@@ -41,6 +41,8 @@ export function SessionPanel({
   const [query, setQuery] = useState("");
   const [sessions, setSessions] = useState<DispatcherSession[]>([]);
   const creatingSessionRef = useRef(false);
+  const activeSessionIdRef = useRef(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
 
   const handleNewSession = useCallback(async () => {
     if (creatingSessionRef.current) return;
@@ -72,8 +74,9 @@ export function SessionPanel({
         });
         if (cancelled) return;
         setSessions(loaded);
+        const currentSessionId = activeSessionIdRef.current;
         if (loaded.length > 0) {
-          if (!activeSessionId || !loaded.some((session) => session.id === activeSessionId)) {
+          if (!currentSessionId || !loaded.some((session) => session.id === currentSessionId)) {
             onSelectSession(loaded[0].id);
           }
         } else {
@@ -89,7 +92,7 @@ export function SessionPanel({
     return () => {
       cancelled = true;
     };
-  }, [activeSessionId, handleNewSession, onSelectSession, project.id]);
+  }, [handleNewSession, onSelectSession, project.id]);
 
   async function handleDeleteSession(id: string) {
     const ok = await confirm(`Delete this session permanently?`, {

@@ -199,7 +199,7 @@ function App() {
       hidden?: boolean;
       dispatcherDispatchId?: string;
     },
-  ) {
+  ): string {
     const task: Task = {
       id: `${Date.now()}`,
       projectId: project.id,
@@ -221,10 +221,11 @@ function App() {
     // Ensure the project is mounted so the task's terminal can be initialized in the background.
     mountProject(project.id);
 
-    if (!immediate) return;
+    if (!immediate) return task.id;
 
     tm.resetTaskTerminal(task.id);
     invokeRunTask(task, project.path, images, dispatcherDispatchId);
+    return task.id;
   }
 
   function deleteTasks(taskIds: string[]) {

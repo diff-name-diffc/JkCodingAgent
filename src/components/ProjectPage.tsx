@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -61,7 +61,7 @@ export function ProjectPage({
     immediate: boolean;
     hidden?: boolean;
     dispatcherDispatchId?: string;
-  }) => void;
+  }) => string;
   onInput: (taskId: string, data: string) => void;
   onResize: (taskId: string, cols: number, rows: number) => void;
   onRegisterTerminal: (
@@ -106,7 +106,9 @@ export function ProjectPage({
   const [showSettings, setShowSettings] = useState(false);
   const [showDispatcherSettings, setShowDispatcherSettings] = useState(false);
   const [subProcesses, setSubProcesses] = useState<SubProcess[]>([]);
-  const [activeSubTabId, setActiveSubTabId] = useState<string | null>(null);
+  const [activeSubTabIdBySession, setActiveSubTabIdBySession] = useState<
+    Record<string, string | null>
+  >({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [subTerminalHeight, setSubTerminalHeight] = useState(500);
   /** Maps subprocess id → real task id for terminal routing */
@@ -114,15 +116,22 @@ export function ProjectPage({
   const shellRef = useRef<ShellTerminalPanelHandle>(null);
   const pendingCmdRef = useRef<string | null>(null);
   const dispatcherChatRef = useRef<DispatcherChatHandle>(null);
-  /** Track dispatchId → subprocess id for correlating dispatch results */
-  const pendingDispatchRef = useRef<Map<string, { spId: string; dispatchId: string }>>(new Map());
+  /** Track subprocess id → owning dispatcher session for result injection */
+  const pendingDispatchRef = useRef<
+    Map<string, { spId: string; dispatchId: string; sessionId: string }>
+  >(new Map());
   /** Track subprocess task_ids that were voluntarily exited via /exit */
   const exitedSubprocessesRef = useRef<Set<string>>(new Set());
-
-  const projectTasks = useMemo(
-    () => tasks.filter((t) => t.projectId === project.id),
-    [tasks, project.id],
+  const visibleSubProcesses = useMemo(
+    () =>
+      activeSessionId
+        ? subProcesses.filter((subProcess) => subProcess.sessionId === activeSessionId)
+        : [],
+    [activeSessionId, subProcesses],
   );
+  const activeVisibleSubTabId = activeSessionId
+    ? activeSubTabIdBySession[activeSessionId] ?? null
+    : null;
 
   const handleRunMakeTarget = useCallback(
     (target: string) => {
@@ -146,26 +155,30 @@ export function ProjectPage({
 
   // ── Dispatcher sub-process handlers ──
   const handleDispatchApproved = useCallback(
-    (dispatchId: string, description: string, permissionMode: string) => {
+    (
+      dispatchId: string,
+      description: string,
+      permissionMode: string,
+      sessionId: string,
+    ) => {
       const spId = `sp_${Date.now()}`;
       const sp: SubProcess = {
         id: spId,
         dispatchId,
+        sessionId,
         agent: "claude",
         description,
         status: "running",
         startedAt: Date.now(),
       };
       setSubProcesses((prev) => [...prev, sp]);
-      setActiveSubTabId(spId);
+      setActiveSubTabIdBySession((prev) => ({ ...prev, [sessionId]: spId }));
 
       // Track pending dispatch for result injection
-      pendingDispatchRef.current.set(spId, { spId, dispatchId });
+      pendingDispatchRef.current.set(spId, { spId, dispatchId, sessionId });
 
       // Start a real Claude task via PTY infrastructure.
-      // The task will be created by App.tsx and its id returned via tasks prop update.
-      // We detect the new task by matching prompt content.
-      onSubmitTask({
+      const taskId = onSubmitTask({
         prompt: description,
         agent: "claude",
         permissionMode: (permissionMode as PermissionMode) || "full_access",
@@ -174,30 +187,10 @@ export function ProjectPage({
         hidden: true,
         dispatcherDispatchId: dispatchId,
       });
+      setSubProcessTaskMap((prev) => ({ ...prev, [spId]: taskId }));
     },
     [onSubmitTask],
   );
-
-  // Detect newly created tasks and map them to subprocesses
-  const prevTaskCountRef = useRef(projectTasks.length);
-  useEffect(() => {
-    const prevCount = prevTaskCountRef.current;
-    prevTaskCountRef.current = projectTasks.length;
-
-    if (projectTasks.length > prevCount) {
-      // A new task was added — check if there's a pending subprocess
-      const newestTask = projectTasks.reduce((a, b) =>
-        a.createdAt > b.createdAt ? a : b
-      );
-      // Find the subprocess that doesn't have a task mapped yet
-      const unmappedSp = subProcesses.find(
-        (sp) => sp.status === "running" && !subProcessTaskMap[sp.id]
-      );
-      if (unmappedSp && newestTask) {
-        setSubProcessTaskMap((prev) => ({ ...prev, [unmappedSp.id]: newestTask.id }));
-      }
-    }
-  }, [projectTasks.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Monitor task completion for subprocesses → inject result back
   useEffect(() => {
@@ -245,9 +238,7 @@ export function ProjectPage({
             ? `Claude 子任务完成。\n\n终端输出：\n${cleaned}`
             : `Claude 子任务失败 (status: ${status})。\n\n终端输出：\n${cleaned}`;
 
-          // Continue the Dispatcher Agent with the result via DispatcherChat ref
-          // This ensures streaming events are handled by the chat UI
-          dispatcherChatRef.current?.continueWithResult(resultText);
+          dispatcherChatRef.current?.continueWithResult(resultText, pending.sessionId);
         }
       }
     );
@@ -270,11 +261,16 @@ export function ProjectPage({
         // Clean and inject output into Dispatcher Agent
         const cleaned = cleanTerminalOutput(output);
         const resultText = `Claude 当前轮次执行完成（流空闲检测）。\n\n终端输出：\n${cleaned}`;
-        dispatcherChatRef.current?.continueWithResult(resultText);
+        const [spId] = spEntry;
+        const sessionId =
+          pendingDispatchRef.current.get(spId)?.sessionId ??
+          subProcesses.find((sp) => sp.id === spId)?.sessionId;
+        if (!sessionId) return;
+        dispatcherChatRef.current?.continueWithResult(resultText, sessionId);
       }
     );
     return () => { unsub.then((fn) => fn()); };
-  }, [subProcessTaskMap]);
+  }, [subProcessTaskMap, subProcesses]);
 
   const handleDispatchRejected = useCallback((_dispatchId: string) => {
     // No-op for now, the agent already recorded the rejection
@@ -282,9 +278,10 @@ export function ProjectPage({
 
   // Handle DispatchContinue: send text to active subprocess terminal
   const handleDispatchContinue = useCallback(
-    (text: string) => {
-      // Find the most recently active subprocess
-      const activeSp = subProcesses.find((sp) => sp.status === "running");
+    (text: string, sessionId: string) => {
+      const activeSp = [...subProcesses]
+        .reverse()
+        .find((sp) => sp.status === "running" && sp.sessionId === sessionId);
       if (!activeSp) return;
       const taskId = subProcessTaskMap[activeSp.id];
       if (!taskId) return;
@@ -296,8 +293,10 @@ export function ProjectPage({
 
   // Handle DispatchExit: send /exit to active subprocess terminal
   const handleDispatchExit = useCallback(
-    (_reason: string) => {
-      const activeSp = subProcesses.find((sp) => sp.status === "running");
+    (_reason: string, sessionId: string) => {
+      const activeSp = [...subProcesses]
+        .reverse()
+        .find((sp) => sp.status === "running" && sp.sessionId === sessionId);
       if (!activeSp) return;
       const taskId = subProcessTaskMap[activeSp.id];
       if (!taskId) return;
@@ -309,10 +308,18 @@ export function ProjectPage({
     [subProcesses, subProcessTaskMap],
   );
 
-  const handleCloseSubTab = useCallback((id: string) => {
-    setSubProcesses((prev) => prev.filter((sp) => sp.id !== id));
-    setActiveSubTabId((prev) => (prev === id ? null : prev));
-  }, []);
+  const handleCloseSubTab = useCallback(
+    (id: string) => {
+      const targetSubProcess = subProcesses.find((sp) => sp.id === id);
+      setSubProcesses((prev) => prev.filter((sp) => sp.id !== id));
+      setActiveSubTabIdBySession((prev) => {
+        if (!targetSubProcess) return prev;
+        if (prev[targetSubProcess.sessionId] !== id) return prev;
+        return { ...prev, [targetSubProcess.sessionId]: null };
+      });
+    },
+    [subProcesses],
+  );
 
   const handleSubTerminalResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -465,11 +472,17 @@ export function ProjectPage({
           </ErrorBoundary>
         </div>
         {/* Sub-process terminal tabs */}
-        {subProcesses.length > 0 && (
+        {visibleSubProcesses.length > 0 && (
           <SubProcessTabs
-            subProcesses={subProcesses}
-            activeTabId={activeSubTabId}
-            onSelectTab={setActiveSubTabId}
+            subProcesses={visibleSubProcesses}
+            activeTabId={activeVisibleSubTabId}
+            onSelectTab={(id) => {
+              if (!activeSessionId) return;
+              setActiveSubTabIdBySession((prev) => ({
+                ...prev,
+                [activeSessionId]: prev[activeSessionId] === id ? null : id,
+              }));
+            }}
             onCloseTab={handleCloseSubTab}
             height={subTerminalHeight}
             onResizeStart={handleSubTerminalResizeStart}

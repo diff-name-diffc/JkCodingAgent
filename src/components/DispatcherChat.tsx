@@ -181,16 +181,17 @@ interface DispatcherChatProps {
     dispatchId: string,
     description: string,
     permissionMode: string,
+    sessionId: string,
   ) => void;
   onDispatchRejected: (dispatchId: string) => void;
-  onDispatchContinue: (text: string) => void;
-  onDispatchExit: (reason: string) => void;
+  onDispatchContinue: (text: string, sessionId: string) => void;
+  onDispatchExit: (reason: string, sessionId: string) => void;
   onOpenSettings: () => void;
 }
 
 export interface DispatcherChatHandle {
   /** Inject dispatch result and continue the agent conversation */
-  continueWithResult: (result: string) => void;
+  continueWithResult: (result: string, targetSessionId?: string) => void;
 }
 
 export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatProps>(
@@ -221,6 +222,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const currentSessionIdRef = useRef(sessionId);
+  currentSessionIdRef.current = sessionId;
+  const activeRunRef = useRef(0);
+  const historyLoadRef = useRef(0);
   const autoApproveRef = useRef(autoApprove);
   autoApproveRef.current = autoApprove;
   const onDispatchApprovedRef = useRef(onDispatchApproved);
@@ -239,12 +244,24 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       .catch(console.error);
   }, []);
 
-  // Load history on mount
+  // Load history for the active session only. Late responses from a previous
+  // session must not overwrite the currently selected session.
   useEffect(() => {
+    const loadId = ++historyLoadRef.current;
+    activeRunRef.current += 1;
+    setMessages([]);
+    setIsLoading(false);
+    setStreamingContent("");
+    setActiveTool(null);
+    setPendingDispatch(null);
+
     invoke<DispatcherMessage[]>("dispatcher_list_messages", {
       workspaceId: sessionId,
     })
-      .then(setMessages)
+      .then((loaded) => {
+        if (currentSessionIdRef.current !== sessionId || historyLoadRef.current !== loadId) return;
+        setMessages(loaded.filter((message) => message.workspaceId === sessionId));
+      })
       .catch(console.error);
   }, [sessionId]);
 
@@ -253,51 +270,62 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingContent]);
 
-  // Shared event channel factory — used by both handleSend and continueWithResult
-  const createEventChannel = useCallback(() => {
+  const createEventChannel = useCallback((targetSessionId: string, runId: number) => {
     const onEvent = new Channel<DispatcherAgentEvent>();
     onEvent.onmessage = (event) => {
+      const isCurrentRun =
+        currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId;
       switch (event.event) {
+        case "started":
+        case "assistantStarted":
+          break;
         case "userMessage":
+          if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
           setMessages((prev) => [...prev, event.data.message]);
           break;
         case "assistantDelta":
+          if (!isCurrentRun) return;
           setStreamingContent((prev) => prev + event.data.delta);
           break;
         case "assistantMessage":
+          if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
           setStreamingContent("");
           setMessages((prev) => [...prev, event.data.message]);
           break;
         case "toolStarted":
+          if (!isCurrentRun) return;
           setActiveTool(event.data.name);
           break;
         case "toolFinished":
+          if (!isCurrentRun) return;
           setActiveTool(null);
           break;
         case "dispatchProposed": {
           const { dispatchId, description, permissionMode } = event.data;
           if (autoApproveRef.current) {
-            onDispatchApprovedRef.current(dispatchId, description, permissionMode);
-          } else {
+            onDispatchApprovedRef.current(dispatchId, description, permissionMode, targetSessionId);
+          } else if (isCurrentRun) {
             setPendingDispatch({ dispatchId, description, permissionMode });
           }
           break;
         }
         case "dispatchContinue": {
-          onDispatchContinueRef.current(event.data.text);
+          onDispatchContinueRef.current(event.data.text, targetSessionId);
           break;
         }
         case "dispatchExit": {
-          onDispatchExitRef.current(event.data.reason);
+          onDispatchExitRef.current(event.data.reason, targetSessionId);
           break;
         }
         case "finished":
-          setMessages(event.data.messages);
+          if (!isCurrentRun) return;
+          setMessages(event.data.messages.filter((message) => message.workspaceId === targetSessionId));
           setIsLoading(false);
           setStreamingContent("");
           setActiveTool(null);
           break;
         case "error":
+          if (!isCurrentRun) return;
           setIsLoading(false);
           setStreamingContent("");
           setActiveTool(null);
@@ -316,12 +344,15 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     setIsLoading(true);
     setStreamingContent("");
     setActiveTool(null);
+    setPendingDispatch(null);
 
-    const onEvent = createEventChannel();
+    const targetSessionId = sessionId;
+    const runId = ++activeRunRef.current;
+    const onEvent = createEventChannel(targetSessionId, runId);
 
     try {
       await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
-        workspaceId: sessionId,
+        workspaceId: targetSessionId,
         projectPath,
         content: text,
         onEvent,
@@ -329,22 +360,29 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     } catch (err) {
       console.error("dispatcher_send_message error:", err);
     } finally {
-      setIsLoading(false);
+      if (currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId) {
+        setIsLoading(false);
+      }
     }
   }, [input, isLoading, projectPath, sessionId, createEventChannel]);
 
   // Expose continueWithResult to parent via ref
   useImperativeHandle(ref, () => ({
-    continueWithResult: async (result: string) => {
-      setIsLoading(true);
-      setStreamingContent("");
-      setActiveTool(null);
+    continueWithResult: async (result: string, targetSessionId = sessionId) => {
+      const isCurrentSession = currentSessionIdRef.current === targetSessionId;
+      const runId = isCurrentSession ? ++activeRunRef.current : activeRunRef.current;
+      if (isCurrentSession) {
+        setIsLoading(true);
+        setStreamingContent("");
+        setActiveTool(null);
+        setPendingDispatch(null);
+      }
 
-      const onEvent = createEventChannel();
+      const onEvent = createEventChannel(targetSessionId, runId);
 
       try {
         await invoke<DispatcherAgentTurn>("dispatcher_continue_after_dispatch", {
-          workspaceId: sessionId,
+          workspaceId: targetSessionId,
           projectPath,
           dispatchResult: result,
           onEvent,
@@ -352,7 +390,9 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       } catch (err) {
         console.error("dispatcher_continue_after_dispatch error:", err);
       } finally {
-        setIsLoading(false);
+        if (currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId) {
+          setIsLoading(false);
+        }
       }
     },
   }), [projectPath, sessionId, createEventChannel]);
@@ -371,9 +411,9 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     (dispatchId: string, description: string) => {
       const pm = pendingDispatch?.permissionMode ?? "full_access";
       setPendingDispatch(null);
-      onDispatchApproved(dispatchId, description, pm);
+      onDispatchApproved(dispatchId, description, pm, sessionId);
     },
-    [pendingDispatch, onDispatchApproved],
+    [pendingDispatch, onDispatchApproved, sessionId],
   );
 
   const handleRejectDispatch = useCallback(

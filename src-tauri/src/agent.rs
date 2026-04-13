@@ -343,14 +343,19 @@ impl DispatcherAgent {
                         // 注入 Claude 的执行结果后，由前端再次调用 dispatcher_continue_after_dispatch
                         // 来继续 Agent 循环。
                         // 为此，返回一条临时的 "等待中" 消息。
-                        let waiting_msg = db.add_visible_message(
-                            workspace_id,
-                            "assistant",
-                            &format!(
+                        let waiting_content = if self.auto_approve_dispatch() {
+                            format!(
+                                "📋 已自动批准 Claude 子任务，正在执行...\n\n**任务描述：**\n{}",
+                                description
+                            )
+                        } else {
+                            format!(
                                 "📋 已提交 Claude 子任务审查，等待执行...\n\n**任务描述：**\n{}",
                                 description
-                            ),
-                        )?;
+                            )
+                        };
+                        let waiting_msg =
+                            db.add_visible_message(workspace_id, "assistant", &waiting_content)?;
                         emit(
                             on_event,
                             AgentEvent::AssistantMessage {

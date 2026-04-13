@@ -2,6 +2,8 @@ import { useMemo, memo } from "react";
 import type { SubProcess } from "../types";
 import { TerminalView } from "./TerminalView";
 
+const COLLAPSED_HEIGHT = 32;
+
 interface SubProcessTabsProps {
   subProcesses: SubProcess[];
   activeTabId: string | null;
@@ -47,11 +49,12 @@ export function SubProcessTabs({
 
   const activeSubProcess = subProcesses.find((sp) => sp.id === activeTabId);
   const activeTaskId = activeTabId ? subProcessTaskMap[activeTabId] : null;
+  const isExpanded = Boolean(activeSubProcess);
 
   return (
-    <div style={{ ...styles.container, height }}>
+    <div style={{ ...styles.container, height: isExpanded ? height : COLLAPSED_HEIGHT }}>
       {/* Resize handle */}
-      <div style={styles.resizeHandle} onMouseDown={onResizeStart} />
+      {isExpanded && <div style={styles.resizeHandle} onMouseDown={onResizeStart} />}
 
       {/* Tab bar */}
       <div style={styles.tabBar}>
@@ -70,33 +73,35 @@ export function SubProcessTabs({
       </div>
 
       {/* Terminal content area */}
-      <div style={styles.content}>
-        {activeTaskId && activeSubProcess?.status === "running" ? (
-          <TerminalView
-            key={activeTaskId}
-            onInput={(data) => onInput(activeTaskId, data)}
-            onResize={(cols, rows) => onResize(activeTaskId, cols, rows)}
-            onRegisterTerminal={(fn) => onRegisterTerminal(activeTaskId, fn)}
-            onReady={(gen) => onTerminalReady(activeTaskId, gen)}
-            onSnapshot={(snap) => onSnapshot(activeTaskId, snap)}
-            isDark={isDark}
-            isActive
-            {...getRestoreState(activeTaskId)}
-          />
-        ) : activeSubProcess ? (
-          <div style={styles.terminalPlaceholder}>
-            {activeSubProcess.status === "pending_approval" && (
-              <span>⏳ 等待审批...</span>
-            )}
-            {activeSubProcess.status === "done" && (
-              <span>✅ 子任务已完成</span>
-            )}
-            {activeSubProcess.status === "failed" && (
-              <span>❌ 子任务失败</span>
-            )}
-          </div>
-        ) : null}
-      </div>
+      {activeSubProcess && (
+        <div style={styles.content}>
+          {activeTaskId && activeSubProcess.status === "running" ? (
+            <TerminalView
+              key={activeTaskId}
+              onInput={(data) => onInput(activeTaskId, data)}
+              onResize={(cols, rows) => onResize(activeTaskId, cols, rows)}
+              onRegisterTerminal={(fn) => onRegisterTerminal(activeTaskId, fn)}
+              onReady={(gen) => onTerminalReady(activeTaskId, gen)}
+              onSnapshot={(snap) => onSnapshot(activeTaskId, snap)}
+              isDark={isDark}
+              isActive
+              {...getRestoreState(activeTaskId)}
+            />
+          ) : (
+            <div style={styles.terminalPlaceholder}>
+              {activeSubProcess.status === "pending_approval" && (
+                <span>⏳ 等待审批...</span>
+              )}
+              {activeSubProcess.status === "done" && (
+                <span>✅ 子任务已完成</span>
+              )}
+              {activeSubProcess.status === "failed" && (
+                <span>❌ 子任务失败</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -157,6 +157,7 @@ export interface DispatcherSession {
 export interface SubProcess {
   id: string;
   dispatchId: string;
+  sessionId: string;
   agent: "claude" | "codex";
   description: string;
   status: "pending_approval" | "running" | "done" | "failed";

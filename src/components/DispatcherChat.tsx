@@ -98,20 +98,27 @@ const MessageBubble = memo(function MessageBubble({
         <div style={styles.messageAvatar(false)}>
           <Wrench size={13} color="var(--text-secondary)" />
         </div>
-        <div 
-          style={{ ...styles.messageBubble(false), padding: "8px 12px", background: "var(--bg-subtle)", opacity: 0.9, flex: 1, cursor: "pointer", userSelect: "none" }} 
-          onClick={() => setIsToolExpanded(!isToolExpanded)}
+        <div
+          style={{
+            ...styles.messageBubble(false),
+            ...styles.toolMessageBubble,
+          }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-secondary)" }}>
+          <button
+            type="button"
+            style={styles.toolMessageHeader}
+            onClick={() => setIsToolExpanded(!isToolExpanded)}
+          >
             <span style={styles.toolDot(false)} />
             <span style={styles.toolName}>{msg.toolName || "tool"} result</span>
             <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
               {isToolExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </div>
-          </div>
+          </button>
           {isToolExpanded && (
-            <div 
+            <div
               style={{
+                ...styles.selectableText,
                 marginTop: "10px", 
                 paddingTop: "10px",
                 borderTop: "1px solid var(--border-dim)",
@@ -124,7 +131,6 @@ const MessageBubble = memo(function MessageBubble({
                 overflowX: "hidden",
                 cursor: "text"
               }}
-              onClick={(e) => e.stopPropagation()}
             >
               {msg.content}
             </div>
@@ -669,11 +675,43 @@ const styles = {
     fontSize: "13.5px",
     lineHeight: "1.6",
     wordBreak: "break-word" as const,
+    userSelect: "text" as const,
+    WebkitUserSelect: "text" as const,
   }),
-  messageText: { whiteSpace: "pre-wrap" as const },
+  messageText: {
+    whiteSpace: "pre-wrap" as const,
+    userSelect: "text" as const,
+    WebkitUserSelect: "text" as const,
+  },
   markdownBody: {
     fontSize: "13.5px",
     lineHeight: "1.6",
+    userSelect: "text" as const,
+    WebkitUserSelect: "text" as const,
+  },
+  selectableText: {
+    userSelect: "text" as const,
+    WebkitUserSelect: "text" as const,
+  },
+  toolMessageBubble: {
+    padding: "8px 12px",
+    background: "var(--bg-subtle)",
+    opacity: 0.9,
+    flex: 1,
+  },
+  toolMessageHeader: {
+    width: "100%",
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: 0,
+    fontSize: "12px",
+    color: "var(--text-secondary)",
+    background: "transparent",
+    border: "none",
+    cursor: "pointer",
+    userSelect: "none" as const,
+    WebkitUserSelect: "none" as const,
   },
   toolIndicator: {
     display: "flex",

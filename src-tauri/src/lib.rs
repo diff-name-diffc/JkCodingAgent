@@ -259,7 +259,7 @@ async fn dispatcher_exit_subprocess(
 
     let mut writers = task_manager.pty_writers.lock();
     if let Some(writer) = writers.get_mut(&task_id) {
-        writer.write_all(b"/exit\n").map_err(|e| e.to_string())?;
+        writer.write_all(b"/exit\r").map_err(|e| e.to_string())?;
         writer.flush().map_err(|e| e.to_string())?;
     }
     Ok(())

@@ -122,6 +122,10 @@ export function ProjectPage({
   >(new Map());
   /** Track subprocess task_ids that were voluntarily exited via /exit */
   const exitedSubprocessesRef = useRef<Set<string>>(new Set());
+  /** Track task_ids whose current round has already been injected via idle detection */
+  const idleInjectedTaskIdsRef = useRef<Set<string>>(new Set());
+  /** Track task_ids that have already reached a terminal state to block late idle events */
+  const closedSubprocessTaskIdsRef = useRef<Set<string>>(new Set());
   const visibleSubProcesses = useMemo(
     () =>
       activeSessionId
@@ -187,6 +191,8 @@ export function ProjectPage({
         hidden: true,
         dispatcherDispatchId: dispatchId,
       });
+      idleInjectedTaskIdsRef.current.delete(taskId);
+      closedSubprocessTaskIdsRef.current.delete(taskId);
       setSubProcessTaskMap((prev) => ({ ...prev, [spId]: taskId }));
     },
     [onSubmitTask],
@@ -206,6 +212,8 @@ export function ProjectPage({
         );
         if (!spEntry) return;
         const [spId] = spEntry;
+        const alreadyInjectedByIdle = idleInjectedTaskIdsRef.current.has(task_id);
+        closedSubprocessTaskIdsRef.current.add(task_id);
 
         // Update subprocess status
         const isDone = status === "done";
@@ -221,25 +229,31 @@ export function ProjectPage({
         if (exitedSubprocessesRef.current.has(task_id)) {
           exitedSubprocessesRef.current.delete(task_id);
           pendingDispatchRef.current.delete(spId);
+          idleInjectedTaskIdsRef.current.delete(task_id);
           return;
         }
 
         // Capture terminal output and inject back to Dispatcher
         const pending = pendingDispatchRef.current.get(spId);
-        if (pending) {
+        if (!pending || alreadyInjectedByIdle) {
           pendingDispatchRef.current.delete(spId);
-
-          // Get terminal content from restore state (buffer)
-          const restoreState = getTaskRestoreState(task_id);
-          const rawOutput = (restoreState.initialSnapshot || "") + (restoreState.initialData || "");
-          const cleaned = cleanTerminalOutput(rawOutput);
-
-          const resultText = isDone
-            ? `Claude 子任务完成。\n\n终端输出：\n${cleaned}`
-            : `Claude 子任务失败 (status: ${status})。\n\n终端输出：\n${cleaned}`;
-
-          dispatcherChatRef.current?.continueWithResult(resultText, pending.sessionId);
+          idleInjectedTaskIdsRef.current.delete(task_id);
+          return;
         }
+
+        pendingDispatchRef.current.delete(spId);
+        idleInjectedTaskIdsRef.current.delete(task_id);
+
+        // Get terminal content from restore state (buffer)
+        const restoreState = getTaskRestoreState(task_id);
+        const rawOutput = (restoreState.initialSnapshot || "") + (restoreState.initialData || "");
+        const cleaned = cleanTerminalOutput(rawOutput);
+
+        const resultText = isDone
+          ? `Claude 子任务完成。\n\n终端输出：\n${cleaned}`
+          : `Claude 子任务失败 (status: ${status})。\n\n终端输出：\n${cleaned}`;
+
+        dispatcherChatRef.current?.continueWithResult(resultText, pending.sessionId);
       }
     );
     return () => { unsub.then((fn) => fn()); };
@@ -251,6 +265,9 @@ export function ProjectPage({
       "dispatcher-subprocess-idle",
       (e) => {
         const { task_id, output } = e.payload;
+        if (closedSubprocessTaskIdsRef.current.has(task_id)) return;
+        if (exitedSubprocessesRef.current.has(task_id)) return;
+        if (idleInjectedTaskIdsRef.current.has(task_id)) return;
 
         // Find subprocess for this task
         const spEntry = Object.entries(subProcessTaskMap).find(
@@ -266,6 +283,8 @@ export function ProjectPage({
           pendingDispatchRef.current.get(spId)?.sessionId ??
           subProcesses.find((sp) => sp.id === spId)?.sessionId;
         if (!sessionId) return;
+        pendingDispatchRef.current.delete(spId);
+        idleInjectedTaskIdsRef.current.add(task_id);
         dispatcherChatRef.current?.continueWithResult(resultText, sessionId);
       }
     );
@@ -286,7 +305,9 @@ export function ProjectPage({
       const taskId = subProcessTaskMap[activeSp.id];
       if (!taskId) return;
 
-      invoke("dispatcher_send_to_subprocess", { taskId, text: text + "\n" }).catch(console.error);
+      idleInjectedTaskIdsRef.current.delete(taskId);
+      const submittedText = text.replace(/(?:\r?\n)+$/, "") + "\r";
+      invoke("dispatcher_send_to_subprocess", { taskId, text: submittedText }).catch(console.error);
     },
     [subProcesses, subProcessTaskMap],
   );
@@ -303,6 +324,7 @@ export function ProjectPage({
 
       // Mark as voluntarily exited so we skip result injection on task-status
       exitedSubprocessesRef.current.add(taskId);
+      closedSubprocessTaskIdsRef.current.add(taskId);
       invoke("dispatcher_exit_subprocess", { taskId }).catch(console.error);
     },
     [subProcesses, subProcessTaskMap],

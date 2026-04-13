@@ -402,9 +402,15 @@ body {
 }
 
 /* ── Session markdown prose ─────────────────────────────────────── */
-.session-prose {
+.session-selectable,
+.session-selectable *,
+.session-prose,
+.session-prose * {
   -webkit-user-select: text;
   user-select: text;
+}
+
+.session-prose {
   font-size: 13.5px;
   line-height: 1.65;
   color: var(--text-primary);

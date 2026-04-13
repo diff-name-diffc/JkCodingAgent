@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronDown, ChevronRight, Wrench, Copy, Check } from "lucide-react";
+import { ChevronDown, ChevronRight, Wrench } from "lucide-react";
 import { marked } from "marked";
 
 interface SessionContent {
@@ -58,6 +58,7 @@ function ToolUseCard({ name, input }: { name: string; input: string }) {
       </button>
       {expanded && (
         <pre
+          className="session-selectable"
           style={{
             margin: 0,
             padding: "8px 12px",
@@ -103,6 +104,7 @@ function ThinkingBlock({ thinking }: { thinking: string }) {
       </button>
       {expanded && (
         <div
+          className="session-selectable"
           style={{
             padding: "6px 12px",
             fontSize: 12,
@@ -124,54 +126,11 @@ function ThinkingBlock({ thinking }: { thinking: string }) {
 }
 
 function UserMessageBubble({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
-
   return (
     <div style={{ marginBottom: 14, display: "flex", justifyContent: "flex-end" }}>
-      <div
-        style={{ maxWidth: "72%", position: "relative" }}
-        className="user-message-bubble"
-        onMouseEnter={(e) => {
-          const btn = (e.currentTarget as HTMLElement).querySelector(
-            ".copy-btn",
-          ) as HTMLElement | null;
-          if (btn) btn.style.opacity = "1";
-        }}
-        onMouseLeave={(e) => {
-          const btn = (e.currentTarget as HTMLElement).querySelector(
-            ".copy-btn",
-          ) as HTMLElement | null;
-          if (btn) btn.style.opacity = "0";
-        }}
-      >
-        <button
-          className="copy-btn"
-          onClick={handleCopy}
-          style={{
-            position: "absolute",
-            top: 6,
-            right: 8,
-            opacity: 0,
-            transition: "opacity 0.15s",
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            padding: 2,
-            color: "var(--text-muted)",
-            display: "flex",
-            alignItems: "center",
-          }}
-        >
-          {copied ? <Check size={13} /> : <Copy size={13} />}
-        </button>
+      <div style={{ maxWidth: "72%" }}>
         <div
+          className="session-selectable"
           style={{
             padding: "10px 16px",
             background: "var(--bg-subtle)",

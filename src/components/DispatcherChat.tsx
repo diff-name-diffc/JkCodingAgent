@@ -1,6 +1,15 @@
-import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef, memo } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useImperativeHandle,
+  forwardRef,
+  memo,
+  useMemo,
+} from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import { User, Sparkles, Wrench, ChevronRight, ChevronDown, Send } from "lucide-react";
+import { User, Sparkles, Send } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
@@ -10,6 +19,12 @@ import type {
   DispatcherSettings,
   SubProcess,
 } from "../types";
+import { ToolActivityBubble, type ToolActivityItem } from "./ToolActivityBubble";
+import {
+  buildDispatcherDisplayItems,
+  finishLiveToolActivity,
+  startLiveToolActivity,
+} from "./dispatcherChatView";
 
 // ── Dispatch Approval Dialog ─────────────────────────────────────────────────
 
@@ -63,115 +78,57 @@ function DispatchApprovalDialog({
   );
 }
 
-// ── Tool Activity Indicator ──────────────────────────────────────────────────
+// ── Message Bubble ───────────────────────────────────────────────────────────
 
-const ToolIndicator = memo(function ToolIndicator({
-  name,
-  isRunning,
+const UserMessageBubble = memo(function UserMessageBubble({
+  message,
 }: {
-  name: string;
-  isRunning: boolean;
+  message: DispatcherMessage;
 }) {
   return (
-    <div style={styles.toolIndicator}>
-      <span style={styles.toolDot(isRunning)} />
-      <span style={styles.toolName}>{name}</span>
-      {isRunning && <span style={styles.toolSpinner}>⟳</span>}
+    <div style={styles.messageBubbleWrap(true)}>
+      <div style={styles.messageAvatar(true)}>
+        <User size={15} color="#fff" />
+      </div>
+      <div style={styles.messageBubble(true)}>
+        <div style={styles.messageText}>{message.content}</div>
+      </div>
     </div>
   );
 });
 
-// ── Message Bubble ───────────────────────────────────────────────────────────
-
-const MessageBubble = memo(function MessageBubble({
-  msg,
+const AssistantTurnBubble = memo(function AssistantTurnBubble({
+  responseText,
+  tools,
 }: {
-  msg: DispatcherMessage;
+  responseText: string;
+  tools: ToolActivityItem[];
 }) {
-  const isUser = msg.role === "user";
-  const isTool = msg.role === "tool";
-  const [isToolExpanded, setIsToolExpanded] = useState(false);
-
-  if (isTool) {
-    return (
-      <div style={styles.messageBubbleWrap(false)}>
-        <div style={styles.messageAvatar(false)}>
-          <Wrench size={13} color="var(--text-secondary)" />
-        </div>
-        <div
-          style={{
-            ...styles.messageBubble(false),
-            ...styles.toolMessageBubble,
-          }}
-        >
-          <button
-            type="button"
-            style={styles.toolMessageHeader}
-            onClick={() => setIsToolExpanded(!isToolExpanded)}
-          >
-            <span style={styles.toolDot(false)} />
-            <span style={styles.toolName}>{msg.toolName || "tool"} result</span>
-            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
-              {isToolExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </div>
-          </button>
-          {isToolExpanded && (
-            <div
-              style={{
-                ...styles.selectableText,
-                marginTop: "10px", 
-                paddingTop: "10px",
-                borderTop: "1px solid var(--border-dim)",
-                fontSize: "11.5px", 
-                fontFamily: "var(--font-mono)", 
-                color: "var(--text-tertiary)", 
-                whiteSpace: "pre-wrap", 
-                maxHeight: "300px", 
-                overflowY: "auto", 
-                overflowX: "hidden",
-                cursor: "text"
-              }}
-            >
-              {msg.content}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  let toolCalls: Array<{ function?: { name?: string } }> = [];
-  if (msg.role === "assistant" && msg.toolCallsJson) {
-    try {
-      toolCalls = JSON.parse(msg.toolCallsJson);
-    } catch {
-      toolCalls = [];
-    }
+  const trimmedResponse = responseText.trim();
+  if (!trimmedResponse && tools.length === 0) {
+    return null;
   }
 
   return (
-    <div style={styles.messageBubbleWrap(isUser)}>
-      <div style={styles.messageAvatar(isUser)}>
-        {isUser ? <User size={15} color="#fff" /> : <Sparkles size={14} color="var(--accent)" />}
+    <div style={styles.messageBubbleWrap(false)}>
+      <div style={styles.messageAvatar(false)}>
+        <Sparkles size={14} color="var(--accent)" />
       </div>
-      <div style={styles.messageBubble(isUser)}>
-        {msg.content && (
-          isUser ? (
-            <div style={styles.messageText}>{msg.content}</div>
-          ) : (
-            <div style={styles.markdownBody} className="dispatcher-markdown">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {msg.content}
-              </ReactMarkdown>
-            </div>
-          )
-        )}
-        
-        {toolCalls.map((tc, idx) => (
-          <div key={idx} style={{ marginTop: msg.content ? "8px" : "0" }}>
-            <ToolIndicator name={tc.function?.name || "tool"} isRunning={false} />
+      <div style={styles.assistantTurnStack}>
+        {tools.length > 0 && (
+          <div style={styles.assistantTurnSection}>
+            <ToolActivityBubble tools={tools} />
           </div>
-        ))}
+        )}
+        {trimmedResponse && (
+          <div style={styles.assistantTurnSection}>
+            <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
+              <div style={styles.markdownBody} className="dispatcher-markdown">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{trimmedResponse}</ReactMarkdown>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -218,7 +175,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
-  const [activeTool, setActiveTool] = useState<string | null>(null);
+  const [liveToolCalls, setLiveToolCalls] = useState<ToolActivityItem[]>([]);
   const [pendingDispatch, setPendingDispatch] = useState<{
     dispatchId: string;
     description: string;
@@ -240,6 +197,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
   onDispatchContinueRef.current = onDispatchContinue;
   const onDispatchExitRef = useRef(onDispatchExit);
   onDispatchExitRef.current = onDispatchExit;
+  const displayItems = useMemo(() => buildDispatcherDisplayItems(messages), [messages]);
 
   // Load settings (for auto-approve flag)
   useEffect(() => {
@@ -258,7 +216,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     setMessages([]);
     setIsLoading(false);
     setStreamingContent("");
-    setActiveTool(null);
+    setLiveToolCalls([]);
     setPendingDispatch(null);
 
     invoke<DispatcherMessage[]>("dispatcher_list_messages", {
@@ -300,11 +258,11 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           break;
         case "toolStarted":
           if (!isCurrentRun) return;
-          setActiveTool(event.data.name);
+          setLiveToolCalls((prev) => startLiveToolActivity(prev, event.data));
           break;
         case "toolFinished":
           if (!isCurrentRun) return;
-          setActiveTool(null);
+          setLiveToolCalls((prev) => finishLiveToolActivity(prev, event.data));
           break;
         case "dispatchProposed": {
           const { dispatchId, description, permissionMode } = event.data;
@@ -328,13 +286,13 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           setMessages(event.data.messages.filter((message) => message.workspaceId === targetSessionId));
           setIsLoading(false);
           setStreamingContent("");
-          setActiveTool(null);
+          setLiveToolCalls([]);
           break;
         case "error":
           if (!isCurrentRun) return;
           setIsLoading(false);
           setStreamingContent("");
-          setActiveTool(null);
+          setLiveToolCalls([]);
           console.error("Agent error:", event.data.message);
           break;
       }
@@ -349,7 +307,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     setInput("");
     setIsLoading(true);
     setStreamingContent("");
-    setActiveTool(null);
+    setLiveToolCalls([]);
     setPendingDispatch(null);
 
     const targetSessionId = sessionId;
@@ -380,7 +338,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       if (isCurrentSession) {
         setIsLoading(true);
         setStreamingContent("");
-        setActiveTool(null);
+        setLiveToolCalls([]);
         setPendingDispatch(null);
       }
 
@@ -455,7 +413,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }
   }, [sessionId]);
 
-  const isEmpty = messages.length === 0 && !streamingContent;
+  const isEmpty = messages.length === 0 && !streamingContent && liveToolCalls.length === 0;
 
   return (
     <div style={styles.container}>
@@ -499,24 +457,20 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             </div>
           </div>
         )}
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} msg={msg} />
+        {displayItems.map((item) => (
+          item.kind === "user" ? (
+            <UserMessageBubble key={item.id} message={item.message} />
+          ) : (
+            <AssistantTurnBubble
+              key={item.id}
+              responseText={item.turn.responseParts.join("\n\n")}
+              tools={item.turn.tools}
+            />
+          )
         ))}
-        {streamingContent && (
-          <div style={styles.messageBubbleWrap(false)}>
-            <div style={styles.messageAvatar(false)}>
-              <Sparkles size={14} color="var(--accent)" />
-            </div>
-            <div style={styles.messageBubble(false)}>
-              <div style={styles.markdownBody} className="dispatcher-markdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {streamingContent}
-                </ReactMarkdown>
-              </div>
-            </div>
-          </div>
+        {(streamingContent.trim() || liveToolCalls.length > 0) && (
+          <AssistantTurnBubble responseText={streamingContent} tools={liveToolCalls} />
         )}
-        {activeTool && <ToolIndicator name={activeTool} isRunning />}
         <div ref={messagesEndRef} />
       </div>
 
@@ -665,7 +619,7 @@ const styles = {
     marginTop: "2px",
   }),
   messageBubble: (isUser: boolean) => ({
-    maxWidth: "85%",
+    maxWidth: "100%",
     padding: "12px 14px",
     borderRadius: isUser ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
     background: isUser ? "var(--accent)" : "var(--bg-card)",
@@ -682,58 +636,29 @@ const styles = {
     whiteSpace: "pre-wrap" as const,
     userSelect: "text" as const,
     WebkitUserSelect: "text" as const,
+    fontFamily: "var(--font-mono)",
   },
   markdownBody: {
     fontSize: "13.5px",
     lineHeight: "1.6",
     userSelect: "text" as const,
     WebkitUserSelect: "text" as const,
+    fontFamily: "var(--font-ui)",
   },
-  selectableText: {
-    userSelect: "text" as const,
-    WebkitUserSelect: "text" as const,
+  assistantTurnStack: {
+    maxWidth: "85%",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "10px",
+    minWidth: 0,
   },
-  toolMessageBubble: {
-    padding: "8px 12px",
-    background: "var(--bg-subtle)",
-    opacity: 0.9,
-    flex: 1,
-  },
-  toolMessageHeader: {
+  assistantTurnSection: {
     width: "100%",
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    padding: 0,
-    fontSize: "12px",
-    color: "var(--text-secondary)",
-    background: "transparent",
-    border: "none",
-    cursor: "pointer",
-    userSelect: "none" as const,
-    WebkitUserSelect: "none" as const,
+    minWidth: 0,
   },
-  toolIndicator: {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    padding: "5px 12px",
-    fontSize: "11.5px",
-    color: "var(--text-secondary)",
-    background: "var(--bg-subtle)",
-    borderRadius: "16px",
-    border: "1px solid var(--border-dim)",
-    alignSelf: "flex-start",
+  assistantReplyBubble: {
+    background: "color-mix(in srgb, var(--bg-card) 92%, var(--bg-subtle))",
   },
-  toolDot: (isRunning: boolean) => ({
-    width: "6px",
-    height: "6px",
-    borderRadius: "50%",
-    background: isRunning ? "var(--success, #34c759)" : "var(--text-tertiary)",
-    animation: isRunning ? "pulse 1s ease-in-out infinite" : "none",
-  }),
-  toolName: { fontFamily: "var(--font-mono)", fontSize: "11px" },
-  toolSpinner: { animation: "spin 1s linear infinite", fontSize: "12px" },
   inputArea: {
     display: "flex",
     alignItems: "flex-end",
@@ -753,7 +678,7 @@ const styles = {
     color: "var(--text-primary)",
     resize: "none" as const,
     outline: "none",
-    fontFamily: "inherit",
+    fontFamily: "var(--font-mono)",
     boxShadow: "0 2px 6px rgba(0,0,0,0.02) inset",
     transition: "border-color 0.2s, box-shadow 0.2s",
   },

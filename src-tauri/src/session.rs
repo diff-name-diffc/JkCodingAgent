@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -621,6 +621,11 @@ pub(crate) enum SessionContent {
         name: String,
         input: String,
     },
+    ToolResult {
+        id: String,
+        name: String,
+        result: String,
+    },
     Thinking {
         thinking: String,
     },
@@ -651,6 +656,7 @@ fn is_codex_format(lines: &[&str]) -> bool {
 
 fn parse_claude_session(lines: &[&str]) -> Vec<SessionMessage> {
     let mut messages = Vec::new();
+    let mut tool_names_by_id = HashMap::new();
 
     for line in lines {
         let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -663,26 +669,22 @@ fn parse_claude_session(lines: &[&str]) -> Vec<SessionMessage> {
 
         match msg_type {
             "user" => {
-                let parts = claude_user_content(message.get("content"));
-                if !parts.is_empty() {
+                let parts = claude_user_content(message.get("content"), &tool_names_by_id);
+                if !parts.text_parts.is_empty() {
                     messages.push(SessionMessage {
                         role: "user".to_string(),
-                        content: parts,
+                        content: parts.text_parts,
                     });
                 }
+                append_assistant_session_parts(&mut messages, parts.tool_results);
             }
             "assistant" => {
                 let parts = message
                     .get("content")
                     .and_then(|c| c.as_array())
-                    .map(|arr| claude_assistant_blocks(arr))
+                    .map(|arr| claude_assistant_blocks(arr, &mut tool_names_by_id))
                     .unwrap_or_default();
-                if !parts.is_empty() {
-                    messages.push(SessionMessage {
-                        role: "assistant".to_string(),
-                        content: parts,
-                    });
-                }
+                append_assistant_session_parts(&mut messages, parts);
             }
             _ => {}
         }
@@ -691,30 +693,72 @@ fn parse_claude_session(lines: &[&str]) -> Vec<SessionMessage> {
     messages
 }
 
-fn claude_user_content(content: Option<&serde_json::Value>) -> Vec<SessionContent> {
+struct ClaudeUserParts {
+    text_parts: Vec<SessionContent>,
+    tool_results: Vec<SessionContent>,
+}
+
+fn claude_user_content(
+    content: Option<&serde_json::Value>,
+    tool_names_by_id: &HashMap<String, String>,
+) -> ClaudeUserParts {
     match content {
         Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
-            vec![SessionContent::Text { text: s.clone() }]
+            ClaudeUserParts {
+                text_parts: vec![SessionContent::Text { text: s.clone() }],
+                tool_results: Vec::new(),
+            }
         }
         Some(serde_json::Value::Array(blocks)) => blocks
             .iter()
-            .filter_map(|b| {
-                if b.get("type").and_then(|v| v.as_str()) == Some("text") {
-                    let text = b.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    if !text.trim().is_empty() {
-                        return Some(SessionContent::Text {
-                            text: text.to_string(),
-                        });
+            .fold(
+                ClaudeUserParts {
+                    text_parts: Vec::new(),
+                    tool_results: Vec::new(),
+                },
+                |mut acc, block| {
+                    match block.get("type").and_then(|v| v.as_str()) {
+                        Some("text") => {
+                            let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            if !text.trim().is_empty() {
+                                acc.text_parts.push(SessionContent::Text {
+                                    text: text.to_string(),
+                                });
+                            }
+                        }
+                        Some("tool_result") => {
+                            let id = block
+                                .get("tool_use_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            if let Some(result) = json_value_to_display(block.get("content")) {
+                                acc.tool_results.push(SessionContent::ToolResult {
+                                    id: id.clone(),
+                                    name: tool_names_by_id
+                                        .get(&id)
+                                        .cloned()
+                                        .unwrap_or_else(|| "tool".to_string()),
+                                    result,
+                                });
+                            }
+                        }
+                        _ => {}
                     }
-                }
-                None
-            })
-            .collect(),
-        _ => Vec::new(),
+                    acc
+                },
+            ),
+        _ => ClaudeUserParts {
+            text_parts: Vec::new(),
+            tool_results: Vec::new(),
+        },
     }
 }
 
-fn claude_assistant_blocks(blocks: &[serde_json::Value]) -> Vec<SessionContent> {
+fn claude_assistant_blocks(
+    blocks: &[serde_json::Value],
+    tool_names_by_id: &mut HashMap<String, String>,
+) -> Vec<SessionContent> {
     let mut parts = Vec::new();
     for block in blocks {
         match block.get("type").and_then(|v| v.as_str()) {
@@ -742,6 +786,9 @@ fn claude_assistant_blocks(blocks: &[serde_json::Value]) -> Vec<SessionContent> 
                     .get("input")
                     .and_then(|v| serde_json::to_string_pretty(v).ok())
                     .unwrap_or_default();
+                if !id.is_empty() && !name.is_empty() {
+                    tool_names_by_id.insert(id.clone(), name.clone());
+                }
                 parts.push(SessionContent::ToolUse { id, name, input });
             }
             Some("thinking") => {
@@ -761,6 +808,7 @@ fn claude_assistant_blocks(blocks: &[serde_json::Value]) -> Vec<SessionContent> 
 
 fn parse_codex_session(lines: &[&str]) -> Vec<SessionMessage> {
     let mut messages: Vec<SessionMessage> = Vec::new();
+    let mut tool_names_by_id = HashMap::new();
 
     for line in lines {
         let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -856,10 +904,41 @@ fn parse_codex_session(lines: &[&str]) -> Vec<SessionMessage> {
                             .ok()
                             .and_then(|v| serde_json::to_string_pretty(&v).ok())
                             .unwrap_or_else(|| raw.to_string());
+                        if !call_id.is_empty() && !name.is_empty() {
+                            tool_names_by_id.insert(call_id.clone(), name.clone());
+                        }
                         let part = SessionContent::ToolUse {
                             id: call_id,
                             name,
                             input,
+                        };
+                        if messages.last().map(|m| m.role.as_str()) == Some("assistant") {
+                            messages.last_mut().unwrap().content.push(part);
+                        } else {
+                            messages.push(SessionMessage {
+                                role: "assistant".to_string(),
+                                content: vec![part],
+                            });
+                        }
+                    }
+                    "function_call_output" => {
+                        let call_id = payload
+                            .and_then(|p| p.get("call_id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let Some(result) =
+                            json_value_to_display(payload.and_then(|p| p.get("output")))
+                        else {
+                            continue;
+                        };
+                        let part = SessionContent::ToolResult {
+                            id: call_id.clone(),
+                            name: tool_names_by_id
+                                .get(&call_id)
+                                .cloned()
+                                .unwrap_or_else(|| "tool".to_string()),
+                            result,
                         };
                         if messages.last().map(|m| m.role.as_str()) == Some("assistant") {
                             messages.last_mut().unwrap().content.push(part);
@@ -878,6 +957,47 @@ fn parse_codex_session(lines: &[&str]) -> Vec<SessionMessage> {
     }
 
     messages
+}
+
+fn append_assistant_session_parts(messages: &mut Vec<SessionMessage>, parts: Vec<SessionContent>) {
+    if parts.is_empty() {
+        return;
+    }
+
+    if messages.last().map(|m| m.role.as_str()) == Some("assistant") {
+        messages.last_mut().unwrap().content.extend(parts);
+    } else {
+        messages.push(SessionMessage {
+            role: "assistant".to_string(),
+            content: parts,
+        });
+    }
+}
+
+fn json_value_to_display(value: Option<&serde_json::Value>) -> Option<String> {
+    match value {
+        Some(serde_json::Value::String(text)) if !text.trim().is_empty() => Some(text.clone()),
+        Some(serde_json::Value::Array(items)) => {
+            let text = items
+                .iter()
+                .filter_map(|item| {
+                    item.get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.trim().is_empty() {
+                serde_json::to_string_pretty(items).ok().filter(|serialized| !serialized.trim().is_empty())
+            } else {
+                Some(text)
+            }
+        }
+        Some(other) => serde_json::to_string_pretty(other)
+            .ok()
+            .filter(|serialized| !serialized.trim().is_empty()),
+        None => None,
+    }
 }
 
 // ── 会话文件工具函数 ──────────────────────────────────────────────────────────
@@ -1502,5 +1622,75 @@ mod tests {
         });
 
         assert!(assistant_message_requests_user_input(Some(&payload)));
+    }
+
+    #[test]
+    fn claude_tool_result_is_attached_to_assistant_turn() {
+        let assistant = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "read_file",
+                        "input": { "path": "README.md" }
+                    }
+                ]
+            }
+        })
+        .to_string();
+
+        let user = serde_json::json!({
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": "file contents"
+                    }
+                ]
+            }
+        })
+        .to_string();
+
+        let lines = vec![assistant.as_str(), user.as_str()];
+        let messages = parse_claude_session(&lines);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "assistant");
+        assert_eq!(messages[0].content.len(), 2);
+    }
+
+    #[test]
+    fn codex_function_call_output_is_parsed_as_tool_result() {
+        let function_call = serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"pwd\"}"
+            }
+        })
+        .to_string();
+
+        let function_output = serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "/repo"
+            }
+        })
+        .to_string();
+
+        let lines = vec![function_call.as_str(), function_output.as_str()];
+        let messages = parse_codex_session(&lines);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "assistant");
+        assert_eq!(messages[0].content.len(), 2);
     }
 }

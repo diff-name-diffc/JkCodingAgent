@@ -136,8 +136,8 @@ export type DispatcherAgentEvent =
   | { event: "assistantStarted"; data: { messageId: string } }
   | { event: "assistantDelta"; data: { messageId: string; delta: string } }
   | { event: "assistantMessage"; data: { message: DispatcherMessage } }
-  | { event: "toolStarted"; data: { name: string; arguments: string } }
-  | { event: "toolFinished"; data: { name: string; result: string } }
+  | { event: "toolStarted"; data: { toolCallId?: string; name: string; arguments: string } }
+  | { event: "toolFinished"; data: { toolCallId?: string; name: string; result: string } }
   | { event: "dispatchProposed"; data: { dispatchId: string; description: string; permissionMode: string } }
   | { event: "dispatchStarted"; data: { dispatchId: string; taskId: string } }
   | { event: "dispatchFinished"; data: { dispatchId: string; result: string } }

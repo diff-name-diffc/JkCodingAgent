@@ -48,10 +48,12 @@ pub enum AgentEvent {
         message: DispatcherMessageRecord,
     },
     ToolStarted {
+        tool_call_id: Option<String>,
         name: String,
         arguments: String,
     },
     ToolFinished {
+        tool_call_id: Option<String>,
         name: String,
         result: String,
     },
@@ -281,6 +283,7 @@ impl DispatcherAgent {
                 emit(
                     on_event,
                     AgentEvent::ToolStarted {
+                        tool_call_id: Some(tool_call.id.clone()),
                         name: tool_call.name.clone(),
                         arguments: serde_json::to_string(&tool_call.arguments)
                             .unwrap_or_else(|_| "{}".to_string()),
@@ -325,6 +328,7 @@ impl DispatcherAgent {
                         emit(
                             on_event,
                             AgentEvent::ToolFinished {
+                                tool_call_id: Some(tool_call.id.clone()),
                                 name: tool_call.name.clone(),
                                 result: dispatch_result.clone(),
                             },
@@ -391,6 +395,7 @@ impl DispatcherAgent {
                         emit(
                             on_event,
                             AgentEvent::ToolFinished {
+                                tool_call_id: Some(tool_call.id.clone()),
                                 name: tool_call.name.clone(),
                                 result: continue_result.clone(),
                             },
@@ -443,6 +448,7 @@ impl DispatcherAgent {
                         emit(
                             on_event,
                             AgentEvent::ToolFinished {
+                                tool_call_id: Some(tool_call.id.clone()),
                                 name: tool_call.name.clone(),
                                 result: exit_result.clone(),
                             },
@@ -466,6 +472,7 @@ impl DispatcherAgent {
                 emit(
                     on_event,
                     AgentEvent::ToolFinished {
+                        tool_call_id: Some(tool_call.id.clone()),
                         name: tool_call.name.clone(),
                         result: result.clone(),
                     },

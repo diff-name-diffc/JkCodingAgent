@@ -42,8 +42,10 @@
   --radius-md: 8px;
   --radius-lg: 12px;
 
-  --font-ui: "SF Pro Display", "IBM Plex Sans", "PingFang SC", "Noto Sans SC", sans-serif;
-  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  --font-ui: "IBM Plex Sans", "Aptos", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Noto Sans SC", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "IBM Plex Mono", "Sarasa Mono SC",
+    "SFMono-Regular", "Consolas", ui-monospace, monospace;
 }
 
 html.dark {
@@ -101,6 +103,11 @@ body,
   overflow: hidden;
 }
 button {
+  font-family: inherit;
+}
+input,
+textarea,
+select {
   font-family: inherit;
 }
 input::placeholder,
@@ -415,6 +422,7 @@ body {
   line-height: 1.65;
   color: var(--text-primary);
   word-break: break-word;
+  font-family: var(--font-ui);
 }
 .session-prose p {
   margin: 0 0 10px 0;
@@ -855,6 +863,9 @@ body {
 }
 
 /* ── Dispatcher Chat markdown ───────────────────────────────────── */
+.dispatcher-markdown {
+  font-family: var(--font-ui);
+}
 .dispatcher-markdown p { margin: 0 0 8px 0; }
 .dispatcher-markdown p:last-child { margin-bottom: 0; }
 .dispatcher-markdown code {

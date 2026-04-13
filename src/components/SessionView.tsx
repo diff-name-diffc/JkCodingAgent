@@ -1,14 +1,16 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronDown, ChevronRight, Wrench } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { marked } from "marked";
+import { ToolActivityBubble, type ToolActivityItem } from "./ToolActivityBubble";
 
 interface SessionContent {
-  type: "text" | "tool_use" | "thinking";
+  type: "text" | "tool_use" | "tool_result" | "thinking";
   text?: string;
   id?: string;
   name?: string;
   input?: string;
+  result?: string;
   thinking?: string;
 }
 
@@ -17,107 +19,28 @@ interface SessionMessage {
   content: SessionContent[];
 }
 
-function ToolUseCard({ name, input }: { name: string; input: string }) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <div
-      style={{
-        margin: "6px 0",
-        border: "1px solid var(--border-dim)",
-        borderRadius: 6,
-        overflow: "hidden",
-        fontSize: 12,
-      }}
-    >
-      <button
-        onClick={() => setExpanded((e) => !e)}
-        style={{
-          width: "100%",
-          display: "flex",
-          alignItems: "center",
-          gap: 7,
-          padding: "5px 10px",
-          background: "var(--bg-input)",
-          border: "none",
-          cursor: "pointer",
-          textAlign: "left",
-          color: "var(--text-secondary)",
-        }}
-      >
-        {expanded ? (
-          <ChevronDown size={11} style={{ flexShrink: 0 }} />
-        ) : (
-          <ChevronRight size={11} style={{ flexShrink: 0 }} />
-        )}
-        <Wrench size={11} style={{ color: "var(--text-hint)", flexShrink: 0 }} />
-        <span
-          style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontWeight: 600 }}
-        >
-          {name}
-        </span>
-      </button>
-      {expanded && (
-        <pre
-          className="session-selectable"
-          style={{
-            margin: 0,
-            padding: "8px 12px",
-            fontSize: 11,
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-            color: "var(--text-secondary)",
-            background: "var(--bg-root)",
-            overflowX: "auto",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
-            maxHeight: 280,
-            overflowY: "auto",
-          }}
-        >
-          {input}
-        </pre>
-      )}
-    </div>
-  );
+interface SessionAssistantTurn {
+  id: string;
+  responseParts: string[];
+  thinkingParts: string[];
+  tools: ToolActivityItem[];
 }
+
+type SessionDisplayItem =
+  | { kind: "user"; id: string; text: string }
+  | { kind: "assistant"; id: string; turn: SessionAssistantTurn };
 
 function ThinkingBlock({ thinking }: { thinking: string }) {
   const [expanded, setExpanded] = useState(false);
+
   return (
-    <div style={{ marginBottom: 6 }}>
-      <button
-        onClick={() => setExpanded((e) => !e)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 5,
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          padding: "2px 0",
-          color: "var(--text-hint)",
-          fontSize: 11.5,
-          fontStyle: "italic",
-        }}
-      >
+    <div style={styles.thinkingWrap}>
+      <button type="button" onClick={() => setExpanded((value) => !value)} style={styles.thinkingBtn}>
         {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
         <span>Thinking…</span>
       </button>
       {expanded && (
-        <div
-          className="session-selectable"
-          style={{
-            padding: "6px 12px",
-            fontSize: 12,
-            color: "var(--text-muted)",
-            fontStyle: "italic",
-            borderLeft: "2px solid var(--border-dim)",
-            marginLeft: 4,
-            marginTop: 4,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-            lineHeight: 1.55,
-          }}
-        >
+        <div className="session-selectable" style={styles.thinkingBody}>
           {thinking}
         </div>
       )}
@@ -127,63 +50,142 @@ function ThinkingBlock({ thinking }: { thinking: string }) {
 
 function UserMessageBubble({ text }: { text: string }) {
   return (
-    <div style={{ marginBottom: 14, display: "flex", justifyContent: "flex-end" }}>
-      <div style={{ maxWidth: "72%" }}>
-        <div
-          className="session-selectable"
-          style={{
-            padding: "10px 16px",
-            background: "var(--bg-subtle)",
-            color: "var(--text-primary)",
-            borderRadius: 20,
-            fontSize: 13.5,
-            lineHeight: 1.6,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-          }}
-        >
-          {text}
-        </div>
+    <div style={styles.userWrap}>
+      <div style={styles.userBubble} className="session-selectable">
+        {text}
       </div>
     </div>
   );
 }
 
-function MessageBlock({ message }: { message: SessionMessage }) {
-  const isUser = message.role === "user";
-
-  if (isUser) {
-    const text = message.content
-      .filter((c) => c.type === "text")
-      .map((c) => c.text ?? "")
-      .join("\n");
-    if (!text.trim()) return null;
-    return <UserMessageBubble text={text} />;
+function AssistantTurnBubble({ turn }: { turn: SessionAssistantTurn }) {
+  const responseText = turn.responseParts.join("\n\n").trim();
+  if (!responseText && turn.thinkingParts.length === 0 && turn.tools.length === 0) {
+    return null;
   }
 
-  const textParts = message.content.filter((c) => c.type === "text");
-  const toolParts = message.content.filter((c) => c.type === "tool_use");
-  const thinkingParts = message.content.filter((c) => c.type === "thinking");
-
-  if (textParts.length === 0 && toolParts.length === 0 && thinkingParts.length === 0) return null;
-
   return (
-    <div style={{ marginBottom: 18 }}>
-      {thinkingParts.map((t, i) => (
-        <ThinkingBlock key={i} thinking={t.thinking ?? ""} />
-      ))}
-      {textParts.map((t, i) => (
-        <div
-          key={i}
-          className="session-prose"
-          dangerouslySetInnerHTML={{ __html: marked(t.text ?? "", { async: false }) as string }}
-        />
-      ))}
-      {toolParts.map((t, i) => (
-        <ToolUseCard key={i} name={t.name ?? ""} input={t.input ?? ""} />
-      ))}
+    <div style={styles.assistantWrap}>
+      {turn.tools.length > 0 && (
+        <div style={styles.assistantSection}>
+          <ToolActivityBubble tools={turn.tools} />
+        </div>
+      )}
+      {(turn.thinkingParts.length > 0 || responseText) && (
+        <div style={styles.assistantSection}>
+          <div style={styles.assistantBubble}>
+            {turn.thinkingParts.map((thinking, index) => (
+              <ThinkingBlock key={`${turn.id}-thinking-${index}`} thinking={thinking} />
+            ))}
+            {responseText && (
+              <div
+                className="session-prose"
+                dangerouslySetInnerHTML={{ __html: marked(responseText, { async: false }) as string }}
+              />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function buildSessionDisplayItems(messages: SessionMessage[]): SessionDisplayItem[] {
+  const items: SessionDisplayItem[] = [];
+  let currentTurn: SessionAssistantTurn | null = null;
+
+  const ensureAssistantTurn = (seedId: string) => {
+    if (currentTurn) {
+      return currentTurn;
+    }
+
+    currentTurn = {
+      id: `session-assistant-${seedId}`,
+      responseParts: [],
+      thinkingParts: [],
+      tools: [],
+    };
+    items.push({
+      kind: "assistant",
+      id: currentTurn.id,
+      turn: currentTurn,
+    });
+    return currentTurn;
+  };
+
+  messages.forEach((message, messageIndex) => {
+    if (message.role === "user") {
+      const text = message.content
+        .filter((part) => part.type === "text")
+        .map((part) => part.text ?? "")
+        .join("\n")
+        .trim();
+      if (!text) {
+        return;
+      }
+      currentTurn = null;
+      items.push({
+        kind: "user",
+        id: `session-user-${messageIndex}`,
+        text,
+      });
+      return;
+    }
+
+    const turn = ensureAssistantTurn(String(messageIndex));
+    message.content.forEach((part, partIndex) => {
+      if (part.type === "text" && part.text?.trim()) {
+        turn.responseParts.push(part.text.trim());
+        return;
+      }
+
+      if (part.type === "thinking" && part.thinking?.trim()) {
+        turn.thinkingParts.push(part.thinking.trim());
+        return;
+      }
+
+      if (part.type === "tool_use") {
+        upsertTool(turn.tools, {
+          key: part.id || `${messageIndex}-${partIndex}-${part.name || "tool"}`,
+          name: part.name || "tool",
+          input: part.input || "",
+          status: "completed",
+        });
+        return;
+      }
+
+      if (part.type === "tool_result" && part.result?.trim()) {
+        upsertTool(turn.tools, {
+          key: part.id || `${messageIndex}-${partIndex}-${part.name || "tool"}`,
+          name: part.name || "tool",
+          output: part.result,
+          status: "completed",
+        });
+      }
+    });
+  });
+
+  return items.filter((item) =>
+    item.kind === "user" ||
+    item.turn.tools.length > 0 ||
+    item.turn.thinkingParts.length > 0 ||
+    item.turn.responseParts.some((part) => part.trim()),
+  );
+}
+
+function upsertTool(tools: ToolActivityItem[], incoming: ToolActivityItem) {
+  const index = tools.findIndex((tool) => tool.key === incoming.key);
+  if (index < 0) {
+    tools.push(incoming);
+    return;
+  }
+
+  tools[index] = {
+    ...tools[index],
+    ...incoming,
+    input: incoming.input ?? tools[index].input,
+    output: incoming.output ?? tools[index].output,
+  };
 }
 
 export function SessionView({ sessionPath }: { sessionPath: string }) {
@@ -191,13 +193,14 @@ export function SessionView({ sessionPath }: { sessionPath: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const displayItems = useMemo(() => buildSessionDisplayItems(messages), [messages]);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
     invoke<SessionMessage[]>("read_session_messages", { sessionPath })
-      .then((msgs) => {
-        setMessages(msgs);
+      .then((loadedMessages) => {
+        setMessages(loadedMessages);
         setLoading(false);
       })
       .catch((err) => {
@@ -207,32 +210,105 @@ export function SessionView({ sessionPath }: { sessionPath: string }) {
   }, [sessionPath]);
 
   return (
-    <div
-      ref={scrollRef}
-      style={{
-        flex: 1,
-        overflowY: "auto",
-        padding: "20px 28px 32px",
-      }}
-    >
-      {loading && (
-        <div style={{ color: "var(--text-hint)", fontSize: 13, padding: "12px 0" }}>
-          Loading session…
-        </div>
+    <div ref={scrollRef} style={styles.container}>
+      {loading && <div style={styles.stateText}>Loading session…</div>}
+      {error && <div style={styles.errorText}>Unable to load session: {error}</div>}
+      {!loading && !error && displayItems.length === 0 && (
+        <div style={styles.stateText}>No messages found in session file.</div>
       )}
-      {error && (
-        <div style={{ color: "var(--text-muted)", fontSize: 13, padding: "12px 0" }}>
-          Unable to load session: {error}
-        </div>
+      {displayItems.map((item) =>
+        item.kind === "user" ? (
+          <UserMessageBubble key={item.id} text={item.text} />
+        ) : (
+          <AssistantTurnBubble key={item.id} turn={item.turn} />
+        ),
       )}
-      {!loading && !error && messages.length === 0 && (
-        <div style={{ color: "var(--text-hint)", fontSize: 13, padding: "12px 0" }}>
-          No messages found in session file.
-        </div>
-      )}
-      {messages.map((msg, i) => (
-        <MessageBlock key={i} message={msg} />
-      ))}
     </div>
   );
 }
+
+const styles = {
+  container: {
+    flex: 1,
+    overflowY: "auto" as const,
+    padding: "20px 28px 32px",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 14,
+  },
+  stateText: {
+    color: "var(--text-hint)",
+    fontSize: 13,
+    padding: "12px 0",
+  },
+  errorText: {
+    color: "var(--text-muted)",
+    fontSize: 13,
+    padding: "12px 0",
+  },
+  userWrap: {
+    display: "flex",
+    justifyContent: "flex-end",
+  },
+  userBubble: {
+    maxWidth: "72%",
+    padding: "11px 16px",
+    background: "color-mix(in srgb, var(--accent) 12%, var(--bg-card))",
+    color: "var(--text-primary)",
+    borderRadius: 18,
+    border: "1px solid color-mix(in srgb, var(--accent) 22%, var(--border-dim))",
+    fontSize: 13.5,
+    lineHeight: 1.65,
+    whiteSpace: "pre-wrap" as const,
+    wordBreak: "break-word" as const,
+    fontFamily: "var(--font-mono)",
+  },
+  assistantWrap: {
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 10,
+  },
+  assistantSection: {
+    maxWidth: "86%",
+    minWidth: 0,
+  },
+  assistantBubble: {
+    padding: "14px 16px",
+    borderRadius: 18,
+    background: "color-mix(in srgb, var(--bg-card) 92%, var(--bg-subtle))",
+    border: "1px solid var(--border-dim)",
+    boxShadow: "var(--shadow-xs)",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 10,
+  },
+  thinkingWrap: {
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 4,
+  },
+  thinkingBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    padding: 0,
+    color: "var(--text-hint)",
+    fontSize: 11.5,
+    fontStyle: "italic",
+    width: "fit-content",
+  },
+  thinkingBody: {
+    padding: "6px 12px",
+    fontSize: 12,
+    color: "var(--text-muted)",
+    fontStyle: "italic",
+    borderLeft: "2px solid var(--border-dim)",
+    marginLeft: 4,
+    whiteSpace: "pre-wrap" as const,
+    wordBreak: "break-word" as const,
+    lineHeight: 1.6,
+  },
+};

@@ -647,11 +647,11 @@ export function LargeFileViewer({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 12,
-          padding: "8px 16px",
+          gap: 10,
+          padding: "6px 12px",
           borderBottom: "1px solid var(--border-dim)",
           background: "color-mix(in srgb, var(--bg-card) 90%, transparent)",
-          fontSize: 11.5,
+          fontSize: 11,
           color: "var(--text-secondary)",
           fontWeight: 500,
           flexShrink: 0,
@@ -662,7 +662,7 @@ export function LargeFileViewer({
             display: "inline-flex",
             alignItems: "center",
             gap: 6,
-            padding: "4px 10px",
+            padding: "3px 8px",
             borderRadius: 999,
             background: dirty
               ? "color-mix(in srgb, var(--accent) 12%, var(--bg-card))"
@@ -679,9 +679,7 @@ export function LargeFileViewer({
         <span>{sizeLabel}</span>
         <span>·</span>
         <span>{totalLines.toLocaleString()} lines</span>
-        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-hint)" }}>
-          {dirty ? "⌘S to save" : "Rope-backed editor"}
-        </span>
+        {dirty && <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-hint)" }}>⌘S to save</span>}
       </div>
 
       {/* Virtual scroll container */}

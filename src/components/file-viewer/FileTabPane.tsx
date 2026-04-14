@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertCircle, CheckCircle2, Eye, FileCode2, FileText, ImageIcon, PencilLine } from "lucide-react";
+import { AlertCircle, CheckCircle2, Eye, ImageIcon, PencilLine } from "lucide-react";
 import { LargeFileViewer } from "./LargeFileViewer";
 import { MonacoEditorPane } from "./MonacoEditorPane";
 import { ImagePreviewPane } from "./ImagePreviewPane";
@@ -138,9 +138,9 @@ function FileStatusPill({
         display: "inline-flex",
         alignItems: "center",
         gap: 6,
-        padding: "7px 11px",
+        padding: "5px 10px",
         borderRadius: 999,
-        fontSize: 11.5,
+        fontSize: 11,
         fontWeight: 600,
         whiteSpace: "nowrap",
         ...toneStyles[tone],
@@ -151,7 +151,15 @@ function FileStatusPill({
   );
 }
 
-function PaneShell({ children }: { children: ReactNode }) {
+function PaneShell({
+  children,
+  padding = 18,
+  gap = 16,
+}: {
+  children: ReactNode;
+  padding?: number;
+  gap?: number;
+}) {
   return (
     <div
       style={{
@@ -161,8 +169,8 @@ function PaneShell({ children }: { children: ReactNode }) {
         overflow: "hidden",
         minWidth: 0,
         minHeight: 0,
-        padding: 18,
-        gap: 16,
+        padding,
+        gap,
         background:
           "radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 8%, transparent), transparent 28%), var(--bg-panel)",
       }}
@@ -352,7 +360,6 @@ function TextFileHeader({
   previewMode: boolean;
   onTogglePreview?: () => void;
 }) {
-  const modeLabel = isMarkdown && previewMode ? "Markdown Preview" : "Editor";
   const saveLabel =
     saveStatus === "saving"
       ? "Saving..."
@@ -361,60 +368,62 @@ function TextFileHeader({
         : saveStatus === "error"
           ? "Save failed"
           : "Live editing";
+  const normalizedPath = filePath.replace(/\\/g, "/");
+  const lastSlashIndex = normalizedPath.lastIndexOf("/");
+  const directoryPath = lastSlashIndex >= 0 ? normalizedPath.slice(0, lastSlashIndex + 1) : "";
+  const displayFileName = lastSlashIndex >= 0 ? normalizedPath.slice(lastSlashIndex + 1) : fileName;
 
   return (
     <div
       style={{
         display: "flex",
-        alignItems: "flex-start",
+        flexWrap: "wrap",
+        alignItems: "center",
         justifyContent: "space-between",
-        gap: 16,
-        padding: "18px 18px 0",
+        gap: 12,
+        padding: 0,
+        minHeight: 28,
       }}
     >
-      <div style={{ minWidth: 0 }}>
+      <div style={{ minWidth: 0, flex: 1 }}>
         <div
           style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            marginBottom: 10,
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-            color: "var(--text-hint)",
-          }}
-        >
-          {isMarkdown ? <FileText size={13} /> : <FileCode2 size={13} />}
-          {modeLabel}
-        </div>
-        <div
-          style={{
-            fontSize: 24,
-            fontWeight: 700,
-            lineHeight: 1.05,
-            letterSpacing: "-0.04em",
-            color: "var(--text-primary)",
-            wordBreak: "break-word",
-          }}
-        >
-          {fileName}
-        </div>
-        <div
-          style={{
-            marginTop: 8,
-            fontSize: 12,
+            display: "flex",
+            alignItems: "baseline",
+            minWidth: 0,
+            overflow: "hidden",
+            fontSize: 12.5,
+            lineHeight: 1.35,
             color: "var(--text-muted)",
             fontFamily: "var(--font-mono)",
-            wordBreak: "break-all",
           }}
         >
-          {filePath}
+          {directoryPath ? (
+            <span
+              style={{
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {directoryPath}
+            </span>
+          ) : null}
+          <strong
+            style={{
+              color: "var(--text-primary)",
+              fontWeight: 700,
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+            }}
+          >
+            {displayFileName}
+          </strong>
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
         {isMarkdown && onTogglePreview && (
           <button
             type="button"
@@ -423,8 +432,8 @@ function TextFileHeader({
             style={{
               display: "inline-flex",
               alignItems: "center",
-              gap: 8,
-              padding: "8px 12px",
+              gap: 6,
+              padding: "6px 10px",
               borderRadius: 999,
               border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border-dim))",
               background: previewMode
@@ -432,13 +441,13 @@ function TextFileHeader({
                 : "color-mix(in srgb, var(--bg-card) 90%, transparent)",
               color: previewMode ? "var(--accent)" : "var(--text-secondary)",
               cursor: "pointer",
-              fontSize: 12,
+              fontSize: 11.5,
               fontWeight: 600,
               flexShrink: 0,
             }}
           >
             {previewMode ? <PencilLine size={14} /> : <Eye size={14} />}
-            {previewMode ? "Edit Markdown" : "Preview Markdown"}
+            {previewMode ? "Edit" : "Preview"}
           </button>
         )}
         <FileStatusPill>{language}</FileStatusPill>
@@ -588,7 +597,7 @@ export function FileTabPane({
   }
 
   return (
-    <PaneShell>
+    <PaneShell padding={14} gap={10}>
       <TextFileHeader
         fileName={tab.name}
         filePath={tab.path}

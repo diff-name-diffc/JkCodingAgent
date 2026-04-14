@@ -1,37 +1,35 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
 import * as Popover from "@radix-ui/react-popover";
-import { X, AlertCircle, Eye, PencilLine, MoreHorizontal } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Eye,
+  FileCode2,
+  FileText,
+  ImageIcon,
+  MoreHorizontal,
+  PencilLine,
+  X,
+} from "lucide-react";
 import { getFileColor } from "../utils";
-import ReactCodeMirror, { EditorView } from "@uiw/react-codemirror";
-import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
-import { javascript } from "@codemirror/lang-javascript";
-import { python } from "@codemirror/lang-python";
-import { rust } from "@codemirror/lang-rust";
-import { go } from "@codemirror/lang-go";
-import { java } from "@codemirror/lang-java";
-import { cpp } from "@codemirror/lang-cpp";
-import { css as langCss } from "@codemirror/lang-css";
-import { html as langHtml } from "@codemirror/lang-html";
-import { json } from "@codemirror/lang-json";
-import { markdown } from "@codemirror/lang-markdown";
-import { sql } from "@codemirror/lang-sql";
-import { xml } from "@codemirror/lang-xml";
-import { yaml } from "@codemirror/lang-yaml";
-import { StreamLanguage } from "@codemirror/language";
-import { shell } from "@codemirror/legacy-modes/mode/shell";
-import { toml } from "@codemirror/legacy-modes/mode/toml";
-import { dockerFile } from "@codemirror/legacy-modes/mode/dockerfile";
-import { ruby } from "@codemirror/legacy-modes/mode/ruby";
-import { lua } from "@codemirror/legacy-modes/mode/lua";
-import { swift } from "@codemirror/legacy-modes/mode/swift";
-import { kotlin } from "@codemirror/legacy-modes/mode/clike";
-import { r } from "@codemirror/legacy-modes/mode/r";
-import type { Extension } from "@codemirror/state";
 import { ImagePreviewPane } from "./file-viewer/ImagePreviewPane";
+import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import type { OpenFileTab } from "../hooks/useProjectPanels";
+
+const MonacoEditorPane = lazy(async () => {
+  const module = await import("./file-viewer/MonacoEditorPane");
+  return { default: module.MonacoEditorPane };
+});
 
 function isMarkdownFile(fileName: string): boolean {
   const ext = fileName.split(".").pop()?.toLowerCase();
@@ -40,149 +38,82 @@ function isMarkdownFile(fileName: string): boolean {
 
 function isPreviewableImageFile(fileName: string): boolean {
   const ext = fileName.split(".").pop()?.toLowerCase();
-  return ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "gif" || ext === "webp" || ext === "bmp" || ext === "svg";
+  return (
+    ext === "png" ||
+    ext === "jpg" ||
+    ext === "jpeg" ||
+    ext === "gif" ||
+    ext === "webp" ||
+    ext === "bmp" ||
+    ext === "svg"
+  );
 }
 
-function getLanguageExtension(fileName: string): Extension {
-  const nameMap: Record<string, () => Extension> = {
-    dockerfile: () => StreamLanguage.define(dockerFile),
-    "dockerfile.dev": () => StreamLanguage.define(dockerFile),
-    "dockerfile.prod": () => StreamLanguage.define(dockerFile),
-    makefile: () => StreamLanguage.define(shell),
-    gnumakefile: () => StreamLanguage.define(shell),
-    justfile: () => StreamLanguage.define(shell),
-    gemfile: () => StreamLanguage.define(ruby),
-    rakefile: () => StreamLanguage.define(ruby),
-    vagrantfile: () => StreamLanguage.define(ruby),
-    procfile: () => StreamLanguage.define(shell),
-    "cmakelists.txt": () => StreamLanguage.define(shell),
-    ".gitignore": () => StreamLanguage.define(shell),
-    ".dockerignore": () => StreamLanguage.define(shell),
-    ".env": () => StreamLanguage.define(shell),
-    ".env.local": () => StreamLanguage.define(shell),
-    ".env.example": () => StreamLanguage.define(shell),
-    ".npmrc": () => StreamLanguage.define(toml),
-    ".yarnrc": () => yaml(),
-    "changelog.md": () => markdown(),
-    readme: () => markdown(),
+function getMonacoLanguage(fileName: string) {
+  const normalized = fileName.toLowerCase();
+  const nameMap: Record<string, string> = {
+    dockerfile: "dockerfile",
+    makefile: "makefile",
+    ".gitignore": "shell",
+    ".dockerignore": "shell",
+    ".env": "shell",
+    ".env.local": "shell",
+    ".env.example": "shell",
+    ".npmrc": "ini",
+    "readme.md": "markdown",
+    "readme.mdx": "markdown",
+    "changelog.md": "markdown",
   };
 
-  const lower = fileName.toLowerCase();
-  if (nameMap[lower]) return nameMap[lower]();
-
-  const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
-  switch (ext) {
-    case "ts":
-      return javascript({ typescript: true });
-    case "tsx":
-      return javascript({ jsx: true, typescript: true });
-    case "js":
-    case "mjs":
-    case "cjs":
-      return javascript();
-    case "jsx":
-      return javascript({ jsx: true });
-    case "json":
-    case "jsonc":
-      return json();
-    case "rs":
-      return rust();
-    case "html":
-    case "htm":
-      return langHtml();
-    case "css":
-    case "scss":
-    case "sass":
-      return langCss();
-    case "md":
-    case "mdx":
-      return markdown();
-    case "yaml":
-    case "yml":
-      return yaml();
-    case "toml":
-      return StreamLanguage.define(toml);
-    case "sh":
-    case "bash":
-    case "zsh":
-    case "fish":
-      return StreamLanguage.define(shell);
-    case "py":
-      return python();
-    case "go":
-      return go();
-    case "java":
-      return java();
-    case "c":
-    case "h":
-      return cpp();
-    case "cpp":
-    case "cc":
-    case "hpp":
-      return cpp();
-    case "sql":
-      return sql();
-    case "xml":
-      return xml();
-    case "swift":
-      return StreamLanguage.define(swift);
-    case "kt":
-      return StreamLanguage.define(kotlin);
-    case "rb":
-      return StreamLanguage.define(ruby);
-    case "lua":
-      return StreamLanguage.define(lua);
-    case "r":
-      return StreamLanguage.define(r);
-    case "proto":
-      return StreamLanguage.define(shell);
-    default:
-      return [];
+  if (nameMap[normalized]) {
+    return nameMap[normalized];
   }
-}
 
-const editorBaseTheme = EditorView.theme({
-  "&": {
-    height: "100%",
-    fontFamily: "var(--font-mono)",
-    fontSize: "13px",
-    background: "var(--bg-panel)",
-    "-webkit-user-select": "text",
-    "user-select": "text",
-  },
-  ".cm-editor": {
-    background: "var(--bg-panel)",
-  },
-  ".cm-scroller": {
-    overflow: "auto",
-    lineHeight: "1.6",
-    background: "var(--bg-panel)",
-    "-webkit-user-select": "text",
-    "user-select": "text",
-  },
-  ".cm-content": {
-    padding: "12px 0",
-    caretColor: "var(--text-primary)",
-    "-webkit-user-select": "text",
-    "user-select": "text",
-  },
-  ".cm-gutters": {
-    borderRight: "1px solid var(--border-dim)",
-    background: "var(--bg-panel)",
-    fontSize: "12px",
-    minWidth: "44px",
-  },
-  ".cm-lineNumbers .cm-gutterElement": {
-    padding: "0 8px 0 4px",
-    color: "var(--text-hint)",
-  },
-  ".cm-activeLineGutter": {
-    background: "rgba(128,128,128,0.06)",
-  },
-  ".cm-focused .cm-activeLine, .cm-activeLine": {
-    background: "rgba(128,128,128,0.06)",
-  },
-});
+  const extension = normalized.split(".").pop() ?? "";
+  const extensionMap: Record<string, string> = {
+    ts: "typescript",
+    tsx: "typescript",
+    js: "javascript",
+    jsx: "javascript",
+    mjs: "javascript",
+    cjs: "javascript",
+    json: "json",
+    jsonc: "json",
+    md: "markdown",
+    mdx: "markdown",
+    py: "python",
+    rs: "rust",
+    go: "go",
+    java: "java",
+    c: "cpp",
+    h: "cpp",
+    cpp: "cpp",
+    cc: "cpp",
+    hpp: "cpp",
+    css: "css",
+    scss: "scss",
+    sass: "scss",
+    html: "html",
+    htm: "html",
+    xml: "xml",
+    yml: "yaml",
+    yaml: "yaml",
+    toml: "ini",
+    sh: "shell",
+    bash: "shell",
+    zsh: "shell",
+    fish: "shell",
+    sql: "sql",
+    lua: "lua",
+    swift: "swift",
+    kt: "kotlin",
+    rb: "ruby",
+    r: "r",
+    proto: "protobuf",
+  };
+
+  return extensionMap[extension] ?? "plaintext";
+}
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 type ImagePreviewData = {
@@ -190,6 +121,50 @@ type ImagePreviewData = {
   mimeType: string;
   byteLength: number;
 };
+
+function FileStatusPill({
+  children,
+  tone = "default",
+}: {
+  children: ReactNode;
+  tone?: "default" | "success" | "error";
+}) {
+  const toneStyles: Record<NonNullable<typeof tone>, CSSProperties> = {
+    default: {
+      color: "var(--text-secondary)",
+      background: "color-mix(in srgb, var(--bg-card) 84%, transparent)",
+      border: "1px solid var(--border-dim)",
+    },
+    success: {
+      color: "var(--success)",
+      background: "color-mix(in srgb, var(--success) 10%, var(--bg-card))",
+      border: "1px solid color-mix(in srgb, var(--success) 18%, var(--border-dim))",
+    },
+    error: {
+      color: "var(--danger)",
+      background: "color-mix(in srgb, var(--danger) 10%, var(--bg-card))",
+      border: "1px solid color-mix(in srgb, var(--danger) 20%, var(--border-dim))",
+    },
+  };
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "7px 11px",
+        borderRadius: 999,
+        fontSize: 11.5,
+        fontWeight: 600,
+        whiteSpace: "nowrap",
+        ...toneStyles[tone],
+      }}
+    >
+      {children}
+    </span>
+  );
+}
 
 function FilePreviewPane({
   filePath,
@@ -211,8 +186,10 @@ function FilePreviewPane({
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const isMarkdown = isMarkdownFile(fileName);
   const isPreviewableImage = isPreviewableImageFile(fileName);
+  const language = useMemo(() => getMonacoLanguage(fileName), [fileName]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -223,58 +200,67 @@ function FilePreviewPane({
     setError(null);
     setSaveStatus("idle");
 
-    const loadFile = isPreviewableImage
+    const loadTask = isPreviewableImage
       ? invoke<ImagePreviewData>("read_image_preview", { path: filePath, projectPath }).then((preview) => {
-          if (cancelled) return;
-          setImagePreview(preview);
-          setLoading(false);
+          if (!cancelled) {
+            setImagePreview(preview);
+            setLoading(false);
+          }
         })
       : invoke<string>("read_file_content", { path: filePath, projectPath }).then((nextContent) => {
-          if (cancelled) return;
-          setContent(nextContent);
-          setLoading(false);
+          if (!cancelled) {
+            setContent(nextContent);
+            setLoading(false);
+          }
         });
 
-    loadFile
-      .catch((err) => {
-        if (cancelled) return;
+    loadTask.catch((err) => {
+      if (!cancelled) {
         setError(String(err));
         setLoading(false);
-      });
+      }
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [filePath, projectPath, isPreviewableImage]);
+  }, [filePath, isPreviewableImage, projectPath]);
 
   useEffect(
     () => () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      if (savedResetRef.current) clearTimeout(savedResetRef.current);
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+      if (savedResetRef.current) {
+        clearTimeout(savedResetRef.current);
+      }
     },
     [],
   );
 
-  const handleChange = (value: string) => {
+  function handleChange(value: string) {
     setContent(value);
 
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    if (savedResetRef.current) clearTimeout(savedResetRef.current);
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+    }
+    if (savedResetRef.current) {
+      clearTimeout(savedResetRef.current);
+    }
 
     setSaveStatus("saving");
     saveTimerRef.current = setTimeout(async () => {
       try {
         await invoke("write_file_content", { path: filePath, content: value, projectPath });
         setSaveStatus("saved");
-        savedResetRef.current = setTimeout(() => setSaveStatus("idle"), 2000);
+        savedResetRef.current = setTimeout(() => setSaveStatus("idle"), 1800);
       } catch {
         setSaveStatus("error");
       }
-    }, 1500);
-  };
+    }, 900);
+  }
 
-  const extensions = useMemo(() => [getLanguageExtension(fileName), editorBaseTheme], [fileName]);
-
+  const modeLabel = isPreviewableImage ? "Image Preview" : isMarkdown && previewMode ? "Markdown Preview" : "Editor";
   const saveLabel =
     saveStatus === "saving"
       ? "Saving..."
@@ -282,12 +268,7 @@ function FilePreviewPane({
         ? "Saved"
         : saveStatus === "error"
           ? "Save failed"
-          : null;
-  const statusLabel = isPreviewableImage
-    ? imagePreview
-      ? `${imagePreview.mimeType} · Read-only`
-      : "Image preview"
-    : saveLabel;
+          : "Live editing";
 
   return (
     <div
@@ -298,50 +279,124 @@ function FilePreviewPane({
         overflow: "hidden",
         minWidth: 0,
         minHeight: 0,
-        background: "var(--bg-panel)",
+        padding: 18,
+        gap: 16,
+        background:
+          "radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 8%, transparent), transparent 28%), var(--bg-panel)",
       }}
     >
       <div
         style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 16,
+          padding: "18px 18px 0",
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 10,
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "var(--text-hint)",
+            }}
+          >
+            {isPreviewableImage ? <ImageIcon size={13} /> : isMarkdown ? <FileText size={13} /> : <FileCode2 size={13} />}
+            {modeLabel}
+          </div>
+          <div
+            style={{
+              fontSize: 24,
+              fontWeight: 700,
+              lineHeight: 1.05,
+              letterSpacing: "-0.04em",
+              color: "var(--text-primary)",
+              wordBreak: "break-word",
+            }}
+          >
+            {fileName}
+          </div>
+          <div
+            style={{
+              marginTop: 8,
+              fontSize: 12,
+              color: "var(--text-muted)",
+              fontFamily: "var(--font-mono)",
+              wordBreak: "break-all",
+            }}
+          >
+            {filePath}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {!isPreviewableImage && <FileStatusPill>{language}</FileStatusPill>}
+          {!isPreviewableImage && (
+            <FileStatusPill tone={saveStatus === "error" ? "error" : saveStatus === "saved" ? "success" : "default"}>
+              {saveStatus === "saved" && <CheckCircle2 size={13} />}
+              {saveLabel}
+            </FileStatusPill>
+          )}
+          {isPreviewableImage && imagePreview && (
+            <FileStatusPill>{`${imagePreview.mimeType} · ${(imagePreview.byteLength / 1024).toFixed(1)} KB`}</FileStatusPill>
+          )}
+        </div>
+      </div>
+
+      <div
+        style={{
           flex: 1,
-          overflow: "hidden",
-          position: "relative",
-          userSelect: "text",
+          display: "flex",
+          flexDirection: "column",
           minWidth: 0,
           minHeight: 0,
+          overflow: "hidden",
+          borderRadius: 30,
+          border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-dim))",
+          background: "color-mix(in srgb, var(--bg-card) 94%, transparent)",
+          boxShadow: "0 24px 70px rgba(15, 23, 42, 0.08)",
         }}
       >
         {loading && (
           <div
             style={{
-              position: "absolute",
-              inset: 0,
+              height: "100%",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              color: "var(--text-hint)",
-              fontSize: 12,
+              color: "var(--text-muted)",
+              fontSize: 13,
             }}
           >
             Loading...
           </div>
         )}
+
         {error && !loading && (
           <div
             style={{
+              height: "100%",
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
               justifyContent: "center",
-              height: "100%",
-              gap: 10,
+              gap: 12,
+              padding: 24,
               color: "var(--text-muted)",
             }}
           >
-            <AlertCircle size={24} strokeWidth={1.5} />
-            <span style={{ fontSize: 12.5 }}>{error}</span>
+            <AlertCircle size={28} strokeWidth={1.7} />
+            <div style={{ fontSize: 13.5, maxWidth: 520, textAlign: "center" }}>{error}</div>
           </div>
         )}
+
         {!loading &&
           !error &&
           (isPreviewableImage && imagePreview ? (
@@ -353,73 +408,33 @@ function FilePreviewPane({
             />
           ) : content !== null ? (
             isMarkdown && previewMode ? (
-              <div
-                style={{
-                  height: "100%",
-                  overflow: "auto",
-                  padding: "24px 32px",
-                  background: "var(--bg-panel)",
-                  minWidth: 0,
-                  minHeight: 0,
-                }}
-              >
-                <div
-                  className="md-preview"
-                  dangerouslySetInnerHTML={{
-                    __html: DOMPurify.sanitize(marked(content, { async: false }) as string),
-                  }}
-                />
+              <div className="md-preview-shell" style={{ height: "100%", overflow: "auto" }}>
+                <div className="md-preview-card">
+                  <div className="md-preview-header">
+                    <div>
+                      <div className="md-preview-eyebrow">Rendered Markdown</div>
+                      <div className="md-preview-title">{fileName}</div>
+                      <div className="md-preview-subtitle">{projectPath}</div>
+                    </div>
+                    <div className="md-preview-meta">react-markdown + remark-gfm + rehype-raw</div>
+                  </div>
+                  <div className="md-preview-body">
+                    <MarkdownRenderer content={content} variant="document" />
+                  </div>
+                </div>
               </div>
             ) : (
-              <ReactCodeMirror
-                value={content}
-                onChange={handleChange}
-                theme={isDark ? githubDark : githubLight}
-                extensions={extensions}
-                height="100%"
-                style={{ height: "100%" }}
-                basicSetup={{
-                  lineNumbers: true,
-                  foldGutter: true,
-                  highlightActiveLine: true,
-                  highlightSelectionMatches: true,
-                  autocompletion: false,
-                  searchKeymap: true,
-                }}
-              />
+              <Suspense fallback={<div className="monaco-loading">Loading editor...</div>}>
+                <MonacoEditorPane
+                  filePath={filePath}
+                  value={content}
+                  language={language}
+                  isDark={isDark}
+                  onChange={handleChange}
+                />
+              </Suspense>
             )
           ) : null)}
-      </div>
-
-      <div
-        style={{
-          height: 22,
-          display: "flex",
-          alignItems: "center",
-          padding: "0 12px",
-          borderTop: "1px solid var(--border-dim)",
-          background: "var(--accent)",
-          flexShrink: 0,
-          gap: 8,
-        }}
-      >
-        <span
-          style={{ fontSize: 11, color: "rgba(255,255,255,0.85)", fontFamily: "var(--font-mono)" }}
-        >
-          {filePath}
-        </span>
-        {statusLabel && (
-          <span
-            style={{
-              marginLeft: "auto",
-              fontSize: 11,
-              color: saveStatus === "error" ? "#fca5a5" : "rgba(255,255,255,0.85)",
-              fontFamily: "var(--font-mono)",
-            }}
-          >
-            {statusLabel}
-          </span>
-        )}
       </div>
     </div>
   );
@@ -455,7 +470,9 @@ export function FileViewer({
     setPreviewModes((prev) => {
       const next: Record<string, boolean> = {};
       for (const tab of tabs) {
-        if (prev[tab.path]) next[tab.path] = true;
+        if (prev[tab.path]) {
+          next[tab.path] = true;
+        }
       }
       return Object.keys(next).length === Object.keys(prev).length ? prev : next;
     });
@@ -466,7 +483,9 @@ export function FileViewer({
     [tabs, activeFilePath],
   );
 
-  if (!activeTab) return null;
+  if (!activeTab) {
+    return null;
+  }
 
   const activePreviewMode = !!previewModes[activeTab.path];
   const activeIsMarkdown = isMarkdownFile(activeTab.name);
@@ -483,18 +502,21 @@ export function FileViewer({
         overflow: "hidden",
         minWidth: 0,
         minHeight: 0,
-        background: "var(--bg-panel)",
+        background:
+          "linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 64%, transparent), var(--bg-panel))",
       }}
     >
       <div
         style={{
-          height: 40,
           display: "flex",
           alignItems: "center",
-          borderBottom: "1px solid var(--border-dim)",
-          flexShrink: 0,
-          background: "var(--bg-sidebar)",
+          gap: 10,
           minWidth: 0,
+          padding: "10px 12px",
+          borderBottom: "1px solid var(--border-dim)",
+          background: "color-mix(in srgb, var(--bg-card) 74%, transparent)",
+          backdropFilter: "blur(14px)",
+          WebkitBackdropFilter: "blur(14px)",
         }}
       >
         <div
@@ -502,49 +524,52 @@ export function FileViewer({
           style={{
             flex: 1,
             minWidth: 0,
-            height: "100%",
             display: "flex",
-            alignItems: "stretch",
+            alignItems: "center",
+            gap: 6,
             overflowX: "auto",
             overflowY: "hidden",
-            paddingLeft: 4,
+            paddingBottom: 2,
           }}
         >
           {tabs.map((tab) => {
             const isActive = tab.path === activeTab.path;
             const fileColor = getFileColor(tab.name);
+
             return (
               <button
                 key={tab.path}
+                type="button"
                 onClick={() => onSelectTab(tab.path)}
                 title={tab.path}
                 style={{
-                  height: "100%",
                   minWidth: 0,
-                  maxWidth: 220,
+                  maxWidth: 260,
                   display: "flex",
                   alignItems: "center",
-                  gap: 6,
-                  padding: "0 10px 0 12px",
-                  border: "none",
-                  borderRight: "1px solid var(--border-dim)",
-                  borderTop: isActive ? "2px solid var(--accent)" : "2px solid transparent",
-                  background: isActive ? "var(--bg-panel)" : "transparent",
-                  fontSize: 12.5,
-                  fontWeight: isActive ? 500 : 400,
+                  gap: 8,
+                  padding: "10px 12px",
+                  borderRadius: 16,
+                  border: isActive
+                    ? "1px solid color-mix(in srgb, var(--accent) 24%, var(--border-dim))"
+                    : "1px solid transparent",
+                  background: isActive
+                    ? "linear-gradient(135deg, color-mix(in srgb, var(--accent) 9%, var(--bg-card)), color-mix(in srgb, var(--bg-card) 88%, transparent))"
+                    : "transparent",
                   color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
                   cursor: "pointer",
                   flexShrink: 0,
+                  boxShadow: isActive ? "0 10px 24px rgba(15, 23, 42, 0.05)" : "none",
                 }}
               >
                 <span
                   style={{
-                    width: 5,
-                    height: 14,
-                    borderRadius: 2,
+                    width: 8,
+                    height: 8,
+                    borderRadius: 999,
                     background: fileColor,
                     flexShrink: 0,
-                    display: "inline-block",
+                    boxShadow: `0 0 0 4px color-mix(in srgb, ${fileColor} 16%, transparent)`,
                   }}
                 />
                 <span
@@ -552,6 +577,8 @@ export function FileViewer({
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
+                    fontSize: 12.5,
+                    fontWeight: isActive ? 600 : 500,
                   }}
                 >
                   {tab.name}
@@ -562,15 +589,14 @@ export function FileViewer({
                     onCloseTab(tab.path);
                   }}
                   style={{
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    padding: "2px",
-                    borderRadius: 3,
                     display: "flex",
                     alignItems: "center",
+                    justifyContent: "center",
+                    width: 20,
+                    height: 20,
+                    borderRadius: 999,
                     color: "var(--text-hint)",
-                    marginLeft: 2,
+                    flexShrink: 0,
                   }}
                   role="button"
                   aria-label={`Close ${tab.name}`}
@@ -581,111 +607,105 @@ export function FileViewer({
             );
           })}
         </div>
-        <div
-          style={{
-            marginLeft: 8,
-            marginRight: 8,
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-            flexShrink: 0,
-          }}
-        >
-          {activeIsMarkdown && (
+
+        {activeIsMarkdown && (
+          <button
+            type="button"
+            onClick={() =>
+              setPreviewModes((prev) => ({
+                ...prev,
+                [activeTab.path]: !prev[activeTab.path],
+              }))
+            }
+            title={activePreviewMode ? "Switch to editor" : "Switch to preview"}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 12px",
+              borderRadius: 999,
+              border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border-dim))",
+              background: activePreviewMode
+                ? "color-mix(in srgb, var(--accent) 10%, var(--bg-card))"
+                : "color-mix(in srgb, var(--bg-card) 90%, transparent)",
+              color: activePreviewMode ? "var(--accent)" : "var(--text-secondary)",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 600,
+              flexShrink: 0,
+            }}
+          >
+            {activePreviewMode ? <PencilLine size={14} /> : <Eye size={14} />}
+            {activePreviewMode ? "Edit Markdown" : "Preview Markdown"}
+          </button>
+        )}
+
+        <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
+          <Popover.Trigger asChild>
             <button
-              onClick={() =>
-                setPreviewModes((prev) => ({
-                  ...prev,
-                  [activeTab.path]: !prev[activeTab.path],
-                }))
-              }
-              title={activePreviewMode ? "Edit" : "Preview"}
+              type="button"
+              title="Tab actions"
+              aria-label="Tab actions"
               style={{
-                background: "none",
-                border: "none",
+                width: 36,
+                height: 36,
+                borderRadius: 12,
+                border: "1px solid var(--border-dim)",
+                background: "color-mix(in srgb, var(--bg-card) 88%, transparent)",
+                color: "var(--text-secondary)",
                 cursor: "pointer",
-                padding: "3px 8px",
-                borderRadius: 4,
                 display: "flex",
                 alignItems: "center",
-                gap: 4,
-                color: activePreviewMode ? "var(--accent)" : "var(--text-hint)",
-                fontSize: 11.5,
-                fontFamily: "var(--font-ui)",
+                justifyContent: "center",
                 flexShrink: 0,
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
             >
-              {activePreviewMode ? <PencilLine size={13} /> : <Eye size={13} />}
-              {activePreviewMode ? "Edit" : "Preview"}
+              <MoreHorizontal size={15} />
             </button>
-          )}
-          <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
-            <Popover.Trigger asChild>
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Content
+              sideOffset={6}
+              align="end"
+              onOpenAutoFocus={(event) => event.preventDefault()}
+              className="file-viewer-tab-menu"
+            >
               <button
-                title="Tab actions"
-                aria-label="Tab actions"
-                style={{
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  padding: "4px",
-                  borderRadius: 4,
-                  display: "flex",
-                  alignItems: "center",
-                  color: "var(--text-hint)",
+                type="button"
+                disabled={!canCloseOtherTabs}
+                onClick={() => {
+                  onCloseOtherTabs(activeTab.path);
+                  setMenuOpen(false);
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
+                className="file-viewer-tab-menu-item"
               >
-                <MoreHorizontal size={15} />
+                Close Other Tabs
               </button>
-            </Popover.Trigger>
-            <Popover.Portal>
-              <Popover.Content
-                sideOffset={6}
-                align="end"
-                onOpenAutoFocus={(event) => event.preventDefault()}
-                className="file-viewer-tab-menu"
+              <button
+                type="button"
+                disabled={!canCloseTabsToRight}
+                onClick={() => {
+                  onCloseTabsToRight(activeTab.path);
+                  setMenuOpen(false);
+                }}
+                className="file-viewer-tab-menu-item"
               >
-                <button
-                  type="button"
-                  disabled={!canCloseOtherTabs}
-                  onClick={() => {
-                    onCloseOtherTabs(activeTab.path);
-                    setMenuOpen(false);
-                  }}
-                  className="file-viewer-tab-menu-item"
-                >
-                  Close Other Tabs
-                </button>
-                <button
-                  type="button"
-                  disabled={!canCloseTabsToRight}
-                  onClick={() => {
-                    onCloseTabsToRight(activeTab.path);
-                    setMenuOpen(false);
-                  }}
-                  className="file-viewer-tab-menu-item"
-                >
-                  Close Tabs to the Right
-                </button>
-                <button
-                  type="button"
-                  disabled={tabs.length === 0}
-                  onClick={() => {
-                    onCloseAllTabs();
-                    setMenuOpen(false);
-                  }}
-                  className="file-viewer-tab-menu-item"
-                >
-                  Close All Tabs
-                </button>
-              </Popover.Content>
-            </Popover.Portal>
-          </Popover.Root>
-        </div>
+                Close Tabs to the Right
+              </button>
+              <button
+                type="button"
+                disabled={tabs.length === 0}
+                onClick={() => {
+                  onCloseAllTabs();
+                  setMenuOpen(false);
+                }}
+                className="file-viewer-tab-menu-item"
+              >
+                Close All Tabs
+              </button>
+            </Popover.Content>
+          </Popover.Portal>
+        </Popover.Root>
       </div>
 
       <div
@@ -698,6 +718,7 @@ export function FileViewer({
       >
         {tabs.map((tab) => {
           const isActive = tab.path === activeTab.path;
+
           return (
             <div
               key={tab.path}

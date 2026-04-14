@@ -10,8 +10,6 @@ import {
 } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { User, Sparkles, Send } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type {
   DispatcherMessage,
   DispatcherAgentEvent,
@@ -20,6 +18,7 @@ import type {
   SubProcess,
 } from "../types";
 import { ToolActivityBubble, type ToolActivityItem } from "./ToolActivityBubble";
+import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import {
   buildDispatcherDisplayItems,
   finishLiveToolActivity,
@@ -123,8 +122,8 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
         {trimmedResponse && (
           <div style={styles.assistantTurnSection}>
             <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
-              <div style={styles.markdownBody} className="dispatcher-markdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{trimmedResponse}</ReactMarkdown>
+              <div style={styles.markdownBody}>
+                <MarkdownRenderer content={trimmedResponse} variant="chat" />
               </div>
             </div>
           </div>
@@ -517,15 +516,18 @@ const styles = {
     display: "flex",
     flexDirection: "column" as const,
     height: "100%",
-    background: "var(--bg-primary)",
+    background:
+      "radial-gradient(circle at top right, color-mix(in srgb, var(--accent) 10%, transparent), transparent 26%), linear-gradient(180deg, var(--bg-panel), color-mix(in srgb, var(--bg-panel) 78%, var(--bg-subtle)))",
   },
   header: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "8px 16px",
-    borderBottom: "1px solid var(--border-primary)",
-    background: "var(--bg-secondary)",
+    padding: "12px 18px",
+    borderBottom: "1px solid var(--border-dim)",
+    background: "color-mix(in srgb, var(--bg-card) 68%, transparent)",
+    backdropFilter: "blur(16px)",
+    WebkitBackdropFilter: "blur(16px)",
     WebkitAppRegion: "drag" as const,
     flexShrink: 0,
   },
@@ -536,15 +538,16 @@ const styles = {
   },
   headerIcon: { fontSize: "16px" },
   headerTitle: {
-    fontSize: "13px",
-    fontWeight: 600,
+    fontSize: "13.5px",
+    fontWeight: 700,
+    letterSpacing: "-0.01em",
     color: "var(--text-primary)",
   },
   thinkingDot: {
     width: "8px",
     height: "8px",
     borderRadius: "50%",
-    background: "var(--accent-blue)",
+    background: "var(--accent)",
     animation: "pulse 1.5s ease-in-out infinite",
   },
   headerRight: {
@@ -554,11 +557,11 @@ const styles = {
     WebkitAppRegion: "no-drag" as const,
   },
   headerBtn: {
-    padding: "4px 8px",
+    padding: "6px 10px",
     fontSize: "11px",
-    background: "transparent",
-    border: "1px solid var(--border-primary)",
-    borderRadius: "4px",
+    background: "color-mix(in srgb, var(--bg-card) 82%, transparent)",
+    border: "1px solid var(--border-dim)",
+    borderRadius: "999px",
     color: "var(--text-secondary)",
     cursor: "pointer",
   },
@@ -570,10 +573,10 @@ const styles = {
   messageList: {
     flex: 1,
     overflowY: "auto" as const,
-    padding: "12px 16px",
+    padding: "22px 20px 18px",
     display: "flex",
     flexDirection: "column" as const,
-    gap: "12px",
+    gap: "18px",
   },
   emptyState: {
     display: "flex",
@@ -581,53 +584,69 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     flex: 1,
-    gap: "8px",
-    opacity: 0.6,
+    gap: "10px",
+    margin: "32px auto",
+    padding: "36px 32px",
+    maxWidth: "520px",
+    borderRadius: "28px",
+    border: "1px solid color-mix(in srgb, var(--accent) 12%, var(--border-dim))",
+    background:
+      "linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 55%), color-mix(in srgb, var(--bg-card) 92%, transparent)",
+    boxShadow: "0 18px 60px rgba(15, 23, 42, 0.06)",
   },
   emptyIcon: { fontSize: "48px" },
   emptyTitle: {
-    fontSize: "18px",
-    fontWeight: 600,
+    fontSize: "22px",
+    fontWeight: 700,
+    letterSpacing: "-0.03em",
     color: "var(--text-primary)",
   },
   emptySubtitle: {
-    fontSize: "13px",
+    fontSize: "14px",
     color: "var(--text-secondary)",
     textAlign: "center" as const,
-    maxWidth: "400px",
-    lineHeight: "1.5",
+    maxWidth: "420px",
+    lineHeight: "1.7",
   },
   messageBubbleWrap: (isUser: boolean) =>
     ({
       display: "flex",
       flexDirection: isUser ? ("row-reverse" as const) : ("row" as const),
-      gap: "12px",
+      gap: "14px",
       alignItems: "flex-start",
       marginBottom: "2px",
     }),
   messageAvatar: (isUser: boolean) => ({
-    width: "30px",
-    height: "30px",
-    borderRadius: "10px",
+    width: "34px",
+    height: "34px",
+    borderRadius: "12px",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    background: isUser ? "var(--accent)" : "var(--bg-card)",
-    border: "1px solid var(--border-subtle)",
-    boxShadow: isUser ? "0 2px 6px -1px color-mix(in srgb, var(--accent) 50%, transparent)" : "0 2px 6px -1px rgba(0,0,0,0.06)",
+    background: isUser
+      ? "linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 72%, white))"
+      : "linear-gradient(135deg, color-mix(in srgb, var(--bg-card) 92%, transparent), color-mix(in srgb, var(--bg-subtle) 84%, transparent))",
+    border: "1px solid var(--border-dim)",
+    boxShadow: isUser
+      ? "0 8px 18px -8px color-mix(in srgb, var(--accent) 48%, transparent)"
+      : "0 8px 18px -10px rgba(0,0,0,0.12)",
     flexShrink: 0,
     marginTop: "2px",
   }),
   messageBubble: (isUser: boolean) => ({
     maxWidth: "100%",
-    padding: "12px 14px",
-    borderRadius: isUser ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
-    background: isUser ? "var(--accent)" : "var(--bg-card)",
+    padding: "14px 16px",
+    borderRadius: isUser ? "22px 22px 8px 22px" : "22px 22px 22px 8px",
+    background: isUser
+      ? "linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 82%, white))"
+      : "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
     color: isUser ? "#fff" : "var(--text-primary)",
-    border: isUser ? "none" : "1px solid var(--border-dim)",
-    boxShadow: isUser ? "0 2px 8px -2px color-mix(in srgb, var(--accent) 30%, transparent)" : "0 2px 8px -2px rgba(0,0,0,0.04)",
-    fontSize: "13.5px",
-    lineHeight: "1.6",
+    border: isUser ? "none" : "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-dim))",
+    boxShadow: isUser
+      ? "0 16px 28px -18px color-mix(in srgb, var(--accent) 50%, transparent)"
+      : "0 16px 32px rgba(15, 23, 42, 0.05)",
+    fontSize: "14px",
+    lineHeight: "1.7",
     wordBreak: "break-word" as const,
     userSelect: "text" as const,
     WebkitUserSelect: "text" as const,
@@ -636,20 +655,20 @@ const styles = {
     whiteSpace: "pre-wrap" as const,
     userSelect: "text" as const,
     WebkitUserSelect: "text" as const,
-    fontFamily: "var(--font-mono)",
+    fontFamily: "var(--font-ui)",
   },
   markdownBody: {
-    fontSize: "13.5px",
-    lineHeight: "1.6",
+    fontSize: "14px",
+    lineHeight: "1.72",
     userSelect: "text" as const,
     WebkitUserSelect: "text" as const,
     fontFamily: "var(--font-ui)",
   },
   assistantTurnStack: {
-    maxWidth: "85%",
+    maxWidth: "88%",
     display: "flex",
     flexDirection: "column" as const,
-    gap: "10px",
+    gap: "12px",
     minWidth: 0,
   },
   assistantTurnSection: {
@@ -657,36 +676,38 @@ const styles = {
     minWidth: 0,
   },
   assistantReplyBubble: {
-    background: "color-mix(in srgb, var(--bg-card) 92%, var(--bg-subtle))",
+    background:
+      "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
   },
   inputArea: {
     display: "flex",
     alignItems: "flex-end",
-    gap: "10px",
-    padding: "12px 16px 16px",
-    background: "var(--bg-primary)",
+    gap: "12px",
+    padding: "14px 18px 18px",
+    background:
+      "linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 0%, transparent), color-mix(in srgb, var(--bg-card) 40%, transparent))",
     flexShrink: 0,
   },
   inputTextarea: {
     flex: 1,
-    padding: "12px 14px",
-    fontSize: "13.5px",
-    lineHeight: "1.5",
-    background: "var(--bg-card)",
-    border: "1px solid var(--border-medium)",
-    borderRadius: "12px",
+    padding: "14px 16px",
+    fontSize: "14px",
+    lineHeight: "1.6",
+    background: "color-mix(in srgb, var(--bg-card) 92%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-medium))",
+    borderRadius: "18px",
     color: "var(--text-primary)",
     resize: "none" as const,
     outline: "none",
-    fontFamily: "var(--font-mono)",
-    boxShadow: "0 2px 6px rgba(0,0,0,0.02) inset",
+    fontFamily: "var(--font-ui)",
+    boxShadow: "0 12px 30px rgba(15, 23, 42, 0.05)",
     transition: "border-color 0.2s, box-shadow 0.2s",
   },
   sendBtn: {
-    width: "38px",
-    height: "38px",
-    borderRadius: "12px",
-    background: "var(--accent)",
+    width: "44px",
+    height: "44px",
+    borderRadius: "16px",
+    background: "linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 74%, white))",
     color: "#fff",
     border: "none",
     display: "flex",
@@ -694,12 +715,12 @@ const styles = {
     justifyContent: "center",
     cursor: "pointer",
     transition: "opacity 0.2s, transform 0.1s",
-    boxShadow: "0 2px 6px color-mix(in srgb, var(--accent) 40%, transparent)",
+    boxShadow: "0 18px 28px -16px color-mix(in srgb, var(--accent) 60%, transparent)",
   },
   sendBtnDisabled: {
     opacity: 0.5,
     cursor: "not-allowed",
-    background: "var(--bg-tertiary)",
+    background: "var(--bg-subtle)",
     color: "var(--text-hint)",
     boxShadow: "none",
   },
@@ -743,7 +764,7 @@ const styles = {
     fontSize: "11px",
     padding: "3px 8px",
     borderRadius: "6px",
-    background: "var(--bg-tertiary)",
+    background: "var(--bg-subtle)",
     color: "var(--text-secondary)",
     fontFamily: "var(--font-mono)",
     fontWeight: 500,

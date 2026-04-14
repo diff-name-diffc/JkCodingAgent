@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { marked } from "marked";
 import { ToolActivityBubble, type ToolActivityItem } from "./ToolActivityBubble";
+import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 
 interface SessionContent {
   type: "text" | "tool_use" | "tool_result" | "thinking";
@@ -51,6 +51,7 @@ function ThinkingBlock({ thinking }: { thinking: string }) {
 function UserMessageBubble({ text }: { text: string }) {
   return (
     <div style={styles.userWrap}>
+      <div style={styles.bubbleMeta}>You</div>
       <div style={styles.userBubble} className="session-selectable">
         {text}
       </div>
@@ -66,6 +67,7 @@ function AssistantTurnBubble({ turn }: { turn: SessionAssistantTurn }) {
 
   return (
     <div style={styles.assistantWrap}>
+      <div style={styles.bubbleMeta}>Assistant</div>
       {turn.tools.length > 0 && (
         <div style={styles.assistantSection}>
           <ToolActivityBubble tools={turn.tools} />
@@ -77,12 +79,7 @@ function AssistantTurnBubble({ turn }: { turn: SessionAssistantTurn }) {
             {turn.thinkingParts.map((thinking, index) => (
               <ThinkingBlock key={`${turn.id}-thinking-${index}`} thinking={thinking} />
             ))}
-            {responseText && (
-              <div
-                className="session-prose"
-                dangerouslySetInnerHTML={{ __html: marked(responseText, { async: false }) as string }}
-              />
-            )}
+            {responseText && <MarkdownRenderer content={responseText} variant="chat" />}
           </div>
         </div>
       )}
@@ -231,10 +228,12 @@ const styles = {
   container: {
     flex: 1,
     overflowY: "auto" as const,
-    padding: "20px 28px 32px",
+    padding: "28px 32px 40px",
     display: "flex",
     flexDirection: "column" as const,
-    gap: 14,
+    gap: 18,
+    background:
+      "radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 8%, transparent), transparent 28%), var(--bg-panel)",
   },
   stateText: {
     color: "var(--text-hint)",
@@ -248,67 +247,83 @@ const styles = {
   },
   userWrap: {
     display: "flex",
+    flexDirection: "column" as const,
     justifyContent: "flex-end",
+    alignItems: "flex-end",
+    gap: 7,
+  },
+  bubbleMeta: {
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase" as const,
+    color: "var(--text-hint)",
   },
   userBubble: {
-    maxWidth: "72%",
-    padding: "11px 16px",
-    background: "color-mix(in srgb, var(--accent) 12%, var(--bg-card))",
+    maxWidth: "76%",
+    padding: "14px 18px",
+    background:
+      "linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--bg-card)), color-mix(in srgb, var(--accent) 8%, var(--bg-card)))",
     color: "var(--text-primary)",
-    borderRadius: 18,
-    border: "1px solid color-mix(in srgb, var(--accent) 22%, var(--border-dim))",
-    fontSize: 13.5,
-    lineHeight: 1.65,
+    borderRadius: 24,
+    border: "1px solid color-mix(in srgb, var(--accent) 26%, var(--border-dim))",
+    fontSize: 14,
+    lineHeight: 1.72,
     whiteSpace: "pre-wrap" as const,
     wordBreak: "break-word" as const,
-    fontFamily: "var(--font-mono)",
+    fontFamily: "var(--font-ui)",
+    boxShadow: "0 12px 30px rgba(15, 23, 42, 0.06)",
   },
   assistantWrap: {
     display: "flex",
     flexDirection: "column" as const,
-    gap: 10,
+    gap: 8,
   },
   assistantSection: {
-    maxWidth: "86%",
+    maxWidth: "88%",
     minWidth: 0,
   },
   assistantBubble: {
-    padding: "14px 16px",
-    borderRadius: 18,
-    background: "color-mix(in srgb, var(--bg-card) 92%, var(--bg-subtle))",
-    border: "1px solid var(--border-dim)",
-    boxShadow: "var(--shadow-xs)",
+    padding: "18px 18px",
+    borderRadius: 24,
+    background:
+      "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 84%, transparent))",
+    border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-dim))",
+    boxShadow: "0 16px 40px rgba(15, 23, 42, 0.06)",
     display: "flex",
     flexDirection: "column" as const,
-    gap: 10,
+    gap: 12,
   },
   thinkingWrap: {
     display: "flex",
     flexDirection: "column" as const,
-    gap: 4,
+    gap: 6,
   },
   thinkingBtn: {
     display: "flex",
     alignItems: "center",
-    gap: 5,
-    background: "none",
-    border: "none",
+    gap: 6,
+    background: "color-mix(in srgb, var(--accent) 8%, var(--bg-subtle))",
+    border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border-dim))",
     cursor: "pointer",
-    padding: 0,
-    color: "var(--text-hint)",
+    padding: "6px 10px",
+    color: "var(--text-muted)",
     fontSize: 11.5,
-    fontStyle: "italic",
+    fontWeight: 600,
     width: "fit-content",
+    borderRadius: 999,
   },
   thinkingBody: {
-    padding: "6px 12px",
+    padding: "10px 14px",
     fontSize: 12,
     color: "var(--text-muted)",
     fontStyle: "italic",
-    borderLeft: "2px solid var(--border-dim)",
-    marginLeft: 4,
+    borderLeft: "2px solid color-mix(in srgb, var(--accent) 24%, var(--border-dim))",
+    marginLeft: 8,
     whiteSpace: "pre-wrap" as const,
     wordBreak: "break-word" as const,
-    lineHeight: 1.6,
+    lineHeight: 1.72,
+    background: "color-mix(in srgb, var(--bg-card) 82%, transparent)",
+    borderRadius: "0 16px 16px 0",
   },
 };

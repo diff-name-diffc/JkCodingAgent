@@ -2,7 +2,7 @@
  * Strip ANSI escape codes from terminal output text.
  * Handles: CSI sequences, OSC sequences, SGR params, cursor movement, etc.
  */
-export function stripAnsi(text: string): string {
+function stripAnsi(text: string): string {
   const esc = String.fromCharCode(0x1b);
   const csi = String.fromCharCode(0x9b);
   const ansiPattern = new RegExp(

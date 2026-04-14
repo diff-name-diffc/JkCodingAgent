@@ -481,6 +481,8 @@ export function FileTabPane({
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedContentRef = useRef("");
+  const queuedSaveContentRef = useRef<string | null>(null);
+  const saveInFlightRef = useRef(false);
 
   const isImage = isPreviewableImageFile(tab.name);
   const isMarkdown = isMarkdownFile(tab.name);
@@ -502,6 +504,38 @@ export function FileTabPane({
     [],
   );
 
+  const flushQueuedSave = useCallback(async () => {
+    if (saveInFlightRef.current) {
+      return;
+    }
+
+    saveInFlightRef.current = true;
+    try {
+      while (queuedSaveContentRef.current !== null) {
+        const contentToSave = queuedSaveContentRef.current;
+        queuedSaveContentRef.current = null;
+
+        await invoke("write_file_content", {
+          path: tab.path,
+          content: contentToSave,
+          projectPath,
+        });
+
+        savedContentRef.current = contentToSave;
+      }
+
+      setSaveStatus("saved");
+      savedResetRef.current = setTimeout(() => setSaveStatus("idle"), 1800);
+    } catch {
+      setSaveStatus("error");
+    } finally {
+      saveInFlightRef.current = false;
+      if (queuedSaveContentRef.current !== null) {
+        void flushQueuedSave();
+      }
+    }
+  }, [projectPath, tab.path]);
+
   useEffect(() => {
     if (isImage) {
       return;
@@ -514,6 +548,8 @@ export function FileTabPane({
     setContent(null);
     setFileMeta(null);
     setLargeDirty(false);
+    queuedSaveContentRef.current = null;
+    saveInFlightRef.current = false;
 
     invoke<FileMeta>("get_file_meta", { path: tab.path, projectPath })
       .then((meta) => {
@@ -576,20 +612,14 @@ export function FileTabPane({
       setSaveStatus("saving");
       saveTimerRef.current = setTimeout(async () => {
         try {
-          await invoke("write_file_content", {
-            path: tab.path,
-            content: value,
-            projectPath,
-          });
-          savedContentRef.current = value;
-          setSaveStatus("saved");
-          savedResetRef.current = setTimeout(() => setSaveStatus("idle"), 1800);
+          queuedSaveContentRef.current = value;
+          await flushQueuedSave();
         } catch {
           setSaveStatus("error");
         }
       }, 900);
     },
-    [projectPath, tab.path],
+    [flushQueuedSave],
   );
 
   if (isImage) {

@@ -17,5 +17,3 @@ const s = {
 } satisfies Record<string, React.CSSProperties>;
 
 export default s;
-
-export { common, dialogs, layout, panels, task, terminal };

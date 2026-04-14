@@ -194,4 +194,4 @@ export function useProjectPanels() {
   };
 }
 
-export type { RightPanel, OpenDiff, OpenFileTab };
+export type { OpenFileTab };

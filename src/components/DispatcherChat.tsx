@@ -287,13 +287,6 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           setStreamingContent("");
           setLiveToolCalls([]);
           break;
-        case "error":
-          if (!isCurrentRun) return;
-          setIsLoading(false);
-          setStreamingContent("");
-          setLiveToolCalls([]);
-          console.error("Agent error:", event.data.message);
-          break;
       }
     };
     return onEvent;

@@ -9,13 +9,13 @@ interface OutboundToolCall {
   };
 }
 
-export interface DispatcherAssistantTurn {
+interface DispatcherAssistantTurn {
   id: string;
   tools: ToolActivityItem[];
   responseParts: string[];
 }
 
-export type DispatcherDisplayItem =
+type DispatcherDisplayItem =
   | { kind: "user"; id: string; message: DispatcherMessage }
   | { kind: "assistant"; id: string; turn: DispatcherAssistantTurn };
 

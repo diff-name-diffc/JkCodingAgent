@@ -63,16 +63,6 @@ pub enum AgentEvent {
         description: String,
         permission_mode: String,
     },
-    /// 用户批准后，Claude 进程已启动
-    DispatchStarted {
-        dispatch_id: String,
-        task_id: String,
-    },
-    /// Claude 进程结束，输出摘要
-    DispatchFinished {
-        dispatch_id: String,
-        result: String,
-    },
     /// Dispatcher Agent 要求继续 Claude 会话
     DispatchContinue {
         dispatch_id: String,
@@ -85,9 +75,6 @@ pub enum AgentEvent {
     },
     Finished {
         messages: Vec<DispatcherMessageRecord>,
-    },
-    Error {
-        message: String,
     },
 }
 

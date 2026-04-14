@@ -56,7 +56,7 @@ export const LIGHT_THEME = {
 const HIGH_WATER = 128 * 1024; // 128 KB：超过时停止写入
 const LOW_WATER  =  16 * 1024; //  16 KB：恢复写入
 
-export interface SmartWriter {
+interface SmartWriter {
   write: (data: string, callback?: () => void) => void;
   drainPending: () => void;
   setSelectionPaused: (paused: boolean) => void;
@@ -120,7 +120,7 @@ export function createSmartWriter(term: Terminal): SmartWriter {
 
 // ── xterm initialization ─────────────────────────────────────────────────────
 
-export interface InitTerminalResult {
+interface InitTerminalResult {
   term: Terminal;
   fitAddon: FitAddon;
 }

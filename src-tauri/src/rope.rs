@@ -15,10 +15,19 @@ struct RopeSession {
     rope: Rope,
     /// True if the rope has been modified since the last save.
     dirty: bool,
+    /// Monotonic revision number for edit history bookkeeping.
+    revision: u64,
+    /// Revision number at the last successful save.
+    saved_revision: u64,
     /// Undo stack: snapshots of the Rope before each committed edit.
-    undo_stack: Vec<Rope>,
+    undo_stack: Vec<RopeSnapshot>,
     /// Redo stack: snapshots popped from undo that can be reapplied.
-    redo_stack: Vec<Rope>,
+    redo_stack: Vec<RopeSnapshot>,
+}
+
+struct RopeSnapshot {
+    rope: Rope,
+    revision: u64,
 }
 
 impl RopeSession {
@@ -34,7 +43,10 @@ impl RopeSession {
         if self.undo_stack.len() >= MAX_UNDO_STACK {
             self.undo_stack.remove(0);
         }
-        self.undo_stack.push(self.rope.clone());
+        self.undo_stack.push(RopeSnapshot {
+            rope: self.rope.clone(),
+            revision: self.revision,
+        });
         self.redo_stack.clear();
     }
 }
@@ -130,6 +142,8 @@ pub async fn rope_open(
     let session = RopeSession {
         path: validated_path,
         dirty: false,
+        revision: 0,
+        saved_revision: 0,
         rope,
         undo_stack: Vec::new(),
         redo_stack: Vec::new(),
@@ -186,7 +200,16 @@ pub fn rope_edit(
         .get_mut(&session_id)
         .ok_or_else(|| format!("Rope session not found: {}", session_id))?;
 
-    if delete_count == 0 && insert_text.is_empty() {
+    let total_lines = session.rope.len_lines();
+    let line_idx = (line as usize).min(total_lines.saturating_sub(1));
+    let line_start_char = session.rope.line_to_char(line_idx);
+    let line_len = session.rope.line(line_idx).len_chars();
+    let col_clamped = (col as usize).min(line_len);
+    let char_offset = line_start_char + col_clamped;
+    let delete_end = (char_offset + delete_count as usize).min(session.rope.len_chars());
+    let has_delete_effect = delete_end > char_offset;
+
+    if !has_delete_effect && insert_text.is_empty() {
         let meta = session.meta();
         return Ok(RopeEditResult {
             line_count: meta.line_count,
@@ -197,15 +220,7 @@ pub fn rope_edit(
 
     session.push_undo_snapshot();
 
-    let total_lines = session.rope.len_lines();
-    let line_idx = (line as usize).min(total_lines.saturating_sub(1));
-    let line_start_char = session.rope.line_to_char(line_idx);
-    let line_len = session.rope.line(line_idx).len_chars();
-    let col_clamped = (col as usize).min(line_len);
-    let char_offset = line_start_char + col_clamped;
-
     if delete_count > 0 {
-        let delete_end = (char_offset + delete_count as usize).min(session.rope.len_chars());
         if delete_end > char_offset {
             session.rope.remove(char_offset..delete_end);
         }
@@ -216,7 +231,8 @@ pub fn rope_edit(
         session.rope.insert(insert_at, &insert_text);
     }
 
-    session.dirty = true;
+    session.revision += 1;
+    session.dirty = session.revision != session.saved_revision;
 
     let new_total = session.rope.len_lines() as u64;
     let newline_count = insert_text.chars().filter(|&ch| ch == '\n').count() as u64;
@@ -287,7 +303,8 @@ pub fn rope_replace_line(
         session.rope.insert(line_start, &new_content);
     }
 
-    session.dirty = true;
+    session.revision += 1;
+    session.dirty = session.revision != session.saved_revision;
 
     let new_total = session.rope.len_lines() as u64;
     let newline_count = new_content.chars().filter(|&ch| ch == '\n').count() as u64;
@@ -323,6 +340,7 @@ pub async fn rope_save(
     .map_err(|e| e.to_string())??;
 
     if let Some(session) = state.sessions.lock().get_mut(&session_id) {
+        session.saved_revision = session.revision;
         session.dirty = false;
     }
 
@@ -359,9 +377,13 @@ pub fn rope_undo(
         .pop()
         .ok_or_else(|| "Nothing to undo".to_string())?;
 
-    session.redo_stack.push(session.rope.clone());
-    session.rope = snapshot;
-    session.dirty = true;
+    session.redo_stack.push(RopeSnapshot {
+        rope: session.rope.clone(),
+        revision: session.revision,
+    });
+    session.rope = snapshot.rope;
+    session.revision = snapshot.revision;
+    session.dirty = session.revision != session.saved_revision;
 
     Ok(session.meta())
 }
@@ -384,9 +406,13 @@ pub fn rope_redo(
     if session.undo_stack.len() >= MAX_UNDO_STACK {
         session.undo_stack.remove(0);
     }
-    session.undo_stack.push(session.rope.clone());
-    session.rope = snapshot;
-    session.dirty = true;
+    session.undo_stack.push(RopeSnapshot {
+        rope: session.rope.clone(),
+        revision: session.revision,
+    });
+    session.rope = snapshot.rope;
+    session.revision = snapshot.revision;
+    session.dirty = session.revision != session.saved_revision;
 
     Ok(session.meta())
 }

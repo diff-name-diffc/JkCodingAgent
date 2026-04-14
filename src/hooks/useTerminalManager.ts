@@ -16,7 +16,7 @@ interface TaskBuffer {
   droppedLen: number;
 }
 
-export type TerminalWriteFn = (data: string, callback?: () => void) => void;
+type TerminalWriteFn = (data: string, callback?: () => void) => void;
 
 interface TerminalWriteState {
   pending: string[];

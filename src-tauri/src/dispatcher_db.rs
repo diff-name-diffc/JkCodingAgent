@@ -176,32 +176,6 @@ impl DispatcherDb {
         Ok(())
     }
 
-    pub fn update_session_title(&self, session_id: &str, title: &str) -> Result<()> {
-        let conn = self.connect()?;
-        conn.execute(
-            "UPDATE dispatcher_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
-            params![title, now(), session_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_session(&self, session_id: &str) -> Result<Option<DispatcherSessionRecord>> {
-        let conn = self.connect()?;
-        conn.query_row(
-            "SELECT id, project_id, title, created_at, updated_at FROM dispatcher_sessions WHERE id = ?1",
-            params![session_id],
-            |row| {
-                Ok(DispatcherSessionRecord {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    title: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                })
-            },
-        ).optional().context("get session by id")
-    }
-
     // ── Messages ──────────────────────────────────────────────
 
     pub fn add_visible_message(

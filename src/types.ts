@@ -36,22 +36,6 @@ export interface Task {
   claudeSessionPath?: string;
 }
 
-export const PERM_LABELS: Record<PermissionMode, string> = {
-  ask: "Ask Permission",
-  auto_edit: "Auto-edit",
-  full_access: "Full Access",
-};
-
-export const STATUS_LABEL: Record<TaskStatus, string> = {
-  todo: "Todo",
-  pending: "Pending",
-  running: "Running...",
-  input_required: "Needs confirmation",
-  done: "Done",
-  failed: "Failed",
-  cancelled: "Cancelled",
-};
-
 export function isActiveTaskStatus(status: TaskStatus): boolean {
   return status === "pending" || status === "running" || status === "input_required";
 }
@@ -139,12 +123,9 @@ export type DispatcherAgentEvent =
   | { event: "toolStarted"; data: { toolCallId?: string; name: string; arguments: string } }
   | { event: "toolFinished"; data: { toolCallId?: string; name: string; result: string } }
   | { event: "dispatchProposed"; data: { dispatchId: string; description: string; permissionMode: string } }
-  | { event: "dispatchStarted"; data: { dispatchId: string; taskId: string } }
-  | { event: "dispatchFinished"; data: { dispatchId: string; result: string } }
   | { event: "dispatchContinue"; data: { dispatchId: string; text: string } }
   | { event: "dispatchExit"; data: { dispatchId: string; reason: string } }
-  | { event: "finished"; data: { messages: DispatcherMessage[] } }
-  | { event: "error"; data: { message: string } };
+  | { event: "finished"; data: { messages: DispatcherMessage[] } };
 
 export interface DispatcherSession {
   id: string;

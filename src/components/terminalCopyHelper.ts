@@ -115,7 +115,7 @@ async function readSelectionChunked(terminal: Terminal): Promise<string> {
  * Returns true if the copy was handled, false if the caller should fall through
  * to default behaviour (e.g. Ctrl-C sending SIGINT when nothing is selected).
  */
-export async function smartCopy(terminal: Terminal): Promise<boolean> {
+async function smartCopy(terminal: Terminal): Promise<boolean> {
   if (!terminal.hasSelection()) return false;
 
   const sel = getSelectionService(terminal);

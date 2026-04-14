@@ -69,7 +69,6 @@ pub struct RequestedToolCall {
 pub struct LlmResponse {
     pub content: String,
     pub tool_calls: Vec<RequestedToolCall>,
-    pub reasoning_content: Option<String>,
 }
 
 #[derive(Clone)]
@@ -143,7 +142,6 @@ impl OpenAiCompatProvider {
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
         let mut content = String::new();
-        let mut reasoning = String::new();
         // index -> (id, name, accumulated_arguments)
         let mut tc_map: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
 
@@ -181,10 +179,6 @@ impl OpenAiCompatProvider {
                     content.push_str(c);
                     on_delta(c);
                 }
-                // Reasoning delta (some models)
-                if let Some(r) = &choice.delta.reasoning_content {
-                    reasoning.push_str(r);
-                }
                 // Tool call fragments
                 if let Some(calls) = &choice.delta.tool_calls {
                     for tc in calls {
@@ -221,11 +215,6 @@ impl OpenAiCompatProvider {
         Ok(LlmResponse {
             content,
             tool_calls,
-            reasoning_content: if reasoning.is_empty() {
-                None
-            } else {
-                Some(reasoning)
-            },
         })
     }
 }
@@ -348,7 +337,6 @@ struct StreamChoice {
 #[derive(Deserialize)]
 struct StreamDelta {
     content: Option<String>,
-    reasoning_content: Option<String>,
     tool_calls: Option<Vec<StreamToolCall>>,
 }
 

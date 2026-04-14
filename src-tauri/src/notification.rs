@@ -13,9 +13,7 @@ use crate::storage::atomic_write;
 
 // Remote notifications disabled for internal deployment
 const _NOTIFICATIONS_URL: &str = "";
-const MAX_RESPONSE_BYTES: usize = 1024 * 1024; // 1MB limit
 const FETCH_INTERVAL_SECS: i64 = 3600; // 1 hour
-const REQUEST_TIMEOUT_SECS: u64 = 15;
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 static NOTIFICATION_STORE_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
@@ -38,12 +36,6 @@ struct RemoteNotification {
     max_app_version: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct RemoteResponse {
-    #[allow(dead_code)]
-    version: u32,
-    notifications: Vec<RemoteNotification>,
-}
 
 // ── Local storage types ──────────────────────────────────────────────────────
 

@@ -23,6 +23,18 @@ type RopeEditResult = {
   affectedEndLine: number;
 };
 
+type MouseSelectionPoint = {
+  line: number;
+  col: number;
+};
+
+type SelectionRange = {
+  startLine: number;
+  startCol: number;
+  endLine: number;
+  endCol: number;
+};
+
 // ─── Cursor helpers ────────────────────────────────────────────────
 function setCaretPosition(el: HTMLElement, offset: number) {
   const textNode = el.firstChild;
@@ -42,6 +54,14 @@ function setCaretPosition(el: HTMLElement, offset: number) {
 function getCaretOffset(): number {
   const sel = window.getSelection();
   return sel?.focusOffset ?? 0;
+}
+
+function compareSelectionPoints(a: MouseSelectionPoint, b: MouseSelectionPoint) {
+  if (a.line !== b.line) {
+    return a.line - b.line;
+  }
+
+  return a.col - b.col;
 }
 
 /**
@@ -73,11 +93,22 @@ export function LargeFileViewer({
   const [ropeReady, setRopeReady] = useState(false);
   const [totalLines, setTotalLines] = useState(meta.lineCount);
   const [dirty, setDirty] = useState(false);
+  const [selectionRange, setSelectionRange] = useState<SelectionRange | null>(null);
   const editingLineRef = useRef<number | null>(null);
   const editTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Pending focus target after re-render from structural edits (Enter / Paste)
   const pendingFocusRef = useRef<{ line: number; col: number } | null>(null);
   const pendingLocalEditRef = useRef<{ line: number; content: string } | null>(null);
+  const mouseSelectionRef = useRef<{
+    active: boolean;
+    dragging: boolean;
+    anchor: MouseSelectionPoint | null;
+  }>({
+    active: false,
+    dragging: false,
+    anchor: null,
+  });
+  const charWidthRef = useRef(7.8);
 
   const totalHeight = totalLines * LINE_HEIGHT;
 
@@ -233,6 +264,44 @@ export function LargeFileViewer({
     ) as HTMLElement | null;
   }, []);
 
+  const getSelectionPointFromCoords = useCallback((clientX: number, clientY: number): MouseSelectionPoint | null => {
+    const contentArea = contentAreaRef.current;
+    if (!contentArea) {
+      return null;
+    }
+
+    const fallbackElement = document.elementFromPoint(clientX, clientY);
+    const lineEl = fallbackElement?.closest("[data-line]");
+
+    if (!(lineEl instanceof HTMLElement) || !contentArea.contains(lineEl)) {
+      return null;
+    }
+
+    const line = Number(lineEl.dataset.line);
+    if (Number.isNaN(line)) {
+      return null;
+    }
+
+    const textLength = (lineCache.current.get(line) ?? lineEl.textContent ?? "").length;
+    const rect = lineEl.getBoundingClientRect();
+    const relativeX = Math.max(0, clientX - rect.left - 8);
+    const col = Math.max(0, Math.min(textLength, Math.round(relativeX / charWidthRef.current)));
+
+    return { line, col };
+  }, []);
+
+  const toSelectionRange = useCallback((anchor: MouseSelectionPoint, current: MouseSelectionPoint): SelectionRange => {
+    const [start, end] =
+      compareSelectionPoints(anchor, current) <= 0 ? [anchor, current] : [current, anchor];
+
+    return {
+      startLine: start.line,
+      startCol: start.col,
+      endLine: end.line,
+      endCol: end.col,
+    };
+  }, []);
+
   // ─── Invalidate cache from a line onward ─────────────────────────
   const invalidateCacheFrom = useCallback((fromLine: number) => {
     for (const key of lineCache.current.keys()) {
@@ -276,6 +345,115 @@ export function LargeFileViewer({
     [sessionId],
   );
 
+  const flushActiveEdit = useCallback(async () => {
+    if (editTimerRef.current) {
+      clearTimeout(editTimerRef.current);
+      editTimerRef.current = null;
+    }
+
+    const pendingEdit = pendingLocalEditRef.current;
+    if (pendingEdit) {
+      await flushPendingEdit(pendingEdit.line, pendingEdit.content);
+      return;
+    }
+
+    if (editingLineRef.current !== null) {
+      const el = getLineElement(editingLineRef.current);
+      if (el) {
+        await flushPendingEdit(editingLineRef.current, el.textContent ?? "");
+      }
+    }
+  }, [flushPendingEdit, getLineElement]);
+
+  const clearSelection = useCallback(() => {
+    setSelectionRange(null);
+    window.getSelection()?.removeAllRanges();
+  }, []);
+
+  const readLines = useCallback(async (startLine: number, endLine: number) => {
+    const count = endLine - startLine + 1;
+    return invoke<string[]>("rope_read_lines", {
+      sessionId,
+      startLine,
+      maxLines: count,
+    });
+  }, [sessionId]);
+
+  const getSelectedText = useCallback(async (range: SelectionRange) => {
+    const lines = await readLines(range.startLine, range.endLine);
+    if (lines.length === 0) {
+      return "";
+    }
+
+    return lines
+      .map((line, index) => {
+        if (range.startLine === range.endLine) {
+          return line.slice(range.startCol, range.endCol);
+        }
+
+        if (index === 0) {
+          return line.slice(range.startCol);
+        }
+
+        if (index === lines.length - 1) {
+          return line.slice(0, range.endCol);
+        }
+
+        return line;
+      })
+      .join("\n");
+  }, [readLines]);
+
+  const replaceSelection = useCallback(async (range: SelectionRange, insertText: string) => {
+    await flushActiveEdit();
+    editingLineRef.current = null;
+
+    const lines = await readLines(range.startLine, range.endLine);
+    if (lines.length === 0) {
+      clearSelection();
+      return;
+    }
+
+    const deleteCount = lines.reduce((total, line, index) => {
+      if (range.startLine === range.endLine) {
+        return range.endCol - range.startCol;
+      }
+
+      if (index === 0) {
+        return total + (line.length - range.startCol) + 1;
+      }
+
+      if (index === lines.length - 1) {
+        return total + range.endCol;
+      }
+
+      return total + line.length + 1;
+    }, 0);
+
+    const result = await invoke<RopeEditResult>("rope_edit", {
+      sessionId,
+      line: range.startLine,
+      col: range.startCol,
+      deleteCount,
+      insertText,
+    });
+
+    markDirty();
+    invalidateCacheFrom(range.startLine);
+    setTotalLines(result.lineCount);
+    clearSelection();
+
+    const newlineCount = (insertText.match(/\n/g) || []).length;
+    const afterLastNewline = insertText.lastIndexOf("\n");
+    pendingFocusRef.current = {
+      line: range.startLine + newlineCount,
+      col:
+        afterLastNewline >= 0
+          ? insertText.length - afterLastNewline - 1
+          : range.startCol + insertText.length,
+    };
+  }, [clearSelection, flushActiveEdit, invalidateCacheFrom, markDirty, readLines, sessionId]);
+
   // ─── Commit a single-line edit (debounced) ───────────────────────
   const commitLineEdit = useCallback(
     (lineIdx: number, content: string) => {
@@ -312,6 +490,9 @@ export function LargeFileViewer({
   // ─── onInput: debounce single-line text changes ──────────────────
   const handleInput = useCallback(
     (lineIdx: number, el: HTMLElement) => {
+      if (selectionRange) {
+        clearSelection();
+      }
       const content = el.textContent ?? "";
       lineCache.current.set(lineIdx, content);
       pendingLocalEditRef.current = { line: lineIdx, content };
@@ -324,7 +505,7 @@ export function LargeFileViewer({
       // Mark dirty immediately
       markDirty();
     },
-    [commitLineEdit, markDirty],
+    [clearSelection, commitLineEdit, markDirty, selectionRange],
   );
 
   // ─── Structural edit: insert text at (line, col) in rope ─────────
@@ -375,6 +556,32 @@ export function LargeFileViewer({
   // ─── Keyboard handler ───────────────────────────────────────────
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLSpanElement>, lineIdx: number) => {
+      if (selectionRange) {
+        if (e.key === "Backspace" || e.key === "Delete") {
+          e.preventDefault();
+          void replaceSelection(selectionRange, "");
+          return;
+        }
+
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void replaceSelection(selectionRange, "\n");
+          return;
+        }
+
+        if (e.key === "Tab") {
+          e.preventDefault();
+          void replaceSelection(selectionRange, "  ");
+          return;
+        }
+
+        if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
+          e.preventDefault();
+          void replaceSelection(selectionRange, e.key);
+          return;
+        }
+      }
+
       if (e.key === "ArrowUp") {
         e.preventDefault();
         const caretCol = getCaretOffset();
@@ -439,7 +646,7 @@ export function LargeFileViewer({
         const el = e.currentTarget;
         const content = el.textContent ?? "";
         const col = getCaretOffset();
-        if (col === content.length) {
+        if (col === content.length && lineIdx < totalLines - 1) {
           // At the end of a line — merge with next line (delete the trailing \n)
           e.preventDefault();
 
@@ -474,7 +681,7 @@ export function LargeFileViewer({
       }
     },
     [commitLineEdit, getLineElement, insertTextAtCursor, flushPendingEdit,
-     handleInput, invalidateCacheFrom, markDirty, sessionId],
+     handleInput, invalidateCacheFrom, markDirty, replaceSelection, selectionRange, sessionId, totalLines],
   );
 
   // ─── Paste handler ──────────────────────────────────────────────
@@ -483,6 +690,11 @@ export function LargeFileViewer({
       e.preventDefault();
       const pastedText = e.clipboardData.getData("text/plain");
       if (!pastedText) return;
+
+      if (selectionRange) {
+        void replaceSelection(selectionRange, pastedText);
+        return;
+      }
 
       const col = getCaretOffset();
 
@@ -499,11 +711,14 @@ export function LargeFileViewer({
         insertTextAtCursor(lineIdx, col, pastedText);
       }
     },
-    [handleInput, insertTextAtCursor],
+    [handleInput, insertTextAtCursor, replaceSelection, selectionRange],
   );
 
   // ─── Focus / blur handlers ──────────────────────────────────────
   const handleFocus = useCallback((lineIdx: number) => {
+    if (mouseSelectionRef.current.dragging) {
+      return;
+    }
     editingLineRef.current = lineIdx;
   }, []);
 
@@ -519,6 +734,71 @@ export function LargeFileViewer({
     },
     [commitLineEdit],
   );
+
+  const handleSelectionMouseDown = useCallback((e: React.MouseEvent<HTMLSpanElement>) => {
+    if (e.button !== 0) {
+      return;
+    }
+
+    e.preventDefault();
+
+    const point = getSelectionPointFromCoords(e.clientX, e.clientY);
+    if (!point) {
+      clearSelection();
+      return;
+    }
+
+    const lineEl = e.currentTarget;
+    editingLineRef.current = point.line;
+    clearSelection();
+    lineEl.focus();
+    setCaretPosition(lineEl, point.col);
+
+    mouseSelectionRef.current = {
+      active: true,
+      dragging: false,
+      anchor: point,
+    };
+  }, [clearSelection, getSelectionPointFromCoords]);
+
+  const handleGlobalMouseMove = useCallback((event: MouseEvent) => {
+    const selectionState = mouseSelectionRef.current;
+    if (!selectionState.active || !selectionState.anchor) {
+      return;
+    }
+
+    const current = getSelectionPointFromCoords(event.clientX, event.clientY);
+    if (!current) {
+      return;
+    }
+
+    if (!selectionState.dragging && current.line === selectionState.anchor.line) {
+      if (current.col === selectionState.anchor.col) {
+        return;
+      }
+    }
+
+    selectionState.dragging = true;
+    editingLineRef.current = null;
+    window.getSelection()?.removeAllRanges();
+    setSelectionRange(toSelectionRange(selectionState.anchor, current));
+  }, [getSelectionPointFromCoords, toSelectionRange]);
+
+  const handleGlobalMouseUp = useCallback(() => {
+    const selectionState = mouseSelectionRef.current;
+    if (selectionState.active && selectionState.anchor && !selectionState.dragging) {
+      const el = getLineElement(selectionState.anchor.line);
+      if (el) {
+        editingLineRef.current = selectionState.anchor.line;
+        el.focus();
+        setCaretPosition(el, selectionState.anchor.col);
+      }
+    }
+
+    mouseSelectionRef.current.active = false;
+    mouseSelectionRef.current.dragging = false;
+    mouseSelectionRef.current.anchor = null;
+  }, [getLineElement]);
 
   // ─── Undo / Redo handler ────────────────────────────────────────
   const handleUndoRedo = useCallback(
@@ -576,31 +856,34 @@ export function LargeFileViewer({
     }
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c" && selectionRange) {
+        e.preventDefault();
+        void flushActiveEdit()
+          .then(() => getSelectedText(selectionRange))
+          .then((text) => navigator.clipboard.writeText(text).catch(() => {}));
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "x" && selectionRange) {
+        e.preventDefault();
+        void flushActiveEdit()
+          .then(() => getSelectedText(selectionRange))
+          .then((text) => navigator.clipboard.writeText(text).catch(() => {}))
+          .then(() => replaceSelection(selectionRange, ""));
+      } else if (e.key === "Escape" && selectionRange) {
+        e.preventDefault();
+        clearSelection();
+      } else if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
         if (!dirty) return;
 
-        // Flush any pending edit
-        if (editTimerRef.current) {
-          clearTimeout(editTimerRef.current);
-          editTimerRef.current = null;
-        }
-        if (editingLineRef.current !== null) {
-          const el = getLineElement(editingLineRef.current);
-          if (el) {
-            commitLineEdit(editingLineRef.current, el.textContent ?? "");
+        void (async () => {
+          try {
+            await flushActiveEdit();
+            await invoke("rope_save", { sessionId, projectPath });
+            setDirty(false);
+            onDirtyChange?.(false);
+          } catch (err) {
+            console.error("rope_save failed:", err);
           }
-        }
-
-        // Small delay to let the last rope_replace_line finish
-        setTimeout(() => {
-          invoke("rope_save", { sessionId, projectPath })
-            .then(() => {
-              setDirty(false);
-              onDirtyChange?.(false);
-            })
-            .catch((err) => console.error("rope_save failed:", err));
-        }, 200);
+        })();
       } else if ((e.metaKey || e.ctrlKey) && e.key === "z") {
         e.preventDefault();
         handleUndoRedo(e.shiftKey); // shiftKey → redo
@@ -609,13 +892,37 @@ export function LargeFileViewer({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [active, dirty, projectPath, sessionId, onDirtyChange, getLineElement, commitLineEdit, handleUndoRedo]);
+  }, [active, clearSelection, dirty, getSelectedText, projectPath, replaceSelection, selectionRange, sessionId, onDirtyChange, flushActiveEdit, handleUndoRedo]);
 
   // Cleanup
   useEffect(() => {
     return () => {
       if (editTimerRef.current) clearTimeout(editTimerRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("mousemove", handleGlobalMouseMove);
+    window.addEventListener("mouseup", handleGlobalMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handleGlobalMouseMove);
+      window.removeEventListener("mouseup", handleGlobalMouseUp);
+    };
+  }, [handleGlobalMouseMove, handleGlobalMouseUp]);
+
+  useEffect(() => {
+    const probe = document.createElement("span");
+    probe.textContent = "MMMMMMMMMM";
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.fontFamily = "JetBrains Mono, monospace";
+    probe.style.fontSize = "13px";
+    probe.style.whiteSpace = "pre";
+    document.body.appendChild(probe);
+    charWidthRef.current = probe.getBoundingClientRect().width / 10 || charWidthRef.current;
+    document.body.removeChild(probe);
   }, []);
 
   // ─── Gutter width ──────────────────────────────────────────────
@@ -630,6 +937,27 @@ export function LargeFileViewer({
     }
     return `${(meta.sizeBytes / 1024).toFixed(1)} KB`;
   }, [meta.sizeBytes]);
+
+  const getSelectionOverlayStyle = useCallback((lineIdx: number) => {
+    if (!selectionRange || lineIdx < selectionRange.startLine || lineIdx > selectionRange.endLine) {
+      return null;
+    }
+
+    const lineText = lineCache.current.get(lineIdx) ?? "";
+    const lineLength = lineText.length;
+    const startCol = lineIdx === selectionRange.startLine ? selectionRange.startCol : 0;
+    const endCol = lineIdx === selectionRange.endLine ? selectionRange.endCol : lineLength;
+    const widthChars = Math.max(endCol - startCol, 0);
+
+    if (widthChars === 0) {
+      return null;
+    }
+
+    return {
+      left: gutterWidth + 8 + startCol * charWidthRef.current,
+      width: Math.max(widthChars * charWidthRef.current, 2),
+    };
+  }, [gutterWidth, selectionRange]);
 
   return (
     <div
@@ -700,77 +1028,98 @@ export function LargeFileViewer({
       >
         <div ref={contentAreaRef} style={{ height: totalHeight, position: "relative" }}>
           {renderedLines.map(({ idx, text }) => (
-            <div
-              key={idx}
-              style={{
-                position: "absolute",
-                top: idx * LINE_HEIGHT,
-                left: 0,
-                right: 0,
-                height: LINE_HEIGHT,
-                display: "flex",
-                alignItems: "stretch",
-              }}
-            >
-              {/* Line number gutter */}
-              <span
-                style={{
-                  width: gutterWidth,
-                  flexShrink: 0,
-                  textAlign: "right",
-                  paddingRight: 12,
-                  color: editingLineRef.current === idx
-                    ? "var(--accent)"
-                    : "var(--text-hint)",
-                  userSelect: "none",
-                  fontSize: 12,
-                  lineHeight: `${LINE_HEIGHT}px`,
-                }}
-              >
-                {idx + 1}
-              </span>
-              {/* Editable line content */}
-              <span
-                data-line={idx}
-                contentEditable
-                suppressContentEditableWarning
-                spellCheck={false}
-                ref={(el) => {
-                  // Directly set textContent via ref callback to avoid
-                  // React vs contentEditable DOM conflicts (Bug 1 fix).
-                  // Only update if the line is NOT currently being edited
-                  // to prevent caret jumps during typing.
-                  if (el && editingLineRef.current !== idx) {
-                    if (el.textContent !== text) {
-                      el.textContent = text;
-                    }
-                  }
-                }}
-                onFocus={() => handleFocus(idx)}
-                onBlur={(e) => handleBlur(idx, e.currentTarget)}
-                onInput={(e) => handleInput(idx, e.currentTarget)}
-                onKeyDown={(e) => handleKeyDown(e, idx)}
-                onPaste={(e) => handlePaste(e, idx)}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  paddingLeft: 8,
-                  outline: "none",
-                  whiteSpace: "pre",
-                  overflow: "hidden",
-                  height: LINE_HEIGHT,
-                  lineHeight: `${LINE_HEIGHT}px`,
-                  display: "block",
-                  caretColor: "var(--accent)",
-                  borderLeft: editingLineRef.current === idx
-                    ? "2px solid var(--accent)"
-                    : "2px solid transparent",
-                  background: editingLineRef.current === idx
-                    ? "color-mix(in srgb, var(--accent) 4%, transparent)"
-                    : "transparent",
-                }}
-              />
-            </div>
+            (() => {
+              const overlayStyle = getSelectionOverlayStyle(idx);
+
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    position: "absolute",
+                    top: idx * LINE_HEIGHT,
+                    left: 0,
+                    right: 0,
+                    height: LINE_HEIGHT,
+                    display: "flex",
+                    alignItems: "stretch",
+                  }}
+                >
+                  {overlayStyle && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: 2,
+                        bottom: 2,
+                        borderRadius: 4,
+                        background: "color-mix(in srgb, var(--accent) 22%, transparent)",
+                        pointerEvents: "none",
+                        ...overlayStyle,
+                      }}
+                    />
+                  )}
+                  {/* Line number gutter */}
+                  <span
+                    style={{
+                      width: gutterWidth,
+                      flexShrink: 0,
+                      textAlign: "right",
+                      paddingRight: 12,
+                      color: editingLineRef.current === idx
+                        ? "var(--accent)"
+                        : "var(--text-hint)",
+                      userSelect: "none",
+                      fontSize: 12,
+                      lineHeight: `${LINE_HEIGHT}px`,
+                    }}
+                  >
+                    {idx + 1}
+                  </span>
+                  {/* Editable line content */}
+                  <span
+                    data-line={idx}
+                    contentEditable
+                    suppressContentEditableWarning
+                    spellCheck={false}
+                    ref={(el) => {
+                      // Directly set textContent via ref callback to avoid
+                      // React vs contentEditable DOM conflicts (Bug 1 fix).
+                      // Only update if the line is NOT currently being edited
+                      // to prevent caret jumps during typing.
+                      if (el && editingLineRef.current !== idx) {
+                        if (el.textContent !== text) {
+                          el.textContent = text;
+                        }
+                      }
+                    }}
+                    onMouseDown={handleSelectionMouseDown}
+                    onFocus={() => handleFocus(idx)}
+                    onBlur={(e) => handleBlur(idx, e.currentTarget)}
+                    onInput={(e) => handleInput(idx, e.currentTarget)}
+                    onKeyDown={(e) => handleKeyDown(e, idx)}
+                    onPaste={(e) => handlePaste(e, idx)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      paddingLeft: 8,
+                      outline: "none",
+                      whiteSpace: "pre",
+                      overflow: "hidden",
+                      height: LINE_HEIGHT,
+                      lineHeight: `${LINE_HEIGHT}px`,
+                      display: "block",
+                      userSelect: "none",
+                      caretColor: selectionRange ? "transparent" : "var(--accent)",
+                      borderLeft: editingLineRef.current === idx
+                        ? "2px solid var(--accent)"
+                        : "2px solid transparent",
+                      background: editingLineRef.current === idx && !selectionRange
+                        ? "color-mix(in srgb, var(--accent) 4%, transparent)"
+                        : "transparent",
+                    }}
+                  />
+                </div>
+              );
+            })()
           ))}
         </div>
       </div>

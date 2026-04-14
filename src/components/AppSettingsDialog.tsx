@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   X,
@@ -503,37 +503,17 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
 function GeneralPanel() {
   const [settings, setSettings] = useState<AppSettings>({ claude_path: "", codex_path: "" });
   const [original, setOriginal] = useState<AppSettings>({ claude_path: "", codex_path: "" });
-  const [versions, setVersions] = useState<AgentVersions>({
-    claude_version: "",
-    codex_version: "",
-  });
   const [loading, setLoading] = useState(true);
   const [detectingPaths, setDetectingPaths] = useState(false);
-  const [refreshingVersions, setRefreshingVersions] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  async function loadVersions(nextSettings: AppSettings) {
-    setRefreshingVersions(true);
-    try {
-      const detected = await invoke<AgentVersions>("detect_agent_versions_for_settings", {
-        settings: nextSettings,
-      });
-      setVersions(detected);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setRefreshingVersions(false);
-    }
-  }
 
   useEffect(() => {
     invoke<AppSettings>("load_app_settings")
       .then(async (loadedSettings) => {
         setSettings(loadedSettings);
         setOriginal(loadedSettings);
-        await loadVersions(loadedSettings);
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
@@ -545,7 +525,6 @@ function GeneralPanel() {
     try {
       const detected = await invoke<AppSettings>("detect_agent_paths");
       setSettings(detected);
-      await loadVersions(detected);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -560,7 +539,6 @@ function GeneralPanel() {
     try {
       await invoke("save_app_settings", { settings });
       setOriginal(settings);
-      await loadVersions(settings);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
@@ -637,48 +615,26 @@ function GeneralPanel() {
               <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
                 Agent Installation Paths
               </span>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 5,
-                    padding: "5px 10px",
-                    background: "none",
-                    border: "1px solid var(--border-medium)",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    color: "var(--text-secondary)",
-                    cursor: detectingPaths ? "default" : "pointer",
-                    opacity: detectingPaths ? 0.6 : 1,
-                  }}
-                  onClick={handleDetect}
-                  disabled={detectingPaths}
-                >
-                  <RefreshCw size={12} className={detectingPaths ? "spin" : undefined} />
-                  {detectingPaths ? "Detecting..." : "Auto Detect"}
-                </button>
-                <button
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 5,
-                    padding: "5px 10px",
-                    background: "none",
-                    border: "1px solid var(--border-medium)",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    color: "var(--text-secondary)",
-                    cursor: refreshingVersions ? "default" : "pointer",
-                    opacity: refreshingVersions ? 0.6 : 1,
-                  }}
-                  onClick={() => loadVersions(settings)}
-                  disabled={refreshingVersions}
-                >
-                  <RefreshCw size={12} className={refreshingVersions ? "spin" : undefined} />
-                  {refreshingVersions ? "Refreshing..." : "Refresh Versions"}
-                </button>
-              </div>
+              <button
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5,
+                  padding: "5px 10px",
+                  background: "none",
+                  border: "1px solid var(--border-medium)",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: "var(--text-secondary)",
+                  cursor: detectingPaths ? "default" : "pointer",
+                  opacity: detectingPaths ? 0.6 : 1,
+                }}
+                onClick={handleDetect}
+                disabled={detectingPaths}
+              >
+                <RefreshCw size={12} className={detectingPaths ? "spin" : undefined} />
+                {detectingPaths ? "Detecting..." : "Auto Detect"}
+              </button>
             </div>
 
             <div style={fieldStyle}>
@@ -703,39 +659,6 @@ function GeneralPanel() {
                 spellCheck={false}
               />
               <span style={hintStyle}>Leave empty to use codex from the system PATH.</span>
-            </div>
-
-            <div style={{ ...fieldStyle, marginBottom: 0 }}>
-              <label style={labelStyle}>Installed Versions</label>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 11, color: "var(--text-hint)", marginBottom: 4 }}>
-                    Claude Code
-                  </div>
-                  <input
-                    style={inputStyle}
-                    value={versions.claude_version}
-                    readOnly
-                    placeholder="Not detected"
-                    spellCheck={false}
-                  />
-                </div>
-                <div>
-                  <div style={{ fontSize: 11, color: "var(--text-hint)", marginBottom: 4 }}>
-                    Codex
-                  </div>
-                  <input
-                    style={inputStyle}
-                    value={versions.codex_version}
-                    readOnly
-                    placeholder="Not detected"
-                    spellCheck={false}
-                  />
-                </div>
-              </div>
-              <span style={hintStyle}>
-                Versions are detected from the configured executable path or the system PATH.
-              </span>
             </div>
           </>
         )}
@@ -1084,6 +1007,40 @@ function AgentConfigPanel({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [detectedVersion, setDetectedVersion] = useState("");
+  const [versionSourcePath, setVersionSourcePath] = useState("");
+  const [versionLoading, setVersionLoading] = useState(true);
+  const [detectingVersion, setDetectingVersion] = useState(false);
+  const [versionError, setVersionError] = useState<string | null>(null);
+
+  const refreshAgentVersion = useCallback(async (showLoadingState: boolean) => {
+    if (showLoadingState) {
+      setVersionLoading(true);
+    } else {
+      setDetectingVersion(true);
+    }
+    setVersionError(null);
+
+    try {
+      const settings = await invoke<AppSettings>("load_app_settings");
+      const configuredPath = agentKey === "claude" ? settings.claude_path : settings.codex_path;
+      setVersionSourcePath(configuredPath);
+      const versions = await invoke<AgentVersions>("detect_agent_versions_for_settings", {
+        settings,
+      });
+      setDetectedVersion(
+        agentKey === "claude" ? versions.claude_version : versions.codex_version,
+      );
+    } catch (e) {
+      setVersionError(String(e));
+    } finally {
+      if (showLoadingState) {
+        setVersionLoading(false);
+      } else {
+        setDetectingVersion(false);
+      }
+    }
+  }, [agentKey]);
 
   // Load file
   useEffect(() => {
@@ -1103,6 +1060,10 @@ function AgentConfigPanel({
       })
       .catch((e) => setError(String(e)));
   }, [agentKey]);
+
+  useEffect(() => {
+    void refreshAgentVersion(true);
+  }, [refreshAgentVersion]);
 
   // Re-highlight when content or theme changes
   useEffect(() => {
@@ -1153,6 +1114,83 @@ function AgentConfigPanel({
           padding: "14px 20px",
         }}
       >
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            padding: 14,
+            marginBottom: 14,
+            borderRadius: 10,
+            border: "1px solid var(--border-dim)",
+            background: "var(--bg-subtle)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+            }}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>
+                Installed Version
+              </span>
+              <span style={{ fontSize: 11.5, color: "var(--text-hint)", lineHeight: 1.45 }}>
+                {versionSourcePath
+                  ? `Using executable: ${versionSourcePath}`
+                  : "Using executable from the system PATH."}
+              </span>
+            </div>
+            <button
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "5px 10px",
+                background: "none",
+                border: "1px solid var(--border-medium)",
+                borderRadius: 6,
+                fontSize: 12,
+                color: "var(--text-secondary)",
+                cursor: detectingVersion ? "default" : "pointer",
+                opacity: detectingVersion ? 0.6 : 1,
+                flexShrink: 0,
+              }}
+              onClick={() => void refreshAgentVersion(false)}
+              disabled={detectingVersion}
+            >
+              <RefreshCw size={12} className={detectingVersion ? "spin" : undefined} />
+              {detectingVersion ? "Detecting..." : "Detect"}
+            </button>
+          </div>
+
+          <input
+            style={{
+              width: "100%",
+              padding: "7px 10px",
+              background: "var(--bg-input)",
+              border: "1px solid var(--border-medium)",
+              borderRadius: 7,
+              color: "var(--text-primary)",
+              fontSize: 12.5,
+              fontFamily: "var(--font-mono)",
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+            value={detectedVersion}
+            readOnly
+            placeholder={versionLoading ? "Detecting..." : "Not detected"}
+            spellCheck={false}
+          />
+
+          {versionError && (
+            <div style={{ fontSize: 11.5, color: "var(--danger)" }}>{versionError}</div>
+          )}
+        </div>
+
         {/* File path + edit button row */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
           <div

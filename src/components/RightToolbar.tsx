@@ -1,19 +1,17 @@
 import type { ReactNode } from "react";
 import { IconButton } from "./IconButton";
-import { Folder, Search, GitBranch, History, Settings, Terminal } from "lucide-react";
+import { Folder, Search, GitBranch, History, Terminal } from "lucide-react";
 
 export function RightToolbar({
   activePanel,
   onToggle,
   terminalActive,
   onToggleTerminal,
-  onOpenSettings,
 }: {
   activePanel: "files" | "git-changes" | "git-history" | null;
   onToggle: (panel: "files" | "git-changes" | "git-history") => void;
   terminalActive: boolean;
   onToggleTerminal: () => void;
-  onOpenSettings: () => void;
 }) {
   const buttons: Array<{
     key: "files" | "git-changes" | "git-history";
@@ -26,10 +24,6 @@ export function RightToolbar({
   ];
 
   const placeholders = [{ icon: <Search size={17} />, title: "Search (coming soon)" }];
-
-  const footerItems = [
-    { icon: <Settings size={17} />, title: "Settings", disabled: false, onClick: onOpenSettings },
-  ];
 
   return (
     <div
@@ -69,18 +63,7 @@ export function RightToolbar({
       {placeholders.map((p, i) => (
         <IconButton key={i} icon={p.icon} title={p.title} disabled />
       ))}
-
       <div style={{ flex: 1 }} />
-
-      {footerItems.map((item, i) => (
-        <IconButton
-          key={i}
-          icon={item.icon}
-          title={item.title}
-          disabled={item.disabled}
-          onClick={item.onClick}
-        />
-      ))}
     </div>
   );
 }

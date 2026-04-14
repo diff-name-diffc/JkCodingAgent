@@ -17,7 +17,6 @@ import { GitChanges } from "./GitChanges";
 import { GitHistory } from "./GitHistory";
 import { GitDiffViewer } from "./GitDiffViewer";
 import { ProjectRail } from "./ProjectRail";
-import { SettingsDialog } from "./SettingsDialog";
 import { RightToolbar } from "./RightToolbar";
 import { ShellTerminalPanel, type ShellTerminalPanelHandle } from "./ShellTerminalPanel";
 import { DispatcherChat, type DispatcherChatHandle } from "./DispatcherChat";
@@ -103,7 +102,6 @@ export function ProjectPage({
   } = useProjectPanels();
 
   const [showShellTerminal, setShowShellTerminal] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [showDispatcherSettings, setShowDispatcherSettings] = useState(false);
   const [subProcesses, setSubProcesses] = useState<SubProcess[]>([]);
   const [activeSubTabIdBySession, setActiveSubTabIdBySession] = useState<
@@ -587,12 +585,7 @@ export function ProjectPage({
         onToggle={handleTogglePanel}
         terminalActive={showShellTerminal}
         onToggleTerminal={() => setShowShellTerminal((v) => !v)}
-        onOpenSettings={() => setShowSettings(true)}
       />
-
-      {showSettings && (
-        <SettingsDialog projectPath={project.path} onClose={() => setShowSettings(false)} />
-      )}
 
       {showDispatcherSettings && (
         <AppSettingsDialog

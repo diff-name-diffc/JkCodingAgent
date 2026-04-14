@@ -111,6 +111,7 @@ export interface MonacoEditorHandle {
 export const MonacoEditorPane = forwardRef<
   MonacoEditorHandle,
   {
+    active?: boolean;
     initialValue: string;
     filePath: string;
     language: string;
@@ -118,7 +119,7 @@ export const MonacoEditorPane = forwardRef<
     onChange: (value: string) => void;
   }
 >(function MonacoEditorPane(
-  { initialValue, filePath, language, isDark, onChange },
+  { active = true, initialValue, filePath, language, isDark, onChange },
   ref,
 ) {
   const editorRef = useRef<MonacoTypes.editor.IStandaloneCodeEditor | null>(
@@ -203,6 +204,16 @@ export const MonacoEditorPane = forwardRef<
       listenerRef.current?.dispose();
     };
   }, []);
+
+  useEffect(() => {
+    if (!active || !editorRef.current) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      editorRef.current?.layout();
+    });
+  }, [active]);
 
   return (
     <div className="monaco-pane">

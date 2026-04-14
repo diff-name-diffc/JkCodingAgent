@@ -82,7 +82,7 @@ export function ProjectPage({
   const {
     rightPanel,
     openFiles,
-    activeFilePath,
+    activeFileTabId,
     openDiff,
     rightPanelWidth,
     terminalHeight,
@@ -456,7 +456,7 @@ export function ProjectPage({
             ) : openFiles.length > 0 ? (
               <FileViewer
                 tabs={openFiles}
-                activeFilePath={activeFilePath}
+                activeTabId={activeFileTabId}
                 projectPath={project.path}
                 onSelectTab={handleFileTabSelect}
                 onCloseTab={handleFileTabClose}

@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from "react";
 
 type RightPanel = "files" | "git-changes" | "git-history" | null;
-type OpenFileTab = { path: string; name: string };
+type OpenFileTab = { id: string; path: string; name: string };
 
 type OpenDiff =
   | { kind: "file"; filePath: string; staged: boolean; label: string }
@@ -12,10 +12,10 @@ export function useProjectPanels() {
   const [rightPanel, setRightPanel] = useState<RightPanel>(null);
   const [openFilesState, setOpenFilesState] = useState<{
     tabs: OpenFileTab[];
-    activePath: string | null;
+    activeTabId: string | null;
   }>({
     tabs: [],
-    activePath: null,
+    activeTabId: null,
   });
   const [openDiff, setOpenDiff] = useState<OpenDiff | null>(null);
   const [rightPanelWidth, setRightPanelWidth] = useState(280);
@@ -24,6 +24,7 @@ export function useProjectPanels() {
   rightPanelWidthRef.current = rightPanelWidth;
   const terminalHeightRef = useRef(terminalHeight);
   terminalHeightRef.current = terminalHeight;
+  const nextFileTabIdRef = useRef(0);
 
   const handleTogglePanel = useCallback((panel: "files" | "git-changes" | "git-history") => {
     setRightPanel((prev) => (prev === panel ? null : panel));
@@ -31,57 +32,73 @@ export function useProjectPanels() {
 
   const handleFileSelect = useCallback((path: string, name: string) => {
     setOpenDiff(null);
-    setOpenFilesState((prev) => ({
-      tabs: prev.tabs.some((tab) => tab.path === path) ? prev.tabs : [...prev.tabs, { path, name }],
-      activePath: path,
-    }));
+    setOpenFilesState((prev) => {
+      const existingTab = prev.tabs.find((tab) => tab.path === path);
+      if (existingTab) {
+        return {
+          tabs: prev.tabs,
+          activeTabId: existingTab.id,
+        };
+      }
+
+      const nextTab: OpenFileTab = {
+        id: `file-tab-${nextFileTabIdRef.current++}`,
+        path,
+        name,
+      };
+
+      return {
+        tabs: [...prev.tabs, nextTab],
+        activeTabId: nextTab.id,
+      };
+    });
   }, []);
 
-  const handleFileTabSelect = useCallback((path: string) => {
+  const handleFileTabSelect = useCallback((tabId: string) => {
     setOpenFilesState((prev) => ({
       tabs: prev.tabs,
-      activePath: prev.tabs.some((tab) => tab.path === path) ? path : prev.activePath,
+      activeTabId: prev.tabs.some((tab) => tab.id === tabId) ? tabId : prev.activeTabId,
     }));
   }, []);
 
-  const handleFileTabClose = useCallback((path: string) => {
+  const handleFileTabClose = useCallback((tabId: string) => {
     setOpenFilesState((prev) => {
-      const closingIndex = prev.tabs.findIndex((tab) => tab.path === path);
+      const closingIndex = prev.tabs.findIndex((tab) => tab.id === tabId);
       if (closingIndex === -1) return prev;
 
-      const nextTabs = prev.tabs.filter((tab) => tab.path !== path);
-      const nextActivePath =
-        prev.activePath !== path
-          ? prev.activePath
-          : nextTabs[Math.min(closingIndex, nextTabs.length - 1)]?.path ?? null;
+      const nextTabs = prev.tabs.filter((tab) => tab.id !== tabId);
+      const nextActiveTabId =
+        prev.activeTabId !== tabId
+          ? prev.activeTabId
+          : nextTabs[Math.min(closingIndex, nextTabs.length - 1)]?.id ?? null;
 
       return {
         tabs: nextTabs,
-        activePath: nextActivePath,
+        activeTabId: nextActiveTabId,
       };
     });
   }, []);
 
-  const handleCloseOtherFileTabs = useCallback((path: string) => {
+  const handleCloseOtherFileTabs = useCallback((tabId: string) => {
     setOpenFilesState((prev) => {
-      const activeTab = prev.tabs.find((tab) => tab.path === path);
+      const activeTab = prev.tabs.find((tab) => tab.id === tabId);
       if (!activeTab) return prev;
       return {
         tabs: [activeTab],
-        activePath: activeTab.path,
+        activeTabId: activeTab.id,
       };
     });
   }, []);
 
-  const handleCloseTabsToRight = useCallback((path: string) => {
+  const handleCloseTabsToRight = useCallback((tabId: string) => {
     setOpenFilesState((prev) => {
-      const activeIndex = prev.tabs.findIndex((tab) => tab.path === path);
+      const activeIndex = prev.tabs.findIndex((tab) => tab.id === tabId);
       if (activeIndex === -1) return prev;
 
       const nextTabs = prev.tabs.slice(0, activeIndex + 1);
       return {
         tabs: nextTabs,
-        activePath: nextTabs.some((tab) => tab.path === prev.activePath) ? prev.activePath : path,
+        activeTabId: nextTabs.some((tab) => tab.id === prev.activeTabId) ? prev.activeTabId : tabId,
       };
     });
   }, []);
@@ -89,7 +106,7 @@ export function useProjectPanels() {
   const handleCloseAllFileTabs = useCallback(() => {
     setOpenFilesState({
       tabs: [],
-      activePath: null,
+      activeTabId: null,
     });
   }, []);
 
@@ -108,7 +125,7 @@ export function useProjectPanels() {
   const clearFileAndDiff = useCallback(() => {
     setOpenFilesState({
       tabs: [],
-      activePath: null,
+      activeTabId: null,
     });
     setOpenDiff(null);
   }, []);
@@ -156,7 +173,7 @@ export function useProjectPanels() {
   return {
     rightPanel,
     openFiles: openFilesState.tabs,
-    activeFilePath: openFilesState.activePath,
+    activeFileTabId: openFilesState.activeTabId,
     openDiff,
     rightPanelWidth,
     terminalHeight,

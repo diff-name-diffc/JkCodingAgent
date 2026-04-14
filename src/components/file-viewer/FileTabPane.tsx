@@ -1,0 +1,678 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { AlertCircle, CheckCircle2, Eye, FileCode2, FileText, ImageIcon, PencilLine } from "lucide-react";
+import { LargeFileViewer } from "./LargeFileViewer";
+import { MonacoEditorPane } from "./MonacoEditorPane";
+import { ImagePreviewPane } from "./ImagePreviewPane";
+import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
+import type { OpenFileTab } from "../../hooks/useProjectPanels";
+
+type SaveStatus = "idle" | "saving" | "saved" | "error";
+
+type ImagePreviewData = {
+  dataUrl: string;
+  mimeType: string;
+  byteLength: number;
+};
+
+type FileMeta = {
+  sizeBytes: number;
+  lineCount: number;
+  isText: boolean;
+};
+
+const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024;
+
+function isMarkdownFile(fileName: string): boolean {
+  const ext = fileName.split(".").pop()?.toLowerCase();
+  return ext === "md" || ext === "mdx" || ext === "markdown";
+}
+
+function isPreviewableImageFile(fileName: string): boolean {
+  const ext = fileName.split(".").pop()?.toLowerCase();
+  return (
+    ext === "png" ||
+    ext === "jpg" ||
+    ext === "jpeg" ||
+    ext === "gif" ||
+    ext === "webp" ||
+    ext === "bmp" ||
+    ext === "svg"
+  );
+}
+
+function getMonacoLanguage(fileName: string) {
+  const normalized = fileName.toLowerCase();
+  const nameMap: Record<string, string> = {
+    dockerfile: "dockerfile",
+    makefile: "makefile",
+    ".gitignore": "shell",
+    ".dockerignore": "shell",
+    ".env": "shell",
+    ".env.local": "shell",
+    ".env.example": "shell",
+    ".npmrc": "ini",
+    "readme.md": "markdown",
+    "readme.mdx": "markdown",
+    "changelog.md": "markdown",
+  };
+
+  if (nameMap[normalized]) {
+    return nameMap[normalized];
+  }
+
+  const extension = normalized.split(".").pop() ?? "";
+  const extensionMap: Record<string, string> = {
+    ts: "typescript",
+    tsx: "typescript",
+    js: "javascript",
+    jsx: "javascript",
+    mjs: "javascript",
+    cjs: "javascript",
+    json: "json",
+    jsonc: "json",
+    md: "markdown",
+    mdx: "markdown",
+    py: "python",
+    rs: "rust",
+    go: "go",
+    java: "java",
+    c: "cpp",
+    h: "cpp",
+    cpp: "cpp",
+    cc: "cpp",
+    hpp: "cpp",
+    css: "css",
+    scss: "scss",
+    sass: "scss",
+    html: "html",
+    htm: "html",
+    xml: "xml",
+    yml: "yaml",
+    yaml: "yaml",
+    toml: "ini",
+    sh: "shell",
+    bash: "shell",
+    zsh: "shell",
+    fish: "shell",
+    sql: "sql",
+    lua: "lua",
+    swift: "swift",
+    kt: "kotlin",
+    rb: "ruby",
+    r: "r",
+    proto: "protobuf",
+  };
+
+  return extensionMap[extension] ?? "plaintext";
+}
+
+function FileStatusPill({
+  children,
+  tone = "default",
+}: {
+  children: ReactNode;
+  tone?: "default" | "success" | "error";
+}) {
+  const toneStyles: Record<NonNullable<typeof tone>, CSSProperties> = {
+    default: {
+      color: "var(--text-secondary)",
+      background: "color-mix(in srgb, var(--bg-card) 84%, transparent)",
+      border: "1px solid var(--border-dim)",
+    },
+    success: {
+      color: "var(--success)",
+      background: "color-mix(in srgb, var(--success) 10%, var(--bg-card))",
+      border: "1px solid color-mix(in srgb, var(--success) 18%, var(--border-dim))",
+    },
+    error: {
+      color: "var(--danger)",
+      background: "color-mix(in srgb, var(--danger) 10%, var(--bg-card))",
+      border: "1px solid color-mix(in srgb, var(--danger) 20%, var(--border-dim))",
+    },
+  };
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "7px 11px",
+        borderRadius: 999,
+        fontSize: 11.5,
+        fontWeight: 600,
+        whiteSpace: "nowrap",
+        ...toneStyles[tone],
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function PaneShell({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        minWidth: 0,
+        minHeight: 0,
+        padding: 18,
+        gap: 16,
+        background:
+          "radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 8%, transparent), transparent 28%), var(--bg-panel)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function PaneCard({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        minWidth: 0,
+        minHeight: 0,
+        overflow: "hidden",
+        borderRadius: 30,
+        border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-dim))",
+        background: "color-mix(in srgb, var(--bg-card) 94%, transparent)",
+        boxShadow: "0 24px 70px rgba(15, 23, 42, 0.08)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function ImageFilePane({
+  filePath,
+  fileName,
+  projectPath,
+}: {
+  filePath: string;
+  fileName: string;
+  projectPath: string;
+}) {
+  const [imagePreview, setImagePreview] = useState<ImagePreviewData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setImagePreview(null);
+    setError(null);
+
+    invoke<ImagePreviewData>("read_image_preview", { path: filePath, projectPath })
+      .then((preview) => {
+        if (!cancelled) {
+          setImagePreview(preview);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(String(err));
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [filePath, projectPath]);
+
+  return (
+    <PaneShell>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 16,
+          padding: "18px 18px 0",
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 10,
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "var(--text-hint)",
+            }}
+          >
+            <ImageIcon size={13} />
+            Image Preview
+          </div>
+          <div
+            style={{
+              fontSize: 24,
+              fontWeight: 700,
+              lineHeight: 1.05,
+              letterSpacing: "-0.04em",
+              color: "var(--text-primary)",
+              wordBreak: "break-word",
+            }}
+          >
+            {fileName}
+          </div>
+          <div
+            style={{
+              marginTop: 8,
+              fontSize: 12,
+              color: "var(--text-muted)",
+              fontFamily: "var(--font-mono)",
+              wordBreak: "break-all",
+            }}
+          >
+            {filePath}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {imagePreview && (
+            <FileStatusPill>{`${imagePreview.mimeType} · ${(imagePreview.byteLength / 1024).toFixed(1)} KB`}</FileStatusPill>
+          )}
+        </div>
+      </div>
+
+      <PaneCard>
+        {loading && (
+          <div
+            style={{
+              height: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--text-muted)",
+              fontSize: 13,
+            }}
+          >
+            Loading...
+          </div>
+        )}
+        {error && !loading && (
+          <div
+            style={{
+              height: "100%",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 12,
+              padding: 24,
+              color: "var(--text-muted)",
+            }}
+          >
+            <AlertCircle size={28} strokeWidth={1.7} />
+            <div style={{ fontSize: 13.5, maxWidth: 520, textAlign: "center" }}>{error}</div>
+          </div>
+        )}
+        {!loading && !error && imagePreview && (
+          <ImagePreviewPane
+            src={imagePreview.dataUrl}
+            fileName={fileName}
+            mimeType={imagePreview.mimeType}
+            byteLength={imagePreview.byteLength}
+          />
+        )}
+      </PaneCard>
+    </PaneShell>
+  );
+}
+
+function TextFileHeader({
+  fileName,
+  filePath,
+  language,
+  saveStatus,
+  isMarkdown,
+  previewMode,
+  onTogglePreview,
+}: {
+  fileName: string;
+  filePath: string;
+  language: string;
+  saveStatus: SaveStatus;
+  isMarkdown: boolean;
+  previewMode: boolean;
+  onTogglePreview?: () => void;
+}) {
+  const modeLabel = isMarkdown && previewMode ? "Markdown Preview" : "Editor";
+  const saveLabel =
+    saveStatus === "saving"
+      ? "Saving..."
+      : saveStatus === "saved"
+        ? "Saved"
+        : saveStatus === "error"
+          ? "Save failed"
+          : "Live editing";
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 16,
+        padding: "18px 18px 0",
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 10,
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: "var(--text-hint)",
+          }}
+        >
+          {isMarkdown ? <FileText size={13} /> : <FileCode2 size={13} />}
+          {modeLabel}
+        </div>
+        <div
+          style={{
+            fontSize: 24,
+            fontWeight: 700,
+            lineHeight: 1.05,
+            letterSpacing: "-0.04em",
+            color: "var(--text-primary)",
+            wordBreak: "break-word",
+          }}
+        >
+          {fileName}
+        </div>
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 12,
+            color: "var(--text-muted)",
+            fontFamily: "var(--font-mono)",
+            wordBreak: "break-all",
+          }}
+        >
+          {filePath}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+        {isMarkdown && onTogglePreview && (
+          <button
+            type="button"
+            onClick={onTogglePreview}
+            title={previewMode ? "Switch to editor" : "Switch to preview"}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 12px",
+              borderRadius: 999,
+              border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border-dim))",
+              background: previewMode
+                ? "color-mix(in srgb, var(--accent) 10%, var(--bg-card))"
+                : "color-mix(in srgb, var(--bg-card) 90%, transparent)",
+              color: previewMode ? "var(--accent)" : "var(--text-secondary)",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 600,
+              flexShrink: 0,
+            }}
+          >
+            {previewMode ? <PencilLine size={14} /> : <Eye size={14} />}
+            {previewMode ? "Edit Markdown" : "Preview Markdown"}
+          </button>
+        )}
+        <FileStatusPill>{language}</FileStatusPill>
+        <FileStatusPill tone={saveStatus === "error" ? "error" : saveStatus === "saved" ? "success" : "default"}>
+          {saveStatus === "saved" && <CheckCircle2 size={13} />}
+          {saveLabel}
+        </FileStatusPill>
+      </div>
+    </div>
+  );
+}
+
+export function FileTabPane({
+  active,
+  tab,
+  projectPath,
+  isDark,
+}: {
+  active: boolean;
+  tab: OpenFileTab;
+  projectPath: string;
+  isDark: boolean;
+}) {
+  const [previewMode, setPreviewMode] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [content, setContent] = useState<string | null>(null);
+  const [fileMeta, setFileMeta] = useState<FileMeta | null>(null);
+  const [largeDirty, setLargeDirty] = useState(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const savedResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const savedContentRef = useRef("");
+
+  const isImage = isPreviewableImageFile(tab.name);
+  const isMarkdown = isMarkdownFile(tab.name);
+  const language = useMemo(() => getMonacoLanguage(tab.name), [tab.name]);
+
+  useEffect(() => {
+    setPreviewMode(false);
+  }, [tab.path]);
+
+  useEffect(
+    () => () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+      if (savedResetRef.current) {
+        clearTimeout(savedResetRef.current);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (isImage) {
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setSaveStatus("idle");
+    setContent(null);
+    setFileMeta(null);
+    setLargeDirty(false);
+
+    invoke<FileMeta>("get_file_meta", { path: tab.path, projectPath })
+      .then((meta) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (meta.sizeBytes >= LARGE_FILE_THRESHOLD) {
+          setFileMeta(meta);
+          setLoading(false);
+          return;
+        }
+
+        invoke<string>("read_file_content", { path: tab.path, projectPath })
+          .then((nextContent) => {
+            if (cancelled) {
+              return;
+            }
+
+            savedContentRef.current = nextContent;
+            setContent(nextContent);
+            setFileMeta(meta);
+            setLoading(false);
+          })
+          .catch((err) => {
+            if (!cancelled) {
+              setError(String(err));
+              setLoading(false);
+            }
+          });
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(String(err));
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isImage, projectPath, tab.path]);
+
+  const handleChange = useCallback(
+    (value: string) => {
+      setContent(value);
+
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+      if (savedResetRef.current) {
+        clearTimeout(savedResetRef.current);
+      }
+
+      if (savedContentRef.current === value) {
+        setSaveStatus("idle");
+        return;
+      }
+
+      setSaveStatus("saving");
+      saveTimerRef.current = setTimeout(async () => {
+        try {
+          await invoke("write_file_content", {
+            path: tab.path,
+            content: value,
+            projectPath,
+          });
+          savedContentRef.current = value;
+          setSaveStatus("saved");
+          savedResetRef.current = setTimeout(() => setSaveStatus("idle"), 1800);
+        } catch {
+          setSaveStatus("error");
+        }
+      }, 900);
+    },
+    [projectPath, tab.path],
+  );
+
+  if (isImage) {
+    return <ImageFilePane filePath={tab.path} fileName={tab.name} projectPath={projectPath} />;
+  }
+
+  return (
+    <PaneShell>
+      <TextFileHeader
+        fileName={tab.name}
+        filePath={tab.path}
+        language={language}
+        saveStatus={fileMeta && fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD ? (largeDirty ? "saving" : "idle") : saveStatus}
+        isMarkdown={isMarkdown}
+        previewMode={previewMode}
+        onTogglePreview={isMarkdown ? () => setPreviewMode((prev) => !prev) : undefined}
+      />
+
+      <PaneCard>
+        {loading && (
+          <div
+            style={{
+              height: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--text-muted)",
+              fontSize: 13,
+            }}
+          >
+            Loading...
+          </div>
+        )}
+
+        {error && !loading && (
+          <div
+            style={{
+              height: "100%",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 12,
+              padding: 24,
+              color: "var(--text-muted)",
+            }}
+          >
+            <AlertCircle size={28} strokeWidth={1.7} />
+            <div style={{ fontSize: 13.5, maxWidth: 520, textAlign: "center" }}>{error}</div>
+          </div>
+        )}
+
+        {!loading && !error && fileMeta && fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD && (
+          <LargeFileViewer
+            active={active}
+            sessionId={tab.id}
+            filePath={tab.path}
+            projectPath={projectPath}
+            meta={fileMeta}
+            onDirtyChange={setLargeDirty}
+          />
+        )}
+
+        {!loading && !error && content !== null && fileMeta && fileMeta.sizeBytes < LARGE_FILE_THRESHOLD && (
+          isMarkdown && previewMode ? (
+            <div className="md-preview-shell" style={{ height: "100%", overflow: "auto" }}>
+              <div className="md-preview-card">
+                <div className="md-preview-header">
+                  <div>
+                    <div className="md-preview-eyebrow">Rendered Markdown</div>
+                    <div className="md-preview-title">{tab.name}</div>
+                    <div className="md-preview-subtitle">{projectPath}</div>
+                  </div>
+                  <div className="md-preview-meta">react-markdown + remark-gfm + rehype-raw</div>
+                </div>
+                <div className="md-preview-body">
+                  <MarkdownRenderer content={content} variant="document" />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <MonacoEditorPane
+              active={active}
+              initialValue={content}
+              filePath={tab.path}
+              language={language}
+              isDark={isDark}
+              onChange={handleChange}
+            />
+          )
+        )}
+      </PaneCard>
+    </PaneShell>
+  );
+}

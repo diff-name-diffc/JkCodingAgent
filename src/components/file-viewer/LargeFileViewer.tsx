@@ -49,11 +49,15 @@ function getCaretOffset(): number {
  * Backed by ropey on the Rust side for O(log N) editing.
  */
 export function LargeFileViewer({
+  active,
+  sessionId,
   filePath,
   projectPath,
   meta,
   onDirtyChange,
 }: {
+  active: boolean;
+  sessionId: string;
   filePath: string;
   projectPath: string;
   meta: FileMeta;
@@ -63,6 +67,7 @@ export function LargeFileViewer({
   const contentAreaRef = useRef<HTMLDivElement>(null);
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 100 });
   const lineCache = useRef<Map<number, string>>(new Map());
+  const syncedLineCache = useRef<Map<number, string>>(new Map());
   const [renderedLines, setRenderedLines] = useState<{ idx: number; text: string }[]>([]);
   const pendingFetches = useRef<Set<string>>(new Set());
   const [ropeReady, setRopeReady] = useState(false);
@@ -72,6 +77,7 @@ export function LargeFileViewer({
   const editTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Pending focus target after re-render from structural edits (Enter / Paste)
   const pendingFocusRef = useRef<{ line: number; col: number } | null>(null);
+  const pendingLocalEditRef = useRef<{ line: number; content: string } | null>(null);
 
   const totalHeight = totalLines * LINE_HEIGHT;
 
@@ -79,13 +85,14 @@ export function LargeFileViewer({
   useEffect(() => {
     let cancelled = false;
     lineCache.current.clear();
+    syncedLineCache.current.clear();
     pendingFetches.current.clear();
     setRenderedLines([]);
     setRopeReady(false);
     setDirty(false);
     setVisibleRange({ start: 0, end: 100 });
 
-    invoke<RopeMeta>("rope_open", { path: filePath, projectPath })
+    invoke<RopeMeta>("rope_open", { sessionId, path: filePath, projectPath })
       .then((ropeMeta) => {
         if (cancelled) return;
         setTotalLines(ropeMeta.lineCount);
@@ -95,9 +102,9 @@ export function LargeFileViewer({
 
     return () => {
       cancelled = true;
-      invoke("rope_close", { path: filePath }).catch(() => {});
+      invoke("rope_close", { sessionId }).catch(() => {});
     };
-  }, [filePath, projectPath]);
+  }, [filePath, projectPath, sessionId]);
 
   // ─── Compute needed chunks ───────────────────────────────────────
   const fetchChunksForRange = useCallback(
@@ -151,7 +158,7 @@ export function LargeFileViewer({
       const results = await Promise.all(
         chunks.map(({ chunkStart, chunkEnd }) =>
           invoke<string[]>("rope_read_lines", {
-            path: filePath,
+            sessionId,
             startLine: chunkStart,
             maxLines: chunkEnd - chunkStart,
           }).then((lines) => ({ chunkStart, lines })),
@@ -160,8 +167,10 @@ export function LargeFileViewer({
 
       for (const { chunkStart, lines } of results) {
         for (let i = 0; i < lines.length; i++) {
-          if (editingLineRef.current !== chunkStart + i) {
-            lineCache.current.set(chunkStart + i, lines[i]);
+          const lineNumber = chunkStart + i;
+          if (editingLineRef.current !== lineNumber) {
+            lineCache.current.set(lineNumber, lines[i]);
+            syncedLineCache.current.set(lineNumber, lines[i]);
           }
         }
         const chunkEnd = chunkStart + lines.length;
@@ -170,7 +179,7 @@ export function LargeFileViewer({
 
       updateRenderedLines(start, end);
     },
-    [ropeReady, fetchChunksForRange, updateRenderedLines, filePath],
+    [ropeReady, fetchChunksForRange, sessionId, updateRenderedLines],
   );
 
   // ─── Scroll handler ──────────────────────────────────────────────
@@ -187,6 +196,16 @@ export function LargeFileViewer({
   useEffect(() => {
     loadRange(visibleRange.start, visibleRange.end);
   }, [visibleRange, loadRange]);
+
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      handleScroll();
+    });
+  }, [active, handleScroll]);
 
   // ─── After render: apply pending focus ───────────────────────────
   useEffect(() => {
@@ -221,6 +240,11 @@ export function LargeFileViewer({
         lineCache.current.delete(key);
       }
     }
+    for (const key of syncedLineCache.current.keys()) {
+      if (key >= fromLine) {
+        syncedLineCache.current.delete(key);
+      }
+    }
     pendingFetches.current.clear();
   }, []);
 
@@ -237,42 +261,52 @@ export function LargeFileViewer({
         clearTimeout(editTimerRef.current);
         editTimerRef.current = null;
       }
+      pendingLocalEditRef.current = null;
+      const syncedContent = syncedLineCache.current.get(lineIdx) ?? "";
+      if (syncedContent === content) {
+        return;
+      }
       await invoke<RopeEditResult>("rope_replace_line", {
-        path: filePath,
+        sessionId,
         line: lineIdx,
         newContent: content,
       });
+      syncedLineCache.current.set(lineIdx, content);
     },
-    [filePath],
+    [sessionId],
   );
 
   // ─── Commit a single-line edit (debounced) ───────────────────────
   const commitLineEdit = useCallback(
     (lineIdx: number, content: string) => {
-      const oldContent = lineCache.current.get(lineIdx);
-      if (oldContent === content) return;
+      const oldContent = syncedLineCache.current.get(lineIdx) ?? "";
+      if (oldContent === content) {
+        pendingLocalEditRef.current = null;
+        return;
+      }
 
+      pendingLocalEditRef.current = null;
       lineCache.current.set(lineIdx, content);
       markDirty();
 
       invoke<RopeEditResult>("rope_replace_line", {
-        path: filePath,
+        sessionId,
         line: lineIdx,
         newContent: content,
       })
         .then((result) => {
+          syncedLineCache.current.set(lineIdx, content);
           if (result.lineCount !== totalLines) {
             setTotalLines(result.lineCount);
           }
         })
         .catch((err) => {
           console.error("rope_replace_line failed:", err);
-          if (oldContent !== undefined) {
-            lineCache.current.set(lineIdx, oldContent);
-          }
+          lineCache.current.set(lineIdx, oldContent);
+          syncedLineCache.current.set(lineIdx, oldContent);
         });
     },
-    [filePath, totalLines, markDirty],
+    [markDirty, sessionId, totalLines],
   );
 
   // ─── onInput: debounce single-line text changes ──────────────────
@@ -280,6 +314,7 @@ export function LargeFileViewer({
     (lineIdx: number, el: HTMLElement) => {
       const content = el.textContent ?? "";
       lineCache.current.set(lineIdx, content);
+      pendingLocalEditRef.current = { line: lineIdx, content };
 
       if (editTimerRef.current) clearTimeout(editTimerRef.current);
       editTimerRef.current = setTimeout(() => {
@@ -305,7 +340,7 @@ export function LargeFileViewer({
 
       // 2. Insert text at (line, col) via rope_edit
       const result = await invoke<RopeEditResult>("rope_edit", {
-        path: filePath,
+        sessionId,
         line: lineIdx,
         col,
         deleteCount: 0,
@@ -334,7 +369,7 @@ export function LargeFileViewer({
       // 6. Force re-fetch visible lines (cache was cleared)
       // The totalLines state update + loadRange will trigger re-render
     },
-    [filePath, getLineElement, flushPendingEdit, markDirty, invalidateCacheFrom],
+    [flushPendingEdit, getLineElement, invalidateCacheFrom, markDirty, sessionId],
   );
 
   // ─── Keyboard handler ───────────────────────────────────────────
@@ -388,7 +423,7 @@ export function LargeFileViewer({
 
           // Delete the newline at end of previous line (merges the two lines)
           const result = await invoke<RopeEditResult>("rope_edit", {
-            path: filePath,
+            sessionId,
             line: lineIdx - 1,
             col: prevContent.length,
             deleteCount: 1, // delete the \n
@@ -413,7 +448,7 @@ export function LargeFileViewer({
             editingLineRef.current = null;
 
             const result = await invoke<RopeEditResult>("rope_edit", {
-              path: filePath,
+              sessionId,
               line: lineIdx,
               col: content.length,
               deleteCount: 1, // delete the \n
@@ -439,7 +474,7 @@ export function LargeFileViewer({
       }
     },
     [commitLineEdit, getLineElement, insertTextAtCursor, flushPendingEdit,
-     filePath, markDirty, invalidateCacheFrom, handleInput],
+     handleInput, invalidateCacheFrom, markDirty, sessionId],
   );
 
   // ─── Paste handler ──────────────────────────────────────────────
@@ -478,6 +513,7 @@ export function LargeFileViewer({
         clearTimeout(editTimerRef.current);
         editTimerRef.current = null;
       }
+      pendingLocalEditRef.current = null;
       commitLineEdit(lineIdx, el.textContent ?? "");
       editingLineRef.current = null;
     },
@@ -487,29 +523,42 @@ export function LargeFileViewer({
   // ─── Undo / Redo handler ────────────────────────────────────────
   const handleUndoRedo = useCallback(
     async (isRedo: boolean) => {
+      let focusTarget: { line: number; col: number } | null = null;
+
       // Flush any pending edit first
       if (editTimerRef.current) {
         clearTimeout(editTimerRef.current);
         editTimerRef.current = null;
       }
       if (editingLineRef.current !== null) {
+        const focusLine = editingLineRef.current;
+        const focusCol = getCaretOffset();
         const el = getLineElement(editingLineRef.current);
         if (el) {
           await flushPendingEdit(editingLineRef.current, el.textContent ?? "");
         }
+        focusTarget = { line: focusLine, col: focusCol };
         editingLineRef.current = null;
       }
 
       try {
         const cmd = isRedo ? "rope_redo" : "rope_undo";
-        const result = await invoke<RopeMeta>(cmd, { path: filePath });
+        const result = await invoke<RopeMeta>(cmd, { sessionId });
 
         // Invalidate entire cache — rope state changed
         lineCache.current.clear();
+        syncedLineCache.current.clear();
         pendingFetches.current.clear();
         setTotalLines(result.lineCount);
         setDirty(true);
         onDirtyChange?.(true);
+
+        if (focusTarget) {
+          pendingFocusRef.current = {
+            line: Math.min(focusTarget.line, Math.max(result.lineCount - 1, 0)),
+            col: focusTarget.col,
+          };
+        }
 
         // Force re-fetch visible lines
         loadRange(visibleRange.start, visibleRange.end);
@@ -517,11 +566,15 @@ export function LargeFileViewer({
         // Nothing to undo/redo — silently ignore
       }
     },
-    [filePath, getLineElement, flushPendingEdit, loadRange, visibleRange, onDirtyChange],
+    [flushPendingEdit, getLineElement, loadRange, onDirtyChange, sessionId, visibleRange],
   );
 
   // ─── Save handler (Cmd+S) + Undo/Redo (Cmd+Z / Cmd+Shift+Z) ───
   useEffect(() => {
+    if (!active) {
+      return;
+    }
+
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
@@ -541,7 +594,7 @@ export function LargeFileViewer({
 
         // Small delay to let the last rope_replace_line finish
         setTimeout(() => {
-          invoke("rope_save", { path: filePath, projectPath })
+          invoke("rope_save", { sessionId, projectPath })
             .then(() => {
               setDirty(false);
               onDirtyChange?.(false);
@@ -556,7 +609,7 @@ export function LargeFileViewer({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [dirty, filePath, projectPath, onDirtyChange, getLineElement, commitLineEdit, handleUndoRedo]);
+  }, [active, dirty, projectPath, sessionId, onDirtyChange, getLineElement, commitLineEdit, handleUndoRedo]);
 
   // Cleanup
   useEffect(() => {
@@ -635,6 +688,7 @@ export function LargeFileViewer({
       <div
         ref={containerRef}
         onScroll={handleScroll}
+        tabIndex={-1}
         style={{
           flex: 1,
           overflow: "auto",

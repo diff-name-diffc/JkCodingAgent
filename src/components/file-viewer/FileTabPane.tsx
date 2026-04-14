@@ -525,6 +525,9 @@ export function FileTabPane({
       }
 
       setSaveStatus("saved");
+      if (savedResetRef.current) {
+        clearTimeout(savedResetRef.current);
+      }
       savedResetRef.current = setTimeout(() => setSaveStatus("idle"), 1800);
     } catch {
       setSaveStatus("error");

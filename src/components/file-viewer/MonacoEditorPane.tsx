@@ -145,6 +145,9 @@ export const MonacoEditorPane = forwardRef<
         // Dispose old model listener before switching
         listenerRef.current?.dispose();
 
+        // Dispose old model if it's no longer referenced by any other editor
+        const oldModel = editor.getModel();
+
         const monacoInstance = monaco;
         // Reuse existing model for same URI, or create new one
         const uri = monacoInstance.Uri.parse(`file://${newPath}`);
@@ -160,6 +163,11 @@ export const MonacoEditorPane = forwardRef<
           model = monacoInstance.editor.createModel(content, newLang, uri);
         }
         editor.setModel(model);
+
+        // Dispose old model after setting the new one (avoid disposing a reused model)
+        if (oldModel && oldModel !== model && !oldModel.isDisposed()) {
+          oldModel.dispose();
+        }
 
         // Re-attach content change listener for the new model
         listenerRef.current = editor.onDidChangeModelContent(() => {
@@ -198,10 +206,14 @@ export const MonacoEditorPane = forwardRef<
     [],
   );
 
-  // Cleanup on unmount
+  // Cleanup on unmount — dispose listener and model to prevent memory leaks
   useEffect(() => {
     return () => {
       listenerRef.current?.dispose();
+      const model = editorRef.current?.getModel();
+      if (model && !model.isDisposed()) {
+        model.dispose();
+      }
     };
   }, []);
 

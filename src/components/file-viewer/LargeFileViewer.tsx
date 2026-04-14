@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 const LINE_HEIGHT = 22;
@@ -64,6 +64,138 @@ function compareSelectionPoints(a: MouseSelectionPoint, b: MouseSelectionPoint) 
   return a.col - b.col;
 }
 
+// ─── P3 fix: Memoized virtual line component ─────────────────────────────
+const VirtualLine = memo(function VirtualLine({
+  idx,
+  text,
+  isEditing,
+  selectionRange,
+  gutterWidth,
+  charWidth,
+  onMouseDown,
+  onFocus,
+  onBlur,
+  onInput,
+  onKeyDown,
+  onPaste,
+  editingLineRef,
+}: {
+  idx: number;
+  text: string;
+  isEditing: boolean;
+  selectionRange: SelectionRange | null;
+  gutterWidth: number;
+  charWidth: number;
+  onMouseDown: (e: React.MouseEvent<HTMLSpanElement>) => void;
+  onFocus: (lineIdx: number) => void;
+  onBlur: (lineIdx: number, el: HTMLElement) => void;
+  onInput: (lineIdx: number, el: HTMLElement) => void;
+  onKeyDown: (e: React.KeyboardEvent<HTMLSpanElement>, lineIdx: number) => void;
+  onPaste: (e: React.ClipboardEvent<HTMLSpanElement>, lineIdx: number) => void;
+  editingLineRef: React.RefObject<number | null>;
+}) {
+  // Compute selection overlay inline (moved from parent)
+  let overlayStyle: { left: number; width: number } | null = null;
+  if (selectionRange && idx >= selectionRange.startLine && idx <= selectionRange.endLine) {
+    const lineLength = text.length;
+    const startCol = idx === selectionRange.startLine ? selectionRange.startCol : 0;
+    const endCol = idx === selectionRange.endLine ? selectionRange.endCol : lineLength;
+    const widthChars = Math.max(endCol - startCol, 0);
+    if (widthChars > 0) {
+      overlayStyle = {
+        left: gutterWidth + 8 + startCol * charWidth,
+        width: Math.max(widthChars * charWidth, 2),
+      };
+    }
+  }
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: idx * LINE_HEIGHT,
+        left: 0,
+        right: 0,
+        height: LINE_HEIGHT,
+        display: "flex",
+        alignItems: "stretch",
+      }}
+    >
+      {overlayStyle && (
+        <div
+          style={{
+            position: "absolute",
+            top: 2,
+            bottom: 2,
+            borderRadius: 4,
+            background: "color-mix(in srgb, var(--accent) 22%, transparent)",
+            pointerEvents: "none",
+            ...overlayStyle,
+          }}
+        />
+      )}
+      {/* Line number gutter */}
+      <span
+        style={{
+          width: gutterWidth,
+          flexShrink: 0,
+          textAlign: "right",
+          paddingRight: 12,
+          color: isEditing ? "var(--accent)" : "var(--text-hint)",
+          userSelect: "none",
+          fontSize: 12,
+          lineHeight: `${LINE_HEIGHT}px`,
+        }}
+      >
+        {idx + 1}
+      </span>
+      {/* Editable line content */}
+      <span
+        data-line={idx}
+        contentEditable
+        suppressContentEditableWarning
+        spellCheck={false}
+        ref={(el) => {
+          // Directly set textContent via ref callback to avoid
+          // React vs contentEditable DOM conflicts.
+          // Only update if the line is NOT currently being edited
+          // to prevent caret jumps during typing.
+          if (el && editingLineRef.current !== idx) {
+            if (el.textContent !== text) {
+              el.textContent = text;
+            }
+          }
+        }}
+        onMouseDown={onMouseDown}
+        onFocus={() => onFocus(idx)}
+        onBlur={(e) => onBlur(idx, e.currentTarget)}
+        onInput={(e) => onInput(idx, e.currentTarget)}
+        onKeyDown={(e) => onKeyDown(e, idx)}
+        onPaste={(e) => onPaste(e, idx)}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          paddingLeft: 8,
+          outline: "none",
+          whiteSpace: "pre",
+          overflow: "hidden",
+          height: LINE_HEIGHT,
+          lineHeight: `${LINE_HEIGHT}px`,
+          display: "block",
+          userSelect: "none",
+          caretColor: selectionRange ? "transparent" : "var(--accent)",
+          borderLeft: isEditing
+            ? "2px solid var(--accent)"
+            : "2px solid transparent",
+          background: isEditing && !selectionRange
+            ? "color-mix(in srgb, var(--accent) 4%, transparent)"
+            : "transparent",
+        }}
+      />
+    </div>
+  );
+});
+
 /**
  * Virtual-scrolling text editor for large files.
  * Backed by ropey on the Rust side for O(log N) editing.
@@ -95,6 +227,8 @@ export function LargeFileViewer({
   const [dirty, setDirty] = useState(false);
   const [selectionRange, setSelectionRange] = useState<SelectionRange | null>(null);
   const editingLineRef = useRef<number | null>(null);
+  // State mirror of editingLineRef — drives gutter/line highlight re-renders (P8 fix)
+  const [editingLine, setEditingLine] = useState<number | null>(null);
   const editTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Pending focus target after re-render from structural edits (Enter / Paste)
   const pendingFocusRef = useRef<{ line: number; col: number } | null>(null);
@@ -303,18 +437,27 @@ export function LargeFileViewer({
   }, []);
 
   // ─── Invalidate cache from a line onward ─────────────────────────
+  // B4 fix: build new Maps instead of deleting during iteration (safe + faster)
   const invalidateCacheFrom = useCallback((fromLine: number) => {
-    for (const key of lineCache.current.keys()) {
-      if (key >= fromLine) {
-        lineCache.current.delete(key);
+    const newLineCache = new Map<number, string>();
+    for (const [key, value] of lineCache.current) {
+      if (key < fromLine) newLineCache.set(key, value);
+    }
+    lineCache.current = newLineCache;
+
+    const newSyncedCache = new Map<number, string>();
+    for (const [key, value] of syncedLineCache.current) {
+      if (key < fromLine) newSyncedCache.set(key, value);
+    }
+    syncedLineCache.current = newSyncedCache;
+
+    // Only clear pendingFetches for chunks that overlap the invalidated range
+    for (const key of pendingFetches.current) {
+      const chunkEnd = Number(key.split("-")[1]);
+      if (chunkEnd > fromLine) {
+        pendingFetches.current.delete(key);
       }
     }
-    for (const key of syncedLineCache.current.keys()) {
-      if (key >= fromLine) {
-        syncedLineCache.current.delete(key);
-      }
-    }
-    pendingFetches.current.clear();
   }, []);
 
   // ─── Mark dirty ──────────────────────────────────────────────────
@@ -518,6 +661,7 @@ export function LargeFileViewer({
       // 1. Flush: make sure rope has current line content
       await flushPendingEdit(lineIdx, currentContent);
       editingLineRef.current = null;
+      setEditingLine(null);
 
       // 2. Insert text at (line, col) via rope_edit
       const result = await invoke<RopeEditResult>("rope_edit", {
@@ -588,10 +732,12 @@ export function LargeFileViewer({
         const currentEl = e.currentTarget;
         commitLineEdit(lineIdx, currentEl.textContent ?? "");
         editingLineRef.current = null;
+        setEditingLine(null);
 
         const prevLine = getLineElement(lineIdx - 1);
         if (prevLine) {
           editingLineRef.current = lineIdx - 1;
+          setEditingLine(lineIdx - 1);
           prevLine.focus();
           setCaretPosition(prevLine, caretCol);
         }
@@ -601,10 +747,12 @@ export function LargeFileViewer({
         const currentEl = e.currentTarget;
         commitLineEdit(lineIdx, currentEl.textContent ?? "");
         editingLineRef.current = null;
+        setEditingLine(null);
 
         const nextLine = getLineElement(lineIdx + 1);
         if (nextLine) {
           editingLineRef.current = lineIdx + 1;
+          setEditingLine(lineIdx + 1);
           nextLine.focus();
           setCaretPosition(nextLine, caretCol);
         }
@@ -627,6 +775,7 @@ export function LargeFileViewer({
           // Flush current line first
           await flushPendingEdit(lineIdx, currentContent);
           editingLineRef.current = null;
+          setEditingLine(null);
 
           // Delete the newline at end of previous line (merges the two lines)
           const result = await invoke<RopeEditResult>("rope_edit", {
@@ -653,6 +802,7 @@ export function LargeFileViewer({
           (async () => {
             await flushPendingEdit(lineIdx, content);
             editingLineRef.current = null;
+            setEditingLine(null);
 
             const result = await invoke<RopeEditResult>("rope_edit", {
               sessionId,
@@ -720,6 +870,7 @@ export function LargeFileViewer({
       return;
     }
     editingLineRef.current = lineIdx;
+    setEditingLine(lineIdx);
   }, []);
 
   const handleBlur = useCallback(
@@ -731,6 +882,7 @@ export function LargeFileViewer({
       pendingLocalEditRef.current = null;
       commitLineEdit(lineIdx, el.textContent ?? "");
       editingLineRef.current = null;
+      setEditingLine(null);
     },
     [commitLineEdit],
   );
@@ -750,6 +902,7 @@ export function LargeFileViewer({
 
     const lineEl = e.currentTarget;
     editingLineRef.current = point.line;
+    setEditingLine(point.line);
     clearSelection();
     lineEl.focus();
     setCaretPosition(lineEl, point.col);
@@ -780,6 +933,7 @@ export function LargeFileViewer({
 
     selectionState.dragging = true;
     editingLineRef.current = null;
+    setEditingLine(null);
     window.getSelection()?.removeAllRanges();
     setSelectionRange(toSelectionRange(selectionState.anchor, current));
   }, [getSelectionPointFromCoords, toSelectionRange]);
@@ -790,6 +944,7 @@ export function LargeFileViewer({
       const el = getLineElement(selectionState.anchor.line);
       if (el) {
         editingLineRef.current = selectionState.anchor.line;
+        setEditingLine(selectionState.anchor.line);
         el.focus();
         setCaretPosition(el, selectionState.anchor.col);
       }
@@ -819,6 +974,7 @@ export function LargeFileViewer({
         }
         focusTarget = { line: focusLine, col: focusCol };
         editingLineRef.current = null;
+        setEditingLine(null);
       }
 
       try {
@@ -901,15 +1057,23 @@ export function LargeFileViewer({
     };
   }, []);
 
+  // B6 fix: use refs to stabilize event handlers, register listeners only once
+  const mouseMoveRef = useRef(handleGlobalMouseMove);
+  mouseMoveRef.current = handleGlobalMouseMove;
+  const mouseUpRef = useRef(handleGlobalMouseUp);
+  mouseUpRef.current = handleGlobalMouseUp;
+
   useEffect(() => {
-    window.addEventListener("mousemove", handleGlobalMouseMove);
-    window.addEventListener("mouseup", handleGlobalMouseUp);
+    const onMove = (e: MouseEvent) => mouseMoveRef.current(e);
+    const onUp = () => mouseUpRef.current();
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
 
     return () => {
-      window.removeEventListener("mousemove", handleGlobalMouseMove);
-      window.removeEventListener("mouseup", handleGlobalMouseUp);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
     };
-  }, [handleGlobalMouseMove, handleGlobalMouseUp]);
+  }, []);
 
   useEffect(() => {
     const probe = document.createElement("span");
@@ -938,26 +1102,7 @@ export function LargeFileViewer({
     return `${(meta.sizeBytes / 1024).toFixed(1)} KB`;
   }, [meta.sizeBytes]);
 
-  const getSelectionOverlayStyle = useCallback((lineIdx: number) => {
-    if (!selectionRange || lineIdx < selectionRange.startLine || lineIdx > selectionRange.endLine) {
-      return null;
-    }
 
-    const lineText = lineCache.current.get(lineIdx) ?? "";
-    const lineLength = lineText.length;
-    const startCol = lineIdx === selectionRange.startLine ? selectionRange.startCol : 0;
-    const endCol = lineIdx === selectionRange.endLine ? selectionRange.endCol : lineLength;
-    const widthChars = Math.max(endCol - startCol, 0);
-
-    if (widthChars === 0) {
-      return null;
-    }
-
-    return {
-      left: gutterWidth + 8 + startCol * charWidthRef.current,
-      width: Math.max(widthChars * charWidthRef.current, 2),
-    };
-  }, [gutterWidth, selectionRange]);
 
   return (
     <div
@@ -1028,98 +1173,22 @@ export function LargeFileViewer({
       >
         <div ref={contentAreaRef} style={{ height: totalHeight, position: "relative" }}>
           {renderedLines.map(({ idx, text }) => (
-            (() => {
-              const overlayStyle = getSelectionOverlayStyle(idx);
-
-              return (
-                <div
-                  key={idx}
-                  style={{
-                    position: "absolute",
-                    top: idx * LINE_HEIGHT,
-                    left: 0,
-                    right: 0,
-                    height: LINE_HEIGHT,
-                    display: "flex",
-                    alignItems: "stretch",
-                  }}
-                >
-                  {overlayStyle && (
-                    <div
-                      style={{
-                        position: "absolute",
-                        top: 2,
-                        bottom: 2,
-                        borderRadius: 4,
-                        background: "color-mix(in srgb, var(--accent) 22%, transparent)",
-                        pointerEvents: "none",
-                        ...overlayStyle,
-                      }}
-                    />
-                  )}
-                  {/* Line number gutter */}
-                  <span
-                    style={{
-                      width: gutterWidth,
-                      flexShrink: 0,
-                      textAlign: "right",
-                      paddingRight: 12,
-                      color: editingLineRef.current === idx
-                        ? "var(--accent)"
-                        : "var(--text-hint)",
-                      userSelect: "none",
-                      fontSize: 12,
-                      lineHeight: `${LINE_HEIGHT}px`,
-                    }}
-                  >
-                    {idx + 1}
-                  </span>
-                  {/* Editable line content */}
-                  <span
-                    data-line={idx}
-                    contentEditable
-                    suppressContentEditableWarning
-                    spellCheck={false}
-                    ref={(el) => {
-                      // Directly set textContent via ref callback to avoid
-                      // React vs contentEditable DOM conflicts (Bug 1 fix).
-                      // Only update if the line is NOT currently being edited
-                      // to prevent caret jumps during typing.
-                      if (el && editingLineRef.current !== idx) {
-                        if (el.textContent !== text) {
-                          el.textContent = text;
-                        }
-                      }
-                    }}
-                    onMouseDown={handleSelectionMouseDown}
-                    onFocus={() => handleFocus(idx)}
-                    onBlur={(e) => handleBlur(idx, e.currentTarget)}
-                    onInput={(e) => handleInput(idx, e.currentTarget)}
-                    onKeyDown={(e) => handleKeyDown(e, idx)}
-                    onPaste={(e) => handlePaste(e, idx)}
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      paddingLeft: 8,
-                      outline: "none",
-                      whiteSpace: "pre",
-                      overflow: "hidden",
-                      height: LINE_HEIGHT,
-                      lineHeight: `${LINE_HEIGHT}px`,
-                      display: "block",
-                      userSelect: "none",
-                      caretColor: selectionRange ? "transparent" : "var(--accent)",
-                      borderLeft: editingLineRef.current === idx
-                        ? "2px solid var(--accent)"
-                        : "2px solid transparent",
-                      background: editingLineRef.current === idx && !selectionRange
-                        ? "color-mix(in srgb, var(--accent) 4%, transparent)"
-                        : "transparent",
-                    }}
-                  />
-                </div>
-              );
-            })()
+            <VirtualLine
+              key={idx}
+              idx={idx}
+              text={text}
+              isEditing={editingLine === idx}
+              selectionRange={selectionRange}
+              gutterWidth={gutterWidth}
+              charWidth={charWidthRef.current}
+              onMouseDown={handleSelectionMouseDown}
+              onFocus={handleFocus}
+              onBlur={handleBlur}
+              onInput={handleInput}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              editingLineRef={editingLineRef}
+            />
           ))}
         </div>
       </div>

@@ -199,37 +199,26 @@ pub async fn write_file_content(
 pub async fn list_project_files(project_path: String) -> Result<Vec<String>, String> {
     let pp = project_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let tracked = std::process::Command::new("git")
-            .args(["-c", "core.quotePath=false", "ls-files"])
-            .current_dir(&pp)
-            .output()
-            .map_err(|e| e.to_string())?;
-
-        let untracked = std::process::Command::new("git")
+        // Merge tracked + untracked into a single git command (P7 perf fix)
+        let output = std::process::Command::new("git")
             .args([
                 "-c",
                 "core.quotePath=false",
                 "ls-files",
-                "--others",
+                "-c",
+                "-o",
                 "--exclude-standard",
             ])
             .current_dir(&pp)
             .output()
             .map_err(|e| e.to_string())?;
 
-        let mut files: Vec<String> = String::from_utf8_lossy(&tracked.stdout)
+        let mut files: Vec<String> = String::from_utf8_lossy(&output.stdout)
             .lines()
             .filter(|l| !l.is_empty())
             .map(|l| l.to_string())
             .collect();
 
-        let extra: Vec<String> = String::from_utf8_lossy(&untracked.stdout)
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(|l| l.to_string())
-            .collect();
-
-        files.extend(extra);
         files.sort();
         files.dedup();
         Ok(files)

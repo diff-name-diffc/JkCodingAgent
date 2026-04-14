@@ -15,6 +15,7 @@ mod fs;
 mod git;
 mod notification;
 mod pty;
+mod rope;
 mod session;
 mod storage;
 mod usage;
@@ -317,6 +318,7 @@ pub fn run() {
             agent: dispatcher_agent,
             db: dispatcher_db,
         })
+        .manage(rope::RopeManager::new())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -335,6 +337,16 @@ pub fn run() {
             fs::list_project_files,
             fs::get_file_meta,
             fs::read_file_chunk,
+            // --- Rope (unified file editing) ---
+            rope::rope_open,
+            rope::rope_read_lines,
+            rope::rope_edit,
+            rope::rope_replace_line,
+            rope::rope_save,
+            rope::rope_is_dirty,
+            rope::rope_close,
+            rope::rope_undo,
+            rope::rope_redo,
             git::generate_commit_message,
             git::git_status,
             git::git_list_branches,

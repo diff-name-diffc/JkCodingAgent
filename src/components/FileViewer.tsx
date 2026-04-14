@@ -132,7 +132,7 @@ type FileMeta = {
   isText: boolean;
 };
 
-/** Threshold above which files use the virtual-scroll read-only LargeFileViewer */
+/** Threshold above which files use the ropey-backed LargeFileViewer */
 const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024; // 2MB
 
 // ─── Cache types for tab pooling ────────────────────────────────────────────
@@ -484,6 +484,8 @@ export function FileViewer({
   const [activeContent, setActiveContent] = useState<string | null>(null);
   /** Set when the active file is too large for Monaco — triggers LargeFileViewer */
   const [activeFileMeta, setActiveFileMeta] = useState<FileMeta | null>(null);
+  /** Tracks dirty state for the ropey-backed large file editor */
+  const [largeDirty, setLargeDirty] = useState(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -813,7 +815,7 @@ export function FileViewer({
       </div>
     );
   } else if (activeFileMeta) {
-    // ─── Large file: virtual-scroll read-only viewer ──────────────
+    // ─── Large file: ropey-backed editor with virtual scrolling ────
     contentPane = (
       <div
         style={{
@@ -833,7 +835,7 @@ export function FileViewer({
           fileName={activeTab.name}
           filePath={activeTab.path}
           language={language}
-          saveStatus="idle"
+          saveStatus={largeDirty ? "saving" : "idle"}
           isMarkdown={activeIsMarkdown}
           previewMode={false}
         />
@@ -855,6 +857,7 @@ export function FileViewer({
             filePath={activeTab.path}
             projectPath={projectPath}
             meta={activeFileMeta}
+            onDirtyChange={setLargeDirty}
           />
         </div>
       </div>

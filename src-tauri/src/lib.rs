@@ -333,6 +333,8 @@ pub fn run() {
             fs::read_image_preview,
             fs::write_file_content,
             fs::list_project_files,
+            fs::get_file_meta,
+            fs::read_file_chunk,
             git::generate_commit_message,
             git::git_status,
             git::git_list_branches,

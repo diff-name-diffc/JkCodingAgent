@@ -1,10 +1,18 @@
 import Editor, { loader, type Monaco } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
+import type * as MonacoTypes from "monaco-editor";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
 import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
 import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+} from "react";
 
 const MONACO_THEME_LIGHT = "nezha-light";
 const MONACO_THEME_DARK = "nezha-dark";
@@ -89,37 +97,125 @@ function ensureMonacoThemes(monacoInstance: Monaco) {
 
 ensureMonacoLoader();
 
-export function MonacoEditorPane({
-  filePath,
-  value,
-  language,
-  isDark,
-  onChange,
-}: {
-  filePath: string;
-  value: string;
-  language: string;
-  isDark: boolean;
-  onChange: (value: string) => void;
-}) {
+export interface MonacoEditorHandle {
+  /** Get current editor content without triggering React re-render */
+  getValue(): string;
+  /** Replace editor content (used when switching tabs) */
+  setValue(content: string, filePath: string, language: string): void;
+  /** Save current view state (scroll position, cursor, etc.) */
+  saveViewState(): MonacoTypes.editor.ICodeEditorViewState | null;
+  /** Restore a previously saved view state */
+  restoreViewState(state: MonacoTypes.editor.ICodeEditorViewState | null): void;
+}
+
+export const MonacoEditorPane = forwardRef<
+  MonacoEditorHandle,
+  {
+    initialValue: string;
+    filePath: string;
+    language: string;
+    isDark: boolean;
+    onChange: (value: string) => void;
+  }
+>(function MonacoEditorPane(
+  { initialValue, filePath, language, isDark, onChange },
+  ref,
+) {
+  const editorRef = useRef<MonacoTypes.editor.IStandaloneCodeEditor | null>(
+    null,
+  );
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  // Dispose listener on unmount
+  const listenerRef =
+    useRef<MonacoTypes.IDisposable | null>(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      getValue() {
+        return editorRef.current?.getValue() ?? "";
+      },
+      setValue(content: string, newPath: string, newLang: string) {
+        const editor = editorRef.current;
+        if (!editor) return;
+
+        // Dispose old model listener before switching
+        listenerRef.current?.dispose();
+
+        const monacoInstance = monaco;
+        // Reuse existing model for same URI, or create new one
+        const uri = monacoInstance.Uri.parse(`file://${newPath}`);
+        let model = monacoInstance.editor.getModel(uri);
+        if (model) {
+          // Model exists; update content only if different
+          if (model.getValue() !== content) {
+            model.setValue(content);
+          }
+          // Ensure language matches
+          monacoInstance.editor.setModelLanguage(model, newLang);
+        } else {
+          model = monacoInstance.editor.createModel(content, newLang, uri);
+        }
+        editor.setModel(model);
+
+        // Re-attach content change listener for the new model
+        listenerRef.current = editor.onDidChangeModelContent(() => {
+          onChangeRef.current(editor.getValue());
+        });
+      },
+      saveViewState() {
+        return editorRef.current?.saveViewState() ?? null;
+      },
+      restoreViewState(
+        state: MonacoTypes.editor.ICodeEditorViewState | null,
+      ) {
+        if (state) {
+          editorRef.current?.restoreViewState(state);
+        }
+      },
+    }),
+    [],
+  );
+
+  const handleMount = useCallback(
+    (editor: MonacoTypes.editor.IStandaloneCodeEditor) => {
+      editorRef.current = editor;
+
+      // Guard: if Monaco mounted before container had final dimensions, force re-layout
+      const { width, height } = editor.getLayoutInfo();
+      if (height === 0 || width === 0) {
+        requestAnimationFrame(() => editor.layout());
+      }
+
+      // Attach content change listener (uncontrolled — no React setState)
+      listenerRef.current = editor.onDidChangeModelContent(() => {
+        onChangeRef.current(editor.getValue());
+      });
+    },
+    [],
+  );
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      listenerRef.current?.dispose();
+    };
+  }, []);
+
   return (
     <div className="monaco-pane">
       <Editor
         path={filePath}
-        value={value}
+        defaultValue={initialValue}
         language={language}
         theme={isDark ? MONACO_THEME_DARK : MONACO_THEME_LIGHT}
         beforeMount={(monacoInstance) => {
           ensureMonacoThemes(monacoInstance);
         }}
-        onMount={(editor) => {
-          // Guard: if Monaco mounted before container had final dimensions, force re-layout
-          const { width, height } = editor.getLayoutInfo();
-          if (height === 0 || width === 0) {
-            requestAnimationFrame(() => editor.layout());
-          }
-        }}
-        onChange={(nextValue) => onChange(nextValue ?? "")}
+        onMount={handleMount}
+        onChange={undefined}
         loading={<div className="monaco-loading">Loading editor...</div>}
         options={{
           automaticLayout: true,
@@ -167,4 +263,4 @@ export function MonacoEditorPane({
       />
     </div>
   );
-}
+});

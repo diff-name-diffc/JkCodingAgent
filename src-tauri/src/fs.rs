@@ -117,22 +117,26 @@ pub async fn read_dir_entries(path: String, project_path: String) -> Result<Vec<
 
 #[tauri::command]
 pub async fn read_file_content(path: String, project_path: String) -> Result<String, String> {
-    validate_path_within(&path, &project_path)?;
+    let validated_path = validate_path_within(&path, &project_path)?;
 
-    use std::io::Read;
-    let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-    let meta = file.metadata().map_err(|e| e.to_string())?;
-    if meta.len() > 2 * 1024 * 1024 {
-        return Err(format!(
-            "File too large ({:.1} MB)",
-            meta.len() as f64 / 1024.0 / 1024.0
-        ));
-    }
-    let mut buf = String::with_capacity(meta.len() as usize);
-    std::io::BufReader::new(file)
-        .read_to_string(&mut buf)
-        .map_err(|e| e.to_string())?;
-    Ok(buf)
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Read;
+        let file = std::fs::File::open(&validated_path).map_err(|e| e.to_string())?;
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        if meta.len() > 2 * 1024 * 1024 {
+            return Err(format!(
+                "File too large ({:.1} MB)",
+                meta.len() as f64 / 1024.0 / 1024.0
+            ));
+        }
+        let mut buf = String::with_capacity(meta.len() as usize);
+        std::io::BufReader::new(file)
+            .read_to_string(&mut buf)
+            .map_err(|e| e.to_string())?;
+        Ok(buf)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -182,44 +186,159 @@ pub async fn write_file_content(
     content: String,
     project_path: String,
 ) -> Result<(), String> {
-    validate_path_within(&path, &project_path)?;
-    std::fs::write(&path, content).map_err(|e| e.to_string())
+    let validated_path = validate_path_within(&path, &project_path)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::write(&validated_path, content).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn list_project_files(project_path: String) -> Result<Vec<String>, String> {
-    let tracked = std::process::Command::new("git")
-        .args(["-c", "core.quotePath=false", "ls-files"])
-        .current_dir(&project_path)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let pp = project_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let tracked = std::process::Command::new("git")
+            .args(["-c", "core.quotePath=false", "ls-files"])
+            .current_dir(&pp)
+            .output()
+            .map_err(|e| e.to_string())?;
 
-    let untracked = std::process::Command::new("git")
-        .args([
-            "-c",
-            "core.quotePath=false",
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-        ])
-        .current_dir(&project_path)
-        .output()
-        .map_err(|e| e.to_string())?;
+        let untracked = std::process::Command::new("git")
+            .args([
+                "-c",
+                "core.quotePath=false",
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+            ])
+            .current_dir(&pp)
+            .output()
+            .map_err(|e| e.to_string())?;
 
-    let mut files: Vec<String> = String::from_utf8_lossy(&tracked.stdout)
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect();
+        let mut files: Vec<String> = String::from_utf8_lossy(&tracked.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
 
-    let extra: Vec<String> = String::from_utf8_lossy(&untracked.stdout)
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect();
+        let extra: Vec<String> = String::from_utf8_lossy(&untracked.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
 
-    files.extend(extra);
-    files.sort();
-    files.dedup();
-    Ok(files)
+        files.extend(extra);
+        files.sort();
+        files.dedup();
+        Ok(files)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
+
+// ─── Large-file support commands ────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FileMeta {
+    size_bytes: u64,
+    line_count: u64,
+    is_text: bool,
+}
+
+/// Returns file size, line count, and whether the file is valid text.
+/// Frontend uses this to decide which rendering path to take.
+#[tauri::command]
+pub async fn get_file_meta(path: String, project_path: String) -> Result<FileMeta, String> {
+    let validated_path = validate_path_within(&path, &project_path)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Read;
+
+        let file = std::fs::File::open(&validated_path).map_err(|e| e.to_string())?;
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        let size_bytes = meta.len();
+
+        // Fast byte-level newline count — reads entire file but only scans for \n.
+        // ~50ms for 28MB on modern hardware, much more reliable than sampling.
+        let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
+        let mut line_count: u64 = 0;
+        let mut is_text = true;
+        let mut total_bytes: u64 = 0;
+        let mut buf = [0u8; 256 * 1024];
+
+        loop {
+            let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+
+            let chunk = &buf[..n];
+
+            // Check for binary content (NUL bytes) in the first 8KB
+            if total_bytes < 8192 {
+                let check_end = std::cmp::min(n, (8192 - total_bytes) as usize);
+                if chunk[..check_end].contains(&0u8) {
+                    is_text = false;
+                    // Still count lines for display purposes, but mark as binary
+                }
+            }
+
+            // Count newline bytes
+            for &byte in chunk {
+                if byte == b'\n' {
+                    line_count += 1;
+                }
+            }
+
+            total_bytes += n as u64;
+        }
+
+        // Account for last line if file doesn't end with newline
+        if size_bytes > 0 {
+            line_count += 1;
+        }
+
+        Ok(FileMeta {
+            size_bytes,
+            line_count,
+            is_text,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Read a range of lines from a file (0-indexed start, exclusive end).
+/// Used for incremental rendering of large files.
+#[tauri::command]
+pub async fn read_file_chunk(
+    path: String,
+    project_path: String,
+    start_line: u64,
+    max_lines: u64,
+) -> Result<Vec<String>, String> {
+    let validated_path = validate_path_within(&path, &project_path)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader};
+
+        let file = std::fs::File::open(&validated_path).map_err(|e| e.to_string())?;
+        let reader = BufReader::with_capacity(64 * 1024, file);
+        let end_line = start_line + max_lines;
+
+        let lines: Vec<String> = reader
+            .lines()
+            .skip(start_line as usize)
+            .take((end_line - start_line) as usize)
+            .map(|l| l.unwrap_or_else(|_| String::new()))
+            .collect();
+
+        Ok(lines)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+

@@ -1,14 +1,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  Project,
-  Task,
-  AgentType,
-  PermissionMode,
-  ThemeMode,
-  SubProcess,
-} from "../types";
+import type { Project, Task, AgentType, PermissionMode, ThemeMode, SubProcess } from "../types";
 import { cleanTerminalOutput } from "../utils/ansiStrip";
 import { FileExplorer } from "./FileExplorer";
 import { SessionPanel } from "./SessionPanel";
@@ -25,6 +18,14 @@ import { AppSettingsDialog } from "./AppSettingsDialog";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useProjectPanels } from "../hooks/useProjectPanels";
 import s from "../styles";
+
+function getSubProcessAgentLabel(agent: AgentType): string {
+  return agent === "claude" ? "Claude" : "Codex";
+}
+
+function getSubProcessRouteKey(sessionId: string, agent: AgentType): string {
+  return `${sessionId}:${agent}`;
+}
 
 export function ProjectPage({
   project,
@@ -118,6 +119,8 @@ export function ProjectPage({
   const pendingDispatchRef = useRef<
     Map<string, { spId: string; dispatchId: string; sessionId: string }>
   >(new Map());
+  /** Track the interactive subprocess to continue/exit for each dispatcher session + agent */
+  const interactiveSubProcessRef = useRef<Map<string, string>>(new Map());
   /** Track subprocess task_ids that were voluntarily exited via /exit */
   const exitedSubprocessesRef = useRef<Set<string>>(new Set());
   /** Track task_ids whose current round has already been injected via idle detection */
@@ -132,7 +135,7 @@ export function ProjectPage({
     [activeSessionId, subProcesses],
   );
   const activeVisibleSubTabId = activeSessionId
-    ? activeSubTabIdBySession[activeSessionId] ?? null
+    ? (activeSubTabIdBySession[activeSessionId] ?? null)
     : null;
 
   const handleRunMakeTarget = useCallback(
@@ -159,6 +162,7 @@ export function ProjectPage({
   const handleDispatchApproved = useCallback(
     (
       dispatchId: string,
+      agent: AgentType,
       description: string,
       permissionMode: string,
       sessionId: string,
@@ -168,21 +172,21 @@ export function ProjectPage({
         id: spId,
         dispatchId,
         sessionId,
-        agent: "claude",
+        agent,
         description,
         status: "running",
         startedAt: Date.now(),
       };
       setSubProcesses((prev) => [...prev, sp]);
       setActiveSubTabIdBySession((prev) => ({ ...prev, [sessionId]: spId }));
+      interactiveSubProcessRef.current.set(getSubProcessRouteKey(sessionId, agent), spId);
 
       // Track pending dispatch for result injection
       pendingDispatchRef.current.set(spId, { spId, dispatchId, sessionId });
 
-      // Start a real Claude task via PTY infrastructure.
       const taskId = onSubmitTask({
         prompt: description,
-        agent: "claude",
+        agent,
         permissionMode: (permissionMode as PermissionMode) || "full_access",
         images: [],
         immediate: true,
@@ -198,95 +202,104 @@ export function ProjectPage({
 
   // Monitor task completion for subprocesses → inject result back
   useEffect(() => {
-    const unsub = listen<{ task_id: string; status: string }>(
-      "task-status",
-      (e) => {
-        const { task_id, status } = e.payload;
-        if (status !== "done" && status !== "failed" && status !== "cancelled") return;
+    const unsub = listen<{ task_id: string; status: string }>("task-status", (e) => {
+      const { task_id, status } = e.payload;
+      if (status !== "done" && status !== "failed" && status !== "cancelled") return;
 
-        // Find subprocess for this task
-        const spEntry = Object.entries(subProcessTaskMap).find(
-          ([, tid]) => tid === task_id
-        );
-        if (!spEntry) return;
-        const [spId] = spEntry;
-        const alreadyInjectedByIdle = idleInjectedTaskIdsRef.current.has(task_id);
-        closedSubprocessTaskIdsRef.current.add(task_id);
+      // Find subprocess for this task
+      const spEntry = Object.entries(subProcessTaskMap).find(([, tid]) => tid === task_id);
+      if (!spEntry) return;
+      const [spId] = spEntry;
+      const alreadyInjectedByIdle = idleInjectedTaskIdsRef.current.has(task_id);
+      closedSubprocessTaskIdsRef.current.add(task_id);
+      const targetSubProcess = subProcesses.find((sp) => sp.id === spId);
+      const routeKey = targetSubProcess
+        ? getSubProcessRouteKey(targetSubProcess.sessionId, targetSubProcess.agent)
+        : null;
 
-        // Update subprocess status
-        const isDone = status === "done";
-        setSubProcesses((prev) =>
-          prev.map((sp) =>
-            sp.id === spId
-              ? { ...sp, status: isDone ? "done" : "failed" }
-              : sp
-          )
-        );
+      // Update subprocess status
+      const isDone = status === "done";
+      setSubProcesses((prev) =>
+        prev.map((sp) => (sp.id === spId ? { ...sp, status: isDone ? "done" : "failed" } : sp)),
+      );
 
-        // If this subprocess was voluntarily exited via /exit, skip result injection
-        if (exitedSubprocessesRef.current.has(task_id)) {
-          exitedSubprocessesRef.current.delete(task_id);
-          pendingDispatchRef.current.delete(spId);
-          idleInjectedTaskIdsRef.current.delete(task_id);
-          return;
-        }
-
-        // Capture terminal output and inject back to Dispatcher
-        const pending = pendingDispatchRef.current.get(spId);
-        if (!pending || alreadyInjectedByIdle) {
-          pendingDispatchRef.current.delete(spId);
-          idleInjectedTaskIdsRef.current.delete(task_id);
-          return;
-        }
-
+      // If this subprocess was voluntarily exited via /exit, skip result injection
+      if (exitedSubprocessesRef.current.has(task_id)) {
+        exitedSubprocessesRef.current.delete(task_id);
         pendingDispatchRef.current.delete(spId);
         idleInjectedTaskIdsRef.current.delete(task_id);
-
-        // Get terminal content from restore state (buffer)
-        const restoreState = getTaskRestoreState(task_id);
-        const rawOutput = (restoreState.initialSnapshot || "") + (restoreState.initialData || "");
-        const cleaned = cleanTerminalOutput(rawOutput);
-
-        const resultText = isDone
-          ? `Claude 子任务完成。\n\n终端输出：\n${cleaned}`
-          : `Claude 子任务失败 (status: ${status})。\n\n终端输出：\n${cleaned}`;
-
-        dispatcherChatRef.current?.continueWithResult(resultText, pending.sessionId);
+        if (routeKey && interactiveSubProcessRef.current.get(routeKey) === spId) {
+          interactiveSubProcessRef.current.delete(routeKey);
+        }
+        return;
       }
-    );
-    return () => { unsub.then((fn) => fn()); };
-  }, [subProcessTaskMap, project.path, getTaskRestoreState]);
+
+      // Capture terminal output and inject back to Dispatcher
+      const pending = pendingDispatchRef.current.get(spId);
+      if (!pending || alreadyInjectedByIdle) {
+        pendingDispatchRef.current.delete(spId);
+        idleInjectedTaskIdsRef.current.delete(task_id);
+        if (routeKey && interactiveSubProcessRef.current.get(routeKey) === spId) {
+          interactiveSubProcessRef.current.delete(routeKey);
+        }
+        return;
+      }
+
+      pendingDispatchRef.current.delete(spId);
+      idleInjectedTaskIdsRef.current.delete(task_id);
+
+      // Get terminal content from restore state (buffer)
+      const restoreState = getTaskRestoreState(task_id);
+      const rawOutput = (restoreState.initialSnapshot || "") + (restoreState.initialData || "");
+      const cleaned = cleanTerminalOutput(rawOutput);
+      const agentLabel = getSubProcessAgentLabel(targetSubProcess?.agent ?? "claude");
+
+      const resultText = isDone
+        ? `${agentLabel} 子任务完成。\n\n终端输出：\n${cleaned}`
+        : `${agentLabel} 子任务失败 (status: ${status})。\n\n终端输出：\n${cleaned}`;
+
+      if (routeKey && interactiveSubProcessRef.current.get(routeKey) === spId) {
+        interactiveSubProcessRef.current.delete(routeKey);
+      }
+
+      dispatcherChatRef.current?.continueWithResult(resultText, pending.sessionId);
+    });
+    return () => {
+      unsub.then((fn) => fn());
+    };
+  }, [subProcessTaskMap, subProcesses, getTaskRestoreState]);
 
   // Listen for dispatcher-subprocess-idle events (stream idle detection)
   useEffect(() => {
-    const unsub = listen<{ task_id: string; output: string }>(
-      "dispatcher-subprocess-idle",
-      (e) => {
-        const { task_id, output } = e.payload;
-        if (closedSubprocessTaskIdsRef.current.has(task_id)) return;
-        if (exitedSubprocessesRef.current.has(task_id)) return;
-        if (idleInjectedTaskIdsRef.current.has(task_id)) return;
+    const unsub = listen<{ task_id: string; output: string }>("dispatcher-subprocess-idle", (e) => {
+      const { task_id, output } = e.payload;
+      if (closedSubprocessTaskIdsRef.current.has(task_id)) return;
+      if (exitedSubprocessesRef.current.has(task_id)) return;
+      if (idleInjectedTaskIdsRef.current.has(task_id)) return;
 
-        // Find subprocess for this task
-        const spEntry = Object.entries(subProcessTaskMap).find(
-          ([, tid]) => tid === task_id
-        );
-        if (!spEntry) return;
+      // Find subprocess for this task
+      const spEntry = Object.entries(subProcessTaskMap).find(([, tid]) => tid === task_id);
+      if (!spEntry) return;
 
-        // Clean and inject output into Dispatcher Agent
-        const cleaned = cleanTerminalOutput(output);
-        const resultText = `Claude 当前轮次执行完成（流空闲检测）。\n\n终端输出：\n${cleaned}`;
-        const [spId] = spEntry;
-        const sessionId =
-          pendingDispatchRef.current.get(spId)?.sessionId ??
-          subProcesses.find((sp) => sp.id === spId)?.sessionId;
-        if (!sessionId) return;
-        pendingDispatchRef.current.delete(spId);
-        idleInjectedTaskIdsRef.current.add(task_id);
-        dispatcherChatRef.current?.continueWithResult(resultText, sessionId);
-      }
-    );
-    return () => { unsub.then((fn) => fn()); };
+      // Clean and inject output into Dispatcher Agent
+      const cleaned = cleanTerminalOutput(output);
+      const [spId] = spEntry;
+      const targetSubProcess = subProcesses.find((sp) => sp.id === spId);
+      const agent = targetSubProcess?.agent ?? "claude";
+      const agentLabel = getSubProcessAgentLabel(agent);
+      const resultText = `${agentLabel} 当前轮次执行完成（流空闲检测）。\n\n终端输出：\n${cleaned}`;
+      const sessionId =
+        pendingDispatchRef.current.get(spId)?.sessionId ??
+        subProcesses.find((sp) => sp.id === spId)?.sessionId;
+      if (!sessionId) return;
+      pendingDispatchRef.current.delete(spId);
+      idleInjectedTaskIdsRef.current.add(task_id);
+      interactiveSubProcessRef.current.set(getSubProcessRouteKey(sessionId, agent), spId);
+      dispatcherChatRef.current?.continueWithResult(resultText, sessionId);
+    });
+    return () => {
+      unsub.then((fn) => fn());
+    };
   }, [subProcessTaskMap, subProcesses]);
 
   const handleDispatchRejected = useCallback((_dispatchId: string) => {
@@ -295,14 +308,26 @@ export function ProjectPage({
 
   // Handle DispatchContinue: send text to active subprocess terminal
   const handleDispatchContinue = useCallback(
-    (text: string, sessionId: string) => {
-      const activeSp = [...subProcesses]
-        .reverse()
-        .find((sp) => sp.status === "running" && sp.sessionId === sessionId);
+    (agent: AgentType, text: string, sessionId: string) => {
+      const routeKey = getSubProcessRouteKey(sessionId, agent);
+      const preferredSpId = interactiveSubProcessRef.current.get(routeKey);
+      const activeSp =
+        (preferredSpId
+          ? subProcesses.filter((sp) => sp.id === preferredSpId)
+          : [...subProcesses].reverse()
+        ).find(
+          (sp) => sp.status === "running" && sp.sessionId === sessionId && sp.agent === agent,
+        ) ??
+        [...subProcesses]
+          .reverse()
+          .find(
+            (sp) => sp.status === "running" && sp.sessionId === sessionId && sp.agent === agent,
+          );
       if (!activeSp) return;
       const taskId = subProcessTaskMap[activeSp.id];
       if (!taskId) return;
 
+      interactiveSubProcessRef.current.set(routeKey, activeSp.id);
       idleInjectedTaskIdsRef.current.delete(taskId);
       const submittedText = text.replace(/(?:\r?\n)+$/, "") + "\r";
       invoke("dispatcher_send_to_subprocess", { taskId, text: submittedText }).catch(console.error);
@@ -312,14 +337,26 @@ export function ProjectPage({
 
   // Handle DispatchExit: send /exit to active subprocess terminal
   const handleDispatchExit = useCallback(
-    (_reason: string, sessionId: string) => {
-      const activeSp = [...subProcesses]
-        .reverse()
-        .find((sp) => sp.status === "running" && sp.sessionId === sessionId);
+    (agent: AgentType, _reason: string, sessionId: string) => {
+      const routeKey = getSubProcessRouteKey(sessionId, agent);
+      const preferredSpId = interactiveSubProcessRef.current.get(routeKey);
+      const activeSp =
+        (preferredSpId
+          ? subProcesses.filter((sp) => sp.id === preferredSpId)
+          : [...subProcesses].reverse()
+        ).find(
+          (sp) => sp.status === "running" && sp.sessionId === sessionId && sp.agent === agent,
+        ) ??
+        [...subProcesses]
+          .reverse()
+          .find(
+            (sp) => sp.status === "running" && sp.sessionId === sessionId && sp.agent === agent,
+          );
       if (!activeSp) return;
       const taskId = subProcessTaskMap[activeSp.id];
       if (!taskId) return;
 
+      interactiveSubProcessRef.current.set(routeKey, activeSp.id);
       // Mark as voluntarily exited so we skip result injection on task-status
       exitedSubprocessesRef.current.add(taskId);
       closedSubprocessTaskIdsRef.current.add(taskId);
@@ -332,6 +369,12 @@ export function ProjectPage({
     (id: string) => {
       const targetSubProcess = subProcesses.find((sp) => sp.id === id);
       setSubProcesses((prev) => prev.filter((sp) => sp.id !== id));
+      if (targetSubProcess) {
+        const routeKey = getSubProcessRouteKey(targetSubProcess.sessionId, targetSubProcess.agent);
+        if (interactiveSubProcessRef.current.get(routeKey) === id) {
+          interactiveSubProcessRef.current.delete(routeKey);
+        }
+      }
       setActiveSubTabIdBySession((prev) => {
         if (!targetSubProcess) return prev;
         if (prev[targetSubProcess.sessionId] !== id) return prev;
@@ -341,22 +384,25 @@ export function ProjectPage({
     [subProcesses],
   );
 
-  const handleSubTerminalResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startHeight = subTerminalHeight;
+  const handleSubTerminalResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startY = e.clientY;
+      const startHeight = subTerminalHeight;
 
-    const onMouseMove = (ev: MouseEvent) => {
-      const delta = startY - ev.clientY;
-      setSubTerminalHeight(Math.max(120, Math.min(600, startHeight + delta)));
-    };
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-    };
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, [subTerminalHeight]);
+      const onMouseMove = (ev: MouseEvent) => {
+        const delta = startY - ev.clientY;
+        setSubTerminalHeight(Math.max(120, Math.min(600, startHeight + delta)));
+      };
+      const onMouseUp = () => {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+      };
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    },
+    [subTerminalHeight],
+  );
 
   return (
     <div

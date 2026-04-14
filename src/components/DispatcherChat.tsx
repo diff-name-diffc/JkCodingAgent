@@ -11,12 +11,14 @@ import {
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { User, Sparkles, Send } from "lucide-react";
 import type {
+  AgentType,
   DispatcherMessage,
   DispatcherAgentEvent,
   DispatcherAgentTurn,
   DispatcherSettings,
   SubProcess,
 } from "../types";
+import { isImeComposing } from "../utils";
 import { ToolActivityBubble, type ToolActivityItem } from "./ToolActivityBubble";
 import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import {
@@ -29,6 +31,7 @@ import {
 
 interface DispatchApprovalProps {
   dispatchId: string;
+  agent: AgentType;
   description: string;
   permissionMode: string;
   onApprove: (dispatchId: string, description: string) => void;
@@ -37,21 +40,25 @@ interface DispatchApprovalProps {
 
 function DispatchApprovalDialog({
   dispatchId,
+  agent,
   description,
   permissionMode,
   onApprove,
   onReject,
 }: DispatchApprovalProps) {
   const [editedDescription, setEditedDescription] = useState(description);
+  const meta = DISPATCH_AGENT_META[agent];
 
   return (
     <div style={styles.approvalOverlay}>
       <div style={styles.approvalDialog}>
         <div style={styles.approvalHeader}>
           <span style={styles.approvalIcon}>📋</span>
-          <span style={styles.approvalTitle}>Claude 子任务审查</span>
+          <span style={styles.approvalTitle}>{meta.title}</span>
+          <span style={styles.approvalAgentBadge}>{meta.badge}</span>
           <span style={styles.approvalBadge}>{permissionMode}</span>
         </div>
+        <div style={styles.approvalHint}>{meta.hint}</div>
         <textarea
           style={styles.approvalTextarea}
           value={editedDescription}
@@ -59,10 +66,7 @@ function DispatchApprovalDialog({
           rows={8}
         />
         <div style={styles.approvalActions}>
-          <button
-            style={styles.approvalRejectBtn}
-            onClick={() => onReject(dispatchId)}
-          >
+          <button style={styles.approvalRejectBtn} onClick={() => onReject(dispatchId)}>
             拒绝
           </button>
           <button
@@ -141,13 +145,14 @@ interface DispatcherChatProps {
   subProcesses: SubProcess[];
   onDispatchApproved: (
     dispatchId: string,
+    agent: AgentType,
     description: string,
     permissionMode: string,
     sessionId: string,
   ) => void;
   onDispatchRejected: (dispatchId: string) => void;
-  onDispatchContinue: (text: string, sessionId: string) => void;
-  onDispatchExit: (reason: string, sessionId: string) => void;
+  onDispatchContinue: (agent: AgentType, text: string, sessionId: string) => void;
+  onDispatchExit: (agent: AgentType, reason: string, sessionId: string) => void;
   onOpenSettings: () => void;
 }
 
@@ -170,337 +175,380 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     },
     ref,
   ) {
-  const [messages, setMessages] = useState<DispatcherMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [streamingContent, setStreamingContent] = useState("");
-  const [liveToolCalls, setLiveToolCalls] = useState<ToolActivityItem[]>([]);
-  const [pendingDispatch, setPendingDispatch] = useState<{
-    dispatchId: string;
-    description: string;
-    permissionMode: string;
-  } | null>(null);
-  const [autoApprove, setAutoApprove] = useState(false);
+    const [messages, setMessages] = useState<DispatcherMessage[]>([]);
+    const [input, setInput] = useState("");
+    const [isLoading, setIsLoading] = useState(false);
+    const [streamingContent, setStreamingContent] = useState("");
+    const [liveToolCalls, setLiveToolCalls] = useState<ToolActivityItem[]>([]);
+    const [pendingDispatch, setPendingDispatch] = useState<{
+      dispatchId: string;
+      agent: AgentType;
+      description: string;
+      permissionMode: string;
+    } | null>(null);
+    const [autoApprove, setAutoApprove] = useState(false);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const currentSessionIdRef = useRef(sessionId);
-  currentSessionIdRef.current = sessionId;
-  const activeRunRef = useRef(0);
-  const historyLoadRef = useRef(0);
-  const autoApproveRef = useRef(autoApprove);
-  autoApproveRef.current = autoApprove;
-  const onDispatchApprovedRef = useRef(onDispatchApproved);
-  onDispatchApprovedRef.current = onDispatchApproved;
-  const onDispatchContinueRef = useRef(onDispatchContinue);
-  onDispatchContinueRef.current = onDispatchContinue;
-  const onDispatchExitRef = useRef(onDispatchExit);
-  onDispatchExitRef.current = onDispatchExit;
-  const displayItems = useMemo(() => buildDispatcherDisplayItems(messages), [messages]);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const inputRef = useRef<HTMLTextAreaElement>(null);
+    const inputComposingRef = useRef(false);
+    const currentSessionIdRef = useRef(sessionId);
+    currentSessionIdRef.current = sessionId;
+    const activeRunRef = useRef(0);
+    const historyLoadRef = useRef(0);
+    const autoApproveRef = useRef(autoApprove);
+    autoApproveRef.current = autoApprove;
+    const onDispatchApprovedRef = useRef(onDispatchApproved);
+    onDispatchApprovedRef.current = onDispatchApproved;
+    const onDispatchContinueRef = useRef(onDispatchContinue);
+    onDispatchContinueRef.current = onDispatchContinue;
+    const onDispatchExitRef = useRef(onDispatchExit);
+    onDispatchExitRef.current = onDispatchExit;
+    const displayItems = useMemo(() => buildDispatcherDisplayItems(messages), [messages]);
 
-  // Load settings (for auto-approve flag)
-  useEffect(() => {
-    invoke<DispatcherSettings | null>("dispatcher_get_settings")
-      .then((s) => {
-        if (s) setAutoApprove(s.autoApproveDispatch);
+    // Load settings (for auto-approve flag)
+    useEffect(() => {
+      invoke<DispatcherSettings | null>("dispatcher_get_settings")
+        .then((s) => {
+          if (s) setAutoApprove(s.autoApproveDispatch);
+        })
+        .catch(console.error);
+    }, []);
+
+    // Load history for the active session only. Late responses from a previous
+    // session must not overwrite the currently selected session.
+    useEffect(() => {
+      const loadId = ++historyLoadRef.current;
+      activeRunRef.current += 1;
+      setMessages([]);
+      setIsLoading(false);
+      setStreamingContent("");
+      setLiveToolCalls([]);
+      setPendingDispatch(null);
+
+      invoke<DispatcherMessage[]>("dispatcher_list_messages", {
+        workspaceId: sessionId,
       })
-      .catch(console.error);
-  }, []);
+        .then((loaded) => {
+          if (currentSessionIdRef.current !== sessionId || historyLoadRef.current !== loadId)
+            return;
+          setMessages(loaded.filter((message) => message.workspaceId === sessionId));
+        })
+        .catch(console.error);
+    }, [sessionId]);
 
-  // Load history for the active session only. Late responses from a previous
-  // session must not overwrite the currently selected session.
-  useEffect(() => {
-    const loadId = ++historyLoadRef.current;
-    activeRunRef.current += 1;
-    setMessages([]);
-    setIsLoading(false);
-    setStreamingContent("");
-    setLiveToolCalls([]);
-    setPendingDispatch(null);
+    // Auto-scroll
+    useEffect(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, [messages, streamingContent]);
 
-    invoke<DispatcherMessage[]>("dispatcher_list_messages", {
-      workspaceId: sessionId,
-    })
-      .then((loaded) => {
-        if (currentSessionIdRef.current !== sessionId || historyLoadRef.current !== loadId) return;
-        setMessages(loaded.filter((message) => message.workspaceId === sessionId));
-      })
-      .catch(console.error);
-  }, [sessionId]);
-
-  // Auto-scroll
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent]);
-
-  const createEventChannel = useCallback((targetSessionId: string, runId: number) => {
-    const onEvent = new Channel<DispatcherAgentEvent>();
-    onEvent.onmessage = (event) => {
-      const isCurrentRun =
-        currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId;
-      switch (event.event) {
-        case "started":
-        case "assistantStarted":
-          break;
-        case "userMessage":
-          if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
-          setMessages((prev) => [...prev, event.data.message]);
-          break;
-        case "assistantDelta":
-          if (!isCurrentRun) return;
-          setStreamingContent((prev) => prev + event.data.delta);
-          break;
-        case "assistantMessage":
-          if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
-          setStreamingContent("");
-          setMessages((prev) => [...prev, event.data.message]);
-          break;
-        case "toolStarted":
-          if (!isCurrentRun) return;
-          setLiveToolCalls((prev) => startLiveToolActivity(prev, event.data));
-          break;
-        case "toolFinished":
-          if (!isCurrentRun) return;
-          setLiveToolCalls((prev) => finishLiveToolActivity(prev, event.data));
-          break;
-        case "dispatchProposed": {
-          const { dispatchId, description, permissionMode } = event.data;
-          if (autoApproveRef.current) {
-            onDispatchApprovedRef.current(dispatchId, description, permissionMode, targetSessionId);
-          } else if (isCurrentRun) {
-            setPendingDispatch({ dispatchId, description, permissionMode });
+    const createEventChannel = useCallback((targetSessionId: string, runId: number) => {
+      const onEvent = new Channel<DispatcherAgentEvent>();
+      onEvent.onmessage = (event) => {
+        const isCurrentRun =
+          currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId;
+        switch (event.event) {
+          case "started":
+          case "assistantStarted":
+            break;
+          case "userMessage":
+            if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
+            setMessages((prev) => [...prev, event.data.message]);
+            break;
+          case "assistantDelta":
+            if (!isCurrentRun) return;
+            setStreamingContent((prev) => prev + event.data.delta);
+            break;
+          case "assistantMessage":
+            if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
+            setStreamingContent("");
+            setMessages((prev) => [...prev, event.data.message]);
+            break;
+          case "toolStarted":
+            if (!isCurrentRun) return;
+            setLiveToolCalls((prev) => startLiveToolActivity(prev, event.data));
+            break;
+          case "toolFinished":
+            if (!isCurrentRun) return;
+            setLiveToolCalls((prev) => finishLiveToolActivity(prev, event.data));
+            break;
+          case "dispatchProposed": {
+            const { dispatchId, agent, description, permissionMode } = event.data;
+            if (autoApproveRef.current) {
+              onDispatchApprovedRef.current(
+                dispatchId,
+                agent,
+                description,
+                permissionMode,
+                targetSessionId,
+              );
+            } else if (isCurrentRun) {
+              setPendingDispatch({ dispatchId, agent, description, permissionMode });
+            }
+            break;
           }
-          break;
+          case "dispatchContinue": {
+            onDispatchContinueRef.current(event.data.agent, event.data.text, targetSessionId);
+            break;
+          }
+          case "dispatchExit": {
+            onDispatchExitRef.current(event.data.agent, event.data.reason, targetSessionId);
+            break;
+          }
+          case "finished":
+            if (!isCurrentRun) return;
+            setMessages(
+              event.data.messages.filter((message) => message.workspaceId === targetSessionId),
+            );
+            setIsLoading(false);
+            setStreamingContent("");
+            setLiveToolCalls([]);
+            break;
         }
-        case "dispatchContinue": {
-          onDispatchContinueRef.current(event.data.text, targetSessionId);
-          break;
-        }
-        case "dispatchExit": {
-          onDispatchExitRef.current(event.data.reason, targetSessionId);
-          break;
-        }
-        case "finished":
-          if (!isCurrentRun) return;
-          setMessages(event.data.messages.filter((message) => message.workspaceId === targetSessionId));
-          setIsLoading(false);
-          setStreamingContent("");
-          setLiveToolCalls([]);
-          break;
-      }
-    };
-    return onEvent;
-  }, []);
+      };
+      return onEvent;
+    }, []);
 
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text || isLoading) return;
+    const handleSend = useCallback(async () => {
+      const text = input.trim();
+      if (!text || isLoading) return;
 
-    setInput("");
-    setIsLoading(true);
-    setStreamingContent("");
-    setLiveToolCalls([]);
-    setPendingDispatch(null);
+      setInput("");
+      setIsLoading(true);
+      setStreamingContent("");
+      setLiveToolCalls([]);
+      setPendingDispatch(null);
 
-    const targetSessionId = sessionId;
-    const runId = ++activeRunRef.current;
-    const onEvent = createEventChannel(targetSessionId, runId);
-
-    try {
-      await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
-        workspaceId: targetSessionId,
-        projectPath,
-        content: text,
-        onEvent,
-      });
-    } catch (err) {
-      console.error("dispatcher_send_message error:", err);
-    } finally {
-      if (currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId) {
-        setIsLoading(false);
-      }
-    }
-  }, [input, isLoading, projectPath, sessionId, createEventChannel]);
-
-  // Expose continueWithResult to parent via ref
-  useImperativeHandle(ref, () => ({
-    continueWithResult: async (result: string, targetSessionId = sessionId) => {
-      const isCurrentSession = currentSessionIdRef.current === targetSessionId;
-      const runId = isCurrentSession ? ++activeRunRef.current : activeRunRef.current;
-      if (isCurrentSession) {
-        setIsLoading(true);
-        setStreamingContent("");
-        setLiveToolCalls([]);
-        setPendingDispatch(null);
-      }
-
+      const targetSessionId = sessionId;
+      const runId = ++activeRunRef.current;
       const onEvent = createEventChannel(targetSessionId, runId);
 
       try {
-        await invoke<DispatcherAgentTurn>("dispatcher_continue_after_dispatch", {
+        await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
           workspaceId: targetSessionId,
           projectPath,
-          dispatchResult: result,
+          content: text,
           onEvent,
         });
       } catch (err) {
-        console.error("dispatcher_continue_after_dispatch error:", err);
+        console.error("dispatcher_send_message error:", err);
       } finally {
         if (currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId) {
           setIsLoading(false);
         }
       }
-    },
-  }), [projectPath, sessionId, createEventChannel]);
+    }, [input, isLoading, projectPath, sessionId, createEventChannel]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
+    // Expose continueWithResult to parent via ref
+    useImperativeHandle(
+      ref,
+      () => ({
+        continueWithResult: async (result: string, targetSessionId = sessionId) => {
+          const isCurrentSession = currentSessionIdRef.current === targetSessionId;
+          const runId = isCurrentSession ? ++activeRunRef.current : activeRunRef.current;
+          if (isCurrentSession) {
+            setIsLoading(true);
+            setStreamingContent("");
+            setLiveToolCalls([]);
+            setPendingDispatch(null);
+          }
+
+          const onEvent = createEventChannel(targetSessionId, runId);
+
+          try {
+            await invoke<DispatcherAgentTurn>("dispatcher_continue_after_dispatch", {
+              workspaceId: targetSessionId,
+              projectPath,
+              dispatchResult: result,
+              onEvent,
+            });
+          } catch (err) {
+            console.error("dispatcher_continue_after_dispatch error:", err);
+          } finally {
+            if (currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId) {
+              setIsLoading(false);
+            }
+          }
+        },
+      }),
+      [projectPath, sessionId, createEventChannel],
+    );
+
+    const handleKeyDown = useCallback(
+      (e: React.KeyboardEvent) => {
+        if (inputComposingRef.current || isImeComposing(e)) {
+          return;
+        }
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          handleSend();
+        }
+      },
+      [handleSend],
+    );
+
+    const handleApproveDispatch = useCallback(
+      (dispatchId: string, description: string) => {
+        const agent = pendingDispatch?.agent ?? "claude";
+        const pm = pendingDispatch?.permissionMode ?? "full_access";
+        setPendingDispatch(null);
+        onDispatchApproved(dispatchId, agent, description, pm, sessionId);
+      },
+      [pendingDispatch, onDispatchApproved, sessionId],
+    );
+
+    const handleRejectDispatch = useCallback(
+      (dispatchId: string) => {
+        setPendingDispatch(null);
+        onDispatchRejected(dispatchId);
+      },
+      [onDispatchRejected],
+    );
+
+    const handleToggleAutoApprove = useCallback(async () => {
+      const next = !autoApprove;
+      setAutoApprove(next);
+      try {
+        const saved = await invoke<DispatcherSettings>("dispatcher_set_auto_approve_dispatch", {
+          autoApproveDispatch: next,
+        });
+        setAutoApprove(saved.autoApproveDispatch);
+      } catch (err) {
+        setAutoApprove(!next);
+        console.error("dispatcher_set_auto_approve_dispatch error:", err);
       }
-    },
-    [handleSend],
-  );
+    }, [autoApprove]);
 
-  const handleApproveDispatch = useCallback(
-    (dispatchId: string, description: string) => {
-      const pm = pendingDispatch?.permissionMode ?? "full_access";
-      setPendingDispatch(null);
-      onDispatchApproved(dispatchId, description, pm, sessionId);
-    },
-    [pendingDispatch, onDispatchApproved, sessionId],
-  );
+    const handleClearHistory = useCallback(async () => {
+      try {
+        await invoke("dispatcher_clear_messages", {
+          workspaceId: sessionId,
+        });
+        setMessages([]);
+      } catch (err) {
+        console.error("clear messages error:", err);
+      }
+    }, [sessionId]);
 
-  const handleRejectDispatch = useCallback(
-    (dispatchId: string) => {
-      setPendingDispatch(null);
-      onDispatchRejected(dispatchId);
-    },
-    [onDispatchRejected],
-  );
+    const isEmpty = messages.length === 0 && !streamingContent && liveToolCalls.length === 0;
 
-  const handleToggleAutoApprove = useCallback(async () => {
-    const next = !autoApprove;
-    setAutoApprove(next);
-    try {
-      const saved = await invoke<DispatcherSettings>("dispatcher_set_auto_approve_dispatch", {
-        autoApproveDispatch: next,
-      });
-      setAutoApprove(saved.autoApproveDispatch);
-    } catch (err) {
-      setAutoApprove(!next);
-      console.error("dispatcher_set_auto_approve_dispatch error:", err);
-    }
-  }, [autoApprove]);
-
-  const handleClearHistory = useCallback(async () => {
-    try {
-      await invoke("dispatcher_clear_messages", {
-        workspaceId: sessionId,
-      });
-      setMessages([]);
-    } catch (err) {
-      console.error("clear messages error:", err);
-    }
-  }, [sessionId]);
-
-  const isEmpty = messages.length === 0 && !streamingContent && liveToolCalls.length === 0;
-
-  return (
-    <div style={styles.container}>
-      {/* Header */}
-      <div style={styles.header}>
-        <div style={styles.headerLeft}>
-          <span style={styles.headerIcon}>🤖</span>
-          <span style={styles.headerTitle}>Dispatcher Agent</span>
-          {isLoading && <span style={styles.thinkingDot} />}
-        </div>
-        <div style={styles.headerRight}>
-          <button
-            style={{
-              ...styles.headerBtn,
-              ...(autoApprove ? styles.headerBtnActive : {}),
-            }}
-            onClick={handleToggleAutoApprove}
-            title="开启后，调度给 Claude 子任务时不再弹出审查确认"
-          >
-            免确认 {autoApprove ? "开" : "关"}
-          </button>
-          {messages.length > 0 && (
-            <button style={styles.headerBtn} onClick={handleClearHistory}>
-              清空
-            </button>
-          )}
-          <button style={styles.headerBtn} onClick={onOpenSettings}>
-            ⚙ 设置
-          </button>
-        </div>
-      </div>
-
-      {/* Messages */}
-      <div style={styles.messageList}>
-        {isEmpty && (
-          <div style={styles.emptyState}>
-            <div style={styles.emptyIcon}>🤖</div>
-            <div style={styles.emptyTitle}>Dispatcher Agent</div>
-            <div style={styles.emptySubtitle}>
-              告诉我你想做什么，我会自动规划并调度 Claude 来完成编码任务
-            </div>
+    return (
+      <div style={styles.container}>
+        {/* Header */}
+        <div style={styles.header}>
+          <div style={styles.headerLeft}>
+            <span style={styles.headerIcon}>🤖</span>
+            <span style={styles.headerTitle}>Dispatcher Agent</span>
+            {isLoading && <span style={styles.thinkingDot} />}
           </div>
-        )}
-        {displayItems.map((item) => (
-          item.kind === "user" ? (
-            <UserMessageBubble key={item.id} message={item.message} />
-          ) : (
-            <AssistantTurnBubble
-              key={item.id}
-              responseText={item.turn.responseParts.join("\n\n")}
-              tools={item.turn.tools}
-            />
-          )
-        ))}
-        {(streamingContent.trim() || liveToolCalls.length > 0) && (
-          <AssistantTurnBubble responseText={streamingContent} tools={liveToolCalls} />
-        )}
-        <div ref={messagesEndRef} />
-      </div>
+          <div style={styles.headerRight}>
+            <button
+              style={{
+                ...styles.headerBtn,
+                ...(autoApprove ? styles.headerBtnActive : {}),
+              }}
+              onClick={handleToggleAutoApprove}
+              title="开启后，调度给 Claude 或 Codex 子任务时不再弹出审查确认"
+            >
+              免确认 {autoApprove ? "开" : "关"}
+            </button>
+            {messages.length > 0 && (
+              <button style={styles.headerBtn} onClick={handleClearHistory}>
+                清空
+              </button>
+            )}
+            <button style={styles.headerBtn} onClick={onOpenSettings}>
+              ⚙ 设置
+            </button>
+          </div>
+        </div>
 
-      {/* Input */}
-      <div style={styles.inputArea}>
-        <textarea
-          ref={inputRef}
-          style={styles.inputTextarea}
-          placeholder="Send a message to Dispatcher..."
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          rows={1}
-          disabled={isLoading}
-        />
-        <button
-          style={{ ...styles.sendBtn, opacity: input.trim() && !isLoading ? 1 : 0.5 }}
-          onClick={handleSend}
-          disabled={!input.trim() || isLoading}
-        >
-          <Send size={16} color="#fff" />
-        </button>
-      </div>
+        {/* Messages */}
+        <div style={styles.messageList}>
+          {isEmpty && (
+            <div style={styles.emptyState}>
+              <div style={styles.emptyIcon}>🤖</div>
+              <div style={styles.emptyTitle}>Dispatcher Agent</div>
+              <div style={styles.emptySubtitle}>
+                告诉我你想做什么，我会自动规划并在 Claude 与 Codex
+                之间选择合适的子进程来完成编码任务
+              </div>
+              <div style={styles.emptyMeta}>
+                Claude 更快，适合新功能、算法和探索；Codex 更稳，适合重构。
+              </div>
+            </div>
+          )}
+          {displayItems.map((item) =>
+            item.kind === "user" ? (
+              <UserMessageBubble key={item.id} message={item.message} />
+            ) : (
+              <AssistantTurnBubble
+                key={item.id}
+                responseText={item.turn.responseParts.join("\n\n")}
+                tools={item.turn.tools}
+              />
+            ),
+          )}
+          {(streamingContent.trim() || liveToolCalls.length > 0) && (
+            <AssistantTurnBubble responseText={streamingContent} tools={liveToolCalls} />
+          )}
+          <div ref={messagesEndRef} />
+        </div>
 
-      {/* Dispatch approval overlay */}
-      {pendingDispatch && (
-        <DispatchApprovalDialog
-          dispatchId={pendingDispatch.dispatchId}
-          description={pendingDispatch.description}
-          permissionMode={pendingDispatch.permissionMode}
-          onApprove={handleApproveDispatch}
-          onReject={handleRejectDispatch}
-        />
-      )}
-    </div>
-  );
+        {/* Input */}
+        <div style={styles.inputArea}>
+          <textarea
+            ref={inputRef}
+            style={styles.inputTextarea}
+            placeholder="Send a message to Dispatcher..."
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onCompositionStart={() => {
+              inputComposingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              inputComposingRef.current = false;
+            }}
+            onKeyDown={handleKeyDown}
+            rows={1}
+            disabled={isLoading}
+          />
+          <button
+            style={{ ...styles.sendBtn, opacity: input.trim() && !isLoading ? 1 : 0.5 }}
+            onClick={handleSend}
+            disabled={!input.trim() || isLoading}
+          >
+            <Send size={16} color="#fff" />
+          </button>
+        </div>
+
+        {/* Dispatch approval overlay */}
+        {pendingDispatch && (
+          <DispatchApprovalDialog
+            dispatchId={pendingDispatch.dispatchId}
+            agent={pendingDispatch.agent}
+            description={pendingDispatch.description}
+            permissionMode={pendingDispatch.permissionMode}
+            onApprove={handleApproveDispatch}
+            onReject={handleRejectDispatch}
+          />
+        )}
+      </div>
+    );
   },
 );
+
+const DISPATCH_AGENT_META: Record<AgentType, { title: string; badge: string; hint: string }> = {
+  claude: {
+    title: "Claude 子任务审查",
+    badge: "Claude",
+    hint: "Claude 速度更快，适合新功能、算法试验和问题探索。",
+  },
+  codex: {
+    title: "Codex 子任务审查",
+    badge: "Codex",
+    hint: "Codex 更慢但更仔细，适合重构、结构整理和高风险修改。",
+  },
+};
 
 // ── Styles ───────────────────────────────────────────────────────────────────
 
@@ -601,14 +649,20 @@ const styles = {
     maxWidth: "420px",
     lineHeight: "1.7",
   },
-  messageBubbleWrap: (isUser: boolean) =>
-    ({
-      display: "flex",
-      flexDirection: isUser ? ("row-reverse" as const) : ("row" as const),
-      gap: "14px",
-      alignItems: "flex-start",
-      marginBottom: "2px",
-    }),
+  emptyMeta: {
+    fontSize: "12px",
+    color: "var(--text-hint)",
+    textAlign: "center" as const,
+    maxWidth: "460px",
+    lineHeight: "1.6",
+  },
+  messageBubbleWrap: (isUser: boolean) => ({
+    display: "flex",
+    flexDirection: isUser ? ("row-reverse" as const) : ("row" as const),
+    gap: "14px",
+    alignItems: "flex-start",
+    marginBottom: "2px",
+  }),
   messageAvatar: (isUser: boolean) => ({
     width: "34px",
     height: "34px",
@@ -700,7 +754,8 @@ const styles = {
     width: "44px",
     height: "44px",
     borderRadius: "16px",
-    background: "linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 74%, white))",
+    background:
+      "linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 74%, white))",
     color: "#fff",
     border: "none",
     display: "flex",
@@ -753,6 +808,15 @@ const styles = {
     color: "var(--text-primary)",
     flex: 1,
   },
+  approvalAgentBadge: {
+    fontSize: "11px",
+    padding: "3px 8px",
+    borderRadius: "999px",
+    background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+    color: "var(--accent)",
+    border: "1px solid color-mix(in srgb, var(--accent) 22%, transparent)",
+    fontWeight: 700,
+  },
   approvalBadge: {
     fontSize: "11px",
     padding: "3px 8px",
@@ -761,6 +825,11 @@ const styles = {
     color: "var(--text-secondary)",
     fontFamily: "var(--font-mono)",
     fontWeight: 500,
+  },
+  approvalHint: {
+    fontSize: "12px",
+    lineHeight: "1.6",
+    color: "var(--text-secondary)",
   },
   approvalTextarea: {
     width: "100%",

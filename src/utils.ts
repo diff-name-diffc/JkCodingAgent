@@ -33,6 +33,29 @@ export function save<T>(key: string, val: T) {
   localStorage.setItem(key, JSON.stringify(val));
 }
 
+type ImeKeyboardEvent = {
+  key?: string;
+  keyCode?: number;
+  which?: number;
+  nativeEvent?: {
+    isComposing?: boolean;
+    keyCode?: number;
+    which?: number;
+  };
+};
+
+// macOS 中文输入法在确认候选时，部分场景下会把 Enter 暴露成 keyCode 229 / Process。
+export function isImeComposing(event: ImeKeyboardEvent): boolean {
+  return Boolean(
+    event.nativeEvent?.isComposing ||
+      event.nativeEvent?.keyCode === 229 ||
+      event.nativeEvent?.which === 229 ||
+      event.keyCode === 229 ||
+      event.which === 229 ||
+      event.key === "Process",
+  );
+}
+
 // ── Usage 颜色工具 ────────────────────────────────────────────────────────────
 
 export function getUsageColor(remainingPercent: number): string {

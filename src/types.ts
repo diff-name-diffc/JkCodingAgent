@@ -122,9 +122,12 @@ export type DispatcherAgentEvent =
   | { event: "assistantMessage"; data: { message: DispatcherMessage } }
   | { event: "toolStarted"; data: { toolCallId?: string; name: string; arguments: string } }
   | { event: "toolFinished"; data: { toolCallId?: string; name: string; result: string } }
-  | { event: "dispatchProposed"; data: { dispatchId: string; description: string; permissionMode: string } }
-  | { event: "dispatchContinue"; data: { dispatchId: string; text: string } }
-  | { event: "dispatchExit"; data: { dispatchId: string; reason: string } }
+  | {
+      event: "dispatchProposed";
+      data: { dispatchId: string; agent: AgentType; description: string; permissionMode: string };
+    }
+  | { event: "dispatchContinue"; data: { dispatchId: string; agent: AgentType; text: string } }
+  | { event: "dispatchExit"; data: { dispatchId: string; agent: AgentType; reason: string } }
   | { event: "finished"; data: { messages: DispatcherMessage[] } };
 
 export interface DispatcherSession {

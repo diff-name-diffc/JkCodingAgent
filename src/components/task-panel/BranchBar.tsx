@@ -1,8 +1,9 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { Search, Plus, ChevronDown, X, Tag, Check, GitFork, GitBranch } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import * as Popover from "@radix-ui/react-popover";
 import s from "../../styles";
+import { isImeComposing } from "../../utils";
 
 interface GitBranchInfo {
   name: string;
@@ -28,6 +29,7 @@ function BranchDialog({
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const branchNameComposingRef = useRef(false);
 
   const filteredBranches = useMemo(() => {
     const q = branchSearch.toLowerCase();
@@ -70,6 +72,9 @@ function BranchDialog({
   }, [branchName, fromBranch, projectPath, onCreated]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (branchNameComposingRef.current || isImeComposing(e)) {
+      return;
+    }
     if (e.key === "Enter" && branchName.trim() && !loading) handleCreate();
     if (e.key === "Escape") onClose();
   };
@@ -102,6 +107,12 @@ function BranchDialog({
             placeholder="feature/my-branch"
             value={branchName}
             onChange={(e) => setBranchName(e.target.value)}
+            onCompositionStart={() => {
+              branchNameComposingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              branchNameComposingRef.current = false;
+            }}
             autoFocus
           />
         </div>

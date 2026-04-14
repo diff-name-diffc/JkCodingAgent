@@ -89,15 +89,9 @@ export function SubProcessTabs({
             />
           ) : (
             <div style={styles.terminalPlaceholder}>
-              {activeSubProcess.status === "pending_approval" && (
-                <span>⏳ 等待审批...</span>
-              )}
-              {activeSubProcess.status === "done" && (
-                <span>✅ 子任务已完成</span>
-              )}
-              {activeSubProcess.status === "failed" && (
-                <span>❌ 子任务失败</span>
-              )}
+              {activeSubProcess.status === "pending_approval" && <span>⏳ 等待审批...</span>}
+              {activeSubProcess.status === "done" && <span>✅ 子任务已完成</span>}
+              {activeSubProcess.status === "failed" && <span>❌ 子任务失败</span>}
             </div>
           )}
         </div>
@@ -125,6 +119,7 @@ const SubProcessTab = memo(function SubProcessTab({
   }, [subProcess.description]);
 
   const icon = subProcess.agent === "claude" ? "🟣" : "🟢";
+  const agentLabel = subProcess.agent === "claude" ? "Claude" : "Codex";
   const isRunning = subProcess.status === "running";
   const isPending = subProcess.status === "pending_approval";
 
@@ -139,6 +134,7 @@ const SubProcessTab = memo(function SubProcessTab({
       <span style={styles.tabIcon}>{icon}</span>
       {isRunning && <span style={styles.tabPulse} />}
       {isPending && <span style={styles.tabPendingDot} />}
+      <span style={styles.agentBadge}>{agentLabel}</span>
       <span style={styles.tabLabel}>{label}</span>
       <StatusBadge status={subProcess.status} />
       <button
@@ -169,10 +165,7 @@ function StatusBadge({ status }: { status: SubProcess["status"] }) {
   );
 }
 
-const statusConfig: Record<
-  SubProcess["status"],
-  { label: string; color: string; bg: string }
-> = {
+const statusConfig: Record<SubProcess["status"], { label: string; color: string; bg: string }> = {
   pending_approval: {
     label: "待审查",
     color: "#f59e0b",
@@ -248,6 +241,16 @@ const styles = {
     color: "var(--text-primary)",
   },
   tabIcon: { fontSize: "10px" },
+  agentBadge: {
+    padding: "1px 6px",
+    borderRadius: "999px",
+    background: "var(--bg-card)",
+    border: "1px solid var(--border-primary)",
+    color: "var(--text-tertiary)",
+    fontSize: "10px",
+    fontWeight: 700,
+    letterSpacing: "0.02em",
+  },
   tabLabel: {
     maxWidth: "200px",
     overflow: "hidden",

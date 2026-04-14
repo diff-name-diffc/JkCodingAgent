@@ -12,9 +12,16 @@ use crate::dispatcher_db::{DispatcherDb, DispatcherMessageRecord, DispatcherSett
 use crate::dispatcher_llm::{ChatMessage, FunctionCall, OpenAiCompatProvider, OutboundToolCall};
 use crate::dispatcher_tools::{
     is_continue_instruction, is_dispatch_instruction, is_exit_instruction,
-    parse_continue_instruction, parse_dispatch_instruction, parse_exit_instruction, ToolContext,
-    ToolRegistry,
+    parse_continue_instruction, parse_dispatch_instruction, parse_exit_instruction, DispatchAgent,
+    ToolContext, ToolRegistry,
 };
+
+const BUILT_IN_DISPATCH_GUIDANCE: &str = r#"# Built-in Dispatch Guidance
+
+- Use `dispatch_claude` for tasks where speed matters more: greenfield features, algorithm experiments, debugging exploration, and broad implementation search.
+- Use `dispatch_codex` for tasks where extra care matters more: refactoring, structural cleanup, consistency passes, and regression-sensitive changes.
+- When continuing or exiting a subprocess, always use the matching tool for the same agent family (`continue_claude_session` / `continue_codex_session`, `exit_claude_session` / `exit_codex_session`).
+"#;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,17 +67,20 @@ pub enum AgentEvent {
     /// 当 dispatch_claude 被调用时，发送给前端审查
     DispatchProposed {
         dispatch_id: String,
+        agent: String,
         description: String,
         permission_mode: String,
     },
-    /// Dispatcher Agent 要求继续 Claude 会话
+    /// Dispatcher Agent 要求继续指定 agent 的活动会话
     DispatchContinue {
         dispatch_id: String,
+        agent: String,
         text: String,
     },
-    /// Dispatcher Agent 要求退出 Claude 会话
+    /// Dispatcher Agent 要求退出指定 agent 的活动会话
     DispatchExit {
         dispatch_id: String,
+        agent: String,
         reason: String,
     },
     Finished {
@@ -282,177 +292,180 @@ impl DispatcherAgent {
                     .execute(&tool_call.name, &tool_call.arguments, &tool_context)
                     .await;
 
-                // 拦截 dispatch_claude 的特殊返回值
-                if tool_call.name == "dispatch_claude" && is_dispatch_instruction(&result) {
-                    if let Some((description, permission_mode)) =
-                        parse_dispatch_instruction(&result)
-                    {
-                        let dispatch_id = uuid::Uuid::new_v4().to_string();
+                if let Some(agent) = dispatch_agent_for_tool_name(&tool_call.name) {
+                    if is_dispatch_instruction(&result, agent) {
+                        if let Some((description, permission_mode)) =
+                            parse_dispatch_instruction(&result, agent)
+                        {
+                            let dispatch_id = uuid::Uuid::new_v4().to_string();
+                            let agent_label = agent.display_name();
 
-                        // 发送待审查事件给前端
-                        emit(
-                            on_event,
-                            AgentEvent::DispatchProposed {
-                                dispatch_id: dispatch_id.clone(),
-                                description: description.clone(),
-                                permission_mode: permission_mode.clone(),
-                            },
-                        );
+                            emit(
+                                on_event,
+                                AgentEvent::DispatchProposed {
+                                    dispatch_id: dispatch_id.clone(),
+                                    agent: agent.slug().to_string(),
+                                    description: description.clone(),
+                                    permission_mode: permission_mode.clone(),
+                                },
+                            );
 
-                        // 将 dispatch 指令作为 tool result 记录（前端会通过
-                        // dispatcher_approve_dispatch 或 dispatcher_reject_dispatch
-                        // 来注入真正的结果）
-                        let dispatch_result = format!(
-                            "[Claude 子任务已提交审查] dispatch_id={}, 任务: {}",
-                            dispatch_id,
-                            if description.len() > 200 {
-                                format!("{}...", &description[..200])
+                            let dispatch_result = format!(
+                                "[{} 子任务已提交审查] dispatch_id={}, 任务: {}",
+                                agent_label,
+                                dispatch_id,
+                                if description.len() > 200 {
+                                    format!("{}...", &description[..200])
+                                } else {
+                                    description.clone()
+                                }
+                            );
+
+                            emit(
+                                on_event,
+                                AgentEvent::ToolFinished {
+                                    tool_call_id: Some(tool_call.id.clone()),
+                                    name: tool_call.name.clone(),
+                                    result: dispatch_result.clone(),
+                                },
+                            );
+
+                            db.add_visible_message_with_tools(
+                                workspace_id,
+                                "tool",
+                                &dispatch_result,
+                                Some(&tool_call.id),
+                                Some(&tool_call.name),
+                                None,
+                            )?;
+
+                            let waiting_content = if self.auto_approve_dispatch() {
+                                format!(
+                                    "📋 已自动批准 {} 子任务，正在执行...\n\n**任务描述：**\n{}",
+                                    agent_label, description
+                                )
                             } else {
-                                description.clone()
-                            }
-                        );
-
-                        emit(
-                            on_event,
-                            AgentEvent::ToolFinished {
-                                tool_call_id: Some(tool_call.id.clone()),
-                                name: tool_call.name.clone(),
-                                result: dispatch_result.clone(),
-                            },
-                        );
-
-                        db.add_visible_message_with_tools(
-                            workspace_id,
-                            "tool",
-                            &dispatch_result,
-                            Some(&tool_call.id),
-                            Some(&tool_call.name),
-                            None,
-                        )?;
-
-                        // 在这里不继续循环 — 等待前端通过 dispatcher_inject_result
-                        // 注入 Claude 的执行结果后，由前端再次调用 dispatcher_continue_after_dispatch
-                        // 来继续 Agent 循环。
-                        // 为此，返回一条临时的 "等待中" 消息。
-                        let waiting_content = if self.auto_approve_dispatch() {
-                            format!(
-                                "📋 已自动批准 Claude 子任务，正在执行...\n\n**任务描述：**\n{}",
-                                description
-                            )
-                        } else {
-                            format!(
-                                "📋 已提交 Claude 子任务审查，等待执行...\n\n**任务描述：**\n{}",
-                                description
-                            )
-                        };
-                        let waiting_msg =
-                            db.add_visible_message(workspace_id, "assistant", &waiting_content)?;
-                        emit(
-                            on_event,
-                            AgentEvent::AssistantMessage {
-                                message: waiting_msg.clone(),
-                            },
-                        );
-                        return Ok(waiting_msg);
+                                format!(
+                                    "📋 已提交 {} 子任务审查，等待执行...\n\n**任务描述：**\n{}",
+                                    agent_label, description
+                                )
+                            };
+                            let waiting_msg = db.add_visible_message(
+                                workspace_id,
+                                "assistant",
+                                &waiting_content,
+                            )?;
+                            emit(
+                                on_event,
+                                AgentEvent::AssistantMessage {
+                                    message: waiting_msg.clone(),
+                                },
+                            );
+                            return Ok(waiting_msg);
+                        }
                     }
                 }
 
-                // 拦截 continue_claude_session 的特殊返回值
-                if tool_call.name == "continue_claude_session" && is_continue_instruction(&result) {
-                    if let Some(text) = parse_continue_instruction(&result) {
-                        let dispatch_id = "active".to_string();
+                if let Some(agent) = continue_agent_for_tool_name(&tool_call.name) {
+                    if is_continue_instruction(&result, agent) {
+                        if let Some(text) = parse_continue_instruction(&result, agent) {
+                            let dispatch_id = "active".to_string();
+                            let agent_label = agent.display_name();
 
-                        emit(
-                            on_event,
-                            AgentEvent::DispatchContinue {
-                                dispatch_id: dispatch_id.clone(),
-                                text: text.clone(),
-                            },
-                        );
+                            emit(
+                                on_event,
+                                AgentEvent::DispatchContinue {
+                                    dispatch_id: dispatch_id.clone(),
+                                    agent: agent.slug().to_string(),
+                                    text: text.clone(),
+                                },
+                            );
 
-                        let continue_result = format!(
-                            "[已发送后续指令到 Claude 会话] 指令: {}",
-                            if text.len() > 200 {
-                                format!("{}...", &text[..200])
-                            } else {
-                                text.clone()
-                            }
-                        );
+                            let continue_result = format!(
+                                "[已发送后续指令到 {} 会话] 指令: {}",
+                                agent_label,
+                                if text.len() > 200 {
+                                    format!("{}...", &text[..200])
+                                } else {
+                                    text.clone()
+                                }
+                            );
 
-                        emit(
-                            on_event,
-                            AgentEvent::ToolFinished {
-                                tool_call_id: Some(tool_call.id.clone()),
-                                name: tool_call.name.clone(),
-                                result: continue_result.clone(),
-                            },
-                        );
+                            emit(
+                                on_event,
+                                AgentEvent::ToolFinished {
+                                    tool_call_id: Some(tool_call.id.clone()),
+                                    name: tool_call.name.clone(),
+                                    result: continue_result.clone(),
+                                },
+                            );
 
-                        db.add_visible_message_with_tools(
-                            workspace_id,
-                            "tool",
-                            &continue_result,
-                            Some(&tool_call.id),
-                            Some(&tool_call.name),
-                            None,
-                        )?;
+                            db.add_visible_message_with_tools(
+                                workspace_id,
+                                "tool",
+                                &continue_result,
+                                Some(&tool_call.id),
+                                Some(&tool_call.name),
+                                None,
+                            )?;
 
-                        // 返回等待消息，前端会向终端注入文本并等待下一次 idle 触发
-                        let waiting_msg = db.add_visible_message(
-                            workspace_id,
-                            "assistant",
-                            &format!(
-                                "📨 已向 Claude 发送后续指令，等待执行...\n\n**指令内容：**\n{}",
-                                text
-                            ),
-                        )?;
-                        emit(
-                            on_event,
-                            AgentEvent::AssistantMessage {
-                                message: waiting_msg.clone(),
-                            },
-                        );
-                        return Ok(waiting_msg);
+                            let waiting_msg = db.add_visible_message(
+                                workspace_id,
+                                "assistant",
+                                &format!(
+                                    "📨 已向 {} 发送后续指令，等待执行...\n\n**指令内容：**\n{}",
+                                    agent_label, text
+                                ),
+                            )?;
+                            emit(
+                                on_event,
+                                AgentEvent::AssistantMessage {
+                                    message: waiting_msg.clone(),
+                                },
+                            );
+                            return Ok(waiting_msg);
+                        }
                     }
                 }
 
-                // 拦截 exit_claude_session 的特殊返回值
-                if tool_call.name == "exit_claude_session" && is_exit_instruction(&result) {
-                    if let Some(reason) = parse_exit_instruction(&result) {
-                        let dispatch_id = "active".to_string();
+                if let Some(agent) = exit_agent_for_tool_name(&tool_call.name) {
+                    if is_exit_instruction(&result, agent) {
+                        if let Some(reason) = parse_exit_instruction(&result, agent) {
+                            let dispatch_id = "active".to_string();
+                            let agent_label = agent.display_name();
 
-                        emit(
-                            on_event,
-                            AgentEvent::DispatchExit {
-                                dispatch_id: dispatch_id.clone(),
-                                reason: reason.clone(),
-                            },
-                        );
+                            emit(
+                                on_event,
+                                AgentEvent::DispatchExit {
+                                    dispatch_id: dispatch_id.clone(),
+                                    agent: agent.slug().to_string(),
+                                    reason: reason.clone(),
+                                },
+                            );
 
-                        let exit_result =
-                            format!("[已发送退出命令到 Claude 会话] 原因: {}", reason);
+                            let exit_result =
+                                format!("[已发送退出命令到 {} 会话] 原因: {}", agent_label, reason);
 
-                        emit(
-                            on_event,
-                            AgentEvent::ToolFinished {
-                                tool_call_id: Some(tool_call.id.clone()),
-                                name: tool_call.name.clone(),
-                                result: exit_result.clone(),
-                            },
-                        );
+                            emit(
+                                on_event,
+                                AgentEvent::ToolFinished {
+                                    tool_call_id: Some(tool_call.id.clone()),
+                                    name: tool_call.name.clone(),
+                                    result: exit_result.clone(),
+                                },
+                            );
 
-                        db.add_visible_message_with_tools(
-                            workspace_id,
-                            "tool",
-                            &exit_result,
-                            Some(&tool_call.id),
-                            Some(&tool_call.name),
-                            None,
-                        )?;
+                            db.add_visible_message_with_tools(
+                                workspace_id,
+                                "tool",
+                                &exit_result,
+                                Some(&tool_call.id),
+                                Some(&tool_call.name),
+                                None,
+                            )?;
 
-                        // 不返回等待消息，直接继续 agent 循环
-                        // 前端会向终端注入 /exit 并标记为主动退出
-                        continue;
+                            continue;
+                        }
                     }
                 }
 
@@ -504,7 +517,7 @@ impl DispatcherAgent {
         Ok(reply)
     }
 
-    /// Claude 子任务完成后，将结果注入对话并继续 Agent 循环
+    /// 子任务完成后，将结果注入对话并继续 Agent 循环
     pub async fn continue_after_dispatch(
         &self,
         db: &DispatcherDb,
@@ -513,11 +526,11 @@ impl DispatcherAgent {
         dispatch_result: &str,
         on_event: Channel<AgentEvent>,
     ) -> Result<AgentTurn> {
-        // 将 Claude 的执行结果作为简短提示追加
+        // 将子任务的执行结果作为简短提示追加
         let result_msg = db.add_visible_message(
             workspace_id,
             "assistant",
-            "✅ Claude 子任务已完成，执行结果已在后台同步供后续分析。",
+            "✅ 子任务已完成，执行结果已在后台同步供后续分析。",
         )?;
         emit(
             &on_event,
@@ -526,12 +539,12 @@ impl DispatcherAgent {
             },
         );
 
-        // 同时将结果作为隐藏的 system 消息加入 LLM 上下文
+        // 同时将结果作为隐藏消息加入 LLM 上下文
         db.add_hidden_message(
             workspace_id,
             "user",
             &format!(
-                "[系统通知] Claude 子任务执行结果如下，请根据结果给用户总结反馈：\n\n{}",
+                "[系统通知] 子任务执行结果如下，请根据结果给用户总结反馈：\n\n{}",
                 dispatch_result
             ),
             None,
@@ -575,6 +588,30 @@ impl DispatcherAgent {
     }
 }
 
+fn dispatch_agent_for_tool_name(name: &str) -> Option<DispatchAgent> {
+    match name {
+        "dispatch_claude" => Some(DispatchAgent::Claude),
+        "dispatch_codex" => Some(DispatchAgent::Codex),
+        _ => None,
+    }
+}
+
+fn continue_agent_for_tool_name(name: &str) -> Option<DispatchAgent> {
+    match name {
+        "continue_claude_session" => Some(DispatchAgent::Claude),
+        "continue_codex_session" => Some(DispatchAgent::Codex),
+        _ => None,
+    }
+}
+
+fn exit_agent_for_tool_name(name: &str) -> Option<DispatchAgent> {
+    match name {
+        "exit_claude_session" => Some(DispatchAgent::Claude),
+        "exit_codex_session" => Some(DispatchAgent::Codex),
+        _ => None,
+    }
+}
+
 fn build_system_prompt(root: &Path) -> Result<String> {
     let mut parts = Vec::new();
 
@@ -615,6 +652,8 @@ fn build_system_prompt(root: &Path) -> Result<String> {
             fs::read_to_string(&memory).with_context(|| format!("read {}", memory.display()))?
         ));
     }
+
+    parts.push(format!("---\n\n{}", BUILT_IN_DISPATCH_GUIDANCE));
 
     Ok(parts.join("\n\n---\n\n"))
 }

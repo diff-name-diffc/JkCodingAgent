@@ -311,10 +311,12 @@ fn process_codex_session_line(
                         .and_then(serde_json::Value::as_str);
                     if role == Some("user") {
                         *awaiting_user_reply = false;
-                    } else if role == Some("assistant")
-                        && assistant_message_requests_user_input(payload)
-                    {
-                        *awaiting_user_reply = true;
+                    } else if role == Some("assistant") {
+                        if assistant_message_requests_user_input(payload) {
+                            *awaiting_user_reply = true;
+                        } else if assistant_message_completes_turn(payload) {
+                            force_dispatcher_idle(app, task_id);
+                        }
                     }
                     sync_waiting_for_user(
                         app,
@@ -368,6 +370,14 @@ fn sync_waiting_for_user(
             "running"
         },
     );
+}
+
+fn force_dispatcher_idle(app: &AppHandle, task_id: &str) {
+    let tm = app.state::<crate::TaskManager>();
+    let flags = tm.dispatcher_force_idle_flags.lock();
+    if let Some(flag) = flags.get(task_id) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 // ── 权限判断 ──────────────────────────────────────────────────────────────────
@@ -501,6 +511,16 @@ fn assistant_message_requests_user_input(payload: Option<&serde_json::Value>) ->
     text.ends_with('?') || text.ends_with('？')
 }
 
+fn assistant_message_completes_turn(payload: Option<&serde_json::Value>) -> bool {
+    let Some(payload) = payload else {
+        return false;
+    };
+
+    let phase = payload.get("phase").and_then(serde_json::Value::as_str);
+    matches!(phase, Some("final") | Some("final_answer"))
+        && !assistant_message_requests_user_input(Some(payload))
+}
+
 // ── Claude Code 会话监视器 ────────────────────────────────────────────────────
 
 fn claude_sessions_dir_for_project(project_path: &str) -> Option<PathBuf> {
@@ -573,11 +593,7 @@ fn process_claude_session_line(
                 *waiting_for_user = true;
                 emit_active_task_status(app, task_id, "input_required");
             } else if stop_reason == Some("end_turn") {
-                let tm = app.state::<crate::TaskManager>();
-                let flags = tm.dispatcher_force_idle_flags.lock();
-                if let Some(flag) = flags.get(task_id) {
-                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
+                force_dispatcher_idle(app, task_id);
             }
         }
         Some("user") => {
@@ -703,51 +719,47 @@ fn claude_user_content(
     tool_names_by_id: &HashMap<String, String>,
 ) -> ClaudeUserParts {
     match content {
-        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => ClaudeUserParts {
+            text_parts: vec![SessionContent::Text { text: s.clone() }],
+            tool_results: Vec::new(),
+        },
+        Some(serde_json::Value::Array(blocks)) => blocks.iter().fold(
             ClaudeUserParts {
-                text_parts: vec![SessionContent::Text { text: s.clone() }],
+                text_parts: Vec::new(),
                 tool_results: Vec::new(),
-            }
-        }
-        Some(serde_json::Value::Array(blocks)) => blocks
-            .iter()
-            .fold(
-                ClaudeUserParts {
-                    text_parts: Vec::new(),
-                    tool_results: Vec::new(),
-                },
-                |mut acc, block| {
-                    match block.get("type").and_then(|v| v.as_str()) {
-                        Some("text") => {
-                            let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                            if !text.trim().is_empty() {
-                                acc.text_parts.push(SessionContent::Text {
-                                    text: text.to_string(),
-                                });
-                            }
+            },
+            |mut acc, block| {
+                match block.get("type").and_then(|v| v.as_str()) {
+                    Some("text") => {
+                        let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        if !text.trim().is_empty() {
+                            acc.text_parts.push(SessionContent::Text {
+                                text: text.to_string(),
+                            });
                         }
-                        Some("tool_result") => {
-                            let id = block
-                                .get("tool_use_id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if let Some(result) = json_value_to_display(block.get("content")) {
-                                acc.tool_results.push(SessionContent::ToolResult {
-                                    id: id.clone(),
-                                    name: tool_names_by_id
-                                        .get(&id)
-                                        .cloned()
-                                        .unwrap_or_else(|| "tool".to_string()),
-                                    result,
-                                });
-                            }
-                        }
-                        _ => {}
                     }
-                    acc
-                },
-            ),
+                    Some("tool_result") => {
+                        let id = block
+                            .get("tool_use_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if let Some(result) = json_value_to_display(block.get("content")) {
+                            acc.tool_results.push(SessionContent::ToolResult {
+                                id: id.clone(),
+                                name: tool_names_by_id
+                                    .get(&id)
+                                    .cloned()
+                                    .unwrap_or_else(|| "tool".to_string()),
+                                result,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+                acc
+            },
+        ),
         _ => ClaudeUserParts {
             text_parts: Vec::new(),
             tool_results: Vec::new(),
@@ -988,7 +1000,9 @@ fn json_value_to_display(value: Option<&serde_json::Value>) -> Option<String> {
                 .collect::<Vec<_>>()
                 .join("\n");
             if text.trim().is_empty() {
-                serde_json::to_string_pretty(items).ok().filter(|serialized| !serialized.trim().is_empty())
+                serde_json::to_string_pretty(items)
+                    .ok()
+                    .filter(|serialized| !serialized.trim().is_empty())
             } else {
                 Some(text)
             }
@@ -1622,6 +1636,19 @@ mod tests {
         });
 
         assert!(assistant_message_requests_user_input(Some(&payload)));
+    }
+
+    #[test]
+    fn final_assistant_answer_without_question_completes_turn() {
+        let payload = serde_json::json!({
+            "role": "assistant",
+            "phase": "final",
+            "content": [
+                { "type": "output_text", "text": "已完成重构并通过检查。" }
+            ]
+        });
+
+        assert!(assistant_message_completes_turn(Some(&payload)));
     }
 
     #[test]

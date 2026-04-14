@@ -74,9 +74,12 @@ impl ToolRegistry {
                 Box::new(ListDirTool),
                 Box::new(GlobTool),
                 Box::new(ExecTool),
-                Box::new(DispatchClaudeTool),
-                Box::new(ContinueClaudeSessionTool),
-                Box::new(ExitClaudeSessionTool),
+                Box::new(DispatchAgentTool::new(DispatchAgent::Claude)),
+                Box::new(DispatchAgentTool::new(DispatchAgent::Codex)),
+                Box::new(ContinueAgentSessionTool::new(DispatchAgent::Claude)),
+                Box::new(ContinueAgentSessionTool::new(DispatchAgent::Codex)),
+                Box::new(ExitAgentSessionTool::new(DispatchAgent::Claude)),
+                Box::new(ExitAgentSessionTool::new(DispatchAgent::Codex)),
                 Box::new(MessageTool),
             ],
         }
@@ -110,26 +113,142 @@ struct EditFileTool;
 struct ListDirTool;
 struct GlobTool;
 struct ExecTool;
-struct DispatchClaudeTool;
-struct ContinueClaudeSessionTool;
-struct ExitClaudeSessionTool;
+struct DispatchAgentTool {
+    agent: DispatchAgent,
+}
+struct ContinueAgentSessionTool {
+    agent: DispatchAgent,
+}
+struct ExitAgentSessionTool {
+    agent: DispatchAgent,
+}
 struct MessageTool;
 
-// ── dispatch_claude tool ─────────────────────────────────────────────────────
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DispatchAgent {
+    Claude,
+    Codex,
+}
 
-/// `dispatch_claude` 工具的执行结果类型标记。
-/// 真正的 Claude 进程拉起由 agent.rs 通过事件 + Tauri 命令配合完成，
-/// 此工具仅返回一个带有特殊前缀的指令字符串，供 agent.rs 拦截并进入调度流程。
-const DISPATCH_PREFIX: &str = "__DISPATCH_CLAUDE__:";
+impl DispatchAgent {
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::Codex => "Codex",
+        }
+    }
+
+    fn tool_name(self) -> &'static str {
+        match self {
+            Self::Claude => "dispatch_claude",
+            Self::Codex => "dispatch_codex",
+        }
+    }
+
+    fn continue_tool_name(self) -> &'static str {
+        match self {
+            Self::Claude => "continue_claude_session",
+            Self::Codex => "continue_codex_session",
+        }
+    }
+
+    fn exit_tool_name(self) -> &'static str {
+        match self {
+            Self::Claude => "exit_claude_session",
+            Self::Codex => "exit_codex_session",
+        }
+    }
+
+    fn dispatch_prefix(self) -> &'static str {
+        match self {
+            Self::Claude => "__DISPATCH_CLAUDE__:",
+            Self::Codex => "__DISPATCH_CODEX__:",
+        }
+    }
+
+    fn continue_prefix(self) -> &'static str {
+        match self {
+            Self::Claude => "__CONTINUE_CLAUDE__:",
+            Self::Codex => "__CONTINUE_CODEX__:",
+        }
+    }
+
+    fn exit_prefix(self) -> &'static str {
+        match self {
+            Self::Claude => "__EXIT_CLAUDE__:",
+            Self::Codex => "__EXIT_CODEX__:",
+        }
+    }
+
+    fn dispatch_description(self) -> &'static str {
+        match self {
+            Self::Claude => {
+                "Delegate a coding task to a Claude Code specialist agent running in a real terminal. Prefer Claude when you want faster iteration for new features, algorithm design, debugging exploration, or broad solution search. The task description should be detailed and self-contained."
+            }
+            Self::Codex => {
+                "Delegate a coding task to a Codex specialist agent running in a real terminal. Prefer Codex when you want slower but more careful execution for refactoring, structural cleanup, regression-sensitive edits, or tasks that need extra verification discipline. The task description should be detailed and self-contained."
+            }
+        }
+    }
+
+    fn continue_description(self) -> &'static str {
+        match self {
+            Self::Claude => {
+                "Continue an active Claude Code session by sending additional instructions to the running terminal. Use this for follow-up work in the same Claude subprocess."
+            }
+            Self::Codex => {
+                "Continue an active Codex session by sending additional instructions to the running terminal. Use this for follow-up work in the same Codex subprocess."
+            }
+        }
+    }
+
+    fn exit_description(self) -> &'static str {
+        match self {
+            Self::Claude => {
+                "Exit the active Claude Code session by sending /exit to the terminal. Use this when the Claude subprocess is complete."
+            }
+            Self::Codex => {
+                "Exit the active Codex session by sending /exit to the terminal. Use this when the Codex subprocess is complete."
+            }
+        }
+    }
+}
+
+impl DispatchAgentTool {
+    fn new(agent: DispatchAgent) -> Self {
+        Self { agent }
+    }
+}
+
+impl ContinueAgentSessionTool {
+    fn new(agent: DispatchAgent) -> Self {
+        Self { agent }
+    }
+}
+
+impl ExitAgentSessionTool {
+    fn new(agent: DispatchAgent) -> Self {
+        Self { agent }
+    }
+}
+
+// ── dispatch_agent tools ─────────────────────────────────────────────────────
 
 #[async_trait]
-impl AgentTool for DispatchClaudeTool {
+impl AgentTool for DispatchAgentTool {
     fn name(&self) -> &'static str {
-        "dispatch_claude"
+        self.agent.tool_name()
     }
 
     fn description(&self) -> &'static str {
-        "Delegate a coding task to a Claude Code specialist agent running in a real terminal. Use this for complex multi-file edits, refactoring, feature implementation, and other substantial coding work. Claude has full access to the workspace. The task description should be detailed and self-contained."
+        self.agent.dispatch_description()
     }
 
     fn parameters(&self) -> Value {
@@ -138,11 +257,11 @@ impl AgentTool for DispatchClaudeTool {
             "properties": {
                 "task_description": {
                     "type": "string",
-                    "description": "A detailed, self-contained description of the coding task for Claude to execute"
+                    "description": format!("A detailed, self-contained description of the coding task for {} to execute", self.agent.display_name())
                 },
                 "permission_mode": {
                     "type": "string",
-                    "description": "Permission mode for Claude: ask (default permissions), auto_edit (auto-accept edits), full_access (skip all permissions)",
+                    "description": format!("Permission mode for {}: ask (default permissions), auto_edit (auto-accept edits), full_access (skip all permissions)", self.agent.display_name()),
                     "enum": ["ask", "auto_edit", "full_access"],
                     "default": "full_access"
                 }
@@ -159,22 +278,21 @@ impl AgentTool for DispatchClaudeTool {
         let permission_mode =
             string_arg(args, "permission_mode").unwrap_or_else(|| "full_access".to_string());
 
-        // Return dispatch instruction for agent.rs to intercept
         format!(
             "{}{}|||{}",
-            DISPATCH_PREFIX, task_description, permission_mode
+            self.agent.dispatch_prefix(),
+            task_description,
+            permission_mode
         )
     }
 }
 
-/// Check if a tool result is a dispatch_claude instruction.
-pub fn is_dispatch_instruction(result: &str) -> bool {
-    result.starts_with(DISPATCH_PREFIX)
+pub fn is_dispatch_instruction(result: &str, agent: DispatchAgent) -> bool {
+    result.starts_with(agent.dispatch_prefix())
 }
 
-/// Parse a dispatch_claude instruction into (task_description, permission_mode).
-pub fn parse_dispatch_instruction(result: &str) -> Option<(String, String)> {
-    let after = result.strip_prefix(DISPATCH_PREFIX)?;
+pub fn parse_dispatch_instruction(result: &str, agent: DispatchAgent) -> Option<(String, String)> {
+    let after = result.strip_prefix(agent.dispatch_prefix())?;
     let parts: Vec<&str> = after.splitn(2, "|||").collect();
     if parts.len() == 2 {
         Some((parts[0].to_string(), parts[1].to_string()))
@@ -183,18 +301,16 @@ pub fn parse_dispatch_instruction(result: &str) -> Option<(String, String)> {
     }
 }
 
-// ── continue_claude_session tool ─────────────────────────────────────────────
-
-const CONTINUE_PREFIX: &str = "__CONTINUE_CLAUDE__:";
+// ── continue_agent_session tools ─────────────────────────────────────────────
 
 #[async_trait]
-impl AgentTool for ContinueClaudeSessionTool {
+impl AgentTool for ContinueAgentSessionTool {
     fn name(&self) -> &'static str {
-        "continue_claude_session"
+        self.agent.continue_tool_name()
     }
 
     fn description(&self) -> &'static str {
-        "Continue an active Claude Code session by sending additional instructions to the running terminal. Use this when you need Claude to perform follow-up tasks or corrections in the same session. The Claude process must still be running."
+        self.agent.continue_description()
     }
 
     fn parameters(&self) -> Value {
@@ -203,7 +319,7 @@ impl AgentTool for ContinueClaudeSessionTool {
             "properties": {
                 "task_description": {
                     "type": "string",
-                    "description": "The follow-up instruction to send to the active Claude session"
+                    "description": format!("The follow-up instruction to send to the active {} session", self.agent.display_name())
                 }
             },
             "required": ["task_description"]
@@ -215,30 +331,30 @@ impl AgentTool for ContinueClaudeSessionTool {
             Some(desc) if !desc.trim().is_empty() => desc,
             _ => return "Error: task_description is required and must not be empty".to_string(),
         };
-        format!("{}{}", CONTINUE_PREFIX, task_description)
+        format!("{}{}", self.agent.continue_prefix(), task_description)
     }
 }
 
-pub fn is_continue_instruction(result: &str) -> bool {
-    result.starts_with(CONTINUE_PREFIX)
+pub fn is_continue_instruction(result: &str, agent: DispatchAgent) -> bool {
+    result.starts_with(agent.continue_prefix())
 }
 
-pub fn parse_continue_instruction(result: &str) -> Option<String> {
-    result.strip_prefix(CONTINUE_PREFIX).map(|s| s.to_string())
+pub fn parse_continue_instruction(result: &str, agent: DispatchAgent) -> Option<String> {
+    result
+        .strip_prefix(agent.continue_prefix())
+        .map(|s| s.to_string())
 }
 
-// ── exit_claude_session tool ─────────────────────────────────────────────────
-
-const EXIT_PREFIX: &str = "__EXIT_CLAUDE__:";
+// ── exit_agent_session tools ─────────────────────────────────────────────────
 
 #[async_trait]
-impl AgentTool for ExitClaudeSessionTool {
+impl AgentTool for ExitAgentSessionTool {
     fn name(&self) -> &'static str {
-        "exit_claude_session"
+        self.agent.exit_tool_name()
     }
 
     fn description(&self) -> &'static str {
-        "Exit the active Claude Code session by sending /exit to the terminal. Use this when the Claude task is complete and no further interaction is needed. This will terminate the Claude process."
+        self.agent.exit_description()
     }
 
     fn parameters(&self) -> Value {
@@ -255,16 +371,18 @@ impl AgentTool for ExitClaudeSessionTool {
 
     async fn execute(&self, args: &Value, _context: &ToolContext) -> String {
         let reason = string_arg(args, "reason").unwrap_or_else(|| "Task completed".to_string());
-        format!("{}{}", EXIT_PREFIX, reason)
+        format!("{}{}", self.agent.exit_prefix(), reason)
     }
 }
 
-pub fn is_exit_instruction(result: &str) -> bool {
-    result.starts_with(EXIT_PREFIX)
+pub fn is_exit_instruction(result: &str, agent: DispatchAgent) -> bool {
+    result.starts_with(agent.exit_prefix())
 }
 
-pub fn parse_exit_instruction(result: &str) -> Option<String> {
-    result.strip_prefix(EXIT_PREFIX).map(|s| s.to_string())
+pub fn parse_exit_instruction(result: &str, agent: DispatchAgent) -> Option<String> {
+    result
+        .strip_prefix(agent.exit_prefix())
+        .map(|s| s.to_string())
 }
 
 // ── Standard tools (ported from mini_code_bot) ──────────────────────────────

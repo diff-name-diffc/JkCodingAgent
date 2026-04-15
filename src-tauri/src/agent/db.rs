@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 use super::llm::{ChatMessage, OutboundToolCall};
 
+const MAX_LLM_DIALOGUES: usize = 5;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DispatcherSessionRecord {
@@ -255,40 +257,30 @@ impl DispatcherDb {
             .context("load visible dispatcher messages")
     }
 
-    pub fn load_llm_history(&self, workspace_id: &str, limit: usize) -> Result<Vec<ChatMessage>> {
+    /// Load only the recent dialogue window for one dispatcher session.
+    ///
+    /// Note:
+    /// - `workspace_id` here is the dispatcher session id used by the frontend.
+    /// - One project can have multiple dispatcher sessions; history is isolated by session id.
+    /// - Only the most recent `MAX_LLM_DIALOGUES` user-started dialogues are injected into the LLM.
+    pub fn load_llm_history(&self, workspace_id: &str) -> Result<Vec<ChatMessage>> {
         let conn = self.connect()?;
+        let cutoff_rowid =
+            self.find_dialogue_cutoff_rowid(&conn, workspace_id, MAX_LLM_DIALOGUES)?;
+
         let mut stmt = conn.prepare(
             "SELECT role, content, tool_call_id, tool_name, tool_calls_json
              FROM dispatcher_messages
-             WHERE workspace_id = ?1
-             ORDER BY created_at DESC, rowid DESC
-             LIMIT ?2",
+             WHERE workspace_id = ?1 AND rowid >= ?2
+             ORDER BY rowid ASC",
         )?;
-        let rows = stmt.query_map(params![workspace_id, limit as i64], |row| {
-            let tool_calls_json: Option<String> = row.get(4)?;
-            let tool_calls = tool_calls_json
-                .as_deref()
-                .and_then(|json| serde_json::from_str::<Vec<OutboundToolCall>>(json).ok());
-            Ok(ChatMessage {
-                role: row.get(0)?,
-                content: row.get(1)?,
-                tool_call_id: row.get(2)?,
-                name: row.get(3)?,
-                tool_calls,
-            })
-        })?;
+        let rows = stmt.query_map(params![workspace_id, cutoff_rowid], map_chat_message_row)?;
 
         let mut messages = rows
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("load dispatcher llm history")?;
-        messages.reverse();
+        messages.retain(should_keep_llm_message);
 
-        // 从第一条 user 消息开始
-        if let Some(first_user_index) = messages.iter().position(|m| m.role == "user") {
-            messages = messages.split_off(first_user_index);
-        }
-
-        // 移除开头的悬挂 tool 消息
         while matches!(messages.first().map(|m| m.role.as_str()), Some("tool")) {
             messages.remove(0);
         }
@@ -413,8 +405,95 @@ impl DispatcherDb {
     fn connect(&self) -> Result<Connection> {
         Connection::open(&self.path).with_context(|| format!("open {}", self.path.display()))
     }
+
+    fn find_dialogue_cutoff_rowid(
+        &self,
+        conn: &Connection,
+        workspace_id: &str,
+        max_dialogues: usize,
+    ) -> Result<i64> {
+        let mut stmt = conn.prepare(
+            "SELECT rowid
+             FROM dispatcher_messages
+             WHERE workspace_id = ?1 AND role = 'user'
+             ORDER BY rowid DESC
+             LIMIT ?2",
+        )?;
+        let rowids = stmt
+            .query_map(params![workspace_id, max_dialogues as i64], |row| {
+                row.get::<_, i64>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("load dispatcher dialogue boundaries")?;
+
+        Ok(rowids.into_iter().min().unwrap_or(0))
+    }
 }
 
 fn now() -> String {
     Utc::now().to_rfc3339()
+}
+
+fn map_chat_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatMessage> {
+    let tool_calls_json: Option<String> = row.get(4)?;
+    let tool_calls = tool_calls_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Vec<OutboundToolCall>>(json).ok());
+
+    Ok(ChatMessage {
+        role: row.get(0)?,
+        content: row.get(1)?,
+        tool_call_id: row.get(2)?,
+        name: row.get(3)?,
+        tool_calls,
+    })
+}
+
+fn should_keep_llm_message(message: &ChatMessage) -> bool {
+    match message.role.as_str() {
+        "assistant" => {
+            !is_process_only_assistant_message(&message.content)
+                && !is_process_only_assistant_tool_call(message)
+        }
+        "tool" => !message
+            .name
+            .as_deref()
+            .is_some_and(is_dispatch_plumbing_tool_name),
+        _ => true,
+    }
+}
+
+fn is_process_only_assistant_message(content: &str) -> bool {
+    matches!(
+        content.trim(),
+        "🔄 子任务当前轮次已完成，执行结果已同步供后续分析。"
+            | "✅ 子任务进程已结束，执行结果已同步供后续分析。"
+            | "⚠️ 子任务进程已失败退出，执行结果已同步供后续分析。"
+            | "⏹️ 子任务进程已取消，执行结果已同步供后续分析。"
+    ) || content.starts_with("📋 已自动批准 ")
+        || content.starts_with("📋 已提交 ")
+        || content.starts_with("📨 已向 ")
+}
+
+fn is_process_only_assistant_tool_call(message: &ChatMessage) -> bool {
+    message
+        .tool_calls
+        .as_ref()
+        .is_some_and(|calls| !calls.is_empty() && calls.iter().all(is_dispatch_plumbing_tool_call))
+}
+
+fn is_dispatch_plumbing_tool_call(call: &OutboundToolCall) -> bool {
+    is_dispatch_plumbing_tool_name(&call.function.name)
+}
+
+fn is_dispatch_plumbing_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        "dispatch_claude"
+            | "dispatch_codex"
+            | "continue_claude_session"
+            | "continue_codex_session"
+            | "exit_claude_session"
+            | "exit_codex_session"
+    )
 }

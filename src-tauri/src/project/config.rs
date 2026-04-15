@@ -4,23 +4,29 @@ use std::path::Path;
 use super::storage::atomic_write;
 use crate::platform::{detect_claude_version, detect_codex_version};
 
-const DEFAULT_CONFIG: &str = r#"# JKCodingAgent project configuration
+const DEFAULT_AGENT_PROMPT_PREFIX: &str = "你是一名资深软件工程师，当前目标是完成用户交付的编码任务。\n- 先阅读相关代码、调用链和约束，再动手修改。\n- 优先做与当前任务直接相关的最小充分改动，不无端扩散范围。\n- 对正确性、边界条件、兼容性和可维护性保持敏感。\n- 修改后主动做编译、测试或关键路径验证；若无法验证，明确说明。\n- 以操作和交付为主，少讲概念，少做长篇分析。\n- 过程输出保持简洁，只在必要时汇报关键判断、风险和下一步。\n- 不要重复复述用户需求，不要写冗长总结。\n- 收尾时只做简洁结果说明：改了什么、验证了什么、还有什么风险。";
+
+const LEGACY_DEFAULT_AGENT_PROMPT_PREFIX: &str = "你是一名资深软件工程师，当前目标是完成用户交付的编码任务。\n- 先阅读相关代码、调用链和约束，再动手修改。\n- 优先做与当前任务直接相关的最小充分改动，不无端扩散范围。\n- 对正确性、边界条件、兼容性和可维护性保持敏感。\n- 修改后主动做编译、测试或关键路径验证；若无法验证，明确说明。\n- 输出聚焦结果、风险、验证结论和后续建议。";
+
+const DEFAULT_COMMIT_PROMPT: &str = "你是一名资深软件工程师，请基于给定的 Git diff 生成提交信息。\n要求：\n1. 使用祈使句，直接描述本次改动。\n2. 第一行格式为 type(scope): summary，尽量不超过 50 个字符。\n3. type 仅使用 feat、fix、refactor、docs、style、test、chore。\n4. 如需补充说明，空一行后用 1-3 行说明原因、影响或验证重点。\n5. 只输出提交信息正文，不要解释，不要 Markdown。";
+
+const DEFAULT_CONFIG: &str = r#"# JKCodingAgent 项目配置
 # https://github.com/diff-name-diffc/JkCodingAgent
 
 [agent]
-# Default agent to use for new tasks: "claude" or "codex"
+# 新任务默认使用的智能体："claude" 或 "codex"
 default = "claude"
-# Text automatically prepended (followed by a newline) to every task prompt
-prompt_prefix = ""
+# 每个任务提示词前自动追加的公共工程指令
+prompt_prefix = "你是一名资深软件工程师，当前目标是完成用户交付的编码任务。\n- 先阅读相关代码、调用链和约束，再动手修改。\n- 优先做与当前任务直接相关的最小充分改动，不无端扩散范围。\n- 对正确性、边界条件、兼容性和可维护性保持敏感。\n- 修改后主动做编译、测试或关键路径验证；若无法验证，明确说明。\n- 以操作和交付为主，少讲概念，少做长篇分析。\n- 过程输出保持简洁，只在必要时汇报关键判断、风险和下一步。\n- 不要重复复述用户需求，不要写冗长总结。\n- 收尾时只做简洁结果说明：改了什么、验证了什么、还有什么风险。"
 
-# Detected version of Claude Code (auto-populated, can be left empty)
+# 自动检测回写的 Claude Code 版本，可留空
 claude_version = ""
-# Detected version of Codex (auto-populated, can be left empty)
+# 自动检测回写的 Codex 版本，可留空
 codex_version = ""
 
 [git]
-# Prompt used when generating commit messages via the AI agent
-commit_prompt = "You are a git commit message generator. Based on the provided git diff, write a concise and descriptive commit message. Follow these rules:\n1. Use the imperative mood (e.g., \"Add feature\" not \"Added feature\")\n2. First line: type(scope): short summary (50 chars or less)\n   Types: feat, fix, docs, style, refactor, test, chore\n3. If needed, add a blank line then a brief body explaining what and why\n4. Output ONLY the commit message text, no explanations or markdown formatting"
+# 生成提交信息时使用的提示词
+commit_prompt = "你是一名资深软件工程师，请基于给定的 Git diff 生成提交信息。\n要求：\n1. 使用祈使句，直接描述本次改动。\n2. 第一行格式为 type(scope): summary，尽量不超过 50 个字符。\n3. type 仅使用 feat、fix、refactor、docs、style、test、chore。\n4. 如需补充说明，空一行后用 1-3 行说明原因、影响或验证重点。\n5. 只输出提交信息正文，不要解释，不要 Markdown。"
 "#;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -50,12 +56,12 @@ impl Default for ProjectConfig {
         ProjectConfig {
             agent: AgentConfig {
                 default: "claude".to_string(),
-                prompt_prefix: String::new(),
+                prompt_prefix: DEFAULT_AGENT_PROMPT_PREFIX.to_string(),
                 claude_version: String::new(),
                 codex_version: String::new(),
             },
             git: GitConfig {
-                commit_prompt: "You are a git commit message generator. Based on the provided git diff, write a concise and descriptive commit message. Follow these rules:\n1. Use the imperative mood (e.g., \"Add feature\" not \"Added feature\")\n2. First line: type(scope): short summary (50 chars or less)\n   Types: feat, fix, docs, style, refactor, test, chore\n3. If needed, add a blank line then a brief body explaining what and why\n4. Output ONLY the commit message text, no explanations or markdown formatting".to_string(),
+                commit_prompt: DEFAULT_COMMIT_PROMPT.to_string(),
             },
         }
     }
@@ -81,6 +87,12 @@ pub fn init_project_config(project_path: String) -> Result<ProjectConfig, String
 
     // 首次打开或版本字段为空时，自动检测并回写
     let mut updated = false;
+    if config.agent.prompt_prefix.is_empty()
+        || config.agent.prompt_prefix == LEGACY_DEFAULT_AGENT_PROMPT_PREFIX
+    {
+        config.agent.prompt_prefix = DEFAULT_AGENT_PROMPT_PREFIX.to_string();
+        updated = true;
+    }
     if config.agent.claude_version.is_empty() {
         if let Some(v) = detect_claude_version() {
             config.agent.claude_version = v;

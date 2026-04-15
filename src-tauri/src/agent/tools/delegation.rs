@@ -117,10 +117,10 @@ impl DispatchAgent {
     fn dispatch_description(self) -> &'static str {
         match self {
             Self::Claude => {
-                "Delegate a coding task to a Claude Code specialist agent running in a real terminal. Prefer Claude when you want faster iteration for new features, algorithm design, debugging exploration, or broad solution search. The task description should be detailed and self-contained."
+                "把编码任务委派给 Claude 终端执行。适合新功能、快速迭代、探索性调试、算法尝试和需要边实现边收敛的任务。发起前应先完成调查，并提供自包含的任务说明。"
             }
             Self::Codex => {
-                "Delegate a coding task to a Codex specialist agent running in a real terminal. Prefer Codex when you want slower but more careful execution for refactoring, structural cleanup, regression-sensitive edits, or tasks that need extra verification discipline. The task description should be detailed and self-contained."
+                "把编码任务委派给 Codex 终端执行。适合重构、结构整理、跨文件一致性修改、回归风险较高和需要严谨验证的任务。发起前应先完成调查，并提供自包含的任务说明。"
             }
         }
     }
@@ -128,10 +128,10 @@ impl DispatchAgent {
     fn continue_description(self) -> &'static str {
         match self {
             Self::Claude => {
-                "Continue an active Claude Code session by sending additional instructions to the running terminal. Use this for follow-up work in the same Claude subprocess."
+                "向正在运行的 Claude 会话发送后续指令，用于在同一个 Claude 子进程中继续推进任务。"
             }
             Self::Codex => {
-                "Continue an active Codex session by sending additional instructions to the running terminal. Use this for follow-up work in the same Codex subprocess."
+                "向正在运行的 Codex 会话发送后续指令，用于在同一个 Codex 子进程中继续推进任务。"
             }
         }
     }
@@ -139,11 +139,9 @@ impl DispatchAgent {
     fn exit_description(self) -> &'static str {
         match self {
             Self::Claude => {
-                "Exit the active Claude Code session by sending /exit to the terminal. Use this when the Claude subprocess is complete."
+                "向 Claude 子进程发送 /exit 以结束当前会话。仅在该子任务确认完成后使用。"
             }
-            Self::Codex => {
-                "Exit the active Codex session by sending /exit to the terminal. Use this when the Codex subprocess is complete."
-            }
+            Self::Codex => "向 Codex 子进程发送 /exit 以结束当前会话。仅在该子任务确认完成后使用。",
         }
     }
 }
@@ -182,11 +180,11 @@ impl AgentTool for DispatchAgentTool {
             "properties": {
                 "task_description": {
                     "type": "string",
-                    "description": format!("A detailed, self-contained description of the coding task for {} to execute", self.agent.display_name())
+                    "description": format!("交给 {} 执行的自包含任务说明，应包含目标、上下文、相关文件、约束和验证方式", self.agent.display_name())
                 },
                 "permission_mode": {
                     "type": "string",
-                    "description": format!("Permission mode for {}: ask (default permissions), auto_edit (auto-accept edits), full_access (skip all permissions)", self.agent.display_name()),
+                    "description": format!("{} 的权限模式：ask（默认权限）、auto_edit（自动接受编辑）、full_access（跳过权限确认）", self.agent.display_name()),
                     "enum": ["ask", "auto_edit", "full_access"],
                     "default": "full_access"
                 }
@@ -198,7 +196,7 @@ impl AgentTool for DispatchAgentTool {
     async fn execute(&self, args: &Value, _context: &ToolContext) -> String {
         let task_description = match string_arg(args, "task_description") {
             Some(description) if !description.trim().is_empty() => description,
-            _ => return "Error: task_description is required and must not be empty".to_string(),
+            _ => return "错误：task_description 为必填项，且不能为空".to_string(),
         };
         let permission_mode =
             string_arg(args, "permission_mode").unwrap_or_else(|| "full_access".to_string());
@@ -228,7 +226,7 @@ impl AgentTool for ContinueAgentSessionTool {
             "properties": {
                 "task_description": {
                     "type": "string",
-                    "description": format!("The follow-up instruction to send to the active {} session", self.agent.display_name())
+                    "description": format!("发送给当前 {} 会话的后续指令", self.agent.display_name())
                 }
             },
             "required": ["task_description"]
@@ -238,7 +236,7 @@ impl AgentTool for ContinueAgentSessionTool {
     async fn execute(&self, args: &Value, _context: &ToolContext) -> String {
         let task_description = match string_arg(args, "task_description") {
             Some(description) if !description.trim().is_empty() => description,
-            _ => return "Error: task_description is required and must not be empty".to_string(),
+            _ => return "错误：task_description 为必填项，且不能为空".to_string(),
         };
         format!("{}{}", self.agent.continue_prefix(), task_description)
     }
@@ -260,14 +258,14 @@ impl AgentTool for ExitAgentSessionTool {
             "properties": {
                 "reason": {
                     "type": "string",
-                    "description": "Optional reason for exiting the session"
+                    "description": "可选，说明为什么结束当前会话"
                 }
             }
         })
     }
 
     async fn execute(&self, args: &Value, _context: &ToolContext) -> String {
-        let reason = string_arg(args, "reason").unwrap_or_else(|| "Task completed".to_string());
+        let reason = string_arg(args, "reason").unwrap_or_else(|| "任务已完成".to_string());
         format!("{}{}", self.agent.exit_prefix(), reason)
     }
 }

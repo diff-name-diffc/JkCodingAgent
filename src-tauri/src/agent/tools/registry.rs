@@ -40,9 +40,9 @@ impl ToolRegistry {
         match self.tools.iter().find(|tool| tool.name() == name) {
             Some(tool) => {
                 let output = tool.execute(args, context).await;
-                truncate_for_display(&output, context.max_result_chars, "\n\n[Output truncated]")
+                truncate_for_display(&output, context.max_result_chars, "\n\n[输出已截断]")
             }
-            None => format!("Error: tool '{name}' not found"),
+            None => format!("错误：未找到工具 '{name}'"),
         }
     }
 }

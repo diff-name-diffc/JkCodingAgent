@@ -72,16 +72,16 @@ impl AgentTool for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a text file. Output format: LINE_NUM|CONTENT. Use offset and limit for large files."
+        "读取文本文件，输出格式为 行号|内容。分析代码时优先使用；大文件请配合 offset 和 limit 分段读取。"
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "The file path to read" },
-                "offset": { "type": "integer", "description": "Line number to start reading from (1-indexed, default 1)", "minimum": 1 },
-                "limit": { "type": "integer", "description": "Maximum number of lines to read (default 2000)", "minimum": 1 }
+                "path": { "type": "string", "description": "要读取的文件路径" },
+                "offset": { "type": "integer", "description": "起始行号，从 1 开始，默认 1" , "minimum": 1 },
+                "limit": { "type": "integer", "description": "最多读取多少行，默认 2000", "minimum": 1 }
             },
             "required": ["path"]
         })
@@ -129,15 +129,15 @@ impl AgentTool for WriteFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Write content to a file. Overwrites if the file already exists; creates parent directories as needed."
+        "将内容写入文件。若文件已存在则覆盖；必要时自动创建父目录。仅适合小范围修改或生成文件。"
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "The file path to write to" },
-                "content": { "type": "string", "description": "The content to write" }
+                "path": { "type": "string", "description": "要写入的文件路径" },
+                "content": { "type": "string", "description": "要写入的内容" }
             },
             "required": ["path", "content"]
         })
@@ -178,17 +178,17 @@ impl AgentTool for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Edit a file by replacing old_text with new_text. If old_text matches multiple times, provide more context or set replace_all=true."
+        "通过将 old_text 替换为 new_text 来编辑文件。如果 old_text 命中多处，请补充上下文或设置 replace_all=true。"
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "The file path to edit" },
-                "old_text": { "type": "string", "description": "The text to find and replace" },
-                "new_text": { "type": "string", "description": "The text to replace with" },
-                "replace_all": { "type": "string", "description": "Replace all occurrences (default false)", "enum": ["true", "false"] }
+                "path": { "type": "string", "description": "要编辑的文件路径" },
+                "old_text": { "type": "string", "description": "要查找并替换的原文本" },
+                "new_text": { "type": "string", "description": "替换后的新文本" },
+                "replace_all": { "type": "string", "description": "是否替换全部命中项，默认 false", "enum": ["true", "false"] }
             },
             "required": ["path", "old_text", "new_text"]
         })
@@ -240,16 +240,16 @@ impl AgentTool for ListDirTool {
     }
 
     fn description(&self) -> &'static str {
-        "List the contents of a directory. Set recursive=true to explore nested structure."
+        "列出目录内容。需要继续深入结构时可设置 recursive=true。"
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "The directory path to list" },
-                "recursive": { "type": "string", "description": "Recursively list all files (default false)", "enum": ["true", "false"] },
-                "max_entries": { "type": "integer", "description": "Maximum entries to return (default 200)", "minimum": 1 }
+                "path": { "type": "string", "description": "要查看的目录路径" },
+                "recursive": { "type": "string", "description": "是否递归列出子目录内容，默认 false", "enum": ["true", "false"] },
+                "max_entries": { "type": "integer", "description": "最多返回多少条，默认 200", "minimum": 1 }
             },
             "required": ["path"]
         })
@@ -286,16 +286,16 @@ impl AgentTool for GlobTool {
     }
 
     fn description(&self) -> &'static str {
-        "Find files matching a glob pattern. Results are sorted by modification time (newest first)."
+        "按 glob 模式查找文件，结果按修改时间倒序排列。适合快速缩小文件范围。"
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "pattern": { "type": "string", "description": "Glob pattern to match, e.g. '*.rs' or 'src/**/*.ts'" },
-                "path": { "type": "string", "description": "Directory to search from (default '.')" },
-                "max_results": { "type": "integer", "description": "Maximum number of matches to return (default 250)", "minimum": 1 }
+                "pattern": { "type": "string", "description": "匹配模式，例如 '*.rs' 或 'src/**/*.ts'" },
+                "path": { "type": "string", "description": "从哪个目录开始搜索，默认 '.'" },
+                "max_results": { "type": "integer", "description": "最多返回多少个结果，默认 250", "minimum": 1 }
             },
             "required": ["pattern"]
         })
@@ -357,15 +357,15 @@ impl AgentTool for ExecTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command in the active workspace and return stdout/stderr."
+        "在当前工作区执行 shell 命令并返回输出。适合搜索、构建、测试、查看 git 信息；优先使用只读命令。"
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "command": { "type": "string", "description": "The shell command to execute" },
-                "timeout": { "type": "integer", "description": "Timeout in seconds (default 60)", "minimum": 1 }
+                "command": { "type": "string", "description": "要执行的 shell 命令" },
+                "timeout": { "type": "integer", "description": "超时时间，单位秒，默认 60", "minimum": 1 }
             },
             "required": ["command"]
         })
@@ -436,14 +436,14 @@ impl AgentTool for MessageTool {
     }
 
     fn description(&self) -> &'static str {
-        "Send a final message to the user."
+        "向用户发送最终回复。通常在调查完成、结果整理完成或协调结束后使用。"
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "content": { "type": "string", "description": "The message content to send" }
+                "content": { "type": "string", "description": "要发送给用户的内容" }
             },
             "required": ["content"]
         })

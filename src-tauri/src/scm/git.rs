@@ -100,7 +100,7 @@ pub async fn generate_commit_message(project_path: String) -> Result<String, Str
 
     // 3. Build full prompt
     let full_prompt = format!(
-        "{}\n\nGit diff:\n```diff\n{}\n```\n\nOutput only the commit message, nothing else.",
+        "{}\n\n以下是 Git diff：\n```diff\n{}\n```\n\n只输出提交信息正文，不要附加解释。",
         commit_prompt, diff
     );
 

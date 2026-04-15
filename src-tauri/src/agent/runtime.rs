@@ -255,7 +255,11 @@ impl DispatcherAgent {
         db.add_hidden_message(
             workspace_id,
             "user",
-            &format!("{}\n\n{}", dispatch_state.hidden_prefix(), dispatch_result,),
+            &format!(
+                "{}\n\n{}",
+                dispatch_state.hidden_prefix(),
+                summarize_dispatch_result(dispatch_result)
+            ),
             None,
             None,
             None,
@@ -309,7 +313,7 @@ impl DispatcherAgent {
 
         for _ in 0..self.config.max_tool_iterations {
             let mut messages = vec![ChatMessage::system(self.build_system_prompt()?)];
-            messages.extend(db.load_llm_history(workspace_id, 500)?);
+            messages.extend(db.load_llm_history(workspace_id)?);
 
             let stream_msg_id = uuid::Uuid::new_v4().to_string();
             emit(
@@ -610,4 +614,96 @@ fn extract_message_content(arguments: &Value) -> Option<String> {
 
 fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
     let _ = on_event.send(event);
+}
+
+fn summarize_dispatch_result(dispatch_result: &str) -> String {
+    let trimmed = dispatch_result.trim();
+    if trimmed.is_empty() {
+        return "【子任务回流摘要】\n- 无可用输出".to_string();
+    }
+
+    let (headline, output) = trimmed
+        .split_once("\n\n终端输出：\n")
+        .map(|(left, right)| (left.trim(), right.trim()))
+        .unwrap_or((trimmed, ""));
+
+    let mut sections = vec!["【子任务回流摘要】".to_string()];
+    sections.push(format!(
+        "- 状态：{}",
+        truncate_for_display(headline, 200, "...")
+    ));
+
+    if output.is_empty() {
+        sections.push("- 关键输出：无终端输出".to_string());
+        return sections.join("\n");
+    }
+
+    let key_lines = extract_key_output_lines(output);
+    let snippet = if key_lines.is_empty() {
+        truncate_for_display(output, 1200, "...")
+    } else {
+        truncate_for_display(&key_lines.join("\n"), 2000, "\n...")
+    };
+
+    sections.push("- 关键输出：".to_string());
+    sections.push(snippet);
+    sections.join("\n")
+}
+
+fn extract_key_output_lines(output: &str) -> Vec<String> {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    let mut result = Vec::new();
+    for line in &lines {
+        if looks_like_key_output_line(line) {
+            let candidate = (*line).to_string();
+            if result.last() != Some(&candidate) {
+                result.push(candidate);
+            }
+            if result.len() >= 12 {
+                break;
+            }
+        }
+    }
+
+    if !result.is_empty() {
+        return result;
+    }
+
+    lines
+        .iter()
+        .rev()
+        .take(12)
+        .rev()
+        .map(|line| (*line).to_string())
+        .collect()
+}
+
+fn looks_like_key_output_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "error",
+        "failed",
+        "panic",
+        "exception",
+        "traceback",
+        "warning",
+        "assert",
+        "test",
+        "build",
+        "lint",
+        "成功",
+        "失败",
+        "报错",
+        "错误",
+        "警告",
+        "通过",
+        "未通过",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
 }

@@ -37,6 +37,8 @@ const IGNORED_DIRS: &[&str] = &[
     ".tox",
 ];
 
+const IGNORED_FILES: &[&str] = &[".DS_Store"];
+
 const MAX_IMAGE_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Validate that `target` is an absolute path within `allowed_root` (prevents directory traversal).
@@ -75,6 +77,21 @@ fn previewable_image_mime_type(path: &Path) -> Option<&'static str> {
     }
 }
 
+fn should_ignore_entry_name(name: &str, is_dir: bool) -> bool {
+    if is_dir {
+        return IGNORED_DIRS.contains(&name);
+    }
+
+    IGNORED_FILES.contains(&name)
+}
+
+fn should_ignore_project_file(relative_path: &str) -> bool {
+    Path::new(relative_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| should_ignore_entry_name(name, false))
+}
+
 #[tauri::command]
 pub async fn read_dir_entries(path: String, project_path: String) -> Result<Vec<FsEntry>, String> {
     validate_path_within(&path, &project_path)?;
@@ -83,13 +100,9 @@ pub async fn read_dir_entries(path: String, project_path: String) -> Result<Vec<
         .flatten()
         .filter(|entry| {
             let p = entry.path();
-            if p.is_dir() {
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                !IGNORED_DIRS.contains(&name_str.as_ref())
-            } else {
-                true
-            }
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            !should_ignore_entry_name(name_str.as_ref(), p.is_dir())
         })
         .map(|entry| {
             let p = entry.path();
@@ -215,7 +228,7 @@ pub async fn list_project_files(project_path: String) -> Result<Vec<String>, Str
 
         let mut files: Vec<String> = String::from_utf8_lossy(&output.stdout)
             .lines()
-            .filter(|l| !l.is_empty())
+            .filter(|line| !line.is_empty() && !should_ignore_project_file(line))
             .map(|l| l.to_string())
             .collect();
 
@@ -225,6 +238,24 @@ pub async fn list_project_files(project_path: String) -> Result<Vec<String>, Str
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_ignore_entry_name, should_ignore_project_file};
+
+    #[test]
+    fn ignores_ds_store_in_directory_entries() {
+        assert!(should_ignore_entry_name(".DS_Store", false));
+        assert!(!should_ignore_entry_name("README.md", false));
+    }
+
+    #[test]
+    fn ignores_ds_store_anywhere_in_project_file_list() {
+        assert!(should_ignore_project_file(".DS_Store"));
+        assert!(should_ignore_project_file("src/.DS_Store"));
+        assert!(!should_ignore_project_file("src/main.ts"));
+    }
 }
 
 // ─── Large-file support commands ────────────────────────────────────────────

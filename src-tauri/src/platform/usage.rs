@@ -8,7 +8,7 @@ use once_cell::sync::Lazy;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::app_settings::{detect_claude_version, get_agent_bin, get_login_shell_path};
+use super::app_settings::{detect_claude_version, get_agent_bin, get_login_shell_path};
 
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_BETA_HEADER: &str = "oauth-2025-04-20";

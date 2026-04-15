@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-use crate::storage::atomic_write;
+use crate::project::atomic_write;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};

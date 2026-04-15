@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::dispatcher_llm::{ChatMessage, OutboundToolCall};
+use super::llm::{ChatMessage, OutboundToolCall};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

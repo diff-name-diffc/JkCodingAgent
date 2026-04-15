@@ -7,23 +7,16 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::ipc::Channel;
 
-use crate::dispatcher_config::DispatcherAgentConfig;
-use crate::dispatcher_db::{DispatcherDb, DispatcherMessageRecord, DispatcherSettingsRecord};
-use crate::dispatcher_llm::{ChatMessage, FunctionCall, OpenAiCompatProvider, OutboundToolCall};
-use crate::dispatcher_tools::{
+use super::config::DispatcherAgentConfig;
+use super::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSettingsRecord};
+use super::llm::{ChatMessage, FunctionCall, OpenAiCompatProvider, OutboundToolCall};
+use super::prompt::build_system_prompt;
+use super::tools::{
     is_continue_instruction, is_dispatch_instruction, is_exit_instruction,
     parse_continue_instruction, parse_dispatch_instruction, parse_exit_instruction, DispatchAgent,
     ToolContext, ToolRegistry,
 };
-use crate::text::truncate_for_display;
-
-const BUILT_IN_DISPATCH_GUIDANCE: &str = r#"# Built-in Dispatch Guidance
-
-- Use `dispatch_claude` for tasks where speed matters more: greenfield features, algorithm experiments, debugging exploration, and broad implementation search.
-- Use `dispatch_codex` for tasks where extra care matters more: refactoring, structural cleanup, consistency passes, and regression-sensitive changes.
-- When continuing or exiting a subprocess, always use the matching tool for the same agent family (`continue_claude_session` / `continue_codex_session`, `exit_claude_session` / `exit_codex_session`).
-- Dispatcher may receive either a round-complete update or a process-exited update from a delegated subprocess. Round-complete means the subprocess is still running and can accept more instructions via `continue_*_session`; do not treat it as the subprocess having exited.
-"#;
+use crate::shared::truncate_for_display;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DispatchFeedbackState {
@@ -113,20 +106,17 @@ pub enum AgentEvent {
         name: String,
         result: String,
     },
-    /// 当 dispatch_claude 被调用时，发送给前端审查
     DispatchProposed {
         dispatch_id: String,
         agent: String,
         description: String,
         permission_mode: String,
     },
-    /// Dispatcher Agent 要求继续指定 agent 的活动会话
     DispatchContinue {
         dispatch_id: String,
         agent: String,
         text: String,
     },
-    /// Dispatcher Agent 要求退出指定 agent 的活动会话
     DispatchExit {
         dispatch_id: String,
         agent: String,
@@ -160,7 +150,6 @@ impl DispatcherAgent {
         }
     }
 
-    /// Apply runtime settings from DB, overriding the env-var defaults.
     pub fn apply_settings(&self, settings: &DispatcherSettingsRecord) {
         let mut provider = self.provider.lock().unwrap();
         *provider = OpenAiCompatProvider::new(
@@ -245,6 +234,63 @@ impl DispatcherAgent {
         Ok(AgentTurn { reply, messages })
     }
 
+    pub async fn continue_after_dispatch(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        workspace_path: &str,
+        dispatch_result: &str,
+        dispatch_state: DispatchFeedbackState,
+        on_event: Channel<AgentEvent>,
+    ) -> Result<AgentTurn> {
+        let result_msg =
+            db.add_visible_message(workspace_id, "assistant", dispatch_state.visible_message())?;
+        emit(
+            &on_event,
+            AgentEvent::AssistantMessage {
+                message: result_msg.clone(),
+            },
+        );
+
+        db.add_hidden_message(
+            workspace_id,
+            "user",
+            &format!("{}\n\n{}", dispatch_state.hidden_prefix(), dispatch_result,),
+            None,
+            None,
+            None,
+        )?;
+
+        let provider = self.provider.lock().unwrap().clone();
+        if !provider.is_configured() {
+            let messages = db.list_visible_messages(workspace_id)?;
+            emit(
+                &on_event,
+                AgentEvent::Finished {
+                    messages: messages.clone(),
+                },
+            );
+            return Ok(AgentTurn {
+                reply: result_msg,
+                messages,
+            });
+        }
+
+        let workspace = PathBuf::from(workspace_path);
+        let reply = self
+            .run_llm_loop(db, workspace_id, &workspace, &on_event, &provider)
+            .await?;
+
+        let messages = db.list_visible_messages(workspace_id)?;
+        emit(
+            &on_event,
+            AgentEvent::Finished {
+                messages: messages.clone(),
+            },
+        );
+        Ok(AgentTurn { reply, messages })
+    }
+
     async fn run_llm_loop(
         &self,
         db: &DispatcherDb,
@@ -265,7 +311,6 @@ impl DispatcherAgent {
             let mut messages = vec![ChatMessage::system(self.build_system_prompt()?)];
             messages.extend(db.load_llm_history(workspace_id, 500)?);
 
-            // Generate a message ID for streaming
             let stream_msg_id = uuid::Uuid::new_v4().to_string();
             emit(
                 on_event,
@@ -274,7 +319,6 @@ impl DispatcherAgent {
                 },
             );
 
-            // Streaming callback
             let event_ref = on_event;
             let msg_id_ref = stream_msg_id.clone();
             let on_delta = move |delta: &str| {
@@ -289,7 +333,6 @@ impl DispatcherAgent {
                 .await?;
 
             if response.tool_calls.is_empty() {
-                // Pure text reply
                 let content = response.content.trim().to_string();
                 let reply = db.add_visible_message(workspace_id, "assistant", &content)?;
                 emit(
@@ -301,7 +344,6 @@ impl DispatcherAgent {
                 return Ok(reply);
             }
 
-            // LLM wants to call tools
             let tool_calls_payload = response
                 .tool_calls
                 .iter()
@@ -341,7 +383,7 @@ impl DispatcherAgent {
                     .execute(&tool_call.name, &tool_call.arguments, &tool_context)
                     .await;
 
-                if let Some(agent) = dispatch_agent_for_tool_name(&tool_call.name) {
+                if let Some(agent) = DispatchAgent::from_dispatch_tool_name(&tool_call.name) {
                     if is_dispatch_instruction(&result, agent) {
                         if let Some((description, permission_mode)) =
                             parse_dispatch_instruction(&result, agent)
@@ -411,16 +453,14 @@ impl DispatcherAgent {
                     }
                 }
 
-                if let Some(agent) = continue_agent_for_tool_name(&tool_call.name) {
+                if let Some(agent) = DispatchAgent::from_continue_tool_name(&tool_call.name) {
                     if is_continue_instruction(&result, agent) {
                         if let Some(text) = parse_continue_instruction(&result, agent) {
-                            let dispatch_id = "active".to_string();
                             let agent_label = agent.display_name();
-
                             emit(
                                 on_event,
                                 AgentEvent::DispatchContinue {
-                                    dispatch_id: dispatch_id.clone(),
+                                    dispatch_id: "active".to_string(),
                                     agent: agent.slug().to_string(),
                                     text: text.clone(),
                                 },
@@ -469,16 +509,14 @@ impl DispatcherAgent {
                     }
                 }
 
-                if let Some(agent) = exit_agent_for_tool_name(&tool_call.name) {
+                if let Some(agent) = DispatchAgent::from_exit_tool_name(&tool_call.name) {
                     if is_exit_instruction(&result, agent) {
                         if let Some(reason) = parse_exit_instruction(&result, agent) {
-                            let dispatch_id = "active".to_string();
                             let agent_label = agent.display_name();
-
                             emit(
                                 on_event,
                                 AgentEvent::DispatchExit {
-                                    dispatch_id: dispatch_id.clone(),
+                                    dispatch_id: "active".to_string(),
                                     agent: agent.slug().to_string(),
                                     reason: reason.clone(),
                                 },
@@ -558,154 +596,9 @@ impl DispatcherAgent {
         Ok(reply)
     }
 
-    /// 子任务完成后，将结果注入对话并继续 Agent 循环
-    pub async fn continue_after_dispatch(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        workspace_path: &str,
-        dispatch_result: &str,
-        dispatch_state: DispatchFeedbackState,
-        on_event: Channel<AgentEvent>,
-    ) -> Result<AgentTurn> {
-        // 将子任务状态作为简短提示追加
-        let result_msg = db.add_visible_message(
-            workspace_id,
-            "assistant",
-            dispatch_state.visible_message(),
-        )?;
-        emit(
-            &on_event,
-            AgentEvent::AssistantMessage {
-                message: result_msg.clone(),
-            },
-        );
-
-        // 同时将结果作为隐藏消息加入 LLM 上下文
-        db.add_hidden_message(
-            workspace_id,
-            "user",
-            &format!(
-                "{}\n\n{}",
-                dispatch_state.hidden_prefix(),
-                dispatch_result,
-            ),
-            None,
-            None,
-            None,
-        )?;
-
-        // 继续 Agent 循环，让主 Agent 分析 Claude 的结果
-        let provider = self.provider.lock().unwrap().clone();
-        if !provider.is_configured() {
-            let messages = db.list_visible_messages(workspace_id)?;
-            emit(
-                &on_event,
-                AgentEvent::Finished {
-                    messages: messages.clone(),
-                },
-            );
-            return Ok(AgentTurn {
-                reply: result_msg,
-                messages,
-            });
-        }
-
-        let workspace = PathBuf::from(workspace_path);
-        let reply = self
-            .run_llm_loop(db, workspace_id, &workspace, &on_event, &provider)
-            .await?;
-
-        let messages = db.list_visible_messages(workspace_id)?;
-        emit(
-            &on_event,
-            AgentEvent::Finished {
-                messages: messages.clone(),
-            },
-        );
-        Ok(AgentTurn { reply, messages })
-    }
-
     fn build_system_prompt(&self) -> Result<String> {
         build_system_prompt(&self.config.root_dir)
     }
-}
-
-fn dispatch_agent_for_tool_name(name: &str) -> Option<DispatchAgent> {
-    match name {
-        "dispatch_claude" => Some(DispatchAgent::Claude),
-        "dispatch_codex" => Some(DispatchAgent::Codex),
-        _ => None,
-    }
-}
-
-fn continue_agent_for_tool_name(name: &str) -> Option<DispatchAgent> {
-    match name {
-        "continue_claude_session" => Some(DispatchAgent::Claude),
-        "continue_codex_session" => Some(DispatchAgent::Codex),
-        _ => None,
-    }
-}
-
-fn exit_agent_for_tool_name(name: &str) -> Option<DispatchAgent> {
-    match name {
-        "exit_claude_session" => Some(DispatchAgent::Claude),
-        "exit_codex_session" => Some(DispatchAgent::Codex),
-        _ => None,
-    }
-}
-
-fn build_system_prompt(root: &Path) -> Result<String> {
-    let mut parts = Vec::new();
-
-    push_file_if_exists(&mut parts, root.join("SOUL.md"))?;
-    push_file_if_exists(&mut parts, root.join("USER.md"))?;
-    push_file_if_exists(&mut parts, root.join("TOOLS.md"))?;
-
-    let skills_dir = root.join("skills");
-    if skills_dir.exists() {
-        let mut skill_parts = Vec::new();
-        for entry in
-            fs::read_dir(&skills_dir).with_context(|| format!("read {}", skills_dir.display()))?
-        {
-            let entry = entry?;
-            let skill_md = entry.path().join("SKILL.md");
-            if skill_md.exists() {
-                skill_parts.push(format!(
-                    "### Skill: {}\n\n{}",
-                    entry.file_name().to_string_lossy(),
-                    fs::read_to_string(&skill_md)
-                        .with_context(|| format!("read {}", skill_md.display()))?
-                ));
-            }
-        }
-        skill_parts.sort();
-        if !skill_parts.is_empty() {
-            parts.push(format!(
-                "---\n\n# Active Skills\n\n{}",
-                skill_parts.join("\n\n")
-            ));
-        }
-    }
-
-    let memory = root.join("memory").join("MEMORY.md");
-    if memory.exists() {
-        parts.push(format!(
-            "---\n\n# Memory\n\n{}",
-            fs::read_to_string(&memory).with_context(|| format!("read {}", memory.display()))?
-        ));
-    }
-
-    parts.push(format!("---\n\n{}", BUILT_IN_DISPATCH_GUIDANCE));
-
-    Ok(parts.join("\n\n---\n\n"))
-}
-
-fn push_file_if_exists(parts: &mut Vec<String>, path: PathBuf) -> Result<()> {
-    if path.exists() {
-        parts.push(fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?);
-    }
-    Ok(())
 }
 
 fn extract_message_content(arguments: &Value) -> Option<String> {

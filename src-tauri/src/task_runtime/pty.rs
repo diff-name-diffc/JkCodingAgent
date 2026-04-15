@@ -6,8 +6,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::session::{spawn_resume_session_watcher, spawn_status_session_watcher};
-use crate::TaskManager;
+use super::session::{spawn_resume_session_watcher, spawn_status_session_watcher};
+use crate::platform::{claude_version_gte, get_agent_bin, get_login_shell_env};
+use crate::project::read_project_config;
+use crate::shared::TaskManager;
 
 const SESSION_WAIT_POLL: Duration = Duration::from_millis(50);
 const SESSION_WAIT_MAX: Duration = Duration::from_millis(500);
@@ -147,7 +149,7 @@ fn save_task_images(
 
 /// 设置 CommandBuilder 的标准环境变量。
 fn setup_env(cmd: &mut CommandBuilder) {
-    for (key, value) in crate::app_settings::get_login_shell_env() {
+    for (key, value) in get_login_shell_env() {
         cmd.env(key, value);
     }
     // 设置终端类型，使 Claude Code / Codex 输出正确的转义序列
@@ -412,7 +414,7 @@ pub async fn run_task(
     let image_paths = save_task_images(&project_path, &task_id, &images.unwrap_or_default())?;
 
     // 若配置了项目级 prompt_prefix，则拼接到提示词前
-    let config = crate::config::read_project_config(project_path.clone()).unwrap_or_default();
+    let config = read_project_config(project_path.clone()).unwrap_or_default();
     let base_prompt = if config.agent.prompt_prefix.is_empty() {
         prompt.clone()
     } else {
@@ -430,13 +432,12 @@ pub async fn run_task(
         )
     };
 
-    let agent_bin = crate::app_settings::get_agent_bin(&agent);
+    let agent_bin = get_agent_bin(&agent);
     let is_codex = agent == "codex";
 
     // 读取项目配置中已保存的 Claude 版本，用于判断是否支持 --session-id
     let saved_claude_version = config.agent.claude_version.clone();
-    let use_explicit_session =
-        !is_codex && crate::app_settings::claude_version_gte(&saved_claude_version, "2.1.87");
+    let use_explicit_session = !is_codex && claude_version_gte(&saved_claude_version, "2.1.87");
 
     // 预生成 session id（仅 Claude >= 2.1.87 使用）
     let pre_session_id = if use_explicit_session {
@@ -608,7 +609,7 @@ pub async fn resume_task(
         })
         .map_err(|e| e.to_string())?;
 
-    let agent_bin = crate::app_settings::get_agent_bin(&agent);
+    let agent_bin = get_agent_bin(&agent);
     let mut cmd = if agent == "codex" {
         let mut c = CommandBuilder::new(&agent_bin);
         c.arg("resume");

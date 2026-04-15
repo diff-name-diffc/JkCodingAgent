@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::text::truncate_for_display;
+use crate::shared::truncate_for_display;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCall {

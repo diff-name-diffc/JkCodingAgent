@@ -181,7 +181,7 @@ pub async fn get_weekly_analytics() -> Result<WeeklyAnalytics, String> {
     let cutoff_ms = (Local::now() - Duration::days(7)).timestamp_millis();
 
     // Load all projects
-    let projects = crate::storage::load_projects()?;
+    let projects = load_projects()?;
 
     let mut daily_map: HashMap<String, DayStats> = dates
         .iter()
@@ -210,7 +210,7 @@ pub async fn get_weekly_analytics() -> Result<WeeklyAnalytics, String> {
     let mut codex_tasks: u32 = 0;
 
     for project in &projects {
-        let tasks = crate::storage::load_project_tasks(project.id.clone())?;
+        let tasks = load_project_tasks(project.id.clone())?;
 
         for task in &tasks {
             if task.created_at < cutoff_ms {
@@ -315,3 +315,4 @@ pub async fn get_weekly_analytics() -> Result<WeeklyAnalytics, String> {
         projects: project_list,
     })
 }
+use super::storage::{load_project_tasks, load_projects};

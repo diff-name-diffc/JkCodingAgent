@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::TaskManager;
+use crate::shared::TaskManager;
 
 #[derive(Clone)]
 pub(crate) struct CodexSessionInfo {
@@ -378,7 +378,7 @@ fn sync_waiting_for_user(
 }
 
 fn force_dispatcher_idle(app: &AppHandle, task_id: &str) {
-    let tm = app.state::<crate::TaskManager>();
+    let tm = app.state::<TaskManager>();
     let flags = tm.dispatcher_force_idle_flags.lock();
     if let Some(flag) = flags.get(task_id) {
         flag.store(true, std::sync::atomic::Ordering::Relaxed);

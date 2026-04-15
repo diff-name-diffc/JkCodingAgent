@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::Path;
 
-use crate::storage::atomic_write;
+use super::storage::atomic_write;
+use crate::platform::{detect_claude_version, detect_codex_version};
 
 const DEFAULT_CONFIG: &str = r#"# JKCodingAgent project configuration
 # https://github.com/diff-name-diffc/JkCodingAgent
@@ -81,13 +82,13 @@ pub fn init_project_config(project_path: String) -> Result<ProjectConfig, String
     // 首次打开或版本字段为空时，自动检测并回写
     let mut updated = false;
     if config.agent.claude_version.is_empty() {
-        if let Some(v) = crate::app_settings::detect_claude_version() {
+        if let Some(v) = detect_claude_version() {
             config.agent.claude_version = v;
             updated = true;
         }
     }
     if config.agent.codex_version.is_empty() {
-        if let Some(v) = crate::app_settings::detect_codex_version() {
+        if let Some(v) = detect_codex_version() {
             config.agent.codex_version = v;
             updated = true;
         }

@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::text::truncate_for_display;
+use crate::project::read_project_config;
+use crate::shared::truncate_for_display;
 
 // ── 辅助函数 ─────────────────────────────────────────────────────────────────
 
@@ -93,7 +94,7 @@ pub async fn generate_commit_message(project_path: String) -> Result<String, Str
     let diff = truncate_for_display(&diff, 50_000, "...(diff truncated)");
 
     // 2. Read project config for prompt and default agent
-    let config = crate::config::read_project_config(project_path.clone())?;
+    let config = read_project_config(project_path.clone())?;
     let commit_prompt = config.git.commit_prompt;
     let agent = config.agent.default;
 

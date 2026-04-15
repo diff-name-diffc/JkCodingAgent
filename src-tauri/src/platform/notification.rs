@@ -7,7 +7,7 @@ use chrono::Utc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-use crate::storage::atomic_write;
+use crate::project::atomic_write;
 
 // ── Security: hardcoded allowed notification source ──────────────────────────
 

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, Filter, GitCommit, Sparkles, ChevronRight, ChevronDown } from "lucide-react";
 import { useCancellableInvoke } from "../hooks/useCancellableInvoke";
 import { getGitStatusColor, getGitStatusLabel } from "../utils";
+import { FileGlyph } from "../file-icons";
 
 interface GitFileChange {
   path: string;
@@ -625,6 +626,7 @@ function FileRow({
       >
         {label}
       </span>
+      <FileGlyph path={change.path} size={18} />
 
       {/* Filename + dir */}
       <span style={{ flex: 1, overflow: "hidden", minWidth: 0 }}>

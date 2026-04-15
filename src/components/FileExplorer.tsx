@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useCancellableInvoke } from "../hooks/useCancellableInvoke";
 import { ChevronRight, ChevronDown, RotateCcw } from "lucide-react";
-import { getFileColor } from "../utils";
+import { FileGlyph } from "../file-icons";
 
 interface FsEntry {
   name: string;
@@ -19,51 +19,18 @@ function FileIcon({
   name,
   ext,
   isDir,
-  expanded,
 }: {
   name: string;
   ext?: string;
   isDir: boolean;
-  expanded?: boolean;
 }) {
   if (isDir) {
-    return (
-      <span
-        style={{
-          color: expanded ? "#7cb9f4" : "#94b8d8",
-          display: "inline-flex",
-          alignItems: "center",
-          flexShrink: 0,
-        }}
-      >
-        {expanded ? (
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M1 3.5A1.5 1.5 0 012.5 2h3.764c.58 0 1.12.34 1.342.87l.496 1.13H13.5A1.5 1.5 0 0115 5.5v7A1.5 1.5 0 0113.5 14h-11A1.5 1.5 0 011 12.5v-9z" />
-          </svg>
-        ) : (
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M1 3.5A1.5 1.5 0 012.5 2h3.764c.58 0 1.12.34 1.342.87l.496 1.13H13.5A1.5 1.5 0 0115 5.5v7A1.5 1.5 0 0113.5 14h-11A1.5 1.5 0 011 12.5v-9zM2.5 3a.5.5 0 00-.5.5v9a.5.5 0 00.5.5h11a.5.5 0 00.5-.5v-7a.5.5 0 00-.5-.5H8l-.724-1.647A.5.5 0 007.264 3H2.5z" />
-          </svg>
-        )}
-      </span>
-    );
+    return <FileGlyph name={name} isDir size={18} />;
   }
-  const color = getFileColor(name, ext);
-  return (
-    <span
-      style={{
-        width: 5,
-        height: 14,
-        borderRadius: 2,
-        background: color,
-        flexShrink: 0,
-        display: "inline-block",
-      }}
-    />
-  );
+  return <FileGlyph name={name} extension={ext} size={18} />;
 }
 
-const ROW_HEIGHT = 22;
+const ROW_HEIGHT = 26;
 const AUTO_REFRESH_MS = 2500;
 
 function flattenVisible(nodes: TreeNode[]): Array<{ node: TreeNode; depth: number }> {
@@ -103,7 +70,7 @@ function TreeItem({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 5,
+        gap: 7,
         height: ROW_HEIGHT,
         paddingLeft: 8 + depth * 14,
         paddingRight: 8,
@@ -132,12 +99,7 @@ function TreeItem({
       >
         {node.is_dir && (node.expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />)}
       </span>
-      <FileIcon
-        name={node.name}
-        ext={node.extension}
-        isDir={node.is_dir}
-        expanded={node.expanded}
-      />
+      <FileIcon name={node.name} ext={node.extension} isDir={node.is_dir} />
       <span
         style={{
           fontSize: 12.5,
@@ -530,16 +492,7 @@ export function FileExplorer({
           color: "var(--text-primary)",
         }}
       >
-        <span
-          style={{
-            width: 5,
-            height: 14,
-            borderRadius: 2,
-            background: "var(--accent)",
-            flexShrink: 0,
-            display: "inline-block",
-          }}
-        />
+        <FileGlyph name={projectName} isDir size={18} />
         {projectName}
       </div>
       {/* Tree */}

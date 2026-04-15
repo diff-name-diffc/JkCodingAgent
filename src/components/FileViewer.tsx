@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { MoreHorizontal, X } from "lucide-react";
-import { getFileColor } from "../utils";
+import { FileGlyph, resolveFilePresentation } from "../file-icons";
 import { FileTabPane } from "./file-viewer/FileTabPane";
 import type { OpenFileTab } from "../hooks/useProjectPanels";
 
@@ -84,7 +84,7 @@ export function FileViewer({
         >
           {tabs.map((tab) => {
             const isActive = tab.id === activeTab.id;
-            const fileColor = getFileColor(tab.name);
+            const presentation = resolveFilePresentation({ name: tab.name, path: tab.path });
 
             return (
               <button
@@ -112,16 +112,7 @@ export function FileViewer({
                   boxShadow: isActive ? "0 10px 24px rgba(15, 23, 42, 0.05)" : "none",
                 }}
               >
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: 999,
-                    background: fileColor,
-                    flexShrink: 0,
-                    boxShadow: `0 0 0 4px color-mix(in srgb, ${fileColor} 16%, transparent)`,
-                  }}
-                />
+                <FileGlyph presentation={presentation} size={18} />
                 <span
                   style={{
                     overflow: "hidden",

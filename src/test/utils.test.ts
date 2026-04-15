@@ -10,6 +10,7 @@ import {
   getFileColor,
   CODE_EXTS,
 } from "../utils";
+import { resolveFilePresentation } from "../file-icons";
 
 // ── getAvatarGradient ────────────────────────────────────────────────────────
 
@@ -129,36 +130,70 @@ describe("getGitStatusLabel", () => {
 // ── getFileColor ─────────────────────────────────────────────────────────────
 
 describe("getFileColor", () => {
-  it("TypeScript 文件返回蓝色", () => {
-    expect(getFileColor("App.tsx")).toBe("#3178c6");
-    expect(getFileColor("utils.ts")).toBe("#3178c6");
+  it("TSX 与 TypeScript 文件返回新的主题色", () => {
+    expect(getFileColor("App.tsx")).toBe("#0EA5E9");
+    expect(getFileColor("utils.ts")).toBe("#2563EB");
   });
 
   it("Rust 文件返回红色", () => {
-    expect(getFileColor("lib.rs")).toBe("#ce422b");
+    expect(getFileColor("lib.rs")).toBe("#C2410C");
   });
 
   it("Dockerfile 特殊文件名（大小写不敏感）返回 Docker 蓝", () => {
-    expect(getFileColor("Dockerfile")).toBe("#2496ed");
-    expect(getFileColor("dockerfile.prod")).toBe("#2496ed");
+    expect(getFileColor("Dockerfile")).toBe("#0284C7");
+    expect(getFileColor("dockerfile.prod")).toBe("#0284C7");
   });
 
-  it("Makefile 返回正确颜色", () => {
-    expect(getFileColor("Makefile")).toBe("#6d8086");
+  it("Makefile 返回构建类主题色", () => {
+    expect(getFileColor("Makefile")).toBe("#0F766E");
   });
 
-  it(".env 文件返回灰色", () => {
-    expect(getFileColor(".env")).toBe("#6b7280");
-    expect(getFileColor(".env.production")).toBe("#6b7280");
+  it(".env 文件返回配置类主题色", () => {
+    expect(getFileColor(".env")).toBe("#475569");
+    expect(getFileColor(".env.production")).toBe("#475569");
   });
 
   it("无扩展名的未知文件返回默认灰色", () => {
-    expect(getFileColor("NOTICE")).toBe("#94a3b8");
+    expect(getFileColor("NOTICE")).toBe("#475569");
   });
 
   it("ext 参数优先于从文件名推断的扩展名", () => {
     // 传入 ext="rs" 覆盖从 "foo.ts" 推断的 "ts"
-    expect(getFileColor("foo.ts", "rs")).toBe("#ce422b");
+    expect(getFileColor("foo.ts", "rs")).toBe("#C2410C");
+  });
+});
+
+// ── resolveFilePresentation ─────────────────────────────────────────────────
+
+describe("resolveFilePresentation", () => {
+  it("按精确文件名优先匹配", () => {
+    const result = resolveFilePresentation({ name: "Dockerfile" });
+    expect(result.iconKey).toBe("docker");
+    expect(result.monacoLanguage).toBe("dockerfile");
+  });
+
+  it("按复合后缀识别测试文件", () => {
+    const result = resolveFilePresentation({ name: "Button.test.tsx" });
+    expect(result.iconKey).toBe("test");
+    expect(result.monacoLanguage).toBe("typescript");
+  });
+
+  it("识别 Markdown 与图片预览能力", () => {
+    expect(resolveFilePresentation({ name: "README.mdx" }).isMarkdown).toBe(true);
+    expect(resolveFilePresentation({ name: "logo.svg" }).isPreviewableImage).toBe(true);
+  });
+
+  it("目录走专用文件夹图标规则", () => {
+    expect(resolveFilePresentation({ name: "src", isDir: true }).iconKey).toBe("folder-src");
+    expect(resolveFilePresentation({ name: "components", isDir: true }).iconKey).toBe(
+      "folder-components",
+    );
+  });
+
+  it("未知扩展名回退为默认文档图标，而不是崩溃", () => {
+    const result = resolveFilePresentation({ name: "data.unknownext" });
+    expect(result.iconKey).toBe("default");
+    expect(result.monacoLanguage).toBe("plaintext");
   });
 });
 

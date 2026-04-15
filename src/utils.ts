@@ -1,3 +1,5 @@
+import { resolveFilePresentation } from "./file-icons";
+
 export const AVATAR_COLORS: [string, string][] = [
   ["#3B82F6", "#1D4ED8"],
   ["#6366F1", "#4338CA"],
@@ -107,69 +109,7 @@ export function getGitStatusLabel(status: string): string {
 // ── 文件颜色工具 ──────────────────────────────────────────────────────────────
 
 export function getFileColor(name: string, ext?: string): string {
-  const n = name.toLowerCase();
-  const e = ext ?? (name.includes(".") ? name.split(".").pop()!.toLowerCase() : "");
-
-  if (n === "dockerfile" || n.startsWith("dockerfile.")) return "#2496ed";
-  if (n === "makefile" || n === "gnumakefile" || n === "justfile") return "#6d8086";
-  if (n === "gemfile" || n === "rakefile") return "#cc342d";
-  if (n.startsWith(".git") || n.startsWith(".docker") || n === ".editorconfig" || n === ".npmrc")
-    return "#6b7280";
-  if (n === ".env" || n.startsWith(".env.")) return "#6b7280";
-
-  switch (e) {
-    case "ts":
-    case "tsx":
-      return "#3178c6";
-    case "js":
-    case "jsx":
-    case "mjs":
-    case "cjs":
-      return "#f7c948";
-    case "json":
-    case "jsonc":
-      return "#f59e0b";
-    case "rs":
-      return "#ce422b";
-    case "html":
-    case "htm":
-      return "#e34c26";
-    case "css":
-    case "scss":
-    case "sass":
-      return "#264de4";
-    case "md":
-    case "mdx":
-      return "#7c3aed";
-    case "yaml":
-    case "yml":
-      return "#ef4444";
-    case "toml":
-      return "#9c4221";
-    case "py":
-      return "#3572a5";
-    case "go":
-      return "#00add8";
-    case "sh":
-    case "bash":
-    case "zsh":
-      return "#4eaa25";
-    case "lock":
-      return "#6b7280";
-    case "svg":
-      return "#ff9800";
-    case "png":
-    case "jpg":
-    case "jpeg":
-    case "gif":
-    case "webp":
-    case "ico":
-      return "#22c55e";
-    case "wasm":
-      return "#654ff0";
-    default:
-      return "#94a3b8";
-  }
+  return resolveFilePresentation({ name, extension: ext }).accentColor;
 }
 
 // ── 文件类型扩展名集合 ────────────────────────────────────────────────────────
@@ -177,19 +117,34 @@ export function getFileColor(name: string, ext?: string): string {
 export const CODE_EXTS = new Set([
   "ts",
   "tsx",
+  "mts",
+  "cts",
   "js",
   "jsx",
+  "mjs",
+  "cjs",
   "rs",
   "py",
   "go",
   "java",
+  "kt",
+  "kts",
+  "swift",
+  "rb",
+  "php",
+  "cs",
   "c",
   "cpp",
   "h",
+  "hpp",
   "css",
   "html",
   "vue",
   "svelte",
-  "swift",
-  "kt",
+  "astro",
+  "lua",
+  "sql",
+  "graphql",
+  "gql",
+  "proto",
 ]);

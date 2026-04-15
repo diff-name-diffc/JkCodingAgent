@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { X, FileCode, FileText, FilePlus2, FileMinus2 } from "lucide-react";
+import { FileGlyph } from "../file-icons";
 
 interface Props {
   projectPath: string;
@@ -215,11 +216,11 @@ export function GitDiffViewer({
           flexShrink: 0,
           background: "var(--bg-panel)",
         }}
-      >
-        <FileCode size={14} color="var(--text-muted)" />
-        <span
-          style={{
-            flex: 1,
+        >
+          {filePath ? <FileGlyph path={filePath} size={18} /> : <FileCode size={14} color="var(--text-muted)" />}
+          <span
+            style={{
+              flex: 1,
             fontSize: 12.5,
             fontWeight: 500,
             color: "var(--text-primary)",
@@ -276,6 +277,7 @@ function DiffFileSection({ file }: { file: DiffFile }) {
       {file.header && (
         <div className="git-diff-file-header">
           <FileStatusIcon meta={file.meta} />
+          <FileGlyph path={file.header} size={18} />
           <span className="git-diff-file-path">{file.header}</span>
         </div>
       )}

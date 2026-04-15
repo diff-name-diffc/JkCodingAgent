@@ -11,6 +11,7 @@ import {
   Check,
 } from "lucide-react";
 import { getGitStatusColor } from "../utils";
+import { FileGlyph } from "../file-icons";
 
 interface GitCommit {
   hash: string;
@@ -751,6 +752,7 @@ function CommitDetailPanel({
             >
               {f.status}
             </span>
+            <FileGlyph path={f.path} size={18} />
             <span style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
               <span
                 style={{

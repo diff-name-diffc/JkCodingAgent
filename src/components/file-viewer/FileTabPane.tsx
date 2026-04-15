@@ -5,6 +5,7 @@ import { LargeFileViewer } from "./LargeFileViewer";
 import { MonacoEditorPane } from "./MonacoEditorPane";
 import { ImagePreviewPane } from "./ImagePreviewPane";
 import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
+import { FileGlyph, resolveFilePresentation, type FilePresentation } from "../../file-icons";
 import type { OpenFileTab } from "../../hooks/useProjectPanels";
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
@@ -22,90 +23,6 @@ type FileMeta = {
 };
 
 const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024;
-
-function isMarkdownFile(fileName: string): boolean {
-  const ext = fileName.split(".").pop()?.toLowerCase();
-  return ext === "md" || ext === "mdx" || ext === "markdown";
-}
-
-function isPreviewableImageFile(fileName: string): boolean {
-  const ext = fileName.split(".").pop()?.toLowerCase();
-  return (
-    ext === "png" ||
-    ext === "jpg" ||
-    ext === "jpeg" ||
-    ext === "gif" ||
-    ext === "webp" ||
-    ext === "bmp" ||
-    ext === "svg"
-  );
-}
-
-function getMonacoLanguage(fileName: string) {
-  const normalized = fileName.toLowerCase();
-  const nameMap: Record<string, string> = {
-    dockerfile: "dockerfile",
-    makefile: "makefile",
-    ".gitignore": "shell",
-    ".dockerignore": "shell",
-    ".env": "shell",
-    ".env.local": "shell",
-    ".env.example": "shell",
-    ".npmrc": "ini",
-    "readme.md": "markdown",
-    "readme.mdx": "markdown",
-    "changelog.md": "markdown",
-  };
-
-  if (nameMap[normalized]) {
-    return nameMap[normalized];
-  }
-
-  const extension = normalized.split(".").pop() ?? "";
-  const extensionMap: Record<string, string> = {
-    ts: "typescript",
-    tsx: "typescript",
-    js: "javascript",
-    jsx: "javascript",
-    mjs: "javascript",
-    cjs: "javascript",
-    json: "json",
-    jsonc: "json",
-    md: "markdown",
-    mdx: "markdown",
-    py: "python",
-    rs: "rust",
-    go: "go",
-    java: "java",
-    c: "cpp",
-    h: "cpp",
-    cpp: "cpp",
-    cc: "cpp",
-    hpp: "cpp",
-    css: "css",
-    scss: "scss",
-    sass: "scss",
-    html: "html",
-    htm: "html",
-    xml: "xml",
-    yml: "yaml",
-    yaml: "yaml",
-    toml: "ini",
-    sh: "shell",
-    bash: "shell",
-    zsh: "shell",
-    fish: "shell",
-    sql: "sql",
-    lua: "lua",
-    swift: "swift",
-    kt: "kotlin",
-    rb: "ruby",
-    r: "r",
-    proto: "protobuf",
-  };
-
-  return extensionMap[extension] ?? "plaintext";
-}
 
 function FileStatusPill({
   children,
@@ -344,6 +261,7 @@ function ImageFilePane({
 }
 
 function TextFileHeader({
+  presentation,
   fileName,
   filePath,
   language,
@@ -352,6 +270,7 @@ function TextFileHeader({
   previewMode,
   onTogglePreview,
 }: {
+  presentation: FilePresentation;
   fileName: string;
   filePath: string;
   language: string;
@@ -398,6 +317,9 @@ function TextFileHeader({
             fontFamily: "var(--font-mono)",
           }}
         >
+          <span style={{ display: "inline-flex", alignItems: "center", marginRight: 8, flexShrink: 0 }}>
+            <FileGlyph presentation={presentation} size={20} />
+          </span>
           {directoryPath ? (
             <span
               style={{
@@ -484,9 +406,13 @@ export function FileTabPane({
   const queuedSaveContentRef = useRef<string | null>(null);
   const saveInFlightRef = useRef(false);
 
-  const isImage = isPreviewableImageFile(tab.name);
-  const isMarkdown = isMarkdownFile(tab.name);
-  const language = useMemo(() => getMonacoLanguage(tab.name), [tab.name]);
+  const presentation = useMemo(
+    () => resolveFilePresentation({ name: tab.name, path: tab.path }),
+    [tab.name, tab.path],
+  );
+  const isImage = presentation.isPreviewableImage;
+  const isMarkdown = presentation.isMarkdown;
+  const language = presentation.monacoLanguage;
 
   useEffect(() => {
     setPreviewMode(false);
@@ -631,10 +557,11 @@ export function FileTabPane({
 
   return (
     <PaneShell padding={14} gap={10}>
-      <TextFileHeader
-        fileName={tab.name}
-        filePath={tab.path}
-        language={language}
+              <TextFileHeader
+                presentation={presentation}
+                fileName={tab.name}
+                filePath={tab.path}
+                language={language}
         saveStatus={fileMeta && fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD ? (largeDirty ? "saving" : "idle") : saveStatus}
         isMarkdown={isMarkdown}
         previewMode={previewMode}

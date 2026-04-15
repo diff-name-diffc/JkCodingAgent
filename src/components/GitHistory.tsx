@@ -752,7 +752,7 @@ function CommitDetailPanel({
             >
               {f.status}
             </span>
-            <FileGlyph path={f.path} size={18} />
+            <FileGlyph path={f.path} size={20} />
             <span style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
               <span
                 style={{

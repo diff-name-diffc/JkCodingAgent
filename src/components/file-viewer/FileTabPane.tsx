@@ -318,7 +318,7 @@ function TextFileHeader({
           }}
         >
           <span style={{ display: "inline-flex", alignItems: "center", marginRight: 8, flexShrink: 0 }}>
-            <FileGlyph presentation={presentation} size={20} />
+            <FileGlyph presentation={presentation} size={22} />
           </span>
           {directoryPath ? (
             <span

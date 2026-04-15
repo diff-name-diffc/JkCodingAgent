@@ -17,20 +17,22 @@ interface TreeNode extends FsEntry {
 
 function FileIcon({
   name,
+  path,
   ext,
   isDir,
 }: {
   name: string;
+  path?: string;
   ext?: string;
   isDir: boolean;
 }) {
   if (isDir) {
-    return <FileGlyph name={name} isDir size={18} />;
+    return <FileGlyph name={name} path={path} isDir size={20} />;
   }
-  return <FileGlyph name={name} extension={ext} size={18} />;
+  return <FileGlyph name={name} path={path} extension={ext} size={20} />;
 }
 
-const ROW_HEIGHT = 26;
+const ROW_HEIGHT = 30;
 const AUTO_REFRESH_MS = 2500;
 
 function flattenVisible(nodes: TreeNode[]): Array<{ node: TreeNode; depth: number }> {
@@ -70,7 +72,7 @@ function TreeItem({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 7,
+        gap: 8,
         height: ROW_HEIGHT,
         paddingLeft: 8 + depth * 14,
         paddingRight: 8,
@@ -99,7 +101,7 @@ function TreeItem({
       >
         {node.is_dir && (node.expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />)}
       </span>
-      <FileIcon name={node.name} ext={node.extension} isDir={node.is_dir} />
+      <FileIcon name={node.name} path={node.path} ext={node.extension} isDir={node.is_dir} />
       <span
         style={{
           fontSize: 12.5,
@@ -492,7 +494,7 @@ export function FileExplorer({
           color: "var(--text-primary)",
         }}
       >
-        <FileGlyph name={projectName} isDir size={18} />
+        <FileGlyph name={projectName} path={projectPath} isDir size={20} />
         {projectName}
       </div>
       {/* Tree */}

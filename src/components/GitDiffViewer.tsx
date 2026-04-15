@@ -217,7 +217,7 @@ export function GitDiffViewer({
           background: "var(--bg-panel)",
         }}
         >
-          {filePath ? <FileGlyph path={filePath} size={18} /> : <FileCode size={14} color="var(--text-muted)" />}
+          {filePath ? <FileGlyph path={filePath} size={20} /> : <FileCode size={14} color="var(--text-muted)" />}
           <span
             style={{
               flex: 1,
@@ -277,7 +277,7 @@ function DiffFileSection({ file }: { file: DiffFile }) {
       {file.header && (
         <div className="git-diff-file-header">
           <FileStatusIcon meta={file.meta} />
-          <FileGlyph path={file.header} size={18} />
+          <FileGlyph path={file.header} size={20} />
           <span className="git-diff-file-path">{file.header}</span>
         </div>
       )}

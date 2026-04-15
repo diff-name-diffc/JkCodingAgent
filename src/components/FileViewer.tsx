@@ -112,7 +112,7 @@ export function FileViewer({
                   boxShadow: isActive ? "0 10px 24px rgba(15, 23, 42, 0.05)" : "none",
                 }}
               >
-                <FileGlyph presentation={presentation} size={18} />
+                <FileGlyph presentation={presentation} size={20} />
                 <span
                   style={{
                     overflow: "hidden",

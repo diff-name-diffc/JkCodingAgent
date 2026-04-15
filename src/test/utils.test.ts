@@ -11,6 +11,7 @@ import {
   CODE_EXTS,
 } from "../utils";
 import { resolveFilePresentation } from "../file-icons";
+import { getSetiIconSvgMarkup, resolveSetiIconName } from "../file-icons/setiIconRegistry";
 
 // ── getAvatarGradient ────────────────────────────────────────────────────────
 
@@ -194,6 +195,40 @@ describe("resolveFilePresentation", () => {
     const result = resolveFilePresentation({ name: "data.unknownext" });
     expect(result.iconKey).toBe("default");
     expect(result.monacoLanguage).toBe("plaintext");
+  });
+});
+
+// ── resolveSetiIconName ─────────────────────────────────────────────────────
+
+describe("resolveSetiIconName", () => {
+  it("为常见构建配置映射到 Seti 专用图标", () => {
+    expect(resolveSetiIconName(resolveFilePresentation({ name: "vite.config.ts" }))).toBe("vite");
+    expect(resolveSetiIconName(resolveFilePresentation({ name: "tsconfig.json" }))).toBe("tsconfig");
+  });
+
+  it("为常见生态文件映射到更贴近语义的 Seti 图标", () => {
+    expect(resolveSetiIconName(resolveFilePresentation({ name: "package.json" }))).toBe("npm");
+    expect(resolveSetiIconName(resolveFilePresentation({ name: ".gitignore" }))).toBe("git_ignore");
+    expect(resolveSetiIconName(resolveFilePresentation({ name: "yarn.lock" }))).toBe("yarn");
+  });
+
+  it("目录默认回退到 Seti 文件夹图标", () => {
+    expect(resolveSetiIconName(resolveFilePresentation({ name: "src", isDir: true }))).toBe(
+      "folder",
+    );
+    expect(resolveSetiIconName(resolveFilePresentation({ name: ".git", isDir: true }))).toBe(
+      "git_folder",
+    );
+  });
+});
+
+describe("getSetiIconSvgMarkup", () => {
+  it("为依赖主题着色的图标注入 Seti 配色，避免退化成浏览器默认黑色", () => {
+    const sqlMarkup = getSetiIconSvgMarkup(resolveFilePresentation({ name: "schema.sql" }));
+    const textMarkup = getSetiIconSvgMarkup(resolveFilePresentation({ name: "notes.txt" }));
+
+    expect(sqlMarkup).toContain('fill="#f55385"');
+    expect(textMarkup).toContain('fill="#d4d7d6"');
   });
 });
 

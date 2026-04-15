@@ -626,7 +626,7 @@ function FileRow({
       >
         {label}
       </span>
-      <FileGlyph path={change.path} size={18} />
+      <FileGlyph path={change.path} size={20} />
 
       {/* Filename + dir */}
       <span style={{ flex: 1, overflow: "hidden", minWidth: 0 }}>

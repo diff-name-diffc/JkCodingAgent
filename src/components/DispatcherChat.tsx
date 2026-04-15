@@ -12,6 +12,7 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import { User, Sparkles, Send } from "lucide-react";
 import type {
   AgentType,
+  DispatchFeedbackState,
   DispatcherMessage,
   DispatcherAgentEvent,
   DispatcherAgentTurn,
@@ -158,7 +159,11 @@ interface DispatcherChatProps {
 
 export interface DispatcherChatHandle {
   /** Inject dispatch result and continue the agent conversation */
-  continueWithResult: (result: string, targetSessionId?: string) => void;
+  continueWithResult: (
+    result: string,
+    dispatchState: DispatchFeedbackState,
+    targetSessionId?: string,
+  ) => void;
 }
 
 export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatProps>(
@@ -342,7 +347,11 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     useImperativeHandle(
       ref,
       () => ({
-        continueWithResult: async (result: string, targetSessionId = sessionId) => {
+        continueWithResult: async (
+          result: string,
+          dispatchState: DispatchFeedbackState,
+          targetSessionId = sessionId,
+        ) => {
           const isCurrentSession = currentSessionIdRef.current === targetSessionId;
           const runId = isCurrentSession ? ++activeRunRef.current : activeRunRef.current;
           if (isCurrentSession) {
@@ -359,6 +368,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               workspaceId: targetSessionId,
               projectPath,
               dispatchResult: result,
+              dispatchState,
               onEvent,
             });
           } catch (err) {

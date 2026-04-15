@@ -36,7 +36,6 @@ struct RemoteNotification {
     max_app_version: Option<String>,
 }
 
-
 // ── Local storage types ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2,6 +2,7 @@ use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
+use tokio::time::{sleep, Duration};
 
 mod agent;
 mod analytics;
@@ -18,9 +19,10 @@ mod pty;
 mod rope;
 mod session;
 mod storage;
+mod text;
 mod usage;
 
-use agent::{AgentEvent, AgentTurn, DispatcherAgent};
+use agent::{AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent};
 use dispatcher_config::DispatcherAgentConfig;
 use dispatcher_db::{
     DispatcherDb, DispatcherMessageRecord, DispatcherSessionRecord, DispatcherSettingsRecord,
@@ -61,6 +63,49 @@ impl TaskManager {
 pub struct DispatcherState {
     agent: tokio::sync::Mutex<DispatcherAgent>,
     db: DispatcherDb,
+}
+
+fn has_live_subprocess(task_manager: &TaskManager, task_id: &str) -> bool {
+    task_manager.child_handles.lock().contains_key(task_id)
+}
+
+fn is_codex_subprocess(task_manager: &TaskManager, task_id: &str) -> bool {
+    task_manager.codex_sessions.lock().contains_key(task_id)
+}
+
+fn write_to_subprocess(task_manager: &TaskManager, task_id: &str, data: &[u8]) -> Result<(), String> {
+    let mut writers = task_manager.pty_writers.lock();
+    let Some(writer) = writers.get_mut(task_id) else {
+        return Err(format!("No active PTY writer found for task {}", task_id));
+    };
+    writer.write_all(data).map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())
+}
+
+async fn submit_subprocess_line(
+    task_manager: &TaskManager,
+    task_id: &str,
+    text: &str,
+    with_lf_fallback: bool,
+) -> Result<(), String> {
+    let line = text.trim_end_matches(['\r', '\n']);
+    if !line.is_empty() {
+        write_to_subprocess(task_manager, task_id, line.as_bytes())?;
+    }
+
+    sleep(Duration::from_millis(120)).await;
+    if has_live_subprocess(task_manager, task_id) {
+        write_to_subprocess(task_manager, task_id, b"\r")?;
+    }
+
+    if with_lf_fallback {
+        sleep(Duration::from_millis(120)).await;
+        if has_live_subprocess(task_manager, task_id) {
+            let _ = write_to_subprocess(task_manager, task_id, b"\n");
+        }
+    }
+
+    Ok(())
 }
 
 // ── Dispatcher Tauri Commands ────────────────────────────────────────────────
@@ -191,13 +236,14 @@ async fn dispatcher_set_auto_approve_dispatch(
     Ok(record)
 }
 
-/// Claude 子任务完成后，将结果注入 Agent 并继续对话循环
+/// 子任务状态回灌后，将结果注入 Agent 并继续对话循环
 #[tauri::command]
 async fn dispatcher_continue_after_dispatch(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
     project_path: String,
     dispatch_result: String,
+    dispatch_state: String,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let agent = state.agent.lock().await;
@@ -207,6 +253,7 @@ async fn dispatcher_continue_after_dispatch(
             &workspace_id,
             &project_path,
             &dispatch_result,
+            DispatchFeedbackState::from_wire(&dispatch_state),
             on_event,
         )
         .await
@@ -234,16 +281,8 @@ async fn dispatcher_send_to_subprocess(
     task_id: String,
     text: String,
 ) -> Result<(), String> {
-    let mut writers = task_manager.pty_writers.lock();
-    if let Some(writer) = writers.get_mut(&task_id) {
-        writer
-            .write_all(text.as_bytes())
-            .map_err(|e| e.to_string())?;
-        writer.flush().map_err(|e| e.to_string())?;
-        Ok(())
-    } else {
-        Err(format!("No active PTY writer found for task {}", task_id))
-    }
+    let is_codex = is_codex_subprocess(&task_manager, &task_id);
+    submit_subprocess_line(&task_manager, &task_id, &text, is_codex).await
 }
 
 /// Send /exit to a dispatcher subprocess and mark it as voluntarily exited
@@ -252,17 +291,22 @@ async fn dispatcher_exit_subprocess(
     task_manager: tauri::State<'_, TaskManager>,
     task_id: String,
 ) -> Result<(), String> {
+    let is_codex = is_codex_subprocess(&task_manager, &task_id);
+
+    if is_codex {
+        // Codex 的“当前轮完成”信号来自 session JSONL，可能早于 TUI 真正回到可输入态。
+        // 退出也走分阶段提交，和继续注入保持一致。
+        submit_subprocess_line(&task_manager, &task_id, "/exit", true).await?;
+    } else {
+        submit_subprocess_line(&task_manager, &task_id, "/exit", false).await?;
+    }
+
     // Mark as voluntarily exited so we skip result injection on task-status
     task_manager
         .dispatcher_exited_subprocesses
         .lock()
         .insert(task_id.clone());
 
-    let mut writers = task_manager.pty_writers.lock();
-    if let Some(writer) = writers.get_mut(&task_id) {
-        writer.write_all(b"/exit\r").map_err(|e| e.to_string())?;
-        writer.flush().map_err(|e| e.to_string())?;
-    }
     Ok(())
 }
 

@@ -9,6 +9,7 @@ use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
 use crate::dispatcher_llm::{ToolDefinition, ToolFunctionDefinition};
+use crate::text::truncate_for_display;
 
 const NOISE: &[&str] = &[
     ".git",
@@ -905,11 +906,6 @@ fn is_dangerous(command: &str) -> bool {
         .any(|pattern| lower.contains(pattern))
 }
 
-fn truncate(mut text: String, max_chars: usize) -> String {
-    if text.len() <= max_chars {
-        return text;
-    }
-    text.truncate(max_chars);
-    text.push_str("\n\n[Output truncated]");
-    text
+fn truncate(text: String, max_chars: usize) -> String {
+    truncate_for_display(&text, max_chars, "\n\n[Output truncated]")
 }

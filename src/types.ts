@@ -113,6 +113,12 @@ export interface DispatcherAgentTurn {
   messages: DispatcherMessage[];
 }
 
+export type DispatchFeedbackState =
+  | "round_completed"
+  | "process_done"
+  | "process_failed"
+  | "process_cancelled";
+
 /** Maps to the Rust `AgentEvent` enum (tagged union via serde) */
 export type DispatcherAgentEvent =
   | { event: "started"; data: { workspaceId: string } }

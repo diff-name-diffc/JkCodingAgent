@@ -314,7 +314,12 @@ fn process_codex_session_line(
                     } else if role == Some("assistant") {
                         if assistant_message_requests_user_input(payload) {
                             *awaiting_user_reply = true;
-                        } else if assistant_message_completes_turn(payload) {
+                        } else if codex_turn_ready_for_dispatch(
+                            payload,
+                            pending_confirmation_calls,
+                            *awaiting_user_reply,
+                            *waiting_for_user,
+                        ) {
                             force_dispatcher_idle(app, task_id);
                         }
                     }
@@ -519,6 +524,18 @@ fn assistant_message_completes_turn(payload: Option<&serde_json::Value>) -> bool
     let phase = payload.get("phase").and_then(serde_json::Value::as_str);
     matches!(phase, Some("final") | Some("final_answer"))
         && !assistant_message_requests_user_input(Some(payload))
+}
+
+fn codex_turn_ready_for_dispatch(
+    payload: Option<&serde_json::Value>,
+    pending_confirmation_calls: &HashSet<String>,
+    awaiting_user_reply: bool,
+    waiting_for_user: bool,
+) -> bool {
+    assistant_message_completes_turn(payload)
+        && pending_confirmation_calls.is_empty()
+        && !awaiting_user_reply
+        && !waiting_for_user
 }
 
 // ── Claude Code 会话监视器 ────────────────────────────────────────────────────
@@ -1649,6 +1666,44 @@ mod tests {
         });
 
         assert!(assistant_message_completes_turn(Some(&payload)));
+    }
+
+    #[test]
+    fn codex_turn_ready_for_dispatch_requires_no_pending_user_input_or_confirmation() {
+        let payload = serde_json::json!({
+            "role": "assistant",
+            "phase": "final",
+            "content": [
+                { "type": "output_text", "text": "已完成当前轮修改。" }
+            ]
+        });
+
+        assert!(codex_turn_ready_for_dispatch(
+            Some(&payload),
+            &HashSet::new(),
+            false,
+            false,
+        ));
+
+        let pending = HashSet::from([String::from("call_1")]);
+        assert!(!codex_turn_ready_for_dispatch(
+            Some(&payload),
+            &pending,
+            false,
+            false,
+        ));
+        assert!(!codex_turn_ready_for_dispatch(
+            Some(&payload),
+            &HashSet::new(),
+            true,
+            false,
+        ));
+        assert!(!codex_turn_ready_for_dispatch(
+            Some(&payload),
+            &HashSet::new(),
+            false,
+            true,
+        ));
     }
 
     #[test]

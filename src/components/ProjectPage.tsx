@@ -1,7 +1,15 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import type { Project, Task, AgentType, PermissionMode, ThemeMode, SubProcess } from "../types";
+import type {
+  Project,
+  Task,
+  AgentType,
+  PermissionMode,
+  ThemeMode,
+  SubProcess,
+  DispatchFeedbackState,
+} from "../types";
 import { cleanTerminalOutput } from "../utils/ansiStrip";
 import { FileExplorer } from "./FileExplorer";
 import { SessionPanel } from "./SessionPanel";
@@ -254,22 +262,32 @@ export function ProjectPage({
       const cleaned = cleanTerminalOutput(rawOutput);
       const agentLabel = getSubProcessAgentLabel(targetSubProcess?.agent ?? "claude");
 
+      const dispatchState: DispatchFeedbackState =
+        status === "done"
+          ? "process_done"
+          : status === "cancelled"
+            ? "process_cancelled"
+            : "process_failed";
       const resultText = isDone
-        ? `${agentLabel} 子任务完成。\n\n终端输出：\n${cleaned}`
-        : `${agentLabel} 子任务失败 (status: ${status})。\n\n终端输出：\n${cleaned}`;
+        ? `${agentLabel} 子进程已退出，本轮执行已结束。\n\n终端输出：\n${cleaned}`
+        : `${agentLabel} 子进程已结束 (status: ${status})。\n\n终端输出：\n${cleaned}`;
 
       if (routeKey && interactiveSubProcessRef.current.get(routeKey) === spId) {
         interactiveSubProcessRef.current.delete(routeKey);
       }
 
-      dispatcherChatRef.current?.continueWithResult(resultText, pending.sessionId);
+      dispatcherChatRef.current?.continueWithResult(
+        resultText,
+        dispatchState,
+        pending.sessionId,
+      );
     });
     return () => {
       unsub.then((fn) => fn());
     };
   }, [subProcessTaskMap, subProcesses, getTaskRestoreState]);
 
-  // Listen for dispatcher-subprocess-idle events (stream idle detection)
+  // 监听 session watcher 发出的“当前轮次完成”信号，允许在同一子进程内继续注入。
   useEffect(() => {
     const unsub = listen<{ task_id: string; output: string }>("dispatcher-subprocess-idle", (e) => {
       const { task_id, output } = e.payload;
@@ -287,7 +305,7 @@ export function ProjectPage({
       const targetSubProcess = subProcesses.find((sp) => sp.id === spId);
       const agent = targetSubProcess?.agent ?? "claude";
       const agentLabel = getSubProcessAgentLabel(agent);
-      const resultText = `${agentLabel} 当前轮次执行完成（流空闲检测）。\n\n终端输出：\n${cleaned}`;
+      const resultText = `${agentLabel} 当前轮次已完成，子进程仍在运行，可继续注入后续指令。\n\n终端输出：\n${cleaned}`;
       const sessionId =
         pendingDispatchRef.current.get(spId)?.sessionId ??
         subProcesses.find((sp) => sp.id === spId)?.sessionId;
@@ -295,7 +313,7 @@ export function ProjectPage({
       pendingDispatchRef.current.delete(spId);
       idleInjectedTaskIdsRef.current.add(task_id);
       interactiveSubProcessRef.current.set(getSubProcessRouteKey(sessionId, agent), spId);
-      dispatcherChatRef.current?.continueWithResult(resultText, sessionId);
+      dispatcherChatRef.current?.continueWithResult(resultText, "round_completed", sessionId);
     });
     return () => {
       unsub.then((fn) => fn());
@@ -329,7 +347,7 @@ export function ProjectPage({
 
       interactiveSubProcessRef.current.set(routeKey, activeSp.id);
       idleInjectedTaskIdsRef.current.delete(taskId);
-      const submittedText = text.replace(/(?:\r?\n)+$/, "") + "\r";
+      const submittedText = text.replace(/(?:\r?\n)+$/, "");
       invoke("dispatcher_send_to_subprocess", { taskId, text: submittedText }).catch(console.error);
     },
     [subProcesses, subProcessTaskMap],

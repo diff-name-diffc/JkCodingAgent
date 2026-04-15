@@ -15,13 +15,62 @@ use crate::dispatcher_tools::{
     parse_continue_instruction, parse_dispatch_instruction, parse_exit_instruction, DispatchAgent,
     ToolContext, ToolRegistry,
 };
+use crate::text::truncate_for_display;
 
 const BUILT_IN_DISPATCH_GUIDANCE: &str = r#"# Built-in Dispatch Guidance
 
 - Use `dispatch_claude` for tasks where speed matters more: greenfield features, algorithm experiments, debugging exploration, and broad implementation search.
 - Use `dispatch_codex` for tasks where extra care matters more: refactoring, structural cleanup, consistency passes, and regression-sensitive changes.
 - When continuing or exiting a subprocess, always use the matching tool for the same agent family (`continue_claude_session` / `continue_codex_session`, `exit_claude_session` / `exit_codex_session`).
+- Dispatcher may receive either a round-complete update or a process-exited update from a delegated subprocess. Round-complete means the subprocess is still running and can accept more instructions via `continue_*_session`; do not treat it as the subprocess having exited.
 "#;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DispatchFeedbackState {
+    RoundCompleted,
+    ProcessDone,
+    ProcessFailed,
+    ProcessCancelled,
+}
+
+impl DispatchFeedbackState {
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "process_done" => Self::ProcessDone,
+            "process_failed" => Self::ProcessFailed,
+            "process_cancelled" => Self::ProcessCancelled,
+            _ => Self::RoundCompleted,
+        }
+    }
+
+    fn visible_message(self) -> &'static str {
+        match self {
+            Self::RoundCompleted => {
+                "🔄 子任务当前轮次已完成，子进程仍在运行，执行结果已同步供后续分析。"
+            }
+            Self::ProcessDone => "✅ 子任务进程已结束，执行结果已同步供后续分析。",
+            Self::ProcessFailed => "⚠️ 子任务进程已失败退出，执行结果已同步供后续分析。",
+            Self::ProcessCancelled => "⏹️ 子任务进程已取消，执行结果已同步供后续分析。",
+        }
+    }
+
+    fn hidden_prefix(self) -> &'static str {
+        match self {
+            Self::RoundCompleted => {
+                "[系统通知] 子任务当前轮次已完成，但子进程仍在运行，可继续注入后续指令，也可在确认无需继续后主动退出。请先分析执行状态，再决定下一步："
+            }
+            Self::ProcessDone => {
+                "[系统通知] 子任务进程已结束。请根据以下执行结果总结反馈："
+            }
+            Self::ProcessFailed => {
+                "[系统通知] 子任务进程已失败退出。请根据以下执行结果分析问题并决定下一步："
+            }
+            Self::ProcessCancelled => {
+                "[系统通知] 子任务进程已取消。请根据以下执行结果判断是否需要重试或调整方案："
+            }
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -314,11 +363,7 @@ impl DispatcherAgent {
                                 "[{} 子任务已提交审查] dispatch_id={}, 任务: {}",
                                 agent_label,
                                 dispatch_id,
-                                if description.len() > 200 {
-                                    format!("{}...", &description[..200])
-                                } else {
-                                    description.clone()
-                                }
+                                truncate_for_display(&description, 200, "...")
                             );
 
                             emit(
@@ -384,11 +429,7 @@ impl DispatcherAgent {
                             let continue_result = format!(
                                 "[已发送后续指令到 {} 会话] 指令: {}",
                                 agent_label,
-                                if text.len() > 200 {
-                                    format!("{}...", &text[..200])
-                                } else {
-                                    text.clone()
-                                }
+                                truncate_for_display(&text, 200, "...")
                             );
 
                             emit(
@@ -524,13 +565,14 @@ impl DispatcherAgent {
         workspace_id: &str,
         workspace_path: &str,
         dispatch_result: &str,
+        dispatch_state: DispatchFeedbackState,
         on_event: Channel<AgentEvent>,
     ) -> Result<AgentTurn> {
-        // 将子任务的执行结果作为简短提示追加
+        // 将子任务状态作为简短提示追加
         let result_msg = db.add_visible_message(
             workspace_id,
             "assistant",
-            "✅ 子任务已完成，执行结果已在后台同步供后续分析。",
+            dispatch_state.visible_message(),
         )?;
         emit(
             &on_event,
@@ -544,8 +586,9 @@ impl DispatcherAgent {
             workspace_id,
             "user",
             &format!(
-                "[系统通知] 子任务执行结果如下，请根据结果给用户总结反馈：\n\n{}",
-                dispatch_result
+                "{}\n\n{}",
+                dispatch_state.hidden_prefix(),
+                dispatch_result,
             ),
             None,
             None,

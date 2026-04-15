@@ -14,9 +14,6 @@ const SESSION_WAIT_MAX: Duration = Duration::from_millis(500);
 const PTY_READ_BUFFER_SIZE: usize = 32 * 1024;
 const PTY_EMIT_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 const PTY_EMIT_MAX_BATCH_BYTES: usize = 64 * 1024;
-/// Idle timeout for dispatcher subprocesses: if no PTY output for this duration,
-/// the subprocess is considered to have finished its current round.
-const DISPATCHER_IDLE_TIMEOUT: Duration = Duration::from_secs(12);
 /// 有界 channel 容量：满时 reader 线程阻塞，反压传播至 OS 内核 PTY 缓冲区，
 /// 最终使写入进程（Claude/Codex）的 write() 系统调用阻塞，从源头限流。
 const PTY_EMIT_CHANNEL_CAPACITY: usize = 32;
@@ -212,7 +209,7 @@ fn flush_pty_batch(app: &AppHandle, id: &str, event_name: &str, id_key: &str, ba
 /// - `event_name`：Tauri 事件名（`"agent-output"` 或 `"shell-output"`）
 /// - `id_key`：JSON payload 中的 ID 字段名（`"task_id"` 或 `"shell_id"`）
 /// - `session_tx`：可选 channel，用于将原始文本转发给 session watcher
-/// - `idle_callback`：可选回调，当流空闲超过 DISPATCHER_IDLE_TIMEOUT 时触发，
+/// - `idle_callback`：可选回调，仅在 session watcher 显式判定“当前轮次完成”时触发，
 ///   参数为自上次触发以来累积的原始输出文本。可重复触发以支持多轮会话。
 /// - `on_finish`：PTY 关闭后执行的可选清理回调
 fn spawn_pty_reader(
@@ -243,20 +240,13 @@ fn spawn_pty_reader(
                 let emit_id = id.clone();
                 let worker = std::thread::spawn(move || {
                     let mut batch = String::new();
-                    // Accumulate output since last idle fire for detection
+                    // 累积本轮输出，只有收到 session watcher 的显式 turn-complete 信号才回调。
                     let mut accumulated_output = String::new();
-                    let mut had_data = false;
-                    let mut idle_elapsed = Duration::ZERO;
-                    // idle_already_fired: prevent re-firing until new data arrives
-                    let mut idle_already_fired = false;
                     loop {
                         match rx.recv_timeout(flush_interval) {
                             Ok(chunk) => {
                                 batch.push_str(&chunk);
                                 accumulated_output.push_str(&chunk);
-                                had_data = true;
-                                idle_elapsed = Duration::ZERO;
-                                idle_already_fired = false;
                                 if batch.len() >= max_batch_bytes {
                                     flush_pty_batch(
                                         &emit_app, &emit_id, event_name, id_key, &mut batch,
@@ -267,24 +257,17 @@ fn spawn_pty_reader(
                                 flush_pty_batch(
                                     &emit_app, &emit_id, event_name, id_key, &mut batch,
                                 );
-                                // Track idle time for dispatcher subprocess detection
-                                // Fires every time idle threshold is reached or forced by JSONL watcher
                                 let force = force_idle_flag
                                     .as_ref()
                                     .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
                                     .unwrap_or(false);
 
-                                if had_data && (!idle_already_fired || force) {
+                                if force {
+                                    if let Some(flag) = force_idle_flag.as_ref() {
+                                        flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                                    }
                                     if let Some(ref cb) = idle_callback {
-                                        idle_elapsed += flush_interval;
-                                        if force || idle_elapsed >= DISPATCHER_IDLE_TIMEOUT {
-                                            idle_already_fired = true;
-                                            if force {
-                                                force_idle_flag.as_ref().unwrap().store(
-                                                    false,
-                                                    std::sync::atomic::Ordering::Relaxed,
-                                                );
-                                            }
+                                        if !accumulated_output.is_empty() {
                                             cb(std::mem::take(&mut accumulated_output));
                                         }
                                     }

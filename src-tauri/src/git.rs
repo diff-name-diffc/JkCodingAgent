@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::text::truncate_for_display;
+
 // ── 辅助函数 ─────────────────────────────────────────────────────────────────
 
 /// Validate that project_path is absolute and looks like a real project directory.
@@ -88,11 +90,7 @@ pub async fn generate_commit_message(project_path: String) -> Result<String, Str
     }
 
     // Truncate diff if too large to avoid CLI arg limits
-    let diff = if diff.len() > 50_000 {
-        format!("{}...(diff truncated)", &diff[..50_000])
-    } else {
-        diff
-    };
+    let diff = truncate_for_display(&diff, 50_000, "...(diff truncated)");
 
     // 2. Read project config for prompt and default agent
     let config = crate::config::read_project_config(project_path.clone())?;

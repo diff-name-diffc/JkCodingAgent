@@ -6,6 +6,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::text::truncate_for_display;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCall {
     pub name: String,
@@ -278,7 +280,7 @@ pub async fn fetch_models(api_base: &str, api_key: &str) -> Result<Vec<String>> 
         return Ok(ids);
     }
 
-    let preview = if raw.len() > 500 { &raw[..500] } else { &raw };
+    let preview = truncate_for_display(&raw, 500, "");
     Err(anyhow!("无法解析模型列表响应，原始内容:\n{}", preview))
 }
 

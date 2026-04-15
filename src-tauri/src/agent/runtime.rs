@@ -39,11 +39,11 @@ impl DispatchFeedbackState {
     fn visible_message(self) -> &'static str {
         match self {
             Self::RoundCompleted => {
-                "🔄 子任务当前轮次已完成，子进程仍在运行，执行结果已同步供后续分析。"
+                "🔄 子任务当前轮次已完成"
             }
-            Self::ProcessDone => "✅ 子任务进程已结束，执行结果已同步供后续分析。",
-            Self::ProcessFailed => "⚠️ 子任务进程已失败退出，执行结果已同步供后续分析。",
-            Self::ProcessCancelled => "⏹️ 子任务进程已取消，执行结果已同步供后续分析。",
+            Self::ProcessDone => "✅ 子任务进程已结束",
+            Self::ProcessFailed => "⚠️ 子任务进程已失败退出",
+            Self::ProcessCancelled => "⏹️ 子任务进程已取消",
         }
     }
 

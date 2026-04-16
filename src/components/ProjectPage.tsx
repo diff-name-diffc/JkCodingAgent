@@ -6,6 +6,7 @@ import type {
   Task,
   AgentType,
   PermissionMode,
+  ProjectMcpStatus,
   ThemeMode,
   SubProcess,
   DispatchFeedbackState,
@@ -21,6 +22,7 @@ import { ProjectRail } from "./ProjectRail";
 import { RightToolbar } from "./RightToolbar";
 import { ShellTerminalPanel, type ShellTerminalPanelHandle } from "./ShellTerminalPanel";
 import { DispatcherChat, type DispatcherChatHandle } from "./DispatcherChat";
+import { McpStatusDialog } from "./McpStatusDialog";
 import { SubProcessTabs } from "./SubProcessTabs";
 import { AppSettingsDialog } from "./AppSettingsDialog";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -119,6 +121,10 @@ export function ProjectPage({
 
   const [showShellTerminal, setShowShellTerminal] = useState(false);
   const [showDispatcherSettings, setShowDispatcherSettings] = useState(false);
+  const [showMcpStatus, setShowMcpStatus] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState<ProjectMcpStatus | null>(null);
+  const [mcpChecking, setMcpChecking] = useState(false);
+  const [mcpUpdatingServer, setMcpUpdatingServer] = useState<string | null>(null);
   const [subProcesses, setSubProcesses] = useState<SubProcess[]>([]);
   const [activeSubTabIdBySession, setActiveSubTabIdBySession] = useState<
     Record<string, string | null>
@@ -172,6 +178,44 @@ export function ProjectPage({
       pendingCmdRef.current = null;
     }
   }, []);
+
+  const refreshMcpStatus = useCallback(async () => {
+    setMcpChecking(true);
+    try {
+      const nextStatus = await invoke<ProjectMcpStatus>("refresh_project_mcp_status", {
+        projectPath: project.path,
+      });
+      setMcpStatus(nextStatus);
+    } catch (error) {
+      console.error("refresh_project_mcp_status 失败:", error);
+    } finally {
+      setMcpChecking(false);
+    }
+  }, [project.path]);
+
+  const handleToggleMcpServerEnabled = useCallback(
+    async (serverName: string, enabled: boolean) => {
+      setMcpUpdatingServer(serverName);
+      try {
+        const nextStatus = await invoke<ProjectMcpStatus>("set_project_mcp_server_enabled", {
+          projectPath: project.path,
+          serverName,
+          enabled,
+        });
+        setMcpStatus(nextStatus);
+      } catch (error) {
+        console.error("set_project_mcp_server_enabled 失败:", error);
+      } finally {
+        setMcpUpdatingServer((current) => (current === serverName ? null : current));
+      }
+    },
+    [project.path],
+  );
+
+  useEffect(() => {
+    if (!visible) return;
+    refreshMcpStatus().catch(console.error);
+  }, [refreshMcpStatus, visible]);
 
   // ── Dispatcher sub-process handlers ──
   const handleDispatchApproved = useCallback(
@@ -548,11 +592,14 @@ export function ProjectPage({
                 ref={dispatcherChatRef}
                 sessionId={activeSessionId}
                 projectPath={project.path}
+                mcpStatus={mcpStatus}
+                mcpChecking={mcpChecking}
                 subProcesses={subProcesses}
                 onDispatchApproved={handleDispatchApproved}
                 onDispatchRejected={handleDispatchRejected}
                 onDispatchContinue={handleDispatchContinue}
                 onDispatchExit={handleDispatchExit}
+                onOpenMcpStatus={() => setShowMcpStatus(true)}
                 onOpenSettings={() => setShowDispatcherSettings(true)}
               />
             ) : (
@@ -674,6 +721,22 @@ export function ProjectPage({
           onThemeModeChange={onThemeModeChange}
           initialTab="aha"
           onClose={() => setShowDispatcherSettings(false)}
+        />
+      )}
+
+      {showMcpStatus && (
+        <McpStatusDialog
+          projectPath={project.path}
+          status={mcpStatus}
+          checking={mcpChecking}
+          updatingServer={mcpUpdatingServer}
+          onRefresh={() => {
+            refreshMcpStatus().catch(console.error);
+          }}
+          onToggleServerEnabled={(serverName, enabled) => {
+            handleToggleMcpServerEnabled(serverName, enabled).catch(console.error);
+          }}
+          onClose={() => setShowMcpStatus(false)}
         />
       )}
     </div>

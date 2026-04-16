@@ -36,6 +36,51 @@ export interface Task {
   claudeSessionPath?: string;
 }
 
+export type ProjectMcpAggregateStatus =
+  | "not_configured"
+  | "healthy"
+  | "degraded"
+  | "invalid_config";
+
+export type ProjectMcpServerState =
+  | "disabled"
+  | "healthy"
+  | "invalid_config"
+  | "spawn_failed"
+  | "connection_failed";
+
+export type ProjectMcpToolTaskSupport = "forbidden" | "optional" | "required";
+
+export interface ProjectMcpToolStatus {
+  name: string;
+  exposedName: string;
+  description: string;
+  taskSupport: ProjectMcpToolTaskSupport;
+}
+
+export interface ProjectMcpServerStatus {
+  name: string;
+  transport: string;
+  enabled: boolean;
+  state: ProjectMcpServerState;
+  summary: string;
+  error?: string;
+  toolCount: number;
+  tools: ProjectMcpToolStatus[];
+}
+
+export interface ProjectMcpStatus {
+  projectPath: string;
+  configPath: string;
+  aggregate: ProjectMcpAggregateStatus;
+  checkedAt: number;
+  serverCount: number;
+  enabledServerCount: number;
+  healthyServerCount: number;
+  servers: ProjectMcpServerStatus[];
+  configError?: string;
+}
+
 export function isActiveTaskStatus(status: TaskStatus): boolean {
   return status === "pending" || status === "running" || status === "input_required";
 }

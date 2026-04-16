@@ -7,6 +7,7 @@ use super::db::{
 };
 use super::llm;
 use super::runtime::{AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent};
+use crate::project::mcp::ProjectMcpRegistry;
 use crate::shared::TaskManager;
 
 pub struct DispatcherState {
@@ -15,10 +16,10 @@ pub struct DispatcherState {
 }
 
 impl DispatcherState {
-    pub fn new() -> Result<Self> {
+    pub fn new(project_mcp_registry: ProjectMcpRegistry) -> Result<Self> {
         let config = DispatcherAgentConfig::load()?;
         let db = DispatcherDb::new(config.db_path.clone())?;
-        let mut agent = DispatcherAgent::new(config);
+        let mut agent = DispatcherAgent::new(config, project_mcp_registry);
 
         if let Ok(Some(settings)) = db.get_settings() {
             agent.apply_settings(&settings);

@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use super::mcp::ensure_project_mcp_file;
 use super::storage::atomic_write;
 use crate::platform::{detect_claude_version, detect_codex_version};
 
@@ -68,7 +69,7 @@ impl Default for ProjectConfig {
 }
 
 /// Creates `.jkcodingagent/config.toml` in the project directory if it doesn't already exist.
-/// Also ensures `.jkcodingagent/attachments/` exists.
+/// Also ensures `.jkcodingagent/attachments/` and `.jkcodingagent/mcp.json` exist.
 /// Returns the parsed config.
 #[tauri::command]
 pub fn init_project_config(project_path: String) -> Result<ProjectConfig, String> {
@@ -77,6 +78,7 @@ pub fn init_project_config(project_path: String) -> Result<ProjectConfig, String
     let attachments_dir = config_dir.join("attachments");
 
     fs::create_dir_all(&attachments_dir).map_err(|e| e.to_string())?;
+    ensure_project_mcp_file(&project_path)?;
 
     if !config_path.exists() {
         fs::write(&config_path, DEFAULT_CONFIG).map_err(|e| e.to_string())?;

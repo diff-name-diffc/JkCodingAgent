@@ -48,6 +48,7 @@ futures = "0.3"
 dirs = "6"
 anyhow = "1"
 ropey = "1"
+rmcp = { version = "1.4.0", default-features = false, features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-client-unix-socket"] }
 
 [profile.dev]
 debug = 0

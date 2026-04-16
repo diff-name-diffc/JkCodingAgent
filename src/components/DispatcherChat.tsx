@@ -17,6 +17,7 @@ import type {
   DispatcherAgentEvent,
   DispatcherAgentTurn,
   DispatcherSettings,
+  ProjectMcpStatus,
   SubProcess,
 } from "../types";
 import { isImeComposing } from "../utils";
@@ -138,11 +139,29 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
   );
 });
 
+function getMcpIndicatorState(
+  mcpStatus: ProjectMcpStatus | null,
+  mcpChecking: boolean,
+): { color: string; label: string } {
+  if (mcpChecking) {
+    return { color: "#d97706", label: "检查中" };
+  }
+  if (!mcpStatus || mcpStatus.aggregate === "not_configured") {
+    return { color: "var(--text-hint)", label: "未配置" };
+  }
+  if (mcpStatus.aggregate === "healthy") {
+    return { color: "#1f9d55", label: "正常" };
+  }
+  return { color: "#dc2626", label: "异常" };
+}
+
 // ── DispatcherChat ───────────────────────────────────────────────────────────
 
 interface DispatcherChatProps {
   sessionId: string;
   projectPath: string;
+  mcpStatus: ProjectMcpStatus | null;
+  mcpChecking: boolean;
   subProcesses: SubProcess[];
   onDispatchApproved: (
     dispatchId: string,
@@ -154,6 +173,7 @@ interface DispatcherChatProps {
   onDispatchRejected: (dispatchId: string) => void;
   onDispatchContinue: (agent: AgentType, text: string, sessionId: string) => void;
   onDispatchExit: (agent: AgentType, reason: string, sessionId: string) => void;
+  onOpenMcpStatus: () => void;
   onOpenSettings: () => void;
 }
 
@@ -178,11 +198,14 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     {
       sessionId,
       projectPath,
+      mcpStatus,
+      mcpChecking,
       subProcesses: _subProcesses,
       onDispatchApproved,
       onDispatchRejected,
       onDispatchContinue,
       onDispatchExit,
+      onOpenMcpStatus,
       onOpenSettings,
     },
     ref,
@@ -213,6 +236,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     onDispatchExitRef.current = onDispatchExit;
     const displayItems = useMemo(() => buildDispatcherDisplayItems(messages), [messages]);
     const currentPendingDispatch = pendingDispatches[0] ?? null;
+    const mcpIndicator = getMcpIndicatorState(mcpStatus, mcpChecking);
 
     // Load settings (for auto-approve flag)
     useEffect(() => {
@@ -497,6 +521,20 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             >
               免确认 {autoApprove ? "开" : "关"}
             </button>
+            <button
+              style={styles.headerBtn}
+              onClick={onOpenMcpStatus}
+              title={`项目级 MCP 状态：${mcpIndicator.label}`}
+            >
+              <span
+                style={{
+                  ...styles.headerSignal,
+                  background: mcpIndicator.color,
+                  boxShadow: `0 0 0 3px ${mcpIndicator.color}22`,
+                }}
+              />
+              MCP
+            </button>
             {messages.length > 0 && (
               <button style={styles.headerBtn} onClick={handleClearHistory}>
                 清空
@@ -646,11 +684,20 @@ const styles = {
   headerBtn: {
     padding: "6px 10px",
     fontSize: "11px",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
     background: "color-mix(in srgb, var(--bg-card) 82%, transparent)",
     border: "1px solid var(--border-dim)",
     borderRadius: "999px",
     color: "var(--text-secondary)",
     cursor: "pointer",
+  },
+  headerSignal: {
+    width: "8px",
+    height: "8px",
+    borderRadius: "999px",
+    flexShrink: 0,
   },
   headerBtnActive: {
     background: "var(--accent-subtle)",

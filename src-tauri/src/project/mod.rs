@@ -1,5 +1,6 @@
 pub(crate) mod analytics;
 pub(crate) mod config;
+pub(crate) mod mcp;
 pub(crate) mod storage;
 
 pub(crate) use config::read_project_config;

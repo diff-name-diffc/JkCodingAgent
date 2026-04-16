@@ -21,6 +21,7 @@ use super::tools::{
     parse_continue_instruction, parse_dispatch_instruction, parse_exit_instruction, DispatchAgent,
     ToolContext, ToolRegistry,
 };
+use crate::project::mcp::{build_workspace_mcp_prompt_block, ProjectMcpRegistry};
 use crate::shared::truncate_for_display;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,6 +136,7 @@ pub struct DispatcherAgent {
     config: DispatcherAgentConfig,
     provider: Mutex<OpenAiCompatProvider>,
     tools: ToolRegistry,
+    project_mcp_registry: ProjectMcpRegistry,
     subprocesses: Mutex<Vec<RegisteredSubprocess>>,
 }
 
@@ -319,7 +321,7 @@ impl ProtocolBatchState {
 }
 
 impl DispatcherAgent {
-    pub fn new(config: DispatcherAgentConfig) -> Self {
+    pub fn new(config: DispatcherAgentConfig, project_mcp_registry: ProjectMcpRegistry) -> Self {
         let provider = OpenAiCompatProvider::new(
             config.api_key.clone(),
             config.api_base.clone(),
@@ -331,7 +333,8 @@ impl DispatcherAgent {
         Self {
             config,
             provider: Mutex::new(provider),
-            tools: ToolRegistry::default_tools(),
+            tools: ToolRegistry::default_tools(project_mcp_registry.clone()),
+            project_mcp_registry,
             subprocesses: Mutex::new(Vec::new()),
         }
     }
@@ -428,6 +431,7 @@ impl DispatcherAgent {
             fs::create_dir_all(&workspace)
                 .with_context(|| format!("create workspace {}", workspace.display()))?;
         }
+        let _ = self.project_mcp_registry.ensure_recent(&workspace).await;
         let user = db.add_visible_message(workspace_id, "user", user_message)?;
         emit(&on_event, AgentEvent::UserMessage { message: user });
 
@@ -532,6 +536,7 @@ impl DispatcherAgent {
         }
 
         let workspace = PathBuf::from(workspace_path);
+        let _ = self.project_mcp_registry.ensure_recent(&workspace).await;
         let reply = self
             .run_llm_loop(db, workspace_id, &workspace, &on_event, &provider)
             .await?;
@@ -562,8 +567,9 @@ impl DispatcherAgent {
         };
 
         for iteration in 0..self.config.max_tool_iterations {
-            let tool_definitions = self.tool_definitions_for_workspace(workspace_id);
-            let prompt_snapshot = self.build_system_prompt_for_workspace(workspace_id)?;
+            let tool_definitions = self.tool_definitions_for_workspace(workspace_id, workspace);
+            let prompt_snapshot =
+                self.build_system_prompt_for_workspace(workspace_id, workspace)?;
             let history_messages = db.load_llm_history(workspace_id)?;
             let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
             messages.extend(history_messages.clone());
@@ -803,6 +809,7 @@ impl DispatcherAgent {
     fn build_system_prompt_for_workspace(
         &self,
         workspace_id: &str,
+        workspace: &Path,
     ) -> Result<SystemPromptSnapshot> {
         let mut prompt_bundle = self.build_system_prompt()?;
         let state_block = self.build_subprocess_state_block(workspace_id);
@@ -814,6 +821,21 @@ impl DispatcherAgent {
             });
             prompt_bundle.content.push_str("\n\n---\n\n");
             prompt_bundle.content.push_str(&state_block);
+        }
+        let mcp_block = build_workspace_mcp_prompt_block(
+            self.project_mcp_registry
+                .cached_for_workspace(workspace)
+                .as_ref(),
+            workspace,
+        );
+        if !mcp_block.is_empty() {
+            prompt_bundle.sections.push(PromptSection {
+                label: "Workspace MCP State".to_string(),
+                source: "runtime::workspace_mcp".to_string(),
+                content: mcp_block.clone(),
+            });
+            prompt_bundle.content.push_str("\n\n---\n\n");
+            prompt_bundle.content.push_str(&mcp_block);
         }
         Ok(SystemPromptSnapshot {
             rendered: prompt_bundle.content,
@@ -861,6 +883,7 @@ impl DispatcherAgent {
     fn tool_definitions_for_workspace(
         &self,
         workspace_id: &str,
+        workspace: &Path,
     ) -> Vec<crate::agent::llm::ToolDefinition> {
         let mut allowed = HashSet::from([
             "read_file",
@@ -887,7 +910,8 @@ impl DispatcherAgent {
             }
         }
 
-        self.tools.definitions_for_names(Some(allowed.into_iter()))
+        self.tools
+            .definitions_for_workspace(workspace, Some(allowed.into_iter()))
     }
 
     fn active_subprocesses_for_workspace(&self, workspace_id: &str) -> Vec<RegisteredSubprocess> {

@@ -7,7 +7,9 @@ fn build_task_manager() -> TaskManager {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let dispatcher_state = DispatcherState::new().expect("failed to initialize Dispatcher state");
+    let project_mcp_registry = project::mcp::ProjectMcpRegistry::default();
+    let dispatcher_state = DispatcherState::new(project_mcp_registry.clone())
+        .expect("failed to initialize Dispatcher state");
 
     tauri::Builder::default()
         .setup(|_app| {
@@ -19,6 +21,7 @@ pub fn run() {
         })
         .manage(build_task_manager())
         .manage(dispatcher_state)
+        .manage(project_mcp_registry)
         .manage(workspace::RopeManager::new())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -71,6 +74,8 @@ pub fn run() {
             project::config::init_project_config,
             project::config::read_project_config,
             project::config::write_project_config,
+            project::mcp::refresh_project_mcp_status,
+            project::mcp::set_project_mcp_server_enabled,
             project::config::read_agent_config_file,
             project::config::write_agent_config_file,
             project::storage::load_projects,

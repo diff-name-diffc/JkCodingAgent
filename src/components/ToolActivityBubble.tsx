@@ -1,11 +1,14 @@
 import { useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import { ChevronDown, ChevronRight, Wrench } from "lucide-react";
+import type { DispatcherToolResultMode } from "../types";
 
 export interface ToolActivityItem {
   key: string;
   name: string;
   input?: string;
   output?: string;
+  resultMode?: DispatcherToolResultMode;
   status: "running" | "completed";
 }
 
@@ -67,6 +70,11 @@ export function ToolActivityBubble({
                     }}
                   />
                   <span style={styles.itemTitle}>{tool.name}</span>
+                  {tool.resultMode && (
+                    <span style={toolModeBadgeStyle(tool.resultMode)}>
+                      {toolResultModeLabel(tool.resultMode)}
+                    </span>
+                  )}
                 </div>
                 <span
                   style={{
@@ -106,6 +114,40 @@ export function ToolActivityBubble({
       </div>
     </div>
   );
+}
+
+function toolResultModeLabel(mode: DispatcherToolResultMode): string {
+  switch (mode) {
+    case "summary":
+      return "摘要";
+    case "conservative_summary":
+      return "保守压缩";
+    case "raw":
+    default:
+      return "原文";
+  }
+}
+
+function toolModeBadgeStyle(mode: DispatcherToolResultMode): CSSProperties {
+  const accent =
+    mode === "summary"
+      ? "var(--accent)"
+      : mode === "conservative_summary"
+        ? "var(--warning, #d97706)"
+        : "var(--text-hint)";
+  const background =
+    mode === "summary"
+      ? "color-mix(in srgb, var(--accent) 12%, transparent)"
+      : mode === "conservative_summary"
+        ? "rgba(217,119,6,0.12)"
+        : "var(--bg-hover)";
+
+  return {
+    ...styles.modeBadge,
+    color: accent,
+    background,
+    borderColor: `color-mix(in srgb, ${accent} 24%, transparent)`,
+  };
 }
 
 const styles = {
@@ -205,6 +247,17 @@ const styles = {
     color: "var(--text-primary)",
     fontFamily: "var(--font-mono)",
     wordBreak: "break-word" as const,
+  },
+  modeBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "2px 7px",
+    borderRadius: 999,
+    border: "1px solid var(--border-dim)",
+    fontSize: 10.5,
+    fontWeight: 700,
+    lineHeight: 1.2,
+    flexShrink: 0,
   },
   itemStatus: {
     flexShrink: 0,

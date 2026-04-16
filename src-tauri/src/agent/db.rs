@@ -39,6 +39,7 @@ pub struct DispatcherMessageRecord {
     pub content: String,
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
+    pub tool_result_mode: Option<String>,
     pub tool_calls_json: Option<String>,
     pub created_at: String,
 }
@@ -197,7 +198,7 @@ impl DispatcherDb {
         role: &str,
         content: &str,
     ) -> Result<DispatcherMessageRecord> {
-        self.add_message(workspace_id, role, content, None, None, None, true)
+        self.add_message(workspace_id, role, content, None, None, None, None, true)
     }
 
     pub fn add_visible_message_with_tools(
@@ -207,6 +208,7 @@ impl DispatcherDb {
         content: &str,
         tool_call_id: Option<&str>,
         tool_name: Option<&str>,
+        tool_result_mode: Option<&str>,
         tool_calls: Option<&[OutboundToolCall]>,
     ) -> Result<DispatcherMessageRecord> {
         self.add_message(
@@ -215,6 +217,7 @@ impl DispatcherDb {
             content,
             tool_call_id,
             tool_name,
+            tool_result_mode,
             tool_calls,
             true,
         )
@@ -227,6 +230,7 @@ impl DispatcherDb {
         content: &str,
         tool_call_id: Option<&str>,
         tool_name: Option<&str>,
+        tool_result_mode: Option<&str>,
         tool_calls: Option<&[OutboundToolCall]>,
     ) -> Result<DispatcherMessageRecord> {
         self.add_message(
@@ -235,6 +239,7 @@ impl DispatcherDb {
             content,
             tool_call_id,
             tool_name,
+            tool_result_mode,
             tool_calls,
             false,
         )
@@ -246,7 +251,7 @@ impl DispatcherDb {
     ) -> Result<Vec<DispatcherMessageRecord>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, role, content, tool_call_id, tool_name, tool_calls_json, created_at
+            "SELECT id, workspace_id, role, content, tool_call_id, tool_name, tool_result_mode, tool_calls_json, created_at
              FROM dispatcher_messages
              WHERE workspace_id = ?1 AND visible = 1
              ORDER BY created_at ASC, rowid ASC",
@@ -259,8 +264,9 @@ impl DispatcherDb {
                 content: row.get(3)?,
                 tool_call_id: row.get(4)?,
                 tool_name: row.get(5)?,
-                tool_calls_json: row.get(6)?,
-                created_at: row.get(7)?,
+                tool_result_mode: row.get(6)?,
+                tool_calls_json: row.get(7)?,
+                created_at: row.get(8)?,
             })
         })?;
 
@@ -316,6 +322,7 @@ impl DispatcherDb {
         content: &str,
         tool_call_id: Option<&str>,
         tool_name: Option<&str>,
+        tool_result_mode: Option<&str>,
         tool_calls: Option<&[OutboundToolCall]>,
         visible: bool,
     ) -> Result<DispatcherMessageRecord> {
@@ -331,6 +338,7 @@ impl DispatcherDb {
             content: content.to_string(),
             tool_call_id: tool_call_id.map(|s| s.to_string()),
             tool_name: tool_name.map(|s| s.to_string()),
+            tool_result_mode: tool_result_mode.map(|s| s.to_string()),
             tool_calls_json: tool_calls_json.clone(),
             created_at: now(),
         };
@@ -343,9 +351,9 @@ impl DispatcherDb {
 
         conn.execute(
             "INSERT INTO dispatcher_messages (
-                id, workspace_id, role, content, tool_call_id, tool_name, tool_calls_json, visible, created_at
+                id, workspace_id, role, content, tool_call_id, tool_name, tool_result_mode, tool_calls_json, visible, created_at
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 record.id,
                 record.workspace_id,
@@ -353,6 +361,7 @@ impl DispatcherDb {
                 record.content,
                 record.tool_call_id,
                 record.tool_name,
+                record.tool_result_mode,
                 record.tool_calls_json,
                 if visible { 1 } else { 0 },
                 record.created_at
@@ -392,6 +401,7 @@ impl DispatcherDb {
                 content TEXT NOT NULL,
                 tool_call_id TEXT,
                 tool_name TEXT,
+                tool_result_mode TEXT,
                 tool_calls_json TEXT,
                 visible INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
@@ -417,6 +427,7 @@ impl DispatcherDb {
             "context_debug",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        ensure_column_exists(&conn, "dispatcher_messages", "tool_result_mode", "TEXT")?;
         Ok(())
     }
 

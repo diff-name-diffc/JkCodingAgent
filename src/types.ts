@@ -97,9 +97,12 @@ export interface DispatcherMessage {
   content: string;
   toolCallId?: string;
   toolName?: string;
+  toolResultMode?: DispatcherToolResultMode;
   toolCallsJson?: string;
   createdAt: string;
 }
+
+export type DispatcherToolResultMode = "raw" | "summary" | "conservative_summary";
 
 export interface DispatcherSettings {
   apiBase: string;
@@ -128,7 +131,15 @@ export type DispatcherAgentEvent =
   | { event: "assistantDelta"; data: { messageId: string; delta: string } }
   | { event: "assistantMessage"; data: { message: DispatcherMessage } }
   | { event: "toolStarted"; data: { toolCallId?: string; name: string; arguments: string } }
-  | { event: "toolFinished"; data: { toolCallId?: string; name: string; result: string } }
+  | {
+      event: "toolFinished";
+      data: {
+        toolCallId?: string;
+        name: string;
+        result: string;
+        resultMode: DispatcherToolResultMode;
+      };
+    }
   | {
       event: "dispatchProposed";
       data: { dispatchId: string; agent: AgentType; description: string; permissionMode: string };

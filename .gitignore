@@ -28,3 +28,4 @@ dist-ssr
 bump-version.sh
 .env*
 knowledge
+.gitnexus

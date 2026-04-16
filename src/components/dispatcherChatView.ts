@@ -1,4 +1,4 @@
-import type { DispatcherMessage } from "../types";
+import type { DispatcherMessage, DispatcherToolResultMode } from "../types";
 import type { ToolActivityItem } from "./ToolActivityBubble";
 
 interface OutboundToolCall {
@@ -79,6 +79,7 @@ export function buildDispatcherDisplayItems(
         key: message.toolCallId || `${message.id}-${message.toolName || "tool"}`,
         name: message.toolName || "tool",
         output: message.content,
+        resultMode: message.toolResultMode,
         status: "completed",
       });
     }
@@ -108,7 +109,12 @@ export function startLiveToolActivity(
 
 export function finishLiveToolActivity(
   tools: ToolActivityItem[],
-  payload: { toolCallId?: string; name: string; result: string },
+  payload: {
+    toolCallId?: string;
+    name: string;
+    result: string;
+    resultMode: DispatcherToolResultMode;
+  },
 ): ToolActivityItem[] {
   const nextTools = [...tools];
   const byToolCallId = payload.toolCallId
@@ -128,6 +134,7 @@ export function finishLiveToolActivity(
     nextTools[matchIndex] = {
       ...nextTools[matchIndex],
       output: payload.result,
+      resultMode: payload.resultMode,
       status: "completed",
     };
     return nextTools;
@@ -137,6 +144,7 @@ export function finishLiveToolActivity(
     key: payload.toolCallId || createLiveToolKey(payload.name, nextTools.length),
     name: payload.name,
     output: payload.result,
+    resultMode: payload.resultMode,
     status: "completed",
   });
   return nextTools;

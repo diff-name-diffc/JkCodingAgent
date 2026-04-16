@@ -72,11 +72,12 @@ impl AgentTool for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "读取文本文件，输出格式为 行号|内容。分析代码时优先使用；大文件请配合 offset 和 limit 分段读取。"
+        "读取文本文件，输出格式为 行号|内容。分析代码时优先使用；大文件请配合 offset 和 limit 分段读取。默认保留完整结果，若只需要概览可传 result_mode=summary。"
     }
 
     fn parameters(&self) -> Value {
-        json!({
+        with_result_mode_parameter(
+            json!({
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "要读取的文件路径" },
@@ -84,7 +85,10 @@ impl AgentTool for ReadFileTool {
                 "limit": { "type": "integer", "description": "最多读取多少行，默认 2000", "minimum": 1 }
             },
             "required": ["path"]
-        })
+            }),
+            "full",
+            "分析代码、配置或精确文本时优先保留完整结果；只看概览时改用 summary。",
+        )
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
@@ -129,18 +133,22 @@ impl AgentTool for WriteFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "将内容写入文件。若文件已存在则覆盖；必要时自动创建父目录。仅适合小范围修改或生成文件。"
+        "将内容写入文件。若文件已存在则覆盖；必要时自动创建父目录。仅适合小范围修改或生成文件。通常保持默认 result_mode=auto 即可。"
     }
 
     fn parameters(&self) -> Value {
-        json!({
+        with_result_mode_parameter(
+            json!({
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "要写入的文件路径" },
                 "content": { "type": "string", "description": "要写入的内容" }
             },
             "required": ["path", "content"]
-        })
+            }),
+            "auto",
+            "写入工具通常只返回简短确认信息，一般无需显式改动。",
+        )
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
@@ -178,11 +186,12 @@ impl AgentTool for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "通过将 old_text 替换为 new_text 来编辑文件。如果 old_text 命中多处，请补充上下文或设置 replace_all=true。"
+        "通过将 old_text 替换为 new_text 来编辑文件。如果 old_text 命中多处，请补充上下文或设置 replace_all=true。通常保持默认 result_mode=auto 即可。"
     }
 
     fn parameters(&self) -> Value {
-        json!({
+        with_result_mode_parameter(
+            json!({
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "要编辑的文件路径" },
@@ -191,7 +200,10 @@ impl AgentTool for EditFileTool {
                 "replace_all": { "type": "string", "description": "是否替换全部命中项，默认 false", "enum": ["true", "false"] }
             },
             "required": ["path", "old_text", "new_text"]
-        })
+            }),
+            "auto",
+            "编辑工具通常只返回简短确认信息，一般无需显式改动。",
+        )
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
@@ -240,11 +252,12 @@ impl AgentTool for ListDirTool {
     }
 
     fn description(&self) -> &'static str {
-        "列出目录内容。需要继续深入结构时可设置 recursive=true。"
+        "列出目录内容。需要继续深入结构时可设置 recursive=true。默认保留目录结构，若只需要概览可传 result_mode=summary。"
     }
 
     fn parameters(&self) -> Value {
-        json!({
+        with_result_mode_parameter(
+            json!({
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "要查看的目录路径" },
@@ -252,7 +265,10 @@ impl AgentTool for ListDirTool {
                 "max_entries": { "type": "integer", "description": "最多返回多少条，默认 200", "minimum": 1 }
             },
             "required": ["path"]
-        })
+            }),
+            "full",
+            "调查目录层级、文件名或结构差异时优先保留完整结果；只看概览时改用 summary。",
+        )
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
@@ -286,11 +302,12 @@ impl AgentTool for GlobTool {
     }
 
     fn description(&self) -> &'static str {
-        "按 glob 模式查找文件，结果按修改时间倒序排列。适合快速缩小文件范围。"
+        "按 glob 模式查找文件，结果按修改时间倒序排列。适合快速缩小文件范围。默认保留匹配文件列表，若只需要概览可传 result_mode=summary。"
     }
 
     fn parameters(&self) -> Value {
-        json!({
+        with_result_mode_parameter(
+            json!({
             "type": "object",
             "properties": {
                 "pattern": { "type": "string", "description": "匹配模式，例如 '*.rs' 或 'src/**/*.ts'" },
@@ -298,7 +315,10 @@ impl AgentTool for GlobTool {
                 "max_results": { "type": "integer", "description": "最多返回多少个结果，默认 250", "minimum": 1 }
             },
             "required": ["pattern"]
-        })
+            }),
+            "full",
+            "当后续需要精确文件列表时保留完整结果；只看分布或概况时改用 summary。",
+        )
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
@@ -357,18 +377,22 @@ impl AgentTool for ExecTool {
     }
 
     fn description(&self) -> &'static str {
-        "在当前工作区执行 shell 命令并返回输出。适合搜索、构建、测试、查看 git 信息；优先使用只读命令。"
+        "在当前工作区执行 shell 命令并返回输出。适合搜索、构建、测试、查看 git 信息；优先使用只读命令。默认自动判断；查精确报错用 result_mode=full，只看结论用 result_mode=summary。"
     }
 
     fn parameters(&self) -> Value {
-        json!({
+        with_result_mode_parameter(
+            json!({
             "type": "object",
             "properties": {
                 "command": { "type": "string", "description": "要执行的 shell 命令" },
                 "timeout": { "type": "integer", "description": "超时时间，单位秒，默认 60", "minimum": 1 }
             },
             "required": ["command"]
-        })
+            }),
+            "auto",
+            "命令输出噪声通常较大：只看成败、统计或阶段性结论时选 summary；要保留原始报错、测试明细或精确文本时选 full。",
+        )
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
@@ -436,17 +460,21 @@ impl AgentTool for MessageTool {
     }
 
     fn description(&self) -> &'static str {
-        "向用户发送最终回复。通常在调查完成、结果整理完成或协调结束后使用。"
+        "向用户发送最终回复。通常在调查完成、结果整理完成或协调结束后使用。通常保持默认 result_mode=auto 即可。"
     }
 
     fn parameters(&self) -> Value {
-        json!({
+        with_result_mode_parameter(
+            json!({
             "type": "object",
             "properties": {
                 "content": { "type": "string", "description": "要发送给用户的内容" }
             },
             "required": ["content"]
-        })
+            }),
+            "auto",
+            "消息工具一般只返回简短确认信息，无需显式改动。",
+        )
     }
 
     async fn execute(&self, args: &Value, _context: &ToolContext) -> String {
@@ -475,6 +503,24 @@ fn boolish_arg(args: &Value, key: &str) -> Option<bool> {
         return Some(flag);
     }
     value.as_str().map(|flag| flag.eq_ignore_ascii_case("true"))
+}
+
+fn with_result_mode_parameter(mut schema: Value, default_mode: &str, guidance: &str) -> Value {
+    let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
+        return schema;
+    };
+    properties.insert(
+        "result_mode".to_string(),
+        json!({
+            "type": "string",
+            "description": format!(
+                "控制本次工具结果写回主调度上下文的方式：auto（按工具类型自动判断）、full（尽量保留完整结果，若过长则做保守压缩）、summary（返回摘要以减少上下文占用）。推荐默认值：{default_mode}。{guidance}"
+            ),
+            "enum": ["auto", "full", "summary"],
+            "default": default_mode
+        }),
+    );
+    schema
 }
 
 fn resolve_path(context: &ToolContext, raw_path: &str) -> Result<PathBuf, String> {

@@ -10,6 +10,8 @@ const BUILT_IN_DISPATCH_GUIDANCE: &str = r#"# 内置调度规则
 - `dispatch_claude` 用于新功能、快速试错、探索性调试、方案空间较大、需要多轮收敛的编码任务。
 - `dispatch_codex` 用于重构、结构治理、跨文件一致性修改、回归风险高、需要严格验证的编码任务。
 - 发起委派前，任务说明必须自包含：目标、背景、相关文件或符号、约束、验证方式、期望产出, 委派指令要精简准确。
+- 调查工具支持 `result_mode`：`full` 保留精确信息，`summary` 返回摘要，`auto` 由系统按工具类型决定。`read_file` / `list_dir` / `glob` 优先保留完整结果，`exec` 默认优先自动判断。
+- 子任务回流默认只同步任务摘要，不直接回灌完整终端日志；如果主调度仍缺证据，应继续下发更具体的子任务，或本地重新读文件/执行命令。
 - 如果 Claude 与 Codex 可以并行推进不同工作流，可以在同一轮同时调用多个 `dispatch_*`；系统支持批量处理。
 - 同一 session 内，同一 agent 同时最多只能有一个活跃或待启动子进程；不要对同一 agent 重复 dispatch。
 - 继续或退出子进程时，必须使用同一家族的工具：`continue_claude_session` / `continue_codex_session`，`exit_claude_session` / `exit_codex_session`。

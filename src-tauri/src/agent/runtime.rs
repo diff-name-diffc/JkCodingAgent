@@ -108,6 +108,7 @@ pub enum AgentEvent {
         tool_call_id: Option<String>,
         name: String,
         result: String,
+        result_mode: String,
     },
     DispatchProposed {
         dispatch_id: String,
@@ -505,7 +506,15 @@ impl DispatcherAgent {
             summarized_dispatch_result
         );
 
-        db.add_hidden_message(workspace_id, "user", &hidden_message, None, None, None)?;
+        db.add_hidden_message(
+            workspace_id,
+            "user",
+            &hidden_message,
+            None,
+            None,
+            None,
+            None,
+        )?;
 
         let provider = self.provider.lock().unwrap().clone();
         if !provider.is_configured() {
@@ -647,6 +656,7 @@ impl DispatcherAgent {
                 &response.content,
                 None,
                 None,
+                None,
                 Some(&tool_calls_payload),
             )?;
 
@@ -689,46 +699,50 @@ impl DispatcherAgent {
                     }
                 }
 
-                let tool_result = match prepare_tool_result(&tool_call.name, &result).await {
-                    Ok(summary) => summary,
-                    Err(error) => {
-                        debug_logger.log(
-                            "工具结果摘要失败",
-                            vec![
-                                ("工作区".to_string(), workspace_id.to_string()),
-                                ("轮次".to_string(), (iteration + 1).to_string()),
-                                ("工具名".to_string(), tool_call.name.clone()),
-                                ("工具调用ID".to_string(), tool_call.id.clone()),
-                            ],
-                            vec![
-                                DebugSection::new("工具参数", tool_arguments.clone()),
-                                DebugSection::new("失败原因", error.clone()),
-                            ],
-                        );
-                        return self.emit_ollama_failure_and_finish(
-                            db,
-                            workspace_id,
-                            on_event,
-                            &error,
-                        );
-                    }
-                };
+                let tool_result =
+                    match prepare_tool_result(&tool_call.name, &tool_call.arguments, &result).await
+                    {
+                        Ok(summary) => summary,
+                        Err(error) => {
+                            debug_logger.log(
+                                "工具结果摘要失败",
+                                vec![
+                                    ("工作区".to_string(), workspace_id.to_string()),
+                                    ("轮次".to_string(), (iteration + 1).to_string()),
+                                    ("工具名".to_string(), tool_call.name.clone()),
+                                    ("工具调用ID".to_string(), tool_call.id.clone()),
+                                ],
+                                vec![
+                                    DebugSection::new("工具参数", tool_arguments.clone()),
+                                    DebugSection::new("失败原因", error.clone()),
+                                ],
+                            );
+                            return self.emit_ollama_failure_and_finish(
+                                db,
+                                workspace_id,
+                                on_event,
+                                &error,
+                            );
+                        }
+                    };
 
                 emit(
                     on_event,
                     AgentEvent::ToolFinished {
                         tool_call_id: Some(tool_call.id.clone()),
                         name: tool_call.name.clone(),
-                        result: tool_result.clone(),
+                        result: tool_result.content.clone(),
+                        result_mode: tool_result.result_mode.to_string(),
                     },
                 );
 
                 db.add_visible_message_with_tools(
                     workspace_id,
                     "tool",
-                    &tool_result,
+                    &tool_result.content,
                     Some(&tool_call.id),
                     Some(&tool_call.name),
+                    Some(tool_result.result_mode),
                     None,
                 )?;
 
@@ -1063,6 +1077,7 @@ impl DispatcherAgent {
                 tool_call_id: Some(tool_call.id.clone()),
                 name: tool_call.name.clone(),
                 result: result.clone(),
+                result_mode: "raw".to_string(),
             },
         );
         db.add_visible_message_with_tools(
@@ -1071,6 +1086,7 @@ impl DispatcherAgent {
             &result,
             Some(&tool_call.id),
             Some(&tool_call.name),
+            Some("raw"),
             None,
         )?;
         Ok(())
@@ -1090,6 +1106,7 @@ impl DispatcherAgent {
                 tool_call_id: Some(tool_call.id.clone()),
                 name: tool_call.name.clone(),
                 result: error.to_string(),
+                result_mode: "raw".to_string(),
             },
         );
         db.add_visible_message_with_tools(
@@ -1098,6 +1115,7 @@ impl DispatcherAgent {
             error,
             Some(&tool_call.id),
             Some(&tool_call.name),
+            Some("raw"),
             None,
         )?;
         Ok(())

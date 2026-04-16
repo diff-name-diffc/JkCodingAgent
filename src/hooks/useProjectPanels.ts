@@ -1,12 +1,13 @@
 import { useState, useCallback, useRef } from "react";
-
-type RightPanel = "files" | "git-changes" | "git-history" | null;
-type OpenFileTab = { id: string; path: string; name: string };
-
-type OpenDiff =
-  | { kind: "file"; filePath: string; staged: boolean; label: string }
-  | { kind: "commit"; hash: string; message: string }
-  | { kind: "commit-file"; hash: string; filePath: string; label: string };
+import {
+  deleteFromOpenFilesState,
+  deleteOpenDiff,
+  renameOpenDiff,
+  renameOpenFilesState,
+  type OpenDiff,
+  type OpenFileTab,
+  type RightPanel,
+} from "./projectPanelsFileState";
 
 export function useProjectPanels() {
   const [rightPanel, setRightPanel] = useState<RightPanel>(null);
@@ -110,6 +111,16 @@ export function useProjectPanels() {
     });
   }, []);
 
+  const handleFileTreeRename = useCallback((currentPath: string, nextPath: string) => {
+    setOpenFilesState((prev) => renameOpenFilesState(prev, currentPath, nextPath));
+    setOpenDiff((prev) => renameOpenDiff(prev, currentPath, nextPath));
+  }, []);
+
+  const handleFileTreeDelete = useCallback((deletedPath: string) => {
+    setOpenFilesState((prev) => deleteFromOpenFilesState(prev, deletedPath));
+    setOpenDiff((prev) => deleteOpenDiff(prev, deletedPath));
+  }, []);
+
   const handleDiffFileSelect = useCallback((filePath: string, staged: boolean, label: string) => {
     setOpenDiff({ kind: "file", filePath, staged, label });
   }, []);
@@ -185,6 +196,8 @@ export function useProjectPanels() {
     handleCloseOtherFileTabs,
     handleCloseTabsToRight,
     handleCloseAllFileTabs,
+    handleFileTreeRename,
+    handleFileTreeDelete,
     handleDiffFileSelect,
     handleCommitSelect,
     handleCommitFileClick,
@@ -193,5 +206,4 @@ export function useProjectPanels() {
     handleTerminalResizeStart,
   };
 }
-
 export type { OpenFileTab };

@@ -38,6 +38,8 @@ pub fn run() {
             workspace::fs::read_file_content,
             workspace::fs::read_image_preview,
             workspace::fs::write_file_content,
+            workspace::fs::move_fs_entry,
+            workspace::fs::delete_fs_entry,
             workspace::fs::list_project_files,
             workspace::fs::get_file_meta,
             workspace::fs::read_file_chunk,

@@ -1,123 +1,36 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useCancellableInvoke } from "../hooks/useCancellableInvoke";
-import { ChevronRight, ChevronDown, RotateCcw } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
+import { RotateCcw } from "lucide-react";
+import { useToast } from "./Toast";
 import { FileGlyph } from "../file-icons";
+import { isSystemGroupNode, type TreeNode } from "./file-explorer/tree";
+import { FileExplorerContextMenu } from "./file-explorer/FileExplorerContextMenu";
 import {
-  findNode,
-  flattenVisible,
-  isSystemGroupNode,
-  loadTreeNodes,
-  updateNode,
-  type FsEntry,
-  type TreeNode,
-} from "./file-explorer/tree";
+  FileExplorerRenameDialog,
+  type RenameTarget,
+} from "./file-explorer/FileExplorerRenameDialog";
+import { FileExplorerTreeItem, ROW_HEIGHT } from "./file-explorer/FileExplorerTreeItem";
+import { buildFileContextActionGroups } from "./file-explorer/fileContextActions";
+import { useFileExplorerTree } from "./file-explorer/useFileExplorerTree";
+import {
+  buildSiblingPath,
+  getRelativePathDisplay,
+  isSameOrChildPath,
+} from "../utils/filePaths";
+import s from "../styles";
 
-function FileIcon({
-  name,
-  path,
-  ext,
-  isDir,
-  iconName,
-}: {
-  name: string;
-  path?: string;
-  ext?: string;
-  isDir: boolean;
-  iconName?: string;
-}) {
-  if (isDir) {
-    return <FileGlyph name={iconName ?? name} path={iconName ? undefined : path} isDir size={20} />;
-  }
-  return <FileGlyph name={name} path={path} extension={ext} size={20} />;
-}
-
-const ROW_HEIGHT = 30;
-const AUTO_REFRESH_MS = 2500;
-
-function TreeItem({
-  node,
-  depth,
-  selectedPath,
-  onSelect,
-  onToggle,
-  onContextMenu,
-}: {
-  node: TreeNode;
-  depth: number;
-  selectedPath: string | null;
-  onSelect: (node: TreeNode) => void;
-  onToggle: (path: string) => void;
-  onContextMenu: (e: React.MouseEvent, path: string) => void;
-}) {
-  const isSelected = selectedPath === node.path;
-  const isSystemGroup = isSystemGroupNode(node);
-  return (
-    <div
-      onClick={() => (node.is_dir ? onToggle(node.path) : onSelect(node))}
-      onContextMenu={(e) => {
-        if (isSystemGroup) return;
-        onContextMenu(e, node.path);
-      }}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        height: ROW_HEIGHT,
-        paddingLeft: 8 + depth * 14,
-        paddingRight: 8,
-        cursor: "pointer",
-        borderRadius: 4,
-        margin: "0 4px",
-        boxSizing: "border-box",
-        background: isSelected ? "var(--bg-selected)" : "transparent",
-        userSelect: "none",
-      }}
-      onMouseEnter={(e) => {
-        if (!isSelected) (e.currentTarget as HTMLElement).style.background = "var(--bg-hover)";
-      }}
-      onMouseLeave={(e) => {
-        if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent";
-      }}
-    >
-      <span
-        style={{
-          width: 12,
-          flexShrink: 0,
-          display: "inline-flex",
-          alignItems: "center",
-          color: "var(--text-hint)",
-        }}
-      >
-        {node.is_dir && (node.expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />)}
-      </span>
-      <FileIcon
-        name={node.name}
-        path={node.path}
-        ext={node.extension}
-        isDir={node.is_dir}
-        iconName={node.iconName}
-      />
-      <span
-        style={{
-          fontSize: 12.5,
-          color: "var(--text-primary)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          flex: 1,
-          fontFamily: "var(--font-ui)",
-        }}
-      >
-        {node.name}
-      </span>
-    </div>
-  );
+function resolveErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function FileExplorer({
   projectPath,
   projectName,
   onFileSelect,
+  onFileRename,
+  onFileDelete,
+  openFilePaths = [],
   isDark: _isDark,
   active = true,
   width = 240,
@@ -125,346 +38,255 @@ export function FileExplorer({
   projectPath: string;
   projectName: string;
   onFileSelect: (path: string, name: string) => void;
+  onFileRename?: (currentPath: string, nextPath: string) => void;
+  onFileDelete?: (deletedPath: string) => void;
+  openFilePaths?: string[];
   isDark: boolean;
   active?: boolean;
   width?: number;
 }) {
-  const [nodes, setNodes] = useState<TreeNode[]>([]);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(500);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; path: string } | null>(null);
-
-  const handleContextMenu = useCallback((e: React.MouseEvent, path: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setCtxMenu({ x: e.clientX, y: e.clientY, path });
-  }, []);
-
-  const closeCtxMenu = useCallback(() => setCtxMenu(null), []);
-
-  const copyPath = useCallback((path: string, withAt: boolean) => {
-    navigator.clipboard.writeText(withAt ? `@${path}` : path);
-    setCtxMenu(null);
-  }, []);
-
-  const { safeInvoke, isCancelled } = useCancellableInvoke();
-  const nodesRef = useRef<TreeNode[]>([]);
-  const refreshIdRef = useRef(0);
+  const { showToast } = useToast();
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
+  const [renameSaving, setRenameSaving] = useState(false);
+  const {
+    scrollRef,
+    loading,
+    flatNodes,
+    startIndex,
+    endIndex,
+    selectedPath,
+    refresh,
+    setScrollTop,
+    handleToggle,
+    handleSelect,
+    updateSelectedPath,
+  } = useFileExplorerTree({
+    projectPath,
+    active,
+    onFileSelect,
+  });
 
   useEffect(() => {
-    nodesRef.current = nodes;
-  }, [nodes]);
+    setRenameTarget(null);
+  }, [projectPath]);
 
-  const readEntries = useCallback(
-    (path: string) => safeInvoke<FsEntry[]>("read_dir_entries", { path, projectPath }),
-    [projectPath, safeInvoke],
+  const isPathOpenInEditor = useCallback(
+    (path: string) => openFilePaths.some((openPath) => isSameOrChildPath(path, openPath)),
+    [openFilePaths],
   );
 
-  const refresh = useCallback(
-    async (showLoading = false) => {
-      const refreshId = refreshIdRef.current + 1;
-      refreshIdRef.current = refreshId;
-      if (showLoading) setLoading(true);
+  const confirmOpenFileMutation = useCallback(
+    async (path: string, actionLabel: "重命名" | "删除") => {
+      if (!isPathOpenInEditor(path)) {
+        return true;
+      }
 
+      return confirm(
+        `该项当前已在编辑器中打开，继续${actionLabel}会刷新相关标签页，未保存的内容可能丢失。确定继续吗？`,
+        {
+          title: `${actionLabel}已打开项`,
+          kind: "warning",
+        },
+      );
+    },
+    [isPathOpenInEditor],
+  );
+
+  const copyPath = useCallback(
+    async (path: string, withMentionPrefix: boolean) => {
       try {
-        const nextNodes = await loadTreeNodes({
-          path: projectPath,
-          rootPath: projectPath,
-          previousNodes: nodesRef.current,
-          readEntries,
-        });
-        if (nextNodes === null || refreshId !== refreshIdRef.current) return;
-        if (nextNodes !== nodesRef.current) {
-          setNodes(nextNodes);
-        }
-        setLoading(false);
-      } catch {
-        if (!isCancelled() && refreshId === refreshIdRef.current) {
-          setLoading(false);
-        }
+        await navigator.clipboard.writeText(withMentionPrefix ? `@${path}` : path);
+      } catch (error) {
+        console.error("复制路径失败:", error);
+        showToast(`复制路径失败：${resolveErrorMessage(error)}`);
       }
     },
-    [isCancelled, projectPath, readEntries],
+    [showToast],
   );
 
-  useEffect(() => {
-    if (!active) return;
-    void refresh(true);
-  }, [active, projectPath, refresh]);
+  const handleDelete = useCallback(
+    async (node: TreeNode) => {
+      const entryLabel = node.is_dir ? "目录" : "文件";
+      const extraWarning = node.is_dir ? "\n目录下的内容也会被一并删除。" : "";
+      const allowMutation = await confirmOpenFileMutation(node.path, "删除");
+      if (!allowMutation) {
+        return;
+      }
 
-  useEffect(() => {
-    if (!active) return;
-
-    const handleVisibilityRefresh = () => {
-      if (document.visibilityState !== "visible") return;
-      void refresh();
-    };
-
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      void refresh();
-    }, AUTO_REFRESH_MS);
-
-    window.addEventListener("focus", handleVisibilityRefresh);
-    document.addEventListener("visibilitychange", handleVisibilityRefresh);
-
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("focus", handleVisibilityRefresh);
-      document.removeEventListener("visibilitychange", handleVisibilityRefresh);
-    };
-  }, [active, refresh]);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    setViewportHeight(el.clientHeight);
-    const ro = new ResizeObserver(() => setViewportHeight(el.clientHeight));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const flat = useMemo(() => flattenVisible(nodes), [nodes]);
-
-  const OVERSCAN = 5;
-  const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-  const endIdx = Math.min(
-    flat.length - 1,
-    Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN,
-  );
-
-  const handleToggle = useCallback(
-    (dirPath: string) => {
-      const current = findNode(nodesRef.current, dirPath);
-      const shouldExpand = !current?.expanded;
-
-      setNodes((prev) =>
-        updateNode(prev, dirPath, (node) => {
-          const nextChildren = shouldExpand ? (node.children ?? []) : node.children;
-          if (node.expanded === shouldExpand && node.children === nextChildren) {
-            return node;
-          }
-          return { ...node, expanded: shouldExpand, children: nextChildren };
-        }),
+      const confirmed = await confirm(
+        `确定永久删除${entryLabel}“${node.name}”吗？${extraWarning}`,
+        {
+          title: `删除${entryLabel}`,
+          kind: "warning",
+        },
       );
+      if (!confirmed) {
+        return;
+      }
 
-      if (!shouldExpand) return;
-
-      void (async () => {
-        const currentChildren = findNode(nodesRef.current, dirPath)?.children ?? [];
-        const nextChildren = await loadTreeNodes({
-          path: dirPath,
-          rootPath: projectPath,
-          previousNodes: currentChildren,
-          readEntries,
-        });
-        if (nextChildren === null) return;
-        setNodes((prev) =>
-          updateNode(prev, dirPath, (node) =>
-            node.children === nextChildren ? node : { ...node, children: nextChildren },
-          ),
-        );
-      })();
+      try {
+        await invoke("delete_fs_entry", { path: node.path, projectPath });
+        updateSelectedPath(node.path, null);
+        onFileDelete?.(node.path);
+        await refresh();
+      } catch (error) {
+        console.error("删除文件项失败:", error);
+        showToast(`删除失败：${resolveErrorMessage(error)}`);
+      }
     },
-    [projectPath, readEntries],
+    [confirmOpenFileMutation, onFileDelete, projectPath, refresh, showToast, updateSelectedPath],
   );
 
-  const handleSelect = useCallback(
-    (node: TreeNode) => {
-      setSelectedPath(node.path);
-      onFileSelect(node.path, node.name);
+  const handleRename = useCallback(
+    async (nextName: string) => {
+      if (!renameTarget) {
+        return;
+      }
+
+      const nextPath = buildSiblingPath(renameTarget.path, nextName);
+      if (nextPath === renameTarget.path) {
+        setRenameTarget(null);
+        return;
+      }
+
+      const allowMutation = await confirmOpenFileMutation(renameTarget.path, "重命名");
+      if (!allowMutation) {
+        return;
+      }
+
+      setRenameSaving(true);
+      try {
+        await invoke("move_fs_entry", {
+          sourcePath: renameTarget.path,
+          destinationPath: nextPath,
+          projectPath,
+        });
+        updateSelectedPath(renameTarget.path, nextPath);
+        onFileRename?.(renameTarget.path, nextPath);
+        setRenameTarget(null);
+        await refresh();
+      } catch (error) {
+        console.error("重命名文件项失败:", error);
+        showToast(`重命名失败：${resolveErrorMessage(error)}`);
+      } finally {
+        setRenameSaving(false);
+      }
     },
-    [onFileSelect],
+    [
+      confirmOpenFileMutation,
+      onFileRename,
+      projectPath,
+      refresh,
+      renameTarget,
+      showToast,
+      updateSelectedPath,
+    ],
   );
 
   return (
-    <div
-      style={{
-        width,
-        flexShrink: 0,
-        background: "var(--bg-sidebar)",
-        borderLeft: "1px solid var(--border-dim)",
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
-      onClick={ctxMenu ? closeCtxMenu : undefined}
-    >
-      {ctxMenu && (
-        <>
-          <div
-            style={{ position: "fixed", inset: 0, zIndex: 999 }}
-            onClick={closeCtxMenu}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              closeCtxMenu();
-            }}
-          />
-          <div
-            style={{
-              position: "fixed",
-              left: ctxMenu.x,
-              top: ctxMenu.y,
-              zIndex: 1000,
-              background: "var(--bg-sidebar)",
-              border: "1px solid var(--border-dim)",
-              borderRadius: 6,
-              boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
-              minWidth: 180,
-              padding: "4px 0",
-              fontSize: 13,
-            }}
-          >
-            {[
-              { label: "Copy full path", withAt: false },
-              { label: "Copy @full path", withAt: true },
-            ].map(({ label, withAt }) => (
-              <div
-                key={label}
-                style={{
-                  padding: "6px 14px",
-                  cursor: "pointer",
-                  color: "var(--text-primary)",
-                  whiteSpace: "nowrap",
-                  borderRadius: 4,
-                  margin: "2px 4px",
-                  transition: "background 0.1s",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--accent)";
-                  e.currentTarget.style.color = "#fff";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "transparent";
-                  e.currentTarget.style.color = "var(--text-primary)";
-                }}
-                onClick={() => copyPath(ctxMenu.path, withAt)}
-              >
-                {label}
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-      {/* Header */}
-      <div
-        style={{
-          height: 40,
-          display: "flex",
-          alignItems: "center",
-          padding: "0 12px",
-          borderBottom: "1px solid var(--border-dim)",
-          flexShrink: 0,
-        }}
-      >
-        <span
-          style={{
-            fontSize: 11,
-            fontWeight: 700,
-            color: "var(--text-hint)",
-            letterSpacing: 0.7,
-            textTransform: "uppercase",
-            flex: 1,
-          }}
-        >
-          Files
-        </span>
+    <div style={{ ...s.fileExplorerPanel, width }}>
+      <div style={s.fileExplorerHeader}>
+        <span style={s.fileExplorerHeaderTitle}>Files</span>
         <button
+          type="button"
           onClick={() => void refresh()}
-          title="Refresh"
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            color: "var(--text-hint)",
-            padding: 4,
-            borderRadius: 4,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
+          title="刷新文件树"
+          style={s.fileExplorerRefreshButton}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.color = "var(--text-primary)";
+            event.currentTarget.style.background = "var(--bg-hover)";
           }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLElement).style.color = "var(--text-primary)";
-            (e.currentTarget as HTMLElement).style.background = "var(--bg-hover)";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.color = "var(--text-hint)";
-            (e.currentTarget as HTMLElement).style.background = "none";
+          onMouseLeave={(event) => {
+            event.currentTarget.style.color = "var(--text-hint)";
+            event.currentTarget.style.background = "none";
           }}
         >
           <RotateCcw size={13} />
         </button>
       </div>
-      {/* Project root label */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "6px 8px 3px 20px",
-          fontSize: 12.5,
-          fontWeight: 600,
-          color: "var(--text-primary)",
-        }}
-      >
+
+      <div style={s.fileExplorerProjectLabel}>
         <FileGlyph name={projectName} path={projectPath} isDir size={20} />
         {projectName}
       </div>
-      {/* Tree */}
+
       <div
         ref={scrollRef}
-        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-        style={{ flex: 1, overflowY: "auto", position: "relative" }}
+        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+        style={s.fileExplorerTreeViewport}
       >
         {loading ? (
-          <div
-            style={{
-              padding: "16px 12px",
-              fontSize: 12,
-              color: "var(--text-hint)",
-              textAlign: "center",
-            }}
-          >
-            加载中...
-          </div>
-        ) : flat.length === 0 ? (
-          <div
-            style={{
-              padding: "16px 12px",
-              fontSize: 12,
-              color: "var(--text-hint)",
-              textAlign: "center",
-            }}
-          >
-            空目录
-          </div>
+          <div style={s.fileExplorerEmptyState}>加载中...</div>
+        ) : flatNodes.length === 0 ? (
+          <div style={s.fileExplorerEmptyState}>空目录</div>
         ) : (
-          <div style={{ height: flat.length * ROW_HEIGHT + 12, position: "relative" }}>
-            {flat.slice(startIdx, endIdx + 1).map(({ node, depth }, i) => (
-              <div
-                key={node.path}
-                style={{
-                  position: "absolute",
-                  top: (startIdx + i) * ROW_HEIGHT + 2,
-                  width: "100%",
-                }}
-              >
-                <TreeItem
+          <div
+            style={{
+              ...s.fileExplorerVirtualInner,
+              height: flatNodes.length * ROW_HEIGHT + 12,
+            }}
+          >
+            {flatNodes.slice(startIndex, endIndex + 1).map(({ node, depth }, index) => {
+              const item = (
+                <FileExplorerTreeItem
                   node={node}
                   depth={depth}
                   selectedPath={selectedPath}
-                  onSelect={handleSelect}
-                  onToggle={handleToggle}
-                  onContextMenu={handleContextMenu}
+                  onNodeSelect={handleSelect}
+                  onNodeToggle={handleToggle}
                 />
-              </div>
-            ))}
+              );
+
+              return (
+                <div
+                  key={node.path}
+                  style={{
+                    position: "absolute",
+                    top: (startIndex + index) * ROW_HEIGHT + 2,
+                    width: "100%",
+                  }}
+                >
+                  {isSystemGroupNode(node) ? (
+                    item
+                  ) : (
+                    <FileExplorerContextMenu
+                      node={node}
+                      relativePath={getRelativePathDisplay(projectPath, node.path)}
+                      groups={buildFileContextActionGroups({
+                        node,
+                        relativePath: getRelativePathDisplay(projectPath, node.path),
+                        onCopyPath: () => copyPath(node.path, false),
+                        onCopyMentionPath: () => copyPath(node.path, true),
+                        onRename: () =>
+                          setRenameTarget({
+                            path: node.path,
+                            name: node.name,
+                            isDir: node.is_dir,
+                          }),
+                        onDelete: () => handleDelete(node),
+                      })}
+                    >
+                      {item}
+                    </FileExplorerContextMenu>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
+
+      <FileExplorerRenameDialog
+        projectPath={projectPath}
+        target={renameTarget}
+        saving={renameSaving}
+        onClose={() => {
+          if (!renameSaving) {
+            setRenameTarget(null);
+          }
+        }}
+        onSubmit={handleRename}
+      />
     </div>
   );
 }

@@ -408,6 +408,169 @@ body {
   background: transparent;
 }
 
+@keyframes context-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.file-explorer-context-menu {
+  min-width: 280px;
+  padding: 6px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--border-medium));
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--bg-card) 92%, transparent),
+      color-mix(in srgb, var(--bg-sidebar) 96%, transparent)
+    );
+  box-shadow:
+    0 24px 64px rgba(15, 23, 42, 0.18),
+    0 8px 18px rgba(15, 23, 42, 0.1);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  transform-origin: var(--radix-context-menu-content-transform-origin);
+  animation: context-menu-in 0.14s ease;
+  z-index: 2200;
+}
+
+.file-explorer-context-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 11px 11px;
+  margin-bottom: 4px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--border-dim));
+}
+
+.file-explorer-context-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-card) 88%, transparent);
+  border: 1px solid var(--border-dim);
+  flex-shrink: 0;
+}
+
+.file-explorer-context-menu-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.file-explorer-context-menu-title {
+  font-size: 13px;
+  line-height: 1.25;
+  font-weight: 650;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.file-explorer-context-menu-path {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+.file-explorer-context-menu-separator {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--border-dim);
+}
+
+.file-explorer-context-menu-group-label {
+  display: block;
+  padding: 4px 10px 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-hint);
+  user-select: none;
+}
+
+.file-explorer-context-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  outline: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.file-explorer-context-menu-item[data-highlighted] {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent) 14%, transparent),
+    color-mix(in srgb, var(--bg-hover) 94%, transparent)
+  );
+}
+
+.file-explorer-context-menu-item-danger {
+  color: var(--text-primary);
+}
+
+.file-explorer-context-menu-item-danger[data-highlighted] {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.file-explorer-context-menu-item-danger[data-highlighted] .file-explorer-context-menu-item-label,
+.file-explorer-context-menu-item-danger[data-highlighted] .file-explorer-context-menu-item-icon {
+  color: var(--danger);
+}
+
+.file-explorer-context-menu-item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-card) 90%, transparent);
+  border: 1px solid var(--border-dim);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.file-explorer-context-menu-item-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.file-explorer-context-menu-item-label {
+  font-size: 13px;
+  line-height: 1.2;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+}
+
+.file-explorer-context-menu-item-caption {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  word-break: break-word;
+}
+
 /* ── Shared markdown surfaces ───────────────────────────────────── */
 .session-selectable,
 .session-selectable *,

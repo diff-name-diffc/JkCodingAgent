@@ -64,6 +64,46 @@ fn validate_path_within(target: &str, allowed_root: &str) -> Result<std::path::P
     Ok(canonical_target)
 }
 
+fn validate_new_path_within(target: &str, allowed_root: &str) -> Result<std::path::PathBuf, String> {
+    let target = Path::new(target);
+    let root = Path::new(allowed_root);
+
+    if !target.is_absolute() {
+        return Err("Path must be absolute".to_string());
+    }
+
+    let parent = target
+        .parent()
+        .ok_or_else(|| "Path must have a parent directory".to_string())?;
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve target parent directory: {}", e))?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve root directory: {}", e))?;
+
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err("Path is outside the allowed directory".to_string());
+    }
+
+    Ok(target.to_path_buf())
+}
+
+fn ensure_not_project_root(target: &Path, allowed_root: &str) -> Result<(), String> {
+    let canonical_target = target
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve path: {}", e))?;
+    let canonical_root = Path::new(allowed_root)
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve root directory: {}", e))?;
+
+    if canonical_target == canonical_root {
+        return Err("Cannot modify the project root".to_string());
+    }
+
+    Ok(())
+}
+
 fn previewable_image_mime_type(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
@@ -203,6 +243,56 @@ pub async fn write_file_content(
 
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::write(&validated_path, content).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn move_fs_entry(
+    source_path: String,
+    destination_path: String,
+    project_path: String,
+) -> Result<(), String> {
+    let validated_source = validate_path_within(&source_path, &project_path)?;
+    ensure_not_project_root(&validated_source, &project_path)?;
+    let validated_destination = validate_new_path_within(&destination_path, &project_path)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        if validated_source == validated_destination {
+            return Ok(());
+        }
+
+        if validated_destination.exists() {
+            let source_is_same_entry = validated_destination
+                .canonicalize()
+                .ok()
+                .zip(validated_source.canonicalize().ok())
+                .is_some_and(|(destination, source)| destination == source);
+
+            if !source_is_same_entry {
+                return Err("A file or folder with the same name already exists".to_string());
+            }
+        }
+
+        std::fs::rename(&validated_source, &validated_destination).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn delete_fs_entry(path: String, project_path: String) -> Result<(), String> {
+    let validated_path = validate_path_within(&path, &project_path)?;
+    ensure_not_project_root(&validated_path, &project_path)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let metadata = std::fs::symlink_metadata(&validated_path).map_err(|e| e.to_string())?;
+        if metadata.is_dir() {
+            std::fs::remove_dir_all(&validated_path).map_err(|e| e.to_string())
+        } else {
+            std::fs::remove_file(&validated_path).map_err(|e| e.to_string())
+        }
     })
     .await
     .map_err(|e| e.to_string())?

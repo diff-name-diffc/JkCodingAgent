@@ -111,6 +111,8 @@ export function ProjectPage({
     handleCloseOtherFileTabs,
     handleCloseTabsToRight,
     handleCloseAllFileTabs,
+    handleFileTreeRename,
+    handleFileTreeDelete,
     handleDiffFileSelect,
     handleCommitSelect,
     handleCommitFileClick,
@@ -677,6 +679,9 @@ export function ProjectPage({
                 projectPath={project.path}
                 projectName={project.name}
                 onFileSelect={handleFileSelect}
+                onFileRename={handleFileTreeRename}
+                onFileDelete={handleFileTreeDelete}
+                openFilePaths={openFiles.map((tab) => tab.path)}
                 isDark={isDark}
                 active={visible}
                 width={rightPanelWidth}

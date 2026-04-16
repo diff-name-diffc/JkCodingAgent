@@ -108,7 +108,7 @@ function NotificationEntry({
       </div>
       {!item.isRead && (
         <button
-          title="Mark as read"
+          title="标记为已读"
           onClick={(e) => {
             e.stopPropagation();
             onMarkRead(item.id);
@@ -151,9 +151,9 @@ export function NotificationBell() {
           ? err
           : err instanceof Error
             ? err.message
-            : "Failed to load notifications";
+            : "加载通知失败";
       setError(message);
-      console.error("Failed to load notifications:", err);
+      console.error("加载通知失败:", err);
     } finally {
       setLoading(false);
     }
@@ -217,7 +217,7 @@ export function NotificationBell() {
           ...s.sidebarIconBtn,
           opacity: isActive ? 1 : 0.5,
         }}
-        title="Notifications"
+        title="通知"
         onClick={() => setOpen((v) => !v)}
       >
         <Bell size={14} strokeWidth={1.6} color={bellColor} />
@@ -282,7 +282,7 @@ export function NotificationBell() {
                   flex: 1,
                 }}
               >
-                Notifications
+                通知
                 {unreadCount > 0 && (
                   <span
                     style={{
@@ -292,13 +292,13 @@ export function NotificationBell() {
                       color: "var(--text-muted)",
                     }}
                   >
-                    ({unreadCount} unread)
+                    （{unreadCount} 条未读）
                   </span>
                 )}
               </span>
               {unreadCount > 0 && (
                 <button
-                  title="Mark all as read"
+                  title="全部标为已读"
                   onClick={handleMarkAllRead}
                   style={{
                     background: "none",
@@ -315,7 +315,7 @@ export function NotificationBell() {
                 </button>
               )}
               <button
-                title="Close"
+                title="关闭"
                 onClick={() => setOpen(false)}
                 style={s.modalCloseBtn}
               >
@@ -338,7 +338,7 @@ export function NotificationBell() {
                     color: "var(--text-hint)",
                   }}
                 >
-                  Loading...
+                  加载中...
                 </div>
               ) : error && !result ? (
                 <div
@@ -361,7 +361,7 @@ export function NotificationBell() {
                     color: "var(--text-hint)",
                   }}
                 >
-                  No notifications
+                  暂无通知
                 </div>
               ) : (
                 result.notifications.map((item) => (

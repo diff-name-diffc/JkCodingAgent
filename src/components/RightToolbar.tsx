@@ -18,12 +18,12 @@ export function RightToolbar({
     icon: ReactNode;
     title: string;
   }> = [
-    { key: "files", icon: <Folder size={17} />, title: "File Explorer" },
-    { key: "git-changes", icon: <GitBranch size={17} />, title: "Git Changes" },
-    { key: "git-history", icon: <History size={17} />, title: "Git History" },
+    { key: "files", icon: <Folder size={17} />, title: "文件浏览器" },
+    { key: "git-changes", icon: <GitBranch size={17} />, title: "Git 变更" },
+    { key: "git-history", icon: <History size={17} />, title: "Git 历史" },
   ];
 
-  const placeholders = [{ icon: <Search size={17} />, title: "Search (coming soon)" }];
+  const placeholders = [{ icon: <Search size={17} />, title: "搜索（即将上线）" }];
 
   return (
     <div
@@ -53,7 +53,7 @@ export function RightToolbar({
 
       <IconButton
         icon={<Terminal size={17} />}
-        title="Terminal"
+        title="终端"
         active={terminalActive}
         onClick={onToggleTerminal}
       />

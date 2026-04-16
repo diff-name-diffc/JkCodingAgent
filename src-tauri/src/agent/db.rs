@@ -27,6 +27,7 @@ pub struct DispatcherSettingsRecord {
     pub api_key: String,
     pub model: String,
     pub auto_approve_dispatch: bool,
+    pub context_debug: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,7 +60,7 @@ impl DispatcherDb {
     pub fn get_settings(&self) -> Result<Option<DispatcherSettingsRecord>> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT api_base, api_key, model, auto_approve_dispatch FROM dispatcher_settings WHERE id = 'default'",
+            "SELECT api_base, api_key, model, auto_approve_dispatch, context_debug FROM dispatcher_settings WHERE id = 'default'",
             [],
             |row| {
                 Ok(DispatcherSettingsRecord {
@@ -67,6 +68,7 @@ impl DispatcherDb {
                     api_key: row.get(1)?,
                     model: row.get(2)?,
                     auto_approve_dispatch: row.get::<_, i32>(3)? != 0,
+                    context_debug: row.get::<_, i32>(4)? != 0,
                 })
             },
         )
@@ -80,14 +82,22 @@ impl DispatcherDb {
         api_key: &str,
         model: &str,
         auto_approve_dispatch: bool,
+        context_debug: bool,
     ) -> Result<DispatcherSettingsRecord> {
         let conn = self.connect()?;
         let auto_approve_int = if auto_approve_dispatch { 1 } else { 0 };
+        let context_debug_int = if context_debug { 1 } else { 0 };
         conn.execute(
-            "INSERT INTO dispatcher_settings (id, api_base, api_key, model, auto_approve_dispatch)
-             VALUES ('default', ?1, ?2, ?3, ?4)
-             ON CONFLICT(id) DO UPDATE SET api_base = ?1, api_key = ?2, model = ?3, auto_approve_dispatch = ?4",
-            params![api_base.trim(), api_key.trim(), model.trim(), auto_approve_int],
+            "INSERT INTO dispatcher_settings (id, api_base, api_key, model, auto_approve_dispatch, context_debug)
+             VALUES ('default', ?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET api_base = ?1, api_key = ?2, model = ?3, auto_approve_dispatch = ?4, context_debug = ?5",
+            params![
+                api_base.trim(),
+                api_key.trim(),
+                model.trim(),
+                auto_approve_int,
+                context_debug_int
+            ],
         )
         .context("save dispatcher settings")?;
         Ok(DispatcherSettingsRecord {
@@ -95,6 +105,7 @@ impl DispatcherDb {
             api_key: api_key.trim().to_string(),
             model: model.trim().to_string(),
             auto_approve_dispatch,
+            context_debug,
         })
     }
 
@@ -394,11 +405,18 @@ impl DispatcherDb {
                 api_base TEXT NOT NULL DEFAULT '',
                 api_key TEXT NOT NULL DEFAULT '',
                 model TEXT NOT NULL DEFAULT '',
-                auto_approve_dispatch INTEGER NOT NULL DEFAULT 0
+                auto_approve_dispatch INTEGER NOT NULL DEFAULT 0,
+                context_debug INTEGER NOT NULL DEFAULT 0
             );
             ",
         )
         .context("initialize dispatcher sqlite schema")?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_settings",
+            "context_debug",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         Ok(())
     }
 
@@ -427,6 +445,28 @@ impl DispatcherDb {
             .context("load dispatcher dialogue boundaries")?;
 
         Ok(rowids.into_iter().min().unwrap_or(0))
+    }
+}
+
+fn ensure_column_exists(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
+    match conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+        [],
+    ) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+            if message.contains("duplicate column name") =>
+        {
+            Ok(())
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("ensure column {column} exists on table {table}"))
+        }
     }
 }
 
@@ -473,6 +513,7 @@ fn is_process_only_assistant_message(content: &str) -> bool {
     ) || content.starts_with("📋 已自动批准 ")
         || content.starts_with("📋 已提交 ")
         || content.starts_with("📨 已向 ")
+        || content.starts_with("⏹️ 已向 ")
 }
 
 fn is_process_only_assistant_tool_call(message: &ChatMessage) -> bool {

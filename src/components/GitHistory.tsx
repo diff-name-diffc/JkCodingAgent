@@ -249,13 +249,13 @@ export function GitHistory({ projectPath, onCommitSelect, onFileClick, width = 2
           }}
         >
           <span style={{ fontSize: 13, fontWeight: 650, color: "var(--text-primary)", flex: 1 }}>
-            History
+            历史
           </span>
 
           <button
             onClick={handlePull}
             disabled={pulling}
-            title="Pull"
+            title="拉取"
             style={{
               display: "flex",
               alignItems: "center",
@@ -270,12 +270,12 @@ export function GitHistory({ projectPath, onCommitSelect, onFileClick, width = 2
               opacity: pulling ? 0.6 : 1,
             }}
           >
-            Pull ↓{remoteCounts.behind}
+            拉取 ↓{remoteCounts.behind}
           </button>
           <button
             onClick={handlePush}
             disabled={pushing}
-            title="Push"
+            title="推送"
             style={{
               display: "flex",
               alignItems: "center",
@@ -293,15 +293,15 @@ export function GitHistory({ projectPath, onCommitSelect, onFileClick, width = 2
             {pushing ? (
               <>
                 <Loader2 size={11} style={{ animation: "spin 1s linear infinite" }} />
-                Pushing…
+                推送中…
               </>
             ) : (
-              <>Push ↑{remoteCounts.ahead}</>
+              <>推送 ↑{remoteCounts.ahead}</>
             )}
           </button>
           <button
             onClick={() => refresh()}
-            title="Refresh"
+            title="刷新"
             style={{
               background: "none",
               border: "none",
@@ -414,7 +414,7 @@ export function GitHistory({ projectPath, onCommitSelect, onFileClick, width = 2
           <input
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
-            placeholder="Search commits"
+            placeholder="搜索提交"
             style={{
               flex: 1,
               border: "none",
@@ -462,7 +462,7 @@ export function GitHistory({ projectPath, onCommitSelect, onFileClick, width = 2
               textAlign: "center",
             }}
           >
-            Loading…
+            加载中…
           </div>
         )}
         {commits.map((commit) => {
@@ -485,7 +485,7 @@ export function GitHistory({ projectPath, onCommitSelect, onFileClick, width = 2
               textAlign: "center",
             }}
           >
-            No commits found
+            没有找到提交记录
           </div>
         )}
       </div>
@@ -663,7 +663,7 @@ function BranchOption({
         {name}
       </span>
       {current && (
-        <span style={{ fontSize: 10, color: "var(--text-hint)", flexShrink: 0 }}>HEAD</span>
+        <span style={{ fontSize: 10, color: "var(--text-hint)", flexShrink: 0 }}>当前</span>
       )}
       {active && <Check size={11} color="var(--accent)" style={{ flexShrink: 0 }} />}
     </div>
@@ -682,7 +682,7 @@ function CommitDetailPanel({
   const [hoveredPath, setHoveredPath] = useState<string | null>(null);
 
   if (loading) {
-    return <div style={{ padding: 16, fontSize: 12, color: "var(--text-hint)" }}>Loading…</div>;
+    return <div style={{ padding: 16, fontSize: 12, color: "var(--text-hint)" }}>加载中…</div>;
   }
 
   return (
@@ -711,7 +711,7 @@ function CommitDetailPanel({
           {detail.message}
         </div>
         <div style={{ fontSize: 11, color: "var(--text-hint)" }}>
-          {detail.files.length} file{detail.files.length !== 1 ? "s" : ""} changed{" "}
+          共变更 {detail.files.length} 个文件{" "}
           <span style={{ color: "#3fb950" }}>+{detail.total_additions}</span>{" "}
           <span style={{ color: "#f85149" }}>-{detail.total_deletions}</span>
         </div>

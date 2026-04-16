@@ -204,6 +204,13 @@ export function ProjectPage({
       idleInjectedTaskIdsRef.current.delete(taskId);
       closedSubprocessTaskIdsRef.current.delete(taskId);
       setSubProcessTaskMap((prev) => ({ ...prev, [spId]: taskId }));
+      invoke("dispatcher_register_subprocess", {
+        workspaceId: sessionId,
+        taskId,
+        dispatchId,
+        agent,
+        description,
+      }).catch(console.error);
     },
     [onSubmitTask],
   );
@@ -220,6 +227,7 @@ export function ProjectPage({
       const [spId] = spEntry;
       const alreadyInjectedByIdle = idleInjectedTaskIdsRef.current.has(task_id);
       closedSubprocessTaskIdsRef.current.add(task_id);
+      invoke("dispatcher_mark_subprocess_finished", { taskId: task_id }).catch(console.error);
       const targetSubProcess = subProcesses.find((sp) => sp.id === spId);
       const routeKey = targetSubProcess
         ? getSubProcessRouteKey(targetSubProcess.sessionId, targetSubProcess.agent)
@@ -313,6 +321,9 @@ export function ProjectPage({
       pendingDispatchRef.current.delete(spId);
       idleInjectedTaskIdsRef.current.add(task_id);
       interactiveSubProcessRef.current.set(getSubProcessRouteKey(sessionId, agent), spId);
+      invoke("dispatcher_mark_subprocess_round_completed", { taskId: task_id }).catch(
+        console.error,
+      );
       dispatcherChatRef.current?.continueWithResult(resultText, "round_completed", sessionId);
     });
     return () => {
@@ -347,6 +358,7 @@ export function ProjectPage({
 
       interactiveSubProcessRef.current.set(routeKey, activeSp.id);
       idleInjectedTaskIdsRef.current.delete(taskId);
+      invoke("dispatcher_mark_subprocess_running", { taskId }).catch(console.error);
       const submittedText = text.replace(/(?:\r?\n)+$/, "");
       invoke("dispatcher_send_to_subprocess", { taskId, text: submittedText }).catch(console.error);
     },

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::session::{spawn_resume_session_watcher, spawn_status_session_watcher};
+use crate::agent::DispatcherState;
 use crate::platform::{claude_version_gte, get_agent_bin, get_login_shell_env};
 use crate::project::read_project_config;
 use crate::shared::TaskManager;
@@ -391,6 +392,7 @@ fn build_claude_cmd(agent_bin: &str, permission_mode: &str) -> CommandBuilder {
 pub async fn run_task(
     app: AppHandle,
     task_manager: State<'_, TaskManager>,
+    _dispatcher_state: State<'_, DispatcherState>,
     task_id: String,
     project_path: String,
     prompt: String,
@@ -469,6 +471,10 @@ pub async fn run_task(
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     register_pty_handles(&task_manager, &task_id, pair.master, writer, child)?;
+    task_manager
+        .task_project_paths
+        .lock()
+        .insert(task_id.clone(), project_path.clone());
 
     let _ = app.emit(
         "task-status",
@@ -630,6 +636,10 @@ pub async fn resume_task(
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     register_pty_handles(&task_manager, &task_id, pair.master, writer, child)?;
+    task_manager
+        .task_project_paths
+        .lock()
+        .insert(task_id.clone(), project_path.clone());
 
     let _ = app.emit(
         "task-status",

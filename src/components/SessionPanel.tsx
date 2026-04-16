@@ -50,14 +50,14 @@ export function SessionPanel({
     try {
       const newSession = await invoke<DispatcherSession>("dispatcher_create_session", {
         projectId: project.id,
-        title: "New Session",
+        title: "新会话",
       });
       setSessions((prev) =>
         prev.some((session) => session.id === newSession.id) ? prev : [newSession, ...prev],
       );
       onSelectSession(newSession.id);
     } catch (err) {
-      console.error("Failed to create session:", err);
+      console.error("创建会话失败:", err);
     } finally {
       creatingSessionRef.current = false;
     }
@@ -83,7 +83,7 @@ export function SessionPanel({
           await handleNewSession();
         }
       } catch (err) {
-        console.error("Failed to load sessions:", err);
+        console.error("加载会话失败:", err);
       }
     }
 
@@ -95,8 +95,8 @@ export function SessionPanel({
   }, [handleNewSession, onSelectSession, project.id]);
 
   async function handleDeleteSession(id: string) {
-    const ok = await confirm(`Delete this session permanently?`, {
-      title: "Delete Session",
+    const ok = await confirm("确定永久删除这个会话吗？", {
+      title: "删除会话",
       kind: "warning",
     });
     if (!ok) return;
@@ -112,7 +112,7 @@ export function SessionPanel({
         await handleNewSession();
       }
     } catch (err) {
-      console.error("Failed to delete session:", err);
+      console.error("删除会话失败:", err);
     }
   }
 
@@ -126,7 +126,7 @@ export function SessionPanel({
     <div style={s.taskPanel}>
       {/* Project header */}
       <div style={s.panelHeader}>
-        <button style={s.backBtn} onClick={onBack} title="Switch project">
+        <button style={s.backBtn} onClick={onBack} title="切换项目">
           <ChevronLeft size={15} strokeWidth={2} />
         </button>
         <ProjectAvatar name={project.name} size={22} />
@@ -141,7 +141,7 @@ export function SessionPanel({
         <Search size={13} strokeWidth={2} color="var(--text-muted)" style={{ flexShrink: 0 }} />
         <input
           style={s.panelSearchInput}
-          placeholder="Search sessions..."
+          placeholder="搜索会话..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -166,7 +166,7 @@ export function SessionPanel({
           onClick={handleNewSession}
         >
           <Plus size={14} strokeWidth={2.5} />
-          New Session
+          新建会话
         </button>
       </div>
 
@@ -174,7 +174,7 @@ export function SessionPanel({
 
       {/* Session list */}
       <div style={s.taskListScroll}>
-        {filtered.length === 0 && <div style={s.taskListEmpty}>No sessions found</div>}
+        {filtered.length === 0 && <div style={s.taskListEmpty}>没有找到会话</div>}
         {filtered.map((session) => (
           <div
             key={session.id}
@@ -194,7 +194,7 @@ export function SessionPanel({
                 e.stopPropagation();
                 handleDeleteSession(session.id);
               }}
-              title="Delete session"
+              title="删除会话"
             >
               <Trash2 size={13} color="var(--text-muted)" />
             </button>

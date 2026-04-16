@@ -54,7 +54,7 @@ pub struct Task {
 fn app_data_dir() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .ok_or_else(|| "Cannot find home directory".to_string())?;
+        .ok_or_else(|| "找不到用户主目录".to_string())?;
     Ok(home.join(".jkcodingagent"))
 }
 

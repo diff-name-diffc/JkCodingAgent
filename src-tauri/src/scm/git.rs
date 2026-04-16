@@ -11,19 +11,19 @@ use crate::shared::truncate_for_display;
 fn validate_project_path(project_path: &str) -> Result<(), String> {
     let path = Path::new(project_path);
     if !path.is_absolute() {
-        return Err("Project path must be absolute".to_string());
+        return Err("项目路径必须是绝对路径".to_string());
     }
     if !path.exists() {
-        return Err("Project path does not exist".to_string());
+        return Err("项目路径不存在".to_string());
     }
     // Resolve symlinks / .. and ensure the path didn't escape
     let canonical = path
         .canonicalize()
-        .map_err(|e| format!("Cannot resolve project path: {}", e))?;
+        .map_err(|e| format!("无法解析项目路径：{}", e))?;
     if canonical != path {
         // Allow symlinks that resolve to a valid directory, but block obvious traversal
         if !canonical.is_dir() {
-            return Err("Project path is not a directory".to_string());
+            return Err("项目路径不是目录".to_string());
         }
     }
     Ok(())
@@ -65,7 +65,7 @@ async fn run_git_with_timeout(
     )
     .await
     .map_err(|_| format!("Git 命令执行超时（{}秒）", timeout.as_secs()))?
-    .map_err(|e| format!("Git 命令线程错误: {}", e))?
+    .map_err(|e| format!("Git 命令线程错误：{}", e))?
 }
 
 /// 执行 git 命令，若退出码非零则将 stderr 作为错误返回。
@@ -87,11 +87,11 @@ pub async fn generate_commit_message(project_path: String) -> Result<String, Str
     let diff_output = run_git(&project_path, &["diff", "--staged"])?;
     let diff = String::from_utf8_lossy(&diff_output.stdout).into_owned();
     if diff.trim().is_empty() {
-        return Err("No staged changes to generate a commit message for.".to_string());
+        return Err("没有可用于生成提交信息的已暂存变更。".to_string());
     }
 
     // Truncate diff if too large to avoid CLI arg limits
-    let diff = truncate_for_display(&diff, 50_000, "...(diff truncated)");
+    let diff = truncate_for_display(&diff, 50_000, "...（diff 已截断）");
 
     // 2. Read project config for prompt and default agent
     let config = read_project_config(project_path.clone())?;
@@ -138,7 +138,7 @@ pub async fn generate_commit_message(project_path: String) -> Result<String, Str
                     .env("HOME", &home)
                     .current_dir(&project_path)
                     .output()
-                    .map_err(|e| format!("Failed to run codex: {}", e))
+                    .map_err(|e| format!("运行 codex 失败：{}", e))
             } else {
                 // claude -p runs in non-interactive print mode; prompt is a positional arg
                 Command::new("claude")
@@ -147,23 +147,23 @@ pub async fn generate_commit_message(project_path: String) -> Result<String, Str
                     .env("HOME", &home)
                     .current_dir(&project_path)
                     .output()
-                    .map_err(|e| format!("Failed to run claude: {}", e))
+                    .map_err(|e| format!("运行 claude 失败：{}", e))
             }
         }),
     )
     .await
     .map_err(|_| "生成提交信息超时（15秒）".to_string())?
-    .map_err(|e| format!("生成提交信息线程错误: {}", e))??;
+    .map_err(|e| format!("生成提交信息线程错误：{}", e))??;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(format!("Agent failed: {}{}", stderr, stdout));
+        return Err(format!("智能体执行失败：{}{}", stderr, stdout));
     }
 
     let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if result.is_empty() {
-        return Err("Agent returned empty response.".to_string());
+        return Err("智能体返回了空结果。".to_string());
     }
     Ok(result)
 }

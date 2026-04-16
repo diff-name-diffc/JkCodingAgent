@@ -78,7 +78,7 @@ pub async fn read_usage_snapshot() -> Result<UsageSnapshot, String> {
 
 async fn read_claude_usage() -> UsageSource<ClaudeUsageData> {
     if !cfg!(target_os = "macos") {
-        return unavailable("Claude usage currently relies on macOS Keychain.");
+        return unavailable("Claude 用量读取当前依赖 macOS 钥匙串。");
     }
 
     let token_result =
@@ -124,7 +124,7 @@ async fn read_claude_usage() -> UsageSource<ClaudeUsageData> {
     let (token, version) = match token_result {
         Ok(Ok(value)) => value,
         Ok(Err(reason)) => return unavailable(reason),
-        Err(err) => return unavailable(format!("Failed to load Claude credentials: {err}")),
+        Err(err) => return unavailable(format!("加载 Claude 凭据失败：{err}")),
     };
 
     let user_agent = format!(
@@ -142,16 +142,16 @@ async fn read_claude_usage() -> UsageSource<ClaudeUsageData> {
         .await
     {
         Ok(response) => response,
-        Err(err) => return unavailable(format!("Claude usage request failed: {err}")),
+        Err(err) => return unavailable(format!("Claude 用量请求失败：{err}")),
     };
 
     if !response.status().is_success() {
-        return unavailable(format!("Claude usage HTTP {}", response.status()));
+        return unavailable(format!("Claude 用量请求返回 HTTP {}", response.status()));
     }
 
     let payload = match response.json::<Value>().await {
         Ok(value) => value,
-        Err(err) => return unavailable(format!("Claude usage response was invalid JSON: {err}")),
+        Err(err) => return unavailable(format!("Claude 用量响应不是有效 JSON：{err}")),
     };
 
     let data = ClaudeUsageData {
@@ -160,7 +160,7 @@ async fn read_claude_usage() -> UsageSource<ClaudeUsageData> {
     };
 
     if data.five_hour.is_none() && data.seven_day.is_none() {
-        unavailable("Claude usage response did not include recognized windows.")
+        unavailable("Claude 用量响应中未包含可识别的窗口数据。")
     } else {
         UsageSource::Available { data }
     }
@@ -170,7 +170,7 @@ async fn read_codex_usage() -> UsageSource<CodexUsageData> {
     match tokio::task::spawn_blocking(read_codex_usage_blocking).await {
         Ok(Ok(data)) => UsageSource::Available { data },
         Ok(Err(reason)) => unavailable(reason),
-        Err(err) => unavailable(format!("Failed to read Codex usage: {err}")),
+        Err(err) => unavailable(format!("读取 Codex 用量失败：{err}")),
     }
 }
 

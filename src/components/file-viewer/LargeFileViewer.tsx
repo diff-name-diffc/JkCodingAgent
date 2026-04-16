@@ -1147,12 +1147,12 @@ export function LargeFileViewer({
             fontWeight: 600,
           }}
         >
-          {dirty ? "Modified" : "Saved"}
+          {dirty ? "已修改" : "已保存"}
         </span>
         <span>{sizeLabel}</span>
         <span>·</span>
-        <span>{totalLines.toLocaleString()} lines</span>
-        {dirty && <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-hint)" }}>⌘S to save</span>}
+        <span>{totalLines.toLocaleString()} 行</span>
+        {dirty && <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-hint)" }}>⌘S 保存</span>}
       </div>
 
       {/* Virtual scroll container */}

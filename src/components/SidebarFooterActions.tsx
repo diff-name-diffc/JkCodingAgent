@@ -27,14 +27,14 @@ export function SidebarFooterActions({
         <NotificationBell />
         <button
           style={s.sidebarIconBtn}
-          title="App Settings"
+          title="应用设置"
           onClick={() => setShowAppSettings(true)}
         >
           <Settings size={14} strokeWidth={1.6} color="var(--text-hint)" />
         </button>
         <button
           style={s.sidebarIconBtn}
-          title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+          title={isDark ? "切换到浅色模式" : "切换到深色模式"}
           onClick={onToggleTheme}
         >
           {isDark ? (

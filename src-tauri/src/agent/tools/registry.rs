@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use serde_json::Value;
+use std::collections::HashSet;
 
 use super::context::ToolContext;
 use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
-use crate::shared::truncate_for_display;
 
 #[async_trait]
 pub(crate) trait AgentTool: Send + Sync {
@@ -22,9 +22,19 @@ impl ToolRegistry {
         Self { tools }
     }
 
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
+    pub fn definitions_for_names<'a, I>(&self, allowed: Option<I>) -> Vec<ToolDefinition>
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let allowed = allowed.map(|names| names.into_iter().collect::<HashSet<_>>());
         self.tools
             .iter()
+            .filter(|tool| {
+                allowed
+                    .as_ref()
+                    .map(|names| names.contains(tool.name()))
+                    .unwrap_or(true)
+            })
             .map(|tool| ToolDefinition {
                 kind: "function".to_string(),
                 function: ToolFunctionDefinition {
@@ -38,10 +48,7 @@ impl ToolRegistry {
 
     pub async fn execute(&self, name: &str, args: &Value, context: &ToolContext) -> String {
         match self.tools.iter().find(|tool| tool.name() == name) {
-            Some(tool) => {
-                let output = tool.execute(args, context).await;
-                truncate_for_display(&output, context.max_result_chars, "\n\n[输出已截断]")
-            }
+            Some(tool) => tool.execute(args, context).await,
             None => format!("错误：未找到工具 '{name}'"),
         }
     }

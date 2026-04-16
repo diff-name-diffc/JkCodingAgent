@@ -202,11 +202,11 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
           }}
         >
           <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", flex: 1 }}>
-            Terminal
+            终端
           </span>
           <button
             onClick={onClose}
-            title="Close terminal"
+            title="关闭终端"
             style={{
               background: "none",
               border: "none",

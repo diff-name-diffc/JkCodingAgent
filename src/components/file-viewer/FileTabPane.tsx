@@ -182,7 +182,7 @@ function ImageFilePane({
             }}
           >
             <ImageIcon size={13} />
-            Image Preview
+            图片预览
           </div>
           <div
             style={{
@@ -227,7 +227,7 @@ function ImageFilePane({
               fontSize: 13,
             }}
           >
-            Loading...
+            加载中...
           </div>
         )}
         {error && !loading && (
@@ -281,12 +281,12 @@ function TextFileHeader({
 }) {
   const saveLabel =
     saveStatus === "saving"
-      ? "Saving..."
+      ? "保存中..."
       : saveStatus === "saved"
-        ? "Saved"
+        ? "已保存"
         : saveStatus === "error"
-          ? "Save failed"
-          : "Live editing";
+          ? "保存失败"
+          : "实时编辑";
   const normalizedPath = filePath.replace(/\\/g, "/");
   const lastSlashIndex = normalizedPath.lastIndexOf("/");
   const directoryPath = lastSlashIndex >= 0 ? normalizedPath.slice(0, lastSlashIndex + 1) : "";
@@ -350,7 +350,7 @@ function TextFileHeader({
           <button
             type="button"
             onClick={onTogglePreview}
-            title={previewMode ? "Switch to editor" : "Switch to preview"}
+            title={previewMode ? "切换到编辑" : "切换到预览"}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -369,7 +369,7 @@ function TextFileHeader({
             }}
           >
             {previewMode ? <PencilLine size={14} /> : <Eye size={14} />}
-            {previewMode ? "Edit" : "Preview"}
+            {previewMode ? "编辑" : "预览"}
           </button>
         )}
         <FileStatusPill>{language}</FileStatusPill>
@@ -580,7 +580,7 @@ export function FileTabPane({
               fontSize: 13,
             }}
           >
-            Loading...
+            加载中...
           </div>
         )}
 
@@ -619,11 +619,11 @@ export function FileTabPane({
               <div className="md-preview-card">
                 <div className="md-preview-header">
                   <div>
-                    <div className="md-preview-eyebrow">Rendered Markdown</div>
+                    <div className="md-preview-eyebrow">Markdown 预览</div>
                     <div className="md-preview-title">{tab.name}</div>
                     <div className="md-preview-subtitle">{projectPath}</div>
                   </div>
-                  <div className="md-preview-meta">react-markdown + remark-gfm + rehype-raw</div>
+                  <div className="md-preview-meta">基于 react-markdown 渲染</div>
                 </div>
                 <div className="md-preview-body">
                   <MarkdownRenderer content={content} variant="document" />

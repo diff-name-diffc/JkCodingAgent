@@ -33,7 +33,7 @@ interface WeeklyAnalytics {
   projects: ProjectAnalytics[];
 }
 
-const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DAY_LABELS = ["日", "一", "二", "三", "四", "五", "六"];
 
 function heatmapColor(count: number): string {
   if (count === 0) return "var(--bg-card)";
@@ -95,7 +95,7 @@ export function AnalyticsDashboard({ projects: _projects }: { projects: Project[
   if (loading) {
     return (
       <div style={{ ...s.analyticsPane, alignItems: "center", justifyContent: "center" }}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Loading...</div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>加载中...</div>
       </div>
     );
   }
@@ -103,7 +103,7 @@ export function AnalyticsDashboard({ projects: _projects }: { projects: Project[
   if (error || !data) {
     return (
       <div style={{ ...s.analyticsPane, alignItems: "center", justifyContent: "center" }}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{error ?? "No data"}</div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{error ?? "暂无数据"}</div>
       </div>
     );
   }
@@ -117,8 +117,8 @@ export function AnalyticsDashboard({ projects: _projects }: { projects: Project[
 
   return (
     <div style={s.analyticsPane}>
-      <div style={s.analyticsHeader}>Last 7 Days</div>
-      <div style={s.analyticsSubtitle}>Vibecoding activity overview</div>
+      <div style={s.analyticsHeader}>最近 7 天</div>
+      <div style={s.analyticsSubtitle}>编码活动概览</div>
 
       {/* Heatmap */}
       <div style={s.heatmapRow}>
@@ -134,7 +134,7 @@ export function AnalyticsDashboard({ projects: _projects }: { projects: Project[
                 boxShadow: isToday(day.date) ? "0 0 0 2px var(--accent)" : undefined,
                 transform: day.task_count > 0 ? "scale(1.04)" : undefined,
               }}
-              title={`${day.date}: ${day.task_count} tasks`}
+              title={`${day.date}：${day.task_count} 个任务`}
             />
             <div
               style={{
@@ -160,7 +160,7 @@ export function AnalyticsDashboard({ projects: _projects }: { projects: Project[
 
       {/* Legend */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
-        <span style={{ fontSize: 11, color: "var(--text-hint)" }}>Less</span>
+        <span style={{ fontSize: 11, color: "var(--text-hint)" }}>少</span>
         {[0, 1, 3, 5, 8].map((n) => (
           <div
             key={n}
@@ -173,33 +173,33 @@ export function AnalyticsDashboard({ projects: _projects }: { projects: Project[
             }}
           />
         ))}
-        <span style={{ fontSize: 11, color: "var(--text-hint)" }}>More</span>
+        <span style={{ fontSize: 11, color: "var(--text-hint)" }}>多</span>
       </div>
 
       <div style={s.analyticsDivider} />
 
       {/* Stat cards */}
       <div style={s.statGrid}>
-        <StatCard value={String(data.total_tasks)} label="Total Tasks" />
-        <StatCard value={`${successRate}%`} label="Success Rate" />
-        <StatCard value={formatTokens(totalTokens)} label="Total Tokens" />
-        <StatCard value={String(data.total_tool_calls)} label="Tool Calls" />
+        <StatCard value={String(data.total_tasks)} label="任务总数" />
+        <StatCard value={`${successRate}%`} label="成功率" />
+        <StatCard value={formatTokens(totalTokens)} label="总 Token" />
+        <StatCard value={String(data.total_tool_calls)} label="工具调用" />
       </div>
 
       {/* Agent + project row */}
       <div style={s.analyticsRow}>
         {/* Agent distribution */}
         <div style={s.analyticsCard}>
-          <div style={s.analyticsCardTitle}>Agent Distribution</div>
+          <div style={s.analyticsCardTitle}>智能体分布</div>
           {totalAgents === 0 ? (
-            <div style={{ fontSize: 12, color: "var(--text-hint)" }}>No data</div>
+            <div style={{ fontSize: 12, color: "var(--text-hint)" }}>暂无数据</div>
           ) : (
             <div style={s.agentBarWrap}>
               <div style={s.agentBarRow}>
                 <div style={s.agentBarMeta}>
                   <span>Claude Code</span>
                   <span>
-                    {data.claude_tasks} tasks ({claudePct}%)
+                    {data.claude_tasks} 个任务（{claudePct}%）
                   </span>
                 </div>
                 <div style={s.agentBarTrack}>
@@ -216,7 +216,7 @@ export function AnalyticsDashboard({ projects: _projects }: { projects: Project[
                 <div style={s.agentBarMeta}>
                   <span>Codex</span>
                   <span>
-                    {data.codex_tasks} tasks ({codexPct}%)
+                    {data.codex_tasks} 个任务（{codexPct}%）
                   </span>
                 </div>
                 <div style={s.agentBarTrack}>
@@ -227,7 +227,7 @@ export function AnalyticsDashboard({ projects: _projects }: { projects: Project[
               </div>
               {data.total_duration_secs > 0 && (
                 <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
-                  Total duration:{" "}
+                  总耗时：
                   <span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>
                     {formatDuration(data.total_duration_secs)}
                   </span>
@@ -239,9 +239,9 @@ export function AnalyticsDashboard({ projects: _projects }: { projects: Project[
 
         {/* Project ranking */}
         <div style={s.analyticsCard}>
-          <div style={s.analyticsCardTitle}>Project Ranking</div>
+          <div style={s.analyticsCardTitle}>项目排行</div>
           {data.projects.length === 0 ? (
-            <div style={{ fontSize: 12, color: "var(--text-hint)" }}>No data</div>
+            <div style={{ fontSize: 12, color: "var(--text-hint)" }}>暂无数据</div>
           ) : (
             <div style={s.projectRankList}>
               {data.projects.slice(0, 5).map((p, i) => {

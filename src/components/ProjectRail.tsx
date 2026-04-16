@@ -133,7 +133,7 @@ function ProjectDrawer({
           marginBottom: 4,
         }}
       >
-        Projects
+        项目
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "4px 8px 8px" }}>
         {projects.map((project) => {
@@ -259,7 +259,7 @@ export function ProjectRail({
       <div style={{ flex: 1 }} />
 
       <button
-        title="Show all projects"
+        title="显示全部项目"
         onClick={() => setDrawerOpen((v) => !v)}
         onMouseEnter={() => setExpandHov(true)}
         onMouseLeave={() => setExpandHov(false)}
@@ -292,7 +292,7 @@ export function ProjectRail({
       </button>
 
       <button
-        title="Open project"
+        title="打开项目"
         onClick={onOpen}
         onMouseEnter={() => setAddHov(true)}
         onMouseLeave={() => setAddHov(false)}

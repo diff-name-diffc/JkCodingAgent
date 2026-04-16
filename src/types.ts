@@ -106,6 +106,7 @@ export interface DispatcherSettings {
   apiKey: string;
   model: string;
   autoApproveDispatch: boolean;
+  contextDebug: boolean;
 }
 
 export interface DispatcherAgentTurn {

@@ -46,16 +46,16 @@ function WelcomeEmpty({ hasProjects, onOpen }: { hasProjects: boolean; onOpen: (
       <div
         style={{ fontSize: 14, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}
       >
-        {hasProjects ? "No matching projects" : "No projects yet"}
+        {hasProjects ? "没有匹配的项目" : "还没有项目"}
       </div>
       {!hasProjects && (
         <>
           <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginBottom: 20 }}>
-            Open a local Git repository to get started
+            打开一个本地 Git 仓库以开始使用
           </div>
           <button style={s.emptyOpenBtn} onClick={onOpen}>
             <FolderOpen size={14} strokeWidth={2} />
-            Open project folder...
+            打开项目文件夹...
           </button>
         </>
       )}
@@ -105,23 +105,23 @@ export function WelcomePage({
             <div style={s.sidebarBrandIcon}>
               <img src={appLogo} alt="JKCodingAgent" style={{ width: "100%", height: "100%", borderRadius: 9, objectFit: "cover" }} />
             </div>
-            <div>
+              <div>
               <div style={s.sidebarBrandTitle}>JKCodingAgent</div>
-              <div style={s.sidebarBrandMeta}>Agent Workspace</div>
+              <div style={s.sidebarBrandMeta}>智能体工作区</div>
             </div>
           </div>
 
           <nav style={s.sidebarNav}>
-            <div style={s.sidebarSectionTitle}>Workspace</div>
+            <div style={s.sidebarSectionTitle}>工作区</div>
             <SidebarItem
               icon={<Layers size={15} />}
-              label="Projects"
+              label="项目"
               active={view === "projects"}
               onClick={() => setView("projects")}
             />
             <SidebarItem
               icon={<BarChart2 size={15} />}
-              label="Analytics"
+              label="分析"
               active={view === "analytics"}
               onClick={() => setView("analytics")}
             />
@@ -158,7 +158,7 @@ export function WelcomePage({
                 />
                 <input
                   style={s.searchInput}
-                  placeholder="Search projects"
+                  placeholder="搜索项目"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onFocus={() => setSearchFocused(true)}
@@ -170,18 +170,18 @@ export function WelcomePage({
               <div style={s.actionRow}>
                 <button style={s.primaryActionBtn} onClick={onOpen}>
                   <Plus size={14} strokeWidth={2.3} />
-                  <span>Open project</span>
+                  <span>打开项目</span>
                 </button>
               </div>
             </div>
 
             <div style={s.projectSectionHeader}>
               <div>
-                <div style={s.projectSectionTitle}>Projects</div>
+                <div style={s.projectSectionTitle}>项目</div>
                 <div style={s.projectSectionCaption}>
                   {query.trim()
-                    ? `${filtered.length} result${filtered.length !== 1 ? "s" : ""} found`
-                    : `${projects.length} project${projects.length !== 1 ? "s" : ""}`}
+                    ? `找到 ${filtered.length} 个结果`
+                    : `共 ${projects.length} 个项目`}
                 </div>
               </div>
             </div>
@@ -229,7 +229,7 @@ export function WelcomePage({
                           {p.branch}
                         </span>
                       ) : (
-                        <span style={s.projectTag}>LOCAL</span>
+                        <span style={s.projectTag}>本地</span>
                       )}
 
                       <button
@@ -257,7 +257,7 @@ export function WelcomePage({
                           e.stopPropagation();
                           onDeleteProject(p.id);
                         }}
-                        title="Delete project"
+                        title="删除项目"
                       >
                         <Trash2 size={14} strokeWidth={1.8} />
                       </button>

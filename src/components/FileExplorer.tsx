@@ -428,7 +428,7 @@ export function FileExplorer({
               textAlign: "center",
             }}
           >
-            Loading...
+            加载中...
           </div>
         ) : flat.length === 0 ? (
           <div
@@ -439,7 +439,7 @@ export function FileExplorer({
               textAlign: "center",
             }}
           >
-            Empty directory
+            空目录
           </div>
         ) : (
           <div style={{ height: flat.length * ROW_HEIGHT + 12, position: "relative" }}>

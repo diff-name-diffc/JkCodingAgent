@@ -89,7 +89,7 @@ impl AgentTool for ReadFileTool {
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
         let Some(path) = string_arg(args, "path") else {
-            return "Error: path is required".to_string();
+            return "错误：缺少必填参数 path".to_string();
         };
         let offset = usize_arg(args, "offset").unwrap_or(1).max(1);
         let limit = usize_arg(args, "limit").unwrap_or(2000).max(1);
@@ -99,10 +99,10 @@ impl AgentTool for ReadFileTool {
             Err(message) => return message,
         };
         if !file_path.exists() {
-            return format!("Error: file not found: {path}");
+            return format!("错误：文件不存在：{path}");
         }
         if file_path.is_dir() {
-            return format!("Error: {path} is a directory, not a file");
+            return format!("错误：{path} 是目录，不是文件");
         }
 
         match fs::read_to_string(&file_path) {
@@ -117,7 +117,7 @@ impl AgentTool for ReadFileTool {
                     .collect::<Vec<_>>()
                     .join("\n")
             }
-            Err(error) => format!("Error reading file: {error}"),
+            Err(error) => format!("读取文件失败：{error}"),
         }
     }
 }
@@ -145,10 +145,10 @@ impl AgentTool for WriteFileTool {
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
         let Some(path) = string_arg(args, "path") else {
-            return "Error: path is required".to_string();
+            return "错误：缺少必填参数 path".to_string();
         };
         let Some(content) = string_arg(args, "content") else {
-            return "Error: content is required".to_string();
+            return "错误：缺少必填参数 content".to_string();
         };
 
         let file_path = match resolve_path(context, &path) {
@@ -157,16 +157,12 @@ impl AgentTool for WriteFileTool {
         };
         if let Some(parent) = file_path.parent() {
             if let Err(error) = fs::create_dir_all(parent) {
-                return format!("Error creating parent directory: {error}");
+                return format!("创建父目录失败：{error}");
             }
         }
         match fs::write(&file_path, &content) {
-            Ok(()) => format!(
-                "Successfully wrote {} chars to {}",
-                content.len(),
-                file_path.display()
-            ),
-            Err(error) => format!("Error writing file: {error}"),
+            Ok(()) => format!("写入成功：{} 字符 -> {}", content.len(), file_path.display()),
+            Err(error) => format!("写入文件失败：{error}"),
         }
     }
 }
@@ -196,13 +192,13 @@ impl AgentTool for EditFileTool {
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
         let Some(path) = string_arg(args, "path") else {
-            return "Error: path is required".to_string();
+            return "错误：缺少必填参数 path".to_string();
         };
         let Some(old_text) = string_arg(args, "old_text") else {
-            return "Error: old_text is required".to_string();
+            return "错误：缺少必填参数 old_text".to_string();
         };
         let Some(new_text) = string_arg(args, "new_text") else {
-            return "Error: new_text is required".to_string();
+            return "错误：缺少必填参数 new_text".to_string();
         };
         let replace_all = boolish_arg(args, "replace_all").unwrap_or(false);
 
@@ -211,13 +207,13 @@ impl AgentTool for EditFileTool {
             Err(message) => return message,
         };
         let Ok(content) = fs::read_to_string(&file_path) else {
-            return format!("Error: file not found or not readable: {path}");
+            return format!("错误：文件不存在或不可读：{path}");
         };
         if !content.contains(&old_text) {
-            return format!("Error: old_text not found in {path}");
+            return format!("错误：在 {path} 中未找到 old_text");
         }
         if !replace_all && content.matches(&old_text).count() > 1 {
-            return "Error: old_text matched multiple times; provide more context or set replace_all=true".to_string();
+            return "错误：old_text 命中多处，请补充上下文或设置 replace_all=true".to_string();
         }
 
         let updated = if replace_all {
@@ -227,8 +223,8 @@ impl AgentTool for EditFileTool {
         };
 
         match fs::write(&file_path, updated) {
-            Ok(()) => format!("Successfully edited {}", file_path.display()),
-            Err(error) => format!("Error editing file: {error}"),
+            Ok(()) => format!("编辑成功：{}", file_path.display()),
+            Err(error) => format!("编辑文件失败：{error}"),
         }
     }
 }
@@ -257,7 +253,7 @@ impl AgentTool for ListDirTool {
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
         let Some(path) = string_arg(args, "path") else {
-            return "Error: path is required".to_string();
+            return "错误：缺少必填参数 path".to_string();
         };
         let recursive = boolish_arg(args, "recursive").unwrap_or(false);
         let max_entries = usize_arg(args, "max_entries").unwrap_or(200).max(1);
@@ -267,10 +263,10 @@ impl AgentTool for ListDirTool {
             Err(message) => return message,
         };
         if !dir_path.exists() {
-            return format!("Error: directory not found: {path}");
+            return format!("错误：目录不存在：{path}");
         }
         if !dir_path.is_dir() {
-            return format!("Error: {path} is not a directory");
+            return format!("错误：{path} 不是目录");
         }
 
         let mut entries = Vec::new();
@@ -303,7 +299,7 @@ impl AgentTool for GlobTool {
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
         let Some(pattern) = string_arg(args, "pattern") else {
-            return "Error: pattern is required".to_string();
+            return "错误：缺少必填参数 pattern".to_string();
         };
         let path = string_arg(args, "path").unwrap_or_else(|| ".".to_string());
         let max_results = usize_arg(args, "max_results").unwrap_or(250).max(1);
@@ -313,18 +309,18 @@ impl AgentTool for GlobTool {
         };
         let search_pattern = dir_path.join(pattern);
         let Some(search_pattern) = search_pattern.to_str() else {
-            return "Error: glob pattern is not valid UTF-8".to_string();
+            return "错误：glob 模式不是有效的 UTF-8".to_string();
         };
 
         let mut matches = Vec::new();
         for entry in match glob(search_pattern) {
             Ok(entries) => entries,
-            Err(error) => return format!("Error in glob pattern: {error}"),
+            Err(error) => return format!("glob 模式无效：{error}"),
         } {
             match entry {
                 Ok(path) if !path.file_name().is_some_and(is_noise) => matches.push(path),
                 Ok(_) => {}
-                Err(error) => return format!("Error in glob search: {error}"),
+                Err(error) => return format!("glob 搜索失败：{error}"),
             }
         }
         matches.sort_by_key(|path| {
@@ -335,7 +331,7 @@ impl AgentTool for GlobTool {
         matches.reverse();
 
         if matches.is_empty() {
-            return format!("No files matching pattern in {}", dir_path.display());
+            return format!("未找到匹配文件：{}", dir_path.display());
         }
 
         let mut lines = matches
@@ -344,7 +340,7 @@ impl AgentTool for GlobTool {
             .map(|path| rel(path, &dir_path))
             .collect::<Vec<_>>();
         if matches.len() > max_results {
-            lines.push(format!("... ({} of {} shown)", max_results, matches.len()));
+            lines.push(format!("...（已显示 {} / {}）", max_results, matches.len()));
         }
         lines.join("\n")
     }
@@ -373,10 +369,10 @@ impl AgentTool for ExecTool {
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
         let Some(command) = string_arg(args, "command") else {
-            return "Error: command is required".to_string();
+            return "错误：缺少必填参数 command".to_string();
         };
         if is_dangerous(&command) {
-            return format!("Error: command blocked for safety: {command}");
+            return format!("错误：基于安全策略已拦截命令：{command}");
         }
         let timeout_secs = u64_arg(args, "timeout")
             .unwrap_or(context.exec_timeout_secs)
@@ -392,14 +388,14 @@ impl AgentTool for ExecTool {
             .spawn()
         {
             Ok(child) => child,
-            Err(error) => return format!("Error executing command: {error}"),
+            Err(error) => return format!("执行命令失败：{error}"),
         };
 
         let output =
             match timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await {
                 Ok(Ok(output)) => output,
-                Ok(Err(error)) => return format!("Error executing command: {error}"),
-                Err(_) => return format!("Error: command timed out after {timeout_secs}s"),
+                Ok(Err(error)) => return format!("执行命令失败：{error}"),
+                Err(_) => return format!("错误：命令执行超时（{timeout_secs} 秒）"),
             };
 
         let stdout = String::from_utf8_lossy(&output.stdout)
@@ -414,15 +410,15 @@ impl AgentTool for ExecTool {
         }
         if !stderr.is_empty() {
             if !result.is_empty() {
-                result.push_str("\n--- stderr ---\n");
+                result.push_str("\n【标准错误】\n");
             }
             result.push_str(&stderr);
         }
         if !output.status.success() {
-            result.push_str(&format!("\n\n[Exit code: {}]", output.status));
+            result.push_str(&format!("\n\n[退出状态：{}]", output.status));
         }
         if result.is_empty() {
-            "[Command completed with no output]".to_string()
+            "[命令已完成，无输出]".to_string()
         } else {
             result
         }
@@ -451,8 +447,8 @@ impl AgentTool for MessageTool {
 
     async fn execute(&self, args: &Value, _context: &ToolContext) -> String {
         match string_arg(args, "content") {
-            Some(content) => format!("Message sent ({} chars)", content.len()),
-            None => "Error: content is required".to_string(),
+            Some(content) => format!("消息已发送（{} 字符）", content.len()),
+            None => "错误：缺少必填参数 content".to_string(),
         }
     }
 }
@@ -490,18 +486,16 @@ fn resolve_path(context: &ToolContext, raw_path: &str) -> Result<PathBuf, String
         let workspace = context
             .workspace
             .canonicalize()
-            .map_err(|error| format!("Error resolving workspace: {error}"))?;
+            .map_err(|error| format!("解析工作区路径失败：{error}"))?;
         let candidate = if normalized.exists() {
             normalized
                 .canonicalize()
-                .map_err(|error| format!("Error resolving path: {error}"))?
+                .map_err(|error| format!("解析路径失败：{error}"))?
         } else {
             normalized
         };
         if !candidate.starts_with(&workspace) {
-            return Err(format!(
-                "Error: access denied outside workspace: {raw_path}"
-            ));
+            return Err(format!("错误：禁止访问工作区之外的路径：{raw_path}"));
         }
         return Ok(candidate);
     }

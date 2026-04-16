@@ -25,7 +25,7 @@ function UsageMetricRow({ label, window }: { label: string; window: UsageWindow 
   return (
     <div style={s.usageMetricRow}>
       <span style={s.usageMetricLabel}>{label}</span>
-      <span style={{ ...s.usageMetricValue, color }}>{window.remainingPercent}% left</span>
+      <span style={{ ...s.usageMetricValue, color }}>剩余 {window.remainingPercent}%</span>
       {resetLabel && <span style={s.usageMetricMeta}>{resetLabel}</span>}
     </div>
   );
@@ -60,7 +60,7 @@ function SourceCard<T>({
               ) : null,
             )
           ) : (
-            <div style={s.usageUnavailableText}>No usage windows were returned.</div>
+            <div style={s.usageUnavailableText}>暂未返回用量窗口数据。</div>
           )}
         </div>
       )}
@@ -81,11 +81,11 @@ export function UsagePopover() {
   const claudeMetrics = useMemo(
     () => [
       {
-        label: "5-hour",
+        label: "5 小时",
         window: snapshot?.claude.status === "available" ? snapshot.claude.data.fiveHour : null,
       },
       {
-        label: "7-day",
+        label: "7 天",
         window: snapshot?.claude.status === "available" ? snapshot.claude.data.sevenDay : null,
       },
     ],
@@ -95,11 +95,11 @@ export function UsagePopover() {
   const codexMetrics = useMemo(
     () => [
       {
-        label: "5-hour",
+        label: "5 小时",
         window: snapshot?.codex.status === "available" ? snapshot.codex.data.primary : null,
       },
       {
-        label: "7-day",
+        label: "7 天",
         window: snapshot?.codex.status === "available" ? snapshot.codex.data.secondary : null,
       },
     ],
@@ -109,20 +109,20 @@ export function UsagePopover() {
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
-        <button style={s.sidebarIconBtn} title="Usage">
+        <button style={s.sidebarIconBtn} title="用量">
           <Activity size={14} strokeWidth={1.8} color="var(--text-hint)" />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content side="top" align="start" sideOffset={8} style={s.usagePopoverContent}>
           <div style={s.usagePopoverHeader}>
-            <div style={s.usagePopoverTitle}>Usage</div>
+            <div style={s.usagePopoverTitle}>用量</div>
           </div>
 
           {loading ? (
-            <div style={s.usageStatusText}>Loading usage…</div>
+            <div style={s.usageStatusText}>正在加载用量…</div>
           ) : error ? (
-            <div style={s.usageStatusText}>Failed to load usage: {error}</div>
+            <div style={s.usageStatusText}>加载用量失败：{error}</div>
           ) : snapshot ? (
             <div style={s.usageSourceList}>
               <SourceCard<ClaudeUsageData>
@@ -138,7 +138,7 @@ export function UsagePopover() {
               />
             </div>
           ) : (
-            <div style={s.usageStatusText}>No usage data yet.</div>
+            <div style={s.usageStatusText}>暂时没有用量数据。</div>
           )}
         </Popover.Content>
       </Popover.Portal>

@@ -140,7 +140,7 @@ function App() {
     setActiveProject(project);
     mountProject(project.id);
     invoke("init_project_config", { projectPath: path }).catch((e: unknown) => {
-      showToast(`Failed to initialize project config: ${String(e)}`, "warning");
+      showToast(`初始化项目配置失败：${String(e)}`, "warning");
     });
   }
 
@@ -154,7 +154,7 @@ function App() {
     setActiveProject(updated);
     mountProject(updated.id);
     invoke("init_project_config", { projectPath: project.path }).catch((e: unknown) => {
-      showToast(`Failed to initialize project config: ${String(e)}`, "warning");
+      showToast(`初始化项目配置失败：${String(e)}`, "warning");
     });
   }
 
@@ -175,7 +175,7 @@ function App() {
       dispatcherDispatchId: dispatcherDispatchId || null,
     }).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
-      tm.writeErrorToTerminal(task.id, `\r\nError: ${msg}\r\n`);
+      tm.writeErrorToTerminal(task.id, `\r\n错误：${msg}\r\n`);
       updateTaskStatus(task.id, "failed", undefined, msg);
     });
   }
@@ -243,7 +243,7 @@ function App() {
           const proj = projects.find((p) => p.id === task.projectId);
           invoke("cancel_task", { taskId: task.id, projectPath: proj?.path ?? "" }).catch(
             (e: unknown) => {
-              showToast(`Failed to cancel task: ${String(e)}`);
+              showToast(`取消任务失败：${String(e)}`);
             },
           );
         });
@@ -260,8 +260,8 @@ function App() {
   async function handleDeleteProject(projectId: string) {
     const project = projects.find((p) => p.id === projectId);
     if (!project) return;
-    const ok = await confirm(`Delete project "${project.name}" and all its task records?`, {
-      title: "Delete Project",
+    const ok = await confirm(`确定删除项目“${project.name}”及其全部任务记录吗？`, {
+      title: "删除项目",
       kind: "warning",
     });
     if (!ok) return;

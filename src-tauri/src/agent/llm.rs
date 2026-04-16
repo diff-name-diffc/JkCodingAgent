@@ -60,15 +60,54 @@ pub struct ToolDefinition {
     pub function: ToolFunctionDefinition,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RequestedToolCall {
     pub id: String,
     pub name: String,
     pub arguments: Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LlmResponse {
+    pub status_code: u16,
+    pub content: String,
+    pub tool_calls: Vec<RequestedToolCall>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LlmRequestSnapshot {
+    pub method: String,
+    pub url: String,
+    pub headers: LlmRequestHeadersSnapshot,
+    pub body: LlmRequestBodySnapshot,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LlmRequestHeadersSnapshot {
+    pub authorization: String,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LlmRequestBodySnapshot {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    pub max_tokens: u32,
+    pub temperature: f32,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolDefinition>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LlmResponseSnapshot {
+    pub status_code: u16,
+    pub body: LlmResponseBodySnapshot,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LlmResponseBodySnapshot {
+    pub model: String,
     pub content: String,
     pub tool_calls: Vec<RequestedToolCall>,
 }
@@ -105,6 +144,48 @@ impl OpenAiCompatProvider {
         !self.api_key.trim().is_empty()
     }
 
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn build_request_snapshot(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> LlmRequestSnapshot {
+        LlmRequestSnapshot {
+            method: "POST".to_string(),
+            url: format!("{}/chat/completions", self.api_base.trim_end_matches('/')),
+            headers: LlmRequestHeadersSnapshot {
+                authorization: "Bearer ***".to_string(),
+                content_type: "application/json".to_string(),
+            },
+            body: LlmRequestBodySnapshot {
+                model: self.model.clone(),
+                messages: messages.to_vec(),
+                max_tokens: self.max_tokens,
+                temperature: self.temperature,
+                stream: true,
+                tools: if tools.is_empty() {
+                    None
+                } else {
+                    Some(tools.to_vec())
+                },
+            },
+        }
+    }
+
+    pub fn build_response_snapshot(&self, response: &LlmResponse) -> LlmResponseSnapshot {
+        LlmResponseSnapshot {
+            status_code: response.status_code,
+            body: LlmResponseBodySnapshot {
+                model: self.model.clone(),
+                content: response.content.clone(),
+                tool_calls: response.tool_calls.clone(),
+            },
+        }
+    }
+
     /// Streaming chat completion. Calls `on_delta` for each content token.
     pub async fn chat_stream(
         &self,
@@ -113,7 +194,7 @@ impl OpenAiCompatProvider {
         on_delta: impl Fn(&str),
     ) -> Result<LlmResponse> {
         if !self.is_configured() {
-            return Err(anyhow!("LLM API key is not configured."));
+            return Err(anyhow!("LLM API Key 尚未配置。"));
         }
 
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
@@ -133,12 +214,12 @@ impl OpenAiCompatProvider {
             .json(&request)
             .send()
             .await
-            .context("send streaming chat request")?;
+            .context("发送流式对话请求失败")?;
 
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("LLM request failed with HTTP {}: {}", status, body));
+            return Err(anyhow!("LLM 请求失败，HTTP {}：{}", status, body));
         }
 
         let mut stream = response.bytes_stream();
@@ -148,7 +229,7 @@ impl OpenAiCompatProvider {
         let mut tc_map: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
 
         while let Some(chunk) = stream.next().await {
-            let bytes = chunk.context("read stream chunk")?;
+            let bytes = chunk.context("读取流式响应分片失败")?;
             buffer.push_str(&String::from_utf8_lossy(&bytes));
 
             // Process complete lines from the buffer
@@ -215,6 +296,7 @@ impl OpenAiCompatProvider {
             .collect();
 
         Ok(LlmResponse {
+            status_code: status.as_u16(),
             content,
             tool_calls,
         })
@@ -231,13 +313,13 @@ pub async fn fetch_models(api_base: &str, api_key: &str) -> Result<Vec<String>> 
         .bearer_auth(api_key)
         .send()
         .await
-        .context("fetch models request")?;
+        .context("获取模型列表请求失败")?;
 
     let status = response.status();
     let raw = response.text().await.unwrap_or_default();
 
     if !status.is_success() {
-        return Err(anyhow!("fetch models failed with HTTP {}: {}", status, raw));
+        return Err(anyhow!("获取模型列表失败，HTTP {}：{}", status, raw));
     }
 
     // Try standard OpenAI format: { "data": [{ "id": "..." }] }

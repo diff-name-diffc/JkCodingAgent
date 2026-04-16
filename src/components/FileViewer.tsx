@@ -140,7 +140,7 @@ export function FileViewer({
                     flexShrink: 0,
                   }}
                   role="button"
-                  aria-label={`Close ${tab.name}`}
+                  aria-label={`关闭 ${tab.name}`}
                 >
                   <X size={12} />
                 </span>
@@ -153,8 +153,8 @@ export function FileViewer({
           <Popover.Trigger asChild>
             <button
               type="button"
-              title="Tab actions"
-              aria-label="Tab actions"
+              title="标签操作"
+              aria-label="标签操作"
               style={{
                 width: 36,
                 height: 36,
@@ -188,7 +188,7 @@ export function FileViewer({
                 }}
                 className="file-viewer-tab-menu-item"
               >
-                Close Other Tabs
+                关闭其他标签
               </button>
               <button
                 type="button"
@@ -199,7 +199,7 @@ export function FileViewer({
                 }}
                 className="file-viewer-tab-menu-item"
               >
-                Close Tabs to the Right
+                关闭右侧标签
               </button>
               <button
                 type="button"
@@ -210,7 +210,7 @@ export function FileViewer({
                 }}
                 className="file-viewer-tab-menu-item"
               >
-                Close All Tabs
+                关闭全部标签
               </button>
             </Popover.Content>
           </Popover.Portal>

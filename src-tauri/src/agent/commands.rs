@@ -18,10 +18,12 @@ impl DispatcherState {
     pub fn new() -> Result<Self> {
         let config = DispatcherAgentConfig::load()?;
         let db = DispatcherDb::new(config.db_path.clone())?;
-        let agent = DispatcherAgent::new(config);
+        let mut agent = DispatcherAgent::new(config);
 
         if let Ok(Some(settings)) = db.get_settings() {
             agent.apply_settings(&settings);
+            agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
+            agent.set_context_debug(settings.context_debug);
         }
 
         Ok(Self {
@@ -90,6 +92,7 @@ pub async fn dispatcher_send_message(
         let mut agent = state.agent.lock().await;
         agent.apply_settings(&settings);
         agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
+        agent.set_context_debug(settings.context_debug);
     }
 
     let agent = state.agent.lock().await;
@@ -169,15 +172,23 @@ pub async fn dispatcher_save_settings(
     api_key: String,
     model: String,
     auto_approve_dispatch: bool,
+    context_debug: bool,
 ) -> Result<DispatcherSettingsRecord, String> {
     let record = state
         .db
-        .save_settings(&api_base, &api_key, &model, auto_approve_dispatch)
+        .save_settings(
+            &api_base,
+            &api_key,
+            &model,
+            auto_approve_dispatch,
+            context_debug,
+        )
         .map_err(|error| error.to_string())?;
 
     let mut agent = state.agent.lock().await;
     agent.apply_settings(&record);
     agent.set_auto_approve_dispatch(record.auto_approve_dispatch);
+    agent.set_context_debug(record.context_debug);
     Ok(record)
 }
 
@@ -203,6 +214,7 @@ pub async fn dispatcher_set_auto_approve_dispatch(
     let mut agent = state.agent.lock().await;
     agent.apply_settings(&record);
     agent.set_auto_approve_dispatch(record.auto_approve_dispatch);
+    agent.set_context_debug(record.context_debug);
     Ok(record)
 }
 
@@ -230,15 +242,51 @@ pub async fn dispatcher_continue_after_dispatch(
 }
 
 #[tauri::command]
-pub fn dispatcher_register_subprocess(
+pub async fn dispatcher_register_subprocess(
     task_manager: tauri::State<'_, TaskManager>,
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
     task_id: String,
     dispatch_id: String,
+    agent: String,
+    description: String,
 ) -> Result<(), String> {
     task_manager
         .dispatcher_subprocess_ids
         .lock()
-        .insert(task_id, dispatch_id);
+        .insert(task_id.clone(), dispatch_id.clone());
+    let agent_runtime = state.agent.lock().await;
+    agent_runtime.register_subprocess(&workspace_id, &task_id, &dispatch_id, &agent, &description);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn dispatcher_mark_subprocess_round_completed(
+    state: tauri::State<'_, DispatcherState>,
+    task_id: String,
+) -> Result<(), String> {
+    let agent = state.agent.lock().await;
+    agent.mark_subprocess_round_completed(&task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn dispatcher_mark_subprocess_running(
+    state: tauri::State<'_, DispatcherState>,
+    task_id: String,
+) -> Result<(), String> {
+    let agent = state.agent.lock().await;
+    agent.mark_subprocess_running(&task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn dispatcher_mark_subprocess_finished(
+    state: tauri::State<'_, DispatcherState>,
+    task_id: String,
+) -> Result<(), String> {
+    let agent = state.agent.lock().await;
+    agent.mark_subprocess_finished(&task_id);
     Ok(())
 }
 

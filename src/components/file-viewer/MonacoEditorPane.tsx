@@ -239,7 +239,7 @@ export const MonacoEditorPane = forwardRef<
         }}
         onMount={handleMount}
         onChange={undefined}
-        loading={<div className="monaco-loading">Loading editor...</div>}
+        loading={<div className="monaco-loading">编辑器加载中...</div>}
         options={{
           automaticLayout: true,
           minimap: { enabled: false },

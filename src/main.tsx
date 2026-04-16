@@ -38,7 +38,7 @@ class ErrorBoundary extends React.Component<
             color: "#666",
           }}
         >
-          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Something went wrong</div>
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>页面发生错误</div>
           <pre
             style={{
               fontSize: 12,
@@ -54,7 +54,7 @@ class ErrorBoundary extends React.Component<
             onClick={() => this.setState({ error: null })}
             style={{ marginTop: 16, padding: "8px 16px", cursor: "pointer" }}
           >
-            Retry
+            重试
           </button>
         </div>
       );

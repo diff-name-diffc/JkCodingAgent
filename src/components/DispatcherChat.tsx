@@ -335,7 +335,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           onEvent,
         });
       } catch (err) {
-        console.error("dispatcher_send_message error:", err);
+            console.error("dispatcher_send_message 失败:", err);
       } finally {
         if (currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId) {
           setIsLoading(false);
@@ -372,7 +372,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onEvent,
             });
           } catch (err) {
-            console.error("dispatcher_continue_after_dispatch error:", err);
+            console.error("dispatcher_continue_after_dispatch 失败:", err);
           } finally {
             if (currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId) {
               setIsLoading(false);
@@ -424,7 +424,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         setAutoApprove(saved.autoApproveDispatch);
       } catch (err) {
         setAutoApprove(!next);
-        console.error("dispatcher_set_auto_approve_dispatch error:", err);
+        console.error("dispatcher_set_auto_approve_dispatch 失败:", err);
       }
     }, [autoApprove]);
 
@@ -435,7 +435,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         });
         setMessages([]);
       } catch (err) {
-        console.error("clear messages error:", err);
+        console.error("清空消息失败:", err);
       }
     }, [sessionId]);
 
@@ -447,7 +447,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         <div style={styles.header}>
           <div style={styles.headerLeft}>
             <span style={styles.headerIcon}>🤖</span>
-            <span style={styles.headerTitle}>Dispatcher Agent</span>
+            <span style={styles.headerTitle}>调度智能体</span>
             {isLoading && <span style={styles.thinkingDot} />}
           </div>
           <div style={styles.headerRight}>
@@ -475,15 +475,15 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         {/* Messages */}
         <div style={styles.messageList}>
           {isEmpty && (
-            <div style={styles.emptyState}>
+              <div style={styles.emptyState}>
               <div style={styles.emptyIcon}>🤖</div>
-              <div style={styles.emptyTitle}>Dispatcher Agent</div>
+              <div style={styles.emptyTitle}>调度智能体</div>
               <div style={styles.emptySubtitle}>
-                告诉我你想做什么，我会自动规划并在 Claude 与 Codex
-                之间选择合适的子进程来完成编码任务
+                告诉我你想完成什么，我会自动规划，并在 Claude 与 Codex
+                之间选择合适的子进程推进编码任务
               </div>
               <div style={styles.emptyMeta}>
-                Claude 更快，适合新功能、算法和探索；Codex 更稳，适合重构。
+                Claude 更快，适合新功能、算法与探索；Codex 更稳，适合重构与收口。
               </div>
             </div>
           )}
@@ -509,7 +509,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           <textarea
             ref={inputRef}
             style={styles.inputTextarea}
-            placeholder="Send a message to Dispatcher..."
+            placeholder="给调度智能体发送消息..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onCompositionStart={() => {
@@ -551,7 +551,7 @@ const DISPATCH_AGENT_META: Record<AgentType, { title: string; badge: string; hin
   claude: {
     title: "Claude 子任务审查",
     badge: "Claude",
-    hint: "Claude 速度更快，适合新功能、算法试验和问题探索。",
+    hint: "Claude 更快，适合新功能、算法试验和问题探索。",
   },
   codex: {
     title: "Codex 子任务审查",

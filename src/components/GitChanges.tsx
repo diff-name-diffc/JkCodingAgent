@@ -172,11 +172,11 @@ export function GitChanges({
         }}
       >
         <span style={{ flex: 1, fontSize: 13, fontWeight: 650, color: "var(--text-primary)" }}>
-          Changes
+          变更
         </span>
         <button
           onClick={refresh}
-          title="Refresh"
+          title="刷新"
           style={{
             background: "none",
             border: "none",
@@ -191,7 +191,7 @@ export function GitChanges({
           <RefreshCw size={13} className={loading ? "spin" : ""} />
         </button>
         <button
-          title="Filter"
+          title="筛选"
           style={{
             background: "none",
             border: "none",
@@ -230,7 +230,7 @@ export function GitChanges({
             color: tab === "task" ? "var(--text-primary)" : "var(--text-muted)",
           }}
         >
-          Current Task {taskCount}
+          当前任务 {taskCount}
         </button>
         <button
           onClick={() => setTab("all")}
@@ -245,7 +245,7 @@ export function GitChanges({
             color: tab === "all" ? "#fff" : "var(--text-muted)",
           }}
         >
-          All {allCount}
+          全部 {allCount}
         </button>
       </div>
 
@@ -277,7 +277,7 @@ export function GitChanges({
               textAlign: "center",
             }}
           >
-            No changes
+            暂无变更
           </div>
         )}
 
@@ -285,7 +285,7 @@ export function GitChanges({
         {trackedFiles.length > 0 && (
           <>
             <TopSectionHeader
-              label="Changes"
+              label="变更"
               count={trackedFiles.length}
               collapsed={trackedCollapsed}
               onToggleCollapse={() => setTrackedCollapsed((v) => !v)}
@@ -295,10 +295,10 @@ export function GitChanges({
                 {stagedFiles.length > 0 && (
                   <>
                     <SectionHeader
-                      label="Staged"
+                      label="已暂存"
                       count={stagedFiles.length}
                       actionIcon="−"
-                      actionTitle="Unstage All"
+                      actionTitle="全部取消暂存"
                       onAction={handleUnstageAll}
                     />
                     {stagedFiles.map((c) => (
@@ -306,7 +306,7 @@ export function GitChanges({
                         key={`staged-${c.path}`}
                         change={c}
                         onFileClick={() =>
-                          onFileSelect(c.path, true, `${fileName(c.path)} (staged)`)
+                          onFileSelect(c.path, true, `${fileName(c.path)}（已暂存）`)
                         }
                         onToggle={(e) => handleStageToggle(c, e)}
                       />
@@ -316,10 +316,10 @@ export function GitChanges({
                 {unstagedFiles.length > 0 && (
                   <>
                     <SectionHeader
-                      label="Modified"
+                      label="已修改"
                       count={unstagedFiles.length}
                       actionIcon="+"
-                      actionTitle="Stage All"
+                      actionTitle="全部暂存"
                       onAction={handleStageAll}
                     />
                     {unstagedFiles.map((c) => (
@@ -327,7 +327,7 @@ export function GitChanges({
                         key={`unstaged-${c.path}`}
                         change={c}
                         onFileClick={() =>
-                          onFileSelect(c.path, false, `${fileName(c.path)} (unstaged)`)
+                          onFileSelect(c.path, false, `${fileName(c.path)}（未暂存）`)
                         }
                         onToggle={(e) => handleStageToggle(c, e)}
                       />
@@ -343,7 +343,7 @@ export function GitChanges({
         {untrackedFiles.length > 0 && (
           <>
             <TopSectionHeader
-              label="Untracked Files"
+              label="未跟踪文件"
               count={untrackedFiles.length}
               collapsed={untrackedCollapsed}
               onToggleCollapse={() => setUntrackedCollapsed((v) => !v)}
@@ -353,7 +353,7 @@ export function GitChanges({
                 <FileRow
                   key={`untracked-${c.path}`}
                   change={c}
-                  onFileClick={() => onFileSelect(c.path, false, `${fileName(c.path)} (untracked)`)}
+                  onFileClick={() => onFileSelect(c.path, false, `${fileName(c.path)}（未跟踪）`)}
                   onToggle={(e) => handleStageToggle(c, e)}
                 />
               ))}
@@ -372,7 +372,7 @@ export function GitChanges({
             }}
             onFocus={() => setTextareaFocused(true)}
             onBlur={() => setTextareaFocused(false)}
-            placeholder="Commit message…"
+            placeholder="提交信息…"
             rows={3}
             style={{
               width: "100%",
@@ -396,7 +396,7 @@ export function GitChanges({
           <button
             onClick={handleGenerateMsg}
             disabled={generatingMsg}
-            title="Generate commit message with AI"
+            title="用 AI 生成提交信息"
             style={{
               position: "absolute",
               top: 6,
@@ -417,7 +417,7 @@ export function GitChanges({
         </div>
         {commitMsgError && (
           <div style={{ fontSize: 11.5, color: "#f85149", marginTop: 3, paddingLeft: 2 }}>
-            Please enter a commit message
+            请输入提交信息
           </div>
         )}
         <div style={{ marginTop: 3, display: "flex" }}>
@@ -440,7 +440,7 @@ export function GitChanges({
             }}
           >
             <GitCommit size={13} />
-            {committing ? "Committing…" : "Commit"}
+            {committing ? "提交中…" : "提交"}
           </button>
         </div>
       </div>
@@ -642,7 +642,7 @@ function FileRow({
       {hovered && (
         <button
           onClick={onToggle}
-          title={change.staged ? "Unstage" : "Stage"}
+          title={change.staged ? "取消暂存" : "暂存"}
           style={{
             flexShrink: 0,
             background: "var(--bg-card)",

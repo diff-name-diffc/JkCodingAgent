@@ -251,11 +251,11 @@ export function GitDiffViewer({
       {/* Content */}
       <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
         {loading ? (
-          <div className="git-diff-empty">Loading diff…</div>
+          <div className="git-diff-empty">正在加载差异…</div>
         ) : error ? (
           <div style={{ padding: 24, color: "var(--danger)", fontSize: 13 }}>{error}</div>
         ) : diff.trim() === "" ? (
-          <div className="git-diff-empty">No changes</div>
+          <div className="git-diff-empty">没有变更</div>
         ) : (
           <div className="git-diff-viewer">
             {parsedFiles.map((file, fi) => (

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 
 const BUILT_IN_DISPATCH_GUIDANCE: &str = r#"# 内置调度规则
 
@@ -13,12 +14,25 @@ const BUILT_IN_DISPATCH_GUIDANCE: &str = r#"# 内置调度规则
 - 子任务返回“当前轮完成”不代表进程已退出；如果还要继续推进，应发送后续指令，而不是误判为已结束。
 "#;
 
-pub(super) fn build_system_prompt(root: &Path) -> Result<String> {
-    let mut parts = Vec::new();
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptSection {
+    pub label: String,
+    pub source: String,
+    pub content: String,
+}
 
-    push_file_if_exists(&mut parts, root.join("SOUL.md"))?;
-    push_file_if_exists(&mut parts, root.join("USER.md"))?;
-    push_file_if_exists(&mut parts, root.join("TOOLS.md"))?;
+#[derive(Debug, Clone)]
+pub(super) struct PromptBundle {
+    pub content: String,
+    pub sections: Vec<PromptSection>,
+}
+
+pub(super) fn build_system_prompt(root: &Path) -> Result<PromptBundle> {
+    let mut sections = Vec::new();
+
+    push_file_if_exists(&mut sections, "SOUL", root.join("SOUL.md"))?;
+    push_file_if_exists(&mut sections, "USER", root.join("USER.md"))?;
+    push_file_if_exists(&mut sections, "TOOLS", root.join("TOOLS.md"))?;
 
     let skills_dir = root.join("skills");
     if skills_dir.exists() {
@@ -30,7 +44,7 @@ pub(super) fn build_system_prompt(root: &Path) -> Result<String> {
             let skill_md = entry.path().join("SKILL.md");
             if skill_md.exists() {
                 skill_parts.push(format!(
-                    "### Skill: {}\n\n{}",
+                    "### 技能：{}\n\n{}",
                     entry.file_name().to_string_lossy(),
                     fs::read_to_string(&skill_md)
                         .with_context(|| format!("read {}", skill_md.display()))?
@@ -39,29 +53,54 @@ pub(super) fn build_system_prompt(root: &Path) -> Result<String> {
         }
         skill_parts.sort();
         if !skill_parts.is_empty() {
-            parts.push(format!(
-                "---\n\n# Active Skills\n\n{}",
-                skill_parts.join("\n\n")
-            ));
+            sections.push(PromptSection {
+                label: "已启用技能".to_string(),
+                source: skills_dir.display().to_string(),
+                content: format!("---\n\n# 已启用技能\n\n{}", skill_parts.join("\n\n")),
+            });
         }
     }
 
     let memory = root.join("memory").join("MEMORY.md");
     if memory.exists() {
-        parts.push(format!(
-            "---\n\n# Memory\n\n{}",
-            fs::read_to_string(&memory).with_context(|| format!("read {}", memory.display()))?
-        ));
+        sections.push(PromptSection {
+            label: "记忆".to_string(),
+            source: memory.display().to_string(),
+            content: format!(
+                "---\n\n# 记忆\n\n{}",
+                fs::read_to_string(&memory)
+                    .with_context(|| format!("read {}", memory.display()))?
+            ),
+        });
     }
 
-    parts.push(format!("---\n\n{}", BUILT_IN_DISPATCH_GUIDANCE));
+    sections.push(PromptSection {
+        label: "内置调度规则".to_string(),
+        source: "builtin".to_string(),
+        content: format!("---\n\n{}", BUILT_IN_DISPATCH_GUIDANCE),
+    });
 
-    Ok(parts.join("\n\n---\n\n"))
+    let content = sections
+        .iter()
+        .map(|section| section.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n");
+
+    Ok(PromptBundle { content, sections })
 }
 
-fn push_file_if_exists(parts: &mut Vec<String>, path: PathBuf) -> Result<()> {
+fn push_file_if_exists(
+    sections: &mut Vec<PromptSection>,
+    label: &str,
+    path: PathBuf,
+) -> Result<()> {
     if path.exists() {
-        parts.push(fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?);
+        sections.push(PromptSection {
+            label: label.to_string(),
+            source: path.display().to_string(),
+            content: fs::read_to_string(&path)
+                .with_context(|| format!("read {}", path.display()))?,
+        });
     }
     Ok(())
 }

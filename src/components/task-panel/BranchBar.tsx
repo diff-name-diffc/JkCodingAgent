@@ -90,7 +90,7 @@ function BranchDialog({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <GitBranch size={16} strokeWidth={2} color="var(--accent)" />
-            <span style={s.branchDialogTitle}>Create Branch</span>
+            <span style={s.branchDialogTitle}>新建分支</span>
           </div>
           <button style={s.modalCloseBtn} onClick={onClose}>
             <X size={15} />
@@ -100,7 +100,7 @@ function BranchDialog({
         <div>
           <label style={{ ...s.modalLabel, display: "flex", alignItems: "center", gap: 5 }}>
             <Tag size={12} strokeWidth={2} color="var(--text-hint)" />
-            Branch name
+            分支名
           </label>
           <input
             style={s.branchInput}
@@ -120,7 +120,7 @@ function BranchDialog({
         <div>
           <label style={{ ...s.modalLabel, display: "flex", alignItems: "center", gap: 5 }}>
             <GitFork size={12} strokeWidth={2} color="var(--text-hint)" />
-            Based on
+            基于
           </label>
           <Popover.Root open={popoverOpen} onOpenChange={setPopoverOpen}>
             <Popover.Trigger asChild>
@@ -134,7 +134,7 @@ function BranchDialog({
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {fromBranch || "Select branch…"}
+                  {fromBranch || "选择分支…"}
                 </span>
                 <ChevronDown
                   size={13}
@@ -161,7 +161,7 @@ function BranchDialog({
                   />
                   <input
                     className="branch-popover-search-input"
-                    placeholder="Search branches…"
+                    placeholder="搜索分支…"
                     value={branchSearch}
                     onChange={(e) => setBranchSearch(e.target.value)}
                     onKeyDown={(e) => e.stopPropagation()}
@@ -176,7 +176,7 @@ function BranchDialog({
                 <div className="branch-popover-list">
                   {localBranches.length > 0 && (
                     <>
-                      <div className="branch-popover-group-label">Local</div>
+                      <div className="branch-popover-group-label">本地</div>
                       {localBranches.map((b) => (
                         <button
                           key={b.name}
@@ -191,7 +191,7 @@ function BranchDialog({
                           />
                           <span className="branch-popover-item-name">
                             {b.name}
-                            {b.current ? " (current)" : ""}
+                            {b.current ? "（当前）" : ""}
                           </span>
                           {fromBranch === b.name && (
                             <Check
@@ -243,7 +243,7 @@ function BranchDialog({
                         textAlign: "center",
                       }}
                     >
-                      No branches found
+                      没有找到分支
                     </div>
                   )}
                 </div>
@@ -256,7 +256,7 @@ function BranchDialog({
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button style={s.modalCancelBtn} onClick={onClose}>
-            Cancel
+            取消
           </button>
           <button
             style={{
@@ -267,7 +267,7 @@ function BranchDialog({
             disabled={!branchName.trim() || loading}
             onClick={handleCreate}
           >
-            {loading ? "Creating…" : "Create"}
+            {loading ? "创建中…" : "创建"}
           </button>
         </div>
       </div>
@@ -365,7 +365,7 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
               background: pickerOpen ? "var(--bg-hover)" : "var(--bg-card)",
               cursor: "pointer",
             }}
-            title="Switch branch"
+            title="切换分支"
           >
             <GitBranch
               size={12}
@@ -373,7 +373,7 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
               color="var(--text-muted)"
               style={{ flexShrink: 0 }}
             />
-            <span style={s.branchBarName}>{currentBranch?.name ?? "detached HEAD"}</span>
+            <span style={s.branchBarName}>{currentBranch?.name ?? "游离 HEAD"}</span>
             <ChevronDown
               size={11}
               strokeWidth={2}
@@ -399,7 +399,7 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
               />
               <input
                 className="branch-popover-search-input"
-                placeholder="Switch to branch…"
+                placeholder="切换到分支…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={(e) => e.stopPropagation()}
@@ -416,7 +416,7 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
             <div className="branch-popover-list">
               {localBranches.length > 0 && (
                 <>
-                  <div className="branch-popover-group-label">Local</div>
+                  <div className="branch-popover-group-label">本地</div>
                   {localBranches.map((b) => (
                     <button
                       key={b.name}
@@ -490,7 +490,7 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
                     textAlign: "center",
                   }}
                 >
-                  No branches found
+                  没有找到分支
                 </div>
               )}
             </div>
@@ -520,7 +520,7 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
               }}
             >
               <Plus size={12} strokeWidth={2.5} color="var(--accent)" style={{ flexShrink: 0 }} />
-              <span style={{ fontSize: 12, color: "var(--accent)" }}>New branch…</span>
+              <span style={{ fontSize: 12, color: "var(--accent)" }}>新建分支…</span>
             </button>
           </Popover.Content>
         </Popover.Portal>

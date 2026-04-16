@@ -1,12 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  X,
-  Pencil,
-  Check,
-  RefreshCw,
-  Monitor,
-} from "lucide-react";
+import { X, Pencil, Check, RefreshCw, Monitor } from "lucide-react";
 import type { ThemeMode } from "../types";
 import s from "../styles";
 import claudeLogo from "../assets/claude.svg";
@@ -46,9 +40,9 @@ const NAV_ITEMS: Array<{
   filePath?: string;
   lang?: string;
 }> = [
-  { key: "general", label: "General" },
-  { key: "theme", label: "Theme" },
-  { key: "aha", label: "Aha Agent", logo: appLogo },
+  { key: "general", label: "通用" },
+  { key: "theme", label: "主题" },
+  { key: "aha", label: "Aha 智能体", logo: appLogo },
   {
     key: "claude",
     label: "Claude Code",
@@ -75,8 +69,8 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
   const manualThemeModes: Array<Extract<ThemeMode, "dark" | "light">> = ["dark", "light"];
   const selectedLabel =
     themeMode === "system"
-      ? `Following system · ${systemPrefersDark ? "Dark" : "Light"}`
-      : `Manual · ${themeMode === "dark" ? "Dark" : "Light"}`;
+      ? `跟随系统 · ${systemPrefersDark ? "深色" : "浅色"}`
+      : `手动设置 · ${themeMode === "dark" ? "深色" : "浅色"}`;
 
   function handleSystemThemeToggle() {
     onThemeModeChange(themeMode === "system" ? "light" : "system");
@@ -99,7 +93,9 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
 
     if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
       event.preventDefault();
-      onThemeModeChange(manualThemeModes[(currentIndex - 1 + manualThemeModes.length) % manualThemeModes.length]);
+      onThemeModeChange(
+        manualThemeModes[(currentIndex - 1 + manualThemeModes.length) % manualThemeModes.length],
+      );
       return;
     }
 
@@ -139,7 +135,7 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
         onKeyDown={(event) => handleManualThemeKeyDown(mode, event)}
         role="radio"
         aria-checked={selected}
-        aria-label={`${title} theme`}
+        aria-label={`${title}主题`}
         style={{
           display: "flex",
           flexDirection: "column",
@@ -210,10 +206,7 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
             <div
               style={{
                 borderRadius: 7,
-                background:
-                  mode === "dark"
-                    ? "rgba(255,255,255,0.05)"
-                    : "rgba(23,27,36,0.06)",
+                background: mode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(23,27,36,0.06)",
                 border:
                   mode === "dark"
                     ? "1px solid rgba(255,255,255,0.06)"
@@ -308,7 +301,8 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
                 <div
                   style={{
                     borderRadius: 6,
-                    background: mode === "dark" ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.9)",
+                    background:
+                      mode === "dark" ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.9)",
                     border:
                       mode === "dark"
                         ? "1px solid rgba(255,255,255,0.06)"
@@ -321,9 +315,7 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
                       height: 18,
                       borderRadius: 6,
                       background:
-                        mode === "dark"
-                          ? "rgba(255,255,255,0.09)"
-                          : "rgba(255,255,255,0.92)",
+                        mode === "dark" ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.92)",
                       border:
                         mode === "dark"
                           ? "1px solid rgba(255,255,255,0.06)"
@@ -335,9 +327,7 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
                       flex: 1,
                       borderRadius: 6,
                       background:
-                        mode === "dark"
-                          ? "rgba(255,255,255,0.05)"
-                          : "rgba(255,255,255,0.82)",
+                        mode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.82)",
                       border:
                         mode === "dark"
                           ? "1px solid rgba(255,255,255,0.05)"
@@ -387,7 +377,7 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
         onClick={handleSystemThemeToggle}
         role="switch"
         aria-checked={themeMode === "system"}
-        aria-label="Follow system theme"
+        aria-label="跟随系统主题"
         style={{
           display: "flex",
           alignItems: "center",
@@ -412,7 +402,9 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
               padding: 3,
               background: themeMode === "system" ? "var(--accent)" : "var(--border-medium)",
               boxShadow:
-                themeMode === "system" ? "0 0 0 4px var(--accent-subtle)" : "inset 0 0 0 1px var(--border-dim)",
+                themeMode === "system"
+                  ? "0 0 0 4px var(--accent-subtle)"
+                  : "inset 0 0 0 1px var(--border-dim)",
               transition: "background 0.12s, box-shadow 0.12s",
             }}
           >
@@ -443,7 +435,7 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
             }}
           >
             <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-              Follow System
+              跟随系统
             </span>
           </div>
         </div>
@@ -469,25 +461,25 @@ function ThemePanel({ themeMode, systemPrefersDark, onThemeModeChange }: ThemePa
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>
-          Manual Theme
+          手动主题
         </div>
         <div
           style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14 }}
           role="radiogroup"
-          aria-label="Manual theme"
+          aria-label="手动主题"
         >
           {renderThemeOption({
             mode: "dark",
-            title: "Dark",
-            description: "Always use the dark interface.",
+            title: "深色",
+            description: "始终使用深色界面。",
             previewBackground: "#11151d",
             previewBorder: "rgba(255,255,255,0.08)",
             previewAccent: "#f1f4fb",
           })}
           {renderThemeOption({
             mode: "light",
-            title: "Light",
-            description: "Always use the light interface.",
+            title: "浅色",
+            description: "始终使用浅色界面。",
             previewBackground: "#f5f7fb",
             previewBorder: "rgba(23,27,36,0.08)",
             previewAccent: "#171b24",
@@ -601,7 +593,7 @@ function GeneralPanel() {
         )}
 
         {loading ? (
-          <div style={{ color: "var(--text-hint)", fontSize: 13 }}>Loading...</div>
+          <div style={{ color: "var(--text-hint)", fontSize: 13 }}>加载中...</div>
         ) : (
           <>
             <div
@@ -613,7 +605,7 @@ function GeneralPanel() {
               }}
             >
               <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                Agent Installation Paths
+                智能体安装路径
               </span>
               <button
                 style={{
@@ -633,12 +625,12 @@ function GeneralPanel() {
                 disabled={detectingPaths}
               >
                 <RefreshCw size={12} className={detectingPaths ? "spin" : undefined} />
-                {detectingPaths ? "Detecting..." : "Auto Detect"}
+                {detectingPaths ? "检测中..." : "自动检测"}
               </button>
             </div>
 
             <div style={fieldStyle}>
-              <label style={labelStyle}>Claude Code Path</label>
+              <label style={labelStyle}>Claude Code 路径</label>
               <input
                 style={inputStyle}
                 value={settings.claude_path}
@@ -646,11 +638,11 @@ function GeneralPanel() {
                 placeholder="/usr/local/bin/claude"
                 spellCheck={false}
               />
-              <span style={hintStyle}>Leave empty to use claude from the system PATH.</span>
+              <span style={hintStyle}>留空则使用系统 PATH 中的 `claude`。</span>
             </div>
 
             <div style={fieldStyle}>
-              <label style={labelStyle}>Codex Path</label>
+              <label style={labelStyle}>Codex 路径</label>
               <input
                 style={inputStyle}
                 value={settings.codex_path}
@@ -658,7 +650,7 @@ function GeneralPanel() {
                 placeholder="/usr/local/bin/codex"
                 spellCheck={false}
               />
-              <span style={hintStyle}>Leave empty to use codex from the system PATH.</span>
+              <span style={hintStyle}>留空则使用系统 PATH 中的 `codex`。</span>
             </div>
           </>
         )}
@@ -676,7 +668,7 @@ function GeneralPanel() {
               marginRight: "auto",
             }}
           >
-            <Check size={12} /> Saved
+            <Check size={12} /> 已保存
           </span>
         )}
         <button
@@ -684,7 +676,7 @@ function GeneralPanel() {
           onClick={handleSave}
           disabled={saving || !isDirty}
         >
-          {saving ? "Saving..." : "Save"}
+          {saving ? "保存中..." : "保存"}
         </button>
       </div>
     </>
@@ -696,24 +688,33 @@ function AhaAgentPanel() {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [autoApprove, setAutoApprove] = useState(false);
+  const [contextDebug, setContextDebug] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [modelList, setModelList] = useState<string[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  
+
   const [showKey, setShowKey] = useState(false);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
 
   useEffect(() => {
-    invoke<{ api_base: string; api_key: string; model: string; auto_approve_dispatch: boolean }>("dispatcher_get_settings")
+    invoke<{
+      apiBase: string;
+      apiKey: string;
+      model: string;
+      autoApproveDispatch: boolean;
+      contextDebug: boolean;
+    }>("dispatcher_get_settings")
       .then((settings) => {
-        setApiBase(settings.api_base);
-        setApiKey(settings.api_key);
+        setApiBase(settings.apiBase);
+        setApiKey(settings.apiKey);
         setModel(settings.model);
-        setAutoApprove(settings.auto_approve_dispatch);
+        setAutoApprove(settings.autoApproveDispatch);
+        setContextDebug(settings.contextDebug);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -722,17 +723,33 @@ function AhaAgentPanel() {
   async function handleSave() {
     setSaving(true);
     setSaved(false);
+    setSaveError(null);
     try {
-      await invoke("dispatcher_save_settings", {
+      const savedSettings = await invoke<{
+        apiBase: string;
+        apiKey: string;
+        model: string;
+        autoApproveDispatch: boolean;
+        contextDebug: boolean;
+      }>("dispatcher_save_settings", {
         apiBase,
         apiKey,
         model,
         autoApproveDispatch: autoApprove,
+        contextDebug,
       });
+      if (savedSettings.contextDebug !== contextDebug) {
+        setContextDebug(savedSettings.contextDebug);
+        setSaveError(
+          "上下文调试开关尚未被后端接受。若刚修改了 `src-tauri` 代码，请先重启 `pnpm tauri dev` 后再保存一次。",
+        );
+        return;
+      }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
       console.error(e);
+      setSaveError(String(e));
     } finally {
       setSaving(false);
     }
@@ -780,17 +797,19 @@ function AhaAgentPanel() {
     marginTop: 3,
   };
 
-  const filteredModels = model ? modelList.filter(m => m.toLowerCase().includes(model.toLowerCase())) : modelList;
+  const filteredModels = model
+    ? modelList.filter((m) => m.toLowerCase().includes(model.toLowerCase()))
+    : modelList;
 
   return (
     <>
       <div style={{ ...s.settingsBody, padding: "20px" }}>
         {loading ? (
-          <div style={{ color: "var(--text-hint)", fontSize: 13 }}>Loading...</div>
+          <div style={{ color: "var(--text-hint)", fontSize: 13 }}>加载中...</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div>
-              <label style={labelStyle}>API Base URL</label>
+              <label style={labelStyle}>API 基础地址</label>
               <input
                 style={inputStyle}
                 value={apiBase}
@@ -832,8 +851,15 @@ function AhaAgentPanel() {
             </div>
 
             <div style={{ position: "relative" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 5 }}>
-                <label style={{ ...labelStyle, marginBottom: 0 }}>Model</label>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "baseline",
+                  marginBottom: 5,
+                }}
+              >
+                <label style={{ ...labelStyle, marginBottom: 0 }}>模型</label>
                 <button
                   onClick={handleFetchModels}
                   disabled={fetchingModels || !apiBase || !apiKey}
@@ -845,12 +871,12 @@ function AhaAgentPanel() {
                     border: "none",
                     color: "var(--accent)",
                     fontSize: 11.5,
-                    cursor: (fetchingModels || !apiBase || !apiKey) ? "default" : "pointer",
-                    opacity: (fetchingModels || !apiBase || !apiKey) ? 0.6 : 1,
+                    cursor: fetchingModels || !apiBase || !apiKey ? "default" : "pointer",
+                    opacity: fetchingModels || !apiBase || !apiKey ? 0.6 : 1,
                   }}
                 >
                   <RefreshCw size={11} className={fetchingModels ? "spin" : undefined} />
-                  {fetchingModels ? "Fetching..." : "Fetch Models"}
+                  {fetchingModels ? "获取中..." : "获取模型"}
                 </button>
               </div>
 
@@ -858,7 +884,7 @@ function AhaAgentPanel() {
                 <input
                   style={{
                     ...inputStyle,
-                    paddingRight: (modelList.length > 0 ? 30 : 10)
+                    paddingRight: modelList.length > 0 ? 30 : 10,
                   }}
                   value={model}
                   onChange={(e) => {
@@ -868,7 +894,7 @@ function AhaAgentPanel() {
                   onFocus={() => {
                     if (modelList.length > 0) setShowModelDropdown(true);
                   }}
-                  placeholder="e.g. gpt-4o, qwen-plus"
+                  placeholder="例如 gpt-4o、qwen-plus"
                   spellCheck={false}
                 />
                 {modelList.length > 0 && (
@@ -889,10 +915,18 @@ function AhaAgentPanel() {
                       justifyContent: "center",
                     }}
                   >
-                    <div style={{ transform: showModelDropdown ? "rotate(180deg)" : "none", transition: "transform 0.2s", fontSize: 10 }}>▼</div>
+                    <div
+                      style={{
+                        transform: showModelDropdown ? "rotate(180deg)" : "none",
+                        transition: "transform 0.2s",
+                        fontSize: 10,
+                      }}
+                    >
+                      ▼
+                    </div>
                   </button>
                 )}
-                
+
                 {showModelDropdown && modelList.length > 0 && (
                   <div
                     style={{
@@ -912,9 +946,18 @@ function AhaAgentPanel() {
                     }}
                   >
                     {filteredModels.length === 0 ? (
-                      <div style={{ padding: "8px 12px", fontSize: 12, color: "var(--text-hint)", textAlign: "center" }}>No models match</div>
+                      <div
+                        style={{
+                          padding: "8px 12px",
+                          fontSize: 12,
+                          color: "var(--text-hint)",
+                          textAlign: "center",
+                        }}
+                      >
+                        没有匹配的模型
+                      </div>
                     ) : (
-                      filteredModels.map(m => (
+                      filteredModels.map((m) => (
                         <div
                           key={m}
                           onClick={() => {
@@ -946,7 +989,7 @@ function AhaAgentPanel() {
               </div>
               {fetchError && (
                 <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 6 }}>
-                  Failed to fetch: {fetchError}
+                  获取失败：{fetchError}
                 </div>
               )}
             </div>
@@ -958,24 +1001,101 @@ function AhaAgentPanel() {
                 onChange={(e) => setAutoApprove(e.target.checked)}
                 style={{ accentColor: "var(--accent)", cursor: "pointer", width: 14, height: 14 }}
               />
-              <span style={{ fontSize: 12.5, color: "var(--text-primary)", userSelect: "none", cursor: "pointer" }} onClick={() => setAutoApprove(!autoApprove)}>
-                Auto-Approve Actions
+              <span
+                style={{
+                  fontSize: 12.5,
+                  color: "var(--text-primary)",
+                  userSelect: "none",
+                  cursor: "pointer",
+                }}
+                onClick={() => setAutoApprove(!autoApprove)}
+              >
+                自动批准操作
               </span>
             </div>
-            <span style={{ fontSize: 11, color: "var(--text-hint)", marginLeft: 22, marginTop: -6, display: "block" }}>
-              If enabled, Aha Agent will not ask for permission before running sub-tasks.
+            <span
+              style={{
+                fontSize: 11,
+                color: "var(--text-hint)",
+                marginLeft: 22,
+                marginTop: -6,
+                display: "block",
+              }}
+            >
+              开启后，Aha 智能体在运行子任务前不再额外请求确认。
+            </span>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+              <input
+                type="checkbox"
+                checked={contextDebug}
+                onChange={(e) => setContextDebug(e.target.checked)}
+                style={{ accentColor: "var(--accent)", cursor: "pointer", width: 14, height: 14 }}
+              />
+              <span
+                style={{
+                  fontSize: 12.5,
+                  color: "var(--text-primary)",
+                  userSelect: "none",
+                  cursor: "pointer",
+                }}
+                onClick={() => setContextDebug(!contextDebug)}
+              >
+                上下文调试日志
+              </span>
+            </div>
+            <span
+              style={{
+                fontSize: 11,
+                color: "var(--text-hint)",
+                marginLeft: 22,
+                marginTop: -6,
+                display: "block",
+              }}
+            >
+              仅在调试时开启。只记录实际发送给大模型的请求/响应快照，其中包含摘要后的注入内容；
+              不会写入子任务终端原始输出。日志文件位于项目根目录的{" "}
+              <code>logs/agent.debug</code>。
             </span>
           </div>
         )}
       </div>
       <div style={s.settingsFooter}>
-        {saved && (
-          <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--success, #34c759)", marginRight: "auto" }}>
-            <Check size={12} /> Saved
+        {saveError && (
+          <span
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 12,
+              color: "var(--danger)",
+              marginRight: "auto",
+              maxWidth: "70%",
+            }}
+          >
+            {saveError}
           </span>
         )}
-        <button style={{ ...s.modalSaveBtn, opacity: saving ? 0.5 : 1 }} onClick={handleSave} disabled={saving}>
-          {saving ? "Saving..." : "Save"}
+        {saved && (
+          <span
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 12,
+              color: "var(--success, #34c759)",
+              marginRight: saveError ? 12 : "auto",
+            }}
+          >
+            <Check size={12} /> 已保存
+          </span>
+        )}
+        <button
+          style={{ ...s.modalSaveBtn, opacity: saving ? 0.5 : 1 }}
+          onClick={handleSave}
+          disabled={saving}
+        >
+          {saving ? "保存中..." : "保存"}
         </button>
       </div>
     </>
@@ -1013,34 +1133,37 @@ function AgentConfigPanel({
   const [detectingVersion, setDetectingVersion] = useState(false);
   const [versionError, setVersionError] = useState<string | null>(null);
 
-  const refreshAgentVersion = useCallback(async (showLoadingState: boolean) => {
-    if (showLoadingState) {
-      setVersionLoading(true);
-    } else {
-      setDetectingVersion(true);
-    }
-    setVersionError(null);
-
-    try {
-      const settings = await invoke<AppSettings>("load_app_settings");
-      const configuredPath = agentKey === "claude" ? settings.claude_path : settings.codex_path;
-      setVersionSourcePath(configuredPath);
-      const versions = await invoke<AgentVersions>("detect_agent_versions_for_settings", {
-        settings,
-      });
-      setDetectedVersion(
-        agentKey === "claude" ? versions.claude_version : versions.codex_version,
-      );
-    } catch (e) {
-      setVersionError(String(e));
-    } finally {
+  const refreshAgentVersion = useCallback(
+    async (showLoadingState: boolean) => {
       if (showLoadingState) {
-        setVersionLoading(false);
+        setVersionLoading(true);
       } else {
-        setDetectingVersion(false);
+        setDetectingVersion(true);
       }
-    }
-  }, [agentKey]);
+      setVersionError(null);
+
+      try {
+        const settings = await invoke<AppSettings>("load_app_settings");
+        const configuredPath = agentKey === "claude" ? settings.claude_path : settings.codex_path;
+        setVersionSourcePath(configuredPath);
+        const versions = await invoke<AgentVersions>("detect_agent_versions_for_settings", {
+          settings,
+        });
+        setDetectedVersion(
+          agentKey === "claude" ? versions.claude_version : versions.codex_version,
+        );
+      } catch (e) {
+        setVersionError(String(e));
+      } finally {
+        if (showLoadingState) {
+          setVersionLoading(false);
+        } else {
+          setDetectingVersion(false);
+        }
+      }
+    },
+    [agentKey],
+  );
 
   // Load file
   useEffect(() => {
@@ -1136,12 +1259,12 @@ function AgentConfigPanel({
           >
             <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>
-                Installed Version
+                已安装版本
               </span>
               <span style={{ fontSize: 11.5, color: "var(--text-hint)", lineHeight: 1.45 }}>
                 {versionSourcePath
-                  ? `Using executable: ${versionSourcePath}`
-                  : "Using executable from the system PATH."}
+                  ? `当前可执行文件：${versionSourcePath}`
+                  : "当前使用系统 PATH 中的可执行文件。"}
               </span>
             </div>
             <button
@@ -1163,7 +1286,7 @@ function AgentConfigPanel({
               disabled={detectingVersion}
             >
               <RefreshCw size={12} className={detectingVersion ? "spin" : undefined} />
-              {detectingVersion ? "Detecting..." : "Detect"}
+              {detectingVersion ? "检测中..." : "检测"}
             </button>
           </div>
 
@@ -1182,7 +1305,7 @@ function AgentConfigPanel({
             }}
             value={detectedVersion}
             readOnly
-            placeholder={versionLoading ? "Detecting..." : "Not detected"}
+            placeholder={versionLoading ? "检测中..." : "未检测到"}
             spellCheck={false}
           />
 
@@ -1223,7 +1346,7 @@ function AgentConfigPanel({
               onClick={() => setEditing(true)}
             >
               <Pencil size={12} />
-              Edit
+              编辑
             </button>
           )}
           {saved && (
@@ -1236,7 +1359,7 @@ function AgentConfigPanel({
                 color: "var(--success, #34c759)",
               }}
             >
-              <Check size={12} /> Saved
+              <Check size={12} /> 已保存
             </span>
           )}
         </div>
@@ -1246,11 +1369,11 @@ function AgentConfigPanel({
         )}
 
         {fileState.status === "loading" && !error && (
-          <div style={{ color: "var(--text-hint)", fontSize: 13 }}>Loading...</div>
+          <div style={{ color: "var(--text-hint)", fontSize: 13 }}>加载中...</div>
         )}
 
         {fileState.status === "missing" && (
-          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Config file not found</div>
+          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>未找到配置文件</div>
         )}
 
         {fileState.status === "loaded" && !editing && (
@@ -1289,14 +1412,14 @@ function AgentConfigPanel({
       {editing && (
         <div style={s.settingsFooter}>
           <button style={s.modalCancelBtn} onClick={handleCancel}>
-            Cancel
+            取消
           </button>
           <button
             style={{ ...s.modalSaveBtn, opacity: saving || !isDirty ? 0.5 : 1 }}
             onClick={handleSave}
             disabled={saving || !isDirty}
           >
-            {saving ? "Saving..." : "Save"}
+            {saving ? "保存中..." : "保存"}
           </button>
         </div>
       )}
@@ -1334,7 +1457,7 @@ export function AppSettingsDialog({
       <div style={s.modalBox}>
         {/* Left nav */}
         <div style={s.settingsNav}>
-          <div style={s.settingsNavTitle}>App Settings</div>
+          <div style={s.settingsNavTitle}>应用设置</div>
           {NAV_ITEMS.map((item) => (
             <button
               key={item.key}
@@ -1388,7 +1511,7 @@ export function AppSettingsDialog({
               )}
               <span style={s.settingsContentTitle}>{activeItem.label}</span>
             </div>
-            <button style={s.modalCloseBtn} onClick={onClose} title="Close">
+            <button style={s.modalCloseBtn} onClick={onClose} title="关闭">
               <X size={16} strokeWidth={2} />
             </button>
           </div>

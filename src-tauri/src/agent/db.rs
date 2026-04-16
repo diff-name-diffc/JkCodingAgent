@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::llm::{ChatMessage, OutboundToolCall};
+use super::summary::ToolArtifactDraft;
 
 const MAX_LLM_DIALOGUES: usize = 5;
 
@@ -37,16 +38,61 @@ pub struct DispatcherMessageRecord {
     pub workspace_id: String,
     pub role: String,
     pub content: String,
+    #[serde(skip_serializing)]
+    pub context_payload: Option<String>,
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
     pub tool_result_mode: Option<String>,
+    pub tool_artifacts: Vec<DispatcherToolArtifactRef>,
     pub tool_calls_json: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatcherToolArtifactRef {
+    pub id: String,
+    pub title: String,
+    pub kind: String,
+    pub preview: String,
+    pub char_count: usize,
+    pub line_count: usize,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatcherToolArtifactRecord {
+    pub id: String,
+    pub workspace_id: String,
+    pub message_id: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub title: String,
+    pub kind: String,
+    pub preview: String,
+    pub content: String,
+    pub char_count: usize,
+    pub line_count: usize,
     pub created_at: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct DispatcherDb {
     path: PathBuf,
+}
+
+struct NewDispatcherMessage<'a> {
+    workspace_id: &'a str,
+    role: &'a str,
+    content: &'a str,
+    context_payload: Option<&'a str>,
+    tool_call_id: Option<&'a str>,
+    tool_name: Option<&'a str>,
+    tool_result_mode: Option<&'a str>,
+    tool_calls: Option<&'a [OutboundToolCall]>,
+    tool_artifacts: &'a [ToolArtifactDraft],
+    visible: bool,
 }
 
 impl DispatcherDb {
@@ -178,15 +224,21 @@ impl DispatcherDb {
     }
 
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
-        let conn = self.connect()?;
-        conn.execute(
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![session_id],
         )?;
-        conn.execute(
+        tx.execute(
             "DELETE FROM dispatcher_sessions WHERE id = ?1",
             params![session_id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -198,7 +250,18 @@ impl DispatcherDb {
         role: &str,
         content: &str,
     ) -> Result<DispatcherMessageRecord> {
-        self.add_message(workspace_id, role, content, None, None, None, None, true)
+        self.add_message(NewDispatcherMessage {
+            workspace_id,
+            role,
+            content,
+            context_payload: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_result_mode: None,
+            tool_calls: None,
+            tool_artifacts: &[],
+            visible: true,
+        })
     }
 
     pub fn add_visible_message_with_tools(
@@ -211,16 +274,42 @@ impl DispatcherDb {
         tool_result_mode: Option<&str>,
         tool_calls: Option<&[OutboundToolCall]>,
     ) -> Result<DispatcherMessageRecord> {
-        self.add_message(
+        self.add_message(NewDispatcherMessage {
             workspace_id,
             role,
             content,
+            context_payload: None,
             tool_call_id,
             tool_name,
             tool_result_mode,
             tool_calls,
-            true,
-        )
+            tool_artifacts: &[],
+            visible: true,
+        })
+    }
+
+    pub fn add_visible_tool_result(
+        &self,
+        workspace_id: &str,
+        content: &str,
+        context_payload: &str,
+        tool_call_id: Option<&str>,
+        tool_name: Option<&str>,
+        tool_result_mode: Option<&str>,
+        tool_artifacts: &[ToolArtifactDraft],
+    ) -> Result<DispatcherMessageRecord> {
+        self.add_message(NewDispatcherMessage {
+            workspace_id,
+            role: "tool",
+            content,
+            context_payload: Some(context_payload),
+            tool_call_id,
+            tool_name,
+            tool_result_mode,
+            tool_calls: None,
+            tool_artifacts,
+            visible: true,
+        })
     }
 
     pub fn add_hidden_message(
@@ -233,16 +322,18 @@ impl DispatcherDb {
         tool_result_mode: Option<&str>,
         tool_calls: Option<&[OutboundToolCall]>,
     ) -> Result<DispatcherMessageRecord> {
-        self.add_message(
+        self.add_message(NewDispatcherMessage {
             workspace_id,
             role,
             content,
+            context_payload: None,
             tool_call_id,
             tool_name,
             tool_result_mode,
             tool_calls,
-            false,
-        )
+            tool_artifacts: &[],
+            visible: false,
+        })
     }
 
     pub fn list_visible_messages(
@@ -251,7 +342,7 @@ impl DispatcherDb {
     ) -> Result<Vec<DispatcherMessageRecord>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, role, content, tool_call_id, tool_name, tool_result_mode, tool_calls_json, created_at
+            "SELECT id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, created_at
              FROM dispatcher_messages
              WHERE workspace_id = ?1 AND visible = 1
              ORDER BY created_at ASC, rowid ASC",
@@ -262,11 +353,13 @@ impl DispatcherDb {
                 workspace_id: row.get(1)?,
                 role: row.get(2)?,
                 content: row.get(3)?,
-                tool_call_id: row.get(4)?,
-                tool_name: row.get(5)?,
-                tool_result_mode: row.get(6)?,
-                tool_calls_json: row.get(7)?,
-                created_at: row.get(8)?,
+                context_payload: row.get(4)?,
+                tool_call_id: row.get(5)?,
+                tool_name: row.get(6)?,
+                tool_result_mode: row.get(7)?,
+                tool_artifacts: parse_tool_artifact_refs(row.get::<_, Option<String>>(8)?),
+                tool_calls_json: row.get(9)?,
+                created_at: row.get(10)?,
             })
         })?;
 
@@ -286,7 +379,7 @@ impl DispatcherDb {
             self.find_dialogue_cutoff_rowid(&conn, workspace_id, MAX_LLM_DIALOGUES)?;
 
         let mut stmt = conn.prepare(
-            "SELECT role, content, tool_call_id, tool_name, tool_calls_json
+            "SELECT role, COALESCE(context_payload, content), tool_call_id, tool_name, tool_calls_json
              FROM dispatcher_messages
              WHERE workspace_id = ?1 AND rowid >= ?2
              ORDER BY rowid ASC",
@@ -306,70 +399,178 @@ impl DispatcherDb {
     }
 
     pub fn clear_messages(&self, workspace_id: &str) -> Result<()> {
-        let conn = self.connect()?;
-        conn.execute(
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("clear dispatcher tool artifacts")?;
+        tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![workspace_id],
         )
         .context("clear dispatcher messages")?;
+        tx.commit().context("commit dispatcher message cleanup")?;
         Ok(())
     }
 
-    fn add_message(
+    pub fn get_tool_artifact(
         &self,
         workspace_id: &str,
-        role: &str,
-        content: &str,
-        tool_call_id: Option<&str>,
-        tool_name: Option<&str>,
-        tool_result_mode: Option<&str>,
-        tool_calls: Option<&[OutboundToolCall]>,
-        visible: bool,
-    ) -> Result<DispatcherMessageRecord> {
-        let tool_calls_json = tool_calls
+        artifact_id: &str,
+    ) -> Result<DispatcherToolArtifactRecord> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT id, workspace_id, message_id, tool_call_id, tool_name, title, kind, preview, content, char_count, line_count, created_at
+             FROM dispatcher_tool_artifacts
+             WHERE id = ?1 AND workspace_id = ?2",
+            params![artifact_id, workspace_id],
+            |row| {
+                Ok(DispatcherToolArtifactRecord {
+                    id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    message_id: row.get(2)?,
+                    tool_call_id: row.get(3)?,
+                    tool_name: row.get(4)?,
+                    title: row.get(5)?,
+                    kind: row.get(6)?,
+                    preview: row.get(7)?,
+                    content: row.get(8)?,
+                    char_count: row.get::<_, i64>(9)? as usize,
+                    line_count: row.get::<_, i64>(10)? as usize,
+                    created_at: row.get(11)?,
+                })
+            },
+        )
+        .optional()
+        .context("load dispatcher tool artifact")?
+        .with_context(|| format!("dispatcher tool artifact not found: {artifact_id}"))
+    }
+
+    fn add_message(&self, params: NewDispatcherMessage<'_>) -> Result<DispatcherMessageRecord> {
+        let tool_calls_json = params
+            .tool_calls
             .map(serde_json::to_string)
             .transpose()
             .context("serialize tool calls")?;
 
-        let record = DispatcherMessageRecord {
+        let mut record = DispatcherMessageRecord {
             id: Uuid::new_v4().to_string(),
-            workspace_id: workspace_id.to_string(),
-            role: role.to_string(),
-            content: content.to_string(),
-            tool_call_id: tool_call_id.map(|s| s.to_string()),
-            tool_name: tool_name.map(|s| s.to_string()),
-            tool_result_mode: tool_result_mode.map(|s| s.to_string()),
+            workspace_id: params.workspace_id.to_string(),
+            role: params.role.to_string(),
+            content: params.content.to_string(),
+            context_payload: params.context_payload.map(|s| s.to_string()),
+            tool_call_id: params.tool_call_id.map(|s| s.to_string()),
+            tool_name: params.tool_name.map(|s| s.to_string()),
+            tool_result_mode: params.tool_result_mode.map(|s| s.to_string()),
+            tool_artifacts: Vec::new(),
             tool_calls_json: tool_calls_json.clone(),
             created_at: now(),
         };
 
-        let conn = self.connect()?;
-        conn.execute(
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        tx.execute(
             "UPDATE dispatcher_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![record.created_at, record.workspace_id],
+            params![&record.created_at, &record.workspace_id],
         )?;
 
-        conn.execute(
+        tx.execute(
             "INSERT INTO dispatcher_messages (
-                id, workspace_id, role, content, tool_call_id, tool_name, tool_result_mode, tool_calls_json, visible, created_at
+                id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, visible, created_at
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
-                record.id,
-                record.workspace_id,
-                record.role,
-                record.content,
-                record.tool_call_id,
-                record.tool_name,
-                record.tool_result_mode,
-                record.tool_calls_json,
-                if visible { 1 } else { 0 },
-                record.created_at
+                &record.id,
+                &record.workspace_id,
+                &record.role,
+                &record.content,
+                &record.context_payload,
+                &record.tool_call_id,
+                &record.tool_name,
+                &record.tool_result_mode,
+                Option::<String>::None,
+                &record.tool_calls_json,
+                if params.visible { 1 } else { 0 },
+                &record.created_at
             ],
         )
         .context("insert dispatcher message")?;
 
+        if !params.tool_artifacts.is_empty() {
+            let artifacts = self.insert_tool_artifacts(
+                &tx,
+                &record.workspace_id,
+                &record.id,
+                record.tool_call_id.as_deref(),
+                record.tool_name.as_deref(),
+                params.tool_artifacts,
+                &record.created_at,
+            )?;
+            let artifacts_json =
+                serde_json::to_string(&artifacts).context("serialize dispatcher tool artifacts")?;
+            tx.execute(
+                "UPDATE dispatcher_messages SET tool_artifacts_json = ?1 WHERE id = ?2",
+                params![&artifacts_json, &record.id],
+            )
+            .context("attach dispatcher tool artifacts to message")?;
+            record.tool_artifacts = artifacts;
+        }
+
+        tx.commit().context("commit dispatcher message insert")?;
+
         Ok(record)
+    }
+
+    fn insert_tool_artifacts(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        workspace_id: &str,
+        message_id: &str,
+        tool_call_id: Option<&str>,
+        tool_name: Option<&str>,
+        drafts: &[ToolArtifactDraft],
+        created_at: &str,
+    ) -> Result<Vec<DispatcherToolArtifactRef>> {
+        let mut refs = Vec::with_capacity(drafts.len());
+
+        for draft in drafts {
+            let artifact_id = Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO dispatcher_tool_artifacts (
+                    id, workspace_id, message_id, tool_call_id, tool_name, title, kind, preview, content, char_count, line_count, created_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    &artifact_id,
+                    workspace_id,
+                    message_id,
+                    tool_call_id,
+                    tool_name,
+                    &draft.title,
+                    &draft.kind,
+                    &draft.preview,
+                    &draft.content,
+                    draft.char_count as i64,
+                    draft.line_count as i64,
+                    created_at,
+                ],
+            )
+            .context("insert dispatcher tool artifact")?;
+
+            refs.push(DispatcherToolArtifactRef {
+                id: artifact_id,
+                title: draft.title.clone(),
+                kind: draft.kind.clone(),
+                preview: draft.preview.clone(),
+                char_count: draft.char_count,
+                line_count: draft.line_count,
+                created_at: created_at.to_string(),
+            });
+        }
+
+        Ok(refs)
     }
 
     fn init(&self) -> Result<()> {
@@ -399,9 +600,11 @@ impl DispatcherDb {
                 workspace_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                context_payload TEXT,
                 tool_call_id TEXT,
                 tool_name TEXT,
                 tool_result_mode TEXT,
+                tool_artifacts_json TEXT,
                 tool_calls_json TEXT,
                 visible INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
@@ -409,6 +612,27 @@ impl DispatcherDb {
 
             CREATE INDEX IF NOT EXISTS idx_dispatcher_messages_workspace_created
             ON dispatcher_messages(workspace_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS dispatcher_tool_artifacts (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                message_id TEXT,
+                tool_call_id TEXT,
+                tool_name TEXT,
+                title TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                preview TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                char_count INTEGER NOT NULL DEFAULT 0,
+                line_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_artifacts_workspace_created
+            ON dispatcher_tool_artifacts(workspace_id, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_artifacts_message
+            ON dispatcher_tool_artifacts(message_id);
 
             CREATE TABLE IF NOT EXISTS dispatcher_settings (
                 id TEXT PRIMARY KEY DEFAULT 'default',
@@ -427,7 +651,9 @@ impl DispatcherDb {
             "context_debug",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        ensure_column_exists(&conn, "dispatcher_messages", "context_payload", "TEXT")?;
         ensure_column_exists(&conn, "dispatcher_messages", "tool_result_mode", "TEXT")?;
+        ensure_column_exists(&conn, "dispatcher_messages", "tool_artifacts_json", "TEXT")?;
         Ok(())
     }
 
@@ -500,6 +726,12 @@ fn map_chat_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatMessage
     })
 }
 
+fn parse_tool_artifact_refs(raw: Option<String>) -> Vec<DispatcherToolArtifactRef> {
+    raw.as_deref()
+        .and_then(|json| serde_json::from_str::<Vec<DispatcherToolArtifactRef>>(json).ok())
+        .unwrap_or_default()
+}
+
 fn should_keep_llm_message(message: &ChatMessage) -> bool {
     match message.role.as_str() {
         "assistant" => {
@@ -553,4 +785,127 @@ fn is_dispatch_plumbing_tool_name(name: &str) -> bool {
             | "exit_claude_session"
             | "exit_codex_session"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::{DispatcherDb, ToolArtifactDraft};
+
+    fn create_test_db() -> (DispatcherDb, PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("jkcodingagent-db-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create temp db root");
+        let db = DispatcherDb::new(root.join("dispatcher.sqlite3")).expect("create dispatcher db");
+        (db, root)
+    }
+
+    fn cleanup_test_db(root: PathBuf) {
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn sample_artifact() -> ToolArtifactDraft {
+        ToolArtifactDraft {
+            kind: "tool_raw_output".to_string(),
+            title: "exec 原始结果".to_string(),
+            preview: "line 1 / line 2".to_string(),
+            content: "line 1\nline 2".to_string(),
+            char_count: 13,
+            line_count: 2,
+        }
+    }
+
+    #[test]
+    fn tool_result_separates_display_content_from_context_payload() {
+        let (db, root) = create_test_db();
+        let session = db.create_session("project-1", "测试会话").unwrap();
+        db.add_visible_message(&session.id, "user", "检查工具结果")
+            .unwrap();
+        let message = db
+            .add_visible_tool_result(
+                &session.id,
+                "展示摘要",
+                "上下文压缩",
+                Some("call-1"),
+                Some("exec"),
+                Some("conservative_summary"),
+                &[sample_artifact()],
+            )
+            .unwrap();
+
+        assert_eq!(message.content, "展示摘要");
+        assert_eq!(message.tool_artifacts.len(), 1);
+
+        let visible_messages = db.list_visible_messages(&session.id).unwrap();
+        assert_eq!(visible_messages.last().unwrap().content, "展示摘要");
+        assert_eq!(visible_messages.last().unwrap().tool_artifacts.len(), 1);
+
+        let llm_history = db.load_llm_history(&session.id).unwrap();
+        let tool_message = llm_history
+            .iter()
+            .find(|message| message.role == "tool")
+            .expect("tool message should exist in llm history");
+        assert_eq!(tool_message.content, "上下文压缩");
+
+        let artifact = db
+            .get_tool_artifact(&session.id, &message.tool_artifacts[0].id)
+            .unwrap();
+        assert_eq!(artifact.content, "line 1\nline 2");
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn clear_messages_removes_tool_artifacts_for_session() {
+        let (db, root) = create_test_db();
+        let session = db.create_session("project-1", "测试会话").unwrap();
+        let message = db
+            .add_visible_tool_result(
+                &session.id,
+                "展示摘要",
+                "上下文压缩",
+                Some("call-1"),
+                Some("exec"),
+                Some("conservative_summary"),
+                &[sample_artifact()],
+            )
+            .unwrap();
+
+        db.clear_messages(&session.id).unwrap();
+
+        assert!(db.list_visible_messages(&session.id).unwrap().is_empty());
+        assert!(db
+            .get_tool_artifact(&session.id, &message.tool_artifacts[0].id)
+            .is_err());
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn delete_session_removes_tool_artifacts_with_session() {
+        let (db, root) = create_test_db();
+        let session = db.create_session("project-1", "测试会话").unwrap();
+        let message = db
+            .add_visible_tool_result(
+                &session.id,
+                "展示摘要",
+                "上下文压缩",
+                Some("call-1"),
+                Some("exec"),
+                Some("conservative_summary"),
+                &[sample_artifact()],
+            )
+            .unwrap();
+
+        db.delete_session(&session.id).unwrap();
+
+        assert!(db.list_sessions("project-1").unwrap().is_empty());
+        assert!(db
+            .get_tool_artifact(&session.id, &message.tool_artifacts[0].id)
+            .is_err());
+
+        cleanup_test_db(root);
+    }
 }

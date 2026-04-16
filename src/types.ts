@@ -143,11 +143,37 @@ export interface DispatcherMessage {
   toolCallId?: string;
   toolName?: string;
   toolResultMode?: DispatcherToolResultMode;
+  toolArtifacts?: DispatcherToolArtifactRef[];
   toolCallsJson?: string;
   createdAt: string;
 }
 
 export type DispatcherToolResultMode = "raw" | "summary" | "conservative_summary";
+
+export interface DispatcherToolArtifactRef {
+  id: string;
+  title: string;
+  kind: string;
+  preview: string;
+  charCount: number;
+  lineCount: number;
+  createdAt: string;
+}
+
+export interface DispatcherToolArtifact {
+  id: string;
+  workspaceId: string;
+  messageId?: string;
+  toolCallId?: string;
+  toolName?: string;
+  title: string;
+  kind: string;
+  preview: string;
+  content: string;
+  charCount: number;
+  lineCount: number;
+  createdAt: string;
+}
 
 export interface DispatcherSettings {
   apiBase: string;
@@ -181,8 +207,9 @@ export type DispatcherAgentEvent =
       data: {
         toolCallId?: string;
         name: string;
-        result: string;
+        displayText: string;
         resultMode: DispatcherToolResultMode;
+        detailRefs: DispatcherToolArtifactRef[];
       };
     }
   | {

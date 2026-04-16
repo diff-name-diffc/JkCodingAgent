@@ -9,7 +9,9 @@ use serde_json::Value;
 use tauri::ipc::Channel;
 
 use super::config::DispatcherAgentConfig;
-use super::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSettingsRecord};
+use super::db::{
+    DispatcherDb, DispatcherMessageRecord, DispatcherSettingsRecord, DispatcherToolArtifactRef,
+};
 use super::debug::{render_json, ContextDebugLogger, DebugSection};
 use super::llm::{ChatMessage, FunctionCall, OpenAiCompatProvider, OutboundToolCall};
 use super::prompt::{build_system_prompt, PromptBundle, PromptSection};
@@ -108,8 +110,9 @@ pub enum AgentEvent {
     ToolFinished {
         tool_call_id: Option<String>,
         name: String,
-        result: String,
+        display_text: String,
         result_mode: String,
+        detail_refs: Vec<DispatcherToolArtifactRef>,
     },
     DispatchProposed {
         dispatch_id: String,
@@ -732,25 +735,26 @@ impl DispatcherAgent {
                         }
                     };
 
+                let tool_message = db.add_visible_tool_result(
+                    workspace_id,
+                    &tool_result.display_content,
+                    &tool_result.context_payload,
+                    Some(&tool_call.id),
+                    Some(&tool_call.name),
+                    Some(tool_result.result_mode),
+                    &tool_result.artifacts,
+                )?;
+
                 emit(
                     on_event,
                     AgentEvent::ToolFinished {
                         tool_call_id: Some(tool_call.id.clone()),
                         name: tool_call.name.clone(),
-                        result: tool_result.content.clone(),
+                        display_text: tool_message.content.clone(),
                         result_mode: tool_result.result_mode.to_string(),
+                        detail_refs: tool_message.tool_artifacts.clone(),
                     },
                 );
-
-                db.add_visible_message_with_tools(
-                    workspace_id,
-                    "tool",
-                    &tool_result.content,
-                    Some(&tool_call.id),
-                    Some(&tool_call.name),
-                    Some(tool_result.result_mode),
-                    None,
-                )?;
 
                 if tool_call.name == "message" {
                     if let Some(content) = extract_message_content(&tool_call.arguments) {
@@ -1100,8 +1104,9 @@ impl DispatcherAgent {
             AgentEvent::ToolFinished {
                 tool_call_id: Some(tool_call.id.clone()),
                 name: tool_call.name.clone(),
-                result: result.clone(),
+                display_text: result.clone(),
                 result_mode: "raw".to_string(),
+                detail_refs: Vec::new(),
             },
         );
         db.add_visible_message_with_tools(
@@ -1129,8 +1134,9 @@ impl DispatcherAgent {
             AgentEvent::ToolFinished {
                 tool_call_id: Some(tool_call.id.clone()),
                 name: tool_call.name.clone(),
-                result: error.to_string(),
+                display_text: error.to_string(),
                 result_mode: "raw".to_string(),
+                detail_refs: Vec::new(),
             },
         );
         db.add_visible_message_with_tools(

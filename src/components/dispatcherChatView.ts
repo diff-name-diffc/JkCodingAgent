@@ -1,4 +1,8 @@
-import type { DispatcherMessage, DispatcherToolResultMode } from "../types";
+import type {
+  DispatcherMessage,
+  DispatcherToolArtifactRef,
+  DispatcherToolResultMode,
+} from "../types";
 import type { ToolActivityItem } from "./ToolActivityBubble";
 
 interface OutboundToolCall {
@@ -78,17 +82,19 @@ export function buildDispatcherDisplayItems(
       upsertToolActivity(turn.tools, {
         key: message.toolCallId || `${message.id}-${message.toolName || "tool"}`,
         name: message.toolName || "tool",
-        output: message.content,
+        displayText: message.content,
+        detailRefs: message.toolArtifacts,
         resultMode: message.toolResultMode,
         status: "completed",
       });
     }
   }
 
-  return items.filter((item) =>
-    item.kind === "user" ||
-    item.turn.tools.length > 0 ||
-    item.turn.responseParts.some((part) => part.trim()),
+  return items.filter(
+    (item) =>
+      item.kind === "user" ||
+      item.turn.tools.length > 0 ||
+      item.turn.responseParts.some((part) => part.trim()),
   );
 }
 
@@ -112,8 +118,9 @@ export function finishLiveToolActivity(
   payload: {
     toolCallId?: string;
     name: string;
-    result: string;
+    displayText: string;
     resultMode: DispatcherToolResultMode;
+    detailRefs: DispatcherToolArtifactRef[];
   },
 ): ToolActivityItem[] {
   const nextTools = [...tools];
@@ -133,7 +140,8 @@ export function finishLiveToolActivity(
   if (matchIndex >= 0) {
     nextTools[matchIndex] = {
       ...nextTools[matchIndex],
-      output: payload.result,
+      displayText: payload.displayText,
+      detailRefs: payload.detailRefs,
       resultMode: payload.resultMode,
       status: "completed",
     };
@@ -143,7 +151,8 @@ export function finishLiveToolActivity(
   nextTools.push({
     key: payload.toolCallId || createLiveToolKey(payload.name, nextTools.length),
     name: payload.name,
-    output: payload.result,
+    displayText: payload.displayText,
+    detailRefs: payload.detailRefs,
     resultMode: payload.resultMode,
     status: "completed",
   });
@@ -171,10 +180,7 @@ function parseToolCalls(raw: string | undefined): Array<{
   }
 }
 
-function upsertToolActivity(
-  tools: ToolActivityItem[],
-  incoming: ToolActivityItem,
-) {
+function upsertToolActivity(tools: ToolActivityItem[], incoming: ToolActivityItem) {
   const index = tools.findIndex((tool) => tool.key === incoming.key);
   if (index < 0) {
     tools.push(incoming);
@@ -185,7 +191,8 @@ function upsertToolActivity(
     ...tools[index],
     ...incoming,
     input: incoming.input ?? tools[index].input,
-    output: incoming.output ?? tools[index].output,
+    displayText: incoming.displayText ?? tools[index].displayText,
+    detailRefs: incoming.detailRefs ?? tools[index].detailRefs,
   };
 }
 

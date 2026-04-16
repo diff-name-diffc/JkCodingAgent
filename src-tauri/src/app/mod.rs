@@ -94,6 +94,7 @@ pub fn run() {
             agent::commands::dispatcher_send_message,
             agent::commands::dispatcher_list_messages,
             agent::commands::dispatcher_clear_messages,
+            agent::commands::dispatcher_get_tool_artifact,
             agent::commands::dispatcher_get_settings,
             agent::commands::dispatcher_list_sessions,
             agent::commands::dispatcher_create_session,

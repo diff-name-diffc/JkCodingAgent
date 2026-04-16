@@ -4,6 +4,7 @@ use tokio::time::{sleep, Duration};
 use super::config::DispatcherAgentConfig;
 use super::db::{
     DispatcherDb, DispatcherMessageRecord, DispatcherSessionRecord, DispatcherSettingsRecord,
+    DispatcherToolArtifactRecord,
 };
 use super::llm;
 use super::runtime::{AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent};
@@ -122,6 +123,18 @@ pub fn dispatcher_clear_messages(
     state
         .db
         .clear_messages(&workspace_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_get_tool_artifact(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+    artifact_id: String,
+) -> Result<DispatcherToolArtifactRecord, String> {
+    state
+        .db
+        .get_tool_artifact(&workspace_id, &artifact_id)
         .map_err(|error| error.to_string())
 }
 

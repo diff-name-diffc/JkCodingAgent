@@ -6,17 +6,28 @@ use tokio::time::{timeout, Duration};
 
 const SUMMARY_MODE_THRESHOLD_CHARS: usize = 240;
 const SUMMARY_MODE_THRESHOLD_LINES: usize = 24;
-const AUTO_SUMMARY_THRESHOLD_CHARS: usize = 1200;
-const AUTO_SUMMARY_THRESHOLD_LINES: usize = 120;
 const FULL_RESULT_MAX_CHARS: usize = 12_000;
 const FULL_RESULT_MAX_LINES: usize = 400;
+const HIGH_FIDELITY_SUMMARY_THRESHOLD_CHARS: usize = 1_000;
 const OLLAMA_MODEL: &str = "llama3.2:3b";
-const OLLAMA_TIMEOUT_SECS: u64 = 20;
+const OLLAMA_TIMEOUT_SECS: u64 = 40;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolArtifactDraft {
+    pub kind: String,
+    pub title: String,
+    pub preview: String,
+    pub content: String,
+    pub char_count: usize,
+    pub line_count: usize,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedToolResult {
-    pub content: String,
+    pub context_payload: String,
+    pub display_content: String,
     pub result_mode: &'static str,
+    pub artifacts: Vec<ToolArtifactDraft>,
 }
 
 pub async fn prepare_tool_result(
@@ -24,35 +35,38 @@ pub async fn prepare_tool_result(
     args: &Value,
     raw_output: &str,
 ) -> Result<PreparedToolResult, String> {
-    let trimmed = raw_output.trim();
-    if trimmed.is_empty() {
+    let trimmed_raw = raw_output.trim();
+    if trimmed_raw.is_empty() {
         return Ok(PreparedToolResult {
-            content: String::new(),
+            context_payload: String::new(),
+            display_content: String::new(),
             result_mode: tool_result_mode_label(ToolResultAction::KeepRaw),
+            artifacts: Vec::new(),
         });
     }
 
-    match decide_tool_result_action(tool_name, args, trimmed) {
+    let normalized = normalize_tool_output(raw_output);
+    let normalized_trimmed = normalized.trim();
+    let artifacts = vec![build_raw_tool_artifact(tool_name, raw_output)];
+
+    match decide_tool_result_action(tool_name, args, trimmed_raw) {
         ToolResultAction::KeepRaw => Ok(PreparedToolResult {
-            content: trimmed.to_string(),
+            context_payload: trimmed_raw.to_string(),
+            display_content: trimmed_raw.to_string(),
             result_mode: tool_result_mode_label(ToolResultAction::KeepRaw),
+            artifacts,
         }),
-        ToolResultAction::Summarize => {
-            summarize_with_ollama(build_tool_summary_prompt(tool_name, trimmed))
-                .await
-                .map(|content| PreparedToolResult {
-                    content,
-                    result_mode: tool_result_mode_label(ToolResultAction::Summarize),
-                })
-        }
-        ToolResultAction::ConservativeSummarize => {
-            summarize_with_ollama(build_conservative_tool_summary_prompt(tool_name, trimmed))
-                .await
-                .map(|content| PreparedToolResult {
-                    content,
-                    result_mode: tool_result_mode_label(ToolResultAction::ConservativeSummarize),
-                })
-        }
+        ToolResultAction::HighFidelitySummarize => summarize_with_ollama(
+            build_dual_tool_summary_prompt(tool_name, normalized_trimmed),
+        )
+        .await
+        .map(parse_dual_tool_summary)
+        .map(|(context_payload, display_content)| PreparedToolResult {
+            context_payload,
+            display_content,
+            result_mode: tool_result_mode_label(ToolResultAction::HighFidelitySummarize),
+            artifacts,
+        }),
     }
 }
 
@@ -123,45 +137,25 @@ enum ToolResultMode {
     Summary,
 }
 
-fn build_tool_summary_prompt(tool_name: &str, raw_output: &str) -> String {
+fn build_dual_tool_summary_prompt(tool_name: &str, raw_output: &str) -> String {
     let focus = tool_summary_focus(tool_name);
     format!(
-        "你是调度 Agent 的工具结果摘要器。请将下面的长工具输出压缩成便于继续决策的中文摘要。\n\
-要求：\n\
-- 只保留事实，不要猜测。\n\
-- 优先保留错误、失败原因、退出码、关键文件路径、命令结果、数量统计。\n\
-- 如果输出里包含明确完成项或下一步线索，也要保留。\n\
-- 根据工具类型保留最重要的结构化信息：{focus}\n\
-- 使用下面结构输出，最多 6 行：\n\
-【工具调用摘要】\n\
-- 工具：{tool_name}\n\
-- 结果：一句话概括\n\
-- 关键事实：最多 3 条，单行内用 `；` 分隔\n\
-- 下一步：若无明确建议写“无”\n\n\
-工具原始输出如下：\n{}",
-        raw_output.trim()
-    )
-}
-
-fn build_conservative_tool_summary_prompt(tool_name: &str, raw_output: &str) -> String {
-    let focus = tool_summary_focus(tool_name);
-    format!(
-        "你在执行调度 Agent 的高保真压缩，不是激进摘要。目标是在明显缩短长度的同时，尽量保留后续推理需要的原始事实。\n\
+        "你在为调度 Agent 生成两份不同用途的结果：一份用于继续注入模型上下文，一份用于前端展示给用户。\n\
 要求：\n\
 - 只保留原文里明确出现的事实，不要猜测。\n\
-- 尽量保留原始顺序、关键实体名、文件路径、符号名、配置键、错误文本、数量、退出状态。\n\
-- 如果内容是代码或配置，不要把不同段落混成一句话；应说明关键位置、职责和关系。\n\
-- 如果内容是目录或文件列表，优先保留层级、关键文件名、数量和明显缺失项。\n\
+- 输出必须严格分成两个区块，且只能使用下面的标签，不要额外添加解释、标题或 Markdown 代码块。\n\
+- `<CONTEXT_PAYLOAD>`：写给主模型，要求高信息密度，尽量保留原始顺序、关键实体名、文件路径、符号名、配置键、错误文本、数量和退出状态；如果内容主要是代码、配置、逐行检索结果、文件清单或其他精确检索输出，只能做最轻量压缩，严禁改写代码含义、删除关键行号、文件名或配置键；{focus}\n\
+- `<DISPLAY_SUMMARY>`：写给前端展示，要求对人类更友好，聚焦结论、关键事实和为什么值得关注，可以比上下文回写更易读，但不能脱离原文事实。\n\
 - 如果内容是命令输出，优先保留命令结果、失败原因、关键日志、测试失败项和退出状态。\n\
 - 需要压缩，但不要过度归纳；宁可稍长，也不要丢掉影响后续判断的细节。\n\
-- {focus}\n\
-- 使用下面结构输出，控制在 8-12 行：\n\
-【工具结果保守压缩】\n\
-- 工具：{tool_name}\n\
-- 总体结论：...\n\
-- 关键事实：逐条列出 3-6 条，尽量包含精确值或原始关键词\n\
-- 重要细节：补充仍会影响后续决策的上下文；若无写“无”\n\
-- 建议下一步：若原文没有明确建议，写“无”\n\n\
+- 严格使用以下格式输出：\n\
+<CONTEXT_PAYLOAD>\n\
+...\n\
+</CONTEXT_PAYLOAD>\n\
+<DISPLAY_SUMMARY>\n\
+...\n\
+</DISPLAY_SUMMARY>\n\
+工具名：{tool_name}\n\
 工具原始输出如下：\n{}",
         raw_output.trim()
     )
@@ -174,7 +168,9 @@ fn build_dispatch_summary_prompt(dispatch_result: &str) -> String {
 - 只保留事实，不要臆测。\n\
 - 必须保留：当前状态、已完成事项、失败/阻塞点、关键证据、建议下一步。\n\
 - 如有测试、构建、lint、报错、修改文件、退出状态，优先保留。\n\
-- 使用下面结构输出，最多 8 行：\n\
+- 可以比工具结果摘要更激进地压缩冗余过程描述，但不能丢掉结论依据。\n\
+- 合并重复进度、重复日志和礼貌性措辞；只保留对主调度继续决策有价值的部分。\n\
+- 使用下面结构输出，最多 6 行：\n\
 【子任务回流摘要】\n\
 - 状态：...\n\
 - 已完成：...\n\
@@ -198,68 +194,47 @@ enum ToolOutputKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ToolResultAction {
     KeepRaw,
-    Summarize,
-    ConservativeSummarize,
+    HighFidelitySummarize,
 }
 
 fn tool_result_mode_label(action: ToolResultAction) -> &'static str {
     match action {
         ToolResultAction::KeepRaw => "raw",
-        ToolResultAction::Summarize => "summary",
-        ToolResultAction::ConservativeSummarize => "conservative_summary",
+        ToolResultAction::HighFidelitySummarize => "conservative_summary",
     }
 }
 
 fn decide_tool_result_action(tool_name: &str, args: &Value, raw_output: &str) -> ToolResultAction {
     let mode = requested_result_mode(args).unwrap_or_else(|| default_result_mode(tool_name));
     let kind = tool_output_kind(tool_name);
+    if should_keep_raw_for_exactness(tool_name, kind, raw_output) {
+        return ToolResultAction::KeepRaw;
+    }
 
     match mode {
-        ToolResultMode::Summary => {
-            if exceeds_limits(
-                raw_output,
-                SUMMARY_MODE_THRESHOLD_CHARS,
-                SUMMARY_MODE_THRESHOLD_LINES,
-            ) {
-                ToolResultAction::Summarize
-            } else {
-                ToolResultAction::KeepRaw
-            }
-        }
+        ToolResultMode::Summary => summarize_if_large_enough(raw_output),
         ToolResultMode::Full => {
             if exceeds_limits(raw_output, FULL_RESULT_MAX_CHARS, FULL_RESULT_MAX_LINES) {
-                ToolResultAction::ConservativeSummarize
+                ToolResultAction::HighFidelitySummarize
             } else {
                 ToolResultAction::KeepRaw
             }
         }
         ToolResultMode::Auto => match kind {
-            ToolOutputKind::Exact => {
-                if exceeds_limits(raw_output, FULL_RESULT_MAX_CHARS, FULL_RESULT_MAX_LINES) {
-                    ToolResultAction::ConservativeSummarize
-                } else {
-                    ToolResultAction::KeepRaw
-                }
-            }
+            ToolOutputKind::Exact => ToolResultAction::KeepRaw,
             ToolOutputKind::Command | ToolOutputKind::Other => {
-                if exceeds_limits(
-                    raw_output,
-                    AUTO_SUMMARY_THRESHOLD_CHARS,
-                    AUTO_SUMMARY_THRESHOLD_LINES,
-                ) {
-                    ToolResultAction::Summarize
-                } else {
-                    ToolResultAction::KeepRaw
-                }
+                summarize_if_large_enough(raw_output)
             }
-            ToolOutputKind::Mutation | ToolOutputKind::Message => {
-                if exceeds_limits(raw_output, FULL_RESULT_MAX_CHARS, FULL_RESULT_MAX_LINES) {
-                    ToolResultAction::ConservativeSummarize
-                } else {
-                    ToolResultAction::KeepRaw
-                }
-            }
+            ToolOutputKind::Mutation | ToolOutputKind::Message => ToolResultAction::KeepRaw,
         },
+    }
+}
+
+fn summarize_if_large_enough(raw_output: &str) -> ToolResultAction {
+    if raw_output.chars().count() > HIGH_FIDELITY_SUMMARY_THRESHOLD_CHARS {
+        ToolResultAction::HighFidelitySummarize
+    } else {
+        ToolResultAction::KeepRaw
     }
 }
 
@@ -302,6 +277,179 @@ fn tool_summary_focus(tool_name: &str) -> &'static str {
     }
 }
 
+fn parse_dual_tool_summary(output: String) -> (String, String) {
+    let parsed = (
+        extract_tagged_block(&output, "CONTEXT_PAYLOAD"),
+        extract_tagged_block(&output, "DISPLAY_SUMMARY"),
+    );
+
+    match parsed {
+        (Some(context_payload), Some(display_summary))
+            if !context_payload.is_empty() && !display_summary.is_empty() =>
+        {
+            (context_payload, display_summary)
+        }
+        _ => {
+            let fallback = output.trim().to_string();
+            (fallback.clone(), fallback)
+        }
+    }
+}
+
+fn extract_tagged_block(output: &str, tag: &str) -> Option<String> {
+    let start_tag = format!("<{tag}>");
+    let end_tag = format!("</{tag}>");
+    let start = output.find(&start_tag)?;
+    let content_start = start + start_tag.len();
+    let end = output[content_start..].find(&end_tag)?;
+    let content = &output[content_start..content_start + end];
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn build_raw_tool_artifact(tool_name: &str, raw_output: &str) -> ToolArtifactDraft {
+    ToolArtifactDraft {
+        kind: "tool_raw_output".to_string(),
+        title: format!("{tool_name} 原始结果"),
+        preview: build_artifact_preview(raw_output),
+        content: raw_output.to_string(),
+        char_count: raw_output.chars().count(),
+        line_count: raw_output.lines().count().max(1),
+    }
+}
+
+fn build_artifact_preview(raw_output: &str) -> String {
+    let preview = raw_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" / ");
+
+    if preview.is_empty() {
+        "原始结果为空白或仅包含空行".to_string()
+    } else if preview.chars().count() > 160 {
+        let shortened = preview.chars().take(160).collect::<String>();
+        format!("{shortened}...")
+    } else {
+        preview
+    }
+}
+
+fn should_keep_raw_for_exactness(tool_name: &str, kind: ToolOutputKind, raw_output: &str) -> bool {
+    matches!(kind, ToolOutputKind::Exact)
+        || tool_name == "message"
+        || looks_like_code_or_precise_retrieval(raw_output)
+}
+
+fn looks_like_code_or_precise_retrieval(raw_output: &str) -> bool {
+    if raw_output.contains("```") {
+        return true;
+    }
+
+    let lines = raw_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(40)
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return false;
+    }
+
+    let numbered_read_lines = lines
+        .iter()
+        .filter(|line| {
+            line.split_once('|')
+                .and_then(|(prefix, _)| prefix.parse::<usize>().ok())
+                .is_some()
+        })
+        .count();
+    if numbered_read_lines >= 3 {
+        return true;
+    }
+
+    let code_like_lines = lines
+        .iter()
+        .filter(|line| {
+            line.starts_with("fn ")
+                || line.starts_with("pub ")
+                || line.starts_with("impl ")
+                || line.starts_with("struct ")
+                || line.starts_with("enum ")
+                || line.starts_with("class ")
+                || line.starts_with("def ")
+                || line.starts_with("function ")
+                || line.starts_with("import ")
+                || line.starts_with("export ")
+                || line.starts_with("const ")
+                || line.starts_with("let ")
+                || line.starts_with("var ")
+                || line.starts_with("#include")
+                || line.ends_with('{')
+                || line.ends_with("};")
+                || line.contains("=>")
+                || line.contains("::")
+                || line.contains("</")
+        })
+        .count();
+
+    code_like_lines >= 3 && code_like_lines * 2 >= lines.len().min(10)
+}
+
+fn normalize_tool_output(raw_output: &str) -> String {
+    raw_output
+        .split('\n')
+        .map(normalize_tool_output_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn normalize_tool_output_line(line: &str) -> String {
+    if line.trim().is_empty() {
+        return String::new();
+    }
+
+    let indent_len = line
+        .char_indices()
+        .find(|(_, ch)| *ch != ' ' && *ch != '\t')
+        .map(|(index, _)| index)
+        .unwrap_or(line.len());
+    let (indent, rest) = line.split_at(indent_len);
+    let mut normalized = String::with_capacity(line.len());
+    normalized.push_str(indent);
+
+    let mut space_run = 0usize;
+    for ch in rest.chars() {
+        if ch == ' ' {
+            space_run += 1;
+            if space_run == 1 {
+                normalized.push(ch);
+            }
+            continue;
+        }
+
+        if space_run > 2 {
+            normalized.pop();
+            normalized.push(' ');
+        }
+        space_run = 0;
+        normalized.push(ch);
+    }
+
+    if space_run > 2 {
+        normalized.pop();
+        normalized.push(' ');
+    }
+
+    normalized.trim_end_matches(' ').to_string()
+}
+
 fn exceeds_limits(raw_output: &str, max_chars: usize, max_lines: usize) -> bool {
     raw_output.chars().count() > max_chars || raw_output.lines().count() > max_lines
 }
@@ -310,7 +458,10 @@ fn exceeds_limits(raw_output: &str, max_chars: usize, max_lines: usize) -> bool 
 mod tests {
     use serde_json::json;
 
-    use super::{build_ollama_install_message, decide_tool_result_action, ToolResultAction};
+    use super::{
+        build_artifact_preview, build_ollama_install_message, decide_tool_result_action,
+        extract_tagged_block, normalize_tool_output, parse_dual_tool_summary, ToolResultAction,
+    };
 
     #[test]
     fn exact_tools_keep_medium_sized_raw_output_by_default() {
@@ -319,9 +470,9 @@ mod tests {
     }
 
     #[test]
-    fn exec_auto_mode_summarizes_medium_output() {
+    fn exec_auto_mode_uses_high_fidelity_summary_for_large_output() {
         let action = decide_tool_result_action("exec", &json!({}), &"a".repeat(2_000));
-        assert_eq!(action, ToolResultAction::Summarize);
+        assert_eq!(action, ToolResultAction::HighFidelitySummarize);
     }
 
     #[test]
@@ -335,23 +486,66 @@ mod tests {
     }
 
     #[test]
-    fn explicit_summary_mode_requests_summary() {
+    fn explicit_summary_mode_requests_high_fidelity_summary() {
         let action = decide_tool_result_action(
-            "read_file",
+            "exec",
             &json!({ "result_mode": "summary" }),
-            &"a".repeat(500),
+            &"a".repeat(1_500),
         );
-        assert_eq!(action, ToolResultAction::Summarize);
+        assert_eq!(action, ToolResultAction::HighFidelitySummarize);
     }
 
     #[test]
-    fn full_mode_falls_back_to_conservative_summary_for_oversized_output() {
+    fn short_summary_mode_still_keeps_raw() {
+        let action = decide_tool_result_action("exec", &json!({ "result_mode": "summary" }), "ok");
+        assert_eq!(action, ToolResultAction::KeepRaw);
+    }
+
+    #[test]
+    fn full_mode_falls_back_to_high_fidelity_summary_for_oversized_output() {
         let action = decide_tool_result_action(
-            "read_file",
+            "exec",
             &json!({ "result_mode": "full" }),
             &"a".repeat(20_000),
         );
-        assert_eq!(action, ToolResultAction::ConservativeSummarize);
+        assert_eq!(action, ToolResultAction::HighFidelitySummarize);
+    }
+
+    #[test]
+    fn code_like_exec_output_keeps_raw() {
+        let action = decide_tool_result_action(
+            "exec",
+            &json!({}),
+            "fn main() {\n  let value = 1;\n  println!(\"{}\", value);\n}\n",
+        );
+        assert_eq!(action, ToolResultAction::KeepRaw);
+    }
+
+    #[test]
+    fn normalize_tool_output_collapses_blank_line_spaces_and_long_space_runs() {
+        let normalized = normalize_tool_output("alpha   beta\n   \n  gamma    delta  ");
+        assert_eq!(normalized, "alpha beta\n\n  gamma delta");
+    }
+
+    #[test]
+    fn parse_dual_tool_summary_prefers_tagged_sections() {
+        let parsed = parse_dual_tool_summary(
+            "<CONTEXT_PAYLOAD>\nctx\n</CONTEXT_PAYLOAD>\n<DISPLAY_SUMMARY>\nui\n</DISPLAY_SUMMARY>"
+                .to_string(),
+        );
+        assert_eq!(parsed, ("ctx".to_string(), "ui".to_string()));
+    }
+
+    #[test]
+    fn extract_tagged_block_trims_internal_padding() {
+        let block = extract_tagged_block("<A>\n  value  \n</A>", "A");
+        assert_eq!(block, Some("value".to_string()));
+    }
+
+    #[test]
+    fn build_artifact_preview_uses_first_non_empty_lines() {
+        let preview = build_artifact_preview("\nalpha\nbeta\n\ngamma\ndelta");
+        assert_eq!(preview, "alpha / beta / gamma");
     }
 
     #[test]

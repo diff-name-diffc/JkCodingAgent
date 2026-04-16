@@ -514,7 +514,7 @@ fn with_result_mode_parameter(mut schema: Value, default_mode: &str, guidance: &
         json!({
             "type": "string",
             "description": format!(
-                "控制本次工具结果写回主调度上下文的方式：auto（按工具类型自动判断）、full（尽量保留完整结果，若过长则做保守压缩）、summary（返回摘要以减少上下文占用）。推荐默认值：{default_mode}。{guidance}"
+                "控制本次工具结果写回主调度上下文的方式：auto（按工具类型自动判断）、full（尽量保留完整结果，若过长则做保守压缩）、summary（只压缩写回主调度上下文的内容，前端展示文案与详细结果引用会单独保留）。推荐默认值：{default_mode}。{guidance}"
             ),
             "enum": ["auto", "full", "summary"],
             "default": default_mode

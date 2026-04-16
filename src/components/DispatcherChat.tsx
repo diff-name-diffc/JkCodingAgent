@@ -105,9 +105,11 @@ const UserMessageBubble = memo(function UserMessageBubble({
 const AssistantTurnBubble = memo(function AssistantTurnBubble({
   responseText,
   tools,
+  workspaceId,
 }: {
   responseText: string;
   tools: ToolActivityItem[];
+  workspaceId: string;
 }) {
   const trimmedResponse = responseText.trim();
   if (!trimmedResponse && tools.length === 0) {
@@ -122,7 +124,7 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
       <div style={styles.assistantTurnStack}>
         {tools.length > 0 && (
           <div style={styles.assistantTurnSection}>
-            <ToolActivityBubble tools={tools} />
+            <ToolActivityBubble tools={tools} workspaceId={workspaceId} />
           </div>
         )}
         {trimmedResponse && (
@@ -569,11 +571,16 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 key={item.id}
                 responseText={item.turn.responseParts.join("\n\n")}
                 tools={item.turn.tools}
+                workspaceId={sessionId}
               />
             ),
           )}
           {(streamingContent.trim() || liveToolCalls.length > 0) && (
-            <AssistantTurnBubble responseText={streamingContent} tools={liveToolCalls} />
+            <AssistantTurnBubble
+              responseText={streamingContent}
+              tools={liveToolCalls}
+              workspaceId={sessionId}
+            />
           )}
           <div ref={messagesEndRef} />
         </div>

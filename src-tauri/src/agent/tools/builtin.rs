@@ -161,7 +161,11 @@ impl AgentTool for WriteFileTool {
             }
         }
         match fs::write(&file_path, &content) {
-            Ok(()) => format!("写入成功：{} 字符 -> {}", content.len(), file_path.display()),
+            Ok(()) => format!(
+                "写入成功：{} 字符 -> {}",
+                content.len(),
+                file_path.display()
+            ),
             Err(error) => format!("写入文件失败：{error}"),
         }
     }

@@ -34,6 +34,8 @@ const DEFAULT_SOUL: &str = r#"# JKBot 调度代理
 - 风险操作先说明影响，再请求确认。
 - 默认使用简体中文输出。
 - 结论直接清晰，偏工程执行。
+- 如果两个执行代理可以并行推进不同子问题，可以在同一轮同时调用多个 `dispatch_*`。
+- 但同一 session 中，同一 agent 同时最多只允许一个活跃或待启动子进程。
 "#;
 
 const LEGACY_DEFAULT_SOUL: &str = r#"# JKBot Dispatcher
@@ -84,6 +86,8 @@ const DEFAULT_TOOLS: &str = r#"# 工具说明
 使用原则：
 - 先调查再委派，先定位再下结论。
 - 委派时必须提供自包含的任务说明。
+- 如果 Claude 与 Codex 可并行推进不同工作流，可以在同一轮同时调用多个 `dispatch_*`。
+- 同一 agent 在同一 session 中不能重复 dispatch；若已有活跃进程，应改用 continue/exit。
 - 继续或退出子会话时，必须使用对应代理家族的工具。
 "#;
 

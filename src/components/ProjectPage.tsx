@@ -35,6 +35,13 @@ function getSubProcessRouteKey(sessionId: string, agent: AgentType): string {
   return `${sessionId}:${agent}`;
 }
 
+function createSubProcessId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `sp_${crypto.randomUUID()}`;
+  }
+  return `sp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export function ProjectPage({
   project,
   visible = true,
@@ -175,7 +182,7 @@ export function ProjectPage({
       permissionMode: string,
       sessionId: string,
     ) => {
-      const spId = `sp_${Date.now()}`;
+      const spId = createSubProcessId();
       const sp: SubProcess = {
         id: spId,
         dispatchId,
@@ -284,11 +291,7 @@ export function ProjectPage({
         interactiveSubProcessRef.current.delete(routeKey);
       }
 
-      dispatcherChatRef.current?.continueWithResult(
-        resultText,
-        dispatchState,
-        pending.sessionId,
-      );
+      dispatcherChatRef.current?.continueWithResult(resultText, dispatchState, pending.sessionId);
     });
     return () => {
       unsub.then((fn) => fn());

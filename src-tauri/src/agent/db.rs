@@ -504,13 +504,18 @@ fn should_keep_llm_message(message: &ChatMessage) -> bool {
 }
 
 fn is_process_only_assistant_message(content: &str) -> bool {
+    let trimmed = content.trim();
     matches!(
-        content.trim(),
-        "🔄 子任务当前轮次已完成，执行结果已同步供后续分析。"
+        trimmed,
+        "🔄 子任务当前轮次已完成"
+            | "✅ 子任务进程已结束"
+            | "⚠️ 子任务进程已失败退出"
+            | "⏹️ 子任务进程已取消"
+            | "🔄 子任务当前轮次已完成，执行结果已同步供后续分析。"
             | "✅ 子任务进程已结束，执行结果已同步供后续分析。"
             | "⚠️ 子任务进程已失败退出，执行结果已同步供后续分析。"
             | "⏹️ 子任务进程已取消，执行结果已同步供后续分析。"
-    ) || content.starts_with("📋 已自动批准 ")
+    ) || trimmed.starts_with("📋 已自动批准 ")
         || content.starts_with("📋 已提交 ")
         || content.starts_with("📨 已向 ")
         || content.starts_with("⏹️ 已向 ")

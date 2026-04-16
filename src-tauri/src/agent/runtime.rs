@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -157,6 +157,164 @@ struct RegisteredSubprocess {
 #[derive(Debug, Clone)]
 struct SystemPromptSnapshot {
     rendered: String,
+}
+
+#[derive(Clone, Debug)]
+enum PlannedSubprocessState {
+    Active {
+        dispatch_id: String,
+        phase: RegisteredSubprocessPhase,
+    },
+    PendingDispatch {
+        dispatch_id: String,
+    },
+}
+
+#[derive(Debug)]
+struct ProtocolBatchState {
+    by_agent: HashMap<String, PlannedSubprocessState>,
+}
+
+#[derive(Clone, Debug)]
+enum ProtocolToolAction {
+    Dispatch {
+        dispatch_id: String,
+        agent: DispatchAgent,
+        description: String,
+        permission_mode: String,
+    },
+    Continue {
+        dispatch_id: String,
+        agent: DispatchAgent,
+        text: String,
+    },
+    Exit {
+        dispatch_id: String,
+        agent: DispatchAgent,
+        reason: String,
+    },
+}
+
+impl ProtocolBatchState {
+    fn new(subprocesses: Vec<RegisteredSubprocess>) -> Self {
+        let by_agent = subprocesses
+            .into_iter()
+            .map(|item| {
+                (
+                    item.agent,
+                    PlannedSubprocessState::Active {
+                        dispatch_id: item.dispatch_id,
+                        phase: item.phase,
+                    },
+                )
+            })
+            .collect();
+
+        Self { by_agent }
+    }
+
+    fn dispatch_id_for_agent(&self, agent: &str) -> Option<&str> {
+        match self.by_agent.get(agent) {
+            Some(PlannedSubprocessState::Active { dispatch_id, .. })
+            | Some(PlannedSubprocessState::PendingDispatch { dispatch_id }) => Some(dispatch_id),
+            None => None,
+        }
+    }
+
+    fn ensure_dispatch_allowed(
+        &self,
+        agent: &str,
+        agent_label: &str,
+    ) -> std::result::Result<(), String> {
+        match self.by_agent.get(agent) {
+            Some(PlannedSubprocessState::Active { dispatch_id, phase }) => Err(format!(
+                "错误：当前会话已有一个活跃的 {agent_label} 子进程（dispatch_id={}, phase={}）。禁止再次调用 dispatch_{}；请改用 continue_{}_session、exit_{}_session，或直接回复用户。",
+                dispatch_id,
+                subprocess_phase_label(*phase),
+                agent,
+                agent,
+                agent
+            )),
+            Some(PlannedSubprocessState::PendingDispatch { dispatch_id }) => Err(format!(
+                "错误：当前轮已为 {agent_label} 规划一个待启动子任务（dispatch_id={}）。禁止重复调用 dispatch_{}；请等待该子任务启动后再继续协调。",
+                dispatch_id, agent
+            )),
+            None => Ok(()),
+        }
+    }
+
+    fn record_dispatch(&mut self, agent: &str, dispatch_id: &str) {
+        self.by_agent.insert(
+            agent.to_string(),
+            PlannedSubprocessState::PendingDispatch {
+                dispatch_id: dispatch_id.to_string(),
+            },
+        );
+    }
+
+    fn ensure_continue_allowed(
+        &self,
+        agent: &str,
+        agent_label: &str,
+    ) -> std::result::Result<(), String> {
+        match self.by_agent.get(agent) {
+            Some(PlannedSubprocessState::Active {
+                phase:
+                    RegisteredSubprocessPhase::Running | RegisteredSubprocessPhase::RoundCompleted,
+                ..
+            }) => Ok(()),
+            Some(PlannedSubprocessState::Active {
+                phase: RegisteredSubprocessPhase::ExitRequested,
+                ..
+            }) => Err(format!(
+                "错误：{agent_label} 子进程已收到退出请求，当前只能等待其结束，不能再继续注入指令。"
+            )),
+            Some(PlannedSubprocessState::PendingDispatch { .. }) => Err(format!(
+                "错误：{agent_label} 子任务已在当前轮提出但尚未真正启动，当前不能继续注入指令。"
+            )),
+            None => Err(format!(
+                "错误：当前会话没有可继续的 {agent_label} 活跃子进程。"
+            )),
+        }
+    }
+
+    fn record_continue(&mut self, agent: &str) {
+        if let Some(PlannedSubprocessState::Active { phase, .. }) = self.by_agent.get_mut(agent) {
+            *phase = RegisteredSubprocessPhase::Running;
+        }
+    }
+
+    fn ensure_exit_allowed(
+        &self,
+        agent: &str,
+        agent_label: &str,
+    ) -> std::result::Result<(), String> {
+        match self.by_agent.get(agent) {
+            Some(PlannedSubprocessState::Active {
+                phase:
+                    RegisteredSubprocessPhase::Running | RegisteredSubprocessPhase::RoundCompleted,
+                ..
+            }) => Ok(()),
+            Some(PlannedSubprocessState::Active {
+                phase: RegisteredSubprocessPhase::ExitRequested,
+                ..
+            }) => Err(format!(
+                "错误：{agent_label} 子进程已经收到退出命令，请等待进程结束，不要重复 exit。"
+            )),
+            Some(PlannedSubprocessState::PendingDispatch { .. }) => Err(format!(
+                "错误：{agent_label} 子任务尚未真正启动，当前不能发送退出命令。"
+            )),
+            None => Err(format!(
+                "错误：当前会话没有可退出的 {agent_label} 活跃子进程。"
+            )),
+        }
+    }
+
+    fn record_exit(&mut self, agent: &str) {
+        if let Some(PlannedSubprocessState::Active { phase, .. }) = self.by_agent.get_mut(agent) {
+            *phase = RegisteredSubprocessPhase::ExitRequested;
+        }
+    }
 }
 
 impl DispatcherAgent {
@@ -411,7 +569,10 @@ impl DispatcherAgent {
                     ("消息数".to_string(), messages.len().to_string()),
                     ("工具数".to_string(), tool_definitions.len().to_string()),
                 ],
-                vec![DebugSection::new("实际请求", render_json(&request_snapshot))],
+                vec![DebugSection::new(
+                    "实际请求",
+                    render_json(&request_snapshot),
+                )],
             );
 
             let stream_msg_id = uuid::Uuid::new_v4().to_string();
@@ -448,7 +609,10 @@ impl DispatcherAgent {
                         response.tool_calls.len().to_string(),
                     ),
                 ],
-                vec![DebugSection::new("实际响应", render_json(&response_snapshot))],
+                vec![DebugSection::new(
+                    "实际响应",
+                    render_json(&response_snapshot),
+                )],
             );
 
             if response.tool_calls.is_empty() {
@@ -486,6 +650,11 @@ impl DispatcherAgent {
                 Some(&tool_calls_payload),
             )?;
 
+            let mut protocol_state =
+                ProtocolBatchState::new(self.active_subprocesses_for_workspace(workspace_id));
+            let mut protocol_actions = Vec::new();
+            let mut final_message: Option<String> = None;
+
             for tool_call in response.tool_calls {
                 let tool_arguments = serde_json::to_string_pretty(&tool_call.arguments)
                     .unwrap_or_else(|_| "{}".to_string());
@@ -504,205 +673,19 @@ impl DispatcherAgent {
                     .execute(&tool_call.name, &tool_call.arguments, &tool_context)
                     .await;
 
-                if let Some(agent) = DispatchAgent::from_dispatch_tool_name(&tool_call.name) {
-                    if let Err(error) = self.ensure_dispatch_allowed(
-                        workspace_id,
-                        agent.slug(),
-                        agent.display_name(),
-                    ) {
-                        self.emit_tool_error(db, workspace_id, on_event, &tool_call, &error)?;
-                        continue;
-                    }
-                    if is_dispatch_instruction(&result, agent) {
-                        if let Some((description, permission_mode)) =
-                            parse_dispatch_instruction(&result, agent)
-                        {
-                            let dispatch_id = uuid::Uuid::new_v4().to_string();
-                            let agent_label = agent.display_name();
-
-                            emit(
-                                on_event,
-                                AgentEvent::DispatchProposed {
-                                    dispatch_id: dispatch_id.clone(),
-                                    agent: agent.slug().to_string(),
-                                    description: description.clone(),
-                                    permission_mode: permission_mode.clone(),
-                                },
-                            );
-
-                            let dispatch_result = format!(
-                                "[{} 子任务已提交审查] dispatch_id={}, 任务: {}",
-                                agent_label,
-                                dispatch_id,
-                                truncate_for_display(&description, 200, "...")
-                            );
-
-                            emit(
-                                on_event,
-                                AgentEvent::ToolFinished {
-                                    tool_call_id: Some(tool_call.id.clone()),
-                                    name: tool_call.name.clone(),
-                                    result: dispatch_result.clone(),
-                                },
-                            );
-
-                            db.add_visible_message_with_tools(
-                                workspace_id,
-                                "tool",
-                                &dispatch_result,
-                                Some(&tool_call.id),
-                                Some(&tool_call.name),
-                                None,
-                            )?;
-
-                            let waiting_content = if self.auto_approve_dispatch() {
-                                format!(
-                                    "📋 已自动批准 {} 子任务，正在执行...\n\n**任务描述：**\n{}",
-                                    agent_label, description
-                                )
-                            } else {
-                                format!(
-                                    "📋 已提交 {} 子任务审查，等待执行...\n\n**任务描述：**\n{}",
-                                    agent_label, description
-                                )
-                            };
-                            let waiting_msg = db.add_visible_message(
-                                workspace_id,
-                                "assistant",
-                                &waiting_content,
-                            )?;
-                            emit(
-                                on_event,
-                                AgentEvent::AssistantMessage {
-                                    message: waiting_msg.clone(),
-                                },
-                            );
-                            return Ok(waiting_msg);
-                        }
-                    }
-                }
-
-                if let Some(agent) = DispatchAgent::from_continue_tool_name(&tool_call.name) {
-                    if let Err(error) = self.ensure_continue_allowed(
-                        workspace_id,
-                        agent.slug(),
-                        agent.display_name(),
-                    ) {
-                        self.emit_tool_error(db, workspace_id, on_event, &tool_call, &error)?;
-                        continue;
-                    }
-                    if is_continue_instruction(&result, agent) {
-                        if let Some(text) = parse_continue_instruction(&result, agent) {
-                            let agent_label = agent.display_name();
-                            emit(
-                                on_event,
-                                AgentEvent::DispatchContinue {
-                                    dispatch_id: "active".to_string(),
-                                    agent: agent.slug().to_string(),
-                                    text: text.clone(),
-                                },
-                            );
-
-                            let continue_result = format!(
-                                "[已发送后续指令到 {} 会话] 指令: {}",
-                                agent_label,
-                                truncate_for_display(&text, 200, "...")
-                            );
-
-                            emit(
-                                on_event,
-                                AgentEvent::ToolFinished {
-                                    tool_call_id: Some(tool_call.id.clone()),
-                                    name: tool_call.name.clone(),
-                                    result: continue_result.clone(),
-                                },
-                            );
-
-                            db.add_visible_message_with_tools(
-                                workspace_id,
-                                "tool",
-                                &continue_result,
-                                Some(&tool_call.id),
-                                Some(&tool_call.name),
-                                None,
-                            )?;
-
-                            let waiting_msg = db.add_visible_message(
-                                workspace_id,
-                                "assistant",
-                                &format!(
-                                    "📨 已向 {} 发送后续指令，等待执行...\n\n**指令内容：**\n{}",
-                                    agent_label, text
-                                ),
-                            )?;
-                            emit(
-                                on_event,
-                                AgentEvent::AssistantMessage {
-                                    message: waiting_msg.clone(),
-                                },
-                            );
-                            return Ok(waiting_msg);
-                        }
-                    }
-                }
-
-                if let Some(agent) = DispatchAgent::from_exit_tool_name(&tool_call.name) {
-                    if let Err(error) =
-                        self.ensure_exit_allowed(workspace_id, agent.slug(), agent.display_name())
-                    {
-                        self.emit_tool_error(db, workspace_id, on_event, &tool_call, &error)?;
-                        continue;
-                    }
-                    if is_exit_instruction(&result, agent) {
-                        if let Some(reason) = parse_exit_instruction(&result, agent) {
-                            let agent_label = agent.display_name();
+                match self.plan_protocol_action(&tool_call, &result, &mut protocol_state) {
+                    Ok(Some(action)) => {
+                        if let ProtocolToolAction::Exit { agent, .. } = &action {
                             self.mark_agent_exit_requested(workspace_id, agent.slug());
-                            emit(
-                                on_event,
-                                AgentEvent::DispatchExit {
-                                    dispatch_id: "active".to_string(),
-                                    agent: agent.slug().to_string(),
-                                    reason: reason.clone(),
-                                },
-                            );
-
-                            let exit_result =
-                                format!("[已发送退出命令到 {} 会话] 原因: {}", agent_label, reason);
-
-                            emit(
-                                on_event,
-                                AgentEvent::ToolFinished {
-                                    tool_call_id: Some(tool_call.id.clone()),
-                                    name: tool_call.name.clone(),
-                                    result: exit_result.clone(),
-                                },
-                            );
-
-                            db.add_visible_message_with_tools(
-                                workspace_id,
-                                "tool",
-                                &exit_result,
-                                Some(&tool_call.id),
-                                Some(&tool_call.name),
-                                None,
-                            )?;
-
-                            let waiting_msg = db.add_visible_message(
-                                workspace_id,
-                                "assistant",
-                                &format!(
-                                    "⏹️ 已向 {} 发送退出命令，等待进程结束...\n\n**退出原因：**\n{}",
-                                    agent_label, reason
-                                ),
-                            )?;
-                            emit(
-                                on_event,
-                                AgentEvent::AssistantMessage {
-                                    message: waiting_msg.clone(),
-                                },
-                            );
-                            return Ok(waiting_msg);
                         }
+                        self.emit_protocol_action(db, workspace_id, on_event, &tool_call, &action)?;
+                        protocol_actions.push(action);
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.emit_tool_error(db, workspace_id, on_event, &tool_call, &error)?;
+                        continue;
                     }
                 }
 
@@ -750,18 +733,38 @@ impl DispatcherAgent {
                 )?;
 
                 if tool_call.name == "message" {
-                    if let Some(final_message) = extract_message_content(&tool_call.arguments) {
-                        let reply =
-                            db.add_visible_message(workspace_id, "assistant", &final_message)?;
-                        emit(
-                            on_event,
-                            AgentEvent::AssistantMessage {
-                                message: reply.clone(),
-                            },
-                        );
-                        return Ok(reply);
+                    if let Some(content) = extract_message_content(&tool_call.arguments) {
+                        final_message = Some(content);
                     }
                 }
+            }
+
+            if !protocol_actions.is_empty() {
+                let waiting_content = build_protocol_waiting_message(
+                    &protocol_actions,
+                    self.auto_approve_dispatch(),
+                    final_message.as_deref(),
+                );
+                let waiting_msg =
+                    db.add_visible_message(workspace_id, "assistant", &waiting_content)?;
+                emit(
+                    on_event,
+                    AgentEvent::AssistantMessage {
+                        message: waiting_msg.clone(),
+                    },
+                );
+                return Ok(waiting_msg);
+            }
+
+            if let Some(final_message) = final_message {
+                let reply = db.add_visible_message(workspace_id, "assistant", &final_message)?;
+                emit(
+                    on_event,
+                    AgentEvent::AssistantMessage {
+                        message: reply.clone(),
+                    },
+                );
+                return Ok(reply);
             }
         }
 
@@ -815,17 +818,12 @@ impl DispatcherAgent {
         ];
 
         for subprocess in &subprocesses {
-            let phase = match subprocess.phase {
-                RegisteredSubprocessPhase::Running => "running",
-                RegisteredSubprocessPhase::RoundCompleted => "round_completed",
-                RegisteredSubprocessPhase::ExitRequested => "exit_requested",
-            };
             lines.push(format!(
                 "- agent={} dispatch_id={} task_id={} phase={} task={}",
                 subprocess.agent,
                 subprocess.dispatch_id,
                 subprocess.task_id,
-                phase,
+                subprocess_phase_label(subprocess.phase),
                 truncate_for_display(&subprocess.description, 120, "...")
             ));
         }
@@ -922,72 +920,160 @@ impl DispatcherAgent {
         }
     }
 
-    fn ensure_dispatch_allowed(
+    fn plan_protocol_action(
         &self,
-        workspace_id: &str,
-        agent: &str,
-        agent_label: &str,
-    ) -> std::result::Result<(), String> {
-        let existing = self
-            .active_subprocesses_for_workspace(workspace_id)
-            .into_iter()
-            .find(|item| item.agent == agent);
-        if let Some(item) = existing {
-            let phase = match item.phase {
-                RegisteredSubprocessPhase::Running => "running",
-                RegisteredSubprocessPhase::RoundCompleted => "round_completed",
-                RegisteredSubprocessPhase::ExitRequested => "exit_requested",
-            };
-            return Err(format!(
-                "错误：当前会话已有一个活跃的 {agent_label} 子进程（dispatch_id={}, phase={}）。禁止再次调用 dispatch_{}；请改用 continue_{}_session、exit_{}_session，或直接回复用户。",
-                item.dispatch_id, phase, agent, agent, agent
-            ));
+        tool_call: &super::llm::RequestedToolCall,
+        result: &str,
+        protocol_state: &mut ProtocolBatchState,
+    ) -> std::result::Result<Option<ProtocolToolAction>, String> {
+        if let Some(agent) = DispatchAgent::from_dispatch_tool_name(&tool_call.name) {
+            protocol_state.ensure_dispatch_allowed(agent.slug(), agent.display_name())?;
+            if let Some((description, permission_mode)) = parse_dispatch_instruction(result, agent)
+                .filter(|_| is_dispatch_instruction(result, agent))
+            {
+                let dispatch_id = uuid::Uuid::new_v4().to_string();
+                protocol_state.record_dispatch(agent.slug(), &dispatch_id);
+                return Ok(Some(ProtocolToolAction::Dispatch {
+                    dispatch_id,
+                    agent,
+                    description,
+                    permission_mode,
+                }));
+            }
+            return Ok(None);
         }
+
+        if let Some(agent) = DispatchAgent::from_continue_tool_name(&tool_call.name) {
+            protocol_state.ensure_continue_allowed(agent.slug(), agent.display_name())?;
+            if let Some(text) = parse_continue_instruction(result, agent)
+                .filter(|_| is_continue_instruction(result, agent))
+            {
+                let dispatch_id = protocol_state
+                    .dispatch_id_for_agent(agent.slug())
+                    .unwrap_or("active")
+                    .to_string();
+                protocol_state.record_continue(agent.slug());
+                return Ok(Some(ProtocolToolAction::Continue {
+                    dispatch_id,
+                    agent,
+                    text,
+                }));
+            }
+            return Ok(None);
+        }
+
+        if let Some(agent) = DispatchAgent::from_exit_tool_name(&tool_call.name) {
+            protocol_state.ensure_exit_allowed(agent.slug(), agent.display_name())?;
+            if let Some(reason) =
+                parse_exit_instruction(result, agent).filter(|_| is_exit_instruction(result, agent))
+            {
+                let dispatch_id = protocol_state
+                    .dispatch_id_for_agent(agent.slug())
+                    .unwrap_or("active")
+                    .to_string();
+                protocol_state.record_exit(agent.slug());
+                return Ok(Some(ProtocolToolAction::Exit {
+                    dispatch_id,
+                    agent,
+                    reason,
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn emit_protocol_action(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        tool_call: &super::llm::RequestedToolCall,
+        action: &ProtocolToolAction,
+    ) -> Result<()> {
+        let result = match action {
+            ProtocolToolAction::Dispatch {
+                dispatch_id,
+                agent,
+                description,
+                permission_mode,
+            } => {
+                emit(
+                    on_event,
+                    AgentEvent::DispatchProposed {
+                        dispatch_id: dispatch_id.clone(),
+                        agent: agent.slug().to_string(),
+                        description: description.clone(),
+                        permission_mode: permission_mode.clone(),
+                    },
+                );
+
+                format!(
+                    "[{} 子任务已提交审查] dispatch_id={}, 任务: {}",
+                    agent.display_name(),
+                    dispatch_id,
+                    truncate_for_display(description, 200, "...")
+                )
+            }
+            ProtocolToolAction::Continue {
+                dispatch_id,
+                agent,
+                text,
+            } => {
+                emit(
+                    on_event,
+                    AgentEvent::DispatchContinue {
+                        dispatch_id: dispatch_id.clone(),
+                        agent: agent.slug().to_string(),
+                        text: text.clone(),
+                    },
+                );
+
+                format!(
+                    "[已发送后续指令到 {} 会话] 指令: {}",
+                    agent.display_name(),
+                    truncate_for_display(text, 200, "...")
+                )
+            }
+            ProtocolToolAction::Exit {
+                dispatch_id,
+                agent,
+                reason,
+            } => {
+                emit(
+                    on_event,
+                    AgentEvent::DispatchExit {
+                        dispatch_id: dispatch_id.clone(),
+                        agent: agent.slug().to_string(),
+                        reason: reason.clone(),
+                    },
+                );
+
+                format!(
+                    "[已发送退出命令到 {} 会话] 原因: {}",
+                    agent.display_name(),
+                    reason
+                )
+            }
+        };
+
+        emit(
+            on_event,
+            AgentEvent::ToolFinished {
+                tool_call_id: Some(tool_call.id.clone()),
+                name: tool_call.name.clone(),
+                result: result.clone(),
+            },
+        );
+        db.add_visible_message_with_tools(
+            workspace_id,
+            "tool",
+            &result,
+            Some(&tool_call.id),
+            Some(&tool_call.name),
+            None,
+        )?;
         Ok(())
-    }
-
-    fn ensure_continue_allowed(
-        &self,
-        workspace_id: &str,
-        agent: &str,
-        agent_label: &str,
-    ) -> std::result::Result<(), String> {
-        let existing = self
-            .active_subprocesses_for_workspace(workspace_id)
-            .into_iter()
-            .find(|item| item.agent == agent);
-        match existing.map(|item| item.phase) {
-            Some(RegisteredSubprocessPhase::Running)
-            | Some(RegisteredSubprocessPhase::RoundCompleted) => Ok(()),
-            Some(RegisteredSubprocessPhase::ExitRequested) => Err(format!(
-                "错误：{agent_label} 子进程已收到退出请求，当前只能等待其结束，不能再继续注入指令。"
-            )),
-            None => Err(format!(
-                "错误：当前会话没有可继续的 {agent_label} 活跃子进程。"
-            )),
-        }
-    }
-
-    fn ensure_exit_allowed(
-        &self,
-        workspace_id: &str,
-        agent: &str,
-        agent_label: &str,
-    ) -> std::result::Result<(), String> {
-        let existing = self
-            .active_subprocesses_for_workspace(workspace_id)
-            .into_iter()
-            .find(|item| item.agent == agent);
-        match existing.map(|item| item.phase) {
-            Some(RegisteredSubprocessPhase::Running)
-            | Some(RegisteredSubprocessPhase::RoundCompleted) => Ok(()),
-            Some(RegisteredSubprocessPhase::ExitRequested) => Err(format!(
-                "错误：{agent_label} 子进程已经收到退出命令，请等待进程结束，不要重复 exit。"
-            )),
-            None => Err(format!(
-                "错误：当前会话没有可退出的 {agent_label} 活跃子进程。"
-            )),
-        }
     }
 
     fn emit_tool_error(
@@ -1048,8 +1134,101 @@ fn extract_message_content(arguments: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn build_protocol_waiting_message(
+    actions: &[ProtocolToolAction],
+    auto_approve_dispatch: bool,
+    final_message: Option<&str>,
+) -> String {
+    let mut sections = Vec::new();
+
+    let dispatch_lines = actions
+        .iter()
+        .filter_map(|action| match action {
+            ProtocolToolAction::Dispatch {
+                agent,
+                description,
+                dispatch_id,
+                ..
+            } => Some(format!(
+                "- [{}] dispatch_id={} {}",
+                agent.display_name(),
+                dispatch_id,
+                truncate_for_display(description, 200, "...")
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !dispatch_lines.is_empty() {
+        let header = if auto_approve_dispatch {
+            format!(
+                "📋 已自动批准 {} 个子任务，正在执行：",
+                dispatch_lines.len()
+            )
+        } else {
+            format!(
+                "📋 已提交 {} 个子任务审查，等待执行：",
+                dispatch_lines.len()
+            )
+        };
+        sections.push(format!("{}\n{}", header, dispatch_lines.join("\n")));
+    }
+
+    let continue_lines = actions
+        .iter()
+        .filter_map(|action| match action {
+            ProtocolToolAction::Continue { agent, text, .. } => Some(format!(
+                "- [{}] {}",
+                agent.display_name(),
+                truncate_for_display(text, 200, "...")
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !continue_lines.is_empty() {
+        sections.push(format!(
+            "📨 已发送 {} 条后续指令，等待执行：\n{}",
+            continue_lines.len(),
+            continue_lines.join("\n")
+        ));
+    }
+
+    let exit_lines = actions
+        .iter()
+        .filter_map(|action| match action {
+            ProtocolToolAction::Exit { agent, reason, .. } => {
+                Some(format!("- [{}] {}", agent.display_name(), reason))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !exit_lines.is_empty() {
+        sections.push(format!(
+            "⏹️ 已发送 {} 条退出命令，等待进程结束：\n{}",
+            exit_lines.len(),
+            exit_lines.join("\n")
+        ));
+    }
+
+    if let Some(message) = final_message
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        sections.push(format!("补充说明：\n{}", message));
+    }
+
+    sections.join("\n\n")
+}
+
 fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
     let _ = on_event.send(event);
+}
+
+fn subprocess_phase_label(phase: RegisteredSubprocessPhase) -> &'static str {
+    match phase {
+        RegisteredSubprocessPhase::Running => "running",
+        RegisteredSubprocessPhase::RoundCompleted => "round_completed",
+        RegisteredSubprocessPhase::ExitRequested => "exit_requested",
+    }
 }
 
 fn dispatch_tool_name(agent: &str) -> &'static str {
@@ -1073,5 +1252,80 @@ fn exit_tool_name(agent: &str) -> &'static str {
         "claude" => "exit_claude_session",
         "codex" => "exit_codex_session",
         _ => "exit_claude_session",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_protocol_waiting_message, DispatchAgent, PlannedSubprocessState, ProtocolBatchState,
+        ProtocolToolAction, RegisteredSubprocess, RegisteredSubprocessPhase,
+    };
+
+    #[test]
+    fn protocol_state_allows_parallel_dispatch_for_different_agents() {
+        let mut state = ProtocolBatchState::new(Vec::new());
+        state.record_dispatch("claude", "dispatch-claude");
+        assert!(state.ensure_dispatch_allowed("codex", "Codex").is_ok());
+    }
+
+    #[test]
+    fn protocol_state_blocks_duplicate_dispatch_in_same_batch() {
+        let mut state = ProtocolBatchState::new(Vec::new());
+        state.record_dispatch("claude", "dispatch-claude");
+        let error = state
+            .ensure_dispatch_allowed("claude", "Claude")
+            .expect_err("duplicate dispatch should be rejected");
+        assert!(error.contains("待启动子任务"));
+    }
+
+    #[test]
+    fn protocol_state_updates_existing_phase_on_exit() {
+        let mut state = ProtocolBatchState::new(vec![RegisteredSubprocess {
+            workspace_id: "ws".to_string(),
+            task_id: "task".to_string(),
+            dispatch_id: "dispatch".to_string(),
+            agent: "claude".to_string(),
+            description: "desc".to_string(),
+            phase: RegisteredSubprocessPhase::RoundCompleted,
+        }]);
+        state.record_exit("claude");
+        match state.by_agent.get("claude") {
+            Some(PlannedSubprocessState::Active { phase, .. }) => {
+                assert_eq!(*phase, RegisteredSubprocessPhase::ExitRequested);
+            }
+            _ => panic!("expected active claude subprocess"),
+        }
+    }
+
+    #[test]
+    fn waiting_message_summarizes_multiple_protocol_actions() {
+        let content = build_protocol_waiting_message(
+            &[
+                ProtocolToolAction::Dispatch {
+                    dispatch_id: "dispatch-claude".to_string(),
+                    agent: DispatchAgent::Claude,
+                    description: "实现功能 A".to_string(),
+                    permission_mode: "full_access".to_string(),
+                },
+                ProtocolToolAction::Dispatch {
+                    dispatch_id: "dispatch-codex".to_string(),
+                    agent: DispatchAgent::Codex,
+                    description: "重构模块 B".to_string(),
+                    permission_mode: "full_access".to_string(),
+                },
+                ProtocolToolAction::Exit {
+                    dispatch_id: "dispatch-claude".to_string(),
+                    agent: DispatchAgent::Claude,
+                    reason: "当前轮完成".to_string(),
+                },
+            ],
+            true,
+            Some("主调度补充说明"),
+        );
+
+        assert!(content.contains("已自动批准 2 个子任务"));
+        assert!(content.contains("已发送 1 条退出命令"));
+        assert!(content.contains("主调度补充说明"));
     }
 }

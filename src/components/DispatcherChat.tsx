@@ -157,6 +157,13 @@ interface DispatcherChatProps {
   onOpenSettings: () => void;
 }
 
+interface PendingDispatchApproval {
+  dispatchId: string;
+  agent: AgentType;
+  description: string;
+  permissionMode: string;
+}
+
 export interface DispatcherChatHandle {
   /** Inject dispatch result and continue the agent conversation */
   continueWithResult: (
@@ -185,12 +192,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [isLoading, setIsLoading] = useState(false);
     const [streamingContent, setStreamingContent] = useState("");
     const [liveToolCalls, setLiveToolCalls] = useState<ToolActivityItem[]>([]);
-    const [pendingDispatch, setPendingDispatch] = useState<{
-      dispatchId: string;
-      agent: AgentType;
-      description: string;
-      permissionMode: string;
-    } | null>(null);
+    const [pendingDispatches, setPendingDispatches] = useState<PendingDispatchApproval[]>([]);
     const [autoApprove, setAutoApprove] = useState(false);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -200,6 +202,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     currentSessionIdRef.current = sessionId;
     const activeRunRef = useRef(0);
     const historyLoadRef = useRef(0);
+    const runQueuesRef = useRef<Map<string, Promise<void>>>(new Map());
     const autoApproveRef = useRef(autoApprove);
     autoApproveRef.current = autoApprove;
     const onDispatchApprovedRef = useRef(onDispatchApproved);
@@ -209,6 +212,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const onDispatchExitRef = useRef(onDispatchExit);
     onDispatchExitRef.current = onDispatchExit;
     const displayItems = useMemo(() => buildDispatcherDisplayItems(messages), [messages]);
+    const currentPendingDispatch = pendingDispatches[0] ?? null;
 
     // Load settings (for auto-approve flag)
     useEffect(() => {
@@ -228,7 +232,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       setIsLoading(false);
       setStreamingContent("");
       setLiveToolCalls([]);
-      setPendingDispatch(null);
+      setPendingDispatches([]);
 
       invoke<DispatcherMessage[]>("dispatcher_list_messages", {
         workspaceId: sessionId,
@@ -287,7 +291,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 targetSessionId,
               );
             } else if (isCurrentRun) {
-              setPendingDispatch({ dispatchId, agent, description, permissionMode });
+              setPendingDispatches((prev) => [
+                ...prev,
+                { dispatchId, agent, description, permissionMode },
+              ]);
             }
             break;
           }
@@ -313,35 +320,73 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       return onEvent;
     }, []);
 
+    const enqueueDispatcherRun = useCallback(
+      async (
+        targetSessionId: string,
+        runner: (onEvent: Channel<DispatcherAgentEvent>) => Promise<void>,
+      ) => {
+        const previous = runQueuesRef.current.get(targetSessionId) ?? Promise.resolve();
+        const queued = previous
+          .catch(() => undefined)
+          .then(async () => {
+            const isCurrentSession = currentSessionIdRef.current === targetSessionId;
+            const runId = isCurrentSession ? ++activeRunRef.current : activeRunRef.current;
+
+            if (isCurrentSession) {
+              setIsLoading(true);
+              setStreamingContent("");
+              setLiveToolCalls([]);
+            }
+
+            const onEvent = createEventChannel(targetSessionId, runId);
+
+            try {
+              await runner(onEvent);
+            } finally {
+              if (
+                currentSessionIdRef.current === targetSessionId &&
+                activeRunRef.current === runId
+              ) {
+                setIsLoading(false);
+              }
+            }
+          });
+
+        runQueuesRef.current.set(targetSessionId, queued);
+
+        try {
+          await queued;
+        } finally {
+          if (runQueuesRef.current.get(targetSessionId) === queued) {
+            runQueuesRef.current.delete(targetSessionId);
+          }
+        }
+      },
+      [createEventChannel],
+    );
+
     const handleSend = useCallback(async () => {
       const text = input.trim();
       if (!text || isLoading) return;
 
       setInput("");
-      setIsLoading(true);
-      setStreamingContent("");
-      setLiveToolCalls([]);
-      setPendingDispatch(null);
+      setPendingDispatches([]);
 
       const targetSessionId = sessionId;
-      const runId = ++activeRunRef.current;
-      const onEvent = createEventChannel(targetSessionId, runId);
 
       try {
-        await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
-          workspaceId: targetSessionId,
-          projectPath,
-          content: text,
-          onEvent,
+        await enqueueDispatcherRun(targetSessionId, async (onEvent) => {
+          await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
+            workspaceId: targetSessionId,
+            projectPath,
+            content: text,
+            onEvent,
+          });
         });
       } catch (err) {
-            console.error("dispatcher_send_message 失败:", err);
-      } finally {
-        if (currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId) {
-          setIsLoading(false);
-        }
+        console.error("dispatcher_send_message 失败:", err);
       }
-    }, [input, isLoading, projectPath, sessionId, createEventChannel]);
+    }, [enqueueDispatcherRun, input, isLoading, projectPath, sessionId]);
 
     // Expose continueWithResult to parent via ref
     useImperativeHandle(
@@ -352,35 +397,26 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           dispatchState: DispatchFeedbackState,
           targetSessionId = sessionId,
         ) => {
-          const isCurrentSession = currentSessionIdRef.current === targetSessionId;
-          const runId = isCurrentSession ? ++activeRunRef.current : activeRunRef.current;
-          if (isCurrentSession) {
-            setIsLoading(true);
-            setStreamingContent("");
-            setLiveToolCalls([]);
-            setPendingDispatch(null);
+          if (currentSessionIdRef.current === targetSessionId) {
+            setPendingDispatches([]);
           }
 
-          const onEvent = createEventChannel(targetSessionId, runId);
-
           try {
-            await invoke<DispatcherAgentTurn>("dispatcher_continue_after_dispatch", {
-              workspaceId: targetSessionId,
-              projectPath,
-              dispatchResult: result,
-              dispatchState,
-              onEvent,
+            await enqueueDispatcherRun(targetSessionId, async (onEvent) => {
+              await invoke<DispatcherAgentTurn>("dispatcher_continue_after_dispatch", {
+                workspaceId: targetSessionId,
+                projectPath,
+                dispatchResult: result,
+                dispatchState,
+                onEvent,
+              });
             });
           } catch (err) {
             console.error("dispatcher_continue_after_dispatch 失败:", err);
-          } finally {
-            if (currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId) {
-              setIsLoading(false);
-            }
           }
         },
       }),
-      [projectPath, sessionId, createEventChannel],
+      [enqueueDispatcherRun, projectPath, sessionId],
     );
 
     const handleKeyDown = useCallback(
@@ -398,17 +434,17 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
     const handleApproveDispatch = useCallback(
       (dispatchId: string, description: string) => {
-        const agent = pendingDispatch?.agent ?? "claude";
-        const pm = pendingDispatch?.permissionMode ?? "full_access";
-        setPendingDispatch(null);
+        const agent = currentPendingDispatch?.agent ?? "claude";
+        const pm = currentPendingDispatch?.permissionMode ?? "full_access";
+        setPendingDispatches((prev) => prev.slice(1));
         onDispatchApproved(dispatchId, agent, description, pm, sessionId);
       },
-      [pendingDispatch, onDispatchApproved, sessionId],
+      [currentPendingDispatch, onDispatchApproved, sessionId],
     );
 
     const handleRejectDispatch = useCallback(
       (dispatchId: string) => {
-        setPendingDispatch(null);
+        setPendingDispatches((prev) => prev.slice(1));
         onDispatchRejected(dispatchId);
       },
       [onDispatchRejected],
@@ -475,7 +511,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         {/* Messages */}
         <div style={styles.messageList}>
           {isEmpty && (
-              <div style={styles.emptyState}>
+            <div style={styles.emptyState}>
               <div style={styles.emptyIcon}>🤖</div>
               <div style={styles.emptyTitle}>调度智能体</div>
               <div style={styles.emptySubtitle}>
@@ -532,12 +568,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         </div>
 
         {/* Dispatch approval overlay */}
-        {pendingDispatch && (
+        {currentPendingDispatch && (
           <DispatchApprovalDialog
-            dispatchId={pendingDispatch.dispatchId}
-            agent={pendingDispatch.agent}
-            description={pendingDispatch.description}
-            permissionMode={pendingDispatch.permissionMode}
+            dispatchId={currentPendingDispatch.dispatchId}
+            agent={currentPendingDispatch.agent}
+            description={currentPendingDispatch.description}
+            permissionMode={currentPendingDispatch.permissionMode}
             onApprove={handleApproveDispatch}
             onReject={handleRejectDispatch}
           />

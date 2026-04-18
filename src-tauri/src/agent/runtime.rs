@@ -16,7 +16,7 @@ use super::debug::{render_json, ContextDebugLogger, DebugSection};
 use super::llm::{ChatMessage, FunctionCall, OpenAiCompatProvider, OutboundToolCall};
 use super::prompt::{build_system_prompt, PromptBundle, PromptSection};
 use super::summary::{
-    build_ollama_install_message, prepare_tool_result, summarize_dispatch_result,
+    build_summary_failure_message, prepare_tool_result, summarize_dispatch_result,
 };
 use super::tools::{
     is_continue_instruction, is_dispatch_instruction, is_exit_instruction,
@@ -486,26 +486,35 @@ impl DispatcherAgent {
                 message: result_msg.clone(),
             },
         );
-        let summarized_dispatch_result = match summarize_dispatch_result(dispatch_result).await {
-            Ok(summary) => summary,
-            Err(error) => {
-                debug_logger.log(
-                    "子任务结果摘要失败",
-                    vec![
-                        ("工作区".to_string(), workspace_id.to_string()),
-                        (
-                            "子任务状态".to_string(),
-                            format!("{dispatch_state:?}").to_lowercase(),
-                        ),
-                    ],
-                    vec![DebugSection::new("失败原因", error.clone())],
-                );
-                let reply =
-                    self.emit_ollama_failure_and_finish(db, workspace_id, &on_event, &error)?;
-                let messages = db.list_visible_messages(workspace_id)?;
-                return Ok(AgentTurn { reply, messages });
-            }
-        };
+        let provider = self.provider.lock().unwrap().clone();
+        let summarized_dispatch_result =
+            match summarize_dispatch_result(&provider, dispatch_result).await {
+                Ok(summary) => summary,
+                Err(error) => {
+                    debug_logger.log(
+                        "子任务结果摘要失败",
+                        vec![
+                            ("工作区".to_string(), workspace_id.to_string()),
+                            (
+                                "子任务状态".to_string(),
+                                format!("{dispatch_state:?}").to_lowercase(),
+                            ),
+                        ],
+                        vec![
+                            DebugSection::new("摘要调用", error.debug_context().to_string()),
+                            DebugSection::new("失败原因", error.message().to_string()),
+                        ],
+                    );
+                    let reply = self.emit_summary_failure_and_finish(
+                        db,
+                        workspace_id,
+                        &on_event,
+                        error.message(),
+                    )?;
+                    let messages = db.list_visible_messages(workspace_id)?;
+                    return Ok(AgentTurn { reply, messages });
+                }
+            };
 
         let hidden_message = format!(
             "{}\n\n{}",
@@ -523,7 +532,6 @@ impl DispatcherAgent {
             None,
         )?;
 
-        let provider = self.provider.lock().unwrap().clone();
         if !provider.is_configured() {
             let messages = db.list_visible_messages(workspace_id)?;
             emit(
@@ -708,32 +716,38 @@ impl DispatcherAgent {
                     }
                 }
 
-                let tool_result =
-                    match prepare_tool_result(&tool_call.name, &tool_call.arguments, &result).await
-                    {
-                        Ok(summary) => summary,
-                        Err(error) => {
-                            debug_logger.log(
-                                "工具结果摘要失败",
-                                vec![
-                                    ("工作区".to_string(), workspace_id.to_string()),
-                                    ("轮次".to_string(), (iteration + 1).to_string()),
-                                    ("工具名".to_string(), tool_call.name.clone()),
-                                    ("工具调用ID".to_string(), tool_call.id.clone()),
-                                ],
-                                vec![
-                                    DebugSection::new("工具参数", tool_arguments.clone()),
-                                    DebugSection::new("失败原因", error.clone()),
-                                ],
-                            );
-                            return self.emit_ollama_failure_and_finish(
-                                db,
-                                workspace_id,
-                                on_event,
-                                &error,
-                            );
-                        }
-                    };
+                let tool_result = match prepare_tool_result(
+                    provider,
+                    &tool_call.name,
+                    &tool_call.arguments,
+                    &result,
+                )
+                .await
+                {
+                    Ok(summary) => summary,
+                    Err(error) => {
+                        debug_logger.log(
+                            "工具结果摘要失败",
+                            vec![
+                                ("工作区".to_string(), workspace_id.to_string()),
+                                ("轮次".to_string(), (iteration + 1).to_string()),
+                                ("工具名".to_string(), tool_call.name.clone()),
+                                ("工具调用ID".to_string(), tool_call.id.clone()),
+                            ],
+                            vec![
+                                DebugSection::new("摘要调用", error.debug_context().to_string()),
+                                DebugSection::new("工具参数", tool_arguments.clone()),
+                                DebugSection::new("失败原因", error.message().to_string()),
+                            ],
+                        );
+                        return self.emit_summary_failure_and_finish(
+                            db,
+                            workspace_id,
+                            on_event,
+                            error.message(),
+                        );
+                    }
+                };
 
                 let tool_message = db.add_visible_tool_result(
                     workspace_id,
@@ -1151,7 +1165,7 @@ impl DispatcherAgent {
         Ok(())
     }
 
-    fn emit_ollama_failure_and_finish(
+    fn emit_summary_failure_and_finish(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
@@ -1161,7 +1175,7 @@ impl DispatcherAgent {
         let reply = db.add_visible_message(
             workspace_id,
             "assistant",
-            &build_ollama_install_message(error),
+            &build_summary_failure_message(error),
         )?;
         emit(
             on_event,

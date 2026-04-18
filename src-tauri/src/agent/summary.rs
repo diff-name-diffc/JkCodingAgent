@@ -1,16 +1,39 @@
-use std::process::Stdio;
-
 use serde_json::Value;
-use tokio::process::Command;
 use tokio::time::{timeout, Duration};
+
+use super::llm::{ChatMessage, OpenAiCompatProvider};
 
 const SUMMARY_MODE_THRESHOLD_CHARS: usize = 240;
 const SUMMARY_MODE_THRESHOLD_LINES: usize = 24;
 const FULL_RESULT_MAX_CHARS: usize = 12_000;
 const FULL_RESULT_MAX_LINES: usize = 400;
 const HIGH_FIDELITY_SUMMARY_THRESHOLD_CHARS: usize = 1_000;
-const OLLAMA_MODEL: &str = "llama3.2:3b";
-const OLLAMA_TIMEOUT_SECS: u64 = 40;
+const SUMMARY_MODEL: &str = "qwen3.6-flash";
+const SUMMARY_TIMEOUT_SECS: u64 = 120;
+const SUMMARY_DEBUG_PREVIEW_CHARS: usize = 1_200;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SummaryError {
+    message: String,
+    debug_context: String,
+}
+
+impl SummaryError {
+    fn new(message: impl Into<String>, debug_context: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            debug_context: debug_context.into(),
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn debug_context(&self) -> &str {
+        &self.debug_context
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolArtifactDraft {
@@ -31,10 +54,11 @@ pub struct PreparedToolResult {
 }
 
 pub async fn prepare_tool_result(
+    provider: &OpenAiCompatProvider,
     tool_name: &str,
     args: &Value,
     raw_output: &str,
-) -> Result<PreparedToolResult, String> {
+) -> Result<PreparedToolResult, SummaryError> {
     let trimmed_raw = raw_output.trim();
     if trimmed_raw.is_empty() {
         return Ok(PreparedToolResult {
@@ -56,7 +80,8 @@ pub async fn prepare_tool_result(
             result_mode: tool_result_mode_label(ToolResultAction::KeepRaw),
             artifacts,
         }),
-        ToolResultAction::HighFidelitySummarize => summarize_with_ollama(
+        ToolResultAction::HighFidelitySummarize => summarize_with_model(
+            provider,
             build_dual_tool_summary_prompt(tool_name, normalized_trimmed),
         )
         .await
@@ -70,7 +95,10 @@ pub async fn prepare_tool_result(
     }
 }
 
-pub async fn summarize_dispatch_result(dispatch_result: &str) -> Result<String, String> {
+pub async fn summarize_dispatch_result(
+    provider: &OpenAiCompatProvider,
+    dispatch_result: &str,
+) -> Result<String, SummaryError> {
     let trimmed = dispatch_result.trim();
     if trimmed.is_empty() {
         return Ok(trimmed.to_string());
@@ -84,50 +112,75 @@ pub async fn summarize_dispatch_result(dispatch_result: &str) -> Result<String, 
         return Ok(trimmed.to_string());
     }
 
-    summarize_with_ollama(build_dispatch_summary_prompt(trimmed)).await
+    summarize_with_model(provider, build_dispatch_summary_prompt(trimmed)).await
 }
 
-pub fn build_ollama_install_message(error: &str) -> String {
+pub fn build_summary_failure_message(error: &str) -> String {
     format!(
-        "检测到摘要依赖 `ollama` 执行失败，当前轮次已停止。\n\n请先安装并确保以下命令可用后再重试：\n- `ollama`\n- `ollama pull {OLLAMA_MODEL}`\n\n如果已经安装，请确认 `ollama` 在 PATH 中且本地模型已拉取完成。\n\n错误详情：\n{error}"
+        "检测到摘要服务调用失败，当前轮次已停止。\n\n请检查以下配置后重试：\n- Dispatcher 设置中的 API Key 是否有效\n- Dispatcher 设置中的 API Base 是否可访问\n- 云端模型 `{SUMMARY_MODEL}` 当前是否可用\n\n错误详情：\n{error}"
     )
 }
 
-async fn summarize_with_ollama(prompt: String) -> Result<String, String> {
-    let output = timeout(
-        Duration::from_secs(OLLAMA_TIMEOUT_SECS),
-        Command::new("ollama")
-            .arg("run")
-            .arg(OLLAMA_MODEL)
-            .arg(prompt)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .output(),
+async fn summarize_with_model(
+    provider: &OpenAiCompatProvider,
+    prompt: String,
+) -> Result<String, SummaryError> {
+    let summary_provider = provider.with_model(SUMMARY_MODEL);
+    let debug_context = build_summary_debug_context(&summary_provider, &prompt);
+    let response = timeout(
+        Duration::from_secs(SUMMARY_TIMEOUT_SECS),
+        summary_provider.chat_stream(&[ChatMessage::system(prompt)], &[], |_| {}),
     )
     .await
-    .map_err(|_| format!("`ollama run {OLLAMA_MODEL}` 超时（>{OLLAMA_TIMEOUT_SECS}s）"))?
-    .map_err(|error| format!("启动 `ollama` 失败：{error}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("退出状态：{}", output.status)
-        };
-        return Err(format!("`ollama run {OLLAMA_MODEL}` 执行失败：{detail}"));
+    .map_err(|_| {
+        SummaryError::new(
+            format!("摘要模型 `{SUMMARY_MODEL}` 调用超时（>{SUMMARY_TIMEOUT_SECS}s）"),
+            debug_context.clone(),
+        )
+    })?
+    .map_err(|error| {
+        SummaryError::new(
+            format!("摘要模型 `{SUMMARY_MODEL}` 调用失败：{error}"),
+            debug_context.clone(),
+        )
+    })?;
+
+    let content = response.content.trim().to_string();
+    if content.is_empty() {
+        return Err(SummaryError::new(
+            format!("摘要模型 `{SUMMARY_MODEL}` 返回空结果"),
+            debug_context,
+        ));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Err(format!("`ollama run {OLLAMA_MODEL}` 返回空结果"));
+    Ok(content)
+}
+
+fn build_summary_debug_context(provider: &OpenAiCompatProvider, prompt: &str) -> String {
+    format!(
+        "调用方式：OpenAI 兼容流式摘要请求\n模型：{}\n超时阈值：{} 秒\nprompt 字符数：{}\nprompt 行数：{}\nprompt 预览：\n{}",
+        provider.model(),
+        SUMMARY_TIMEOUT_SECS,
+        prompt.chars().count(),
+        prompt.lines().count().max(1),
+        build_prompt_preview(prompt),
+    )
+}
+
+fn build_prompt_preview(prompt: &str) -> String {
+    let total_chars = prompt.chars().count();
+    if total_chars <= SUMMARY_DEBUG_PREVIEW_CHARS {
+        return prompt.to_string();
     }
 
-    Ok(stdout)
+    let preview = prompt
+        .chars()
+        .take(SUMMARY_DEBUG_PREVIEW_CHARS)
+        .collect::<String>();
+    format!(
+        "{preview}\n...（已截断，预览 {} / {} 字符）",
+        SUMMARY_DEBUG_PREVIEW_CHARS, total_chars
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -459,9 +512,21 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        build_artifact_preview, build_ollama_install_message, decide_tool_result_action,
-        extract_tagged_block, normalize_tool_output, parse_dual_tool_summary, ToolResultAction,
+        build_artifact_preview, build_prompt_preview, build_summary_debug_context,
+        build_summary_failure_message, decide_tool_result_action, extract_tagged_block,
+        normalize_tool_output, parse_dual_tool_summary, ToolResultAction,
     };
+    use crate::agent::llm::OpenAiCompatProvider;
+
+    fn summary_provider() -> OpenAiCompatProvider {
+        OpenAiCompatProvider::new(
+            "key".to_string(),
+            "https://example.com/v1".to_string(),
+            "qwen3.6-plus".to_string(),
+            2048,
+            0.1,
+        )
+    }
 
     #[test]
     fn exact_tools_keep_medium_sized_raw_output_by_default() {
@@ -549,10 +614,26 @@ mod tests {
     }
 
     #[test]
-    fn install_message_mentions_model_and_pull_command() {
-        let message = build_ollama_install_message("command not found");
-        assert!(message.contains("ollama"));
-        assert!(message.contains("llama3.2:3b"));
-        assert!(message.contains("ollama pull llama3.2:3b"));
+    fn summary_debug_context_contains_model_and_prompt_metadata() {
+        let context = build_summary_debug_context(&summary_provider(), "alpha\nbeta");
+        assert!(context.contains("模型：qwen3.6-plus"));
+        assert!(context.contains("prompt 字符数：10"));
+        assert!(context.contains("prompt 行数：2"));
+        assert!(context.contains("alpha\nbeta"));
+    }
+
+    #[test]
+    fn prompt_preview_truncates_long_input() {
+        let preview = build_prompt_preview(&"a".repeat(1_500));
+        assert!(preview.contains("已截断"));
+        assert!(preview.contains("1200 / 1500"));
+    }
+
+    #[test]
+    fn failure_message_mentions_cloud_summary_model() {
+        let message = build_summary_failure_message("401 unauthorized");
+        assert!(message.contains("摘要服务调用失败"));
+        assert!(message.contains("qwen3.6-flash"));
+        assert!(message.contains("401 unauthorized"));
     }
 }

@@ -148,6 +148,12 @@ impl OpenAiCompatProvider {
         &self.model
     }
 
+    pub fn with_model(&self, model: impl Into<String>) -> Self {
+        let mut next = self.clone();
+        next.model = model.into();
+        next
+    }
+
     pub fn build_request_snapshot(
         &self,
         messages: &[ChatMessage],

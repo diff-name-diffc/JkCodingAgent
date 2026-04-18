@@ -64,7 +64,10 @@ fn validate_path_within(target: &str, allowed_root: &str) -> Result<std::path::P
     Ok(canonical_target)
 }
 
-fn validate_new_path_within(target: &str, allowed_root: &str) -> Result<std::path::PathBuf, String> {
+fn validate_new_path_within(
+    target: &str,
+    allowed_root: &str,
+) -> Result<std::path::PathBuf, String> {
     let target = Path::new(target);
     let root = Path::new(allowed_root);
 

@@ -98,6 +98,7 @@ export function ProjectPage({
 }) {
   const {
     rightPanel,
+    editorWorkbenchVisible,
     openFiles,
     activeFileTabId,
     openDiff,
@@ -116,6 +117,8 @@ export function ProjectPage({
     handleDiffFileSelect,
     handleCommitSelect,
     handleCommitFileClick,
+    hideEditorWorkbench,
+    showEditorWorkbench,
     clearFileAndDiff,
     handleRightResizeStart,
     handleTerminalResizeStart,
@@ -133,9 +136,12 @@ export function ProjectPage({
   >({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [subTerminalHeight, setSubTerminalHeight] = useState(500);
+  const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
+  const [showSessionWorkbench, setShowSessionWorkbench] = useState(true);
   /** Maps subprocess id → real task id for terminal routing */
   const [subProcessTaskMap, setSubProcessTaskMap] = useState<Record<string, string>>({});
   const shellRef = useRef<ShellTerminalPanelHandle>(null);
+  const workspaceSplitRef = useRef<HTMLDivElement>(null);
   const pendingCmdRef = useRef<string | null>(null);
   const dispatcherChatRef = useRef<DispatcherChatHandle>(null);
   /** Track subprocess id → owning dispatcher session for result injection */
@@ -160,6 +166,44 @@ export function ProjectPage({
   const activeVisibleSubTabId = activeSessionId
     ? (activeSubTabIdBySession[activeSessionId] ?? null)
     : null;
+  const hasEditorWorkbenchContent = openDiff !== null || openFiles.length > 0;
+  const showSessionPane = showSessionWorkbench;
+  const showEditorPane = editorWorkbenchVisible && hasEditorWorkbenchContent;
+  const workbenchColumnCount = Number(showSessionPane) + Number(showEditorPane);
+
+  const handleEditorPaneResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const container = workspaceSplitRef.current;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const updateRatio = (clientX: number) => {
+      const nextRatio = (rect.right - clientX) / rect.width;
+      setEditorPaneRatio(Math.max(0.28, Math.min(0.72, nextRatio)));
+    };
+
+    const onMouseMove = (event: MouseEvent) => {
+      updateRatio(event.clientX);
+    };
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    updateRatio(e.clientX);
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, []);
+
+  useEffect(() => {
+    if (!hasEditorWorkbenchContent) {
+      setShowSessionWorkbench(true);
+    }
+  }, [hasEditorWorkbenchContent]);
 
   const handleRunMakeTarget = useCallback(
     (target: string) => {
@@ -504,7 +548,12 @@ export function ProjectPage({
       <SessionPanel
         project={project}
         activeSessionId={activeSessionId}
-        onSelectSession={setActiveSessionId}
+        onSelectSession={(sessionId) => {
+          setActiveSessionId(sessionId);
+          if (sessionId) {
+            setShowSessionWorkbench(true);
+          }
+        }}
         onBack={onBack}
         isDark={isDark}
         themeMode={themeMode}
@@ -523,101 +572,214 @@ export function ProjectPage({
             position: "relative",
           }}
         >
-          {/* Foreground: file viewer, diff, or dispatcher session */}
-          <ErrorBoundary
-            label="主内容区"
-            fallback={(error, reset) => (
-              <div style={s.errorBoundaryWrap}>
-                <div style={s.errorBoundaryIcon}>⚠</div>
-                <div style={s.errorBoundaryTitle}>内容区渲染出错</div>
-                <div style={s.errorBoundaryMessage}>{error.message || "未知错误"}</div>
-                <div style={s.errorBoundaryActions}>
-                  <button onClick={reset} style={s.errorBoundaryBtn}>
-                    重试
-                  </button>
-                  <button
-                    onClick={() => {
-                      clearFileAndDiff();
-                      reset();
-                    }}
-                    style={s.errorBoundaryBtn}
-                  >
-                    返回任务视图
-                  </button>
-                </div>
-              </div>
-            )}
+          <div
+            ref={workspaceSplitRef}
+            style={{
+              flex: 1,
+              minHeight: 0,
+              display: "grid",
+              gridTemplateColumns:
+                workbenchColumnCount === 2
+                  ? `minmax(0, calc(${(1 - editorPaneRatio) * 100}% - 4px)) 8px minmax(0, calc(${editorPaneRatio * 100}% - 4px))`
+                  : "minmax(0, 1fr)",
+              overflow: "hidden",
+              background: "var(--bg-panel)",
+            }}
           >
-            {openDiff ? (
-              openDiff.kind === "file" ? (
-                <GitDiffViewer
-                  projectPath={project.path}
-                  mode="file"
-                  filePath={openDiff.filePath}
-                  staged={openDiff.staged}
-                  title={openDiff.label}
-                  onClose={() => setOpenDiff(null)}
-                />
-              ) : openDiff.kind === "commit-file" ? (
-                <GitDiffViewer
-                  projectPath={project.path}
-                  mode="commit-file"
-                  commitHash={openDiff.hash}
-                  filePath={openDiff.filePath}
-                  title={openDiff.label}
-                  onClose={() => setOpenDiff(null)}
-                />
-              ) : (
-                <GitDiffViewer
-                  projectPath={project.path}
-                  mode="commit"
-                  commitHash={openDiff.hash}
-                  title={openDiff.message}
-                  onClose={() => setOpenDiff(null)}
-                />
-              )
-            ) : openFiles.length > 0 ? (
-              <FileViewer
-                tabs={openFiles}
-                activeTabId={activeFileTabId}
-                projectPath={project.path}
-                onSelectTab={handleFileTabSelect}
-                onCloseTab={handleFileTabClose}
-                onCloseOtherTabs={handleCloseOtherFileTabs}
-                onCloseTabsToRight={handleCloseTabsToRight}
-                onCloseAllTabs={handleCloseAllFileTabs}
-                isDark={isDark}
-                onRunMakeTarget={handleRunMakeTarget}
-              />
-            ) : activeSessionId ? (
-              <DispatcherChat
-                ref={dispatcherChatRef}
-                sessionId={activeSessionId}
-                projectPath={project.path}
-                mcpStatus={mcpStatus}
-                mcpChecking={mcpChecking}
-                subProcesses={subProcesses}
-                onDispatchApproved={handleDispatchApproved}
-                onDispatchRejected={handleDispatchRejected}
-                onDispatchContinue={handleDispatchContinue}
-                onDispatchExit={handleDispatchExit}
-                onOpenMcpStatus={() => setShowMcpStatus(true)}
-                onOpenSettings={() => setShowDispatcherSettings(true)}
-              />
-            ) : (
+            {showSessionPane && (
               <div
                 style={{
-                  flex: 1,
+                  minWidth: 0,
+                  minHeight: 0,
+                  display: "flex",
+                  overflow: "hidden",
+                }}
+              >
+                <ErrorBoundary
+                  label="会话区"
+                  fallback={(error, reset) => (
+                    <div style={s.errorBoundaryWrap}>
+                      <div style={s.errorBoundaryIcon}>⚠</div>
+                      <div style={s.errorBoundaryTitle}>会话区渲染出错</div>
+                      <div style={s.errorBoundaryMessage}>{error.message || "未知错误"}</div>
+                      <div style={s.errorBoundaryActions}>
+                        <button onClick={reset} style={s.errorBoundaryBtn}>
+                          重试
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                >
+                  {activeSessionId ? (
+                    <DispatcherChat
+                      ref={dispatcherChatRef}
+                      sessionId={activeSessionId}
+                      projectPath={project.path}
+                      mcpStatus={mcpStatus}
+                      mcpChecking={mcpChecking}
+                      layoutMode={showEditorPane ? "split" : "single"}
+                      subProcesses={subProcesses}
+                      onDispatchApproved={handleDispatchApproved}
+                      onDispatchRejected={handleDispatchRejected}
+                      onDispatchContinue={handleDispatchContinue}
+                      onDispatchExit={handleDispatchExit}
+                      onOpenMcpStatus={() => setShowMcpStatus(true)}
+                      onOpenSettings={() => setShowDispatcherSettings(true)}
+                      onClosePanel={() => setShowSessionWorkbench(false)}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        flex: 1,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "var(--text-muted)",
+                      }}
+                    >
+                      正在创建会话...
+                    </div>
+                  )}
+                </ErrorBoundary>
+              </div>
+            )}
+
+            {workbenchColumnCount === 2 && (
+              <div
+                onMouseDown={handleEditorPaneResizeStart}
+                style={{
+                  width: 8,
+                  cursor: "col-resize",
+                  background:
+                    "linear-gradient(180deg, transparent, color-mix(in srgb, var(--accent) 14%, var(--border-dim)), transparent)",
+                }}
+              />
+            )}
+
+            {showEditorPane && (
+              <div
+                style={{
+                  minWidth: 0,
+                  minHeight: 0,
+                  display: "flex",
+                  overflow: "hidden",
+                  borderLeft:
+                    workbenchColumnCount === 2 ? "1px solid var(--border-dim)" : "none",
+                  background: "var(--bg-panel)",
+                }}
+              >
+                <ErrorBoundary
+                  label="编辑区"
+                  fallback={(error, reset) => (
+                    <div style={s.errorBoundaryWrap}>
+                      <div style={s.errorBoundaryIcon}>⚠</div>
+                      <div style={s.errorBoundaryTitle}>编辑区渲染出错</div>
+                      <div style={s.errorBoundaryMessage}>{error.message || "未知错误"}</div>
+                      <div style={s.errorBoundaryActions}>
+                        <button onClick={reset} style={s.errorBoundaryBtn}>
+                          重试
+                        </button>
+                        <button
+                          onClick={() => {
+                            clearFileAndDiff();
+                            reset();
+                          }}
+                          style={s.errorBoundaryBtn}
+                        >
+                          关闭编辑区
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                >
+                  {openDiff ? (
+                    openDiff.kind === "file" ? (
+                      <GitDiffViewer
+                        projectPath={project.path}
+                        mode="file"
+                        filePath={openDiff.filePath}
+                        staged={openDiff.staged}
+                        title={openDiff.label}
+                        onClose={() => setOpenDiff(null)}
+                      />
+                    ) : openDiff.kind === "commit-file" ? (
+                      <GitDiffViewer
+                        projectPath={project.path}
+                        mode="commit-file"
+                        commitHash={openDiff.hash}
+                        filePath={openDiff.filePath}
+                        title={openDiff.label}
+                        onClose={() => setOpenDiff(null)}
+                      />
+                    ) : (
+                      <GitDiffViewer
+                        projectPath={project.path}
+                        mode="commit"
+                        commitHash={openDiff.hash}
+                        title={openDiff.message}
+                        onClose={() => setOpenDiff(null)}
+                      />
+                    )
+                  ) : (
+                    <FileViewer
+                      tabs={openFiles}
+                      activeTabId={activeFileTabId}
+                      projectPath={project.path}
+                      onSelectTab={handleFileTabSelect}
+                      onCloseTab={handleFileTabClose}
+                      onCloseOtherTabs={handleCloseOtherFileTabs}
+                      onCloseTabsToRight={handleCloseTabsToRight}
+                      onCloseAllTabs={handleCloseAllFileTabs}
+                      onHide={hideEditorWorkbench}
+                      isDark={isDark}
+                      onRunMakeTarget={handleRunMakeTarget}
+                    />
+                  )}
+                </ErrorBoundary>
+              </div>
+            )}
+
+            {workbenchColumnCount === 0 && (
+              <div
+                style={{
+                  minWidth: 0,
+                  minHeight: 0,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                   color: "var(--text-muted)",
+                  background:
+                    "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 72%, transparent), var(--bg-panel))",
                 }}
               >
-                正在创建会话...
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 10,
+                    textAlign: "center",
+                  }}
+                >
+                  <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>
+                    当前没有打开的会话面板或文件预览
+                  </div>
+                  <button
+                    type="button"
+                    style={s.errorBoundaryBtn}
+                    onClick={() => setShowSessionWorkbench(true)}
+                  >
+                    打开会话面板
+                  </button>
+                  {hasEditorWorkbenchContent && !showEditorPane && (
+                    <button type="button" style={s.errorBoundaryBtn} onClick={showEditorWorkbench}>
+                      恢复文件编辑器
+                    </button>
+                  )}
+                </div>
               </div>
             )}
-          </ErrorBoundary>
+          </div>
         </div>
         {/* Sub-process terminal tabs */}
         {visibleSubProcesses.length > 0 && (

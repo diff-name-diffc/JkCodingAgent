@@ -8,8 +8,20 @@ import {
   memo,
   useMemo,
 } from "react";
+import type { ReactNode } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import { User, Sparkles, Send } from "lucide-react";
+import {
+  User,
+  Sparkles,
+  Send,
+  X,
+  FolderGit2,
+  SearchCode,
+  Wrench,
+  Workflow,
+  Settings2,
+  PlugZap,
+} from "lucide-react";
 import type {
   AgentType,
   DispatchFeedbackState,
@@ -24,6 +36,9 @@ import { isImeComposing } from "../utils";
 import { ToolActivityBubble, type ToolActivityItem } from "./ToolActivityBubble";
 import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import {
+  appendAssistantTextSegment,
+  appendToolSummarySegment,
+  type AssistantTurnSegment,
   buildDispatcherDisplayItems,
   finishLiveToolActivity,
   startLiveToolActivity,
@@ -103,16 +118,16 @@ const UserMessageBubble = memo(function UserMessageBubble({
 });
 
 const AssistantTurnBubble = memo(function AssistantTurnBubble({
-  responseText,
+  segments,
   tools,
   workspaceId,
 }: {
-  responseText: string;
+  segments: AssistantTurnSegment[];
   tools: ToolActivityItem[];
   workspaceId: string;
 }) {
-  const trimmedResponse = responseText.trim();
-  if (!trimmedResponse && tools.length === 0) {
+  const visibleSegments = segments.filter((segment) => segment.text.trim());
+  if (visibleSegments.length === 0 && tools.length === 0) {
     return null;
   }
 
@@ -127,15 +142,191 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
             <ToolActivityBubble tools={tools} workspaceId={workspaceId} />
           </div>
         )}
-        {trimmedResponse && (
-          <div style={styles.assistantTurnSection}>
-            <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
-              <div style={styles.markdownBody}>
-                <MarkdownRenderer content={trimmedResponse} variant="chat" />
+        {visibleSegments.map((segment, index) => (
+          <div key={`${segment.kind}-${segment.toolCallId ?? segment.toolName ?? index}`}>
+            {segment.kind === "tool-summary" ? (
+              <ToolSummaryBlock segment={segment} />
+            ) : (
+              <div style={styles.assistantTurnSection}>
+                <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
+                  <div style={styles.markdownBody}>
+                    <MarkdownRenderer content={segment.text.trim()} variant="chat" />
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
           </div>
-        )}
+        ))}
+      </div>
+    </div>
+  );
+});
+
+const ToolSummaryBlock = memo(function ToolSummaryBlock({
+  segment,
+}: {
+  segment: AssistantTurnSegment;
+}) {
+  return (
+    <div style={styles.assistantTurnSection}>
+      <div style={styles.toolSummaryCard}>
+        <div style={styles.toolSummaryHeader}>
+          <span style={styles.toolSummaryBadge}>工具摘要</span>
+          {segment.toolName && <span style={styles.toolSummaryName}>{segment.toolName}</span>}
+          {segment.resultMode === "conservative_summary" && (
+            <span style={styles.toolSummaryMode}>高保真压缩</span>
+          )}
+        </div>
+        <div style={styles.markdownBody}>
+          <MarkdownRenderer content={segment.text.trim()} variant="chat" />
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
+  input,
+  isLoading,
+  autoApprove,
+  inputRef,
+  layoutMode,
+  onChangeInput,
+  onSelectQuickAction,
+  onSend,
+  onKeyDown,
+  onOpenSettings,
+  onOpenMcpStatus,
+  onToggleAutoApprove,
+  onCompositionStart,
+  onCompositionEnd,
+}: {
+  input: string;
+  isLoading: boolean;
+  autoApprove: boolean;
+  inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  layoutMode: "single" | "split";
+  onChangeInput: (value: string) => void;
+  onSelectQuickAction: (value: string) => void;
+  onSend: () => void;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+  onOpenSettings: () => void;
+  onOpenMcpStatus: () => void;
+  onToggleAutoApprove: () => void;
+  onCompositionStart: () => void;
+  onCompositionEnd: () => void;
+}) {
+  return (
+    <div style={styles.emptyLauncherWrap}>
+      <div style={styles.emptyLauncherHero}>
+        <div style={styles.emptyLauncherKicker}>
+          <span style={styles.emptyLauncherBadge}>
+            <Sparkles size={13} />
+            主调度智能体
+          </span>
+          <span style={styles.emptyLauncherMeta}>协调 Claude / Codex 子进程</span>
+        </div>
+        <h2 style={styles.emptyLauncherTitle}>今天想一起推进什么？</h2>
+        <p style={styles.emptyLauncherSubtitle}>
+          直接描述目标、粘贴报错，或者让我先读这个仓库。我会负责拆解任务、调用工具，并把执行进度持续回流到会话中。
+        </p>
+      </div>
+
+      <div style={styles.emptyComposerDialog(layoutMode)}>
+        <div style={styles.emptyComposerTopBar}>
+          <div style={styles.emptyComposerPromptHint}>启动一轮新对话</div>
+          <div style={styles.emptyComposerToolRow}>
+            <button type="button" style={styles.emptyTopToolBtn} onClick={onOpenMcpStatus}>
+              <PlugZap size={14} />
+              MCP
+            </button>
+            <button type="button" style={styles.emptyTopToolBtn} onClick={onOpenSettings}>
+              <Settings2 size={14} />
+              设置
+            </button>
+            <button type="button" style={styles.emptyTopToolBtn} onClick={onToggleAutoApprove}>
+              <Wrench size={14} />
+              免确认 {autoApprove ? "开" : "关"}
+            </button>
+          </div>
+        </div>
+
+        <div style={styles.emptyComposerInputShell}>
+          <textarea
+            ref={inputRef}
+            style={styles.emptyComposerTextarea}
+            placeholder="例如：先审查这个仓库的前端架构，再给出重构方案并开始实现。"
+            value={input}
+            onChange={(e) => onChangeInput(e.target.value)}
+            onCompositionStart={onCompositionStart}
+            onCompositionEnd={onCompositionEnd}
+            onKeyDown={onKeyDown}
+            rows={4}
+            disabled={isLoading}
+          />
+        </div>
+
+        <div style={styles.emptyComposerActionRow}>
+          {EMPTY_QUICK_ACTIONS.map((action) => (
+            <button
+              key={action.label}
+              type="button"
+              style={styles.emptyComposerActionBtn}
+              onClick={() => onSelectQuickAction(action.prompt)}
+            >
+              <span style={styles.emptyComposerActionIcon}>{action.icon}</span>
+              <span style={styles.emptyComposerActionLabel}>{action.label}</span>
+            </button>
+          ))}
+        </div>
+
+        <div style={styles.emptyComposerFooter}>
+          <div style={styles.emptyComposerFootnote}>
+            <span>Enter 发送</span>
+            <span style={styles.emptyComposerFootnoteDot} />
+            <span>Shift + Enter 换行</span>
+            <span style={styles.emptyComposerFootnoteDot} />
+            <span>支持直接贴入报错、日志或需求描述</span>
+          </div>
+
+          <div style={styles.emptyComposerBottomRow}>
+            <div style={styles.emptyComposerSecondaryRow}>
+              <button
+                type="button"
+                style={styles.emptySecondaryBtn}
+                onClick={() =>
+                  onSelectQuickAction(
+                    "先浏览当前工作区的关键目录与项目结构，再告诉我应该从哪里开始。",
+                  )
+                }
+              >
+                浏览仓库
+              </button>
+              <button
+                type="button"
+                style={styles.emptySecondaryBtn}
+                onClick={() =>
+                  onSelectQuickAction("先检查当前仓库的未提交改动和最近提交，再总结上下文。")
+                }
+              >
+                读取上下文
+              </button>
+            </div>
+
+            <button
+              type="button"
+              style={{
+                ...styles.emptyComposerSendBtn,
+                opacity: input.trim() && !isLoading ? 1 : 0.45,
+              }}
+              onClick={onSend}
+              disabled={!input.trim() || isLoading}
+            >
+              <span>开始对话</span>
+              <Send size={15} />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -164,6 +355,7 @@ interface DispatcherChatProps {
   projectPath: string;
   mcpStatus: ProjectMcpStatus | null;
   mcpChecking: boolean;
+  layoutMode?: "single" | "split";
   subProcesses: SubProcess[];
   onDispatchApproved: (
     dispatchId: string,
@@ -177,6 +369,7 @@ interface DispatcherChatProps {
   onDispatchExit: (agent: AgentType, reason: string, sessionId: string) => void;
   onOpenMcpStatus: () => void;
   onOpenSettings: () => void;
+  onClosePanel?: () => void;
 }
 
 interface PendingDispatchApproval {
@@ -202,6 +395,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       projectPath,
       mcpStatus,
       mcpChecking,
+      layoutMode = "split",
       subProcesses: _subProcesses,
       onDispatchApproved,
       onDispatchRejected,
@@ -209,13 +403,14 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       onDispatchExit,
       onOpenMcpStatus,
       onOpenSettings,
+      onClosePanel,
     },
     ref,
   ) {
     const [messages, setMessages] = useState<DispatcherMessage[]>([]);
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
-    const [streamingContent, setStreamingContent] = useState("");
+    const [streamingSegments, setStreamingSegments] = useState<AssistantTurnSegment[]>([]);
     const [liveToolCalls, setLiveToolCalls] = useState<ToolActivityItem[]>([]);
     const [pendingDispatches, setPendingDispatches] = useState<PendingDispatchApproval[]>([]);
     const [autoApprove, setAutoApprove] = useState(false);
@@ -256,7 +451,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       activeRunRef.current += 1;
       setMessages([]);
       setIsLoading(false);
-      setStreamingContent("");
+      setStreamingSegments([]);
       setLiveToolCalls([]);
       setPendingDispatches([]);
 
@@ -274,7 +469,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     // Auto-scroll
     useEffect(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages, streamingContent]);
+    }, [messages, streamingSegments]);
 
     const createEventChannel = useCallback((targetSessionId: string, runId: number) => {
       const onEvent = new Channel<DispatcherAgentEvent>();
@@ -291,16 +486,25 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             break;
           case "assistantDelta":
             if (!isCurrentRun) return;
-            setStreamingContent((prev) => prev + event.data.delta);
+            setStreamingSegments((prev) => appendAssistantTextSegment(prev, event.data.delta));
             break;
           case "assistantMessage":
             if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
-            setStreamingContent("");
+            setStreamingSegments((prev) =>
+              prev.filter((segment) => segment.kind === "tool-summary"),
+            );
             setMessages((prev) => [...prev, event.data.message]);
             break;
           case "toolStarted":
             if (!isCurrentRun) return;
             setLiveToolCalls((prev) => startLiveToolActivity(prev, event.data));
+            break;
+          case "toolSummaryStarted":
+            if (!isCurrentRun) return;
+            break;
+          case "toolSummaryDelta":
+            if (!isCurrentRun) return;
+            setStreamingSegments((prev) => appendToolSummarySegment(prev, event.data));
             break;
           case "toolFinished":
             if (!isCurrentRun) return;
@@ -338,7 +542,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               event.data.messages.filter((message) => message.workspaceId === targetSessionId),
             );
             setIsLoading(false);
-            setStreamingContent("");
+            setStreamingSegments([]);
             setLiveToolCalls([]);
             break;
         }
@@ -360,7 +564,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
             if (isCurrentSession) {
               setIsLoading(true);
-              setStreamingContent("");
+              setStreamingSegments([]);
               setLiveToolCalls([]);
             }
 
@@ -501,7 +705,13 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       }
     }, [sessionId]);
 
-    const isEmpty = messages.length === 0 && !streamingContent && liveToolCalls.length === 0;
+    const handleApplyStarterPrompt = useCallback((prompt: string) => {
+      setInput(prompt);
+      inputRef.current?.focus();
+    }, []);
+
+    const hasLiveSegments = streamingSegments.some((segment) => segment.text.trim());
+    const isEmpty = messages.length === 0 && !hasLiveSegments && liveToolCalls.length === 0;
 
     return (
       <div style={styles.container}>
@@ -545,23 +755,42 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             <button style={styles.headerBtn} onClick={onOpenSettings}>
               ⚙ 设置
             </button>
+            {onClosePanel && (
+              <button
+                style={styles.headerBtn}
+                onClick={onClosePanel}
+                title="关闭会话面板"
+                aria-label="关闭会话面板"
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
         </div>
 
         {/* Messages */}
         <div style={styles.messageList}>
           {isEmpty && (
-            <div style={styles.emptyState}>
-              <div style={styles.emptyIcon}>🤖</div>
-              <div style={styles.emptyTitle}>调度智能体</div>
-              <div style={styles.emptySubtitle}>
-                告诉我你想完成什么，我会自动规划，并在 Claude 与 Codex
-                之间选择合适的子进程推进编码任务
-              </div>
-              <div style={styles.emptyMeta}>
-                Claude 更快，适合新功能、算法与探索；Codex 更稳，适合重构与收口。
-              </div>
-            </div>
+            <EmptyConversationLauncher
+              input={input}
+              isLoading={isLoading}
+              autoApprove={autoApprove}
+              inputRef={inputRef}
+              layoutMode={layoutMode}
+              onChangeInput={setInput}
+              onSelectQuickAction={handleApplyStarterPrompt}
+              onSend={handleSend}
+              onKeyDown={handleKeyDown}
+              onOpenSettings={onOpenSettings}
+              onOpenMcpStatus={onOpenMcpStatus}
+              onToggleAutoApprove={handleToggleAutoApprove}
+              onCompositionStart={() => {
+                inputComposingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                inputComposingRef.current = false;
+              }}
+            />
           )}
           {displayItems.map((item) =>
             item.kind === "user" ? (
@@ -569,15 +798,15 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             ) : (
               <AssistantTurnBubble
                 key={item.id}
-                responseText={item.turn.responseParts.join("\n\n")}
+                segments={item.turn.segments}
                 tools={item.turn.tools}
                 workspaceId={sessionId}
               />
             ),
           )}
-          {(streamingContent.trim() || liveToolCalls.length > 0) && (
+          {(hasLiveSegments || liveToolCalls.length > 0) && (
             <AssistantTurnBubble
-              responseText={streamingContent}
+              segments={streamingSegments}
               tools={liveToolCalls}
               workspaceId={sessionId}
             />
@@ -586,31 +815,33 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         </div>
 
         {/* Input */}
-        <div style={styles.inputArea}>
-          <textarea
-            ref={inputRef}
-            style={styles.inputTextarea}
-            placeholder="给调度智能体发送消息..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onCompositionStart={() => {
-              inputComposingRef.current = true;
-            }}
-            onCompositionEnd={() => {
-              inputComposingRef.current = false;
-            }}
-            onKeyDown={handleKeyDown}
-            rows={1}
-            disabled={isLoading}
-          />
-          <button
-            style={{ ...styles.sendBtn, opacity: input.trim() && !isLoading ? 1 : 0.5 }}
-            onClick={handleSend}
-            disabled={!input.trim() || isLoading}
-          >
-            <Send size={16} color="#fff" />
-          </button>
-        </div>
+        {!isEmpty && (
+          <div style={styles.inputArea}>
+            <textarea
+              ref={inputRef}
+              style={styles.inputTextarea}
+              placeholder="给调度智能体发送消息..."
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onCompositionStart={() => {
+                inputComposingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                inputComposingRef.current = false;
+              }}
+              onKeyDown={handleKeyDown}
+              rows={1}
+              disabled={isLoading}
+            />
+            <button
+              style={{ ...styles.sendBtn, opacity: input.trim() && !isLoading ? 1 : 0.5 }}
+              onClick={handleSend}
+              disabled={!input.trim() || isLoading}
+            >
+              <Send size={16} color="#fff" />
+            </button>
+          </div>
+        )}
 
         {/* Dispatch approval overlay */}
         {currentPendingDispatch && (
@@ -640,6 +871,33 @@ const DISPATCH_AGENT_META: Record<AgentType, { title: string; badge: string; hin
     hint: "Codex 更慢但更仔细，适合重构、结构整理和高风险修改。",
   },
 };
+
+const EMPTY_QUICK_ACTIONS: Array<{
+  label: string;
+  prompt: string;
+  icon: ReactNode;
+}> = [
+  {
+    label: "审查项目结构",
+    prompt: "先审查这个项目的整体架构、关键模块和潜在风险，再给我一个简洁的分析结论。",
+    icon: <SearchCode size={14} />,
+  },
+  {
+    label: "查看最近改动",
+    prompt: "先查看这个项目最近的 Git 变更和当前工作区状态，再总结我现在最该关注的内容。",
+    icon: <FolderGit2 size={14} />,
+  },
+  {
+    label: "制定实现计划",
+    prompt: "请先理解当前代码库，再针对我要做的需求给出一个清晰、可执行的实现计划。",
+    icon: <Workflow size={14} />,
+  },
+  {
+    label: "排查构建问题",
+    prompt: "请先检查当前项目是否能正常构建、测试或 lint，并定位阻塞问题。",
+    icon: <Wrench size={14} />,
+  },
+];
 
 // ── Styles ───────────────────────────────────────────────────────────────────
 
@@ -719,42 +977,230 @@ const styles = {
     flexDirection: "column" as const,
     gap: "18px",
   },
-  emptyState: {
+  emptyLauncherWrap: {
     display: "flex",
     flexDirection: "column" as const,
     alignItems: "center",
     justifyContent: "center",
     flex: 1,
-    gap: "10px",
-    margin: "32px auto",
-    padding: "36px 32px",
-    maxWidth: "520px",
-    borderRadius: "28px",
-    border: "1px solid color-mix(in srgb, var(--accent) 12%, var(--border-dim))",
-    background:
-      "linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 55%), color-mix(in srgb, var(--bg-card) 92%, transparent)",
-    boxShadow: "0 18px 60px rgba(15, 23, 42, 0.06)",
+    width: "100%",
+    padding: "28px 12px 44px",
+    boxSizing: "border-box" as const,
   },
-  emptyIcon: { fontSize: "48px" },
-  emptyTitle: {
-    fontSize: "22px",
+  emptyLauncherHero: {
+    width: "100%",
+    maxWidth: "780px",
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: "center",
+    gap: "14px",
+    marginBottom: "26px",
+    textAlign: "center" as const,
+  },
+  emptyLauncherKicker: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "10px",
+    flexWrap: "wrap" as const,
+  },
+  emptyLauncherBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "7px",
+    padding: "7px 12px",
+    borderRadius: "999px",
+    border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border-dim))",
+    background: "color-mix(in srgb, var(--bg-card) 76%, transparent)",
+    color: "var(--text-secondary)",
+    fontSize: "12px",
+    fontWeight: 600,
+    boxShadow: "0 12px 30px rgba(15, 23, 42, 0.04)",
+  },
+  emptyLauncherMeta: {
+    fontSize: "12.5px",
+    color: "var(--text-muted)",
+    letterSpacing: "0.01em",
+  },
+  emptyLauncherTitle: {
+    margin: 0,
+    fontSize: "34px",
+    lineHeight: 1.04,
+    letterSpacing: "-0.04em",
     fontWeight: 700,
-    letterSpacing: "-0.03em",
     color: "var(--text-primary)",
   },
-  emptySubtitle: {
-    fontSize: "14px",
+  emptyLauncherSubtitle: {
+    margin: 0,
+    fontSize: "15px",
     color: "var(--text-secondary)",
-    textAlign: "center" as const,
-    maxWidth: "420px",
-    lineHeight: "1.7",
+    maxWidth: "700px",
+    lineHeight: "1.72",
   },
-  emptyMeta: {
+  emptyComposerDialog: (layoutMode: "single" | "split") => ({
+    width: "100%",
+    maxWidth: layoutMode === "single" ? "980px" : "860px",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "18px",
+    padding: "18px",
+    borderRadius: "30px",
+    border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-dim))",
+    background:
+      "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 94%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
+    boxShadow: "0 36px 100px rgba(15, 23, 42, 0.09)",
+    backdropFilter: "blur(22px)",
+    WebkitBackdropFilter: "blur(22px)",
+    boxSizing: "border-box" as const,
+  }),
+  emptyComposerTopBar: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "12px",
+    flexWrap: "wrap" as const,
+  },
+  emptyComposerPromptHint: {
     fontSize: "12px",
+    fontWeight: 700,
+    letterSpacing: "0.06em",
+    textTransform: "uppercase" as const,
     color: "var(--text-hint)",
-    textAlign: "center" as const,
-    maxWidth: "460px",
-    lineHeight: "1.6",
+  },
+  emptyComposerToolRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flexWrap: "wrap" as const,
+  },
+  emptyTopToolBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    height: "34px",
+    padding: "0 12px",
+    borderRadius: "999px",
+    border: "1px solid var(--border-dim)",
+    background: "color-mix(in srgb, var(--bg-card) 74%, transparent)",
+    color: "var(--text-secondary)",
+    fontSize: "12px",
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  emptyComposerInputShell: {
+    borderRadius: "24px",
+    border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-dim))",
+    background:
+      "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 72%, transparent))",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)",
+  },
+  emptyComposerTextarea: {
+    width: "100%",
+    minHeight: "150px",
+    padding: "20px 22px",
+    border: "none",
+    outline: "none",
+    resize: "none" as const,
+    background: "transparent",
+    color: "var(--text-primary)",
+    fontSize: "19px",
+    lineHeight: "1.7",
+    fontFamily: "var(--font-ui)",
+    boxSizing: "border-box" as const,
+  },
+  emptyComposerActionRow: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: "10px",
+  },
+  emptyComposerActionBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
+    minHeight: "38px",
+    padding: "8px 13px",
+    borderRadius: "999px",
+    border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-dim))",
+    background: "color-mix(in srgb, var(--bg-card) 68%, transparent)",
+    color: "var(--text-secondary)",
+    fontSize: "12.5px",
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  emptyComposerActionIcon: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "18px",
+    height: "18px",
+    color: "var(--text-primary)",
+  },
+  emptyComposerActionLabel: {
+    whiteSpace: "nowrap" as const,
+  },
+  emptyComposerFooter: {
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "14px",
+    paddingTop: "2px",
+  },
+  emptyComposerFootnote: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    flexWrap: "wrap" as const,
+    color: "var(--text-muted)",
+    fontSize: "12px",
+    lineHeight: 1.6,
+  },
+  emptyComposerFootnoteDot: {
+    width: "4px",
+    height: "4px",
+    borderRadius: "999px",
+    background: "var(--text-hint)",
+    flexShrink: 0,
+  },
+  emptyComposerBottomRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "12px",
+    flexWrap: "wrap" as const,
+  },
+  emptyComposerSecondaryRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    flexWrap: "wrap" as const,
+  },
+  emptySecondaryBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "8px 12px",
+    borderRadius: "999px",
+    border: "1px solid var(--border-dim)",
+    background: "transparent",
+    color: "var(--text-secondary)",
+    fontSize: "12px",
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  emptyComposerSendBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
+    height: "44px",
+    padding: "0 18px",
+    borderRadius: "999px",
+    border: "none",
+    background:
+      "linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 74%, white))",
+    color: "#fff",
+    fontSize: "13px",
+    fontWeight: 700,
+    cursor: "pointer",
+    boxShadow: "0 18px 28px -16px color-mix(in srgb, var(--accent) 60%, transparent)",
   },
   messageBubbleWrap: (isUser: boolean) => ({
     display: "flex",
@@ -825,6 +1271,42 @@ const styles = {
   assistantReplyBubble: {
     background:
       "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
+  },
+  toolSummaryCard: {
+    width: "100%",
+    padding: "14px 16px",
+    borderRadius: "22px 22px 22px 8px",
+    border: "1px solid color-mix(in srgb, var(--warning, #d97706) 22%, var(--border-dim))",
+    background:
+      "linear-gradient(180deg, rgba(217,119,6,0.08), color-mix(in srgb, var(--bg-card) 94%, transparent))",
+    boxShadow: "0 16px 32px rgba(15, 23, 42, 0.05)",
+  },
+  toolSummaryHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flexWrap: "wrap" as const,
+    marginBottom: "10px",
+  },
+  toolSummaryBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "4px 9px",
+    borderRadius: "999px",
+    background: "rgba(217,119,6,0.12)",
+    color: "var(--warning, #d97706)",
+    fontSize: "11px",
+    fontWeight: 700,
+    letterSpacing: "0.02em",
+  },
+  toolSummaryName: {
+    fontSize: "12px",
+    fontWeight: 600,
+    color: "var(--text-primary)",
+  },
+  toolSummaryMode: {
+    fontSize: "11px",
+    color: "var(--text-secondary)",
   },
   inputArea: {
     display: "flex",

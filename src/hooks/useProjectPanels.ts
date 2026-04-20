@@ -11,6 +11,7 @@ import {
 
 export function useProjectPanels() {
   const [rightPanel, setRightPanel] = useState<RightPanel>(null);
+  const [editorWorkbenchVisible, setEditorWorkbenchVisible] = useState(true);
   const [openFilesState, setOpenFilesState] = useState<{
     tabs: OpenFileTab[];
     activeTabId: string | null;
@@ -32,6 +33,7 @@ export function useProjectPanels() {
   }, []);
 
   const handleFileSelect = useCallback((path: string, name: string) => {
+    setEditorWorkbenchVisible(true);
     setOpenDiff(null);
     setOpenFilesState((prev) => {
       const existingTab = prev.tabs.find((tab) => tab.path === path);
@@ -122,15 +124,26 @@ export function useProjectPanels() {
   }, []);
 
   const handleDiffFileSelect = useCallback((filePath: string, staged: boolean, label: string) => {
+    setEditorWorkbenchVisible(true);
     setOpenDiff({ kind: "file", filePath, staged, label });
   }, []);
 
   const handleCommitSelect = useCallback((hash: string, message: string) => {
+    setEditorWorkbenchVisible(true);
     setOpenDiff({ kind: "commit", hash, message });
   }, []);
 
   const handleCommitFileClick = useCallback((hash: string, filePath: string, label: string) => {
+    setEditorWorkbenchVisible(true);
     setOpenDiff({ kind: "commit-file", hash, filePath, label });
+  }, []);
+
+  const hideEditorWorkbench = useCallback(() => {
+    setEditorWorkbenchVisible(false);
+  }, []);
+
+  const showEditorWorkbench = useCallback(() => {
+    setEditorWorkbenchVisible(true);
   }, []);
 
   const clearFileAndDiff = useCallback(() => {
@@ -183,6 +196,7 @@ export function useProjectPanels() {
 
   return {
     rightPanel,
+    editorWorkbenchVisible,
     openFiles: openFilesState.tabs,
     activeFileTabId: openFilesState.activeTabId,
     openDiff,
@@ -201,6 +215,8 @@ export function useProjectPanels() {
     handleDiffFileSelect,
     handleCommitSelect,
     handleCommitFileClick,
+    hideEditorWorkbench,
+    showEditorWorkbench,
     clearFileAndDiff,
     handleRightResizeStart,
     handleTerminalResizeStart,

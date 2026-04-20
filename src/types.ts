@@ -203,6 +203,23 @@ export type DispatcherAgentEvent =
   | { event: "assistantMessage"; data: { message: DispatcherMessage } }
   | { event: "toolStarted"; data: { toolCallId?: string; name: string; arguments: string } }
   | {
+      event: "toolSummaryStarted";
+      data: {
+        toolCallId?: string;
+        name: string;
+        resultMode: DispatcherToolResultMode;
+      };
+    }
+  | {
+      event: "toolSummaryDelta";
+      data: {
+        toolCallId?: string;
+        name: string;
+        delta: string;
+        resultMode: DispatcherToolResultMode;
+      };
+    }
+  | {
       event: "toolFinished";
       data: {
         toolCallId?: string;

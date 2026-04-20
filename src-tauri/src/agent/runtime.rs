@@ -107,6 +107,17 @@ pub enum AgentEvent {
         name: String,
         arguments: String,
     },
+    ToolSummaryStarted {
+        tool_call_id: Option<String>,
+        name: String,
+        result_mode: String,
+    },
+    ToolSummaryDelta {
+        tool_call_id: Option<String>,
+        name: String,
+        delta: String,
+        result_mode: String,
+    },
     ToolFinished {
         tool_call_id: Option<String>,
         name: String,
@@ -721,6 +732,27 @@ impl DispatcherAgent {
                     &tool_call.name,
                     &tool_call.arguments,
                     &result,
+                    |result_mode| {
+                        emit(
+                            on_event,
+                            AgentEvent::ToolSummaryStarted {
+                                tool_call_id: Some(tool_call.id.clone()),
+                                name: tool_call.name.clone(),
+                                result_mode: result_mode.to_string(),
+                            },
+                        );
+                    },
+                    |delta| {
+                        emit(
+                            on_event,
+                            AgentEvent::ToolSummaryDelta {
+                                tool_call_id: Some(tool_call.id.clone()),
+                                name: tool_call.name.clone(),
+                                delta: delta.to_string(),
+                                result_mode: "conservative_summary".to_string(),
+                            },
+                        );
+                    },
                 )
                 .await
                 {

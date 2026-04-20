@@ -1,3 +1,8 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+
 use serde_json::Value;
 use tokio::time::{timeout, Duration};
 
@@ -53,12 +58,18 @@ pub struct PreparedToolResult {
     pub artifacts: Vec<ToolArtifactDraft>,
 }
 
-pub async fn prepare_tool_result(
+pub async fn prepare_tool_result<FStart, FDelta>(
     provider: &OpenAiCompatProvider,
     tool_name: &str,
     args: &Value,
     raw_output: &str,
-) -> Result<PreparedToolResult, SummaryError> {
+    on_display_stream_start: FStart,
+    on_display_delta: FDelta,
+) -> Result<PreparedToolResult, SummaryError>
+where
+    FStart: Fn(&'static str) + Send + Sync,
+    FDelta: Fn(&str) + Send + Sync,
+{
     let trimmed_raw = raw_output.trim();
     if trimmed_raw.is_empty() {
         return Ok(PreparedToolResult {
@@ -72,6 +83,7 @@ pub async fn prepare_tool_result(
     let normalized = normalize_tool_output(raw_output);
     let normalized_trimmed = normalized.trim();
     let artifacts = vec![build_raw_tool_artifact(tool_name, raw_output)];
+    let on_display_delta = Arc::new(on_display_delta);
 
     match decide_tool_result_action(tool_name, args, trimmed_raw) {
         ToolResultAction::KeepRaw => Ok(PreparedToolResult {
@@ -80,18 +92,43 @@ pub async fn prepare_tool_result(
             result_mode: tool_result_mode_label(ToolResultAction::KeepRaw),
             artifacts,
         }),
-        ToolResultAction::HighFidelitySummarize => summarize_with_model(
-            provider,
-            build_dual_tool_summary_prompt(tool_name, normalized_trimmed),
-        )
-        .await
-        .map(parse_dual_tool_summary)
-        .map(|(context_payload, display_content)| PreparedToolResult {
-            context_payload,
-            display_content,
-            result_mode: tool_result_mode_label(ToolResultAction::HighFidelitySummarize),
-            artifacts,
-        }),
+        ToolResultAction::HighFidelitySummarize => {
+            let result_mode = tool_result_mode_label(ToolResultAction::HighFidelitySummarize);
+            let display_stream = Arc::new(Mutex::new(TaggedBlockStream::new("DISPLAY_SUMMARY")));
+            let emitted_summary = Arc::new(AtomicBool::new(false));
+            on_display_stream_start(result_mode);
+            let raw_summary = summarize_with_model(
+                provider,
+                build_dual_tool_summary_prompt(tool_name, normalized_trimmed),
+                {
+                    let display_stream = Arc::clone(&display_stream);
+                    let emitted_summary = Arc::clone(&emitted_summary);
+                    let on_display_delta = Arc::clone(&on_display_delta);
+                    move |delta| {
+                        let streamed = display_stream
+                            .lock()
+                            .expect("tool summary stream poisoned")
+                            .push(delta);
+                        if streamed.is_empty() {
+                            return;
+                        }
+                        emitted_summary.store(true, Ordering::Relaxed);
+                        on_display_delta(&streamed);
+                    }
+                },
+            )
+            .await?;
+            let (context_payload, display_content) = parse_dual_tool_summary(raw_summary);
+            if !emitted_summary.load(Ordering::Relaxed) && !display_content.is_empty() {
+                on_display_delta(&display_content);
+            }
+            Ok(PreparedToolResult {
+                context_payload,
+                display_content,
+                result_mode,
+                artifacts,
+            })
+        }
     }
 }
 
@@ -112,7 +149,7 @@ pub async fn summarize_dispatch_result(
         return Ok(trimmed.to_string());
     }
 
-    summarize_with_model(provider, build_dispatch_summary_prompt(trimmed)).await
+    summarize_with_model(provider, build_dispatch_summary_prompt(trimmed), |_| {}).await
 }
 
 pub fn build_summary_failure_message(error: &str) -> String {
@@ -124,12 +161,13 @@ pub fn build_summary_failure_message(error: &str) -> String {
 async fn summarize_with_model(
     provider: &OpenAiCompatProvider,
     prompt: String,
+    on_delta: impl FnMut(&str),
 ) -> Result<String, SummaryError> {
     let summary_provider = provider.with_model(SUMMARY_MODEL);
     let debug_context = build_summary_debug_context(&summary_provider, &prompt);
     let response = timeout(
         Duration::from_secs(SUMMARY_TIMEOUT_SECS),
-        summary_provider.chat_stream(&[ChatMessage::system(prompt)], &[], |_| {}),
+        summary_provider.chat_stream(&[ChatMessage::system(prompt)], &[], on_delta),
     )
     .await
     .map_err(|_| {
@@ -197,17 +235,17 @@ fn build_dual_tool_summary_prompt(tool_name: &str, raw_output: &str) -> String {
 要求：\n\
 - 只保留原文里明确出现的事实，不要猜测。\n\
 - 输出必须严格分成两个区块，且只能使用下面的标签，不要额外添加解释、标题或 Markdown 代码块。\n\
-- `<CONTEXT_PAYLOAD>`：写给主模型，要求高信息密度，尽量保留原始顺序、关键实体名、文件路径、符号名、配置键、错误文本、数量和退出状态；如果内容主要是代码、配置、逐行检索结果、文件清单或其他精确检索输出，只能做最轻量压缩，严禁改写代码含义、删除关键行号、文件名或配置键；{focus}\n\
 - `<DISPLAY_SUMMARY>`：写给前端展示，要求对人类更友好，聚焦结论、关键事实和为什么值得关注，可以比上下文回写更易读，但不能脱离原文事实。\n\
+- `<CONTEXT_PAYLOAD>`：写给主模型，要求高信息密度，尽量保留原始顺序、关键实体名、文件路径、符号名、配置键、错误文本、数量和退出状态；如果内容主要是代码、配置、逐行检索结果、文件清单或其他精确检索输出，只能做最轻量压缩，严禁改写代码含义、删除关键行号、文件名或配置键；{focus}\n\
 - 如果内容是命令输出，优先保留命令结果、失败原因、关键日志、测试失败项和退出状态。\n\
 - 需要压缩，但不要过度归纳；宁可稍长，也不要丢掉影响后续判断的细节。\n\
 - 严格使用以下格式输出：\n\
-<CONTEXT_PAYLOAD>\n\
-...\n\
-</CONTEXT_PAYLOAD>\n\
 <DISPLAY_SUMMARY>\n\
 ...\n\
 </DISPLAY_SUMMARY>\n\
+<CONTEXT_PAYLOAD>\n\
+...\n\
+</CONTEXT_PAYLOAD>\n\
 工具名：{tool_name}\n\
 工具原始输出如下：\n{}",
         raw_output.trim()
@@ -361,6 +399,58 @@ fn extract_tagged_block(output: &str, tag: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+#[derive(Debug)]
+struct TaggedBlockStream {
+    start_tag: String,
+    end_tag: String,
+    buffer: String,
+    trim_prefix_bytes: usize,
+    emitted_bytes: usize,
+}
+
+impl TaggedBlockStream {
+    fn new(tag: &str) -> Self {
+        Self {
+            start_tag: format!("<{tag}>"),
+            end_tag: format!("</{tag}>"),
+            buffer: String::new(),
+            trim_prefix_bytes: 0,
+            emitted_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, delta: &str) -> String {
+        if delta.is_empty() {
+            return String::new();
+        }
+        self.buffer.push_str(delta);
+
+        let Some(start) = self.buffer.find(&self.start_tag) else {
+            return String::new();
+        };
+        let content_start = start + self.start_tag.len();
+        let content_tail = &self.buffer[content_start..];
+        let content_end = content_tail
+            .find(&self.end_tag)
+            .unwrap_or(content_tail.len());
+        let content = &content_tail[..content_end];
+
+        if self.emitted_bytes == 0 {
+            let trimmed = content.trim_start_matches(['\r', '\n']);
+            self.trim_prefix_bytes = content.len() - trimmed.len();
+        }
+
+        let visible_start = self.trim_prefix_bytes + self.emitted_bytes;
+        if content.len() <= visible_start {
+            return String::new();
+        }
+
+        let segment = &content[visible_start..];
+        self.emitted_bytes += segment.len();
+        segment.to_string()
     }
 }
 

@@ -197,7 +197,7 @@ impl OpenAiCompatProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        on_delta: impl Fn(&str),
+        mut on_delta: impl FnMut(&str),
     ) -> Result<LlmResponse> {
         if !self.is_configured() {
             return Err(anyhow!("LLM API Key 尚未配置。"));

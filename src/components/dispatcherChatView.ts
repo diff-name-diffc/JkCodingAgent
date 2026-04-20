@@ -16,7 +16,15 @@ interface OutboundToolCall {
 interface DispatcherAssistantTurn {
   id: string;
   tools: ToolActivityItem[];
-  responseParts: string[];
+  segments: AssistantTurnSegment[];
+}
+
+export interface AssistantTurnSegment {
+  kind: "assistant-text" | "tool-summary";
+  text: string;
+  toolCallId?: string;
+  toolName?: string;
+  resultMode?: DispatcherToolResultMode;
 }
 
 type DispatcherDisplayItem =
@@ -37,7 +45,7 @@ export function buildDispatcherDisplayItems(
     currentTurn = {
       id: `assistant-turn-${seedId}`,
       tools: [],
-      responseParts: [],
+      segments: [],
     };
     items.push({
       kind: "assistant",
@@ -73,20 +81,37 @@ export function buildDispatcherDisplayItems(
 
       const content = message.content.trim();
       if (content) {
-        turn.responseParts.push(content);
+        pushAssistantSegment(turn.segments, {
+          kind: "assistant-text",
+          text: content,
+        });
       }
       continue;
     }
 
     if (message.role === "tool") {
+      const shouldInlineSummary = shouldRenderToolSummaryInline(message.toolResultMode);
+      const displayText = shouldInlineSummary ? undefined : message.content;
+
       upsertToolActivity(turn.tools, {
         key: message.toolCallId || `${message.id}-${message.toolName || "tool"}`,
         name: message.toolName || "tool",
-        displayText: message.content,
+        displayText,
         detailRefs: message.toolArtifacts,
         resultMode: message.toolResultMode,
         status: "completed",
       });
+
+      const content = message.content.trim();
+      if (shouldInlineSummary && content) {
+        pushAssistantSegment(turn.segments, {
+          kind: "tool-summary",
+          text: content,
+          toolCallId: message.toolCallId,
+          toolName: message.toolName,
+          resultMode: message.toolResultMode,
+        });
+      }
     }
   }
 
@@ -94,7 +119,7 @@ export function buildDispatcherDisplayItems(
     (item) =>
       item.kind === "user" ||
       item.turn.tools.length > 0 ||
-      item.turn.responseParts.some((part) => part.trim()),
+      item.turn.segments.some((segment) => segment.text.trim()),
   );
 }
 
@@ -140,7 +165,9 @@ export function finishLiveToolActivity(
   if (matchIndex >= 0) {
     nextTools[matchIndex] = {
       ...nextTools[matchIndex],
-      displayText: payload.displayText,
+      displayText: shouldRenderToolSummaryInline(payload.resultMode)
+        ? undefined
+        : payload.displayText,
       detailRefs: payload.detailRefs,
       resultMode: payload.resultMode,
       status: "completed",
@@ -151,12 +178,68 @@ export function finishLiveToolActivity(
   nextTools.push({
     key: payload.toolCallId || createLiveToolKey(payload.name, nextTools.length),
     name: payload.name,
-    displayText: payload.displayText,
+    displayText: shouldRenderToolSummaryInline(payload.resultMode) ? undefined : payload.displayText,
     detailRefs: payload.detailRefs,
     resultMode: payload.resultMode,
     status: "completed",
   });
   return nextTools;
+}
+
+export function appendAssistantTextSegment(
+  segments: AssistantTurnSegment[],
+  delta: string,
+): AssistantTurnSegment[] {
+  return appendSegmentText(segments, {
+    kind: "assistant-text",
+    text: delta,
+  });
+}
+
+export function appendToolSummarySegment(
+  segments: AssistantTurnSegment[],
+  payload: {
+    toolCallId?: string;
+    name: string;
+    delta: string;
+    resultMode: DispatcherToolResultMode;
+  },
+): AssistantTurnSegment[] {
+  return appendSegmentText(segments, {
+    kind: "tool-summary",
+    text: payload.delta,
+    toolCallId: payload.toolCallId,
+    toolName: payload.name,
+    resultMode: payload.resultMode,
+  });
+}
+
+function appendSegmentText(
+  segments: AssistantTurnSegment[],
+  incoming: AssistantTurnSegment,
+): AssistantTurnSegment[] {
+  const nextSegments = [...segments];
+  const lastSegment = nextSegments[nextSegments.length - 1];
+  const matchesLastSegment =
+    lastSegment &&
+    lastSegment.kind === incoming.kind &&
+    (incoming.kind !== "tool-summary" ||
+      (lastSegment.toolCallId ?? lastSegment.toolName) ===
+        (incoming.toolCallId ?? incoming.toolName));
+
+  if (matchesLastSegment) {
+    nextSegments[nextSegments.length - 1] = {
+      ...lastSegment,
+      text: `${lastSegment.text}${incoming.text}`,
+      resultMode: incoming.resultMode ?? lastSegment.resultMode,
+      toolCallId: incoming.toolCallId ?? lastSegment.toolCallId,
+      toolName: incoming.toolName ?? lastSegment.toolName,
+    };
+    return nextSegments;
+  }
+
+  nextSegments.push(incoming);
+  return nextSegments;
 }
 
 function parseToolCalls(raw: string | undefined): Array<{
@@ -211,4 +294,15 @@ function prettyPrintToolPayload(raw: string | undefined): string {
 
 function createLiveToolKey(name: string, index: number): string {
   return `live-${name}-${index}-${Date.now()}`;
+}
+
+function pushAssistantSegment(segments: AssistantTurnSegment[], incoming: AssistantTurnSegment) {
+  const next = appendSegmentText(segments, incoming);
+  segments.splice(0, segments.length, ...next);
+}
+
+function shouldRenderToolSummaryInline(
+  mode: DispatcherToolResultMode | undefined,
+): mode is Exclude<DispatcherToolResultMode, "raw"> {
+  return mode === "summary" || mode === "conservative_summary";
 }

@@ -106,6 +106,7 @@ export function ToolActivityBubble({
             : false;
           const detailRefs = tool.detailRefs ?? [];
           const hasDisplayText = Boolean(tool.displayText?.trim());
+          const showSummaryInConversation = shouldDisplaySummaryInConversation(tool.resultMode);
 
           return (
             <div
@@ -163,6 +164,10 @@ export function ToolActivityBubble({
                     </div>
                   )}
 
+                  {showSummaryInConversation && (
+                    <div style={styles.infoState}>压缩后的展示结果已在会话流中展示，用于体现执行进度。</div>
+                  )}
+
                   {detailRefs.length > 0 && (
                     <div style={styles.block}>
                       <div style={styles.blockLabel}>详细结果引用</div>
@@ -194,7 +199,7 @@ export function ToolActivityBubble({
                     </div>
                   )}
 
-                  {!hasDisplayText && detailRefs.length === 0 && (
+                  {!hasDisplayText && detailRefs.length === 0 && !showSummaryInConversation && (
                     <div style={styles.pendingText}>
                       {tool.status === "running" ? "等待工具返回..." : "工具未返回可展示内容"}
                     </div>
@@ -261,6 +266,10 @@ function toolModeBadgeStyle(mode: DispatcherToolResultMode): CSSProperties {
     background,
     borderColor: `color-mix(in srgb, ${accent} 24%, transparent)`,
   };
+}
+
+function shouldDisplaySummaryInConversation(mode: DispatcherToolResultMode | undefined): boolean {
+  return mode === "summary" || mode === "conservative_summary";
 }
 
 const styles = {
@@ -501,6 +510,15 @@ const styles = {
     lineHeight: 1.5,
     whiteSpace: "pre-wrap" as const,
     wordBreak: "break-word" as const,
+  },
+  infoState: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: "rgba(217,119,6,0.08)",
+    border: "1px solid rgba(217,119,6,0.18)",
+    color: "var(--text-secondary)",
+    fontSize: 12,
+    lineHeight: 1.5,
   },
   pendingText: {
     padding: "10px 12px",

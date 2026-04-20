@@ -14,6 +14,7 @@ export function FileViewer({
   onCloseOtherTabs,
   onCloseTabsToRight,
   onCloseAllTabs,
+  onHide,
   isDark,
   onRunMakeTarget: _onRunMakeTarget,
 }: {
@@ -25,6 +26,7 @@ export function FileViewer({
   onCloseOtherTabs: (tabId: string) => void;
   onCloseTabsToRight: (tabId: string) => void;
   onCloseAllTabs: () => void;
+  onHide: () => void;
   isDark: boolean;
   onRunMakeTarget?: (target: string) => void;
 }) {
@@ -215,6 +217,28 @@ export function FileViewer({
             </Popover.Content>
           </Popover.Portal>
         </Popover.Root>
+
+        <button
+          type="button"
+          title="隐藏文件编辑器"
+          aria-label="隐藏文件编辑器"
+          onClick={onHide}
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 12,
+            border: "1px solid var(--border-dim)",
+            background: "color-mix(in srgb, var(--bg-card) 88%, transparent)",
+            color: "var(--text-secondary)",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          <X size={15} />
+        </button>
       </div>
 
       <div

@@ -10,7 +10,7 @@ import {
   ChevronDown,
   Check,
 } from "lucide-react";
-import { getGitStatusColor } from "../utils";
+import { getGitStatusColor, fileName, fileDir } from "../utils";
 import { FileGlyph } from "../file-icons";
 
 interface GitCommit {
@@ -56,15 +56,6 @@ interface Props {
   onCommitSelect: (hash: string, message: string) => void;
   onFileClick?: (hash: string, filePath: string, label: string) => void;
   width?: number;
-}
-
-function fileName(path: string): string {
-  return path.split("/").pop() ?? path;
-}
-
-function fileDir(path: string): string {
-  const parts = path.split("/");
-  return parts.length > 1 ? parts.slice(0, -1).join("/") : "";
 }
 
 export function GitHistory({ projectPath, onCommitSelect, onFileClick, width = 280 }: Props) {

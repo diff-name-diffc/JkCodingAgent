@@ -142,7 +142,6 @@ export function ProjectPage({
   const [subProcessTaskMap, setSubProcessTaskMap] = useState<Record<string, string>>({});
   const shellRef = useRef<ShellTerminalPanelHandle>(null);
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
-  const pendingCmdRef = useRef<string | null>(null);
   const dispatcherChatRef = useRef<DispatcherChatHandle>(null);
   /** Track subprocess id → owning dispatcher session for result injection */
   const pendingDispatchRef = useRef<
@@ -204,26 +203,6 @@ export function ProjectPage({
       setShowSessionWorkbench(true);
     }
   }, [hasEditorWorkbenchContent]);
-
-  const handleRunMakeTarget = useCallback(
-    (target: string) => {
-      const cmd = `make ${target}\n`;
-      if (showShellTerminal && shellRef.current) {
-        shellRef.current.sendCommand(cmd);
-      } else {
-        pendingCmdRef.current = cmd;
-        setShowShellTerminal(true);
-      }
-    },
-    [showShellTerminal],
-  );
-
-  const handleShellReady = useCallback(() => {
-    if (pendingCmdRef.current) {
-      shellRef.current?.sendCommand(pendingCmdRef.current);
-      pendingCmdRef.current = null;
-    }
-  }, []);
 
   const refreshMcpStatus = useCallback(async () => {
     setMcpChecking(true);
@@ -732,7 +711,6 @@ export function ProjectPage({
                       onCloseAllTabs={handleCloseAllFileTabs}
                       onHide={hideEditorWorkbench}
                       isDark={isDark}
-                      onRunMakeTarget={handleRunMakeTarget}
                     />
                   )}
                 </ErrorBoundary>
@@ -814,7 +792,6 @@ export function ProjectPage({
             isActive={visible}
             onClose={() => setShowShellTerminal(false)}
             isDark={isDark}
-            onReady={handleShellReady}
             height={terminalHeight}
             onResizeStart={handleTerminalResizeStart}
           />

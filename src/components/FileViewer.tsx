@@ -16,7 +16,6 @@ export function FileViewer({
   onCloseAllTabs,
   onHide,
   isDark,
-  onRunMakeTarget: _onRunMakeTarget,
 }: {
   tabs: OpenFileTab[];
   activeTabId: string | null;
@@ -28,7 +27,6 @@ export function FileViewer({
   onCloseAllTabs: () => void;
   onHide: () => void;
   isDark: boolean;
-  onRunMakeTarget?: (target: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
 

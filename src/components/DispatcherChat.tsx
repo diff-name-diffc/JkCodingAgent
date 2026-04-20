@@ -1347,13 +1347,6 @@ const styles = {
     transition: "opacity 0.2s, transform 0.1s",
     boxShadow: "0 18px 28px -16px color-mix(in srgb, var(--accent) 60%, transparent)",
   },
-  sendBtnDisabled: {
-    opacity: 0.5,
-    cursor: "not-allowed",
-    background: "var(--bg-subtle)",
-    color: "var(--text-hint)",
-    boxShadow: "none",
-  },
   // ── Approval dialog styles ──
   approvalOverlay: {
     position: "absolute" as const,

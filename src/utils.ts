@@ -148,3 +148,14 @@ export const CODE_EXTS = new Set([
   "gql",
   "proto",
 ]);
+
+// ── Git 文件路径工具 ──────────────────────────────────────────────────────────
+
+export function fileName(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
+export function fileDir(path: string): string {
+  const parts = path.split("/");
+  return parts.length > 1 ? parts.slice(0, -1).join("/") : "";
+}

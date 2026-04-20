@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, Filter, GitCommit, Sparkles, ChevronRight, ChevronDown } from "lucide-react";
 import { useCancellableInvoke } from "../hooks/useCancellableInvoke";
-import { getGitStatusColor, getGitStatusLabel } from "../utils";
+import { getGitStatusColor, getGitStatusLabel, fileName, fileDir } from "../utils";
 import { FileGlyph } from "../file-icons";
 
 interface GitFileChange {
@@ -16,14 +16,6 @@ interface Props {
   currentTaskCreatedAt: number | null;
   onFileSelect: (filePath: string, staged: boolean, label: string) => void;
   width?: number;
-}
-
-function fileName(path: string): string {
-  return path.split("/").pop() ?? path;
-}
-function fileDir(path: string): string {
-  const parts = path.split("/");
-  return parts.length > 1 ? parts.slice(0, -1).join("/") : "";
 }
 
 export function GitChanges({
@@ -226,7 +218,7 @@ export function GitChanges({
             fontWeight: 500,
             border: "none",
             cursor: "pointer",
-            background: tab === "task" ? "none" : "none",
+            background: "none",
             color: tab === "task" ? "var(--text-primary)" : "var(--text-muted)",
           }}
         >

@@ -351,7 +351,7 @@ fn default_result_mode(tool_name: &str) -> ToolResultMode {
 
 fn tool_output_kind(tool_name: &str) -> ToolOutputKind {
     match tool_name {
-        "read_file" | "list_dir" | "glob" => ToolOutputKind::Exact,
+        "read_file" | "list_dir" | "glob" | "grep" => ToolOutputKind::Exact,
         "exec" => ToolOutputKind::Command,
         "write_file" | "edit_file" => ToolOutputKind::Mutation,
         "message" => ToolOutputKind::Message,
@@ -363,6 +363,7 @@ fn tool_summary_focus(tool_name: &str) -> &'static str {
     match tool_name {
         "read_file" => "保留关键文件路径、符号名、行号范围、配置键和能支持判断的核心实现细节",
         "list_dir" | "glob" => "保留目录层级、关键文件名、数量和显著的结构特征",
+        "grep" => "保留匹配文件路径、行号、命中片段、上下文和能支撑后续 read_file 的关键关键词",
         "exec" => "保留命令结果、错误文本、失败项、退出状态、关键路径和数量统计",
         _ => "保留后续判断最依赖的事实、路径、标识符和数量信息",
     }
@@ -621,6 +622,12 @@ mod tests {
     #[test]
     fn exact_tools_keep_medium_sized_raw_output_by_default() {
         let action = decide_tool_result_action("read_file", &json!({}), &"a".repeat(2_000));
+        assert_eq!(action, ToolResultAction::KeepRaw);
+    }
+
+    #[test]
+    fn grep_is_treated_as_exact_output() {
+        let action = decide_tool_result_action("grep", &json!({}), &"a".repeat(2_000));
         assert_eq!(action, ToolResultAction::KeepRaw);
     }
 

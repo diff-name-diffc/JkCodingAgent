@@ -941,6 +941,7 @@ impl DispatcherAgent {
             "edit_file",
             "list_dir",
             "glob",
+            "grep",
             "exec",
             "message",
         ]);

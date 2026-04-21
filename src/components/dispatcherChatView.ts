@@ -17,6 +17,7 @@ interface DispatcherAssistantTurn {
   id: string;
   tools: ToolActivityItem[];
   segments: AssistantTurnSegment[];
+  messageIds: string[];
 }
 
 export interface AssistantTurnSegment {
@@ -46,6 +47,7 @@ export function buildDispatcherDisplayItems(
       id: `assistant-turn-${seedId}`,
       tools: [],
       segments: [],
+      messageIds: [],
     };
     items.push({
       kind: "assistant",
@@ -67,6 +69,7 @@ export function buildDispatcherDisplayItems(
     }
 
     const turn = ensureAssistantTurn(message.id);
+    turn.messageIds.push(message.id);
 
     if (message.role === "assistant") {
       const toolCalls = parseToolCalls(message.toolCallsJson);
@@ -178,7 +181,9 @@ export function finishLiveToolActivity(
   nextTools.push({
     key: payload.toolCallId || createLiveToolKey(payload.name, nextTools.length),
     name: payload.name,
-    displayText: shouldRenderToolSummaryInline(payload.resultMode) ? undefined : payload.displayText,
+    displayText: shouldRenderToolSummaryInline(payload.resultMode)
+      ? undefined
+      : payload.displayText,
     detailRefs: payload.detailRefs,
     resultMode: payload.resultMode,
     status: "completed",

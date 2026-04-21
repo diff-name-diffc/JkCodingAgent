@@ -8,6 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::ipc::Channel;
 
+use super::cad::build_attachment_context;
 use super::config::DispatcherAgentConfig;
 use super::db::{
     DispatcherDb, DispatcherMessageRecord, DispatcherSettingsRecord, DispatcherToolArtifactRef,
@@ -432,6 +433,7 @@ impl DispatcherAgent {
         workspace_id: &str,
         workspace_path: &str,
         user_message: &str,
+        attachment_ids: &[String],
         on_event: Channel<AgentEvent>,
     ) -> Result<AgentTurn> {
         emit(
@@ -447,7 +449,15 @@ impl DispatcherAgent {
                 .with_context(|| format!("create workspace {}", workspace.display()))?;
         }
         let _ = self.project_mcp_registry.ensure_recent(&workspace).await;
-        let user = db.add_visible_message(workspace_id, "user", user_message)?;
+        let attachments = db.get_attachments_by_ids(workspace_id, attachment_ids)?;
+        let context_payload = build_attachment_context(&attachments)
+            .map(|attachment_context| format!("{user_message}\n\n{attachment_context}"));
+        let user = db.add_visible_user_message(
+            workspace_id,
+            user_message,
+            context_payload.as_deref(),
+            attachment_ids,
+        )?;
         emit(&on_event, AgentEvent::UserMessage { message: user });
 
         let provider = self.provider.lock().unwrap().clone();
@@ -585,6 +595,8 @@ impl DispatcherAgent {
         let debug_logger = ContextDebugLogger::new(self.context_debug_enabled(), workspace);
         let tool_context = ToolContext {
             workspace: workspace.to_path_buf(),
+            workspace_id: workspace_id.to_string(),
+            dispatcher_db_path: db.path().clone(),
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: self.config.restrict_to_workspace,
         };
@@ -791,6 +803,12 @@ impl DispatcherAgent {
                     Some(tool_result.result_mode),
                     &tool_result.artifacts,
                 )?;
+
+                if tool_call.name == "cad_save_review_result" {
+                    if let Some(run_id) = extract_cad_review_run_id(&result) {
+                        let _ = db.bind_cad_review_result_message(&run_id, &tool_message.id);
+                    }
+                }
 
                 emit(
                     on_event,
@@ -1258,6 +1276,15 @@ impl DispatcherAgent {
         emit(on_event, AgentEvent::Finished { messages });
         Ok(reply)
     }
+}
+
+fn extract_cad_review_run_id(raw_output: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(raw_output).ok()?;
+    value
+        .get("run")
+        .and_then(|run| run.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn extract_message_content(arguments: &Value) -> Option<String> {

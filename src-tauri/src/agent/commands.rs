@@ -1,6 +1,13 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use tokio::time::{sleep, Duration};
+use uuid::Uuid;
 
+use super::cad::{
+    CadReviewRunDetail, CadReviewRunRecord, DispatcherAttachmentRecord, DwgParseCacheRecord,
+    SaveDwgParseCacheInput,
+};
 use super::config::DispatcherAgentConfig;
 use super::db::{
     DispatcherDb, DispatcherMessageRecord, DispatcherSessionRecord, DispatcherSettingsRecord,
@@ -80,12 +87,78 @@ async fn submit_subprocess_line(
     Ok(())
 }
 
+fn ensure_absolute_path(path: &str, label: &str) -> Result<PathBuf, String> {
+    let value = PathBuf::from(path);
+    if !value.is_absolute() {
+        return Err(format!("{label} 必须是绝对路径"));
+    }
+    Ok(value)
+}
+
+fn attachment_mime_type(file_name: &str) -> String {
+    let lower = file_name.to_ascii_lowercase();
+    if lower.ends_with(".md") || lower.ends_with(".markdown") {
+        "text/markdown".to_string()
+    } else if lower.ends_with(".json") {
+        "application/json".to_string()
+    } else if lower.ends_with(".yaml") || lower.ends_with(".yml") {
+        "application/yaml".to_string()
+    } else if lower.ends_with(".dwg") {
+        "application/acad".to_string()
+    } else if lower.ends_with(".txt") {
+        "text/plain".to_string()
+    } else {
+        "application/octet-stream".to_string()
+    }
+}
+
+fn copy_attachment_into_workspace(
+    project_path: &str,
+    workspace_id: &str,
+    source_path: &str,
+) -> Result<(String, String, u64, String), String> {
+    let project_root = ensure_absolute_path(project_path, "projectPath")?;
+    let source = ensure_absolute_path(source_path, "sourcePath")?;
+    if !source.exists() {
+        return Err(format!("附件文件不存在：{}", source.display()));
+    }
+    if !source.is_file() {
+        return Err(format!("附件路径不是文件：{}", source.display()));
+    }
+
+    let file_name = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "附件文件名无效".to_string())?
+        .to_string();
+    let size_bytes = source
+        .metadata()
+        .map_err(|error| format!("读取附件元数据失败：{error}"))?
+        .len();
+    let attachment_dir = project_root
+        .join(".nezha")
+        .join("dispatcher-attachments")
+        .join(workspace_id);
+    std::fs::create_dir_all(&attachment_dir)
+        .map_err(|error| format!("创建附件目录失败：{error}"))?;
+    let target_path = attachment_dir.join(format!("{}_{}", Uuid::new_v4(), file_name));
+    std::fs::copy(&source, &target_path).map_err(|error| format!("复制附件失败：{error}"))?;
+
+    Ok((
+        file_name.clone(),
+        target_path.to_string_lossy().into_owned(),
+        size_bytes,
+        attachment_mime_type(&file_name),
+    ))
+}
+
 #[tauri::command]
 pub async fn dispatcher_send_message(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
     project_path: String,
     content: String,
+    attachments: Option<Vec<String>>,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     if let Ok(Some(settings)) = state.db.get_settings() {
@@ -97,7 +170,14 @@ pub async fn dispatcher_send_message(
 
     let agent = state.agent.lock().await;
     agent
-        .run(&state.db, &workspace_id, &project_path, &content, on_event)
+        .run(
+            &state.db,
+            &workspace_id,
+            &project_path,
+            &content,
+            attachments.as_deref().unwrap_or(&[]),
+            on_event,
+        )
         .await
         .map_err(|error| error.to_string())
 }
@@ -121,6 +201,116 @@ pub fn dispatcher_clear_messages(
     state
         .db
         .clear_messages(&workspace_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_upload_attachment(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+    project_path: String,
+    source_path: String,
+) -> Result<DispatcherAttachmentRecord, String> {
+    let (original_name, stored_path, size_bytes, mime_type) =
+        copy_attachment_into_workspace(&project_path, &workspace_id, &source_path)?;
+    state
+        .db
+        .create_attachment(
+            &workspace_id,
+            &original_name,
+            &stored_path,
+            &mime_type,
+            size_bytes,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_list_pending_attachments(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+) -> Result<Vec<DispatcherAttachmentRecord>, String> {
+    state
+        .db
+        .list_pending_attachments(&workspace_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_delete_pending_attachment(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+    attachment_id: String,
+) -> Result<(), String> {
+    let record = state
+        .db
+        .get_attachments_by_ids(&workspace_id, &[attachment_id.clone()])
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .next();
+    state
+        .db
+        .delete_pending_attachment(&workspace_id, &attachment_id)
+        .map_err(|error| error.to_string())?;
+    if let Some(record) = record {
+        let _ = std::fs::remove_file(&record.stored_path);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn dispatcher_get_dwg_parse_cache(
+    state: tauri::State<'_, DispatcherState>,
+    project_path: String,
+    file_path: String,
+    file_size: u64,
+    file_mtime: i64,
+    parser_version: String,
+) -> Result<Option<DwgParseCacheRecord>, String> {
+    state
+        .db
+        .get_dwg_parse_cache(
+            &project_path,
+            &file_path,
+            file_size,
+            file_mtime,
+            &parser_version,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_save_dwg_parse_cache(
+    state: tauri::State<'_, DispatcherState>,
+    payload: SaveDwgParseCacheInput,
+) -> Result<DwgParseCacheRecord, String> {
+    state
+        .db
+        .save_dwg_parse_cache(&payload)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_list_cad_review_runs(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+    file_path: Option<String>,
+) -> Result<Vec<CadReviewRunRecord>, String> {
+    state
+        .db
+        .list_cad_review_runs(&workspace_id, file_path.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_get_cad_review_run_detail(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+    run_id: String,
+) -> Result<CadReviewRunDetail, String> {
+    state
+        .db
+        .get_cad_review_run_detail(&workspace_id, &run_id)
         .map_err(|error| error.to_string())
 }
 
@@ -342,4 +532,58 @@ pub fn dispatcher_is_subprocess_exited(
         .dispatcher_exited_subprocesses
         .lock()
         .contains(&task_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::{copy_attachment_into_workspace, ensure_absolute_path};
+
+    fn create_temp_dir(prefix: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create temp dir");
+        root
+    }
+
+    #[test]
+    fn ensure_absolute_path_rejects_relative_input() {
+        let error = ensure_absolute_path("relative/path.md", "sourcePath").unwrap_err();
+        assert!(error.contains("sourcePath 必须是绝对路径"));
+    }
+
+    #[test]
+    fn copy_attachment_into_workspace_copies_file_under_workspace_storage() {
+        let project_root = create_temp_dir("dispatcher-project");
+        let source_root = create_temp_dir("dispatcher-source");
+        let source_path = source_root.join("rules.md");
+        fs::write(&source_path, "# 审查规则\n- 检查尺寸").expect("write source attachment");
+
+        let (original_name, stored_path, size_bytes, mime_type) = copy_attachment_into_workspace(
+            &project_root.to_string_lossy(),
+            "session-1",
+            &source_path.to_string_lossy(),
+        )
+        .expect("copy attachment into workspace");
+
+        assert_eq!(original_name, "rules.md");
+        assert_eq!(mime_type, "text/markdown");
+        assert!(size_bytes > 0);
+        assert!(stored_path.starts_with(
+            project_root
+                .join(".nezha")
+                .join("dispatcher-attachments")
+                .join("session-1")
+                .to_string_lossy()
+                .as_ref()
+        ));
+        assert_eq!(
+            fs::read_to_string(&stored_path).expect("read copied attachment"),
+            "# 审查规则\n- 检查尺寸"
+        );
+
+        let _ = fs::remove_dir_all(project_root);
+        let _ = fs::remove_dir_all(source_root);
+    }
 }

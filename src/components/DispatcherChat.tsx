@@ -8,8 +8,9 @@ import {
   memo,
   useMemo,
 } from "react";
-import type { ReactNode } from "react";
+import type { KeyboardEvent, RefObject, ReactNode } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   User,
   Sparkles,
@@ -21,14 +22,18 @@ import {
   Workflow,
   Settings2,
   PlugZap,
+  Paperclip,
+  Trash2,
 } from "lucide-react";
 import type {
   AgentType,
   DispatchFeedbackState,
+  DispatcherAttachmentRecord,
   DispatcherMessage,
   DispatcherAgentEvent,
   DispatcherAgentTurn,
   DispatcherSettings,
+  DispatcherToolArtifact,
   ProjectMcpStatus,
   SubProcess,
 } from "../types";
@@ -115,6 +120,16 @@ const UserMessageBubble = memo(function UserMessageBubble({
       </div>
       <div style={styles.messageBubble(true)}>
         <div style={styles.messageText}>{message.content}</div>
+        {message.attachments.length > 0 && (
+          <div style={styles.messageAttachmentList}>
+            {message.attachments.map((attachment) => (
+              <div key={attachment.id} style={styles.messageAttachmentItem}>
+                <Paperclip size={12} />
+                <span style={styles.messageAttachmentName}>{attachment.originalName}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -124,10 +139,12 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
   segments,
   tools,
   workspaceId,
+  onArtifactOpen,
 }: {
   segments: AssistantTurnSegment[];
   tools: ToolActivityItem[];
   workspaceId: string;
+  onArtifactOpen?: (artifact: DispatcherToolArtifact) => void;
 }) {
   const visibleSegments = segments.filter((segment) => segment.text.trim());
   if (visibleSegments.length === 0 && tools.length === 0) {
@@ -142,7 +159,11 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
       <div style={styles.assistantTurnStack}>
         {tools.length > 0 && (
           <div style={styles.assistantTurnSection}>
-            <ToolActivityBubble tools={tools} workspaceId={workspaceId} />
+            <ToolActivityBubble
+              tools={tools}
+              workspaceId={workspaceId}
+              onArtifactOpen={onArtifactOpen}
+            />
           </div>
         )}
         {visibleSegments.map((segment, index) => (
@@ -188,13 +209,63 @@ const ToolSummaryBlock = memo(function ToolSummaryBlock({
   );
 });
 
+function formatAttachmentSize(sizeBytes: number): string {
+  if (sizeBytes < 1024) {
+    return `${sizeBytes} B`;
+  }
+  if (sizeBytes < 1024 * 1024) {
+    return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const PendingAttachmentTray = memo(function PendingAttachmentTray({
+  attachments,
+  onRemove,
+}: {
+  attachments: DispatcherAttachmentRecord[];
+  onRemove: (attachmentId: string) => void;
+}) {
+  if (attachments.length === 0) {
+    return null;
+  }
+
+  return (
+    <div style={styles.attachmentTray}>
+      {attachments.map((attachment) => (
+        <div key={attachment.id} style={styles.attachmentChip}>
+          <div style={styles.attachmentChipMain}>
+            <Paperclip size={12} />
+            <span style={styles.attachmentChipName}>{attachment.originalName}</span>
+            <span style={styles.attachmentChipMeta}>
+              {formatAttachmentSize(attachment.sizeBytes)}
+            </span>
+          </div>
+          <button
+            type="button"
+            style={styles.attachmentRemoveBtn}
+            onClick={() => onRemove(attachment.id)}
+            aria-label={`移除附件 ${attachment.originalName}`}
+            title={`移除附件 ${attachment.originalName}`}
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+});
+
 const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   input,
   isLoading,
   autoApprove,
+  pendingAttachments,
   inputRef,
   layoutMode,
   onChangeInput,
+  onPickAttachments,
+  onRemoveAttachment,
   onSelectQuickAction,
   onSend,
   onKeyDown,
@@ -207,12 +278,15 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   input: string;
   isLoading: boolean;
   autoApprove: boolean;
-  inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  pendingAttachments: DispatcherAttachmentRecord[];
+  inputRef: RefObject<HTMLTextAreaElement | null>;
   layoutMode: "single" | "split";
   onChangeInput: (value: string) => void;
+  onPickAttachments: () => void;
+  onRemoveAttachment: (attachmentId: string) => void;
   onSelectQuickAction: (value: string) => void;
   onSend: () => void;
-  onKeyDown: (e: React.KeyboardEvent) => void;
+  onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   onOpenSettings: () => void;
   onOpenMcpStatus: () => void;
   onToggleAutoApprove: () => void;
@@ -251,6 +325,10 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
               <Wrench size={14} />
               免确认 {autoApprove ? "开" : "关"}
             </button>
+            <button type="button" style={styles.emptyTopToolBtn} onClick={onPickAttachments}>
+              <Paperclip size={14} />
+              附件
+            </button>
           </div>
         </div>
 
@@ -268,6 +346,8 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
             disabled={isLoading}
           />
         </div>
+
+        <PendingAttachmentTray attachments={pendingAttachments} onRemove={onRemoveAttachment} />
 
         <div style={styles.emptyComposerActionRow}>
           {EMPTY_QUICK_ACTIONS.map((action) => (
@@ -373,6 +453,8 @@ interface DispatcherChatProps {
   onDispatchExit: (agent: AgentType, reason: string, sessionId: string) => void;
   onOpenMcpStatus: () => void;
   onOpenSettings: () => void;
+  onCadArtifactOpen?: (artifact: DispatcherToolArtifact) => void;
+  activeCadResultMessageId?: string | null;
   onClosePanel?: () => void;
 }
 
@@ -408,6 +490,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       onDispatchExit,
       onOpenMcpStatus,
       onOpenSettings,
+      onCadArtifactOpen,
+      activeCadResultMessageId,
       onClosePanel,
     },
     ref,
@@ -418,11 +502,15 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [streamingSegments, setStreamingSegments] = useState<AssistantTurnSegment[]>([]);
     const [liveToolCalls, setLiveToolCalls] = useState<ToolActivityItem[]>([]);
     const [pendingDispatches, setPendingDispatches] = useState<PendingDispatchApproval[]>([]);
+    const [pendingAttachments, setPendingAttachments] = useState<DispatcherAttachmentRecord[]>([]);
     const [autoApprove, setAutoApprove] = useState(false);
+    const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const inputComposingRef = useRef(false);
+    const messageNodeMapRef = useRef<Map<string, HTMLDivElement>>(new Map());
+    const highlightTimerRef = useRef<number | null>(null);
     const currentSessionIdRef = useRef(sessionId);
     currentSessionIdRef.current = sessionId;
     const activeRunRef = useRef(0);
@@ -459,6 +547,9 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       setStreamingSegments([]);
       setLiveToolCalls([]);
       setPendingDispatches([]);
+      setPendingAttachments([]);
+      setHighlightedMessageId(null);
+      messageNodeMapRef.current.clear();
 
       invoke<DispatcherMessage[]>("dispatcher_list_messages", {
         workspaceId: sessionId,
@@ -469,12 +560,52 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           setMessages(loaded.filter((message) => message.workspaceId === sessionId));
         })
         .catch(console.error);
+
+      invoke<DispatcherAttachmentRecord[]>("dispatcher_list_pending_attachments", {
+        workspaceId: sessionId,
+      })
+        .then((loaded) => {
+          if (currentSessionIdRef.current !== sessionId || historyLoadRef.current !== loadId) {
+            return;
+          }
+          setPendingAttachments(loaded);
+        })
+        .catch(console.error);
     }, [sessionId]);
 
     // Auto-scroll
     useEffect(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages, streamingSegments]);
+
+    useEffect(
+      () => () => {
+        if (highlightTimerRef.current !== null) {
+          window.clearTimeout(highlightTimerRef.current);
+        }
+      },
+      [],
+    );
+
+    useEffect(() => {
+      if (!activeCadResultMessageId) {
+        return;
+      }
+      const node = messageNodeMapRef.current.get(activeCadResultMessageId);
+      if (!node) {
+        return;
+      }
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightedMessageId(activeCadResultMessageId);
+      if (highlightTimerRef.current !== null) {
+        window.clearTimeout(highlightTimerRef.current);
+      }
+      highlightTimerRef.current = window.setTimeout(() => {
+        setHighlightedMessageId((current) =>
+          current === activeCadResultMessageId ? null : current,
+        );
+      }, 2200);
+    }, [activeCadResultMessageId, displayItems]);
 
     const createEventChannel = useCallback((targetSessionId: string, runId: number) => {
       const onEvent = new Channel<DispatcherAgentEvent>();
@@ -616,13 +747,62 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             workspaceId: targetSessionId,
             projectPath,
             content: text,
+            attachments: pendingAttachments.map((attachment) => attachment.id),
             onEvent,
           });
         });
+        setPendingAttachments([]);
       } catch (err) {
         console.error("dispatcher_send_message 失败:", err);
       }
-    }, [enqueueDispatcherRun, input, isLoading, projectPath, sessionId]);
+    }, [enqueueDispatcherRun, input, isLoading, pendingAttachments, projectPath, sessionId]);
+
+    const handlePickAttachments = useCallback(async () => {
+      try {
+        const selected = await openDialog({
+          multiple: true,
+          directory: false,
+          title: "选择会话附件",
+        });
+        if (!selected) {
+          return;
+        }
+
+        const paths = Array.isArray(selected) ? selected : [selected];
+        const uploaded: DispatcherAttachmentRecord[] = [];
+        for (const sourcePath of paths) {
+          const record = await invoke<DispatcherAttachmentRecord>("dispatcher_upload_attachment", {
+            workspaceId: sessionId,
+            projectPath,
+            sourcePath,
+          });
+          uploaded.push(record);
+        }
+
+        if (uploaded.length > 0) {
+          setPendingAttachments((prev) => [...prev, ...uploaded]);
+        }
+      } catch (error) {
+        console.error("上传附件失败:", error);
+      }
+    }, [projectPath, sessionId]);
+
+    const handleRemoveAttachment = useCallback(
+      async (attachmentId: string) => {
+        try {
+          await invoke("dispatcher_delete_pending_attachment", {
+            workspaceId: sessionId,
+            attachmentId,
+          });
+          setPendingAttachments((prev) =>
+            prev.filter((attachment) => attachment.id !== attachmentId),
+          );
+        } catch (error) {
+          console.error("删除附件失败:", error);
+        }
+      },
+      [sessionId],
+    );
 
     // Expose continueWithResult to parent via ref
     useImperativeHandle(
@@ -656,7 +836,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     );
 
     const handleKeyDown = useCallback(
-      (e: React.KeyboardEvent) => {
+      (e: KeyboardEvent<HTMLTextAreaElement>) => {
         if (inputComposingRef.current || isImeComposing(e)) {
           return;
         }
@@ -782,9 +962,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               input={input}
               isLoading={isLoading}
               autoApprove={autoApprove}
+              pendingAttachments={pendingAttachments}
               inputRef={inputRef}
               layoutMode={layoutMode}
               onChangeInput={setInput}
+              onPickAttachments={handlePickAttachments}
+              onRemoveAttachment={handleRemoveAttachment}
               onSelectQuickAction={handleApplyStarterPrompt}
               onSend={handleSend}
               onKeyDown={handleKeyDown}
@@ -799,23 +982,53 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               }}
             />
           )}
-          {displayItems.map((item) =>
-            item.kind === "user" ? (
-              <UserMessageBubble key={item.id} message={item.message} />
-            ) : (
-              <AssistantTurnBubble
+          {displayItems.map((item) => {
+            const messageIds = item.kind === "user" ? [item.message.id] : item.turn.messageIds;
+            const isHighlighted = messageIds.includes(highlightedMessageId ?? "");
+            return (
+              <div
                 key={item.id}
-                segments={item.turn.segments}
-                tools={item.turn.tools}
-                workspaceId={sessionId}
-              />
-            ),
-          )}
+                ref={(node) => {
+                  for (const messageId of messageIds) {
+                    if (node) {
+                      messageNodeMapRef.current.set(messageId, node);
+                    } else {
+                      messageNodeMapRef.current.delete(messageId);
+                    }
+                  }
+                }}
+                data-dispatch-message-id={messageIds.join(",")}
+                data-highlighted={isHighlighted ? "true" : undefined}
+                style={{
+                  borderRadius: 20,
+                  transition: "background 180ms ease, box-shadow 180ms ease",
+                  background: isHighlighted
+                    ? "color-mix(in srgb, var(--accent) 10%, transparent)"
+                    : "transparent",
+                  boxShadow: isHighlighted
+                    ? "0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent)"
+                    : "none",
+                }}
+              >
+                {item.kind === "user" ? (
+                  <UserMessageBubble message={item.message} />
+                ) : (
+                  <AssistantTurnBubble
+                    segments={item.turn.segments}
+                    tools={item.turn.tools}
+                    workspaceId={sessionId}
+                    onArtifactOpen={onCadArtifactOpen}
+                  />
+                )}
+              </div>
+            );
+          })}
           {(hasLiveSegments || liveToolCalls.length > 0) && (
             <AssistantTurnBubble
               segments={streamingSegments}
               tools={liveToolCalls}
               workspaceId={sessionId}
+              onArtifactOpen={onCadArtifactOpen}
             />
           )}
           <div ref={messagesEndRef} />
@@ -824,22 +1037,40 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         {/* Input */}
         {!isEmpty && (
           <div style={styles.inputArea}>
-            <textarea
-              ref={inputRef}
-              style={styles.inputTextarea}
-              placeholder="给调度智能体发送消息..."
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onCompositionStart={() => {
-                inputComposingRef.current = true;
-              }}
-              onCompositionEnd={() => {
-                inputComposingRef.current = false;
-              }}
-              onKeyDown={handleKeyDown}
-              rows={1}
-              disabled={isLoading}
-            />
+            <div style={styles.inputComposer}>
+              <PendingAttachmentTray
+                attachments={pendingAttachments}
+                onRemove={handleRemoveAttachment}
+              />
+              <div style={styles.inputComposerRow}>
+                <button
+                  type="button"
+                  style={styles.attachBtn}
+                  onClick={handlePickAttachments}
+                  title="添加会话附件"
+                  aria-label="添加会话附件"
+                  disabled={isLoading}
+                >
+                  <Paperclip size={15} />
+                </button>
+                <textarea
+                  ref={inputRef}
+                  style={styles.inputTextarea}
+                  placeholder="给调度智能体发送消息..."
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onCompositionStart={() => {
+                    inputComposingRef.current = true;
+                  }}
+                  onCompositionEnd={() => {
+                    inputComposingRef.current = false;
+                  }}
+                  onKeyDown={handleKeyDown}
+                  rows={1}
+                  disabled={isLoading}
+                />
+              </div>
+            </div>
             <button
               style={{ ...styles.sendBtn, opacity: input.trim() && !isLoading ? 1 : 0.5 }}
               onClick={handleSend}
@@ -1064,7 +1295,10 @@ const styles = {
     border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-dim))",
     background:
       "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 94%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
-    boxShadow: layoutMode === "single" ? "0 28px 72px rgba(15, 23, 42, 0.10)" : "0 36px 100px rgba(15, 23, 42, 0.09)",
+    boxShadow:
+      layoutMode === "single"
+        ? "0 28px 72px rgba(15, 23, 42, 0.10)"
+        : "0 36px 100px rgba(15, 23, 42, 0.09)",
     backdropFilter: "blur(22px)",
     WebkitBackdropFilter: "blur(22px)",
     boxSizing: "border-box" as const,
@@ -1268,6 +1502,30 @@ const styles = {
     WebkitUserSelect: "text" as const,
     fontFamily: "var(--font-ui)",
   },
+  messageAttachmentList: {
+    marginTop: "10px",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "8px",
+  },
+  messageAttachmentItem: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
+    width: "fit-content",
+    maxWidth: "100%",
+    padding: "7px 10px",
+    borderRadius: "12px",
+    background: "rgba(255,255,255,0.16)",
+    color: "inherit",
+    fontSize: "12px",
+    fontWeight: 600,
+  },
+  messageAttachmentName: {
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap" as const,
+  },
   markdownBody: {
     fontSize: "14px",
     lineHeight: "1.72",
@@ -1335,6 +1593,19 @@ const styles = {
       "linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 0%, transparent), color-mix(in srgb, var(--bg-card) 40%, transparent))",
     flexShrink: 0,
   },
+  inputComposer: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "10px",
+    minWidth: 0,
+  },
+  inputComposerRow: {
+    display: "flex",
+    alignItems: "flex-end",
+    gap: "10px",
+    minWidth: 0,
+  },
   inputTextarea: {
     flex: 1,
     padding: "14px 16px",
@@ -1350,6 +1621,20 @@ const styles = {
     boxShadow: "0 12px 30px rgba(15, 23, 42, 0.05)",
     transition: "border-color 0.2s, box-shadow 0.2s",
   },
+  attachBtn: {
+    width: "44px",
+    height: "44px",
+    borderRadius: "16px",
+    border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-medium))",
+    background: "color-mix(in srgb, var(--bg-card) 92%, transparent)",
+    color: "var(--text-secondary)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    flexShrink: 0,
+    boxShadow: "0 12px 30px rgba(15, 23, 42, 0.05)",
+  },
   sendBtn: {
     width: "44px",
     height: "44px",
@@ -1364,6 +1649,55 @@ const styles = {
     cursor: "pointer",
     transition: "opacity 0.2s, transform 0.1s",
     boxShadow: "0 18px 28px -16px color-mix(in srgb, var(--accent) 60%, transparent)",
+  },
+  attachmentTray: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: "8px",
+  },
+  attachmentChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
+    minWidth: 0,
+    maxWidth: "100%",
+    padding: "8px 10px",
+    borderRadius: "14px",
+    border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-dim))",
+    background: "color-mix(in srgb, var(--bg-card) 90%, transparent)",
+    color: "var(--text-secondary)",
+  },
+  attachmentChipMain: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "7px",
+    minWidth: 0,
+  },
+  attachmentChipName: {
+    maxWidth: "220px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap" as const,
+    fontSize: "12px",
+    fontWeight: 600,
+  },
+  attachmentChipMeta: {
+    fontSize: "11px",
+    color: "var(--text-muted)",
+    whiteSpace: "nowrap" as const,
+  },
+  attachmentRemoveBtn: {
+    width: "22px",
+    height: "22px",
+    borderRadius: "999px",
+    border: "none",
+    background: "transparent",
+    color: "var(--text-hint)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    flexShrink: 0,
   },
   // ── Approval dialog styles ──
   approvalOverlay: {

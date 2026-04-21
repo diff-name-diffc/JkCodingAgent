@@ -143,6 +143,7 @@ export interface DispatcherMessage {
   toolCallId?: string;
   toolName?: string;
   toolResultMode?: DispatcherToolResultMode;
+  attachments: DispatcherAttachmentRef[];
   toolArtifacts?: DispatcherToolArtifactRef[];
   toolCallsJson?: string;
   createdAt: string;
@@ -158,6 +159,20 @@ export interface DispatcherToolArtifactRef {
   charCount: number;
   lineCount: number;
   createdAt: string;
+}
+
+export interface DispatcherAttachmentRef {
+  id: string;
+  originalName: string;
+  storedPath: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+export interface DispatcherAttachmentRecord extends DispatcherAttachmentRef {
+  workspaceId: string;
+  messageId?: string | null;
 }
 
 export interface DispatcherToolArtifact {
@@ -249,6 +264,115 @@ export interface DispatcherSession {
   title: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CadPoint {
+  x: number;
+  y: number;
+}
+
+export interface CadBBox {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+export interface DwgLayerSummary {
+  name: string;
+  entityCount: number;
+}
+
+export interface DwgBlockSummary {
+  name: string;
+  count: number;
+}
+
+export interface DwgParseSummary {
+  filePath: string;
+  parserVersion: string;
+  totalEntities: number;
+  unknownEntityCount: number;
+  bounds?: CadBBox | null;
+  layers: DwgLayerSummary[];
+  entityCounts: Record<string, number>;
+  textSamples: string[];
+  blocks: DwgBlockSummary[];
+}
+
+export interface CadEntityRecord {
+  id: string;
+  handle: string;
+  entityType: string;
+  rawType: string;
+  layer: string;
+  color?: number | null;
+  lineType?: string | null;
+  text?: string | null;
+  blockName?: string | null;
+  center?: CadPoint | null;
+  radius?: number | null;
+  vertices: CadPoint[];
+  bbox?: CadBBox | null;
+}
+
+export interface DwgParseCacheRecord {
+  id: string;
+  projectPath: string;
+  filePath: string;
+  fileSize: number;
+  fileMtime: number;
+  parserVersion: string;
+  summary: DwgParseSummary;
+  entities: CadEntityRecord[];
+  createdAt: string;
+}
+
+export interface CadEntityQueryFilters {
+  layers?: string[];
+  entityTypes?: string[];
+  textQuery?: string;
+  bbox?: CadBBox | null;
+}
+
+export interface CadEntityQueryResult {
+  items: CadEntityRecord[];
+  total: number;
+  nextCursor?: number | null;
+  appliedFilters: CadEntityQueryFilters;
+}
+
+export interface CadReviewIssue {
+  id: string;
+  runId: string;
+  severity: string;
+  title: string;
+  description: string;
+  layer?: string | null;
+  entityRefs: string[];
+  anchorPoint?: CadPoint | null;
+  bbox?: CadBBox | null;
+  ruleRef?: string | null;
+  createdAt: string;
+}
+
+export interface CadReviewRun {
+  id: string;
+  workspaceId: string;
+  filePath: string;
+  sourceMessageId: string;
+  resultMessageId?: string | null;
+  ruleAttachmentIds: string[];
+  goal: string;
+  status: string;
+  summary: string;
+  issueCount: number;
+  createdAt: string;
+}
+
+export interface CadReviewRunDetail {
+  run: CadReviewRun;
+  issues: CadReviewIssue[];
 }
 
 export interface SubProcess {

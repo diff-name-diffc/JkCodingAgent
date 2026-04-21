@@ -1,9 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AlertCircle, CheckCircle2, Eye, ImageIcon, PencilLine } from "lucide-react";
 import { LargeFileViewer } from "./LargeFileViewer";
 import { MonacoEditorPane } from "./MonacoEditorPane";
 import { ImagePreviewPane } from "./ImagePreviewPane";
+import { DwgWorkbenchPane } from "./DwgWorkbenchPane";
 import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
 import { FileGlyph, resolveFilePresentation, type FilePresentation } from "../../file-icons";
 import type { OpenFileTab } from "../../hooks/useProjectPanels";
@@ -20,6 +29,7 @@ type FileMeta = {
   sizeBytes: number;
   lineCount: number;
   isText: boolean;
+  modifiedAt: number;
 };
 
 const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024;
@@ -208,7 +218,15 @@ function ImageFilePane({
             {filePath}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+          }}
+        >
           {imagePreview && (
             <FileStatusPill>{`${imagePreview.mimeType} · ${(imagePreview.byteLength / 1024).toFixed(1)} KB`}</FileStatusPill>
           )}
@@ -317,7 +335,9 @@ function TextFileHeader({
             fontFamily: "var(--font-mono)",
           }}
         >
-          <span style={{ display: "inline-flex", alignItems: "center", marginRight: 8, flexShrink: 0 }}>
+          <span
+            style={{ display: "inline-flex", alignItems: "center", marginRight: 8, flexShrink: 0 }}
+          >
             <FileGlyph presentation={presentation} size={22} />
           </span>
           {directoryPath ? (
@@ -345,7 +365,15 @@ function TextFileHeader({
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap",
+          justifyContent: "flex-end",
+        }}
+      >
         {isMarkdown && onTogglePreview && (
           <button
             type="button"
@@ -373,7 +401,9 @@ function TextFileHeader({
           </button>
         )}
         <FileStatusPill>{language}</FileStatusPill>
-        <FileStatusPill tone={saveStatus === "error" ? "error" : saveStatus === "saved" ? "success" : "default"}>
+        <FileStatusPill
+          tone={saveStatus === "error" ? "error" : saveStatus === "saved" ? "success" : "default"}
+        >
           {saveStatus === "saved" && <CheckCircle2 size={13} />}
           {saveLabel}
         </FileStatusPill>
@@ -387,11 +417,23 @@ export function FileTabPane({
   tab,
   projectPath,
   isDark,
+  workspaceId,
+  activeCadReviewRunId,
+  activeCadIssueId,
+  onLocateCadResultMessage,
+  onActiveCadReviewRunChange,
+  onActiveCadIssueChange,
 }: {
   active: boolean;
   tab: OpenFileTab;
   projectPath: string;
   isDark: boolean;
+  workspaceId: string | null;
+  activeCadReviewRunId: string | null;
+  activeCadIssueId: string | null;
+  onLocateCadResultMessage?: (messageId: string | null) => void;
+  onActiveCadReviewRunChange: (runId: string | null) => void;
+  onActiveCadIssueChange: (issueId: string | null) => void;
 }) {
   const [previewMode, setPreviewMode] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -412,6 +454,7 @@ export function FileTabPane({
   );
   const isImage = presentation.isPreviewableImage;
   const isMarkdown = presentation.isMarkdown;
+  const isDwg = tab.path.toLowerCase().endsWith(".dwg");
   const language = presentation.monacoLanguage;
 
   useEffect(() => {
@@ -466,7 +509,7 @@ export function FileTabPane({
   }, [projectPath, tab.path]);
 
   useEffect(() => {
-    if (isImage) {
+    if (isImage || isDwg) {
       return;
     }
 
@@ -520,7 +563,7 @@ export function FileTabPane({
     return () => {
       cancelled = true;
     };
-  }, [isImage, projectPath, tab.path]);
+  }, [isDwg, isImage, projectPath, tab.path]);
 
   const handleChange = useCallback(
     (value: string) => {
@@ -555,14 +598,37 @@ export function FileTabPane({
     return <ImageFilePane filePath={tab.path} fileName={tab.name} projectPath={projectPath} />;
   }
 
+  if (isDwg) {
+    return (
+      <DwgWorkbenchPane
+        filePath={tab.path}
+        fileName={tab.name}
+        projectPath={projectPath}
+        workspaceId={workspaceId}
+        isDark={isDark}
+        activeReviewRunId={activeCadReviewRunId}
+        activeIssueId={activeCadIssueId}
+        onLocateResultMessage={onLocateCadResultMessage}
+        onActiveReviewRunChange={onActiveCadReviewRunChange}
+        onActiveIssueChange={onActiveCadIssueChange}
+      />
+    );
+  }
+
   return (
     <PaneShell padding={14} gap={10}>
-              <TextFileHeader
-                presentation={presentation}
-                fileName={tab.name}
-                filePath={tab.path}
-                language={language}
-        saveStatus={fileMeta && fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD ? (largeDirty ? "saving" : "idle") : saveStatus}
+      <TextFileHeader
+        presentation={presentation}
+        fileName={tab.name}
+        filePath={tab.path}
+        language={language}
+        saveStatus={
+          fileMeta && fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD
+            ? largeDirty
+              ? "saving"
+              : "idle"
+            : saveStatus
+        }
         isMarkdown={isMarkdown}
         previewMode={previewMode}
         onTogglePreview={isMarkdown ? () => setPreviewMode((prev) => !prev) : undefined}
@@ -613,8 +679,12 @@ export function FileTabPane({
           />
         )}
 
-        {!loading && !error && content !== null && fileMeta && fileMeta.sizeBytes < LARGE_FILE_THRESHOLD && (
-          isMarkdown && previewMode ? (
+        {!loading &&
+          !error &&
+          content !== null &&
+          fileMeta &&
+          fileMeta.sizeBytes < LARGE_FILE_THRESHOLD &&
+          (isMarkdown && previewMode ? (
             <div className="md-preview-shell" style={{ height: "100%", overflow: "auto" }}>
               <div className="md-preview-card">
                 <div className="md-preview-header">
@@ -639,8 +709,7 @@ export function FileTabPane({
               isDark={isDark}
               onChange={handleChange}
             />
-          )
-        )}
+          ))}
       </PaneCard>
     </PaneShell>
   );

@@ -80,6 +80,12 @@ where
         });
     }
 
+    if tool_name == "cad_save_review_result" {
+        if let Some(result) = prepare_cad_review_tool_result(trimmed_raw) {
+            return Ok(result);
+        }
+    }
+
     let normalized = normalize_tool_output(raw_output);
     let normalized_trimmed = normalized.trim();
     let artifacts = vec![build_raw_tool_artifact(tool_name, raw_output)];
@@ -130,6 +136,42 @@ where
             })
         }
     }
+}
+
+fn prepare_cad_review_tool_result(raw_output: &str) -> Option<PreparedToolResult> {
+    let value = serde_json::from_str::<Value>(raw_output).ok()?;
+    let run = value.get("run")?;
+    let issues = value.get("issues")?;
+    let display = value
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("CAD 审查结果已保存")
+        .to_string();
+    let run_content = serde_json::to_string_pretty(run).ok()?;
+    let issues_content = serde_json::to_string_pretty(issues).ok()?;
+    Some(PreparedToolResult {
+        context_payload: serde_json::to_string_pretty(&value).ok()?,
+        display_content: display,
+        result_mode: tool_result_mode_label(ToolResultAction::KeepRaw),
+        artifacts: vec![
+            ToolArtifactDraft {
+                kind: "cad-review-run".to_string(),
+                title: "CAD 审查运行记录".to_string(),
+                preview: build_artifact_preview(&run_content),
+                char_count: run_content.chars().count(),
+                line_count: run_content.lines().count().max(1),
+                content: run_content,
+            },
+            ToolArtifactDraft {
+                kind: "cad-review-issues".to_string(),
+                title: "CAD 审查问题清单".to_string(),
+                preview: build_artifact_preview(&issues_content),
+                char_count: issues_content.chars().count(),
+                line_count: issues_content.lines().count().max(1),
+                content: issues_content,
+            },
+        ],
+    })
 }
 
 pub async fn summarize_dispatch_result(

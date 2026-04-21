@@ -22,12 +22,14 @@ interface ToolActivityBubbleProps {
   tools: ToolActivityItem[];
   workspaceId: string;
   title?: string;
+  onArtifactOpen?: (artifact: DispatcherToolArtifact) => void;
 }
 
 export function ToolActivityBubble({
   tools,
   workspaceId,
   title = "工具活动",
+  onArtifactOpen,
 }: ToolActivityBubbleProps) {
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
   const [activeArtifactByTool, setActiveArtifactByTool] = useState<Record<string, string | null>>(
@@ -59,6 +61,10 @@ export function ToolActivityBubble({
 
     setActiveArtifactByTool((prev) => ({ ...prev, [toolKey]: artifact.id }));
     if (artifactCache[artifact.id] || artifactLoading[artifact.id]) {
+      const cachedArtifact = artifactCache[artifact.id];
+      if (cachedArtifact && onArtifactOpen) {
+        onArtifactOpen(cachedArtifact);
+      }
       return;
     }
 
@@ -75,6 +81,7 @@ export function ToolActivityBubble({
         artifactId: artifact.id,
       });
       setArtifactCache((prev) => ({ ...prev, [artifact.id]: loaded }));
+      onArtifactOpen?.(loaded);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setArtifactErrors((prev) => ({ ...prev, [artifact.id]: message }));

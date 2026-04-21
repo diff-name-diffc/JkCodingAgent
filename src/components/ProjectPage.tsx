@@ -2,6 +2,10 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CadReviewIssue,
+  CadReviewRun,
+  CadReviewRunDetail,
+  DispatcherToolArtifact,
   Project,
   Task,
   AgentType,
@@ -12,6 +16,7 @@ import type {
   DispatchFeedbackState,
 } from "../types";
 import { cleanTerminalOutput } from "../utils/ansiStrip";
+import { getPathBasename } from "../utils/filePaths";
 import { FileExplorer } from "./FileExplorer";
 import { SessionPanel } from "./SessionPanel";
 import { FileViewer } from "./FileViewer";
@@ -141,6 +146,10 @@ export function ProjectPage({
     Record<string, string | null>
   >({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeCadFilePath, setActiveCadFilePath] = useState<string | null>(null);
+  const [activeCadReviewRunId, setActiveCadReviewRunId] = useState<string | null>(null);
+  const [activeCadIssueId, setActiveCadIssueId] = useState<string | null>(null);
+  const [activeCadResultMessageId, setActiveCadResultMessageId] = useState<string | null>(null);
   const [subTerminalHeight, setSubTerminalHeight] = useState(500);
   const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
   const [showSessionWorkbench, setShowSessionWorkbench] = useState(true);
@@ -150,6 +159,8 @@ export function ProjectPage({
   const shellRef = useRef<ShellTerminalPanelHandle>(null);
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
   const dispatcherChatRef = useRef<DispatcherChatHandle>(null);
+  const activeCadResultMessageIdRef = useRef<string | null>(null);
+  activeCadResultMessageIdRef.current = activeCadResultMessageId;
   /** Track subprocess id → owning dispatcher session for result injection */
   const pendingDispatchRef = useRef<
     Map<string, { spId: string; dispatchId: string; sessionId: string }>
@@ -166,6 +177,7 @@ export function ProjectPage({
     ? (activeSubTabIdBySession[activeSessionId] ?? null)
     : null;
   const hasEditorWorkbenchContent = openDiff !== null || openFiles.length > 0;
+  const activeFilePath = openFiles.find((tab) => tab.id === activeFileTabId)?.path ?? null;
   const showSessionPane = showSessionWorkbench;
   const showEditorPane = editorWorkbenchVisible && hasEditorWorkbenchContent;
   const workbenchColumnCount = Number(showSessionPane) + Number(showEditorPane);
@@ -196,6 +208,63 @@ export function ProjectPage({
     updateRatio(e.clientX);
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
+  }, []);
+
+  const handleCadArtifactOpen = useCallback(
+    async (artifact: DispatcherToolArtifact) => {
+      if (!activeSessionId) {
+        return;
+      }
+
+      try {
+        if (artifact.kind === "cad-review-run") {
+          const run = JSON.parse(artifact.content) as CadReviewRun;
+          handleFileSelect(run.filePath, getPathBasename(run.filePath));
+          setActiveCadFilePath(run.filePath);
+          setActiveCadReviewRunId(run.id);
+          setActiveCadIssueId(null);
+          setActiveCadResultMessageId(run.resultMessageId ?? null);
+          showEditorWorkbench();
+          return;
+        }
+
+        if (artifact.kind === "cad-review-issues") {
+          const issues = JSON.parse(artifact.content) as CadReviewIssue[];
+          const firstIssue = issues[0];
+          if (!firstIssue) {
+            return;
+          }
+          const detail = await invoke<CadReviewRunDetail>("dispatcher_get_cad_review_run_detail", {
+            workspaceId: activeSessionId,
+            runId: firstIssue.runId,
+          });
+          handleFileSelect(detail.run.filePath, getPathBasename(detail.run.filePath));
+          setActiveCadFilePath(detail.run.filePath);
+          setActiveCadReviewRunId(detail.run.id);
+          setActiveCadIssueId(firstIssue.id);
+          setActiveCadResultMessageId(detail.run.resultMessageId ?? null);
+          showEditorWorkbench();
+        }
+      } catch (error) {
+        console.error("处理 CAD artifact 失败:", error);
+      }
+    },
+    [activeSessionId, handleFileSelect, showEditorWorkbench],
+  );
+
+  const handleLocateCadResultMessage = useCallback((messageId: string | null) => {
+    if (!messageId) {
+      setActiveCadResultMessageId(null);
+      return;
+    }
+    if (activeCadResultMessageIdRef.current !== messageId) {
+      setActiveCadResultMessageId(messageId);
+      return;
+    }
+    setActiveCadResultMessageId(null);
+    window.setTimeout(() => {
+      setActiveCadResultMessageId(messageId);
+    }, 0);
   }, []);
 
   useEffect(() => {
@@ -625,6 +694,8 @@ export function ProjectPage({
                       onDispatchRejected={handleDispatchRejected}
                       onDispatchContinue={handleDispatchContinue}
                       onDispatchExit={handleDispatchExit}
+                      onCadArtifactOpen={handleCadArtifactOpen}
+                      activeCadResultMessageId={activeCadResultMessageId}
                       onOpenMcpStatus={() => setShowMcpStatus(true)}
                       onOpenSettings={() => setShowDispatcherSettings(true)}
                       onClosePanel={() => setShowSessionWorkbench(false)}
@@ -733,6 +804,16 @@ export function ProjectPage({
                       onCloseAllTabs={handleCloseAllFileTabs}
                       onHide={hideEditorWorkbench}
                       isDark={isDark}
+                      workspaceId={activeSessionId}
+                      activeCadReviewRunId={
+                        activeCadFilePath === activeFilePath ? activeCadReviewRunId : null
+                      }
+                      activeCadIssueId={
+                        activeCadFilePath === activeFilePath ? activeCadIssueId : null
+                      }
+                      onLocateCadResultMessage={handleLocateCadResultMessage}
+                      onActiveCadReviewRunChange={setActiveCadReviewRunId}
+                      onActiveCadIssueChange={setActiveCadIssueId}
                     />
                   )}
                 </ErrorBoundary>

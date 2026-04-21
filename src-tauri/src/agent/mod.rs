@@ -1,3 +1,4 @@
+mod cad;
 pub mod commands;
 mod config;
 mod db;

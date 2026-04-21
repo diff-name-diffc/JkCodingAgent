@@ -480,6 +480,8 @@ mod tests {
         let workspace = create_workspace();
         let context = ToolContext {
             workspace: workspace.clone(),
+            workspace_id: "test-workspace".to_string(),
+            dispatcher_db_path: workspace.join("dispatcher.db"),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
         };
@@ -512,6 +514,8 @@ mod tests {
         let workspace = create_workspace();
         let context = ToolContext {
             workspace: workspace.clone(),
+            workspace_id: "test-workspace".to_string(),
+            dispatcher_db_path: workspace.join("dispatcher.db"),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
         };

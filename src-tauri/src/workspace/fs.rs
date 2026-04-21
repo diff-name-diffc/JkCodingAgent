@@ -40,6 +40,7 @@ const IGNORED_DIRS: &[&str] = &[
 const IGNORED_FILES: &[&str] = &[".DS_Store"];
 
 const MAX_IMAGE_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_BINARY_READ_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Validate that `target` is an absolute path within `allowed_root` (prevents directory traversal).
 fn validate_path_within(target: &str, allowed_root: &str) -> Result<std::path::PathBuf, String> {
@@ -237,6 +238,32 @@ pub async fn read_image_preview(
 }
 
 #[tauri::command]
+pub async fn read_binary_file(path: String, project_path: String) -> Result<Vec<u8>, String> {
+    let validated_path = validate_path_within(&path, &project_path)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Read;
+
+        let file = std::fs::File::open(&validated_path).map_err(|e| e.to_string())?;
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        if meta.len() > MAX_BINARY_READ_BYTES {
+            return Err(format!(
+                "Binary file too large ({:.1} MB)",
+                meta.len() as f64 / 1024.0 / 1024.0
+            ));
+        }
+
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        std::io::BufReader::new(file)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        Ok(bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn write_file_content(
     path: String,
     content: String,
@@ -359,6 +386,7 @@ pub(crate) struct FileMeta {
     size_bytes: u64,
     line_count: u64,
     is_text: bool,
+    modified_at: i64,
 }
 
 /// Returns file size, line count, and whether the file is valid text.
@@ -373,6 +401,12 @@ pub async fn get_file_meta(path: String, project_path: String) -> Result<FileMet
         let file = std::fs::File::open(&validated_path).map_err(|e| e.to_string())?;
         let meta = file.metadata().map_err(|e| e.to_string())?;
         let size_bytes = meta.len();
+        let modified_at = meta
+            .modified()
+            .map_err(|e| e.to_string())?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_secs() as i64;
 
         // Fast byte-level newline count — reads entire file but only scans for \n.
         // ~50ms for 28MB on modern hardware, much more reliable than sampling.
@@ -418,6 +452,7 @@ pub async fn get_file_meta(path: String, project_path: String) -> Result<FileMet
             size_bytes,
             line_count,
             is_text,
+            modified_at,
         })
     })
     .await

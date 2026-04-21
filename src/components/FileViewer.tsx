@@ -16,6 +16,12 @@ export function FileViewer({
   onCloseAllTabs,
   onHide,
   isDark,
+  workspaceId,
+  activeCadReviewRunId,
+  activeCadIssueId,
+  onLocateCadResultMessage,
+  onActiveCadReviewRunChange,
+  onActiveCadIssueChange,
 }: {
   tabs: OpenFileTab[];
   activeTabId: string | null;
@@ -27,6 +33,12 @@ export function FileViewer({
   onCloseAllTabs: () => void;
   onHide: () => void;
   isDark: boolean;
+  workspaceId: string | null;
+  activeCadReviewRunId: string | null;
+  activeCadIssueId: string | null;
+  onLocateCadResultMessage?: (messageId: string | null) => void;
+  onActiveCadReviewRunChange: (runId: string | null) => void;
+  onActiveCadIssueChange: (issueId: string | null) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -261,7 +273,18 @@ export function FileViewer({
                 minHeight: 0,
               }}
             >
-              <FileTabPane active={isActive} tab={tab} projectPath={projectPath} isDark={isDark} />
+              <FileTabPane
+                active={isActive}
+                tab={tab}
+                projectPath={projectPath}
+                isDark={isDark}
+                workspaceId={workspaceId}
+                activeCadReviewRunId={activeCadReviewRunId}
+                activeCadIssueId={activeCadIssueId}
+                onLocateCadResultMessage={onLocateCadResultMessage}
+                onActiveCadReviewRunChange={onActiveCadReviewRunChange}
+                onActiveCadIssueChange={onActiveCadIssueChange}
+              />
             </div>
           );
         })}

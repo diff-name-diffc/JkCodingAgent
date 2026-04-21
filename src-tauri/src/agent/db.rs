@@ -6,6 +6,11 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::cad::{
+    filter_entities, CadEntityQueryFilters, CadEntityQueryResult, CadReviewIssueRecord,
+    CadReviewRunDetail, CadReviewRunRecord, CreateCadReviewRunInput, DispatcherAttachmentRecord,
+    DispatcherAttachmentRef, DwgParseCacheRecord, SaveDwgParseCacheInput,
+};
 use super::llm::{ChatMessage, OutboundToolCall};
 use super::summary::ToolArtifactDraft;
 
@@ -43,6 +48,7 @@ pub struct DispatcherMessageRecord {
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
     pub tool_result_mode: Option<String>,
+    pub attachments: Vec<DispatcherAttachmentRef>,
     pub tool_artifacts: Vec<DispatcherToolArtifactRef>,
     pub tool_calls_json: Option<String>,
     pub created_at: String,
@@ -91,6 +97,7 @@ struct NewDispatcherMessage<'a> {
     tool_name: Option<&'a str>,
     tool_result_mode: Option<&'a str>,
     tool_calls: Option<&'a [OutboundToolCall]>,
+    attachment_ids: &'a [String],
     tool_artifacts: &'a [ToolArtifactDraft],
     visible: bool,
 }
@@ -100,6 +107,10 @@ impl DispatcherDb {
         let db = Self { path };
         db.init()?;
         Ok(db)
+    }
+
+    pub fn path(&self) -> &PathBuf {
+        &self.path
     }
 
     // ── Settings ──────────────────────────────────────────────
@@ -227,6 +238,20 @@ impl DispatcherDb {
         let mut conn = self.connect()?;
         let tx = conn.transaction()?;
         tx.execute(
+            "DELETE FROM cad_review_issues WHERE run_id IN (
+                SELECT id FROM cad_review_runs WHERE workspace_id = ?1
+             )",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM cad_review_runs WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM dispatcher_attachments WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
             "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
             params![session_id],
         )?;
@@ -259,6 +284,29 @@ impl DispatcherDb {
             tool_name: None,
             tool_result_mode: None,
             tool_calls: None,
+            attachment_ids: &[],
+            tool_artifacts: &[],
+            visible: true,
+        })
+    }
+
+    pub fn add_visible_user_message(
+        &self,
+        workspace_id: &str,
+        content: &str,
+        context_payload: Option<&str>,
+        attachment_ids: &[String],
+    ) -> Result<DispatcherMessageRecord> {
+        self.add_message(NewDispatcherMessage {
+            workspace_id,
+            role: "user",
+            content,
+            context_payload,
+            tool_call_id: None,
+            tool_name: None,
+            tool_result_mode: None,
+            tool_calls: None,
+            attachment_ids,
             tool_artifacts: &[],
             visible: true,
         })
@@ -283,6 +331,7 @@ impl DispatcherDb {
             tool_name,
             tool_result_mode,
             tool_calls,
+            attachment_ids: &[],
             tool_artifacts: &[],
             visible: true,
         })
@@ -307,6 +356,7 @@ impl DispatcherDb {
             tool_name,
             tool_result_mode,
             tool_calls: None,
+            attachment_ids: &[],
             tool_artifacts,
             visible: true,
         })
@@ -331,6 +381,7 @@ impl DispatcherDb {
             tool_name,
             tool_result_mode,
             tool_calls,
+            attachment_ids: &[],
             tool_artifacts: &[],
             visible: false,
         })
@@ -342,7 +393,7 @@ impl DispatcherDb {
     ) -> Result<Vec<DispatcherMessageRecord>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, created_at
+            "SELECT id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, attachments_json, tool_artifacts_json, tool_calls_json, created_at
              FROM dispatcher_messages
              WHERE workspace_id = ?1 AND visible = 1
              ORDER BY created_at ASC, rowid ASC",
@@ -357,9 +408,10 @@ impl DispatcherDb {
                 tool_call_id: row.get(5)?,
                 tool_name: row.get(6)?,
                 tool_result_mode: row.get(7)?,
-                tool_artifacts: parse_tool_artifact_refs(row.get::<_, Option<String>>(8)?),
-                tool_calls_json: row.get(9)?,
-                created_at: row.get(10)?,
+                attachments: parse_attachment_refs(row.get::<_, Option<String>>(8)?),
+                tool_artifacts: parse_tool_artifact_refs(row.get::<_, Option<String>>(9)?),
+                tool_calls_json: row.get(10)?,
+                created_at: row.get(11)?,
             })
         })?;
 
@@ -401,6 +453,23 @@ impl DispatcherDb {
     pub fn clear_messages(&self, workspace_id: &str) -> Result<()> {
         let mut conn = self.connect()?;
         let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM cad_review_issues WHERE run_id IN (
+                SELECT id FROM cad_review_runs WHERE workspace_id = ?1
+             )",
+            params![workspace_id],
+        )
+        .context("clear cad review issues")?;
+        tx.execute(
+            "DELETE FROM cad_review_runs WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("clear cad review runs")?;
+        tx.execute(
+            "DELETE FROM dispatcher_attachments WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("clear dispatcher attachments")?;
         tx.execute(
             "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
             params![workspace_id],
@@ -448,6 +517,368 @@ impl DispatcherDb {
         .with_context(|| format!("dispatcher tool artifact not found: {artifact_id}"))
     }
 
+    pub fn create_attachment(
+        &self,
+        workspace_id: &str,
+        original_name: &str,
+        stored_path: &str,
+        mime_type: &str,
+        size_bytes: u64,
+    ) -> Result<DispatcherAttachmentRecord> {
+        let record = DispatcherAttachmentRecord {
+            id: Uuid::new_v4().to_string(),
+            workspace_id: workspace_id.to_string(),
+            message_id: None,
+            original_name: original_name.to_string(),
+            stored_path: stored_path.to_string(),
+            mime_type: mime_type.to_string(),
+            size_bytes,
+            created_at: now(),
+        };
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO dispatcher_attachments (
+                id, workspace_id, message_id, original_name, stored_path, mime_type, size_bytes, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                &record.id,
+                &record.workspace_id,
+                &record.message_id,
+                &record.original_name,
+                &record.stored_path,
+                &record.mime_type,
+                record.size_bytes as i64,
+                &record.created_at
+            ],
+        )
+        .context("insert dispatcher attachment")?;
+        Ok(record)
+    }
+
+    pub fn list_pending_attachments(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<DispatcherAttachmentRecord>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, workspace_id, message_id, original_name, stored_path, mime_type, size_bytes, created_at
+             FROM dispatcher_attachments
+             WHERE workspace_id = ?1 AND message_id IS NULL
+             ORDER BY created_at ASC, rowid ASC",
+        )?;
+        let rows = stmt.query_map(params![workspace_id], map_attachment_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("list pending dispatcher attachments")
+    }
+
+    pub fn delete_pending_attachment(&self, workspace_id: &str, attachment_id: &str) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM dispatcher_attachments
+             WHERE id = ?1 AND workspace_id = ?2 AND message_id IS NULL",
+            params![attachment_id, workspace_id],
+        )
+        .context("delete pending dispatcher attachment")?;
+        Ok(())
+    }
+
+    pub fn get_attachments_by_ids(
+        &self,
+        workspace_id: &str,
+        attachment_ids: &[String],
+    ) -> Result<Vec<DispatcherAttachmentRecord>> {
+        if attachment_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.connect()?;
+        let mut refs = Vec::with_capacity(attachment_ids.len());
+        for attachment_id in attachment_ids {
+            let record = conn
+                .query_row(
+                    "SELECT id, workspace_id, message_id, original_name, stored_path, mime_type, size_bytes, created_at
+                     FROM dispatcher_attachments
+                     WHERE id = ?1 AND workspace_id = ?2",
+                    params![attachment_id, workspace_id],
+                    map_attachment_row,
+                )
+                .optional()
+                .with_context(|| format!("load dispatcher attachment {attachment_id}"))?
+                .with_context(|| format!("dispatcher attachment not found: {attachment_id}"))?;
+            refs.push(record);
+        }
+        Ok(refs)
+    }
+
+    pub fn get_dwg_parse_cache(
+        &self,
+        project_path: &str,
+        file_path: &str,
+        file_size: u64,
+        file_mtime: i64,
+        parser_version: &str,
+    ) -> Result<Option<DwgParseCacheRecord>> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT id, project_path, file_path, file_size, file_mtime, parser_version, summary_json, entity_index_json, created_at
+             FROM dwg_parse_cache
+             WHERE project_path = ?1 AND file_path = ?2 AND file_size = ?3 AND file_mtime = ?4 AND parser_version = ?5
+             ORDER BY created_at DESC
+             LIMIT 1",
+            params![
+                project_path,
+                file_path,
+                file_size as i64,
+                file_mtime,
+                parser_version
+            ],
+            map_parse_cache_row,
+        )
+        .optional()
+        .context("load dwg parse cache")
+    }
+
+    pub fn save_dwg_parse_cache(
+        &self,
+        input: &SaveDwgParseCacheInput,
+    ) -> Result<DwgParseCacheRecord> {
+        let record = DwgParseCacheRecord {
+            id: Uuid::new_v4().to_string(),
+            project_path: input.project_path.clone(),
+            file_path: input.file_path.clone(),
+            file_size: input.file_size,
+            file_mtime: input.file_mtime,
+            parser_version: input.parser_version.clone(),
+            summary: input.summary.clone(),
+            entities: input.entities.clone(),
+            created_at: now(),
+        };
+        let summary_json =
+            serde_json::to_string(&record.summary).context("serialize dwg parse summary")?;
+        let entity_json =
+            serde_json::to_string(&record.entities).context("serialize dwg parse entities")?;
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM dwg_parse_cache
+             WHERE project_path = ?1 AND file_path = ?2 AND parser_version = ?3",
+            params![
+                &record.project_path,
+                &record.file_path,
+                &record.parser_version
+            ],
+        )
+        .context("cleanup stale dwg parse cache")?;
+        conn.execute(
+            "INSERT INTO dwg_parse_cache (
+                id, project_path, file_path, file_size, file_mtime, parser_version, summary_json, entity_index_json, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                &record.id,
+                &record.project_path,
+                &record.file_path,
+                record.file_size as i64,
+                record.file_mtime,
+                &record.parser_version,
+                summary_json,
+                entity_json,
+                &record.created_at
+            ],
+        )
+        .context("insert dwg parse cache")?;
+        Ok(record)
+    }
+
+    pub fn query_dwg_parse_entities(
+        &self,
+        project_path: &str,
+        file_path: &str,
+        file_size: u64,
+        file_mtime: i64,
+        parser_version: &str,
+        filters: &CadEntityQueryFilters,
+        cursor: usize,
+        limit: usize,
+    ) -> Result<Option<CadEntityQueryResult>> {
+        let Some(cache) = self.get_dwg_parse_cache(
+            project_path,
+            file_path,
+            file_size,
+            file_mtime,
+            parser_version,
+        )?
+        else {
+            return Ok(None);
+        };
+        let filtered = filter_entities(&cache.entities, filters);
+        let end = filtered.len().min(cursor.saturating_add(limit));
+        let items = if cursor >= filtered.len() {
+            Vec::new()
+        } else {
+            filtered[cursor..end].to_vec()
+        };
+        Ok(Some(CadEntityQueryResult {
+            items,
+            total: filtered.len(),
+            next_cursor: (end < filtered.len()).then_some(end),
+            applied_filters: filters.clone(),
+        }))
+    }
+
+    pub fn create_cad_review_run(
+        &self,
+        input: &CreateCadReviewRunInput,
+    ) -> Result<CadReviewRunDetail> {
+        let run = CadReviewRunRecord {
+            id: Uuid::new_v4().to_string(),
+            workspace_id: input.workspace_id.clone(),
+            file_path: input.file_path.clone(),
+            source_message_id: input.source_message_id.clone(),
+            result_message_id: None,
+            rule_attachment_ids: input.rule_attachment_ids.clone(),
+            goal: input.goal.clone(),
+            status: input.status.clone(),
+            summary: input.summary.clone(),
+            issue_count: input.issues.len(),
+            created_at: now(),
+        };
+
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO cad_review_runs (
+                id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                &run.id,
+                &run.workspace_id,
+                &run.file_path,
+                &run.source_message_id,
+                &run.result_message_id,
+                serde_json::to_string(&run.rule_attachment_ids)?,
+                &run.goal,
+                &run.status,
+                &run.summary,
+                run.issue_count as i64,
+                &run.created_at
+            ],
+        )
+        .context("insert cad review run")?;
+
+        let mut issues = Vec::with_capacity(input.issues.len());
+        for issue in &input.issues {
+            let record = CadReviewIssueRecord {
+                id: Uuid::new_v4().to_string(),
+                run_id: run.id.clone(),
+                severity: issue.severity.clone(),
+                title: issue.title.clone(),
+                description: issue.description.clone(),
+                layer: issue.layer.clone(),
+                entity_refs: issue.entity_refs.clone(),
+                anchor_point: issue.anchor_point.clone(),
+                bbox: issue.bbox.clone(),
+                rule_ref: issue.rule_ref.clone(),
+                created_at: run.created_at.clone(),
+            };
+            tx.execute(
+                "INSERT INTO cad_review_issues (
+                    id, run_id, severity, title, description, layer, entity_refs_json, anchor_point_json, bbox_json, rule_ref, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    &record.id,
+                    &record.run_id,
+                    &record.severity,
+                    &record.title,
+                    &record.description,
+                    &record.layer,
+                    serde_json::to_string(&record.entity_refs)?,
+                    json_string(&record.anchor_point)?,
+                    json_string(&record.bbox)?,
+                    &record.rule_ref,
+                    &record.created_at
+                ],
+            )
+            .context("insert cad review issue")?;
+            issues.push(record);
+        }
+
+        tx.commit().context("commit cad review run")?;
+        Ok(CadReviewRunDetail { run, issues })
+    }
+
+    pub fn bind_cad_review_result_message(
+        &self,
+        run_id: &str,
+        result_message_id: &str,
+    ) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "UPDATE cad_review_runs SET result_message_id = ?1 WHERE id = ?2",
+            params![result_message_id, run_id],
+        )
+        .context("bind cad review result message")?;
+        Ok(())
+    }
+
+    pub fn list_cad_review_runs(
+        &self,
+        workspace_id: &str,
+        file_path: Option<&str>,
+    ) -> Result<Vec<CadReviewRunRecord>> {
+        let conn = self.connect()?;
+        if let Some(file_path) = file_path {
+            let mut stmt = conn.prepare(
+                "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at
+                 FROM cad_review_runs
+                 WHERE workspace_id = ?1 AND file_path = ?2
+                 ORDER BY created_at DESC, rowid DESC",
+            )?;
+            let rows = stmt.query_map(params![workspace_id, file_path], map_review_run_row)?;
+            return rows
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("list cad review runs by file");
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at
+             FROM cad_review_runs
+             WHERE workspace_id = ?1
+             ORDER BY created_at DESC, rowid DESC",
+        )?;
+        let rows = stmt.query_map(params![workspace_id], map_review_run_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("list cad review runs")
+    }
+
+    pub fn get_cad_review_run_detail(
+        &self,
+        workspace_id: &str,
+        run_id: &str,
+    ) -> Result<CadReviewRunDetail> {
+        let conn = self.connect()?;
+        let run = conn
+            .query_row(
+                "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at
+                 FROM cad_review_runs
+                 WHERE workspace_id = ?1 AND id = ?2",
+                params![workspace_id, run_id],
+                map_review_run_row,
+            )
+            .optional()
+            .context("load cad review run")?
+            .with_context(|| format!("cad review run not found: {run_id}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, run_id, severity, title, description, layer, entity_refs_json, anchor_point_json, bbox_json, rule_ref, created_at
+             FROM cad_review_issues
+             WHERE run_id = ?1
+             ORDER BY created_at ASC, rowid ASC",
+        )?;
+        let rows = stmt.query_map(params![run_id], map_review_issue_row)?;
+        let issues = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("load cad review issues")?;
+        Ok(CadReviewRunDetail { run, issues })
+    }
+
     fn add_message(&self, params: NewDispatcherMessage<'_>) -> Result<DispatcherMessageRecord> {
         let tool_calls_json = params
             .tool_calls
@@ -464,6 +895,7 @@ impl DispatcherDb {
             tool_call_id: params.tool_call_id.map(|s| s.to_string()),
             tool_name: params.tool_name.map(|s| s.to_string()),
             tool_result_mode: params.tool_result_mode.map(|s| s.to_string()),
+            attachments: Vec::new(),
             tool_artifacts: Vec::new(),
             tool_calls_json: tool_calls_json.clone(),
             created_at: now(),
@@ -478,9 +910,9 @@ impl DispatcherDb {
 
         tx.execute(
             "INSERT INTO dispatcher_messages (
-                id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, visible, created_at
+                id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, attachments_json, tool_artifacts_json, tool_calls_json, visible, created_at
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 &record.id,
                 &record.workspace_id,
@@ -491,12 +923,30 @@ impl DispatcherDb {
                 &record.tool_name,
                 &record.tool_result_mode,
                 Option::<String>::None,
+                Option::<String>::None,
                 &record.tool_calls_json,
                 if params.visible { 1 } else { 0 },
                 &record.created_at
             ],
         )
         .context("insert dispatcher message")?;
+
+        if !params.attachment_ids.is_empty() {
+            let attachments = self.bind_attachments_to_message(
+                &tx,
+                &record.workspace_id,
+                &record.id,
+                params.attachment_ids,
+            )?;
+            let attachments_json =
+                serde_json::to_string(&attachments).context("serialize dispatcher attachments")?;
+            tx.execute(
+                "UPDATE dispatcher_messages SET attachments_json = ?1 WHERE id = ?2",
+                params![&attachments_json, &record.id],
+            )
+            .context("attach dispatcher attachments to message")?;
+            record.attachments = attachments;
+        }
 
         if !params.tool_artifacts.is_empty() {
             let artifacts = self.insert_tool_artifacts(
@@ -521,6 +971,48 @@ impl DispatcherDb {
         tx.commit().context("commit dispatcher message insert")?;
 
         Ok(record)
+    }
+
+    fn bind_attachments_to_message(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        workspace_id: &str,
+        message_id: &str,
+        attachment_ids: &[String],
+    ) -> Result<Vec<DispatcherAttachmentRef>> {
+        let mut refs = Vec::with_capacity(attachment_ids.len());
+        for attachment_id in attachment_ids {
+            tx.execute(
+                "UPDATE dispatcher_attachments
+                 SET message_id = ?1
+                 WHERE id = ?2 AND workspace_id = ?3",
+                params![message_id, attachment_id, workspace_id],
+            )
+            .with_context(|| format!("bind dispatcher attachment {attachment_id}"))?;
+
+            let record = tx
+                .query_row(
+                    "SELECT id, workspace_id, message_id, original_name, stored_path, mime_type, size_bytes, created_at
+                     FROM dispatcher_attachments
+                     WHERE id = ?1 AND workspace_id = ?2",
+                    params![attachment_id, workspace_id],
+                    map_attachment_row,
+                )
+                .optional()
+                .with_context(|| format!("load bound dispatcher attachment {attachment_id}"))?
+                .with_context(|| format!("dispatcher attachment not found: {attachment_id}"))?;
+
+            refs.push(DispatcherAttachmentRef {
+                id: record.id,
+                original_name: record.original_name,
+                stored_path: record.stored_path,
+                mime_type: record.mime_type,
+                size_bytes: record.size_bytes,
+                created_at: record.created_at,
+            });
+        }
+
+        Ok(refs)
     }
 
     fn insert_tool_artifacts(
@@ -604,6 +1096,7 @@ impl DispatcherDb {
                 tool_call_id TEXT,
                 tool_name TEXT,
                 tool_result_mode TEXT,
+                attachments_json TEXT,
                 tool_artifacts_json TEXT,
                 tool_calls_json TEXT,
                 visible INTEGER NOT NULL DEFAULT 1,
@@ -612,6 +1105,20 @@ impl DispatcherDb {
 
             CREATE INDEX IF NOT EXISTS idx_dispatcher_messages_workspace_created
             ON dispatcher_messages(workspace_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS dispatcher_attachments (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                message_id TEXT,
+                original_name TEXT NOT NULL,
+                stored_path TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dispatcher_attachments_workspace_created
+            ON dispatcher_attachments(workspace_id, created_at);
 
             CREATE TABLE IF NOT EXISTS dispatcher_tool_artifacts (
                 id TEXT PRIMARY KEY,
@@ -634,6 +1141,55 @@ impl DispatcherDb {
             CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_artifacts_message
             ON dispatcher_tool_artifacts(message_id);
 
+            CREATE TABLE IF NOT EXISTS dwg_parse_cache (
+                id TEXT PRIMARY KEY,
+                project_path TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                file_mtime INTEGER NOT NULL,
+                parser_version TEXT NOT NULL,
+                summary_json TEXT NOT NULL,
+                entity_index_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dwg_parse_cache_lookup
+            ON dwg_parse_cache(project_path, file_path, parser_version, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS cad_review_runs (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                source_message_id TEXT NOT NULL,
+                result_message_id TEXT,
+                rule_attachment_ids_json TEXT NOT NULL DEFAULT '[]',
+                goal TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                issue_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cad_review_runs_workspace_file
+            ON cad_review_runs(workspace_id, file_path, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS cad_review_issues (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                layer TEXT,
+                entity_refs_json TEXT NOT NULL DEFAULT '[]',
+                anchor_point_json TEXT,
+                bbox_json TEXT,
+                rule_ref TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cad_review_issues_run
+            ON cad_review_issues(run_id, created_at);
+
             CREATE TABLE IF NOT EXISTS dispatcher_settings (
                 id TEXT PRIMARY KEY DEFAULT 'default',
                 api_base TEXT NOT NULL DEFAULT '',
@@ -653,6 +1209,7 @@ impl DispatcherDb {
         )?;
         ensure_column_exists(&conn, "dispatcher_messages", "context_payload", "TEXT")?;
         ensure_column_exists(&conn, "dispatcher_messages", "tool_result_mode", "TEXT")?;
+        ensure_column_exists(&conn, "dispatcher_messages", "attachments_json", "TEXT")?;
         ensure_column_exists(&conn, "dispatcher_messages", "tool_artifacts_json", "TEXT")?;
         Ok(())
     }
@@ -683,6 +1240,90 @@ impl DispatcherDb {
 
         Ok(rowids.into_iter().min().unwrap_or(0))
     }
+}
+
+fn map_attachment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DispatcherAttachmentRecord> {
+    Ok(DispatcherAttachmentRecord {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        message_id: row.get(2)?,
+        original_name: row.get(3)?,
+        stored_path: row.get(4)?,
+        mime_type: row.get(5)?,
+        size_bytes: row.get::<_, i64>(6)? as u64,
+        created_at: row.get(7)?,
+    })
+}
+
+fn map_parse_cache_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DwgParseCacheRecord> {
+    Ok(DwgParseCacheRecord {
+        id: row.get(0)?,
+        project_path: row.get(1)?,
+        file_path: row.get(2)?,
+        file_size: row.get::<_, i64>(3)? as u64,
+        file_mtime: row.get(4)?,
+        parser_version: row.get(5)?,
+        summary: parse_json_column(row.get(6)?)?,
+        entities: parse_json_column(row.get(7)?)?,
+        created_at: row.get(8)?,
+    })
+}
+
+fn map_review_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CadReviewRunRecord> {
+    Ok(CadReviewRunRecord {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        file_path: row.get(2)?,
+        source_message_id: row.get(3)?,
+        result_message_id: row.get(4)?,
+        rule_attachment_ids: parse_json_column(row.get(5)?)?,
+        goal: row.get(6)?,
+        status: row.get(7)?,
+        summary: row.get(8)?,
+        issue_count: row.get::<_, i64>(9)? as usize,
+        created_at: row.get(10)?,
+    })
+}
+
+fn map_review_issue_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CadReviewIssueRecord> {
+    Ok(CadReviewIssueRecord {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        severity: row.get(2)?,
+        title: row.get(3)?,
+        description: row.get(4)?,
+        layer: row.get(5)?,
+        entity_refs: parse_json_column(row.get(6)?)?,
+        anchor_point: parse_optional_json_column(row.get(7)?)?,
+        bbox: parse_optional_json_column(row.get(8)?)?,
+        rule_ref: row.get(9)?,
+        created_at: row.get(10)?,
+    })
+}
+
+fn parse_attachment_refs(raw: Option<String>) -> Vec<DispatcherAttachmentRef> {
+    raw.and_then(|json| serde_json::from_str::<Vec<DispatcherAttachmentRef>>(&json).ok())
+        .unwrap_or_default()
+}
+
+fn parse_json_column<T: for<'de> Deserialize<'de>>(raw: String) -> rusqlite::Result<T> {
+    serde_json::from_str(&raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+    })
+}
+
+fn parse_optional_json_column<T: for<'de> Deserialize<'de>>(
+    raw: Option<String>,
+) -> rusqlite::Result<Option<T>> {
+    raw.map(parse_json_column).transpose()
+}
+
+fn json_string<T: Serialize>(value: &Option<T>) -> Result<Option<String>> {
+    value
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .context("serialize optional json payload")
 }
 
 fn ensure_column_exists(
@@ -792,7 +1433,14 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use rusqlite::Connection;
+
     use super::{DispatcherDb, ToolArtifactDraft};
+    use crate::agent::cad::{
+        CadBBox, CadEntityQueryFilters, CadEntityRecord, CadPoint, CreateCadReviewIssueInput,
+        CreateCadReviewRunInput, DwgBlockSummary, DwgLayerSummary, DwgParseSummary,
+        SaveDwgParseCacheInput,
+    };
 
     fn create_test_db() -> (DispatcherDb, PathBuf) {
         let root =
@@ -815,6 +1463,104 @@ mod tests {
             char_count: 13,
             line_count: 2,
         }
+    }
+
+    fn sample_summary(file_path: &str) -> DwgParseSummary {
+        DwgParseSummary {
+            file_path: file_path.to_string(),
+            parser_version: "dwg-worker-v1".to_string(),
+            total_entities: 3,
+            unknown_entity_count: 0,
+            bounds: Some(CadBBox {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 20.0,
+                max_y: 20.0,
+            }),
+            layers: vec![
+                DwgLayerSummary {
+                    name: "A-WALL".to_string(),
+                    entity_count: 2,
+                },
+                DwgLayerSummary {
+                    name: "A-TEXT".to_string(),
+                    entity_count: 1,
+                },
+            ],
+            entity_counts: [("LINE".to_string(), 2usize), ("TEXT".to_string(), 1usize)]
+                .into_iter()
+                .collect(),
+            text_samples: vec!["房间".to_string()],
+            blocks: vec![DwgBlockSummary {
+                name: "ROOM_TAG".to_string(),
+                count: 1,
+            }],
+        }
+    }
+
+    fn sample_entities() -> Vec<CadEntityRecord> {
+        vec![
+            CadEntityRecord {
+                id: "L1".to_string(),
+                handle: "L1".to_string(),
+                entity_type: "LINE".to_string(),
+                raw_type: "LINE".to_string(),
+                layer: "A-WALL".to_string(),
+                color: None,
+                line_type: None,
+                text: None,
+                block_name: None,
+                center: Some(CadPoint { x: 2.0, y: 2.0 }),
+                radius: None,
+                vertices: vec![CadPoint { x: 0.0, y: 0.0 }, CadPoint { x: 4.0, y: 4.0 }],
+                bbox: Some(CadBBox {
+                    min_x: 0.0,
+                    min_y: 0.0,
+                    max_x: 4.0,
+                    max_y: 4.0,
+                }),
+            },
+            CadEntityRecord {
+                id: "L2".to_string(),
+                handle: "L2".to_string(),
+                entity_type: "LINE".to_string(),
+                raw_type: "LINE".to_string(),
+                layer: "A-WALL".to_string(),
+                color: None,
+                line_type: None,
+                text: None,
+                block_name: None,
+                center: Some(CadPoint { x: 8.0, y: 8.0 }),
+                radius: None,
+                vertices: vec![CadPoint { x: 6.0, y: 6.0 }, CadPoint { x: 10.0, y: 10.0 }],
+                bbox: Some(CadBBox {
+                    min_x: 6.0,
+                    min_y: 6.0,
+                    max_x: 10.0,
+                    max_y: 10.0,
+                }),
+            },
+            CadEntityRecord {
+                id: "T1".to_string(),
+                handle: "T1".to_string(),
+                entity_type: "TEXT".to_string(),
+                raw_type: "TEXT".to_string(),
+                layer: "A-TEXT".to_string(),
+                color: None,
+                line_type: None,
+                text: Some("房间名称".to_string()),
+                block_name: None,
+                center: Some(CadPoint { x: 16.0, y: 16.0 }),
+                radius: None,
+                vertices: Vec::new(),
+                bbox: Some(CadBBox {
+                    min_x: 15.0,
+                    min_y: 15.0,
+                    max_x: 17.0,
+                    max_y: 17.0,
+                }),
+            },
+        ]
     }
 
     #[test]
@@ -905,6 +1651,175 @@ mod tests {
         assert!(db
             .get_tool_artifact(&session.id, &message.tool_artifacts[0].id)
             .is_err());
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn init_migrates_existing_sqlite_schema() {
+        let root =
+            std::env::temp_dir().join(format!("jkcodingagent-db-migrate-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create temp db root");
+        let db_path = root.join("dispatcher.sqlite3");
+        let conn = Connection::open(&db_path).expect("open sqlite");
+        conn.execute_batch(
+            "
+            CREATE TABLE dispatcher_messages (
+              id TEXT PRIMARY KEY,
+              workspace_id TEXT NOT NULL,
+              role TEXT NOT NULL,
+              content TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE dispatcher_settings (
+              id TEXT PRIMARY KEY DEFAULT 'default',
+              api_base TEXT NOT NULL DEFAULT '',
+              api_key TEXT NOT NULL DEFAULT '',
+              model TEXT NOT NULL DEFAULT '',
+              auto_approve_dispatch INTEGER NOT NULL DEFAULT 0
+            );
+            ",
+        )
+        .expect("seed legacy schema");
+        drop(conn);
+
+        let db = DispatcherDb::new(db_path.clone()).expect("migrate dispatcher db");
+        let conn = Connection::open(db.path()).expect("open migrated db");
+        let columns = conn
+            .prepare("PRAGMA table_info(dispatcher_messages)")
+            .expect("prepare pragma")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query columns")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect columns");
+        assert!(columns.contains(&"context_payload".to_string()));
+        assert!(columns.contains(&"attachments_json".to_string()));
+        assert!(columns.contains(&"tool_artifacts_json".to_string()));
+        assert!(conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cad_review_runs'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .is_ok());
+
+        drop(db);
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn query_dwg_parse_entities_filters_and_paginates() {
+        let (db, root) = create_test_db();
+        let file_path = "/repo/sample.dwg";
+        db.save_dwg_parse_cache(&SaveDwgParseCacheInput {
+            project_path: "/repo".to_string(),
+            file_path: file_path.to_string(),
+            file_size: 128,
+            file_mtime: 12345,
+            parser_version: "dwg-worker-v1".to_string(),
+            summary: sample_summary(file_path),
+            entities: sample_entities(),
+        })
+        .expect("save parse cache");
+
+        let filters = CadEntityQueryFilters {
+            layers: vec!["A-WALL".to_string()],
+            entity_types: vec!["LINE".to_string()],
+            text_query: None,
+            bbox: Some(CadBBox {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 12.0,
+                max_y: 12.0,
+            }),
+        };
+        let page1 = db
+            .query_dwg_parse_entities(
+                "/repo",
+                file_path,
+                128,
+                12345,
+                "dwg-worker-v1",
+                &filters,
+                0,
+                1,
+            )
+            .expect("query page1")
+            .expect("cache exists");
+        assert_eq!(page1.total, 2);
+        assert_eq!(page1.items.len(), 1);
+        assert_eq!(page1.items[0].id, "L1");
+        assert_eq!(page1.next_cursor, Some(1));
+
+        let page2 = db
+            .query_dwg_parse_entities(
+                "/repo",
+                file_path,
+                128,
+                12345,
+                "dwg-worker-v1",
+                &filters,
+                1,
+                1,
+            )
+            .expect("query page2")
+            .expect("cache exists");
+        assert_eq!(page2.items.len(), 1);
+        assert_eq!(page2.items[0].id, "L2");
+        assert_eq!(page2.next_cursor, None);
+
+        let empty = db
+            .query_dwg_parse_entities(
+                "/repo",
+                file_path,
+                128,
+                12345,
+                "dwg-worker-v1",
+                &filters,
+                9,
+                50,
+            )
+            .expect("query empty page")
+            .expect("cache exists");
+        assert!(empty.items.is_empty());
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn create_cad_review_run_can_bind_result_message() {
+        let (db, root) = create_test_db();
+        let detail = db
+            .create_cad_review_run(&CreateCadReviewRunInput {
+                workspace_id: "ws-1".to_string(),
+                file_path: "/repo/sample.dwg".to_string(),
+                source_message_id: "msg-source".to_string(),
+                rule_attachment_ids: vec!["att-1".to_string()],
+                goal: "检查门洞尺寸".to_string(),
+                status: "completed".to_string(),
+                summary: "发现 1 个问题".to_string(),
+                issues: vec![CreateCadReviewIssueInput {
+                    severity: "high".to_string(),
+                    title: "门洞过窄".to_string(),
+                    description: "门洞净宽不足".to_string(),
+                    layer: Some("A-DOOR".to_string()),
+                    entity_refs: vec!["L1".to_string()],
+                    anchor_point: Some(CadPoint { x: 2.0, y: 2.0 }),
+                    bbox: None,
+                    rule_ref: Some("规则 1".to_string()),
+                }],
+            })
+            .expect("create cad review run");
+
+        db.bind_cad_review_result_message(&detail.run.id, "msg-result")
+            .expect("bind result message");
+
+        let loaded = db
+            .get_cad_review_run_detail("ws-1", &detail.run.id)
+            .expect("load review detail");
+        assert_eq!(loaded.run.result_message_id.as_deref(), Some("msg-result"));
+        assert_eq!(loaded.issues.len(), 1);
+        assert_eq!(loaded.issues[0].entity_refs, vec!["L1".to_string()]);
 
         cleanup_test_db(root);
     }

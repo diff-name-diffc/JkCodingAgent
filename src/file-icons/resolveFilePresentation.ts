@@ -227,6 +227,7 @@ const EXTENSION_ICON_RULES: Record<string, string> = {
   db3: "database",
   sqlitedb: "database",
   wasm: "wasm",
+  dwg: "binary",
   proto: "protobuf",
   toml: "toml",
   yaml: "yaml",

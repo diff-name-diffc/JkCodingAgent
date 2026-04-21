@@ -6,7 +6,6 @@ mod registry;
 
 pub use context::ToolContext;
 pub use delegation::{
-    is_continue_instruction, is_dispatch_instruction, is_exit_instruction,
     parse_continue_instruction, parse_dispatch_instruction, parse_exit_instruction, DispatchAgent,
 };
 pub use registry::ToolRegistry;

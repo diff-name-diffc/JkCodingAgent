@@ -19,7 +19,6 @@ use super::summary::{
     build_summary_failure_message, prepare_tool_result, summarize_dispatch_result,
 };
 use super::tools::{
-    is_continue_instruction, is_dispatch_instruction, is_exit_instruction,
     parse_continue_instruction, parse_dispatch_instruction, parse_exit_instruction, DispatchAgent,
     ToolContext, ToolRegistry,
 };
@@ -129,6 +128,7 @@ pub enum AgentEvent {
         dispatch_id: String,
         agent: String,
         description: String,
+        task_prompt: String,
         permission_mode: String,
     },
     DispatchContinue {
@@ -198,6 +198,7 @@ enum ProtocolToolAction {
         dispatch_id: String,
         agent: DispatchAgent,
         description: String,
+        task_prompt: String,
         permission_mode: String,
     },
     Continue {
@@ -711,7 +712,7 @@ impl DispatcherAgent {
                     .execute(&tool_call.name, &tool_call.arguments, &tool_context)
                     .await;
 
-                match self.plan_protocol_action(&tool_call, &result, &mut protocol_state) {
+                match self.plan_protocol_action(db, workspace_id, &tool_call, &mut protocol_state) {
                     Ok(Some(action)) => {
                         if let ProtocolToolAction::Exit { agent, .. } = &action {
                             self.mark_agent_exit_requested(workspace_id, agent.slug());
@@ -930,6 +931,46 @@ impl DispatcherAgent {
         lines.join("\n")
     }
 
+    fn build_subprocess_task_prompt(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        _agent: DispatchAgent,
+        task_description: &str,
+    ) -> std::result::Result<String, String> {
+        let history = db
+            .load_llm_history(workspace_id)
+            .map_err(|error| format!("读取调度历史失败：{error}"))?;
+        let latest_user_goal = history
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .map(|message| compact_multiline(message.content.trim(), 240))
+            .filter(|text| !text.is_empty());
+        let explored_index_info = collect_recent_exploration_entries(&history);
+
+        let mut sections = vec![format!("【任务目标】\n{}", task_description.trim())];
+
+        if let Some(goal) =
+            latest_user_goal.filter(|goal| should_include_latest_user_goal(goal, task_description))
+        {
+            sections.push(format!("【用户诉求】\n{}", goal));
+        }
+
+        if !explored_index_info.is_empty() {
+            sections.push(format!("【已确认上下文】\n{}", explored_index_info));
+        }
+
+        sections.push(
+            "【执行要求】\n\
+- 优先直接完成目标；只有在上下文不足或与代码现场冲突时，才补做最少量验证。\n\
+- 输出聚焦：实际改动或结论、验证结果、剩余风险；默认使用简体中文。"
+                .to_string(),
+        );
+
+        Ok(sections.join("\n\n"))
+    }
+
     fn tool_definitions_for_workspace(
         &self,
         workspace_id: &str,
@@ -1011,62 +1052,57 @@ impl DispatcherAgent {
 
     fn plan_protocol_action(
         &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
         tool_call: &super::llm::RequestedToolCall,
-        result: &str,
         protocol_state: &mut ProtocolBatchState,
     ) -> std::result::Result<Option<ProtocolToolAction>, String> {
         if let Some(agent) = DispatchAgent::from_dispatch_tool_name(&tool_call.name) {
             protocol_state.ensure_dispatch_allowed(agent.slug(), agent.display_name())?;
-            if let Some((description, permission_mode)) = parse_dispatch_instruction(result, agent)
-                .filter(|_| is_dispatch_instruction(result, agent))
-            {
-                let dispatch_id = uuid::Uuid::new_v4().to_string();
-                protocol_state.record_dispatch(agent.slug(), &dispatch_id);
-                return Ok(Some(ProtocolToolAction::Dispatch {
-                    dispatch_id,
-                    agent,
-                    description,
-                    permission_mode,
-                }));
-            }
-            return Ok(None);
+            let (task_description, permission_mode) =
+                parse_dispatch_instruction(&tool_call.arguments, agent)?;
+            let dispatch_id = uuid::Uuid::new_v4().to_string();
+            let description = summarize_dispatch_description(&task_description);
+            let task_prompt =
+                self.build_subprocess_task_prompt(db, workspace_id, agent, &task_description)?;
+            protocol_state.record_dispatch(agent.slug(), &dispatch_id);
+            return Ok(Some(ProtocolToolAction::Dispatch {
+                dispatch_id,
+                agent,
+                description,
+                task_prompt,
+                permission_mode,
+            }));
         }
 
         if let Some(agent) = DispatchAgent::from_continue_tool_name(&tool_call.name) {
             protocol_state.ensure_continue_allowed(agent.slug(), agent.display_name())?;
-            if let Some(text) = parse_continue_instruction(result, agent)
-                .filter(|_| is_continue_instruction(result, agent))
-            {
-                let dispatch_id = protocol_state
-                    .dispatch_id_for_agent(agent.slug())
-                    .unwrap_or("active")
-                    .to_string();
-                protocol_state.record_continue(agent.slug());
-                return Ok(Some(ProtocolToolAction::Continue {
-                    dispatch_id,
-                    agent,
-                    text,
-                }));
-            }
-            return Ok(None);
+            let text = parse_continue_instruction(&tool_call.arguments, agent)?;
+            let dispatch_id = protocol_state
+                .dispatch_id_for_agent(agent.slug())
+                .unwrap_or("active")
+                .to_string();
+            protocol_state.record_continue(agent.slug());
+            return Ok(Some(ProtocolToolAction::Continue {
+                dispatch_id,
+                agent,
+                text,
+            }));
         }
 
         if let Some(agent) = DispatchAgent::from_exit_tool_name(&tool_call.name) {
             protocol_state.ensure_exit_allowed(agent.slug(), agent.display_name())?;
-            if let Some(reason) =
-                parse_exit_instruction(result, agent).filter(|_| is_exit_instruction(result, agent))
-            {
-                let dispatch_id = protocol_state
-                    .dispatch_id_for_agent(agent.slug())
-                    .unwrap_or("active")
-                    .to_string();
-                protocol_state.record_exit(agent.slug());
-                return Ok(Some(ProtocolToolAction::Exit {
-                    dispatch_id,
-                    agent,
-                    reason,
-                }));
-            }
+            let reason = parse_exit_instruction(&tool_call.arguments, agent);
+            let dispatch_id = protocol_state
+                .dispatch_id_for_agent(agent.slug())
+                .unwrap_or("active")
+                .to_string();
+            protocol_state.record_exit(agent.slug());
+            return Ok(Some(ProtocolToolAction::Exit {
+                dispatch_id,
+                agent,
+                reason,
+            }));
         }
 
         Ok(None)
@@ -1085,6 +1121,7 @@ impl DispatcherAgent {
                 dispatch_id,
                 agent,
                 description,
+                task_prompt,
                 permission_mode,
             } => {
                 emit(
@@ -1093,6 +1130,7 @@ impl DispatcherAgent {
                         dispatch_id: dispatch_id.clone(),
                         agent: agent.slug().to_string(),
                         description: description.clone(),
+                        task_prompt: task_prompt.clone(),
                         permission_mode: permission_mode.clone(),
                     },
                 );
@@ -1314,6 +1352,81 @@ fn build_protocol_waiting_message(
     sections.join("\n\n")
 }
 
+fn collect_recent_exploration_entries(history: &[ChatMessage]) -> String {
+    const MAX_ENTRIES: usize = 3;
+    const MAX_TOTAL_CHARS: usize = 900;
+
+    let mut entries = Vec::new();
+    let mut total_chars = 0usize;
+
+    for message in history.iter().rev() {
+        let content = message.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+
+        let label = match message.role.as_str() {
+            "tool" => message
+                .name
+                .as_deref()
+                .map(|name| format!("工具 {}", name))
+                .unwrap_or_else(|| "工具".to_string()),
+            "assistant" => "调度结论".to_string(),
+            "user" => continue,
+            _ => continue,
+        };
+        let compact = compact_multiline(content, 220);
+        if compact.is_empty() {
+            continue;
+        }
+
+        let candidate = format!("- {}：{}", label, compact);
+        let candidate_len = candidate.chars().count();
+        if total_chars + candidate_len > MAX_TOTAL_CHARS && !entries.is_empty() {
+            break;
+        }
+
+        entries.push(candidate);
+        total_chars += candidate_len;
+        if entries.len() >= MAX_ENTRIES {
+            break;
+        }
+    }
+
+    if entries.is_empty() {
+        String::new()
+    } else {
+        entries.reverse();
+        entries.join("\n")
+    }
+}
+
+fn compact_multiline(content: &str, max_chars: usize) -> String {
+    let normalized = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" / ");
+    truncate_for_display(&normalized, max_chars, "...")
+}
+
+fn should_include_latest_user_goal(latest_user_goal: &str, task_description: &str) -> bool {
+    let normalized_task = compact_multiline(task_description.trim(), 320);
+    !normalized_task.is_empty()
+        && latest_user_goal != normalized_task
+        && !normalized_task.contains(latest_user_goal)
+}
+
+fn summarize_dispatch_description(task_description: &str) -> String {
+    let normalized = compact_multiline(task_description.trim(), 180);
+    if normalized.is_empty() {
+        "未命名子任务".to_string()
+    } else {
+        normalized
+    }
+}
+
 fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
     let _ = on_event.send(event);
 }
@@ -1353,9 +1466,11 @@ fn exit_tool_name(agent: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_protocol_waiting_message, DispatchAgent, PlannedSubprocessState, ProtocolBatchState,
+        build_protocol_waiting_message, collect_recent_exploration_entries,
+        should_include_latest_user_goal, DispatchAgent, PlannedSubprocessState, ProtocolBatchState,
         ProtocolToolAction, RegisteredSubprocess, RegisteredSubprocessPhase,
     };
+    use crate::agent::llm::ChatMessage;
 
     #[test]
     fn protocol_state_allows_parallel_dispatch_for_different_agents() {
@@ -1401,12 +1516,14 @@ mod tests {
                     dispatch_id: "dispatch-claude".to_string(),
                     agent: DispatchAgent::Claude,
                     description: "实现功能 A".to_string(),
+                    task_prompt: "任务提示 A".to_string(),
                     permission_mode: "full_access".to_string(),
                 },
                 ProtocolToolAction::Dispatch {
                     dispatch_id: "dispatch-codex".to_string(),
                     agent: DispatchAgent::Codex,
                     description: "重构模块 B".to_string(),
+                    task_prompt: "任务提示 B".to_string(),
                     permission_mode: "full_access".to_string(),
                 },
                 ProtocolToolAction::Exit {
@@ -1422,5 +1539,51 @@ mod tests {
         assert!(content.contains("已自动批准 2 个子任务"));
         assert!(content.contains("已发送 1 条退出命令"));
         assert!(content.contains("主调度补充说明"));
+    }
+
+    #[test]
+    fn exploration_entries_are_compact_and_skip_user_messages() {
+        let history = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: "用户原始诉求".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: "读取文件 A，确认只需调整调度提示词拼装。".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: Some("read_file".to_string()),
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: "当前冗长主要来自已探索索引信息和输出要求重复注入。".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+        ];
+
+        let result = collect_recent_exploration_entries(&history);
+        assert!(result.contains("工具 read_file"));
+        assert!(result.contains("调度结论"));
+        assert!(!result.contains("用户原始诉求"));
+    }
+
+    #[test]
+    fn latest_user_goal_is_skipped_when_task_already_covers_it() {
+        let task_description = "请精简 Claude 子任务提示词，删除冗长动态规划内容，只保留必要约束。";
+        let latest_user_goal = "请精简 Claude 子任务提示词，删除冗长动态规划内容，只保留必要约束。";
+        assert!(!should_include_latest_user_goal(
+            latest_user_goal,
+            task_description
+        ));
+        assert!(should_include_latest_user_goal(
+            "调度子任务不要再带固定工程师开头",
+            task_description
+        ));
     }
 }

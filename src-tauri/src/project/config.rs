@@ -5,7 +5,9 @@ use super::mcp::ensure_project_mcp_file;
 use super::storage::atomic_write;
 use crate::platform::{detect_claude_version, detect_codex_version};
 
-const DEFAULT_AGENT_PROMPT_PREFIX: &str = "你是一名资深软件工程师，当前目标是完成用户交付的编码任务。\n- 先阅读相关代码、调用链和约束，再动手修改。\n- 优先做与当前任务直接相关的最小充分改动，不无端扩散范围。\n- 对正确性、边界条件、兼容性和可维护性保持敏感。\n- 修改后主动做编译、测试或关键路径验证；若无法验证，明确说明。\n- 以操作和交付为主，少讲概念，少做长篇分析。\n- 过程输出保持简洁，只在必要时汇报关键判断、风险和下一步。\n- 不要重复复述用户需求，不要写冗长总结。\n- 收尾时只做简洁结果说明：改了什么、验证了什么、还有什么风险。";
+const DEFAULT_AGENT_PROMPT_PREFIX: &str = "- 先围绕当前任务目标确认相关代码、约束和必要上下文。\n- 只做与目标直接相关的最小充分改动，避免无关重构。\n- 完成后简洁说明改动、验证结果和剩余风险。";
+
+const PREVIOUS_DEFAULT_AGENT_PROMPT_PREFIX: &str = "你是一名资深软件工程师，当前目标是完成用户交付的编码任务。\n- 先阅读相关代码、调用链和约束，再动手修改。\n- 优先做与当前任务直接相关的最小充分改动，不无端扩散范围。\n- 对正确性、边界条件、兼容性和可维护性保持敏感。\n- 修改后主动做编译、测试或关键路径验证；若无法验证，明确说明。\n- 以操作和交付为主，少讲概念，少做长篇分析。\n- 过程输出保持简洁，只在必要时汇报关键判断、风险和下一步。\n- 不要重复复述用户需求，不要写冗长总结。\n- 收尾时只做简洁结果说明：改了什么、验证了什么、还有什么风险。";
 
 const LEGACY_DEFAULT_AGENT_PROMPT_PREFIX: &str = "你是一名资深软件工程师，当前目标是完成用户交付的编码任务。\n- 先阅读相关代码、调用链和约束，再动手修改。\n- 优先做与当前任务直接相关的最小充分改动，不无端扩散范围。\n- 对正确性、边界条件、兼容性和可维护性保持敏感。\n- 修改后主动做编译、测试或关键路径验证；若无法验证，明确说明。\n- 输出聚焦结果、风险、验证结论和后续建议。";
 
@@ -18,7 +20,7 @@ const DEFAULT_CONFIG: &str = r#"# JKCodingAgent 项目配置
 # 新任务默认使用的智能体："claude" 或 "codex"
 default = "claude"
 # 每个任务提示词前自动追加的公共工程指令
-prompt_prefix = "你是一名资深软件工程师，当前目标是完成用户交付的编码任务。\n- 先阅读相关代码、调用链和约束，再动手修改。\n- 优先做与当前任务直接相关的最小充分改动，不无端扩散范围。\n- 对正确性、边界条件、兼容性和可维护性保持敏感。\n- 修改后主动做编译、测试或关键路径验证；若无法验证，明确说明。\n- 以操作和交付为主，少讲概念，少做长篇分析。\n- 过程输出保持简洁，只在必要时汇报关键判断、风险和下一步。\n- 不要重复复述用户需求，不要写冗长总结。\n- 收尾时只做简洁结果说明：改了什么、验证了什么、还有什么风险。"
+prompt_prefix = "- 先围绕当前任务目标确认相关代码、约束和必要上下文。\n- 只做与目标直接相关的最小充分改动，避免无关重构。\n- 完成后简洁说明改动、验证结果和剩余风险。"
 
 # 自动检测回写的 Claude Code 版本，可留空
 claude_version = ""
@@ -68,6 +70,12 @@ impl Default for ProjectConfig {
     }
 }
 
+fn should_refresh_prompt_prefix(prompt_prefix: &str) -> bool {
+    prompt_prefix.is_empty()
+        || prompt_prefix == PREVIOUS_DEFAULT_AGENT_PROMPT_PREFIX
+        || prompt_prefix == LEGACY_DEFAULT_AGENT_PROMPT_PREFIX
+}
+
 /// Creates `.jkcodingagent/config.toml` in the project directory if it doesn't already exist.
 /// Also ensures `.jkcodingagent/attachments/` and `.jkcodingagent/mcp.json` exist.
 /// Returns the parsed config.
@@ -89,9 +97,7 @@ pub fn init_project_config(project_path: String) -> Result<ProjectConfig, String
 
     // 首次打开或版本字段为空时，自动检测并回写
     let mut updated = false;
-    if config.agent.prompt_prefix.is_empty()
-        || config.agent.prompt_prefix == LEGACY_DEFAULT_AGENT_PROMPT_PREFIX
-    {
+    if should_refresh_prompt_prefix(&config.agent.prompt_prefix) {
         config.agent.prompt_prefix = DEFAULT_AGENT_PROMPT_PREFIX.to_string();
         updated = true;
     }
@@ -177,4 +183,29 @@ pub fn write_agent_config_file(agent: String, content: String) -> Result<(), Str
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     atomic_write(&path, &content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        should_refresh_prompt_prefix, DEFAULT_AGENT_PROMPT_PREFIX,
+        LEGACY_DEFAULT_AGENT_PROMPT_PREFIX, PREVIOUS_DEFAULT_AGENT_PROMPT_PREFIX,
+    };
+
+    #[test]
+    fn refreshes_empty_or_builtin_legacy_prompt_prefix() {
+        assert!(should_refresh_prompt_prefix(""));
+        assert!(should_refresh_prompt_prefix(
+            PREVIOUS_DEFAULT_AGENT_PROMPT_PREFIX
+        ));
+        assert!(should_refresh_prompt_prefix(
+            LEGACY_DEFAULT_AGENT_PROMPT_PREFIX
+        ));
+    }
+
+    #[test]
+    fn keeps_custom_prompt_prefix() {
+        assert!(!should_refresh_prompt_prefix("请始终使用英文输出。"));
+        assert!(!should_refresh_prompt_prefix(DEFAULT_AGENT_PROMPT_PREFIX));
+    }
 }

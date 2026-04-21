@@ -56,6 +56,9 @@ export function ProjectPage({
   onRegisterTerminal,
   onTerminalReady,
   onSnapshot,
+  onRetainTaskBuffers,
+  onReleaseTaskBuffers,
+  onRemoveTaskBuffers,
   onBack,
   onSwitchProject,
   onOpen,
@@ -87,6 +90,9 @@ export function ProjectPage({
   ) => number;
   onTerminalReady: (taskId: string, generation: number) => void;
   onSnapshot: (taskId: string, snapshot: string) => void;
+  onRetainTaskBuffers: (taskIds: string[]) => void;
+  onReleaseTaskBuffers: (taskIds: string[]) => void;
+  onRemoveTaskBuffers: (taskIds: string[]) => void;
   onBack: () => void;
   onSwitchProject: (project: Project) => void;
   onOpen: () => void;
@@ -248,6 +254,7 @@ export function ProjectPage({
       dispatchId: string,
       agent: AgentType,
       description: string,
+      taskPrompt: string,
       permissionMode: string,
       sessionId: string,
     ) => {
@@ -269,7 +276,7 @@ export function ProjectPage({
       pendingDispatchRef.current.set(spId, { spId, dispatchId, sessionId });
 
       const taskId = onSubmitTask({
-        prompt: description,
+        prompt: taskPrompt,
         agent,
         permissionMode: (permissionMode as PermissionMode) || "full_access",
         images: [],
@@ -279,6 +286,7 @@ export function ProjectPage({
       });
       idleInjectedTaskIdsRef.current.delete(taskId);
       closedSubprocessTaskIdsRef.current.delete(taskId);
+      onRetainTaskBuffers([taskId]);
       setSubProcessTaskMap((prev) => ({ ...prev, [spId]: taskId }));
       invoke("dispatcher_register_subprocess", {
         workspaceId: sessionId,
@@ -288,7 +296,7 @@ export function ProjectPage({
         description,
       }).catch(console.error);
     },
-    [onSubmitTask],
+    [onRetainTaskBuffers, onSubmitTask],
   );
 
   // Monitor task completion for subprocesses → inject result back
@@ -470,7 +478,14 @@ export function ProjectPage({
   const handleCloseSubTab = useCallback(
     (id: string) => {
       const targetSubProcess = subProcesses.find((sp) => sp.id === id);
+      const taskId = subProcessTaskMap[id];
       setSubProcesses((prev) => prev.filter((sp) => sp.id !== id));
+      setSubProcessTaskMap((prev) => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
       if (targetSubProcess) {
         const routeKey = getSubProcessRouteKey(targetSubProcess.sessionId, targetSubProcess.agent);
         if (interactiveSubProcessRef.current.get(routeKey) === id) {
@@ -482,8 +497,14 @@ export function ProjectPage({
         if (prev[targetSubProcess.sessionId] !== id) return prev;
         return { ...prev, [targetSubProcess.sessionId]: null };
       });
+      if (taskId) {
+        onReleaseTaskBuffers([taskId]);
+        if (targetSubProcess?.status !== "running" && targetSubProcess?.status !== "pending_approval") {
+          onRemoveTaskBuffers([taskId]);
+        }
+      }
     },
-    [subProcesses],
+    [onReleaseTaskBuffers, onRemoveTaskBuffers, subProcessTaskMap, subProcesses],
   );
 
   const handleSubTerminalResizeStart = useCallback(

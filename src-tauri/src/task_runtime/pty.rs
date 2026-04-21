@@ -460,6 +460,8 @@ pub async fn run_task(
             c.arg("--session-id");
             c.arg(sid);
         }
+        // 用 `--` 显式结束选项解析，避免以 `-` 开头的提示词首行被 Claude CLI 误判为参数。
+        c.arg("--");
         c.arg(&final_prompt);
         c
     };

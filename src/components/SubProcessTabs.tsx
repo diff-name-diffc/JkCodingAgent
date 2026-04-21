@@ -50,6 +50,11 @@ export function SubProcessTabs({
   const activeSubProcess = subProcesses.find((sp) => sp.id === activeTabId);
   const activeTaskId = activeTabId ? subProcessTaskMap[activeTabId] : null;
   const isExpanded = Boolean(activeSubProcess);
+  const shouldRenderTerminal =
+    !!activeSubProcess &&
+    !!activeTaskId &&
+    activeSubProcess.status !== "pending_approval";
+  const isTerminalInteractive = activeSubProcess?.status === "running";
 
   return (
     <div style={{ ...styles.container, height: isExpanded ? height : COLLAPSED_HEIGHT }}>
@@ -75,23 +80,33 @@ export function SubProcessTabs({
       {/* Terminal content area */}
       {activeSubProcess && (
         <div style={styles.content}>
-          {activeTaskId && activeSubProcess.status === "running" ? (
-            <TerminalView
-              key={activeTaskId}
-              onInput={(data) => onInput(activeTaskId, data)}
-              onResize={(cols, rows) => onResize(activeTaskId, cols, rows)}
-              onRegisterTerminal={(fn) => onRegisterTerminal(activeTaskId, fn)}
-              onReady={(gen) => onTerminalReady(activeTaskId, gen)}
-              onSnapshot={(snap) => onSnapshot(activeTaskId, snap)}
-              isDark={isDark}
-              isActive
-              {...getRestoreState(activeTaskId)}
-            />
+          {shouldRenderTerminal ? (
+            <div style={styles.terminalWrap}>
+              <TerminalView
+                key={activeTaskId}
+                onInput={(data) => {
+                  if (isTerminalInteractive) {
+                    onInput(activeTaskId, data);
+                  }
+                }}
+                onResize={(cols, rows) => onResize(activeTaskId, cols, rows)}
+                onRegisterTerminal={(fn) => onRegisterTerminal(activeTaskId, fn)}
+                onReady={(gen) => onTerminalReady(activeTaskId, gen)}
+                onSnapshot={(snap) => onSnapshot(activeTaskId, snap)}
+                isDark={isDark}
+                isActive={isTerminalInteractive}
+                {...getRestoreState(activeTaskId)}
+              />
+              {!isTerminalInteractive && (
+                <div style={styles.terminalStatusOverlay}>
+                  {activeSubProcess.status === "done" && <span>终端已退出，可继续查看本次输入与输出</span>}
+                  {activeSubProcess.status === "failed" && <span>终端已失败退出，可继续查看本次输入与输出</span>}
+                </div>
+              )}
+            </div>
           ) : (
             <div style={styles.terminalPlaceholder}>
               {activeSubProcess.status === "pending_approval" && <span>⏳ 等待审批...</span>}
-              {activeSubProcess.status === "done" && <span>✅ 子任务已完成</span>}
-              {activeSubProcess.status === "failed" && <span>❌ 子任务失败</span>}
             </div>
           )}
         </div>
@@ -298,6 +313,24 @@ const styles = {
     flex: 1,
     overflow: "hidden",
     position: "relative" as const,
+  },
+  terminalWrap: {
+    width: "100%",
+    height: "100%",
+    position: "relative" as const,
+  },
+  terminalStatusOverlay: {
+    position: "absolute" as const,
+    top: 8,
+    right: 8,
+    padding: "6px 10px",
+    borderRadius: "8px",
+    fontSize: "12px",
+    color: "var(--text-primary)",
+    background: "color-mix(in srgb, var(--bg-elevated) 92%, transparent)",
+    border: "1px solid var(--border-primary)",
+    boxShadow: "0 8px 20px rgba(0,0,0,0.12)",
+    pointerEvents: "none" as const,
   },
   terminalPlaceholder: {
     display: "flex",

@@ -231,7 +231,13 @@ export type DispatcherAgentEvent =
     }
   | {
       event: "dispatchProposed";
-      data: { dispatchId: string; agent: AgentType; description: string; permissionMode: string };
+      data: {
+        dispatchId: string;
+        agent: AgentType;
+        description: string;
+        taskPrompt: string;
+        permissionMode: string;
+      };
     }
   | { event: "dispatchContinue"; data: { dispatchId: string; agent: AgentType; text: string } }
   | { event: "dispatchExit"; data: { dispatchId: string; agent: AgentType; reason: string } }

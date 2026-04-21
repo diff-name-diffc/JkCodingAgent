@@ -50,8 +50,9 @@ interface DispatchApprovalProps {
   dispatchId: string;
   agent: AgentType;
   description: string;
+  taskPrompt: string;
   permissionMode: string;
-  onApprove: (dispatchId: string, description: string) => void;
+  onApprove: (dispatchId: string, taskPrompt: string) => void;
   onReject: (dispatchId: string) => void;
 }
 
@@ -59,11 +60,12 @@ function DispatchApprovalDialog({
   dispatchId,
   agent,
   description,
+  taskPrompt,
   permissionMode,
   onApprove,
   onReject,
 }: DispatchApprovalProps) {
-  const [editedDescription, setEditedDescription] = useState(description);
+  const [editedTaskPrompt, setEditedTaskPrompt] = useState(taskPrompt);
   const meta = DISPATCH_AGENT_META[agent];
 
   return (
@@ -76,11 +78,12 @@ function DispatchApprovalDialog({
           <span style={styles.approvalBadge}>{permissionMode}</span>
         </div>
         <div style={styles.approvalHint}>{meta.hint}</div>
+        <div style={styles.approvalHint}>任务摘要：{description}</div>
         <textarea
           style={styles.approvalTextarea}
-          value={editedDescription}
-          onChange={(e) => setEditedDescription(e.target.value)}
-          rows={8}
+          value={editedTaskPrompt}
+          onChange={(e) => setEditedTaskPrompt(e.target.value)}
+          rows={14}
         />
         <div style={styles.approvalActions}>
           <button style={styles.approvalRejectBtn} onClick={() => onReject(dispatchId)}>
@@ -88,7 +91,7 @@ function DispatchApprovalDialog({
           </button>
           <button
             style={styles.approvalApproveBtn}
-            onClick={() => onApprove(dispatchId, editedDescription)}
+            onClick={() => onApprove(dispatchId, editedTaskPrompt)}
           >
             ✓ 批准运行
           </button>
@@ -361,6 +364,7 @@ interface DispatcherChatProps {
     dispatchId: string,
     agent: AgentType,
     description: string,
+    taskPrompt: string,
     permissionMode: string,
     sessionId: string,
   ) => void;
@@ -376,6 +380,7 @@ interface PendingDispatchApproval {
   dispatchId: string;
   agent: AgentType;
   description: string;
+  taskPrompt: string;
   permissionMode: string;
 }
 
@@ -511,19 +516,20 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             setLiveToolCalls((prev) => finishLiveToolActivity(prev, event.data));
             break;
           case "dispatchProposed": {
-            const { dispatchId, agent, description, permissionMode } = event.data;
+            const { dispatchId, agent, description, taskPrompt, permissionMode } = event.data;
             if (autoApproveRef.current) {
               onDispatchApprovedRef.current(
                 dispatchId,
                 agent,
                 description,
+                taskPrompt,
                 permissionMode,
                 targetSessionId,
               );
             } else if (isCurrentRun) {
               setPendingDispatches((prev) => [
                 ...prev,
-                { dispatchId, agent, description, permissionMode },
+                { dispatchId, agent, description, taskPrompt, permissionMode },
               ]);
             }
             break;
@@ -663,11 +669,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     );
 
     const handleApproveDispatch = useCallback(
-      (dispatchId: string, description: string) => {
+      (dispatchId: string, taskPrompt: string) => {
         const agent = currentPendingDispatch?.agent ?? "claude";
         const pm = currentPendingDispatch?.permissionMode ?? "full_access";
+        const description = currentPendingDispatch?.description ?? "未命名子任务";
         setPendingDispatches((prev) => prev.slice(1));
-        onDispatchApproved(dispatchId, agent, description, pm, sessionId);
+        onDispatchApproved(dispatchId, agent, description, taskPrompt, pm, sessionId);
       },
       [currentPendingDispatch, onDispatchApproved, sessionId],
     );
@@ -849,6 +856,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             dispatchId={currentPendingDispatch.dispatchId}
             agent={currentPendingDispatch.agent}
             description={currentPendingDispatch.description}
+            taskPrompt={currentPendingDispatch.taskPrompt}
             permissionMode={currentPendingDispatch.permissionMode}
             onApprove={handleApproveDispatch}
             onReject={handleRejectDispatch}

@@ -93,27 +93,6 @@ impl DispatchAgent {
         }
     }
 
-    fn dispatch_prefix(self) -> &'static str {
-        match self {
-            Self::Claude => "__DISPATCH_CLAUDE__:",
-            Self::Codex => "__DISPATCH_CODEX__:",
-        }
-    }
-
-    fn continue_prefix(self) -> &'static str {
-        match self {
-            Self::Claude => "__CONTINUE_CLAUDE__:",
-            Self::Codex => "__CONTINUE_CODEX__:",
-        }
-    }
-
-    fn exit_prefix(self) -> &'static str {
-        match self {
-            Self::Claude => "__EXIT_CLAUDE__:",
-            Self::Codex => "__EXIT_CODEX__:",
-        }
-    }
-
     fn dispatch_description(self) -> &'static str {
         match self {
             Self::Claude => {
@@ -202,10 +181,10 @@ impl AgentTool for DispatchAgentTool {
             string_arg(args, "permission_mode").unwrap_or_else(|| "full_access".to_string());
 
         format!(
-            "{}{}|||{}",
-            self.agent.dispatch_prefix(),
-            task_description,
-            permission_mode
+            "已记录向 {} 提交子任务请求（权限：{}，说明长度：{} 字符）",
+            self.agent.display_name(),
+            permission_mode,
+            task_description.chars().count()
         )
     }
 }
@@ -238,7 +217,11 @@ impl AgentTool for ContinueAgentSessionTool {
             Some(description) if !description.trim().is_empty() => description,
             _ => return "错误：task_description 为必填项，且不能为空".to_string(),
         };
-        format!("{}{}", self.agent.continue_prefix(), task_description)
+        format!(
+            "已记录发送到 {} 会话的后续指令（{} 字符）",
+            self.agent.display_name(),
+            task_description.chars().count()
+        )
     }
 }
 
@@ -266,44 +249,133 @@ impl AgentTool for ExitAgentSessionTool {
 
     async fn execute(&self, args: &Value, _context: &ToolContext) -> String {
         let reason = string_arg(args, "reason").unwrap_or_else(|| "任务已完成".to_string());
-        format!("{}{}", self.agent.exit_prefix(), reason)
+        format!(
+            "已记录结束 {} 会话的请求：{}",
+            self.agent.display_name(),
+            reason
+        )
     }
 }
 
-pub fn is_dispatch_instruction(result: &str, agent: DispatchAgent) -> bool {
-    result.starts_with(agent.dispatch_prefix())
-}
+pub fn parse_dispatch_instruction(
+    args: &Value,
+    _agent: DispatchAgent,
+) -> Result<(String, String), String> {
+    let description = string_arg(args, "task_description")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "错误：task_description 为必填项，且不能为空".to_string())?;
+    let permission_mode = string_arg(args, "permission_mode")
+        .unwrap_or_else(|| "full_access".to_string())
+        .trim()
+        .to_string();
 
-pub fn parse_dispatch_instruction(result: &str, agent: DispatchAgent) -> Option<(String, String)> {
-    let after = result.strip_prefix(agent.dispatch_prefix())?;
-    let parts: Vec<&str> = after.splitn(2, "|||").collect();
-    if parts.len() == 2 {
-        Some((parts[0].to_string(), parts[1].to_string()))
-    } else {
-        Some((after.to_string(), "full_access".to_string()))
+    if !matches!(
+        permission_mode.as_str(),
+        "ask" | "auto_edit" | "full_access"
+    ) {
+        return Err(format!(
+            "错误：permission_mode 必须是 ask / auto_edit / full_access，实际收到：{}",
+            permission_mode
+        ));
     }
+
+    Ok((description, permission_mode))
 }
 
-pub fn is_continue_instruction(result: &str, agent: DispatchAgent) -> bool {
-    result.starts_with(agent.continue_prefix())
+pub fn parse_continue_instruction(args: &Value, _agent: DispatchAgent) -> Result<String, String> {
+    string_arg(args, "task_description")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "错误：task_description 为必填项，且不能为空".to_string())
 }
 
-pub fn parse_continue_instruction(result: &str, agent: DispatchAgent) -> Option<String> {
-    result
-        .strip_prefix(agent.continue_prefix())
-        .map(|value| value.to_string())
-}
-
-pub fn is_exit_instruction(result: &str, agent: DispatchAgent) -> bool {
-    result.starts_with(agent.exit_prefix())
-}
-
-pub fn parse_exit_instruction(result: &str, agent: DispatchAgent) -> Option<String> {
-    result
-        .strip_prefix(agent.exit_prefix())
-        .map(|value| value.to_string())
+pub fn parse_exit_instruction(args: &Value, _agent: DispatchAgent) -> String {
+    string_arg(args, "reason").unwrap_or_else(|| "任务已完成".to_string())
 }
 
 fn string_arg(args: &Value, key: &str) -> Option<String> {
-    args.get(key)?.as_str().map(str::to_string)
+    if let Some(value) = args.get(key).and_then(Value::as_str) {
+        return Some(value.to_string());
+    }
+
+    let parsed = match args {
+        Value::String(raw) => serde_json::from_str::<Value>(raw).ok()?,
+        _ => return None,
+    };
+
+    parsed.get(key)?.as_str().map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        parse_continue_instruction, parse_dispatch_instruction, parse_exit_instruction,
+        DispatchAgent,
+    };
+
+    #[test]
+    fn parse_dispatch_instruction_reads_structured_args() {
+        let parsed = parse_dispatch_instruction(
+            &json!({
+                "task_description": "修复调度协议",
+                "permission_mode": "auto_edit"
+            }),
+            DispatchAgent::Codex,
+        )
+        .expect("dispatch args should parse");
+        assert_eq!(parsed.0, "修复调度协议");
+        assert_eq!(parsed.1, "auto_edit");
+    }
+
+    #[test]
+    fn parse_continue_instruction_requires_text() {
+        let parsed = parse_continue_instruction(
+            &json!({ "task_description": "继续验证测试结果" }),
+            DispatchAgent::Claude,
+        )
+        .expect("continue args should parse");
+        assert_eq!(parsed, "继续验证测试结果");
+    }
+
+    #[test]
+    fn parse_exit_instruction_uses_default_reason() {
+        let parsed = parse_exit_instruction(&json!({}), DispatchAgent::Claude);
+        assert_eq!(parsed, "任务已完成");
+    }
+
+    #[test]
+    fn parse_dispatch_instruction_accepts_stringified_json_args() {
+        let parsed = parse_dispatch_instruction(
+            &json!(
+                "{\"task_description\":\"在终端中执行 echo \\\"Hi from Claude!\\\" 命令，然后回复确认即可。\",\"permission_mode\":\"full_access\"}"
+            ),
+            DispatchAgent::Claude,
+        )
+        .expect("stringified dispatch args should parse");
+        assert_eq!(
+            parsed.0,
+            "在终端中执行 echo \"Hi from Claude!\" 命令，然后回复确认即可。"
+        );
+        assert_eq!(parsed.1, "full_access");
+    }
+
+    #[test]
+    fn parse_continue_instruction_accepts_stringified_json_args() {
+        let parsed = parse_continue_instruction(
+            &json!("{\"task_description\":\"继续处理刚才的终端输出\"}"),
+            DispatchAgent::Claude,
+        )
+        .expect("stringified continue args should parse");
+        assert_eq!(parsed, "继续处理刚才的终端输出");
+    }
+
+    #[test]
+    fn parse_exit_instruction_accepts_stringified_json_args() {
+        let parsed =
+            parse_exit_instruction(&json!("{\"reason\":\"本轮已完成\"}"), DispatchAgent::Claude);
+        assert_eq!(parsed, "本轮已完成");
+    }
 }

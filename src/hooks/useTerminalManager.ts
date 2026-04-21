@@ -74,6 +74,7 @@ export function useTerminalManager() {
   const terminalSnapshotRef = useRef<Record<string, { snapshot: string; bufferLength: number }>>(
     {},
   );
+  const retainedTaskIdsRef = useRef<Set<string>>(new Set());
   const terminalWriteRefs = useRef<Record<string, TerminalWriteFn>>({});
   const terminalWriteStateRef = useRef<Record<string, TerminalWriteState>>({});
   const terminalSizeRef = useRef<{ cols: number; rows: number }>({ cols: 220, rows: 50 });
@@ -168,14 +169,36 @@ export function useTerminalManager() {
     delete terminalSnapshotRef.current[taskId];
   }, []);
 
+  const retainTaskBuffers = useCallback((taskIds: string[]) => {
+    for (const taskId of taskIds) {
+      retainedTaskIdsRef.current.add(taskId);
+    }
+  }, []);
+
+  const releaseTaskBuffers = useCallback((taskIds: string[]) => {
+    for (const taskId of taskIds) {
+      retainedTaskIdsRef.current.delete(taskId);
+    }
+  }, []);
+
   const removeTaskBuffers = useCallback((taskIds: string[]) => {
     for (const taskId of taskIds) {
+      retainedTaskIdsRef.current.delete(taskId);
       delete taskBufferRef.current[taskId];
       delete terminalSnapshotRef.current[taskId];
       delete terminalWriteRefs.current[taskId];
       delete terminalWriteStateRef.current[taskId];
     }
   }, []);
+
+  const removeInactiveTaskBuffers = useCallback(
+    (taskIds: string[]) => {
+      const removableTaskIds = taskIds.filter((taskId) => !retainedTaskIdsRef.current.has(taskId));
+      if (removableTaskIds.length === 0) return;
+      removeTaskBuffers(removableTaskIds);
+    },
+    [removeTaskBuffers],
+  );
 
   const writeErrorToTerminal = useCallback((taskId: string, errMsg: string) => {
     const writeFn = terminalWriteRefs.current[taskId];
@@ -257,7 +280,10 @@ export function useTerminalManager() {
   return {
     terminalSizeRef,
     resetTaskTerminal,
+    retainTaskBuffers,
+    releaseTaskBuffers,
     removeTaskBuffers,
+    removeInactiveTaskBuffers,
     writeErrorToTerminal,
     handleInput,
     handleResize,

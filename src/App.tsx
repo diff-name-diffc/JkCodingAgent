@@ -108,7 +108,7 @@ function App() {
         const { task_id, status, failure_reason } = e.payload;
         updateTaskStatus(task_id, status, undefined, failure_reason);
         if (!isActiveTaskStatus(status)) {
-          tm.removeTaskBuffers([task_id]);
+          tm.removeInactiveTaskBuffers([task_id]);
         }
       },
     );
@@ -373,6 +373,9 @@ function App() {
             onRegisterTerminal={tm.handleRegisterTerminal}
             onTerminalReady={tm.handleTerminalReady}
             onSnapshot={tm.handleSnapshot}
+            onRetainTaskBuffers={tm.retainTaskBuffers}
+            onReleaseTaskBuffers={tm.releaseTaskBuffers}
+            onRemoveTaskBuffers={tm.removeTaskBuffers}
             onBack={handleBack}
             onSwitchProject={handleProjectClick}
             onOpen={handleOpen}

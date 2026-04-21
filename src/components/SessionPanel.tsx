@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Search, ChevronLeft, Plus, Trash2 } from "lucide-react";
+import { Search, ChevronLeft, PanelLeftClose, Plus, Trash2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { Project, ThemeMode, DispatcherSession } from "../types";
@@ -22,6 +22,7 @@ export function SessionPanel({
   activeSessionId,
   onSelectSession,
   onBack,
+  onCollapse,
   isDark,
   themeMode,
   systemPrefersDark,
@@ -32,6 +33,7 @@ export function SessionPanel({
   activeSessionId: string | null;
   onSelectSession: (id: string | null) => void;
   onBack: () => void;
+  onCollapse: () => void;
   isDark: boolean;
   themeMode: ThemeMode;
   systemPrefersDark: boolean;
@@ -126,11 +128,14 @@ export function SessionPanel({
     <div style={s.taskPanel}>
       {/* Project header */}
       <div style={s.panelHeader}>
-        <button style={s.backBtn} onClick={onBack} title="切换项目">
-          <ChevronLeft size={15} strokeWidth={2} />
+        <button style={s.backBtn} onClick={onCollapse} title="折叠会话列表">
+          <PanelLeftClose size={15} strokeWidth={2} />
         </button>
         <ProjectAvatar name={project.name} size={22} />
         <span style={s.panelProjectName}>{project.name}</span>
+        <button style={s.backBtn} onClick={onBack} title="返回项目页">
+          <ChevronLeft size={15} strokeWidth={2} />
+        </button>
       </div>
 
       {/* Branch bar */}

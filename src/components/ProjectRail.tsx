@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, ChevronsRight } from "lucide-react";
+import { Plus, ChevronsRight, ChevronRight } from "lucide-react";
 import type { Project, Task } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
 
@@ -212,12 +212,16 @@ export function ProjectRail({
   projects,
   allTasks,
   activeProjectId,
+  sessionSidebarCollapsed,
+  onExpandSessionSidebar,
   onSwitch,
   onOpen,
 }: {
   projects: Project[];
   allTasks: Task[];
   activeProjectId: string;
+  sessionSidebarCollapsed: boolean;
+  onExpandSessionSidebar: () => void;
   onSwitch: (project: Project) => void;
   onOpen: () => void;
 }) {
@@ -243,6 +247,29 @@ export function ProjectRail({
         zIndex: drawerOpen ? 50 : "auto",
       }}
     >
+      {sessionSidebarCollapsed && (
+        <button
+          title="展开会话列表"
+          onClick={onExpandSessionSidebar}
+          style={{
+            width: 32,
+            height: 32,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "var(--accent-subtle)",
+            border: "1px solid color-mix(in srgb, var(--accent) 24%, var(--border-dim))",
+            borderRadius: 8,
+            cursor: "pointer",
+            color: "var(--accent)",
+            marginBottom: 4,
+            boxShadow: "0 8px 20px rgba(15, 23, 42, 0.08)",
+          }}
+        >
+          <ChevronRight size={15} strokeWidth={2.5} />
+        </button>
+      )}
+
       {projects.map((project) => (
         <RailItem
           key={project.id}

@@ -220,8 +220,8 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onCompositionEnd: () => void;
 }) {
   return (
-    <div style={styles.emptyLauncherWrap}>
-      <div style={styles.emptyLauncherHero}>
+    <div style={styles.emptyLauncherWrap(layoutMode)}>
+      <div style={styles.emptyLauncherHero(layoutMode)}>
         <div style={styles.emptyLauncherKicker}>
           <span style={styles.emptyLauncherBadge}>
             <Sparkles size={13} />
@@ -254,17 +254,17 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
           </div>
         </div>
 
-        <div style={styles.emptyComposerInputShell}>
+        <div style={styles.emptyComposerInputShell()}>
           <textarea
             ref={inputRef}
-            style={styles.emptyComposerTextarea}
+            style={styles.emptyComposerTextarea(layoutMode)}
             placeholder="例如：先审查这个仓库的前端架构，再给出重构方案并开始实现。"
             value={input}
             onChange={(e) => onChangeInput(e.target.value)}
             onCompositionStart={onCompositionStart}
             onCompositionEnd={onCompositionEnd}
             onKeyDown={onKeyDown}
-            rows={4}
+            rows={layoutMode === "single" ? 10 : 4}
             disabled={isLoading}
           />
         </div>
@@ -913,7 +913,11 @@ const styles = {
   container: {
     display: "flex",
     flexDirection: "column" as const,
+    flex: 1,
+    width: "100%",
     height: "100%",
+    minWidth: 0,
+    minHeight: 0,
     background:
       "radial-gradient(circle at top right, color-mix(in srgb, var(--accent) 10%, transparent), transparent 26%), linear-gradient(180deg, var(--bg-panel), color-mix(in srgb, var(--bg-panel) 78%, var(--bg-subtle)))",
   },
@@ -979,32 +983,35 @@ const styles = {
   },
   messageList: {
     flex: 1,
+    minHeight: 0,
     overflowY: "auto" as const,
     padding: "22px 20px 18px",
     display: "flex",
     flexDirection: "column" as const,
     gap: "18px",
   },
-  emptyLauncherWrap: {
+  emptyLauncherWrap: (layoutMode: "single" | "split") => ({
     display: "flex",
     flexDirection: "column" as const,
     alignItems: "center",
     justifyContent: "center",
     flex: 1,
     width: "100%",
-    padding: "28px 12px 44px",
+    minHeight: "100%",
+    gap: layoutMode === "single" ? "22px" : "0",
+    padding: layoutMode === "single" ? "44px 24px 56px" : "28px 12px 44px",
     boxSizing: "border-box" as const,
-  },
-  emptyLauncherHero: {
+  }),
+  emptyLauncherHero: (layoutMode: "single" | "split") => ({
     width: "100%",
-    maxWidth: "780px",
+    maxWidth: layoutMode === "single" ? "920px" : "780px",
     display: "flex",
     flexDirection: "column" as const,
     alignItems: "center",
     gap: "14px",
-    marginBottom: "26px",
+    marginBottom: layoutMode === "single" ? "4px" : "26px",
     textAlign: "center" as const,
-  },
+  }),
   emptyLauncherKicker: {
     display: "flex",
     alignItems: "center",
@@ -1047,16 +1054,17 @@ const styles = {
   },
   emptyComposerDialog: (layoutMode: "single" | "split") => ({
     width: "100%",
-    maxWidth: layoutMode === "single" ? "980px" : "860px",
+    maxWidth: layoutMode === "single" ? "920px" : "860px",
     display: "flex",
     flexDirection: "column" as const,
     gap: "18px",
-    padding: "18px",
+    justifyContent: "flex-start",
+    padding: layoutMode === "single" ? "20px 24px 22px" : "18px",
     borderRadius: "30px",
     border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-dim))",
     background:
       "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 94%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
-    boxShadow: "0 36px 100px rgba(15, 23, 42, 0.09)",
+    boxShadow: layoutMode === "single" ? "0 28px 72px rgba(15, 23, 42, 0.10)" : "0 36px 100px rgba(15, 23, 42, 0.09)",
     backdropFilter: "blur(22px)",
     WebkitBackdropFilter: "blur(22px)",
     boxSizing: "border-box" as const,
@@ -1095,27 +1103,29 @@ const styles = {
     fontWeight: 600,
     cursor: "pointer",
   },
-  emptyComposerInputShell: {
+  emptyComposerInputShell: () => ({
     borderRadius: "24px",
     border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-dim))",
     background:
       "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 72%, transparent))",
     boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)",
-  },
-  emptyComposerTextarea: {
+    display: "flex",
+  }),
+  emptyComposerTextarea: (layoutMode: "single" | "split") => ({
     width: "100%",
-    minHeight: "150px",
-    padding: "20px 22px",
+    minHeight: layoutMode === "single" ? "220px" : "150px",
+    padding: layoutMode === "single" ? "18px 22px" : "20px 22px",
     border: "none",
     outline: "none",
     resize: "none" as const,
     background: "transparent",
     color: "var(--text-primary)",
-    fontSize: "19px",
+    fontSize: layoutMode === "single" ? "17px" : "19px",
     lineHeight: "1.7",
     fontFamily: "var(--font-ui)",
     boxSizing: "border-box" as const,
-  },
+    flex: 1,
+  }),
   emptyComposerActionRow: {
     display: "flex",
     flexWrap: "wrap" as const,

@@ -144,6 +144,7 @@ export function ProjectPage({
   const [subTerminalHeight, setSubTerminalHeight] = useState(500);
   const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
   const [showSessionWorkbench, setShowSessionWorkbench] = useState(true);
+  const [sessionSidebarCollapsed, setSessionSidebarCollapsed] = useState(false);
   /** Maps subprocess id → real task id for terminal routing */
   const [subProcessTaskMap, setSubProcessTaskMap] = useState<Record<string, string>>({});
   const shellRef = useRef<ShellTerminalPanelHandle>(null);
@@ -538,25 +539,30 @@ export function ProjectPage({
         projects={allProjects}
         allTasks={tasks}
         activeProjectId={project.id}
+        sessionSidebarCollapsed={sessionSidebarCollapsed}
+        onExpandSessionSidebar={() => setSessionSidebarCollapsed(false)}
         onSwitch={onSwitchProject}
         onOpen={onOpen}
       />
-      <SessionPanel
-        project={project}
-        activeSessionId={activeSessionId}
-        onSelectSession={(sessionId) => {
-          setActiveSessionId(sessionId);
-          if (sessionId) {
-            setShowSessionWorkbench(true);
-          }
-        }}
-        onBack={onBack}
-        isDark={isDark}
-        themeMode={themeMode}
-        systemPrefersDark={systemPrefersDark}
-        onThemeModeChange={onThemeModeChange}
-        onToggleTheme={onToggleTheme}
-      />
+      {!sessionSidebarCollapsed && (
+        <SessionPanel
+          project={project}
+          activeSessionId={activeSessionId}
+          onSelectSession={(sessionId) => {
+            setActiveSessionId(sessionId);
+            if (sessionId) {
+              setShowSessionWorkbench(true);
+            }
+          }}
+          onBack={onBack}
+          onCollapse={() => setSessionSidebarCollapsed(true)}
+          isDark={isDark}
+          themeMode={themeMode}
+          systemPrefersDark={systemPrefersDark}
+          onThemeModeChange={onThemeModeChange}
+          onToggleTheme={onToggleTheme}
+        />
+      )}
       <div style={{ ...s.mainContent, flexDirection: "column" }}>
         <div
           style={{

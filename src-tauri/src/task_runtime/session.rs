@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -1286,33 +1286,14 @@ fn should_send_status_command(
 }
 
 fn send_status_command(app: &AppHandle, task_id: &str, is_codex: bool) {
+    let tm = app.state::<TaskManager>();
     if is_codex {
-        // Codex 有自动补全菜单，需先输入 /status 触发菜单，
-        // 再延迟发送 \r 选中执行；两次写入之间释放锁，避免长时间持锁
-        {
-            let tm = app.state::<TaskManager>();
-            let mut writers = tm.pty_writers.lock();
-            if let Some(writer) = writers.get_mut(task_id) {
-                let _ = writer.write_all(b"/status");
-                let _ = writer.flush();
-            }
-        }
+        // Codex 有自动补全菜单，先发送 /status，再发送回车选中。
+        let _ = tm.write_to_pty(task_id, b"/status", true);
         thread::sleep(Duration::from_millis(100));
-        {
-            let tm = app.state::<TaskManager>();
-            let mut writers = tm.pty_writers.lock();
-            if let Some(writer) = writers.get_mut(task_id) {
-                let _ = writer.write_all(b"\r");
-                let _ = writer.flush();
-            }
-        }
+        let _ = tm.write_to_pty(task_id, b"\r", true);
     } else {
-        let tm = app.state::<TaskManager>();
-        let mut writers = tm.pty_writers.lock();
-        if let Some(writer) = writers.get_mut(task_id) {
-            let _ = writer.write_all(b"/status\r");
-            let _ = writer.flush();
-        }
+        let _ = tm.write_to_pty(task_id, b"/status\r", true);
     }
 }
 
@@ -1451,11 +1432,7 @@ fn run_status_session_watcher(
                     // Codex 无此面板，无需处理
                     if !is_codex {
                         let tm = app.state::<TaskManager>();
-                        let mut writers = tm.pty_writers.lock();
-                        if let Some(writer) = writers.get_mut(&task_id) {
-                            let _ = writer.write_all(b"\x1b");
-                            let _ = writer.flush();
-                        }
+                        let _ = tm.write_to_pty(&task_id, b"\x1b", true);
                     }
                     break;
                 }

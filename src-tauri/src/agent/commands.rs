@@ -48,12 +48,10 @@ fn write_to_subprocess(
     task_id: &str,
     data: &[u8],
 ) -> Result<(), String> {
-    let mut writers = task_manager.pty_writers.lock();
-    let Some(writer) = writers.get_mut(task_id) else {
+    if !task_manager.pty_writers.lock().contains_key(task_id) {
         return Err(format!("No active PTY writer found for task {}", task_id));
-    };
-    std::io::Write::write_all(writer, data).map_err(|error| error.to_string())?;
-    std::io::Write::flush(writer).map_err(|error| error.to_string())
+    }
+    task_manager.write_to_pty(task_id, data, true)
 }
 
 async fn submit_subprocess_line(

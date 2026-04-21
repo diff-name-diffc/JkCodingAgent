@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -161,13 +161,6 @@ export function ProjectPage({
   const idleInjectedTaskIdsRef = useRef<Set<string>>(new Set());
   /** Track task_ids that have already reached a terminal state to block late idle events */
   const closedSubprocessTaskIdsRef = useRef<Set<string>>(new Set());
-  const visibleSubProcesses = useMemo(
-    () =>
-      activeSessionId
-        ? subProcesses.filter((subProcess) => subProcess.sessionId === activeSessionId)
-        : [],
-    [activeSessionId, subProcesses],
-  );
   const activeVisibleSubTabId = activeSessionId
     ? (activeSubTabIdBySession[activeSessionId] ?? null)
     : null;
@@ -499,7 +492,10 @@ export function ProjectPage({
       });
       if (taskId) {
         onReleaseTaskBuffers([taskId]);
-        if (targetSubProcess?.status !== "running" && targetSubProcess?.status !== "pending_approval") {
+        if (
+          targetSubProcess?.status !== "running" &&
+          targetSubProcess?.status !== "pending_approval"
+        ) {
           onRemoveTaskBuffers([taskId]);
         }
       }
@@ -663,8 +659,7 @@ export function ProjectPage({
                   minHeight: 0,
                   display: "flex",
                   overflow: "hidden",
-                  borderLeft:
-                    workbenchColumnCount === 2 ? "1px solid var(--border-dim)" : "none",
+                  borderLeft: workbenchColumnCount === 2 ? "1px solid var(--border-dim)" : "none",
                   background: "var(--bg-panel)",
                 }}
               >
@@ -781,9 +776,10 @@ export function ProjectPage({
           </div>
         </div>
         {/* Sub-process terminal tabs */}
-        {visibleSubProcesses.length > 0 && (
+        {subProcesses.length > 0 && (
           <SubProcessTabs
-            subProcesses={visibleSubProcesses}
+            subProcesses={subProcesses}
+            activeSessionId={activeSessionId}
             activeTabId={activeVisibleSubTabId}
             onSelectTab={(id) => {
               if (!activeSessionId) return;

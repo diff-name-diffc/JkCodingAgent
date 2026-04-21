@@ -1,16 +1,20 @@
 use parking_lot::Mutex;
+use portable_pty::{Child, ExitStatus, MasterPty, PtySize};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
 
 use crate::task_runtime::session::{ClaudeSessionInfo, CodexSessionInfo};
 
+pub(crate) type SharedPtyMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
+pub(crate) type SharedPtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+pub(crate) type SharedChildHandle = Arc<Mutex<Box<dyn Child + Send + Sync>>>;
+
 #[derive(Default)]
 pub struct TaskManager {
-    pub(crate) pty_masters: Mutex<HashMap<String, Box<dyn portable_pty::MasterPty + Send>>>,
-    pub(crate) pty_writers: Mutex<HashMap<String, Box<dyn Write + Send>>>,
-    pub(crate) child_handles:
-        Mutex<HashMap<String, Arc<std::sync::Mutex<Box<dyn portable_pty::Child + Send + Sync>>>>>,
+    pub(crate) pty_masters: Mutex<HashMap<String, SharedPtyMaster>>,
+    pub(crate) pty_writers: Mutex<HashMap<String, SharedPtyWriter>>,
+    pub(crate) child_handles: Mutex<HashMap<String, SharedChildHandle>>,
     pub(crate) cancelled_tasks: Mutex<HashSet<String>>,
     pub(crate) codex_sessions: Mutex<HashMap<String, CodexSessionInfo>>,
     pub(crate) claude_sessions: Mutex<HashMap<String, ClaudeSessionInfo>>,
@@ -27,6 +31,64 @@ pub struct TaskManager {
 }
 
 impl TaskManager {
+    pub(crate) fn insert_pty_handles(
+        &self,
+        id: &str,
+        master: Box<dyn MasterPty + Send>,
+        writer: Box<dyn Write + Send>,
+        child: Box<dyn Child + Send + Sync>,
+    ) {
+        self.pty_masters
+            .lock()
+            .insert(id.to_string(), Arc::new(Mutex::new(master)));
+        self.pty_writers
+            .lock()
+            .insert(id.to_string(), Arc::new(Mutex::new(writer)));
+        self.child_handles
+            .lock()
+            .insert(id.to_string(), Arc::new(Mutex::new(child)));
+    }
+
+    pub(crate) fn write_to_pty(&self, id: &str, data: &[u8], flush: bool) -> Result<(), String> {
+        let writer = self.pty_writers.lock().get(id).cloned();
+        let Some(writer) = writer else {
+            return Ok(());
+        };
+        let mut writer = writer.lock();
+        writer.write_all(data).map_err(|err| err.to_string())?;
+        if flush {
+            writer.flush().map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn resize_registered_pty(&self, id: &str, size: PtySize) -> Result<(), String> {
+        let master = self.pty_masters.lock().get(id).cloned();
+        let Some(master) = master else {
+            return Ok(());
+        };
+        let result = master.lock().resize(size).map_err(|err| err.to_string());
+        result
+    }
+
+    pub(crate) fn try_wait_child(&self, id: &str) -> Result<Option<ExitStatus>, String> {
+        let child = self.child_handles.lock().get(id).cloned();
+        let Some(child) = child else {
+            return Ok(None);
+        };
+        let mut child = child.lock();
+        child.try_wait().map_err(|err| err.to_string())
+    }
+
+    pub(crate) fn kill_child(&self, id: &str) -> Result<(), String> {
+        let child = self.child_handles.lock().get(id).cloned();
+        let Some(child) = child else {
+            return Ok(());
+        };
+        let mut child = child.lock();
+        child.kill().map_err(|err| err.to_string())
+    }
+
     /// Atomically remove a task or shell from all PTY maps.
     /// Locks are acquired in a fixed order to prevent deadlocks.
     pub(crate) fn remove_pty_handles(&self, id: &str) {

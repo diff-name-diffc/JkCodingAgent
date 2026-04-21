@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB per task (in-memory limit)
 const MAX_BUFFER_CHUNKS = 256; // compact when chunks array exceeds this
 const DRAIN_FRAME_BUDGET = 128 * 1024; // 每帧最多处理 128KB，避免单帧写入时间过长
+const MAX_PENDING_TERMINAL_BYTES = 512 * 1024; // 终端已注册但尚未 ready 时的临时待写上限
 
 // ── Buffer types & helpers ───────────────────────────────────────────────────
 
@@ -20,6 +21,7 @@ type TerminalWriteFn = (data: string, callback?: () => void) => void;
 
 interface TerminalWriteState {
   pending: string[];
+  pendingBytes: number;
   ready: boolean;
   generation: number;
 }
@@ -29,7 +31,16 @@ function createTaskBuffer(): TaskBuffer {
 }
 
 function createTerminalWriteState(generation = 0): TerminalWriteState {
-  return { pending: [], ready: false, generation };
+  return { pending: [], pendingBytes: 0, ready: false, generation };
+}
+
+function enqueuePendingTerminalWrite(state: TerminalWriteState, data: string): void {
+  state.pending.push(data);
+  state.pendingBytes += data.length;
+  while (state.pendingBytes > MAX_PENDING_TERMINAL_BYTES && state.pending.length > 0) {
+    const dropped = state.pending.shift()!;
+    state.pendingBytes -= dropped.length;
+  }
 }
 
 function pushToBuffer(buf: TaskBuffer, data: string): void {
@@ -92,7 +103,7 @@ export function useTerminalManager() {
     (taskId: string, data: string) => {
       const state = terminalWriteStateRef.current[taskId] ?? resetTerminalWriteState(taskId);
       if (!state.ready) {
-        state.pending.push(data);
+        enqueuePendingTerminalWrite(state, data);
         return;
       }
       const writeFn = terminalWriteRefs.current[taskId];
@@ -243,13 +254,14 @@ export function useTerminalManager() {
         writeFn(data);
       }
       state.pending = [];
+      state.pendingBytes = 0;
     }
   }, []);
 
   const handleSnapshot = useCallback((taskId: string, snapshot: string) => {
     const buf = taskBufferRef.current[taskId];
     const state = terminalWriteStateRef.current[taskId];
-    const pendingLen = state?.pending.reduce((s, c) => s + c.length, 0) ?? 0;
+    const pendingLen = state?.pendingBytes ?? 0;
     terminalSnapshotRef.current[taskId] = {
       snapshot,
       bufferLength: buf ? Math.max(0, getBufferAbsLen(buf) - pendingLen) : 0,

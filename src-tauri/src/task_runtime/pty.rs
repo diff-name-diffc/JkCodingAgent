@@ -1,8 +1,7 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -17,6 +16,7 @@ const SESSION_WAIT_MAX: Duration = Duration::from_millis(500);
 const PTY_READ_BUFFER_SIZE: usize = 32 * 1024;
 const PTY_EMIT_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 const PTY_EMIT_MAX_BATCH_BYTES: usize = 64 * 1024;
+const PTY_IDLE_OUTPUT_MAX_BYTES: usize = 256 * 1024;
 /// 有界 channel 容量：满时 reader 线程阻塞，反压传播至 OS 内核 PTY 缓冲区，
 /// 最终使写入进程（Claude/Codex）的 write() 系统调用阻塞，从源头限流。
 const PTY_EMIT_CHANNEL_CAPACITY: usize = 32;
@@ -158,32 +158,8 @@ fn setup_env(cmd: &mut CommandBuilder) {
     cmd.env("COLORTERM", "truecolor");
 }
 
-/// 将 PTY master/writer/child 注册到 TaskManager 的三个 HashMap 中。
-fn register_pty_handles(
-    task_manager: &TaskManager,
-    id: &str,
-    master: Box<dyn portable_pty::MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-) -> Result<(), String> {
-    task_manager
-        .pty_masters
-        .lock()
-        .insert(id.to_string(), master);
-    task_manager
-        .pty_writers
-        .lock()
-        .insert(id.to_string(), writer);
-    task_manager
-        .child_handles
-        .lock()
-        .insert(id.to_string(), Arc::new(std::sync::Mutex::new(child)));
-    Ok(())
-}
-
 #[derive(Clone, Copy)]
 enum PtyEmitMode {
-    Immediate,
     Batched {
         flush_interval: Duration,
         max_batch_bytes: usize,
@@ -205,6 +181,20 @@ fn flush_pty_batch(app: &AppHandle, id: &str, event_name: &str, id_key: &str, ba
         return;
     }
     emit_pty_event(app, id, event_name, id_key, std::mem::take(batch));
+}
+
+fn trim_output_tail(text: &mut String, max_bytes: usize) {
+    if text.len() <= max_bytes {
+        return;
+    }
+    let target = text.len() - max_bytes;
+    let boundary = text
+        .char_indices()
+        .find_map(|(idx, _)| (idx >= target).then_some(idx))
+        .unwrap_or(text.len());
+    if boundary > 0 {
+        text.drain(..boundary);
+    }
 }
 
 /// 在后台线程中读取 PTY 输出，向前端发送事件。
@@ -232,62 +222,53 @@ fn spawn_pty_reader(
         let mut buf = [0u8; PTY_READ_BUFFER_SIZE];
         // 保存上次读取中不完整的 UTF-8 字节序列
         let mut leftover: Vec<u8> = Vec::new();
-        let (emit_tx, emit_worker) = match emit_mode {
-            PtyEmitMode::Immediate => (None, None),
-            PtyEmitMode::Batched {
-                flush_interval,
-                max_batch_bytes,
-            } => {
-                let (tx, rx) = std::sync::mpsc::sync_channel::<String>(PTY_EMIT_CHANNEL_CAPACITY);
-                let emit_app = app.clone();
-                let emit_id = id.clone();
-                let worker = std::thread::spawn(move || {
-                    let mut batch = String::new();
-                    // 累积本轮输出，只有收到 session watcher 的显式 turn-complete 信号才回调。
-                    let mut accumulated_output = String::new();
-                    loop {
-                        match rx.recv_timeout(flush_interval) {
-                            Ok(chunk) => {
-                                batch.push_str(&chunk);
-                                accumulated_output.push_str(&chunk);
-                                if batch.len() >= max_batch_bytes {
-                                    flush_pty_batch(
-                                        &emit_app, &emit_id, event_name, id_key, &mut batch,
-                                    );
-                                }
-                            }
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                flush_pty_batch(
-                                    &emit_app, &emit_id, event_name, id_key, &mut batch,
-                                );
-                                let force = force_idle_flag
-                                    .as_ref()
-                                    .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
-                                    .unwrap_or(false);
+        let PtyEmitMode::Batched {
+            flush_interval,
+            max_batch_bytes,
+        } = emit_mode;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(PTY_EMIT_CHANNEL_CAPACITY);
+        let emit_app = app.clone();
+        let emit_id = id.clone();
+        let worker = std::thread::spawn(move || {
+            let mut batch = String::new();
+            // 累积本轮输出，只有收到 session watcher 的显式 turn-complete 信号才回调。
+            let mut accumulated_output = String::new();
+            loop {
+                match rx.recv_timeout(flush_interval) {
+                    Ok(chunk) => {
+                        batch.push_str(&chunk);
+                        accumulated_output.push_str(&chunk);
+                        trim_output_tail(&mut accumulated_output, PTY_IDLE_OUTPUT_MAX_BYTES);
+                        if batch.len() >= max_batch_bytes {
+                            flush_pty_batch(&emit_app, &emit_id, event_name, id_key, &mut batch);
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        flush_pty_batch(&emit_app, &emit_id, event_name, id_key, &mut batch);
+                        let force = force_idle_flag
+                            .as_ref()
+                            .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+                            .unwrap_or(false);
 
-                                if force {
-                                    if let Some(flag) = force_idle_flag.as_ref() {
-                                        flag.store(false, std::sync::atomic::Ordering::Relaxed);
-                                    }
-                                    if let Some(ref cb) = idle_callback {
-                                        if !accumulated_output.is_empty() {
-                                            cb(std::mem::take(&mut accumulated_output));
-                                        }
-                                    }
-                                }
+                        if force {
+                            if let Some(flag) = force_idle_flag.as_ref() {
+                                flag.store(false, std::sync::atomic::Ordering::Relaxed);
                             }
-                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                                flush_pty_batch(
-                                    &emit_app, &emit_id, event_name, id_key, &mut batch,
-                                );
-                                break;
+                            if let Some(ref cb) = idle_callback {
+                                if !accumulated_output.is_empty() {
+                                    cb(std::mem::take(&mut accumulated_output));
+                                }
                             }
                         }
                     }
-                });
-                (Some(tx), Some(worker))
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        flush_pty_batch(&emit_app, &emit_id, event_name, id_key, &mut batch);
+                        break;
+                    }
+                }
             }
-        };
+        });
+        let (emit_tx, emit_worker) = (Some(tx), Some(worker));
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
@@ -314,8 +295,6 @@ fn spawn_pty_reader(
                                 Ok(()) => {}
                                 Err(err) => emit_pty_event(&app, &id, event_name, id_key, err.0),
                             }
-                        } else {
-                            emit_pty_event(&app, &id, event_name, id_key, data);
                         }
                     }
 
@@ -341,11 +320,16 @@ fn spawn_exit_monitor(app: AppHandle, task_id: String, project_path: String, is_
     tokio::task::spawn_blocking(move || loop {
         let exit_status = {
             let tm = app.state::<TaskManager>();
-            let child_arc = tm.child_handles.lock().get(&task_id).cloned();
-            if let Some(arc) = child_arc {
-                arc.lock().unwrap().try_wait().ok().flatten()
-            } else {
-                return;
+            match tm.try_wait_child(&task_id) {
+                Ok(Some(status)) => Some(status),
+                Ok(None) => {
+                    if tm.child_handles.lock().contains_key(&task_id) {
+                        None
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => return,
             }
         };
 
@@ -472,7 +456,7 @@ pub async fn run_task(
     drop(pair.slave);
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    register_pty_handles(&task_manager, &task_id, pair.master, writer, child)?;
+    task_manager.insert_pty_handles(&task_id, pair.master, writer, child);
     task_manager
         .task_project_paths
         .lock()
@@ -558,10 +542,7 @@ pub async fn cancel_task(
 ) -> Result<(), String> {
     task_manager.cancelled_tasks.lock().insert(task_id.clone());
 
-    let child_arc = task_manager.child_handles.lock().get(&task_id).cloned();
-    if let Some(arc) = child_arc {
-        let _ = arc.lock().unwrap().kill();
-    }
+    let _ = task_manager.kill_child(&task_id);
 
     // 释放已声明的会话路径，确保相同提示词的任务可以重新运行
     {
@@ -637,7 +618,7 @@ pub async fn resume_task(
     drop(pair.slave);
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    register_pty_handles(&task_manager, &task_id, pair.master, writer, child)?;
+    task_manager.insert_pty_handles(&task_id, pair.master, writer, child);
     task_manager
         .task_project_paths
         .lock()
@@ -684,14 +665,7 @@ pub async fn send_input(
     task_id: String,
     data: String,
 ) -> Result<(), String> {
-    let mut writers = task_manager.pty_writers.lock();
-    if let Some(writer) = writers.get_mut(&task_id) {
-        writer
-            .write_all(data.as_bytes())
-            .map_err(|e| e.to_string())?;
-        writer.flush().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    task_manager.write_to_pty(&task_id, data.as_bytes(), false)
 }
 
 #[tauri::command]
@@ -701,18 +675,15 @@ pub async fn resize_pty(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let masters = task_manager.pty_masters.lock();
-    if let Some(master) = masters.get(&task_id) {
-        master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    task_manager.resize_registered_pty(
+        &task_id,
+        PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+    )
 }
 
 #[tauri::command]
@@ -726,10 +697,7 @@ pub async fn open_shell(
 ) -> Result<(), String> {
     // 先终止已存在的同 ID Shell
     {
-        let child_arc = task_manager.child_handles.lock().get(&shell_id).cloned();
-        if let Some(arc) = child_arc {
-            let _ = arc.lock().unwrap().kill();
-        }
+        let _ = task_manager.kill_child(&shell_id);
         task_manager.remove_pty_handles(&shell_id);
     }
 
@@ -751,7 +719,7 @@ pub async fn open_shell(
     drop(pair.slave);
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    register_pty_handles(&task_manager, &shell_id, pair.master, writer, child)?;
+    task_manager.insert_pty_handles(&shell_id, pair.master, writer, child);
 
     // Shell 退出后清理 TaskManager 中的残留句柄
     let app_cleanup = app.clone();
@@ -766,7 +734,10 @@ pub async fn open_shell(
         shell_id,
         "shell-output",
         "shell_id",
-        PtyEmitMode::Immediate,
+        PtyEmitMode::Batched {
+            flush_interval: PTY_EMIT_FLUSH_INTERVAL,
+            max_batch_bytes: PTY_EMIT_MAX_BATCH_BYTES,
+        },
         reader,
         None,
         None,
@@ -782,10 +753,7 @@ pub async fn kill_shell(
     task_manager: State<'_, TaskManager>,
     shell_id: String,
 ) -> Result<(), String> {
-    let child_arc = task_manager.child_handles.lock().get(&shell_id).cloned();
-    if let Some(arc) = child_arc {
-        let _ = arc.lock().unwrap().kill();
-    }
+    let _ = task_manager.kill_child(&shell_id);
     task_manager.remove_pty_handles(&shell_id);
     Ok(())
 }

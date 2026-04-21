@@ -6,6 +6,7 @@ const COLLAPSED_HEIGHT = 32;
 
 interface SubProcessTabsProps {
   subProcesses: SubProcess[];
+  activeSessionId: string | null;
   activeTabId: string | null;
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
@@ -31,6 +32,7 @@ interface SubProcessTabsProps {
 
 export function SubProcessTabs({
   subProcesses,
+  activeSessionId,
   activeTabId,
   onSelectTab,
   onCloseTab,
@@ -45,19 +47,35 @@ export function SubProcessTabs({
   getRestoreState,
   subProcessTaskMap,
 }: SubProcessTabsProps) {
+  const visibleSubProcesses = useMemo(
+    () =>
+      activeSessionId
+        ? subProcesses.filter((subProcess) => subProcess.sessionId === activeSessionId)
+        : [],
+    [activeSessionId, subProcesses],
+  );
+  const mountedTerminals = useMemo(
+    () =>
+      subProcesses.filter(
+        (subProcess) =>
+          Boolean(subProcessTaskMap[subProcess.id]) && subProcess.status !== "pending_approval",
+      ),
+    [subProcessTaskMap, subProcesses],
+  );
+  const activeSubProcess = visibleSubProcesses.find((sp) => sp.id === activeTabId) ?? null;
+  const isExpanded = Boolean(activeSubProcess);
+  const isPanelVisible = visibleSubProcesses.length > 0;
+
   if (subProcesses.length === 0) return null;
 
-  const activeSubProcess = subProcesses.find((sp) => sp.id === activeTabId);
-  const activeTaskId = activeTabId ? subProcessTaskMap[activeTabId] : null;
-  const isExpanded = Boolean(activeSubProcess);
-  const shouldRenderTerminal =
-    !!activeSubProcess &&
-    !!activeTaskId &&
-    activeSubProcess.status !== "pending_approval";
-  const isTerminalInteractive = activeSubProcess?.status === "running";
-
   return (
-    <div style={{ ...styles.container, height: isExpanded ? height : COLLAPSED_HEIGHT }}>
+    <div
+      style={{
+        ...styles.container,
+        display: isPanelVisible ? "flex" : "none",
+        height: isExpanded ? height : COLLAPSED_HEIGHT,
+      }}
+    >
       {/* Resize handle */}
       {isExpanded && <div style={styles.resizeHandle} onMouseDown={onResizeStart} />}
 
@@ -65,7 +83,7 @@ export function SubProcessTabs({
       <div style={styles.tabBar}>
         <div style={styles.tabBarLabel}>子进程终端</div>
         <div style={styles.tabList}>
-          {subProcesses.map((sp) => (
+          {visibleSubProcesses.map((sp) => (
             <SubProcessTab
               key={sp.id}
               subProcess={sp}
@@ -80,33 +98,54 @@ export function SubProcessTabs({
       {/* Terminal content area */}
       {activeSubProcess && (
         <div style={styles.content}>
-          {shouldRenderTerminal ? (
-            <div style={styles.terminalWrap}>
-              <TerminalView
-                key={activeTaskId}
-                onInput={(data) => {
-                  if (isTerminalInteractive) {
-                    onInput(activeTaskId, data);
-                  }
-                }}
-                onResize={(cols, rows) => onResize(activeTaskId, cols, rows)}
-                onRegisterTerminal={(fn) => onRegisterTerminal(activeTaskId, fn)}
-                onReady={(gen) => onTerminalReady(activeTaskId, gen)}
-                onSnapshot={(snap) => onSnapshot(activeTaskId, snap)}
-                isDark={isDark}
-                isActive={isTerminalInteractive}
-                {...getRestoreState(activeTaskId)}
-              />
-              {!isTerminalInteractive && (
-                <div style={styles.terminalStatusOverlay}>
-                  {activeSubProcess.status === "done" && <span>终端已退出，可继续查看本次输入与输出</span>}
-                  {activeSubProcess.status === "failed" && <span>终端已失败退出，可继续查看本次输入与输出</span>}
-                </div>
-              )}
+          {activeSubProcess.status === "pending_approval" ? (
+            <div style={styles.terminalPlaceholder}>
+              <span>⏳ 等待审批...</span>
             </div>
           ) : (
-            <div style={styles.terminalPlaceholder}>
-              {activeSubProcess.status === "pending_approval" && <span>⏳ 等待审批...</span>}
+            <div style={styles.terminalStage}>
+              {mountedTerminals.map((subProcess) => {
+                const taskId = subProcessTaskMap[subProcess.id];
+                if (!taskId) return null;
+                const isVisible = subProcess.id === activeTabId;
+                const isInteractive = subProcess.status === "running";
+                return (
+                  <div
+                    key={subProcess.id}
+                    style={{
+                      ...styles.terminalLayer,
+                      display: isVisible ? "block" : "none",
+                    }}
+                  >
+                    <div style={styles.terminalWrap}>
+                      <TerminalView
+                        onInput={(data) => {
+                          if (isInteractive) {
+                            onInput(taskId, data);
+                          }
+                        }}
+                        onResize={(cols, rows) => onResize(taskId, cols, rows)}
+                        onRegisterTerminal={(fn) => onRegisterTerminal(taskId, fn)}
+                        onReady={(gen) => onTerminalReady(taskId, gen)}
+                        onSnapshot={(snap) => onSnapshot(taskId, snap)}
+                        isDark={isDark}
+                        isActive={isVisible && isInteractive}
+                        {...getRestoreState(taskId)}
+                      />
+                      {!isInteractive && isVisible && (
+                        <div style={styles.terminalStatusOverlay}>
+                          {subProcess.status === "done" && (
+                            <span>终端已退出，可继续查看本次输入与输出</span>
+                          )}
+                          {subProcess.status === "failed" && (
+                            <span>终端已失败退出，可继续查看本次输入与输出</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -313,6 +352,15 @@ const styles = {
     flex: 1,
     overflow: "hidden",
     position: "relative" as const,
+  },
+  terminalStage: {
+    width: "100%",
+    height: "100%",
+    position: "relative" as const,
+  },
+  terminalLayer: {
+    position: "absolute" as const,
+    inset: 0,
   },
   terminalWrap: {
     width: "100%",

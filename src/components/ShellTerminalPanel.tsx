@@ -12,6 +12,8 @@ import {
   loadWebglAddon,
   safeFit,
   createSmartWriter,
+  createInputBatcher,
+  createResizeScheduler,
 } from "./terminalShared";
 import { X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
@@ -36,6 +38,8 @@ interface Props {
   onResizeStart?: (e: React.MouseEvent) => void;
 }
 
+const DRAIN_FRAME_BUDGET = 128 * 1024;
+
 export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
   function ShellTerminalPanel(
     {
@@ -54,6 +58,7 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
     const containerRef = useRef<HTMLDivElement>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
+    const inputBatcherRef = useRef<ReturnType<typeof createInputBatcher> | null>(null);
     const isDarkRef = useRef(isDark);
     const onReadyRef = useRef(onReady);
     isDarkRef.current = isDark;
@@ -61,6 +66,12 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
 
     useImperativeHandle(ref, () => ({
       sendCommand: (cmd: string) => {
+        const batcher = inputBatcherRef.current;
+        if (batcher) {
+          batcher.push(cmd);
+          batcher.flush();
+          return;
+        }
         invoke("send_input", { taskId: shellId, data: cmd }).catch(console.error);
       },
     }));
@@ -74,14 +85,21 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
       fitAddonRef.current = fitAddon;
       term.open(container);
       loadWebglAddon(term);
+      const writer = createSmartWriter(term);
+      const inputBatcher = createInputBatcher((data) => {
+        invoke("send_input", { taskId: shellId, data }).catch(() => {});
+      });
+      inputBatcherRef.current = inputBatcher;
 
       const fit = () => {
         const s = safeFit(fitAddon, term);
-        if (s) invoke("resize_pty", { taskId: shellId, cols: s.cols, rows: s.rows }).catch(() => {});
+        if (s)
+          invoke("resize_pty", { taskId: shellId, cols: s.cols, rows: s.rows }).catch(() => {});
       };
+      const resizeScheduler = createResizeScheduler(fit);
 
       setTimeout(() => {
-        fit();
+        resizeScheduler.flush();
         invoke<void>("open_shell", {
           shellId,
           projectPath,
@@ -95,22 +113,20 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
         term.focus();
       }, 50);
 
-      const writer = createSmartWriter(term);
-
       const disposeSmartCopy = attachSmartCopy(term);
       const disposeOnData = term.onData((data) => {
-        invoke("send_input", { taskId: shellId, data }).catch(() => {});
+        inputBatcher.push(data);
       });
 
       const resizeObserver = new ResizeObserver(() => {
-        setTimeout(fit, 50);
+        resizeScheduler.schedule();
       });
       resizeObserver.observe(container);
 
       const handleVisibilityChange = () => {
         if (document.visibilityState !== "visible" || !terminalRef.current) return;
         window.requestAnimationFrame(() => {
-          fit();
+          resizeScheduler.flush();
           const t = terminalRef.current;
           if (t) {
             t.refresh(0, t.rows - 1);
@@ -122,9 +138,41 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
 
       let unlisten: (() => void) | null = null;
       let cleaned = false;
+      const pendingOutputs: string[] = [];
+      let pendingHead = 0;
+      let rafId = 0;
+
+      const compactPendingOutputs = () => {
+        if (pendingHead === 0) return;
+        if (pendingHead < 64 && pendingHead * 2 < pendingOutputs.length) return;
+        pendingOutputs.splice(0, pendingHead);
+        pendingHead = 0;
+      };
+
+      const drainPendingOutputs = () => {
+        rafId = 0;
+        let bytesThisFrame = 0;
+        const chunks: string[] = [];
+        while (pendingHead < pendingOutputs.length && bytesThisFrame < DRAIN_FRAME_BUDGET) {
+          const chunk = pendingOutputs[pendingHead++];
+          chunks.push(chunk);
+          bytesThisFrame += chunk.length;
+        }
+        compactPendingOutputs();
+        if (chunks.length > 0) {
+          writer.write(chunks.length === 1 ? chunks[0] : chunks.join(""));
+        }
+        if (pendingHead < pendingOutputs.length) {
+          rafId = requestAnimationFrame(drainPendingOutputs);
+        }
+      };
+
       listen<ShellOutputEvent>("shell-output", (event) => {
         if (event.payload.shell_id === shellId && terminalRef.current) {
-          writer.write(event.payload.data);
+          pendingOutputs.push(event.payload.data);
+          if (!rafId) {
+            rafId = requestAnimationFrame(drainPendingOutputs);
+          }
         }
       }).then((fn) => {
         if (cleaned) {
@@ -138,7 +186,11 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
         cleaned = true;
         unlisten?.();
         disposeSmartCopy();
+        inputBatcher.dispose();
+        inputBatcherRef.current = null;
         disposeOnData.dispose();
+        if (rafId) cancelAnimationFrame(rafId);
+        resizeScheduler.dispose();
         resizeObserver.disconnect();
         document.removeEventListener("visibilitychange", handleVisibilityChange);
         terminalRef.current = null;
@@ -153,7 +205,8 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
       window.requestAnimationFrame(() => {
         if (!fitAddonRef.current || !terminalRef.current) return;
         const s = safeFit(fitAddonRef.current, terminalRef.current);
-        if (s) invoke("resize_pty", { taskId: shellId, cols: s.cols, rows: s.rows }).catch(() => {});
+        if (s)
+          invoke("resize_pty", { taskId: shellId, cols: s.cols, rows: s.rows }).catch(() => {});
         terminalRef.current.refresh(0, terminalRef.current.rows - 1);
         terminalRef.current.focus();
       });

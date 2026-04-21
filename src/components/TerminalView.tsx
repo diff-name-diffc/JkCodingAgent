@@ -10,15 +10,15 @@ import {
   loadWebglAddon,
   safeFit,
   createSmartWriter,
+  createInputBatcher,
+  createResizeScheduler,
 } from "./terminalShared";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalViewProps {
   onInput: (data: string) => void;
   onResize: (cols: number, rows: number) => void;
-  onRegisterTerminal: (
-    writeFn: ((data: string, callback?: () => void) => void) | null,
-  ) => number;
+  onRegisterTerminal: (writeFn: ((data: string, callback?: () => void) => void) | null) => number;
   onReady?: (generation: number) => void;
   isDark: boolean;
   isActive?: boolean;
@@ -77,6 +77,11 @@ export function TerminalView({
     };
 
     const writer = createSmartWriter(term);
+    const inputBatcher = createInputBatcher((data) => onInputRef.current(data));
+    const resizeScheduler = createResizeScheduler(() => {
+      const s = safeFit(fitAddon, term);
+      if (s) onResizeRef.current(s.cols, s.rows);
+    });
 
     const terminalGeneration = onRegisterRef.current(writer.write);
 
@@ -106,7 +111,7 @@ export function TerminalView({
     });
 
     const disposeSmartCopy = attachSmartCopy(term);
-    const disposeOnData = term.onData((data) => onInputRef.current(data));
+    const disposeOnData = term.onData((data) => inputBatcher.push(data));
 
     const handlePointerDown = (e: PointerEvent) => {
       if (e.button === 0) {
@@ -134,13 +139,8 @@ export function TerminalView({
     document.addEventListener("pointerup", handlePointerUp as EventListener);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
-    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const resizeObserver = new ResizeObserver(() => {
-      if (resizeTimer) clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        const s = safeFit(fitAddon, term);
-        if (s) onResizeRef.current(s.cols, s.rows);
-      }, 50);
+      resizeScheduler.schedule();
     });
     resizeObserver.observe(container);
 
@@ -154,8 +154,9 @@ export function TerminalView({
       onRegisterRef.current(null);
       fitAddonRef.current = null;
       disposeSmartCopy();
+      inputBatcher.dispose();
       disposeOnData.dispose();
-      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeScheduler.dispose();
       resizeObserver.disconnect();
       container.removeEventListener("pointerdown", handlePointerDown as EventListener);
       document.removeEventListener("pointerup", handlePointerUp as EventListener);

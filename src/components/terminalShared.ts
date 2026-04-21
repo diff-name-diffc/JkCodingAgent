@@ -54,12 +54,26 @@ export const LIGHT_THEME = {
 // ── Watermark flow control ───────────────────────────────────────────────────
 
 const HIGH_WATER = 128 * 1024; // 128 KB：超过时停止写入
-const LOW_WATER  =  16 * 1024; //  16 KB：恢复写入
+const LOW_WATER = 16 * 1024; // 16 KB：恢复写入
+const MAX_PENDING_BYTES = 2 * 1024 * 1024; // 2 MB：暂停期间最多缓存的数据
+const INPUT_FLUSH_DELAY_MS = 8;
 
 interface SmartWriter {
   write: (data: string, callback?: () => void) => void;
   drainPending: () => void;
   setSelectionPaused: (paused: boolean) => void;
+}
+
+interface InputBatcher {
+  push: (data: string) => void;
+  flush: () => void;
+  dispose: () => void;
+}
+
+interface ResizeScheduler {
+  schedule: () => void;
+  flush: () => void;
+  dispose: () => void;
 }
 
 /**
@@ -72,10 +86,37 @@ interface SmartWriter {
 export function createSmartWriter(term: Terminal): SmartWriter {
   const state = {
     pendingChunks: [] as Array<{ data: string; callback?: () => void }>,
+    pendingHead: 0,
+    pendingBytes: 0,
     watermark: 0,
     paused: false,
     selectionPaused: false,
   };
+
+  function compactPendingQueue() {
+    if (state.pendingHead === 0) return;
+    if (state.pendingHead < 64 && state.pendingHead * 2 < state.pendingChunks.length) return;
+    state.pendingChunks = state.pendingChunks.slice(state.pendingHead);
+    state.pendingHead = 0;
+  }
+
+  function dropOldestPendingChunk() {
+    if (state.pendingHead >= state.pendingChunks.length) return;
+    const dropped = state.pendingChunks[state.pendingHead++];
+    state.pendingBytes -= dropped.data.length;
+    compactPendingQueue();
+  }
+
+  function enqueuePending(data: string, callback?: () => void) {
+    state.pendingChunks.push({ data, callback });
+    state.pendingBytes += data.length;
+    while (
+      state.pendingBytes > MAX_PENDING_BYTES &&
+      state.pendingHead < state.pendingChunks.length
+    ) {
+      dropOldestPendingChunk();
+    }
+  }
 
   function flushOne(data: string, callback?: () => void) {
     state.watermark += data.length;
@@ -90,21 +131,28 @@ export function createSmartWriter(term: Terminal): SmartWriter {
   }
 
   function drainPending() {
-    while (state.pendingChunks.length > 0 && !state.paused && !state.selectionPaused) {
-      const next = state.pendingChunks.shift()!;
+    while (
+      state.pendingHead < state.pendingChunks.length &&
+      !state.paused &&
+      !state.selectionPaused
+    ) {
+      const next = state.pendingChunks[state.pendingHead++];
+      state.pendingBytes -= next.data.length;
       if (state.watermark >= HIGH_WATER) {
-        state.pendingChunks.unshift(next);
+        state.pendingHead--;
+        state.pendingBytes += next.data.length;
         state.paused = true;
         break;
       }
       flushOne(next.data, next.callback);
     }
+    compactPendingQueue();
   }
 
   function write(data: string, callback?: () => void) {
     if (state.paused || state.selectionPaused || state.watermark >= HIGH_WATER) {
       if (state.watermark >= HIGH_WATER) state.paused = true;
-      state.pendingChunks.push({ data, callback });
+      enqueuePending(data, callback);
       return;
     }
     flushOne(data, callback);
@@ -116,6 +164,82 @@ export function createSmartWriter(term: Terminal): SmartWriter {
   }
 
   return { write, drainPending, setSelectionPaused };
+}
+
+export function createInputBatcher(send: (data: string) => void): InputBatcher {
+  let timer: number | null = null;
+  let buffer = "";
+
+  function flush() {
+    if (!buffer) return;
+    const data = buffer;
+    buffer = "";
+    if (timer !== null) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+    send(data);
+  }
+
+  function scheduleFlush() {
+    if (timer !== null) return;
+    timer = window.setTimeout(() => {
+      timer = null;
+      flush();
+    }, INPUT_FLUSH_DELAY_MS);
+  }
+
+  function push(data: string) {
+    buffer += data;
+    const hasImmediateControl =
+      data.includes("\r") ||
+      data.includes("\n") ||
+      data.includes(String.fromCharCode(3)) ||
+      data.includes(String.fromCharCode(4)) ||
+      data.includes(String.fromCharCode(27));
+    if (buffer.length >= 4096 || hasImmediateControl) {
+      flush();
+      return;
+    }
+    scheduleFlush();
+  }
+
+  function dispose() {
+    flush();
+  }
+
+  return { push, flush, dispose };
+}
+
+export function createResizeScheduler(run: () => void, delayMs = 50): ResizeScheduler {
+  let timer: number | null = null;
+
+  function flush() {
+    if (timer !== null) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+    run();
+  }
+
+  function schedule() {
+    if (timer !== null) {
+      window.clearTimeout(timer);
+    }
+    timer = window.setTimeout(() => {
+      timer = null;
+      run();
+    }, delayMs);
+  }
+
+  function dispose() {
+    if (timer !== null) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+  }
+
+  return { schedule, flush, dispose };
 }
 
 // ── xterm initialization ─────────────────────────────────────────────────────
@@ -168,10 +292,7 @@ export function loadWebglAddon(term: Terminal): void {
 /**
  * 安全地执行 fitAddon.fit() 并返回 { cols, rows }，失败时返回 null。
  */
-export function safeFit(
-  fitAddon: FitAddon,
-  term: Terminal,
-): { cols: number; rows: number } | null {
+export function safeFit(fitAddon: FitAddon, term: Terminal): { cols: number; rows: number } | null {
   try {
     fitAddon.fit();
     return { cols: term.cols, rows: term.rows };

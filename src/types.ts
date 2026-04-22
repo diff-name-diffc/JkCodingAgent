@@ -477,6 +477,14 @@ export interface CadReviewRunDetail {
   issues: CadReviewIssue[];
 }
 
+export interface DwgIssueMarker {
+  id: string;
+  severity?: string | null;
+  title?: string | null;
+  anchorPoint?: CadPoint | null;
+  bbox?: CadBBox | null;
+}
+
 export interface DwgViewerSessionRegistration {
   sessionId: string;
   workspaceId: string;

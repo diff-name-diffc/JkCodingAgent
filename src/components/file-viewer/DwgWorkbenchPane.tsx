@@ -70,6 +70,7 @@ export function DwgWorkbenchPane({
     parseStatus,
     docId,
     parseError: indexError,
+    reviewIssues: reviewDetail?.issues ?? [],
     activeIssue,
   });
 

@@ -83,7 +83,7 @@ const DEFAULT_TOOLS: &str = r#"# 工具说明
 - `write_file` / `edit_file`：只用于极小范围修补、验证性修改或维护调度文件；不要把自己变成主要实现代理。
 - `cad_ensure_dwg_index` / `cad_get_dwg_overview` / `cad_list_dwg_layers` / `cad_inspect_dwg_region`：用于 DWG 的渐进式探索，先看概览，再按图层或区域收敛。
 - `cad_query_dwg_entities` / `cad_get_dwg_entity_detail`：先取轻量 envelope，再对少量目标展开细节，禁止默认整图全量读取。
-- `cad_get_dwg_viewer_session` / `cad_get_dwg_viewport` / `cad_control_dwg_viewer` / `cad_pick_dwg_viewer` / `cad_capture_dwg_viewer`：用于复用或打开 DWG viewer，并执行定位、缩放、平移、拾取和留痕。
+- `cad_get_dwg_viewer_session` / `cad_get_dwg_viewport` / `cad_set_dwg_issue_markers` / `cad_clear_dwg_issue_markers` / `cad_control_dwg_viewer` / `cad_pick_dwg_viewer` / `cad_capture_dwg_viewer`：用于复用或打开 DWG viewer，并执行圈标记、定位、缩放、平移、拾取和留痕。
 - `cad_compute_geometry` / `cad_save_review_result`：用于纯几何辅助判断，以及保存结构化 CAD 审查结果。
 - `dispatch_claude`：把任务交给 Claude 执行，适合新功能、快速试错和探索性调试。
 - `dispatch_codex`：把任务交给 Codex 执行，适合重构、结构整理和需要严格验证的任务。

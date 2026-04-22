@@ -1716,6 +1716,8 @@ fn builtin_tool_allowlist() -> HashSet<&'static str> {
         "cad_inspect_dwg_region",
         "cad_get_dwg_viewer_session",
         "cad_get_dwg_viewport",
+        "cad_set_dwg_issue_markers",
+        "cad_clear_dwg_issue_markers",
         "cad_control_dwg_viewer",
         "cad_pick_dwg_viewer",
         "cad_capture_dwg_viewer",
@@ -1883,6 +1885,7 @@ mod tests {
         let allowed = builtin_tool_allowlist();
         assert!(allowed.contains("cad_ensure_dwg_index"));
         assert!(allowed.contains("cad_get_dwg_viewer_session"));
+        assert!(allowed.contains("cad_set_dwg_issue_markers"));
         assert!(allowed.contains("cad_control_dwg_viewer"));
         assert!(allowed.contains("cad_save_review_result"));
     }

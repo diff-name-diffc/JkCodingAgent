@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AcGeBox2d, AcGePoint2d } from "@mlightcad/data-model";
@@ -14,17 +14,37 @@ import type {
   CadBBox,
   CadPoint,
   CadReviewIssue,
+  DwgIssueMarker,
   DwgViewerCommand,
   DwgViewerCommandResult,
   DwgViewerSessionRegistration,
   DwgViewerSessionState,
 } from "../../../types";
 import { openCadViewerDwgDocument } from "../../../lib/cadViewerDwg";
+import {
+  bboxCenter,
+  buildCommandIssueMarkers,
+  buildReviewIssueMarkers,
+  createIssueMarkerLayer,
+  getViewportBox,
+  mergeCommandIssueMarkers,
+  type IssueMarkerLayerHandle,
+} from "./issueMarkers";
 
 type ViewerBridge = {
   context: AcApContext;
   document: AcApDocument;
   view: AcTrView2d;
+};
+
+type ViewerCommandRuntime = {
+  clearIssueMarkers: (markerIds?: string[]) => void;
+  setIssueMarkers: (
+    markers: DwgIssueMarker[],
+    activeMarkerId: string | null | undefined,
+    replace: boolean,
+  ) => void;
+  setViewMode: (mode: "select" | "pan") => void;
 };
 
 export function useDwgViewerSession({
@@ -38,6 +58,7 @@ export function useDwgViewerSession({
   parseStatus,
   docId,
   parseError,
+  reviewIssues,
   activeIssue,
 }: {
   tabId: string;
@@ -50,13 +71,15 @@ export function useDwgViewerSession({
   parseStatus: string;
   docId: string | null;
   parseError: string | null;
+  reviewIssues: CadReviewIssue[];
   activeIssue: CadReviewIssue | null;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const markerRef = useRef<HTMLDivElement | null>(null);
-  const markerFrameRef = useRef<number | null>(null);
+  const markerLayerRef = useRef<IssueMarkerLayerHandle | null>(null);
   const viewerRef = useRef<ViewerBridge | null>(null);
   const commandQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const commandMarkersRef = useRef<DwgIssueMarker[]>([]);
+  const commandActiveMarkerIdRef = useRef<string | null>(null);
   const sessionId = useMemo(
     () => (workspaceId ? `dwg-${workspaceId}-${tabId}` : null),
     [tabId, workspaceId],
@@ -65,6 +88,59 @@ export function useDwgViewerSession({
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"select" | "pan">("select");
   const [viewerNotice, setViewerNotice] = useState<string | null>(null);
+  const [commandMarkers, setCommandMarkers] = useState<DwgIssueMarker[]>([]);
+  const [commandActiveMarkerId, setCommandActiveMarkerId] = useState<string | null>(null);
+
+  const reviewMarkers = useMemo(
+    () => buildReviewIssueMarkers(reviewIssues, activeIssue?.id ?? null),
+    [activeIssue?.id, reviewIssues],
+  );
+  const overlayMarkers = useMemo(
+    () => [...reviewMarkers, ...buildCommandIssueMarkers(commandMarkers, commandActiveMarkerId)],
+    [commandActiveMarkerId, commandMarkers, reviewMarkers],
+  );
+  const overlayMarkersRef = useRef(overlayMarkers);
+
+  const commitCommandMarkers = useCallback(
+    (markers: DwgIssueMarker[], activeMarkerId: string | null) => {
+      commandMarkersRef.current = markers;
+      commandActiveMarkerIdRef.current = activeMarkerId;
+      setCommandMarkers(markers);
+      setCommandActiveMarkerId(activeMarkerId);
+    },
+    [],
+  );
+
+  const setIssueMarkers = useCallback(
+    (markers: DwgIssueMarker[], activeMarkerId: string | null | undefined, replace: boolean) => {
+      const nextMarkers = replace
+        ? markers
+        : mergeCommandIssueMarkers(commandMarkersRef.current, markers);
+      let nextActiveMarkerId =
+        activeMarkerId === undefined ? commandActiveMarkerIdRef.current : activeMarkerId;
+      if (nextActiveMarkerId && !nextMarkers.some((marker) => marker.id === nextActiveMarkerId)) {
+        nextActiveMarkerId = null;
+      }
+      commitCommandMarkers(nextMarkers, nextActiveMarkerId ?? null);
+    },
+    [commitCommandMarkers],
+  );
+
+  const clearIssueMarkers = useCallback(
+    (markerIds?: string[]) => {
+      if (!markerIds || markerIds.length === 0) {
+        commitCommandMarkers([], null);
+        return;
+      }
+      const removeSet = new Set(markerIds);
+      const nextMarkers = commandMarkersRef.current.filter((marker) => !removeSet.has(marker.id));
+      const nextActiveMarkerId = removeSet.has(commandActiveMarkerIdRef.current ?? "")
+        ? null
+        : commandActiveMarkerIdRef.current;
+      commitCommandMarkers(nextMarkers, nextActiveMarkerId ?? null);
+    },
+    [commitCommandMarkers],
+  );
 
   const buildStateSnapshot = useCallback((): DwgViewerSessionRegistration | null => {
     const bridge = viewerRef.current;
@@ -144,6 +220,8 @@ export function useDwgViewerSession({
         view.activeLayoutBtrId = modelSpaceBtrId;
         view.clear();
         await document.database.regen();
+        markerLayerRef.current = createIssueMarkerLayer(view);
+        markerLayerRef.current.setMarkers(overlayMarkersRef.current);
         viewerRef.current = { context, document, view };
         if (document.database.extents.isEmpty()) {
           view.zoomToFitDrawing(1500);
@@ -166,11 +244,8 @@ export function useDwgViewerSession({
     void boot();
     return () => {
       cancelled = true;
-      if (markerFrameRef.current !== null) {
-        cancelAnimationFrame(markerFrameRef.current);
-      }
-      markerRef.current?.remove();
-      markerRef.current = null;
+      markerLayerRef.current?.dispose();
+      markerLayerRef.current = null;
       const bridge = viewerRef.current;
       viewerRef.current = null;
       if (bridge) {
@@ -179,6 +254,11 @@ export function useDwgViewerSession({
       }
     };
   }, [bytes, fileName, isDark]);
+
+  useEffect(() => {
+    overlayMarkersRef.current = overlayMarkers;
+    markerLayerRef.current?.setMarkers(overlayMarkers);
+  }, [overlayMarkers]);
 
   useEffect(() => {
     if (!sessionId || !workspaceId) {
@@ -192,9 +272,7 @@ export function useDwgViewerSession({
     });
 
     return () => {
-      if (sessionId) {
-        void invoke("dispatcher_unregister_dwg_viewer_session", { sessionId }).catch(console.error);
-      }
+      void invoke("dispatcher_unregister_dwg_viewer_session", { sessionId }).catch(console.error);
     };
   }, [buildStateSnapshot, sessionId, workspaceId]);
 
@@ -209,6 +287,7 @@ export function useDwgViewerSession({
       if (frameTimer) {
         clearTimeout(frameTimer);
       }
+      markerLayerRef.current?.scheduleRefresh();
       frameTimer = setTimeout(() => {
         void syncViewerState();
       }, 100);
@@ -221,6 +300,7 @@ export function useDwgViewerSession({
     bridge.view.selectionSet.events.selectionAdded.addEventListener(selectionAdded);
     bridge.view.selectionSet.events.selectionRemoved.addEventListener(selectionRemoved);
     bridge.view.events.viewChanged.addEventListener(viewChanged);
+    markerLayerRef.current?.scheduleRefresh();
     void syncViewerState();
 
     return () => {
@@ -237,6 +317,7 @@ export function useDwgViewerSession({
     if (!viewerRef.current || !sessionId || !workspaceId) {
       return;
     }
+    markerLayerRef.current?.scheduleRefresh();
     void syncViewerState();
   }, [active, docId, parseError, parseStatus, sessionId, syncViewerState, viewMode, workspaceId]);
 
@@ -255,13 +336,18 @@ export function useDwgViewerSession({
       }
     };
 
+    const runtime: ViewerCommandRuntime = {
+      clearIssueMarkers,
+      setIssueMarkers,
+      setViewMode,
+    };
+
     void listen<DwgViewerCommand>("dwg-viewer/command", (event) => {
-      if (disposed) return;
-      if (event.payload.sessionId !== sessionId) {
+      if (disposed || event.payload.sessionId !== sessionId) {
         return;
       }
       const runCommand = async () => {
-        const result = await executeCommand(event.payload, viewerRef.current, setViewMode);
+        const result = await executeCommand(event.payload, viewerRef.current, runtime);
         await resolveCommand(result);
         await syncViewerState();
       };
@@ -274,38 +360,35 @@ export function useDwgViewerSession({
       disposed = true;
       unsubscribe?.();
     };
-  }, [sessionId]);
+  }, [clearIssueMarkers, sessionId, setIssueMarkers, syncViewerState]);
 
   useEffect(() => {
     const bridge = viewerRef.current;
     if (!bridge || !activeIssue) {
       bridge?.view.selectionSet.clear();
       setViewerNotice(null);
-      clearMarker(markerFrameRef, markerRef);
       return;
     }
 
-    const cleanup = locateCadIssueInViewer(
-      bridge,
-      activeIssue,
-      markerRef,
-      markerFrameRef,
-      setViewerNotice,
-    );
+    const cleanup = locateCadIssueInViewer(bridge, activeIssue, setViewerNotice);
     void syncViewerState();
     return cleanup;
   }, [activeIssue, syncViewerState]);
 
   const switchToSelect = useCallback(() => {
     const bridge = viewerRef.current;
-    if (!bridge) return;
+    if (!bridge) {
+      return;
+    }
     void new AcApSelectCmd().execute(bridge.context).catch(() => undefined);
     setViewMode("select");
   }, []);
 
   const switchToPan = useCallback(() => {
     const bridge = viewerRef.current;
-    if (!bridge) return;
+    if (!bridge) {
+      return;
+    }
     void new AcApPanCmd().execute(bridge.context).catch(() => undefined);
     setViewMode("pan");
   }, []);
@@ -324,7 +407,7 @@ export function useDwgViewerSession({
 async function executeCommand(
   command: DwgViewerCommand,
   bridge: ViewerBridge | null,
-  setViewMode: (mode: "select" | "pan") => void,
+  runtime: ViewerCommandRuntime,
 ): Promise<DwgViewerCommandResult> {
   if (!bridge) {
     return {
@@ -342,7 +425,7 @@ async function executeCommand(
         bridge.view.zoomToFitDrawing(1500);
         break;
       case "fit_bbox": {
-        const bbox = payload.bbox as CadBBox | undefined;
+        const bbox = normalizeCadBBox(payload.bbox);
         if (!bbox) {
           throw new Error("fit_bbox 缺少 bbox");
         }
@@ -364,7 +447,7 @@ async function executeCommand(
           bridge.view.selectionSet.add(entityIds);
           bridge.view.highlight(entityIds);
         }
-        const bbox = payload.bbox as CadBBox | undefined;
+        const bbox = normalizeCadBBox(payload.bbox);
         if (bbox) {
           bridge.view.zoomTo(
             new AcGeBox2d(
@@ -377,7 +460,7 @@ async function executeCommand(
         break;
       }
       case "fly_to_point": {
-        const point = payload.point as CadPoint | undefined;
+        const point = normalizeCadPoint(payload.point);
         if (!point) {
           throw new Error("fly_to_point 缺少 point");
         }
@@ -407,7 +490,9 @@ async function executeCommand(
       }
       case "pan_by_view_ratio": {
         const box = getViewportBox(bridge.view);
-        if (!box) break;
+        if (!box) {
+          break;
+        }
         const dxRatio = typeof payload.dxRatio === "number" ? Number(payload.dxRatio) : 0;
         const dyRatio = typeof payload.dyRatio === "number" ? Number(payload.dyRatio) : 0;
         bridge.view.flyTo(
@@ -425,24 +510,41 @@ async function executeCommand(
       case "set_mode":
         if (payload.mode === "pan") {
           await new AcApPanCmd().execute(bridge.context).catch(() => undefined);
-          setViewMode("pan");
+          runtime.setViewMode("pan");
         } else {
           await new AcApSelectCmd().execute(bridge.context).catch(() => undefined);
-          setViewMode("select");
+          runtime.setViewMode("select");
         }
         break;
+      case "set_issue_markers": {
+        const markers = normalizeIssueMarkers(payload.markers);
+        const replace = typeof payload.replace === "boolean" ? payload.replace : true;
+        const activeMarkerId =
+          typeof payload.activeMarkerId === "string" ? payload.activeMarkerId : undefined;
+        runtime.setIssueMarkers(markers, activeMarkerId, replace);
+        result = {
+          activeMarkerId: activeMarkerId ?? null,
+          markerCount: markers.length,
+          replace,
+        };
+        break;
+      }
+      case "clear_issue_markers": {
+        const markerIds = Array.isArray(payload.markerIds)
+          ? payload.markerIds.filter((value): value is string => typeof value === "string")
+          : undefined;
+        runtime.clearIssueMarkers(markerIds);
+        result = { clearedMarkerIds: markerIds ?? null };
+        break;
+      }
       case "pick": {
         const hitRadius =
           typeof payload.hitRadius === "number" ? Number(payload.hitRadius) : undefined;
         const pickOneOnly =
           typeof payload.pickOneOnly === "boolean" ? Boolean(payload.pickOneOnly) : true;
-        const worldPoint = payload.worldPoint as CadPoint | undefined;
-        const screenPoint = payload.screenPoint as CadPoint | undefined;
-        const point = worldPoint
-          ? worldPoint
-          : screenPoint
-            ? bridge.view.screenToWorld(screenPoint)
-            : undefined;
+        const worldPoint = normalizeCadPoint(payload.worldPoint);
+        const screenPoint = normalizeCadPoint(payload.screenPoint);
+        const point = worldPoint ?? (screenPoint ? bridge.view.screenToWorld(screenPoint) : undefined);
         result = bridge.view.pick(point, hitRadius, pickOneOnly);
         break;
       }
@@ -488,75 +590,16 @@ function getViewerContainerSize(container: HTMLDivElement) {
   };
 }
 
-function getViewportBox(view: AcTrView2d): CadBBox | null {
-  const topLeft = view.screenToWorld({ x: 0, y: 0 });
-  const bottomRight = view.screenToWorld({ x: view.width, y: view.height });
-  return {
-    minX: Math.min(topLeft.x, bottomRight.x),
-    minY: Math.min(topLeft.y, bottomRight.y),
-    maxX: Math.max(topLeft.x, bottomRight.x),
-    maxY: Math.max(topLeft.y, bottomRight.y),
-  };
-}
-
 function pointToCadPoint(point: { x: number; y: number } | null | undefined) {
-  if (!point) return null;
-  return { x: point.x, y: point.y };
-}
-
-function bboxCenter(bbox: CadBBox | null): CadPoint | null {
-  if (!bbox) return null;
-  return {
-    x: (bbox.minX + bbox.maxX) / 2,
-    y: (bbox.minY + bbox.maxY) / 2,
-  };
-}
-
-function clearMarker(
-  markerFrameRef: MutableRefObject<number | null>,
-  markerRef: MutableRefObject<HTMLDivElement | null>,
-) {
-  if (markerFrameRef.current !== null) {
-    cancelAnimationFrame(markerFrameRef.current);
-    markerFrameRef.current = null;
+  if (!point) {
+    return null;
   }
-  markerRef.current?.remove();
-  markerRef.current = null;
-}
-
-function mountMarkerLoop(
-  view: AcTrView2d,
-  target: CadPoint,
-  markerRef: MutableRefObject<HTMLDivElement | null>,
-  markerFrameRef: MutableRefObject<number | null>,
-) {
-  clearMarker(markerFrameRef, markerRef);
-  const marker = document.createElement("div");
-  marker.style.position = "absolute";
-  marker.style.width = "18px";
-  marker.style.height = "18px";
-  marker.style.borderRadius = "999px";
-  marker.style.border = "3px solid #ef4444";
-  marker.style.boxShadow = "0 0 0 6px rgba(239,68,68,0.12)";
-  marker.style.pointerEvents = "none";
-  marker.style.zIndex = "40";
-  markerRef.current = marker;
-  view.container.appendChild(marker);
-
-  const tick = () => {
-    const screenPoint = view.worldToScreen(target);
-    const containerPoint = view.canvasToContainer(screenPoint);
-    marker.style.transform = `translate(${containerPoint.x - 9}px, ${containerPoint.y - 9}px)`;
-    markerFrameRef.current = requestAnimationFrame(tick);
-  };
-  tick();
+  return { x: point.x, y: point.y };
 }
 
 function locateCadIssueInViewer(
   bridge: ViewerBridge,
   issue: CadReviewIssue,
-  markerRef: MutableRefObject<HTMLDivElement | null>,
-  markerFrameRef: MutableRefObject<number | null>,
   setViewerNotice: (message: string | null) => void,
 ) {
   const ids = issue.entityRefs;
@@ -579,9 +622,6 @@ function locateCadIssueInViewer(
   if (target) {
     void new AcApSelectCmd().execute(bridge.context).catch(() => undefined);
     bridge.view.flyTo(target, 4);
-    mountMarkerLoop(bridge.view, target, markerRef, markerFrameRef);
-  } else {
-    clearMarker(markerFrameRef, markerRef);
   }
 
   return () => {
@@ -589,4 +629,57 @@ function locateCadIssueInViewer(
       bridge.view.unhighlight(ids);
     }
   };
+}
+
+function normalizeIssueMarkers(value: unknown): DwgIssueMarker[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object") {
+      return [];
+    }
+    const marker = candidate as Record<string, unknown>;
+    const id = typeof marker.id === "string" ? marker.id.trim() : "";
+    if (!id) {
+      return [];
+    }
+    return [
+      {
+        id,
+        severity: typeof marker.severity === "string" ? marker.severity : null,
+        title: typeof marker.title === "string" ? marker.title : null,
+        anchorPoint: normalizeCadPoint(marker.anchorPoint),
+        bbox: normalizeCadBBox(marker.bbox),
+      },
+    ];
+  });
+}
+
+function normalizeCadPoint(value: unknown): CadPoint | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const point = value as Record<string, unknown>;
+  return typeof point.x === "number" && typeof point.y === "number"
+    ? { x: point.x, y: point.y }
+    : null;
+}
+
+function normalizeCadBBox(value: unknown): CadBBox | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const bbox = value as Record<string, unknown>;
+  return typeof bbox.minX === "number" &&
+    typeof bbox.minY === "number" &&
+    typeof bbox.maxX === "number" &&
+    typeof bbox.maxY === "number"
+    ? {
+        minX: bbox.minX,
+        minY: bbox.minY,
+        maxX: bbox.maxX,
+        maxY: bbox.maxY,
+      }
+    : null;
 }

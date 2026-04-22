@@ -22,6 +22,8 @@ pub(super) fn builtin_tools() -> Vec<Box<dyn AgentTool>> {
         dwg::cad_inspect_dwg_region_tool(),
         dwg::cad_get_dwg_viewer_session_tool(),
         dwg::cad_get_dwg_viewport_tool(),
+        dwg::cad_set_dwg_issue_markers_tool(),
+        dwg::cad_clear_dwg_issue_markers_tool(),
         dwg::cad_control_dwg_viewer_tool(),
         dwg::cad_pick_dwg_viewer_tool(),
         dwg::cad_capture_dwg_viewer_tool(),

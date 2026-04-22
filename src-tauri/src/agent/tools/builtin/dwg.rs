@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 
 use super::common::{string_arg, usize_arg, with_result_mode_parameter};
 use crate::agent::cad::{
-    CadBBox, CadEntityQueryFilters, CadPoint, CadReviewIssueRecord, DwgViewerSessionState,
+    CadBBox, CadEntityQueryFilters, CadPoint, CadReviewIssueRecord, DwgIssueMarker,
+    DwgViewerSessionState,
 };
 use crate::agent::db::DispatcherDb;
 use crate::agent::tools::context::ToolContext;
@@ -51,6 +52,14 @@ pub(super) fn cad_get_dwg_viewport_tool() -> Box<dyn AgentTool> {
     Box::new(CadGetDwgViewportTool)
 }
 
+pub(super) fn cad_set_dwg_issue_markers_tool() -> Box<dyn AgentTool> {
+    Box::new(CadSetDwgIssueMarkersTool)
+}
+
+pub(super) fn cad_clear_dwg_issue_markers_tool() -> Box<dyn AgentTool> {
+    Box::new(CadClearDwgIssueMarkersTool)
+}
+
 pub(super) fn cad_control_dwg_viewer_tool() -> Box<dyn AgentTool> {
     Box::new(CadControlDwgViewerTool)
 }
@@ -72,6 +81,8 @@ struct CadGetDwgEntityDetailTool;
 struct CadInspectDwgRegionTool;
 struct CadGetDwgViewerSessionTool;
 struct CadGetDwgViewportTool;
+struct CadSetDwgIssueMarkersTool;
+struct CadClearDwgIssueMarkersTool;
 struct CadControlDwgViewerTool;
 struct CadPickDwgViewerTool;
 struct CadCaptureDwgViewerTool;
@@ -544,6 +555,174 @@ impl AgentTool for CadGetDwgViewportTool {
             "state": session,
             "visibleEntitySample": visible_entities,
         }))
+    }
+}
+
+#[async_trait]
+impl AgentTool for CadSetDwgIssueMarkersTool {
+    fn name(&self) -> &'static str {
+        "cad_set_dwg_issue_markers"
+    }
+
+    fn description(&self) -> &'static str {
+        "在当前 DWG viewer 上设置审查问题圈标记，不影响截图导出。"
+    }
+
+    fn parameters(&self) -> Value {
+        with_result_mode_parameter(
+            json!({
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "replace": { "type": "boolean" },
+                    "activeMarkerId": { "type": "string" },
+                    "markers": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "severity": { "type": "string" },
+                                "title": { "type": "string" },
+                                "anchorPoint": {
+                                    "type": "object",
+                                    "properties": {
+                                        "x": { "type": "number" },
+                                        "y": { "type": "number" }
+                                    },
+                                    "required": ["x", "y"]
+                                },
+                                "bbox": {
+                                    "type": "object",
+                                    "properties": {
+                                        "minX": { "type": "number" },
+                                        "minY": { "type": "number" },
+                                        "maxX": { "type": "number" },
+                                        "maxY": { "type": "number" }
+                                    },
+                                    "required": ["minX", "minY", "maxX", "maxY"]
+                                }
+                            },
+                            "required": ["id"]
+                        }
+                    }
+                },
+                "required": ["sessionId", "markers"]
+            }),
+            "full",
+            "圈标记默认只影响 viewer 叠加层，不写入截图。",
+        )
+    }
+
+    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+        let Some(session_id) = string_arg(args, "sessionId") else {
+            return "错误：缺少必填参数 sessionId".to_string();
+        };
+        let Some(bridge) = &context.dwg_viewer_bridge else {
+            return "错误：当前环境不支持 DWG Viewer bridge".to_string();
+        };
+        let Some(app_handle) = &context.app_handle else {
+            return "错误：当前环境不支持发起 DWG Viewer 命令".to_string();
+        };
+        let markers = match args
+            .get("markers")
+            .cloned()
+            .map(serde_json::from_value::<Vec<DwgIssueMarker>>)
+            .transpose()
+        {
+            Ok(Some(value)) if !value.is_empty() => value,
+            Ok(_) => return "错误：markers 不能为空".to_string(),
+            Err(error) => return format!("错误：markers 无效：{error}"),
+        };
+        if markers.len() > 200 {
+            return "错误：markers 最多允许 200 个，请先缩小范围".to_string();
+        }
+
+        match bridge
+            .issue_command(
+                app_handle,
+                &session_id,
+                "set_issue_markers",
+                json!({
+                    "markers": markers,
+                    "replace": args.get("replace").and_then(Value::as_bool).unwrap_or(true),
+                    "activeMarkerId": args.get("activeMarkerId").and_then(Value::as_str),
+                }),
+                Duration::from_secs(5),
+            )
+            .await
+        {
+            Ok(result) => serialize(json!({
+                "ok": result.ok,
+                "result": result.result,
+                "error": result.error,
+                "session": bridge.get_session(&session_id),
+            })),
+            Err(error) => format!("设置 DWG 问题圈标记失败：{error}"),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentTool for CadClearDwgIssueMarkersTool {
+    fn name(&self) -> &'static str {
+        "cad_clear_dwg_issue_markers"
+    }
+
+    fn description(&self) -> &'static str {
+        "清除当前 DWG viewer 上的审查问题圈标记。"
+    }
+
+    fn parameters(&self) -> Value {
+        with_result_mode_parameter(
+            json!({
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "markerIds": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                },
+                "required": ["sessionId"]
+            }),
+            "full",
+            "不传 markerIds 时清空全部圈标记。",
+        )
+    }
+
+    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+        let Some(session_id) = string_arg(args, "sessionId") else {
+            return "错误：缺少必填参数 sessionId".to_string();
+        };
+        let Some(bridge) = &context.dwg_viewer_bridge else {
+            return "错误：当前环境不支持 DWG Viewer bridge".to_string();
+        };
+        let Some(app_handle) = &context.app_handle else {
+            return "错误：当前环境不支持发起 DWG Viewer 命令".to_string();
+        };
+
+        match bridge
+            .issue_command(
+                app_handle,
+                &session_id,
+                "clear_issue_markers",
+                json!({
+                    "markerIds": args.get("markerIds").cloned().unwrap_or(Value::Null),
+                }),
+                Duration::from_secs(5),
+            )
+            .await
+        {
+            Ok(result) => serialize(json!({
+                "ok": result.ok,
+                "result": result.result,
+                "error": result.error,
+                "session": bridge.get_session(&session_id),
+            })),
+            Err(error) => format!("清除 DWG 问题圈标记失败：{error}"),
+        }
     }
 }
 

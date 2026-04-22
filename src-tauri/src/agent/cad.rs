@@ -321,6 +321,16 @@ pub struct CreateCadReviewIssueInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DwgIssueMarker {
+    pub id: String,
+    pub severity: Option<String>,
+    pub title: Option<String>,
+    pub anchor_point: Option<CadPoint>,
+    pub bbox: Option<CadBBox>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DwgViewerSessionRegistration {
     pub session_id: String,
     pub workspace_id: String,

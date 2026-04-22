@@ -160,7 +160,7 @@ export function DwgWorkbenchPane({
         view.modelSpaceBtrId = modelSpaceBtrId;
         view.activeLayoutBtrId = modelSpaceBtrId;
         view.clear();
-        document.database.regen();
+        await document.database.regen();
         viewerRef.current = { context, document, view };
         if (document.database.extents.isEmpty()) {
           view.zoomToFitDrawing(1500);

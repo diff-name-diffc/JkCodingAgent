@@ -3,12 +3,15 @@ import {
   AcDbFileType,
   acdbHostApplicationServices,
 } from "@mlightcad/data-model";
-import { AcApDocument, AcEdOpenMode } from "@mlightcad/cad-simple-viewer";
+import { AcApDocManager, AcApDocument, AcEdOpenMode } from "@mlightcad/cad-simple-viewer";
 import libredwgParserWorkerUrl from "../../node_modules/.pnpm/node_modules/@mlightcad/libredwg-converter/dist/libredwg-parser-worker.js?url";
 
 const DEFAULT_DWG_OPEN_ERROR = "cad-simple-viewer 无法打开该 DWG 文件";
+const DEFAULT_CJK_FALLBACK_FONTS = ["simsun", "simhei", "simkai"];
 
 let dwgSupportPromise: Promise<void> | null = null;
+let cadFontSupportPromise: Promise<void> = Promise.resolve();
+const loadedCadFonts = new Set<string>();
 
 type OpenCadViewerDwgDocumentInput = {
   document: AcApDocument;
@@ -70,6 +73,49 @@ function activateWorkingDatabase(document: AcApDocument) {
   acdbHostApplicationServices().workingDatabase = document.database;
 }
 
+function getCadFontManager() {
+  return AcApDocManager.createInstance({ notLoadDefaultFonts: true }) ?? AcApDocManager.instance;
+}
+
+async function ensureCadViewerFontSupport(fontNames: string[]) {
+  const requestedFonts = Array.from(
+    new Set(
+      [...fontNames, ...DEFAULT_CJK_FALLBACK_FONTS]
+        .map((fontName) => fontName.trim())
+        .filter((fontName) => fontName.length > 0),
+    ),
+  );
+
+  if (requestedFonts.length === 0) {
+    return;
+  }
+
+  const missingFonts = requestedFonts.filter(
+    (fontName) => !loadedCadFonts.has(fontName.toLowerCase()),
+  );
+
+  if (missingFonts.length === 0) {
+    return;
+  }
+
+  const loadPromise = cadFontSupportPromise.then(async () => {
+    const nextMissingFonts = missingFonts.filter(
+      (fontName) => !loadedCadFonts.has(fontName.toLowerCase()),
+    );
+    if (nextMissingFonts.length === 0) {
+      return;
+    }
+
+    await getCadFontManager().loadDefaultFonts(nextMissingFonts);
+    nextMissingFonts.forEach((fontName) => {
+      loadedCadFonts.add(fontName.toLowerCase());
+    });
+  });
+
+  cadFontSupportPromise = loadPromise.catch(() => undefined);
+  await loadPromise;
+}
+
 export async function ensureCadViewerDwgSupport() {
   if (!dwgSupportPromise) {
     dwgSupportPromise = registerDwgConverter().catch((error) => {
@@ -105,6 +151,10 @@ export async function openCadViewerDwgDocument({
 
   const opened = await document.openDocument(fileName, content, { mode });
   if (opened) {
+    const drawingFonts = document.database.tables.textStyleTable.fonts;
+    await ensureCadViewerFontSupport(drawingFonts).catch((error) => {
+      console.warn("[cad-viewer] 字体预加载失败，标注文字可能无法显示。", error);
+    });
     activateWorkingDatabase(document);
     return;
   }

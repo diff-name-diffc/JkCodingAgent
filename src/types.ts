@@ -220,6 +220,7 @@ export type DispatcherAgentEvent =
   | { event: "assistantStarted"; data: { messageId: string } }
   | { event: "assistantDelta"; data: { messageId: string; delta: string } }
   | { event: "assistantMessage"; data: { message: DispatcherMessage } }
+  | { event: "toolPlanned"; data: { toolCallId?: string; name: string; arguments: string } }
   | { event: "toolStarted"; data: { toolCallId?: string; name: string; arguments: string } }
   | {
       event: "toolSummaryStarted";

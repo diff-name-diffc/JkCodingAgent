@@ -141,6 +141,21 @@ export function startLiveToolActivity(
   return nextTools;
 }
 
+export function planLiveToolActivity(
+  tools: ToolActivityItem[],
+  payload: { toolCallId?: string; name: string; arguments: string },
+): ToolActivityItem[] {
+  const nextTools = [...tools];
+  const key = payload.toolCallId || createLiveToolKey(payload.name, nextTools.length);
+  upsertToolActivity(nextTools, {
+    key,
+    name: payload.name,
+    input: prettyPrintToolPayload(payload.arguments),
+    status: "planned",
+  });
+  return nextTools;
+}
+
 export function finishLiveToolActivity(
   tools: ToolActivityItem[],
   payload: {
@@ -281,6 +296,7 @@ function upsertToolActivity(tools: ToolActivityItem[], incoming: ToolActivityIte
     input: incoming.input ?? tools[index].input,
     displayText: incoming.displayText ?? tools[index].displayText,
     detailRefs: incoming.detailRefs ?? tools[index].detailRefs,
+    resultMode: incoming.resultMode ?? tools[index].resultMode,
   };
 }
 

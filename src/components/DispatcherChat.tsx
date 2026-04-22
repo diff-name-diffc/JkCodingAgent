@@ -48,6 +48,7 @@ import {
   type AssistantTurnSegment,
   buildDispatcherDisplayItems,
   finishLiveToolActivity,
+  planLiveToolActivity,
   startLiveToolActivity,
 } from "./dispatcherChatView";
 
@@ -141,15 +142,18 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
   segments,
   tools,
   workspaceId,
+  placeholderText,
   onArtifactOpen,
 }: {
   segments: AssistantTurnSegment[];
   tools: ToolActivityItem[];
   workspaceId: string;
+  placeholderText?: string | null;
   onArtifactOpen?: (artifact: DispatcherToolArtifact) => void;
 }) {
   const visibleSegments = segments.filter((segment) => segment.text.trim());
-  if (visibleSegments.length === 0 && tools.length === 0) {
+  const visiblePlaceholder = placeholderText?.trim() ?? "";
+  if (visibleSegments.length === 0 && tools.length === 0 && !visiblePlaceholder) {
     return null;
   }
 
@@ -166,6 +170,16 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
               workspaceId={workspaceId}
               onArtifactOpen={onArtifactOpen}
             />
+          </div>
+        )}
+        {visiblePlaceholder && (
+          <div style={styles.assistantTurnSection}>
+            <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
+              <div style={styles.assistantPlaceholder}>
+                <span style={styles.assistantPlaceholderDot} />
+                <span>{visiblePlaceholder}</span>
+              </div>
+            </div>
           </div>
         )}
         {visibleSegments.map((segment, index) => (
@@ -568,8 +582,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [isStopping, setIsStopping] = useState(false);
+    const [hasPendingRun, setHasPendingRun] = useState(false);
     const [streamingSegments, setStreamingSegments] = useState<AssistantTurnSegment[]>([]);
     const [liveToolCalls, setLiveToolCalls] = useState<ToolActivityItem[]>([]);
+    const [assistantPlaceholder, setAssistantPlaceholder] = useState<string | null>(null);
     const [pendingDispatches, setPendingDispatches] = useState<PendingDispatchApproval[]>([]);
     const [pendingAttachments, setPendingAttachments] = useState<DispatcherAttachmentRecord[]>([]);
     const [autoApprove, setAutoApprove] = useState(false);
@@ -603,11 +619,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const hasStoppedSubProcess = sessionSubProcesses.some(
       (subProcess) => subProcess.status === "stopped",
     );
-    const composerMode: "send" | "stop" | "resume" = isLoading || hasRunningSubProcess
-      ? "stop"
-      : hasStoppedSubProcess
-        ? "resume"
-        : "send";
+    const composerMode: "send" | "stop" | "resume" =
+      hasPendingRun || isLoading || hasRunningSubProcess
+        ? "stop"
+        : hasStoppedSubProcess
+          ? "resume"
+          : "send";
     const isComposerBusy = isLoading || isStopping;
     const displayItems = useMemo(() => buildDispatcherDisplayItems(messages), [messages]);
     const currentPendingDispatch = pendingDispatches[0] ?? null;
@@ -630,8 +647,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       setMessages([]);
       setIsLoading(false);
       setIsStopping(false);
+      setHasPendingRun(false);
       setStreamingSegments([]);
       setLiveToolCalls([]);
+      setAssistantPlaceholder(null);
       setPendingDispatches([]);
       setPendingAttachments([]);
       setHighlightedMessageId(null);
@@ -700,7 +719,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId;
         switch (event.event) {
           case "started":
+            break;
           case "assistantStarted":
+            if (!isCurrentRun) return;
+            setAssistantPlaceholder("正在分析问题...");
             break;
           case "userMessage":
             if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
@@ -708,17 +730,25 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             break;
           case "assistantDelta":
             if (!isCurrentRun) return;
+            setAssistantPlaceholder(null);
             setStreamingSegments((prev) => appendAssistantTextSegment(prev, event.data.delta));
             break;
           case "assistantMessage":
             if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
+            setAssistantPlaceholder(null);
             setStreamingSegments((prev) =>
               prev.filter((segment) => segment.kind === "tool-summary"),
             );
             setMessages((prev) => [...prev, event.data.message]);
             break;
+          case "toolPlanned":
+            if (!isCurrentRun) return;
+            setAssistantPlaceholder("正在规划工具调用...");
+            setLiveToolCalls((prev) => planLiveToolActivity(prev, event.data));
+            break;
           case "toolStarted":
             if (!isCurrentRun) return;
+            setAssistantPlaceholder("正在执行工具...");
             setLiveToolCalls((prev) => startLiveToolActivity(prev, event.data));
             break;
           case "toolSummaryStarted":
@@ -764,9 +794,11 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             setMessages(
               event.data.messages.filter((message) => message.workspaceId === targetSessionId),
             );
+            setHasPendingRun(false);
             setIsLoading(false);
             setStreamingSegments([]);
             setLiveToolCalls([]);
+            setAssistantPlaceholder(null);
             break;
         }
       };
@@ -786,6 +818,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             const runId = isCurrentSession ? ++activeRunRef.current : activeRunRef.current;
 
             if (isCurrentSession) {
+              setHasPendingRun(true);
               setIsLoading(true);
               setStreamingSegments([]);
               setLiveToolCalls([]);
@@ -800,6 +833,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 currentSessionIdRef.current === targetSessionId &&
                 activeRunRef.current === runId
               ) {
+                setHasPendingRun(false);
                 setIsLoading(false);
               }
             }
@@ -1016,7 +1050,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }, []);
 
     const hasLiveSegments = streamingSegments.some((segment) => segment.text.trim());
-    const isEmpty = messages.length === 0 && !hasLiveSegments && liveToolCalls.length === 0;
+    const hasAssistantPlaceholder = Boolean(assistantPlaceholder?.trim());
+    const isEmpty =
+      messages.length === 0 &&
+      !hasLiveSegments &&
+      liveToolCalls.length === 0 &&
+      !hasAssistantPlaceholder;
 
     return (
       <div style={styles.container}>
@@ -1145,11 +1184,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               </div>
             );
           })}
-          {(hasLiveSegments || liveToolCalls.length > 0) && (
+          {(hasLiveSegments || liveToolCalls.length > 0 || hasAssistantPlaceholder) && (
             <AssistantTurnBubble
               segments={streamingSegments}
               tools={liveToolCalls}
               workspaceId={sessionId}
+              placeholderText={assistantPlaceholder}
               onArtifactOpen={onCadArtifactOpen}
             />
           )}
@@ -1604,6 +1644,9 @@ const styles = {
   },
   emptyComposerStopBtn: {
     background: "linear-gradient(135deg, #0f172a, #334155)",
+    borderRadius: "14px",
+    padding: "0 16px",
+    border: "1px solid rgba(148, 163, 184, 0.28)",
     boxShadow: "0 18px 28px -16px rgba(15, 23, 42, 0.55)",
   },
   emptyComposerResumeBtn: {
@@ -1703,6 +1746,22 @@ const styles = {
   assistantReplyBubble: {
     background:
       "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
+  },
+  assistantPlaceholder: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    color: "var(--text-secondary)",
+    fontSize: 13,
+    lineHeight: 1.6,
+  },
+  assistantPlaceholderDot: {
+    width: 8,
+    height: 8,
+    borderRadius: "50%",
+    background: "var(--accent)",
+    boxShadow: "0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent)",
+    flexShrink: 0,
   },
   toolSummaryCard: {
     width: "100%",
@@ -1857,6 +1916,8 @@ const styles = {
   },
   stopBtn: {
     background: "linear-gradient(135deg, #0f172a, #334155)",
+    borderRadius: "12px",
+    border: "1px solid rgba(148, 163, 184, 0.28)",
     boxShadow: "0 18px 28px -16px rgba(15, 23, 42, 0.55)",
   },
   resumeBtn: {

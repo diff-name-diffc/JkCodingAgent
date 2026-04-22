@@ -105,6 +105,11 @@ pub enum AgentEvent {
     AssistantMessage {
         message: DispatcherMessageRecord,
     },
+    ToolPlanned {
+        tool_call_id: Option<String>,
+        name: String,
+        arguments: String,
+    },
     ToolStarted {
         tool_call_id: Option<String>,
         name: String,
@@ -780,6 +785,18 @@ impl DispatcherAgent {
                     },
                 })
                 .collect::<Vec<_>>();
+
+            for tool_call in &response.tool_calls {
+                emit(
+                    on_event,
+                    AgentEvent::ToolPlanned {
+                        tool_call_id: Some(tool_call.id.clone()),
+                        name: tool_call.name.clone(),
+                        arguments: serde_json::to_string(&tool_call.arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
+                );
+            }
 
             db.add_visible_message_with_tools(
                 workspace_id,

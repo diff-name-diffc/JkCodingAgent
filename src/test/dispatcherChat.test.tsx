@@ -78,6 +78,8 @@ describe("DispatcherChat", () => {
           return createSettings();
         case "dispatcher_list_messages":
           return [];
+        case "dispatcher_get_session_token_usage":
+          return [];
         case "dispatcher_list_pending_attachments":
           return [];
         case "dispatcher_upload_attachment":
@@ -150,6 +152,8 @@ describe("DispatcherChat", () => {
           return createSettings();
         case "dispatcher_list_messages":
           return messages;
+        case "dispatcher_get_session_token_usage":
+          return [];
         case "dispatcher_list_pending_attachments":
           return [];
         default:
@@ -164,6 +168,187 @@ describe("DispatcherChat", () => {
       expect(bubble).not.toBeNull();
       expect(scrollIntoViewMock).toHaveBeenCalled();
       expect(bubble).toHaveAttribute("data-highlighted", "true");
+    });
+  });
+
+  it("会在发送区旁展示当前会话的模型 token 占用并支持悬浮查看详情", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      switch (command) {
+        case "dispatcher_get_settings":
+          return createSettings();
+        case "dispatcher_list_messages":
+          return [];
+        case "dispatcher_get_session_token_usage":
+          return [
+            {
+              workspaceId: "ws-1",
+              model: "qwen3.6-plus",
+              sourceKind: "primary",
+              promptTokens: 8192,
+              completionTokens: 512,
+              totalTokens: 8704,
+              cachedTokens: 2048,
+              contextWindowTokens: 8192,
+              contextWindowCapacity: 1000000,
+              updatedAt: "2026-04-22T00:00:00Z",
+            },
+            {
+              workspaceId: "ws-1",
+              model: "qwen3.6-flash",
+              sourceKind: "summary",
+              promptTokens: 2048,
+              completionTokens: 128,
+              totalTokens: 2176,
+              cachedTokens: 0,
+              contextWindowTokens: 2048,
+              contextWindowCapacity: 1000000,
+              updatedAt: "2026-04-22T00:00:01Z",
+            },
+          ];
+        case "dispatcher_list_pending_attachments":
+          return [];
+        default:
+          return null;
+      }
+    });
+
+    renderChat();
+
+    const usageButton = await screen.findByRole("button", {
+      name: /qwen3\.6-flash 窗口 token 占用/i,
+    });
+    await userEvent.hover(usageButton);
+
+    expect(await screen.findByText("qwen3.6-flash")).toBeInTheDocument();
+    expect(screen.getByText("摘要模型")).toBeInTheDocument();
+    expect(screen.getByText("2,048 / 1,000,000")).toBeInTheDocument();
+  });
+
+  it("新会话在尚无 usage 时也会显示空的模型占用圈", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      switch (command) {
+        case "dispatcher_get_settings":
+          return createSettings();
+        case "dispatcher_list_messages":
+          return [];
+        case "dispatcher_get_session_token_usage":
+          return [];
+        case "dispatcher_list_pending_attachments":
+          return [];
+        default:
+          return null;
+      }
+    });
+
+    renderChat();
+
+    expect(
+      await screen.findByRole("button", {
+        name: /gpt-test 窗口 token 占用 0%/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /qwen3\.6-flash 窗口 token 占用 0%/i,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("收到不完整的 finished 快照时不会把已有对话覆盖掉", async () => {
+    const initialMessages: DispatcherMessage[] = [
+      {
+        id: "user-1",
+        workspaceId: "ws-1",
+        role: "user",
+        content: "已有问题",
+        attachments: [],
+        createdAt: "2026-04-21T00:00:00Z",
+      },
+      {
+        id: "assistant-1",
+        workspaceId: "ws-1",
+        role: "assistant",
+        content: "已有回复",
+        attachments: [],
+        createdAt: "2026-04-21T00:00:01Z",
+      },
+    ];
+
+    invokeMock.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      switch (command) {
+        case "dispatcher_get_settings":
+          return createSettings();
+        case "dispatcher_list_messages":
+          return initialMessages;
+        case "dispatcher_get_session_token_usage":
+          return [];
+        case "dispatcher_list_pending_attachments":
+          return [];
+        case "dispatcher_send_message": {
+          const onEvent = payload?.onEvent as {
+            onmessage: ((event: { event: string; data: Record<string, unknown> }) => void) | null;
+          };
+          onEvent.onmessage?.({
+            event: "userMessage",
+            data: {
+              message: {
+                id: "user-2",
+                workspaceId: "ws-1",
+                role: "user",
+                content: "新的追问",
+                attachments: [],
+                createdAt: "2026-04-21T00:00:02Z",
+              },
+            },
+          });
+          onEvent.onmessage?.({
+            event: "assistantMessage",
+            data: {
+              message: {
+                id: "assistant-2",
+                workspaceId: "ws-1",
+                role: "assistant",
+                content: "新的回复",
+                attachments: [],
+                createdAt: "2026-04-21T00:00:03Z",
+              },
+            },
+          });
+          onEvent.onmessage?.({
+            event: "finished",
+            data: {
+              messages: [
+                {
+                  id: "assistant-2",
+                  workspaceId: "ws-1",
+                  role: "assistant",
+                  content: "新的回复",
+                  attachments: [],
+                  createdAt: "2026-04-21T00:00:03Z",
+                },
+              ],
+            },
+          });
+          return { reply: null, messages: [] };
+        }
+        default:
+          return null;
+      }
+    });
+
+    renderChat();
+
+    expect(await screen.findByText("已有问题")).toBeInTheDocument();
+    expect(screen.getByText("已有回复")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByPlaceholderText("给调度智能体发送消息..."), "新的追问");
+    await userEvent.click(screen.getByRole("button", { name: "开始对话" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("已有问题")).toBeInTheDocument();
+      expect(screen.getByText("已有回复")).toBeInTheDocument();
+      expect(screen.getByText("新的追问")).toBeInTheDocument();
+      expect(screen.getByText("新的回复")).toBeInTheDocument();
     });
   });
 });

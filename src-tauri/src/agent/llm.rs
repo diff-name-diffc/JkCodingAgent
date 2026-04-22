@@ -72,6 +72,8 @@ pub struct LlmResponse {
     pub status_code: u16,
     pub content: String,
     pub tool_calls: Vec<RequestedToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsage>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,6 +98,8 @@ pub struct LlmRequestBodySnapshot {
     pub temperature: f32,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
 }
 
@@ -110,6 +114,34 @@ pub struct LlmResponseBodySnapshot {
     pub model: String,
     pub content: String,
     pub tool_calls: Vec<RequestedToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsage>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LlmPromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LlmUsage {
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+    #[serde(default)]
+    pub prompt_tokens_details: Option<LlmPromptTokensDetails>,
+}
+
+impl LlmUsage {
+    pub fn cached_tokens(&self) -> u64 {
+        self.prompt_tokens_details
+            .as_ref()
+            .map_or(0, |details| details.cached_tokens)
+    }
 }
 
 #[derive(Clone)]
@@ -172,6 +204,9 @@ impl OpenAiCompatProvider {
                 max_tokens: self.max_tokens,
                 temperature: self.temperature,
                 stream: true,
+                stream_options: Some(StreamOptions {
+                    include_usage: true,
+                }),
                 tools: if tools.is_empty() {
                     None
                 } else {
@@ -188,6 +223,7 @@ impl OpenAiCompatProvider {
                 model: self.model.clone(),
                 content: response.content.clone(),
                 tool_calls: response.tool_calls.clone(),
+                usage: response.usage.clone(),
             },
         }
     }
@@ -211,6 +247,9 @@ impl OpenAiCompatProvider {
             temperature: self.temperature,
             tools: if tools.is_empty() { None } else { Some(tools) },
             stream: true,
+            stream_options: Some(StreamOptions {
+                include_usage: true,
+            }),
         };
 
         let response = self
@@ -231,6 +270,7 @@ impl OpenAiCompatProvider {
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
         let mut content = String::new();
+        let mut usage: Option<LlmUsage> = None;
         // index -> (id, name, accumulated_arguments)
         let mut tc_map: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
 
@@ -259,7 +299,14 @@ impl OpenAiCompatProvider {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
-                let Some(choice) = chunk.choices.first() else {
+                let StreamChunk {
+                    choices,
+                    usage: chunk_usage,
+                } = chunk;
+                if let Some(chunk_usage) = chunk_usage {
+                    usage = Some(chunk_usage);
+                }
+                let Some(choice) = choices.first() else {
                     continue;
                 };
 
@@ -305,6 +352,7 @@ impl OpenAiCompatProvider {
             status_code: status.as_u16(),
             content,
             tool_calls,
+            usage,
         })
     }
 }
@@ -410,13 +458,23 @@ struct StreamChatRequest<'a> {
     temperature: f32,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a [ToolDefinition]>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamOptions {
+    include_usage: bool,
 }
 
 // --- SSE stream chunk types ---
 #[derive(Deserialize)]
 struct StreamChunk {
+    #[serde(default)]
     choices: Vec<StreamChoice>,
+    #[serde(default)]
+    usage: Option<LlmUsage>,
 }
 
 #[derive(Deserialize)]
@@ -441,4 +499,34 @@ struct StreamToolCall {
 struct StreamFunctionCall {
     name: Option<String>,
     arguments: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StreamChunk;
+
+    #[test]
+    fn stream_chunk_supports_usage_only_tail_event() {
+        let chunk = serde_json::from_str::<StreamChunk>(
+            r#"{
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 321,
+                    "completion_tokens": 45,
+                    "total_tokens": 366,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 128
+                    }
+                }
+            }"#,
+        )
+        .expect("parse usage tail chunk");
+
+        assert!(chunk.choices.is_empty());
+        let usage = chunk.usage.expect("usage should exist");
+        assert_eq!(usage.prompt_tokens, 321);
+        assert_eq!(usage.completion_tokens, 45);
+        assert_eq!(usage.total_tokens, 366);
+        assert_eq!(usage.cached_tokens(), 128);
+    }
 }

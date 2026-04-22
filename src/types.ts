@@ -202,6 +202,21 @@ export interface DispatcherSettings {
   contextDebug: boolean;
 }
 
+export type DispatcherSessionTokenUsageSource = "primary" | "summary";
+
+export interface DispatcherSessionTokenUsage {
+  workspaceId: string;
+  model: string;
+  sourceKind: DispatcherSessionTokenUsageSource;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedTokens: number;
+  contextWindowTokens: number;
+  contextWindowCapacity: number;
+  updatedAt: string;
+}
+
 export interface DispatcherAgentTurn {
   reply: DispatcherMessage;
   messages: DispatcherMessage[];

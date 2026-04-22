@@ -34,12 +34,15 @@ import type {
   DispatcherMessage,
   DispatcherAgentEvent,
   DispatcherAgentTurn,
+  DispatcherSessionTokenUsage,
   DispatcherSettings,
   DispatcherToolArtifact,
   ProjectMcpStatus,
   SubProcess,
 } from "../types";
 import { isImeComposing } from "../utils";
+import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTokenUsage";
+import { SessionTokenUsageIndicators } from "./SessionTokenUsageIndicators";
 import { ToolActivityBubble, type ToolActivityItem } from "./ToolActivityBubble";
 import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import {
@@ -278,6 +281,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   isBusy,
   isStopping,
   autoApprove,
+  sessionTokenUsages,
   pendingAttachments,
   inputRef,
   layoutMode,
@@ -300,6 +304,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   isBusy: boolean;
   isStopping: boolean;
   autoApprove: boolean;
+  sessionTokenUsages: DispatcherSessionTokenUsage[];
   pendingAttachments: DispatcherAttachmentRecord[];
   inputRef: RefObject<HTMLTextAreaElement | null>;
   layoutMode: "single" | "split";
@@ -423,20 +428,27 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
               </button>
             </div>
 
-            <button
-              type="button"
-              style={{
-                ...getEmptyPrimaryComposerButtonStyle(composerMode),
-                opacity: getPrimaryComposerOpacity(composerMode, input, isBusy, isStopping),
-              }}
-              onClick={
-                isStopMode ? onStop : isResumeMode && !input.trim() ? onResume : onSend
-              }
-              disabled={isComposerActionDisabled(composerMode, input, isBusy, isStopping)}
-            >
-              <span>{getComposerButtonLabel(composerMode, Boolean(input.trim()))}</span>
-              {isStopMode ? <Square size={15} /> : isResumeMode && !input.trim() ? <Play size={15} /> : <Send size={15} />}
-            </button>
+            <div style={styles.emptyComposerPrimaryRow}>
+              <SessionTokenUsageIndicators entries={sessionTokenUsages} />
+              <button
+                type="button"
+                style={{
+                  ...getEmptyPrimaryComposerButtonStyle(composerMode),
+                  opacity: getPrimaryComposerOpacity(composerMode, input, isBusy, isStopping),
+                }}
+                onClick={isStopMode ? onStop : isResumeMode && !input.trim() ? onResume : onSend}
+                disabled={isComposerActionDisabled(composerMode, input, isBusy, isStopping)}
+              >
+                <span>{getComposerButtonLabel(composerMode, Boolean(input.trim()))}</span>
+                {isStopMode ? (
+                  <Square size={15} />
+                ) : isResumeMode && !input.trim() ? (
+                  <Play size={15} />
+                ) : (
+                  <Send size={15} />
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -444,10 +456,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   );
 });
 
-function getComposerButtonLabel(
-  mode: "send" | "stop" | "resume",
-  hasInput: boolean,
-): string {
+function getComposerButtonLabel(mode: "send" | "stop" | "resume", hasInput: boolean): string {
   if (mode === "stop") return "停止";
   if (mode === "resume" && !hasInput) return "继续运行";
   return mode === "send" ? "开始对话" : "发送消息";
@@ -507,6 +516,33 @@ function getMcpIndicatorState(
     return { color: "#1f9d55", label: "正常" };
   }
   return { color: "#dc2626", label: "异常" };
+}
+
+function mergeDispatcherMessages(
+  current: DispatcherMessage[],
+  incoming: DispatcherMessage[],
+): DispatcherMessage[] {
+  if (current.length === 0) {
+    return incoming;
+  }
+  if (incoming.length === 0) {
+    return current;
+  }
+
+  const mergedById = new Map(current.map((message) => [message.id, message] as const));
+  for (const message of incoming) {
+    mergedById.set(message.id, message);
+  }
+
+  const existingIds = new Set(current.map((message) => message.id));
+  const orderedIds = [
+    ...current.map((message) => message.id),
+    ...incoming.filter((message) => !existingIds.has(message.id)).map((message) => message.id),
+  ];
+
+  return orderedIds
+    .map((messageId) => mergedById.get(messageId))
+    .filter((message): message is DispatcherMessage => Boolean(message));
 }
 
 // ── DispatcherChat ───────────────────────────────────────────────────────────
@@ -589,6 +625,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [pendingDispatches, setPendingDispatches] = useState<PendingDispatchApproval[]>([]);
     const [pendingAttachments, setPendingAttachments] = useState<DispatcherAttachmentRecord[]>([]);
     const [autoApprove, setAutoApprove] = useState(false);
+    const [primaryModelName, setPrimaryModelName] = useState(DEFAULT_DISPATCHER_MODEL);
     const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -629,12 +666,48 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const displayItems = useMemo(() => buildDispatcherDisplayItems(messages), [messages]);
     const currentPendingDispatch = pendingDispatches[0] ?? null;
     const mcpIndicator = getMcpIndicatorState(mcpStatus, mcpChecking);
+    const {
+      entries: sessionTokenUsages,
+      refresh: refreshSessionTokenUsage,
+      reset: resetSessionTokenUsage,
+    } = useDispatcherSessionTokenUsage(sessionId);
+    const displayTokenUsages = useMemo(() => {
+      const entriesByModel = new Map(
+        sessionTokenUsages.map((entry) => [entry.model, entry] as const),
+      );
+
+      for (const model of [primaryModelName, SUMMARY_MODEL]) {
+        const normalizedModel = model.trim();
+        if (!normalizedModel || entriesByModel.has(normalizedModel)) {
+          continue;
+        }
+        entriesByModel.set(normalizedModel, {
+          workspaceId: sessionId,
+          model: normalizedModel,
+          sourceKind: normalizedModel === SUMMARY_MODEL ? "summary" : "primary",
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          cachedTokens: 0,
+          contextWindowTokens: 0,
+          contextWindowCapacity: 1_000_000,
+          updatedAt: "",
+        });
+      }
+
+      return Array.from(entriesByModel.values());
+    }, [primaryModelName, sessionId, sessionTokenUsages]);
 
     // Load settings (for auto-approve flag)
     useEffect(() => {
       invoke<DispatcherSettings | null>("dispatcher_get_settings")
         .then((s) => {
-          if (s) setAutoApprove(s.autoApproveDispatch);
+          if (s) {
+            setAutoApprove(s.autoApproveDispatch);
+            setPrimaryModelName(s.model.trim() || DEFAULT_DISPATCHER_MODEL);
+            return;
+          }
+          setPrimaryModelName(DEFAULT_DISPATCHER_MODEL);
         })
         .catch(console.error);
     }, []);
@@ -712,98 +785,105 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       }, 2200);
     }, [activeCadResultMessageId, displayItems]);
 
-    const createEventChannel = useCallback((targetSessionId: string, runId: number) => {
-      const onEvent = new Channel<DispatcherAgentEvent>();
-      onEvent.onmessage = (event) => {
-        const isCurrentRun =
-          currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId;
-        switch (event.event) {
-          case "started":
-            break;
-          case "assistantStarted":
-            if (!isCurrentRun) return;
-            setAssistantPlaceholder("正在分析问题...");
-            break;
-          case "userMessage":
-            if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
-            setMessages((prev) => [...prev, event.data.message]);
-            break;
-          case "assistantDelta":
-            if (!isCurrentRun) return;
-            setAssistantPlaceholder(null);
-            setStreamingSegments((prev) => appendAssistantTextSegment(prev, event.data.delta));
-            break;
-          case "assistantMessage":
-            if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
-            setAssistantPlaceholder(null);
-            setStreamingSegments((prev) =>
-              prev.filter((segment) => segment.kind === "tool-summary"),
-            );
-            setMessages((prev) => [...prev, event.data.message]);
-            break;
-          case "toolPlanned":
-            if (!isCurrentRun) return;
-            setAssistantPlaceholder("正在规划工具调用...");
-            setLiveToolCalls((prev) => planLiveToolActivity(prev, event.data));
-            break;
-          case "toolStarted":
-            if (!isCurrentRun) return;
-            setAssistantPlaceholder("正在执行工具...");
-            setLiveToolCalls((prev) => startLiveToolActivity(prev, event.data));
-            break;
-          case "toolSummaryStarted":
-            if (!isCurrentRun) return;
-            break;
-          case "toolSummaryDelta":
-            if (!isCurrentRun) return;
-            setStreamingSegments((prev) => appendToolSummarySegment(prev, event.data));
-            break;
-          case "toolFinished":
-            if (!isCurrentRun) return;
-            setLiveToolCalls((prev) => finishLiveToolActivity(prev, event.data));
-            break;
-          case "dispatchProposed": {
-            const { dispatchId, agent, description, taskPrompt, permissionMode } = event.data;
-            if (autoApproveRef.current) {
-              onDispatchApprovedRef.current(
-                dispatchId,
-                agent,
-                description,
-                taskPrompt,
-                permissionMode,
-                targetSessionId,
+    const createEventChannel = useCallback(
+      (targetSessionId: string, runId: number) => {
+        const onEvent = new Channel<DispatcherAgentEvent>();
+        onEvent.onmessage = (event) => {
+          const isCurrentRun =
+            currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId;
+          switch (event.event) {
+            case "started":
+              break;
+            case "assistantStarted":
+              if (!isCurrentRun) return;
+              setAssistantPlaceholder("正在分析问题...");
+              break;
+            case "userMessage":
+              if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
+              setMessages((prev) => [...prev, event.data.message]);
+              break;
+            case "assistantDelta":
+              if (!isCurrentRun) return;
+              setAssistantPlaceholder(null);
+              setStreamingSegments((prev) => appendAssistantTextSegment(prev, event.data.delta));
+              break;
+            case "assistantMessage":
+              if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
+              setAssistantPlaceholder(null);
+              setStreamingSegments((prev) =>
+                prev.filter((segment) => segment.kind === "tool-summary"),
               );
-            } else if (isCurrentRun) {
-              setPendingDispatches((prev) => [
-                ...prev,
-                { dispatchId, agent, description, taskPrompt, permissionMode },
-              ]);
+              setMessages((prev) => [...prev, event.data.message]);
+              break;
+            case "toolPlanned":
+              if (!isCurrentRun) return;
+              setAssistantPlaceholder("正在规划工具调用...");
+              setLiveToolCalls((prev) => planLiveToolActivity(prev, event.data));
+              break;
+            case "toolStarted":
+              if (!isCurrentRun) return;
+              setAssistantPlaceholder("正在执行工具...");
+              setLiveToolCalls((prev) => startLiveToolActivity(prev, event.data));
+              break;
+            case "toolSummaryStarted":
+              if (!isCurrentRun) return;
+              break;
+            case "toolSummaryDelta":
+              if (!isCurrentRun) return;
+              setStreamingSegments((prev) => appendToolSummarySegment(prev, event.data));
+              break;
+            case "toolFinished":
+              if (!isCurrentRun) return;
+              setLiveToolCalls((prev) => finishLiveToolActivity(prev, event.data));
+              break;
+            case "dispatchProposed": {
+              const { dispatchId, agent, description, taskPrompt, permissionMode } = event.data;
+              if (autoApproveRef.current) {
+                onDispatchApprovedRef.current(
+                  dispatchId,
+                  agent,
+                  description,
+                  taskPrompt,
+                  permissionMode,
+                  targetSessionId,
+                );
+              } else if (isCurrentRun) {
+                setPendingDispatches((prev) => [
+                  ...prev,
+                  { dispatchId, agent, description, taskPrompt, permissionMode },
+                ]);
+              }
+              break;
             }
-            break;
+            case "dispatchContinue": {
+              onDispatchContinueRef.current(event.data.agent, event.data.text, targetSessionId);
+              break;
+            }
+            case "dispatchExit": {
+              onDispatchExitRef.current(event.data.agent, event.data.reason, targetSessionId);
+              break;
+            }
+            case "finished":
+              if (!isCurrentRun) return;
+              setMessages((prev) =>
+                mergeDispatcherMessages(
+                  prev,
+                  event.data.messages.filter((message) => message.workspaceId === targetSessionId),
+                ),
+              );
+              void refreshSessionTokenUsage(targetSessionId);
+              setHasPendingRun(false);
+              setIsLoading(false);
+              setStreamingSegments([]);
+              setLiveToolCalls([]);
+              setAssistantPlaceholder(null);
+              break;
           }
-          case "dispatchContinue": {
-            onDispatchContinueRef.current(event.data.agent, event.data.text, targetSessionId);
-            break;
-          }
-          case "dispatchExit": {
-            onDispatchExitRef.current(event.data.agent, event.data.reason, targetSessionId);
-            break;
-          }
-          case "finished":
-            if (!isCurrentRun) return;
-            setMessages(
-              event.data.messages.filter((message) => message.workspaceId === targetSessionId),
-            );
-            setHasPendingRun(false);
-            setIsLoading(false);
-            setStreamingSegments([]);
-            setLiveToolCalls([]);
-            setAssistantPlaceholder(null);
-            break;
-        }
-      };
-      return onEvent;
-    }, []);
+        };
+        return onEvent;
+      },
+      [refreshSessionTokenUsage],
+    );
 
     const enqueueDispatcherRun = useCallback(
       async (
@@ -1039,10 +1119,11 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           workspaceId: sessionId,
         });
         setMessages([]);
+        resetSessionTokenUsage();
       } catch (err) {
         console.error("清空消息失败:", err);
       }
-    }, [sessionId]);
+    }, [resetSessionTokenUsage, sessionId]);
 
     const handleApplyStarterPrompt = useCallback((prompt: string) => {
       setInput(prompt);
@@ -1121,6 +1202,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               isBusy={isComposerBusy}
               isStopping={isStopping}
               autoApprove={autoApprove}
+              sessionTokenUsages={displayTokenUsages}
               pendingAttachments={pendingAttachments}
               inputRef={inputRef}
               layoutMode={layoutMode}
@@ -1233,39 +1315,37 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 />
               </div>
             </div>
-            <button
-              style={{
-                ...getPrimaryComposerButtonStyle(composerMode),
-                opacity: getPrimaryComposerOpacity(
-                  composerMode,
-                  input,
-                  isComposerBusy,
-                  isStopping,
-                ),
-              }}
-              title={getComposerButtonLabel(composerMode, Boolean(input.trim()))}
-              onClick={
-                composerMode === "stop"
-                  ? handleStop
-                  : composerMode === "resume" && !input.trim()
-                    ? handleResume
-                    : handleSend
-              }
-              disabled={isComposerActionDisabled(
-                composerMode,
-                input,
-                isComposerBusy,
-                isStopping,
-              )}
-            >
-              {composerMode === "stop" ? (
-                <Square size={16} color="#fff" />
-              ) : composerMode === "resume" && !input.trim() ? (
-                <Play size={16} color="#fff" />
-              ) : (
-                <Send size={16} color="#fff" />
-              )}
-            </button>
+            <div style={styles.inputActionCluster}>
+              <SessionTokenUsageIndicators entries={displayTokenUsages} />
+              <button
+                style={{
+                  ...getPrimaryComposerButtonStyle(composerMode),
+                  opacity: getPrimaryComposerOpacity(
+                    composerMode,
+                    input,
+                    isComposerBusy,
+                    isStopping,
+                  ),
+                }}
+                title={getComposerButtonLabel(composerMode, Boolean(input.trim()))}
+                onClick={
+                  composerMode === "stop"
+                    ? handleStop
+                    : composerMode === "resume" && !input.trim()
+                      ? handleResume
+                      : handleSend
+                }
+                disabled={isComposerActionDisabled(composerMode, input, isComposerBusy, isStopping)}
+              >
+                {composerMode === "stop" ? (
+                  <Square size={16} color="#fff" />
+                ) : composerMode === "resume" && !input.trim() ? (
+                  <Play size={16} color="#fff" />
+                ) : (
+                  <Send size={16} color="#fff" />
+                )}
+              </button>
+            </div>
           </div>
         )}
 
@@ -1325,6 +1405,9 @@ const EMPTY_QUICK_ACTIONS: Array<{
     icon: <Wrench size={14} />,
   },
 ];
+
+const DEFAULT_DISPATCHER_MODEL = "qwen3.6-plus";
+const SUMMARY_MODEL = "qwen3.6-flash";
 
 // ── Styles ───────────────────────────────────────────────────────────────────
 
@@ -1607,6 +1690,13 @@ const styles = {
     gap: "12px",
     flexWrap: "wrap" as const,
   },
+  emptyComposerPrimaryRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: "10px",
+    flexWrap: "wrap" as const,
+  },
   emptyComposerSecondaryRow: {
     display: "flex",
     alignItems: "center",
@@ -1802,6 +1892,7 @@ const styles = {
   inputArea: {
     display: "flex",
     alignItems: "flex-end",
+    justifyContent: "space-between",
     gap: "12px",
     padding: "14px 18px 18px",
     background:
@@ -1835,6 +1926,14 @@ const styles = {
     fontFamily: "var(--font-ui)",
     boxShadow: "0 12px 30px rgba(15, 23, 42, 0.05)",
     transition: "border-color 0.2s, box-shadow 0.2s",
+  },
+  inputActionCluster: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: "10px",
+    flexWrap: "wrap" as const,
+    flexShrink: 0,
   },
   attachBtn: {
     width: "44px",

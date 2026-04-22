@@ -98,6 +98,7 @@ pub fn run() {
             platform::usage::read_usage_snapshot,
             agent::commands::dispatcher_send_message,
             agent::commands::dispatcher_list_messages,
+            agent::commands::dispatcher_get_session_token_usage,
             agent::commands::dispatcher_clear_messages,
             agent::commands::dispatcher_upload_attachment,
             agent::commands::dispatcher_list_pending_attachments,

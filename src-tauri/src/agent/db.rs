@@ -17,10 +17,11 @@ use super::cad::{
     DwgLayerListResult, DwgParseCacheRecord, DwgRegionInspectionResult, SaveDwgDocumentIndexInput,
     SaveDwgEntityPayloadsInput, SaveDwgParseCacheInput,
 };
-use super::llm::{ChatMessage, OutboundToolCall};
+use super::llm::{ChatMessage, LlmUsage, OutboundToolCall};
 use super::summary::ToolArtifactDraft;
 
 const MAX_LLM_DIALOGUES: usize = 5;
+const DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS: u64 = 1_000_000;
 
 struct DwgDocumentWriteInput<'a> {
     project_path: &'a str,
@@ -97,6 +98,28 @@ pub struct DispatcherToolArtifactRecord {
     pub char_count: usize,
     pub line_count: usize,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatcherSessionTokenUsageSource {
+    Primary,
+    Summary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatcherSessionTokenUsageRecord {
+    pub workspace_id: String,
+    pub model: String,
+    pub source_kind: DispatcherSessionTokenUsageSource,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    pub cached_tokens: u64,
+    pub context_window_tokens: u64,
+    pub context_window_capacity: u64,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -269,6 +292,10 @@ impl DispatcherDb {
         )?;
         tx.execute(
             "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
         )?;
         tx.execute(
@@ -492,12 +519,99 @@ impl DispatcherDb {
         )
         .context("clear dispatcher tool artifacts")?;
         tx.execute(
+            "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("clear dispatcher session token usage")?;
+        tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![workspace_id],
         )
         .context("clear dispatcher messages")?;
         tx.commit().context("commit dispatcher message cleanup")?;
         Ok(())
+    }
+
+    pub fn upsert_session_token_usage(
+        &self,
+        workspace_id: &str,
+        model: &str,
+        source_kind: DispatcherSessionTokenUsageSource,
+        usage: &LlmUsage,
+    ) -> Result<DispatcherSessionTokenUsageRecord> {
+        let record = DispatcherSessionTokenUsageRecord {
+            workspace_id: workspace_id.to_string(),
+            model: model.to_string(),
+            source_kind,
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+            cached_tokens: usage.cached_tokens(),
+            context_window_tokens: usage.prompt_tokens,
+            context_window_capacity: default_context_window_capacity(model),
+            updated_at: now(),
+        };
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO dispatcher_session_token_usage (
+                workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens,
+                cached_tokens, context_window_tokens, context_window_capacity, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(workspace_id, model) DO UPDATE SET
+                source_kind = excluded.source_kind,
+                prompt_tokens = excluded.prompt_tokens,
+                completion_tokens = excluded.completion_tokens,
+                total_tokens = excluded.total_tokens,
+                cached_tokens = excluded.cached_tokens,
+                context_window_tokens = excluded.context_window_tokens,
+                context_window_capacity = excluded.context_window_capacity,
+                updated_at = excluded.updated_at",
+            params![
+                &record.workspace_id,
+                &record.model,
+                source_kind.as_sql_value(),
+                record.prompt_tokens as i64,
+                record.completion_tokens as i64,
+                record.total_tokens as i64,
+                record.cached_tokens as i64,
+                record.context_window_tokens as i64,
+                record.context_window_capacity as i64,
+                &record.updated_at,
+            ],
+        )
+        .context("upsert dispatcher session token usage")?;
+        Ok(record)
+    }
+
+    pub fn list_session_token_usage(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<DispatcherSessionTokenUsageRecord>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens,
+                    cached_tokens, context_window_tokens, context_window_capacity, updated_at
+             FROM dispatcher_session_token_usage
+             WHERE workspace_id = ?1
+             ORDER BY updated_at DESC, model ASC",
+        )?;
+        let rows = stmt.query_map(params![workspace_id], |row| {
+            Ok(DispatcherSessionTokenUsageRecord {
+                workspace_id: row.get(0)?,
+                model: row.get(1)?,
+                source_kind: DispatcherSessionTokenUsageSource::from_sql_value(row.get(2)?),
+                prompt_tokens: row.get::<_, i64>(3)? as u64,
+                completion_tokens: row.get::<_, i64>(4)? as u64,
+                total_tokens: row.get::<_, i64>(5)? as u64,
+                cached_tokens: row.get::<_, i64>(6)? as u64,
+                context_window_tokens: row.get::<_, i64>(7)? as u64,
+                context_window_capacity: row.get::<_, i64>(8)? as u64,
+                updated_at: row.get(9)?,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("list dispatcher session token usage")
     }
 
     pub fn get_tool_artifact(
@@ -1556,6 +1670,23 @@ impl DispatcherDb {
             CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_artifacts_message
             ON dispatcher_tool_artifacts(message_id);
 
+            CREATE TABLE IF NOT EXISTS dispatcher_session_token_usage (
+                workspace_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'primary',
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_tokens INTEGER NOT NULL DEFAULT 0,
+                context_window_tokens INTEGER NOT NULL DEFAULT 0,
+                context_window_capacity INTEGER NOT NULL DEFAULT 1000000,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, model)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dispatcher_session_token_usage_workspace_updated
+            ON dispatcher_session_token_usage(workspace_id, updated_at DESC);
+
             CREATE TABLE IF NOT EXISTS dwg_parse_cache (
                 id TEXT PRIMARY KEY,
                 project_path TEXT NOT NULL,
@@ -1729,6 +1860,22 @@ impl DispatcherDb {
             .context("load dispatcher dialogue boundaries")?;
 
         Ok(rowids.into_iter().min().unwrap_or(0))
+    }
+}
+
+impl DispatcherSessionTokenUsageSource {
+    fn as_sql_value(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Summary => "summary",
+        }
+    }
+
+    fn from_sql_value(value: String) -> Self {
+        match value.as_str() {
+            "summary" => Self::Summary,
+            _ => Self::Primary,
+        }
     }
 }
 
@@ -2416,6 +2563,12 @@ fn now() -> String {
     Utc::now().to_rfc3339()
 }
 
+fn default_context_window_capacity(_model: &str) -> u64 {
+    // 先按百炼当前默认接入的 Qwen 3.6 系列 1M 上下文窗口展示；
+    // 后续如引入模型级配置，可在这里细化到不同模型。
+    DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS
+}
+
 fn map_chat_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatMessage> {
     let tool_calls_json: Option<String> = row.get(4)?;
     let tool_calls = tool_calls_json
@@ -2499,13 +2652,17 @@ mod tests {
 
     use rusqlite::{params, Connection};
 
-    use super::{entity_to_envelope, entity_to_payload, DispatcherDb, ToolArtifactDraft};
+    use super::{
+        entity_to_envelope, entity_to_payload, DispatcherDb, DispatcherSessionTokenUsageSource,
+        ToolArtifactDraft,
+    };
     use crate::agent::cad::{
         CadBBox, CadEntityQueryFilters, CadEntityRecord, CadPoint, CreateCadReviewIssueInput,
         CreateCadReviewRunInput, DwgBlockSummary, DwgEntityPayloadRecord, DwgLayerSummary,
         DwgParseSummary, SaveDwgDocumentIndexInput, SaveDwgEntityPayloadsInput,
         SaveDwgParseCacheInput,
     };
+    use crate::agent::llm::{LlmPromptTokensDetails, LlmUsage};
 
     fn create_test_db() -> (DispatcherDb, PathBuf) {
         let root =
@@ -2527,6 +2684,17 @@ mod tests {
             content: "line 1\nline 2".to_string(),
             char_count: 13,
             line_count: 2,
+        }
+    }
+
+    fn sample_usage() -> LlmUsage {
+        LlmUsage {
+            prompt_tokens: 4096,
+            completion_tokens: 512,
+            total_tokens: 4608,
+            prompt_tokens_details: Some(LlmPromptTokensDetails {
+                cached_tokens: 1024,
+            }),
         }
     }
 
@@ -2695,6 +2863,25 @@ mod tests {
     }
 
     #[test]
+    fn clear_messages_removes_session_token_usage() {
+        let (db, root) = create_test_db();
+        let session = db.create_session("project-1", "测试会话").unwrap();
+        db.upsert_session_token_usage(
+            &session.id,
+            "qwen3.6-plus",
+            DispatcherSessionTokenUsageSource::Primary,
+            &sample_usage(),
+        )
+        .unwrap();
+
+        db.clear_messages(&session.id).unwrap();
+
+        assert!(db.list_session_token_usage(&session.id).unwrap().is_empty());
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
     fn delete_session_removes_tool_artifacts_with_session() {
         let (db, root) = create_test_db();
         let session = db.create_session("project-1", "测试会话").unwrap();
@@ -2716,6 +2903,67 @@ mod tests {
         assert!(db
             .get_tool_artifact(&session.id, &message.tool_artifacts[0].id)
             .is_err());
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn delete_session_removes_token_usage_with_session() {
+        let (db, root) = create_test_db();
+        let session = db.create_session("project-1", "测试会话").unwrap();
+        db.upsert_session_token_usage(
+            &session.id,
+            "qwen3.6-flash",
+            DispatcherSessionTokenUsageSource::Summary,
+            &sample_usage(),
+        )
+        .unwrap();
+
+        db.delete_session(&session.id).unwrap();
+
+        assert!(db.list_session_token_usage(&session.id).unwrap().is_empty());
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn upsert_session_token_usage_keeps_latest_usage_per_model() {
+        let (db, root) = create_test_db();
+        let session = db.create_session("project-1", "测试会话").unwrap();
+        db.upsert_session_token_usage(
+            &session.id,
+            "qwen3.6-plus",
+            DispatcherSessionTokenUsageSource::Primary,
+            &sample_usage(),
+        )
+        .unwrap();
+
+        let latest = LlmUsage {
+            prompt_tokens: 6144,
+            completion_tokens: 256,
+            total_tokens: 6400,
+            prompt_tokens_details: Some(LlmPromptTokensDetails {
+                cached_tokens: 2048,
+            }),
+        };
+        let record = db
+            .upsert_session_token_usage(
+                &session.id,
+                "qwen3.6-plus",
+                DispatcherSessionTokenUsageSource::Summary,
+                &latest,
+            )
+            .unwrap();
+
+        let usages = db.list_session_token_usage(&session.id).unwrap();
+        assert_eq!(usages.len(), 1);
+        assert_eq!(
+            record.source_kind,
+            DispatcherSessionTokenUsageSource::Summary
+        );
+        assert_eq!(usages[0].context_window_tokens, 6144);
+        assert_eq!(usages[0].cached_tokens, 2048);
+        assert_eq!(usages[0].completion_tokens, 256);
 
         cleanup_test_db(root);
     }
@@ -2763,6 +3011,13 @@ mod tests {
         assert!(conn
             .query_row(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cad_review_runs'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .is_ok());
+        assert!(conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dispatcher_session_token_usage'",
                 [],
                 |row| row.get::<_, String>(0),
             )

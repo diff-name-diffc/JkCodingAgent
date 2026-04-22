@@ -6,14 +6,14 @@ use std::sync::{
 use serde_json::Value;
 use tokio::time::{timeout, Duration};
 
-use super::llm::{ChatMessage, OpenAiCompatProvider};
+use super::llm::{ChatMessage, LlmUsage, OpenAiCompatProvider};
 
 const SUMMARY_MODE_THRESHOLD_CHARS: usize = 240;
 const SUMMARY_MODE_THRESHOLD_LINES: usize = 24;
 const FULL_RESULT_MAX_CHARS: usize = 12_000;
 const FULL_RESULT_MAX_LINES: usize = 400;
 const HIGH_FIDELITY_SUMMARY_THRESHOLD_CHARS: usize = 1_000;
-const SUMMARY_MODEL: &str = "qwen3.6-flash";
+pub const SUMMARY_MODEL: &str = "qwen3.6-flash";
 const SUMMARY_TIMEOUT_SECS: u64 = 120;
 const SUMMARY_DEBUG_PREVIEW_CHARS: usize = 1_200;
 
@@ -58,17 +58,19 @@ pub struct PreparedToolResult {
     pub artifacts: Vec<ToolArtifactDraft>,
 }
 
-pub async fn prepare_tool_result<FStart, FDelta>(
+pub async fn prepare_tool_result<FStart, FDelta, FUsage>(
     provider: &OpenAiCompatProvider,
     tool_name: &str,
     args: &Value,
     raw_output: &str,
     on_display_stream_start: FStart,
     on_display_delta: FDelta,
+    on_usage: FUsage,
 ) -> Result<PreparedToolResult, SummaryError>
 where
     FStart: Fn(&'static str) + Send + Sync,
     FDelta: Fn(&str) + Send + Sync,
+    FUsage: FnMut(&LlmUsage) + Send,
 {
     let trimmed_raw = raw_output.trim();
     if trimmed_raw.is_empty() {
@@ -122,6 +124,7 @@ where
                         on_display_delta(&streamed);
                     }
                 },
+                on_usage,
             )
             .await?;
             let (context_payload, display_content) = parse_dual_tool_summary(raw_summary);
@@ -174,10 +177,14 @@ fn prepare_cad_review_tool_result(raw_output: &str) -> Option<PreparedToolResult
     })
 }
 
-pub async fn summarize_dispatch_result(
+pub async fn summarize_dispatch_result<FUsage>(
     provider: &OpenAiCompatProvider,
     dispatch_result: &str,
-) -> Result<String, SummaryError> {
+    on_usage: FUsage,
+) -> Result<String, SummaryError>
+where
+    FUsage: FnMut(&LlmUsage) + Send,
+{
     let trimmed = dispatch_result.trim();
     if trimmed.is_empty() {
         return Ok(trimmed.to_string());
@@ -191,7 +198,13 @@ pub async fn summarize_dispatch_result(
         return Ok(trimmed.to_string());
     }
 
-    summarize_with_model(provider, build_dispatch_summary_prompt(trimmed), |_| {}).await
+    summarize_with_model(
+        provider,
+        build_dispatch_summary_prompt(trimmed),
+        |_| {},
+        on_usage,
+    )
+    .await
 }
 
 pub fn build_summary_failure_message(error: &str) -> String {
@@ -204,6 +217,7 @@ async fn summarize_with_model(
     provider: &OpenAiCompatProvider,
     prompt: String,
     on_delta: impl FnMut(&str),
+    mut on_usage: impl FnMut(&LlmUsage) + Send,
 ) -> Result<String, SummaryError> {
     let summary_provider = provider.with_model(SUMMARY_MODEL);
     let debug_context = build_summary_debug_context(&summary_provider, &prompt);
@@ -224,6 +238,10 @@ async fn summarize_with_model(
             debug_context.clone(),
         )
     })?;
+
+    if let Some(usage) = response.usage.as_ref() {
+        on_usage(usage);
+    }
 
     let content = response.content.trim().to_string();
     if content.is_empty() {

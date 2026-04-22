@@ -18,8 +18,8 @@ use super::cad::{
 };
 use super::config::DispatcherAgentConfig;
 use super::db::{
-    DispatcherDb, DispatcherMessageRecord, DispatcherSessionRecord, DispatcherSettingsRecord,
-    DispatcherToolArtifactRecord,
+    DispatcherDb, DispatcherMessageRecord, DispatcherSessionRecord,
+    DispatcherSessionTokenUsageRecord, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
 };
 use super::dwg::viewer_bridge::DwgViewerBridgeState;
 use super::llm;
@@ -260,6 +260,17 @@ pub fn dispatcher_list_messages(
     state
         .db
         .list_visible_messages(&workspace_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_get_session_token_usage(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+) -> Result<Vec<DispatcherSessionTokenUsageRecord>, String> {
+    state
+        .db
+        .list_session_token_usage(&workspace_id)
         .map_err(|error| error.to_string())
 }
 

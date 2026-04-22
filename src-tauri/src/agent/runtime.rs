@@ -13,13 +13,14 @@ use tokio::sync::watch;
 use super::cad::build_attachment_context;
 use super::config::DispatcherAgentConfig;
 use super::db::{
-    DispatcherDb, DispatcherMessageRecord, DispatcherSettingsRecord, DispatcherToolArtifactRef,
+    DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource,
+    DispatcherSettingsRecord, DispatcherToolArtifactRef,
 };
 use super::debug::{render_json, ContextDebugLogger, DebugSection};
-use super::llm::{ChatMessage, FunctionCall, OpenAiCompatProvider, OutboundToolCall};
+use super::llm::{ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider, OutboundToolCall};
 use super::prompt::{build_system_prompt, PromptBundle, PromptSection};
 use super::summary::{
-    build_summary_failure_message, prepare_tool_result, summarize_dispatch_result,
+    build_summary_failure_message, prepare_tool_result, summarize_dispatch_result, SUMMARY_MODEL,
 };
 use super::tools::{
     parse_continue_instruction, parse_dispatch_instruction, parse_exit_instruction, DispatchAgent,
@@ -572,7 +573,15 @@ impl DispatcherAgent {
                 );
                 return Ok(AgentTurn { reply, messages });
             }
-            result = summarize_dispatch_result(&provider, dispatch_result) => result
+            result = summarize_dispatch_result(&provider, dispatch_result, |usage| {
+                record_session_token_usage(
+                    db,
+                    workspace_id,
+                    SUMMARY_MODEL,
+                    DispatcherSessionTokenUsageSource::Summary,
+                    usage,
+                );
+            }) => result
         } {
             Ok(summary) => summary,
             Err(error) => {
@@ -741,6 +750,15 @@ impl DispatcherAgent {
                 response = provider.chat_stream(&messages, &tool_definitions, on_delta) => response
             }?;
             let response_snapshot = provider.build_response_snapshot(&response);
+            if let Some(usage) = response.usage.as_ref() {
+                record_session_token_usage(
+                    db,
+                    workspace_id,
+                    provider.model(),
+                    DispatcherSessionTokenUsageSource::Primary,
+                    usage,
+                );
+            }
 
             debug_logger.log(
                 "收到大模型响应",
@@ -875,6 +893,15 @@ impl DispatcherAgent {
                                 delta: delta.to_string(),
                                 result_mode: "conservative_summary".to_string(),
                             },
+                        );
+                    },
+                    |usage| {
+                        record_session_token_usage(
+                            db,
+                            workspace_id,
+                            SUMMARY_MODEL,
+                            DispatcherSessionTokenUsageSource::Summary,
+                            usage,
                         );
                     },
                 )
@@ -1620,6 +1647,21 @@ fn build_stopped_dispatch_reply(partial: &str) -> String {
 
 fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
     let _ = on_event.send(event);
+}
+
+fn record_session_token_usage(
+    db: &DispatcherDb,
+    workspace_id: &str,
+    model: &str,
+    source_kind: DispatcherSessionTokenUsageSource,
+    usage: &LlmUsage,
+) {
+    if let Err(error) = db.upsert_session_token_usage(workspace_id, model, source_kind, usage) {
+        eprintln!(
+            "failed to persist dispatcher session token usage for workspace {} and model {}: {}",
+            workspace_id, model, error
+        );
+    }
 }
 
 fn subprocess_phase_label(phase: RegisteredSubprocessPhase) -> &'static str {

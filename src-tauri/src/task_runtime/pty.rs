@@ -9,7 +9,7 @@ use super::session::{spawn_resume_session_watcher, spawn_status_session_watcher}
 use crate::agent::DispatcherState;
 use crate::platform::{claude_version_gte, get_agent_bin, get_login_shell_env};
 use crate::project::read_project_config;
-use crate::shared::TaskManager;
+use crate::shared::{TaskManager, TaskTerminationIntent};
 
 const SESSION_WAIT_POLL: Duration = Duration::from_millis(50);
 const SESSION_WAIT_MAX: Duration = Duration::from_millis(500);
@@ -56,10 +56,9 @@ fn finalize_task_exit(
     exit_ok: bool,
     exit_code: Option<u32>,
 ) {
-    let is_cancelled = {
+    let termination_intent = {
         let tm = app.state::<TaskManager>();
-        let mut cancelled = tm.cancelled_tasks.lock();
-        cancelled.remove(task_id)
+        tm.take_task_termination_intent(task_id)
     };
 
     let had_agent_session;
@@ -85,7 +84,12 @@ fn finalize_task_exit(
         }
     }
 
-    if is_cancelled {
+    if let Some(intent) = termination_intent {
+        let status = termination_status_label(intent);
+        let _ = app.emit(
+            "task-status",
+            serde_json::json!({ "task_id": task_id, "status": status }),
+        );
         let _ = fs::remove_dir_all(task_attachments_dir(project_path, task_id));
         return;
     }
@@ -107,6 +111,22 @@ fn finalize_task_exit(
     let _ = app.emit("task-status", payload);
 
     let _ = fs::remove_dir_all(task_attachments_dir(project_path, task_id));
+}
+
+fn request_task_termination(
+    task_manager: &TaskManager,
+    task_id: &str,
+    intent: TaskTerminationIntent,
+) -> Result<(), String> {
+    task_manager.set_task_termination_intent(task_id, intent);
+    task_manager.kill_child(task_id)
+}
+
+fn termination_status_label(intent: TaskTerminationIntent) -> &'static str {
+    match intent {
+        TaskTerminationIntent::Cancelled => "cancelled",
+        TaskTerminationIntent::Stopped => "stopped",
+    }
 }
 
 fn save_task_images(
@@ -535,45 +555,18 @@ pub async fn run_task(
 
 #[tauri::command]
 pub async fn cancel_task(
-    app: AppHandle,
     task_manager: State<'_, TaskManager>,
     task_id: String,
-    project_path: String,
 ) -> Result<(), String> {
-    task_manager.cancelled_tasks.lock().insert(task_id.clone());
+    request_task_termination(&task_manager, &task_id, TaskTerminationIntent::Cancelled)
+}
 
-    let _ = task_manager.kill_child(&task_id);
-
-    // 释放已声明的会话路径，确保相同提示词的任务可以重新运行
-    {
-        let codex_path = task_manager
-            .codex_sessions
-            .lock()
-            .get(&task_id)
-            .map(|info| info.session_path.clone());
-        let claude_path = task_manager
-            .claude_sessions
-            .lock()
-            .get(&task_id)
-            .map(|info| info.session_path.clone());
-        let mut claimed = task_manager.claimed_session_paths.lock();
-        if let Some(path) = codex_path {
-            claimed.remove(&path);
-        }
-        if let Some(path) = claude_path {
-            claimed.remove(&path);
-        }
-    }
-
-    let _ = app.emit(
-        "task-status",
-        serde_json::json!({ "task_id": task_id, "status": "cancelled" }),
-    );
-
-    // 清理任务附件
-    let _ = fs::remove_dir_all(task_attachments_dir(&project_path, &task_id));
-
-    Ok(())
+#[tauri::command]
+pub async fn stop_task(
+    task_manager: State<'_, TaskManager>,
+    task_id: String,
+) -> Result<(), String> {
+    request_task_termination(&task_manager, &task_id, TaskTerminationIntent::Stopped)
 }
 
 #[tauri::command]
@@ -756,4 +749,26 @@ pub async fn kill_shell(
     let _ = task_manager.kill_child(&shell_id);
     task_manager.remove_pty_handles(&shell_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::termination_status_label;
+    use crate::shared::TaskTerminationIntent;
+
+    #[test]
+    fn termination_status_label_maps_cancelled() {
+        assert_eq!(
+            termination_status_label(TaskTerminationIntent::Cancelled),
+            "cancelled"
+        );
+    }
+
+    #[test]
+    fn termination_status_label_maps_stopped() {
+        assert_eq!(
+            termination_status_label(TaskTerminationIntent::Stopped),
+            "stopped"
+        );
+    }
 }

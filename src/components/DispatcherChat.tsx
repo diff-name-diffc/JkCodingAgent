@@ -12,9 +12,11 @@ import type { KeyboardEvent, RefObject, ReactNode } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
+  Play,
   User,
   Sparkles,
   Send,
+  Square,
   X,
   FolderGit2,
   SearchCode,
@@ -258,7 +260,9 @@ const PendingAttachmentTray = memo(function PendingAttachmentTray({
 
 const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   input,
-  isLoading,
+  composerMode,
+  isBusy,
+  isStopping,
   autoApprove,
   pendingAttachments,
   inputRef,
@@ -268,6 +272,8 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onRemoveAttachment,
   onSelectQuickAction,
   onSend,
+  onStop,
+  onResume,
   onKeyDown,
   onOpenSettings,
   onOpenMcpStatus,
@@ -276,7 +282,9 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onCompositionEnd,
 }: {
   input: string;
-  isLoading: boolean;
+  composerMode: "send" | "stop" | "resume";
+  isBusy: boolean;
+  isStopping: boolean;
   autoApprove: boolean;
   pendingAttachments: DispatcherAttachmentRecord[];
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -286,6 +294,8 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onRemoveAttachment: (attachmentId: string) => void;
   onSelectQuickAction: (value: string) => void;
   onSend: () => void;
+  onStop: () => void;
+  onResume: () => void;
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   onOpenSettings: () => void;
   onOpenMcpStatus: () => void;
@@ -293,6 +303,9 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onCompositionStart: () => void;
   onCompositionEnd: () => void;
 }) {
+  const isStopMode = composerMode === "stop";
+  const isResumeMode = composerMode === "resume";
+
   return (
     <div style={styles.emptyLauncherWrap(layoutMode)}>
       <div style={styles.emptyLauncherHero(layoutMode)}>
@@ -343,7 +356,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
             onCompositionEnd={onCompositionEnd}
             onKeyDown={onKeyDown}
             rows={layoutMode === "single" ? 10 : 4}
-            disabled={isLoading}
+            disabled={isStopMode || isStopping}
           />
         </div>
 
@@ -399,14 +412,16 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
             <button
               type="button"
               style={{
-                ...styles.emptyComposerSendBtn,
-                opacity: input.trim() && !isLoading ? 1 : 0.45,
+                ...getEmptyPrimaryComposerButtonStyle(composerMode),
+                opacity: getPrimaryComposerOpacity(composerMode, input, isBusy, isStopping),
               }}
-              onClick={onSend}
-              disabled={!input.trim() || isLoading}
+              onClick={
+                isStopMode ? onStop : isResumeMode && !input.trim() ? onResume : onSend
+              }
+              disabled={isComposerActionDisabled(composerMode, input, isBusy, isStopping)}
             >
-              <span>开始对话</span>
-              <Send size={15} />
+              <span>{getComposerButtonLabel(composerMode, Boolean(input.trim()))}</span>
+              {isStopMode ? <Square size={15} /> : isResumeMode && !input.trim() ? <Play size={15} /> : <Send size={15} />}
             </button>
           </div>
         </div>
@@ -414,6 +429,55 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
     </div>
   );
 });
+
+function getComposerButtonLabel(
+  mode: "send" | "stop" | "resume",
+  hasInput: boolean,
+): string {
+  if (mode === "stop") return "停止";
+  if (mode === "resume" && !hasInput) return "继续运行";
+  return mode === "send" ? "开始对话" : "发送消息";
+}
+
+function isComposerActionDisabled(
+  mode: "send" | "stop" | "resume",
+  input: string,
+  isBusy: boolean,
+  isStopping: boolean,
+): boolean {
+  if (mode === "stop") return isStopping;
+  if (mode === "resume") return (!input.trim() && isBusy) || isStopping;
+  return !input.trim() || isBusy || isStopping;
+}
+
+function getPrimaryComposerOpacity(
+  mode: "send" | "stop" | "resume",
+  input: string,
+  isBusy: boolean,
+  isStopping: boolean,
+): number {
+  return isComposerActionDisabled(mode, input, isBusy, isStopping) ? 0.45 : 1;
+}
+
+function getPrimaryComposerButtonStyle(mode: "send" | "stop" | "resume") {
+  if (mode === "stop") {
+    return { ...styles.sendBtn, ...styles.stopBtn };
+  }
+  if (mode === "resume") {
+    return { ...styles.sendBtn, ...styles.resumeBtn };
+  }
+  return styles.sendBtn;
+}
+
+function getEmptyPrimaryComposerButtonStyle(mode: "send" | "stop" | "resume") {
+  if (mode === "stop") {
+    return { ...styles.emptyComposerSendBtn, ...styles.emptyComposerStopBtn };
+  }
+  if (mode === "resume") {
+    return { ...styles.emptyComposerSendBtn, ...styles.emptyComposerResumeBtn };
+  }
+  return styles.emptyComposerSendBtn;
+}
 
 function getMcpIndicatorState(
   mcpStatus: ProjectMcpStatus | null,
@@ -451,6 +515,8 @@ interface DispatcherChatProps {
   onDispatchRejected: (dispatchId: string) => void;
   onDispatchContinue: (agent: AgentType, text: string, sessionId: string) => void;
   onDispatchExit: (agent: AgentType, reason: string, sessionId: string) => void;
+  onStopActiveRun?: (sessionId: string) => Promise<void>;
+  onResumeStoppedRun?: (sessionId: string) => Promise<void>;
   onOpenMcpStatus: () => void;
   onOpenSettings: () => void;
   onCadArtifactOpen?: (artifact: DispatcherToolArtifact) => void;
@@ -488,6 +554,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       onDispatchRejected,
       onDispatchContinue,
       onDispatchExit,
+      onStopActiveRun = async () => {},
+      onResumeStoppedRun = async () => {},
       onOpenMcpStatus,
       onOpenSettings,
       onCadArtifactOpen,
@@ -499,6 +567,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [messages, setMessages] = useState<DispatcherMessage[]>([]);
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
+    const [isStopping, setIsStopping] = useState(false);
     const [streamingSegments, setStreamingSegments] = useState<AssistantTurnSegment[]>([]);
     const [liveToolCalls, setLiveToolCalls] = useState<ToolActivityItem[]>([]);
     const [pendingDispatches, setPendingDispatches] = useState<PendingDispatchApproval[]>([]);
@@ -524,6 +593,22 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     onDispatchContinueRef.current = onDispatchContinue;
     const onDispatchExitRef = useRef(onDispatchExit);
     onDispatchExitRef.current = onDispatchExit;
+    const sessionSubProcesses = useMemo(
+      () => _subProcesses.filter((subProcess) => subProcess.sessionId === sessionId),
+      [_subProcesses, sessionId],
+    );
+    const hasRunningSubProcess = sessionSubProcesses.some(
+      (subProcess) => subProcess.status === "running",
+    );
+    const hasStoppedSubProcess = sessionSubProcesses.some(
+      (subProcess) => subProcess.status === "stopped",
+    );
+    const composerMode: "send" | "stop" | "resume" = isLoading || hasRunningSubProcess
+      ? "stop"
+      : hasStoppedSubProcess
+        ? "resume"
+        : "send";
+    const isComposerBusy = isLoading || isStopping;
     const displayItems = useMemo(() => buildDispatcherDisplayItems(messages), [messages]);
     const currentPendingDispatch = pendingDispatches[0] ?? null;
     const mcpIndicator = getMcpIndicatorState(mcpStatus, mcpChecking);
@@ -544,6 +629,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       activeRunRef.current += 1;
       setMessages([]);
       setIsLoading(false);
+      setIsStopping(false);
       setStreamingSegments([]);
       setLiveToolCalls([]);
       setPendingDispatches([]);
@@ -734,7 +820,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
     const handleSend = useCallback(async () => {
       const text = input.trim();
-      if (!text || isLoading) return;
+      if (!text || isLoading || isStopping) return;
 
       setInput("");
       setPendingDispatches([]);
@@ -755,7 +841,15 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       } catch (err) {
         console.error("dispatcher_send_message 失败:", err);
       }
-    }, [enqueueDispatcherRun, input, isLoading, pendingAttachments, projectPath, sessionId]);
+    }, [
+      enqueueDispatcherRun,
+      input,
+      isLoading,
+      isStopping,
+      pendingAttachments,
+      projectPath,
+      sessionId,
+    ]);
 
     const handlePickAttachments = useCallback(async () => {
       try {
@@ -804,6 +898,23 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       [sessionId],
     );
 
+    const handleStop = useCallback(async () => {
+      if (isStopping) return;
+      setIsStopping(true);
+      try {
+        await Promise.all([
+          invoke("dispatcher_stop_run", { workspaceId: sessionId }).catch(console.error),
+          onStopActiveRun(sessionId),
+        ]);
+      } finally {
+        setIsStopping(false);
+      }
+    }, [isStopping, onStopActiveRun, sessionId]);
+
+    const handleResume = useCallback(async () => {
+      await onResumeStoppedRun(sessionId);
+    }, [onResumeStoppedRun, sessionId]);
+
     // Expose continueWithResult to parent via ref
     useImperativeHandle(
       ref,
@@ -837,15 +948,22 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
     const handleKeyDown = useCallback(
       (e: KeyboardEvent<HTMLTextAreaElement>) => {
+        if (composerMode === "stop") {
+          return;
+        }
         if (inputComposingRef.current || isImeComposing(e)) {
           return;
         }
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
+          if (composerMode === "resume" && !input.trim()) {
+            handleResume();
+            return;
+          }
           handleSend();
         }
       },
-      [handleSend],
+      [composerMode, handleResume, handleSend, input],
     );
 
     const handleApproveDispatch = useCallback(
@@ -960,7 +1078,9 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           {isEmpty && (
             <EmptyConversationLauncher
               input={input}
-              isLoading={isLoading}
+              composerMode={composerMode}
+              isBusy={isComposerBusy}
+              isStopping={isStopping}
               autoApprove={autoApprove}
               pendingAttachments={pendingAttachments}
               inputRef={inputRef}
@@ -970,6 +1090,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onRemoveAttachment={handleRemoveAttachment}
               onSelectQuickAction={handleApplyStarterPrompt}
               onSend={handleSend}
+              onStop={handleStop}
+              onResume={handleResume}
               onKeyDown={handleKeyDown}
               onOpenSettings={onOpenSettings}
               onOpenMcpStatus={onOpenMcpStatus}
@@ -1049,7 +1171,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                   onClick={handlePickAttachments}
                   title="添加会话附件"
                   aria-label="添加会话附件"
-                  disabled={isLoading}
+                  disabled={composerMode === "stop" || isStopping}
                 >
                   <Paperclip size={15} />
                 </button>
@@ -1067,16 +1189,42 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                   }}
                   onKeyDown={handleKeyDown}
                   rows={1}
-                  disabled={isLoading}
+                  disabled={composerMode === "stop" || isStopping}
                 />
               </div>
             </div>
             <button
-              style={{ ...styles.sendBtn, opacity: input.trim() && !isLoading ? 1 : 0.5 }}
-              onClick={handleSend}
-              disabled={!input.trim() || isLoading}
+              style={{
+                ...getPrimaryComposerButtonStyle(composerMode),
+                opacity: getPrimaryComposerOpacity(
+                  composerMode,
+                  input,
+                  isComposerBusy,
+                  isStopping,
+                ),
+              }}
+              title={getComposerButtonLabel(composerMode, Boolean(input.trim()))}
+              onClick={
+                composerMode === "stop"
+                  ? handleStop
+                  : composerMode === "resume" && !input.trim()
+                    ? handleResume
+                    : handleSend
+              }
+              disabled={isComposerActionDisabled(
+                composerMode,
+                input,
+                isComposerBusy,
+                isStopping,
+              )}
             >
-              <Send size={16} color="#fff" />
+              {composerMode === "stop" ? (
+                <Square size={16} color="#fff" />
+              ) : composerMode === "resume" && !input.trim() ? (
+                <Play size={16} color="#fff" />
+              ) : (
+                <Send size={16} color="#fff" />
+              )}
             </button>
           </div>
         )}
@@ -1454,6 +1602,14 @@ const styles = {
     cursor: "pointer",
     boxShadow: "0 18px 28px -16px color-mix(in srgb, var(--accent) 60%, transparent)",
   },
+  emptyComposerStopBtn: {
+    background: "linear-gradient(135deg, #0f172a, #334155)",
+    boxShadow: "0 18px 28px -16px rgba(15, 23, 42, 0.55)",
+  },
+  emptyComposerResumeBtn: {
+    background: "linear-gradient(135deg, #0f766e, #14b8a6)",
+    boxShadow: "0 18px 28px -16px rgba(13, 148, 136, 0.5)",
+  },
   messageBubbleWrap: (isUser: boolean) => ({
     display: "flex",
     flexDirection: isUser ? ("row-reverse" as const) : ("row" as const),
@@ -1698,6 +1854,14 @@ const styles = {
     justifyContent: "center",
     cursor: "pointer",
     flexShrink: 0,
+  },
+  stopBtn: {
+    background: "linear-gradient(135deg, #0f172a, #334155)",
+    boxShadow: "0 18px 28px -16px rgba(15, 23, 42, 0.55)",
+  },
+  resumeBtn: {
+    background: "linear-gradient(135deg, #0f766e, #14b8a6)",
+    boxShadow: "0 18px 28px -16px rgba(13, 148, 136, 0.5)",
   },
   // ── Approval dialog styles ──
   approvalOverlay: {

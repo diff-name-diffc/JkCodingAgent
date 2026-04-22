@@ -26,8 +26,6 @@ interface SubProcessTabsProps {
     initialData?: string;
     initialSnapshot?: string;
   };
-  /** Map from subprocess id → actual task id (for terminal data routing) */
-  subProcessTaskMap: Record<string, string>;
 }
 
 export function SubProcessTabs({
@@ -45,7 +43,6 @@ export function SubProcessTabs({
   onTerminalReady,
   onSnapshot,
   getRestoreState,
-  subProcessTaskMap,
 }: SubProcessTabsProps) {
   const visibleSubProcesses = useMemo(
     () =>
@@ -56,11 +53,8 @@ export function SubProcessTabs({
   );
   const mountedTerminals = useMemo(
     () =>
-      subProcesses.filter(
-        (subProcess) =>
-          Boolean(subProcessTaskMap[subProcess.id]) && subProcess.status !== "pending_approval",
-      ),
-    [subProcessTaskMap, subProcesses],
+      subProcesses.filter((subProcess) => subProcess.status !== "pending_approval"),
+    [subProcesses],
   );
   const activeSubProcess = visibleSubProcesses.find((sp) => sp.id === activeTabId) ?? null;
   const isExpanded = Boolean(activeSubProcess);
@@ -105,8 +99,7 @@ export function SubProcessTabs({
           ) : (
             <div style={styles.terminalStage}>
               {mountedTerminals.map((subProcess) => {
-                const taskId = subProcessTaskMap[subProcess.id];
-                if (!taskId) return null;
+                const taskId = subProcess.id;
                 const isVisible = subProcess.id === activeTabId;
                 const isInteractive = subProcess.status === "running";
                 return (
@@ -139,6 +132,9 @@ export function SubProcessTabs({
                           )}
                           {subProcess.status === "failed" && (
                             <span>终端已失败退出，可继续查看本次输入与输出</span>
+                          )}
+                          {subProcess.status === "stopped" && (
+                            <span>终端已停止，历史输出已保留，可稍后继续运行</span>
                           )}
                         </div>
                       )}
@@ -226,6 +222,7 @@ const statusConfig: Record<SubProcess["status"], { label: string; color: string;
     bg: "rgba(245,158,11,0.1)",
   },
   running: { label: "运行中", color: "#22c55e", bg: "rgba(34,197,94,0.1)" },
+  stopped: { label: "已停止", color: "#0f766e", bg: "rgba(15,118,110,0.12)" },
   done: { label: "完成", color: "#8b5cf6", bg: "rgba(139,92,246,0.1)" },
   failed: { label: "失败", color: "#ef4444", bg: "rgba(239,68,68,0.1)" },
 };

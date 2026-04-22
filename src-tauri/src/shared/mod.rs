@@ -1,5 +1,5 @@
 mod state;
 mod text;
 
-pub use state::TaskManager;
+pub(crate) use state::{TaskManager, TaskTerminationIntent};
 pub use text::truncate_for_display;

@@ -119,7 +119,15 @@ impl AgentTool for CadEnsureDwgIndexTool {
             .and_then(Value::as_bool)
             .unwrap_or(true);
 
-        match ensure_index(&path, &parser_version, &refresh_policy, open_viewer, context).await {
+        match ensure_index(
+            &path,
+            &parser_version,
+            &refresh_policy,
+            open_viewer,
+            context,
+        )
+        .await
+        {
             Ok(value) => serialize(value),
             Err(message) => message,
         }
@@ -218,7 +226,11 @@ impl AgentTool for CadListDwgLayersTool {
             &document.id,
             cursor,
             limit,
-            if sort_by == "name" { "name" } else { "entityCount" },
+            if sort_by == "name" {
+                "name"
+            } else {
+                "entityCount"
+            },
         ) {
             Ok(value) => serialize(value),
             Err(error) => format!("列出 DWG 图层失败：{error}"),
@@ -823,7 +835,8 @@ async fn ensure_index(
     context: &ToolContext,
 ) -> Result<Value, String> {
     let normalized = normalize_path(path, context)?;
-    let metadata = fs::metadata(&normalized).map_err(|error| format!("读取 DWG 文件元数据失败：{error}"))?;
+    let metadata =
+        fs::metadata(&normalized).map_err(|error| format!("读取 DWG 文件元数据失败：{error}"))?;
     let file_size = metadata.len();
     let file_mtime = file_mtime(&metadata)?;
     let db = dispatcher_db(context)?;
@@ -874,13 +887,14 @@ async fn ensure_index(
             }));
         }
         if let Some(bridge) = &context.dwg_viewer_bridge {
-            if let Some(session) = bridge.best_session_for_file(&context.workspace_id, &normalized) {
+            if let Some(session) = bridge.best_session_for_file(&context.workspace_id, &normalized)
+            {
                 if session.parse_status == "error" {
                     return Err(format!(
                         "错误：DWG 索引构建失败：{}",
-                        session
-                            .parse_error
-                            .unwrap_or_else(|| "前端解析器进入错误状态，请检查 DWG 工作台报错".to_string())
+                        session.parse_error.unwrap_or_else(|| {
+                            "前端解析器进入错误状态，请检查 DWG 工作台报错".to_string()
+                        })
                     ));
                 }
             }
@@ -924,7 +938,8 @@ async fn resolve_document(
     let parser_version =
         string_arg(args, "parserVersion").unwrap_or_else(|| DEFAULT_PARSER_VERSION.to_string());
     let normalized = normalize_path(&path, context)?;
-    let metadata = fs::metadata(&normalized).map_err(|error| format!("读取 DWG 文件元数据失败：{error}"))?;
+    let metadata =
+        fs::metadata(&normalized).map_err(|error| format!("读取 DWG 文件元数据失败：{error}"))?;
     if let Some(document) = db
         .get_dwg_document(
             &context.workspace.to_string_lossy(),
@@ -940,7 +955,14 @@ async fn resolve_document(
     if !open_if_missing {
         return Err("错误：未找到 DWG 索引，请先调用 cad_ensure_dwg_index".to_string());
     }
-    ensure_index(&normalized, &parser_version, "if_missing_or_stale", true, context).await?;
+    ensure_index(
+        &normalized,
+        &parser_version,
+        "if_missing_or_stale",
+        true,
+        context,
+    )
+    .await?;
     db.get_dwg_document(
         &context.workspace.to_string_lossy(),
         &normalized,

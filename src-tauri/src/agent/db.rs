@@ -3,18 +3,18 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite::types::Value as SqlValue;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::cad::{
     CadBBox, CadEntityDetail, CadEntityEnvelope, CadEntityQueryFilters, CadEntityQueryResult,
-    CadEntityRecord, CadPoint, CadReviewIssueRecord,
-    CadReviewRunDetail, CadReviewRunRecord, CreateCadReviewRunInput, DispatcherAttachmentRecord,
-    DispatcherAttachmentRef, DwgDocumentOverview, DwgDocumentRecord, DwgLayerDetail,
-    DwgLayerListResult, DwgParseCacheRecord, DwgRegionInspectionResult, SaveDwgParseCacheInput,
+    CadEntityRecord, CadPoint, CadReviewIssueRecord, CadReviewRunDetail, CadReviewRunRecord,
+    CreateCadReviewRunInput, DispatcherAttachmentRecord, DispatcherAttachmentRef,
+    DwgDocumentOverview, DwgDocumentRecord, DwgLayerDetail, DwgLayerListResult,
+    DwgParseCacheRecord, DwgRegionInspectionResult, SaveDwgParseCacheInput,
 };
 use super::llm::{ChatMessage, OutboundToolCall};
 use super::summary::ToolArtifactDraft;
@@ -719,7 +719,8 @@ impl DispatcherDb {
             file_mtime,
             parser_version,
         )? {
-            if self.dwg_document_has_materialized_index(&document.id)? || document.summary.total_entities == 0
+            if self.dwg_document_has_materialized_index(&document.id)?
+                || document.summary.total_entities == 0
             {
                 return Ok(Some(document));
             }
@@ -764,19 +765,25 @@ impl DispatcherDb {
         file_mtime: i64,
         parser_version: &str,
     ) -> Result<Option<DwgDocumentOverview>> {
-        self.get_dwg_document(project_path, file_path, file_size, file_mtime, parser_version)?
-            .map(|document| {
-                let next_suggested_actions = vec![
-                    "先按图层收窄范围".to_string(),
-                    "如需定位区域，优先用 cad_inspect_dwg_region".to_string(),
-                    "只对少量目标调用 cad_get_dwg_entity_detail".to_string(),
-                ];
-                Ok(DwgDocumentOverview {
-                    document,
-                    next_suggested_actions,
-                })
+        self.get_dwg_document(
+            project_path,
+            file_path,
+            file_size,
+            file_mtime,
+            parser_version,
+        )?
+        .map(|document| {
+            let next_suggested_actions = vec![
+                "先按图层收窄范围".to_string(),
+                "如需定位区域，优先用 cad_inspect_dwg_region".to_string(),
+                "只对少量目标调用 cad_get_dwg_entity_detail".to_string(),
+            ];
+            Ok(DwgDocumentOverview {
+                document,
+                next_suggested_actions,
             })
-            .transpose()
+        })
+        .transpose()
     }
 
     pub fn list_dwg_layers(
@@ -874,7 +881,10 @@ impl DispatcherDb {
         query_params.push(SqlValue::Integer(limit as i64));
         query_params.push(SqlValue::Integer(cursor as i64));
         let mut stmt = conn.prepare(&query_sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(query_params.iter()), map_envelope_row)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(query_params.iter()),
+            map_envelope_row,
+        )?;
         let items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         let next_cursor = (cursor + items.len() < total).then_some(cursor + items.len());
         Ok(CadEntityQueryResult {
@@ -894,7 +904,9 @@ impl DispatcherDb {
             return Ok(Vec::new());
         }
         let conn = self.connect()?;
-        let placeholders = std::iter::repeat_n("?", entity_ids.len()).collect::<Vec<_>>().join(", ");
+        let placeholders = std::iter::repeat_n("?", entity_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
         let sql = format!(
             "SELECT e.row_id, e.doc_id, e.entity_id, e.handle, e.entity_type, e.raw_type, e.layer, e.block_name,
                     e.text_excerpt, e.normalized_text, e.center_x, e.center_y, e.anchor_x, e.anchor_y,
@@ -915,10 +927,13 @@ impl DispatcherDb {
              WHERE doc_id = ? AND entity_id IN ({placeholders})"
         );
         let mut payload_stmt = conn.prepare(&payload_sql)?;
-        let payload_rows = payload_stmt.query_map(
-            rusqlite::params_from_iter(params.iter()),
-            |row| Ok((row.get::<_, String>(0)?, parse_json_column::<Value>(row.get(1)?)?)),
-        )?;
+        let payload_rows =
+            payload_stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    parse_json_column::<Value>(row.get(1)?)?,
+                ))
+            })?;
         let payloads = payload_rows
             .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
@@ -931,10 +946,13 @@ impl DispatcherDb {
         Ok(entity_ids
             .iter()
             .filter_map(|entity_id| {
-                envelope_map.get(entity_id).cloned().map(|envelope| CadEntityDetail {
-                    payload: payloads.get(entity_id).cloned(),
-                    envelope,
-                })
+                envelope_map
+                    .get(entity_id)
+                    .cloned()
+                    .map(|envelope| CadEntityDetail {
+                        payload: payloads.get(entity_id).cloned(),
+                        envelope,
+                    })
             })
             .collect())
     }
@@ -952,7 +970,11 @@ impl DispatcherDb {
         };
         let sample = self.query_dwg_entities(doc_id, &filters, 0, sample_limit)?;
         let conn = self.connect()?;
-        let group_column = if group_by == "layer" { "layer" } else { "entity_type" };
+        let group_column = if group_by == "layer" {
+            "layer"
+        } else {
+            "entity_type"
+        };
         let sql = format!(
             "SELECT {group_column}, COUNT(*)
              FROM dwg_entity_envelopes
@@ -1744,11 +1766,17 @@ fn map_envelope_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CadEntityEnvelo
         block_name: row.get(7)?,
         text_excerpt: row.get(8)?,
         normalized_text: row.get(9)?,
-        center: match (row.get::<_, Option<f64>>(10)?, row.get::<_, Option<f64>>(11)?) {
+        center: match (
+            row.get::<_, Option<f64>>(10)?,
+            row.get::<_, Option<f64>>(11)?,
+        ) {
             (Some(x), Some(y)) => Some(CadPoint { x, y }),
             _ => None,
         },
-        anchor: match (row.get::<_, Option<f64>>(12)?, row.get::<_, Option<f64>>(13)?) {
+        anchor: match (
+            row.get::<_, Option<f64>>(12)?,
+            row.get::<_, Option<f64>>(13)?,
+        ) {
             (Some(x), Some(y)) => Some(CadPoint { x, y }),
             _ => None,
         },
@@ -2102,7 +2130,9 @@ fn rebuild_dwg_entity_index(
         ])?;
         let row_id = tx.last_insert_rowid();
         if let Some(bbox) = &envelope.bbox {
-            rtree_stmt.execute(params![row_id, bbox.min_x, bbox.max_x, bbox.min_y, bbox.max_y])?;
+            rtree_stmt.execute(params![
+                row_id, bbox.min_x, bbox.max_x, bbox.min_y, bbox.max_y
+            ])?;
         }
         payload_stmt.execute(params![
             doc_id,
@@ -2128,10 +2158,13 @@ fn entity_to_envelope(entity: &CadEntityRecord) -> CadEntityEnvelope {
         layer: entity.layer.clone(),
         block_name: entity.block_name.clone(),
         text_excerpt: entity.text.clone().map(|value| truncate_text(&value, 160)),
-        normalized_text: entity
-            .text
-            .as_ref()
-            .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()),
+        normalized_text: entity.text.as_ref().map(|value| {
+            value
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase()
+        }),
         center: entity.center.clone(),
         anchor,
         bbox: entity.bbox.clone(),
@@ -2185,13 +2218,16 @@ fn build_envelope_query(
     let mut params = vec![SqlValue::Text(doc_id.to_string())];
 
     if !filters.layers.is_empty() {
-        let placeholders = std::iter::repeat_n("?", filters.layers.len()).collect::<Vec<_>>().join(", ");
+        let placeholders = std::iter::repeat_n("?", filters.layers.len())
+            .collect::<Vec<_>>()
+            .join(", ");
         where_parts.push(format!("e.layer IN ({placeholders})"));
         params.extend(filters.layers.iter().cloned().map(SqlValue::Text));
     }
     if !filters.entity_types.is_empty() {
-        let placeholders =
-            std::iter::repeat_n("?", filters.entity_types.len()).collect::<Vec<_>>().join(", ");
+        let placeholders = std::iter::repeat_n("?", filters.entity_types.len())
+            .collect::<Vec<_>>()
+            .join(", ");
         where_parts.push(format!("e.entity_type IN ({placeholders})"));
         params.extend(filters.entity_types.iter().cloned().map(SqlValue::Text));
     }
@@ -2213,13 +2249,15 @@ fn build_envelope_query(
         .filter(|value| !value.is_empty())
     {
         where_parts.push("LOWER(COALESCE(e.block_name, '')) LIKE ?".to_string());
-        params.push(SqlValue::Text(format!("%{}%", block_name.to_ascii_lowercase())));
+        params.push(SqlValue::Text(format!(
+            "%{}%",
+            block_name.to_ascii_lowercase()
+        )));
     }
     if let Some(bbox) = &filters.bbox {
         join_clause.push_str(" JOIN dwg_entity_rtree r ON r.row_id = e.row_id");
-        where_parts.push(
-            "r.min_x <= ? AND r.max_x >= ? AND r.min_y <= ? AND r.max_y >= ?".to_string(),
-        );
+        where_parts
+            .push("r.min_x <= ? AND r.max_x >= ? AND r.min_y <= ? AND r.max_y >= ?".to_string());
         params.push(SqlValue::Real(bbox.max_x));
         params.push(SqlValue::Real(bbox.min_x));
         params.push(SqlValue::Real(bbox.max_y));
@@ -2230,11 +2268,11 @@ fn build_envelope_query(
 }
 
 fn query_count(conn: &Connection, sql: &str, params: &[SqlValue]) -> Result<usize> {
-    Ok(conn.query_row(
-        sql,
-        rusqlite::params_from_iter(params.iter()),
-        |row| row.get::<_, i64>(0),
-    )? as usize)
+    Ok(
+        conn.query_row(sql, rusqlite::params_from_iter(params.iter()), |row| {
+            row.get::<_, i64>(0)
+        })? as usize,
+    )
 }
 
 fn json_string<T: Serialize>(value: &Option<T>) -> Result<Option<String>> {

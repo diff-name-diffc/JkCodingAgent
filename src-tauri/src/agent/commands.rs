@@ -1,9 +1,13 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use anyhow::Result;
-use tauri::AppHandle;
+use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
+
+use tauri::AppHandle;
 use uuid::Uuid;
 
 use super::cad::{
@@ -26,6 +30,19 @@ pub struct DispatcherState {
     agent: tokio::sync::Mutex<DispatcherAgent>,
     db: DispatcherDb,
     viewer_bridge: Arc<DwgViewerBridgeState>,
+    active_runs: Mutex<HashMap<String, ActiveRunEntry>>,
+    next_run_generation: AtomicU64,
+}
+
+#[derive(Clone)]
+struct ActiveRunEntry {
+    generation: u64,
+    stop_tx: watch::Sender<bool>,
+}
+
+struct ActiveRunHandle {
+    generation: u64,
+    cancel_rx: watch::Receiver<bool>,
 }
 
 impl DispatcherState {
@@ -44,7 +61,45 @@ impl DispatcherState {
             agent: tokio::sync::Mutex::new(agent),
             db,
             viewer_bridge: DwgViewerBridgeState::new(),
+            active_runs: Mutex::new(HashMap::new()),
+            next_run_generation: AtomicU64::new(1),
         })
+    }
+
+    fn begin_run(&self, workspace_id: &str) -> ActiveRunHandle {
+        let generation = self.next_run_generation.fetch_add(1, Ordering::Relaxed);
+        let (stop_tx, cancel_rx) = watch::channel(false);
+        self.active_runs.lock().insert(
+            workspace_id.to_string(),
+            ActiveRunEntry {
+                generation,
+                stop_tx,
+            },
+        );
+        ActiveRunHandle {
+            generation,
+            cancel_rx,
+        }
+    }
+
+    fn finish_run(&self, workspace_id: &str, generation: u64) {
+        let mut active_runs = self.active_runs.lock();
+        let should_remove = active_runs
+            .get(workspace_id)
+            .is_some_and(|entry| entry.generation == generation);
+        if should_remove {
+            active_runs.remove(workspace_id);
+        }
+    }
+
+    fn stop_run(&self, workspace_id: &str) -> bool {
+        let tx = self
+            .active_runs
+            .lock()
+            .get(workspace_id)
+            .map(|entry| entry.stop_tx.clone());
+
+        tx.is_some_and(|sender| sender.send(true).is_ok())
     }
 }
 
@@ -175,8 +230,9 @@ pub async fn dispatcher_send_message(
         agent.set_context_debug(settings.context_debug);
     }
 
+    let run_handle = state.begin_run(&workspace_id);
     let agent = state.agent.lock().await;
-    agent
+    let result = agent
         .run(
             &state.db,
             &workspace_id,
@@ -186,9 +242,13 @@ pub async fn dispatcher_send_message(
             Some(app),
             Some(state.viewer_bridge.clone()),
             on_event,
+            run_handle.cancel_rx,
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string());
+    drop(agent);
+    state.finish_run(&workspace_id, run_handle.generation);
+    result
 }
 
 #[tauri::command]
@@ -475,7 +535,8 @@ pub async fn dispatcher_continue_after_dispatch(
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let agent = state.agent.lock().await;
-    agent
+    let run_handle = state.begin_run(&workspace_id);
+    let result = agent
         .continue_after_dispatch(
             &state.db,
             &workspace_id,
@@ -483,9 +544,18 @@ pub async fn dispatcher_continue_after_dispatch(
             &dispatch_result,
             DispatchFeedbackState::from_wire(&dispatch_state),
             on_event,
+            run_handle.cancel_rx,
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string());
+    drop(agent);
+    state.finish_run(&workspace_id, run_handle.generation);
+    result
+}
+
+#[tauri::command]
+pub fn dispatcher_stop_run(state: tauri::State<'_, DispatcherState>, workspace_id: String) -> bool {
+    state.stop_run(&workspace_id)
 }
 
 #[tauri::command]
@@ -524,6 +594,16 @@ pub async fn dispatcher_mark_subprocess_running(
 ) -> Result<(), String> {
     let agent = state.agent.lock().await;
     agent.mark_subprocess_running(&task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn dispatcher_mark_subprocess_stopped(
+    state: tauri::State<'_, DispatcherState>,
+    task_id: String,
+) -> Result<(), String> {
+    let agent = state.agent.lock().await;
+    agent.mark_subprocess_stopped(&task_id);
     Ok(())
 }
 

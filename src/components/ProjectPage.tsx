@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -15,6 +15,7 @@ import type {
   SubProcess,
   DispatchFeedbackState,
   DwgViewerOpenRequest,
+  TaskStatus,
 } from "../types";
 import { cleanTerminalOutput } from "../utils/ansiStrip";
 import { getPathBasename } from "../utils/filePaths";
@@ -43,11 +44,43 @@ function getSubProcessRouteKey(sessionId: string, agent: AgentType): string {
   return `${sessionId}:${agent}`;
 }
 
-function createSubProcessId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `sp_${crypto.randomUUID()}`;
+function isDispatcherTask(task: Task, projectId: string): boolean {
+  return (
+    task.projectId === projectId &&
+    !!task.dispatcherSessionId &&
+    !!task.dispatcherDispatchId &&
+    !!task.dispatcherDescription
+  );
+}
+
+function mapTaskStatusToSubProcessStatus(status: TaskStatus): SubProcess["status"] {
+  switch (status) {
+    case "stopped":
+      return "stopped";
+    case "done":
+      return "done";
+    case "failed":
+    case "cancelled":
+      return "failed";
+    default:
+      return "running";
   }
-  return `sp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function toSubProcess(task: Task): SubProcess | null {
+  if (!task.dispatcherSessionId || !task.dispatcherDispatchId || !task.dispatcherDescription) {
+    return null;
+  }
+
+  return {
+    id: task.id,
+    dispatchId: task.dispatcherDispatchId,
+    sessionId: task.dispatcherSessionId,
+    agent: task.agent,
+    description: task.dispatcherDescription,
+    status: mapTaskStatusToSubProcessStatus(task.status),
+    startedAt: task.createdAt,
+  };
 }
 
 export function ProjectPage({
@@ -65,6 +98,8 @@ export function ProjectPage({
   onRetainTaskBuffers,
   onReleaseTaskBuffers,
   onRemoveTaskBuffers,
+  onStopTask,
+  onResumeTask,
   onBack,
   onSwitchProject,
   onOpen,
@@ -87,7 +122,11 @@ export function ProjectPage({
     immediate: boolean;
     hidden?: boolean;
     dispatcherDispatchId?: string;
+    dispatcherSessionId?: string;
+    dispatcherDescription?: string;
   }) => string;
+  onStopTask: (taskId: string) => Promise<void>;
+  onResumeTask: (task: Task) => Promise<void>;
   onInput: (taskId: string, data: string) => void;
   onResize: (taskId: string, cols: number, rows: number) => void;
   onRegisterTerminal: (
@@ -142,7 +181,7 @@ export function ProjectPage({
   const [mcpStatus, setMcpStatus] = useState<ProjectMcpStatus | null>(null);
   const [mcpChecking, setMcpChecking] = useState(false);
   const [mcpUpdatingServer, setMcpUpdatingServer] = useState<string | null>(null);
-  const [subProcesses, setSubProcesses] = useState<SubProcess[]>([]);
+  const [dismissedSubProcessIds, setDismissedSubProcessIds] = useState<Set<string>>(new Set());
   const [activeSubTabIdBySession, setActiveSubTabIdBySession] = useState<
     Record<string, string | null>
   >({});
@@ -155,16 +194,14 @@ export function ProjectPage({
   const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
   const [showSessionWorkbench, setShowSessionWorkbench] = useState(true);
   const [sessionSidebarCollapsed, setSessionSidebarCollapsed] = useState(false);
-  /** Maps subprocess id → real task id for terminal routing */
-  const [subProcessTaskMap, setSubProcessTaskMap] = useState<Record<string, string>>({});
   const shellRef = useRef<ShellTerminalPanelHandle>(null);
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
   const dispatcherChatRef = useRef<DispatcherChatHandle>(null);
   const activeCadResultMessageIdRef = useRef<string | null>(null);
   activeCadResultMessageIdRef.current = activeCadResultMessageId;
-  /** Track subprocess id → owning dispatcher session for result injection */
+  /** Track task_id → owning dispatcher session for result injection */
   const pendingDispatchRef = useRef<
-    Map<string, { spId: string; dispatchId: string; sessionId: string }>
+    Map<string, { taskId: string; dispatchId: string; sessionId: string }>
   >(new Map());
   /** Track the interactive subprocess to continue/exit for each dispatcher session + agent */
   const interactiveSubProcessRef = useRef<Map<string, string>>(new Map());
@@ -174,9 +211,32 @@ export function ProjectPage({
   const idleInjectedTaskIdsRef = useRef<Set<string>>(new Set());
   /** Track task_ids that have already reached a terminal state to block late idle events */
   const closedSubprocessTaskIdsRef = useRef<Set<string>>(new Set());
+  const allSubProcesses = useMemo(
+    () =>
+      tasks
+        .filter((task) => isDispatcherTask(task, project.id))
+        .map((task) => toSubProcess(task))
+        .filter((subProcess): subProcess is SubProcess => !!subProcess)
+        .sort((left, right) => right.startedAt - left.startedAt),
+    [project.id, tasks],
+  );
+  const subProcesses = useMemo(
+    () =>
+      allSubProcesses
+        .filter((subProcess) => !dismissedSubProcessIds.has(subProcess.id))
+        .sort((left, right) => right.startedAt - left.startedAt),
+    [allSubProcesses, dismissedSubProcessIds],
+  );
   const activeVisibleSubTabId = activeSessionId
     ? (activeSubTabIdBySession[activeSessionId] ?? null)
     : null;
+  const activeSessionSubProcesses = useMemo(
+    () =>
+      activeSessionId
+        ? subProcesses.filter((subProcess) => subProcess.sessionId === activeSessionId)
+        : [],
+    [activeSessionId, subProcesses],
+  );
   const hasEditorWorkbenchContent = openDiff !== null || openFiles.length > 0;
   const activeFilePath = openFiles.find((tab) => tab.id === activeFileTabId)?.path ?? null;
   const showSessionPane = showSessionWorkbench;
@@ -289,6 +349,20 @@ export function ProjectPage({
     }
   }, [hasEditorWorkbenchContent]);
 
+  useEffect(() => {
+    if (!activeSessionId || activeSessionSubProcesses.length === 0) return;
+
+    const currentActiveId = activeSubTabIdBySession[activeSessionId];
+    if (currentActiveId && activeSessionSubProcesses.some((subProcess) => subProcess.id === currentActiveId)) {
+      return;
+    }
+
+    setActiveSubTabIdBySession((prev) => ({
+      ...prev,
+      [activeSessionId]: activeSessionSubProcesses[0].id,
+    }));
+  }, [activeSessionId, activeSessionSubProcesses, activeSubTabIdBySession]);
+
   const refreshMcpStatus = useCallback(async () => {
     setMcpChecking(true);
     try {
@@ -337,23 +411,6 @@ export function ProjectPage({
       permissionMode: string,
       sessionId: string,
     ) => {
-      const spId = createSubProcessId();
-      const sp: SubProcess = {
-        id: spId,
-        dispatchId,
-        sessionId,
-        agent,
-        description,
-        status: "running",
-        startedAt: Date.now(),
-      };
-      setSubProcesses((prev) => [...prev, sp]);
-      setActiveSubTabIdBySession((prev) => ({ ...prev, [sessionId]: spId }));
-      interactiveSubProcessRef.current.set(getSubProcessRouteKey(sessionId, agent), spId);
-
-      // Track pending dispatch for result injection
-      pendingDispatchRef.current.set(spId, { spId, dispatchId, sessionId });
-
       const taskId = onSubmitTask({
         prompt: taskPrompt,
         agent,
@@ -362,11 +419,21 @@ export function ProjectPage({
         immediate: true,
         hidden: true,
         dispatcherDispatchId: dispatchId,
+        dispatcherSessionId: sessionId,
+        dispatcherDescription: description,
       });
+      setDismissedSubProcessIds((prev) => {
+        if (!prev.has(taskId)) return prev;
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
+      setActiveSubTabIdBySession((prev) => ({ ...prev, [sessionId]: taskId }));
+      interactiveSubProcessRef.current.set(getSubProcessRouteKey(sessionId, agent), taskId);
+      pendingDispatchRef.current.set(taskId, { taskId, dispatchId, sessionId });
       idleInjectedTaskIdsRef.current.delete(taskId);
       closedSubprocessTaskIdsRef.current.delete(taskId);
       onRetainTaskBuffers([taskId]);
-      setSubProcessTaskMap((prev) => ({ ...prev, [spId]: taskId }));
       invoke("dispatcher_register_subprocess", {
         workspaceId: sessionId,
         taskId,
@@ -382,52 +449,63 @@ export function ProjectPage({
   useEffect(() => {
     const unsub = listen<{ task_id: string; status: string }>("task-status", (e) => {
       const { task_id, status } = e.payload;
+      const targetSubProcess = allSubProcesses.find((sp) => sp.id === task_id);
+      if (!targetSubProcess) return;
+      const routeKey = getSubProcessRouteKey(targetSubProcess.sessionId, targetSubProcess.agent);
+
+      if (status === "running" || status === "input_required") {
+        closedSubprocessTaskIdsRef.current.delete(task_id);
+        setDismissedSubProcessIds((prev) => {
+          if (!prev.has(task_id)) return prev;
+          const next = new Set(prev);
+          next.delete(task_id);
+          return next;
+        });
+        setActiveSubTabIdBySession((prev) => ({ ...prev, [targetSubProcess.sessionId]: task_id }));
+        interactiveSubProcessRef.current.set(routeKey, task_id);
+        invoke("dispatcher_mark_subprocess_running", { taskId: task_id }).catch(console.error);
+        return;
+      }
+
+      if (status === "stopped") {
+        pendingDispatchRef.current.delete(task_id);
+        idleInjectedTaskIdsRef.current.delete(task_id);
+        interactiveSubProcessRef.current.delete(routeKey);
+        invoke("dispatcher_mark_subprocess_stopped", { taskId: task_id }).catch(console.error);
+        return;
+      }
+
       if (status !== "done" && status !== "failed" && status !== "cancelled") return;
 
-      // Find subprocess for this task
-      const spEntry = Object.entries(subProcessTaskMap).find(([, tid]) => tid === task_id);
-      if (!spEntry) return;
-      const [spId] = spEntry;
       const alreadyInjectedByIdle = idleInjectedTaskIdsRef.current.has(task_id);
       closedSubprocessTaskIdsRef.current.add(task_id);
       invoke("dispatcher_mark_subprocess_finished", { taskId: task_id }).catch(console.error);
-      const targetSubProcess = subProcesses.find((sp) => sp.id === spId);
-      const routeKey = targetSubProcess
-        ? getSubProcessRouteKey(targetSubProcess.sessionId, targetSubProcess.agent)
-        : null;
 
-      // Update subprocess status
       const isDone = status === "done";
-      setSubProcesses((prev) =>
-        prev.map((sp) => (sp.id === spId ? { ...sp, status: isDone ? "done" : "failed" } : sp)),
-      );
 
       // If this subprocess was voluntarily exited via /exit, skip result injection
       if (exitedSubprocessesRef.current.has(task_id)) {
         exitedSubprocessesRef.current.delete(task_id);
-        pendingDispatchRef.current.delete(spId);
+        pendingDispatchRef.current.delete(task_id);
         idleInjectedTaskIdsRef.current.delete(task_id);
-        if (routeKey && interactiveSubProcessRef.current.get(routeKey) === spId) {
+        if (interactiveSubProcessRef.current.get(routeKey) === task_id) {
           interactiveSubProcessRef.current.delete(routeKey);
         }
         return;
       }
 
-      // Capture terminal output and inject back to Dispatcher
-      const pending = pendingDispatchRef.current.get(spId);
+      const pending = pendingDispatchRef.current.get(task_id);
       if (!pending || alreadyInjectedByIdle) {
-        pendingDispatchRef.current.delete(spId);
+        pendingDispatchRef.current.delete(task_id);
         idleInjectedTaskIdsRef.current.delete(task_id);
-        if (routeKey && interactiveSubProcessRef.current.get(routeKey) === spId) {
+        if (interactiveSubProcessRef.current.get(routeKey) === task_id) {
           interactiveSubProcessRef.current.delete(routeKey);
         }
         return;
       }
 
-      pendingDispatchRef.current.delete(spId);
+      pendingDispatchRef.current.delete(task_id);
       idleInjectedTaskIdsRef.current.delete(task_id);
-
-      // Get terminal content from restore state (buffer)
       const restoreState = getTaskRestoreState(task_id);
       const rawOutput = (restoreState.initialSnapshot || "") + (restoreState.initialData || "");
       const cleaned = cleanTerminalOutput(rawOutput);
@@ -443,7 +521,7 @@ export function ProjectPage({
         ? `${agentLabel} 子进程已退出，本轮执行已结束。\n\n终端输出：\n${cleaned}`
         : `${agentLabel} 子进程已结束 (status: ${status})。\n\n终端输出：\n${cleaned}`;
 
-      if (routeKey && interactiveSubProcessRef.current.get(routeKey) === spId) {
+      if (interactiveSubProcessRef.current.get(routeKey) === task_id) {
         interactiveSubProcessRef.current.delete(routeKey);
       }
 
@@ -452,7 +530,7 @@ export function ProjectPage({
     return () => {
       unsub.then((fn) => fn());
     };
-  }, [subProcessTaskMap, subProcesses, getTaskRestoreState]);
+  }, [allSubProcesses, getTaskRestoreState]);
 
   // 监听 session watcher 发出的“当前轮次完成”信号，允许在同一子进程内继续注入。
   useEffect(() => {
@@ -461,25 +539,19 @@ export function ProjectPage({
       if (closedSubprocessTaskIdsRef.current.has(task_id)) return;
       if (exitedSubprocessesRef.current.has(task_id)) return;
       if (idleInjectedTaskIdsRef.current.has(task_id)) return;
+      const targetSubProcess = allSubProcesses.find((sp) => sp.id === task_id);
+      if (!targetSubProcess) return;
 
-      // Find subprocess for this task
-      const spEntry = Object.entries(subProcessTaskMap).find(([, tid]) => tid === task_id);
-      if (!spEntry) return;
-
-      // Clean and inject output into Dispatcher Agent
       const cleaned = cleanTerminalOutput(output);
-      const [spId] = spEntry;
-      const targetSubProcess = subProcesses.find((sp) => sp.id === spId);
       const agent = targetSubProcess?.agent ?? "claude";
       const agentLabel = getSubProcessAgentLabel(agent);
       const resultText = `${agentLabel} 当前轮次已完成，子进程仍在运行，可继续注入后续指令。\n\n终端输出：\n${cleaned}`;
       const sessionId =
-        pendingDispatchRef.current.get(spId)?.sessionId ??
-        subProcesses.find((sp) => sp.id === spId)?.sessionId;
+        pendingDispatchRef.current.get(task_id)?.sessionId ?? targetSubProcess.sessionId;
       if (!sessionId) return;
-      pendingDispatchRef.current.delete(spId);
+      pendingDispatchRef.current.delete(task_id);
       idleInjectedTaskIdsRef.current.add(task_id);
-      interactiveSubProcessRef.current.set(getSubProcessRouteKey(sessionId, agent), spId);
+      interactiveSubProcessRef.current.set(getSubProcessRouteKey(sessionId, agent), task_id);
       invoke("dispatcher_mark_subprocess_round_completed", { taskId: task_id }).catch(
         console.error,
       );
@@ -488,7 +560,7 @@ export function ProjectPage({
     return () => {
       unsub.then((fn) => fn());
     };
-  }, [subProcessTaskMap, subProcesses]);
+  }, [allSubProcesses]);
 
   const handleDispatchRejected = useCallback((_dispatchId: string) => {
     // No-op for now, the agent already recorded the rejection
@@ -512,16 +584,16 @@ export function ProjectPage({
             (sp) => sp.status === "running" && sp.sessionId === sessionId && sp.agent === agent,
           );
       if (!activeSp) return;
-      const taskId = subProcessTaskMap[activeSp.id];
-      if (!taskId) return;
 
       interactiveSubProcessRef.current.set(routeKey, activeSp.id);
-      idleInjectedTaskIdsRef.current.delete(taskId);
-      invoke("dispatcher_mark_subprocess_running", { taskId }).catch(console.error);
+      idleInjectedTaskIdsRef.current.delete(activeSp.id);
+      invoke("dispatcher_mark_subprocess_running", { taskId: activeSp.id }).catch(console.error);
       const submittedText = text.replace(/(?:\r?\n)+$/, "");
-      invoke("dispatcher_send_to_subprocess", { taskId, text: submittedText }).catch(console.error);
+      invoke("dispatcher_send_to_subprocess", { taskId: activeSp.id, text: submittedText }).catch(
+        console.error,
+      );
     },
-    [subProcesses, subProcessTaskMap],
+    [subProcesses],
   );
 
   // Handle DispatchExit: send /exit to active subprocess terminal
@@ -542,27 +614,22 @@ export function ProjectPage({
             (sp) => sp.status === "running" && sp.sessionId === sessionId && sp.agent === agent,
           );
       if (!activeSp) return;
-      const taskId = subProcessTaskMap[activeSp.id];
-      if (!taskId) return;
 
       interactiveSubProcessRef.current.set(routeKey, activeSp.id);
-      // Mark as voluntarily exited so we skip result injection on task-status
-      exitedSubprocessesRef.current.add(taskId);
-      closedSubprocessTaskIdsRef.current.add(taskId);
-      invoke("dispatcher_exit_subprocess", { taskId }).catch(console.error);
+      exitedSubprocessesRef.current.add(activeSp.id);
+      closedSubprocessTaskIdsRef.current.add(activeSp.id);
+      invoke("dispatcher_exit_subprocess", { taskId: activeSp.id }).catch(console.error);
     },
-    [subProcesses, subProcessTaskMap],
+    [subProcesses],
   );
 
   const handleCloseSubTab = useCallback(
     (id: string) => {
       const targetSubProcess = subProcesses.find((sp) => sp.id === id);
-      const taskId = subProcessTaskMap[id];
-      setSubProcesses((prev) => prev.filter((sp) => sp.id !== id));
-      setSubProcessTaskMap((prev) => {
-        if (!(id in prev)) return prev;
-        const next = { ...prev };
-        delete next[id];
+      setDismissedSubProcessIds((prev) => {
+        if (prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.add(id);
         return next;
       });
       if (targetSubProcess) {
@@ -576,17 +643,66 @@ export function ProjectPage({
         if (prev[targetSubProcess.sessionId] !== id) return prev;
         return { ...prev, [targetSubProcess.sessionId]: null };
       });
-      if (taskId) {
-        onReleaseTaskBuffers([taskId]);
-        if (
-          targetSubProcess?.status !== "running" &&
-          targetSubProcess?.status !== "pending_approval"
-        ) {
-          onRemoveTaskBuffers([taskId]);
-        }
+      onReleaseTaskBuffers([id]);
+      if (
+        targetSubProcess?.status !== "running" &&
+        targetSubProcess?.status !== "pending_approval" &&
+        targetSubProcess?.status !== "stopped"
+      ) {
+        onRemoveTaskBuffers([id]);
       }
     },
-    [onReleaseTaskBuffers, onRemoveTaskBuffers, subProcessTaskMap, subProcesses],
+    [onReleaseTaskBuffers, onRemoveTaskBuffers, subProcesses],
+  );
+
+  const handleStopSessionSubProcesses = useCallback(
+    async (sessionId: string) => {
+      const runningSubProcesses = allSubProcesses.filter(
+        (subProcess) => subProcess.sessionId === sessionId && subProcess.status === "running",
+      );
+      await Promise.all(
+        runningSubProcesses.map((subProcess) => {
+          closedSubprocessTaskIdsRef.current.add(subProcess.id);
+          return onStopTask(subProcess.id);
+        }),
+      );
+    },
+    [allSubProcesses, onStopTask],
+  );
+
+  const handleResumeSessionSubProcesses = useCallback(
+    async (sessionId: string) => {
+      const resumableTasks = tasks.filter(
+        (task) =>
+          task.projectId === project.id &&
+          task.dispatcherSessionId === sessionId &&
+          task.status === "stopped",
+      );
+
+      if (resumableTasks.length === 0) return;
+
+      setDismissedSubProcessIds((prev) => {
+        const next = new Set(prev);
+        for (const task of resumableTasks) {
+          next.delete(task.id);
+        }
+        return next;
+      });
+      setActiveSubTabIdBySession((prev) => ({
+        ...prev,
+        [sessionId]: resumableTasks[0].id,
+      }));
+
+      await Promise.all(
+        resumableTasks.map((task) => {
+          closedSubprocessTaskIdsRef.current.delete(task.id);
+          idleInjectedTaskIdsRef.current.delete(task.id);
+          onRetainTaskBuffers([task.id]);
+          return onResumeTask(task);
+        }),
+      );
+    },
+    [onResumeTask, onRetainTaskBuffers, project.id, tasks],
   );
 
   const handleSubTerminalResizeStart = useCallback(
@@ -705,13 +821,15 @@ export function ProjectPage({
                       mcpStatus={mcpStatus}
                       mcpChecking={mcpChecking}
                       layoutMode={showEditorPane ? "split" : "single"}
-                      subProcesses={subProcesses}
+                      subProcesses={allSubProcesses}
                       onDispatchApproved={handleDispatchApproved}
                       onDispatchRejected={handleDispatchRejected}
                       onDispatchContinue={handleDispatchContinue}
                       onDispatchExit={handleDispatchExit}
                       onCadArtifactOpen={handleCadArtifactOpen}
                       activeCadResultMessageId={activeCadResultMessageId}
+                      onStopActiveRun={handleStopSessionSubProcesses}
+                      onResumeStoppedRun={handleResumeSessionSubProcesses}
                       onOpenMcpStatus={() => setShowMcpStatus(true)}
                       onOpenSettings={() => setShowDispatcherSettings(true)}
                       onClosePanel={() => setShowSessionWorkbench(false)}
@@ -901,7 +1019,6 @@ export function ProjectPage({
             onTerminalReady={onTerminalReady}
             onSnapshot={onSnapshot}
             getRestoreState={getTaskRestoreState}
-            subProcessTaskMap={subProcessTaskMap}
           />
         )}
         {showShellTerminal && (

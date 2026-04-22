@@ -484,6 +484,8 @@ mod tests {
             dispatcher_db_path: workspace.join("dispatcher.db"),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
+            app_handle: None,
+            dwg_viewer_bridge: None,
         };
 
         let output = GrepTool
@@ -518,6 +520,8 @@ mod tests {
             dispatcher_db_path: workspace.join("dispatcher.db"),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
+            app_handle: None,
+            dwg_viewer_bridge: None,
         };
 
         let output = GrepTool

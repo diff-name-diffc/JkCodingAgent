@@ -601,6 +601,8 @@ export function FileTabPane({
   if (isDwg) {
     return (
       <DwgWorkbenchPane
+        tabId={tab.id}
+        active={active}
         filePath={tab.path}
         fileName={tab.name}
         projectPath={projectPath}

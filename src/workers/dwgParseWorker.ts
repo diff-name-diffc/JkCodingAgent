@@ -28,11 +28,60 @@ const workerScope = self as typeof globalThis & {
   postMessage: (message: ParseResponse) => void;
 };
 
+let activeFilePath: string | null = null;
+
+function describeUnknownError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message || error.stack || "未知 Error";
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error && typeof error === "object") {
+    const message =
+      "message" in error && typeof error.message === "string"
+        ? error.message
+        : "reason" in error && typeof error.reason === "string"
+          ? error.reason
+          : null;
+    if (message) {
+      return message;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return Object.prototype.toString.call(error);
+    }
+  }
+  if (typeof error === "undefined") {
+    return "未知错误（undefined）";
+  }
+  return String(error);
+}
+
+function postWorkerError(error: unknown, filePath = activeFilePath ?? "__unknown__") {
+  const response: ParseResponse = {
+    kind: "error",
+    filePath,
+    error: describeUnknownError(error),
+  };
+  workerScope.postMessage(response);
+}
+
+self.addEventListener("error", (event: ErrorEvent) => {
+  postWorkerError(event.message || event.error || "DWG 解析 worker 全局错误");
+});
+
+self.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
+  postWorkerError(event.reason || "DWG 解析 worker 未处理 Promise 异常");
+});
+
 workerScope.onmessage = async (event: MessageEvent<ParseRequest>) => {
   const payload = event.data;
   if (payload.kind !== "parse") {
     return;
   }
+  activeFilePath = payload.filePath;
 
   try {
     const libredwg = await LibreDwg.create();
@@ -62,12 +111,7 @@ workerScope.onmessage = async (event: MessageEvent<ParseRequest>) => {
       libredwg.dwg_free(handle);
     }
   } catch (error) {
-    const response: ParseResponse = {
-      kind: "error",
-      filePath: payload.filePath,
-      error: error instanceof Error ? error.message : String(error),
-    };
-    workerScope.postMessage(response);
+    postWorkerError(error, payload.filePath);
   }
 };
 

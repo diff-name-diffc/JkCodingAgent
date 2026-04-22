@@ -14,6 +14,7 @@ import type {
   ThemeMode,
   SubProcess,
   DispatchFeedbackState,
+  DwgViewerOpenRequest,
 } from "../types";
 import { cleanTerminalOutput } from "../utils/ansiStrip";
 import { getPathBasename } from "../utils/filePaths";
@@ -266,6 +267,21 @@ export function ProjectPage({
       setActiveCadResultMessageId(messageId);
     }, 0);
   }, []);
+
+  useEffect(() => {
+    const unsub = listen<DwgViewerOpenRequest>("dwg-viewer/open-request", (event) => {
+      if (!activeSessionId || event.payload.workspaceId !== activeSessionId) {
+        return;
+      }
+      handleFileSelect(event.payload.filePath, getPathBasename(event.payload.filePath));
+      setActiveCadFilePath(event.payload.filePath);
+      showEditorWorkbench();
+    });
+
+    return () => {
+      unsub.then((off) => off());
+    };
+  }, [activeSessionId, handleFileSelect, showEditorWorkbench]);
 
   useEffect(() => {
     if (!hasEditorWorkbenchContent) {

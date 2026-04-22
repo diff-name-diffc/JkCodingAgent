@@ -2,6 +2,7 @@ use std::fs;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use tauri::Emitter;
 
 use super::common::{string_arg, usize_arg, with_result_mode_parameter};
 use crate::agent::cad::{
@@ -14,14 +15,6 @@ use crate::agent::tools::registry::AgentTool;
 
 const DEFAULT_PARSER_VERSION: &str = "dwg-worker-v1";
 
-pub(super) fn cad_get_dwg_summary_tool() -> Box<dyn AgentTool> {
-    Box::new(CadGetDwgSummaryTool)
-}
-
-pub(super) fn cad_query_dwg_entities_tool() -> Box<dyn AgentTool> {
-    Box::new(CadQueryDwgEntitiesTool)
-}
-
 pub(super) fn cad_compute_geometry_tool() -> Box<dyn AgentTool> {
     Box::new(CadComputeGeometryTool)
 }
@@ -30,137 +23,8 @@ pub(super) fn cad_save_review_result_tool() -> Box<dyn AgentTool> {
     Box::new(CadSaveReviewResultTool)
 }
 
-struct CadGetDwgSummaryTool;
-struct CadQueryDwgEntitiesTool;
 struct CadComputeGeometryTool;
 struct CadSaveReviewResultTool;
-
-#[async_trait]
-impl AgentTool for CadGetDwgSummaryTool {
-    fn name(&self) -> &'static str {
-        "cad_get_dwg_summary"
-    }
-
-    fn description(&self) -> &'static str {
-        "读取指定 DWG 的解析缓存摘要，返回图层、范围、实体计数、文字样本与块引用摘要。若缓存不存在，请先在文件预览中打开该 DWG。"
-    }
-
-    fn parameters(&self) -> Value {
-        with_result_mode_parameter(
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "DWG 文件路径" },
-                    "parserVersion": { "type": "string", "description": "解析器版本，默认 dwg-worker-v1" }
-                },
-                "required": ["path"]
-            }),
-            "full",
-            "CAD 摘要通常需要原样保留，便于模型后续按图层和实体类型做审查。",
-        )
-    }
-
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        let Some(path) = string_arg(args, "path") else {
-            return "错误：缺少必填参数 path".to_string();
-        };
-        let parser_version =
-            string_arg(args, "parserVersion").unwrap_or_else(|| DEFAULT_PARSER_VERSION.to_string());
-        match load_cache(&path, &parser_version, context) {
-            Ok(cache) => serde_json::to_string_pretty(&cache.summary)
-                .unwrap_or_else(|error| format!("序列化摘要失败：{error}")),
-            Err(message) => message,
-        }
-    }
-}
-
-#[async_trait]
-impl AgentTool for CadQueryDwgEntitiesTool {
-    fn name(&self) -> &'static str {
-        "cad_query_dwg_entities"
-    }
-
-    fn description(&self) -> &'static str {
-        "按图层、实体类型、文字关键词、范围分页查询 DWG 解析缓存中的实体，避免一次性暴露整图实体。"
-    }
-
-    fn parameters(&self) -> Value {
-        with_result_mode_parameter(
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "DWG 文件路径" },
-                    "parserVersion": { "type": "string", "description": "解析器版本，默认 dwg-worker-v1" },
-                    "cursor": { "type": "integer", "description": "分页游标，默认 0", "minimum": 0 },
-                    "limit": { "type": "integer", "description": "分页大小，默认 50", "minimum": 1 },
-                    "filters": {
-                        "type": "object",
-                        "properties": {
-                            "layers": { "type": "array", "items": { "type": "string" } },
-                            "entityTypes": { "type": "array", "items": { "type": "string" } },
-                            "textQuery": { "type": "string" },
-                            "bbox": {
-                                "type": "object",
-                                "properties": {
-                                    "minX": { "type": "number" },
-                                    "minY": { "type": "number" },
-                                    "maxX": { "type": "number" },
-                                    "maxY": { "type": "number" }
-                                },
-                                "required": ["minX", "minY", "maxX", "maxY"]
-                            }
-                        }
-                    }
-                },
-                "required": ["path"]
-            }),
-            "full",
-            "实体查询结果是渐进式审查上下文，建议保留完整 JSON。",
-        )
-    }
-
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        let Some(path) = string_arg(args, "path") else {
-            return "错误：缺少必填参数 path".to_string();
-        };
-        let parser_version =
-            string_arg(args, "parserVersion").unwrap_or_else(|| DEFAULT_PARSER_VERSION.to_string());
-        let cursor = usize_arg(args, "cursor").unwrap_or(0);
-        let limit = usize_arg(args, "limit").unwrap_or(50).clamp(1, 500);
-        let filters = args
-            .get("filters")
-            .cloned()
-            .map(serde_json::from_value::<CadEntityQueryFilters>)
-            .transpose()
-            .unwrap_or_else(|_| Some(CadEntityQueryFilters::default()))
-            .unwrap_or_default();
-
-        match load_cache(&path, &parser_version, context) {
-            Ok(cache) => {
-                let db = match DispatcherDb::new(context.dispatcher_db_path.clone()) {
-                    Ok(db) => db,
-                    Err(error) => return format!("打开 dispatcher 数据库失败：{error}"),
-                };
-                match db.query_dwg_parse_entities(
-                    &context.workspace.to_string_lossy(),
-                    &cache.file_path,
-                    cache.file_size,
-                    cache.file_mtime,
-                    &parser_version,
-                    &filters,
-                    cursor,
-                    limit,
-                ) {
-                    Ok(Some(result)) => serde_json::to_string_pretty(&result)
-                        .unwrap_or_else(|error| format!("序列化查询结果失败：{error}")),
-                    Ok(None) => "错误：未找到 DWG 解析缓存，请先在文件预览中打开该 DWG".to_string(),
-                    Err(error) => format!("查询 DWG 实体失败：{error}"),
-                }
-            }
-            Err(message) => message,
-        }
-    }
-}
 
 #[async_trait]
 impl AgentTool for CadComputeGeometryTool {
@@ -276,13 +140,25 @@ impl AgentTool for CadSaveReviewResultTool {
             Err(error) => return format!("打开 dispatcher 数据库失败：{error}"),
         };
         match db.create_cad_review_run(&input) {
-            Ok(detail) => serde_json::to_string_pretty(&json!({
-                "status": "ok",
-                "message": format!("已保存 {} 条 CAD 审查问题", detail.issues.len()),
-                "run": detail.run,
-                "issues": detail.issues,
-            }))
-            .unwrap_or_else(|error| format!("序列化审查结果失败：{error}")),
+            Ok(detail) => {
+                if let Some(app_handle) = &context.app_handle {
+                    let _ = app_handle.emit(
+                        "cad-review/run-created",
+                        json!({
+                            "workspaceId": detail.run.workspace_id,
+                            "filePath": detail.run.file_path,
+                            "runId": detail.run.id,
+                        }),
+                    );
+                }
+                serde_json::to_string_pretty(&json!({
+                    "status": "ok",
+                    "message": format!("已保存 {} 条 CAD 审查问题", detail.issues.len()),
+                    "run": detail.run,
+                    "issues": detail.issues,
+                }))
+                .unwrap_or_else(|error| format!("序列化审查结果失败：{error}"))
+            }
             Err(error) => format!("保存 CAD 审查结果失败：{error}"),
         }
     }

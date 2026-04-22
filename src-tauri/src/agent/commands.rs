@@ -1,11 +1,14 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
+use tauri::AppHandle;
 use tokio::time::{sleep, Duration};
 use uuid::Uuid;
 
 use super::cad::{
     CadReviewRunDetail, CadReviewRunRecord, DispatcherAttachmentRecord, DwgParseCacheRecord,
+    DwgViewerCommandResult, DwgViewerSessionRegistration, DwgViewerSessionState,
     SaveDwgParseCacheInput,
 };
 use super::config::DispatcherAgentConfig;
@@ -13,6 +16,7 @@ use super::db::{
     DispatcherDb, DispatcherMessageRecord, DispatcherSessionRecord, DispatcherSettingsRecord,
     DispatcherToolArtifactRecord,
 };
+use super::dwg::viewer_bridge::DwgViewerBridgeState;
 use super::llm;
 use super::runtime::{AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent};
 use crate::project::mcp::ProjectMcpRegistry;
@@ -21,6 +25,7 @@ use crate::shared::TaskManager;
 pub struct DispatcherState {
     agent: tokio::sync::Mutex<DispatcherAgent>,
     db: DispatcherDb,
+    viewer_bridge: Arc<DwgViewerBridgeState>,
 }
 
 impl DispatcherState {
@@ -38,6 +43,7 @@ impl DispatcherState {
         Ok(Self {
             agent: tokio::sync::Mutex::new(agent),
             db,
+            viewer_bridge: DwgViewerBridgeState::new(),
         })
     }
 }
@@ -155,6 +161,7 @@ fn copy_attachment_into_workspace(
 #[tauri::command]
 pub async fn dispatcher_send_message(
     state: tauri::State<'_, DispatcherState>,
+    app: AppHandle,
     workspace_id: String,
     project_path: String,
     content: String,
@@ -176,6 +183,8 @@ pub async fn dispatcher_send_message(
             &project_path,
             &content,
             attachments.as_deref().unwrap_or(&[]),
+            Some(app),
+            Some(state.viewer_bridge.clone()),
             on_event,
         )
         .await
@@ -323,6 +332,42 @@ pub fn dispatcher_get_tool_artifact(
     state
         .db
         .get_tool_artifact(&workspace_id, &artifact_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_register_dwg_viewer_session(
+    state: tauri::State<'_, DispatcherState>,
+    payload: DwgViewerSessionRegistration,
+) -> Result<DwgViewerSessionState, String> {
+    Ok(state.viewer_bridge.register_session(payload))
+}
+
+#[tauri::command]
+pub fn dispatcher_unregister_dwg_viewer_session(
+    state: tauri::State<'_, DispatcherState>,
+    session_id: String,
+) -> Result<(), String> {
+    state.viewer_bridge.unregister_session(&session_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn dispatcher_update_dwg_viewer_state(
+    state: tauri::State<'_, DispatcherState>,
+    payload: DwgViewerSessionRegistration,
+) -> Result<DwgViewerSessionState, String> {
+    Ok(state.viewer_bridge.update_state(payload.into_state()))
+}
+
+#[tauri::command]
+pub fn dispatcher_resolve_dwg_viewer_command(
+    state: tauri::State<'_, DispatcherState>,
+    payload: DwgViewerCommandResult,
+) -> Result<(), String> {
+    state
+        .viewer_bridge
+        .resolve_command_result(payload)
         .map_err(|error| error.to_string())
 }
 

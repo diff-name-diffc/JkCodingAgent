@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +41,14 @@ pub struct CadBBox {
     pub min_y: f64,
     pub max_x: f64,
     pub max_y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CadViewportHint {
+    pub center: Option<CadPoint>,
+    pub bbox: Option<CadBBox>,
+    pub zoom_scale: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +100,71 @@ pub struct CadEntityRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CadEntityEnvelope {
+    pub id: String,
+    pub handle: String,
+    pub entity_type: String,
+    pub raw_type: String,
+    pub layer: String,
+    pub block_name: Option<String>,
+    pub text_excerpt: Option<String>,
+    pub normalized_text: Option<String>,
+    pub center: Option<CadPoint>,
+    pub anchor: Option<CadPoint>,
+    pub bbox: Option<CadBBox>,
+    pub layout: Option<String>,
+    pub owner_block: Option<String>,
+    pub rotation_deg: Option<f64>,
+    pub scale_x: Option<f64>,
+    pub scale_y: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CadEntityDetail {
+    pub envelope: CadEntityEnvelope,
+    pub payload: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DwgDocumentRecord {
+    pub id: String,
+    pub project_path: String,
+    pub file_path: String,
+    pub file_size: u64,
+    pub file_mtime: i64,
+    pub parser_version: String,
+    pub summary: DwgParseSummary,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DwgDocumentOverview {
+    pub document: DwgDocumentRecord,
+    pub next_suggested_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DwgLayerDetail {
+    pub name: String,
+    pub entity_count: usize,
+    pub entity_types: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DwgLayerListResult {
+    pub items: Vec<DwgLayerDetail>,
+    pub total: usize,
+    pub next_cursor: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DwgParseCacheRecord {
     pub id: String,
     pub project_path: String,
@@ -99,6 +173,7 @@ pub struct DwgParseCacheRecord {
     pub file_mtime: i64,
     pub parser_version: String,
     pub summary: DwgParseSummary,
+    pub document_id: Option<String>,
     pub entities: Vec<CadEntityRecord>,
     pub created_at: String,
 }
@@ -111,16 +186,28 @@ pub struct CadEntityQueryFilters {
     #[serde(default)]
     pub entity_types: Vec<String>,
     pub text_query: Option<String>,
+    pub block_name: Option<String>,
     pub bbox: Option<CadBBox>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CadEntityQueryResult {
-    pub items: Vec<CadEntityRecord>,
+    pub items: Vec<CadEntityEnvelope>,
     pub total: usize,
     pub next_cursor: Option<usize>,
     pub applied_filters: CadEntityQueryFilters,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DwgRegionInspectionResult {
+    pub bbox: CadBBox,
+    pub group_by: String,
+    pub group_counts: BTreeMap<String, usize>,
+    pub text_samples: Vec<String>,
+    pub items: Vec<CadEntityEnvelope>,
+    pub next_suggested_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +223,7 @@ pub struct CadReviewIssueRecord {
     pub entity_refs: Vec<String>,
     pub anchor_point: Option<CadPoint>,
     pub bbox: Option<CadBBox>,
+    pub viewport_hint: Option<CadViewportHint>,
     pub rule_ref: Option<String>,
     pub created_at: String,
 }
@@ -201,7 +289,103 @@ pub struct CreateCadReviewIssueInput {
     pub entity_refs: Vec<String>,
     pub anchor_point: Option<CadPoint>,
     pub bbox: Option<CadBBox>,
+    pub viewport_hint: Option<CadViewportHint>,
     pub rule_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DwgViewerSessionRegistration {
+    pub session_id: String,
+    pub workspace_id: String,
+    pub file_path: String,
+    pub tab_id: String,
+    pub visible: bool,
+    pub active: bool,
+    pub mode: String,
+    pub parse_status: String,
+    pub canvas_width: f64,
+    pub canvas_height: f64,
+    pub viewport_box: Option<CadBBox>,
+    pub center: Option<CadPoint>,
+    pub zoom_scale: Option<f64>,
+    #[serde(default)]
+    pub selection_ids: Vec<String>,
+    pub doc_id: Option<String>,
+    pub parse_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DwgViewerSessionState {
+    pub session_id: String,
+    pub workspace_id: String,
+    pub file_path: String,
+    pub tab_id: String,
+    pub visible: bool,
+    pub active: bool,
+    pub mode: String,
+    pub parse_status: String,
+    pub canvas_width: f64,
+    pub canvas_height: f64,
+    pub viewport_box: Option<CadBBox>,
+    pub center: Option<CadPoint>,
+    pub zoom_scale: Option<f64>,
+    #[serde(default)]
+    pub selection_ids: Vec<String>,
+    pub doc_id: Option<String>,
+    pub parse_error: Option<String>,
+    pub updated_at: String,
+}
+
+impl DwgViewerSessionRegistration {
+    pub fn into_state(self) -> DwgViewerSessionState {
+        DwgViewerSessionState {
+            session_id: self.session_id,
+            workspace_id: self.workspace_id,
+            file_path: self.file_path,
+            tab_id: self.tab_id,
+            visible: self.visible,
+            active: self.active,
+            mode: self.mode,
+            parse_status: self.parse_status,
+            canvas_width: self.canvas_width,
+            canvas_height: self.canvas_height,
+            viewport_box: self.viewport_box,
+            center: self.center,
+            zoom_scale: self.zoom_scale,
+            selection_ids: self.selection_ids,
+            doc_id: self.doc_id,
+            parse_error: self.parse_error,
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DwgViewerCommand {
+    pub command_id: String,
+    pub session_id: String,
+    pub action: String,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DwgViewerCommandResult {
+    pub command_id: String,
+    pub session_id: String,
+    pub ok: bool,
+    pub result: Option<Value>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DwgViewerOpenRequest {
+    pub workspace_id: String,
+    pub file_path: String,
 }
 
 pub fn build_attachment_context(attachments: &[DispatcherAttachmentRecord]) -> Option<String> {
@@ -264,6 +448,12 @@ pub fn filter_entities(
                             .block_name
                             .as_ref()
                             .is_some_and(|name| name.to_ascii_lowercase().contains(query))
+                })
+                && filters.block_name.as_ref().is_none_or(|block_name| {
+                    entity.block_name.as_ref().is_some_and(|name| {
+                        name.to_ascii_lowercase()
+                            .contains(&block_name.trim().to_ascii_lowercase())
+                    })
                 })
                 && filters.bbox.as_ref().is_none_or(|bbox| {
                     entity

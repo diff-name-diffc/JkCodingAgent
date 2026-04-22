@@ -81,6 +81,10 @@ const DEFAULT_TOOLS: &str = r#"# 工具说明
 - `grep`：在 glob 缩小范围后继续按内容精确匹配，优先用于定位符号、配置键、错误文本和调用点。
 - `exec`：执行命令获取事实，例如搜索符号、查看 Git 状态、运行构建或测试；优先使用只读命令。
 - `write_file` / `edit_file`：只用于极小范围修补、验证性修改或维护调度文件；不要把自己变成主要实现代理。
+- `cad_ensure_dwg_index` / `cad_get_dwg_overview` / `cad_list_dwg_layers` / `cad_inspect_dwg_region`：用于 DWG 的渐进式探索，先看概览，再按图层或区域收敛。
+- `cad_query_dwg_entities` / `cad_get_dwg_entity_detail`：先取轻量 envelope，再对少量目标展开细节，禁止默认整图全量读取。
+- `cad_get_dwg_viewer_session` / `cad_get_dwg_viewport` / `cad_control_dwg_viewer` / `cad_pick_dwg_viewer` / `cad_capture_dwg_viewer`：用于复用或打开 DWG viewer，并执行定位、缩放、平移、拾取和留痕。
+- `cad_compute_geometry` / `cad_save_review_result`：用于纯几何辅助判断，以及保存结构化 CAD 审查结果。
 - `dispatch_claude`：把任务交给 Claude 执行，适合新功能、快速试错和探索性调试。
 - `dispatch_codex`：把任务交给 Codex 执行，适合重构、结构整理和需要严格验证的任务。
 - `message`：在调查或协调完成后，向用户输出最终结论。
@@ -93,6 +97,7 @@ const DEFAULT_TOOLS: &str = r#"# 工具说明
 - `exec` 默认更适合 `auto`；只看成败、统计或阶段结论时可显式用 `summary`，需要原始报错或精确输出时用 `full`。
 - 委派时必须提供自包含的任务说明。
 - 子任务回流到主调度时默认只同步任务摘要，不回灌完整终端日志；如果需要更多原始事实，应继续下发更具体的子任务，或直接使用本地调查工具补证据。
+- CAD / DWG 调查遵循：概览 → 图层 / 区域 → envelope → detail → viewer 导航，不要一开始就全量读取整图实体。
 - 如果 Claude 与 Codex 可并行推进不同工作流，可以在同一轮同时调用多个 `dispatch_*`。
 - 同一 agent 在同一 session 中不能重复 dispatch；若已有活跃进程，应改用 continue/exit。
 - 继续或退出子会话时，必须使用对应代理家族的工具。
@@ -109,6 +114,7 @@ Available tools are exposed as OpenAI-compatible function tools.
 - glob: find files by glob pattern.
 - grep: search text with ripgrep after narrowing the candidate files with glob.
 - exec: run shell commands in the active workspace.
+- cad_* DWG tools: inspect DWG drawings progressively, navigate the viewer, compute geometry, and save CAD review results.
 - dispatch_claude: delegate a coding task to a Claude Code agent running in a real terminal. Prefer it for faster exploration, new functionality, and algorithm work.
 - dispatch_codex: delegate a coding task to a Codex agent running in a real terminal. Prefer it for careful refactoring, structural cleanup, and risk-sensitive modifications.
 "#;

@@ -278,6 +278,12 @@ export interface CadBBox {
   maxY: number;
 }
 
+export interface CadViewportHint {
+  center?: CadPoint | null;
+  bbox?: CadBBox | null;
+  zoomScale?: number | null;
+}
+
 export interface DwgLayerSummary {
   name: string;
   entityCount: number;
@@ -316,6 +322,59 @@ export interface CadEntityRecord {
   bbox?: CadBBox | null;
 }
 
+export interface CadEntityEnvelope {
+  id: string;
+  handle: string;
+  entityType: string;
+  rawType: string;
+  layer: string;
+  blockName?: string | null;
+  textExcerpt?: string | null;
+  normalizedText?: string | null;
+  center?: CadPoint | null;
+  anchor?: CadPoint | null;
+  bbox?: CadBBox | null;
+  layout?: string | null;
+  ownerBlock?: string | null;
+  rotationDeg?: number | null;
+  scaleX?: number | null;
+  scaleY?: number | null;
+}
+
+export interface CadEntityDetail {
+  envelope: CadEntityEnvelope;
+  payload?: unknown;
+}
+
+export interface DwgDocumentRecord {
+  id: string;
+  projectPath: string;
+  filePath: string;
+  fileSize: number;
+  fileMtime: number;
+  parserVersion: string;
+  summary: DwgParseSummary;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DwgDocumentOverview {
+  document: DwgDocumentRecord;
+  nextSuggestedActions: string[];
+}
+
+export interface DwgLayerDetail {
+  name: string;
+  entityCount: number;
+  entityTypes: Record<string, number>;
+}
+
+export interface DwgLayerListResult {
+  items: DwgLayerDetail[];
+  total: number;
+  nextCursor?: number | null;
+}
+
 export interface DwgParseCacheRecord {
   id: string;
   projectPath: string;
@@ -324,6 +383,7 @@ export interface DwgParseCacheRecord {
   fileMtime: number;
   parserVersion: string;
   summary: DwgParseSummary;
+  documentId?: string | null;
   entities: CadEntityRecord[];
   createdAt: string;
 }
@@ -332,14 +392,24 @@ export interface CadEntityQueryFilters {
   layers?: string[];
   entityTypes?: string[];
   textQuery?: string;
+  blockName?: string;
   bbox?: CadBBox | null;
 }
 
 export interface CadEntityQueryResult {
-  items: CadEntityRecord[];
+  items: CadEntityEnvelope[];
   total: number;
   nextCursor?: number | null;
   appliedFilters: CadEntityQueryFilters;
+}
+
+export interface DwgRegionInspectionResult {
+  bbox: CadBBox;
+  groupBy: string;
+  groupCounts: Record<string, number>;
+  textSamples: string[];
+  items: CadEntityEnvelope[];
+  nextSuggestedActions: string[];
 }
 
 export interface CadReviewIssue {
@@ -352,6 +422,7 @@ export interface CadReviewIssue {
   entityRefs: string[];
   anchorPoint?: CadPoint | null;
   bbox?: CadBBox | null;
+  viewportHint?: CadViewportHint | null;
   ruleRef?: string | null;
   createdAt: string;
 }
@@ -373,6 +444,49 @@ export interface CadReviewRun {
 export interface CadReviewRunDetail {
   run: CadReviewRun;
   issues: CadReviewIssue[];
+}
+
+export interface DwgViewerSessionRegistration {
+  sessionId: string;
+  workspaceId: string;
+  filePath: string;
+  tabId: string;
+  visible: boolean;
+  active: boolean;
+  mode: string;
+  parseStatus: string;
+  canvasWidth: number;
+  canvasHeight: number;
+  viewportBox?: CadBBox | null;
+  center?: CadPoint | null;
+  zoomScale?: number | null;
+  selectionIds: string[];
+  docId?: string | null;
+  parseError?: string | null;
+}
+
+export interface DwgViewerSessionState extends DwgViewerSessionRegistration {
+  updatedAt: string;
+}
+
+export interface DwgViewerCommand {
+  commandId: string;
+  sessionId: string;
+  action: string;
+  payload: unknown;
+}
+
+export interface DwgViewerCommandResult {
+  commandId: string;
+  sessionId: string;
+  ok: boolean;
+  result?: unknown;
+  error?: string | null;
+}
+
+export interface DwgViewerOpenRequest {
+  workspaceId: string;
+  filePath: string;
 }
 
 export interface SubProcess {

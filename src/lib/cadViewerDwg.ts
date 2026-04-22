@@ -3,13 +3,17 @@ import {
   AcDbFileType,
   acdbHostApplicationServices,
 } from "@mlightcad/data-model";
+import type { AcDbDatabaseConverter } from "@mlightcad/data-model";
+import type { AcDbParsingTaskResult } from "@mlightcad/data-model";
 import { AcApDocManager, AcApDocument, AcEdOpenMode } from "@mlightcad/cad-simple-viewer";
-import libredwgParserWorkerUrl from "../../node_modules/.pnpm/node_modules/@mlightcad/libredwg-converter/dist/libredwg-parser-worker.js?url";
+import { Dwg_File_Type, LibreDwg } from "@mlightcad/libredwg-web";
+import type { DwgDatabase } from "@mlightcad/libredwg-web";
 
 const DEFAULT_DWG_OPEN_ERROR = "cad-simple-viewer 无法打开该 DWG 文件";
 const DEFAULT_CJK_FALLBACK_FONTS = ["simsun", "simhei", "simkai"];
 
 let dwgSupportPromise: Promise<void> | null = null;
+let libreDwgPromise: Promise<Awaited<ReturnType<typeof LibreDwg.create>>> | null = null;
 let cadFontSupportPromise: Promise<void> = Promise.resolve();
 const loadedCadFonts = new Set<string>();
 
@@ -20,6 +24,41 @@ type OpenCadViewerDwgDocumentInput = {
   mode: AcEdOpenMode;
 };
 
+function describeCadViewerError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message || error.stack || "未知 Error";
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (error && typeof error === "object") {
+    const message =
+      "message" in error && typeof error.message === "string"
+        ? error.message
+        : "reason" in error && typeof error.reason === "string"
+          ? error.reason
+          : null;
+
+    if (message) {
+      return message;
+    }
+
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return Object.prototype.toString.call(error);
+    }
+  }
+
+  if (typeof error === "undefined") {
+    return "未知错误（undefined）";
+  }
+
+  return String(error);
+}
+
 function buildProbeOptions(mode: AcEdOpenMode) {
   return {
     readOnly: mode === AcEdOpenMode.Read,
@@ -27,19 +66,28 @@ function buildProbeOptions(mode: AcEdOpenMode) {
 }
 
 function normalizeCadViewerOpenError(error: unknown): Error {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = describeCadViewerError(error);
 
   if (message.includes("isn't registered")) {
     return new Error("DWG converter 未注册，cad-simple-viewer 当前缺少 DWG 解析器初始化。");
   }
 
   if (
-    message.includes("worker") ||
-    message.includes("Worker") ||
-    message.includes("Failed to fetch") ||
-    message.includes("importScripts")
+    message.includes("Failed to fetch dynamically imported module") ||
+    message.includes("importScripts") ||
+    message.includes("Worker error:") ||
+    message.includes("worker")
   ) {
-    return new Error(`DWG parser worker 加载失败：${message}`);
+    return new Error(`DWG 解析器初始化失败：${message}`);
+  }
+
+  if (
+    message.includes("DWG 数据句柄创建失败") ||
+    message.includes("DWG 主线程解析失败") ||
+    message.includes("Failed to parse drawing") ||
+    message.includes("Failed to read dwg data")
+  ) {
+    return new Error(`DWG 文件解析失败：${message}`);
   }
 
   if (message.startsWith("DWG ")) {
@@ -49,24 +97,67 @@ function normalizeCadViewerOpenError(error: unknown): Error {
   return new Error(`DWG 加载失败：${message}`);
 }
 
-async function loadLibreDwgConverter() {
-  return import(
-    // @ts-ignore The bundled dist entry is intentionally used for runtime compatibility.
+async function ensureLibreDwg() {
+  if (!libreDwgPromise) {
+    libreDwgPromise = LibreDwg.create().catch((error) => {
+      libreDwgPromise = null;
+      throw new Error(`libredwg 初始化失败：${describeCadViewerError(error)}`);
+    });
+  }
+
+  return libreDwgPromise;
+}
+
+type LibreDwgConverterConstructor = new (
+  config?: Record<string, unknown>,
+) => AcDbDatabaseConverter<DwgDatabase>;
+
+async function loadLibreDwgConverterConstructor(): Promise<LibreDwgConverterConstructor> {
+  const module = await import(
+    // @ts-ignore 工程当前依赖布局下需直接走 dist 入口，避免包名解析失败。
     "../../node_modules/.pnpm/node_modules/@mlightcad/libredwg-converter/dist/libredwg-converter.js"
   );
+
+  return module.AcDbLibreDwgConverter as LibreDwgConverterConstructor;
+}
+
+async function createManagedDwgConverter() {
+  const BaseLibreDwgConverter = await loadLibreDwgConverterConstructor();
+
+  return new (class ManagedLibreDwgConverter extends BaseLibreDwgConverter {
+    protected async parse(data: ArrayBuffer): Promise<AcDbParsingTaskResult<DwgDatabase>> {
+      const libredwg = await ensureLibreDwg();
+      const copiedData = data.slice(0);
+      const handle = libredwg.dwg_read_data(copiedData, Dwg_File_Type.DWG);
+
+      if (typeof handle !== "number") {
+        throw new Error("DWG 数据句柄创建失败");
+      }
+
+      try {
+        const converted = libredwg.convertEx(handle);
+        if (!converted?.database) {
+          throw new Error("DWG 解析结果缺少 database");
+        }
+
+        return {
+          model: converted.database,
+          data: converted.stats ?? { unknownEntityCount: 0 },
+        };
+      } catch (error) {
+        throw new Error(`DWG 主线程解析失败：${describeCadViewerError(error)}`);
+      } finally {
+        libredwg.dwg_free(handle);
+      }
+    }
+  })({
+    convertByEntityType: false,
+  });
 }
 
 async function registerDwgConverter() {
   const manager = AcDbDatabaseConverterManager.instance;
-  const { AcDbLibreDwgConverter } = await loadLibreDwgConverter();
-  manager.register(
-    AcDbFileType.DWG,
-    new AcDbLibreDwgConverter({
-      convertByEntityType: false,
-      useWorker: true,
-      parserWorkerUrl: libredwgParserWorkerUrl,
-    }),
-  );
+  manager.register(AcDbFileType.DWG, await createManagedDwgConverter());
 }
 
 function activateWorkingDatabase(document: AcApDocument) {
@@ -118,10 +209,12 @@ async function ensureCadViewerFontSupport(fontNames: string[]) {
 
 export async function ensureCadViewerDwgSupport() {
   if (!dwgSupportPromise) {
-    dwgSupportPromise = registerDwgConverter().catch((error) => {
-      dwgSupportPromise = null;
-      throw normalizeCadViewerOpenError(error);
-    });
+    dwgSupportPromise = Promise.resolve()
+      .then(() => registerDwgConverter())
+      .catch((error) => {
+        dwgSupportPromise = null;
+        throw normalizeCadViewerOpenError(error);
+      });
   }
 
   return dwgSupportPromise;

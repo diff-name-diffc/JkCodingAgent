@@ -2,10 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
+use tauri::AppHandle;
 use tauri::ipc::Channel;
 
 use super::cad::build_attachment_context;
@@ -23,6 +25,7 @@ use super::tools::{
     parse_continue_instruction, parse_dispatch_instruction, parse_exit_instruction, DispatchAgent,
     ToolContext, ToolRegistry,
 };
+use crate::agent::dwg::viewer_bridge::DwgViewerBridgeState;
 use crate::project::mcp::{build_workspace_mcp_prompt_block, ProjectMcpRegistry};
 use crate::shared::truncate_for_display;
 
@@ -434,6 +437,8 @@ impl DispatcherAgent {
         workspace_path: &str,
         user_message: &str,
         attachment_ids: &[String],
+        app_handle: Option<AppHandle>,
+        dwg_viewer_bridge: Option<Arc<DwgViewerBridgeState>>,
         on_event: Channel<AgentEvent>,
     ) -> Result<AgentTurn> {
         emit(
@@ -462,7 +467,15 @@ impl DispatcherAgent {
 
         let provider = self.provider.lock().unwrap().clone();
         let reply = if provider.is_configured() {
-            self.run_llm_loop(db, workspace_id, &workspace, &on_event, &provider)
+            self.run_llm_loop(
+                db,
+                workspace_id,
+                &workspace,
+                app_handle,
+                dwg_viewer_bridge,
+                &on_event,
+                &provider,
+            )
                 .await?
         } else {
             let reply = db.add_visible_message(
@@ -571,7 +584,15 @@ impl DispatcherAgent {
         let workspace = PathBuf::from(workspace_path);
         let _ = self.project_mcp_registry.ensure_recent(&workspace).await;
         let reply = self
-            .run_llm_loop(db, workspace_id, &workspace, &on_event, &provider)
+            .run_llm_loop(
+                db,
+                workspace_id,
+                &workspace,
+                None,
+                None,
+                &on_event,
+                &provider,
+            )
             .await?;
 
         let messages = db.list_visible_messages(workspace_id)?;
@@ -589,6 +610,8 @@ impl DispatcherAgent {
         db: &DispatcherDb,
         workspace_id: &str,
         workspace: &Path,
+        app_handle: Option<AppHandle>,
+        dwg_viewer_bridge: Option<Arc<DwgViewerBridgeState>>,
         on_event: &Channel<AgentEvent>,
         provider: &OpenAiCompatProvider,
     ) -> Result<DispatcherMessageRecord> {
@@ -599,12 +622,14 @@ impl DispatcherAgent {
             dispatcher_db_path: db.path().clone(),
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: self.config.restrict_to_workspace,
+            app_handle,
+            dwg_viewer_bridge,
         };
 
         for iteration in 0..self.config.max_tool_iterations {
             let tool_definitions = self.tool_definitions_for_workspace(workspace_id, workspace);
             let prompt_snapshot =
-                self.build_system_prompt_for_workspace(workspace_id, workspace)?;
+                self.build_system_prompt_for_workspace(workspace_id, workspace, &tool_definitions)?;
             let history_messages = db.load_llm_history(workspace_id)?;
             let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
             messages.extend(history_messages.clone());
@@ -879,8 +904,19 @@ impl DispatcherAgent {
         &self,
         workspace_id: &str,
         workspace: &Path,
+        tool_definitions: &[crate::agent::llm::ToolDefinition],
     ) -> Result<SystemPromptSnapshot> {
         let mut prompt_bundle = self.build_system_prompt()?;
+        let tool_block = render_available_tools_block(tool_definitions);
+        if !tool_block.is_empty() {
+            prompt_bundle.sections.push(PromptSection {
+                label: "Runtime Tool State".to_string(),
+                source: "runtime::available_tools".to_string(),
+                content: tool_block.clone(),
+            });
+            prompt_bundle.content.push_str("\n\n---\n\n");
+            prompt_bundle.content.push_str(&tool_block);
+        }
         let state_block = self.build_subprocess_state_block(workspace_id);
         if !state_block.is_empty() {
             prompt_bundle.sections.push(PromptSection {
@@ -994,16 +1030,7 @@ impl DispatcherAgent {
         workspace_id: &str,
         workspace: &Path,
     ) -> Vec<crate::agent::llm::ToolDefinition> {
-        let mut allowed = HashSet::from([
-            "read_file",
-            "write_file",
-            "edit_file",
-            "list_dir",
-            "glob",
-            "grep",
-            "exec",
-            "message",
-        ]);
+        let mut allowed = builtin_tool_allowlist();
 
         for (agent_slug, has_active, phase) in self.agent_runtime_flags(workspace_id) {
             match (has_active, phase) {
@@ -1490,14 +1517,73 @@ fn exit_tool_name(agent: &str) -> &'static str {
     }
 }
 
+fn builtin_tool_allowlist() -> HashSet<&'static str> {
+    HashSet::from([
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "glob",
+        "grep",
+        "exec",
+        "message",
+        "cad_ensure_dwg_index",
+        "cad_get_dwg_overview",
+        "cad_get_dwg_summary",
+        "cad_list_dwg_layers",
+        "cad_query_dwg_entities",
+        "cad_get_dwg_entity_detail",
+        "cad_inspect_dwg_region",
+        "cad_get_dwg_viewer_session",
+        "cad_get_dwg_viewport",
+        "cad_control_dwg_viewer",
+        "cad_pick_dwg_viewer",
+        "cad_capture_dwg_viewer",
+        "cad_compute_geometry",
+        "cad_save_review_result",
+    ])
+}
+
+fn render_available_tools_block(
+    tool_definitions: &[crate::agent::llm::ToolDefinition],
+) -> String {
+    if tool_definitions.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = vec![
+        "# 当前实际可用工具".to_string(),
+        "以下列表来自本轮运行时实际注入的工具定义，优先级高于静态 TOOLS.md。".to_string(),
+    ];
+
+    let mut tools = tool_definitions
+        .iter()
+        .map(|tool| {
+            (
+                tool.function.name.clone(),
+                tool.function.description.trim().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    tools.sort_by(|left, right| left.0.cmp(&right.0));
+
+    for (name, description) in tools {
+        lines.push(format!("- `{name}`：{description}"));
+    }
+
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_protocol_waiting_message, collect_recent_exploration_entries,
+        build_protocol_waiting_message, builtin_tool_allowlist, collect_recent_exploration_entries,
+        render_available_tools_block,
         should_include_latest_user_goal, DispatchAgent, PlannedSubprocessState, ProtocolBatchState,
         ProtocolToolAction, RegisteredSubprocess, RegisteredSubprocessPhase,
     };
-    use crate::agent::llm::ChatMessage;
+    use crate::agent::llm::{ChatMessage, ToolDefinition, ToolFunctionDefinition};
+    use serde_json::json;
 
     #[test]
     fn protocol_state_allows_parallel_dispatch_for_different_agents() {
@@ -1612,5 +1698,40 @@ mod tests {
             "调度子任务不要再带固定工程师开头",
             task_description
         ));
+    }
+
+    #[test]
+    fn builtin_allowlist_includes_cad_and_dwg_tools() {
+        let allowed = builtin_tool_allowlist();
+        assert!(allowed.contains("cad_ensure_dwg_index"));
+        assert!(allowed.contains("cad_get_dwg_viewer_session"));
+        assert!(allowed.contains("cad_control_dwg_viewer"));
+        assert!(allowed.contains("cad_save_review_result"));
+    }
+
+    #[test]
+    fn available_tools_block_prefers_runtime_tool_inventory() {
+        let rendered = render_available_tools_block(&[
+            ToolDefinition {
+                kind: "function".to_string(),
+                function: ToolFunctionDefinition {
+                    name: "cad_get_dwg_overview".to_string(),
+                    description: "返回 DWG 顶层概览。".to_string(),
+                    parameters: json!({ "type": "object" }),
+                },
+            },
+            ToolDefinition {
+                kind: "function".to_string(),
+                function: ToolFunctionDefinition {
+                    name: "read_file".to_string(),
+                    description: "读取文件。".to_string(),
+                    parameters: json!({ "type": "object" }),
+                },
+            },
+        ]);
+
+        assert!(rendered.contains("当前实际可用工具"));
+        assert!(rendered.contains("`cad_get_dwg_overview`"));
+        assert!(rendered.contains("`read_file`"));
     }
 }

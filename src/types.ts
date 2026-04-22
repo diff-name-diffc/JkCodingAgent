@@ -14,6 +14,7 @@ export type TaskStatus =
   | "pending"
   | "running"
   | "input_required"
+  | "stopped"
   | "done"
   | "failed"
   | "cancelled";
@@ -34,6 +35,9 @@ export interface Task {
   codexSessionPath?: string;
   claudeSessionId?: string;
   claudeSessionPath?: string;
+  dispatcherSessionId?: string;
+  dispatcherDispatchId?: string;
+  dispatcherDescription?: string;
 }
 
 export type ProjectMcpAggregateStatus =
@@ -257,6 +261,6 @@ export interface SubProcess {
   sessionId: string;
   agent: "claude" | "codex";
   description: string;
-  status: "pending_approval" | "running" | "done" | "failed";
+  status: "pending_approval" | "running" | "stopped" | "done" | "failed";
   startedAt: number;
 }

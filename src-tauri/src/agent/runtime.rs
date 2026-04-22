@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::ipc::Channel;
+use tokio::sync::watch;
 
 use super::config::DispatcherAgentConfig;
 use super::db::{
@@ -158,6 +159,7 @@ pub struct DispatcherAgent {
 enum RegisteredSubprocessPhase {
     Running,
     RoundCompleted,
+    Stopped,
     ExitRequested,
 }
 
@@ -282,6 +284,12 @@ impl ProtocolBatchState {
                 ..
             }) => Ok(()),
             Some(PlannedSubprocessState::Active {
+                phase: RegisteredSubprocessPhase::Stopped,
+                ..
+            }) => Err(format!(
+                "错误：{agent_label} 子进程当前处于 stopped 状态，请先由 UI 恢复运行后再继续注入指令。"
+            )),
+            Some(PlannedSubprocessState::Active {
                 phase: RegisteredSubprocessPhase::ExitRequested,
                 ..
             }) => Err(format!(
@@ -313,6 +321,12 @@ impl ProtocolBatchState {
                     RegisteredSubprocessPhase::Running | RegisteredSubprocessPhase::RoundCompleted,
                 ..
             }) => Ok(()),
+            Some(PlannedSubprocessState::Active {
+                phase: RegisteredSubprocessPhase::Stopped,
+                ..
+            }) => Err(format!(
+                "错误：{agent_label} 子进程当前处于 stopped 状态，请先恢复运行后再决定是否退出。"
+            )),
             Some(PlannedSubprocessState::Active {
                 phase: RegisteredSubprocessPhase::ExitRequested,
                 ..
@@ -421,6 +435,10 @@ impl DispatcherAgent {
         self.update_subprocess_phase(task_id, RegisteredSubprocessPhase::Running);
     }
 
+    pub fn mark_subprocess_stopped(&self, task_id: &str) {
+        self.update_subprocess_phase(task_id, RegisteredSubprocessPhase::Stopped);
+    }
+
     pub fn mark_subprocess_finished(&self, task_id: &str) {
         let mut subprocesses = self.subprocesses.lock().unwrap();
         subprocesses.retain(|item| item.task_id != task_id);
@@ -433,6 +451,7 @@ impl DispatcherAgent {
         workspace_path: &str,
         user_message: &str,
         on_event: Channel<AgentEvent>,
+        cancel_rx: watch::Receiver<bool>,
     ) -> Result<AgentTurn> {
         emit(
             &on_event,
@@ -452,8 +471,15 @@ impl DispatcherAgent {
 
         let provider = self.provider.lock().unwrap().clone();
         let reply = if provider.is_configured() {
-            self.run_llm_loop(db, workspace_id, &workspace, &on_event, &provider)
-                .await?
+            self.run_llm_loop(
+                db,
+                workspace_id,
+                &workspace,
+                &on_event,
+                &provider,
+                cancel_rx,
+            )
+            .await?
         } else {
             let reply = db.add_visible_message(
                 workspace_id,
@@ -487,6 +513,7 @@ impl DispatcherAgent {
         dispatch_result: &str,
         dispatch_state: DispatchFeedbackState,
         on_event: Channel<AgentEvent>,
+        mut cancel_rx: watch::Receiver<bool>,
     ) -> Result<AgentTurn> {
         let debug_logger =
             ContextDebugLogger::new(self.context_debug_enabled(), PathBuf::from(workspace_path));
@@ -498,35 +525,60 @@ impl DispatcherAgent {
                 message: result_msg.clone(),
             },
         );
+
+        if cancellation_requested(&cancel_rx) {
+            let reply = self.emit_stop_and_finish(db, workspace_id, &on_event, "")?;
+            let messages = db.list_visible_messages(workspace_id)?;
+            emit(
+                &on_event,
+                AgentEvent::Finished {
+                    messages: messages.clone(),
+                },
+            );
+            return Ok(AgentTurn { reply, messages });
+        }
+
         let provider = self.provider.lock().unwrap().clone();
-        let summarized_dispatch_result =
-            match summarize_dispatch_result(&provider, dispatch_result).await {
-                Ok(summary) => summary,
-                Err(error) => {
-                    debug_logger.log(
-                        "子任务结果摘要失败",
-                        vec![
-                            ("工作区".to_string(), workspace_id.to_string()),
-                            (
-                                "子任务状态".to_string(),
-                                format!("{dispatch_state:?}").to_lowercase(),
-                            ),
-                        ],
-                        vec![
-                            DebugSection::new("摘要调用", error.debug_context().to_string()),
-                            DebugSection::new("失败原因", error.message().to_string()),
-                        ],
-                    );
-                    let reply = self.emit_summary_failure_and_finish(
-                        db,
-                        workspace_id,
-                        &on_event,
-                        error.message(),
-                    )?;
-                    let messages = db.list_visible_messages(workspace_id)?;
-                    return Ok(AgentTurn { reply, messages });
-                }
-            };
+        let summarized_dispatch_result = match tokio::select! {
+            _ = wait_for_cancellation(&mut cancel_rx) => {
+                let reply = self.emit_stop_and_finish(db, workspace_id, &on_event, "")?;
+                let messages = db.list_visible_messages(workspace_id)?;
+                emit(
+                    &on_event,
+                    AgentEvent::Finished {
+                        messages: messages.clone(),
+                    },
+                );
+                return Ok(AgentTurn { reply, messages });
+            }
+            result = summarize_dispatch_result(&provider, dispatch_result) => result
+        } {
+            Ok(summary) => summary,
+            Err(error) => {
+                debug_logger.log(
+                    "子任务结果摘要失败",
+                    vec![
+                        ("工作区".to_string(), workspace_id.to_string()),
+                        (
+                            "子任务状态".to_string(),
+                            format!("{dispatch_state:?}").to_lowercase(),
+                        ),
+                    ],
+                    vec![
+                        DebugSection::new("摘要调用", error.debug_context().to_string()),
+                        DebugSection::new("失败原因", error.message().to_string()),
+                    ],
+                );
+                let reply = self.emit_summary_failure_and_finish(
+                    db,
+                    workspace_id,
+                    &on_event,
+                    error.message(),
+                )?;
+                let messages = db.list_visible_messages(workspace_id)?;
+                return Ok(AgentTurn { reply, messages });
+            }
+        };
 
         let hidden_message = format!(
             "{}\n\n{}",
@@ -561,7 +613,14 @@ impl DispatcherAgent {
         let workspace = PathBuf::from(workspace_path);
         let _ = self.project_mcp_registry.ensure_recent(&workspace).await;
         let reply = self
-            .run_llm_loop(db, workspace_id, &workspace, &on_event, &provider)
+            .run_llm_loop(
+                db,
+                workspace_id,
+                &workspace,
+                &on_event,
+                &provider,
+                cancel_rx,
+            )
             .await?;
 
         let messages = db.list_visible_messages(workspace_id)?;
@@ -581,6 +640,7 @@ impl DispatcherAgent {
         workspace: &Path,
         on_event: &Channel<AgentEvent>,
         provider: &OpenAiCompatProvider,
+        cancel_rx: watch::Receiver<bool>,
     ) -> Result<DispatcherMessageRecord> {
         let debug_logger = ContextDebugLogger::new(self.context_debug_enabled(), workspace);
         let tool_context = ToolContext {
@@ -590,6 +650,10 @@ impl DispatcherAgent {
         };
 
         for iteration in 0..self.config.max_tool_iterations {
+            if cancellation_requested(&cancel_rx) {
+                return self.emit_stop_and_finish(db, workspace_id, on_event, "");
+            }
+
             let tool_definitions = self.tool_definitions_for_workspace(workspace_id, workspace);
             let prompt_snapshot =
                 self.build_system_prompt_for_workspace(workspace_id, workspace)?;
@@ -623,16 +687,30 @@ impl DispatcherAgent {
 
             let event_ref = on_event;
             let msg_id_ref = stream_msg_id.clone();
+            let streamed_text = Arc::new(Mutex::new(String::new()));
+            let streamed_text_ref = Arc::clone(&streamed_text);
             let on_delta = move |delta: &str| {
+                let mut partial = streamed_text_ref
+                    .lock()
+                    .expect("dispatcher streamed_text poisoned");
+                partial.push_str(delta);
                 let _ = event_ref.send(AgentEvent::AssistantDelta {
                     message_id: msg_id_ref.clone(),
                     delta: delta.to_string(),
                 });
             };
 
-            let response = provider
-                .chat_stream(&messages, &tool_definitions, on_delta)
-                .await?;
+            let mut stream_cancel_rx = cancel_rx.clone();
+            let response = tokio::select! {
+                _ = wait_for_cancellation(&mut stream_cancel_rx) => {
+                    let partial = streamed_text
+                        .lock()
+                        .expect("dispatcher streamed_text poisoned")
+                        .clone();
+                    return self.emit_stop_and_finish(db, workspace_id, on_event, &partial);
+                }
+                response = provider.chat_stream(&messages, &tool_definitions, on_delta) => response
+            }?;
             let response_snapshot = provider.build_response_snapshot(&response);
 
             debug_logger.log(
@@ -695,6 +773,10 @@ impl DispatcherAgent {
             let mut final_message: Option<String> = None;
 
             for tool_call in response.tool_calls {
+                if cancellation_requested(&cancel_rx) {
+                    return self.emit_stop_and_finish(db, workspace_id, on_event, "");
+                }
+
                 let tool_arguments = serde_json::to_string_pretty(&tool_call.arguments)
                     .unwrap_or_else(|_| "{}".to_string());
                 emit(
@@ -924,6 +1006,10 @@ impl DispatcherAgent {
                 .to_string(),
         );
         lines.push(
+            "规则：phase=stopped 时，说明子进程已被 UI 手动停止但会话仍可恢复；此时不要继续 dispatch/continue/exit，而是先让用户决定是否恢复。"
+                .to_string(),
+        );
+        lines.push(
             "规则：phase=exit_requested 时，不要再次调用该 agent 的 dispatch_* / continue_* / exit_*，只等待进程结束。"
                 .to_string(),
         );
@@ -997,6 +1083,7 @@ impl DispatcherAgent {
                     allowed.insert(continue_tool_name(agent_slug));
                     allowed.insert(exit_tool_name(agent_slug));
                 }
+                (true, Some(RegisteredSubprocessPhase::Stopped)) => {}
                 (true, Some(RegisteredSubprocessPhase::ExitRequested)) => {}
                 (true, None) => {}
             }
@@ -1258,6 +1345,24 @@ impl DispatcherAgent {
         emit(on_event, AgentEvent::Finished { messages });
         Ok(reply)
     }
+
+    fn emit_stop_and_finish(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        partial: &str,
+    ) -> Result<DispatcherMessageRecord> {
+        let content = build_stopped_dispatch_reply(partial);
+        let reply = db.add_visible_message(workspace_id, "assistant", &content)?;
+        emit(
+            on_event,
+            AgentEvent::AssistantMessage {
+                message: reply.clone(),
+            },
+        );
+        Ok(reply)
+    }
 }
 
 fn extract_message_content(arguments: &Value) -> Option<String> {
@@ -1427,6 +1532,34 @@ fn summarize_dispatch_description(task_description: &str) -> String {
     }
 }
 
+fn cancellation_requested(cancel_rx: &watch::Receiver<bool>) -> bool {
+    *cancel_rx.borrow()
+}
+
+async fn wait_for_cancellation(cancel_rx: &mut watch::Receiver<bool>) {
+    if cancellation_requested(cancel_rx) {
+        return;
+    }
+
+    while cancel_rx.changed().await.is_ok() {
+        if cancellation_requested(cancel_rx) {
+            return;
+        }
+    }
+}
+
+fn build_stopped_dispatch_reply(partial: &str) -> String {
+    let trimmed = partial.trim();
+    if trimmed.is_empty() {
+        "⏹️ 本轮调度已停止。当前会话上下文与已完成内容均已保留，可稍后继续。".to_string()
+    } else {
+        format!(
+            "{}\n\n[本轮已手动停止。当前会话上下文与以上输出均已保留，可稍后继续。]",
+            trimmed
+        )
+    }
+}
+
 fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
     let _ = on_event.send(event);
 }
@@ -1435,6 +1568,7 @@ fn subprocess_phase_label(phase: RegisteredSubprocessPhase) -> &'static str {
     match phase {
         RegisteredSubprocessPhase::Running => "running",
         RegisteredSubprocessPhase::RoundCompleted => "round_completed",
+        RegisteredSubprocessPhase::Stopped => "stopped",
         RegisteredSubprocessPhase::ExitRequested => "exit_requested",
     }
 }

@@ -10,12 +10,18 @@ pub(crate) type SharedPtyMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 pub(crate) type SharedPtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 pub(crate) type SharedChildHandle = Arc<Mutex<Box<dyn Child + Send + Sync>>>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TaskTerminationIntent {
+    Cancelled,
+    Stopped,
+}
+
 #[derive(Default)]
 pub struct TaskManager {
     pub(crate) pty_masters: Mutex<HashMap<String, SharedPtyMaster>>,
     pub(crate) pty_writers: Mutex<HashMap<String, SharedPtyWriter>>,
     pub(crate) child_handles: Mutex<HashMap<String, SharedChildHandle>>,
-    pub(crate) cancelled_tasks: Mutex<HashSet<String>>,
+    pub(crate) task_termination_intents: Mutex<HashMap<String, TaskTerminationIntent>>,
     pub(crate) codex_sessions: Mutex<HashMap<String, CodexSessionInfo>>,
     pub(crate) claude_sessions: Mutex<HashMap<String, ClaudeSessionInfo>>,
     pub(crate) claimed_session_paths: Mutex<HashSet<String>>,
@@ -31,6 +37,16 @@ pub struct TaskManager {
 }
 
 impl TaskManager {
+    pub(crate) fn set_task_termination_intent(&self, id: &str, intent: TaskTerminationIntent) {
+        self.task_termination_intents
+            .lock()
+            .insert(id.to_string(), intent);
+    }
+
+    pub(crate) fn take_task_termination_intent(&self, id: &str) -> Option<TaskTerminationIntent> {
+        self.task_termination_intents.lock().remove(id)
+    }
+
     pub(crate) fn insert_pty_handles(
         &self,
         id: &str,
@@ -96,10 +112,12 @@ impl TaskManager {
         let mut writers = self.pty_writers.lock();
         let mut children = self.child_handles.lock();
         let mut project_paths = self.task_project_paths.lock();
+        let mut intents = self.task_termination_intents.lock();
 
         masters.remove(id);
         writers.remove(id);
         children.remove(id);
         project_paths.remove(id);
+        intents.remove(id);
     }
 }

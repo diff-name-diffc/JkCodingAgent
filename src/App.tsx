@@ -107,7 +107,7 @@ function App() {
       (e) => {
         const { task_id, status, failure_reason } = e.payload;
         updateTaskStatus(task_id, status, undefined, failure_reason);
-        if (!isActiveTaskStatus(status)) {
+        if (status === "done" || status === "failed" || status === "cancelled") {
           tm.removeInactiveTaskBuffers([task_id]);
         }
       },
@@ -180,6 +180,30 @@ function App() {
     });
   }
 
+  function invokeResumeTask(task: Task, projectPath: string) {
+    const sessionId = task.agent === "claude" ? task.claudeSessionId : task.codexSessionId;
+    if (!sessionId) {
+      showToast("当前任务尚未记录可恢复的会话 ID，暂时无法继续。", "warning");
+      return Promise.resolve();
+    }
+
+    return invoke("resume_task", {
+      taskId: task.id,
+      projectPath,
+      agent: task.agent,
+      sessionId,
+      prompt: task.prompt,
+      permissionMode: task.permissionMode,
+      cols: tm.terminalSizeRef.current.cols,
+      rows: tm.terminalSizeRef.current.rows,
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      tm.writeErrorToTerminal(task.id, `\r\n错误：${msg}\r\n`);
+      updateTaskStatus(task.id, "stopped");
+      showToast(`继续任务失败：${msg}`);
+    });
+  }
+
   function handleSubmitTask(
     project: Project,
     {
@@ -190,6 +214,8 @@ function App() {
       immediate,
       hidden,
       dispatcherDispatchId,
+      dispatcherSessionId,
+      dispatcherDescription,
     }: {
       prompt: string;
       agent: AgentType;
@@ -198,6 +224,8 @@ function App() {
       immediate: boolean;
       hidden?: boolean;
       dispatcherDispatchId?: string;
+      dispatcherSessionId?: string;
+      dispatcherDescription?: string;
     },
   ): string {
     const task: Task = {
@@ -208,6 +236,9 @@ function App() {
       permissionMode,
       status: immediate ? "pending" : "todo",
       createdAt: Date.now(),
+      dispatcherDispatchId,
+      dispatcherSessionId,
+      dispatcherDescription,
     };
     setTasks((prev) => {
       const next = [task, ...prev];
@@ -240,8 +271,7 @@ function App() {
       deletingTasks
         .filter((task) => isActiveTaskStatus(task.status))
         .forEach((task) => {
-          const proj = projects.find((p) => p.id === task.projectId);
-          invoke("cancel_task", { taskId: task.id, projectPath: proj?.path ?? "" }).catch(
+          invoke("cancel_task", { taskId: task.id }).catch(
             (e: unknown) => {
               showToast(`取消任务失败：${String(e)}`);
             },
@@ -297,6 +327,7 @@ function App() {
         changed = true;
         const updated: Task = { ...task, status, attentionRequestedAt };
         if (status === "failed" && failureReason) updated.failureReason = failureReason;
+        if (status !== "failed") delete updated.failureReason;
         return updated;
       });
 
@@ -368,6 +399,22 @@ function App() {
             tasks={tasks}
             getTaskRestoreState={tm.getTaskRestoreState}
             onSubmitTask={(taskInput) => handleSubmitTask(project, taskInput)}
+            onStopTask={(taskId) =>
+              invoke("stop_task", { taskId })
+                .catch((e: unknown) => {
+                  showToast(`停止任务失败：${String(e)}`);
+                })
+                .then(() => undefined)
+            }
+            onResumeTask={(task) => {
+              const sessionId = task.agent === "claude" ? task.claudeSessionId : task.codexSessionId;
+              if (!sessionId) {
+                showToast("当前任务尚未记录可恢复的会话 ID，暂时无法继续。", "warning");
+                return Promise.resolve();
+              }
+              updateTaskStatus(task.id, "pending");
+              return invokeResumeTask(task, project.path).then(() => undefined);
+            }}
             onInput={tm.handleInput}
             onResize={tm.handleResize}
             onRegisterTerminal={tm.handleRegisterTerminal}

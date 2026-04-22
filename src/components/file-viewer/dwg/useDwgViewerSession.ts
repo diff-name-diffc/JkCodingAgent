@@ -22,7 +22,6 @@ import type {
 } from "../../../types";
 import { openCadViewerDwgDocument } from "../../../lib/cadViewerDwg";
 import {
-  bboxCenter,
   buildCommandIssueMarkers,
   buildReviewIssueMarkers,
   createIssueMarkerLayer,
@@ -30,6 +29,7 @@ import {
   mergeCommandIssueMarkers,
   type IssueMarkerLayerHandle,
 } from "./issueMarkers";
+import { buildCadIssueFocusPlan } from "./issueLocation";
 
 type ViewerBridge = {
   context: AcApContext;
@@ -60,6 +60,7 @@ export function useDwgViewerSession({
   parseError,
   reviewIssues,
   activeIssue,
+  locateRequestNonce,
 }: {
   tabId: string;
   active: boolean;
@@ -73,6 +74,7 @@ export function useDwgViewerSession({
   parseError: string | null;
   reviewIssues: CadReviewIssue[];
   activeIssue: CadReviewIssue | null;
+  locateRequestNonce: number;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const markerLayerRef = useRef<IssueMarkerLayerHandle | null>(null);
@@ -373,7 +375,7 @@ export function useDwgViewerSession({
     const cleanup = locateCadIssueInViewer(bridge, activeIssue, setViewerNotice);
     void syncViewerState();
     return cleanup;
-  }, [activeIssue, syncViewerState]);
+  }, [activeIssue, locateRequestNonce, syncViewerState]);
 
   const switchToSelect = useCallback(() => {
     const bridge = viewerRef.current;
@@ -544,7 +546,8 @@ async function executeCommand(
           typeof payload.pickOneOnly === "boolean" ? Boolean(payload.pickOneOnly) : true;
         const worldPoint = normalizeCadPoint(payload.worldPoint);
         const screenPoint = normalizeCadPoint(payload.screenPoint);
-        const point = worldPoint ?? (screenPoint ? bridge.view.screenToWorld(screenPoint) : undefined);
+        const point =
+          worldPoint ?? (screenPoint ? bridge.view.screenToWorld(screenPoint) : undefined);
         result = bridge.view.pick(point, hitRadius, pickOneOnly);
         break;
       }
@@ -603,12 +606,8 @@ function locateCadIssueInViewer(
   setViewerNotice: (message: string | null) => void,
 ) {
   const ids = issue.entityRefs;
-  const target = issue.anchorPoint ?? bboxCenter(issue.bbox ?? null);
-  setViewerNotice(
-    ids.length === 0 && !target
-      ? "当前问题没有可定位的图元引用、锚点或包围盒，只能保留文字说明。"
-      : null,
-  );
+  const plan = buildCadIssueFocusPlan(issue);
+  setViewerNotice(plan.kind === "noop" ? plan.reason : null);
   bridge.view.selectionSet.clear();
   if (ids.length > 0) {
     try {
@@ -619,9 +618,25 @@ function locateCadIssueInViewer(
     }
   }
 
-  if (target) {
-    void new AcApSelectCmd().execute(bridge.context).catch(() => undefined);
-    bridge.view.flyTo(target, 4);
+  switch (plan.kind) {
+    case "fit_entities":
+      void new AcApSelectCmd().execute(bridge.context).catch(() => undefined);
+      if (plan.bbox) {
+        zoomToBBox(bridge, plan.bbox);
+      } else if (plan.point) {
+        bridge.view.flyTo(plan.point, plan.zoomScale ?? 4);
+      }
+      break;
+    case "fit_bbox":
+      zoomToBBox(bridge, plan.bbox);
+      break;
+    case "fly_to_point":
+      void new AcApSelectCmd().execute(bridge.context).catch(() => undefined);
+      bridge.view.flyTo(plan.point, plan.zoomScale ?? 4);
+      break;
+    case "noop":
+    default:
+      break;
   }
 
   return () => {
@@ -629,6 +644,12 @@ function locateCadIssueInViewer(
       bridge.view.unhighlight(ids);
     }
   };
+}
+
+function zoomToBBox(bridge: ViewerBridge, bbox: CadBBox) {
+  bridge.view.zoomTo(
+    new AcGeBox2d(new AcGePoint2d(bbox.minX, bbox.minY), new AcGePoint2d(bbox.maxX, bbox.maxY)),
+  );
 }
 
 function normalizeIssueMarkers(value: unknown): DwgIssueMarker[] {

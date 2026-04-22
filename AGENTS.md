@@ -235,7 +235,7 @@ commit_prompt = "..."     # generate_commit_message 使用的提示词
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **aha-coding** (2579 symbols, 6022 relationships, 221 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **aha-coding** (3143 symbols, 7455 relationships, 271 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

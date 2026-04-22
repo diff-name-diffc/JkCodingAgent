@@ -34,8 +34,8 @@ export function buildReviewIssueMarkers(
     id: issue.id,
     severity: issue.severity,
     title: issue.title,
-    anchorPoint: issue.anchorPoint,
-    bbox: issue.bbox,
+    anchorPoint: issue.anchorPoint ?? issue.viewportHint?.center ?? null,
+    bbox: issue.bbox ?? issue.viewportHint?.bbox ?? null,
     active: issue.id === activeIssueId,
   }));
 }
@@ -241,10 +241,7 @@ function inflateBBox(bbox: CadBBox, paddingRatio: number): CadBBox {
 
 function pointInBBox(point: CadPoint, bbox: CadBBox): boolean {
   return (
-    point.x >= bbox.minX &&
-    point.x <= bbox.maxX &&
-    point.y >= bbox.minY &&
-    point.y <= bbox.maxY
+    point.x >= bbox.minX && point.x <= bbox.maxX && point.y >= bbox.minY && point.y <= bbox.maxY
   );
 }
 

@@ -43,6 +43,38 @@ describe("dwg issue markers", () => {
     expect(markers[1]).toMatchObject({ key: "review:issue-2", active: true });
   });
 
+  it("falls back to viewport hints when review issues do not carry direct anchors", () => {
+    const markers = buildReviewIssueMarkers(
+      [
+        {
+          id: "issue-viewport",
+          runId: "run-1",
+          severity: "medium",
+          title: "局部空间不足",
+          description: "当前问题只有视口提示",
+          entityRefs: [],
+          anchorPoint: null,
+          bbox: null,
+          viewportHint: {
+            center: { x: 32, y: 48 },
+            bbox: { minX: 20, minY: 30, maxX: 44, maxY: 60 },
+            zoomScale: 6,
+          },
+          createdAt: "2026-04-22T00:00:00Z",
+        },
+      ],
+      null,
+    );
+
+    expect(markers).toEqual([
+      expect.objectContaining({
+        key: "review:issue-viewport",
+        anchorPoint: { x: 32, y: 48 },
+        bbox: { minX: 20, minY: 30, maxX: 44, maxY: 60 },
+      }),
+    ]);
+  });
+
   it("merges command markers by id and keeps the latest payload", () => {
     const existing: DwgIssueMarker[] = [
       { id: "m-1", severity: "low", anchorPoint: { x: 1, y: 2 } },

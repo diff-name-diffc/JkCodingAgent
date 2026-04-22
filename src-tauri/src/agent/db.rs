@@ -1255,41 +1255,122 @@ impl DispatcherDb {
         &self,
         input: &CreateCadReviewRunInput,
     ) -> Result<CadReviewRunDetail> {
-        let run = CadReviewRunRecord {
-            id: Uuid::new_v4().to_string(),
-            workspace_id: input.workspace_id.clone(),
-            file_path: input.file_path.clone(),
-            source_message_id: input.source_message_id.clone(),
-            result_message_id: None,
-            rule_attachment_ids: input.rule_attachment_ids.clone(),
-            goal: input.goal.clone(),
-            status: input.status.clone(),
-            summary: input.summary.clone(),
-            issue_count: input.issues.len(),
-            created_at: now(),
-        };
+        let timestamp = now();
 
         let mut conn = self.connect()?;
         let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT INTO cad_review_runs (
-                id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                &run.id,
-                &run.workspace_id,
-                &run.file_path,
-                &run.source_message_id,
-                &run.result_message_id,
-                serde_json::to_string(&run.rule_attachment_ids)?,
-                &run.goal,
-                &run.status,
-                &run.summary,
-                run.issue_count as i64,
-                &run.created_at
-            ],
-        )
-        .context("insert cad review run")?;
+        let existing_run_by_id = if let Some(run_id) = input.run_id.as_deref() {
+            tx.query_row(
+                "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at, updated_at
+                 FROM cad_review_runs
+                 WHERE workspace_id = ?1 AND id = ?2
+                 LIMIT 1",
+                params![&input.workspace_id, run_id],
+                map_review_run_row,
+            )
+            .optional()
+            .context("load cad review run by id")?
+        } else {
+            None
+        };
+        let existing_run = if let Some(run) = existing_run_by_id {
+            Some(run)
+        } else {
+            tx.query_row(
+                "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at, updated_at
+                 FROM cad_review_runs
+                 WHERE workspace_id = ?1 AND file_path = ?2 AND source_message_id = ?3
+                 ORDER BY updated_at DESC, created_at DESC, rowid DESC
+                 LIMIT 1",
+                params![&input.workspace_id, &input.file_path, &input.source_message_id],
+                map_review_run_row,
+            )
+            .optional()
+            .context("load cad review run by source message")
+            ?
+        };
+
+        let run = if let Some(mut run) = existing_run {
+            run.file_path = input.file_path.clone();
+            run.source_message_id = input.source_message_id.clone();
+            run.rule_attachment_ids = input.rule_attachment_ids.clone();
+            run.goal = input.goal.clone();
+            run.status = input.status.clone();
+            run.summary = input.summary.clone();
+            run.issue_count = input.issues.len();
+            run.updated_at = timestamp.clone();
+
+            tx.execute(
+                "UPDATE cad_review_runs
+                 SET file_path = ?1,
+                     source_message_id = ?2,
+                     rule_attachment_ids_json = ?3,
+                     goal = ?4,
+                     status = ?5,
+                     summary = ?6,
+                     issue_count = ?7,
+                     updated_at = ?8
+                 WHERE id = ?9",
+                params![
+                    &run.file_path,
+                    &run.source_message_id,
+                    serde_json::to_string(&run.rule_attachment_ids)?,
+                    &run.goal,
+                    &run.status,
+                    &run.summary,
+                    run.issue_count as i64,
+                    &run.updated_at,
+                    &run.id
+                ],
+            )
+            .context("update cad review run")?;
+            tx.execute(
+                "DELETE FROM cad_review_issues WHERE run_id = ?1",
+                params![&run.id],
+            )
+            .context("clear cad review issues before sync")?;
+            run
+        } else {
+            let run = CadReviewRunRecord {
+                id: input
+                    .run_id
+                    .clone()
+                    .unwrap_or_else(|| Uuid::new_v4().to_string()),
+                workspace_id: input.workspace_id.clone(),
+                file_path: input.file_path.clone(),
+                source_message_id: input.source_message_id.clone(),
+                result_message_id: None,
+                rule_attachment_ids: input.rule_attachment_ids.clone(),
+                goal: input.goal.clone(),
+                status: input.status.clone(),
+                summary: input.summary.clone(),
+                issue_count: input.issues.len(),
+                created_at: timestamp.clone(),
+                updated_at: timestamp.clone(),
+            };
+
+            tx.execute(
+                "INSERT INTO cad_review_runs (
+                    id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    &run.id,
+                    &run.workspace_id,
+                    &run.file_path,
+                    &run.source_message_id,
+                    &run.result_message_id,
+                    serde_json::to_string(&run.rule_attachment_ids)?,
+                    &run.goal,
+                    &run.status,
+                    &run.summary,
+                    run.issue_count as i64,
+                    &run.created_at,
+                    &run.updated_at
+                ],
+            )
+            .context("insert cad review run")?;
+            run
+        };
 
         let mut issues = Vec::with_capacity(input.issues.len());
         for issue in &input.issues {
@@ -1305,7 +1386,7 @@ impl DispatcherDb {
                 bbox: issue.bbox.clone(),
                 viewport_hint: issue.viewport_hint.clone(),
                 rule_ref: issue.rule_ref.clone(),
-                created_at: run.created_at.clone(),
+                created_at: run.updated_at.clone(),
             };
             tx.execute(
                 "INSERT INTO cad_review_issues (
@@ -1356,10 +1437,10 @@ impl DispatcherDb {
         let conn = self.connect()?;
         if let Some(file_path) = file_path {
             let mut stmt = conn.prepare(
-                "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at
+                "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at, updated_at
                  FROM cad_review_runs
                  WHERE workspace_id = ?1 AND file_path = ?2
-                 ORDER BY created_at DESC, rowid DESC",
+                 ORDER BY updated_at DESC, created_at DESC, rowid DESC",
             )?;
             let rows = stmt.query_map(params![workspace_id, file_path], map_review_run_row)?;
             return rows
@@ -1368,10 +1449,10 @@ impl DispatcherDb {
         }
 
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at
+            "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at, updated_at
              FROM cad_review_runs
              WHERE workspace_id = ?1
-             ORDER BY created_at DESC, rowid DESC",
+             ORDER BY updated_at DESC, created_at DESC, rowid DESC",
         )?;
         let rows = stmt.query_map(params![workspace_id], map_review_run_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -1386,7 +1467,7 @@ impl DispatcherDb {
         let conn = self.connect()?;
         let run = conn
             .query_row(
-                "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at
+                "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at, updated_at
                  FROM cad_review_runs
                  WHERE workspace_id = ?1 AND id = ?2",
                 params![workspace_id, run_id],
@@ -1785,7 +1866,8 @@ impl DispatcherDb {
                 status TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 issue_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_cad_review_runs_workspace_file
@@ -1832,6 +1914,20 @@ impl DispatcherDb {
         ensure_column_exists(&conn, "dispatcher_messages", "tool_artifacts_json", "TEXT")?;
         ensure_column_exists(&conn, "dwg_parse_cache", "document_id", "TEXT")?;
         ensure_column_exists(&conn, "cad_review_issues", "viewport_hint_json", "TEXT")?;
+        ensure_column_exists(&conn, "cad_review_runs", "updated_at", "TEXT")?;
+        conn.execute(
+            "UPDATE cad_review_runs
+             SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at)
+             WHERE updated_at IS NULL OR updated_at = ''",
+            [],
+        )
+        .context("backfill cad review run updated_at")?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cad_review_runs_workspace_file_updated
+             ON cad_review_runs(workspace_id, file_path, updated_at DESC, created_at DESC)",
+            [],
+        )
+        .context("create cad review run updated index")?;
         Ok(())
     }
 
@@ -1920,6 +2016,7 @@ fn map_review_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CadReviewRunR
         summary: row.get(8)?,
         issue_count: row.get::<_, i64>(9)? as usize,
         created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -3028,6 +3125,80 @@ mod tests {
     }
 
     #[test]
+    fn init_migrates_legacy_cad_review_runs_without_updated_at() {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-db-cad-review-migrate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create temp db root");
+        let db_path = root.join("dispatcher.sqlite3");
+        let conn = Connection::open(&db_path).expect("open sqlite");
+        conn.execute_batch(
+            "
+            CREATE TABLE cad_review_runs (
+              id TEXT PRIMARY KEY,
+              workspace_id TEXT NOT NULL,
+              file_path TEXT NOT NULL,
+              source_message_id TEXT NOT NULL,
+              result_message_id TEXT,
+              rule_attachment_ids_json TEXT NOT NULL DEFAULT '[]',
+              goal TEXT NOT NULL,
+              status TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              issue_count INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_cad_review_runs_workspace_file
+            ON cad_review_runs(workspace_id, file_path, created_at DESC);
+            INSERT INTO cad_review_runs (
+              id, workspace_id, file_path, source_message_id, result_message_id,
+              rule_attachment_ids_json, goal, status, summary, issue_count, created_at
+            )
+            VALUES (
+              'run-1', 'ws-1', '/repo/sample.dwg', 'msg-1', NULL,
+              '[]', 'review', 'completed', 'ok', 0, '2026-04-22T00:00:00Z'
+            );
+            ",
+        )
+        .expect("seed legacy cad review schema");
+        drop(conn);
+
+        let db = DispatcherDb::new(db_path.clone()).expect("migrate dispatcher db");
+        let conn = Connection::open(db.path()).expect("open migrated db");
+        let columns = conn
+            .prepare("PRAGMA table_info(cad_review_runs)")
+            .expect("prepare pragma")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query columns")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect columns");
+        assert!(columns.contains(&"updated_at".to_string()));
+
+        let updated_at: String = conn
+            .query_row(
+                "SELECT updated_at FROM cad_review_runs WHERE id = 'run-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read backfilled updated_at");
+        assert_eq!(updated_at, "2026-04-22T00:00:00Z");
+
+        let index_exists: String = conn
+            .query_row(
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name = 'idx_cad_review_runs_workspace_file_updated'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated index");
+        assert_eq!(index_exists, "idx_cad_review_runs_workspace_file_updated");
+
+        drop(db);
+        cleanup_test_db(root);
+    }
+
+    #[test]
     fn query_dwg_parse_entities_filters_and_paginates() {
         let (db, root) = create_test_db();
         let file_path = "/repo/sample.dwg";
@@ -3228,6 +3399,7 @@ mod tests {
         let (db, root) = create_test_db();
         let detail = db
             .create_cad_review_run(&CreateCadReviewRunInput {
+                run_id: None,
                 workspace_id: "ws-1".to_string(),
                 file_path: "/repo/sample.dwg".to_string(),
                 source_message_id: "msg-source".to_string(),
@@ -3258,6 +3430,93 @@ mod tests {
         assert_eq!(loaded.run.result_message_id.as_deref(), Some("msg-result"));
         assert_eq!(loaded.issues.len(), 1);
         assert_eq!(loaded.issues[0].entity_refs, vec!["L1".to_string()]);
+        assert_eq!(loaded.run.created_at, loaded.run.updated_at);
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn create_cad_review_run_updates_existing_run_for_same_source_message() {
+        let (db, root) = create_test_db();
+        let first = db
+            .create_cad_review_run(&CreateCadReviewRunInput {
+                run_id: None,
+                workspace_id: "ws-1".to_string(),
+                file_path: "/repo/sample.dwg".to_string(),
+                source_message_id: "msg-source".to_string(),
+                rule_attachment_ids: vec![],
+                goal: "第一次审查".to_string(),
+                status: "running".to_string(),
+                summary: "发现 1 个问题".to_string(),
+                issues: vec![CreateCadReviewIssueInput {
+                    severity: "high".to_string(),
+                    title: "问题 A".to_string(),
+                    description: "描述 A".to_string(),
+                    layer: Some("A-DOOR".to_string()),
+                    entity_refs: vec!["L1".to_string()],
+                    anchor_point: Some(CadPoint { x: 2.0, y: 2.0 }),
+                    bbox: None,
+                    viewport_hint: None,
+                    rule_ref: None,
+                }],
+            })
+            .expect("create first cad review run");
+
+        let updated = db
+            .create_cad_review_run(&CreateCadReviewRunInput {
+                run_id: None,
+                workspace_id: "ws-1".to_string(),
+                file_path: "/repo/sample.dwg".to_string(),
+                source_message_id: "msg-source".to_string(),
+                rule_attachment_ids: vec!["att-2".to_string()],
+                goal: "第二次同步".to_string(),
+                status: "completed".to_string(),
+                summary: "发现 2 个问题".to_string(),
+                issues: vec![
+                    CreateCadReviewIssueInput {
+                        severity: "medium".to_string(),
+                        title: "问题 B".to_string(),
+                        description: "描述 B".to_string(),
+                        layer: Some("A-WALL".to_string()),
+                        entity_refs: vec!["L2".to_string()],
+                        anchor_point: None,
+                        bbox: None,
+                        viewport_hint: None,
+                        rule_ref: None,
+                    },
+                    CreateCadReviewIssueInput {
+                        severity: "low".to_string(),
+                        title: "问题 C".to_string(),
+                        description: "描述 C".to_string(),
+                        layer: None,
+                        entity_refs: vec![],
+                        anchor_point: Some(CadPoint { x: 8.0, y: 5.0 }),
+                        bbox: None,
+                        viewport_hint: None,
+                        rule_ref: None,
+                    },
+                ],
+            })
+            .expect("update cad review run");
+
+        let runs = db
+            .list_cad_review_runs("ws-1", Some("/repo/sample.dwg"))
+            .expect("list synced review runs");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(updated.run.id, first.run.id);
+        assert_eq!(updated.run.issue_count, 2);
+        assert_eq!(updated.run.summary, "发现 2 个问题");
+        assert_eq!(updated.run.status, "completed");
+        assert_eq!(updated.run.rule_attachment_ids, vec!["att-2".to_string()]);
+        assert_eq!(updated.run.created_at, first.run.created_at);
+        assert_ne!(updated.run.updated_at, first.run.updated_at);
+
+        let loaded = db
+            .get_cad_review_run_detail("ws-1", &updated.run.id)
+            .expect("load updated cad review detail");
+        assert_eq!(loaded.issues.len(), 2);
+        assert_eq!(loaded.issues[0].title, "问题 B");
+        assert_eq!(loaded.issues[1].title, "问题 C");
 
         cleanup_test_db(root);
     }

@@ -1,5 +1,5 @@
 import { AlertCircle, LoaderCircle, Map, MapPinned, MousePointer2, ScanSearch } from "lucide-react";
-import { useMemo, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { CadReviewIssue } from "../../types";
 import { DwgReviewPanel } from "./dwg/DwgReviewPanel";
 import { useCadReviewRuns } from "./dwg/useCadReviewRuns";
@@ -33,7 +33,14 @@ export function DwgWorkbenchPane({
   onActiveReviewRunChange: (runId: string | null) => void;
   onActiveIssueChange: (issueId: string | null) => void;
 }) {
-  const { loading, parseStatus, error: indexError, summary, docId, bytes } = useDwgIndex({
+  const {
+    loading,
+    parseStatus,
+    error: indexError,
+    summary,
+    docId,
+    bytes,
+  } = useDwgIndex({
     filePath,
     fileName,
     projectPath,
@@ -50,6 +57,19 @@ export function DwgWorkbenchPane({
   const activeIssue = useMemo<CadReviewIssue | null>(
     () => reviewDetail?.issues.find((issue) => issue.id === activeIssueId) ?? null,
     [activeIssueId, reviewDetail],
+  );
+  const [locateRequest, setLocateRequest] = useState<{ issueId: string; nonce: number } | null>(
+    null,
+  );
+  const handleLocateIssue = useCallback(
+    (issueId: string) => {
+      onActiveIssueChange(issueId);
+      setLocateRequest((current) => ({
+        issueId,
+        nonce: current && current.issueId === issueId ? current.nonce + 1 : 1,
+      }));
+    },
+    [onActiveIssueChange],
   );
   const {
     containerRef,
@@ -72,6 +92,8 @@ export function DwgWorkbenchPane({
     parseError: indexError,
     reviewIssues: reviewDetail?.issues ?? [],
     activeIssue,
+    locateRequestNonce:
+      locateRequest && locateRequest.issueId === activeIssue?.id ? locateRequest.nonce : 0,
   });
 
   const error = viewerError ?? indexError ?? reviewError;
@@ -168,7 +190,14 @@ export function DwgWorkbenchPane({
               >
                 DWG 工作台
               </div>
-              <div style={{ marginTop: 4, fontSize: 19, fontWeight: 700, color: "var(--text-primary)" }}>
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 19,
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                }}
+              >
                 {fileName}
               </div>
               <div
@@ -276,6 +305,7 @@ export function DwgWorkbenchPane({
           activeIssueId={activeIssueId}
           onActiveReviewRunChange={onActiveReviewRunChange}
           onActiveIssueChange={onActiveIssueChange}
+          onLocateIssue={handleLocateIssue}
         />
       </aside>
     </div>

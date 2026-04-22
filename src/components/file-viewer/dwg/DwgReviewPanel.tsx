@@ -1,5 +1,7 @@
+import { LocateFixed } from "lucide-react";
 import type { CSSProperties } from "react";
 import type { CadReviewRun, CadReviewRunDetail, DwgParseSummary } from "../../../types";
+import { canLocateCadReviewIssue } from "./issueLocation";
 
 const tokenStyle: CSSProperties = {
   display: "inline-flex",
@@ -21,6 +23,7 @@ export function DwgReviewPanel({
   activeIssueId,
   onActiveReviewRunChange,
   onActiveIssueChange,
+  onLocateIssue,
 }: {
   summary: DwgParseSummary | null;
   reviewRuns: CadReviewRun[];
@@ -29,6 +32,7 @@ export function DwgReviewPanel({
   activeIssueId: string | null;
   onActiveReviewRunChange: (runId: string | null) => void;
   onActiveIssueChange: (issueId: string | null) => void;
+  onLocateIssue: (issueId: string) => void;
 }) {
   return (
     <>
@@ -83,7 +87,7 @@ export function DwgReviewPanel({
                       {run.summary}
                     </div>
                     <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 4 }}>
-                      {run.issueCount} 条问题 · {new Date(run.createdAt).toLocaleString()}
+                      {run.issueCount} 条问题 · 最近同步 {new Date(run.updatedAt).toLocaleString()}
                     </div>
                   </button>
                 );
@@ -94,11 +98,20 @@ export function DwgReviewPanel({
               <div style={{ display: "grid", gap: 8 }}>
                 {reviewDetail.issues.map((issue) => {
                   const active = issue.id === activeIssueId;
+                  const locatable = canLocateCadReviewIssue(issue);
+                  const issueBBox = issue.bbox ?? issue.viewportHint?.bbox ?? null;
                   return (
-                    <button
+                    <div
                       key={issue.id}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       onClick={() => onActiveIssueChange(issue.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          onActiveIssueChange(issue.id);
+                        }
+                      }}
                       style={{
                         textAlign: "left",
                         padding: 12,
@@ -110,11 +123,48 @@ export function DwgReviewPanel({
                         cursor: "pointer",
                       }}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={severityPill(issue.severity)}>{issue.severity}</span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>
-                          {issue.title}
-                        </span>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            flex: 1,
+                            minWidth: 0,
+                          }}
+                        >
+                          <span style={severityPill(issue.severity)}>{issue.severity}</span>
+                          <span
+                            style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}
+                          >
+                            {issue.title}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onLocateIssue(issue.id);
+                          }}
+                          disabled={!locatable}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            borderRadius: 999,
+                            border: "1px solid var(--border-dim)",
+                            background: locatable ? "var(--bg-panel)" : "transparent",
+                            color: locatable ? "var(--text-primary)" : "var(--text-hint)",
+                            padding: "6px 10px",
+                            fontSize: 11.5,
+                            fontWeight: 600,
+                            cursor: locatable ? "pointer" : "not-allowed",
+                            flexShrink: 0,
+                          }}
+                        >
+                          <LocateFixed size={13} />
+                          定位
+                        </button>
                       </div>
                       <div
                         style={{
@@ -126,7 +176,7 @@ export function DwgReviewPanel({
                       >
                         {issue.description}
                       </div>
-                      {(issue.anchorPoint || issue.bbox) && (
+                      {(issue.anchorPoint || issue.viewportHint?.center || issueBBox) && (
                         <div
                           style={{
                             marginTop: 8,
@@ -137,10 +187,25 @@ export function DwgReviewPanel({
                         >
                           {issue.anchorPoint
                             ? `定位: ${issue.anchorPoint.x.toFixed(2)}, ${issue.anchorPoint.y.toFixed(2)}`
-                            : `范围: ${issue.bbox?.minX.toFixed(2)}, ${issue.bbox?.minY.toFixed(2)} → ${issue.bbox?.maxX.toFixed(2)}, ${issue.bbox?.maxY.toFixed(2)}`}
+                            : issue.viewportHint?.center
+                              ? `视口: ${issue.viewportHint.center.x.toFixed(2)}, ${issue.viewportHint.center.y.toFixed(2)}`
+                              : issueBBox
+                                ? `范围: ${issueBBox.minX.toFixed(2)}, ${issueBBox.minY.toFixed(2)} → ${issueBBox.maxX.toFixed(2)}, ${issueBBox.maxY.toFixed(2)}`
+                                : "缺少范围信息"}
                         </div>
                       )}
-                    </button>
+                      {!locatable && (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            fontSize: 11.5,
+                            color: "var(--text-hint)",
+                          }}
+                        >
+                          当前问题缺少可定位信息，Agent 后续同步时需要补充实体、视口或几何锚点。
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -191,7 +256,9 @@ function MetaRow({ label, value }: { label: string; value: string }) {
 }
 
 function EmptyHint({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.5 }}>{children}</div>;
+  return (
+    <div style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.5 }}>{children}</div>
+  );
 }
 
 function severityPill(severity: string): CSSProperties {

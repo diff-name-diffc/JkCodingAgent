@@ -24,46 +24,77 @@ export function useCadReviewRuns({
   const [reviewDetail, setReviewDetail] = useState<CadReviewRunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const loadReviewRuns = useCallback(async (preferredRunId?: string | null) => {
-    if (!workspaceId) {
-      setReviewRuns([]);
-      setReviewDetail(null);
-      onLocateResultMessage?.(null);
-      return;
-    }
-    try {
-      const runs = await invoke<CadReviewRun[]>("dispatcher_list_cad_review_runs", {
-        workspaceId,
-        filePath,
-      });
-      setReviewRuns(runs);
-      if (runs.length === 0) {
+  const loadReviewDetail = useCallback(
+    async (runId: string) => {
+      if (!workspaceId) {
         setReviewDetail(null);
-        onActiveReviewRunChange(null);
-        onActiveIssueChange(null);
+        return null;
+      }
+      try {
+        const detail = await invoke<CadReviewRunDetail>("dispatcher_get_cad_review_run_detail", {
+          workspaceId,
+          runId,
+        });
+        setReviewDetail(detail);
+        setError(null);
+        return detail;
+      } catch (nextError) {
+        setError(nextError instanceof Error ? nextError.message : String(nextError));
+        return null;
+      }
+    },
+    [workspaceId],
+  );
+
+  const loadReviewRuns = useCallback(
+    async (preferredRunId?: string | null, options?: { reloadActiveDetail?: boolean }) => {
+      if (!workspaceId) {
+        setReviewRuns([]);
+        setReviewDetail(null);
         onLocateResultMessage?.(null);
-        return;
+        return null;
       }
-      const resolvedRunId =
-        preferredRunId && runs.some((run) => run.id === preferredRunId)
-          ? preferredRunId
-          : activeReviewRunId && runs.some((run) => run.id === activeReviewRunId)
-            ? activeReviewRunId
-          : runs[0].id;
-      if (resolvedRunId !== activeReviewRunId) {
-        onActiveReviewRunChange(resolvedRunId);
+      try {
+        const runs = await invoke<CadReviewRun[]>("dispatcher_list_cad_review_runs", {
+          workspaceId,
+          filePath,
+        });
+        setReviewRuns(runs);
+        setError(null);
+        if (runs.length === 0) {
+          setReviewDetail(null);
+          onActiveReviewRunChange(null);
+          onActiveIssueChange(null);
+          onLocateResultMessage?.(null);
+          return null;
+        }
+        const resolvedRunId =
+          preferredRunId && runs.some((run) => run.id === preferredRunId)
+            ? preferredRunId
+            : activeReviewRunId && runs.some((run) => run.id === activeReviewRunId)
+              ? activeReviewRunId
+              : runs[0].id;
+        if (resolvedRunId !== activeReviewRunId) {
+          onActiveReviewRunChange(resolvedRunId);
+        } else if (options?.reloadActiveDetail) {
+          await loadReviewDetail(resolvedRunId);
+        }
+        return resolvedRunId;
+      } catch (nextError) {
+        setError(nextError instanceof Error ? nextError.message : String(nextError));
+        return null;
       }
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : String(nextError));
-    }
-  }, [
-    activeReviewRunId,
-    filePath,
-    onActiveIssueChange,
-    onActiveReviewRunChange,
-    onLocateResultMessage,
-    workspaceId,
-  ]);
+    },
+    [
+      activeReviewRunId,
+      filePath,
+      loadReviewDetail,
+      onActiveIssueChange,
+      onActiveReviewRunChange,
+      onLocateResultMessage,
+      workspaceId,
+    ],
+  );
 
   useEffect(() => {
     void loadReviewRuns();
@@ -75,34 +106,21 @@ export function useCadReviewRuns({
       onLocateResultMessage?.(null);
       return;
     }
-    let cancelled = false;
-    invoke<CadReviewRunDetail>("dispatcher_get_cad_review_run_detail", {
-      workspaceId,
-      runId: activeReviewRunId,
-    })
-      .then((detail) => {
-        if (cancelled) return;
-        setReviewDetail(detail);
-        if (!activeIssueId || !detail.issues.some((issue) => issue.id === activeIssueId)) {
-          onActiveIssueChange(detail.issues[0]?.id ?? null);
-        }
-      })
-      .catch((nextError) => {
-        if (!cancelled) {
-          setError(nextError instanceof Error ? nextError.message : String(nextError));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeIssueId, activeReviewRunId, onActiveIssueChange, onLocateResultMessage, workspaceId]);
+    void loadReviewDetail(activeReviewRunId);
+  }, [activeReviewRunId, loadReviewDetail, onLocateResultMessage, workspaceId]);
+
+  useEffect(() => {
+    if (!reviewDetail) {
+      return;
+    }
+    if (!activeIssueId || !reviewDetail.issues.some((issue) => issue.id === activeIssueId)) {
+      onActiveIssueChange(reviewDetail.issues[0]?.id ?? null);
+    }
+  }, [activeIssueId, onActiveIssueChange, reviewDetail]);
 
   useEffect(() => {
     const issue = reviewDetail?.issues.find((value) => value.id === activeIssueId) ?? null;
-    if (!issue) {
-      return;
-    }
-    onLocateResultMessage?.(reviewDetail?.run.resultMessageId ?? null);
+    onLocateResultMessage?.(issue ? (reviewDetail?.run.resultMessageId ?? null) : null);
   }, [activeIssueId, onLocateResultMessage, reviewDetail]);
 
   useEffect(() => {
@@ -110,22 +128,33 @@ export function useCadReviewRuns({
       return;
     }
     let disposed = false;
-    let unsubscribe: (() => void) | null = null;
+    const unsubscribers: Array<() => void> = [];
+    const handleRunSaved = (event: {
+      payload: { workspaceId: string; filePath: string; runId: string };
+    }) => {
+      if (disposed) return;
+      if (event.payload.workspaceId !== workspaceId || event.payload.filePath !== filePath) {
+        return;
+      }
+      void loadReviewRuns(event.payload.runId, { reloadActiveDetail: true });
+    };
     void listen<{ workspaceId: string; filePath: string; runId: string }>(
       "cad-review/run-created",
-      (event) => {
-        if (disposed) return;
-        if (event.payload.workspaceId !== workspaceId || event.payload.filePath !== filePath) {
-          return;
-        }
-        void loadReviewRuns(event.payload.runId);
-      },
+      handleRunSaved,
     ).then((off) => {
-      unsubscribe = off;
+      unsubscribers.push(off);
+    });
+    void listen<{ workspaceId: string; filePath: string; runId: string }>(
+      "cad-review/run-saved",
+      handleRunSaved,
+    ).then((off) => {
+      unsubscribers.push(off);
     });
     return () => {
       disposed = true;
-      unsubscribe?.();
+      for (const unsubscribe of unsubscribers) {
+        unsubscribe();
+      }
     };
   }, [filePath, loadReviewRuns, workspaceId]);
 

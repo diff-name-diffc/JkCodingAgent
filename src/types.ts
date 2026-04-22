@@ -470,6 +470,7 @@ export interface CadReviewRun {
   summary: string;
   issueCount: number;
   createdAt: string;
+  updatedAt: string;
 }
 
 export interface CadReviewRunDetail {

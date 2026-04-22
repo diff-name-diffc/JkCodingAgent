@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 
 use async_trait::async_trait;
@@ -6,8 +7,9 @@ use tauri::Emitter;
 
 use super::common::{string_arg, usize_arg, with_result_mode_parameter};
 use crate::agent::cad::{
-    bbox_intersects, filter_entities, CadBBox, CadEntityQueryFilters, CadEntityRecord, CadPoint,
-    CreateCadReviewRunInput, DwgParseCacheRecord,
+    bbox_intersects, filter_entities, CadBBox, CadEntityDetail, CadEntityQueryFilters,
+    CadEntityRecord, CadPoint, CadViewportHint, CreateCadReviewIssueInput, CreateCadReviewRunInput,
+    DwgDocumentRecord, DwgParseCacheRecord, DwgViewerSessionState,
 };
 use crate::agent::db::DispatcherDb;
 use crate::agent::tools::context::ToolContext;
@@ -97,7 +99,7 @@ impl AgentTool for CadSaveReviewResultTool {
     }
 
     fn description(&self) -> &'static str {
-        "持久化一次 CAD 审查结果和问题清单，并回传可用于前端联动的运行记录。"
+        "同步一次 CAD 审查结果到 UI 问题清单；同一轮审查可复用 runId 持续更新同一份问题单。"
     }
 
     fn parameters(&self) -> Value {
@@ -105,6 +107,7 @@ impl AgentTool for CadSaveReviewResultTool {
             json!({
                 "type": "object",
                 "properties": {
+                    "runId": { "type": "string" },
                     "filePath": { "type": "string" },
                     "sourceMessageId": { "type": "string" },
                     "goal": { "type": "string" },
@@ -116,14 +119,22 @@ impl AgentTool for CadSaveReviewResultTool {
                 "required": ["filePath", "sourceMessageId", "goal", "status", "summary", "issues"]
             }),
             "full",
-            "审查结果会被保存为结构化 artifact，建议保留完整 JSON。",
+            "审查结果会被保存为结构化 artifact；issue 应尽量附带 entityRefs、viewportHint、anchorPoint 或 bbox，以支持 UI 定位。",
         )
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+        let Some(raw_file_path) = string_arg(args, "filePath") else {
+            return "错误：缺少必填参数 filePath".to_string();
+        };
+        let normalized_file_path = match normalize_path(&raw_file_path, context) {
+            Ok(value) => value,
+            Err(message) => return message,
+        };
         let input = match serde_json::from_value::<CreateCadReviewRunInput>(json!({
+            "runId": args.get("runId"),
             "workspaceId": context.workspace_id,
-            "filePath": args.get("filePath"),
+            "filePath": normalized_file_path,
             "sourceMessageId": args.get("sourceMessageId"),
             "ruleAttachmentIds": args.get("ruleAttachmentIds").cloned().unwrap_or_else(|| json!([])),
             "goal": args.get("goal"),
@@ -139,21 +150,37 @@ impl AgentTool for CadSaveReviewResultTool {
             Ok(db) => db,
             Err(error) => return format!("打开 dispatcher 数据库失败：{error}"),
         };
+        let input = match enrich_review_input(input, &db, context) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
         match db.create_cad_review_run(&input) {
             Ok(detail) => {
                 if let Some(app_handle) = &context.app_handle {
-                    let _ = app_handle.emit(
-                        "cad-review/run-created",
-                        json!({
-                            "workspaceId": detail.run.workspace_id,
-                            "filePath": detail.run.file_path,
-                            "runId": detail.run.id,
-                        }),
-                    );
+                    let payload = json!({
+                        "workspaceId": detail.run.workspace_id,
+                        "filePath": detail.run.file_path,
+                        "runId": detail.run.id,
+                    });
+                    if detail.run.created_at == detail.run.updated_at {
+                        let _ = app_handle.emit("cad-review/run-created", payload);
+                    } else {
+                        let _ = app_handle.emit("cad-review/run-saved", payload);
+                    }
                 }
+                let locatable_issue_count = detail
+                    .issues
+                    .iter()
+                    .filter(|issue| {
+                        !issue.entity_refs.is_empty()
+                            || issue.viewport_hint.is_some()
+                            || issue.anchor_point.is_some()
+                            || issue.bbox.is_some()
+                    })
+                    .count();
                 serde_json::to_string_pretty(&json!({
                     "status": "ok",
-                    "message": format!("已保存 {} 条 CAD 审查问题", detail.issues.len()),
+                    "message": format!("已同步 {} 条 CAD 审查问题到 UI，{} 条支持定位", detail.issues.len(), locatable_issue_count),
                     "run": detail.run,
                     "issues": detail.issues,
                 }))
@@ -162,6 +189,169 @@ impl AgentTool for CadSaveReviewResultTool {
             Err(error) => format!("保存 CAD 审查结果失败：{error}"),
         }
     }
+}
+
+fn enrich_review_input(
+    mut input: CreateCadReviewRunInput,
+    db: &DispatcherDb,
+    context: &ToolContext,
+) -> Result<CreateCadReviewRunInput, String> {
+    let document = resolve_review_document(&input.file_path, db, context);
+    let viewer_session = context
+        .dwg_viewer_bridge
+        .as_ref()
+        .and_then(|bridge| bridge.best_session_for_file(&context.workspace_id, &input.file_path));
+    let mut issues = Vec::with_capacity(input.issues.len());
+    for issue in input.issues {
+        issues.push(enrich_review_issue(
+            issue,
+            document.as_ref(),
+            viewer_session.as_ref(),
+            db,
+        )?);
+    }
+    input.issues = issues;
+    Ok(input)
+}
+
+fn resolve_review_document(
+    file_path: &str,
+    db: &DispatcherDb,
+    context: &ToolContext,
+) -> Option<DwgDocumentRecord> {
+    let metadata = fs::metadata(file_path).ok()?;
+    let mtime = file_mtime(&metadata).ok()?;
+    let project_path = context.workspace.to_string_lossy().into_owned();
+    db.get_dwg_document(
+        &project_path,
+        file_path,
+        metadata.len(),
+        mtime,
+        DEFAULT_PARSER_VERSION,
+    )
+    .ok()
+    .flatten()
+}
+
+fn enrich_review_issue(
+    mut issue: CreateCadReviewIssueInput,
+    document: Option<&DwgDocumentRecord>,
+    viewer_session: Option<&DwgViewerSessionState>,
+    db: &DispatcherDb,
+) -> Result<CreateCadReviewIssueInput, String> {
+    issue.entity_refs = dedupe_string_vec(issue.entity_refs);
+    let entity_details = load_issue_entity_details(&issue, document, db)?;
+
+    if issue.layer.is_none() {
+        issue.layer = unique_issue_layer(&entity_details);
+    }
+    if issue.bbox.is_none() {
+        issue.bbox = merge_issue_bbox(&entity_details);
+    }
+    if issue.anchor_point.is_none() {
+        issue.anchor_point =
+            resolve_issue_anchor(&entity_details).or_else(|| issue.bbox.as_ref().map(bbox_center));
+    }
+
+    let mut viewport_hint = issue.viewport_hint.unwrap_or(CadViewportHint {
+        center: None,
+        bbox: None,
+        zoom_scale: None,
+    });
+    if viewport_hint.center.is_none() {
+        viewport_hint.center = issue.anchor_point.clone().or_else(|| {
+            if issue.entity_refs.is_empty() {
+                None
+            } else {
+                viewer_session.and_then(|session| session.center.clone())
+            }
+        });
+    }
+    if viewport_hint.bbox.is_none() {
+        viewport_hint.bbox = issue.bbox.clone().or_else(|| {
+            if issue.entity_refs.is_empty() {
+                None
+            } else {
+                viewer_session.and_then(|session| session.viewport_box.clone())
+            }
+        });
+    }
+    if viewport_hint.zoom_scale.is_none() {
+        viewport_hint.zoom_scale = viewer_session.and_then(|session| session.zoom_scale);
+    }
+    issue.viewport_hint =
+        (viewport_hint.center.is_some() || viewport_hint.bbox.is_some()).then_some(viewport_hint);
+
+    Ok(issue)
+}
+
+fn load_issue_entity_details(
+    issue: &CreateCadReviewIssueInput,
+    document: Option<&DwgDocumentRecord>,
+    db: &DispatcherDb,
+) -> Result<Vec<CadEntityDetail>, String> {
+    if issue.entity_refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(document) = document else {
+        return Ok(Vec::new());
+    };
+    db.get_dwg_entity_details(&document.id, &issue.entity_refs)
+        .map_err(|error| format!("读取审查问题实体定位信息失败：{error}"))
+}
+
+fn unique_issue_layer(details: &[CadEntityDetail]) -> Option<String> {
+    let layers = details
+        .iter()
+        .map(|detail| detail.envelope.layer.trim())
+        .filter(|layer| !layer.is_empty())
+        .collect::<BTreeSet<_>>();
+    (layers.len() == 1).then(|| layers.iter().next().unwrap_or(&"").to_string())
+}
+
+fn merge_issue_bbox(details: &[CadEntityDetail]) -> Option<CadBBox> {
+    let mut merged: Option<CadBBox> = None;
+    for detail in details {
+        let Some(bbox) = detail.envelope.bbox.as_ref() else {
+            continue;
+        };
+        merged = Some(match merged {
+            Some(current) => CadBBox {
+                min_x: current.min_x.min(bbox.min_x),
+                min_y: current.min_y.min(bbox.min_y),
+                max_x: current.max_x.max(bbox.max_x),
+                max_y: current.max_y.max(bbox.max_y),
+            },
+            None => bbox.clone(),
+        });
+    }
+    merged
+}
+
+fn resolve_issue_anchor(details: &[CadEntityDetail]) -> Option<CadPoint> {
+    details.iter().find_map(|detail| {
+        detail
+            .envelope
+            .anchor
+            .clone()
+            .or_else(|| detail.envelope.center.clone())
+            .or_else(|| detail.envelope.bbox.as_ref().map(bbox_center))
+    })
+}
+
+fn dedupe_string_vec(values: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            deduped.push(trimmed.to_string());
+        }
+    }
+    deduped
 }
 
 fn load_cache(

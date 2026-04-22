@@ -1225,10 +1225,26 @@ fn build_focus_issue_command(action: &Value) -> Result<(String, Value), String> 
         .ok_or_else(|| "错误：focus_issue 需要 issue 对象".to_string())?;
     let issue = serde_json::from_value::<CadReviewIssueRecord>(issue)
         .map_err(|error| format!("错误：issue 无效：{error}"))?;
+    let focus_bbox = issue
+        .viewport_hint
+        .as_ref()
+        .and_then(|hint| hint.bbox.clone())
+        .or_else(|| issue.bbox.clone());
+    let focus_center = issue
+        .viewport_hint
+        .as_ref()
+        .and_then(|hint| hint.center.clone())
+        .or_else(|| issue.anchor_point.clone());
     if !issue.entity_refs.is_empty() {
         return Ok((
             "fit_entities".to_string(),
-            json!({ "entityIds": issue.entity_refs, "reason": "focus_issue" }),
+            json!({
+                "entityIds": issue.entity_refs,
+                "bbox": focus_bbox,
+                "point": focus_center,
+                "zoomScale": issue.viewport_hint.as_ref().and_then(|hint| hint.zoom_scale),
+                "reason": "focus_issue"
+            }),
         ));
     }
     if let Some(viewport_hint) = issue.viewport_hint {

@@ -250,6 +250,7 @@ pub struct CadReviewRunRecord {
     pub summary: String,
     pub issue_count: usize,
     pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,6 +294,7 @@ pub struct SaveDwgEntityPayloadsInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateCadReviewRunInput {
+    pub run_id: Option<String>,
     pub workspace_id: String,
     pub file_path: String,
     pub source_message_id: String,

@@ -128,6 +128,13 @@ pub struct CadEntityDetail {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DwgEntityPayloadRecord {
+    pub entity_id: String,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DwgDocumentRecord {
     pub id: String,
     pub project_path: String,
@@ -262,6 +269,25 @@ pub struct SaveDwgParseCacheInput {
     pub parser_version: String,
     pub summary: DwgParseSummary,
     pub entities: Vec<CadEntityRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveDwgDocumentIndexInput {
+    pub project_path: String,
+    pub file_path: String,
+    pub file_size: u64,
+    pub file_mtime: i64,
+    pub parser_version: String,
+    pub summary: DwgParseSummary,
+    pub envelopes: Vec<CadEntityEnvelope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveDwgEntityPayloadsInput {
+    pub doc_id: String,
+    pub payloads: Vec<DwgEntityPayloadRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -131,11 +131,15 @@ export function useDwgViewerSession({
         await openCadViewerDwgDocument({
           document,
           fileName,
-          content: bytes.slice().buffer,
+          content:
+            bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+              ? (bytes.buffer as ArrayBuffer)
+              : bytes.slice().buffer,
           mode: AcEdOpenMode.Review,
         });
         const modelSpaceBtrId =
-          document.database.tables.blockTable.modelSpace.objectId || document.database.currentSpaceId;
+          document.database.tables.blockTable.modelSpace.objectId ||
+          document.database.currentSpaceId;
         view.modelSpaceBtrId = modelSpaceBtrId;
         view.activeLayoutBtrId = modelSpaceBtrId;
         view.clear();
@@ -377,7 +381,10 @@ async function executeCommand(
         if (!point) {
           throw new Error("fly_to_point 缺少 point");
         }
-        bridge.view.flyTo(point, typeof payload.zoomScale === "number" ? Number(payload.zoomScale) : 4);
+        bridge.view.flyTo(
+          point,
+          typeof payload.zoomScale === "number" ? Number(payload.zoomScale) : 4,
+        );
         break;
       }
       case "zoom_by_factor": {
@@ -425,7 +432,8 @@ async function executeCommand(
         }
         break;
       case "pick": {
-        const hitRadius = typeof payload.hitRadius === "number" ? Number(payload.hitRadius) : undefined;
+        const hitRadius =
+          typeof payload.hitRadius === "number" ? Number(payload.hitRadius) : undefined;
         const pickOneOnly =
           typeof payload.pickOneOnly === "boolean" ? Boolean(payload.pickOneOnly) : true;
         const worldPoint = payload.worldPoint as CadPoint | undefined;

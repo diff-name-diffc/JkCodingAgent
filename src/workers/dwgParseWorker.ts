@@ -15,7 +15,8 @@ type ParseResponse =
       filePath: string;
       parserVersion: string;
       summary: ReturnType<typeof buildNormalizedDwgIndex>["summary"];
-      entities: ReturnType<typeof buildNormalizedDwgIndex>["entities"];
+      envelopes: ReturnType<typeof buildNormalizedDwgIndex>["envelopes"];
+      payloads: ReturnType<typeof buildNormalizedDwgIndex>["payloads"];
     }
   | {
       kind: "error";
@@ -104,7 +105,8 @@ workerScope.onmessage = async (event: MessageEvent<ParseRequest>) => {
         filePath: payload.filePath,
         parserVersion: payload.parserVersion,
         summary: normalized.summary,
-        entities: normalized.entities,
+        envelopes: normalized.envelopes,
+        payloads: normalized.payloads,
       };
       workerScope.postMessage(response);
     } finally {

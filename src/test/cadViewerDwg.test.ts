@@ -78,4 +78,28 @@ describe("ensureCadViewerDwgSupport", () => {
       data: { unknownEntityCount: 2 },
     });
   });
+
+  it("命中预解析结果时复用已解析模型，避免重复调用 libredwg", async () => {
+    const { ensureCadViewerDwgSupport } = await import("../lib/cadViewerDwg");
+    const { registerPreparedDwgViewerParse } = await import("../lib/dwgSharedParse");
+    const content = new ArrayBuffer(16);
+
+    registerPreparedDwgViewerParse(content, {
+      model: { entities: [{ id: "cached" }] } as never,
+      stats: { unknownEntityCount: 0 },
+    });
+
+    await ensureCadViewerDwgSupport();
+
+    const registeredConverter = registerMock.mock.calls[0]?.[1] as {
+      parse: (data: ArrayBuffer) => Promise<unknown>;
+    };
+    const result = await registeredConverter.parse(content);
+
+    expect(libreDwgCreateMock).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      model: { entities: [{ id: "cached" }] },
+      data: { unknownEntityCount: 0 },
+    });
+  });
 });

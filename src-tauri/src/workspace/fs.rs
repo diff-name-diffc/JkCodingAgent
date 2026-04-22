@@ -42,6 +42,13 @@ const IGNORED_FILES: &[&str] = &[".DS_Store"];
 const MAX_IMAGE_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_BINARY_READ_BYTES: u64 = 50 * 1024 * 1024;
 
+fn is_known_binary_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("dwg"))
+        .unwrap_or(false)
+}
+
 /// Validate that `target` is an absolute path within `allowed_root` (prevents directory traversal).
 fn validate_path_within(target: &str, allowed_root: &str) -> Result<std::path::PathBuf, String> {
     let target = Path::new(target);
@@ -389,6 +396,14 @@ pub(crate) struct FileMeta {
     modified_at: i64,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DwgFileSnapshot {
+    size_bytes: u64,
+    modified_at: i64,
+    bytes: Vec<u8>,
+}
+
 /// Returns file size, line count, and whether the file is valid text.
 /// Frontend uses this to decide which rendering path to take.
 #[tauri::command]
@@ -407,6 +422,15 @@ pub async fn get_file_meta(path: String, project_path: String) -> Result<FileMet
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_secs() as i64;
+
+        if is_known_binary_extension(&validated_path) {
+            return Ok(FileMeta {
+                size_bytes,
+                line_count: 0,
+                is_text: false,
+                modified_at,
+            });
+        }
 
         // Fast byte-level newline count — reads entire file but only scans for \n.
         // ~50ms for 28MB on modern hardware, much more reliable than sampling.
@@ -453,6 +477,46 @@ pub async fn get_file_meta(path: String, project_path: String) -> Result<FileMet
             line_count,
             is_text,
             modified_at,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn read_dwg_file_snapshot(
+    path: String,
+    project_path: String,
+) -> Result<DwgFileSnapshot, String> {
+    let validated_path = validate_path_within(&path, &project_path)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Read;
+
+        let file = std::fs::File::open(&validated_path).map_err(|e| e.to_string())?;
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        if meta.len() > MAX_BINARY_READ_BYTES {
+            return Err(format!(
+                "Binary file too large ({:.1} MB)",
+                meta.len() as f64 / 1024.0 / 1024.0
+            ));
+        }
+
+        let modified_at = meta
+            .modified()
+            .map_err(|e| e.to_string())?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_secs() as i64;
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        std::io::BufReader::new(file)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+
+        Ok(DwgFileSnapshot {
+            size_bytes: meta.len(),
+            modified_at,
+            bytes,
         })
     })
     .await

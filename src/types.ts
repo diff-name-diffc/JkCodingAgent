@@ -350,6 +350,11 @@ export interface CadEntityDetail {
   payload?: unknown;
 }
 
+export interface DwgEntityPayloadRecord {
+  entityId: string;
+  payload: unknown;
+}
+
 export interface DwgDocumentRecord {
   id: string;
   projectPath: string;
@@ -390,6 +395,12 @@ export interface DwgParseCacheRecord {
   documentId?: string | null;
   entities: CadEntityRecord[];
   createdAt: string;
+}
+
+export interface DwgFileSnapshot {
+  sizeBytes: number;
+  modifiedAt: number;
+  bytes: number[];
 }
 
 export interface CadEntityQueryFilters {

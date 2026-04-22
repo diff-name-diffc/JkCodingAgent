@@ -11,8 +11,9 @@ use tauri::AppHandle;
 use uuid::Uuid;
 
 use super::cad::{
-    CadReviewRunDetail, CadReviewRunRecord, DispatcherAttachmentRecord, DwgParseCacheRecord,
-    DwgViewerCommandResult, DwgViewerSessionRegistration, DwgViewerSessionState,
+    CadReviewRunDetail, CadReviewRunRecord, DispatcherAttachmentRecord, DwgDocumentRecord,
+    DwgParseCacheRecord, DwgViewerCommandResult, DwgViewerSessionRegistration,
+    DwgViewerSessionState, SaveDwgDocumentIndexInput, SaveDwgEntityPayloadsInput,
     SaveDwgParseCacheInput,
 };
 use super::config::DispatcherAgentConfig;
@@ -356,6 +357,49 @@ pub fn dispatcher_save_dwg_parse_cache(
     state
         .db
         .save_dwg_parse_cache(&payload)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_get_dwg_document_record(
+    state: tauri::State<'_, DispatcherState>,
+    project_path: String,
+    file_path: String,
+    file_size: u64,
+    file_mtime: i64,
+    parser_version: String,
+) -> Result<Option<DwgDocumentRecord>, String> {
+    state
+        .db
+        .get_dwg_document(
+            &project_path,
+            &file_path,
+            file_size,
+            file_mtime,
+            &parser_version,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_upsert_dwg_document_index(
+    state: tauri::State<'_, DispatcherState>,
+    payload: SaveDwgDocumentIndexInput,
+) -> Result<DwgDocumentRecord, String> {
+    state
+        .db
+        .upsert_dwg_document_index(&payload)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_upsert_dwg_entity_payloads(
+    state: tauri::State<'_, DispatcherState>,
+    payload: SaveDwgEntityPayloadsInput,
+) -> Result<(), String> {
+    state
+        .db
+        .upsert_dwg_entity_payloads(&payload)
         .map_err(|error| error.to_string())
 }
 

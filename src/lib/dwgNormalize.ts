@@ -1,12 +1,29 @@
 import type { DwgDatabase } from "@mlightcad/libredwg-web";
 import type {
   CadBBox,
-  CadEntityRecord,
+  CadEntityEnvelope,
   CadPoint,
   DwgBlockSummary,
+  DwgEntityPayloadRecord,
   DwgLayerSummary,
   DwgParseSummary,
 } from "../types";
+
+type NormalizedEntity = {
+  id: string;
+  handle: string;
+  entityType: string;
+  rawType: string;
+  layer: string;
+  color: number | null;
+  lineType: string | null;
+  text: string | null;
+  blockName: string | null;
+  center: CadPoint | null;
+  radius: number | null;
+  vertices: CadPoint[];
+  bbox: CadBBox | null;
+};
 
 function point(x: number, y: number): CadPoint {
   return { x, y };
@@ -47,9 +64,9 @@ function toPoint(value: { x: number; y: number } | { x: number; y: number; z: nu
   return point(value.x, value.y);
 }
 
-function normalizeEntity(entity: Record<string, unknown>, index: number): CadEntityRecord {
+function normalizeEntity(entity: Record<string, unknown>, index: number): NormalizedEntity {
   const entityType = String(entity.type ?? "UNKNOWN");
-  const base: CadEntityRecord = {
+  const base: NormalizedEntity = {
     id: String(entity.handle ?? `${entityType}_${index}`),
     handle: String(entity.handle ?? `${entityType}_${index}`),
     entityType,
@@ -156,12 +173,72 @@ function normalizeEntity(entity: Record<string, unknown>, index: number): CadEnt
   return base;
 }
 
+function truncateText(value: string, maxChars: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length <= maxChars ? normalized : normalized.slice(0, maxChars);
+}
+
+function bboxCenter(bbox: CadBBox): CadPoint {
+  return {
+    x: (bbox.minX + bbox.maxX) / 2,
+    y: (bbox.minY + bbox.maxY) / 2,
+  };
+}
+
+function toEnvelope(entity: NormalizedEntity): CadEntityEnvelope {
+  const anchor =
+    entity.center ?? (entity.bbox ? bboxCenter(entity.bbox) : null) ?? entity.vertices[0] ?? null;
+  return {
+    id: entity.id,
+    handle: entity.handle,
+    entityType: entity.entityType,
+    rawType: entity.rawType,
+    layer: entity.layer,
+    blockName: entity.blockName,
+    textExcerpt: entity.text ? truncateText(entity.text, 160) : null,
+    normalizedText: entity.text ? entity.text.replace(/\s+/g, " ").trim().toLowerCase() : null,
+    center: entity.center,
+    anchor,
+    bbox: entity.bbox,
+    layout: null,
+    ownerBlock: null,
+    rotationDeg: null,
+    scaleX: null,
+    scaleY: null,
+  };
+}
+
+function toPayload(entity: NormalizedEntity): DwgEntityPayloadRecord {
+  return {
+    entityId: entity.id,
+    payload: {
+      id: entity.id,
+      handle: entity.handle,
+      entityType: entity.entityType,
+      rawType: entity.rawType,
+      layer: entity.layer,
+      color: entity.color,
+      lineType: entity.lineType,
+      text: entity.text,
+      blockName: entity.blockName,
+      center: entity.center,
+      radius: entity.radius,
+      vertices: entity.vertices,
+      bbox: entity.bbox,
+    },
+  };
+}
+
 export function buildNormalizedDwgIndex(
   database: DwgDatabase,
   filePath: string,
   parserVersion: string,
   unknownEntityCount = 0,
-): { summary: DwgParseSummary; entities: CadEntityRecord[] } {
+): {
+  summary: DwgParseSummary;
+  envelopes: CadEntityEnvelope[];
+  payloads: DwgEntityPayloadRecord[];
+} {
   const entities = database.entities.map((entity, index) =>
     normalizeEntity(entity as unknown as Record<string, unknown>, index),
   );
@@ -176,12 +253,12 @@ export function buildNormalizedDwgIndex(
     layerCount.set(entity.layer, (layerCount.get(entity.layer) ?? 0) + 1);
     entityCounts.set(entity.entityType, (entityCounts.get(entity.entityType) ?? 0) + 1);
     if (entity.text) {
-      textSamples.add(entity.text.replace(/\s+/g, " ").trim().slice(0, 120));
+      textSamples.add(truncateText(entity.text, 120));
     }
     if (entity.blockName) {
       blockCounts.set(entity.blockName, (blockCounts.get(entity.blockName) ?? 0) + 1);
     }
-    bounds = mergeBounds(bounds, entity.bbox ?? null);
+    bounds = mergeBounds(bounds, entity.bbox);
   }
 
   const layers: DwgLayerSummary[] = Array.from(layerCount.entries())
@@ -192,19 +269,21 @@ export function buildNormalizedDwgIndex(
     .slice(0, 20)
     .map(([name, count]) => ({ name, count }));
 
-  const summary: DwgParseSummary = {
-    filePath,
-    parserVersion,
-    totalEntities: entities.length,
-    unknownEntityCount,
-    bounds,
-    layers,
-    entityCounts: Object.fromEntries(
-      Array.from(entityCounts.entries()).sort((left, right) => left[0].localeCompare(right[0])),
-    ),
-    textSamples: Array.from(textSamples).filter(Boolean).slice(0, 20),
-    blocks,
+  return {
+    summary: {
+      filePath,
+      parserVersion,
+      totalEntities: entities.length,
+      unknownEntityCount,
+      bounds,
+      layers,
+      entityCounts: Object.fromEntries(
+        Array.from(entityCounts.entries()).sort((left, right) => left[0].localeCompare(right[0])),
+      ),
+      textSamples: Array.from(textSamples).filter(Boolean).slice(0, 20),
+      blocks,
+    },
+    envelopes: entities.map(toEnvelope),
+    payloads: entities.map(toPayload),
   };
-
-  return { summary, entities };
 }

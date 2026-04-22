@@ -53,11 +53,18 @@ describe("buildNormalizedDwgIndex", () => {
     ]);
     expect(normalized.summary.textSamples).toEqual(["轴线 1"]);
     expect(normalized.summary.blocks).toEqual([{ name: "ROOM_TAG", count: 1 }]);
-    expect(normalized.entities[0].bbox).toEqual({
+    expect(normalized.envelopes[0].bbox).toEqual({
       minX: 0,
       minY: 0,
       maxX: 20,
       maxY: 10,
+    });
+    expect(normalized.payloads[1]).toEqual({
+      entityId: "20",
+      payload: expect.objectContaining({
+        entityType: "TEXT",
+        text: "轴线 1",
+      }),
     });
   });
 });

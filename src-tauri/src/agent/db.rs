@@ -13,13 +13,24 @@ use super::cad::{
     CadBBox, CadEntityDetail, CadEntityEnvelope, CadEntityQueryFilters, CadEntityQueryResult,
     CadEntityRecord, CadPoint, CadReviewIssueRecord, CadReviewRunDetail, CadReviewRunRecord,
     CreateCadReviewRunInput, DispatcherAttachmentRecord, DispatcherAttachmentRef,
-    DwgDocumentOverview, DwgDocumentRecord, DwgLayerDetail, DwgLayerListResult,
-    DwgParseCacheRecord, DwgRegionInspectionResult, SaveDwgParseCacheInput,
+    DwgDocumentOverview, DwgDocumentRecord, DwgEntityPayloadRecord, DwgLayerDetail,
+    DwgLayerListResult, DwgParseCacheRecord, DwgRegionInspectionResult, SaveDwgDocumentIndexInput,
+    SaveDwgEntityPayloadsInput, SaveDwgParseCacheInput,
 };
 use super::llm::{ChatMessage, OutboundToolCall};
 use super::summary::ToolArtifactDraft;
 
 const MAX_LLM_DIALOGUES: usize = 5;
+
+struct DwgDocumentWriteInput<'a> {
+    project_path: &'a str,
+    file_path: &'a str,
+    file_size: u64,
+    file_mtime: i64,
+    parser_version: &'a str,
+    summary: &'a super::cad::DwgParseSummary,
+    created_at: &'a str,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -664,7 +675,18 @@ impl DispatcherDb {
         };
         let mut conn = self.connect()?;
         let tx = conn.transaction()?;
-        let document = upsert_dwg_document(&tx, &record)?;
+        let document = upsert_dwg_document(
+            &tx,
+            &DwgDocumentWriteInput {
+                project_path: &record.project_path,
+                file_path: &record.file_path,
+                file_size: record.file_size,
+                file_mtime: record.file_mtime,
+                parser_version: &record.parser_version,
+                summary: &record.summary,
+                created_at: &record.created_at,
+            },
+        )?;
         record.document_id = Some(document.id.clone());
         let summary_json =
             serde_json::to_string(&record.summary).context("serialize dwg parse summary")?;
@@ -701,6 +723,52 @@ impl DispatcherDb {
         rebuild_dwg_entity_index(&tx, &document.id, &record.entities, &record.created_at)?;
         tx.commit().context("commit dwg parse cache save")?;
         Ok(record)
+    }
+
+    pub fn upsert_dwg_document_index(
+        &self,
+        input: &SaveDwgDocumentIndexInput,
+    ) -> Result<DwgDocumentRecord> {
+        let (project_path, file_path) =
+            normalize_dwg_storage_keys(&input.project_path, &input.file_path);
+        let mut summary = input.summary.clone();
+        summary.file_path = file_path.clone();
+        let created_at = now();
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        let document = upsert_dwg_document(
+            &tx,
+            &DwgDocumentWriteInput {
+                project_path: &project_path,
+                file_path: &file_path,
+                file_size: input.file_size,
+                file_mtime: input.file_mtime,
+                parser_version: &input.parser_version,
+                summary: &summary,
+                created_at: &created_at,
+            },
+        )?;
+        rebuild_dwg_entity_envelopes(&tx, &document.id, &input.envelopes, &created_at)?;
+        tx.commit().context("commit dwg document index save")?;
+        Ok(document)
+    }
+
+    pub fn upsert_dwg_entity_payloads(&self, input: &SaveDwgEntityPayloadsInput) -> Result<()> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        let exists = tx
+            .query_row(
+                "SELECT 1 FROM dwg_documents WHERE id = ?1 LIMIT 1",
+                params![&input.doc_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some();
+        if !exists {
+            return Ok(());
+        }
+        replace_dwg_entity_payloads(&tx, &input.doc_id, &input.payloads, &now())?;
+        tx.commit().context("commit dwg entity payload save")
     }
 
     pub fn get_dwg_document(
@@ -1804,7 +1872,7 @@ fn map_envelope_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CadEntityEnvelo
 
 fn upsert_dwg_document(
     tx: &rusqlite::Transaction<'_>,
-    record: &DwgParseCacheRecord,
+    record: &DwgDocumentWriteInput<'_>,
 ) -> Result<DwgDocumentRecord> {
     let existing = tx
         .query_row(
@@ -1813,17 +1881,17 @@ fn upsert_dwg_document(
              WHERE project_path = ?1 AND file_path = ?2 AND file_size = ?3 AND file_mtime = ?4 AND parser_version = ?5
              LIMIT 1",
             params![
-                &record.project_path,
-                &record.file_path,
+                record.project_path,
+                record.file_path,
                 record.file_size as i64,
                 record.file_mtime,
-                &record.parser_version
+                record.parser_version
             ],
             map_dwg_document_row,
         )
         .optional()
         .context("query existing dwg document")?;
-    let summary_json = serde_json::to_string(&record.summary)?;
+    let summary_json = serde_json::to_string(record.summary)?;
     let now = now();
     if let Some(mut document) = existing {
         tx.execute(
@@ -1839,13 +1907,13 @@ fn upsert_dwg_document(
 
     let document = DwgDocumentRecord {
         id: Uuid::new_v4().to_string(),
-        project_path: record.project_path.clone(),
-        file_path: record.file_path.clone(),
+        project_path: record.project_path.to_string(),
+        file_path: record.file_path.to_string(),
         file_size: record.file_size,
         file_mtime: record.file_mtime,
-        parser_version: record.parser_version.clone(),
+        parser_version: record.parser_version.to_string(),
         summary: record.summary.clone(),
-        created_at: record.created_at.clone(),
+        created_at: record.created_at.to_string(),
         updated_at: now,
     };
     tx.execute(
@@ -2037,7 +2105,18 @@ impl DispatcherDb {
 
         let mut conn = self.connect()?;
         let tx = conn.transaction()?;
-        let document = upsert_dwg_document(&tx, &normalized_cache)?;
+        let document = upsert_dwg_document(
+            &tx,
+            &DwgDocumentWriteInput {
+                project_path: &normalized_cache.project_path,
+                file_path: &normalized_cache.file_path,
+                file_size: normalized_cache.file_size,
+                file_mtime: normalized_cache.file_mtime,
+                parser_version: &normalized_cache.parser_version,
+                summary: &normalized_cache.summary,
+                created_at: &normalized_cache.created_at,
+            },
+        )?;
         normalized_cache.document_id = Some(document.id.clone());
         rebuild_dwg_entity_index(
             &tx,
@@ -2068,10 +2147,24 @@ fn rebuild_dwg_entity_index(
     entities: &[CadEntityRecord],
     created_at: &str,
 ) -> Result<()> {
-    tx.execute(
-        "DELETE FROM dwg_entity_payloads WHERE doc_id = ?1",
-        params![doc_id],
-    )?;
+    let envelopes = entities.iter().map(entity_to_envelope).collect::<Vec<_>>();
+    let payloads = entities
+        .iter()
+        .map(|entity| DwgEntityPayloadRecord {
+            entity_id: entity.id.clone(),
+            payload: entity_to_payload(entity),
+        })
+        .collect::<Vec<_>>();
+    rebuild_dwg_entity_envelopes(tx, doc_id, &envelopes, created_at)?;
+    replace_dwg_entity_payloads(tx, doc_id, &payloads, created_at)
+}
+
+fn rebuild_dwg_entity_envelopes(
+    tx: &rusqlite::Transaction<'_>,
+    doc_id: &str,
+    envelopes: &[CadEntityEnvelope],
+    created_at: &str,
+) -> Result<()> {
     tx.execute(
         "DELETE FROM dwg_entity_rtree WHERE row_id IN (
             SELECT row_id FROM dwg_entity_envelopes WHERE doc_id = ?1
@@ -2091,17 +2184,12 @@ fn rebuild_dwg_entity_index(
             layout, owner_block, rotation_deg, scale_x, scale_y, sort_key, created_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
     )?;
-    let mut payload_stmt = tx.prepare(
-        "INSERT INTO dwg_entity_payloads (doc_id, entity_id, payload_json, created_at)
-         VALUES (?1, ?2, ?3, ?4)",
-    )?;
     let mut rtree_stmt = tx.prepare(
         "INSERT INTO dwg_entity_rtree (row_id, min_x, max_x, min_y, max_y)
          VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
 
-    for (sort_key, entity) in entities.iter().enumerate() {
-        let envelope = entity_to_envelope(entity);
+    for (sort_key, envelope) in envelopes.iter().enumerate() {
         envelope_stmt.execute(params![
             doc_id,
             &envelope.id,
@@ -2128,16 +2216,35 @@ fn rebuild_dwg_entity_index(
             sort_key as i64,
             created_at,
         ])?;
-        let row_id = tx.last_insert_rowid();
         if let Some(bbox) = &envelope.bbox {
+            let row_id = tx.last_insert_rowid();
             rtree_stmt.execute(params![
                 row_id, bbox.min_x, bbox.max_x, bbox.min_y, bbox.max_y
             ])?;
         }
+    }
+    Ok(())
+}
+
+fn replace_dwg_entity_payloads(
+    tx: &rusqlite::Transaction<'_>,
+    doc_id: &str,
+    payloads: &[DwgEntityPayloadRecord],
+    created_at: &str,
+) -> Result<()> {
+    tx.execute(
+        "DELETE FROM dwg_entity_payloads WHERE doc_id = ?1",
+        params![doc_id],
+    )?;
+    let mut payload_stmt = tx.prepare(
+        "INSERT INTO dwg_entity_payloads (doc_id, entity_id, payload_json, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for payload in payloads {
         payload_stmt.execute(params![
             doc_id,
-            &envelope.id,
-            serde_json::to_string(&entity_to_payload(entity))?,
+            &payload.entity_id,
+            serde_json::to_string(&payload.payload)?,
             created_at,
         ])?;
     }
@@ -2392,10 +2499,11 @@ mod tests {
 
     use rusqlite::{params, Connection};
 
-    use super::{DispatcherDb, ToolArtifactDraft};
+    use super::{entity_to_envelope, entity_to_payload, DispatcherDb, ToolArtifactDraft};
     use crate::agent::cad::{
         CadBBox, CadEntityQueryFilters, CadEntityRecord, CadPoint, CreateCadReviewIssueInput,
-        CreateCadReviewRunInput, DwgBlockSummary, DwgLayerSummary, DwgParseSummary,
+        CreateCadReviewRunInput, DwgBlockSummary, DwgEntityPayloadRecord, DwgLayerSummary,
+        DwgParseSummary, SaveDwgDocumentIndexInput, SaveDwgEntityPayloadsInput,
         SaveDwgParseCacheInput,
     };
 
@@ -2794,6 +2902,68 @@ mod tests {
             .expect("query entities");
         assert_eq!(entities.total, 3);
         assert_eq!(entities.items.len(), 3);
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn upsert_dwg_document_index_and_payloads_split_hot_path_storage() {
+        let (db, root) = create_test_db();
+        let file_path = "/repo/sample.dwg";
+        let entities = sample_entities();
+        let envelopes = entities.iter().map(entity_to_envelope).collect::<Vec<_>>();
+        let payloads = entities
+            .iter()
+            .map(|entity| DwgEntityPayloadRecord {
+                entity_id: entity.id.clone(),
+                payload: entity_to_payload(entity),
+            })
+            .collect::<Vec<_>>();
+
+        let document = db
+            .upsert_dwg_document_index(&SaveDwgDocumentIndexInput {
+                project_path: "/repo".to_string(),
+                file_path: file_path.to_string(),
+                file_size: 128,
+                file_mtime: 12345,
+                parser_version: "dwg-worker-v1".to_string(),
+                summary: sample_summary(file_path),
+                envelopes,
+            })
+            .expect("save dwg document index");
+
+        let conn = Connection::open(db.path()).expect("open db");
+        let parse_cache_count = conn
+            .query_row("SELECT COUNT(*) FROM dwg_parse_cache", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count parse cache");
+        assert_eq!(parse_cache_count, 0);
+        drop(conn);
+
+        let queried = db
+            .query_dwg_entities(&document.id, &CadEntityQueryFilters::default(), 0, 10)
+            .expect("query envelopes");
+        assert_eq!(queried.total, 3);
+
+        db.upsert_dwg_entity_payloads(&SaveDwgEntityPayloadsInput {
+            doc_id: document.id.clone(),
+            payloads,
+        })
+        .expect("save payloads");
+
+        let details = db
+            .get_dwg_entity_details(&document.id, &["T1".to_string()])
+            .expect("load entity detail");
+        assert_eq!(details.len(), 1);
+        assert_eq!(
+            details[0]
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("text"))
+                .and_then(|value| value.as_str()),
+            Some("房间名称")
+        );
 
         cleanup_test_db(root);
     }

@@ -6,14 +6,14 @@ import {
 import type { AcDbDatabaseConverter } from "@mlightcad/data-model";
 import type { AcDbParsingTaskResult } from "@mlightcad/data-model";
 import { AcApDocManager, AcApDocument, AcEdOpenMode } from "@mlightcad/cad-simple-viewer";
-import { Dwg_File_Type, LibreDwg } from "@mlightcad/libredwg-web";
+import { Dwg_File_Type } from "@mlightcad/libredwg-web";
 import type { DwgDatabase } from "@mlightcad/libredwg-web";
+import { consumePreparedDwgViewerParseTask, ensureLibreDwg } from "./dwgSharedParse";
 
 const DEFAULT_DWG_OPEN_ERROR = "cad-simple-viewer 无法打开该 DWG 文件";
 const DEFAULT_CJK_FALLBACK_FONTS = ["simsun", "simhei", "simkai"];
 
 let dwgSupportPromise: Promise<void> | null = null;
-let libreDwgPromise: Promise<Awaited<ReturnType<typeof LibreDwg.create>>> | null = null;
 let cadFontSupportPromise: Promise<void> = Promise.resolve();
 const loadedCadFonts = new Set<string>();
 
@@ -97,17 +97,6 @@ function normalizeCadViewerOpenError(error: unknown): Error {
   return new Error(`DWG 加载失败：${message}`);
 }
 
-async function ensureLibreDwg() {
-  if (!libreDwgPromise) {
-    libreDwgPromise = LibreDwg.create().catch((error) => {
-      libreDwgPromise = null;
-      throw new Error(`libredwg 初始化失败：${describeCadViewerError(error)}`);
-    });
-  }
-
-  return libreDwgPromise;
-}
-
 type LibreDwgConverterConstructor = new (
   config?: Record<string, unknown>,
 ) => AcDbDatabaseConverter<DwgDatabase>;
@@ -126,9 +115,17 @@ async function createManagedDwgConverter() {
 
   return new (class ManagedLibreDwgConverter extends BaseLibreDwgConverter {
     protected async parse(data: ArrayBuffer): Promise<AcDbParsingTaskResult<DwgDatabase>> {
+      const prepared = consumePreparedDwgViewerParseTask(data);
+      if (prepared) {
+        const resolved = await prepared;
+        return {
+          model: resolved.model,
+          data: resolved.stats,
+        };
+      }
+
       const libredwg = await ensureLibreDwg();
-      const copiedData = data.slice(0);
-      const handle = libredwg.dwg_read_data(copiedData, Dwg_File_Type.DWG);
+      const handle = libredwg.dwg_read_data(data.slice(0), Dwg_File_Type.DWG);
 
       if (typeof handle !== "number") {
         throw new Error("DWG 数据句柄创建失败");

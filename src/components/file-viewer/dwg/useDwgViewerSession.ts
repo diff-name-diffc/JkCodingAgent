@@ -149,6 +149,9 @@ export function useDwgViewerSession({
     if (!sessionId || !workspaceId) {
       return null;
     }
+    const viewportBox = bridge ? sanitizeCadBBox(getViewportBox(bridge.view)) : null;
+    const center = bridge ? sanitizeCadPoint(bridge.view.center) : null;
+    const zoomScale = bridge ? finiteNumberOrNull(bridge.view.activeLayoutView.internalCamera.zoom) : null;
     return {
       sessionId,
       workspaceId,
@@ -158,11 +161,11 @@ export function useDwgViewerSession({
       active,
       mode: viewMode,
       parseStatus,
-      canvasWidth: bridge?.view.width ?? 0,
-      canvasHeight: bridge?.view.height ?? 0,
-      viewportBox: bridge ? getViewportBox(bridge.view) : null,
-      center: bridge ? pointToCadPoint(bridge.view.center) : null,
-      zoomScale: bridge ? bridge.view.activeLayoutView.internalCamera.zoom : null,
+      canvasWidth: bridge ? finiteNumberOrZero(bridge.view.width) : 0,
+      canvasHeight: bridge ? finiteNumberOrZero(bridge.view.height) : 0,
+      viewportBox,
+      center,
+      zoomScale,
       selectionIds: bridge ? [...bridge.view.selectionSet.ids] : [],
       docId,
       parseError,
@@ -598,6 +601,41 @@ function pointToCadPoint(point: { x: number; y: number } | null | undefined) {
     return null;
   }
   return { x: point.x, y: point.y };
+}
+
+function finiteNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function finiteNumberOrZero(value: unknown): number {
+  return finiteNumberOrNull(value) ?? 0;
+}
+
+function sanitizeCadPoint(point: { x: number; y: number } | null | undefined): CadPoint | null {
+  const nextPoint = pointToCadPoint(point);
+  if (!nextPoint) {
+    return null;
+  }
+  const x = finiteNumberOrNull(nextPoint.x);
+  const y = finiteNumberOrNull(nextPoint.y);
+  if (x === null || y === null) {
+    return null;
+  }
+  return { x, y };
+}
+
+function sanitizeCadBBox(bbox: CadBBox | null | undefined): CadBBox | null {
+  if (!bbox) {
+    return null;
+  }
+  const minX = finiteNumberOrNull(bbox.minX);
+  const minY = finiteNumberOrNull(bbox.minY);
+  const maxX = finiteNumberOrNull(bbox.maxX);
+  const maxY = finiteNumberOrNull(bbox.maxY);
+  if (minX === null || minY === null || maxX === null || maxY === null) {
+    return null;
+  }
+  return { minX, minY, maxX, maxY };
 }
 
 function locateCadIssueInViewer(

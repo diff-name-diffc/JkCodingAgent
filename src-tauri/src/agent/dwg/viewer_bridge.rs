@@ -86,6 +86,20 @@ impl DwgViewerBridgeState {
         matches.into_iter().next()
     }
 
+    pub fn best_active_session_for_file(
+        &self,
+        workspace_id: &str,
+        file_path: &str,
+    ) -> Option<DwgViewerSessionState> {
+        let mut matches = self
+            .list_file_sessions(workspace_id, file_path)
+            .into_iter()
+            .filter(|state| state.active)
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        matches.into_iter().next()
+    }
+
     pub async fn request_open(
         &self,
         app: &AppHandle,
@@ -103,7 +117,7 @@ impl DwgViewerBridgeState {
         Ok(())
     }
 
-    pub async fn wait_for_session(
+    pub async fn wait_for_active_session(
         &self,
         workspace_id: &str,
         file_path: &str,
@@ -111,11 +125,11 @@ impl DwgViewerBridgeState {
     ) -> Result<DwgViewerSessionState> {
         let start = std::time::Instant::now();
         loop {
-            if let Some(session) = self.best_session_for_file(workspace_id, file_path) {
+            if let Some(session) = self.best_active_session_for_file(workspace_id, file_path) {
                 return Ok(session);
             }
             if start.elapsed() >= timeout_duration {
-                return Err(anyhow!("等待 DWG Viewer 会话超时"));
+                return Err(anyhow!("等待激活中的 DWG Viewer 会话超时"));
             }
             tokio::time::sleep(Duration::from_millis(120)).await;
         }
@@ -192,4 +206,96 @@ fn lexical_normalize(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registration(
+        session_id: &str,
+        workspace_id: &str,
+        file_path: &str,
+        active: bool,
+        visible: bool,
+    ) -> DwgViewerSessionRegistration {
+        DwgViewerSessionRegistration {
+            session_id: session_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            file_path: file_path.to_string(),
+            tab_id: format!("tab-{session_id}"),
+            visible,
+            active,
+            mode: "select".to_string(),
+            parse_status: "ready".to_string(),
+            canvas_width: 1200.0,
+            canvas_height: 800.0,
+            viewport_box: None,
+            center: None,
+            zoom_scale: None,
+            selection_ids: Vec::new(),
+            doc_id: Some("doc-1".to_string()),
+            parse_error: None,
+        }
+    }
+
+    #[test]
+    fn best_active_session_for_file_ignores_background_tabs() {
+        let bridge = DwgViewerBridgeState::default();
+        bridge.register_session(registration(
+            "session-hidden",
+            "ws-1",
+            "/repo/sample.dwg",
+            false,
+            false,
+        ));
+        bridge.register_session(registration(
+            "session-active",
+            "ws-1",
+            "/repo/sample.dwg",
+            true,
+            true,
+        ));
+
+        let session = bridge
+            .best_active_session_for_file("ws-1", "/repo/sample.dwg")
+            .expect("active session");
+
+        assert_eq!(session.session_id, "session-active");
+    }
+
+    #[tokio::test]
+    async fn wait_for_active_session_waits_until_tab_becomes_active() {
+        let bridge = DwgViewerBridgeState::new();
+        bridge.register_session(registration(
+            "session-hidden",
+            "ws-1",
+            "/repo/sample.dwg",
+            false,
+            false,
+        ));
+
+        let waiting_bridge = Arc::clone(&bridge);
+        let wait_task = tokio::spawn(async move {
+            waiting_bridge
+                .wait_for_active_session("ws-1", "/repo/sample.dwg", Duration::from_secs(2))
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        bridge.register_session(registration(
+            "session-active",
+            "ws-1",
+            "/repo/sample.dwg",
+            true,
+            true,
+        ));
+
+        let session = wait_task
+            .await
+            .expect("join wait task")
+            .expect("active session");
+
+        assert_eq!(session.session_id, "session-active");
+    }
 }

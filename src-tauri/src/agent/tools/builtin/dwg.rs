@@ -1162,7 +1162,9 @@ async fn resolve_session_for_path(
     let Some(bridge) = &context.dwg_viewer_bridge else {
         return Err("错误：当前环境不支持 DWG Viewer bridge".to_string());
     };
-    if let Some(session) = bridge.best_session_for_file(&context.workspace_id, &normalized) {
+    if let Some(session) =
+        reusable_session_for_policy(bridge, &context.workspace_id, &normalized, policy)
+    {
         return Ok((session, false));
     }
     if policy != "open_if_missing" {
@@ -1176,10 +1178,25 @@ async fn resolve_session_for_path(
         .await
         .map_err(|error| format!("请求打开 DWG 工作台失败：{error}"))?;
     let session = bridge
-        .wait_for_session(&context.workspace_id, &normalized, Duration::from_secs(30))
+        .wait_for_active_session(&context.workspace_id, &normalized, Duration::from_secs(30))
         .await
         .map_err(|error| error.to_string())?;
     Ok((session, true))
+}
+
+fn reusable_session_for_policy(
+    bridge: &crate::agent::dwg::viewer_bridge::DwgViewerBridgeState,
+    workspace_id: &str,
+    file_path: &str,
+    policy: &str,
+) -> Option<DwgViewerSessionState> {
+    match policy {
+        "reuse_any" => bridge.best_session_for_file(workspace_id, file_path),
+        "prefer_active" | "open_if_missing" => {
+            bridge.best_active_session_for_file(workspace_id, file_path)
+        }
+        _ => bridge.best_active_session_for_file(workspace_id, file_path),
+    }
 }
 
 fn parse_region_bbox(args: &Value) -> Result<CadBBox, String> {
@@ -1265,4 +1282,65 @@ fn build_focus_issue_command(action: &Value) -> Result<(String, Value), String> 
         return Ok(("fit_bbox".to_string(), json!({ "bbox": bbox })));
     }
     Ok(("noop".to_string(), json!({ "reason": "no_focus_target" })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::cad::DwgViewerSessionRegistration;
+    use crate::agent::dwg::viewer_bridge::DwgViewerBridgeState;
+
+    fn registration(session_id: &str, active: bool) -> DwgViewerSessionRegistration {
+        DwgViewerSessionRegistration {
+            session_id: session_id.to_string(),
+            workspace_id: "ws-1".to_string(),
+            file_path: "/repo/sample.dwg".to_string(),
+            tab_id: format!("tab-{session_id}"),
+            visible: active,
+            active,
+            mode: "select".to_string(),
+            parse_status: "ready".to_string(),
+            canvas_width: 1200.0,
+            canvas_height: 800.0,
+            viewport_box: None,
+            center: None,
+            zoom_scale: None,
+            selection_ids: Vec::new(),
+            doc_id: Some("doc-1".to_string()),
+            parse_error: None,
+        }
+    }
+
+    #[test]
+    fn open_if_missing_only_reuses_active_session() {
+        let bridge = DwgViewerBridgeState::default();
+        bridge.register_session(registration("session-hidden", false));
+
+        assert!(reusable_session_for_policy(
+            &bridge,
+            "ws-1",
+            "/repo/sample.dwg",
+            "open_if_missing"
+        )
+        .is_none());
+
+        bridge.register_session(registration("session-active", true));
+
+        let session =
+            reusable_session_for_policy(&bridge, "ws-1", "/repo/sample.dwg", "open_if_missing")
+                .expect("active session");
+
+        assert_eq!(session.session_id, "session-active");
+    }
+
+    #[test]
+    fn reuse_any_can_still_bind_background_session() {
+        let bridge = DwgViewerBridgeState::default();
+        bridge.register_session(registration("session-hidden", false));
+
+        let session = reusable_session_for_policy(&bridge, "ws-1", "/repo/sample.dwg", "reuse_any")
+            .expect("background session");
+
+        assert_eq!(session.session_id, "session-hidden");
+    }
 }

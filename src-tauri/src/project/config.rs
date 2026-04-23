@@ -198,8 +198,8 @@ pub fn write_agent_config_file(agent: String, content: String) -> Result<(), Str
 mod tests {
     use super::{
         should_refresh_commit_prompt, should_refresh_prompt_prefix, DEFAULT_AGENT_PROMPT_PREFIX,
-        DEFAULT_COMMIT_PROMPT, LEGACY_DEFAULT_AGENT_PROMPT_PREFIX,
-        LEGACY_DEFAULT_COMMIT_PROMPT, PREVIOUS_DEFAULT_AGENT_PROMPT_PREFIX,
+        DEFAULT_COMMIT_PROMPT, LEGACY_DEFAULT_AGENT_PROMPT_PREFIX, LEGACY_DEFAULT_COMMIT_PROMPT,
+        PREVIOUS_DEFAULT_AGENT_PROMPT_PREFIX,
     };
 
     #[test]
@@ -228,6 +228,8 @@ mod tests {
     #[test]
     fn keeps_custom_or_latest_commit_prompt() {
         assert!(!should_refresh_commit_prompt(DEFAULT_COMMIT_PROMPT));
-        assert!(!should_refresh_commit_prompt("请根据 diff 输出一句简洁中文提交信息。"));
+        assert!(!should_refresh_commit_prompt(
+            "请根据 diff 输出一句简洁中文提交信息。"
+        ));
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -22,6 +22,12 @@ use super::summary::ToolArtifactDraft;
 
 const MAX_LLM_DIALOGUES: usize = 5;
 const DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS: u64 = 1_000_000;
+
+#[derive(Debug, Default)]
+pub struct ClearMessagesCleanup {
+    pub attachment_paths: Vec<String>,
+    pub attachment_dir: Option<String>,
+}
 
 struct DwgDocumentWriteInput<'a> {
     project_path: &'a str,
@@ -493,9 +499,11 @@ impl DispatcherDb {
         Ok(messages)
     }
 
-    pub fn clear_messages(&self, workspace_id: &str) -> Result<()> {
+    pub fn clear_messages(&self, workspace_id: &str) -> Result<ClearMessagesCleanup> {
         let mut conn = self.connect()?;
         let tx = conn.transaction()?;
+        let cleanup = collect_workspace_cleanup_targets(&tx, workspace_id)?;
+        clear_workspace_dwg_cache(&tx, workspace_id)?;
         tx.execute(
             "DELETE FROM cad_review_issues WHERE run_id IN (
                 SELECT id FROM cad_review_runs WHERE workspace_id = ?1
@@ -529,7 +537,7 @@ impl DispatcherDb {
         )
         .context("clear dispatcher messages")?;
         tx.commit().context("commit dispatcher message cleanup")?;
-        Ok(())
+        Ok(cleanup)
     }
 
     pub fn upsert_session_token_usage(
@@ -1459,6 +1467,22 @@ impl DispatcherDb {
             .context("list cad review runs")
     }
 
+    pub fn list_cad_review_runs_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<CadReviewRunRecord>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at, updated_at
+             FROM cad_review_runs
+             WHERE file_path = ?1
+             ORDER BY updated_at DESC, created_at DESC, rowid DESC",
+        )?;
+        let rows = stmt.query_map(params![file_path], map_review_run_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("list cad review runs by file")
+    }
+
     pub fn get_cad_review_run_detail(
         &self,
         workspace_id: &str,
@@ -1476,13 +1500,37 @@ impl DispatcherDb {
             .optional()
             .context("load cad review run")?
             .with_context(|| format!("cad review run not found: {run_id}"))?;
+        self.load_cad_review_run_detail(&conn, run)
+    }
+
+    pub fn get_cad_review_run_detail_by_id(&self, run_id: &str) -> Result<CadReviewRunDetail> {
+        let conn = self.connect()?;
+        let run = conn
+            .query_row(
+                "SELECT id, workspace_id, file_path, source_message_id, result_message_id, rule_attachment_ids_json, goal, status, summary, issue_count, created_at, updated_at
+                 FROM cad_review_runs
+                 WHERE id = ?1",
+                params![run_id],
+                map_review_run_row,
+            )
+            .optional()
+            .context("load cad review run by id")?
+            .with_context(|| format!("cad review run not found: {run_id}"))?;
+        self.load_cad_review_run_detail(&conn, run)
+    }
+
+    fn load_cad_review_run_detail(
+        &self,
+        conn: &Connection,
+        run: CadReviewRunRecord,
+    ) -> Result<CadReviewRunDetail> {
         let mut stmt = conn.prepare(
             "SELECT id, run_id, severity, title, description, layer, entity_refs_json, anchor_point_json, bbox_json, viewport_hint_json, rule_ref, created_at
              FROM cad_review_issues
              WHERE run_id = ?1
              ORDER BY created_at ASC, rowid ASC",
         )?;
-        let rows = stmt.query_map(params![run_id], map_review_issue_row)?;
+        let rows = stmt.query_map(params![&run.id], map_review_issue_row)?;
         let issues = rows
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("load cad review issues")?;
@@ -2403,6 +2451,170 @@ fn rebuild_dwg_entity_index(
     replace_dwg_entity_payloads(tx, doc_id, &payloads, created_at)
 }
 
+fn collect_workspace_cleanup_targets(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+) -> Result<ClearMessagesCleanup> {
+    let project_path = tx
+        .query_row(
+            "SELECT project_id FROM dispatcher_sessions WHERE id = ?1",
+            params![workspace_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .context("load workspace project path for cleanup")?;
+
+    let mut stmt = tx.prepare(
+        "SELECT stored_path
+         FROM dispatcher_attachments
+         WHERE workspace_id = ?1
+         ORDER BY created_at ASC, rowid ASC",
+    )?;
+    let attachment_paths = stmt
+        .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("load workspace attachment paths for cleanup")?;
+
+    let attachment_dir = project_path.map(|project_path| {
+        Path::new(&project_path)
+            .join(".nezha")
+            .join("dispatcher-attachments")
+            .join(workspace_id)
+            .to_string_lossy()
+            .into_owned()
+    });
+
+    Ok(ClearMessagesCleanup {
+        attachment_paths,
+        attachment_dir,
+    })
+}
+
+fn collect_workspace_dwg_cache_targets(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+) -> Result<HashSet<(String, String)>> {
+    let Some(project_path) = tx
+        .query_row(
+            "SELECT project_id FROM dispatcher_sessions WHERE id = ?1",
+            params![workspace_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .context("load workspace project path")?
+    else {
+        return Ok(HashSet::new());
+    };
+
+    let mut targets = HashSet::new();
+
+    let mut run_stmt = tx.prepare(
+        "SELECT DISTINCT file_path
+         FROM cad_review_runs
+         WHERE workspace_id = ?1",
+    )?;
+    let run_paths = run_stmt
+        .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("load workspace cad review dwg paths")?;
+    for file_path in run_paths {
+        targets.insert(normalize_dwg_storage_keys(&project_path, &file_path));
+    }
+
+    let mut attachment_stmt = tx.prepare(
+        "SELECT stored_path
+         FROM dispatcher_attachments
+         WHERE workspace_id = ?1",
+    )?;
+    let attachment_paths = attachment_stmt
+        .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("load workspace attachment dwg paths")?;
+    for stored_path in attachment_paths {
+        if stored_path.to_ascii_lowercase().ends_with(".dwg") {
+            targets.insert(normalize_dwg_storage_keys(&project_path, &stored_path));
+        }
+    }
+
+    Ok(targets)
+}
+
+fn clear_workspace_dwg_cache(tx: &rusqlite::Transaction<'_>, workspace_id: &str) -> Result<()> {
+    let targets = collect_workspace_dwg_cache_targets(tx, workspace_id)?;
+    if targets.is_empty() {
+        return Ok(());
+    }
+
+    let mut document_ids = HashSet::new();
+    let mut parse_cache_ids = Vec::new();
+
+    {
+        let mut stmt = tx.prepare("SELECT id, project_path, file_path FROM dwg_documents")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (doc_id, project_path, file_path) = row?;
+            if targets.contains(&normalize_dwg_storage_keys(&project_path, &file_path)) {
+                document_ids.insert(doc_id);
+            }
+        }
+    }
+
+    {
+        let mut stmt =
+            tx.prepare("SELECT id, project_path, file_path, document_id FROM dwg_parse_cache")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (cache_id, project_path, file_path, document_id) = row?;
+            if targets.contains(&normalize_dwg_storage_keys(&project_path, &file_path)) {
+                parse_cache_ids.push(cache_id);
+                if let Some(document_id) = document_id {
+                    document_ids.insert(document_id);
+                }
+            }
+        }
+    }
+
+    for doc_id in &document_ids {
+        tx.execute(
+            "DELETE FROM dwg_entity_rtree WHERE row_id IN (
+                SELECT row_id FROM dwg_entity_envelopes WHERE doc_id = ?1
+             )",
+            params![doc_id],
+        )?;
+        tx.execute(
+            "DELETE FROM dwg_entity_envelopes WHERE doc_id = ?1",
+            params![doc_id],
+        )?;
+        tx.execute(
+            "DELETE FROM dwg_entity_payloads WHERE doc_id = ?1",
+            params![doc_id],
+        )?;
+        tx.execute("DELETE FROM dwg_documents WHERE id = ?1", params![doc_id])?;
+    }
+
+    for cache_id in parse_cache_ids {
+        tx.execute(
+            "DELETE FROM dwg_parse_cache WHERE id = ?1",
+            params![cache_id],
+        )?;
+    }
+
+    Ok(())
+}
+
 fn rebuild_dwg_entity_envelopes(
     tx: &rusqlite::Transaction<'_>,
     doc_id: &str,
@@ -2979,6 +3191,118 @@ mod tests {
     }
 
     #[test]
+    fn clear_messages_removes_dwg_cache_for_session() {
+        let (db, root) = create_test_db();
+        let session = db.create_session("/repo", "测试会话").unwrap();
+        let other_session = db.create_session("/repo", "其他会话").unwrap();
+        let file_path = "/repo/sample.dwg";
+        let other_file_path = "/repo/other.dwg";
+
+        db.create_attachment(
+            &session.id,
+            "sample.dwg",
+            "/repo/.nezha/dispatcher-attachments/ws-1/sample.dwg",
+            "application/acad",
+            128,
+        )
+        .unwrap();
+
+        db.save_dwg_parse_cache(&SaveDwgParseCacheInput {
+            project_path: "/repo".to_string(),
+            file_path: file_path.to_string(),
+            file_size: 128,
+            file_mtime: 12345,
+            parser_version: "dwg-worker-v1".to_string(),
+            summary: sample_summary(file_path),
+            entities: sample_entities(),
+        })
+        .unwrap();
+        db.save_dwg_parse_cache(&SaveDwgParseCacheInput {
+            project_path: "/repo".to_string(),
+            file_path: other_file_path.to_string(),
+            file_size: 256,
+            file_mtime: 67890,
+            parser_version: "dwg-worker-v1".to_string(),
+            summary: sample_summary(other_file_path),
+            entities: sample_entities(),
+        })
+        .unwrap();
+
+        db.upsert_dwg_document_index(&SaveDwgDocumentIndexInput {
+            project_path: "/repo".to_string(),
+            file_path: file_path.to_string(),
+            file_size: 128,
+            file_mtime: 12345,
+            parser_version: "dwg-worker-v1".to_string(),
+            summary: sample_summary(file_path),
+            envelopes: sample_entities()
+                .iter()
+                .map(entity_to_envelope)
+                .collect::<Vec<_>>(),
+        })
+        .unwrap();
+        db.upsert_dwg_document_index(&SaveDwgDocumentIndexInput {
+            project_path: "/repo".to_string(),
+            file_path: other_file_path.to_string(),
+            file_size: 256,
+            file_mtime: 67890,
+            parser_version: "dwg-worker-v1".to_string(),
+            summary: sample_summary(other_file_path),
+            envelopes: sample_entities()
+                .iter()
+                .map(entity_to_envelope)
+                .collect::<Vec<_>>(),
+        })
+        .unwrap();
+
+        db.create_cad_review_run(&CreateCadReviewRunInput {
+            run_id: None,
+            workspace_id: session.id.clone(),
+            file_path: file_path.to_string(),
+            source_message_id: "msg-source".to_string(),
+            rule_attachment_ids: vec![],
+            goal: "检查 sample".to_string(),
+            status: "completed".to_string(),
+            summary: "sample".to_string(),
+            issues: vec![],
+        })
+        .unwrap();
+        db.create_cad_review_run(&CreateCadReviewRunInput {
+            run_id: None,
+            workspace_id: other_session.id.clone(),
+            file_path: other_file_path.to_string(),
+            source_message_id: "msg-source-other".to_string(),
+            rule_attachment_ids: vec![],
+            goal: "检查 other".to_string(),
+            status: "completed".to_string(),
+            summary: "other".to_string(),
+            issues: vec![],
+        })
+        .unwrap();
+
+        db.clear_messages(&session.id).unwrap();
+
+        assert!(db
+            .get_dwg_parse_cache("/repo", file_path, 128, 12345, "dwg-worker-v1")
+            .unwrap()
+            .is_none());
+        assert!(db
+            .get_dwg_document("/repo", file_path, 128, 12345, "dwg-worker-v1")
+            .unwrap()
+            .is_none());
+        assert!(db
+            .get_dwg_parse_cache("/repo", other_file_path, 256, 67890, "dwg-worker-v1")
+            .unwrap()
+            .is_some());
+        assert!(db
+            .get_dwg_document("/repo", other_file_path, 256, 67890, "dwg-worker-v1")
+            .unwrap()
+            .is_some());
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
     fn delete_session_removes_tool_artifacts_with_session() {
         let (db, root) = create_test_db();
         let session = db.create_session("project-1", "测试会话").unwrap();
@@ -3517,6 +3841,108 @@ mod tests {
         assert_eq!(loaded.issues.len(), 2);
         assert_eq!(loaded.issues[0].title, "问题 B");
         assert_eq!(loaded.issues[1].title, "问题 C");
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn list_cad_review_runs_for_file_returns_history_across_workspaces() {
+        let (db, root) = create_test_db();
+
+        db.create_cad_review_run(&CreateCadReviewRunInput {
+            run_id: None,
+            workspace_id: "ws-1".to_string(),
+            file_path: "/repo/sample.dwg".to_string(),
+            source_message_id: "msg-source-1".to_string(),
+            rule_attachment_ids: vec![],
+            goal: "第一次审查".to_string(),
+            status: "completed".to_string(),
+            summary: "发现 1 个问题".to_string(),
+            issues: vec![CreateCadReviewIssueInput {
+                severity: "high".to_string(),
+                title: "问题 A".to_string(),
+                description: "描述 A".to_string(),
+                layer: Some("A-DOOR".to_string()),
+                entity_refs: vec!["L1".to_string()],
+                anchor_point: Some(CadPoint { x: 2.0, y: 2.0 }),
+                bbox: None,
+                viewport_hint: None,
+                rule_ref: None,
+            }],
+        })
+        .expect("create first workspace review run");
+
+        let second = db
+            .create_cad_review_run(&CreateCadReviewRunInput {
+                run_id: None,
+                workspace_id: "ws-2".to_string(),
+                file_path: "/repo/sample.dwg".to_string(),
+                source_message_id: "msg-source-2".to_string(),
+                rule_attachment_ids: vec![],
+                goal: "第二次审查".to_string(),
+                status: "completed".to_string(),
+                summary: "发现 1 个新问题".to_string(),
+                issues: vec![CreateCadReviewIssueInput {
+                    severity: "medium".to_string(),
+                    title: "问题 B".to_string(),
+                    description: "描述 B".to_string(),
+                    layer: Some("A-WALL".to_string()),
+                    entity_refs: vec!["L2".to_string()],
+                    anchor_point: None,
+                    bbox: None,
+                    viewport_hint: None,
+                    rule_ref: None,
+                }],
+            })
+            .expect("create second workspace review run");
+
+        let runs = db
+            .list_cad_review_runs_for_file("/repo/sample.dwg")
+            .expect("list review runs by file");
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].id, second.run.id);
+        assert_eq!(runs[0].workspace_id, "ws-2");
+        assert_eq!(runs[1].workspace_id, "ws-1");
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn get_cad_review_run_detail_by_id_can_restore_run_without_workspace_context() {
+        let (db, root) = create_test_db();
+        let detail = db
+            .create_cad_review_run(&CreateCadReviewRunInput {
+                run_id: None,
+                workspace_id: "ws-1".to_string(),
+                file_path: "/repo/sample.dwg".to_string(),
+                source_message_id: "msg-source".to_string(),
+                rule_attachment_ids: vec![],
+                goal: "恢复问题清单".to_string(),
+                status: "completed".to_string(),
+                summary: "发现 1 个问题".to_string(),
+                issues: vec![CreateCadReviewIssueInput {
+                    severity: "high".to_string(),
+                    title: "问题 A".to_string(),
+                    description: "描述 A".to_string(),
+                    layer: Some("A-DOOR".to_string()),
+                    entity_refs: vec!["L1".to_string()],
+                    anchor_point: Some(CadPoint { x: 2.0, y: 2.0 }),
+                    bbox: None,
+                    viewport_hint: None,
+                    rule_ref: None,
+                }],
+            })
+            .expect("create review run");
+
+        let loaded = db
+            .get_cad_review_run_detail_by_id(&detail.run.id)
+            .expect("load review detail by id");
+
+        assert_eq!(loaded.run.id, detail.run.id);
+        assert_eq!(loaded.run.workspace_id, "ws-1");
+        assert_eq!(loaded.issues.len(), 1);
+        assert_eq!(loaded.issues[0].title, "问题 A");
 
         cleanup_test_db(root);
     }

@@ -26,13 +26,8 @@ export function useCadReviewRuns({
 
   const loadReviewDetail = useCallback(
     async (runId: string) => {
-      if (!workspaceId) {
-        setReviewDetail(null);
-        return null;
-      }
       try {
         const detail = await invoke<CadReviewRunDetail>("dispatcher_get_cad_review_run_detail", {
-          workspaceId,
           runId,
         });
         setReviewDetail(detail);
@@ -43,20 +38,13 @@ export function useCadReviewRuns({
         return null;
       }
     },
-    [workspaceId],
+    [],
   );
 
   const loadReviewRuns = useCallback(
     async (preferredRunId?: string | null, options?: { reloadActiveDetail?: boolean }) => {
-      if (!workspaceId) {
-        setReviewRuns([]);
-        setReviewDetail(null);
-        onLocateResultMessage?.(null);
-        return null;
-      }
       try {
         const runs = await invoke<CadReviewRun[]>("dispatcher_list_cad_review_runs", {
-          workspaceId,
           filePath,
         });
         setReviewRuns(runs);
@@ -92,7 +80,6 @@ export function useCadReviewRuns({
       onActiveIssueChange,
       onActiveReviewRunChange,
       onLocateResultMessage,
-      workspaceId,
     ],
   );
 
@@ -101,20 +88,21 @@ export function useCadReviewRuns({
   }, [loadReviewRuns]);
 
   useEffect(() => {
-    if (!workspaceId || !activeReviewRunId) {
+    if (!activeReviewRunId) {
       setReviewDetail(null);
       onLocateResultMessage?.(null);
       return;
     }
     void loadReviewDetail(activeReviewRunId);
-  }, [activeReviewRunId, loadReviewDetail, onLocateResultMessage, workspaceId]);
+  }, [activeReviewRunId, loadReviewDetail, onLocateResultMessage]);
 
   useEffect(() => {
     if (!reviewDetail) {
       return;
     }
-    if (!activeIssueId || !reviewDetail.issues.some((issue) => issue.id === activeIssueId)) {
-      onActiveIssueChange(reviewDetail.issues[0]?.id ?? null);
+    if (activeIssueId && !reviewDetail.issues.some((issue) => issue.id === activeIssueId)) {
+      // 首次打开 DWG 时保持整图视角，只有显式选择问题时才触发定位。
+      onActiveIssueChange(null);
     }
   }, [activeIssueId, onActiveIssueChange, reviewDetail]);
 

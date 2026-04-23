@@ -279,10 +279,17 @@ pub fn dispatcher_clear_messages(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
 ) -> Result<(), String> {
-    state
+    let cleanup = state
         .db
         .clear_messages(&workspace_id)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    for attachment_path in cleanup.attachment_paths {
+        let _ = std::fs::remove_file(&attachment_path);
+    }
+    if let Some(attachment_dir) = cleanup.attachment_dir {
+        let _ = std::fs::remove_dir_all(attachment_dir);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -417,25 +424,38 @@ pub fn dispatcher_upsert_dwg_entity_payloads(
 #[tauri::command]
 pub fn dispatcher_list_cad_review_runs(
     state: tauri::State<'_, DispatcherState>,
-    workspace_id: String,
+    workspace_id: Option<String>,
     file_path: Option<String>,
 ) -> Result<Vec<CadReviewRunRecord>, String> {
-    state
-        .db
-        .list_cad_review_runs(&workspace_id, file_path.as_deref())
-        .map_err(|error| error.to_string())
+    match (workspace_id.as_deref(), file_path.as_deref()) {
+        (Some(workspace_id), file_path) => state
+            .db
+            .list_cad_review_runs(workspace_id, file_path)
+            .map_err(|error| error.to_string()),
+        (None, Some(file_path)) => state
+            .db
+            .list_cad_review_runs_for_file(file_path)
+            .map_err(|error| error.to_string()),
+        (None, None) => Err("dispatcher_list_cad_review_runs 缺少查询条件".to_string()),
+    }
 }
 
 #[tauri::command]
 pub fn dispatcher_get_cad_review_run_detail(
     state: tauri::State<'_, DispatcherState>,
-    workspace_id: String,
+    workspace_id: Option<String>,
     run_id: String,
 ) -> Result<CadReviewRunDetail, String> {
-    state
-        .db
-        .get_cad_review_run_detail(&workspace_id, &run_id)
-        .map_err(|error| error.to_string())
+    match workspace_id.as_deref() {
+        Some(workspace_id) => state
+            .db
+            .get_cad_review_run_detail(workspace_id, &run_id)
+            .map_err(|error| error.to_string()),
+        None => state
+            .db
+            .get_cad_review_run_detail_by_id(&run_id)
+            .map_err(|error| error.to_string()),
+    }
 }
 
 #[tauri::command]

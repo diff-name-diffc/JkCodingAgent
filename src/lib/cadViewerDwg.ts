@@ -3,6 +3,8 @@ import {
   AcDbBlockTableRecord,
   AcDbDatabaseConverterManager,
   AcDbFileType,
+  AcDbLayerTableRecord,
+  AcCmColor,
   acdbHostApplicationServices,
 } from "@mlightcad/data-model";
 import type {
@@ -28,6 +30,8 @@ const DEFAULT_DWG_OPEN_ERROR = "cad-simple-viewer 无法打开该 DWG 文件";
 const DEFAULT_CJK_FALLBACK_FONTS = ["simsun", "simhei", "simkai"];
 const MAX_DWG_FAILURE_DETAILS = 8;
 const CAD_DATA_BASE_URL = "https://mlightcad.gitlab.io/cad-data/";
+const DEFAULT_LAYER_NAME = "0";
+const DEFAULT_LAYER_LINETYPE = "Continuous";
 
 let dwgSupportPromise: Promise<void> | null = null;
 let cadFontSupportPromise: Promise<void> = Promise.resolve();
@@ -186,6 +190,48 @@ function groupDwgEntitiesByType<T extends DwgSourceEntity>(entities: readonly T[
   }
 
   return Array.from(grouped.values()).flat();
+}
+
+function normalizeDwgLayerName(layerName: unknown) {
+  return typeof layerName === "string" && layerName.trim().length > 0
+    ? layerName.trim()
+    : DEFAULT_LAYER_NAME;
+}
+
+function collectReferencedDwgLayerNames(model: DwgDatabase) {
+  const names = new Set<string>([DEFAULT_LAYER_NAME]);
+  model.tables.BLOCK_RECORD.entries.forEach((btr) => {
+    btr.entities?.forEach((entity) => {
+      names.add(normalizeDwgLayerName(entity?.layer));
+    });
+  });
+  return names;
+}
+
+function ensureDwgLayerExists(db: AcDbDatabase, layerName: string) {
+  if (db.tables.layerTable.getAt(layerName)) {
+    return;
+  }
+
+  const color = new AcCmColor();
+  color.colorIndex = 7;
+  db.tables.layerTable.add(
+    new AcDbLayerTableRecord({
+      name: layerName,
+      standardFlags: 0,
+      linetype: DEFAULT_LAYER_LINETYPE,
+      lineWeight: 0,
+      isOff: false,
+      color,
+      isPlottable: true,
+    }),
+  );
+}
+
+function ensureReferencedDwgLayers(model: DwgDatabase, db: AcDbDatabase) {
+  collectReferencedDwgLayerNames(model).forEach((layerName) => {
+    ensureDwgLayerExists(db, layerName);
+  });
 }
 
 function describeDwgEntity(entity: DwgSourceEntity, index: number) {
@@ -412,6 +458,7 @@ async function createManagedDwgConverter() {
     }
 
     protected processBlockTables(model: DwgDatabase, db: AcDbDatabase): void {
+      ensureReferencedDwgLayers(model, db);
       const btrs = model.tables.BLOCK_RECORD.entries;
 
       btrs.forEach((btr) => {

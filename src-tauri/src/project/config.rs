@@ -12,6 +12,7 @@ const PREVIOUS_DEFAULT_AGENT_PROMPT_PREFIX: &str = "你是一名资深软件工�
 const LEGACY_DEFAULT_AGENT_PROMPT_PREFIX: &str = "你是一名资深软件工程师，当前目标是完成用户交付的编码任务。\n- 先阅读相关代码、调用链和约束，再动手修改。\n- 优先做与当前任务直接相关的最小充分改动，不无端扩散范围。\n- 对正确性、边界条件、兼容性和可维护性保持敏感。\n- 修改后主动做编译、测试或关键路径验证；若无法验证，明确说明。\n- 输出聚焦结果、风险、验证结论和后续建议。";
 
 const DEFAULT_COMMIT_PROMPT: &str = "你是一名资深软件工程师，请基于给定的 Git diff 生成提交信息。\n要求：\n1. 使用祈使句，直接描述本次改动。\n2. 第一行格式为 type(scope): summary，尽量不超过 50 个字符。\n3. type 仅使用 feat、fix、refactor、docs、style、test、chore。\n4. 如需补充说明，空一行后用 1-3 行说明原因、影响或验证重点。\n5. 只输出提交信息正文，不要解释，不要 Markdown。";
+const LEGACY_DEFAULT_COMMIT_PROMPT: &str = "You are a git commit message generator. Based on the provided git diff, write a concise and descriptive commit message. Follow these rules:\n1. Use the imperative mood (e.g., \"Add feature\" not \"Added feature\")\n2. First line: type(scope): short summary (50 chars or less)\n   Types: feat, fix, docs, style, refactor, test, chore\n3. If needed, add a blank line then a brief body explaining what and why\n4. Output ONLY the commit message text, no explanations or markdown formatting";
 
 const DEFAULT_CONFIG: &str = r#"# JKCodingAgent 项目配置
 # https://github.com/diff-name-diffc/JkCodingAgent
@@ -76,6 +77,10 @@ fn should_refresh_prompt_prefix(prompt_prefix: &str) -> bool {
         || prompt_prefix == LEGACY_DEFAULT_AGENT_PROMPT_PREFIX
 }
 
+fn should_refresh_commit_prompt(commit_prompt: &str) -> bool {
+    commit_prompt.is_empty() || commit_prompt == LEGACY_DEFAULT_COMMIT_PROMPT
+}
+
 /// Creates `.jkcodingagent/config.toml` in the project directory if it doesn't already exist.
 /// Also ensures `.jkcodingagent/attachments/` and `.jkcodingagent/mcp.json` exist.
 /// Returns the parsed config.
@@ -99,6 +104,10 @@ pub fn init_project_config(project_path: String) -> Result<ProjectConfig, String
     let mut updated = false;
     if should_refresh_prompt_prefix(&config.agent.prompt_prefix) {
         config.agent.prompt_prefix = DEFAULT_AGENT_PROMPT_PREFIX.to_string();
+        updated = true;
+    }
+    if should_refresh_commit_prompt(&config.git.commit_prompt) {
+        config.git.commit_prompt = DEFAULT_COMMIT_PROMPT.to_string();
         updated = true;
     }
     if config.agent.claude_version.is_empty() {
@@ -188,8 +197,9 @@ pub fn write_agent_config_file(agent: String, content: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        should_refresh_prompt_prefix, DEFAULT_AGENT_PROMPT_PREFIX,
-        LEGACY_DEFAULT_AGENT_PROMPT_PREFIX, PREVIOUS_DEFAULT_AGENT_PROMPT_PREFIX,
+        should_refresh_commit_prompt, should_refresh_prompt_prefix, DEFAULT_AGENT_PROMPT_PREFIX,
+        DEFAULT_COMMIT_PROMPT, LEGACY_DEFAULT_AGENT_PROMPT_PREFIX,
+        LEGACY_DEFAULT_COMMIT_PROMPT, PREVIOUS_DEFAULT_AGENT_PROMPT_PREFIX,
     };
 
     #[test]
@@ -207,5 +217,17 @@ mod tests {
     fn keeps_custom_prompt_prefix() {
         assert!(!should_refresh_prompt_prefix("请始终使用英文输出。"));
         assert!(!should_refresh_prompt_prefix(DEFAULT_AGENT_PROMPT_PREFIX));
+    }
+
+    #[test]
+    fn refreshes_empty_or_builtin_legacy_commit_prompt() {
+        assert!(should_refresh_commit_prompt(""));
+        assert!(should_refresh_commit_prompt(LEGACY_DEFAULT_COMMIT_PROMPT));
+    }
+
+    #[test]
+    fn keeps_custom_or_latest_commit_prompt() {
+        assert!(!should_refresh_commit_prompt(DEFAULT_COMMIT_PROMPT));
+        assert!(!should_refresh_commit_prompt("请根据 diff 输出一句简洁中文提交信息。"));
     }
 }

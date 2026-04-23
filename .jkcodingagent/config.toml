@@ -15,9 +15,10 @@ codex_version = "0.118.0"
 
 [git]
 commit_prompt = """
-You are a git commit message generator. Based on the provided git diff, write a concise and descriptive commit message. Follow these rules:
-1. Use the imperative mood (e.g., \"Add feature\" not \"Added feature\")
-2. First line: type(scope): short summary (50 chars or less)
-   Types: feat, fix, docs, style, refactor, test, chore
-3. If needed, add a blank line then a brief body explaining what and why
-4. Output ONLY the commit message text, no explanations or markdown formatting"""
+你是一名资深软件工程师，请基于给定的 Git diff 生成提交信息。
+要求：
+1. 使用祈使句，直接描述本次改动。
+2. 第一行格式为 type(scope): summary，尽量不超过 50 个字符。
+3. type 仅使用 feat、fix、refactor、docs、style、test、chore。
+4. 如需补充说明，空一行后用 1-3 行说明原因、影响或验证重点。
+5. 只输出提交信息正文，不要解释，不要 Markdown。"""

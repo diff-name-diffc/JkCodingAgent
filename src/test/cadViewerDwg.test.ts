@@ -40,6 +40,16 @@ vi.mock("@mlightcad/data-model", () => ({
       this.appended.push(...entities);
     }
   },
+  AcDbLayerTableRecord: class {
+    name: string;
+
+    constructor(config: { name: string }) {
+      this.name = config.name;
+    }
+  },
+  AcCmColor: class {
+    colorIndex = 0;
+  },
   AcDbDatabaseConverterManager: {
     instance: {
       register: registerMock,
@@ -248,13 +258,17 @@ describe("ensureCadViewerDwgSupport", () => {
                 explodability: number;
                 scalability: number;
                 bmpPreview?: unknown;
-                entities: Array<{ handle: string; type: string }>;
+                entities: Array<{ handle: string; type: string; layer?: string }>;
               }>;
             };
           };
         },
         db: {
           tables: {
+            layerTable: {
+              getAt: (name: string) => unknown | null;
+              add: (layer: { name: string }) => void;
+            };
             blockTable: {
               getAt: (name: string) => null;
               add: (block: { name: string; appended: Array<{ id: string }> }) => void;
@@ -264,6 +278,7 @@ describe("ensureCadViewerDwgSupport", () => {
       ) => void;
     };
 
+    const knownLayers = new Map<string, { name: string }>();
     const addedBlocks: Array<{ name: string; appended: Array<{ id: string }> }> = [];
     registeredConverter.processBlockTables(
       {
@@ -280,9 +295,9 @@ describe("ensureCadViewerDwgSupport", () => {
                 explodability: 0,
                 scalability: 0,
                 entities: [
-                  { handle: "10", type: "LINE" },
-                  { handle: "bad-block", type: "LINE" },
-                  { handle: "30", type: "LINE" },
+                  { handle: "10", type: "LINE", layer: "BS_Pole_Pos" },
+                  { handle: "bad-block", type: "LINE", layer: "0" },
+                  { handle: "30", type: "LINE", layer: "杆(塔)-图例编号" },
                 ],
               },
             ],
@@ -291,6 +306,12 @@ describe("ensureCadViewerDwgSupport", () => {
       },
       {
         tables: {
+          layerTable: {
+            getAt: (name) => knownLayers.get(name) ?? null,
+            add: (layer) => {
+              knownLayers.set(layer.name, layer);
+            },
+          },
           blockTable: {
             getAt: () => null,
             add: (block) => {
@@ -303,5 +324,10 @@ describe("ensureCadViewerDwgSupport", () => {
 
     expect(addedBlocks).toHaveLength(1);
     expect(addedBlocks[0]?.appended.map((entity) => entity.id)).toEqual(["10", "30"]);
+    expect(Array.from(knownLayers.keys()).sort()).toEqual([
+      "0",
+      "BS_Pole_Pos",
+      "杆(塔)-图例编号",
+    ]);
   });
 });

@@ -5,15 +5,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, Manager};
 
-use super::config::DispatcherAgentConfig;
+use super::config::{DispatcherAgentConfig, DEFAULT_SUMMARY_MODEL};
 use super::db::{
     DispatcherDb, DispatcherMessageRecord, DispatcherSessionRecord,
     DispatcherSessionTokenUsageRecord, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
 };
 use super::llm;
+use super::llm::OpenAiCompatProvider;
 use super::runtime::{AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent};
+use super::summary::{fallback_session_title, summarize_session_title};
 use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::project::mcp::ProjectMcpRegistry;
 use crate::shared::TaskManager;
@@ -23,6 +25,8 @@ pub struct DispatcherState {
     db: DispatcherDb,
     active_runs: Mutex<HashMap<String, ActiveRunEntry>>,
     next_run_generation: AtomicU64,
+    title_generations: Mutex<HashMap<String, u64>>,
+    next_title_generation: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -53,6 +57,8 @@ impl DispatcherState {
             db,
             active_runs: Mutex::new(HashMap::new()),
             next_run_generation: AtomicU64::new(1),
+            title_generations: Mutex::new(HashMap::new()),
+            next_title_generation: AtomicU64::new(1),
         })
     }
 
@@ -90,6 +96,26 @@ impl DispatcherState {
             .map(|entry| entry.stop_tx.clone());
 
         tx.is_some_and(|sender| sender.send(true).is_ok())
+    }
+
+    fn begin_title_generation(&self, workspace_id: &str) -> u64 {
+        let generation = self.next_title_generation.fetch_add(1, Ordering::Relaxed);
+        self.title_generations
+            .lock()
+            .insert(workspace_id.to_string(), generation);
+        generation
+    }
+
+    fn finish_latest_title_generation(&self, workspace_id: &str, generation: u64) -> bool {
+        let mut title_generations = self.title_generations.lock();
+        if title_generations
+            .get(workspace_id)
+            .is_some_and(|current| *current == generation)
+        {
+            title_generations.remove(workspace_id);
+            return true;
+        }
+        false
     }
 }
 
@@ -206,14 +232,142 @@ async fn submit_subprocess_line(
     Ok(())
 }
 
+fn spawn_session_title_update(
+    state: &DispatcherState,
+    app: &AppHandle,
+    workspace_id: &str,
+    content: &str,
+) {
+    let generation = state.begin_title_generation(workspace_id);
+    let app = app.clone();
+    let db = state.db.clone();
+    let workspace_id = workspace_id.to_string();
+    let content = content.to_string();
+
+    tokio::spawn(async move {
+        let title = generate_session_title(db.clone(), content).await;
+        let state = app.state::<DispatcherState>();
+        if !state.finish_latest_title_generation(&workspace_id, generation) {
+            return;
+        }
+
+        let update_workspace_id = workspace_id.clone();
+        let update_title = title.clone();
+        let update_result = tokio::task::spawn_blocking(move || {
+            db.update_session_title(&update_workspace_id, &update_title)
+        })
+        .await;
+
+        match update_result {
+            Ok(Ok(Some(session))) => {
+                let _ = app.emit("dispatcher-session-updated", session);
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => {
+                eprintln!(
+                    "failed to update dispatcher session title for {}: {}",
+                    workspace_id, error
+                );
+            }
+            Err(error) => {
+                eprintln!(
+                    "dispatcher session title update task failed for {}: {}",
+                    workspace_id, error
+                );
+            }
+        }
+    });
+}
+
+async fn generate_session_title(db: DispatcherDb, content: String) -> String {
+    let fallback = fallback_session_title(&content);
+    let provider_config = tokio::task::spawn_blocking(move || resolve_title_provider(&db)).await;
+
+    let (provider, summary_model) = match provider_config {
+        Ok(Ok(config)) => config,
+        Ok(Err(error)) => {
+            eprintln!("failed to load dispatcher title summary config: {error}");
+            return fallback;
+        }
+        Err(error) => {
+            eprintln!("dispatcher title summary config task failed: {error}");
+            return fallback;
+        }
+    };
+
+    if !provider.is_configured() {
+        return fallback;
+    }
+
+    match summarize_session_title(&provider, &summary_model, &content, |_| {}).await {
+        Ok(title) => title,
+        Err(error) => {
+            eprintln!(
+                "failed to summarize dispatcher session title with {}: {}",
+                summary_model,
+                error.message()
+            );
+            fallback
+        }
+    }
+}
+
+fn resolve_title_provider(db: &DispatcherDb) -> Result<(OpenAiCompatProvider, String)> {
+    let config = DispatcherAgentConfig::load()?;
+    let settings = db.get_settings()?;
+
+    let api_key = settings
+        .as_ref()
+        .map(|item| item.api_key.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| config.api_key.clone());
+    let api_base = settings
+        .as_ref()
+        .map(|item| item.api_base.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| config.api_base.clone());
+    let summary_model = settings
+        .as_ref()
+        .map(|item| item.summary_model.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| config.summary_model.clone());
+    let summary_model = normalize_summary_model_name(&summary_model);
+
+    Ok((
+        OpenAiCompatProvider::new(
+            api_key,
+            api_base,
+            summary_model.clone(),
+            96,
+            config.temperature,
+        ),
+        summary_model,
+    ))
+}
+
+fn normalize_summary_model_name(model: &str) -> String {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        DEFAULT_SUMMARY_MODEL.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[tauri::command]
 pub async fn dispatcher_send_message(
     state: tauri::State<'_, DispatcherState>,
+    app: AppHandle,
     workspace_id: String,
     project_path: String,
     content: String,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
+    spawn_session_title_update(&state, &app, &workspace_id, &content);
+
     if let Ok(Some(settings)) = state.db.get_settings() {
         let mut agent = state.agent.lock().await;
         agent.apply_settings(&settings);

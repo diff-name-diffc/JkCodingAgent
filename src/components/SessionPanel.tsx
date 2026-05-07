@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Search, ChevronLeft, PanelLeftClose, Plus, Trash2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { Project, ThemeMode, DispatcherSession } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
@@ -15,6 +16,14 @@ function formatTime(timestampStr: string) {
   } catch {
     return timestampStr;
   }
+}
+
+function sortSessionsByUpdatedAt(sessions: DispatcherSession[]) {
+  return [...sessions].sort((left, right) => {
+    const leftTime = Date.parse(left.updatedAt);
+    const rightTime = Date.parse(right.updatedAt);
+    return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+  });
 }
 
 export function SessionPanel({
@@ -45,6 +54,25 @@ export function SessionPanel({
   const creatingSessionRef = useRef(false);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+
+  useEffect(() => {
+    const unlisten = listen<DispatcherSession>("dispatcher-session-updated", (event) => {
+      const updatedSession = event.payload;
+      if (updatedSession.projectId !== project.id) return;
+
+      setSessions((prev) => {
+        const exists = prev.some((session) => session.id === updatedSession.id);
+        const next = exists
+          ? prev.map((session) => (session.id === updatedSession.id ? updatedSession : session))
+          : [updatedSession, ...prev];
+        return sortSessionsByUpdatedAt(next);
+      });
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [project.id]);
 
   const handleNewSession = useCallback(async () => {
     if (creatingSessionRef.current) return;

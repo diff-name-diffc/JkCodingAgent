@@ -270,6 +270,45 @@ impl DispatcherDb {
         Ok(record)
     }
 
+    pub fn update_session_title(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<Option<DispatcherSessionRecord>> {
+        let updated_at = now();
+        let conn = self.connect()?;
+        let changed = conn
+            .execute(
+                "UPDATE dispatcher_sessions
+                 SET title = ?1, updated_at = ?2
+                 WHERE id = ?3",
+                params![title.trim(), &updated_at, session_id],
+            )
+            .context("update dispatcher session title")?;
+
+        if changed == 0 {
+            return Ok(None);
+        }
+
+        conn.query_row(
+            "SELECT id, project_id, title, created_at, updated_at
+             FROM dispatcher_sessions
+             WHERE id = ?1",
+            params![session_id],
+            |row| {
+                Ok(DispatcherSessionRecord {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    title: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .context("load dispatcher session after title update")
+    }
+
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         let mut conn = self.connect()?;
         let tx = conn.transaction()?;
@@ -1161,6 +1200,27 @@ mod tests {
             char_count: 13,
             line_count: 2,
         }
+    }
+
+    #[test]
+    fn update_session_title_persists_latest_title() {
+        let (db, root) = create_test_db();
+        let session = db.create_session("project-1", "新会话").unwrap();
+
+        let updated = db
+            .update_session_title(&session.id, "修复会话命名")
+            .unwrap()
+            .expect("session should exist");
+
+        assert_eq!(updated.title, "修复会话命名");
+        assert_eq!(updated.project_id, "project-1");
+        assert!(updated.updated_at >= session.updated_at);
+        assert_eq!(
+            db.list_sessions("project-1").unwrap()[0].title,
+            "修复会话命名"
+        );
+
+        cleanup_test_db(root);
     }
 
     #[test]

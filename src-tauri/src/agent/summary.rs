@@ -15,6 +15,8 @@ const FULL_RESULT_MAX_LINES: usize = 400;
 const HIGH_FIDELITY_SUMMARY_THRESHOLD_CHARS: usize = 1_000;
 const SUMMARY_TIMEOUT_SECS: u64 = 120;
 const SUMMARY_DEBUG_PREVIEW_CHARS: usize = 1_200;
+const SESSION_TITLE_SOURCE_MAX_CHARS: usize = 6_000;
+const SESSION_TITLE_MAX_CHARS: usize = 24;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SummaryError {
@@ -168,6 +170,31 @@ where
     .await
 }
 
+pub async fn summarize_session_title<FUsage>(
+    provider: &OpenAiCompatProvider,
+    summary_model: &str,
+    user_prompt: &str,
+    on_usage: FUsage,
+) -> Result<String, SummaryError>
+where
+    FUsage: FnMut(&LlmUsage) + Send,
+{
+    let raw_title = summarize_with_model(
+        provider,
+        summary_model,
+        build_session_title_prompt(user_prompt),
+        |_| {},
+        on_usage,
+    )
+    .await?;
+
+    Ok(normalize_session_title(&raw_title, user_prompt))
+}
+
+pub fn fallback_session_title(user_prompt: &str) -> String {
+    normalize_session_title(user_prompt, "新会话")
+}
+
 pub fn build_summary_failure_message(summary_model: &str, error: &str) -> String {
     format!(
         "检测到工具结果辅助模型调用失败，当前轮次已停止。\n\n请检查以下配置后重试：\n- Dispatcher 设置中的 API Key 是否有效\n- Dispatcher 设置中的 API Base 是否可访问\n- 摘要模型 `{summary_model}` 当前是否可用\n\n错误详情：\n{error}"
@@ -293,6 +320,76 @@ fn build_dispatch_summary_prompt(dispatch_result: &str) -> String {
 子任务原始结果如下：\n{}",
         dispatch_result.trim()
     )
+}
+
+fn build_session_title_prompt(user_prompt: &str) -> String {
+    let prompt = truncate_session_title_source(user_prompt);
+    format!(
+        "你是桌面 AI 编程工具的会话标题生成器。请根据用户最新问题生成一个简洁中文标题。\n\
+要求：\n\
+- 只输出标题本身，不要解释，不要加引号、编号、Markdown 或“标题：”前缀。\n\
+- 标题应概括用户这次要推进的核心任务，避免使用“新会话”“问题”“任务”等空泛词。\n\
+- 优先保留关键对象、模块、错误或功能名。\n\
+- 最长 {SESSION_TITLE_MAX_CHARS} 个字符；建议 4-8 个中文字符。\n\n\
+用户最新问题：\n{}",
+        prompt.trim()
+    )
+}
+
+fn truncate_session_title_source(source: &str) -> String {
+    let mut truncated = source
+        .chars()
+        .take(SESSION_TITLE_SOURCE_MAX_CHARS)
+        .collect::<String>();
+    if source.chars().count() > SESSION_TITLE_SOURCE_MAX_CHARS {
+        truncated.push_str("\n...");
+    }
+    truncated
+}
+
+fn normalize_session_title(candidate: &str, fallback_source: &str) -> String {
+    let fallback = if fallback_source == "新会话" {
+        "新会话".to_string()
+    } else {
+        truncate_title(clean_title_line(fallback_source))
+    };
+
+    let title = truncate_title(clean_title_line(candidate));
+    if title.is_empty() || title == "新会话" {
+        return fallback;
+    }
+
+    title
+}
+
+fn clean_title_line(raw: &str) -> String {
+    let line = raw
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+
+    let without_prefix = line
+        .trim_start_matches(|ch: char| matches!(ch, '-' | '*' | '#' | '>' | ' ' | '\t'))
+        .trim_start_matches("标题：")
+        .trim_start_matches("标题:")
+        .trim_start_matches("会话标题：")
+        .trim_start_matches("会话标题:")
+        .trim();
+
+    let trimmed = without_prefix.trim_matches(|ch: char| {
+        ch.is_whitespace()
+            || matches!(
+                ch,
+                '"' | '\'' | '`' | '“' | '”' | '‘' | '’' | '。' | '，' | ',' | '.' | '：' | ':'
+            )
+    });
+
+    trimmed.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_title(title: String) -> String {
+    title.chars().take(SESSION_TITLE_MAX_CHARS).collect()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -627,7 +724,8 @@ mod tests {
     use super::{
         build_artifact_preview, build_prompt_preview, build_summary_debug_context,
         build_summary_failure_message, decide_tool_result_action, extract_tagged_block,
-        normalize_tool_output, parse_dual_tool_summary, ToolResultAction,
+        fallback_session_title, normalize_session_title, normalize_tool_output,
+        parse_dual_tool_summary, ToolResultAction,
     };
     use crate::agent::llm::OpenAiCompatProvider;
 
@@ -754,5 +852,24 @@ mod tests {
         assert!(message.contains("辅助模型调用失败"));
         assert!(message.contains("deepseek-v4-flash"));
         assert!(message.contains("401 unauthorized"));
+    }
+
+    #[test]
+    fn session_title_normalization_removes_common_prefixes() {
+        let title = normalize_session_title("标题：`优化 Agent 会话命名`", "用户问题");
+        assert_eq!(title, "优化 Agent 会话命名");
+    }
+
+    #[test]
+    fn session_title_falls_back_to_prompt_when_model_is_generic() {
+        let title = normalize_session_title("新会话", "修复会话标题一直显示新会话的问题");
+        assert_eq!(title, "修复会话标题一直显示新会话的问题");
+    }
+
+    #[test]
+    fn fallback_session_title_truncates_long_prompt() {
+        let title =
+            fallback_session_title("请帮我实现一个非常非常非常非常非常非常长的会话标题生成逻辑");
+        assert!(title.chars().count() <= 24);
     }
 }

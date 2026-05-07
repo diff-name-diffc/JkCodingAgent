@@ -21,6 +21,7 @@ pub fn run() {
         })
         .manage(build_task_manager())
         .manage(dispatcher_state)
+        .manage(agent::voice::VoiceAsrManager::default())
         .manage(project_mcp_registry)
         .manage(workspace::RopeManager::new())
         .plugin(tauri_plugin_opener::init())
@@ -96,6 +97,7 @@ pub fn run() {
             platform::usage::read_usage_snapshot,
             agent::commands::dispatcher_send_message,
             agent::commands::dispatcher_list_messages,
+            agent::commands::dispatcher_get_session_token_usage,
             agent::commands::dispatcher_clear_messages,
             agent::commands::dispatcher_get_tool_artifact,
             agent::commands::dispatcher_get_settings,
@@ -107,6 +109,10 @@ pub fn run() {
             agent::commands::dispatcher_fetch_models,
             agent::commands::dispatcher_continue_after_dispatch,
             agent::commands::dispatcher_stop_run,
+            agent::commands::dispatcher_start_voice_input,
+            agent::commands::dispatcher_append_voice_audio,
+            agent::commands::dispatcher_finish_voice_input,
+            agent::commands::dispatcher_cancel_voice_input,
             agent::commands::dispatcher_register_subprocess,
             agent::commands::dispatcher_mark_subprocess_round_completed,
             agent::commands::dispatcher_mark_subprocess_running,

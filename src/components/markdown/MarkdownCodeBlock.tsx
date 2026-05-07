@@ -3,6 +3,19 @@ import { Check, Copy } from "lucide-react";
 import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
 import { highlightCodeToHtml } from "../../utils/shiki";
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderPlainCodeHtml(code: string) {
+  return `<pre class="markdown-code-plain"><code>${escapeHtml(code)}</code></pre>`;
+}
+
 export function MarkdownCodeBlock({
   code,
   language,
@@ -13,32 +26,35 @@ export function MarkdownCodeBlock({
   compact?: boolean;
 }) {
   const isDark = useIsDarkTheme();
-  const [highlighted, setHighlighted] = useState<string>("");
+  const fallbackHtml = useMemo(() => renderPlainCodeHtml(code), [code]);
+  const [highlighted, setHighlighted] = useState<{ code: string; html: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const resolvedLanguage = useMemo(
     () => (language?.trim() ? language.trim().toLowerCase() : "text"),
     [language],
   );
+  const renderedHtml = highlighted?.code === code ? highlighted.html : fallbackHtml;
 
   useEffect(() => {
     let cancelled = false;
+    setHighlighted({ code, html: fallbackHtml });
 
     highlightCodeToHtml(code, resolvedLanguage, isDark)
       .then((html) => {
         if (!cancelled) {
-          setHighlighted(html);
+          setHighlighted({ code, html: html || fallbackHtml });
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setHighlighted("");
+          setHighlighted({ code, html: fallbackHtml });
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [code, isDark, resolvedLanguage]);
+  }, [code, fallbackHtml, isDark, resolvedLanguage]);
 
   useEffect(() => {
     if (!copied) {
@@ -67,10 +83,7 @@ export function MarkdownCodeBlock({
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      <div
-        className="markdown-code-content"
-        dangerouslySetInnerHTML={{ __html: highlighted }}
-      />
+      <div className="markdown-code-content" dangerouslySetInnerHTML={{ __html: renderedHtml }} />
     </div>
   );
 }

@@ -766,6 +766,7 @@ body {
 .markdown-code-content {
   overflow-x: auto;
 }
+.markdown-code-content pre,
 .markdown-code-content .shiki {
   margin: 0 !important;
   padding: 16px 18px !important;
@@ -773,11 +774,14 @@ body {
   background: transparent !important;
   font-family: var(--font-mono) !important;
 }
+.markdown-code-content code {
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre;
+}
 .markdown-code-content .shiki code {
   display: grid;
   gap: 2px;
-  font-size: 13px;
-  line-height: 1.7;
 }
 
 /* ── Markdown file preview ──────────────────────────────────────── */

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 
+pub const DEFAULT_SUMMARY_MODEL: &str = "deepseek-v4-flash";
+
 const DEFAULT_SOUL: &str = r#"# JKBot 调度代理
 
 你是桌面客户端中的编程任务调度代理，负责把用户的编码需求高效推进到可交付结果。
@@ -120,6 +122,7 @@ pub struct DispatcherAgentConfig {
     pub api_key: String,
     pub api_base: String,
     pub model: String,
+    pub summary_model: String,
     pub max_tokens: u32,
     pub temperature: f32,
     pub max_tool_iterations: usize,
@@ -166,6 +169,8 @@ impl DispatcherAgentConfig {
                     "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()
                 }),
             model: std::env::var("MODEL_NAME").unwrap_or_else(|_| "qwen3.6-plus".to_string()),
+            summary_model: std::env::var("SUMMARY_MODEL_NAME")
+                .unwrap_or_else(|_| DEFAULT_SUMMARY_MODEL.to_string()),
             max_tokens: 8192,
             temperature: 0.1,
             max_tool_iterations: 200,

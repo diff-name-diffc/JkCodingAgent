@@ -183,8 +183,27 @@ export interface DispatcherSettings {
   apiBase: string;
   apiKey: string;
   model: string;
+  summaryModel: string;
+  visionModel: string;
+  asrApiKey: string;
+  asrWebsocketUrl: string;
   autoApproveDispatch: boolean;
   contextDebug: boolean;
+}
+
+export type DispatcherSessionTokenUsageSource = "primary" | "summary";
+
+export interface DispatcherSessionTokenUsage {
+  workspaceId: string;
+  model: string;
+  sourceKind: DispatcherSessionTokenUsageSource;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedTokens: number;
+  contextWindowTokens: number;
+  contextWindowCapacity: number;
+  updatedAt: string;
 }
 
 export interface DispatcherAgentTurn {
@@ -205,6 +224,7 @@ export type DispatcherAgentEvent =
   | { event: "assistantStarted"; data: { messageId: string } }
   | { event: "assistantDelta"; data: { messageId: string; delta: string } }
   | { event: "assistantMessage"; data: { message: DispatcherMessage } }
+  | { event: "toolPlanned"; data: { toolCallId?: string; name: string; arguments: string } }
   | { event: "toolStarted"; data: { toolCallId?: string; name: string; arguments: string } }
   | {
       event: "toolSummaryStarted";

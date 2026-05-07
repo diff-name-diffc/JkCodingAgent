@@ -33,6 +33,8 @@ interface AgentVersions {
 
 type AgentKey = "claude" | "codex";
 
+const DEFAULT_SUMMARY_MODEL = "deepseek-v4-flash";
+
 const NAV_ITEMS: Array<{
   key: NavKey;
   label: string;
@@ -687,6 +689,10 @@ function AhaAgentPanel() {
   const [apiBase, setApiBase] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
+  const [summaryModel, setSummaryModel] = useState(DEFAULT_SUMMARY_MODEL);
+  const [visionModel, setVisionModel] = useState("");
+  const [asrApiKey, setAsrApiKey] = useState("");
+  const [asrWebsocketUrl, setAsrWebsocketUrl] = useState("");
   const [autoApprove, setAutoApprove] = useState(false);
   const [contextDebug, setContextDebug] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -706,13 +712,22 @@ function AhaAgentPanel() {
       apiBase: string;
       apiKey: string;
       model: string;
+      summaryModel: string;
+      visionModel: string;
+      asrApiKey: string;
+      asrWebsocketUrl: string;
       autoApproveDispatch: boolean;
       contextDebug: boolean;
-    }>("dispatcher_get_settings")
+    } | null>("dispatcher_get_settings")
       .then((settings) => {
+        if (!settings) return;
         setApiBase(settings.apiBase);
         setApiKey(settings.apiKey);
         setModel(settings.model);
+        setSummaryModel(settings.summaryModel?.trim() || DEFAULT_SUMMARY_MODEL);
+        setVisionModel(settings.visionModel ?? "");
+        setAsrApiKey(settings.asrApiKey ?? "");
+        setAsrWebsocketUrl(settings.asrWebsocketUrl ?? "");
         setAutoApprove(settings.autoApproveDispatch);
         setContextDebug(settings.contextDebug);
       })
@@ -729,12 +744,20 @@ function AhaAgentPanel() {
         apiBase: string;
         apiKey: string;
         model: string;
+        summaryModel: string;
+        visionModel: string;
+        asrApiKey: string;
+        asrWebsocketUrl: string;
         autoApproveDispatch: boolean;
         contextDebug: boolean;
       }>("dispatcher_save_settings", {
         apiBase,
         apiKey,
         model,
+        summaryModel,
+        visionModel,
+        asrApiKey,
+        asrWebsocketUrl,
         autoApproveDispatch: autoApprove,
         contextDebug,
       });
@@ -848,6 +871,31 @@ function AhaAgentPanel() {
                   {showKey ? "🙈" : "👁"}
                 </button>
               </div>
+            </div>
+
+            <div>
+              <label style={labelStyle}>ASR API Key</label>
+              <input
+                style={inputStyle}
+                type={showKey ? "text" : "password"}
+                value={asrApiKey}
+                onChange={(e) => setAsrApiKey(e.target.value)}
+                placeholder="留空则回退 DASHSCOPE_API_KEY"
+                spellCheck={false}
+              />
+              <span style={hintStyle}>实时语音识别专用 DashScope API Key。</span>
+            </div>
+
+            <div>
+              <label style={labelStyle}>ASR WebSocket 地址</label>
+              <input
+                style={inputStyle}
+                value={asrWebsocketUrl}
+                onChange={(e) => setAsrWebsocketUrl(e.target.value)}
+                placeholder="wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+                spellCheck={false}
+              />
+              <span style={hintStyle}>可选。留空时根据 API 基础地址自动选择 DashScope 国内/国际实时识别地址。</span>
             </div>
 
             <div style={{ position: "relative" }}>
@@ -992,6 +1040,30 @@ function AhaAgentPanel() {
                   获取失败：{fetchError}
                 </div>
               )}
+            </div>
+
+            <div>
+              <label style={labelStyle}>摘要模型</label>
+              <input
+                style={inputStyle}
+                value={summaryModel}
+                onChange={(e) => setSummaryModel(e.target.value)}
+                placeholder={DEFAULT_SUMMARY_MODEL}
+                spellCheck={false}
+              />
+              <span style={hintStyle}>用于工具结果和子任务输出摘要，留空时默认使用 {DEFAULT_SUMMARY_MODEL}。</span>
+            </div>
+
+            <div>
+              <label style={labelStyle}>视觉模型</label>
+              <input
+                style={inputStyle}
+                value={visionModel}
+                onChange={(e) => setVisionModel(e.target.value)}
+                placeholder="例如 qwen-vl-plus、gpt-4o"
+                spellCheck={false}
+              />
+              <span style={hintStyle}>预留给通用图像或截图分析能力；留空则不启用。</span>
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>

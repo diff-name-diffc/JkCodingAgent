@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -6,10 +7,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::llm::{ChatMessage, OutboundToolCall};
+use super::config::DEFAULT_SUMMARY_MODEL;
+use super::llm::{ChatMessage, LlmUsage, OutboundToolCall};
 use super::summary::ToolArtifactDraft;
 
 const MAX_LLM_DIALOGUES: usize = 5;
+const DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS: u64 = 1_000_000;
+pub(crate) const TOOL_RETRY_CONTEXT_PREFIX: &str = "[工具调用失败，已交回模型修正重试]";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +31,10 @@ pub struct DispatcherSettingsRecord {
     pub api_base: String,
     pub api_key: String,
     pub model: String,
+    pub summary_model: String,
+    pub vision_model: String,
+    pub asr_api_key: String,
+    pub asr_websocket_url: String,
     pub auto_approve_dispatch: bool,
     pub context_debug: bool,
 }
@@ -77,6 +85,28 @@ pub struct DispatcherToolArtifactRecord {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatcherSessionTokenUsageSource {
+    Primary,
+    Summary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatcherSessionTokenUsageRecord {
+    pub workspace_id: String,
+    pub model: String,
+    pub source_kind: DispatcherSessionTokenUsageSource,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    pub cached_tokens: u64,
+    pub context_window_tokens: u64,
+    pub context_window_capacity: u64,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct DispatcherDb {
     path: PathBuf,
@@ -107,15 +137,19 @@ impl DispatcherDb {
     pub fn get_settings(&self) -> Result<Option<DispatcherSettingsRecord>> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT api_base, api_key, model, auto_approve_dispatch, context_debug FROM dispatcher_settings WHERE id = 'default'",
+            "SELECT api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug FROM dispatcher_settings WHERE id = 'default'",
             [],
             |row| {
                 Ok(DispatcherSettingsRecord {
                     api_base: row.get(0)?,
                     api_key: row.get(1)?,
                     model: row.get(2)?,
-                    auto_approve_dispatch: row.get::<_, i32>(3)? != 0,
-                    context_debug: row.get::<_, i32>(4)? != 0,
+                    summary_model: row.get(3)?,
+                    vision_model: row.get(4)?,
+                    asr_api_key: row.get(5)?,
+                    asr_websocket_url: row.get(6)?,
+                    auto_approve_dispatch: row.get::<_, i32>(7)? != 0,
+                    context_debug: row.get::<_, i32>(8)? != 0,
                 })
             },
         )
@@ -128,20 +162,29 @@ impl DispatcherDb {
         api_base: &str,
         api_key: &str,
         model: &str,
+        summary_model: &str,
+        vision_model: &str,
+        asr_api_key: &str,
+        asr_websocket_url: &str,
         auto_approve_dispatch: bool,
         context_debug: bool,
     ) -> Result<DispatcherSettingsRecord> {
         let conn = self.connect()?;
         let auto_approve_int = if auto_approve_dispatch { 1 } else { 0 };
         let context_debug_int = if context_debug { 1 } else { 0 };
+        let normalized_summary_model = normalize_summary_model(summary_model);
         conn.execute(
-            "INSERT INTO dispatcher_settings (id, api_base, api_key, model, auto_approve_dispatch, context_debug)
-             VALUES ('default', ?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(id) DO UPDATE SET api_base = ?1, api_key = ?2, model = ?3, auto_approve_dispatch = ?4, context_debug = ?5",
+            "INSERT INTO dispatcher_settings (id, api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug)
+             VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET api_base = ?1, api_key = ?2, model = ?3, summary_model = ?4, vision_model = ?5, asr_api_key = ?6, asr_websocket_url = ?7, auto_approve_dispatch = ?8, context_debug = ?9",
             params![
                 api_base.trim(),
                 api_key.trim(),
                 model.trim(),
+                &normalized_summary_model,
+                vision_model.trim(),
+                asr_api_key.trim(),
+                asr_websocket_url.trim(),
                 auto_approve_int,
                 context_debug_int
             ],
@@ -151,6 +194,10 @@ impl DispatcherDb {
             api_base: api_base.trim().to_string(),
             api_key: api_key.trim().to_string(),
             model: model.trim().to_string(),
+            summary_model: normalized_summary_model,
+            vision_model: vision_model.trim().to_string(),
+            asr_api_key: asr_api_key.trim().to_string(),
+            asr_websocket_url: asr_websocket_url.trim().to_string(),
             auto_approve_dispatch,
             context_debug,
         })
@@ -228,6 +275,10 @@ impl DispatcherDb {
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
         )?;
         tx.execute(
@@ -310,6 +361,129 @@ impl DispatcherDb {
             tool_artifacts,
             visible: true,
         })
+    }
+
+    pub fn compact_successful_tool_retry(
+        &self,
+        workspace_id: &str,
+        tool_name: &str,
+        current_tool_call_id: &str,
+    ) -> Result<()> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        let cutoff_rowid = latest_user_message_rowid(&tx, workspace_id)?;
+        let retry_context_pattern = format!("{TOOL_RETRY_CONTEXT_PREFIX}%");
+        let retry_messages = {
+            let mut stmt = tx.prepare(
+                "SELECT id, tool_call_id
+                 FROM dispatcher_messages
+                 WHERE workspace_id = ?1
+                   AND role = 'tool'
+                   AND tool_name = ?2
+                   AND rowid >= ?3
+                   AND tool_call_id IS NOT NULL
+                   AND tool_call_id <> ?4
+                   AND context_payload LIKE ?5",
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    workspace_id,
+                    tool_name,
+                    cutoff_rowid,
+                    current_tool_call_id,
+                    retry_context_pattern
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        if retry_messages.is_empty() {
+            tx.commit()
+                .context("commit empty dispatcher retry compaction")?;
+            return Ok(());
+        }
+
+        let failed_tool_call_ids = retry_messages
+            .iter()
+            .map(|(_, tool_call_id)| tool_call_id.clone())
+            .collect::<HashSet<_>>();
+
+        for (message_id, _) in &retry_messages {
+            tx.execute(
+                "DELETE FROM dispatcher_tool_artifacts WHERE message_id = ?1",
+                params![message_id],
+            )
+            .context("delete compacted retry tool artifacts")?;
+            tx.execute(
+                "DELETE FROM dispatcher_messages WHERE id = ?1",
+                params![message_id],
+            )
+            .context("delete compacted retry tool message")?;
+        }
+
+        let assistant_messages = {
+            let mut stmt = tx.prepare(
+                "SELECT id, content, tool_calls_json
+                 FROM dispatcher_messages
+                 WHERE workspace_id = ?1
+                   AND role = 'assistant'
+                   AND rowid >= ?2
+                   AND tool_calls_json IS NOT NULL
+                 ORDER BY rowid ASC",
+            )?;
+            let rows = stmt.query_map(params![workspace_id, cutoff_rowid], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        for (message_id, content, tool_calls_json) in assistant_messages {
+            let Ok(mut tool_calls) =
+                serde_json::from_str::<Vec<OutboundToolCall>>(&tool_calls_json)
+            else {
+                continue;
+            };
+            let original_len = tool_calls.len();
+            tool_calls.retain(|call| !failed_tool_call_ids.contains(&call.id));
+            if tool_calls.len() == original_len {
+                continue;
+            }
+
+            if tool_calls.is_empty() && content.trim().is_empty() {
+                tx.execute(
+                    "DELETE FROM dispatcher_tool_artifacts WHERE message_id = ?1",
+                    params![&message_id],
+                )
+                .context("delete compacted retry assistant artifacts")?;
+                tx.execute(
+                    "DELETE FROM dispatcher_messages WHERE id = ?1",
+                    params![&message_id],
+                )
+                .context("delete compacted retry assistant message")?;
+            } else {
+                let next_tool_calls_json = if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(
+                        serde_json::to_string(&tool_calls)
+                            .context("serialize compacted assistant tool calls")?,
+                    )
+                };
+                tx.execute(
+                    "UPDATE dispatcher_messages SET tool_calls_json = ?1 WHERE id = ?2",
+                    params![next_tool_calls_json, &message_id],
+                )
+                .context("update compacted assistant tool calls")?;
+            }
+        }
+
+        tx.commit()
+            .context("commit dispatcher successful retry compaction")
     }
 
     pub fn add_hidden_message(
@@ -407,12 +581,99 @@ impl DispatcherDb {
         )
         .context("clear dispatcher tool artifacts")?;
         tx.execute(
+            "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("clear dispatcher session token usage")?;
+        tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![workspace_id],
         )
         .context("clear dispatcher messages")?;
         tx.commit().context("commit dispatcher message cleanup")?;
         Ok(())
+    }
+
+    pub fn upsert_session_token_usage(
+        &self,
+        workspace_id: &str,
+        model: &str,
+        source_kind: DispatcherSessionTokenUsageSource,
+        usage: &LlmUsage,
+    ) -> Result<DispatcherSessionTokenUsageRecord> {
+        let record = DispatcherSessionTokenUsageRecord {
+            workspace_id: workspace_id.to_string(),
+            model: model.to_string(),
+            source_kind,
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+            cached_tokens: usage.cached_tokens(),
+            context_window_tokens: usage.prompt_tokens,
+            context_window_capacity: default_context_window_capacity(model),
+            updated_at: now(),
+        };
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO dispatcher_session_token_usage (
+                workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens,
+                cached_tokens, context_window_tokens, context_window_capacity, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(workspace_id, model) DO UPDATE SET
+                source_kind = excluded.source_kind,
+                prompt_tokens = excluded.prompt_tokens,
+                completion_tokens = excluded.completion_tokens,
+                total_tokens = excluded.total_tokens,
+                cached_tokens = excluded.cached_tokens,
+                context_window_tokens = excluded.context_window_tokens,
+                context_window_capacity = excluded.context_window_capacity,
+                updated_at = excluded.updated_at",
+            params![
+                &record.workspace_id,
+                &record.model,
+                source_kind.as_sql_value(),
+                record.prompt_tokens as i64,
+                record.completion_tokens as i64,
+                record.total_tokens as i64,
+                record.cached_tokens as i64,
+                record.context_window_tokens as i64,
+                record.context_window_capacity as i64,
+                &record.updated_at,
+            ],
+        )
+        .context("upsert dispatcher session token usage")?;
+        Ok(record)
+    }
+
+    pub fn list_session_token_usage(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<DispatcherSessionTokenUsageRecord>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens,
+                    cached_tokens, context_window_tokens, context_window_capacity, updated_at
+             FROM dispatcher_session_token_usage
+             WHERE workspace_id = ?1
+             ORDER BY updated_at DESC, model ASC",
+        )?;
+        let rows = stmt.query_map(params![workspace_id], |row| {
+            Ok(DispatcherSessionTokenUsageRecord {
+                workspace_id: row.get(0)?,
+                model: row.get(1)?,
+                source_kind: DispatcherSessionTokenUsageSource::from_sql_value(row.get(2)?),
+                prompt_tokens: row.get::<_, i64>(3)? as u64,
+                completion_tokens: row.get::<_, i64>(4)? as u64,
+                total_tokens: row.get::<_, i64>(5)? as u64,
+                cached_tokens: row.get::<_, i64>(6)? as u64,
+                context_window_tokens: row.get::<_, i64>(7)? as u64,
+                context_window_capacity: row.get::<_, i64>(8)? as u64,
+                updated_at: row.get(9)?,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("list dispatcher session token usage")
     }
 
     pub fn get_tool_artifact(
@@ -639,12 +900,57 @@ impl DispatcherDb {
                 api_base TEXT NOT NULL DEFAULT '',
                 api_key TEXT NOT NULL DEFAULT '',
                 model TEXT NOT NULL DEFAULT '',
+                summary_model TEXT NOT NULL DEFAULT 'deepseek-v4-flash',
+                vision_model TEXT NOT NULL DEFAULT '',
+                asr_api_key TEXT NOT NULL DEFAULT '',
+                asr_websocket_url TEXT NOT NULL DEFAULT '',
                 auto_approve_dispatch INTEGER NOT NULL DEFAULT 0,
                 context_debug INTEGER NOT NULL DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS dispatcher_session_token_usage (
+                workspace_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'primary',
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_tokens INTEGER NOT NULL DEFAULT 0,
+                context_window_tokens INTEGER NOT NULL DEFAULT 0,
+                context_window_capacity INTEGER NOT NULL DEFAULT 1000000,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, model)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dispatcher_session_token_usage_workspace_updated
+            ON dispatcher_session_token_usage(workspace_id, updated_at DESC);
             ",
         )
         .context("initialize dispatcher sqlite schema")?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_settings",
+            "summary_model",
+            "TEXT NOT NULL DEFAULT 'deepseek-v4-flash'",
+        )?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_settings",
+            "vision_model",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_settings",
+            "asr_api_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_settings",
+            "asr_websocket_url",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         ensure_column_exists(
             &conn,
             "dispatcher_settings",
@@ -685,6 +991,22 @@ impl DispatcherDb {
     }
 }
 
+impl DispatcherSessionTokenUsageSource {
+    fn as_sql_value(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Summary => "summary",
+        }
+    }
+
+    fn from_sql_value(value: String) -> Self {
+        match value.as_str() {
+            "summary" => Self::Summary,
+            _ => Self::Primary,
+        }
+    }
+}
+
 fn ensure_column_exists(
     conn: &Connection,
     table: &str,
@@ -709,6 +1031,30 @@ fn ensure_column_exists(
 
 fn now() -> String {
     Utc::now().to_rfc3339()
+}
+
+fn default_context_window_capacity(_model: &str) -> u64 {
+    DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS
+}
+
+fn normalize_summary_model(summary_model: &str) -> String {
+    let trimmed = summary_model.trim();
+    if trimmed.is_empty() {
+        DEFAULT_SUMMARY_MODEL.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn latest_user_message_rowid(conn: &Connection, workspace_id: &str) -> Result<i64> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(rowid), 0)
+         FROM dispatcher_messages
+         WHERE workspace_id = ?1 AND role = 'user'",
+        params![workspace_id],
+        |row| row.get(0),
+    )
+    .context("load latest dispatcher user message rowid")
 }
 
 fn map_chat_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatMessage> {

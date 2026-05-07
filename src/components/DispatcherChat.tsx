@@ -8,7 +8,7 @@ import {
   memo,
   useMemo,
 } from "react";
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import {
   Play,
@@ -23,6 +23,7 @@ import {
   Workflow,
   Settings2,
   PlugZap,
+  Mic,
 } from "lucide-react";
 import type {
   AgentType,
@@ -30,11 +31,15 @@ import type {
   DispatcherMessage,
   DispatcherAgentEvent,
   DispatcherAgentTurn,
+  DispatcherSessionTokenUsage,
   DispatcherSettings,
   ProjectMcpStatus,
   SubProcess,
 } from "../types";
+import { useDashScopeAsr } from "../hooks/useDashScopeAsr";
+import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTokenUsage";
 import { isImeComposing } from "../utils";
+import { SessionTokenUsageIndicators } from "./SessionTokenUsageIndicators";
 import { ToolActivityBubble, type ToolActivityItem } from "./ToolActivityBubble";
 import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import {
@@ -43,6 +48,7 @@ import {
   type AssistantTurnSegment,
   buildDispatcherDisplayItems,
   finishLiveToolActivity,
+  planLiveToolActivity,
   startLiveToolActivity,
 } from "./dispatcherChatView";
 
@@ -126,13 +132,16 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
   segments,
   tools,
   workspaceId,
+  placeholderText,
 }: {
   segments: AssistantTurnSegment[];
   tools: ToolActivityItem[];
   workspaceId: string;
+  placeholderText?: string | null;
 }) {
   const visibleSegments = segments.filter((segment) => segment.text.trim());
-  if (visibleSegments.length === 0 && tools.length === 0) {
+  const visiblePlaceholder = placeholderText?.trim() ?? "";
+  if (visibleSegments.length === 0 && tools.length === 0 && !visiblePlaceholder) {
     return null;
   }
 
@@ -145,6 +154,16 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
         {tools.length > 0 && (
           <div style={styles.assistantTurnSection}>
             <ToolActivityBubble tools={tools} workspaceId={workspaceId} />
+          </div>
+        )}
+        {visiblePlaceholder && (
+          <div style={styles.assistantTurnSection}>
+            <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
+              <div style={styles.assistantPlaceholder}>
+                <span style={styles.assistantPlaceholderDot} />
+                <span>{visiblePlaceholder}</span>
+              </div>
+            </div>
           </div>
         )}
         {visibleSegments.map((segment, index) => (
@@ -190,12 +209,54 @@ const ToolSummaryBlock = memo(function ToolSummaryBlock({
   );
 });
 
+const VoiceInputStatusCard = memo(function VoiceInputStatusCard({
+  transcript,
+  error,
+  isRecording,
+  onDismissError,
+}: {
+  transcript: string;
+  error: string | null;
+  isRecording: boolean;
+  onDismissError: () => void;
+}) {
+  const visibleTranscript = transcript.trim();
+  if (!error && !visibleTranscript && !isRecording) {
+    return null;
+  }
+
+  return (
+    <div style={styles.voiceStatusCard(Boolean(error))}>
+      <div style={styles.voiceStatusHeader}>
+        <span style={styles.voiceStatusBadge(isRecording, Boolean(error))}>
+          <Mic size={12} />
+          {error ? "语音识别失败" : isRecording ? "正在听写" : "听写完成"}
+        </span>
+        {error && (
+          <button type="button" style={styles.voiceStatusDismissBtn} onClick={onDismissError}>
+            收起
+          </button>
+        )}
+      </div>
+      {visibleTranscript && <div style={styles.voiceStatusText}>{visibleTranscript}</div>}
+      {!visibleTranscript && !error && (
+        <div style={styles.voiceStatusHint}>请开始说话，识别到完整句子后会自动发送。</div>
+      )}
+      {error && <div style={styles.voiceStatusError}>{error}</div>}
+    </div>
+  );
+});
+
 const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   input,
   composerMode,
   isBusy,
   isStopping,
+  isRecordingVoice,
   autoApprove,
+  sessionTokenUsages,
+  voiceTranscript,
+  voiceError,
   inputRef,
   layoutMode,
   onChangeInput,
@@ -203,6 +264,8 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onSend,
   onStop,
   onResume,
+  onToggleVoiceInput,
+  onDismissVoiceError,
   onKeyDown,
   onOpenSettings,
   onOpenMcpStatus,
@@ -214,7 +277,11 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   composerMode: "send" | "stop" | "resume";
   isBusy: boolean;
   isStopping: boolean;
+  isRecordingVoice: boolean;
   autoApprove: boolean;
+  sessionTokenUsages: DispatcherSessionTokenUsage[];
+  voiceTranscript: string;
+  voiceError: string | null;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   layoutMode: "single" | "split";
   onChangeInput: (value: string) => void;
@@ -222,7 +289,9 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onSend: () => void;
   onStop: () => void;
   onResume: () => void;
-  onKeyDown: (e: React.KeyboardEvent) => void;
+  onToggleVoiceInput: () => void;
+  onDismissVoiceError: () => void;
+  onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   onOpenSettings: () => void;
   onOpenMcpStatus: () => void;
   onToggleAutoApprove: () => void;
@@ -282,6 +351,13 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
           />
         </div>
 
+        <VoiceInputStatusCard
+          transcript={voiceTranscript}
+          error={voiceError}
+          isRecording={isRecordingVoice}
+          onDismissError={onDismissVoiceError}
+        />
+
         <div style={styles.emptyComposerActionRow}>
           {EMPTY_QUICK_ACTIONS.map((action) => (
             <button
@@ -329,20 +405,37 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
               </button>
             </div>
 
-            <button
-              type="button"
-              style={{
-                ...getEmptyPrimaryComposerButtonStyle(composerMode),
-                opacity: getPrimaryComposerOpacity(composerMode, input, isBusy, isStopping),
-              }}
-              onClick={
-                isStopMode ? onStop : isResumeMode && !input.trim() ? onResume : onSend
-              }
-              disabled={isComposerActionDisabled(composerMode, input, isBusy, isStopping)}
-            >
-              <span>{getComposerButtonLabel(composerMode, Boolean(input.trim()))}</span>
-              {isStopMode ? <Square size={15} /> : isResumeMode && !input.trim() ? <Play size={15} /> : <Send size={15} />}
-            </button>
+            <div style={styles.emptyComposerPrimaryRow}>
+              <SessionTokenUsageIndicators entries={sessionTokenUsages} />
+              <button
+                type="button"
+                style={styles.voiceBtn(isRecordingVoice)}
+                onClick={onToggleVoiceInput}
+                disabled={composerMode === "stop" || isStopping}
+                title={isRecordingVoice ? "停止听写" : "开始语音输入"}
+                aria-label={isRecordingVoice ? "停止语音输入" : "开始语音输入"}
+              >
+                <Mic size={15} />
+              </button>
+              <button
+                type="button"
+                style={{
+                  ...getEmptyPrimaryComposerButtonStyle(composerMode),
+                  opacity: getPrimaryComposerOpacity(composerMode, input, isBusy, isStopping),
+                }}
+                onClick={isStopMode ? onStop : isResumeMode && !input.trim() ? onResume : onSend}
+                disabled={isComposerActionDisabled(composerMode, input, isBusy, isStopping)}
+              >
+                <span>{getComposerButtonLabel(composerMode, Boolean(input.trim()))}</span>
+                {isStopMode ? (
+                  <Square size={15} />
+                ) : isResumeMode && !input.trim() ? (
+                  <Play size={15} />
+                ) : (
+                  <Send size={15} />
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -415,6 +508,33 @@ function getMcpIndicatorState(
   return { color: "#dc2626", label: "异常" };
 }
 
+function mergeDispatcherMessages(
+  current: DispatcherMessage[],
+  incoming: DispatcherMessage[],
+): DispatcherMessage[] {
+  if (current.length === 0) {
+    return incoming;
+  }
+  if (incoming.length === 0) {
+    return current;
+  }
+
+  const mergedById = new Map(current.map((message) => [message.id, message] as const));
+  for (const message of incoming) {
+    mergedById.set(message.id, message);
+  }
+
+  const existingIds = new Set(current.map((message) => message.id));
+  const orderedIds = [
+    ...current.map((message) => message.id),
+    ...incoming.filter((message) => !existingIds.has(message.id)).map((message) => message.id),
+  ];
+
+  return orderedIds
+    .map((messageId) => mergedById.get(messageId))
+    .filter((message): message is DispatcherMessage => Boolean(message));
+}
+
 // ── DispatcherChat ───────────────────────────────────────────────────────────
 
 interface DispatcherChatProps {
@@ -484,8 +604,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [isStopping, setIsStopping] = useState(false);
+    const [hasPendingRun, setHasPendingRun] = useState(false);
     const [streamingSegments, setStreamingSegments] = useState<AssistantTurnSegment[]>([]);
     const [liveToolCalls, setLiveToolCalls] = useState<ToolActivityItem[]>([]);
+    const [assistantPlaceholder, setAssistantPlaceholder] = useState<string | null>(null);
     const [pendingDispatches, setPendingDispatches] = useState<PendingDispatchApproval[]>([]);
     const [autoApprove, setAutoApprove] = useState(false);
 
@@ -515,15 +637,21 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const hasStoppedSubProcess = sessionSubProcesses.some(
       (subProcess) => subProcess.status === "stopped",
     );
-    const composerMode: "send" | "stop" | "resume" = isLoading || hasRunningSubProcess
-      ? "stop"
-      : hasStoppedSubProcess
-        ? "resume"
-        : "send";
+    const composerMode: "send" | "stop" | "resume" =
+      hasPendingRun || isLoading || hasRunningSubProcess
+        ? "stop"
+        : hasStoppedSubProcess
+          ? "resume"
+          : "send";
     const isComposerBusy = isLoading || isStopping;
     const displayItems = useMemo(() => buildDispatcherDisplayItems(messages), [messages]);
     const currentPendingDispatch = pendingDispatches[0] ?? null;
     const mcpIndicator = getMcpIndicatorState(mcpStatus, mcpChecking);
+    const {
+      entries: sessionTokenUsageEntries,
+      refresh: refreshSessionTokenUsage,
+      reset: resetSessionTokenUsage,
+    } = useDispatcherSessionTokenUsage(sessionId);
 
     // Load settings (for auto-approve flag)
     useEffect(() => {
@@ -542,8 +670,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       setMessages([]);
       setIsLoading(false);
       setIsStopping(false);
+      setHasPendingRun(false);
       setStreamingSegments([]);
       setLiveToolCalls([]);
+      setAssistantPlaceholder(null);
       setPendingDispatches([]);
 
       invoke<DispatcherMessage[]>("dispatcher_list_messages", {
@@ -560,7 +690,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     // Auto-scroll
     useEffect(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages, streamingSegments]);
+    }, [messages, streamingSegments, assistantPlaceholder, liveToolCalls]);
 
     const createEventChannel = useCallback((targetSessionId: string, runId: number) => {
       const onEvent = new Channel<DispatcherAgentEvent>();
@@ -569,7 +699,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId;
         switch (event.event) {
           case "started":
+            break;
           case "assistantStarted":
+            if (!isCurrentRun) return;
+            setAssistantPlaceholder("正在分析问题...");
             break;
           case "userMessage":
             if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
@@ -577,17 +710,25 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             break;
           case "assistantDelta":
             if (!isCurrentRun) return;
+            setAssistantPlaceholder(null);
             setStreamingSegments((prev) => appendAssistantTextSegment(prev, event.data.delta));
             break;
           case "assistantMessage":
             if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
+            setAssistantPlaceholder(null);
             setStreamingSegments((prev) =>
               prev.filter((segment) => segment.kind === "tool-summary"),
             );
             setMessages((prev) => [...prev, event.data.message]);
             break;
+          case "toolPlanned":
+            if (!isCurrentRun) return;
+            setAssistantPlaceholder("正在规划工具调用...");
+            setLiveToolCalls((prev) => planLiveToolActivity(prev, event.data));
+            break;
           case "toolStarted":
             if (!isCurrentRun) return;
+            setAssistantPlaceholder("正在执行工具...");
             setLiveToolCalls((prev) => startLiveToolActivity(prev, event.data));
             break;
           case "toolSummaryStarted":
@@ -630,17 +771,23 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           }
           case "finished":
             if (!isCurrentRun) return;
-            setMessages(
-              event.data.messages.filter((message) => message.workspaceId === targetSessionId),
+            setMessages((prev) =>
+              mergeDispatcherMessages(
+                prev,
+                event.data.messages.filter((message) => message.workspaceId === targetSessionId),
+              ),
             );
+            void refreshSessionTokenUsage(targetSessionId);
+            setHasPendingRun(false);
             setIsLoading(false);
             setStreamingSegments([]);
             setLiveToolCalls([]);
+            setAssistantPlaceholder(null);
             break;
         }
       };
       return onEvent;
-    }, []);
+    }, [refreshSessionTokenUsage]);
 
     const enqueueDispatcherRun = useCallback(
       async (
@@ -655,9 +802,11 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             const runId = isCurrentSession ? ++activeRunRef.current : activeRunRef.current;
 
             if (isCurrentSession) {
+              setHasPendingRun(true);
               setIsLoading(true);
               setStreamingSegments([]);
               setLiveToolCalls([]);
+              setAssistantPlaceholder(null);
             }
 
             const onEvent = createEventChannel(targetSessionId, runId);
@@ -669,6 +818,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 currentSessionIdRef.current === targetSessionId &&
                 activeRunRef.current === runId
               ) {
+                setHasPendingRun(false);
                 setIsLoading(false);
               }
             }
@@ -687,33 +837,66 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       [createEventChannel],
     );
 
+    const sendUserMessage = useCallback(
+      async (rawText: string, targetSessionId = sessionId) => {
+        const text = rawText.trim();
+        if (!text) return;
+
+        setInput("");
+        setPendingDispatches([]);
+
+        try {
+          await enqueueDispatcherRun(targetSessionId, async (onEvent) => {
+            await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
+              workspaceId: targetSessionId,
+              projectPath,
+              content: text,
+              onEvent,
+            });
+          });
+        } catch (err) {
+          console.error("dispatcher_send_message 失败:", err);
+        }
+      },
+      [enqueueDispatcherRun, projectPath, sessionId],
+    );
+
+    const voiceInput = useDashScopeAsr({
+      workspaceId: sessionId,
+      enabled: composerMode !== "stop" && !isStopping,
+      onTranscriptReady: async (text) => {
+        await sendUserMessage(text, sessionId);
+      },
+    });
+    const {
+      isRecording: isRecordingVoice,
+      transcript: voiceTranscript,
+      error: voiceError,
+      stopRecording: stopVoiceRecording,
+      toggleRecording: toggleVoiceRecording,
+      clearError: clearVoiceError,
+    } = voiceInput;
+
     const handleSend = useCallback(async () => {
       const text = input.trim();
       if (!text || isLoading || isStopping) return;
 
-      setInput("");
-      setPendingDispatches([]);
-
-      const targetSessionId = sessionId;
-
       try {
-        await enqueueDispatcherRun(targetSessionId, async (onEvent) => {
-          await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
-            workspaceId: targetSessionId,
-            projectPath,
-            content: text,
-            onEvent,
-          });
-        });
-      } catch (err) {
-        console.error("dispatcher_send_message 失败:", err);
+        await sendUserMessage(text, sessionId);
+      } finally {
+        if (isRecordingVoice) {
+          await stopVoiceRecording();
+        }
       }
-    }, [enqueueDispatcherRun, input, isLoading, isStopping, projectPath, sessionId]);
+    }, [input, isLoading, isRecordingVoice, isStopping, sendUserMessage, sessionId, stopVoiceRecording]);
 
     const handleStop = useCallback(async () => {
       if (isStopping) return;
       setIsStopping(true);
       try {
+        if (isRecordingVoice) {
+          await stopVoiceRecording();
+        }
         await Promise.all([
           invoke("dispatcher_stop_run", { workspaceId: sessionId }).catch(console.error),
           onStopActiveRun(sessionId),
@@ -721,7 +904,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       } finally {
         setIsStopping(false);
       }
-    }, [isStopping, onStopActiveRun, sessionId]);
+    }, [isRecordingVoice, isStopping, onStopActiveRun, sessionId, stopVoiceRecording]);
 
     const handleResume = useCallback(async () => {
       await onResumeStoppedRun(sessionId);
@@ -817,10 +1000,11 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           workspaceId: sessionId,
         });
         setMessages([]);
+        resetSessionTokenUsage();
       } catch (err) {
         console.error("清空消息失败:", err);
       }
-    }, [sessionId]);
+    }, [resetSessionTokenUsage, sessionId]);
 
     const handleApplyStarterPrompt = useCallback((prompt: string) => {
       setInput(prompt);
@@ -828,7 +1012,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }, []);
 
     const hasLiveSegments = streamingSegments.some((segment) => segment.text.trim());
-    const isEmpty = messages.length === 0 && !hasLiveSegments && liveToolCalls.length === 0;
+    const hasAssistantPlaceholder = Boolean(assistantPlaceholder?.trim());
+    const isEmpty =
+      messages.length === 0 &&
+      !hasLiveSegments &&
+      liveToolCalls.length === 0 &&
+      !hasAssistantPlaceholder;
 
     return (
       <div style={styles.container}>
@@ -893,7 +1082,11 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               composerMode={composerMode}
               isBusy={isComposerBusy}
               isStopping={isStopping}
+              isRecordingVoice={isRecordingVoice}
               autoApprove={autoApprove}
+              sessionTokenUsages={sessionTokenUsageEntries}
+              voiceTranscript={voiceTranscript}
+              voiceError={voiceError}
               inputRef={inputRef}
               layoutMode={layoutMode}
               onChangeInput={setInput}
@@ -901,6 +1094,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onSend={handleSend}
               onStop={handleStop}
               onResume={handleResume}
+              onToggleVoiceInput={toggleVoiceRecording}
+              onDismissVoiceError={clearVoiceError}
               onKeyDown={handleKeyDown}
               onOpenSettings={onOpenSettings}
               onOpenMcpStatus={onOpenMcpStatus}
@@ -925,11 +1120,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               />
             ),
           )}
-          {(hasLiveSegments || liveToolCalls.length > 0) && (
+          {(hasLiveSegments || liveToolCalls.length > 0 || hasAssistantPlaceholder) && (
             <AssistantTurnBubble
               segments={streamingSegments}
               tools={liveToolCalls}
               workspaceId={sessionId}
+              placeholderText={assistantPlaceholder}
             />
           )}
           <div ref={messagesEndRef} />
@@ -937,7 +1133,15 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
         {/* Input */}
         {!isEmpty && (
+          <>
+          <VoiceInputStatusCard
+            transcript={voiceTranscript}
+            error={voiceError}
+            isRecording={isRecordingVoice}
+            onDismissError={clearVoiceError}
+          />
           <div style={styles.inputArea}>
+            <SessionTokenUsageIndicators entries={sessionTokenUsageEntries} />
             <textarea
               ref={inputRef}
               style={styles.inputTextarea}
@@ -954,6 +1158,15 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               rows={1}
               disabled={composerMode === "stop" || isStopping}
             />
+            <button
+              style={styles.voiceBtn(isRecordingVoice)}
+              onClick={toggleVoiceRecording}
+              disabled={composerMode === "stop" || isStopping}
+              title={isRecordingVoice ? "停止听写" : "开始语音输入"}
+              aria-label={isRecordingVoice ? "停止语音输入" : "开始语音输入"}
+            >
+              <Mic size={15} />
+            </button>
             <button
               style={{
                 ...getPrimaryComposerButtonStyle(composerMode),
@@ -988,6 +1201,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               )}
             </button>
           </div>
+          </>
         )}
 
         {/* Dispatch approval overlay */}
@@ -1331,6 +1545,13 @@ const styles = {
     gap: "10px",
     flexWrap: "wrap" as const,
   },
+  emptyComposerPrimaryRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: "10px",
+    flexWrap: "wrap" as const,
+  },
   emptySecondaryBtn: {
     display: "inline-flex",
     alignItems: "center",
@@ -1438,6 +1659,22 @@ const styles = {
     background:
       "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
   },
+  assistantPlaceholder: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
+    color: "var(--text-secondary)",
+    fontSize: "13px",
+    lineHeight: 1.6,
+  },
+  assistantPlaceholderDot: {
+    width: "8px",
+    height: "8px",
+    borderRadius: "50%",
+    background: "var(--accent)",
+    boxShadow: "0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent)",
+    flexShrink: 0,
+  },
   toolSummaryCard: {
     width: "100%",
     padding: "14px 16px",
@@ -1482,6 +1719,7 @@ const styles = {
     background:
       "linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 0%, transparent), color-mix(in srgb, var(--bg-card) 40%, transparent))",
     flexShrink: 0,
+    flexWrap: "wrap" as const,
   },
   inputTextarea: {
     flex: 1,
@@ -1512,6 +1750,70 @@ const styles = {
     cursor: "pointer",
     transition: "opacity 0.2s, transform 0.1s",
     boxShadow: "0 18px 28px -16px color-mix(in srgb, var(--accent) 60%, transparent)",
+  },
+  voiceBtn: (active: boolean) => ({
+    width: "44px",
+    height: "44px",
+    borderRadius: "14px",
+    border: active ? "1px solid color-mix(in srgb, var(--danger) 38%, transparent)" : "1px solid var(--border-dim)",
+    background: active
+      ? "color-mix(in srgb, var(--danger) 14%, var(--bg-card))"
+      : "color-mix(in srgb, var(--bg-card) 88%, transparent)",
+    color: active ? "var(--danger)" : "var(--text-secondary)",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    flexShrink: 0,
+    boxShadow: active ? "0 12px 24px -18px var(--danger)" : "var(--shadow-xs)",
+  }),
+  voiceStatusCard: (isError: boolean) => ({
+    margin: "0 18px 8px",
+    padding: "10px 12px",
+    borderRadius: "12px",
+    border: isError
+      ? "1px solid color-mix(in srgb, var(--danger) 30%, var(--border-dim))"
+      : "1px solid color-mix(in srgb, var(--accent) 18%, var(--border-dim))",
+    background: isError
+      ? "color-mix(in srgb, var(--danger) 8%, var(--bg-card))"
+      : "color-mix(in srgb, var(--accent) 7%, var(--bg-card))",
+  }),
+  voiceStatusHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "10px",
+    marginBottom: "6px",
+  },
+  voiceStatusBadge: (active: boolean, isError: boolean) => ({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    fontSize: "12px",
+    fontWeight: 700,
+    color: isError ? "var(--danger)" : active ? "var(--accent)" : "var(--text-secondary)",
+  }),
+  voiceStatusDismissBtn: {
+    border: "none",
+    background: "transparent",
+    color: "var(--text-secondary)",
+    fontSize: "12px",
+    cursor: "pointer",
+  },
+  voiceStatusText: {
+    fontSize: "13px",
+    lineHeight: 1.6,
+    color: "var(--text-primary)",
+    whiteSpace: "pre-wrap" as const,
+  },
+  voiceStatusHint: {
+    fontSize: "12px",
+    color: "var(--text-hint)",
+  },
+  voiceStatusError: {
+    fontSize: "12px",
+    lineHeight: 1.5,
+    color: "var(--danger)",
   },
   stopBtn: {
     background: "linear-gradient(135deg, #0f172a, #334155)",

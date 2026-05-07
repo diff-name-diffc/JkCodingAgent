@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use futures::future::join_all;
 use serde::Serialize;
 use serde_json::Value;
 use tauri::ipc::Channel;
@@ -11,10 +12,13 @@ use tokio::sync::watch;
 
 use super::config::DispatcherAgentConfig;
 use super::db::{
-    DispatcherDb, DispatcherMessageRecord, DispatcherSettingsRecord, DispatcherToolArtifactRef,
+    DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource,
+    DispatcherSettingsRecord, DispatcherToolArtifactRef, TOOL_RETRY_CONTEXT_PREFIX,
 };
 use super::debug::{render_json, ContextDebugLogger, DebugSection};
-use super::llm::{ChatMessage, FunctionCall, OpenAiCompatProvider, OutboundToolCall};
+use super::llm::{
+    ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider, OutboundToolCall, RequestedToolCall,
+};
 use super::prompt::{build_system_prompt, PromptBundle, PromptSection};
 use super::summary::{
     build_summary_failure_message, prepare_tool_result, summarize_dispatch_result,
@@ -102,6 +106,11 @@ pub enum AgentEvent {
     AssistantMessage {
         message: DispatcherMessageRecord,
     },
+    ToolPlanned {
+        tool_call_id: Option<String>,
+        name: String,
+        arguments: String,
+    },
     ToolStarted {
         tool_call_id: Option<String>,
         name: String,
@@ -150,6 +159,7 @@ pub enum AgentEvent {
 pub struct DispatcherAgent {
     config: DispatcherAgentConfig,
     provider: Mutex<OpenAiCompatProvider>,
+    summary_model: Mutex<String>,
     tools: ToolRegistry,
     project_mcp_registry: ProjectMcpRegistry,
     subprocesses: Mutex<Vec<RegisteredSubprocess>>,
@@ -360,6 +370,7 @@ impl DispatcherAgent {
         );
 
         Self {
+            summary_model: Mutex::new(normalize_summary_model(&config.summary_model)),
             config,
             provider: Mutex::new(provider),
             tools: ToolRegistry::default_tools(project_mcp_registry.clone()),
@@ -389,6 +400,12 @@ impl DispatcherAgent {
             self.config.max_tokens,
             self.config.temperature,
         );
+        let mut summary_model = self.summary_model.lock().unwrap();
+        *summary_model = if settings.summary_model.trim().is_empty() {
+            normalize_summary_model(&self.config.summary_model)
+        } else {
+            normalize_summary_model(&settings.summary_model)
+        };
     }
 
     pub fn auto_approve_dispatch(&self) -> bool {
@@ -401,6 +418,10 @@ impl DispatcherAgent {
 
     pub fn context_debug_enabled(&self) -> bool {
         self.config.context_debug
+    }
+
+    fn summary_model(&self) -> String {
+        self.summary_model.lock().unwrap().clone()
     }
 
     pub fn set_context_debug(&mut self, value: bool) {
@@ -539,6 +560,7 @@ impl DispatcherAgent {
         }
 
         let provider = self.provider.lock().unwrap().clone();
+        let summary_model = self.summary_model();
         let summarized_dispatch_result = match tokio::select! {
             _ = wait_for_cancellation(&mut cancel_rx) => {
                 let reply = self.emit_stop_and_finish(db, workspace_id, &on_event, "")?;
@@ -551,7 +573,15 @@ impl DispatcherAgent {
                 );
                 return Ok(AgentTurn { reply, messages });
             }
-            result = summarize_dispatch_result(&provider, dispatch_result) => result
+            result = summarize_dispatch_result(&provider, &summary_model, dispatch_result, |usage| {
+                record_session_token_usage(
+                    db,
+                    workspace_id,
+                    &summary_model,
+                    DispatcherSessionTokenUsageSource::Summary,
+                    usage,
+                );
+            }) => result
         } {
             Ok(summary) => summary,
             Err(error) => {
@@ -573,6 +603,7 @@ impl DispatcherAgent {
                     db,
                     workspace_id,
                     &on_event,
+                    &summary_model,
                     error.message(),
                 )?;
                 let messages = db.list_visible_messages(workspace_id)?;
@@ -656,7 +687,7 @@ impl DispatcherAgent {
 
             let tool_definitions = self.tool_definitions_for_workspace(workspace_id, workspace);
             let prompt_snapshot =
-                self.build_system_prompt_for_workspace(workspace_id, workspace)?;
+                self.build_system_prompt_for_workspace(workspace_id, workspace, &tool_definitions)?;
             let history_messages = db.load_llm_history(workspace_id)?;
             let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
             messages.extend(history_messages.clone());
@@ -712,6 +743,15 @@ impl DispatcherAgent {
                 response = provider.chat_stream(&messages, &tool_definitions, on_delta) => response
             }?;
             let response_snapshot = provider.build_response_snapshot(&response);
+            if let Some(usage) = response.usage.as_ref() {
+                record_session_token_usage(
+                    db,
+                    workspace_id,
+                    provider.model(),
+                    DispatcherSessionTokenUsageSource::Primary,
+                    usage,
+                );
+            }
 
             debug_logger.log(
                 "收到大模型响应",
@@ -757,6 +797,18 @@ impl DispatcherAgent {
                 })
                 .collect::<Vec<_>>();
 
+            for tool_call in &response.tool_calls {
+                emit(
+                    on_event,
+                    AgentEvent::ToolPlanned {
+                        tool_call_id: Some(tool_call.id.clone()),
+                        name: tool_call.name.clone(),
+                        arguments: serde_json::to_string(&tool_call.arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
+                );
+            }
+
             db.add_visible_message_with_tools(
                 workspace_id,
                 "assistant",
@@ -771,28 +823,44 @@ impl DispatcherAgent {
                 ProtocolBatchState::new(self.active_subprocesses_for_workspace(workspace_id));
             let mut protocol_actions = Vec::new();
             let mut final_message: Option<String> = None;
+            let mut saw_retryable_tool_error = false;
 
-            for tool_call in response.tool_calls {
+            let parallel_results = self
+                .execute_parallel_readonly_tools(&response.tool_calls, &tool_context, on_event)
+                .await;
+            let tool_calls = response
+                .tool_calls
+                .into_iter()
+                .zip(
+                    parallel_results
+                        .unwrap_or_else(|| (0..tool_calls_payload.len()).map(|_| None).collect()),
+                )
+                .collect::<Vec<_>>();
+
+            for (tool_call, precomputed_result) in tool_calls {
                 if cancellation_requested(&cancel_rx) {
                     return self.emit_stop_and_finish(db, workspace_id, on_event, "");
                 }
 
                 let tool_arguments = serde_json::to_string_pretty(&tool_call.arguments)
                     .unwrap_or_else(|_| "{}".to_string());
-                emit(
-                    on_event,
-                    AgentEvent::ToolStarted {
-                        tool_call_id: Some(tool_call.id.clone()),
-                        name: tool_call.name.clone(),
-                        arguments: serde_json::to_string(&tool_call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string()),
-                    },
-                );
-
-                let result = self
-                    .tools
-                    .execute(&tool_call.name, &tool_call.arguments, &tool_context)
-                    .await;
+                let result = match precomputed_result {
+                    Some(result) => result,
+                    None => {
+                        emit(
+                            on_event,
+                            AgentEvent::ToolStarted {
+                                tool_call_id: Some(tool_call.id.clone()),
+                                name: tool_call.name.clone(),
+                                arguments: serde_json::to_string(&tool_call.arguments)
+                                    .unwrap_or_else(|_| "{}".to_string()),
+                            },
+                        );
+                        self.tools
+                            .execute(&tool_call.name, &tool_call.arguments, &tool_context)
+                            .await
+                    }
+                };
 
                 match self.plan_protocol_action(db, workspace_id, &tool_call, &mut protocol_state) {
                     Ok(Some(action)) => {
@@ -805,13 +873,32 @@ impl DispatcherAgent {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        self.emit_tool_error(db, workspace_id, on_event, &tool_call, &error)?;
+                        if is_retryable_tool_error(&tool_call.name, &error) {
+                            self.emit_tool_retry_feedback(
+                                db,
+                                workspace_id,
+                                on_event,
+                                &tool_call,
+                                &error,
+                            )?;
+                            saw_retryable_tool_error = true;
+                        } else {
+                            self.emit_tool_error(db, workspace_id, on_event, &tool_call, &error)?;
+                        }
                         continue;
                     }
                 }
 
+                if is_retryable_tool_error(&tool_call.name, &result) {
+                    self.emit_tool_retry_feedback(db, workspace_id, on_event, &tool_call, &result)?;
+                    saw_retryable_tool_error = true;
+                    continue;
+                }
+
+                let summary_model = self.summary_model();
                 let tool_result = match prepare_tool_result(
                     provider,
+                    &summary_model,
                     &tool_call.name,
                     &tool_call.arguments,
                     &result,
@@ -834,6 +921,15 @@ impl DispatcherAgent {
                                 delta: delta.to_string(),
                                 result_mode: "conservative_summary".to_string(),
                             },
+                        );
+                    },
+                    |usage| {
+                        record_session_token_usage(
+                            db,
+                            workspace_id,
+                            &summary_model,
+                            DispatcherSessionTokenUsageSource::Summary,
+                            usage,
                         );
                     },
                 )
@@ -859,6 +955,7 @@ impl DispatcherAgent {
                             db,
                             workspace_id,
                             on_event,
+                            &summary_model,
                             error.message(),
                         );
                     }
@@ -885,11 +982,24 @@ impl DispatcherAgent {
                     },
                 );
 
+                if let Err(error) =
+                    db.compact_successful_tool_retry(workspace_id, &tool_call.name, &tool_call.id)
+                {
+                    eprintln!(
+                        "failed to compact dispatcher tool retry messages for workspace {} and tool {}: {}",
+                        workspace_id, tool_call.name, error
+                    );
+                }
+
                 if tool_call.name == "message" {
                     if let Some(content) = extract_message_content(&tool_call.arguments) {
                         final_message = Some(content);
                     }
                 }
+            }
+
+            if saw_retryable_tool_error {
+                continue;
             }
 
             if !protocol_actions.is_empty() {
@@ -943,8 +1053,19 @@ impl DispatcherAgent {
         &self,
         workspace_id: &str,
         workspace: &Path,
+        tool_definitions: &[crate::agent::llm::ToolDefinition],
     ) -> Result<SystemPromptSnapshot> {
         let mut prompt_bundle = self.build_system_prompt()?;
+        let tool_block = render_available_tools_block(tool_definitions);
+        if !tool_block.is_empty() {
+            prompt_bundle.sections.push(PromptSection {
+                label: "Runtime Tool State".to_string(),
+                source: "runtime::available_tools".to_string(),
+                content: tool_block.clone(),
+            });
+            prompt_bundle.content.push_str("\n\n---\n\n");
+            prompt_bundle.content.push_str(&tool_block);
+        }
         let state_block = self.build_subprocess_state_block(workspace_id);
         if !state_block.is_empty() {
             prompt_bundle.sections.push(PromptSection {
@@ -1062,16 +1183,7 @@ impl DispatcherAgent {
         workspace_id: &str,
         workspace: &Path,
     ) -> Vec<crate::agent::llm::ToolDefinition> {
-        let mut allowed = HashSet::from([
-            "read_file",
-            "write_file",
-            "edit_file",
-            "list_dir",
-            "glob",
-            "grep",
-            "exec",
-            "message",
-        ]);
+        let mut allowed = builtin_tool_allowlist();
 
         for (agent_slug, has_active, phase) in self.agent_runtime_flags(workspace_id) {
             match (has_active, phase) {
@@ -1135,6 +1247,38 @@ impl DispatcherAgent {
         {
             item.phase = RegisteredSubprocessPhase::ExitRequested;
         }
+    }
+
+    async fn execute_parallel_readonly_tools(
+        &self,
+        tool_calls: &[RequestedToolCall],
+        tool_context: &ToolContext,
+        on_event: &Channel<AgentEvent>,
+    ) -> Option<Vec<Option<String>>> {
+        if tool_calls.len() < 2 || !tool_calls.iter().all(is_parallel_readonly_tool_call) {
+            return None;
+        }
+
+        for tool_call in tool_calls {
+            emit(
+                on_event,
+                AgentEvent::ToolStarted {
+                    tool_call_id: Some(tool_call.id.clone()),
+                    name: tool_call.name.clone(),
+                    arguments: serde_json::to_string(&tool_call.arguments)
+                        .unwrap_or_else(|_| "{}".to_string()),
+                },
+            );
+        }
+
+        let results = join_all(tool_calls.iter().map(|tool_call| async move {
+            self.tools
+                .execute(&tool_call.name, &tool_call.arguments, tool_context)
+                .await
+        }))
+        .await;
+
+        Some(results.into_iter().map(Some).collect())
     }
 
     fn plan_protocol_action(
@@ -1290,6 +1434,46 @@ impl DispatcherAgent {
             Some("raw"),
             None,
         )?;
+        if let Err(error) =
+            db.compact_successful_tool_retry(workspace_id, &tool_call.name, &tool_call.id)
+        {
+            eprintln!(
+                "failed to compact dispatcher protocol retry messages for workspace {} and tool {}: {}",
+                workspace_id, tool_call.name, error
+            );
+        }
+        Ok(())
+    }
+
+    fn emit_tool_retry_feedback(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        tool_call: &super::llm::RequestedToolCall,
+        error: &str,
+    ) -> Result<()> {
+        let context_payload = build_tool_retry_context(tool_call, error);
+        let display_text = "工具调用参数需要修正，已交回模型重试。";
+        emit(
+            on_event,
+            AgentEvent::ToolFinished {
+                tool_call_id: Some(tool_call.id.clone()),
+                name: tool_call.name.clone(),
+                display_text: display_text.to_string(),
+                result_mode: "raw".to_string(),
+                detail_refs: Vec::new(),
+            },
+        );
+        db.add_visible_tool_result(
+            workspace_id,
+            display_text,
+            &context_payload,
+            Some(&tool_call.id),
+            Some(&tool_call.name),
+            Some("raw"),
+            &[],
+        )?;
         Ok(())
     }
 
@@ -1328,12 +1512,13 @@ impl DispatcherAgent {
         db: &DispatcherDb,
         workspace_id: &str,
         on_event: &Channel<AgentEvent>,
+        summary_model: &str,
         error: &str,
     ) -> Result<DispatcherMessageRecord> {
         let reply = db.add_visible_message(
             workspace_id,
             "assistant",
-            &build_summary_failure_message(error),
+            &build_summary_failure_message(summary_model, error),
         )?;
         emit(
             on_event,
@@ -1370,6 +1555,49 @@ fn extract_message_content(arguments: &Value) -> Option<String> {
         .get("content")
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+fn is_parallel_readonly_tool_call(tool_call: &RequestedToolCall) -> bool {
+    matches!(
+        tool_call.name.as_str(),
+        "read_file" | "list_dir" | "glob" | "grep"
+    )
+}
+
+fn build_tool_retry_context(tool_call: &super::llm::RequestedToolCall, error: &str) -> String {
+    let arguments =
+        serde_json::to_string_pretty(&tool_call.arguments).unwrap_or_else(|_| "{}".to_string());
+    format!(
+        "{TOOL_RETRY_CONTEXT_PREFIX}\n\
+工具：{}\n\
+工具调用 ID：{}\n\
+错误详情：{}\n\n\
+上次参数：\n{}\n\n\
+要求：不要直接把该错误回复给用户。请根据工具 schema 和错误详情修正参数后重试同一个工具；重试成功后，系统会覆盖本次失败工具调用记录。",
+        tool_call.name,
+        tool_call.id,
+        error.trim(),
+        truncate_for_display(&arguments, 4_000, "\n...")
+    )
+}
+
+fn is_retryable_tool_error(tool_name: &str, result: &str) -> bool {
+    let trimmed = result.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if tool_name == "exec" {
+        return false;
+    }
+    if !trimmed.starts_with("错误：") {
+        return false;
+    }
+    trimmed.starts_with("错误：缺少必填参数")
+        || trimmed.starts_with("错误：参数")
+        || trimmed.contains("参数无效")
+        || trimmed.contains("invalid type")
+        || trimmed.contains("未找到工具")
+        || trimmed.contains("禁止")
 }
 
 fn build_protocol_waiting_message(
@@ -1564,6 +1792,30 @@ fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
     let _ = on_event.send(event);
 }
 
+fn record_session_token_usage(
+    db: &DispatcherDb,
+    workspace_id: &str,
+    model: &str,
+    source_kind: DispatcherSessionTokenUsageSource,
+    usage: &LlmUsage,
+) {
+    if let Err(error) = db.upsert_session_token_usage(workspace_id, model, source_kind, usage) {
+        eprintln!(
+            "failed to persist dispatcher session token usage for workspace {} and model {}: {}",
+            workspace_id, model, error
+        );
+    }
+}
+
+fn normalize_summary_model(model: &str) -> String {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        super::config::DEFAULT_SUMMARY_MODEL.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn subprocess_phase_label(phase: RegisteredSubprocessPhase) -> &'static str {
     match phase {
         RegisteredSubprocessPhase::Running => "running",
@@ -1595,6 +1847,47 @@ fn exit_tool_name(agent: &str) -> &'static str {
         "codex" => "exit_codex_session",
         _ => "exit_claude_session",
     }
+}
+
+fn builtin_tool_allowlist() -> HashSet<&'static str> {
+    HashSet::from([
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "glob",
+        "grep",
+        "exec",
+        "message",
+    ])
+}
+
+fn render_available_tools_block(tool_definitions: &[crate::agent::llm::ToolDefinition]) -> String {
+    if tool_definitions.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = vec![
+        "# 当前实际可用工具".to_string(),
+        "以下列表来自本轮运行时实际注入的工具定义，优先级高于静态 TOOLS.md。".to_string(),
+    ];
+
+    let mut tools = tool_definitions
+        .iter()
+        .map(|tool| {
+            (
+                tool.function.name.clone(),
+                tool.function.description.trim().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    tools.sort_by(|left, right| left.0.cmp(&right.0));
+
+    for (name, description) in tools {
+        lines.push(format!("- `{name}`：{description}"));
+    }
+
+    lines.join("\n")
 }
 
 #[cfg(test)]

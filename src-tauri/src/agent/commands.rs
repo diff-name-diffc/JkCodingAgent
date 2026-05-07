@@ -5,13 +5,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
 
+use tauri::AppHandle;
+
 use super::config::DispatcherAgentConfig;
 use super::db::{
-    DispatcherDb, DispatcherMessageRecord, DispatcherSessionRecord, DispatcherSettingsRecord,
-    DispatcherToolArtifactRecord,
+    DispatcherDb, DispatcherMessageRecord, DispatcherSessionRecord,
+    DispatcherSessionTokenUsageRecord, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
 };
 use super::llm;
 use super::runtime::{AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent};
+use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::project::mcp::ProjectMcpRegistry;
 use crate::shared::TaskManager;
 
@@ -92,6 +95,74 @@ impl DispatcherState {
 
 fn has_live_subprocess(task_manager: &TaskManager, task_id: &str) -> bool {
     task_manager.child_handles.lock().contains_key(task_id)
+}
+
+fn resolve_voice_asr_config(state: &DispatcherState) -> Result<VoiceAsrConfig, String> {
+    let saved = state.db.get_settings().ok().flatten();
+    let loaded = DispatcherAgentConfig::load().ok();
+
+    let api_key = saved
+        .as_ref()
+        .map(|settings| settings.asr_api_key.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            std::env::var("DASHSCOPE_API_KEY").ok().and_then(|value| {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            })
+        })
+        .or_else(|| {
+            saved
+                .as_ref()
+                .filter(|settings| settings.api_base.contains("dashscope"))
+                .map(|settings| settings.api_key.trim())
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            loaded.as_ref().and_then(|config| {
+                if config.api_base.contains("dashscope") && !config.api_key.trim().is_empty() {
+                    Some(config.api_key.trim().to_string())
+                } else {
+                    None
+                }
+            })
+        })
+        .ok_or_else(|| {
+            "未检测到 ASR API Key，请先在 Aha 智能体设置中填写 ASR API Key，或设置 DASHSCOPE_API_KEY。"
+                .to_string()
+        })?;
+
+    let saved_websocket_url = saved
+        .as_ref()
+        .map(|settings| settings.asr_websocket_url.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+
+    let api_base = saved
+        .as_ref()
+        .map(|settings| settings.api_base.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            loaded
+                .as_ref()
+                .map(|config| config.api_base.trim())
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string());
+
+    Ok(VoiceAsrConfig {
+        api_key,
+        websocket_url: saved_websocket_url
+            .unwrap_or_else(|| resolve_dashscope_websocket_url(&api_base)),
+    })
 }
 
 fn is_codex_subprocess(task_manager: &TaskManager, task_id: &str) -> bool {
@@ -180,6 +251,17 @@ pub fn dispatcher_list_messages(
 }
 
 #[tauri::command]
+pub fn dispatcher_get_session_token_usage(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+) -> Result<Vec<DispatcherSessionTokenUsageRecord>, String> {
+    state
+        .db
+        .list_session_token_usage(&workspace_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn dispatcher_clear_messages(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
@@ -249,6 +331,10 @@ pub async fn dispatcher_save_settings(
     api_base: String,
     api_key: String,
     model: String,
+    summary_model: String,
+    vision_model: String,
+    asr_api_key: String,
+    asr_websocket_url: String,
     auto_approve_dispatch: bool,
     context_debug: bool,
 ) -> Result<DispatcherSettingsRecord, String> {
@@ -258,6 +344,10 @@ pub async fn dispatcher_save_settings(
             &api_base,
             &api_key,
             &model,
+            &summary_model,
+            &vision_model,
+            &asr_api_key,
+            &asr_websocket_url,
             auto_approve_dispatch,
             context_debug,
         )
@@ -327,6 +417,42 @@ pub async fn dispatcher_continue_after_dispatch(
 #[tauri::command]
 pub fn dispatcher_stop_run(state: tauri::State<'_, DispatcherState>, workspace_id: String) -> bool {
     state.stop_run(&workspace_id)
+}
+
+#[tauri::command]
+pub fn dispatcher_start_voice_input(
+    state: tauri::State<'_, DispatcherState>,
+    voice_state: tauri::State<'_, VoiceAsrManager>,
+    app: AppHandle,
+    workspace_id: String,
+) -> Result<(), String> {
+    let config = resolve_voice_asr_config(&state)?;
+    voice_state.start_session(app, workspace_id, config)
+}
+
+#[tauri::command]
+pub fn dispatcher_append_voice_audio(
+    voice_state: tauri::State<'_, VoiceAsrManager>,
+    workspace_id: String,
+    audio_base64: String,
+) -> Result<(), String> {
+    voice_state.append_audio(&workspace_id, audio_base64)
+}
+
+#[tauri::command]
+pub fn dispatcher_finish_voice_input(
+    voice_state: tauri::State<'_, VoiceAsrManager>,
+    workspace_id: String,
+) -> Result<(), String> {
+    voice_state.finish_session(&workspace_id)
+}
+
+#[tauri::command]
+pub fn dispatcher_cancel_voice_input(
+    voice_state: tauri::State<'_, VoiceAsrManager>,
+    workspace_id: String,
+) {
+    voice_state.cancel_session(&workspace_id);
 }
 
 #[tauri::command]

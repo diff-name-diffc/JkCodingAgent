@@ -15,7 +15,7 @@ export interface ToolActivityItem {
   displayText?: string;
   detailRefs?: DispatcherToolArtifactRef[];
   resultMode?: DispatcherToolResultMode;
-  status: "running" | "completed";
+  status: "planned" | "running" | "completed";
 }
 
 interface ToolActivityBubbleProps {
@@ -39,6 +39,10 @@ export function ToolActivityBubble({
 
   const runningCount = useMemo(
     () => tools.filter((tool) => tool.status === "running").length,
+    [tools],
+  );
+  const plannedCount = useMemo(
+    () => tools.filter((tool) => tool.status === "planned").length,
     [tools],
   );
 
@@ -92,6 +96,7 @@ export function ToolActivityBubble({
         </div>
         <div style={styles.headerMeta}>
           <span style={styles.headerCount}>{tools.length}</span>
+          {plannedCount > 0 && <span style={styles.plannedBadge}>待执行 {plannedCount}</span>}
           {runningCount > 0 && <span style={styles.runningBadge}>运行中 {runningCount}</span>}
         </div>
       </div>
@@ -122,7 +127,12 @@ export function ToolActivityBubble({
                   <span
                     style={{
                       ...styles.statusDot,
-                      background: tool.status === "running" ? "var(--success)" : "var(--text-hint)",
+                      background:
+                        tool.status === "running"
+                          ? "var(--success)"
+                          : tool.status === "planned"
+                            ? "var(--warning, #d97706)"
+                            : "var(--text-hint)",
                     }}
                   />
                   <span style={styles.itemTitle}>{tool.name}</span>
@@ -138,10 +148,19 @@ export function ToolActivityBubble({
                 <span
                   style={{
                     ...styles.itemStatus,
-                    color: tool.status === "running" ? "var(--success)" : "var(--text-secondary)",
+                    color:
+                      tool.status === "running"
+                        ? "var(--success)"
+                        : tool.status === "planned"
+                          ? "var(--warning, #d97706)"
+                          : "var(--text-secondary)",
                   }}
                 >
-                  {tool.status === "running" ? "执行中" : "已完成"}
+                  {tool.status === "running"
+                    ? "执行中"
+                    : tool.status === "planned"
+                      ? "待执行"
+                      : "已完成"}
                 </span>
               </button>
               {expanded && (
@@ -201,7 +220,11 @@ export function ToolActivityBubble({
 
                   {!hasDisplayText && detailRefs.length === 0 && !showSummaryInConversation && (
                     <div style={styles.pendingText}>
-                      {tool.status === "running" ? "等待工具返回..." : "工具未返回可展示内容"}
+                      {tool.status === "planned"
+                        ? "等待开始执行..."
+                        : tool.status === "running"
+                          ? "等待工具返回..."
+                          : "工具未返回可展示内容"}
                     </div>
                   )}
 
@@ -327,6 +350,14 @@ const styles = {
     borderRadius: 999,
     background: "color-mix(in srgb, var(--success) 14%, transparent)",
     color: "var(--success)",
+    fontSize: 11,
+    fontWeight: 700,
+  },
+  plannedBadge: {
+    padding: "3px 8px",
+    borderRadius: 999,
+    background: "rgba(217,119,6,0.12)",
+    color: "var(--warning, #d97706)",
     fontSize: 11,
     fontWeight: 700,
   },

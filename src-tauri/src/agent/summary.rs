@@ -6,14 +6,13 @@ use std::sync::{
 use serde_json::Value;
 use tokio::time::{timeout, Duration};
 
-use super::llm::{ChatMessage, OpenAiCompatProvider};
+use super::llm::{ChatMessage, LlmUsage, OpenAiCompatProvider};
 
 const SUMMARY_MODE_THRESHOLD_CHARS: usize = 240;
 const SUMMARY_MODE_THRESHOLD_LINES: usize = 24;
 const FULL_RESULT_MAX_CHARS: usize = 12_000;
 const FULL_RESULT_MAX_LINES: usize = 400;
 const HIGH_FIDELITY_SUMMARY_THRESHOLD_CHARS: usize = 1_000;
-const SUMMARY_MODEL: &str = "qwen3.6-flash";
 const SUMMARY_TIMEOUT_SECS: u64 = 120;
 const SUMMARY_DEBUG_PREVIEW_CHARS: usize = 1_200;
 
@@ -58,17 +57,20 @@ pub struct PreparedToolResult {
     pub artifacts: Vec<ToolArtifactDraft>,
 }
 
-pub async fn prepare_tool_result<FStart, FDelta>(
+pub async fn prepare_tool_result<FStart, FDelta, FUsage>(
     provider: &OpenAiCompatProvider,
+    summary_model: &str,
     tool_name: &str,
     args: &Value,
     raw_output: &str,
     on_display_stream_start: FStart,
     on_display_delta: FDelta,
+    on_usage: FUsage,
 ) -> Result<PreparedToolResult, SummaryError>
 where
     FStart: Fn(&'static str) + Send + Sync,
     FDelta: Fn(&str) + Send + Sync,
+    FUsage: FnMut(&LlmUsage) + Send,
 {
     let trimmed_raw = raw_output.trim();
     if trimmed_raw.is_empty() {
@@ -99,6 +101,7 @@ where
             on_display_stream_start(result_mode);
             let raw_summary = summarize_with_model(
                 provider,
+                summary_model,
                 build_dual_tool_summary_prompt(tool_name, normalized_trimmed),
                 {
                     let display_stream = Arc::clone(&display_stream);
@@ -116,6 +119,7 @@ where
                         on_display_delta(&streamed);
                     }
                 },
+                on_usage,
             )
             .await?;
             let (context_payload, display_content) = parse_dual_tool_summary(raw_summary);
@@ -132,10 +136,15 @@ where
     }
 }
 
-pub async fn summarize_dispatch_result(
+pub async fn summarize_dispatch_result<FUsage>(
     provider: &OpenAiCompatProvider,
+    summary_model: &str,
     dispatch_result: &str,
-) -> Result<String, SummaryError> {
+    on_usage: FUsage,
+) -> Result<String, SummaryError>
+where
+    FUsage: FnMut(&LlmUsage) + Send,
+{
     let trimmed = dispatch_result.trim();
     if trimmed.is_empty() {
         return Ok(trimmed.to_string());
@@ -149,21 +158,30 @@ pub async fn summarize_dispatch_result(
         return Ok(trimmed.to_string());
     }
 
-    summarize_with_model(provider, build_dispatch_summary_prompt(trimmed), |_| {}).await
+    summarize_with_model(
+        provider,
+        summary_model,
+        build_dispatch_summary_prompt(trimmed),
+        |_| {},
+        on_usage,
+    )
+    .await
 }
 
-pub fn build_summary_failure_message(error: &str) -> String {
+pub fn build_summary_failure_message(summary_model: &str, error: &str) -> String {
     format!(
-        "检测到摘要服务调用失败，当前轮次已停止。\n\n请检查以下配置后重试：\n- Dispatcher 设置中的 API Key 是否有效\n- Dispatcher 设置中的 API Base 是否可访问\n- 云端模型 `{SUMMARY_MODEL}` 当前是否可用\n\n错误详情：\n{error}"
+        "检测到工具结果辅助模型调用失败，当前轮次已停止。\n\n请检查以下配置后重试：\n- Dispatcher 设置中的 API Key 是否有效\n- Dispatcher 设置中的 API Base 是否可访问\n- 摘要模型 `{summary_model}` 当前是否可用\n\n错误详情：\n{error}"
     )
 }
 
 async fn summarize_with_model(
     provider: &OpenAiCompatProvider,
+    summary_model: &str,
     prompt: String,
     on_delta: impl FnMut(&str),
+    mut on_usage: impl FnMut(&LlmUsage) + Send,
 ) -> Result<String, SummaryError> {
-    let summary_provider = provider.with_model(SUMMARY_MODEL);
+    let summary_provider = provider.with_model(summary_model);
     let debug_context = build_summary_debug_context(&summary_provider, &prompt);
     let response = timeout(
         Duration::from_secs(SUMMARY_TIMEOUT_SECS),
@@ -172,21 +190,25 @@ async fn summarize_with_model(
     .await
     .map_err(|_| {
         SummaryError::new(
-            format!("摘要模型 `{SUMMARY_MODEL}` 调用超时（>{SUMMARY_TIMEOUT_SECS}s）"),
+            format!("摘要模型 `{summary_model}` 调用超时（>{SUMMARY_TIMEOUT_SECS}s）"),
             debug_context.clone(),
         )
     })?
     .map_err(|error| {
         SummaryError::new(
-            format!("摘要模型 `{SUMMARY_MODEL}` 调用失败：{error}"),
+            format!("摘要模型 `{summary_model}` 调用失败：{error}"),
             debug_context.clone(),
         )
     })?;
 
+    if let Some(usage) = response.usage.as_ref() {
+        on_usage(usage);
+    }
+
     let content = response.content.trim().to_string();
     if content.is_empty() {
         return Err(SummaryError::new(
-            format!("摘要模型 `{SUMMARY_MODEL}` 返回空结果"),
+            format!("摘要模型 `{summary_model}` 返回空结果"),
             debug_context,
         ));
     }
@@ -728,9 +750,9 @@ mod tests {
 
     #[test]
     fn failure_message_mentions_cloud_summary_model() {
-        let message = build_summary_failure_message("401 unauthorized");
-        assert!(message.contains("摘要服务调用失败"));
-        assert!(message.contains("qwen3.6-flash"));
+        let message = build_summary_failure_message("deepseek-v4-flash", "401 unauthorized");
+        assert!(message.contains("辅助模型调用失败"));
+        assert!(message.contains("deepseek-v4-flash"));
         assert!(message.contains("401 unauthorized"));
     }
 }

@@ -68,7 +68,7 @@ impl TaskManager {
     pub(crate) fn write_to_pty(&self, id: &str, data: &[u8], flush: bool) -> Result<(), String> {
         let writer = self.pty_writers.lock().get(id).cloned();
         let Some(writer) = writer else {
-            return Ok(());
+            return Err(format!("找不到任务 {id} 的活动 PTY 写入器"));
         };
         let mut writer = writer.lock();
         writer.write_all(data).map_err(|err| err.to_string())?;

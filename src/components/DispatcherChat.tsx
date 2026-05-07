@@ -109,6 +109,10 @@ function DispatchApprovalDialog({
   );
 }
 
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // ── Message Bubble ───────────────────────────────────────────────────────────
 
 const UserMessageBubble = memo(function UserMessageBubble({
@@ -608,6 +612,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [streamingSegments, setStreamingSegments] = useState<AssistantTurnSegment[]>([]);
     const [liveToolCalls, setLiveToolCalls] = useState<ToolActivityItem[]>([]);
     const [assistantPlaceholder, setAssistantPlaceholder] = useState<string | null>(null);
+    const [runError, setRunError] = useState<string | null>(null);
     const [pendingDispatches, setPendingDispatches] = useState<PendingDispatchApproval[]>([]);
     const [autoApprove, setAutoApprove] = useState(false);
 
@@ -674,6 +679,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       setStreamingSegments([]);
       setLiveToolCalls([]);
       setAssistantPlaceholder(null);
+      setRunError(null);
       setPendingDispatches([]);
 
       invoke<DispatcherMessage[]>("dispatcher_list_messages", {
@@ -690,7 +696,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     // Auto-scroll
     useEffect(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages, streamingSegments, assistantPlaceholder, liveToolCalls]);
+    }, [messages, streamingSegments, assistantPlaceholder, liveToolCalls, runError]);
 
     const createEventChannel = useCallback((targetSessionId: string, runId: number) => {
       const onEvent = new Channel<DispatcherAgentEvent>();
@@ -807,6 +813,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               setStreamingSegments([]);
               setLiveToolCalls([]);
               setAssistantPlaceholder(null);
+              setRunError(null);
             }
 
             const onEvent = createEventChannel(targetSessionId, runId);
@@ -856,6 +863,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           });
         } catch (err) {
           console.error("dispatcher_send_message 失败:", err);
+          setRunError(`调度智能体执行失败：${toErrorMessage(err)}`);
         }
       },
       [enqueueDispatcherRun, projectPath, sessionId],
@@ -935,6 +943,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             });
           } catch (err) {
             console.error("dispatcher_continue_after_dispatch 失败:", err);
+            setRunError(`调度智能体继续执行失败：${toErrorMessage(err)}`);
           }
         },
       }),
@@ -1076,6 +1085,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
         {/* Messages */}
         <div style={styles.messageList}>
+          {runError && <div style={styles.runErrorBanner}>{runError}</div>}
           {isEmpty && (
             <EmptyConversationLauncher
               input={input}
@@ -1343,6 +1353,16 @@ const styles = {
     display: "flex",
     flexDirection: "column" as const,
     gap: "18px",
+  },
+  runErrorBanner: {
+    border: "1px solid color-mix(in srgb, var(--danger) 36%, var(--border-primary))",
+    background: "color-mix(in srgb, var(--danger) 10%, var(--bg-panel))",
+    color: "var(--danger)",
+    borderRadius: "8px",
+    padding: "10px 12px",
+    fontSize: "12px",
+    lineHeight: 1.5,
+    whiteSpace: "pre-wrap" as const,
   },
   emptyLauncherWrap: (layoutMode: "single" | "split") => ({
     display: "flex",

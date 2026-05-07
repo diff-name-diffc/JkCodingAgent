@@ -156,13 +156,13 @@ export function SessionPanel({
     <div style={s.taskPanel}>
       {/* Project header */}
       <div style={s.panelHeader}>
-        <button style={s.backBtn} onClick={onCollapse} title="折叠会话列表">
-          <PanelLeftClose size={15} strokeWidth={2} />
+        <button style={s.backBtn} onClick={onBack} title="返回项目页">
+          <ChevronLeft size={15} strokeWidth={2} />
         </button>
         <ProjectAvatar name={project.name} size={22} />
         <span style={s.panelProjectName}>{project.name}</span>
-        <button style={s.backBtn} onClick={onBack} title="返回项目页">
-          <ChevronLeft size={15} strokeWidth={2} />
+        <button style={s.backBtn} onClick={onCollapse} title="折叠会话列表">
+          <PanelLeftClose size={15} strokeWidth={2} />
         </button>
       </div>
 

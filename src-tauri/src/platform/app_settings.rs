@@ -262,6 +262,25 @@ pub fn get_agent_bin(agent: &str) -> String {
     get_agent_bin_from_settings(&load_settings_internal(), agent)
 }
 
+fn load_settings_for_agent_execution() -> Result<AppSettings, String> {
+    let path = settings_path()?;
+    if !path.exists() {
+        return Ok(load_settings_internal());
+    }
+
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("读取智能体设置失败（{}）：{error}", path.display()))?;
+    serde_json::from_str(&raw)
+        .map_err(|error| format!("解析智能体设置失败（{}）：{error}", path.display()))
+}
+
+pub fn get_agent_bin_checked(agent: &str) -> Result<String, String> {
+    Ok(get_agent_bin_from_settings(
+        &load_settings_for_agent_execution()?,
+        agent,
+    ))
+}
+
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]

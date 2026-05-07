@@ -93,7 +93,8 @@ pub fn init_project_config(project_path: String) -> Result<ProjectConfig, String
     }
 
     let raw = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-    let mut config: ProjectConfig = toml::from_str(&raw).unwrap_or_default();
+    let mut config: ProjectConfig = toml::from_str(&raw)
+        .map_err(|e| format!("解析项目配置失败（{}）：{e}", config_path.display()))?;
 
     // 首次打开或版本字段为空时，自动检测并回写
     let mut updated = false;
@@ -133,7 +134,8 @@ pub fn read_project_config(project_path: String) -> Result<ProjectConfig, String
         return Ok(ProjectConfig::default());
     }
     let raw = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-    let config: ProjectConfig = toml::from_str(&raw).unwrap_or_default();
+    let config: ProjectConfig = toml::from_str(&raw)
+        .map_err(|e| format!("解析项目配置失败（{}）：{e}", config_path.display()))?;
     Ok(config)
 }
 

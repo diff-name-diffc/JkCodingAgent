@@ -283,4 +283,5 @@ export interface SubProcess {
   description: string;
   status: "pending_approval" | "running" | "stopped" | "done" | "failed";
   startedAt: number;
+  failureReason?: string;
 }

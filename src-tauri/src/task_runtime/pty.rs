@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::session::{spawn_resume_session_watcher, spawn_status_session_watcher};
 use crate::agent::DispatcherState;
-use crate::platform::{claude_version_gte, get_agent_bin, get_login_shell_env};
+use crate::platform::{claude_version_gte, get_agent_bin_checked, get_login_shell_env};
 use crate::project::read_project_config;
 use crate::shared::{TaskManager, TaskTerminationIntent};
 
@@ -52,16 +52,15 @@ fn finalize_task_exit(
     app: &AppHandle,
     task_id: &str,
     project_path: &str,
-    is_codex: bool,
     exit_ok: bool,
     exit_code: Option<u32>,
+    wait_error: Option<String>,
 ) {
     let termination_intent = {
         let tm = app.state::<TaskManager>();
         tm.take_task_termination_intent(task_id)
     };
 
-    let had_agent_session;
     {
         let tm = app.state::<TaskManager>();
         tm.remove_pty_handles(task_id);
@@ -70,11 +69,6 @@ fn finalize_task_exit(
         let codex_path = codex_info.map(|info| info.session_path);
         let claude_info = tm.claude_sessions.lock().remove(task_id);
         let claude_path = claude_info.as_ref().map(|info| info.session_path.clone());
-        had_agent_session = if is_codex {
-            codex_path.is_some()
-        } else {
-            claude_info.is_some()
-        };
         let mut claimed = tm.claimed_session_paths.lock();
         if let Some(path) = codex_path {
             claimed.remove(&path);
@@ -94,16 +88,9 @@ fn finalize_task_exit(
         return;
     }
 
-    let status = if exit_ok || had_agent_session {
-        "done"
-    } else {
-        "failed"
-    };
+    let status = task_exit_status(exit_ok);
     let payload = if status == "failed" {
-        let reason = match exit_code {
-            Some(code) => format!("Process exited with code {}", code),
-            None => "Process exited with non-zero status".to_string(),
-        };
+        let reason = task_exit_failure_reason(exit_code, wait_error.as_deref());
         serde_json::json!({ "task_id": task_id, "status": status, "failure_reason": reason })
     } else {
         serde_json::json!({ "task_id": task_id, "status": status })
@@ -111,6 +98,25 @@ fn finalize_task_exit(
     let _ = app.emit("task-status", payload);
 
     let _ = fs::remove_dir_all(task_attachments_dir(project_path, task_id));
+}
+
+fn task_exit_status(exit_ok: bool) -> &'static str {
+    if exit_ok {
+        "done"
+    } else {
+        "failed"
+    }
+}
+
+fn task_exit_failure_reason(exit_code: Option<u32>, wait_error: Option<&str>) -> String {
+    if let Some(error) = wait_error {
+        return format!("读取 Agent 进程退出状态失败：{error}");
+    }
+
+    match exit_code {
+        Some(code) => format!("Agent 进程以非 0 状态退出，退出码：{code}"),
+        None => "Agent 进程以非 0 状态退出，但未返回退出码".to_string(),
+    }
 }
 
 fn request_task_termination(
@@ -341,7 +347,7 @@ fn spawn_exit_monitor(app: AppHandle, task_id: String, project_path: String, is_
         let exit_status = {
             let tm = app.state::<TaskManager>();
             match tm.try_wait_child(&task_id) {
-                Ok(Some(status)) => Some(status),
+                Ok(Some(status)) => Some(Ok(status)),
                 Ok(None) => {
                     if tm.child_handles.lock().contains_key(&task_id) {
                         None
@@ -349,20 +355,27 @@ fn spawn_exit_monitor(app: AppHandle, task_id: String, project_path: String, is_
                         return;
                     }
                 }
-                Err(_) => return,
+                Err(error) => Some(Err(error)),
             }
         };
 
-        if let Some(status) = exit_status {
-            let exit_ok = status.success();
-            let exit_code = if exit_ok {
-                None
-            } else {
-                Some(status.exit_code())
-            };
-            // 等待会话注册完成
-            wait_for_session(&app, &task_id, is_codex);
-            finalize_task_exit(&app, &task_id, &project_path, is_codex, exit_ok, exit_code);
+        if let Some(result) = exit_status {
+            match result {
+                Ok(status) => {
+                    let exit_ok = status.success();
+                    let exit_code = if exit_ok {
+                        None
+                    } else {
+                        Some(status.exit_code())
+                    };
+                    // 等待会话注册完成
+                    wait_for_session(&app, &task_id, is_codex);
+                    finalize_task_exit(&app, &task_id, &project_path, exit_ok, exit_code, None);
+                }
+                Err(error) => {
+                    finalize_task_exit(&app, &task_id, &project_path, false, None, Some(error));
+                }
+            }
             return;
         }
 
@@ -407,6 +420,10 @@ pub async fn run_task(
     rows: Option<u16>,
     dispatcher_dispatch_id: Option<String>,
 ) -> Result<(), String> {
+    if agent != "claude" && agent != "codex" {
+        return Err(format!("未知 Agent：{agent}"));
+    }
+
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: rows.unwrap_or(50),
@@ -420,7 +437,7 @@ pub async fn run_task(
     let image_paths = save_task_images(&project_path, &task_id, &images.unwrap_or_default())?;
 
     // 若配置了项目级 prompt_prefix，则拼接到提示词前
-    let config = read_project_config(project_path.clone()).unwrap_or_default();
+    let config = read_project_config(project_path.clone())?;
     let base_prompt = if config.agent.prompt_prefix.is_empty() {
         prompt.clone()
     } else {
@@ -438,7 +455,7 @@ pub async fn run_task(
         )
     };
 
-    let agent_bin = get_agent_bin(&agent);
+    let agent_bin = get_agent_bin_checked(&agent)?;
     let is_codex = agent == "codex";
 
     // 读取项目配置中已保存的 Claude 版本，用于判断是否支持 --session-id
@@ -582,6 +599,10 @@ pub async fn resume_task(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<(), String> {
+    if agent != "claude" && agent != "codex" {
+        return Err(format!("未知 Agent：{agent}"));
+    }
+
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: rows.unwrap_or(50),
@@ -591,7 +612,7 @@ pub async fn resume_task(
         })
         .map_err(|e| e.to_string())?;
 
-    let agent_bin = get_agent_bin(&agent);
+    let agent_bin = get_agent_bin_checked(&agent)?;
     let mut cmd = if agent == "codex" {
         let mut c = CommandBuilder::new(&agent_bin);
         c.arg("resume");
@@ -753,7 +774,7 @@ pub async fn kill_shell(
 
 #[cfg(test)]
 mod tests {
-    use super::termination_status_label;
+    use super::{task_exit_failure_reason, task_exit_status, termination_status_label};
     use crate::shared::TaskTerminationIntent;
 
     #[test]
@@ -769,6 +790,27 @@ mod tests {
         assert_eq!(
             termination_status_label(TaskTerminationIntent::Stopped),
             "stopped"
+        );
+    }
+
+    #[test]
+    fn nonzero_agent_exit_is_failed_even_when_session_exists() {
+        assert_eq!(task_exit_status(false), "failed");
+    }
+
+    #[test]
+    fn task_exit_failure_reason_keeps_exit_code_visible() {
+        assert_eq!(
+            task_exit_failure_reason(Some(42), None),
+            "Agent 进程以非 0 状态退出，退出码：42"
+        );
+    }
+
+    #[test]
+    fn task_exit_failure_reason_keeps_wait_error_visible() {
+        assert_eq!(
+            task_exit_failure_reason(None, Some("wait failed")),
+            "读取 Agent 进程退出状态失败：wait failed"
         );
     }
 }

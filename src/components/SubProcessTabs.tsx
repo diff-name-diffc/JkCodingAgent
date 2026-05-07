@@ -52,8 +52,7 @@ export function SubProcessTabs({
     [activeSessionId, subProcesses],
   );
   const mountedTerminals = useMemo(
-    () =>
-      subProcesses.filter((subProcess) => subProcess.status !== "pending_approval"),
+    () => subProcesses.filter((subProcess) => subProcess.status !== "pending_approval"),
     [subProcesses],
   );
   const activeSubProcess = visibleSubProcesses.find((sp) => sp.id === activeTabId) ?? null;
@@ -131,7 +130,10 @@ export function SubProcessTabs({
                             <span>终端已退出，可继续查看本次输入与输出</span>
                           )}
                           {subProcess.status === "failed" && (
-                            <span>终端已失败退出，可继续查看本次输入与输出</span>
+                            <span>
+                              终端已失败退出
+                              {subProcess.failureReason ? `：${subProcess.failureReason}` : ""}
+                            </span>
                           )}
                           {subProcess.status === "stopped" && (
                             <span>终端已停止，历史输出已保留，可稍后继续运行</span>
@@ -371,10 +373,12 @@ const styles = {
     padding: "6px 10px",
     borderRadius: "8px",
     fontSize: "12px",
+    lineHeight: 1.45,
     color: "var(--text-primary)",
     background: "color-mix(in srgb, var(--bg-elevated) 92%, transparent)",
     border: "1px solid var(--border-primary)",
     boxShadow: "0 8px 20px rgba(0,0,0,0.12)",
+    maxWidth: "min(520px, calc(100% - 16px))",
     pointerEvents: "none" as const,
   },
   terminalPlaceholder: {

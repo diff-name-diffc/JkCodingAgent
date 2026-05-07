@@ -221,14 +221,28 @@ export function useTerminalManager() {
     taskBufferRef.current[taskId] = buf;
   }, []);
 
-  const handleInput = useCallback((taskId: string, data: string) => {
-    invoke("send_input", { taskId, data }).catch(console.error);
-  }, []);
+  const handleInput = useCallback(
+    (taskId: string, data: string) => {
+      invoke("send_input", { taskId, data }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(error);
+        writeErrorToTerminal(taskId, `\r\n输入发送失败：${message}\r\n`);
+      });
+    },
+    [writeErrorToTerminal],
+  );
 
-  const handleResize = useCallback((taskId: string, cols: number, rows: number) => {
-    terminalSizeRef.current = { cols, rows };
-    invoke("resize_pty", { taskId, cols, rows }).catch(console.error);
-  }, []);
+  const handleResize = useCallback(
+    (taskId: string, cols: number, rows: number) => {
+      terminalSizeRef.current = { cols, rows };
+      invoke("resize_pty", { taskId, cols, rows }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(error);
+        writeErrorToTerminal(taskId, `\r\n终端尺寸同步失败：${message}\r\n`);
+      });
+    },
+    [writeErrorToTerminal],
+  );
 
   const handleRegisterTerminal = useCallback(
     (taskId: string, fn: TerminalWriteFn | null): number => {

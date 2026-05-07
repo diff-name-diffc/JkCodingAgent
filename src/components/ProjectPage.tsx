@@ -74,7 +74,12 @@ function toSubProcess(task: Task): SubProcess | null {
     description: task.dispatcherDescription,
     status: mapTaskStatusToSubProcessStatus(task.status),
     startedAt: task.createdAt,
+    failureReason: task.failureReason,
   };
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function ProjectPage({
@@ -498,14 +503,34 @@ export function ProjectPage({
           .find(
             (sp) => sp.status === "running" && sp.sessionId === sessionId && sp.agent === agent,
           );
-      if (!activeSp) return;
+      const agentLabel = getSubProcessAgentLabel(agent);
+      if (!activeSp) {
+        dispatcherChatRef.current?.continueWithResult(
+          `${agentLabel} 子进程续写失败：未找到运行中的子进程。`,
+          "process_failed",
+          sessionId,
+        );
+        return;
+      }
 
       interactiveSubProcessRef.current.set(routeKey, activeSp.id);
       idleInjectedTaskIdsRef.current.delete(activeSp.id);
-      invoke("dispatcher_mark_subprocess_running", { taskId: activeSp.id }).catch(console.error);
+      invoke("dispatcher_mark_subprocess_running", { taskId: activeSp.id }).catch((error) => {
+        dispatcherChatRef.current?.continueWithResult(
+          `${agentLabel} 子进程状态同步失败：${toErrorMessage(error)}`,
+          "process_failed",
+          sessionId,
+        );
+      });
       const submittedText = text.replace(/(?:\r?\n)+$/, "");
       invoke("dispatcher_send_to_subprocess", { taskId: activeSp.id, text: submittedText }).catch(
-        console.error,
+        (error) => {
+          dispatcherChatRef.current?.continueWithResult(
+            `${agentLabel} 子进程续写失败：${toErrorMessage(error)}`,
+            "process_failed",
+            sessionId,
+          );
+        },
       );
     },
     [subProcesses],
@@ -528,12 +553,28 @@ export function ProjectPage({
           .find(
             (sp) => sp.status === "running" && sp.sessionId === sessionId && sp.agent === agent,
           );
-      if (!activeSp) return;
+      const agentLabel = getSubProcessAgentLabel(agent);
+      if (!activeSp) {
+        dispatcherChatRef.current?.continueWithResult(
+          `${agentLabel} 子进程退出失败：未找到运行中的子进程。`,
+          "process_failed",
+          sessionId,
+        );
+        return;
+      }
 
       interactiveSubProcessRef.current.set(routeKey, activeSp.id);
       exitedSubprocessesRef.current.add(activeSp.id);
       closedSubprocessTaskIdsRef.current.add(activeSp.id);
-      invoke("dispatcher_exit_subprocess", { taskId: activeSp.id }).catch(console.error);
+      invoke("dispatcher_exit_subprocess", { taskId: activeSp.id }).catch((error) => {
+        exitedSubprocessesRef.current.delete(activeSp.id);
+        closedSubprocessTaskIdsRef.current.delete(activeSp.id);
+        dispatcherChatRef.current?.continueWithResult(
+          `${agentLabel} 子进程退出失败：${toErrorMessage(error)}`,
+          "process_failed",
+          sessionId,
+        );
+      });
     },
     [subProcesses],
   );

@@ -106,6 +106,10 @@ function App() {
       "task-status",
       (e) => {
         const { task_id, status, failure_reason } = e.payload;
+        if (status === "failed" && failure_reason) {
+          tm.writeErrorToTerminal(task_id, `\r\n错误：${failure_reason}\r\n`);
+          showToast(`Agent 执行失败：${failure_reason}`);
+        }
         updateTaskStatus(task_id, status, undefined, failure_reason);
         if (status === "done" || status === "failed" || status === "cancelled") {
           tm.removeInactiveTaskBuffers([task_id]);
@@ -245,7 +249,7 @@ function App() {
       persistProjectTasks(task.projectId, next, showToast);
       return next;
     });
-    
+
     if (!hidden) {
       setActiveProject(project);
     }
@@ -320,14 +324,21 @@ function App() {
         const attentionRequestedAt =
           status === "input_required" ? (extra?.attentionRequestedAt ?? Date.now()) : undefined;
 
-        if (task.status === status && task.attentionRequestedAt === attentionRequestedAt) {
+        const nextFailureReason =
+          status === "failed" ? (failureReason ?? task.failureReason) : undefined;
+
+        if (
+          task.status === status &&
+          task.attentionRequestedAt === attentionRequestedAt &&
+          task.failureReason === nextFailureReason
+        ) {
           return task;
         }
 
         changed = true;
         const updated: Task = { ...task, status, attentionRequestedAt };
-        if (status === "failed" && failureReason) updated.failureReason = failureReason;
-        if (status !== "failed") delete updated.failureReason;
+        if (nextFailureReason) updated.failureReason = nextFailureReason;
+        if (!nextFailureReason) delete updated.failureReason;
         return updated;
       });
 

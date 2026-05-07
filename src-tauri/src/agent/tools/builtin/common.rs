@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -51,6 +52,37 @@ pub(super) fn string_array_arg(args: &Value, key: &str) -> Option<Vec<String>> {
             .filter_map(|value| value.as_str().map(str::to_string))
             .collect(),
     )
+}
+
+pub(super) fn non_empty_string_array_arg(args: &Value, key: &str) -> Option<Vec<String>> {
+    let values = string_array_arg(args, key)?
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>();
+    (!values.is_empty()).then_some(values)
+}
+
+pub(super) fn string_list_arg(
+    args: &Value,
+    single_key: &str,
+    list_key: &str,
+) -> Result<Vec<String>, String> {
+    let mut values = Vec::new();
+    if let Some(value) = string_arg(args, single_key) {
+        values.push(value);
+    }
+    if let Some(items) = string_array_arg(args, list_key) {
+        values.extend(items);
+    }
+
+    let mut seen = HashSet::new();
+    values.retain(|value| !value.trim().is_empty() && seen.insert(value.clone()));
+
+    if values.is_empty() {
+        Err(format!("错误：缺少必填参数 {single_key} 或 {list_key}"))
+    } else {
+        Ok(values)
+    }
 }
 
 pub(super) fn usize_arg(args: &Value, key: &str) -> Option<usize> {
@@ -169,6 +201,21 @@ pub(super) fn collect_entries(
             entries.push(format!("[file] {}", rel(&path, root)));
         }
     }
+}
+
+pub(super) fn render_labeled_sections(sections: Vec<(String, String)>) -> String {
+    sections
+        .into_iter()
+        .map(|(label, body)| {
+            let body = body.trim();
+            if body.is_empty() {
+                format!("## {label}\n[无结果]")
+            } else {
+                format!("## {label}\n{body}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 pub(super) fn is_noise(name: &std::ffi::OsStr) -> bool {

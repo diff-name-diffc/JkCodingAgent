@@ -825,175 +825,214 @@ impl DispatcherAgent {
             let mut final_message: Option<String> = None;
             let mut saw_retryable_tool_error = false;
 
-            let parallel_results = self
-                .execute_parallel_readonly_tools(&response.tool_calls, &tool_context, on_event)
-                .await;
-            let tool_calls = response
-                .tool_calls
-                .into_iter()
-                .zip(
-                    parallel_results
-                        .unwrap_or_else(|| (0..tool_calls_payload.len()).map(|_| None).collect()),
-                )
-                .collect::<Vec<_>>();
-
-            for (tool_call, precomputed_result) in tool_calls {
+            let tool_calls = response.tool_calls;
+            let mut tool_call_index = 0usize;
+            while tool_call_index < tool_calls.len() {
                 if cancellation_requested(&cancel_rx) {
                     return self.emit_stop_and_finish(db, workspace_id, on_event, "");
                 }
 
-                let tool_arguments = serde_json::to_string_pretty(&tool_call.arguments)
-                    .unwrap_or_else(|_| "{}".to_string());
-                let result = match precomputed_result {
-                    Some(result) => result,
-                    None => {
-                        emit(
-                            on_event,
-                            AgentEvent::ToolStarted {
-                                tool_call_id: Some(tool_call.id.clone()),
-                                name: tool_call.name.clone(),
-                                arguments: serde_json::to_string(&tool_call.arguments)
-                                    .unwrap_or_else(|_| "{}".to_string()),
-                            },
-                        );
-                        self.tools
-                            .execute(&tool_call.name, &tool_call.arguments, &tool_context)
-                            .await
-                    }
+                let readonly_end = readonly_tool_run_end(&tool_calls, tool_call_index);
+                let ready_tool_results = if readonly_end.saturating_sub(tool_call_index) >= 2 {
+                    let run = &tool_calls[tool_call_index..readonly_end];
+                    let results = self
+                        .execute_parallel_readonly_tools(run, &tool_context, on_event)
+                        .await;
+                    let items = run
+                        .iter()
+                        .cloned()
+                        .zip(results)
+                        .collect::<Vec<(RequestedToolCall, String)>>();
+                    tool_call_index = readonly_end;
+                    items
+                } else {
+                    let tool_call = tool_calls[tool_call_index].clone();
+                    tool_call_index += 1;
+                    emit(
+                        on_event,
+                        AgentEvent::ToolStarted {
+                            tool_call_id: Some(tool_call.id.clone()),
+                            name: tool_call.name.clone(),
+                            arguments: serde_json::to_string(&tool_call.arguments)
+                                .unwrap_or_else(|_| "{}".to_string()),
+                        },
+                    );
+                    let result = self
+                        .tools
+                        .execute(&tool_call.name, &tool_call.arguments, &tool_context)
+                        .await;
+                    vec![(tool_call, result)]
                 };
 
-                match self.plan_protocol_action(db, workspace_id, &tool_call, &mut protocol_state) {
-                    Ok(Some(action)) => {
-                        if let ProtocolToolAction::Exit { agent, .. } = &action {
-                            self.mark_agent_exit_requested(workspace_id, agent.slug());
-                        }
-                        self.emit_protocol_action(db, workspace_id, on_event, &tool_call, &action)?;
-                        protocol_actions.push(action);
-                        continue;
+                for (tool_call, result) in ready_tool_results {
+                    if cancellation_requested(&cancel_rx) {
+                        return self.emit_stop_and_finish(db, workspace_id, on_event, "");
                     }
-                    Ok(None) => {}
-                    Err(error) => {
-                        if is_retryable_tool_error(&tool_call.name, &error) {
-                            self.emit_tool_retry_feedback(
+
+                    let tool_arguments = serde_json::to_string_pretty(&tool_call.arguments)
+                        .unwrap_or_else(|_| "{}".to_string());
+
+                    match self.plan_protocol_action(
+                        db,
+                        workspace_id,
+                        &tool_call,
+                        &mut protocol_state,
+                    ) {
+                        Ok(Some(action)) => {
+                            if let ProtocolToolAction::Exit { agent, .. } = &action {
+                                self.mark_agent_exit_requested(workspace_id, agent.slug());
+                            }
+                            self.emit_protocol_action(
                                 db,
                                 workspace_id,
                                 on_event,
                                 &tool_call,
-                                &error,
+                                &action,
                             )?;
-                            saw_retryable_tool_error = true;
-                        } else {
-                            self.emit_tool_error(db, workspace_id, on_event, &tool_call, &error)?;
+                            protocol_actions.push(action);
+                            continue;
                         }
+                        Ok(None) => {}
+                        Err(error) => {
+                            if is_retryable_tool_error(&tool_call.name, &error) {
+                                self.emit_tool_retry_feedback(
+                                    db,
+                                    workspace_id,
+                                    on_event,
+                                    &tool_call,
+                                    &error,
+                                )?;
+                                saw_retryable_tool_error = true;
+                            } else {
+                                self.emit_tool_error(
+                                    db,
+                                    workspace_id,
+                                    on_event,
+                                    &tool_call,
+                                    &error,
+                                )?;
+                            }
+                            continue;
+                        }
+                    }
+
+                    if is_retryable_tool_error(&tool_call.name, &result) {
+                        self.emit_tool_retry_feedback(
+                            db,
+                            workspace_id,
+                            on_event,
+                            &tool_call,
+                            &result,
+                        )?;
+                        saw_retryable_tool_error = true;
                         continue;
                     }
-                }
 
-                if is_retryable_tool_error(&tool_call.name, &result) {
-                    self.emit_tool_retry_feedback(db, workspace_id, on_event, &tool_call, &result)?;
-                    saw_retryable_tool_error = true;
-                    continue;
-                }
+                    let summary_model = self.summary_model();
+                    let tool_result = match prepare_tool_result(
+                        provider,
+                        &summary_model,
+                        &tool_call.name,
+                        &tool_call.arguments,
+                        &result,
+                        |result_mode| {
+                            emit(
+                                on_event,
+                                AgentEvent::ToolSummaryStarted {
+                                    tool_call_id: Some(tool_call.id.clone()),
+                                    name: tool_call.name.clone(),
+                                    result_mode: result_mode.to_string(),
+                                },
+                            );
+                        },
+                        |delta| {
+                            emit(
+                                on_event,
+                                AgentEvent::ToolSummaryDelta {
+                                    tool_call_id: Some(tool_call.id.clone()),
+                                    name: tool_call.name.clone(),
+                                    delta: delta.to_string(),
+                                    result_mode: "conservative_summary".to_string(),
+                                },
+                            );
+                        },
+                        |usage| {
+                            record_session_token_usage(
+                                db,
+                                workspace_id,
+                                &summary_model,
+                                DispatcherSessionTokenUsageSource::Summary,
+                                usage,
+                            );
+                        },
+                    )
+                    .await
+                    {
+                        Ok(summary) => summary,
+                        Err(error) => {
+                            debug_logger.log(
+                                "工具结果摘要失败",
+                                vec![
+                                    ("工作区".to_string(), workspace_id.to_string()),
+                                    ("轮次".to_string(), (iteration + 1).to_string()),
+                                    ("工具名".to_string(), tool_call.name.clone()),
+                                    ("工具调用ID".to_string(), tool_call.id.clone()),
+                                ],
+                                vec![
+                                    DebugSection::new(
+                                        "摘要调用",
+                                        error.debug_context().to_string(),
+                                    ),
+                                    DebugSection::new("工具参数", tool_arguments.clone()),
+                                    DebugSection::new("失败原因", error.message().to_string()),
+                                ],
+                            );
+                            return self.emit_summary_failure_and_finish(
+                                db,
+                                workspace_id,
+                                on_event,
+                                &summary_model,
+                                error.message(),
+                            );
+                        }
+                    };
 
-                let summary_model = self.summary_model();
-                let tool_result = match prepare_tool_result(
-                    provider,
-                    &summary_model,
-                    &tool_call.name,
-                    &tool_call.arguments,
-                    &result,
-                    |result_mode| {
-                        emit(
-                            on_event,
-                            AgentEvent::ToolSummaryStarted {
-                                tool_call_id: Some(tool_call.id.clone()),
-                                name: tool_call.name.clone(),
-                                result_mode: result_mode.to_string(),
-                            },
-                        );
-                    },
-                    |delta| {
-                        emit(
-                            on_event,
-                            AgentEvent::ToolSummaryDelta {
-                                tool_call_id: Some(tool_call.id.clone()),
-                                name: tool_call.name.clone(),
-                                delta: delta.to_string(),
-                                result_mode: "conservative_summary".to_string(),
-                            },
-                        );
-                    },
-                    |usage| {
-                        record_session_token_usage(
-                            db,
-                            workspace_id,
-                            &summary_model,
-                            DispatcherSessionTokenUsageSource::Summary,
-                            usage,
-                        );
-                    },
-                )
-                .await
-                {
-                    Ok(summary) => summary,
-                    Err(error) => {
-                        debug_logger.log(
-                            "工具结果摘要失败",
-                            vec![
-                                ("工作区".to_string(), workspace_id.to_string()),
-                                ("轮次".to_string(), (iteration + 1).to_string()),
-                                ("工具名".to_string(), tool_call.name.clone()),
-                                ("工具调用ID".to_string(), tool_call.id.clone()),
-                            ],
-                            vec![
-                                DebugSection::new("摘要调用", error.debug_context().to_string()),
-                                DebugSection::new("工具参数", tool_arguments.clone()),
-                                DebugSection::new("失败原因", error.message().to_string()),
-                            ],
-                        );
-                        return self.emit_summary_failure_and_finish(
-                            db,
-                            workspace_id,
-                            on_event,
-                            &summary_model,
-                            error.message(),
+                    let tool_message = db.add_visible_tool_result(
+                        workspace_id,
+                        &tool_result.display_content,
+                        &tool_result.context_payload,
+                        Some(&tool_call.id),
+                        Some(&tool_call.name),
+                        Some(tool_result.result_mode),
+                        &tool_result.artifacts,
+                    )?;
+
+                    emit(
+                        on_event,
+                        AgentEvent::ToolFinished {
+                            tool_call_id: Some(tool_call.id.clone()),
+                            name: tool_call.name.clone(),
+                            display_text: tool_message.content.clone(),
+                            result_mode: tool_result.result_mode.to_string(),
+                            detail_refs: tool_message.tool_artifacts.clone(),
+                        },
+                    );
+
+                    if let Err(error) = db.compact_successful_tool_retry(
+                        workspace_id,
+                        &tool_call.name,
+                        &tool_call.id,
+                    ) {
+                        eprintln!(
+                            "failed to compact dispatcher tool retry messages for workspace {} and tool {}: {}",
+                            workspace_id, tool_call.name, error
                         );
                     }
-                };
 
-                let tool_message = db.add_visible_tool_result(
-                    workspace_id,
-                    &tool_result.display_content,
-                    &tool_result.context_payload,
-                    Some(&tool_call.id),
-                    Some(&tool_call.name),
-                    Some(tool_result.result_mode),
-                    &tool_result.artifacts,
-                )?;
-
-                emit(
-                    on_event,
-                    AgentEvent::ToolFinished {
-                        tool_call_id: Some(tool_call.id.clone()),
-                        name: tool_call.name.clone(),
-                        display_text: tool_message.content.clone(),
-                        result_mode: tool_result.result_mode.to_string(),
-                        detail_refs: tool_message.tool_artifacts.clone(),
-                    },
-                );
-
-                if let Err(error) =
-                    db.compact_successful_tool_retry(workspace_id, &tool_call.name, &tool_call.id)
-                {
-                    eprintln!(
-                        "failed to compact dispatcher tool retry messages for workspace {} and tool {}: {}",
-                        workspace_id, tool_call.name, error
-                    );
-                }
-
-                if tool_call.name == "message" {
-                    if let Some(content) = extract_message_content(&tool_call.arguments) {
-                        final_message = Some(content);
+                    if tool_call.name == "message" {
+                        if let Some(content) = extract_message_content(&tool_call.arguments) {
+                            final_message = Some(content);
+                        }
                     }
                 }
             }
@@ -1254,11 +1293,7 @@ impl DispatcherAgent {
         tool_calls: &[RequestedToolCall],
         tool_context: &ToolContext,
         on_event: &Channel<AgentEvent>,
-    ) -> Option<Vec<Option<String>>> {
-        if tool_calls.len() < 2 || !tool_calls.iter().all(is_parallel_readonly_tool_call) {
-            return None;
-        }
-
+    ) -> Vec<String> {
         for tool_call in tool_calls {
             emit(
                 on_event,
@@ -1278,7 +1313,7 @@ impl DispatcherAgent {
         }))
         .await;
 
-        Some(results.into_iter().map(Some).collect())
+        results
     }
 
     fn plan_protocol_action(
@@ -1562,6 +1597,17 @@ fn is_parallel_readonly_tool_call(tool_call: &RequestedToolCall) -> bool {
         tool_call.name.as_str(),
         "read_file" | "list_dir" | "glob" | "grep"
     )
+}
+
+fn readonly_tool_run_end(tool_calls: &[RequestedToolCall], start: usize) -> usize {
+    tool_calls
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(index, tool_call)| {
+            (!is_parallel_readonly_tool_call(tool_call)).then_some(index)
+        })
+        .unwrap_or(tool_calls.len())
 }
 
 fn build_tool_retry_context(tool_call: &super::llm::RequestedToolCall, error: &str) -> String {
@@ -1893,11 +1939,11 @@ fn render_available_tools_block(tool_definitions: &[crate::agent::llm::ToolDefin
 #[cfg(test)]
 mod tests {
     use super::{
-        build_protocol_waiting_message, collect_recent_exploration_entries,
+        build_protocol_waiting_message, collect_recent_exploration_entries, readonly_tool_run_end,
         should_include_latest_user_goal, DispatchAgent, PlannedSubprocessState, ProtocolBatchState,
         ProtocolToolAction, RegisteredSubprocess, RegisteredSubprocessPhase,
     };
-    use crate::agent::llm::ChatMessage;
+    use crate::agent::llm::{ChatMessage, RequestedToolCall};
 
     #[test]
     fn protocol_state_allows_parallel_dispatch_for_different_agents() {
@@ -2012,5 +2058,25 @@ mod tests {
             "调度子任务不要再带固定工程师开头",
             task_description
         ));
+    }
+
+    #[test]
+    fn readonly_tool_run_stops_before_mutating_tool() {
+        let calls = ["glob", "grep", "write_file", "read_file"]
+            .into_iter()
+            .map(requested_tool_call)
+            .collect::<Vec<_>>();
+
+        assert_eq!(readonly_tool_run_end(&calls, 0), 2);
+        assert_eq!(readonly_tool_run_end(&calls, 2), 2);
+        assert_eq!(readonly_tool_run_end(&calls, 3), 4);
+    }
+
+    fn requested_tool_call(name: &str) -> RequestedToolCall {
+        RequestedToolCall {
+            id: name.to_string(),
+            name: name.to_string(),
+            arguments: serde_json::json!({}),
+        }
     }
 }

@@ -3,13 +3,14 @@ use std::fs;
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use futures::future::join_all;
 use glob::glob;
 use serde_json::{json, Value};
-use tokio::process::Command;
+use tokio::{process::Command, task};
 
 use super::common::{
-    boolish_arg, is_noise, rel, resolve_path, string_arg, string_array_arg, usize_arg,
-    with_result_mode_parameter,
+    boolish_arg, is_noise, non_empty_string_array_arg, rel, render_labeled_sections, resolve_path,
+    string_arg, string_array_arg, string_list_arg, usize_arg, with_result_mode_parameter,
 };
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
@@ -39,6 +40,22 @@ struct GrepLine {
     is_match: bool,
 }
 
+#[derive(Debug)]
+struct GrepOptions {
+    include: Vec<String>,
+    exclude: Vec<String>,
+    match_mode: String,
+    case_sensitive: Option<bool>,
+    word: bool,
+    context_before: usize,
+    context_after: usize,
+    max_matches_per_file: usize,
+    max_files: usize,
+    files_with_matches: bool,
+    include_hidden: bool,
+    no_ignore: bool,
+}
+
 #[async_trait]
 impl AgentTool for GlobTool {
     fn name(&self) -> &'static str {
@@ -55,10 +72,23 @@ impl AgentTool for GlobTool {
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string", "description": "匹配模式，例如 '*.rs' 或 'src/**/*.ts'" },
-                    "path": { "type": "string", "description": "从哪个目录开始搜索，默认 '.'" },
+                    "patterns": {
+                        "type": "array",
+                        "description": "要批量搜索的 glob 模式列表。传入多个模式时，结果会按 pattern 分段返回。",
+                        "items": { "type": "string" }
+                    },
+                    "paths": {
+                        "type": "array",
+                        "description": "搜索起始目录列表，默认 ['.']。即使只指定一个目录，也必须传单元素数组。与 patterns 同时提供时会搜索每个 path + pattern 组合。",
+                        "minItems": 1,
+                        "items": { "type": "string" }
+                    },
                     "max_results": { "type": "integer", "description": "最多返回多少个结果，默认 250", "minimum": 1 }
                 },
-                "required": ["pattern"]
+                "anyOf": [
+                    { "required": ["pattern"] },
+                    { "required": ["patterns"] }
+                ]
             }),
             "full",
             "当后续需要精确文件列表时保留完整结果；只看分布或概况时改用 summary。",
@@ -66,51 +96,33 @@ impl AgentTool for GlobTool {
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        let Some(pattern) = string_arg(args, "pattern") else {
-            return "错误：缺少必填参数 pattern".to_string();
-        };
-        let path = string_arg(args, "path").unwrap_or_else(|| ".".to_string());
-        let max_results = usize_arg(args, "max_results").unwrap_or(250).max(1);
-        let dir_path = match resolve_path(context, &path) {
-            Ok(path) => path,
+        let patterns = match string_list_arg(args, "pattern", "patterns") {
+            Ok(patterns) => patterns,
             Err(message) => return message,
         };
-        let search_pattern = dir_path.join(pattern);
-        let Some(search_pattern) = search_pattern.to_str() else {
-            return "错误：glob 模式不是有效的 UTF-8".to_string();
-        };
+        let paths =
+            non_empty_string_array_arg(args, "paths").unwrap_or_else(|| vec![".".to_string()]);
+        let max_results = usize_arg(args, "max_results").unwrap_or(250).max(1);
+        let context = context.clone();
 
-        let mut matches = Vec::new();
-        for entry in match glob(search_pattern) {
-            Ok(entries) => entries,
-            Err(error) => return format!("glob 模式无效：{error}"),
-        } {
-            match entry {
-                Ok(path) if !path.file_name().is_some_and(is_noise) => matches.push(path),
-                Ok(_) => {}
-                Err(error) => return format!("glob 搜索失败：{error}"),
+        match task::spawn_blocking(move || {
+            let mut sections = Vec::new();
+            for path in &paths {
+                for pattern in &patterns {
+                    sections.push((
+                        format!("glob path={path} pattern={pattern}"),
+                        run_glob_query(path, pattern, max_results, &context),
+                    ));
+                }
             }
-        }
-        matches.sort_by_key(|path| {
-            fs::metadata(path)
-                .and_then(|metadata| metadata.modified())
-                .ok()
-        });
-        matches.reverse();
 
-        if matches.is_empty() {
-            return format!("未找到匹配文件：{}", dir_path.display());
+            render_single_or_grouped_sections(sections)
+        })
+        .await
+        {
+            Ok(output) => output,
+            Err(error) => format!("glob 搜索任务失败：{error}"),
         }
-
-        let mut lines = matches
-            .iter()
-            .take(max_results)
-            .map(|path| rel(path, &dir_path))
-            .collect::<Vec<_>>();
-        if matches.len() > max_results {
-            lines.push(format!("...（已显示 {} / {}）", max_results, matches.len()));
-        }
-        lines.join("\n")
     }
 }
 
@@ -130,7 +142,17 @@ impl AgentTool for GrepTool {
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string", "description": "要搜索的模式。默认按正则处理。" },
-                    "path": { "type": "string", "description": "搜索起点，默认 '.'；可传目录或单个文件。" },
+                    "patterns": {
+                        "type": "array",
+                        "description": "要批量搜索的模式列表。传入多个模式时，结果会按 pattern 分段返回。",
+                        "items": { "type": "string" }
+                    },
+                    "paths": {
+                        "type": "array",
+                        "description": "搜索起点列表，默认 ['.']；可传目录或单个文件。即使只指定一个搜索起点，也必须传单元素数组。与 patterns 同时提供时会搜索每个 path + pattern 组合。",
+                        "minItems": 1,
+                        "items": { "type": "string" }
+                    },
                     "include": {
                         "type": "array",
                         "description": "可选的 glob 过滤列表，例如 ['src/**/*.rs', 'src/**/*.ts']",
@@ -180,7 +202,10 @@ impl AgentTool for GrepTool {
                         "description": "是否忽略 .gitignore 等规则。"
                     }
                 },
-                "required": ["pattern"]
+                "anyOf": [
+                    { "required": ["pattern"] },
+                    { "required": ["patterns"] }
+                ]
             }),
             "full",
             "grep 是精确检索工具，通常应保留原始匹配行与行号；只在非常长且用户只要概览时再改用 summary。",
@@ -188,120 +213,209 @@ impl AgentTool for GrepTool {
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        let Some(pattern) = string_arg(args, "pattern") else {
-            return "错误：缺少必填参数 pattern".to_string();
-        };
-        let path = string_arg(args, "path").unwrap_or_else(|| ".".to_string());
-        let include = string_array_arg(args, "include").unwrap_or_default();
-        let exclude = string_array_arg(args, "exclude").unwrap_or_default();
-        let match_mode = string_arg(args, "match_mode").unwrap_or_else(|| "regex".to_string());
-        let case_sensitive = args.get("case_sensitive").and_then(Value::as_bool);
-        let word = boolish_arg(args, "word").unwrap_or(false);
-        let context_before = usize_arg(args, "context_before").unwrap_or(0);
-        let context_after = usize_arg(args, "context_after").unwrap_or(0);
-        let max_matches_per_file = usize_arg(args, "max_matches_per_file").unwrap_or(20).max(1);
-        let max_files = usize_arg(args, "max_files").unwrap_or(25).max(1);
-        let files_with_matches = boolish_arg(args, "files_with_matches").unwrap_or(false);
-        let include_hidden = boolish_arg(args, "include_hidden").unwrap_or(false);
-        let no_ignore = boolish_arg(args, "no_ignore").unwrap_or(false);
-
-        let search_path = match resolve_path(context, &path) {
-            Ok(path) => path,
+        let patterns = match string_list_arg(args, "pattern", "patterns") {
+            Ok(patterns) => patterns,
             Err(message) => return message,
         };
-        if !search_path.exists() {
-            return format!("错误：搜索路径不存在：{path}");
-        }
-
-        let workspace = match context.workspace.canonicalize() {
-            Ok(path) => path,
-            Err(error) => return format!("解析工作区路径失败：{error}"),
-        };
-        let target = workspace_relative_target(&workspace, &search_path);
-
-        let mut command = Command::new("rg");
-        command
-            .arg("--json")
-            .arg("--line-number")
-            .arg("--color")
-            .arg("never")
-            .arg("--max-count")
-            .arg(max_matches_per_file.to_string())
-            .current_dir(&workspace)
-            .kill_on_drop(true);
-
-        match case_sensitive {
-            Some(true) => {
-                command.arg("--case-sensitive");
-            }
-            Some(false) => {
-                command.arg("--ignore-case");
-            }
-            None => {
-                command.arg("--smart-case");
-            }
-        }
-
-        if match_mode == "fixed" {
-            command.arg("--fixed-strings");
-        }
-        if word {
-            command.arg("--word-regexp");
-        }
-        if include_hidden {
-            command.arg("--hidden");
-        }
-        if no_ignore {
-            command.arg("--no-ignore");
-        }
-        if context_before == context_after && context_before > 0 {
-            command.arg("--context").arg(context_before.to_string());
-        } else {
-            if context_before > 0 {
-                command
-                    .arg("--before-context")
-                    .arg(context_before.to_string());
-            }
-            if context_after > 0 {
-                command
-                    .arg("--after-context")
-                    .arg(context_after.to_string());
-            }
-        }
-
-        for glob in include {
-            command.arg("--glob").arg(glob);
-        }
-        for glob in exclude {
-            command.arg("--glob").arg(format!("!{glob}"));
-        }
-
-        command.arg(&pattern).arg(&target);
-
-        let output = match command.output().await {
-            Ok(output) => output,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return "错误：未找到 ripgrep (`rg`) 可执行文件，无法执行 grep 搜索".to_string();
-            }
-            Err(error) => return format!("执行 grep 搜索失败：{error}"),
+        let paths =
+            non_empty_string_array_arg(args, "paths").unwrap_or_else(|| vec![".".to_string()]);
+        let options = GrepOptions {
+            include: string_array_arg(args, "include").unwrap_or_default(),
+            exclude: string_array_arg(args, "exclude").unwrap_or_default(),
+            match_mode: string_arg(args, "match_mode").unwrap_or_else(|| "regex".to_string()),
+            case_sensitive: args.get("case_sensitive").and_then(Value::as_bool),
+            word: boolish_arg(args, "word").unwrap_or(false),
+            context_before: usize_arg(args, "context_before").unwrap_or(0),
+            context_after: usize_arg(args, "context_after").unwrap_or(0),
+            max_matches_per_file: usize_arg(args, "max_matches_per_file").unwrap_or(20).max(1),
+            max_files: usize_arg(args, "max_files").unwrap_or(25).max(1),
+            files_with_matches: boolish_arg(args, "files_with_matches").unwrap_or(false),
+            include_hidden: boolish_arg(args, "include_hidden").unwrap_or(false),
+            no_ignore: boolish_arg(args, "no_ignore").unwrap_or(false),
         };
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let status = output.status.code().unwrap_or_default();
-        if status != 0 && status != 1 {
-            if stderr.is_empty() {
-                return format!("grep 搜索失败，退出状态：{}", output.status);
+        let queries = patterns
+            .iter()
+            .flat_map(|pattern| {
+                paths
+                    .iter()
+                    .map(move |path| (pattern.clone(), path.clone()))
+            })
+            .collect::<Vec<_>>();
+        let sections = join_all(queries.into_iter().map(|(pattern, path)| {
+            let options = &options;
+            async move {
+                (
+                    format!("grep path={path} pattern={pattern}"),
+                    run_grep_query(&pattern, &path, options, context).await,
+                )
             }
-            return format!("grep 搜索失败：{stderr}\n\n[退出状态：{}]", output.status);
-        }
+        }))
+        .await;
 
-        let rendered = render_grep_stdout(&stdout, max_files, files_with_matches);
-        if rendered.is_empty() {
-            return format!("未找到匹配内容：{pattern}");
-        }
-        rendered
+        render_single_or_grouped_sections(sections)
     }
+}
+
+fn render_single_or_grouped_sections(sections: Vec<(String, String)>) -> String {
+    if sections.len() == 1 {
+        sections
+            .into_iter()
+            .next()
+            .map(|(_, content)| content)
+            .unwrap_or_default()
+    } else {
+        render_labeled_sections(sections)
+    }
+}
+
+fn run_glob_query(path: &str, pattern: &str, max_results: usize, context: &ToolContext) -> String {
+    let dir_path = match resolve_path(context, path) {
+        Ok(path) => path,
+        Err(message) => return message,
+    };
+    let search_pattern = dir_path.join(pattern);
+    let Some(search_pattern) = search_pattern.to_str() else {
+        return "错误：glob 模式不是有效的 UTF-8".to_string();
+    };
+
+    let mut matches = Vec::new();
+    for entry in match glob(search_pattern) {
+        Ok(entries) => entries,
+        Err(error) => return format!("glob 模式无效：{error}"),
+    } {
+        match entry {
+            Ok(path) if !path.file_name().is_some_and(is_noise) => matches.push(path),
+            Ok(_) => {}
+            Err(error) => return format!("glob 搜索失败：{error}"),
+        }
+    }
+    matches.sort_by_key(|path| {
+        fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    matches.reverse();
+
+    if matches.is_empty() {
+        return format!("未找到匹配文件：{}", dir_path.display());
+    }
+
+    let mut lines = matches
+        .iter()
+        .take(max_results)
+        .map(|path| rel(path, &dir_path))
+        .collect::<Vec<_>>();
+    if matches.len() > max_results {
+        lines.push(format!("...（已显示 {} / {}）", max_results, matches.len()));
+    }
+    lines.join("\n")
+}
+
+async fn run_grep_query(
+    pattern: &str,
+    path: &str,
+    options: &GrepOptions,
+    context: &ToolContext,
+) -> String {
+    let search_path = match resolve_path(context, path) {
+        Ok(path) => path,
+        Err(message) => return message,
+    };
+    if !search_path.exists() {
+        return format!("错误：搜索路径不存在：{path}");
+    }
+
+    let workspace = match context.workspace.canonicalize() {
+        Ok(path) => path,
+        Err(error) => return format!("解析工作区路径失败：{error}"),
+    };
+    let target = workspace_relative_target(&workspace, &search_path);
+
+    let mut command = Command::new("rg");
+    command
+        .arg("--json")
+        .arg("--line-number")
+        .arg("--color")
+        .arg("never")
+        .arg("--max-count")
+        .arg(options.max_matches_per_file.to_string())
+        .current_dir(&workspace)
+        .kill_on_drop(true);
+
+    match options.case_sensitive {
+        Some(true) => {
+            command.arg("--case-sensitive");
+        }
+        Some(false) => {
+            command.arg("--ignore-case");
+        }
+        None => {
+            command.arg("--smart-case");
+        }
+    }
+
+    if options.match_mode == "fixed" {
+        command.arg("--fixed-strings");
+    }
+    if options.word {
+        command.arg("--word-regexp");
+    }
+    if options.include_hidden {
+        command.arg("--hidden");
+    }
+    if options.no_ignore {
+        command.arg("--no-ignore");
+    }
+    if options.context_before == options.context_after && options.context_before > 0 {
+        command
+            .arg("--context")
+            .arg(options.context_before.to_string());
+    } else {
+        if options.context_before > 0 {
+            command
+                .arg("--before-context")
+                .arg(options.context_before.to_string());
+        }
+        if options.context_after > 0 {
+            command
+                .arg("--after-context")
+                .arg(options.context_after.to_string());
+        }
+    }
+
+    for glob in &options.include {
+        command.arg("--glob").arg(glob);
+    }
+    for glob in &options.exclude {
+        command.arg("--glob").arg(format!("!{glob}"));
+    }
+
+    command.arg(pattern).arg(&target);
+
+    let output = match command.output().await {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return "错误：未找到 ripgrep (`rg`) 可执行文件，无法执行 grep 搜索".to_string();
+        }
+        Err(error) => return format!("执行 grep 搜索失败：{error}"),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let status = output.status.code().unwrap_or_default();
+    if status != 0 && status != 1 {
+        if stderr.is_empty() {
+            return format!("grep 搜索失败，退出状态：{}", output.status);
+        }
+        return format!("grep 搜索失败：{stderr}\n\n[退出状态：{}]", output.status);
+    }
+
+    let rendered = render_grep_stdout(&stdout, options.max_files, options.files_with_matches);
+    if rendered.is_empty() {
+        return format!("未找到匹配内容：{pattern}");
+    }
+    rendered
 }
 
 fn workspace_relative_target(workspace: &std::path::Path, target: &std::path::Path) -> String {
@@ -447,7 +561,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::GrepTool;
+    use super::{GlobTool, GrepTool};
     use crate::agent::tools::context::ToolContext;
     use crate::agent::tools::registry::AgentTool;
 
@@ -532,5 +646,76 @@ mod tests {
         assert!(!output.contains("2:"));
 
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[tokio::test]
+    async fn glob_groups_multiple_patterns() {
+        let workspace = create_workspace();
+        let context = ToolContext {
+            workspace: workspace.clone(),
+            exec_timeout_secs: 30,
+            restrict_to_workspace: true,
+        };
+
+        let output = GlobTool
+            .execute(
+                &json!({
+                    "patterns": ["src/**/*.rs", "*.md"],
+                    "max_results": 20
+                }),
+                &context,
+            )
+            .await;
+
+        assert!(output.contains("## glob path=. pattern=src/**/*.rs"));
+        assert!(output.contains("src/search.rs"));
+        assert!(output.contains("## glob path=. pattern=*.md"));
+        assert!(output.contains("README.md"));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[tokio::test]
+    async fn grep_groups_multiple_patterns() {
+        if !ripgrep_available() {
+            return;
+        }
+
+        let workspace = create_workspace();
+        let context = ToolContext {
+            workspace: workspace.clone(),
+            exec_timeout_secs: 30,
+            restrict_to_workspace: true,
+        };
+
+        let output = GrepTool
+            .execute(
+                &json!({
+                    "patterns": ["createD1HttpClient", "fn main"],
+                    "match_mode": "fixed",
+                    "max_files": 10
+                }),
+                &context,
+            )
+            .await;
+
+        assert!(output.contains("## grep path=. pattern=createD1HttpClient"));
+        assert!(output.contains("共 2 个文件 / 3 处匹配"));
+        assert!(output.contains("## grep path=. pattern=fn main"));
+        assert!(output.contains("src/search.rs"));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn search_tools_expose_paths_not_path() {
+        for schema in [GlobTool.parameters(), GrepTool.parameters()] {
+            let properties = schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .expect("schema properties");
+            assert!(properties.contains_key("paths"));
+            assert!(!properties.contains_key("path"));
+        }
     }
 }

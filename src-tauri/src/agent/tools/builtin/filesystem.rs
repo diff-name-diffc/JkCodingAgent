@@ -2,9 +2,11 @@ use std::fs;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use tokio::task;
 
 use super::common::{
-    boolish_arg, collect_entries, resolve_path, string_arg, usize_arg, with_result_mode_parameter,
+    boolish_arg, collect_entries, non_empty_string_array_arg, render_labeled_sections,
+    resolve_path, string_arg, usize_arg, with_result_mode_parameter,
 };
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
@@ -45,11 +47,16 @@ impl AgentTool for ReadFileTool {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "要读取的文件路径" },
+                    "paths": {
+                        "type": "array",
+                        "description": "要读取的文件路径列表。即使只读取一个文件，也必须传单元素数组。传入多个路径时，结果会按文件路径分段返回。",
+                        "minItems": 1,
+                        "items": { "type": "string" }
+                    },
                     "offset": { "type": "integer", "description": "起始行号，从 1 开始，默认 1" , "minimum": 1 },
                     "limit": { "type": "integer", "description": "最多读取多少行，默认 2000", "minimum": 1 }
                 },
-                "required": ["path"]
+                "required": ["paths"]
             }),
             "full",
             "分析代码、配置或精确文本时优先保留完整结果；只看概览时改用 summary。",
@@ -57,36 +64,30 @@ impl AgentTool for ReadFileTool {
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        let Some(path) = string_arg(args, "path") else {
-            return "错误：缺少必填参数 path".to_string();
+        let Some(paths) = non_empty_string_array_arg(args, "paths") else {
+            return "错误：缺少必填参数 paths，且 paths 必须是非空字符串数组".to_string();
         };
         let offset = usize_arg(args, "offset").unwrap_or(1).max(1);
         let limit = usize_arg(args, "limit").unwrap_or(2000).max(1);
+        let context = context.clone();
 
-        let file_path = match resolve_path(context, &path) {
-            Ok(path) => path,
-            Err(message) => return message,
-        };
-        if !file_path.exists() {
-            return format!("错误：文件不存在：{path}");
-        }
-        if file_path.is_dir() {
-            return format!("错误：{path} 是目录，不是文件");
-        }
+        match task::spawn_blocking(move || {
+            let sections = paths
+                .iter()
+                .map(|path| {
+                    (
+                        format!("read_file path={path}"),
+                        read_file_lines(path, offset, limit, &context),
+                    )
+                })
+                .collect::<Vec<_>>();
 
-        match fs::read_to_string(&file_path) {
-            Ok(content) => {
-                let start = offset.saturating_sub(1);
-                content
-                    .lines()
-                    .skip(start)
-                    .take(limit)
-                    .enumerate()
-                    .map(|(index, line)| format!("{}|{}", start + index + 1, line))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
-            Err(error) => format!("读取文件失败：{error}"),
+            render_single_or_grouped_sections(sections)
+        })
+        .await
+        {
+            Ok(output) => output,
+            Err(error) => format!("读取文件任务失败：{error}"),
         }
     }
 }
@@ -225,11 +226,16 @@ impl AgentTool for ListDirTool {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "要查看的目录路径" },
+                    "paths": {
+                        "type": "array",
+                        "description": "要查看的目录路径列表。即使只查看一个目录，也必须传单元素数组。传入多个路径时，结果会按目录路径分段返回。",
+                        "minItems": 1,
+                        "items": { "type": "string" }
+                    },
                     "recursive": { "type": "string", "description": "是否递归列出子目录内容，默认 false", "enum": ["true", "false"] },
                     "max_entries": { "type": "integer", "description": "最多返回多少条，默认 200", "minimum": 1 }
                 },
-                "required": ["path"]
+                "required": ["paths"]
             }),
             "full",
             "调查目录层级、文件名或结构差异时优先保留完整结果；只看概览时改用 summary。",
@@ -237,25 +243,186 @@ impl AgentTool for ListDirTool {
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        let Some(path) = string_arg(args, "path") else {
-            return "错误：缺少必填参数 path".to_string();
+        let Some(paths) = non_empty_string_array_arg(args, "paths") else {
+            return "错误：缺少必填参数 paths，且 paths 必须是非空字符串数组".to_string();
         };
         let recursive = boolish_arg(args, "recursive").unwrap_or(false);
         let max_entries = usize_arg(args, "max_entries").unwrap_or(200).max(1);
+        let context = context.clone();
 
-        let dir_path = match resolve_path(context, &path) {
-            Ok(path) => path,
-            Err(message) => return message,
-        };
-        if !dir_path.exists() {
-            return format!("错误：目录不存在：{path}");
-        }
-        if !dir_path.is_dir() {
-            return format!("错误：{path} 不是目录");
-        }
+        match task::spawn_blocking(move || {
+            let sections = paths
+                .iter()
+                .map(|path| {
+                    (
+                        format!("list_dir path={path}"),
+                        list_dir_entries(path, recursive, max_entries, &context),
+                    )
+                })
+                .collect::<Vec<_>>();
 
-        let mut entries = Vec::new();
-        collect_entries(&dir_path, &dir_path, recursive, max_entries, &mut entries);
-        entries.join("\n")
+            render_single_or_grouped_sections(sections)
+        })
+        .await
+        {
+            Ok(output) => output,
+            Err(error) => format!("读取目录任务失败：{error}"),
+        }
+    }
+}
+
+fn render_single_or_grouped_sections(sections: Vec<(String, String)>) -> String {
+    if sections.len() == 1 {
+        sections
+            .into_iter()
+            .next()
+            .map(|(_, content)| content)
+            .unwrap_or_default()
+    } else {
+        render_labeled_sections(sections)
+    }
+}
+
+fn read_file_lines(path: &str, offset: usize, limit: usize, context: &ToolContext) -> String {
+    let file_path = match resolve_path(context, path) {
+        Ok(path) => path,
+        Err(message) => return message,
+    };
+    if !file_path.exists() {
+        return format!("错误：文件不存在：{path}");
+    }
+    if file_path.is_dir() {
+        return format!("错误：{path} 是目录，不是文件");
+    }
+
+    match fs::read_to_string(&file_path) {
+        Ok(content) => {
+            let start = offset.saturating_sub(1);
+            content
+                .lines()
+                .skip(start)
+                .take(limit)
+                .enumerate()
+                .map(|(index, line)| format!("{}|{}", start + index + 1, line))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        Err(error) => format!("读取文件失败：{error}"),
+    }
+}
+
+fn list_dir_entries(
+    path: &str,
+    recursive: bool,
+    max_entries: usize,
+    context: &ToolContext,
+) -> String {
+    let dir_path = match resolve_path(context, path) {
+        Ok(path) => path,
+        Err(message) => return message,
+    };
+    if !dir_path.exists() {
+        return format!("错误：目录不存在：{path}");
+    }
+    if !dir_path.is_dir() {
+        return format!("错误：{path} 不是目录");
+    }
+
+    let mut entries = Vec::new();
+    collect_entries(&dir_path, &dir_path, recursive, max_entries, &mut entries);
+    entries.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use serde_json::json;
+
+    use super::{ListDirTool, ReadFileTool};
+    use crate::agent::tools::context::ToolContext;
+    use crate::agent::tools::registry::AgentTool;
+
+    fn create_workspace() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-filesystem-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(root.join("src")).expect("create src");
+        fs::create_dir_all(root.join("docs")).expect("create docs");
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write main");
+        fs::write(root.join("docs/README.md"), "# Docs\n").expect("write docs");
+        root
+    }
+
+    fn tool_context(workspace: std::path::PathBuf) -> ToolContext {
+        ToolContext {
+            workspace,
+            exec_timeout_secs: 30,
+            restrict_to_workspace: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn list_dir_groups_multiple_paths() {
+        let workspace = create_workspace();
+        let context = tool_context(workspace.clone());
+
+        let output = ListDirTool
+            .execute(
+                &json!({
+                    "paths": ["src", "docs"],
+                    "max_entries": 20
+                }),
+                &context,
+            )
+            .await;
+
+        assert!(output.contains("## list_dir path=src"));
+        assert!(output.contains("[file] main.rs"));
+        assert!(output.contains("## list_dir path=docs"));
+        assert!(output.contains("[file] README.md"));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[tokio::test]
+    async fn read_file_groups_multiple_paths() {
+        let workspace = create_workspace();
+        let context = tool_context(workspace.clone());
+
+        let output = ReadFileTool
+            .execute(
+                &json!({
+                    "paths": ["src/main.rs", "docs/README.md"],
+                    "limit": 5
+                }),
+                &context,
+            )
+            .await;
+
+        assert!(output.contains("## read_file path=src/main.rs"));
+        assert!(output.contains("1|fn main() {}"));
+        assert!(output.contains("## read_file path=docs/README.md"));
+        assert!(output.contains("1|# Docs"));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn read_only_file_tools_expose_paths_only() {
+        for schema in [ReadFileTool.parameters(), ListDirTool.parameters()] {
+            let properties = schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .expect("schema properties");
+            assert!(properties.contains_key("paths"));
+            assert!(!properties.contains_key("path"));
+            assert_eq!(
+                schema.get("required"),
+                Some(&json!(["paths"])),
+                "paths should be the only required path field"
+            );
+        }
     }
 }

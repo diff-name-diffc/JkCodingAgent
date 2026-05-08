@@ -77,15 +77,14 @@ fn should_refresh_prompt_prefix(prompt_prefix: &str) -> bool {
 }
 
 /// Creates `.jkcodingagent/config.toml` in the project directory if it doesn't already exist.
-/// Also ensures `.jkcodingagent/attachments/` and `.jkcodingagent/mcp.json` exist.
+/// Also ensures `.jkcodingagent/mcp.json` exists.
 /// Returns the parsed config.
 #[tauri::command]
 pub fn init_project_config(project_path: String) -> Result<ProjectConfig, String> {
     let config_dir = Path::new(&project_path).join(".jkcodingagent");
     let config_path = config_dir.join("config.toml");
-    let attachments_dir = config_dir.join("attachments");
 
-    fs::create_dir_all(&attachments_dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
     ensure_project_mcp_file(&project_path)?;
 
     if !config_path.exists() {

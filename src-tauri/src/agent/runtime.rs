@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::future::join_all;
+use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::Value;
 use tauri::ipc::Channel;
@@ -169,6 +171,11 @@ pub struct DispatcherAgent {
     vision_model: Mutex<String>,
     tools: ToolRegistry,
     project_mcp_registry: ProjectMcpRegistry,
+    subprocesses: Arc<DispatcherSubprocessRegistry>,
+}
+
+#[derive(Default)]
+pub(crate) struct DispatcherSubprocessRegistry {
     subprocesses: Mutex<Vec<RegisteredSubprocess>>,
 }
 
@@ -188,6 +195,7 @@ struct RegisteredSubprocess {
     agent: String,
     description: String,
     phase: RegisteredSubprocessPhase,
+    force_idle: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -366,8 +374,87 @@ impl ProtocolBatchState {
     }
 }
 
+impl DispatcherSubprocessRegistry {
+    pub(crate) fn register(
+        &self,
+        workspace_id: &str,
+        task_id: &str,
+        dispatch_id: &str,
+        agent: &str,
+        description: &str,
+    ) -> Arc<AtomicBool> {
+        let mut subprocesses = self.subprocesses.lock();
+        let force_idle = subprocesses
+            .iter()
+            .find(|item| item.task_id == task_id)
+            .map(|item| Arc::clone(&item.force_idle))
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+
+        subprocesses.retain(|item| !(item.workspace_id == workspace_id && item.agent == agent));
+        subprocesses.push(RegisteredSubprocess {
+            workspace_id: workspace_id.to_string(),
+            task_id: task_id.to_string(),
+            dispatch_id: dispatch_id.to_string(),
+            agent: agent.to_string(),
+            description: description.to_string(),
+            phase: RegisteredSubprocessPhase::Running,
+            force_idle: Arc::clone(&force_idle),
+        });
+        force_idle
+    }
+
+    pub(crate) fn mark_round_completed(&self, task_id: &str) {
+        self.update_phase(task_id, RegisteredSubprocessPhase::RoundCompleted);
+    }
+
+    pub(crate) fn mark_running(&self, task_id: &str) {
+        self.update_phase(task_id, RegisteredSubprocessPhase::Running);
+    }
+
+    pub(crate) fn mark_stopped(&self, task_id: &str) {
+        self.update_phase(task_id, RegisteredSubprocessPhase::Stopped);
+    }
+
+    pub(crate) fn mark_exit_requested(&self, task_id: &str) {
+        self.update_phase(task_id, RegisteredSubprocessPhase::ExitRequested);
+    }
+
+    pub(crate) fn mark_finished(&self, task_id: &str) {
+        let mut subprocesses = self.subprocesses.lock();
+        subprocesses.retain(|item| item.task_id != task_id);
+    }
+
+    pub(crate) fn force_idle(&self, task_id: &str) {
+        if let Some(item) = self
+            .subprocesses
+            .lock()
+            .iter()
+            .find(|item| item.task_id == task_id)
+        {
+            item.force_idle.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn is_exit_requested(&self, task_id: &str) -> bool {
+        self.subprocesses.lock().iter().any(|item| {
+            item.task_id == task_id && item.phase == RegisteredSubprocessPhase::ExitRequested
+        })
+    }
+
+    fn update_phase(&self, task_id: &str, phase: RegisteredSubprocessPhase) {
+        let mut subprocesses = self.subprocesses.lock();
+        if let Some(item) = subprocesses.iter_mut().find(|item| item.task_id == task_id) {
+            item.phase = phase;
+        }
+    }
+}
+
 impl DispatcherAgent {
-    pub fn new(config: DispatcherAgentConfig, project_mcp_registry: ProjectMcpRegistry) -> Self {
+    pub fn new(
+        config: DispatcherAgentConfig,
+        project_mcp_registry: ProjectMcpRegistry,
+        subprocesses: Arc<DispatcherSubprocessRegistry>,
+    ) -> Self {
         let provider = OpenAiCompatProvider::new(
             config.api_key.clone(),
             config.api_base.clone(),
@@ -383,12 +470,12 @@ impl DispatcherAgent {
             provider: Mutex::new(provider),
             tools: ToolRegistry::default_tools(project_mcp_registry.clone()),
             project_mcp_registry,
-            subprocesses: Mutex::new(Vec::new()),
+            subprocesses,
         }
     }
 
     pub fn apply_settings(&self, settings: &DispatcherSettingsRecord) {
-        let mut provider = self.provider.lock().unwrap();
+        let mut provider = self.provider.lock();
         *provider = OpenAiCompatProvider::new(
             if settings.api_key.is_empty() {
                 self.config.api_key.clone()
@@ -408,13 +495,13 @@ impl DispatcherAgent {
             self.config.max_tokens,
             self.config.temperature,
         );
-        let mut summary_model = self.summary_model.lock().unwrap();
+        let mut summary_model = self.summary_model.lock();
         *summary_model = if settings.summary_model.trim().is_empty() {
             normalize_summary_model(&self.config.summary_model)
         } else {
             normalize_summary_model(&settings.summary_model)
         };
-        let mut vision_model = self.vision_model.lock().unwrap();
+        let mut vision_model = self.vision_model.lock();
         *vision_model = if settings.vision_model.trim().is_empty() {
             self.config.vision_model.trim().to_string()
         } else {
@@ -435,11 +522,11 @@ impl DispatcherAgent {
     }
 
     fn summary_model(&self) -> String {
-        self.summary_model.lock().unwrap().clone()
+        self.summary_model.lock().clone()
     }
 
     fn vision_model(&self) -> String {
-        self.vision_model.lock().unwrap().clone()
+        self.vision_model.lock().clone()
     }
 
     fn provider_for_messages(
@@ -479,43 +566,6 @@ impl DispatcherAgent {
         self.config.context_debug = value;
     }
 
-    pub fn register_subprocess(
-        &self,
-        workspace_id: &str,
-        task_id: &str,
-        dispatch_id: &str,
-        agent: &str,
-        description: &str,
-    ) {
-        let mut subprocesses = self.subprocesses.lock().unwrap();
-        subprocesses.retain(|item| !(item.workspace_id == workspace_id && item.agent == agent));
-        subprocesses.push(RegisteredSubprocess {
-            workspace_id: workspace_id.to_string(),
-            task_id: task_id.to_string(),
-            dispatch_id: dispatch_id.to_string(),
-            agent: agent.to_string(),
-            description: description.to_string(),
-            phase: RegisteredSubprocessPhase::Running,
-        });
-    }
-
-    pub fn mark_subprocess_round_completed(&self, task_id: &str) {
-        self.update_subprocess_phase(task_id, RegisteredSubprocessPhase::RoundCompleted);
-    }
-
-    pub fn mark_subprocess_running(&self, task_id: &str) {
-        self.update_subprocess_phase(task_id, RegisteredSubprocessPhase::Running);
-    }
-
-    pub fn mark_subprocess_stopped(&self, task_id: &str) {
-        self.update_subprocess_phase(task_id, RegisteredSubprocessPhase::Stopped);
-    }
-
-    pub fn mark_subprocess_finished(&self, task_id: &str) {
-        let mut subprocesses = self.subprocesses.lock().unwrap();
-        subprocesses.retain(|item| item.task_id != task_id);
-    }
-
     pub async fn run(
         &self,
         db: &DispatcherDb,
@@ -541,7 +591,7 @@ impl DispatcherAgent {
         let user = db.add_visible_message(workspace_id, "user", user_message)?;
         emit(&on_event, AgentEvent::UserMessage { message: user });
 
-        let provider = self.provider.lock().unwrap().clone();
+        let provider = self.provider.lock().clone();
         let reply = if provider.is_configured() {
             self.run_llm_loop(
                 db,
@@ -610,7 +660,7 @@ impl DispatcherAgent {
             return Ok(AgentTurn { reply, messages });
         }
 
-        let provider = self.provider.lock().unwrap().clone();
+        let provider = self.provider.lock().clone();
         let summary_model = self.summary_model();
         let summarized_dispatch_result = match tokio::select! {
             _ = wait_for_cancellation(&mut cancel_rx) => {
@@ -775,9 +825,7 @@ impl DispatcherAgent {
             let streamed_text = Arc::new(Mutex::new(String::new()));
             let streamed_text_ref = Arc::clone(&streamed_text);
             let on_delta = move |delta: &str| {
-                let mut partial = streamed_text_ref
-                    .lock()
-                    .expect("dispatcher streamed_text poisoned");
+                let mut partial = streamed_text_ref.lock();
                 partial.push_str(delta);
                 let _ = event_ref.send(AgentEvent::AssistantDelta {
                     message_id: msg_id_ref.clone(),
@@ -788,10 +836,7 @@ impl DispatcherAgent {
             let mut stream_cancel_rx = cancel_rx.clone();
             let response = tokio::select! {
                 _ = wait_for_cancellation(&mut stream_cancel_rx) => {
-                    let partial = streamed_text
-                        .lock()
-                        .expect("dispatcher streamed_text poisoned")
-                        .clone();
+                    let partial = streamed_text.lock().clone();
                     return self.emit_stop_and_finish(db, workspace_id, on_event, &partial);
                 }
                 response = request_provider.chat_stream(
@@ -1305,8 +1350,8 @@ impl DispatcherAgent {
 
     fn active_subprocesses_for_workspace(&self, workspace_id: &str) -> Vec<RegisteredSubprocess> {
         self.subprocesses
+            .subprocesses
             .lock()
-            .unwrap()
             .iter()
             .filter(|item| item.workspace_id == workspace_id)
             .cloned()
@@ -1330,15 +1375,8 @@ impl DispatcherAgent {
             .collect()
     }
 
-    fn update_subprocess_phase(&self, task_id: &str, phase: RegisteredSubprocessPhase) {
-        let mut subprocesses = self.subprocesses.lock().unwrap();
-        if let Some(item) = subprocesses.iter_mut().find(|item| item.task_id == task_id) {
-            item.phase = phase;
-        }
-    }
-
     fn mark_agent_exit_requested(&self, workspace_id: &str, agent: &str) {
-        let mut subprocesses = self.subprocesses.lock().unwrap();
+        let mut subprocesses = self.subprocesses.subprocesses.lock();
         if let Some(item) = subprocesses
             .iter_mut()
             .find(|item| item.workspace_id == workspace_id && item.agent == agent)
@@ -1997,6 +2035,9 @@ fn render_available_tools_block(tool_definitions: &[crate::agent::llm::ToolDefin
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
     use super::{
         build_protocol_waiting_message, collect_recent_exploration_entries, readonly_tool_run_end,
         should_include_latest_user_goal, DispatchAgent, PlannedSubprocessState, ProtocolBatchState,
@@ -2030,6 +2071,7 @@ mod tests {
             agent: "claude".to_string(),
             description: "desc".to_string(),
             phase: RegisteredSubprocessPhase::RoundCompleted,
+            force_idle: Arc::new(AtomicBool::new(false)),
         }]);
         state.record_exit("claude");
         match state.by_agent.get("claude") {

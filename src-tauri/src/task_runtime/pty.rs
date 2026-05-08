@@ -1,7 +1,5 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use std::fs;
 use std::io::Read;
-use std::path::Path;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -20,13 +18,6 @@ const PTY_IDLE_OUTPUT_MAX_BYTES: usize = 256 * 1024;
 /// 有界 channel 容量：满时 reader 线程阻塞，反压传播至 OS 内核 PTY 缓冲区，
 /// 最终使写入进程（Claude/Codex）的 write() 系统调用阻塞，从源头限流。
 const PTY_EMIT_CHANNEL_CAPACITY: usize = 32;
-
-fn task_attachments_dir(project_path: &str, task_id: &str) -> std::path::PathBuf {
-    Path::new(project_path)
-        .join(".jkcodingagent")
-        .join("attachments")
-        .join(task_id)
-}
 
 fn has_task_session(app: &AppHandle, task_id: &str, is_codex: bool) -> bool {
     let tm = app.state::<TaskManager>();
@@ -51,7 +42,6 @@ fn wait_for_session(app: &AppHandle, task_id: &str, is_codex: bool) {
 fn finalize_task_exit(
     app: &AppHandle,
     task_id: &str,
-    project_path: &str,
     exit_ok: bool,
     exit_code: Option<u32>,
     wait_error: Option<String>,
@@ -84,7 +74,6 @@ fn finalize_task_exit(
             "task-status",
             serde_json::json!({ "task_id": task_id, "status": status }),
         );
-        let _ = fs::remove_dir_all(task_attachments_dir(project_path, task_id));
         return;
     }
 
@@ -96,8 +85,6 @@ fn finalize_task_exit(
         serde_json::json!({ "task_id": task_id, "status": status })
     };
     let _ = app.emit("task-status", payload);
-
-    let _ = fs::remove_dir_all(task_attachments_dir(project_path, task_id));
 }
 
 fn task_exit_status(exit_ok: bool) -> &'static str {
@@ -130,46 +117,8 @@ fn request_task_termination(
 
 fn termination_status_label(intent: TaskTerminationIntent) -> &'static str {
     match intent {
-        TaskTerminationIntent::Cancelled => "cancelled",
         TaskTerminationIntent::Stopped => "stopped",
     }
-}
-
-fn save_task_images(
-    project_path: &str,
-    task_id: &str,
-    images: &[String],
-) -> Result<Vec<String>, String> {
-    if images.is_empty() {
-        return Ok(vec![]);
-    }
-    let attachments_dir = task_attachments_dir(project_path, task_id);
-    fs::create_dir_all(&attachments_dir).map_err(|e| e.to_string())?;
-    let mut paths = Vec::new();
-    for (i, data_url) in images.iter().enumerate() {
-        // 解析 "data:image/png;base64,<data>" 格式
-        let comma = data_url.find(',').ok_or("invalid image data URL")?;
-        let header = &data_url[..comma];
-        let b64 = &data_url[comma + 1..];
-        let ext = if header.contains("jpeg") || header.contains("jpg") {
-            "jpg"
-        } else if header.contains("gif") {
-            "gif"
-        } else if header.contains("webp") {
-            "webp"
-        } else {
-            "png"
-        };
-        use base64::Engine;
-        let data = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .map_err(|e| e.to_string())?;
-        let filename = format!("{}.{}", i, ext);
-        let file_path = attachments_dir.join(&filename);
-        fs::write(&file_path, &data).map_err(|e| e.to_string())?;
-        paths.push(file_path.to_string_lossy().into_owned());
-    }
-    Ok(paths)
 }
 
 // ── 共享 PTY 辅助函数 ────────────────────────────────────────────────────────
@@ -342,7 +291,7 @@ fn spawn_pty_reader(
 }
 
 /// 在后台线程中轮询子进程退出状态，退出后调用 finalize_task_exit。
-fn spawn_exit_monitor(app: AppHandle, task_id: String, project_path: String, is_codex: bool) {
+fn spawn_exit_monitor(app: AppHandle, task_id: String, is_codex: bool) {
     tokio::task::spawn_blocking(move || loop {
         let exit_status = {
             let tm = app.state::<TaskManager>();
@@ -370,10 +319,10 @@ fn spawn_exit_monitor(app: AppHandle, task_id: String, project_path: String, is_
                     };
                     // 等待会话注册完成
                     wait_for_session(&app, &task_id, is_codex);
-                    finalize_task_exit(&app, &task_id, &project_path, exit_ok, exit_code, None);
+                    finalize_task_exit(&app, &task_id, exit_ok, exit_code, None);
                 }
                 Err(error) => {
-                    finalize_task_exit(&app, &task_id, &project_path, false, None, Some(error));
+                    finalize_task_exit(&app, &task_id, false, None, Some(error));
                 }
             }
             return;
@@ -406,19 +355,20 @@ fn build_claude_cmd(agent_bin: &str, permission_mode: &str) -> CommandBuilder {
 // ── Tauri 命令 ───────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn run_task(
+pub async fn start_dispatcher_subprocess(
     app: AppHandle,
     task_manager: State<'_, TaskManager>,
-    _dispatcher_state: State<'_, DispatcherState>,
+    dispatcher_state: State<'_, DispatcherState>,
     task_id: String,
     project_path: String,
     prompt: String,
     agent: String,
     permission_mode: String,
-    images: Option<Vec<String>>,
     cols: Option<u16>,
     rows: Option<u16>,
-    dispatcher_dispatch_id: Option<String>,
+    dispatcher_dispatch_id: String,
+    dispatcher_session_id: String,
+    dispatcher_description: String,
 ) -> Result<(), String> {
     if agent != "claude" && agent != "codex" {
         return Err(format!("未知 Agent：{agent}"));
@@ -433,26 +383,12 @@ pub async fn run_task(
         })
         .map_err(|e| e.to_string())?;
 
-    // 将图片保存至 .jkcodingagent/attachments/ 并获取文件路径
-    let image_paths = save_task_images(&project_path, &task_id, &images.unwrap_or_default())?;
-
     // 若配置了项目级 prompt_prefix，则拼接到提示词前
     let config = read_project_config(project_path.clone())?;
-    let base_prompt = if config.agent.prompt_prefix.is_empty() {
+    let final_prompt = if config.agent.prompt_prefix.is_empty() {
         prompt.clone()
     } else {
         format!("{}\n{}", config.agent.prompt_prefix, prompt)
-    };
-
-    // 将图片路径追加到提示词，供 Claude Code 通过文件工具读取
-    let final_prompt = if image_paths.is_empty() {
-        base_prompt
-    } else {
-        format!(
-            "{}\n\n[Attached images]\n{}",
-            base_prompt,
-            image_paths.join("\n")
-        )
     };
 
     let agent_bin = get_agent_bin_checked(&agent)?;
@@ -494,10 +430,6 @@ pub async fn run_task(
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     task_manager.insert_pty_handles(&task_id, pair.master, writer, child);
-    task_manager
-        .task_project_paths
-        .lock()
-        .insert(task_id.clone(), project_path.clone());
 
     let _ = app.emit(
         "task-status",
@@ -516,21 +448,15 @@ pub async fn run_task(
     );
     // Register dispatcher subprocess BEFORE spawning PTY reader to avoid race condition.
     // This must happen synchronously before spawn_pty_reader so the idle callback is attached.
-    let is_dispatcher_sub = dispatcher_dispatch_id.is_some();
-    let force_idle = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let force_idle = dispatcher_state.register_subprocess(
+        &dispatcher_session_id,
+        &task_id,
+        &dispatcher_dispatch_id,
+        &agent,
+        &dispatcher_description,
+    );
 
-    if let Some(ref dispatch_id) = dispatcher_dispatch_id {
-        task_manager
-            .dispatcher_subprocess_ids
-            .lock()
-            .insert(task_id.clone(), dispatch_id.clone());
-        task_manager
-            .dispatcher_force_idle_flags
-            .lock()
-            .insert(task_id.clone(), force_idle.clone());
-    }
-
-    let idle_cb: Option<Box<dyn Fn(String) + Send>> = if is_dispatcher_sub {
+    let idle_cb: Option<Box<dyn Fn(String) + Send>> = {
         let app_idle = app.clone();
         let tid_idle = task_id.clone();
         Some(Box::new(move |output: String| {
@@ -542,8 +468,6 @@ pub async fn run_task(
                 }),
             );
         }))
-    } else {
-        None
     };
 
     spawn_pty_reader(
@@ -559,23 +483,11 @@ pub async fn run_task(
         Some(session_tx),
         idle_cb,
         None,
-        if is_dispatcher_sub {
-            Some(force_idle)
-        } else {
-            None
-        },
+        Some(force_idle),
     );
-    spawn_exit_monitor(app, task_id, project_path, is_codex);
+    spawn_exit_monitor(app, task_id, is_codex);
 
     Ok(())
-}
-
-#[tauri::command]
-pub async fn cancel_task(
-    task_manager: State<'_, TaskManager>,
-    task_id: String,
-) -> Result<(), String> {
-    request_task_termination(&task_manager, &task_id, TaskTerminationIntent::Cancelled)
 }
 
 #[tauri::command]
@@ -587,9 +499,10 @@ pub async fn stop_task(
 }
 
 #[tauri::command]
-pub async fn resume_task(
+pub async fn resume_dispatcher_subprocess(
     app: AppHandle,
     task_manager: State<'_, TaskManager>,
+    dispatcher_state: State<'_, DispatcherState>,
     task_id: String,
     project_path: String,
     agent: String,
@@ -598,6 +511,9 @@ pub async fn resume_task(
     permission_mode: String,
     cols: Option<u16>,
     rows: Option<u16>,
+    dispatcher_dispatch_id: String,
+    dispatcher_session_id: String,
+    dispatcher_description: String,
 ) -> Result<(), String> {
     if agent != "claude" && agent != "codex" {
         return Err(format!("未知 Agent：{agent}"));
@@ -633,10 +549,6 @@ pub async fn resume_task(
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     task_manager.insert_pty_handles(&task_id, pair.master, writer, child);
-    task_manager
-        .task_project_paths
-        .lock()
-        .insert(task_id.clone(), project_path.clone());
 
     let _ = app.emit(
         "task-status",
@@ -653,6 +565,26 @@ pub async fn resume_task(
         session_id,
         is_codex,
     );
+    let force_idle = dispatcher_state.register_subprocess(
+        &dispatcher_session_id,
+        &task_id,
+        &dispatcher_dispatch_id,
+        &agent,
+        &dispatcher_description,
+    );
+    let idle_cb: Option<Box<dyn Fn(String) + Send>> = {
+        let app_idle = app.clone();
+        let tid_idle = task_id.clone();
+        Some(Box::new(move |output: String| {
+            let _ = app_idle.emit(
+                "dispatcher-subprocess-idle",
+                serde_json::json!({
+                    "task_id": tid_idle,
+                    "output": output
+                }),
+            );
+        }))
+    };
     spawn_pty_reader(
         app.clone(),
         task_id.clone(),
@@ -664,11 +596,11 @@ pub async fn resume_task(
         },
         reader,
         None,
+        idle_cb,
         None,
-        None,
-        None,
+        Some(force_idle),
     );
-    spawn_exit_monitor(app, task_id, project_path, is_codex);
+    spawn_exit_monitor(app, task_id, is_codex);
 
     Ok(())
 }
@@ -776,14 +708,6 @@ pub async fn kill_shell(
 mod tests {
     use super::{task_exit_failure_reason, task_exit_status, termination_status_label};
     use crate::shared::TaskTerminationIntent;
-
-    #[test]
-    fn termination_status_label_maps_cancelled() {
-        assert_eq!(
-            termination_status_label(TaskTerminationIntent::Cancelled),
-            "cancelled"
-        );
-    }
 
     #[test]
     fn termination_status_label_maps_stopped() {

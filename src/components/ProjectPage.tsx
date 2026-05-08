@@ -88,7 +88,7 @@ export function ProjectPage({
   allProjects = [],
   tasks,
   getTaskRestoreState,
-  onSubmitTask,
+  onStartSubProcess,
   onInput,
   onResize,
   onRegisterTerminal,
@@ -113,16 +113,13 @@ export function ProjectPage({
   allProjects?: Project[];
   tasks: Task[];
   getTaskRestoreState: (taskId: string) => { initialData?: string; initialSnapshot?: string };
-  onSubmitTask: (task: {
+  onStartSubProcess: (task: {
     prompt: string;
     agent: AgentType;
     permissionMode: PermissionMode;
-    images: string[];
-    immediate: boolean;
-    hidden?: boolean;
-    dispatcherDispatchId?: string;
-    dispatcherSessionId?: string;
-    dispatcherDescription?: string;
+    dispatcherDispatchId: string;
+    dispatcherSessionId: string;
+    dispatcherDescription: string;
   }) => string;
   onStopTask: (taskId: string) => Promise<void>;
   onResumeTask: (task: Task) => Promise<void>;
@@ -331,13 +328,10 @@ export function ProjectPage({
       permissionMode: string,
       sessionId: string,
     ) => {
-      const taskId = onSubmitTask({
+      const taskId = onStartSubProcess({
         prompt: taskPrompt,
         agent,
         permissionMode: (permissionMode as PermissionMode) || "full_access",
-        images: [],
-        immediate: true,
-        hidden: true,
         dispatcherDispatchId: dispatchId,
         dispatcherSessionId: sessionId,
         dispatcherDescription: description,
@@ -354,15 +348,8 @@ export function ProjectPage({
       idleInjectedTaskIdsRef.current.delete(taskId);
       closedSubprocessTaskIdsRef.current.delete(taskId);
       onRetainTaskBuffers([taskId]);
-      invoke("dispatcher_register_subprocess", {
-        workspaceId: sessionId,
-        taskId,
-        dispatchId,
-        agent,
-        description,
-      }).catch(console.error);
     },
-    [onRetainTaskBuffers, onSubmitTask],
+    [onRetainTaskBuffers, onStartSubProcess],
   );
 
   // Monitor task completion for subprocesses → inject result back

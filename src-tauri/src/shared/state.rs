@@ -1,6 +1,6 @@
 use parking_lot::Mutex;
 use portable_pty::{Child, ExitStatus, MasterPty, PtySize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
 
@@ -12,7 +12,6 @@ pub(crate) type SharedChildHandle = Arc<Mutex<Box<dyn Child + Send + Sync>>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TaskTerminationIntent {
-    Cancelled,
     Stopped,
 }
 
@@ -24,16 +23,7 @@ pub struct TaskManager {
     pub(crate) task_termination_intents: Mutex<HashMap<String, TaskTerminationIntent>>,
     pub(crate) codex_sessions: Mutex<HashMap<String, CodexSessionInfo>>,
     pub(crate) claude_sessions: Mutex<HashMap<String, ClaudeSessionInfo>>,
-    pub(crate) claimed_session_paths: Mutex<HashSet<String>>,
-    /// Maps task_id -> dispatch_id for dispatcher-spawned subprocess tracking.
-    pub(crate) dispatcher_subprocess_ids: Mutex<HashMap<String, String>>,
-    /// Maps task_id -> project_path for dispatcher debug logging on subprocess interactions.
-    pub(crate) task_project_paths: Mutex<HashMap<String, String>>,
-    /// Subprocess task_ids exited by the dispatcher via /exit (skip result injection).
-    pub(crate) dispatcher_exited_subprocesses: Mutex<HashSet<String>>,
-    /// Maps task_id -> AtomicBool, used by session JSONL watcher to force idle emission.
-    pub(crate) dispatcher_force_idle_flags:
-        Mutex<HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    pub(crate) claimed_session_paths: Mutex<std::collections::HashSet<String>>,
 }
 
 impl TaskManager {
@@ -111,13 +101,11 @@ impl TaskManager {
         let mut masters = self.pty_masters.lock();
         let mut writers = self.pty_writers.lock();
         let mut children = self.child_handles.lock();
-        let mut project_paths = self.task_project_paths.lock();
         let mut intents = self.task_termination_intents.lock();
 
         masters.remove(id);
         writers.remove(id);
         children.remove(id);
-        project_paths.remove(id);
         intents.remove(id);
     }
 }

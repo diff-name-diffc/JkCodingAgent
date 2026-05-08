@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::agent::DispatcherState;
 use crate::shared::TaskManager;
 
 #[derive(Clone)]
@@ -176,22 +177,12 @@ fn watch_codex_session(
 
     let mut offset = 0u64;
     let mut partial = String::new();
-    let mut waiting_for_user = false;
-    let mut pending_confirmation_calls = HashSet::new();
-    let mut awaiting_user_reply = false;
+    let mut task_state = CodexTaskState::default();
 
     while is_task_active(&app, &task_id) {
         if let Ok(lines) = read_session_lines_since(&session_path, &mut offset, &mut partial) {
             for line in lines {
-                process_codex_session_line(
-                    &app,
-                    &task_id,
-                    &line,
-                    &project_path,
-                    &mut waiting_for_user,
-                    &mut pending_confirmation_calls,
-                    &mut awaiting_user_reply,
-                );
+                task_state.process_line(&app, &task_id, &line, &project_path);
             }
         }
 
@@ -206,183 +197,184 @@ fn watch_codex_session(
     }
 }
 
-fn process_codex_session_line(
-    app: &AppHandle,
-    task_id: &str,
-    line: &str,
-    project_path: &Path,
-    waiting_for_user: &mut bool,
-    pending_confirmation_calls: &mut HashSet<String>,
-    awaiting_user_reply: &mut bool,
-) {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-        return;
-    };
-
-    let event_type = value.get("type").and_then(serde_json::Value::as_str);
-    let payload = value.get("payload");
-
-    match event_type {
-        Some("response_item") => {
-            let payload_type = payload
-                .and_then(|item| item.get("type"))
-                .and_then(serde_json::Value::as_str);
-
-            match payload_type {
-                Some("function_call") => {
-                    let name = payload
-                        .and_then(|item| item.get("name"))
-                        .and_then(serde_json::Value::as_str);
-                    let call_id = payload
-                        .and_then(|item| item.get("call_id"))
-                        .and_then(serde_json::Value::as_str);
-                    let arguments = payload
-                        .and_then(|item| item.get("arguments"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-
-                    if name == Some("request_user_input") {
-                        *awaiting_user_reply = true;
-                    } else if name
-                        .map(|tool| tool_call_requires_confirmation(tool, arguments, project_path))
-                        .unwrap_or(false)
-                    {
-                        if let Some(call_id) = call_id {
-                            pending_confirmation_calls.insert(call_id.to_string());
-                        } else {
-                            *awaiting_user_reply = true;
-                        }
-                    }
-                    sync_waiting_for_user(
-                        app,
-                        task_id,
-                        waiting_for_user,
-                        pending_confirmation_calls,
-                        *awaiting_user_reply,
-                    );
-                }
-                Some("function_call_output") => {
-                    if let Some(call_id) = payload
-                        .and_then(|item| item.get("call_id"))
-                        .and_then(serde_json::Value::as_str)
-                    {
-                        pending_confirmation_calls.remove(call_id);
-                    }
-
-                    let output = payload
-                        .and_then(|item| item.get("output"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-                    if output.starts_with("aborted by user after") {
-                        *awaiting_user_reply = true;
-                    }
-                    sync_waiting_for_user(
-                        app,
-                        task_id,
-                        waiting_for_user,
-                        pending_confirmation_calls,
-                        *awaiting_user_reply,
-                    );
-                }
-                Some("custom_tool_call") => {
-                    let status = payload
-                        .and_then(|item| item.get("status"))
-                        .and_then(serde_json::Value::as_str);
-                    let call_id = payload
-                        .and_then(|item| item.get("call_id"))
-                        .and_then(serde_json::Value::as_str);
-
-                    if matches!(status, Some("completed") | Some("failed")) {
-                        if let Some(call_id) = call_id {
-                            pending_confirmation_calls.remove(call_id);
-                        }
-                        sync_waiting_for_user(
-                            app,
-                            task_id,
-                            waiting_for_user,
-                            pending_confirmation_calls,
-                            *awaiting_user_reply,
-                        );
-                    }
-                }
-                Some("message") => {
-                    let role = payload
-                        .and_then(|item| item.get("role"))
-                        .and_then(serde_json::Value::as_str);
-                    if role == Some("user") {
-                        *awaiting_user_reply = false;
-                    } else if role == Some("assistant") {
-                        if assistant_message_requests_user_input(payload) {
-                            *awaiting_user_reply = true;
-                        } else if codex_turn_ready_for_dispatch(
-                            payload,
-                            pending_confirmation_calls,
-                            *awaiting_user_reply,
-                            *waiting_for_user,
-                        ) {
-                            force_dispatcher_idle(app, task_id);
-                        }
-                    }
-                    sync_waiting_for_user(
-                        app,
-                        task_id,
-                        waiting_for_user,
-                        pending_confirmation_calls,
-                        *awaiting_user_reply,
-                    );
-                }
-                _ => {}
-            }
-        }
-        Some("event_msg") => {
-            let payload_type = payload
-                .and_then(|item| item.get("type"))
-                .and_then(serde_json::Value::as_str);
-            if payload_type == Some("user_message") {
-                *awaiting_user_reply = false;
-                sync_waiting_for_user(
-                    app,
-                    task_id,
-                    waiting_for_user,
-                    pending_confirmation_calls,
-                    *awaiting_user_reply,
-                );
-            }
-        }
-        _ => {}
-    }
+#[derive(Default)]
+struct CodexTaskState {
+    waiting_for_user: bool,
+    pending_confirmation_calls: HashSet<String>,
+    awaiting_user_reply: bool,
 }
 
-fn sync_waiting_for_user(
-    app: &AppHandle,
-    task_id: &str,
-    waiting_for_user: &mut bool,
-    pending_confirmation_calls: &HashSet<String>,
-    awaiting_user_reply: bool,
-) {
-    let next_waiting = awaiting_user_reply || !pending_confirmation_calls.is_empty();
-    if *waiting_for_user == next_waiting {
-        return;
+impl CodexTaskState {
+    fn process_line(&mut self, app: &AppHandle, task_id: &str, line: &str, project_path: &Path) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
+
+        let event_type = value.get("type").and_then(serde_json::Value::as_str);
+        let payload = value.get("payload");
+
+        match event_type {
+            Some("response_item") => {
+                self.process_response_item(app, task_id, payload, project_path)
+            }
+            Some("event_msg") => self.process_event_msg(app, task_id, payload),
+            _ => {}
+        }
     }
 
-    *waiting_for_user = next_waiting;
-    emit_active_task_status(
-        app,
-        task_id,
-        if next_waiting {
-            "input_required"
-        } else {
-            "running"
-        },
-    );
+    fn process_response_item(
+        &mut self,
+        app: &AppHandle,
+        task_id: &str,
+        payload: Option<&serde_json::Value>,
+        project_path: &Path,
+    ) {
+        let payload_type = payload
+            .and_then(|item| item.get("type"))
+            .and_then(serde_json::Value::as_str);
+
+        match payload_type {
+            Some("function_call") => self.process_function_call(payload, project_path),
+            Some("function_call_output") => self.process_function_call_output(payload),
+            Some("custom_tool_call") => self.process_custom_tool_call(payload),
+            Some("message") => self.process_message(app, task_id, payload),
+            _ => return,
+        }
+
+        self.sync_waiting_for_user(app, task_id);
+    }
+
+    fn process_event_msg(
+        &mut self,
+        app: &AppHandle,
+        task_id: &str,
+        payload: Option<&serde_json::Value>,
+    ) {
+        let payload_type = payload
+            .and_then(|item| item.get("type"))
+            .and_then(serde_json::Value::as_str);
+        if payload_type == Some("user_message") {
+            self.awaiting_user_reply = false;
+            self.sync_waiting_for_user(app, task_id);
+        }
+    }
+
+    fn process_function_call(&mut self, payload: Option<&serde_json::Value>, project_path: &Path) {
+        let name = payload
+            .and_then(|item| item.get("name"))
+            .and_then(serde_json::Value::as_str);
+        let call_id = payload
+            .and_then(|item| item.get("call_id"))
+            .and_then(serde_json::Value::as_str);
+        let arguments = payload
+            .and_then(|item| item.get("arguments"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+
+        if name == Some("request_user_input") {
+            self.awaiting_user_reply = true;
+        } else if name
+            .map(|tool| tool_call_requires_confirmation(tool, arguments, project_path))
+            .unwrap_or(false)
+        {
+            if let Some(call_id) = call_id {
+                self.pending_confirmation_calls.insert(call_id.to_string());
+            } else {
+                self.awaiting_user_reply = true;
+            }
+        }
+    }
+
+    fn process_function_call_output(&mut self, payload: Option<&serde_json::Value>) {
+        if let Some(call_id) = payload
+            .and_then(|item| item.get("call_id"))
+            .and_then(serde_json::Value::as_str)
+        {
+            self.pending_confirmation_calls.remove(call_id);
+        }
+
+        let output = payload
+            .and_then(|item| item.get("output"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if output.starts_with("aborted by user after") {
+            self.awaiting_user_reply = true;
+        }
+    }
+
+    fn process_custom_tool_call(&mut self, payload: Option<&serde_json::Value>) {
+        let status = payload
+            .and_then(|item| item.get("status"))
+            .and_then(serde_json::Value::as_str);
+        if !matches!(status, Some("completed") | Some("failed")) {
+            return;
+        }
+
+        if let Some(call_id) = payload
+            .and_then(|item| item.get("call_id"))
+            .and_then(serde_json::Value::as_str)
+        {
+            self.pending_confirmation_calls.remove(call_id);
+        }
+    }
+
+    fn process_message(
+        &mut self,
+        app: &AppHandle,
+        task_id: &str,
+        payload: Option<&serde_json::Value>,
+    ) {
+        let role = payload
+            .and_then(|item| item.get("role"))
+            .and_then(serde_json::Value::as_str);
+        if role == Some("user") {
+            self.awaiting_user_reply = false;
+        } else if role == Some("assistant") {
+            if assistant_message_requests_user_input(payload) {
+                self.awaiting_user_reply = true;
+            } else if self.turn_ready_for_dispatch(payload) {
+                force_dispatcher_idle(app, task_id);
+            }
+        }
+    }
+
+    fn turn_ready_for_dispatch(&self, payload: Option<&serde_json::Value>) -> bool {
+        assistant_message_completes_turn(payload)
+            && self.pending_confirmation_calls.is_empty()
+            && !self.awaiting_user_reply
+            && !self.waiting_for_user
+    }
+
+    fn sync_waiting_for_user(&mut self, app: &AppHandle, task_id: &str) {
+        let Some(next_waiting) = self.take_waiting_transition() else {
+            return;
+        };
+
+        emit_active_task_status(
+            app,
+            task_id,
+            if next_waiting {
+                "input_required"
+            } else {
+                "running"
+            },
+        );
+    }
+
+    fn take_waiting_transition(&mut self) -> Option<bool> {
+        let next_waiting = self.awaiting_user_reply || !self.pending_confirmation_calls.is_empty();
+        if self.waiting_for_user == next_waiting {
+            return None;
+        }
+
+        self.waiting_for_user = next_waiting;
+        Some(next_waiting)
+    }
 }
 
 fn force_dispatcher_idle(app: &AppHandle, task_id: &str) {
-    let tm = app.state::<TaskManager>();
-    let flags = tm.dispatcher_force_idle_flags.lock();
-    if let Some(flag) = flags.get(task_id) {
-        flag.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+    app.state::<DispatcherState>()
+        .force_subprocess_idle(task_id);
 }
 
 // ── 权限判断 ──────────────────────────────────────────────────────────────────
@@ -524,18 +516,6 @@ fn assistant_message_completes_turn(payload: Option<&serde_json::Value>) -> bool
     let phase = payload.get("phase").and_then(serde_json::Value::as_str);
     matches!(phase, Some("final") | Some("final_answer"))
         && !assistant_message_requests_user_input(Some(payload))
-}
-
-fn codex_turn_ready_for_dispatch(
-    payload: Option<&serde_json::Value>,
-    pending_confirmation_calls: &HashSet<String>,
-    awaiting_user_reply: bool,
-    waiting_for_user: bool,
-) -> bool {
-    assistant_message_completes_turn(payload)
-        && pending_confirmation_calls.is_empty()
-        && !awaiting_user_reply
-        && !waiting_for_user
 }
 
 // ── Claude Code 会话监视器 ────────────────────────────────────────────────────
@@ -1443,7 +1423,7 @@ fn run_status_session_watcher(
     }
 }
 
-/// 供 `resume_task` 使用：根据已知的 session_id 查找会话文件并开始监视。
+/// 供 `resume_dispatcher_subprocess` 使用：根据已知的 session_id 查找会话文件并开始监视。
 pub(crate) fn spawn_resume_session_watcher(
     app: AppHandle,
     task_id: String,
@@ -1646,7 +1626,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_turn_ready_for_dispatch_requires_no_pending_user_input_or_confirmation() {
+    fn codex_task_state_dispatch_requires_no_pending_user_input_or_confirmation() {
         let payload = serde_json::json!({
             "role": "assistant",
             "phase": "final",
@@ -1655,32 +1635,26 @@ mod tests {
             ]
         });
 
-        assert!(codex_turn_ready_for_dispatch(
-            Some(&payload),
-            &HashSet::new(),
-            false,
-            false,
-        ));
+        let ready = CodexTaskState::default();
+        assert!(ready.turn_ready_for_dispatch(Some(&payload)));
 
-        let pending = HashSet::from([String::from("call_1")]);
-        assert!(!codex_turn_ready_for_dispatch(
-            Some(&payload),
-            &pending,
-            false,
-            false,
-        ));
-        assert!(!codex_turn_ready_for_dispatch(
-            Some(&payload),
-            &HashSet::new(),
-            true,
-            false,
-        ));
-        assert!(!codex_turn_ready_for_dispatch(
-            Some(&payload),
-            &HashSet::new(),
-            false,
-            true,
-        ));
+        let mut pending = CodexTaskState::default();
+        pending
+            .pending_confirmation_calls
+            .insert(String::from("call_1"));
+        assert!(!pending.turn_ready_for_dispatch(Some(&payload)));
+
+        let awaiting_reply = CodexTaskState {
+            awaiting_user_reply: true,
+            ..Default::default()
+        };
+        assert!(!awaiting_reply.turn_ready_for_dispatch(Some(&payload)));
+
+        let waiting = CodexTaskState {
+            waiting_for_user: true,
+            ..Default::default()
+        };
+        assert!(!waiting.turn_ready_for_dispatch(Some(&payload)));
     }
 
     #[test]

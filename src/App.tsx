@@ -166,17 +166,22 @@ function App() {
     setActiveProject(null);
   }
 
-  function invokeRunTask(task: Task, projectPath: string, images: string[], dispatcherDispatchId?: string) {
-    invoke("run_task", {
+  function invokeStartDispatcherSubprocess(task: Task, projectPath: string) {
+    if (!task.dispatcherDispatchId || !task.dispatcherSessionId || !task.dispatcherDescription) {
+      throw new Error("调度子进程缺少 Dispatcher 元数据");
+    }
+
+    invoke("start_dispatcher_subprocess", {
       taskId: task.id,
       projectPath,
       prompt: task.prompt,
       agent: task.agent,
       permissionMode: task.permissionMode,
-      images,
       cols: tm.terminalSizeRef.current.cols,
       rows: tm.terminalSizeRef.current.rows,
-      dispatcherDispatchId: dispatcherDispatchId || null,
+      dispatcherDispatchId: task.dispatcherDispatchId,
+      dispatcherSessionId: task.dispatcherSessionId,
+      dispatcherDescription: task.dispatcherDescription,
     }).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       tm.writeErrorToTerminal(task.id, `\r\n错误：${msg}\r\n`);
@@ -184,14 +189,24 @@ function App() {
     });
   }
 
-  function invokeResumeTask(task: Task, projectPath: string) {
+  function invokeResumeDispatcherSubprocess(task: Task, projectPath: string) {
     const sessionId = task.agent === "claude" ? task.claudeSessionId : task.codexSessionId;
     if (!sessionId) {
       showToast("当前任务尚未记录可恢复的会话 ID，暂时无法继续。", "warning");
       return Promise.resolve();
     }
 
-    return invoke("resume_task", {
+    if (!task.dispatcherDispatchId) {
+      showToast("当前任务不是调度子进程，不能从这里继续。", "warning");
+      return Promise.resolve();
+    }
+
+    if (!task.dispatcherSessionId || !task.dispatcherDescription) {
+      showToast("当前调度子进程缺少 Dispatcher 元数据，暂时无法继续。", "warning");
+      return Promise.resolve();
+    }
+
+    return invoke("resume_dispatcher_subprocess", {
       taskId: task.id,
       projectPath,
       agent: task.agent,
@@ -200,6 +215,9 @@ function App() {
       permissionMode: task.permissionMode,
       cols: tm.terminalSizeRef.current.cols,
       rows: tm.terminalSizeRef.current.rows,
+      dispatcherDispatchId: task.dispatcherDispatchId,
+      dispatcherSessionId: task.dispatcherSessionId,
+      dispatcherDescription: task.dispatcherDescription,
     }).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       tm.writeErrorToTerminal(task.id, `\r\n错误：${msg}\r\n`);
@@ -208,15 +226,12 @@ function App() {
     });
   }
 
-  function handleSubmitTask(
+  function handleStartDispatcherSubprocess(
     project: Project,
     {
       prompt,
       agent,
       permissionMode,
-      images,
-      immediate,
-      hidden,
       dispatcherDispatchId,
       dispatcherSessionId,
       dispatcherDescription,
@@ -224,12 +239,9 @@ function App() {
       prompt: string;
       agent: AgentType;
       permissionMode: PermissionMode;
-      images: string[];
-      immediate: boolean;
-      hidden?: boolean;
-      dispatcherDispatchId?: string;
-      dispatcherSessionId?: string;
-      dispatcherDescription?: string;
+      dispatcherDispatchId: string;
+      dispatcherSessionId: string;
+      dispatcherDescription: string;
     },
   ): string {
     const task: Task = {
@@ -238,7 +250,7 @@ function App() {
       prompt,
       agent,
       permissionMode,
-      status: immediate ? "pending" : "todo",
+      status: "pending",
       createdAt: Date.now(),
       dispatcherDispatchId,
       dispatcherSessionId,
@@ -250,16 +262,11 @@ function App() {
       return next;
     });
 
-    if (!hidden) {
-      setActiveProject(project);
-    }
     // Ensure the project is mounted so the task's terminal can be initialized in the background.
     mountProject(project.id);
 
-    if (!immediate) return task.id;
-
     tm.resetTaskTerminal(task.id);
-    invokeRunTask(task, project.path, images, dispatcherDispatchId);
+    invokeStartDispatcherSubprocess(task, project.path);
     return task.id;
   }
 
@@ -275,9 +282,9 @@ function App() {
       deletingTasks
         .filter((task) => isActiveTaskStatus(task.status))
         .forEach((task) => {
-          invoke("cancel_task", { taskId: task.id }).catch(
+          invoke("stop_task", { taskId: task.id }).catch(
             (e: unknown) => {
-              showToast(`取消任务失败：${String(e)}`);
+              showToast(`停止任务失败：${String(e)}`);
             },
           );
         });
@@ -409,7 +416,7 @@ function App() {
             allProjects={railProjects}
             tasks={tasks}
             getTaskRestoreState={tm.getTaskRestoreState}
-            onSubmitTask={(taskInput) => handleSubmitTask(project, taskInput)}
+            onStartSubProcess={(taskInput) => handleStartDispatcherSubprocess(project, taskInput)}
             onStopTask={(taskId) =>
               invoke("stop_task", { taskId })
                 .catch((e: unknown) => {
@@ -424,7 +431,7 @@ function App() {
                 return Promise.resolve();
               }
               updateTaskStatus(task.id, "pending");
-              return invokeResumeTask(task, project.path).then(() => undefined);
+              return invokeResumeDispatcherSubprocess(task, project.path).then(() => undefined);
             }}
             onInput={tm.handleInput}
             onResize={tm.handleResize}

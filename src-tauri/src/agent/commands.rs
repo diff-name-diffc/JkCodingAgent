@@ -2,6 +2,7 @@ use anyhow::Result;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
 
@@ -14,7 +15,9 @@ use super::db::{
 };
 use super::llm;
 use super::llm::OpenAiCompatProvider;
-use super::runtime::{AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent};
+use super::runtime::{
+    AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent, DispatcherSubprocessRegistry,
+};
 use super::summary::{fallback_session_title, summarize_session_title};
 use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::project::mcp::ProjectMcpRegistry;
@@ -22,6 +25,7 @@ use crate::shared::TaskManager;
 
 pub struct DispatcherState {
     agent: tokio::sync::Mutex<DispatcherAgent>,
+    subprocesses: Arc<DispatcherSubprocessRegistry>,
     db: DispatcherDb,
     active_runs: Mutex<HashMap<String, ActiveRunEntry>>,
     next_run_generation: AtomicU64,
@@ -44,7 +48,9 @@ impl DispatcherState {
     pub fn new(project_mcp_registry: ProjectMcpRegistry) -> Result<Self> {
         let config = DispatcherAgentConfig::load()?;
         let db = DispatcherDb::new(config.db_path.clone())?;
-        let mut agent = DispatcherAgent::new(config, project_mcp_registry);
+        let subprocesses = Arc::new(DispatcherSubprocessRegistry::default());
+        let mut agent =
+            DispatcherAgent::new(config, project_mcp_registry, Arc::clone(&subprocesses));
 
         if let Ok(Some(settings)) = db.get_settings() {
             agent.apply_settings(&settings);
@@ -54,6 +60,7 @@ impl DispatcherState {
 
         Ok(Self {
             agent: tokio::sync::Mutex::new(agent),
+            subprocesses,
             db,
             active_runs: Mutex::new(HashMap::new()),
             next_run_generation: AtomicU64::new(1),
@@ -76,6 +83,46 @@ impl DispatcherState {
             generation,
             cancel_rx,
         }
+    }
+
+    pub(crate) fn register_subprocess(
+        &self,
+        workspace_id: &str,
+        task_id: &str,
+        dispatch_id: &str,
+        agent: &str,
+        description: &str,
+    ) -> Arc<std::sync::atomic::AtomicBool> {
+        self.subprocesses
+            .register(workspace_id, task_id, dispatch_id, agent, description)
+    }
+
+    pub(crate) fn mark_subprocess_round_completed(&self, task_id: &str) {
+        self.subprocesses.mark_round_completed(task_id);
+    }
+
+    pub(crate) fn mark_subprocess_running(&self, task_id: &str) {
+        self.subprocesses.mark_running(task_id);
+    }
+
+    pub(crate) fn mark_subprocess_stopped(&self, task_id: &str) {
+        self.subprocesses.mark_stopped(task_id);
+    }
+
+    pub(crate) fn mark_subprocess_finished(&self, task_id: &str) {
+        self.subprocesses.mark_finished(task_id);
+    }
+
+    pub(crate) fn mark_subprocess_exit_requested(&self, task_id: &str) {
+        self.subprocesses.mark_exit_requested(task_id);
+    }
+
+    pub(crate) fn force_subprocess_idle(&self, task_id: &str) {
+        self.subprocesses.force_idle(task_id);
+    }
+
+    pub(crate) fn is_subprocess_exit_requested(&self, task_id: &str) -> bool {
+        self.subprocesses.is_exit_requested(task_id)
     }
 
     fn finish_run(&self, workspace_id: &str, generation: u64) {
@@ -610,31 +657,11 @@ pub fn dispatcher_cancel_voice_input(
 }
 
 #[tauri::command]
-pub async fn dispatcher_register_subprocess(
-    task_manager: tauri::State<'_, TaskManager>,
-    state: tauri::State<'_, DispatcherState>,
-    workspace_id: String,
-    task_id: String,
-    dispatch_id: String,
-    agent: String,
-    description: String,
-) -> Result<(), String> {
-    task_manager
-        .dispatcher_subprocess_ids
-        .lock()
-        .insert(task_id.clone(), dispatch_id.clone());
-    let agent_runtime = state.agent.lock().await;
-    agent_runtime.register_subprocess(&workspace_id, &task_id, &dispatch_id, &agent, &description);
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn dispatcher_mark_subprocess_round_completed(
     state: tauri::State<'_, DispatcherState>,
     task_id: String,
 ) -> Result<(), String> {
-    let agent = state.agent.lock().await;
-    agent.mark_subprocess_round_completed(&task_id);
+    state.mark_subprocess_round_completed(&task_id);
     Ok(())
 }
 
@@ -643,8 +670,7 @@ pub async fn dispatcher_mark_subprocess_running(
     state: tauri::State<'_, DispatcherState>,
     task_id: String,
 ) -> Result<(), String> {
-    let agent = state.agent.lock().await;
-    agent.mark_subprocess_running(&task_id);
+    state.mark_subprocess_running(&task_id);
     Ok(())
 }
 
@@ -653,8 +679,7 @@ pub async fn dispatcher_mark_subprocess_stopped(
     state: tauri::State<'_, DispatcherState>,
     task_id: String,
 ) -> Result<(), String> {
-    let agent = state.agent.lock().await;
-    agent.mark_subprocess_stopped(&task_id);
+    state.mark_subprocess_stopped(&task_id);
     Ok(())
 }
 
@@ -663,8 +688,7 @@ pub async fn dispatcher_mark_subprocess_finished(
     state: tauri::State<'_, DispatcherState>,
     task_id: String,
 ) -> Result<(), String> {
-    let agent = state.agent.lock().await;
-    agent.mark_subprocess_finished(&task_id);
+    state.mark_subprocess_finished(&task_id);
     Ok(())
 }
 
@@ -681,6 +705,7 @@ pub async fn dispatcher_send_to_subprocess(
 #[tauri::command]
 pub async fn dispatcher_exit_subprocess(
     task_manager: tauri::State<'_, TaskManager>,
+    state: tauri::State<'_, DispatcherState>,
     task_id: String,
 ) -> Result<(), String> {
     let is_codex = is_codex_subprocess(&task_manager, &task_id);
@@ -691,21 +716,15 @@ pub async fn dispatcher_exit_subprocess(
         submit_subprocess_line(&task_manager, &task_id, "/exit", false).await?;
     }
 
-    task_manager
-        .dispatcher_exited_subprocesses
-        .lock()
-        .insert(task_id);
+    state.mark_subprocess_exit_requested(&task_id);
 
     Ok(())
 }
 
 #[tauri::command]
 pub fn dispatcher_is_subprocess_exited(
-    task_manager: tauri::State<'_, TaskManager>,
+    state: tauri::State<'_, DispatcherState>,
     task_id: String,
 ) -> bool {
-    task_manager
-        .dispatcher_exited_subprocesses
-        .lock()
-        .contains(&task_id)
+    state.is_subprocess_exit_requested(&task_id)
 }

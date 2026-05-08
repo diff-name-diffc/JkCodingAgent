@@ -28,9 +28,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            task_runtime::pty::run_task,
-            task_runtime::pty::resume_task,
-            task_runtime::pty::cancel_task,
+            task_runtime::pty::start_dispatcher_subprocess,
+            task_runtime::pty::resume_dispatcher_subprocess,
             task_runtime::pty::stop_task,
             task_runtime::pty::send_input,
             task_runtime::pty::resize_pty,
@@ -113,7 +112,6 @@ pub fn run() {
             agent::commands::dispatcher_append_voice_audio,
             agent::commands::dispatcher_finish_voice_input,
             agent::commands::dispatcher_cancel_voice_input,
-            agent::commands::dispatcher_register_subprocess,
             agent::commands::dispatcher_mark_subprocess_round_completed,
             agent::commands::dispatcher_mark_subprocess_running,
             agent::commands::dispatcher_mark_subprocess_stopped,

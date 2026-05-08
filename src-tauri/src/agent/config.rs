@@ -126,6 +126,7 @@ pub struct DispatcherAgentConfig {
     pub api_base: String,
     pub model: String,
     pub summary_model: String,
+    pub vision_model: String,
     pub max_tokens: u32,
     pub temperature: f32,
     pub max_tool_iterations: usize,
@@ -174,6 +175,7 @@ impl DispatcherAgentConfig {
             model: std::env::var("MODEL_NAME").unwrap_or_else(|_| "qwen3.6-plus".to_string()),
             summary_model: std::env::var("SUMMARY_MODEL_NAME")
                 .unwrap_or_else(|_| DEFAULT_SUMMARY_MODEL.to_string()),
+            vision_model: std::env::var("VISION_MODEL_NAME").unwrap_or_default(),
             max_tokens: 8192,
             temperature: 0.1,
             max_tool_iterations: 200,

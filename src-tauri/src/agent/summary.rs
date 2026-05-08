@@ -212,7 +212,7 @@ async fn summarize_with_model(
     let debug_context = build_summary_debug_context(&summary_provider, &prompt);
     let response = timeout(
         Duration::from_secs(SUMMARY_TIMEOUT_SECS),
-        summary_provider.chat_stream(&[ChatMessage::system(prompt)], &[], on_delta),
+        summary_provider.chat_stream(&[ChatMessage::system(prompt)], &[], false, on_delta),
     )
     .await
     .map_err(|_| {

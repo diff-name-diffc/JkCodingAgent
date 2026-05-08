@@ -8,7 +8,7 @@ import {
   memo,
   useMemo,
 } from "react";
-import type { KeyboardEvent, ReactNode } from "react";
+import type { KeyboardEvent } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import {
   Play,
@@ -17,10 +17,7 @@ import {
   Send,
   Square,
   X,
-  FolderGit2,
-  SearchCode,
   Wrench,
-  Workflow,
   Settings2,
   PlugZap,
   Mic,
@@ -126,7 +123,9 @@ const UserMessageBubble = memo(function UserMessageBubble({
         <User size={15} color="#fff" />
       </div>
       <div style={styles.messageBubble(true)}>
-        <div style={styles.messageText}>{message.content}</div>
+        <div style={styles.markdownBody}>
+          <MarkdownRenderer content={message.content} variant="chat" />
+        </div>
       </div>
     </div>
   );
@@ -263,8 +262,10 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   voiceError,
   inputRef,
   layoutMode,
+  attachedImages,
   onChangeInput,
-  onSelectQuickAction,
+  onPaste,
+  onRemoveImage,
   onSend,
   onStop,
   onResume,
@@ -288,8 +289,10 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   voiceError: string | null;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   layoutMode: "single" | "split";
+  attachedImages: string[];
   onChangeInput: (value: string) => void;
-  onSelectQuickAction: (value: string) => void;
+  onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
+  onRemoveImage: (index: number) => void;
   onSend: () => void;
   onStop: () => void;
   onResume: () => void;
@@ -307,23 +310,12 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
 
   return (
     <div style={styles.emptyLauncherWrap(layoutMode)}>
-      <div style={styles.emptyLauncherHero(layoutMode)}>
-        <div style={styles.emptyLauncherKicker}>
-          <span style={styles.emptyLauncherBadge}>
-            <Sparkles size={13} />
-            主调度智能体
-          </span>
-          <span style={styles.emptyLauncherMeta}>协调 Claude / Codex 子进程</span>
-        </div>
-        <h2 style={styles.emptyLauncherTitle}>今天想一起推进什么？</h2>
-        <p style={styles.emptyLauncherSubtitle}>
-          直接描述目标、粘贴报错，或者让我先读这个仓库。我会负责拆解任务、调用工具，并把执行进度持续回流到会话中。
-        </p>
-      </div>
-
       <div style={styles.emptyComposerDialog(layoutMode)}>
         <div style={styles.emptyComposerTopBar}>
-          <div style={styles.emptyComposerPromptHint}>启动一轮新对话</div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <Sparkles size={16} color="var(--accent)" />
+            <div style={styles.emptyComposerPromptHint}>主调度智能体</div>
+          </div>
           <div style={styles.emptyComposerToolRow}>
             <button type="button" style={styles.emptyTopToolBtn} onClick={onOpenMcpStatus}>
               <PlugZap size={14} />
@@ -341,16 +333,33 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
         </div>
 
         <div style={styles.emptyComposerInputShell()}>
+          {attachedImages.length > 0 && (
+            <div style={styles.attachedImagesContainer}>
+              {attachedImages.map((src, idx) => (
+                <div key={idx} style={styles.attachedImageWrapper}>
+                  <img src={src} alt="pasted" style={styles.attachedImage} />
+                  <button
+                    style={styles.removeImageBtn}
+                    onClick={() => onRemoveImage(idx)}
+                    title="移除图片"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <textarea
             ref={inputRef}
             style={styles.emptyComposerTextarea(layoutMode)}
-            placeholder="例如：先审查这个仓库的前端架构，再给出重构方案并开始实现。"
+            placeholder="描述你的需求、粘贴代码或报错信息，支持粘贴图片..."
             value={input}
             onChange={(e) => onChangeInput(e.target.value)}
+            onPaste={onPaste}
             onCompositionStart={onCompositionStart}
             onCompositionEnd={onCompositionEnd}
             onKeyDown={onKeyDown}
-            rows={layoutMode === "single" ? 10 : 4}
+            rows={layoutMode === "single" ? 6 : 3}
             disabled={isStopMode || isStopping}
           />
         </div>
@@ -362,51 +371,12 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
           onDismissError={onDismissVoiceError}
         />
 
-        <div style={styles.emptyComposerActionRow}>
-          {EMPTY_QUICK_ACTIONS.map((action) => (
-            <button
-              key={action.label}
-              type="button"
-              style={styles.emptyComposerActionBtn}
-              onClick={() => onSelectQuickAction(action.prompt)}
-            >
-              <span style={styles.emptyComposerActionIcon}>{action.icon}</span>
-              <span style={styles.emptyComposerActionLabel}>{action.label}</span>
-            </button>
-          ))}
-        </div>
-
         <div style={styles.emptyComposerFooter}>
-          <div style={styles.emptyComposerFootnote}>
-            <span>Enter 发送</span>
-            <span style={styles.emptyComposerFootnoteDot} />
-            <span>Shift + Enter 换行</span>
-            <span style={styles.emptyComposerFootnoteDot} />
-            <span>支持直接贴入报错、日志或需求描述</span>
-          </div>
-
           <div style={styles.emptyComposerBottomRow}>
-            <div style={styles.emptyComposerSecondaryRow}>
-              <button
-                type="button"
-                style={styles.emptySecondaryBtn}
-                onClick={() =>
-                  onSelectQuickAction(
-                    "先浏览当前工作区的关键目录与项目结构，再告诉我应该从哪里开始。",
-                  )
-                }
-              >
-                浏览仓库
-              </button>
-              <button
-                type="button"
-                style={styles.emptySecondaryBtn}
-                onClick={() =>
-                  onSelectQuickAction("先检查当前仓库的未提交改动和最近提交，再总结上下文。")
-                }
-              >
-                读取上下文
-              </button>
+            <div style={styles.emptyComposerFootnote}>
+              <span>Enter 发送</span>
+              <span style={styles.emptyComposerFootnoteDot} />
+              <span>Shift + Enter 换行</span>
             </div>
 
             <div style={styles.emptyComposerPrimaryRow}>
@@ -425,12 +395,12 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
                 type="button"
                 style={{
                   ...getEmptyPrimaryComposerButtonStyle(composerMode),
-                  opacity: getPrimaryComposerOpacity(composerMode, input, isBusy, isStopping),
+                  opacity: getPrimaryComposerOpacity(composerMode, input, isBusy, isStopping, attachedImages.length > 0),
                 }}
                 onClick={isStopMode ? onStop : isResumeMode && !input.trim() ? onResume : onSend}
-                disabled={isComposerActionDisabled(composerMode, input, isBusy, isStopping)}
+                disabled={isComposerActionDisabled(composerMode, input, isBusy, isStopping, attachedImages.length > 0)}
               >
-                <span>{getComposerButtonLabel(composerMode, Boolean(input.trim()))}</span>
+                <span>{getComposerButtonLabel(composerMode, Boolean(input.trim() || attachedImages.length > 0))}</span>
                 {isStopMode ? (
                   <Square size={15} />
                 ) : isResumeMode && !input.trim() ? (
@@ -461,10 +431,11 @@ function isComposerActionDisabled(
   input: string,
   isBusy: boolean,
   isStopping: boolean,
+  hasImages = false,
 ): boolean {
   if (mode === "stop") return isStopping;
-  if (mode === "resume") return (!input.trim() && isBusy) || isStopping;
-  return !input.trim() || isBusy || isStopping;
+  if (mode === "resume") return (!input.trim() && !hasImages && isBusy) || isStopping;
+  return (!input.trim() && !hasImages) || isBusy || isStopping;
 }
 
 function getPrimaryComposerOpacity(
@@ -472,8 +443,9 @@ function getPrimaryComposerOpacity(
   input: string,
   isBusy: boolean,
   isStopping: boolean,
+  hasImages = false,
 ): number {
-  return isComposerActionDisabled(mode, input, isBusy, isStopping) ? 0.45 : 1;
+  return isComposerActionDisabled(mode, input, isBusy, isStopping, hasImages) ? 0.45 : 1;
 }
 
 function getPrimaryComposerButtonStyle(mode: "send" | "stop" | "resume") {
@@ -606,6 +578,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
   ) {
     const [messages, setMessages] = useState<DispatcherMessage[]>([]);
     const [input, setInput] = useState("");
+    const [attachedImages, setAttachedImages] = useState<string[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [isStopping, setIsStopping] = useState(false);
     const [hasPendingRun, setHasPendingRun] = useState(false);
@@ -615,6 +588,29 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [runError, setRunError] = useState<string | null>(null);
     const [pendingDispatches, setPendingDispatches] = useState<PendingDispatchApproval[]>([]);
     const [autoApprove, setAutoApprove] = useState(false);
+
+    const handlePaste = useCallback((e: React.ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf("image") !== -1) {
+          const blob = items[i].getAsFile();
+          if (blob) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+              const base64 = event.target?.result as string;
+              setAttachedImages((prev) => [...prev, base64]);
+            };
+            reader.readAsDataURL(blob);
+          }
+        }
+      }
+    }, []);
+
+    const handleRemoveImage = useCallback((index: number) => {
+      setAttachedImages((prev) => prev.filter((_, i) => i !== index));
+    }, []);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -709,6 +705,16 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           case "assistantStarted":
             if (!isCurrentRun) return;
             setAssistantPlaceholder("正在分析问题...");
+            break;
+          case "modelSwitched":
+            if (!isCurrentRun) return;
+            setAssistantPlaceholder(`已检测到图片，自动切换到视觉模型 ${event.data.toModel}。`);
+            setStreamingSegments((prev) =>
+              appendAssistantTextSegment(
+                prev,
+                `> ${event.data.reason}，已从 ${event.data.fromModel} 自动切换到视觉模型 ${event.data.toModel}。\n\n`,
+              ),
+            );
             break;
           case "userMessage":
             if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
@@ -845,19 +851,28 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     );
 
     const sendUserMessage = useCallback(
-      async (rawText: string, targetSessionId = sessionId) => {
+      async (rawText: string, images: string[] = [], targetSessionId = sessionId) => {
         const text = rawText.trim();
-        if (!text) return;
+        if (!text && images.length === 0) return;
 
         setInput("");
+        setAttachedImages([]);
         setPendingDispatches([]);
+
+        // If images are present, embed them in the content.
+        // The backend/LLM will receive this as part of the prompt.
+        let content = text;
+        if (images.length > 0) {
+          const imageMarkdown = images.map(img => `![image](${img})\n`).join("");
+          content = imageMarkdown + content;
+        }
 
         try {
           await enqueueDispatcherRun(targetSessionId, async (onEvent) => {
             await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
               workspaceId: targetSessionId,
               projectPath,
-              content: text,
+              content,
               onEvent,
             });
           });
@@ -873,7 +888,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       workspaceId: sessionId,
       enabled: composerMode !== "stop" && !isStopping,
       onTranscriptReady: async (text) => {
-        await sendUserMessage(text, sessionId);
+        await sendUserMessage(text, [], sessionId);
       },
     });
     const {
@@ -887,16 +902,16 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
     const handleSend = useCallback(async () => {
       const text = input.trim();
-      if (!text || isLoading || isStopping) return;
+      if ((!text && attachedImages.length === 0) || isLoading || isStopping) return;
 
       try {
-        await sendUserMessage(text, sessionId);
+        await sendUserMessage(text, attachedImages, sessionId);
       } finally {
         if (isRecordingVoice) {
           await stopVoiceRecording();
         }
       }
-    }, [input, isLoading, isRecordingVoice, isStopping, sendUserMessage, sessionId, stopVoiceRecording]);
+    }, [input, attachedImages, isLoading, isRecordingVoice, isStopping, sendUserMessage, sessionId, stopVoiceRecording]);
 
     const handleStop = useCallback(async () => {
       if (isStopping) return;
@@ -1015,11 +1030,6 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       }
     }, [resetSessionTokenUsage, sessionId]);
 
-    const handleApplyStarterPrompt = useCallback((prompt: string) => {
-      setInput(prompt);
-      inputRef.current?.focus();
-    }, []);
-
     const hasLiveSegments = streamingSegments.some((segment) => segment.text.trim());
     const hasAssistantPlaceholder = Boolean(assistantPlaceholder?.trim());
     const isEmpty =
@@ -1099,8 +1109,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               voiceError={voiceError}
               inputRef={inputRef}
               layoutMode={layoutMode}
+              attachedImages={attachedImages}
               onChangeInput={setInput}
-              onSelectQuickAction={handleApplyStarterPrompt}
+              onPaste={handlePaste}
+              onRemoveImage={handleRemoveImage}
               onSend={handleSend}
               onStop={handleStop}
               onResume={handleResume}
@@ -1151,6 +1163,22 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             onDismissError={clearVoiceError}
           />
           <div style={styles.inputArea}>
+            {attachedImages.length > 0 && (
+              <div style={styles.attachedImagesContainer}>
+                {attachedImages.map((src, idx) => (
+                  <div key={idx} style={styles.attachedImageWrapper}>
+                    <img src={src} alt="pasted" style={styles.attachedImage} />
+                    <button
+                      style={styles.removeImageBtn}
+                      onClick={() => handleRemoveImage(idx)}
+                      title="移除图片"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <SessionTokenUsageIndicators entries={sessionTokenUsageEntries} />
             <textarea
               ref={inputRef}
@@ -1158,6 +1186,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               placeholder="给调度智能体发送消息..."
               value={input}
               onChange={(e) => setInput(e.target.value)}
+              onPaste={handlePaste}
               onCompositionStart={() => {
                 inputComposingRef.current = true;
               }}
@@ -1185,9 +1214,13 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                   input,
                   isComposerBusy,
                   isStopping,
+                  attachedImages.length > 0,
                 ),
               }}
-              title={getComposerButtonLabel(composerMode, Boolean(input.trim()))}
+              title={getComposerButtonLabel(
+                composerMode,
+                Boolean(input.trim() || attachedImages.length > 0),
+              )}
               onClick={
                 composerMode === "stop"
                   ? handleStop
@@ -1200,6 +1233,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 input,
                 isComposerBusy,
                 isStopping,
+                attachedImages.length > 0,
               )}
             >
               {composerMode === "stop" ? (
@@ -1243,33 +1277,6 @@ const DISPATCH_AGENT_META: Record<AgentType, { title: string; badge: string; hin
     hint: "Codex 更慢但更仔细，适合重构、结构整理和高风险修改。",
   },
 };
-
-const EMPTY_QUICK_ACTIONS: Array<{
-  label: string;
-  prompt: string;
-  icon: ReactNode;
-}> = [
-  {
-    label: "审查项目结构",
-    prompt: "先审查这个项目的整体架构、关键模块和潜在风险，再给我一个简洁的分析结论。",
-    icon: <SearchCode size={14} />,
-  },
-  {
-    label: "查看最近改动",
-    prompt: "先查看这个项目最近的 Git 变更和当前工作区状态，再总结我现在最该关注的内容。",
-    icon: <FolderGit2 size={14} />,
-  },
-  {
-    label: "制定实现计划",
-    prompt: "请先理解当前代码库，再针对我要做的需求给出一个清晰、可执行的实现计划。",
-    icon: <Workflow size={14} />,
-  },
-  {
-    label: "排查构建问题",
-    prompt: "请先检查当前项目是否能正常构建、测试或 lint，并定位阻塞问题。",
-    icon: <Wrench size={14} />,
-  },
-];
 
 // ── Styles ───────────────────────────────────────────────────────────────────
 
@@ -1484,11 +1491,46 @@ const styles = {
       "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 72%, transparent))",
     boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)",
     display: "flex",
+    flexDirection: "column" as const,
   }),
+  attachedImagesContainer: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: "10px",
+    padding: "16px 22px 0",
+  },
+  attachedImageWrapper: {
+    position: "relative" as const,
+    width: "64px",
+    height: "64px",
+    borderRadius: "10px",
+    overflow: "hidden",
+    border: "1px solid var(--border-medium)",
+  },
+  attachedImage: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover" as const,
+  },
+  removeImageBtn: {
+    position: "absolute" as const,
+    top: "4px",
+    right: "4px",
+    width: "20px",
+    height: "20px",
+    borderRadius: "50%",
+    background: "rgba(0,0,0,0.6)",
+    color: "#fff",
+    border: "none",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+  },
   emptyComposerTextarea: (layoutMode: "single" | "split") => ({
     width: "100%",
-    minHeight: layoutMode === "single" ? "220px" : "150px",
-    padding: layoutMode === "single" ? "18px 22px" : "20px 22px",
+    minHeight: layoutMode === "single" ? "120px" : "80px",
+    padding: layoutMode === "single" ? "18px 22px" : "16px 20px",
     border: "none",
     outline: "none",
     resize: "none" as const,

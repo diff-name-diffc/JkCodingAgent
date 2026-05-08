@@ -17,7 +17,8 @@ use super::db::{
 };
 use super::debug::{render_json, ContextDebugLogger, DebugSection};
 use super::llm::{
-    ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider, OutboundToolCall, RequestedToolCall,
+    messages_contain_inline_images, ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider,
+    OutboundToolCall, RequestedToolCall,
 };
 use super::prompt::{build_system_prompt, PromptBundle, PromptSection};
 use super::summary::{
@@ -99,6 +100,11 @@ pub enum AgentEvent {
     AssistantStarted {
         message_id: String,
     },
+    ModelSwitched {
+        from_model: String,
+        to_model: String,
+        reason: String,
+    },
     AssistantDelta {
         message_id: String,
         delta: String,
@@ -160,6 +166,7 @@ pub struct DispatcherAgent {
     config: DispatcherAgentConfig,
     provider: Mutex<OpenAiCompatProvider>,
     summary_model: Mutex<String>,
+    vision_model: Mutex<String>,
     tools: ToolRegistry,
     project_mcp_registry: ProjectMcpRegistry,
     subprocesses: Mutex<Vec<RegisteredSubprocess>>,
@@ -371,6 +378,7 @@ impl DispatcherAgent {
 
         Self {
             summary_model: Mutex::new(normalize_summary_model(&config.summary_model)),
+            vision_model: Mutex::new(config.vision_model.trim().to_string()),
             config,
             provider: Mutex::new(provider),
             tools: ToolRegistry::default_tools(project_mcp_registry.clone()),
@@ -406,6 +414,12 @@ impl DispatcherAgent {
         } else {
             normalize_summary_model(&settings.summary_model)
         };
+        let mut vision_model = self.vision_model.lock().unwrap();
+        *vision_model = if settings.vision_model.trim().is_empty() {
+            self.config.vision_model.trim().to_string()
+        } else {
+            settings.vision_model.trim().to_string()
+        };
     }
 
     pub fn auto_approve_dispatch(&self) -> bool {
@@ -422,6 +436,43 @@ impl DispatcherAgent {
 
     fn summary_model(&self) -> String {
         self.summary_model.lock().unwrap().clone()
+    }
+
+    fn vision_model(&self) -> String {
+        self.vision_model.lock().unwrap().clone()
+    }
+
+    fn provider_for_messages(
+        &self,
+        provider: &OpenAiCompatProvider,
+        messages: &[ChatMessage],
+        on_event: &Channel<AgentEvent>,
+        notify_user: bool,
+    ) -> Result<OpenAiCompatProvider> {
+        if !messages_contain_inline_images(messages) {
+            return Ok(provider.clone());
+        }
+
+        let vision_model = self.vision_model();
+        if vision_model.trim().is_empty() {
+            anyhow::bail!(
+                "检测到用户上传了图片，但 Dispatcher 设置中的视觉模型为空。请先配置视觉模型后重试。"
+            );
+        }
+
+        let selected = provider.with_model(vision_model.trim());
+        if notify_user && selected.model() != provider.model() {
+            emit(
+                on_event,
+                AgentEvent::ModelSwitched {
+                    from_model: provider.model().to_string(),
+                    to_model: selected.model().to_string(),
+                    reason: "检测到用户上传了图片".to_string(),
+                },
+            );
+        }
+
+        Ok(selected)
     }
 
     pub fn set_context_debug(&mut self, value: bool) {
@@ -689,16 +740,19 @@ impl DispatcherAgent {
             let prompt_snapshot =
                 self.build_system_prompt_for_workspace(workspace_id, workspace, &tool_definitions)?;
             let history_messages = db.load_llm_history(workspace_id)?;
+            let request_provider =
+                self.provider_for_messages(provider, &history_messages, on_event, iteration == 0)?;
             let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
             messages.extend(history_messages.clone());
-            let request_snapshot = provider.build_request_snapshot(&messages, &tool_definitions);
+            let request_snapshot =
+                request_provider.build_request_snapshot(&messages, &tool_definitions);
 
             debug_logger.log(
                 "发送大模型请求",
                 vec![
                     ("工作区".to_string(), workspace_id.to_string()),
                     ("轮次".to_string(), (iteration + 1).to_string()),
-                    ("模型".to_string(), provider.model().to_string()),
+                    ("模型".to_string(), request_provider.model().to_string()),
                     ("消息数".to_string(), messages.len().to_string()),
                     ("工具数".to_string(), tool_definitions.len().to_string()),
                 ],
@@ -740,14 +794,19 @@ impl DispatcherAgent {
                         .clone();
                     return self.emit_stop_and_finish(db, workspace_id, on_event, &partial);
                 }
-                response = provider.chat_stream(&messages, &tool_definitions, on_delta) => response
+                response = request_provider.chat_stream(
+                    &messages,
+                    &tool_definitions,
+                    messages_contain_inline_images(&history_messages),
+                    on_delta,
+                ) => response
             }?;
-            let response_snapshot = provider.build_response_snapshot(&response);
+            let response_snapshot = request_provider.build_response_snapshot(&response);
             if let Some(usage) = response.usage.as_ref() {
                 record_session_token_usage(
                     db,
                     workspace_id,
-                    provider.model(),
+                    request_provider.model(),
                     DispatcherSessionTokenUsageSource::Primary,
                     usage,
                 );
@@ -758,7 +817,7 @@ impl DispatcherAgent {
                 vec![
                     ("工作区".to_string(), workspace_id.to_string()),
                     ("轮次".to_string(), (iteration + 1).to_string()),
-                    ("模型".to_string(), provider.model().to_string()),
+                    ("模型".to_string(), request_provider.model().to_string()),
                     ("状态码".to_string(), response.status_code.to_string()),
                     (
                         "工具调用数".to_string(),
@@ -930,7 +989,7 @@ impl DispatcherAgent {
 
                     let summary_model = self.summary_model();
                     let tool_result = match prepare_tool_result(
-                        provider,
+                        &request_provider,
                         &summary_model,
                         &tool_call.name,
                         &tool_call.arguments,

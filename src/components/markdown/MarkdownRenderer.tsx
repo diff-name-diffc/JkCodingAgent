@@ -1,9 +1,17 @@
 import { memo, useDeferredValue } from "react";
 import type { Components } from "react-markdown";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
+import { MarkdownImage } from "./MarkdownImage";
+
+function customUrlTransform(url: string) {
+  if (url.startsWith("data:image/")) {
+    return url;
+  }
+  return defaultUrlTransform(url);
+}
 
 const markdownComponents: Components = {
   code({ className, children }) {
@@ -27,6 +35,9 @@ const markdownComponents: Components = {
       </div>
     );
   },
+  img({ src, alt }) {
+    return <MarkdownImage src={src} alt={alt} />;
+  },
 };
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({
@@ -44,6 +55,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeRaw]}
         components={markdownComponents}
+        urlTransform={customUrlTransform}
       >
         {deferredContent}
       </ReactMarkdown>

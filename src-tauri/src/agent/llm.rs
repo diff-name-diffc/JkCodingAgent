@@ -46,6 +46,37 @@ impl ChatMessage {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ApiChatMessage {
+    role: String,
+    content: ApiMessageContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OutboundToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+enum ApiMessageContent {
+    Text(String),
+    Parts(Vec<ApiMessageContentPart>),
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ApiMessageContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ApiImageUrl },
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ApiImageUrl {
+    url: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolFunctionDefinition {
     pub name: String,
@@ -144,6 +175,12 @@ impl LlmUsage {
     }
 }
 
+pub fn messages_contain_inline_images(messages: &[ChatMessage]) -> bool {
+    messages
+        .iter()
+        .any(|message| message.role == "user" && content_contains_inline_image(&message.content))
+}
+
 #[derive(Clone)]
 pub struct OpenAiCompatProvider {
     client: Client,
@@ -233,6 +270,7 @@ impl OpenAiCompatProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
+        enable_multimodal: bool,
         mut on_delta: impl FnMut(&str),
     ) -> Result<LlmResponse> {
         if !self.is_configured() {
@@ -240,9 +278,10 @@ impl OpenAiCompatProvider {
         }
 
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
+        let api_messages = build_api_messages(messages, enable_multimodal);
         let request = StreamChatRequest {
             model: &self.model,
-            messages,
+            messages: &api_messages,
             max_tokens: self.max_tokens,
             temperature: self.temperature,
             tools: if tools.is_empty() { None } else { Some(tools) },
@@ -357,6 +396,122 @@ impl OpenAiCompatProvider {
     }
 }
 
+fn build_api_messages(messages: &[ChatMessage], enable_multimodal: bool) -> Vec<ApiChatMessage> {
+    messages
+        .iter()
+        .map(|message| ApiChatMessage {
+            role: message.role.clone(),
+            content: if enable_multimodal && message.role == "user" {
+                build_api_message_content(&message.content)
+            } else {
+                ApiMessageContent::Text(message.content.clone())
+            },
+            tool_calls: message.tool_calls.clone(),
+            tool_call_id: message.tool_call_id.clone(),
+            name: message.name.clone(),
+        })
+        .collect()
+}
+
+fn build_api_message_content(content: &str) -> ApiMessageContent {
+    let parts = extract_multimodal_parts(content);
+    if parts
+        .iter()
+        .any(|part| matches!(part, ApiMessageContentPart::ImageUrl { .. }))
+    {
+        ApiMessageContent::Parts(parts)
+    } else {
+        ApiMessageContent::Text(content.to_string())
+    }
+}
+
+fn content_contains_inline_image(content: &str) -> bool {
+    extract_inline_image_urls(content).next().is_some()
+}
+
+fn extract_multimodal_parts(content: &str) -> Vec<ApiMessageContentPart> {
+    let mut parts = Vec::new();
+    let mut cursor = 0usize;
+
+    for image in extract_inline_image_urls(content) {
+        if image.start > cursor {
+            push_text_part(&mut parts, &content[cursor..image.start]);
+        }
+        parts.push(ApiMessageContentPart::ImageUrl {
+            image_url: ApiImageUrl { url: image.url },
+        });
+        cursor = image.end;
+    }
+
+    if cursor < content.len() {
+        push_text_part(&mut parts, &content[cursor..]);
+    }
+
+    parts
+}
+
+fn push_text_part(parts: &mut Vec<ApiMessageContentPart>, text: &str) {
+    let trimmed = text.trim();
+    if !trimmed.is_empty() {
+        parts.push(ApiMessageContentPart::Text {
+            text: trimmed.to_string(),
+        });
+    }
+}
+
+struct InlineImageUrl {
+    start: usize,
+    end: usize,
+    url: String,
+}
+
+fn extract_inline_image_urls(content: &str) -> impl Iterator<Item = InlineImageUrl> + '_ {
+    InlineImageUrlIter {
+        content,
+        search_from: 0,
+    }
+}
+
+struct InlineImageUrlIter<'a> {
+    content: &'a str,
+    search_from: usize,
+}
+
+impl Iterator for InlineImageUrlIter<'_> {
+    type Item = InlineImageUrl;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.search_from < self.content.len() {
+            let rel_start = self.content[self.search_from..].find("![")?;
+            let start = self.search_from + rel_start;
+            let after_bang = start + 2;
+            let Some(alt_end_rel) = self.content[after_bang..].find("](") else {
+                self.search_from = after_bang;
+                continue;
+            };
+            let url_start = after_bang + alt_end_rel + 2;
+            let Some(url_end_rel) = self.content[url_start..].find(')') else {
+                self.search_from = url_start;
+                continue;
+            };
+            let url_end = url_start + url_end_rel;
+            let end = url_end + 1;
+            let url = &self.content[url_start..url_end];
+            self.search_from = end;
+
+            if url.starts_with("data:image/") {
+                return Some(InlineImageUrl {
+                    start,
+                    end,
+                    url: url.to_string(),
+                });
+            }
+        }
+
+        None
+    }
+}
+
 /// Fetch model list from an OpenAI-compatible `/v1/models` endpoint.
 pub async fn fetch_models(api_base: &str, api_key: &str) -> Result<Vec<String>> {
     let base_url = format!("{}/models", api_base.trim_end_matches('/'));
@@ -453,7 +608,7 @@ struct DashScopeModelEntry {
 #[derive(Serialize)]
 struct StreamChatRequest<'a> {
     model: &'a str,
-    messages: &'a [ChatMessage],
+    messages: &'a [ApiChatMessage],
     max_tokens: u32,
     temperature: f32,
     stream: bool,
@@ -503,7 +658,10 @@ struct StreamFunctionCall {
 
 #[cfg(test)]
 mod tests {
-    use super::StreamChunk;
+    use super::{
+        build_api_message_content, messages_contain_inline_images, ApiMessageContent,
+        ApiMessageContentPart, ChatMessage, StreamChunk,
+    };
 
     #[test]
     fn stream_chunk_supports_usage_only_tail_event() {
@@ -528,5 +686,40 @@ mod tests {
         assert_eq!(usage.completion_tokens, 45);
         assert_eq!(usage.total_tokens, 366);
         assert_eq!(usage.cached_tokens(), 128);
+    }
+
+    #[test]
+    fn detects_inline_images_only_in_user_messages() {
+        let messages = vec![
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: "![image](data:image/png;base64,aaa)".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "看这里 ![image](data:image/jpeg;base64,bbb)".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+        ];
+
+        assert!(messages_contain_inline_images(&messages));
+    }
+
+    #[test]
+    fn converts_markdown_data_images_to_openai_parts() {
+        let content = "先看图\n![image](data:image/png;base64,aaa)\n再解释";
+        let ApiMessageContent::Parts(parts) = build_api_message_content(content) else {
+            panic!("expected multimodal parts");
+        };
+
+        assert_eq!(parts.len(), 3);
+        assert!(matches!(parts[0], ApiMessageContentPart::Text { .. }));
+        assert!(matches!(parts[1], ApiMessageContentPart::ImageUrl { .. }));
+        assert!(matches!(parts[2], ApiMessageContentPart::Text { .. }));
     }
 }

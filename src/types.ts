@@ -222,6 +222,10 @@ export type DispatcherAgentEvent =
   | { event: "started"; data: { workspaceId: string } }
   | { event: "userMessage"; data: { message: DispatcherMessage } }
   | { event: "assistantStarted"; data: { messageId: string } }
+  | {
+      event: "modelSwitched";
+      data: { fromModel: string; toModel: string; reason: string };
+    }
   | { event: "assistantDelta"; data: { messageId: string; delta: string } }
   | { event: "assistantMessage"; data: { message: DispatcherMessage } }
   | { event: "toolPlanned"; data: { toolCallId?: string; name: string; arguments: string } }

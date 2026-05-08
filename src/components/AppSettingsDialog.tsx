@@ -1063,7 +1063,9 @@ function AhaAgentPanel() {
                 placeholder="例如 qwen-vl-plus、gpt-4o"
                 spellCheck={false}
               />
-              <span style={hintStyle}>预留给通用图像或截图分析能力；留空则不启用。</span>
+              <span style={hintStyle}>
+                用户上传图片时自动切换到该模型；留空时图片请求会停止并提示配置缺失。
+              </span>
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>

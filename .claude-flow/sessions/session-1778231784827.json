@@ -1,6 +1,6 @@
 {
-  "id": "session-1778233042376",
-  "startedAt": "2026-05-08T09:37:22.376Z",
+  "id": "session-1778231784827",
+  "startedAt": "2026-05-08T09:16:24.827Z",
   "cwd": "/Users/jk/work/python/ai/aha-coding",
   "context": {},
   "metrics": {
@@ -8,5 +8,7 @@
     "commands": 0,
     "tasks": 0,
     "errors": 0
-  }
+  },
+  "endedAt": "2026-05-08T09:31:55.549Z",
+  "duration": 930722
 }

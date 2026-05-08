@@ -145,23 +145,30 @@ export function ToolActivityBubble({
                     <span style={styles.refBadge}>详细引用 {detailRefs.length}</span>
                   )}
                 </div>
-                <span
-                  style={{
-                    ...styles.itemStatus,
-                    color:
-                      tool.status === "running"
-                        ? "var(--success)"
-                        : tool.status === "planned"
-                          ? "var(--warning, #d97706)"
-                          : "var(--text-secondary)",
-                  }}
-                >
-                  {tool.status === "running"
-                    ? "执行中"
-                    : tool.status === "planned"
-                      ? "待执行"
-                      : "已完成"}
-                </span>
+                <div style={styles.itemRightWrap}>
+                  {hasDisplayText && (
+                    <span style={styles.itemDisplayText} title={tool.displayText}>
+                      {tool.displayText}
+                    </span>
+                  )}
+                  <span
+                    style={{
+                      ...styles.itemStatus,
+                      color:
+                        tool.status === "running"
+                          ? "var(--success)"
+                          : tool.status === "planned"
+                            ? "var(--warning, #d97706)"
+                            : "var(--text-secondary)",
+                    }}
+                  >
+                    {tool.status === "running"
+                      ? "执行中"
+                      : tool.status === "planned"
+                        ? "待执行"
+                        : "已完成"}
+                  </span>
+                </div>
               </button>
               {expanded && (
                 <div style={styles.itemBody}>
@@ -171,15 +178,6 @@ export function ToolActivityBubble({
                       <pre className="session-selectable" style={styles.blockCode}>
                         {tool.input}
                       </pre>
-                    </div>
-                  )}
-
-                  {hasDisplayText && (
-                    <div style={styles.block}>
-                      <div style={styles.blockLabel}>展示文案</div>
-                      <div className="session-selectable" style={styles.blockText}>
-                        {tool.displayText}
-                      </div>
                     </div>
                   )}
 
@@ -424,6 +422,22 @@ const styles = {
     fontSize: 10.5,
     fontWeight: 700,
     lineHeight: 1.2,
+  },
+  itemRightWrap: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    minWidth: 0,
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  itemDisplayText: {
+    fontSize: 11.5,
+    color: "var(--text-secondary)",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    textAlign: "right" as const,
   },
   itemStatus: {
     fontSize: 11.5,

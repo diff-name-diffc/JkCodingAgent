@@ -4,6 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -17,9 +18,9 @@ use tokio::sync::watch;
 use super::config::DispatcherAgentConfig;
 use super::db::{
     ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb,
-    DispatcherMessageRecord, DispatcherMode, DispatcherSessionRuntimeState,
-    DispatcherSessionTokenUsageSource, DispatcherSettingsRecord, DispatcherToolArtifactRef,
-    PlanInteraction, PlanQuestionOption, TOOL_RETRY_CONTEXT_PREFIX,
+    DispatcherMessageRecord, DispatcherMessageUsageStats, DispatcherMode,
+    DispatcherSessionRuntimeState, DispatcherSessionTokenUsageSource, DispatcherSettingsRecord,
+    DispatcherToolArtifactRef, PlanInteraction, PlanQuestionOption, TOOL_RETRY_CONTEXT_PREFIX,
 };
 use super::debug::{render_json, ContextDebugLogger, DebugSection};
 use super::llm::{
@@ -118,6 +119,10 @@ pub enum AgentEvent {
     AssistantMessage {
         message: DispatcherMessageRecord,
     },
+    RunUsageUpdated {
+        workspace_id: String,
+        stats: DispatcherMessageUsageStats,
+    },
     ToolPlanned {
         tool_call_id: Option<String>,
         name: String,
@@ -183,6 +188,41 @@ pub enum AgentEvent {
     Finished {
         messages: Vec<DispatcherMessageRecord>,
     },
+}
+
+#[derive(Debug)]
+struct RunUsageTracker {
+    started_at: Instant,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+}
+
+impl RunUsageTracker {
+    fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+        }
+    }
+
+    fn record(&mut self, usage: &LlmUsage) -> DispatcherMessageUsageStats {
+        self.prompt_tokens += usage.prompt_tokens;
+        self.completion_tokens += usage.completion_tokens;
+        self.total_tokens += normalized_total_tokens(usage);
+        self.snapshot()
+    }
+
+    fn snapshot(&self) -> DispatcherMessageUsageStats {
+        DispatcherMessageUsageStats {
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            total_tokens: self.total_tokens,
+            elapsed_ms: self.started_at.elapsed().as_millis() as u64,
+        }
+    }
 }
 
 pub struct DispatcherAgent {
@@ -636,6 +676,7 @@ impl DispatcherAgent {
                 "主 Agent LLM API Key 未配置。请在 Dispatcher 设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
             );
         }
+        let mut usage_tracker = RunUsageTracker::new();
         let reply = self
             .run_llm_loop(
                 db,
@@ -644,6 +685,7 @@ impl DispatcherAgent {
                 &on_event,
                 &provider,
                 cancel_rx,
+                &mut usage_tracker,
             )
             .await?;
 
@@ -699,7 +741,7 @@ impl DispatcherAgent {
         );
 
         if cancellation_requested(&cancel_rx) {
-            let reply = self.emit_stop_and_finish(db, workspace_id, &on_event, "")?;
+            let reply = self.emit_stop_and_finish(db, workspace_id, &on_event, "", None)?;
             let messages = db.list_visible_messages(workspace_id)?;
             emit(
                 &on_event,
@@ -717,9 +759,16 @@ impl DispatcherAgent {
             );
         }
         let summary_model = self.summary_model();
+        let mut usage_tracker = RunUsageTracker::new();
         let summarized_dispatch_result = match tokio::select! {
             _ = wait_for_cancellation(&mut cancel_rx) => {
-                let reply = self.emit_stop_and_finish(db, workspace_id, &on_event, "")?;
+                let reply = self.emit_stop_and_finish(
+                    db,
+                    workspace_id,
+                    &on_event,
+                    "",
+                    None,
+                )?;
                 let messages = db.list_visible_messages(workspace_id)?;
                 emit(
                     &on_event,
@@ -730,12 +779,14 @@ impl DispatcherAgent {
                 return Ok(AgentTurn { reply, messages });
             }
             result = summarize_dispatch_result(&provider, &summary_model, dispatch_result, |usage| {
-                record_session_token_usage(
+                record_run_token_usage(
                     db,
                     workspace_id,
                     &summary_model,
                     DispatcherSessionTokenUsageSource::Summary,
                     usage,
+                    &mut usage_tracker,
+                    &on_event,
                 );
             }) => result
         } {
@@ -793,6 +844,7 @@ impl DispatcherAgent {
                 &on_event,
                 &provider,
                 cancel_rx,
+                &mut usage_tracker,
             )
             .await?;
 
@@ -814,6 +866,7 @@ impl DispatcherAgent {
         on_event: &Channel<AgentEvent>,
         provider: &OpenAiCompatProvider,
         cancel_rx: watch::Receiver<bool>,
+        usage_tracker: &mut RunUsageTracker,
     ) -> Result<DispatcherMessageRecord> {
         let debug_logger = ContextDebugLogger::new(self.context_debug_enabled(), workspace);
         let tool_context = ToolContext {
@@ -824,7 +877,13 @@ impl DispatcherAgent {
 
         for iteration in 0..self.config.max_tool_iterations {
             if cancellation_requested(&cancel_rx) {
-                return self.emit_stop_and_finish(db, workspace_id, on_event, "");
+                return self.emit_stop_and_finish(
+                    db,
+                    workspace_id,
+                    on_event,
+                    "",
+                    Some(usage_tracker),
+                );
             }
 
             let runtime_state = db.get_session_runtime_state(workspace_id)?;
@@ -888,7 +947,13 @@ impl DispatcherAgent {
             let response = tokio::select! {
                 _ = wait_for_cancellation(&mut stream_cancel_rx) => {
                     let partial = streamed_text.lock().clone();
-                    return self.emit_stop_and_finish(db, workspace_id, on_event, &partial);
+                    return self.emit_stop_and_finish(
+                        db,
+                        workspace_id,
+                        on_event,
+                        &partial,
+                        Some(usage_tracker),
+                    );
                 }
                 response = request_provider.chat_stream(
                     &messages,
@@ -899,12 +964,14 @@ impl DispatcherAgent {
             }?;
             let response_snapshot = request_provider.build_response_snapshot(&response);
             if let Some(usage) = response.usage.as_ref() {
-                record_session_token_usage(
+                record_run_token_usage(
                     db,
                     workspace_id,
                     request_provider.model(),
                     DispatcherSessionTokenUsageSource::Primary,
                     usage,
+                    usage_tracker,
+                    on_event,
                 );
             }
 
@@ -931,7 +998,13 @@ impl DispatcherAgent {
                 if content.is_empty() {
                     anyhow::bail!("LLM 返回了空响应且没有工具调用，无法继续执行。");
                 }
-                let reply = db.add_visible_message(workspace_id, "assistant", &content)?;
+                let usage_stats = usage_tracker.snapshot();
+                let reply = db.add_visible_message_with_usage(
+                    workspace_id,
+                    "assistant",
+                    &content,
+                    &usage_stats,
+                )?;
                 emit(
                     on_event,
                     AgentEvent::AssistantMessage {
@@ -999,7 +1072,13 @@ impl DispatcherAgent {
             let mut tool_call_index = 0usize;
             while tool_call_index < tool_calls.len() {
                 if cancellation_requested(&cancel_rx) {
-                    return self.emit_stop_and_finish(db, workspace_id, on_event, "");
+                    return self.emit_stop_and_finish(
+                        db,
+                        workspace_id,
+                        on_event,
+                        "",
+                        Some(usage_tracker),
+                    );
                 }
                 if preprocessed_tool_call_ids.contains(&tool_calls[tool_call_index].id) {
                     tool_call_index += 1;
@@ -1048,7 +1127,13 @@ impl DispatcherAgent {
 
                 for (tool_call, result) in ready_tool_results {
                     if cancellation_requested(&cancel_rx) {
-                        return self.emit_stop_and_finish(db, workspace_id, on_event, "");
+                        return self.emit_stop_and_finish(
+                            db,
+                            workspace_id,
+                            on_event,
+                            "",
+                            Some(usage_tracker),
+                        );
                     }
                     if preprocessed_tool_call_ids.contains(&tool_call.id) {
                         continue;
@@ -1222,12 +1307,14 @@ impl DispatcherAgent {
                             );
                         },
                         |usage| {
-                            record_session_token_usage(
+                            record_run_token_usage(
                                 db,
                                 workspace_id,
                                 &summary_model,
                                 DispatcherSessionTokenUsageSource::Summary,
                                 usage,
+                                usage_tracker,
+                                on_event,
                             );
                         },
                     )
@@ -1306,8 +1393,13 @@ impl DispatcherAgent {
             }
 
             if let Some(waiting_content) = planning_waiting_message {
-                let waiting_msg =
-                    db.add_visible_message(workspace_id, "assistant", &waiting_content)?;
+                let usage_stats = usage_tracker.snapshot();
+                let waiting_msg = db.add_visible_message_with_usage(
+                    workspace_id,
+                    "assistant",
+                    &waiting_content,
+                    &usage_stats,
+                )?;
                 emit(
                     on_event,
                     AgentEvent::AssistantMessage {
@@ -1323,8 +1415,13 @@ impl DispatcherAgent {
                     self.auto_approve_dispatch(),
                     final_message.as_deref(),
                 );
-                let waiting_msg =
-                    db.add_visible_message(workspace_id, "assistant", &waiting_content)?;
+                let usage_stats = usage_tracker.snapshot();
+                let waiting_msg = db.add_visible_message_with_usage(
+                    workspace_id,
+                    "assistant",
+                    &waiting_content,
+                    &usage_stats,
+                )?;
                 emit(
                     on_event,
                     AgentEvent::AssistantMessage {
@@ -1335,7 +1432,13 @@ impl DispatcherAgent {
             }
 
             if let Some(final_message) = final_message {
-                let reply = db.add_visible_message(workspace_id, "assistant", &final_message)?;
+                let usage_stats = usage_tracker.snapshot();
+                let reply = db.add_visible_message_with_usage(
+                    workspace_id,
+                    "assistant",
+                    &final_message,
+                    &usage_stats,
+                )?;
                 emit(
                     on_event,
                     AgentEvent::AssistantMessage {
@@ -2129,9 +2232,15 @@ impl DispatcherAgent {
         workspace_id: &str,
         on_event: &Channel<AgentEvent>,
         partial: &str,
+        usage_tracker: Option<&RunUsageTracker>,
     ) -> Result<DispatcherMessageRecord> {
         let content = build_stopped_dispatch_reply(partial);
-        let reply = db.add_visible_message(workspace_id, "assistant", &content)?;
+        let usage_stats = usage_tracker.map(RunUsageTracker::snapshot);
+        let reply = if let Some(usage_stats) = usage_stats.as_ref() {
+            db.add_visible_message_with_usage(workspace_id, "assistant", &content, usage_stats)?
+        } else {
+            db.add_visible_message(workspace_id, "assistant", &content)?
+        };
         emit(
             on_event,
             AgentEvent::AssistantMessage {
@@ -2851,6 +2960,34 @@ fn record_session_token_usage(
             "failed to persist dispatcher session token usage for workspace {} and model {}: {}",
             workspace_id, model, error
         );
+    }
+}
+
+fn record_run_token_usage(
+    db: &DispatcherDb,
+    workspace_id: &str,
+    model: &str,
+    source_kind: DispatcherSessionTokenUsageSource,
+    usage: &LlmUsage,
+    tracker: &mut RunUsageTracker,
+    on_event: &Channel<AgentEvent>,
+) {
+    record_session_token_usage(db, workspace_id, model, source_kind, usage);
+    let stats = tracker.record(usage);
+    emit(
+        on_event,
+        AgentEvent::RunUsageUpdated {
+            workspace_id: workspace_id.to_string(),
+            stats,
+        },
+    );
+}
+
+fn normalized_total_tokens(usage: &LlmUsage) -> u64 {
+    if usage.total_tokens > 0 {
+        usage.total_tokens
+    } else {
+        usage.prompt_tokens + usage.completion_tokens
     }
 }
 

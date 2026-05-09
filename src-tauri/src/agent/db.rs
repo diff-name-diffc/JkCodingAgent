@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, types::Type, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -153,6 +153,15 @@ pub struct DispatcherSessionRuntimeState {
     pub active_plan_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatcherMessageUsageStats {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    pub elapsed_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DispatcherMessageRecord {
@@ -167,6 +176,7 @@ pub struct DispatcherMessageRecord {
     pub tool_result_mode: Option<String>,
     pub tool_artifacts: Vec<DispatcherToolArtifactRef>,
     pub tool_calls_json: Option<String>,
+    pub usage_stats: Option<DispatcherMessageUsageStats>,
     pub created_at: String,
 }
 
@@ -236,6 +246,7 @@ struct NewDispatcherMessage<'a> {
     tool_result_mode: Option<&'a str>,
     tool_calls: Option<&'a [OutboundToolCall]>,
     tool_artifacts: &'a [ToolArtifactDraft],
+    usage_stats: Option<&'a DispatcherMessageUsageStats>,
     visible: bool,
 }
 
@@ -674,6 +685,29 @@ impl DispatcherDb {
             tool_result_mode: None,
             tool_calls: None,
             tool_artifacts: &[],
+            usage_stats: None,
+            visible: true,
+        })
+    }
+
+    pub fn add_visible_message_with_usage(
+        &self,
+        workspace_id: &str,
+        role: &str,
+        content: &str,
+        usage_stats: &DispatcherMessageUsageStats,
+    ) -> Result<DispatcherMessageRecord> {
+        self.add_message(NewDispatcherMessage {
+            workspace_id,
+            role,
+            content,
+            context_payload: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_result_mode: None,
+            tool_calls: None,
+            tool_artifacts: &[],
+            usage_stats: Some(usage_stats),
             visible: true,
         })
     }
@@ -698,6 +732,7 @@ impl DispatcherDb {
             tool_result_mode,
             tool_calls,
             tool_artifacts: &[],
+            usage_stats: None,
             visible: true,
         })
     }
@@ -722,6 +757,7 @@ impl DispatcherDb {
             tool_result_mode,
             tool_calls: None,
             tool_artifacts,
+            usage_stats: None,
             visible: true,
         })
     }
@@ -869,6 +905,7 @@ impl DispatcherDb {
             tool_result_mode,
             tool_calls,
             tool_artifacts: &[],
+            usage_stats: None,
             visible: false,
         })
     }
@@ -879,7 +916,7 @@ impl DispatcherDb {
     ) -> Result<Vec<DispatcherMessageRecord>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, created_at
+            "SELECT id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
              FROM dispatcher_messages
              WHERE workspace_id = ?1 AND visible = 1
              ORDER BY created_at ASC, rowid ASC",
@@ -896,7 +933,8 @@ impl DispatcherDb {
                 tool_result_mode: row.get(7)?,
                 tool_artifacts: parse_tool_artifact_refs(row.get::<_, Option<String>>(8)?),
                 tool_calls_json: row.get(9)?,
-                created_at: row.get(10)?,
+                usage_stats: parse_message_usage_stats(row.get::<_, Option<String>>(10)?)?,
+                created_at: row.get(11)?,
             })
         })?;
 
@@ -1131,6 +1169,11 @@ impl DispatcherDb {
             .map(serde_json::to_string)
             .transpose()
             .context("serialize tool calls")?;
+        let usage_stats_json = params
+            .usage_stats
+            .map(serde_json::to_string)
+            .transpose()
+            .context("serialize dispatcher message usage stats")?;
 
         let mut record = DispatcherMessageRecord {
             id: Uuid::new_v4().to_string(),
@@ -1143,6 +1186,7 @@ impl DispatcherDb {
             tool_result_mode: params.tool_result_mode.map(|s| s.to_string()),
             tool_artifacts: Vec::new(),
             tool_calls_json: tool_calls_json.clone(),
+            usage_stats: params.usage_stats.cloned(),
             created_at: now(),
         };
 
@@ -1155,9 +1199,9 @@ impl DispatcherDb {
 
         tx.execute(
             "INSERT INTO dispatcher_messages (
-                id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, visible, created_at
+                id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, visible, created_at
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 &record.id,
                 &record.workspace_id,
@@ -1169,6 +1213,7 @@ impl DispatcherDb {
                 &record.tool_result_mode,
                 Option::<String>::None,
                 &record.tool_calls_json,
+                &usage_stats_json,
                 if params.visible { 1 } else { 0 },
                 &record.created_at
             ],
@@ -1287,6 +1332,7 @@ impl DispatcherDb {
                 tool_result_mode TEXT,
                 tool_artifacts_json TEXT,
                 tool_calls_json TEXT,
+                usage_stats_json TEXT,
                 visible INTEGER NOT NULL DEFAULT 1,
                 context_cleared INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
@@ -1382,6 +1428,7 @@ impl DispatcherDb {
         ensure_column_exists(&conn, "dispatcher_messages", "context_payload", "TEXT")?;
         ensure_column_exists(&conn, "dispatcher_messages", "tool_result_mode", "TEXT")?;
         ensure_column_exists(&conn, "dispatcher_messages", "tool_artifacts_json", "TEXT")?;
+        ensure_column_exists(&conn, "dispatcher_messages", "usage_stats_json", "TEXT")?;
         ensure_column_exists(
             &conn,
             "dispatcher_messages",
@@ -1607,6 +1654,19 @@ fn parse_tool_artifact_refs(raw: Option<String>) -> Vec<DispatcherToolArtifactRe
         .unwrap_or_default()
 }
 
+fn parse_message_usage_stats(
+    raw: Option<String>,
+) -> rusqlite::Result<Option<DispatcherMessageUsageStats>> {
+    raw.as_deref()
+        .filter(|json| !json.trim().is_empty())
+        .map(|json| {
+            serde_json::from_str::<DispatcherMessageUsageStats>(json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(10, Type::Text, Box::new(error))
+            })
+        })
+        .transpose()
+}
+
 fn parse_optional_json<T>(raw: Option<String>, column: &str) -> Result<Option<T>>
 where
     T: for<'de> Deserialize<'de>,
@@ -1681,8 +1741,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb, DispatcherMode,
-        DispatcherSessionTokenUsageSource, PlanInteraction, PlanQuestionOption, ToolArtifactDraft,
+        ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb,
+        DispatcherMessageUsageStats, DispatcherMode, DispatcherSessionTokenUsageSource,
+        PlanInteraction, PlanQuestionOption, ToolArtifactDraft,
     };
     use crate::agent::llm::{LlmPromptTokensDetails, LlmUsage};
 
@@ -1715,6 +1776,15 @@ mod tests {
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
             prompt_tokens_details: Some(LlmPromptTokensDetails { cached_tokens }),
+        }
+    }
+
+    fn sample_message_usage_stats() -> DispatcherMessageUsageStats {
+        DispatcherMessageUsageStats {
+            prompt_tokens: 120,
+            completion_tokens: 45,
+            total_tokens: 165,
+            elapsed_ms: 12_345,
         }
     }
 
@@ -1883,6 +1953,26 @@ mod tests {
             .set_session_mode(&session.id, DispatcherMode::Plan)
             .unwrap();
         assert_eq!(state.mode, DispatcherMode::Plan);
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn visible_message_usage_stats_round_trip() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .unwrap();
+        let stats = sample_message_usage_stats();
+
+        let message = db
+            .add_visible_message_with_usage(&session.id, "assistant", "完成", &stats)
+            .unwrap();
+
+        assert_eq!(message.usage_stats, Some(stats.clone()));
+        let visible_messages = db.list_visible_messages(&session.id).unwrap();
+        assert_eq!(visible_messages.len(), 1);
+        assert_eq!(visible_messages[0].usage_stats, Some(stats));
 
         cleanup_test_db(root);
     }

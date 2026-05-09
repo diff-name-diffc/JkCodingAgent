@@ -151,7 +151,15 @@ export interface DispatcherMessage {
   toolResultMode?: DispatcherToolResultMode;
   toolArtifacts?: DispatcherToolArtifactRef[];
   toolCallsJson?: string;
+  usageStats?: DispatcherMessageUsageStats | null;
   createdAt: string;
+}
+
+export interface DispatcherMessageUsageStats {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  elapsedMs: number;
 }
 
 export type DispatcherToolResultMode = "raw" | "summary" | "conservative_summary";
@@ -263,6 +271,10 @@ export type DispatcherAgentEvent =
     }
   | { event: "assistantDelta"; data: { messageId: string; delta: string } }
   | { event: "assistantMessage"; data: { message: DispatcherMessage } }
+  | {
+      event: "runUsageUpdated";
+      data: { workspaceId: string; stats: DispatcherMessageUsageStats };
+    }
   | { event: "toolPlanned"; data: { toolCallId?: string; name: string; arguments: string } }
   | { event: "toolStarted"; data: { toolCallId?: string; name: string; arguments: string } }
   | {

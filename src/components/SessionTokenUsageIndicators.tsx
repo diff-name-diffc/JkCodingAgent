@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import type { DispatcherSessionTokenUsage } from "../types";
+import { formatTokenCount } from "../utils";
 
 interface SessionTokenUsageIndicatorsProps {
   entries: DispatcherSessionTokenUsage[];
@@ -45,16 +46,6 @@ function shortModelName(model: string): string {
     return trimmed || "model";
   }
   return `${trimmed.slice(0, 8)}...${trimmed.slice(-7)}`;
-}
-
-function formatTokenCount(value: number): string {
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(2)}M`;
-  }
-  if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(1)}K`;
-  }
-  return String(value);
 }
 
 const styles = {

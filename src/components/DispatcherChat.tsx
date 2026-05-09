@@ -29,6 +29,7 @@ import type {
   ChecklistPlanState,
   DispatchFeedbackState,
   DispatcherMessage,
+  DispatcherMessageUsageStats,
   DispatcherAgentEvent,
   DispatcherAgentTurn,
   DispatcherMode,
@@ -41,7 +42,7 @@ import type {
 } from "../types";
 import { useDashScopeAsr } from "../hooks/useDashScopeAsr";
 import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTokenUsage";
-import { isImeComposing } from "../utils";
+import { formatElapsedMmSs, formatTokenCount, isImeComposing } from "../utils";
 import { SessionTokenUsageIndicators } from "./SessionTokenUsageIndicators";
 import { ToolActivityBubble, type ToolActivityItem } from "./ToolActivityBubble";
 import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
@@ -116,6 +117,30 @@ function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function createEmptyUsageStats(): DispatcherMessageUsageStats {
+  return {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    elapsedMs: 0,
+  };
+}
+
+function withLiveElapsed(
+  stats: DispatcherMessageUsageStats | null,
+  receivedAt: number,
+  now: number,
+): DispatcherMessageUsageStats | null {
+  if (!stats) {
+    return null;
+  }
+
+  return {
+    ...stats,
+    elapsedMs: stats.elapsedMs + Math.max(0, now - receivedAt),
+  };
+}
+
 // ── Message Bubble ───────────────────────────────────────────────────────────
 
 const UserMessageBubble = memo(function UserMessageBubble({
@@ -141,16 +166,23 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
   segments,
   tools,
   workspaceId,
+  usageStats,
   placeholderText,
 }: {
   segments: AssistantTurnSegment[];
   tools: ToolActivityItem[];
   workspaceId: string;
+  usageStats?: DispatcherMessageUsageStats | null;
   placeholderText?: string | null;
 }) {
   const visibleSegments = segments.filter((segment) => segment.text.trim());
   const visiblePlaceholder = placeholderText?.trim() ?? "";
-  if (visibleSegments.length === 0 && tools.length === 0 && !visiblePlaceholder) {
+  if (
+    visibleSegments.length === 0 &&
+    tools.length === 0 &&
+    !visiblePlaceholder &&
+    !usageStats
+  ) {
     return null;
   }
 
@@ -190,7 +222,23 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
             )}
           </div>
         ))}
+        {usageStats && <AssistantUsageStats stats={usageStats} />}
       </div>
+    </div>
+  );
+});
+
+const AssistantUsageStats = memo(function AssistantUsageStats({
+  stats,
+}: {
+  stats: DispatcherMessageUsageStats;
+}) {
+  return (
+    <div style={styles.assistantUsageStats} title="来自模型标准 usage 字段">
+      <span>总 {formatTokenCount(stats.totalTokens)}</span>
+      <span>输入 {formatTokenCount(stats.promptTokens)}</span>
+      <span>输出 {formatTokenCount(stats.completionTokens)}</span>
+      <span>耗时：{formatElapsedMmSs(stats.elapsedMs)}</span>
     </div>
   );
 });
@@ -813,6 +861,9 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [planInteraction, setPlanInteraction] = useState<PlanInteraction | null>(null);
     const [activePlanPath, setActivePlanPath] = useState<string | null>(null);
     const [implementingPlan, setImplementingPlan] = useState(false);
+    const [activeUsageStats, setActiveUsageStats] =
+      useState<DispatcherMessageUsageStats | null>(null);
+    const [usageClockNow, setUsageClockNow] = useState(() => Date.now());
 
     const handlePaste = useCallback((e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -844,6 +895,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     currentSessionIdRef.current = sessionId;
     const activeRunRef = useRef(0);
     const historyLoadRef = useRef(0);
+    const activeUsageStatsReceivedAtRef = useRef(Date.now());
     const runQueuesRef = useRef<Map<string, Promise<void>>>(new Map());
     const autoApproveRef = useRef(autoApprove);
     autoApproveRef.current = autoApprove;
@@ -878,6 +930,22 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       refresh: refreshSessionTokenUsage,
       reset: resetSessionTokenUsage,
     } = useDispatcherSessionTokenUsage(sessionId);
+    const liveUsageStats = useMemo(
+      () =>
+        withLiveElapsed(activeUsageStats, activeUsageStatsReceivedAtRef.current, usageClockNow),
+      [activeUsageStats, usageClockNow],
+    );
+
+    useEffect(() => {
+      if (!activeUsageStats) {
+        return;
+      }
+
+      const timer = window.setInterval(() => {
+        setUsageClockNow(Date.now());
+      }, 1000);
+      return () => window.clearInterval(timer);
+    }, [activeUsageStats]);
 
     // Load settings (for auto-approve flag)
     useEffect(() => {
@@ -906,6 +974,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       setPlanInteraction(null);
       setActivePlanPath(null);
       setImplementingPlan(false);
+      setActiveUsageStats(null);
+      setUsageClockNow(Date.now());
 
       invoke<DispatcherMessage[]>("dispatcher_list_messages", {
         workspaceId: sessionId,
@@ -973,6 +1043,13 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               prev.filter((segment) => segment.kind === "tool-summary"),
             );
             setMessages((prev) => [...prev, event.data.message]);
+            break;
+          case "runUsageUpdated":
+            if (!isCurrentRun || event.data.workspaceId !== targetSessionId) return;
+            activeUsageStatsReceivedAtRef.current = Date.now();
+            setActiveUsageStats(event.data.stats);
+            setUsageClockNow(Date.now());
+            void refreshSessionTokenUsage(targetSessionId);
             break;
           case "toolPlanned":
             if (!isCurrentRun) return;
@@ -1063,6 +1140,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             setStreamingSegments([]);
             setLiveToolCalls([]);
             setAssistantPlaceholder(null);
+            setActiveUsageStats(null);
             break;
         }
       };
@@ -1088,6 +1166,9 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               setLiveToolCalls([]);
               setAssistantPlaceholder(null);
               setRunError(null);
+              activeUsageStatsReceivedAtRef.current = Date.now();
+              setActiveUsageStats(createEmptyUsageStats());
+              setUsageClockNow(Date.now());
             }
 
             const onEvent = createEventChannel(targetSessionId, runId);
@@ -1101,6 +1182,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               ) {
                 setHasPendingRun(false);
                 setIsLoading(false);
+                setActiveUsageStats(null);
               }
             }
           });
@@ -1528,14 +1610,19 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 segments={item.turn.segments}
                 tools={item.turn.tools}
                 workspaceId={sessionId}
+                usageStats={item.turn.usageStats}
               />
             ),
           )}
-          {(hasLiveSegments || liveToolCalls.length > 0 || hasAssistantPlaceholder) && (
+          {(hasLiveSegments ||
+            liveToolCalls.length > 0 ||
+            hasAssistantPlaceholder ||
+            liveUsageStats) && (
             <AssistantTurnBubble
               segments={streamingSegments}
               tools={liveToolCalls}
               workspaceId={sessionId}
+              usageStats={liveUsageStats}
               placeholderText={assistantPlaceholder}
             />
           )}
@@ -2341,6 +2428,22 @@ const styles = {
   assistantReplyBubble: {
     background:
       "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
+  },
+  assistantUsageStats: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flexWrap: "wrap" as const,
+    width: "fit-content",
+    maxWidth: "100%",
+    padding: "4px 8px",
+    borderRadius: "999px",
+    border: "1px solid var(--border-dim)",
+    background: "color-mix(in srgb, var(--bg-card) 82%, transparent)",
+    color: "var(--text-hint)",
+    fontFamily: "var(--font-mono)",
+    fontSize: "10.5px",
+    lineHeight: 1.4,
   },
   assistantPlaceholder: {
     display: "inline-flex",

@@ -66,6 +66,23 @@ export function getUsageColor(remainingPercent: number): string {
   return "var(--usage-danger)";
 }
 
+export function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(2)}M`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(1)}K`;
+  }
+  return String(value);
+}
+
+export function formatElapsedMmSs(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 // ── Git 状态工具 ──────────────────────────────────────────────────────────────
 
 export function getGitStatusColor(status: string): string {

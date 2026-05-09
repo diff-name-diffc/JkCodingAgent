@@ -1,5 +1,6 @@
 import type {
   DispatcherMessage,
+  DispatcherMessageUsageStats,
   DispatcherToolArtifactRef,
   DispatcherToolResultMode,
 } from "../types";
@@ -17,6 +18,7 @@ interface DispatcherAssistantTurn {
   id: string;
   tools: ToolActivityItem[];
   segments: AssistantTurnSegment[];
+  usageStats?: DispatcherMessageUsageStats;
 }
 
 export interface AssistantTurnSegment {
@@ -69,6 +71,8 @@ export function buildDispatcherDisplayItems(
     const turn = ensureAssistantTurn(message.id);
 
     if (message.role === "assistant") {
+      mergeTurnUsageStats(turn, message.usageStats);
+
       const toolCalls = parseToolCalls(message.toolCallsJson);
       for (const toolCall of toolCalls) {
         upsertToolActivity(turn.tools, {
@@ -292,6 +296,27 @@ function upsertToolActivity(tools: ToolActivityItem[], incoming: ToolActivityIte
     displayText: incoming.displayText ?? tools[index].displayText,
     detailRefs: incoming.detailRefs ?? tools[index].detailRefs,
     resultMode: incoming.resultMode ?? tools[index].resultMode,
+  };
+}
+
+function mergeTurnUsageStats(
+  turn: DispatcherAssistantTurn,
+  incoming: DispatcherMessageUsageStats | null | undefined,
+) {
+  if (!incoming) {
+    return;
+  }
+
+  if (!turn.usageStats) {
+    turn.usageStats = { ...incoming };
+    return;
+  }
+
+  turn.usageStats = {
+    promptTokens: turn.usageStats.promptTokens + incoming.promptTokens,
+    completionTokens: turn.usageStats.completionTokens + incoming.completionTokens,
+    totalTokens: turn.usageStats.totalTokens + incoming.totalTokens,
+    elapsedMs: Math.max(turn.usageStats.elapsedMs, incoming.elapsedMs),
   };
 }
 

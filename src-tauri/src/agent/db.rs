@@ -21,6 +21,8 @@ pub struct DispatcherSessionRecord {
     pub id: String,
     pub project_id: String,
     pub title: String,
+    pub mode: DispatcherMode,
+    pub active_plan_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -37,6 +39,118 @@ pub struct DispatcherSettingsRecord {
     pub asr_websocket_url: String,
     pub auto_approve_dispatch: bool,
     pub context_debug: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatcherMode {
+    Default,
+    Plan,
+}
+
+impl DispatcherMode {
+    pub fn from_wire(value: &str) -> Result<Self> {
+        match value.trim() {
+            "" | "default" => Ok(Self::Default),
+            "plan" => Ok(Self::Plan),
+            other => anyhow::bail!("invalid dispatcher mode: {other}"),
+        }
+    }
+
+    pub fn as_sql_value(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Plan => "plan",
+        }
+    }
+
+    fn from_sql_value(value: String) -> Self {
+        match value.as_str() {
+            "plan" => Self::Plan,
+            _ => Self::Default,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecklistPlanState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+    pub items: Vec<ChecklistPlanItem>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecklistPlanItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub step: String,
+    pub status: ChecklistStepStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dispatch_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subprocess_task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChecklistStepStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl ChecklistStepStatus {
+    pub fn from_wire(value: &str) -> Result<Self> {
+        match value.trim() {
+            "pending" => Ok(Self::Pending),
+            "in_progress" => Ok(Self::InProgress),
+            "completed" => Ok(Self::Completed),
+            other => anyhow::bail!("invalid checklist step status: {other}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanQuestionOption {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlanInteraction {
+    Question {
+        id: String,
+        question: String,
+        options: Vec<PlanQuestionOption>,
+    },
+    Ready {
+        plan_path: String,
+        title: String,
+        summary: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatcherSessionRuntimeState {
+    pub mode: DispatcherMode,
+    pub checklist: Option<ChecklistPlanState>,
+    pub plan_interaction: Option<PlanInteraction>,
+    pub active_plan_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -225,7 +339,7 @@ impl DispatcherDb {
     pub fn list_sessions(&self, project_id: &str) -> Result<Vec<DispatcherSessionRecord>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, title, created_at, updated_at
+            "SELECT id, project_id, title, mode, active_plan_path, created_at, updated_at
              FROM dispatcher_sessions
              WHERE project_id = ?1
              ORDER BY updated_at DESC",
@@ -235,8 +349,10 @@ impl DispatcherDb {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
                 title: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
+                mode: DispatcherMode::from_sql_value(row.get(3)?),
+                active_plan_path: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
             })
         })?;
 
@@ -244,23 +360,33 @@ impl DispatcherDb {
             .context("list dispatcher sessions")
     }
 
-    pub fn create_session(&self, project_id: &str, title: &str) -> Result<DispatcherSessionRecord> {
+    pub fn create_session(
+        &self,
+        project_id: &str,
+        title: &str,
+        mode: DispatcherMode,
+        active_plan_path: Option<&str>,
+    ) -> Result<DispatcherSessionRecord> {
         let record = DispatcherSessionRecord {
             id: Uuid::new_v4().to_string(),
             project_id: project_id.to_string(),
             title: title.to_string(),
+            mode,
+            active_plan_path: active_plan_path.map(str::to_string),
             created_at: now(),
             updated_at: now(),
         };
 
         let conn = self.connect()?;
         conn.execute(
-            "INSERT INTO dispatcher_sessions (id, project_id, title, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO dispatcher_sessions (id, project_id, title, mode, active_plan_path, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 record.id,
                 record.project_id,
                 record.title,
+                record.mode.as_sql_value(),
+                record.active_plan_path,
                 record.created_at,
                 record.updated_at
             ],
@@ -291,7 +417,7 @@ impl DispatcherDb {
         }
 
         conn.query_row(
-            "SELECT id, project_id, title, created_at, updated_at
+            "SELECT id, project_id, title, mode, active_plan_path, created_at, updated_at
              FROM dispatcher_sessions
              WHERE id = ?1",
             params![session_id],
@@ -300,8 +426,10 @@ impl DispatcherDb {
                     id: row.get(0)?,
                     project_id: row.get(1)?,
                     title: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
+                    mode: DispatcherMode::from_sql_value(row.get(3)?),
+                    active_plan_path: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
                 })
             },
         )
@@ -330,6 +458,202 @@ impl DispatcherDb {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn get_session_runtime_state(
+        &self,
+        session_id: &str,
+    ) -> Result<DispatcherSessionRuntimeState> {
+        let conn = self.connect()?;
+        let (mode, active_plan_path, checklist_json, plan_interaction_json) = conn
+            .query_row(
+                "SELECT mode, active_plan_path, checklist_json, plan_interaction_json
+                 FROM dispatcher_sessions
+                 WHERE id = ?1",
+                params![session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("load dispatcher session runtime state")?
+            .with_context(|| format!("dispatcher session not found: {session_id}"))?;
+
+        Ok(DispatcherSessionRuntimeState {
+            mode: DispatcherMode::from_sql_value(mode),
+            active_plan_path,
+            checklist: parse_optional_json(checklist_json, "checklist_json")?,
+            plan_interaction: parse_optional_json(plan_interaction_json, "plan_interaction_json")?,
+        })
+    }
+
+    pub fn set_session_mode(
+        &self,
+        session_id: &str,
+        mode: DispatcherMode,
+    ) -> Result<DispatcherSessionRuntimeState> {
+        let conn = self.connect()?;
+        let changed = conn
+            .execute(
+                "UPDATE dispatcher_sessions
+                 SET mode = ?1, updated_at = ?2
+                 WHERE id = ?3",
+                params![mode.as_sql_value(), now(), session_id],
+            )
+            .context("set dispatcher session mode")?;
+        if changed == 0 {
+            anyhow::bail!("dispatcher session not found: {session_id}");
+        }
+        self.get_session_runtime_state(session_id)
+    }
+
+    pub fn update_checklist(
+        &self,
+        session_id: &str,
+        checklist: &ChecklistPlanState,
+    ) -> Result<DispatcherSessionRuntimeState> {
+        let checklist_json = serde_json::to_string(checklist).context("serialize checklist")?;
+        let conn = self.connect()?;
+        let changed = conn
+            .execute(
+                "UPDATE dispatcher_sessions
+                 SET checklist_json = ?1, updated_at = ?2
+                 WHERE id = ?3",
+                params![checklist_json, now(), session_id],
+            )
+            .context("update dispatcher checklist")?;
+        if changed == 0 {
+            anyhow::bail!("dispatcher session not found: {session_id}");
+        }
+        self.get_session_runtime_state(session_id)
+    }
+
+    pub fn clear_checklist(&self, session_id: &str) -> Result<DispatcherSessionRuntimeState> {
+        let conn = self.connect()?;
+        let changed = conn
+            .execute(
+                "UPDATE dispatcher_sessions
+                 SET checklist_json = NULL, updated_at = ?1
+                 WHERE id = ?2",
+                params![now(), session_id],
+            )
+            .context("clear dispatcher checklist")?;
+        if changed == 0 {
+            anyhow::bail!("dispatcher session not found: {session_id}");
+        }
+        self.get_session_runtime_state(session_id)
+    }
+
+    pub fn attach_checklist_subprocess(
+        &self,
+        session_id: &str,
+        dispatch_id: &str,
+        task_id: &str,
+    ) -> Result<DispatcherSessionRuntimeState> {
+        let mut state = self.get_session_runtime_state(session_id)?;
+        let Some(mut checklist) = state.checklist.take() else {
+            return Ok(state);
+        };
+
+        if let Some(item) = checklist
+            .items
+            .iter_mut()
+            .find(|item| item.dispatch_id.as_deref() == Some(dispatch_id))
+        {
+            item.status = ChecklistStepStatus::InProgress;
+            item.subprocess_task_id = Some(task_id.to_string());
+            checklist.updated_at = now();
+            return self.update_checklist(session_id, &checklist);
+        }
+
+        Ok(DispatcherSessionRuntimeState {
+            checklist: Some(checklist),
+            ..state
+        })
+    }
+
+    pub fn clear_checklist_dispatch(
+        &self,
+        session_id: &str,
+        dispatch_id: &str,
+    ) -> Result<DispatcherSessionRuntimeState> {
+        let mut state = self.get_session_runtime_state(session_id)?;
+        let Some(mut checklist) = state.checklist.take() else {
+            return Ok(state);
+        };
+
+        let mut changed = false;
+        for item in &mut checklist.items {
+            if item.dispatch_id.as_deref() == Some(dispatch_id) {
+                item.dispatch_id = None;
+                item.subprocess_task_id = None;
+                item.agent = None;
+                item.detail = None;
+                if item.status == ChecklistStepStatus::InProgress {
+                    item.status = ChecklistStepStatus::Pending;
+                }
+                changed = true;
+            }
+        }
+
+        if changed {
+            checklist.updated_at = now();
+            return self.update_checklist(session_id, &checklist);
+        }
+
+        Ok(DispatcherSessionRuntimeState {
+            checklist: Some(checklist),
+            ..state
+        })
+    }
+
+    pub fn set_plan_interaction(
+        &self,
+        session_id: &str,
+        interaction: Option<&PlanInteraction>,
+    ) -> Result<DispatcherSessionRuntimeState> {
+        let interaction_json = interaction
+            .map(serde_json::to_string)
+            .transpose()
+            .context("serialize plan interaction")?;
+        let conn = self.connect()?;
+        let changed = conn
+            .execute(
+                "UPDATE dispatcher_sessions
+                 SET plan_interaction_json = ?1, updated_at = ?2
+                 WHERE id = ?3",
+                params![interaction_json, now(), session_id],
+            )
+            .context("update dispatcher plan interaction")?;
+        if changed == 0 {
+            anyhow::bail!("dispatcher session not found: {session_id}");
+        }
+        self.get_session_runtime_state(session_id)
+    }
+
+    pub fn set_active_plan_path(
+        &self,
+        session_id: &str,
+        plan_path: Option<&str>,
+    ) -> Result<DispatcherSessionRuntimeState> {
+        let conn = self.connect()?;
+        let changed = conn
+            .execute(
+                "UPDATE dispatcher_sessions
+                 SET active_plan_path = ?1, updated_at = ?2
+                 WHERE id = ?3",
+                params![plan_path, now(), session_id],
+            )
+            .context("update dispatcher active plan path")?;
+        if changed == 0 {
+            anyhow::bail!("dispatcher session not found: {session_id}");
+        }
+        self.get_session_runtime_state(session_id)
     }
 
     // ── Messages ──────────────────────────────────────────────
@@ -594,7 +918,7 @@ impl DispatcherDb {
         let mut stmt = conn.prepare(
             "SELECT role, COALESCE(context_payload, content), tool_call_id, tool_name, tool_calls_json
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND rowid >= ?2
+             WHERE workspace_id = ?1 AND rowid >= ?2 AND context_cleared = 0
              ORDER BY rowid ASC",
         )?;
         let rows = stmt.query_map(params![workspace_id, cutoff_rowid], map_chat_message_row)?;
@@ -609,6 +933,18 @@ impl DispatcherDb {
         }
 
         Ok(messages)
+    }
+
+    pub fn clear_context_messages(&self, workspace_id: &str) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "UPDATE dispatcher_messages
+             SET context_cleared = 1
+             WHERE workspace_id = ?1 AND context_cleared = 0",
+            params![workspace_id],
+        )
+        .context("logically clear dispatcher messages")?;
+        Ok(())
     }
 
     pub fn clear_messages(&self, workspace_id: &str) -> Result<()> {
@@ -629,6 +965,16 @@ impl DispatcherDb {
             params![workspace_id],
         )
         .context("clear dispatcher messages")?;
+        tx.execute(
+            "UPDATE dispatcher_sessions
+             SET checklist_json = NULL,
+                 plan_interaction_json = NULL,
+                 active_plan_path = NULL,
+                 updated_at = ?1
+             WHERE id = ?2",
+            params![now(), workspace_id],
+        )
+        .context("clear dispatcher planning state")?;
         tx.commit().context("commit dispatcher message cleanup")?;
         Ok(())
     }
@@ -888,6 +1234,10 @@ impl DispatcherDb {
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
                 title TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'default',
+                active_plan_path TEXT,
+                checklist_json TEXT,
+                plan_interaction_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -907,6 +1257,7 @@ impl DispatcherDb {
                 tool_artifacts_json TEXT,
                 tool_calls_json TEXT,
                 visible INTEGER NOT NULL DEFAULT 1,
+                context_cleared INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
 
@@ -999,6 +1350,26 @@ impl DispatcherDb {
         ensure_column_exists(&conn, "dispatcher_messages", "context_payload", "TEXT")?;
         ensure_column_exists(&conn, "dispatcher_messages", "tool_result_mode", "TEXT")?;
         ensure_column_exists(&conn, "dispatcher_messages", "tool_artifacts_json", "TEXT")?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_messages",
+            "context_cleared",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_sessions",
+            "mode",
+            "TEXT NOT NULL DEFAULT 'default'",
+        )?;
+        ensure_column_exists(&conn, "dispatcher_sessions", "active_plan_path", "TEXT")?;
+        ensure_column_exists(&conn, "dispatcher_sessions", "checklist_json", "TEXT")?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_sessions",
+            "plan_interaction_json",
+            "TEXT",
+        )?;
         Ok(())
     }
 
@@ -1015,7 +1386,7 @@ impl DispatcherDb {
         let mut stmt = conn.prepare(
             "SELECT rowid
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND role = 'user'
+             WHERE workspace_id = ?1 AND role = 'user' AND context_cleared = 0
              ORDER BY rowid DESC
              LIMIT ?2",
         )?;
@@ -1117,6 +1488,19 @@ fn parse_tool_artifact_refs(raw: Option<String>) -> Vec<DispatcherToolArtifactRe
         .unwrap_or_default()
 }
 
+fn parse_optional_json<T>(raw: Option<String>, column: &str) -> Result<Option<T>>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    raw.as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            serde_json::from_str::<T>(value)
+                .with_context(|| format!("parse dispatcher session {column}"))
+        })
+        .transpose()
+}
+
 fn should_keep_llm_message(message: &ChatMessage) -> bool {
     match message.role.as_str() {
         "assistant" => {
@@ -1177,7 +1561,10 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{DispatcherDb, ToolArtifactDraft};
+    use super::{
+        ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb, DispatcherMode,
+        PlanInteraction, PlanQuestionOption, ToolArtifactDraft,
+    };
 
     fn create_test_db() -> (DispatcherDb, PathBuf) {
         let root =
@@ -1205,7 +1592,9 @@ mod tests {
     #[test]
     fn update_session_title_persists_latest_title() {
         let (db, root) = create_test_db();
-        let session = db.create_session("project-1", "新会话").unwrap();
+        let session = db
+            .create_session("project-1", "新会话", DispatcherMode::Default, None)
+            .unwrap();
 
         let updated = db
             .update_session_title(&session.id, "修复会话命名")
@@ -1224,9 +1613,32 @@ mod tests {
     }
 
     #[test]
+    fn session_runtime_state_defaults_to_default_mode() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session("project-1", "新会话", DispatcherMode::Default, None)
+            .unwrap();
+
+        let state = db.get_session_runtime_state(&session.id).unwrap();
+        assert_eq!(state.mode, DispatcherMode::Default);
+        assert!(state.checklist.is_none());
+        assert!(state.plan_interaction.is_none());
+        assert!(state.active_plan_path.is_none());
+
+        let state = db
+            .set_session_mode(&session.id, DispatcherMode::Plan)
+            .unwrap();
+        assert_eq!(state.mode, DispatcherMode::Plan);
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
     fn tool_result_separates_display_content_from_context_payload() {
         let (db, root) = create_test_db();
-        let session = db.create_session("project-1", "测试会话").unwrap();
+        let session = db
+            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .unwrap();
         db.add_visible_message(&session.id, "user", "检查工具结果")
             .unwrap();
         let message = db
@@ -1266,7 +1678,41 @@ mod tests {
     #[test]
     fn clear_messages_removes_tool_artifacts_for_session() {
         let (db, root) = create_test_db();
-        let session = db.create_session("project-1", "测试会话").unwrap();
+        let session = db
+            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .unwrap();
+        db.update_checklist(
+            &session.id,
+            &ChecklistPlanState {
+                explanation: Some("规划中".to_string()),
+                items: vec![ChecklistPlanItem {
+                    id: Some("step_1".to_string()),
+                    step: "实现状态机".to_string(),
+                    status: ChecklistStepStatus::InProgress,
+                    agent: Some("claude".to_string()),
+                    dispatch_id: Some("dispatch-1".to_string()),
+                    subprocess_task_id: Some("task-1".to_string()),
+                    detail: Some("子任务".to_string()),
+                }],
+                updated_at: "2026-05-09T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+        db.set_active_plan_path(&session.id, Some("/repo/.jkcodingagent/plan/demo.md"))
+            .unwrap();
+        db.set_plan_interaction(
+            &session.id,
+            Some(&PlanInteraction::Question {
+                id: "q1".to_string(),
+                question: "怎么做？".to_string(),
+                options: vec![PlanQuestionOption {
+                    id: "a".to_string(),
+                    label: "A".to_string(),
+                    description: "方案 A".to_string(),
+                }],
+            }),
+        )
+        .unwrap();
         let message = db
             .add_visible_tool_result(
                 &session.id,
@@ -1285,6 +1731,82 @@ mod tests {
         assert!(db
             .get_tool_artifact(&session.id, &message.tool_artifacts[0].id)
             .is_err());
+        let state = db.get_session_runtime_state(&session.id).unwrap();
+        assert!(state.checklist.is_none());
+        assert!(state.plan_interaction.is_none());
+        assert!(state.active_plan_path.is_none());
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn clear_context_keeps_visible_messages_but_excludes_them_from_llm_history() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .unwrap();
+
+        db.add_visible_message(&session.id, "user", "旧需求")
+            .unwrap();
+        db.add_visible_message(&session.id, "assistant", "旧回复")
+            .unwrap();
+        db.clear_context_messages(&session.id).unwrap();
+        db.add_visible_message(&session.id, "user", "新需求")
+            .unwrap();
+
+        let visible_messages = db.list_visible_messages(&session.id).unwrap();
+        assert_eq!(visible_messages.len(), 3);
+        assert_eq!(visible_messages[0].content, "旧需求");
+        assert_eq!(visible_messages[2].content, "新需求");
+
+        let llm_history = db.load_llm_history(&session.id).unwrap();
+        assert_eq!(llm_history.len(), 1);
+        assert_eq!(llm_history[0].role, "user");
+        assert_eq!(llm_history[0].content, "新需求");
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn clear_checklist_removes_only_step_plan_state() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .unwrap();
+        db.update_checklist(
+            &session.id,
+            &ChecklistPlanState {
+                explanation: Some("旧规划".to_string()),
+                items: vec![ChecklistPlanItem {
+                    id: Some("step_1".to_string()),
+                    step: "旧步骤".to_string(),
+                    status: ChecklistStepStatus::Completed,
+                    agent: None,
+                    dispatch_id: None,
+                    subprocess_task_id: None,
+                    detail: None,
+                }],
+                updated_at: "2026-05-09T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+        db.set_active_plan_path(&session.id, Some("/repo/.jkcodingagent/plan/demo.md"))
+            .unwrap();
+        db.set_plan_interaction(
+            &session.id,
+            Some(&PlanInteraction::Ready {
+                plan_path: "/repo/.jkcodingagent/plan/demo.md".to_string(),
+                title: "Demo".to_string(),
+                summary: "ready".to_string(),
+            }),
+        )
+        .unwrap();
+
+        let state = db.clear_checklist(&session.id).unwrap();
+
+        assert!(state.checklist.is_none());
+        assert!(state.active_plan_path.is_some());
+        assert!(state.plan_interaction.is_some());
 
         cleanup_test_db(root);
     }
@@ -1292,7 +1814,9 @@ mod tests {
     #[test]
     fn delete_session_removes_tool_artifacts_with_session() {
         let (db, root) = create_test_db();
-        let session = db.create_session("project-1", "测试会话").unwrap();
+        let session = db
+            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .unwrap();
         let message = db
             .add_visible_tool_result(
                 &session.id,

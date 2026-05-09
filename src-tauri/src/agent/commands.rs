@@ -10,8 +10,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::config::{DispatcherAgentConfig, DEFAULT_SUMMARY_MODEL};
 use super::db::{
-    DispatcherDb, DispatcherMessageRecord, DispatcherSessionRecord,
-    DispatcherSessionTokenUsageRecord, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
+    DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherSessionRecord,
+    DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord, DispatcherSettingsRecord,
+    DispatcherToolArtifactRecord,
 };
 use super::llm;
 use super::llm::OpenAiCompatProvider;
@@ -411,9 +412,22 @@ pub async fn dispatcher_send_message(
     workspace_id: String,
     project_path: String,
     content: String,
+    mode: Option<String>,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     spawn_session_title_update(&state, &app, &workspace_id, &content);
+    let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
+        .map_err(|error| error.to_string())?;
+    state
+        .db
+        .set_session_mode(&workspace_id, mode)
+        .map_err(|error| error.to_string())?;
+    if mode == DispatcherMode::Default {
+        state
+            .db
+            .set_plan_interaction(&workspace_id, None)
+            .map_err(|error| error.to_string())?;
+    }
 
     if let Ok(Some(settings)) = state.db.get_settings() {
         let mut agent = state.agent.lock().await;
@@ -474,6 +488,17 @@ pub fn dispatcher_clear_messages(
 }
 
 #[tauri::command]
+pub fn dispatcher_clear_message_context(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    state
+        .db
+        .clear_context_messages(&workspace_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn dispatcher_get_tool_artifact(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
@@ -506,12 +531,43 @@ pub fn dispatcher_list_sessions(
 #[tauri::command]
 pub fn dispatcher_create_session(
     state: tauri::State<'_, DispatcherState>,
+    app: AppHandle,
     project_id: String,
     title: String,
+    mode: Option<String>,
+    active_plan_path: Option<String>,
 ) -> Result<DispatcherSessionRecord, String> {
+    let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
+        .map_err(|error| error.to_string())?;
+    let session = state
+        .db
+        .create_session(&project_id, &title, mode, active_plan_path.as_deref())
+        .map_err(|error| error.to_string())?;
+    let _ = app.emit("dispatcher-session-updated", session.clone());
+    Ok(session)
+}
+
+#[tauri::command]
+pub fn dispatcher_get_session_runtime_state(
+    state: tauri::State<'_, DispatcherState>,
+    session_id: String,
+) -> Result<DispatcherSessionRuntimeState, String> {
     state
         .db
-        .create_session(&project_id, &title)
+        .get_session_runtime_state(&session_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_set_session_mode(
+    state: tauri::State<'_, DispatcherState>,
+    session_id: String,
+    mode: String,
+) -> Result<DispatcherSessionRuntimeState, String> {
+    let mode = DispatcherMode::from_wire(&mode).map_err(|error| error.to_string())?;
+    state
+        .db
+        .set_session_mode(&session_id, mode)
         .map_err(|error| error.to_string())
 }
 
@@ -594,6 +650,7 @@ pub async fn dispatcher_continue_after_dispatch(
     project_path: String,
     dispatch_result: String,
     dispatch_state: String,
+    dispatch_id: Option<String>,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let agent = state.agent.lock().await;
@@ -605,6 +662,7 @@ pub async fn dispatcher_continue_after_dispatch(
             &project_path,
             &dispatch_result,
             DispatchFeedbackState::from_wire(&dispatch_state),
+            dispatch_id.as_deref(),
             on_event,
             run_handle.cancel_rx,
         )
@@ -613,6 +671,31 @@ pub async fn dispatcher_continue_after_dispatch(
     drop(agent);
     state.finish_run(&workspace_id, run_handle.generation);
     result
+}
+
+#[tauri::command]
+pub fn dispatcher_attach_checklist_subprocess(
+    state: tauri::State<'_, DispatcherState>,
+    session_id: String,
+    dispatch_id: String,
+    task_id: String,
+) -> Result<DispatcherSessionRuntimeState, String> {
+    state
+        .db
+        .attach_checklist_subprocess(&session_id, &dispatch_id, &task_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dispatcher_clear_checklist_dispatch(
+    state: tauri::State<'_, DispatcherState>,
+    session_id: String,
+    dispatch_id: String,
+) -> Result<DispatcherSessionRuntimeState, String> {
+    state
+        .db
+        .clear_checklist_dispatch(&session_id, &dispatch_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

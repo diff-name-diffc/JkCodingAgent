@@ -20,7 +20,7 @@ const DEFAULT_CONFIG: &str = r#"# JKCodingAgent 项目配置
 # 新任务默认使用的智能体："claude" 或 "codex"
 default = "claude"
 # 每个任务提示词前自动追加的公共工程指令
-prompt_prefix = "- 先围绕当前任务目标确认相关代码、约束和必要上下文。\n- 只做与目标直接相关的最小充分改动，避免无关重构。\n- 完成后简洁说明改动、验证结果和剩余风险。"
+prompt_prefix = "- 先围绕当前任务目标确认相关代码和文件路径、和子任务相关的上下文。\n- 只做与目标直接相关的最小充分改动，避免无关重构。\n- 完成后简洁说明改动、验证结果和剩余风险。"
 
 # 自动检测回写的 Claude Code 版本，可留空
 claude_version = ""

@@ -195,12 +195,6 @@ pub fn fallback_session_title(user_prompt: &str) -> String {
     normalize_session_title(user_prompt, "新会话")
 }
 
-pub fn build_summary_failure_message(summary_model: &str, error: &str) -> String {
-    format!(
-        "检测到工具结果辅助模型调用失败，当前轮次已停止。\n\n请检查以下配置后重试：\n- Dispatcher 设置中的 API Key 是否有效\n- Dispatcher 设置中的 API Base 是否可访问\n- 摘要模型 `{summary_model}` 当前是否可用\n\n错误详情：\n{error}"
-    )
-}
-
 async fn summarize_with_model(
     provider: &OpenAiCompatProvider,
     summary_model: &str,
@@ -723,9 +717,8 @@ mod tests {
 
     use super::{
         build_artifact_preview, build_prompt_preview, build_summary_debug_context,
-        build_summary_failure_message, decide_tool_result_action, extract_tagged_block,
-        fallback_session_title, normalize_session_title, normalize_tool_output,
-        parse_dual_tool_summary, ToolResultAction,
+        decide_tool_result_action, extract_tagged_block, fallback_session_title,
+        normalize_session_title, normalize_tool_output, parse_dual_tool_summary, ToolResultAction,
     };
     use crate::agent::llm::OpenAiCompatProvider;
 
@@ -844,14 +837,6 @@ mod tests {
         let preview = build_prompt_preview(&"a".repeat(1_500));
         assert!(preview.contains("已截断"));
         assert!(preview.contains("1200 / 1500"));
-    }
-
-    #[test]
-    fn failure_message_mentions_cloud_summary_model() {
-        let message = build_summary_failure_message("deepseek-v4-flash", "401 unauthorized");
-        assert!(message.contains("辅助模型调用失败"));
-        assert!(message.contains("deepseek-v4-flash"));
-        assert!(message.contains("401 unauthorized"));
     }
 
     #[test]

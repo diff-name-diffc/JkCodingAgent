@@ -11,11 +11,12 @@ import type {
   SubProcess,
   DispatchFeedbackState,
   TaskStatus,
+  DispatcherSessionRuntimeState,
 } from "../types";
 import { cleanTerminalOutput } from "../utils/ansiStrip";
 import { FileExplorer } from "./FileExplorer";
 import { SessionPanel } from "./SessionPanel";
-import { FileViewer } from "./FileViewer";
+import { FileViewer, type FileViewerHandle } from "./FileViewer";
 import { GitChanges } from "./GitChanges";
 import { GitHistory } from "./GitHistory";
 import { GitDiffViewer } from "./GitDiffViewer";
@@ -28,6 +29,7 @@ import { SubProcessTabs } from "./SubProcessTabs";
 import { AppSettingsDialog } from "./AppSettingsDialog";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useProjectPanels } from "../hooks/useProjectPanels";
+import { getPathBasename } from "../utils/filePaths";
 import s from "../styles";
 
 function getSubProcessAgentLabel(agent: AgentType): string {
@@ -189,6 +191,7 @@ export function ProjectPage({
   const shellRef = useRef<ShellTerminalPanelHandle>(null);
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
   const dispatcherChatRef = useRef<DispatcherChatHandle>(null);
+  const fileViewerRef = useRef<FileViewerHandle>(null);
   /** Track task_id → owning dispatcher session for result injection */
   const pendingDispatchRef = useRef<
     Map<string, { taskId: string; dispatchId: string; sessionId: string }>
@@ -345,6 +348,13 @@ export function ProjectPage({
       setActiveSubTabIdBySession((prev) => ({ ...prev, [sessionId]: taskId }));
       interactiveSubProcessRef.current.set(getSubProcessRouteKey(sessionId, agent), taskId);
       pendingDispatchRef.current.set(taskId, { taskId, dispatchId, sessionId });
+      invoke<DispatcherSessionRuntimeState>("dispatcher_attach_checklist_subprocess", {
+        sessionId,
+        dispatchId,
+        taskId,
+      })
+        .then((state) => dispatcherChatRef.current?.applyRuntimeState(state))
+        .catch(console.error);
       idleInjectedTaskIdsRef.current.delete(taskId);
       closedSubprocessTaskIdsRef.current.delete(taskId);
       onRetainTaskBuffers([taskId]);
@@ -432,7 +442,12 @@ export function ProjectPage({
         interactiveSubProcessRef.current.delete(routeKey);
       }
 
-      dispatcherChatRef.current?.continueWithResult(resultText, dispatchState, pending.sessionId);
+      dispatcherChatRef.current?.continueWithResult(
+        resultText,
+        dispatchState,
+        pending.sessionId,
+        pending.dispatchId,
+      );
     });
     return () => {
       unsub.then((fn) => fn());
@@ -453,8 +468,8 @@ export function ProjectPage({
       const agent = targetSubProcess?.agent ?? "claude";
       const agentLabel = getSubProcessAgentLabel(agent);
       const resultText = `${agentLabel} 当前轮次已完成，子进程仍在运行，可继续注入后续指令。\n\n终端输出：\n${cleaned}`;
-      const sessionId =
-        pendingDispatchRef.current.get(task_id)?.sessionId ?? targetSubProcess.sessionId;
+      const pending = pendingDispatchRef.current.get(task_id);
+      const sessionId = pending?.sessionId ?? targetSubProcess.sessionId;
       if (!sessionId) return;
       pendingDispatchRef.current.delete(task_id);
       idleInjectedTaskIdsRef.current.add(task_id);
@@ -462,7 +477,12 @@ export function ProjectPage({
       invoke("dispatcher_mark_subprocess_round_completed", { taskId: task_id }).catch(
         console.error,
       );
-      dispatcherChatRef.current?.continueWithResult(resultText, "round_completed", sessionId);
+      dispatcherChatRef.current?.continueWithResult(
+        resultText,
+        "round_completed",
+        sessionId,
+        pending?.dispatchId,
+      );
     });
     return () => {
       unsub.then((fn) => fn());
@@ -648,6 +668,14 @@ export function ProjectPage({
     [onResumeTask, onRetainTaskBuffers, project.id, tasks],
   );
 
+  const handleOpenPlanDocument = useCallback(
+    (path: string) => {
+      handleFileSelect(path, getPathBasename(path));
+      showEditorWorkbench();
+    },
+    [handleFileSelect, showEditorWorkbench],
+  );
+
   const handleSubTerminalResizeStart = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
@@ -773,6 +801,7 @@ export function ProjectPage({
                       onResumeStoppedRun={handleResumeSessionSubProcesses}
                       onOpenMcpStatus={() => setShowMcpStatus(true)}
                       onOpenSettings={() => setShowDispatcherSettings(true)}
+                      onOpenPlanDocument={handleOpenPlanDocument}
                       onClosePanel={() => setShowSessionWorkbench(false)}
                     />
                   ) : (
@@ -869,6 +898,7 @@ export function ProjectPage({
                     )
                   ) : (
                     <FileViewer
+                      ref={fileViewerRef}
                       tabs={openFiles}
                       activeTabId={activeFileTabId}
                       projectPath={project.path}

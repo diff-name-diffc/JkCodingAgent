@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AlertCircle, CheckCircle2, Eye, ImageIcon, PencilLine } from "lucide-react";
 import { LargeFileViewer } from "./LargeFileViewer";
@@ -21,6 +31,10 @@ type FileMeta = {
   lineCount: number;
   isText: boolean;
 };
+
+export interface FileTabPaneHandle {
+  flushPendingSave: () => Promise<string | null>;
+}
 
 const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024;
 
@@ -382,17 +396,17 @@ function TextFileHeader({
   );
 }
 
-export function FileTabPane({
-  active,
-  tab,
-  projectPath,
-  isDark,
-}: {
+export const FileTabPane = forwardRef<FileTabPaneHandle, {
   active: boolean;
   tab: OpenFileTab;
   projectPath: string;
   isDark: boolean;
-}) {
+}>(function FileTabPane({
+  active,
+  tab,
+  projectPath,
+  isDark,
+}, ref) {
   const [previewMode, setPreviewMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -403,6 +417,7 @@ export function FileTabPane({
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedContentRef = useRef("");
+  const contentRef = useRef<string | null>(null);
   const queuedSaveContentRef = useRef<string | null>(null);
   const saveInFlightRef = useRef(false);
 
@@ -475,6 +490,7 @@ export function FileTabPane({
     setError(null);
     setSaveStatus("idle");
     setContent(null);
+    contentRef.current = null;
     setFileMeta(null);
     setLargeDirty(false);
     queuedSaveContentRef.current = null;
@@ -499,6 +515,7 @@ export function FileTabPane({
             }
 
             savedContentRef.current = nextContent;
+            contentRef.current = nextContent;
             setContent(nextContent);
             setFileMeta(meta);
             setLoading(false);
@@ -524,6 +541,7 @@ export function FileTabPane({
 
   const handleChange = useCallback(
     (value: string) => {
+      contentRef.current = value;
       setContent(value);
 
       if (saveTimerRef.current) {
@@ -549,6 +567,32 @@ export function FileTabPane({
       }, 900);
     },
     [flushQueuedSave],
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      async flushPendingSave() {
+        if (isImage || !fileMeta || fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD) {
+          return null;
+        }
+        const currentContent = contentRef.current;
+        if (currentContent === null) {
+          return null;
+        }
+        if (saveTimerRef.current) {
+          clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
+        if (savedContentRef.current !== currentContent) {
+          queuedSaveContentRef.current = currentContent;
+          setSaveStatus("saving");
+          await flushQueuedSave();
+        }
+        return currentContent;
+      },
+    }),
+    [fileMeta, flushQueuedSave, isImage],
   );
 
   if (isImage) {
@@ -644,4 +688,4 @@ export function FileTabPane({
       </PaneCard>
     </PaneShell>
   );
-}
+});

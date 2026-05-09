@@ -1,22 +1,15 @@
-import { useMemo, useState } from "react";
+import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { MoreHorizontal, X } from "lucide-react";
 import { FileGlyph, resolveFilePresentation } from "../file-icons";
-import { FileTabPane } from "./file-viewer/FileTabPane";
+import { FileTabPane, type FileTabPaneHandle } from "./file-viewer/FileTabPane";
 import type { OpenFileTab } from "../hooks/useProjectPanels";
 
-export function FileViewer({
-  tabs,
-  activeTabId,
-  projectPath,
-  onSelectTab,
-  onCloseTab,
-  onCloseOtherTabs,
-  onCloseTabsToRight,
-  onCloseAllTabs,
-  onHide,
-  isDark,
-}: {
+export interface FileViewerHandle {
+  flushFile: (path: string) => Promise<string | null>;
+}
+
+export const FileViewer = forwardRef<FileViewerHandle, {
   tabs: OpenFileTab[];
   activeTabId: string | null;
   projectPath: string;
@@ -27,12 +20,38 @@ export function FileViewer({
   onCloseAllTabs: () => void;
   onHide: () => void;
   isDark: boolean;
-}) {
+}>(function FileViewer({
+  tabs,
+  activeTabId,
+  projectPath,
+  onSelectTab,
+  onCloseTab,
+  onCloseOtherTabs,
+  onCloseTabsToRight,
+  onCloseAllTabs,
+  onHide,
+  isDark,
+}, ref) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const tabRefs = useRef<Map<string, FileTabPaneHandle | null>>(new Map());
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? tabs[tabs.length - 1] ?? null,
     [activeTabId, tabs],
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      async flushFile(path: string) {
+        const tab = tabs.find((item) => item.path === path);
+        if (!tab) {
+          return null;
+        }
+        return (await tabRefs.current.get(tab.id)?.flushPendingSave()) ?? null;
+      },
+    }),
+    [tabs],
   );
 
   if (!activeTab) {
@@ -261,11 +280,19 @@ export function FileViewer({
                 minHeight: 0,
               }}
             >
-              <FileTabPane active={isActive} tab={tab} projectPath={projectPath} isDark={isDark} />
+              <FileTabPane
+                ref={(handle) => {
+                  tabRefs.current.set(tab.id, handle);
+                }}
+                active={isActive}
+                tab={tab}
+                projectPath={projectPath}
+                isDark={isDark}
+              />
             </div>
           );
         })}
       </div>
     </div>
   );
-}
+});

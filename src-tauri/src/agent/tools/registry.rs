@@ -46,6 +46,7 @@ impl ToolRegistry {
         &self,
         workspace: &Path,
         allowed: Option<I>,
+        include_dynamic: bool,
     ) -> Vec<ToolDefinition>
     where
         I: IntoIterator<Item = &'a str>,
@@ -71,8 +72,10 @@ impl ToolRegistry {
             .collect::<Vec<_>>();
 
         let mut definitions = static_definitions;
-        if let Some(provider) = &self.dynamic_provider {
-            definitions.extend(provider.definitions_for_workspace(workspace));
+        if include_dynamic {
+            if let Some(provider) = &self.dynamic_provider {
+                definitions.extend(provider.definitions_for_workspace(workspace));
+            }
         }
         definitions
     }

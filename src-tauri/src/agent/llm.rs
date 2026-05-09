@@ -302,7 +302,7 @@ impl OpenAiCompatProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = response.text().await.context("读取 LLM 错误响应失败")?;
             return Err(anyhow!("LLM 请求失败，HTTP {}：{}", status, body));
         }
 
@@ -334,10 +334,8 @@ impl OpenAiCompatProvider {
                     break;
                 }
 
-                let chunk: StreamChunk = match serde_json::from_str(data) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
+                let chunk: StreamChunk = serde_json::from_str(data)
+                    .with_context(|| format!("解析 LLM 流式响应失败：{data}"))?;
                 let StreamChunk {
                     choices,
                     usage: chunk_usage,
@@ -357,13 +355,14 @@ impl OpenAiCompatProvider {
                 // Tool call fragments
                 if let Some(calls) = &choice.delta.tool_calls {
                     for tc in calls {
-                        let entry = tc_map.entry(tc.index).or_insert_with(|| {
-                            (
-                                tc.id.clone().unwrap_or_default(),
-                                String::new(),
-                                String::new(),
-                            )
-                        });
+                        let entry = tc_map
+                            .entry(tc.index)
+                            .or_insert_with(|| (String::new(), String::new(), String::new()));
+                        if let Some(id) = &tc.id {
+                            if !id.trim().is_empty() {
+                                entry.0.clone_from(id);
+                            }
+                        }
                         if let Some(f) = &tc.function {
                             if let Some(name) = &f.name {
                                 entry.1.clone_from(name);
@@ -378,14 +377,7 @@ impl OpenAiCompatProvider {
         }
 
         // Build final tool calls from accumulated fragments
-        let tool_calls = tc_map
-            .into_values()
-            .map(|(id, name, args)| RequestedToolCall {
-                id,
-                name,
-                arguments: serde_json::from_str(&args).unwrap_or(Value::Null),
-            })
-            .collect();
+        let tool_calls = build_requested_tool_calls(tc_map)?;
 
         Ok(LlmResponse {
             status_code: status.as_u16(),
@@ -394,6 +386,32 @@ impl OpenAiCompatProvider {
             usage,
         })
     }
+}
+
+fn build_requested_tool_calls(
+    tc_map: BTreeMap<usize, (String, String, String)>,
+) -> Result<Vec<RequestedToolCall>> {
+    tc_map
+        .into_values()
+        .map(|(id, name, args)| {
+            if id.trim().is_empty() {
+                return Err(anyhow!("LLM 工具调用缺少 tool_call id。"));
+            }
+            if name.trim().is_empty() {
+                return Err(anyhow!(
+                    "LLM 工具调用缺少 function name，tool_call_id={id}。"
+                ));
+            }
+            let arguments = serde_json::from_str(&args).with_context(|| {
+                format!("解析 LLM 工具调用参数失败，tool_call_id={id}, function={name}")
+            })?;
+            Ok(RequestedToolCall {
+                id,
+                name,
+                arguments,
+            })
+        })
+        .collect()
 }
 
 fn build_api_messages(messages: &[ChatMessage], enable_multimodal: bool) -> Vec<ApiChatMessage> {
@@ -658,9 +676,11 @@ struct StreamFunctionCall {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{
-        build_api_message_content, messages_contain_inline_images, ApiMessageContent,
-        ApiMessageContentPart, ChatMessage, StreamChunk,
+        build_api_message_content, build_requested_tool_calls, messages_contain_inline_images,
+        ApiMessageContent, ApiMessageContentPart, ChatMessage, StreamChunk,
     };
 
     #[test]
@@ -686,6 +706,46 @@ mod tests {
         assert_eq!(usage.completion_tokens, 45);
         assert_eq!(usage.total_tokens, 366);
         assert_eq!(usage.cached_tokens(), 128);
+    }
+
+    #[test]
+    fn requested_tool_calls_fail_on_invalid_arguments() {
+        let mut calls = BTreeMap::new();
+        calls.insert(
+            0,
+            (
+                "call_1".to_string(),
+                "create_plan_document".to_string(),
+                "{not json}".to_string(),
+            ),
+        );
+
+        let error = build_requested_tool_calls(calls).expect_err("invalid args should fail");
+        assert!(error.to_string().contains("解析 LLM 工具调用参数失败"));
+    }
+
+    #[test]
+    fn requested_tool_calls_fail_on_missing_identity() {
+        let mut missing_id = BTreeMap::new();
+        missing_id.insert(
+            0,
+            (
+                String::new(),
+                "create_plan_document".to_string(),
+                "{}".to_string(),
+            ),
+        );
+        assert!(build_requested_tool_calls(missing_id)
+            .expect_err("missing id should fail")
+            .to_string()
+            .contains("缺少 tool_call id"));
+
+        let mut missing_name = BTreeMap::new();
+        missing_name.insert(0, ("call_1".to_string(), String::new(), "{}".to_string()));
+        assert!(build_requested_tool_calls(missing_name)
+            .expect_err("missing name should fail")
+            .to_string()
+            .contains("缺少 function name"));
     }
 
     #[test]

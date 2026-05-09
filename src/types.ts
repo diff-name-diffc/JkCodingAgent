@@ -9,6 +9,8 @@ export interface Project {
 export type AgentType = "claude" | "codex";
 export type ThemeMode = "system" | "dark" | "light";
 export type PermissionMode = "ask" | "auto_edit" | "full_access";
+export type DispatcherMode = "default" | "plan";
+export type ChecklistStepStatus = "pending" | "in_progress" | "completed";
 export type TaskStatus =
   | "todo"
   | "pending"
@@ -154,6 +156,39 @@ export interface DispatcherMessage {
 
 export type DispatcherToolResultMode = "raw" | "summary" | "conservative_summary";
 
+export interface ChecklistPlanState {
+  explanation?: string;
+  items: ChecklistPlanItem[];
+  updatedAt: string;
+}
+
+export interface ChecklistPlanItem {
+  id?: string;
+  step: string;
+  status: ChecklistStepStatus;
+  agent?: AgentType;
+  dispatchId?: string;
+  subprocessTaskId?: string;
+  detail?: string;
+}
+
+export type PlanInteraction =
+  | { kind: "question"; id: string; question: string; options: PlanQuestionOption[] }
+  | { kind: "ready"; planPath: string; title: string; summary: string };
+
+export interface PlanQuestionOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface DispatcherSessionRuntimeState {
+  mode: DispatcherMode;
+  checklist?: ChecklistPlanState | null;
+  planInteraction?: PlanInteraction | null;
+  activePlanPath?: string | null;
+}
+
 export interface DispatcherToolArtifactRef {
   id: string;
   title: string;
@@ -257,6 +292,14 @@ export type DispatcherAgentEvent =
         detailRefs: DispatcherToolArtifactRef[];
       };
     }
+  | { event: "checklistPlanUpdated"; data: { state: ChecklistPlanState } }
+  | { event: "planQuestionRequested"; data: { interaction: PlanInteraction } }
+  | { event: "planDocumentOpened"; data: { planPath: string } }
+  | { event: "planReady"; data: { interaction: PlanInteraction } }
+  | {
+      event: "planImplemented";
+      data: { planPath: string; implementedPath: string; summary: string };
+    }
   | {
       event: "dispatchProposed";
       data: {
@@ -275,6 +318,8 @@ export interface DispatcherSession {
   id: string;
   projectId: string;
   title: string;
+  mode: DispatcherMode;
+  activePlanPath?: string | null;
   createdAt: string;
   updatedAt: string;
 }

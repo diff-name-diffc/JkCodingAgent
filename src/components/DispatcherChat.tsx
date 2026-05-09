@@ -21,15 +21,21 @@ import {
   Settings2,
   PlugZap,
   Mic,
+  ClipboardList,
+  FileText,
 } from "lucide-react";
 import type {
   AgentType,
+  ChecklistPlanState,
   DispatchFeedbackState,
   DispatcherMessage,
   DispatcherAgentEvent,
   DispatcherAgentTurn,
+  DispatcherMode,
+  DispatcherSessionRuntimeState,
   DispatcherSessionTokenUsage,
   DispatcherSettings,
+  PlanInteraction,
   ProjectMcpStatus,
   SubProcess,
 } from "../types";
@@ -248,6 +254,160 @@ const VoiceInputStatusCard = memo(function VoiceInputStatusCard({
       {error && <div style={styles.voiceStatusError}>{error}</div>}
     </div>
   );
+});
+
+export const InteractionDrawer = memo(function InteractionDrawer({
+  checklist,
+  planInteraction,
+  implementingPlan,
+  onAnswerPlanQuestion,
+  onImplementPlan,
+  onImplementPlanWithClearedContext,
+  onStayInPlanMode,
+}: {
+  checklist: ChecklistPlanState | null;
+  planInteraction: PlanInteraction | null;
+  implementingPlan: boolean;
+  onAnswerPlanQuestion: (answer: string) => void;
+  onImplementPlan: (interaction: Extract<PlanInteraction, { kind: "ready" }>) => void;
+  onImplementPlanWithClearedContext: (
+    interaction: Extract<PlanInteraction, { kind: "ready" }>,
+  ) => void;
+  onStayInPlanMode: () => void;
+}) {
+  const [customAnswer, setCustomAnswer] = useState("");
+
+  if (planInteraction?.kind === "question") {
+    return (
+      <div style={styles.drawer}>
+        <div style={styles.drawerHeader}>
+          <span style={styles.drawerTitle}>
+            <ClipboardList size={14} />
+            问题清单
+          </span>
+        </div>
+        <div style={styles.drawerQuestion}>{planInteraction.question}</div>
+        <div style={styles.drawerOptionGrid}>
+          {planInteraction.options.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              style={styles.drawerOptionBtn}
+              onClick={() =>
+                onAnswerPlanQuestion(
+                  `选择：${option.label}\n说明：${option.description}`,
+                )
+              }
+            >
+              <span style={styles.drawerOptionLabel}>{option.label}</span>
+              <span style={styles.drawerOptionDesc}>{option.description}</span>
+            </button>
+          ))}
+          <div style={styles.drawerCustomBox}>
+            <textarea
+              style={styles.drawerCustomInput}
+              value={customAnswer}
+              onChange={(event) => setCustomAnswer(event.target.value)}
+              placeholder="自定义输入..."
+              rows={3}
+            />
+            <button
+              type="button"
+              style={styles.drawerPrimaryBtn}
+              disabled={!customAnswer.trim()}
+              onClick={() => {
+                onAnswerPlanQuestion(`自定义回答：${customAnswer.trim()}`);
+                setCustomAnswer("");
+              }}
+            >
+              发送自定义
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (planInteraction?.kind === "ready") {
+    return (
+      <div style={styles.drawer}>
+        <div style={styles.drawerHeader}>
+          <span style={styles.drawerTitle}>
+            <FileText size={14} />
+            计划已完成
+          </span>
+          <span style={styles.drawerPath}>{planInteraction.planPath}</span>
+        </div>
+        <div style={styles.drawerQuestion}>{planInteraction.title}</div>
+        <div style={styles.drawerSummary}>{planInteraction.summary}</div>
+        <div style={styles.drawerActionRow}>
+          <button
+            type="button"
+            style={styles.drawerPrimaryBtn}
+            disabled={implementingPlan}
+            onClick={() => onImplementPlan(planInteraction)}
+          >
+            是，实施此计划
+          </button>
+          <button
+            type="button"
+            style={styles.drawerSecondaryBtn}
+            disabled={implementingPlan}
+            onClick={() => onImplementPlanWithClearedContext(planInteraction)}
+          >
+            清除上下文后实施
+          </button>
+          <button type="button" style={styles.drawerGhostBtn} onClick={onStayInPlanMode}>
+            否，继续修改
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (checklist && checklist.items.length > 0) {
+    return (
+      <div style={styles.drawer}>
+        <div style={styles.drawerHeader}>
+          <span style={styles.drawerTitle}>
+            <ClipboardList size={14} />
+            本次任务规划步骤
+          </span>
+          <span style={styles.drawerPath}>{new Date(checklist.updatedAt).toLocaleTimeString()}</span>
+        </div>
+        {checklist.explanation && <div style={styles.drawerSummary}>{checklist.explanation}</div>}
+        <div style={styles.checklistRows}>
+          {checklist.items.map((item, index) => (
+            <div key={item.id ?? `${item.step}-${index}`} style={styles.checklistRow}>
+              <span
+                style={styles.checklistStatus(item.status)}
+                title={
+                  item.status === "in_progress"
+                    ? "正在执行"
+                    : item.status === "completed"
+                      ? "已完成"
+                      : "等待执行"
+                }
+              >
+                <span style={styles.checklistStatusDot(item.status)} />
+              </span>
+              <div style={styles.checklistContent}>
+                <span style={styles.checklistText(item.status)}>{item.step}</span>
+                {(item.agent || item.detail) && (
+                  <span style={styles.checklistMeta}>
+                    {item.agent ? getSubProcessAgentLabel(item.agent) : "子任务"}
+                    {item.detail ? ` · ${item.detail}` : ""}
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
 });
 
 const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
@@ -484,6 +644,10 @@ function getMcpIndicatorState(
   return { color: "#dc2626", label: "异常" };
 }
 
+function getSubProcessAgentLabel(agent: AgentType): string {
+  return agent === "claude" ? "Claude" : "Codex";
+}
+
 function mergeDispatcherMessages(
   current: DispatcherMessage[],
   incoming: DispatcherMessage[],
@@ -511,6 +675,31 @@ function mergeDispatcherMessages(
     .filter((message): message is DispatcherMessage => Boolean(message));
 }
 
+export function buildPlanQuestionAnswer(
+  interaction: Extract<PlanInteraction, { kind: "question" }>,
+  answer: string,
+) {
+  return [
+    "[规划问题答复]",
+    `问题：${interaction.question}`,
+    answer,
+    "",
+    "请基于以上答复继续完善计划书；如果仍缺关键信息，可以继续提问。",
+  ].join("\n");
+}
+
+export function buildPlanImplementationPrompt(planPath: string) {
+  return [
+    "请实施已确认的 Plan 计划书。",
+    "",
+    `计划书路径：${planPath}`,
+    "",
+    "请考虑计划书中的实际任务内容，按照 Claude 和 Codex 各自擅长点派遣子任务：Claude 优先处理新功能、探索和快速实现，Codex 优先处理重构、结构治理和高风险一致性修改。",
+    "不要重新规划步骤，也不要调用 update_plan。提示子 Agent 按照上述计划书路径中的规划 MD 进行编码任务即可；子 Agent 需要自行读取该计划书。",
+    "派遣后等待执行结束，汇总验证结果。实施完成并验证后，调用 mark_plan_implemented 标记计划已实现。",
+  ].join("\n");
+}
+
 // ── DispatcherChat ───────────────────────────────────────────────────────────
 
 interface DispatcherChatProps {
@@ -535,6 +724,7 @@ interface DispatcherChatProps {
   onResumeStoppedRun: (sessionId: string) => Promise<void>;
   onOpenMcpStatus: () => void;
   onOpenSettings: () => void;
+  onOpenPlanDocument: (path: string) => void;
   onClosePanel?: () => void;
 }
 
@@ -552,7 +742,9 @@ export interface DispatcherChatHandle {
     result: string,
     dispatchState: DispatchFeedbackState,
     targetSessionId?: string,
+    dispatchId?: string,
   ) => void;
+  applyRuntimeState: (state: DispatcherSessionRuntimeState) => void;
 }
 
 export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatProps>(
@@ -572,6 +764,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       onResumeStoppedRun,
       onOpenMcpStatus,
       onOpenSettings,
+      onOpenPlanDocument,
       onClosePanel,
     },
     ref,
@@ -588,6 +781,11 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [runError, setRunError] = useState<string | null>(null);
     const [pendingDispatches, setPendingDispatches] = useState<PendingDispatchApproval[]>([]);
     const [autoApprove, setAutoApprove] = useState(false);
+    const [mode, setMode] = useState<DispatcherMode>("default");
+    const [checklist, setChecklist] = useState<ChecklistPlanState | null>(null);
+    const [planInteraction, setPlanInteraction] = useState<PlanInteraction | null>(null);
+    const [activePlanPath, setActivePlanPath] = useState<string | null>(null);
+    const [implementingPlan, setImplementingPlan] = useState(false);
 
     const handlePaste = useCallback((e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -677,6 +875,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       setAssistantPlaceholder(null);
       setRunError(null);
       setPendingDispatches([]);
+      setChecklist(null);
+      setPlanInteraction(null);
+      setActivePlanPath(null);
+      setImplementingPlan(false);
 
       invoke<DispatcherMessage[]>("dispatcher_list_messages", {
         workspaceId: sessionId,
@@ -685,6 +887,18 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           if (currentSessionIdRef.current !== sessionId || historyLoadRef.current !== loadId)
             return;
           setMessages(loaded.filter((message) => message.workspaceId === sessionId));
+        })
+        .catch(console.error);
+      invoke<DispatcherSessionRuntimeState>("dispatcher_get_session_runtime_state", {
+        sessionId,
+      })
+        .then((state) => {
+          if (currentSessionIdRef.current !== sessionId || historyLoadRef.current !== loadId)
+            return;
+          setMode(state.mode);
+          setChecklist(state.checklist ?? null);
+          setPlanInteraction(state.planInteraction ?? null);
+          setActivePlanPath(state.activePlanPath ?? null);
         })
         .catch(console.error);
     }, [sessionId]);
@@ -754,6 +968,33 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             if (!isCurrentRun) return;
             setLiveToolCalls((prev) => finishLiveToolActivity(prev, event.data));
             break;
+          case "checklistPlanUpdated":
+            if (!isCurrentRun) return;
+            setChecklist(event.data.state);
+            break;
+          case "planQuestionRequested":
+            if (!isCurrentRun) return;
+            setPlanInteraction(event.data.interaction);
+            break;
+          case "planDocumentOpened":
+            if (!isCurrentRun) return;
+            setActivePlanPath(event.data.planPath);
+            onOpenPlanDocument(event.data.planPath);
+            break;
+          case "planReady":
+            if (!isCurrentRun) return;
+            setPlanInteraction(event.data.interaction);
+            if (event.data.interaction.kind === "ready") {
+              setActivePlanPath(event.data.interaction.planPath);
+              onOpenPlanDocument(event.data.interaction.planPath);
+            }
+            break;
+          case "planImplemented":
+            if (!isCurrentRun) return;
+            setActivePlanPath(event.data.implementedPath);
+            setPlanInteraction(null);
+            onOpenPlanDocument(event.data.implementedPath);
+            break;
           case "dispatchProposed": {
             const { dispatchId, agent, description, taskPrompt, permissionMode } = event.data;
             if (autoApproveRef.current) {
@@ -799,7 +1040,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         }
       };
       return onEvent;
-    }, [refreshSessionTokenUsage]);
+    }, [onOpenPlanDocument, refreshSessionTokenUsage]);
 
     const enqueueDispatcherRun = useCallback(
       async (
@@ -851,7 +1092,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     );
 
     const sendUserMessage = useCallback(
-      async (rawText: string, images: string[] = [], targetSessionId = sessionId) => {
+      async (
+        rawText: string,
+        images: string[] = [],
+        targetSessionId = sessionId,
+        targetMode: DispatcherMode = mode,
+      ) => {
         const text = rawText.trim();
         if (!text && images.length === 0) return;
 
@@ -873,6 +1119,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               workspaceId: targetSessionId,
               projectPath,
               content,
+              mode: targetMode,
               onEvent,
             });
           });
@@ -881,7 +1128,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           setRunError(`调度智能体执行失败：${toErrorMessage(err)}`);
         }
       },
-      [enqueueDispatcherRun, projectPath, sessionId],
+      [enqueueDispatcherRun, mode, projectPath, sessionId],
     );
 
     const voiceInput = useDashScopeAsr({
@@ -941,6 +1188,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           result: string,
           dispatchState: DispatchFeedbackState,
           targetSessionId = sessionId,
+          dispatchId?: string,
         ) => {
           if (currentSessionIdRef.current === targetSessionId) {
             setPendingDispatches([]);
@@ -953,6 +1201,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 projectPath,
                 dispatchResult: result,
                 dispatchState,
+                dispatchId,
                 onEvent,
               });
             });
@@ -960,6 +1209,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             console.error("dispatcher_continue_after_dispatch 失败:", err);
             setRunError(`调度智能体继续执行失败：${toErrorMessage(err)}`);
           }
+        },
+        applyRuntimeState: (state: DispatcherSessionRuntimeState) => {
+          setMode(state.mode);
+          setChecklist(state.checklist ?? null);
+          setPlanInteraction(state.planInteraction ?? null);
+          setActivePlanPath(state.activePlanPath ?? null);
         },
       }),
       [enqueueDispatcherRun, projectPath, sessionId],
@@ -999,9 +1254,17 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const handleRejectDispatch = useCallback(
       (dispatchId: string) => {
         setPendingDispatches((prev) => prev.slice(1));
+        invoke<DispatcherSessionRuntimeState>("dispatcher_clear_checklist_dispatch", {
+          sessionId,
+          dispatchId,
+        })
+          .then((state) => {
+            setChecklist(state.checklist ?? null);
+          })
+          .catch(console.error);
         onDispatchRejected(dispatchId);
       },
-      [onDispatchRejected],
+      [onDispatchRejected, sessionId],
     );
 
     const handleToggleAutoApprove = useCallback(async () => {
@@ -1018,12 +1281,89 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       }
     }, [autoApprove]);
 
+    const handleModeChange = useCallback(
+      async (nextMode: DispatcherMode) => {
+        if (nextMode === mode) return;
+        const previousMode = mode;
+        setMode(nextMode);
+        try {
+          const state = await invoke<DispatcherSessionRuntimeState>("dispatcher_set_session_mode", {
+            sessionId,
+            mode: nextMode,
+          });
+          setMode(state.mode);
+          setChecklist(state.checklist ?? null);
+          setPlanInteraction(state.planInteraction ?? null);
+          setActivePlanPath(state.activePlanPath ?? null);
+        } catch (err) {
+          setMode(previousMode);
+          setRunError(`切换模式失败：${toErrorMessage(err)}`);
+        }
+      },
+      [mode, sessionId],
+    );
+
+    const handleAnswerPlanQuestion = useCallback(
+      async (answer: string) => {
+        if (planInteraction?.kind !== "question") return;
+        const content = buildPlanQuestionAnswer(planInteraction, answer);
+        setPlanInteraction(null);
+        await sendUserMessage(content, [], sessionId, "plan");
+      },
+      [planInteraction, sendUserMessage, sessionId],
+    );
+
+    const handleImplementPlan = useCallback(
+      async (interaction: Extract<PlanInteraction, { kind: "ready" }>) => {
+        setImplementingPlan(true);
+        try {
+          const content = buildPlanImplementationPrompt(interaction.planPath);
+          await handleModeChange("default");
+          setPlanInteraction(null);
+          await sendUserMessage(content, [], sessionId, "default");
+        } catch (err) {
+          setRunError(`实施计划失败：${toErrorMessage(err)}`);
+        } finally {
+          setImplementingPlan(false);
+        }
+      },
+      [handleModeChange, sendUserMessage, sessionId],
+    );
+
+    const handleImplementPlanWithClearedContext = useCallback(
+      async (interaction: Extract<PlanInteraction, { kind: "ready" }>) => {
+        setImplementingPlan(true);
+        try {
+          const content = buildPlanImplementationPrompt(interaction.planPath);
+          await handleModeChange("default");
+          await invoke("dispatcher_clear_message_context", { workspaceId: sessionId });
+          setPlanInteraction(null);
+          setChecklist(null);
+          await sendUserMessage(content, [], sessionId, "default");
+        } catch (err) {
+          setRunError(`清除上下文后实施失败：${toErrorMessage(err)}`);
+        } finally {
+          setImplementingPlan(false);
+        }
+      },
+      [handleModeChange, sendUserMessage, sessionId],
+    );
+
+    const handleStayInPlanMode = useCallback(() => {
+      setPlanInteraction(null);
+      setMode("plan");
+      inputRef.current?.focus();
+    }, []);
+
     const handleClearHistory = useCallback(async () => {
       try {
         await invoke("dispatcher_clear_messages", {
           workspaceId: sessionId,
         });
         setMessages([]);
+        setChecklist(null);
+        setPlanInteraction(null);
+        setActivePlanPath(null);
         resetSessionTokenUsage();
       } catch (err) {
         console.error("清空消息失败:", err);
@@ -1045,9 +1385,30 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           <div style={styles.headerLeft}>
             <span style={styles.headerIcon}>🤖</span>
             <span style={styles.headerTitle}>调度智能体</span>
+            {activePlanPath && <span style={styles.headerPlanBadge}>Plan</span>}
             {isLoading && <span style={styles.thinkingDot} />}
           </div>
           <div style={styles.headerRight}>
+            <div style={styles.modeSegment}>
+              <button
+                type="button"
+                style={styles.modeSegmentBtn(mode === "default")}
+                onClick={() => {
+                  handleModeChange("default").catch(console.error);
+                }}
+              >
+                Default
+              </button>
+              <button
+                type="button"
+                style={styles.modeSegmentBtn(mode === "plan")}
+                onClick={() => {
+                  handleModeChange("plan").catch(console.error);
+                }}
+              >
+                Plan
+              </button>
+            </div>
             <button
               style={{
                 ...styles.headerBtn,
@@ -1096,6 +1457,17 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         {/* Messages */}
         <div style={styles.messageList}>
           {runError && <div style={styles.runErrorBanner}>{runError}</div>}
+          {isEmpty && (
+            <InteractionDrawer
+              checklist={checklist}
+              planInteraction={planInteraction}
+              implementingPlan={implementingPlan}
+              onAnswerPlanQuestion={handleAnswerPlanQuestion}
+              onImplementPlan={handleImplementPlan}
+              onImplementPlanWithClearedContext={handleImplementPlanWithClearedContext}
+              onStayInPlanMode={handleStayInPlanMode}
+            />
+          )}
           {isEmpty && (
             <EmptyConversationLauncher
               input={input}
@@ -1156,6 +1528,15 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         {/* Input */}
         {!isEmpty && (
           <>
+          <InteractionDrawer
+            checklist={checklist}
+            planInteraction={planInteraction}
+            implementingPlan={implementingPlan}
+            onAnswerPlanQuestion={handleAnswerPlanQuestion}
+            onImplementPlan={handleImplementPlan}
+            onImplementPlanWithClearedContext={handleImplementPlanWithClearedContext}
+            onStayInPlanMode={handleStayInPlanMode}
+          />
           <VoiceInputStatusCard
             transcript={voiceTranscript}
             error={voiceError}
@@ -1316,6 +1697,15 @@ const styles = {
     letterSpacing: "-0.01em",
     color: "var(--text-primary)",
   },
+  headerPlanBadge: {
+    border: "1px solid color-mix(in srgb, var(--accent) 22%, var(--border-dim))",
+    borderRadius: 999,
+    padding: "3px 7px",
+    color: "var(--accent)",
+    background: "var(--accent-subtle)",
+    fontSize: 10,
+    fontWeight: 800,
+  },
   thinkingDot: {
     width: "8px",
     height: "8px",
@@ -1329,6 +1719,24 @@ const styles = {
     gap: "4px",
     WebkitAppRegion: "no-drag" as const,
   },
+  modeSegment: {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: 2,
+    border: "1px solid var(--border-dim)",
+    borderRadius: 999,
+    background: "color-mix(in srgb, var(--bg-card) 82%, transparent)",
+  },
+  modeSegmentBtn: (active: boolean) => ({
+    border: "none",
+    borderRadius: 999,
+    padding: "5px 9px",
+    background: active ? "var(--accent)" : "transparent",
+    color: active ? "#fff" : "var(--text-secondary)",
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: "pointer",
+  }),
   headerBtn: {
     padding: "6px 10px",
     fontSize: "11px",
@@ -1370,6 +1778,200 @@ const styles = {
     fontSize: "12px",
     lineHeight: 1.5,
     whiteSpace: "pre-wrap" as const,
+  },
+  drawer: {
+    border: "1px solid color-mix(in srgb, var(--accent) 18%, var(--border-dim))",
+    background: "color-mix(in srgb, var(--bg-card) 94%, transparent)",
+    borderRadius: 14,
+    padding: "12px 14px",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 10,
+    boxShadow: "0 14px 36px rgba(15, 23, 42, 0.08)",
+  },
+  drawerHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    minWidth: 0,
+  },
+  drawerTitle: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 7,
+    color: "var(--text-primary)",
+    fontSize: 12,
+    fontWeight: 800,
+  },
+  drawerPath: {
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap" as const,
+    color: "var(--text-hint)",
+    fontSize: 11,
+    fontFamily: "var(--font-mono)",
+  },
+  drawerQuestion: {
+    color: "var(--text-primary)",
+    fontSize: 13,
+    fontWeight: 700,
+    lineHeight: 1.5,
+  },
+  drawerSummary: {
+    color: "var(--text-secondary)",
+    fontSize: 12,
+    lineHeight: 1.6,
+    whiteSpace: "pre-wrap" as const,
+  },
+  drawerOptionGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+    gap: 8,
+  },
+  drawerOptionBtn: {
+    textAlign: "left" as const,
+    border: "1px solid var(--border-dim)",
+    background: "color-mix(in srgb, var(--bg-panel) 84%, transparent)",
+    borderRadius: 10,
+    padding: "10px 11px",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 5,
+    cursor: "pointer",
+  },
+  drawerOptionLabel: {
+    color: "var(--text-primary)",
+    fontSize: 12,
+    fontWeight: 800,
+  },
+  drawerOptionDesc: {
+    color: "var(--text-secondary)",
+    fontSize: 11.5,
+    lineHeight: 1.45,
+  },
+  drawerCustomBox: {
+    border: "1px solid var(--border-dim)",
+    borderRadius: 10,
+    padding: 8,
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 8,
+    background: "color-mix(in srgb, var(--bg-panel) 84%, transparent)",
+  },
+  drawerCustomInput: {
+    border: "none",
+    outline: "none",
+    resize: "vertical" as const,
+    minHeight: 64,
+    background: "transparent",
+    color: "var(--text-primary)",
+    fontSize: 12.5,
+    lineHeight: 1.5,
+  },
+  drawerActionRow: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap" as const,
+    gap: 8,
+  },
+  drawerPrimaryBtn: {
+    border: "none",
+    borderRadius: 9,
+    padding: "8px 11px",
+    background: "var(--accent)",
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  drawerSecondaryBtn: {
+    border: "1px solid var(--border-dim)",
+    borderRadius: 9,
+    padding: "8px 11px",
+    background: "color-mix(in srgb, var(--bg-card) 88%, transparent)",
+    color: "var(--text-primary)",
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  drawerGhostBtn: {
+    border: "none",
+    borderRadius: 9,
+    padding: "8px 11px",
+    background: "transparent",
+    color: "var(--text-secondary)",
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  checklistRows: {
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 7,
+  },
+  checklistRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    minWidth: 0,
+  },
+  checklistStatus: (_status: "pending" | "in_progress" | "completed") => ({
+    width: 18,
+    height: 18,
+    borderRadius: 999,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    position: "relative" as const,
+  }),
+  checklistStatusDot: (status: "pending" | "in_progress" | "completed") => ({
+    width: status === "in_progress" ? 16 : 9,
+    height: status === "in_progress" ? 16 : 9,
+    borderRadius: 999,
+    display: "inline-block",
+    background:
+      status === "completed"
+        ? "var(--success)"
+        : status === "pending"
+          ? "color-mix(in srgb, var(--text-muted) 55%, transparent)"
+          : "transparent",
+    border:
+      status === "in_progress"
+        ? "2px solid color-mix(in srgb, var(--accent) 24%, transparent)"
+        : "none",
+    borderTopColor: status === "in_progress" ? "var(--accent)" : undefined,
+    boxShadow:
+      status === "completed"
+        ? "0 0 0 4px color-mix(in srgb, var(--success) 13%, transparent)"
+        : status === "pending"
+          ? "0 0 0 4px color-mix(in srgb, var(--text-muted) 9%, transparent)"
+          : "none",
+    animation: status === "in_progress" ? "spin 0.85s linear infinite" : undefined,
+  }),
+  checklistContent: {
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 2,
+  },
+  checklistText: (status: "pending" | "in_progress" | "completed") => ({
+    minWidth: 0,
+    color: status === "completed" ? "var(--text-muted)" : "var(--text-primary)",
+    textDecoration: status === "completed" ? "line-through" : "none",
+    fontSize: 12.5,
+    lineHeight: 1.45,
+  }),
+  checklistMeta: {
+    minWidth: 0,
+    color: "var(--text-muted)",
+    fontSize: 11,
+    lineHeight: 1.35,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap" as const,
   },
   emptyLauncherWrap: (layoutMode: "single" | "split") => ({
     display: "flex",

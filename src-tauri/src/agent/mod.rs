@@ -2,7 +2,7 @@ pub mod commands;
 mod config;
 mod db;
 pub(crate) mod debug;
-mod llm;
+pub(crate) mod llm;
 mod prompt;
 mod runtime;
 mod summary;

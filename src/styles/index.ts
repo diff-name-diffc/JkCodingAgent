@@ -3,12 +3,14 @@ import type React from "react";
 import { common } from "./common";
 import { dialogs } from "./dialogs";
 import { layout } from "./layout";
+import { knowledge } from "./knowledge";
 import { panels } from "./panels";
 import { task } from "./task";
 import { terminal } from "./terminal";
 
 const s = {
   ...layout,
+  ...knowledge,
   ...panels,
   ...terminal,
   ...dialogs,

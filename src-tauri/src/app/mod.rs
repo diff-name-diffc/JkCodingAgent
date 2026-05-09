@@ -1,5 +1,8 @@
 use crate::agent::DispatcherState;
-use crate::{agent, platform, project, scm, shared::TaskManager, task_runtime, workspace};
+use crate::{
+    agent, knowledge, platform, project, scm, shared::TaskManager, task_runtime, workspace,
+};
+use tauri::Manager;
 
 fn build_task_manager() -> TaskManager {
     TaskManager::default()
@@ -12,7 +15,10 @@ pub fn run() {
         .expect("failed to initialize Dispatcher state");
 
     tauri::Builder::default()
-        .setup(|_app| {
+        .setup(|app| {
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                knowledge::set_resource_dir_hint(resource_dir);
+            }
             // 后台预热 login shell 环境，避免第一次启动任务时阻塞
             std::thread::spawn(|| {
                 platform::get_login_shell_path();
@@ -53,6 +59,25 @@ pub fn run() {
             workspace::rope::rope_close,
             workspace::rope::rope_undo,
             workspace::rope::rope_redo,
+            knowledge::knowledge_list_collections,
+            knowledge::knowledge_create_collection,
+            knowledge::knowledge_update_collection,
+            knowledge::knowledge_delete_collection,
+            knowledge::knowledge_get_settings,
+            knowledge::knowledge_save_settings,
+            knowledge::knowledge_test_model,
+            knowledge::knowledge_import_sources,
+            knowledge::knowledge_get_ingest_jobs,
+            knowledge::knowledge_cancel_ingest,
+            knowledge::knowledge_retry_ingest,
+            knowledge::knowledge_list_pages,
+            knowledge::knowledge_read_page,
+            knowledge::knowledge_write_page,
+            knowledge::knowledge_delete_page,
+            knowledge::knowledge_search,
+            knowledge::knowledge_reindex_collection,
+            knowledge::knowledge_vector_stats,
+            knowledge::knowledge_build_graph,
             scm::git::generate_commit_message,
             scm::git::git_status,
             scm::git::git_list_branches,

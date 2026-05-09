@@ -1,10 +1,11 @@
 import { useState, useMemo } from "react";
-import { Search, FolderOpen, GitBranch, Layers, Plus, Trash2, BarChart2 } from "lucide-react";
+import { Search, FolderOpen, GitBranch, Layers, Plus, Trash2, BarChart2, BookOpen } from "lucide-react";
 import type { Project, ThemeMode } from "../types";
 import { getAvatarGradient, shortenPath } from "../utils";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
 import { AnalyticsDashboard } from "./AnalyticsDashboard";
+import { KnowledgePage } from "./knowledge/KnowledgePage";
 import appLogo from "../assets/app-logo.png";
 import s from "../styles";
 
@@ -87,7 +88,7 @@ export function WelcomePage({
   const [query, setQuery] = useState("");
   const [hov, setHov] = useState<string | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
-  const [view, setView] = useState<"projects" | "analytics">("projects");
+  const [view, setView] = useState<"projects" | "analytics" | "knowledge">("projects");
 
   const filtered = useMemo(() => {
     if (!query.trim()) return projects;
@@ -125,6 +126,12 @@ export function WelcomePage({
               active={view === "analytics"}
               onClick={() => setView("analytics")}
             />
+            <SidebarItem
+              icon={<BookOpen size={15} />}
+              label="知识库"
+              active={view === "knowledge"}
+              onClick={() => setView("knowledge")}
+            />
           </nav>
 
           <div style={s.sidebarFooter}>
@@ -140,6 +147,8 @@ export function WelcomePage({
 
         {view === "analytics" ? (
           <AnalyticsDashboard projects={projects} />
+        ) : view === "knowledge" ? (
+          <KnowledgePage />
         ) : (
           <div style={s.welcomePane}>
             <div style={s.searchRow}>

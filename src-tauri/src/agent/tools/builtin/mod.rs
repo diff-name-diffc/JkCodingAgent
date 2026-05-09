@@ -1,5 +1,6 @@
 mod common;
 mod filesystem;
+mod knowledge;
 mod search;
 mod shell;
 
@@ -13,6 +14,8 @@ pub(super) fn builtin_tools() -> Vec<Box<dyn AgentTool>> {
         filesystem::list_dir_tool(),
         search::glob_tool(),
         search::grep_tool(),
+        knowledge::search_knowledge_base_tool(),
+        knowledge::read_knowledge_page_tool(),
         shell::exec_tool(),
         shell::message_tool(),
     ]

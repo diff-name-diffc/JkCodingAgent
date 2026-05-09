@@ -346,3 +346,94 @@ export interface SubProcess {
   startedAt: number;
   failureReason?: string;
 }
+
+// ── Knowledge Base ───────────────────────────────────────────────────────────
+
+export interface KnowledgeCollection {
+  id: string;
+  name: string;
+  rootPath: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface KnowledgeModelConfig {
+  url: string;
+  apiKey: string;
+  model: string;
+}
+
+export interface KnowledgeSettings {
+  textModel: KnowledgeModelConfig;
+  visionModel: KnowledgeModelConfig;
+  embeddingModel: KnowledgeModelConfig;
+}
+
+export interface KnowledgeIngestJob {
+  id: string;
+  collectionId: string;
+  sourceName: string;
+  sourcePath: string;
+  status: "running" | "done" | "failed" | "skipped" | "cancelled" | string;
+  message: string;
+  pagesWritten: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface KnowledgePageSummary {
+  collectionId: string;
+  path: string;
+  relativePath: string;
+  title: string;
+  pageType: string;
+  tags: string[];
+  updated?: string | null;
+}
+
+export interface KnowledgePageContent {
+  collectionId: string;
+  path: string;
+  relativePath: string;
+  title: string;
+  content: string;
+}
+
+export interface KnowledgeSearchResult {
+  collectionId: string;
+  collectionName: string;
+  path: string;
+  relativePath: string;
+  title: string;
+  pageType: string;
+  snippet: string;
+  score: number;
+  vectorScore: number;
+  tokenScore: number;
+}
+
+export interface KnowledgeVectorStats {
+  collectionId: string;
+  pageCount: number;
+  chunkCount: number;
+  dimension: number;
+}
+
+export interface KnowledgeGraphNode {
+  id: string;
+  label: string;
+  pageType: string;
+  path: string;
+}
+
+export interface KnowledgeGraphEdge {
+  source: string;
+  target: string;
+  weight: number;
+  reason: string;
+}
+
+export interface KnowledgeGraph {
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+}

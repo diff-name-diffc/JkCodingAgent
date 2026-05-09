@@ -3041,6 +3041,8 @@ fn default_mode_tool_allowlist() -> HashSet<&'static str> {
         "list_dir",
         "glob",
         "grep",
+        "search_knowledge_base",
+        "read_knowledge_page",
         "exec",
         "message",
         "update_plan",

@@ -30,4 +30,8 @@ dist-ssr
 bump-version.sh
 .env*
 knowledge
+!src/components/knowledge/
+!src/components/knowledge/**
+!src-tauri/src/knowledge/
+!src-tauri/src/knowledge/**
 .gitnexus

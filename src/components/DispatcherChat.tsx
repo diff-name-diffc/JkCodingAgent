@@ -195,6 +195,28 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
   );
 });
 
+const PlanModeToggleButton = memo(function PlanModeToggleButton({
+  mode,
+  onToggleMode,
+}: {
+  mode: DispatcherMode;
+  onToggleMode: (mode: DispatcherMode) => void;
+}) {
+  const active = mode === "plan";
+
+  return (
+    <button
+      type="button"
+      style={styles.modeToggleBtn(active)}
+      onClick={() => onToggleMode("plan")}
+      title={active ? "取消 Plan 模式" : "启用 Plan 模式"}
+      aria-pressed={active}
+    >
+      Plan
+    </button>
+  );
+});
+
 const ToolSummaryBlock = memo(function ToolSummaryBlock({
   segment,
 }: {
@@ -413,6 +435,7 @@ export const InteractionDrawer = memo(function InteractionDrawer({
 const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   input,
   composerMode,
+  mode,
   isBusy,
   isStopping,
   isRecordingVoice,
@@ -429,6 +452,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onSend,
   onStop,
   onResume,
+  onToggleMode,
   onToggleVoiceInput,
   onDismissVoiceError,
   onKeyDown,
@@ -440,6 +464,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
 }: {
   input: string;
   composerMode: "send" | "stop" | "resume";
+  mode: DispatcherMode;
   isBusy: boolean;
   isStopping: boolean;
   isRecordingVoice: boolean;
@@ -456,6 +481,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onSend: () => void;
   onStop: () => void;
   onResume: () => void;
+  onToggleMode: (mode: DispatcherMode) => void;
   onToggleVoiceInput: () => void;
   onDismissVoiceError: () => void;
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -541,6 +567,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
 
             <div style={styles.emptyComposerPrimaryRow}>
               <SessionTokenUsageIndicators entries={sessionTokenUsages} />
+              <PlanModeToggleButton mode={mode} onToggleMode={onToggleMode} />
               <button
                 type="button"
                 style={styles.voiceBtn(isRecordingVoice)}
@@ -1303,6 +1330,14 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       [mode, sessionId],
     );
 
+    const handleModeToggle = useCallback(
+      (nextMode: DispatcherMode) => {
+        const resolvedMode = mode === nextMode ? "default" : nextMode;
+        handleModeChange(resolvedMode).catch(console.error);
+      },
+      [handleModeChange, mode],
+    );
+
     const handleAnswerPlanQuestion = useCallback(
       async (answer: string) => {
         if (planInteraction?.kind !== "question") return;
@@ -1389,26 +1424,6 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             {isLoading && <span style={styles.thinkingDot} />}
           </div>
           <div style={styles.headerRight}>
-            <div style={styles.modeSegment}>
-              <button
-                type="button"
-                style={styles.modeSegmentBtn(mode === "default")}
-                onClick={() => {
-                  handleModeChange("default").catch(console.error);
-                }}
-              >
-                Default
-              </button>
-              <button
-                type="button"
-                style={styles.modeSegmentBtn(mode === "plan")}
-                onClick={() => {
-                  handleModeChange("plan").catch(console.error);
-                }}
-              >
-                Plan
-              </button>
-            </div>
             <button
               style={{
                 ...styles.headerBtn,
@@ -1472,6 +1487,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             <EmptyConversationLauncher
               input={input}
               composerMode={composerMode}
+              mode={mode}
               isBusy={isComposerBusy}
               isStopping={isStopping}
               isRecordingVoice={isRecordingVoice}
@@ -1488,6 +1504,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onSend={handleSend}
               onStop={handleStop}
               onResume={handleResume}
+              onToggleMode={handleModeToggle}
               onToggleVoiceInput={toggleVoiceRecording}
               onDismissVoiceError={clearVoiceError}
               onKeyDown={handleKeyDown}
@@ -1578,6 +1595,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               rows={1}
               disabled={composerMode === "stop" || isStopping}
             />
+            <PlanModeToggleButton mode={mode} onToggleMode={handleModeToggle} />
             <button
               style={styles.voiceBtn(isRecordingVoice)}
               onClick={toggleVoiceRecording}
@@ -1719,23 +1737,21 @@ const styles = {
     gap: "4px",
     WebkitAppRegion: "no-drag" as const,
   },
-  modeSegment: {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: 2,
-    border: "1px solid var(--border-dim)",
-    borderRadius: 999,
-    background: "color-mix(in srgb, var(--bg-card) 82%, transparent)",
-  },
-  modeSegmentBtn: (active: boolean) => ({
-    border: "none",
-    borderRadius: 999,
-    padding: "5px 9px",
-    background: active ? "var(--accent)" : "transparent",
-    color: active ? "#fff" : "var(--text-secondary)",
-    fontSize: 11,
+  modeToggleBtn: (active: boolean) => ({
+    height: "34px",
+    padding: "0 11px",
+    borderRadius: "12px",
+    border: active
+      ? "1px solid color-mix(in srgb, var(--accent) 48%, transparent)"
+      : "1px solid var(--border-dim)",
+    background: active
+      ? "color-mix(in srgb, var(--accent) 14%, var(--bg-card))"
+      : "color-mix(in srgb, var(--bg-card) 88%, transparent)",
+    color: active ? "var(--accent)" : "var(--text-secondary)",
+    fontSize: 12,
     fontWeight: 700,
     cursor: "pointer",
+    boxShadow: active ? "0 12px 24px -18px var(--accent)" : "var(--shadow-xs)",
   }),
   headerBtn: {
     padding: "6px 10px",
@@ -2254,6 +2270,8 @@ const styles = {
     boxShadow: "0 18px 28px -16px rgba(13, 148, 136, 0.5)",
   },
   messageBubbleWrap: (isUser: boolean) => ({
+    width: "100%",
+    minWidth: 0,
     display: "flex",
     flexDirection: isUser ? ("row-reverse" as const) : ("row" as const),
     gap: "14px",
@@ -2278,7 +2296,8 @@ const styles = {
     marginTop: "2px",
   }),
   messageBubble: (isUser: boolean) => ({
-    maxWidth: "100%",
+    maxWidth: isUser ? "min(760px, calc(100% - 96px))" : "100%",
+    minWidth: 0,
     padding: "14px 16px",
     borderRadius: isUser ? "22px 22px 8px 22px" : "22px 22px 22px 8px",
     background: isUser
@@ -2309,7 +2328,7 @@ const styles = {
     fontFamily: "var(--font-ui)",
   },
   assistantTurnStack: {
-    maxWidth: "88%",
+    maxWidth: "min(760px, calc(100% - 96px))",
     display: "flex",
     flexDirection: "column" as const,
     gap: "12px",

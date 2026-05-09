@@ -23,6 +23,8 @@ dist-ssr
 *.sw?
 .nezha
 .claude
+.claude-flow/
+.jkcodingagent/
 .husky
 .local_docs
 bump-version.sh

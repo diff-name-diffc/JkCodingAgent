@@ -931,12 +931,6 @@ impl DispatcherAgent {
                 if content.is_empty() {
                     anyhow::bail!("LLM 返回了空响应且没有工具调用，无法继续执行。");
                 }
-                if runtime_state.mode == DispatcherMode::Plan {
-                    anyhow::bail!(
-                        "Plan 模式下 LLM 未调用计划工具而直接返回文本，已终止以暴露协议错误。返回内容：{}",
-                        truncate_for_display(&content, 500, "...")
-                    );
-                }
                 let reply = db.add_visible_message(workspace_id, "assistant", &content)?;
                 emit(
                     on_event,
@@ -2971,7 +2965,8 @@ fn build_dispatcher_mode_block(runtime_state: &DispatcherSessionRuntimeState) ->
         }
         DispatcherMode::Plan => {
             lines.push("# 当前模式：Plan".to_string());
-            lines.push("- 严格流程：先探索当前代码与约束；若信息不足，调用 `ask_plan_question`；信息充分后创建/编辑计划书；最后调用 `present_plan`。".to_string());
+            lines.push("- 自主判断任务难度：简单咨询或无需落盘计划书的请求可以直接回复；只有需要形成实施计划时，才进入计划工具流程。".to_string());
+            lines.push("- 需要规划时的流程：先探索当前代码与约束；若信息不足，调用 `ask_plan_question`；信息充分后创建/编辑计划书；最后调用 `present_plan`。".to_string());
             lines.push("- 禁止编码、禁止修改普通项目文件、禁止委派 Claude/Codex、禁止使用 `update_plan`。只能使用只读探索工具和计划书工具。".to_string());
             lines.push(
                 "- 计划书必须写入当前项目 `.jkcodingagent/plan/*.md`，并且要足够详细到执行代理可直接开工。"
@@ -3355,6 +3350,23 @@ mod tests {
         assert!(prompt.contains("复杂任务应主动维护，简单任务可跳过"));
         assert!(prompt.contains("必须先调用 `update_plan` 创建本次任务规划步骤"));
         assert!(prompt.contains("再进行 glob/grep/read_file/exec 探索"));
+    }
+
+    #[test]
+    fn plan_mode_prompt_allows_simple_direct_reply() {
+        let state = DispatcherSessionRuntimeState {
+            mode: DispatcherMode::Plan,
+            checklist: None,
+            plan_interaction: None,
+            active_plan_path: None,
+        };
+
+        let prompt = build_dispatcher_mode_block(&state);
+
+        assert!(prompt.contains("简单咨询或无需落盘计划书的请求可以直接回复"));
+        assert!(prompt.contains("只有需要形成实施计划时，才进入计划工具流程"));
+        assert!(prompt.contains("禁止编码、禁止修改普通项目文件"));
+        assert!(prompt.contains("禁止使用 `update_plan`"));
     }
 
     fn requested_tool_call(name: &str) -> RequestedToolCall {

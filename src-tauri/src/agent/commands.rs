@@ -11,8 +11,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::config::{DispatcherAgentConfig, DEFAULT_SUMMARY_MODEL};
 use super::db::{
     DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherSessionRecord,
-    DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord, DispatcherSettingsRecord,
-    DispatcherToolArtifactRecord,
+    DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord,
+    DispatcherSessionTokenUsageSource, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
 };
 use super::llm;
 use super::llm::OpenAiCompatProvider;
@@ -293,7 +293,7 @@ fn spawn_session_title_update(
     let content = content.to_string();
 
     tokio::spawn(async move {
-        let title = generate_session_title(db.clone(), content).await;
+        let title = generate_session_title(db.clone(), workspace_id.clone(), content).await;
         let state = app.state::<DispatcherState>();
         if !state.finish_latest_title_generation(&workspace_id, generation) {
             return;
@@ -327,9 +327,11 @@ fn spawn_session_title_update(
     });
 }
 
-async fn generate_session_title(db: DispatcherDb, content: String) -> String {
+async fn generate_session_title(db: DispatcherDb, workspace_id: String, content: String) -> String {
     let fallback = fallback_session_title(&content);
-    let provider_config = tokio::task::spawn_blocking(move || resolve_title_provider(&db)).await;
+    let provider_db = db.clone();
+    let provider_config =
+        tokio::task::spawn_blocking(move || resolve_title_provider(&provider_db)).await;
 
     let (provider, summary_model) = match provider_config {
         Ok(Ok(config)) => config,
@@ -347,7 +349,24 @@ async fn generate_session_title(db: DispatcherDb, content: String) -> String {
         return fallback;
     }
 
-    match summarize_session_title(&provider, &summary_model, &content, |_| {}).await {
+    let usage_db = db.clone();
+    let usage_workspace_id = workspace_id.clone();
+    let usage_summary_model = summary_model.clone();
+    match summarize_session_title(&provider, &summary_model, &content, move |usage| {
+        if let Err(error) = usage_db.upsert_session_token_usage(
+            &usage_workspace_id,
+            &usage_summary_model,
+            DispatcherSessionTokenUsageSource::Summary,
+            usage,
+        ) {
+            eprintln!(
+                "failed to persist dispatcher title token usage for workspace {} and model {}: {}",
+                usage_workspace_id, usage_summary_model, error
+            );
+        }
+    })
+    .await
+    {
         Ok(title) => title,
         Err(error) => {
             eprintln!(

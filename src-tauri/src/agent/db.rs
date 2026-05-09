@@ -986,17 +986,18 @@ impl DispatcherDb {
         source_kind: DispatcherSessionTokenUsageSource,
         usage: &LlmUsage,
     ) -> Result<DispatcherSessionTokenUsageRecord> {
+        let updated_at = now();
         let record = DispatcherSessionTokenUsageRecord {
             workspace_id: workspace_id.to_string(),
             model: model.to_string(),
             source_kind,
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
-            total_tokens: usage.total_tokens,
+            total_tokens: usage_total_tokens(usage),
             cached_tokens: usage.cached_tokens(),
             context_window_tokens: usage.prompt_tokens,
             context_window_capacity: default_context_window_capacity(model),
-            updated_at: now(),
+            updated_at,
         };
         let conn = self.connect()?;
         conn.execute(
@@ -1004,12 +1005,11 @@ impl DispatcherDb {
                 workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens,
                 cached_tokens, context_window_tokens, context_window_capacity, updated_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(workspace_id, model) DO UPDATE SET
-                source_kind = excluded.source_kind,
-                prompt_tokens = excluded.prompt_tokens,
-                completion_tokens = excluded.completion_tokens,
-                total_tokens = excluded.total_tokens,
-                cached_tokens = excluded.cached_tokens,
+             ON CONFLICT(workspace_id, model, source_kind) DO UPDATE SET
+                prompt_tokens = dispatcher_session_token_usage.prompt_tokens + excluded.prompt_tokens,
+                completion_tokens = dispatcher_session_token_usage.completion_tokens + excluded.completion_tokens,
+                total_tokens = dispatcher_session_token_usage.total_tokens + excluded.total_tokens,
+                cached_tokens = dispatcher_session_token_usage.cached_tokens + excluded.cached_tokens,
                 context_window_tokens = excluded.context_window_tokens,
                 context_window_capacity = excluded.context_window_capacity,
                 updated_at = excluded.updated_at",
@@ -1027,7 +1027,38 @@ impl DispatcherDb {
             ],
         )
         .context("upsert dispatcher session token usage")?;
-        Ok(record)
+        self.get_session_token_usage_record(&conn, workspace_id, model, source_kind)
+    }
+
+    fn get_session_token_usage_record(
+        &self,
+        conn: &Connection,
+        workspace_id: &str,
+        model: &str,
+        source_kind: DispatcherSessionTokenUsageSource,
+    ) -> Result<DispatcherSessionTokenUsageRecord> {
+        conn.query_row(
+            "SELECT workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens,
+                    cached_tokens, context_window_tokens, context_window_capacity, updated_at
+             FROM dispatcher_session_token_usage
+             WHERE workspace_id = ?1 AND model = ?2 AND source_kind = ?3",
+            params![workspace_id, model, source_kind.as_sql_value()],
+            |row| {
+                Ok(DispatcherSessionTokenUsageRecord {
+                    workspace_id: row.get(0)?,
+                    model: row.get(1)?,
+                    source_kind: DispatcherSessionTokenUsageSource::from_sql_value(row.get(2)?),
+                    prompt_tokens: row.get::<_, i64>(3)? as u64,
+                    completion_tokens: row.get::<_, i64>(4)? as u64,
+                    total_tokens: row.get::<_, i64>(5)? as u64,
+                    cached_tokens: row.get::<_, i64>(6)? as u64,
+                    context_window_tokens: row.get::<_, i64>(7)? as u64,
+                    context_window_capacity: row.get::<_, i64>(8)? as u64,
+                    updated_at: row.get(9)?,
+                })
+            },
+        )
+        .context("load dispatcher session token usage after upsert")
     }
 
     pub fn list_session_token_usage(
@@ -1040,7 +1071,7 @@ impl DispatcherDb {
                     cached_tokens, context_window_tokens, context_window_capacity, updated_at
              FROM dispatcher_session_token_usage
              WHERE workspace_id = ?1
-             ORDER BY updated_at DESC, model ASC",
+             ORDER BY updated_at DESC, model ASC, source_kind ASC",
         )?;
         let rows = stmt.query_map(params![workspace_id], |row| {
             Ok(DispatcherSessionTokenUsageRecord {
@@ -1224,7 +1255,7 @@ impl DispatcherDb {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create db directory {}", parent.display()))?;
         }
-        let conn = self.connect()?;
+        let mut conn = self.connect()?;
         conn.execute_batch(
             "
             PRAGMA journal_mode = WAL;
@@ -1309,7 +1340,7 @@ impl DispatcherDb {
                 context_window_tokens INTEGER NOT NULL DEFAULT 0,
                 context_window_capacity INTEGER NOT NULL DEFAULT 1000000,
                 updated_at TEXT NOT NULL,
-                PRIMARY KEY (workspace_id, model)
+                PRIMARY KEY (workspace_id, model, source_kind)
             );
 
             CREATE INDEX IF NOT EXISTS idx_dispatcher_session_token_usage_workspace_updated
@@ -1317,6 +1348,7 @@ impl DispatcherDb {
             ",
         )
         .context("initialize dispatcher sqlite schema")?;
+        migrate_session_token_usage_primary_key(&mut conn)?;
         ensure_column_exists(
             &conn,
             "dispatcher_settings",
@@ -1417,6 +1449,85 @@ impl DispatcherSessionTokenUsageSource {
     }
 }
 
+fn migrate_session_token_usage_primary_key(conn: &mut Connection) -> Result<()> {
+    let primary_key_columns = table_primary_key_columns(conn, "dispatcher_session_token_usage")?;
+    if primary_key_columns
+        .iter()
+        .map(String::as_str)
+        .eq(["workspace_id", "model", "source_kind"])
+    {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "
+        ALTER TABLE dispatcher_session_token_usage RENAME TO dispatcher_session_token_usage_old;
+
+        CREATE TABLE dispatcher_session_token_usage (
+            workspace_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            source_kind TEXT NOT NULL DEFAULT 'primary',
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            cached_tokens INTEGER NOT NULL DEFAULT 0,
+            context_window_tokens INTEGER NOT NULL DEFAULT 0,
+            context_window_capacity INTEGER NOT NULL DEFAULT 1000000,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, model, source_kind)
+        );
+
+        INSERT INTO dispatcher_session_token_usage (
+            workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens,
+            cached_tokens, context_window_tokens, context_window_capacity, updated_at
+        )
+        SELECT
+            workspace_id,
+            model,
+            COALESCE(NULLIF(source_kind, ''), 'primary'),
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            context_window_tokens,
+            context_window_capacity,
+            updated_at
+        FROM dispatcher_session_token_usage_old;
+
+        DROP TABLE dispatcher_session_token_usage_old;
+
+        CREATE INDEX IF NOT EXISTS idx_dispatcher_session_token_usage_workspace_updated
+        ON dispatcher_session_token_usage(workspace_id, updated_at DESC);
+        ",
+    )
+    .context("migrate dispatcher session token usage primary key")?;
+    tx.commit()
+        .context("commit dispatcher session token usage primary key migration")
+}
+
+fn table_primary_key_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .with_context(|| format!("read table info for {table}"))?;
+    let columns = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(5)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .with_context(|| format!("collect table info for {table}"))?;
+
+    let mut primary_key_columns = columns
+        .into_iter()
+        .filter(|(position, _)| *position > 0)
+        .collect::<Vec<_>>();
+    primary_key_columns.sort_by_key(|(position, _)| *position);
+    Ok(primary_key_columns
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect())
+}
+
 fn ensure_column_exists(
     conn: &Connection,
     table: &str,
@@ -1445,6 +1556,14 @@ fn now() -> String {
 
 fn default_context_window_capacity(_model: &str) -> u64 {
     DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS
+}
+
+fn usage_total_tokens(usage: &LlmUsage) -> u64 {
+    if usage.total_tokens > 0 {
+        usage.total_tokens
+    } else {
+        usage.prompt_tokens + usage.completion_tokens
+    }
 }
 
 fn normalize_summary_model(summary_model: &str) -> String {
@@ -1563,8 +1682,9 @@ mod tests {
 
     use super::{
         ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb, DispatcherMode,
-        PlanInteraction, PlanQuestionOption, ToolArtifactDraft,
+        DispatcherSessionTokenUsageSource, PlanInteraction, PlanQuestionOption, ToolArtifactDraft,
     };
+    use crate::agent::llm::{LlmPromptTokensDetails, LlmUsage};
 
     fn create_test_db() -> (DispatcherDb, PathBuf) {
         let root =
@@ -1589,6 +1709,15 @@ mod tests {
         }
     }
 
+    fn sample_usage(prompt_tokens: u64, completion_tokens: u64, cached_tokens: u64) -> LlmUsage {
+        LlmUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+            prompt_tokens_details: Some(LlmPromptTokensDetails { cached_tokens }),
+        }
+    }
+
     #[test]
     fn update_session_title_persists_latest_title() {
         let (db, root) = create_test_db();
@@ -1608,6 +1737,131 @@ mod tests {
             db.list_sessions("project-1").unwrap()[0].title,
             "修复会话命名"
         );
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn session_token_usage_accumulates_per_model_and_source() {
+        let (db, root) = create_test_db();
+        let workspace_id = "session-usage";
+
+        db.upsert_session_token_usage(
+            workspace_id,
+            "deepseek-chat",
+            DispatcherSessionTokenUsageSource::Primary,
+            &sample_usage(100, 20, 12),
+        )
+        .unwrap();
+        let primary = db
+            .upsert_session_token_usage(
+                workspace_id,
+                "deepseek-chat",
+                DispatcherSessionTokenUsageSource::Primary,
+                &sample_usage(80, 15, 8),
+            )
+            .unwrap();
+        db.upsert_session_token_usage(
+            workspace_id,
+            "deepseek-chat",
+            DispatcherSessionTokenUsageSource::Summary,
+            &sample_usage(30, 5, 3),
+        )
+        .unwrap();
+
+        assert_eq!(primary.prompt_tokens, 180);
+        assert_eq!(primary.completion_tokens, 35);
+        assert_eq!(primary.total_tokens, 215);
+        assert_eq!(primary.cached_tokens, 20);
+        assert_eq!(primary.context_window_tokens, 80);
+
+        let entries = db.list_session_token_usage(workspace_id).unwrap();
+        assert_eq!(entries.len(), 2);
+        let summary = entries
+            .iter()
+            .find(|entry| entry.source_kind == DispatcherSessionTokenUsageSource::Summary)
+            .expect("summary usage should be tracked separately");
+        assert_eq!(summary.prompt_tokens, 30);
+        assert_eq!(summary.total_tokens, 35);
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn session_token_usage_derives_total_when_provider_omits_it() {
+        let (db, root) = create_test_db();
+        let usage = LlmUsage {
+            prompt_tokens: 12,
+            completion_tokens: 3,
+            total_tokens: 0,
+            prompt_tokens_details: None,
+        };
+
+        let record = db
+            .upsert_session_token_usage(
+                "session-usage",
+                "minimal-compat-model",
+                DispatcherSessionTokenUsageSource::Primary,
+                &usage,
+            )
+            .unwrap();
+
+        assert_eq!(record.total_tokens, 15);
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn session_token_usage_migration_preserves_existing_rows() {
+        let root =
+            std::env::temp_dir().join(format!("jkcodingagent-db-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create temp db root");
+        let path = root.join("dispatcher.sqlite3");
+        let conn = rusqlite::Connection::open(&path).expect("open legacy db");
+        conn.execute_batch(
+            "
+            CREATE TABLE dispatcher_session_token_usage (
+                workspace_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'primary',
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_tokens INTEGER NOT NULL DEFAULT 0,
+                context_window_tokens INTEGER NOT NULL DEFAULT 0,
+                context_window_capacity INTEGER NOT NULL DEFAULT 1000000,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, model)
+            );
+            INSERT INTO dispatcher_session_token_usage (
+                workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens,
+                cached_tokens, context_window_tokens, context_window_capacity, updated_at
+            ) VALUES (
+                'session-usage', 'same-model', 'primary', 100, 20, 120, 10, 100, 1000000,
+                '2026-05-09T00:00:00Z'
+            );
+            ",
+        )
+        .expect("create legacy token usage table");
+        drop(conn);
+
+        let db = DispatcherDb::new(path).expect("migrate dispatcher db");
+        db.upsert_session_token_usage(
+            "session-usage",
+            "same-model",
+            DispatcherSessionTokenUsageSource::Summary,
+            &sample_usage(30, 5, 3),
+        )
+        .unwrap();
+
+        let entries = db.list_session_token_usage("session-usage").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|entry| entry.source_kind
+            == DispatcherSessionTokenUsageSource::Primary
+            && entry.prompt_tokens == 100));
+        assert!(entries.iter().any(|entry| entry.source_kind
+            == DispatcherSessionTokenUsageSource::Summary
+            && entry.prompt_tokens == 30));
 
         cleanup_test_db(root);
     }

@@ -29,8 +29,8 @@ export function SessionTokenUsageIndicators({ entries }: SessionTokenUsageIndica
               <div style={{ ...styles.barFill, width: `${percent}%` }} />
             </div>
             <div style={styles.meta}>
-              <span>{formatTokenCount(entry.contextWindowTokens)}</span>
-              <span>{percent.toFixed(1)}%</span>
+              <span>总 {formatTokenCount(entry.totalTokens)}</span>
+              <span>上下文 {percent.toFixed(1)}%</span>
             </div>
           </div>
         );

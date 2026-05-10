@@ -41,6 +41,10 @@
   --markdown-code-text: #172033;
   --markdown-code-muted: #53627a;
   --markdown-code-shadow: 0 14px 28px rgba(37, 99, 235, 0.1);
+  --markdown-math-bg: #f6f9ff;
+  --markdown-math-border: rgba(68, 103, 245, 0.28);
+  --markdown-math-text: #10213f;
+  --markdown-math-shadow: 0 12px 28px rgba(37, 99, 235, 0.12);
 
   --success: #16a34a;
   --warning: #d97706;
@@ -103,6 +107,10 @@ html.dark {
   --markdown-code-text: #dbe7f5;
   --markdown-code-muted: #8fa4bb;
   --markdown-code-shadow: 0 18px 34px rgba(0, 0, 0, 0.32);
+  --markdown-math-bg: #111923;
+  --markdown-math-border: rgba(93, 173, 226, 0.36);
+  --markdown-math-text: #e6f3ff;
+  --markdown-math-shadow: 0 16px 34px rgba(0, 0, 0, 0.34);
 
   --success: #3dd68c;
   --warning: #f5a623;
@@ -668,6 +676,33 @@ body {
   border: 1px solid var(--markdown-inline-border);
   color: var(--markdown-inline-text);
   font-weight: 600;
+}
+.markdown-surface .katex {
+  color: var(--markdown-math-text);
+  font-size: 1.08em;
+  font-weight: 600;
+}
+.markdown-surface .katex-display {
+  margin: 18px 0;
+  padding: 18px 20px;
+  border: 1px solid var(--markdown-math-border);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%),
+    var(--markdown-math-bg);
+  box-shadow: var(--markdown-math-shadow);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.markdown-surface .katex-display > .katex {
+  display: inline-block;
+  min-width: 100%;
+  font-size: 1.2em;
+  font-weight: 700;
+  text-align: center;
+}
+.markdown-surface .katex-html {
+  white-space: nowrap;
 }
 .markdown-surface ul,
 .markdown-surface ol {

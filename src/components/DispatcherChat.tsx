@@ -23,6 +23,8 @@ import {
   Mic,
   ClipboardList,
   FileText,
+  Check,
+  Copy,
 } from "lucide-react";
 import type {
   AgentType,
@@ -151,6 +153,50 @@ function withLiveElapsed(
 
 // ── Message Bubble ───────────────────────────────────────────────────────────
 
+const BubbleCopyButton = memo(function BubbleCopyButton({
+  text,
+  isUser,
+}: {
+  text: string;
+  isUser: boolean;
+}) {
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const copied = status === "copied";
+  const failed = status === "failed";
+
+  useEffect(() => {
+    if (status === "idle") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setStatus("idle"), 1600);
+    return () => window.clearTimeout(timer);
+  }, [status]);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus("copied");
+    } catch (error) {
+      console.error("Failed to copy message bubble text", error);
+      setStatus("failed");
+    }
+  }, [text]);
+
+  return (
+    <button
+      type="button"
+      style={styles.bubbleCopyButton(isUser, status)}
+      onClick={handleCopy}
+      title={copied ? "已复制气泡原文" : failed ? "复制失败" : "复制气泡原文"}
+      aria-label={copied ? "已复制气泡原文" : failed ? "复制失败" : "复制气泡原文"}
+    >
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+      <span>{copied ? "已复制" : failed ? "失败" : "复制"}</span>
+    </button>
+  );
+});
+
 const UserMessageBubble = memo(function UserMessageBubble({
   message,
 }: {
@@ -161,10 +207,13 @@ const UserMessageBubble = memo(function UserMessageBubble({
       <div style={styles.messageAvatar(true)}>
         <User size={15} color="#fff" />
       </div>
-      <div style={styles.messageBubble(true)}>
-        <div style={styles.markdownBody}>
-          <MarkdownRenderer content={message.content} variant="chat" />
+      <div style={styles.messageBubbleColumn(true)}>
+        <div style={styles.messageBubble(true)}>
+          <div style={styles.markdownBody}>
+            <MarkdownRenderer content={message.content} variant="chat" />
+          </div>
         </div>
+        <BubbleCopyButton text={message.content} isUser />
       </div>
     </div>
   );
@@ -210,21 +259,26 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
             </div>
           </div>
         )}
-        {visibleSegments.map((segment, index) => (
-          <div key={`${segment.kind}-${segment.toolCallId ?? segment.toolName ?? index}`}>
-            {segment.kind === "tool-summary" ? (
-              <ToolSummaryBlock segment={segment} />
-            ) : (
-              <div style={styles.assistantTurnSection}>
-                <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
-                  <div style={styles.markdownBody}>
-                    <MarkdownRenderer content={segment.text.trim()} variant="chat" />
+        {visibleSegments.map((segment, index) => {
+          const segmentText = segment.text.trim();
+
+          return (
+            <div key={`${segment.kind}-${segment.toolCallId ?? segment.toolName ?? index}`}>
+              {segment.kind === "tool-summary" ? (
+                <ToolSummaryBlock segment={segment} />
+              ) : (
+                <div style={styles.assistantTurnSection}>
+                  <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
+                    <div style={styles.markdownBody}>
+                      <MarkdownRenderer content={segmentText} variant="chat" />
+                    </div>
                   </div>
+                  <BubbleCopyButton text={segmentText} isUser={false} />
                 </div>
-              </div>
-            )}
-          </div>
-        ))}
+              )}
+            </div>
+          );
+        })}
         {usageStats && <AssistantUsageStats stats={usageStats} />}
       </div>
     </div>
@@ -2490,6 +2544,46 @@ const styles = {
     wordBreak: "break-word" as const,
     userSelect: "text" as const,
     WebkitUserSelect: "text" as const,
+  }),
+  messageBubbleColumn: (isUser: boolean) => ({
+    maxWidth: "min(760px, calc(100% - 96px))",
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: isUser ? ("flex-end" as const) : ("flex-start" as const),
+    gap: "5px",
+  }),
+  bubbleCopyButton: (isUser: boolean, status: "idle" | "copied" | "failed") => ({
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "4px",
+    width: "fit-content",
+    minHeight: "24px",
+    padding: "3px 7px",
+    borderRadius: "7px",
+    border: "1px solid var(--border-dim)",
+    background:
+      status === "copied"
+        ? "color-mix(in srgb, var(--success, #16a34a) 14%, var(--bg-card))"
+        : status === "failed"
+          ? "color-mix(in srgb, var(--danger, #dc2626) 12%, var(--bg-card))"
+          : "color-mix(in srgb, var(--bg-card) 90%, transparent)",
+    color:
+      status === "copied"
+        ? "var(--success, #16a34a)"
+        : status === "failed"
+          ? "var(--danger, #dc2626)"
+          : isUser
+            ? "color-mix(in srgb, var(--accent) 78%, var(--text-secondary))"
+            : "var(--text-hint)",
+    fontSize: "11px",
+    fontWeight: 600,
+    lineHeight: 1.2,
+    cursor: "pointer",
+    userSelect: "none" as const,
+    WebkitUserSelect: "none" as const,
+    opacity: status === "idle" ? 0.78 : 1,
   }),
   messageText: {
     whiteSpace: "pre-wrap" as const,

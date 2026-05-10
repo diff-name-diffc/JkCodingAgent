@@ -10,8 +10,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::config::{DispatcherAgentConfig, DEFAULT_SUMMARY_MODEL};
 use super::db::{
-    DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherSessionRecord,
-    DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord,
+    DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherSessionKind,
+    DispatcherSessionRecord, DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord,
     DispatcherSessionTokenUsageSource, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
 };
 use super::llm;
@@ -474,6 +474,48 @@ pub async fn dispatcher_send_message(
 }
 
 #[tauri::command]
+pub async fn dispatcher_send_plain_chat_message(
+    state: tauri::State<'_, DispatcherState>,
+    app: AppHandle,
+    workspace_id: String,
+    content: String,
+    on_event: tauri::ipc::Channel<AgentEvent>,
+) -> Result<AgentTurn, String> {
+    spawn_session_title_update(&state, &app, &workspace_id, &content);
+    state
+        .db
+        .set_session_mode(&workspace_id, DispatcherMode::Default)
+        .map_err(|error| error.to_string())?;
+    state
+        .db
+        .set_plan_interaction(&workspace_id, None)
+        .map_err(|error| error.to_string())?;
+
+    if let Ok(Some(settings)) = state.db.get_settings() {
+        let mut agent = state.agent.lock().await;
+        agent.apply_settings(&settings);
+        agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
+        agent.set_context_debug(settings.context_debug);
+    }
+
+    let run_handle = state.begin_run(&workspace_id);
+    let agent = state.agent.lock().await;
+    let result = agent
+        .run_plain_chat(
+            &state.db,
+            &workspace_id,
+            &content,
+            on_event,
+            run_handle.cancel_rx,
+        )
+        .await
+        .map_err(|error| error.to_string());
+    drop(agent);
+    state.finish_run(&workspace_id, run_handle.generation);
+    result
+}
+
+#[tauri::command]
 pub fn dispatcher_list_messages(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
@@ -540,10 +582,13 @@ pub fn dispatcher_get_settings(
 pub fn dispatcher_list_sessions(
     state: tauri::State<'_, DispatcherState>,
     project_id: String,
+    kind: Option<String>,
 ) -> Result<Vec<DispatcherSessionRecord>, String> {
+    let kind = DispatcherSessionKind::from_wire(kind.as_deref().unwrap_or("project"))
+        .map_err(|error| error.to_string())?;
     state
         .db
-        .list_sessions(&project_id)
+        .list_sessions(&project_id, kind)
         .map_err(|error| error.to_string())
 }
 
@@ -553,14 +598,17 @@ pub fn dispatcher_create_session(
     app: AppHandle,
     project_id: String,
     title: String,
+    kind: Option<String>,
     mode: Option<String>,
     active_plan_path: Option<String>,
 ) -> Result<DispatcherSessionRecord, String> {
+    let kind = DispatcherSessionKind::from_wire(kind.as_deref().unwrap_or("project"))
+        .map_err(|error| error.to_string())?;
     let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
         .map_err(|error| error.to_string())?;
     let session = state
         .db
-        .create_session(&project_id, &title, mode, active_plan_path.as_deref())
+        .create_session(&project_id, &title, kind, mode, active_plan_path.as_deref())
         .map_err(|error| error.to_string())?;
     let _ = app.emit("dispatcher-session-updated", session.clone());
     Ok(session)

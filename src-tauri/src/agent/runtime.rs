@@ -858,6 +858,131 @@ impl DispatcherAgent {
         Ok(AgentTurn { reply, messages })
     }
 
+    pub async fn run_plain_chat(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        user_message: &str,
+        on_event: Channel<AgentEvent>,
+        mut cancel_rx: watch::Receiver<bool>,
+    ) -> Result<AgentTurn> {
+        emit(
+            &on_event,
+            AgentEvent::Started {
+                workspace_id: workspace_id.to_string(),
+            },
+        );
+        db.clear_checklist(workspace_id)
+            .context("clear stale checklist before plain chat turn")?;
+
+        let user = db.add_visible_message(workspace_id, "user", user_message)?;
+        emit(&on_event, AgentEvent::UserMessage { message: user });
+
+        let provider = self.provider.lock().clone();
+        if !provider.is_configured() {
+            anyhow::bail!(
+                "聊天 LLM API Key 未配置。请在设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
+            );
+        }
+
+        let mut usage_tracker = RunUsageTracker::new();
+        let history_messages = db.load_llm_history(workspace_id)?;
+        let request_provider =
+            self.provider_for_messages(&provider, &history_messages, &on_event, true)?;
+        let mut messages = vec![ChatMessage::system(build_plain_chat_system_prompt())];
+        messages.extend(history_messages.clone());
+
+        let stream_msg_id = uuid::Uuid::new_v4().to_string();
+        emit(
+            &on_event,
+            AgentEvent::AssistantStarted {
+                message_id: stream_msg_id.clone(),
+            },
+        );
+
+        let event_ref = &on_event;
+        let msg_id_ref = stream_msg_id.clone();
+        let streamed_text = Arc::new(Mutex::new(String::new()));
+        let streamed_text_ref = Arc::clone(&streamed_text);
+        let on_delta = move |delta: &str| {
+            let mut partial = streamed_text_ref.lock();
+            partial.push_str(delta);
+            let _ = event_ref.send(AgentEvent::AssistantDelta {
+                message_id: msg_id_ref.clone(),
+                delta: delta.to_string(),
+            });
+        };
+
+        let response = tokio::select! {
+            _ = wait_for_cancellation(&mut cancel_rx) => {
+                let partial = streamed_text.lock().clone();
+                let reply = emit_plain_chat_stop_and_finish(
+                    db,
+                    workspace_id,
+                    &on_event,
+                    &partial,
+                    &usage_tracker,
+                )?;
+                let messages = db.list_visible_messages(workspace_id)?;
+                emit(
+                    &on_event,
+                    AgentEvent::Finished {
+                        messages: messages.clone(),
+                    },
+                );
+                return Ok(AgentTurn { reply, messages });
+            }
+            response = request_provider.chat_stream(
+                &messages,
+                &[],
+                messages_contain_inline_images(&history_messages),
+                on_delta,
+            ) => response
+        }?;
+
+        if let Some(usage) = response.usage.as_ref() {
+            record_run_token_usage(
+                db,
+                workspace_id,
+                request_provider.model(),
+                DispatcherSessionTokenUsageSource::Primary,
+                usage,
+                &mut usage_tracker,
+                &on_event,
+            );
+        }
+
+        if !response.tool_calls.is_empty() {
+            anyhow::bail!(
+                "普通聊天链路禁止工具调用，但模型返回了 {} 个工具调用。",
+                response.tool_calls.len()
+            );
+        }
+
+        let content = response.content.trim().to_string();
+        if content.is_empty() {
+            anyhow::bail!("LLM 返回了空响应，无法继续执行。");
+        }
+
+        let usage_stats = usage_tracker.snapshot();
+        let reply =
+            db.add_visible_message_with_usage(workspace_id, "assistant", &content, &usage_stats)?;
+        emit(
+            &on_event,
+            AgentEvent::AssistantMessage {
+                message: reply.clone(),
+            },
+        );
+        let messages = db.list_visible_messages(workspace_id)?;
+        emit(
+            &on_event,
+            AgentEvent::Finished {
+                messages: messages.clone(),
+            },
+        );
+        Ok(AgentTurn { reply, messages })
+    }
+
     async fn run_llm_loop(
         &self,
         db: &DispatcherDb,
@@ -2944,6 +3069,51 @@ fn build_stopped_dispatch_reply(partial: &str) -> String {
     }
 }
 
+fn build_stopped_plain_chat_reply(partial: &str) -> String {
+    let trimmed = partial.trim();
+    if trimmed.is_empty() {
+        "⏹️ 本轮聊天已停止。当前会话上下文已保留，可稍后继续。".to_string()
+    } else {
+        format!(
+            "{}\n\n[本轮聊天已手动停止。当前会话上下文与以上输出均已保留，可稍后继续。]",
+            trimmed
+        )
+    }
+}
+
+fn emit_plain_chat_stop_and_finish(
+    db: &DispatcherDb,
+    workspace_id: &str,
+    on_event: &Channel<AgentEvent>,
+    partial: &str,
+    usage_tracker: &RunUsageTracker,
+) -> Result<DispatcherMessageRecord> {
+    let content = build_stopped_plain_chat_reply(partial);
+    let usage_stats = usage_tracker.snapshot();
+    let reply =
+        db.add_visible_message_with_usage(workspace_id, "assistant", &content, &usage_stats)?;
+    emit(
+        on_event,
+        AgentEvent::AssistantMessage {
+            message: reply.clone(),
+        },
+    );
+    Ok(reply)
+}
+
+fn build_plain_chat_system_prompt() -> String {
+    [
+        "# 普通聊天",
+        "",
+        "你是桌面客户端中的普通聊天助手。",
+        "当前会话不是项目 Agent 会话，没有项目目录、文件系统、终端、MCP、子进程或任何工具能力。",
+        "不要声称已经读取、修改或执行了本地文件；如果用户要求操作项目或文件，请说明普通聊天不具备该能力，并建议切换到项目会话。",
+        "可以基于用户直接提供的文本、代码片段、错误信息或图片进行解释、分析、改写和建议。",
+        "默认使用简体中文，表达直接、清晰、面向有经验的开发者。",
+    ]
+    .join("\n")
+}
+
 fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
     let _ = on_event.send(event);
 }
@@ -3155,18 +3325,19 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        build_checklist_state, build_dispatcher_mode_block, build_protocol_waiting_message,
-        collect_recent_exploration_entries, complete_checklist_dispatch,
-        default_mode_tool_allowlist, parse_update_plan, plan_mode_tool_allowlist,
-        readonly_tool_run_end, reserve_checklist_dispatch, resolve_plan_path,
-        should_include_latest_user_goal, start_checklist_dispatch, DispatchAgent, DispatcherAgent,
-        DispatcherSubprocessRegistry, PlanPathAccess, PlannedSubprocessState, ProtocolBatchState,
-        ProtocolToolAction, RegisteredSubprocess, RegisteredSubprocessPhase,
+        build_checklist_state, build_dispatcher_mode_block, build_plain_chat_system_prompt,
+        build_protocol_waiting_message, collect_recent_exploration_entries,
+        complete_checklist_dispatch, default_mode_tool_allowlist, parse_update_plan,
+        plan_mode_tool_allowlist, readonly_tool_run_end, reserve_checklist_dispatch,
+        resolve_plan_path, should_include_latest_user_goal, start_checklist_dispatch,
+        DispatchAgent, DispatcherAgent, DispatcherSubprocessRegistry, PlanPathAccess,
+        PlannedSubprocessState, ProtocolBatchState, ProtocolToolAction, RegisteredSubprocess,
+        RegisteredSubprocessPhase,
     };
     use super::{ChecklistStepStatus, DispatcherMode, DispatcherSessionRuntimeState};
     use crate::agent::config::DispatcherAgentConfig;
-    use crate::agent::db::DispatcherDb;
-    use crate::agent::llm::{ChatMessage, RequestedToolCall};
+    use crate::agent::db::{DispatcherDb, DispatcherSessionKind};
+    use crate::agent::llm::{ChatMessage, OpenAiCompatProvider, RequestedToolCall};
     use crate::project::mcp::ProjectMcpRegistry;
 
     #[test]
@@ -3350,7 +3521,13 @@ mod tests {
         let workspace = temp_workspace("checklist-dispatch-lifecycle");
         let db = DispatcherDb::new(workspace.join("dispatcher.sqlite3")).unwrap();
         let session = db
-            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .create_session(
+                "project-1",
+                "测试会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
             .unwrap();
         let checklist = build_checklist_state(
             parse_update_plan(&serde_json::json!({
@@ -3390,6 +3567,25 @@ mod tests {
         assert_eq!(completed.items[1].status, ChecklistStepStatus::Pending);
 
         let _ = fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn plain_chat_prompt_and_request_do_not_expose_tools_or_workspace() {
+        let prompt = build_plain_chat_system_prompt();
+        assert!(prompt.contains("普通聊天"));
+        assert!(prompt.contains("没有项目目录"));
+        assert!(prompt.contains("任何工具能力"));
+
+        let provider = OpenAiCompatProvider::new(
+            "test-key".to_string(),
+            "https://example.com/v1".to_string(),
+            "test-model".to_string(),
+            1024,
+            0.1,
+        );
+        let snapshot = provider.build_request_snapshot(&[ChatMessage::system(prompt)], &[]);
+
+        assert!(snapshot.body.tools.is_none());
     }
 
     #[test]

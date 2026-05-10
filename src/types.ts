@@ -329,6 +329,7 @@ export type DispatcherAgentEvent =
 export interface DispatcherSession {
   id: string;
   projectId: string;
+  kind: "project" | "chat";
   title: string;
   mode: DispatcherMode;
   activePlanPath?: string | null;

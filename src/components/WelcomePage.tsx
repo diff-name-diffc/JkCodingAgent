@@ -1,11 +1,22 @@
 import { useState, useMemo } from "react";
-import { Search, FolderOpen, GitBranch, Layers, Plus, Trash2, BarChart2, BookOpen } from "lucide-react";
+import {
+  Search,
+  FolderOpen,
+  GitBranch,
+  Layers,
+  Plus,
+  Trash2,
+  BarChart2,
+  BookOpen,
+  MessageCircle,
+} from "lucide-react";
 import type { Project, ThemeMode } from "../types";
 import { getAvatarGradient, shortenPath } from "../utils";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
 import { AnalyticsDashboard } from "./AnalyticsDashboard";
 import { KnowledgePage } from "./knowledge/KnowledgePage";
+import { HomeChatPage } from "./HomeChatPage";
 import appLogo from "../assets/app-logo.png";
 import s from "../styles";
 
@@ -88,7 +99,7 @@ export function WelcomePage({
   const [query, setQuery] = useState("");
   const [hov, setHov] = useState<string | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
-  const [view, setView] = useState<"projects" | "analytics" | "knowledge">("projects");
+  const [view, setView] = useState<"projects" | "chat" | "analytics" | "knowledge">("projects");
 
   const filtered = useMemo(() => {
     if (!query.trim()) return projects;
@@ -104,9 +115,13 @@ export function WelcomePage({
         <div style={s.sidebar}>
           <div style={s.sidebarBrand}>
             <div style={s.sidebarBrandIcon}>
-              <img src={appLogo} alt="JKCodingAgent" style={{ width: "100%", height: "100%", borderRadius: 9, objectFit: "cover" }} />
+              <img
+                src={appLogo}
+                alt="JKCodingAgent"
+                style={{ width: "100%", height: "100%", borderRadius: 9, objectFit: "cover" }}
+              />
             </div>
-              <div>
+            <div>
               <div style={s.sidebarBrandTitle}>JKCodingAgent</div>
               <div style={s.sidebarBrandMeta}>智能体工作区</div>
             </div>
@@ -119,6 +134,12 @@ export function WelcomePage({
               label="项目"
               active={view === "projects"}
               onClick={() => setView("projects")}
+            />
+            <SidebarItem
+              icon={<MessageCircle size={15} />}
+              label="聊天"
+              active={view === "chat"}
+              onClick={() => setView("chat")}
             />
             <SidebarItem
               icon={<BarChart2 size={15} />}
@@ -145,7 +166,14 @@ export function WelcomePage({
           </div>
         </div>
 
-        {view === "analytics" ? (
+        {view === "chat" ? (
+          <HomeChatPage
+            isDark={isDark}
+            themeMode={themeMode}
+            systemPrefersDark={systemPrefersDark}
+            onThemeModeChange={onThemeModeChange}
+          />
+        ) : view === "analytics" ? (
           <AnalyticsDashboard projects={projects} />
         ) : view === "knowledge" ? (
           <KnowledgePage />
@@ -188,9 +216,7 @@ export function WelcomePage({
               <div>
                 <div style={s.projectSectionTitle}>项目</div>
                 <div style={s.projectSectionCaption}>
-                  {query.trim()
-                    ? `找到 ${filtered.length} 个结果`
-                    : `共 ${projects.length} 个项目`}
+                  {query.trim() ? `找到 ${filtered.length} 个结果` : `共 ${projects.length} 个项目`}
                 </div>
               </div>
             </div>

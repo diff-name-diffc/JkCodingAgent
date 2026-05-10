@@ -56,6 +56,14 @@ import {
   startLiveToolActivity,
 } from "./dispatcherChatView";
 
+const MESSAGE_LIST_BOTTOM_THRESHOLD = 48;
+
+function isMessageListNearBottom(element: HTMLDivElement): boolean {
+  return (
+    element.scrollHeight - element.scrollTop - element.clientHeight <= MESSAGE_LIST_BOTTOM_THRESHOLD
+  );
+}
+
 // ── Dispatch Approval Dialog ─────────────────────────────────────────────────
 
 interface DispatchApprovalProps {
@@ -177,12 +185,7 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
 }) {
   const visibleSegments = segments.filter((segment) => segment.text.trim());
   const visiblePlaceholder = placeholderText?.trim() ?? "";
-  if (
-    visibleSegments.length === 0 &&
-    tools.length === 0 &&
-    !visiblePlaceholder &&
-    !usageStats
-  ) {
+  if (visibleSegments.length === 0 && tools.length === 0 && !visiblePlaceholder && !usageStats) {
     return null;
   }
 
@@ -364,9 +367,7 @@ export const InteractionDrawer = memo(function InteractionDrawer({
               type="button"
               style={styles.drawerOptionBtn}
               onClick={() =>
-                onAnswerPlanQuestion(
-                  `选择：${option.label}\n说明：${option.description}`,
-                )
+                onAnswerPlanQuestion(`选择：${option.label}\n说明：${option.description}`)
               }
             >
               <span style={styles.drawerOptionLabel}>{option.label}</span>
@@ -443,7 +444,9 @@ export const InteractionDrawer = memo(function InteractionDrawer({
             <ClipboardList size={14} />
             本次任务规划步骤
           </span>
-          <span style={styles.drawerPath}>{new Date(checklist.updatedAt).toLocaleTimeString()}</span>
+          <span style={styles.drawerPath}>
+            {new Date(checklist.updatedAt).toLocaleTimeString()}
+          </span>
         </div>
         {checklist.explanation && <div style={styles.drawerSummary}>{checklist.explanation}</div>}
         <div style={styles.checklistRows}>
@@ -481,6 +484,7 @@ export const InteractionDrawer = memo(function InteractionDrawer({
 });
 
 const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
+  conversationKind,
   input,
   composerMode,
   mode,
@@ -510,6 +514,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onCompositionStart,
   onCompositionEnd,
 }: {
+  conversationKind: "project" | "chat";
   input: string;
   composerMode: "send" | "stop" | "resume";
   mode: DispatcherMode;
@@ -541,6 +546,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
 }) {
   const isStopMode = composerMode === "stop";
   const isResumeMode = composerMode === "resume";
+  const isPlainChat = conversationKind === "chat";
 
   return (
     <div style={styles.emptyLauncherWrap(layoutMode)}>
@@ -548,21 +554,27 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
         <div style={styles.emptyComposerTopBar}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <Sparkles size={16} color="var(--accent)" />
-            <div style={styles.emptyComposerPromptHint}>主调度智能体</div>
+            <div style={styles.emptyComposerPromptHint}>
+              {isPlainChat ? "普通聊天" : "主调度智能体"}
+            </div>
           </div>
           <div style={styles.emptyComposerToolRow}>
-            <button type="button" style={styles.emptyTopToolBtn} onClick={onOpenMcpStatus}>
-              <PlugZap size={14} />
-              MCP
-            </button>
+            {!isPlainChat && (
+              <button type="button" style={styles.emptyTopToolBtn} onClick={onOpenMcpStatus}>
+                <PlugZap size={14} />
+                MCP
+              </button>
+            )}
             <button type="button" style={styles.emptyTopToolBtn} onClick={onOpenSettings}>
               <Settings2 size={14} />
               设置
             </button>
-            <button type="button" style={styles.emptyTopToolBtn} onClick={onToggleAutoApprove}>
-              <Wrench size={14} />
-              免确认 {autoApprove ? "开" : "关"}
-            </button>
+            {!isPlainChat && (
+              <button type="button" style={styles.emptyTopToolBtn} onClick={onToggleAutoApprove}>
+                <Wrench size={14} />
+                免确认 {autoApprove ? "开" : "关"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -586,7 +598,11 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
           <textarea
             ref={inputRef}
             style={styles.emptyComposerTextarea(layoutMode)}
-            placeholder="描述你的需求、粘贴代码或报错信息，支持粘贴图片..."
+            placeholder={
+              isPlainChat
+                ? "输入普通聊天消息，支持粘贴图片..."
+                : "描述你的需求、粘贴代码或报错信息，支持粘贴图片..."
+            }
             value={input}
             onChange={(e) => onChangeInput(e.target.value)}
             onPaste={onPaste}
@@ -615,7 +631,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
 
             <div style={styles.emptyComposerPrimaryRow}>
               <SessionTokenUsageIndicators entries={sessionTokenUsages} />
-              <PlanModeToggleButton mode={mode} onToggleMode={onToggleMode} />
+              {!isPlainChat && <PlanModeToggleButton mode={mode} onToggleMode={onToggleMode} />}
               <button
                 type="button"
                 style={styles.voiceBtn(isRecordingVoice)}
@@ -630,12 +646,29 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
                 type="button"
                 style={{
                   ...getEmptyPrimaryComposerButtonStyle(composerMode),
-                  opacity: getPrimaryComposerOpacity(composerMode, input, isBusy, isStopping, attachedImages.length > 0),
+                  opacity: getPrimaryComposerOpacity(
+                    composerMode,
+                    input,
+                    isBusy,
+                    isStopping,
+                    attachedImages.length > 0,
+                  ),
                 }}
                 onClick={isStopMode ? onStop : isResumeMode && !input.trim() ? onResume : onSend}
-                disabled={isComposerActionDisabled(composerMode, input, isBusy, isStopping, attachedImages.length > 0)}
+                disabled={isComposerActionDisabled(
+                  composerMode,
+                  input,
+                  isBusy,
+                  isStopping,
+                  attachedImages.length > 0,
+                )}
               >
-                <span>{getComposerButtonLabel(composerMode, Boolean(input.trim() || attachedImages.length > 0))}</span>
+                <span>
+                  {getComposerButtonLabel(
+                    composerMode,
+                    Boolean(input.trim() || attachedImages.length > 0),
+                  )}
+                </span>
                 {isStopMode ? (
                   <Square size={15} />
                 ) : isResumeMode && !input.trim() ? (
@@ -652,10 +685,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   );
 });
 
-function getComposerButtonLabel(
-  mode: "send" | "stop" | "resume",
-  hasInput: boolean,
-): string {
+function getComposerButtonLabel(mode: "send" | "stop" | "resume", hasInput: boolean): string {
   if (mode === "stop") return "停止";
   if (mode === "resume" && !hasInput) return "继续运行";
   return mode === "send" ? "开始对话" : "发送消息";
@@ -779,12 +809,13 @@ export function buildPlanImplementationPrompt(planPath: string) {
 
 interface DispatcherChatProps {
   sessionId: string;
-  projectPath: string;
-  mcpStatus: ProjectMcpStatus | null;
-  mcpChecking: boolean;
+  conversationKind?: "project" | "chat";
+  projectPath?: string;
+  mcpStatus?: ProjectMcpStatus | null;
+  mcpChecking?: boolean;
   layoutMode?: "single" | "split";
-  subProcesses: SubProcess[];
-  onDispatchApproved: (
+  subProcesses?: SubProcess[];
+  onDispatchApproved?: (
     dispatchId: string,
     agent: AgentType,
     description: string,
@@ -792,14 +823,14 @@ interface DispatcherChatProps {
     permissionMode: string,
     sessionId: string,
   ) => void;
-  onDispatchRejected: (dispatchId: string) => void;
-  onDispatchContinue: (agent: AgentType, text: string, sessionId: string) => void;
-  onDispatchExit: (agent: AgentType, reason: string, sessionId: string) => void;
-  onStopActiveRun: (sessionId: string) => Promise<void>;
-  onResumeStoppedRun: (sessionId: string) => Promise<void>;
-  onOpenMcpStatus: () => void;
+  onDispatchRejected?: (dispatchId: string) => void;
+  onDispatchContinue?: (agent: AgentType, text: string, sessionId: string) => void;
+  onDispatchExit?: (agent: AgentType, reason: string, sessionId: string) => void;
+  onStopActiveRun?: (sessionId: string) => Promise<void>;
+  onResumeStoppedRun?: (sessionId: string) => Promise<void>;
+  onOpenMcpStatus?: () => void;
   onOpenSettings: () => void;
-  onOpenPlanDocument: (path: string) => void;
+  onOpenPlanDocument?: (path: string) => void;
   onClosePanel?: () => void;
 }
 
@@ -826,11 +857,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
   function DispatcherChat(
     {
       sessionId,
-      projectPath,
-      mcpStatus,
-      mcpChecking,
+      conversationKind = "project",
+      projectPath = "",
+      mcpStatus = null,
+      mcpChecking = false,
       layoutMode = "split",
-      subProcesses: _subProcesses,
+      subProcesses: _subProcesses = [],
       onDispatchApproved,
       onDispatchRejected,
       onDispatchContinue,
@@ -861,9 +893,11 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [planInteraction, setPlanInteraction] = useState<PlanInteraction | null>(null);
     const [activePlanPath, setActivePlanPath] = useState<string | null>(null);
     const [implementingPlan, setImplementingPlan] = useState(false);
-    const [activeUsageStats, setActiveUsageStats] =
-      useState<DispatcherMessageUsageStats | null>(null);
+    const [activeUsageStats, setActiveUsageStats] = useState<DispatcherMessageUsageStats | null>(
+      null,
+    );
     const [usageClockNow, setUsageClockNow] = useState(() => Date.now());
+    const isPlainChat = conversationKind === "chat";
 
     const handlePaste = useCallback((e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -888,7 +922,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       setAttachedImages((prev) => prev.filter((_, i) => i !== index));
     }, []);
 
-    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const messageListRef = useRef<HTMLDivElement>(null);
+    const shouldStickToBottomRef = useRef(true);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const inputComposingRef = useRef(false);
     const currentSessionIdRef = useRef(sessionId);
@@ -909,12 +944,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       () => _subProcesses.filter((subProcess) => subProcess.sessionId === sessionId),
       [_subProcesses, sessionId],
     );
-    const hasRunningSubProcess = sessionSubProcesses.some(
-      (subProcess) => subProcess.status === "running",
-    );
-    const hasStoppedSubProcess = sessionSubProcesses.some(
-      (subProcess) => subProcess.status === "stopped",
-    );
+    const hasRunningSubProcess =
+      !isPlainChat && sessionSubProcesses.some((subProcess) => subProcess.status === "running");
+    const hasStoppedSubProcess =
+      !isPlainChat && sessionSubProcesses.some((subProcess) => subProcess.status === "stopped");
     const composerMode: "send" | "stop" | "resume" =
       hasPendingRun || isLoading || hasRunningSubProcess
         ? "stop"
@@ -931,10 +964,19 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       reset: resetSessionTokenUsage,
     } = useDispatcherSessionTokenUsage(sessionId);
     const liveUsageStats = useMemo(
-      () =>
-        withLiveElapsed(activeUsageStats, activeUsageStatsReceivedAtRef.current, usageClockNow),
+      () => withLiveElapsed(activeUsageStats, activeUsageStatsReceivedAtRef.current, usageClockNow),
       [activeUsageStats, usageClockNow],
     );
+
+    const scrollMessageListToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+      const element = messageListRef.current;
+      if (!element) return;
+      element.scrollTo({ top: element.scrollHeight, behavior });
+    }, []);
+
+    const handleMessageListScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+      shouldStickToBottomRef.current = isMessageListNearBottom(event.currentTarget);
+    }, []);
 
     useEffect(() => {
       if (!activeUsageStats) {
@@ -961,6 +1003,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     useEffect(() => {
       const loadId = ++historyLoadRef.current;
       activeRunRef.current += 1;
+      shouldStickToBottomRef.current = true;
       setMessages([]);
       setIsLoading(false);
       setIsStopping(false);
@@ -1000,152 +1043,165 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         .catch(console.error);
     }, [sessionId]);
 
-    // Auto-scroll
     useEffect(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages, streamingSegments, assistantPlaceholder, liveToolCalls, runError]);
+      if (!shouldStickToBottomRef.current) return;
+      scrollMessageListToBottom();
+    }, [
+      messages,
+      streamingSegments,
+      assistantPlaceholder,
+      liveToolCalls,
+      runError,
+      scrollMessageListToBottom,
+    ]);
 
-    const createEventChannel = useCallback((targetSessionId: string, runId: number) => {
-      const onEvent = new Channel<DispatcherAgentEvent>();
-      onEvent.onmessage = (event) => {
-        const isCurrentRun =
-          currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId;
-        switch (event.event) {
-          case "started":
-            break;
-          case "assistantStarted":
-            if (!isCurrentRun) return;
-            setAssistantPlaceholder("正在分析问题...");
-            break;
-          case "modelSwitched":
-            if (!isCurrentRun) return;
-            setAssistantPlaceholder(`已检测到图片，自动切换到视觉模型 ${event.data.toModel}。`);
-            setStreamingSegments((prev) =>
-              appendAssistantTextSegment(
-                prev,
-                `> ${event.data.reason}，已从 ${event.data.fromModel} 自动切换到视觉模型 ${event.data.toModel}。\n\n`,
-              ),
-            );
-            break;
-          case "userMessage":
-            if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
-            setMessages((prev) => [...prev, event.data.message]);
-            break;
-          case "assistantDelta":
-            if (!isCurrentRun) return;
-            setAssistantPlaceholder(null);
-            setStreamingSegments((prev) => appendAssistantTextSegment(prev, event.data.delta));
-            break;
-          case "assistantMessage":
-            if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
-            setAssistantPlaceholder(null);
-            setStreamingSegments((prev) =>
-              prev.filter((segment) => segment.kind === "tool-summary"),
-            );
-            setMessages((prev) => [...prev, event.data.message]);
-            break;
-          case "runUsageUpdated":
-            if (!isCurrentRun || event.data.workspaceId !== targetSessionId) return;
-            activeUsageStatsReceivedAtRef.current = Date.now();
-            setActiveUsageStats(event.data.stats);
-            setUsageClockNow(Date.now());
-            void refreshSessionTokenUsage(targetSessionId);
-            break;
-          case "toolPlanned":
-            if (!isCurrentRun) return;
-            setAssistantPlaceholder("正在规划工具调用...");
-            setLiveToolCalls((prev) => planLiveToolActivity(prev, event.data));
-            break;
-          case "toolStarted":
-            if (!isCurrentRun) return;
-            setAssistantPlaceholder("正在执行工具...");
-            setLiveToolCalls((prev) => startLiveToolActivity(prev, event.data));
-            break;
-          case "toolSummaryStarted":
-            if (!isCurrentRun) return;
-            break;
-          case "toolSummaryDelta":
-            if (!isCurrentRun) return;
-            setStreamingSegments((prev) => appendToolSummarySegment(prev, event.data));
-            break;
-          case "toolFinished":
-            if (!isCurrentRun) return;
-            setLiveToolCalls((prev) => finishLiveToolActivity(prev, event.data));
-            break;
-          case "checklistPlanUpdated":
-            if (!isCurrentRun) return;
-            setChecklist(event.data.state);
-            break;
-          case "planQuestionRequested":
-            if (!isCurrentRun) return;
-            setPlanInteraction(event.data.interaction);
-            break;
-          case "planDocumentOpened":
-            if (!isCurrentRun) return;
-            setActivePlanPath(event.data.planPath);
-            onOpenPlanDocument(event.data.planPath);
-            break;
-          case "planReady":
-            if (!isCurrentRun) return;
-            setPlanInteraction(event.data.interaction);
-            if (event.data.interaction.kind === "ready") {
-              setActivePlanPath(event.data.interaction.planPath);
-              onOpenPlanDocument(event.data.interaction.planPath);
-            }
-            break;
-          case "planImplemented":
-            if (!isCurrentRun) return;
-            setActivePlanPath(event.data.implementedPath);
-            setPlanInteraction(null);
-            onOpenPlanDocument(event.data.implementedPath);
-            break;
-          case "dispatchProposed": {
-            const { dispatchId, agent, description, taskPrompt, permissionMode } = event.data;
-            if (autoApproveRef.current) {
-              onDispatchApprovedRef.current(
-                dispatchId,
-                agent,
-                description,
-                taskPrompt,
-                permissionMode,
-                targetSessionId,
+    const createEventChannel = useCallback(
+      (targetSessionId: string, runId: number) => {
+        const onEvent = new Channel<DispatcherAgentEvent>();
+        onEvent.onmessage = (event) => {
+          const isCurrentRun =
+            currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId;
+          switch (event.event) {
+            case "started":
+              break;
+            case "assistantStarted":
+              if (!isCurrentRun) return;
+              setAssistantPlaceholder("正在分析问题...");
+              break;
+            case "modelSwitched":
+              if (!isCurrentRun) return;
+              setAssistantPlaceholder(`已检测到图片，自动切换到视觉模型 ${event.data.toModel}。`);
+              setStreamingSegments((prev) =>
+                appendAssistantTextSegment(
+                  prev,
+                  `> ${event.data.reason}，已从 ${event.data.fromModel} 自动切换到视觉模型 ${event.data.toModel}。\n\n`,
+                ),
               );
-            } else if (isCurrentRun) {
-              setPendingDispatches((prev) => [
-                ...prev,
-                { dispatchId, agent, description, taskPrompt, permissionMode },
-              ]);
+              break;
+            case "userMessage":
+              if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
+              setMessages((prev) => [...prev, event.data.message]);
+              break;
+            case "assistantDelta":
+              if (!isCurrentRun) return;
+              setAssistantPlaceholder(null);
+              setStreamingSegments((prev) => appendAssistantTextSegment(prev, event.data.delta));
+              break;
+            case "assistantMessage":
+              if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
+              setAssistantPlaceholder(null);
+              setStreamingSegments((prev) =>
+                prev.filter((segment) => segment.kind === "tool-summary"),
+              );
+              setMessages((prev) => [...prev, event.data.message]);
+              break;
+            case "runUsageUpdated":
+              if (!isCurrentRun || event.data.workspaceId !== targetSessionId) return;
+              activeUsageStatsReceivedAtRef.current = Date.now();
+              setActiveUsageStats(event.data.stats);
+              setUsageClockNow(Date.now());
+              void refreshSessionTokenUsage(targetSessionId);
+              break;
+            case "toolPlanned":
+              if (!isCurrentRun) return;
+              setAssistantPlaceholder("正在规划工具调用...");
+              setLiveToolCalls((prev) => planLiveToolActivity(prev, event.data));
+              break;
+            case "toolStarted":
+              if (!isCurrentRun) return;
+              setAssistantPlaceholder("正在执行工具...");
+              setLiveToolCalls((prev) => startLiveToolActivity(prev, event.data));
+              break;
+            case "toolSummaryStarted":
+              if (!isCurrentRun) return;
+              break;
+            case "toolSummaryDelta":
+              if (!isCurrentRun) return;
+              setStreamingSegments((prev) => appendToolSummarySegment(prev, event.data));
+              break;
+            case "toolFinished":
+              if (!isCurrentRun) return;
+              setLiveToolCalls((prev) => finishLiveToolActivity(prev, event.data));
+              break;
+            case "checklistPlanUpdated":
+              if (!isCurrentRun) return;
+              setChecklist(event.data.state);
+              break;
+            case "planQuestionRequested":
+              if (!isCurrentRun) return;
+              setPlanInteraction(event.data.interaction);
+              break;
+            case "planDocumentOpened":
+              if (!isCurrentRun) return;
+              setActivePlanPath(event.data.planPath);
+              onOpenPlanDocument?.(event.data.planPath);
+              break;
+            case "planReady":
+              if (!isCurrentRun) return;
+              setPlanInteraction(event.data.interaction);
+              if (event.data.interaction.kind === "ready") {
+                setActivePlanPath(event.data.interaction.planPath);
+                onOpenPlanDocument?.(event.data.interaction.planPath);
+              }
+              break;
+            case "planImplemented":
+              if (!isCurrentRun) return;
+              setActivePlanPath(event.data.implementedPath);
+              setPlanInteraction(null);
+              onOpenPlanDocument?.(event.data.implementedPath);
+              break;
+            case "dispatchProposed": {
+              const { dispatchId, agent, description, taskPrompt, permissionMode } = event.data;
+              if (isPlainChat) {
+                return;
+              }
+              if (autoApproveRef.current && onDispatchApprovedRef.current) {
+                onDispatchApprovedRef.current(
+                  dispatchId,
+                  agent,
+                  description,
+                  taskPrompt,
+                  permissionMode,
+                  targetSessionId,
+                );
+              } else if (isCurrentRun) {
+                setPendingDispatches((prev) => [
+                  ...prev,
+                  { dispatchId, agent, description, taskPrompt, permissionMode },
+                ]);
+              }
+              break;
             }
-            break;
+            case "dispatchContinue": {
+              onDispatchContinueRef.current?.(event.data.agent, event.data.text, targetSessionId);
+              break;
+            }
+            case "dispatchExit": {
+              onDispatchExitRef.current?.(event.data.agent, event.data.reason, targetSessionId);
+              break;
+            }
+            case "finished":
+              if (!isCurrentRun) return;
+              setMessages((prev) =>
+                mergeDispatcherMessages(
+                  prev,
+                  event.data.messages.filter((message) => message.workspaceId === targetSessionId),
+                ),
+              );
+              void refreshSessionTokenUsage(targetSessionId);
+              setHasPendingRun(false);
+              setIsLoading(false);
+              setStreamingSegments([]);
+              setLiveToolCalls([]);
+              setAssistantPlaceholder(null);
+              setActiveUsageStats(null);
+              break;
           }
-          case "dispatchContinue": {
-            onDispatchContinueRef.current(event.data.agent, event.data.text, targetSessionId);
-            break;
-          }
-          case "dispatchExit": {
-            onDispatchExitRef.current(event.data.agent, event.data.reason, targetSessionId);
-            break;
-          }
-          case "finished":
-            if (!isCurrentRun) return;
-            setMessages((prev) =>
-              mergeDispatcherMessages(
-                prev,
-                event.data.messages.filter((message) => message.workspaceId === targetSessionId),
-              ),
-            );
-            void refreshSessionTokenUsage(targetSessionId);
-            setHasPendingRun(false);
-            setIsLoading(false);
-            setStreamingSegments([]);
-            setLiveToolCalls([]);
-            setAssistantPlaceholder(null);
-            setActiveUsageStats(null);
-            break;
-        }
-      };
-      return onEvent;
-    }, [onOpenPlanDocument, refreshSessionTokenUsage]);
+        };
+        return onEvent;
+      },
+      [isPlainChat, onOpenPlanDocument, refreshSessionTokenUsage],
+    );
 
     const enqueueDispatcherRun = useCallback(
       async (
@@ -1213,31 +1269,43 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         setInput("");
         setAttachedImages([]);
         setPendingDispatches([]);
+        if (currentSessionIdRef.current === targetSessionId) {
+          shouldStickToBottomRef.current = true;
+          window.requestAnimationFrame(() => scrollMessageListToBottom());
+        }
 
         // If images are present, embed them in the content.
         // The backend/LLM will receive this as part of the prompt.
         let content = text;
         if (images.length > 0) {
-          const imageMarkdown = images.map(img => `![image](${img})\n`).join("");
+          const imageMarkdown = images.map((img) => `![image](${img})\n`).join("");
           content = imageMarkdown + content;
         }
 
         try {
           await enqueueDispatcherRun(targetSessionId, async (onEvent) => {
-            await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
-              workspaceId: targetSessionId,
-              projectPath,
-              content,
-              mode: targetMode,
-              onEvent,
-            });
+            if (isPlainChat) {
+              await invoke<DispatcherAgentTurn>("dispatcher_send_plain_chat_message", {
+                workspaceId: targetSessionId,
+                content,
+                onEvent,
+              });
+            } else {
+              await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
+                workspaceId: targetSessionId,
+                projectPath,
+                content,
+                mode: targetMode,
+                onEvent,
+              });
+            }
           });
         } catch (err) {
-          console.error("dispatcher_send_message 失败:", err);
-          setRunError(`调度智能体执行失败：${toErrorMessage(err)}`);
+          console.error("发送消息失败:", err);
+          setRunError(`${isPlainChat ? "聊天" : "调度智能体"}执行失败：${toErrorMessage(err)}`);
         }
       },
-      [enqueueDispatcherRun, mode, projectPath, sessionId],
+      [enqueueDispatcherRun, isPlainChat, mode, projectPath, scrollMessageListToBottom, sessionId],
     );
 
     const voiceInput = useDashScopeAsr({
@@ -1267,7 +1335,16 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           await stopVoiceRecording();
         }
       }
-    }, [input, attachedImages, isLoading, isRecordingVoice, isStopping, sendUserMessage, sessionId, stopVoiceRecording]);
+    }, [
+      input,
+      attachedImages,
+      isLoading,
+      isRecordingVoice,
+      isStopping,
+      sendUserMessage,
+      sessionId,
+      stopVoiceRecording,
+    ]);
 
     const handleStop = useCallback(async () => {
       if (isStopping) return;
@@ -1278,7 +1355,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         }
         await Promise.all([
           invoke("dispatcher_stop_run", { workspaceId: sessionId }).catch(console.error),
-          onStopActiveRun(sessionId),
+          onStopActiveRun?.(sessionId) ?? Promise.resolve(),
         ]);
       } finally {
         setIsStopping(false);
@@ -1286,7 +1363,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }, [isRecordingVoice, isStopping, onStopActiveRun, sessionId, stopVoiceRecording]);
 
     const handleResume = useCallback(async () => {
-      await onResumeStoppedRun(sessionId);
+      await onResumeStoppedRun?.(sessionId);
     }, [onResumeStoppedRun, sessionId]);
 
     // Expose continueWithResult to parent via ref
@@ -1304,6 +1381,9 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           }
 
           try {
+            if (isPlainChat) {
+              return;
+            }
             await enqueueDispatcherRun(targetSessionId, async (onEvent) => {
               await invoke<DispatcherAgentTurn>("dispatcher_continue_after_dispatch", {
                 workspaceId: targetSessionId,
@@ -1326,7 +1406,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           setActivePlanPath(state.activePlanPath ?? null);
         },
       }),
-      [enqueueDispatcherRun, projectPath, sessionId],
+      [enqueueDispatcherRun, isPlainChat, projectPath, sessionId],
     );
 
     const handleKeyDown = useCallback(
@@ -1355,7 +1435,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         const pm = currentPendingDispatch?.permissionMode ?? "full_access";
         const description = currentPendingDispatch?.description ?? "未命名子任务";
         setPendingDispatches((prev) => prev.slice(1));
-        onDispatchApproved(dispatchId, agent, description, taskPrompt, pm, sessionId);
+        onDispatchApproved?.(dispatchId, agent, description, taskPrompt, pm, sessionId);
       },
       [currentPendingDispatch, onDispatchApproved, sessionId],
     );
@@ -1371,7 +1451,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             setChecklist(state.checklist ?? null);
           })
           .catch(console.error);
-        onDispatchRejected(dispatchId);
+        onDispatchRejected?.(dispatchId);
       },
       [onDispatchRejected, sessionId],
     );
@@ -1500,36 +1580,40 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         {/* Header */}
         <div style={styles.header}>
           <div style={styles.headerLeft}>
-            <span style={styles.headerIcon}>🤖</span>
-            <span style={styles.headerTitle}>调度智能体</span>
-            {activePlanPath && <span style={styles.headerPlanBadge}>Plan</span>}
+            <span style={styles.headerIcon}>{isPlainChat ? "💬" : "🤖"}</span>
+            <span style={styles.headerTitle}>{isPlainChat ? "聊天" : "调度智能体"}</span>
+            {!isPlainChat && activePlanPath && <span style={styles.headerPlanBadge}>Plan</span>}
             {isLoading && <span style={styles.thinkingDot} />}
           </div>
           <div style={styles.headerRight}>
-            <button
-              style={{
-                ...styles.headerBtn,
-                ...(autoApprove ? styles.headerBtnActive : {}),
-              }}
-              onClick={handleToggleAutoApprove}
-              title="开启后，调度给 Claude 或 Codex 子任务时不再弹出审查确认"
-            >
-              免确认 {autoApprove ? "开" : "关"}
-            </button>
-            <button
-              style={styles.headerBtn}
-              onClick={onOpenMcpStatus}
-              title={`项目级 MCP 状态：${mcpIndicator.label}`}
-            >
-              <span
-                style={{
-                  ...styles.headerSignal,
-                  background: mcpIndicator.color,
-                  boxShadow: `0 0 0 3px ${mcpIndicator.color}22`,
-                }}
-              />
-              MCP
-            </button>
+            {!isPlainChat && (
+              <>
+                <button
+                  style={{
+                    ...styles.headerBtn,
+                    ...(autoApprove ? styles.headerBtnActive : {}),
+                  }}
+                  onClick={handleToggleAutoApprove}
+                  title="开启后，调度给 Claude 或 Codex 子任务时不再弹出审查确认"
+                >
+                  免确认 {autoApprove ? "开" : "关"}
+                </button>
+                <button
+                  style={styles.headerBtn}
+                  onClick={onOpenMcpStatus}
+                  title={`项目级 MCP 状态：${mcpIndicator.label}`}
+                >
+                  <span
+                    style={{
+                      ...styles.headerSignal,
+                      background: mcpIndicator.color,
+                      boxShadow: `0 0 0 3px ${mcpIndicator.color}22`,
+                    }}
+                  />
+                  MCP
+                </button>
+              </>
+            )}
             {messages.length > 0 && (
               <button style={styles.headerBtn} onClick={handleClearHistory}>
                 清空
@@ -1552,9 +1636,9 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         </div>
 
         {/* Messages */}
-        <div style={styles.messageList}>
+        <div ref={messageListRef} style={styles.messageList} onScroll={handleMessageListScroll}>
           {runError && <div style={styles.runErrorBanner}>{runError}</div>}
-          {isEmpty && (
+          {isEmpty && !isPlainChat && (
             <InteractionDrawer
               checklist={checklist}
               planInteraction={planInteraction}
@@ -1567,6 +1651,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           )}
           {isEmpty && (
             <EmptyConversationLauncher
+              conversationKind={conversationKind}
               input={input}
               composerMode={composerMode}
               mode={mode}
@@ -1591,7 +1676,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onDismissVoiceError={clearVoiceError}
               onKeyDown={handleKeyDown}
               onOpenSettings={onOpenSettings}
-              onOpenMcpStatus={onOpenMcpStatus}
+              onOpenMcpStatus={() => onOpenMcpStatus?.()}
               onToggleAutoApprove={handleToggleAutoApprove}
               onCompositionStart={() => {
                 inputComposingRef.current = true;
@@ -1626,116 +1711,117 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               placeholderText={assistantPlaceholder}
             />
           )}
-          <div ref={messagesEndRef} />
         </div>
 
         {/* Input */}
         {!isEmpty && (
           <>
-          <InteractionDrawer
-            checklist={checklist}
-            planInteraction={planInteraction}
-            implementingPlan={implementingPlan}
-            onAnswerPlanQuestion={handleAnswerPlanQuestion}
-            onImplementPlan={handleImplementPlan}
-            onImplementPlanWithClearedContext={handleImplementPlanWithClearedContext}
-            onStayInPlanMode={handleStayInPlanMode}
-          />
-          <VoiceInputStatusCard
-            transcript={voiceTranscript}
-            error={voiceError}
-            isRecording={isRecordingVoice}
-            onDismissError={clearVoiceError}
-          />
-          <div style={styles.inputArea}>
-            {attachedImages.length > 0 && (
-              <div style={styles.attachedImagesContainer}>
-                {attachedImages.map((src, idx) => (
-                  <div key={idx} style={styles.attachedImageWrapper}>
-                    <img src={src} alt="pasted" style={styles.attachedImage} />
-                    <button
-                      style={styles.removeImageBtn}
-                      onClick={() => handleRemoveImage(idx)}
-                      title="移除图片"
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                ))}
-              </div>
+            {!isPlainChat && (
+              <InteractionDrawer
+                checklist={checklist}
+                planInteraction={planInteraction}
+                implementingPlan={implementingPlan}
+                onAnswerPlanQuestion={handleAnswerPlanQuestion}
+                onImplementPlan={handleImplementPlan}
+                onImplementPlanWithClearedContext={handleImplementPlanWithClearedContext}
+                onStayInPlanMode={handleStayInPlanMode}
+              />
             )}
-            <SessionTokenUsageIndicators entries={sessionTokenUsageEntries} />
-            <textarea
-              ref={inputRef}
-              style={styles.inputTextarea}
-              placeholder="给调度智能体发送消息..."
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onPaste={handlePaste}
-              onCompositionStart={() => {
-                inputComposingRef.current = true;
-              }}
-              onCompositionEnd={() => {
-                inputComposingRef.current = false;
-              }}
-              onKeyDown={handleKeyDown}
-              rows={1}
-              disabled={composerMode === "stop" || isStopping}
+            <VoiceInputStatusCard
+              transcript={voiceTranscript}
+              error={voiceError}
+              isRecording={isRecordingVoice}
+              onDismissError={clearVoiceError}
             />
-            <PlanModeToggleButton mode={mode} onToggleMode={handleModeToggle} />
-            <button
-              style={styles.voiceBtn(isRecordingVoice)}
-              onClick={toggleVoiceRecording}
-              disabled={composerMode === "stop" || isStopping}
-              title={isRecordingVoice ? "停止听写" : "开始语音输入"}
-              aria-label={isRecordingVoice ? "停止语音输入" : "开始语音输入"}
-            >
-              <Mic size={15} />
-            </button>
-            <button
-              style={{
-                ...getPrimaryComposerButtonStyle(composerMode),
-                opacity: getPrimaryComposerOpacity(
+            <div style={styles.inputArea}>
+              {attachedImages.length > 0 && (
+                <div style={styles.attachedImagesContainer}>
+                  {attachedImages.map((src, idx) => (
+                    <div key={idx} style={styles.attachedImageWrapper}>
+                      <img src={src} alt="pasted" style={styles.attachedImage} />
+                      <button
+                        style={styles.removeImageBtn}
+                        onClick={() => handleRemoveImage(idx)}
+                        title="移除图片"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <SessionTokenUsageIndicators entries={sessionTokenUsageEntries} />
+              <textarea
+                ref={inputRef}
+                style={styles.inputTextarea}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onPaste={handlePaste}
+                onCompositionStart={() => {
+                  inputComposingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  inputComposingRef.current = false;
+                }}
+                onKeyDown={handleKeyDown}
+                rows={1}
+                disabled={composerMode === "stop" || isStopping}
+                placeholder={isPlainChat ? "发送普通聊天消息..." : "给调度智能体发送消息..."}
+              />
+              {!isPlainChat && <PlanModeToggleButton mode={mode} onToggleMode={handleModeToggle} />}
+              <button
+                style={styles.voiceBtn(isRecordingVoice)}
+                onClick={toggleVoiceRecording}
+                disabled={composerMode === "stop" || isStopping}
+                title={isRecordingVoice ? "停止听写" : "开始语音输入"}
+                aria-label={isRecordingVoice ? "停止语音输入" : "开始语音输入"}
+              >
+                <Mic size={15} />
+              </button>
+              <button
+                style={{
+                  ...getPrimaryComposerButtonStyle(composerMode),
+                  opacity: getPrimaryComposerOpacity(
+                    composerMode,
+                    input,
+                    isComposerBusy,
+                    isStopping,
+                    attachedImages.length > 0,
+                  ),
+                }}
+                title={getComposerButtonLabel(
+                  composerMode,
+                  Boolean(input.trim() || attachedImages.length > 0),
+                )}
+                onClick={
+                  composerMode === "stop"
+                    ? handleStop
+                    : composerMode === "resume" && !input.trim()
+                      ? handleResume
+                      : handleSend
+                }
+                disabled={isComposerActionDisabled(
                   composerMode,
                   input,
                   isComposerBusy,
                   isStopping,
                   attachedImages.length > 0,
-                ),
-              }}
-              title={getComposerButtonLabel(
-                composerMode,
-                Boolean(input.trim() || attachedImages.length > 0),
-              )}
-              onClick={
-                composerMode === "stop"
-                  ? handleStop
-                  : composerMode === "resume" && !input.trim()
-                    ? handleResume
-                    : handleSend
-              }
-              disabled={isComposerActionDisabled(
-                composerMode,
-                input,
-                isComposerBusy,
-                isStopping,
-                attachedImages.length > 0,
-              )}
-            >
-              {composerMode === "stop" ? (
-                <Square size={16} color="#fff" />
-              ) : composerMode === "resume" && !input.trim() ? (
-                <Play size={16} color="#fff" />
-              ) : (
-                <Send size={16} color="#fff" />
-              )}
-            </button>
-          </div>
+                )}
+              >
+                {composerMode === "stop" ? (
+                  <Square size={16} color="#fff" />
+                ) : composerMode === "resume" && !input.trim() ? (
+                  <Play size={16} color="#fff" />
+                ) : (
+                  <Send size={16} color="#fff" />
+                )}
+              </button>
+            </div>
           </>
         )}
 
         {/* Dispatch approval overlay */}
-        {currentPendingDispatch && (
+        {!isPlainChat && currentPendingDispatch && (
           <DispatchApprovalDialog
             dispatchId={currentPendingDispatch.dispatchId}
             agent={currentPendingDispatch.agent}
@@ -1867,6 +1953,7 @@ const styles = {
     flex: 1,
     minHeight: 0,
     overflowY: "auto" as const,
+    overflowAnchor: "none" as const,
     padding: "22px 20px 18px",
     display: "flex",
     flexDirection: "column" as const,
@@ -2150,7 +2237,10 @@ const styles = {
     border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-dim))",
     background:
       "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 94%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
-    boxShadow: layoutMode === "single" ? "0 28px 72px rgba(15, 23, 42, 0.10)" : "0 36px 100px rgba(15, 23, 42, 0.09)",
+    boxShadow:
+      layoutMode === "single"
+        ? "0 28px 72px rgba(15, 23, 42, 0.10)"
+        : "0 36px 100px rgba(15, 23, 42, 0.09)",
     backdropFilter: "blur(22px)",
     WebkitBackdropFilter: "blur(22px)",
     boxSizing: "border-box" as const,
@@ -2541,7 +2631,9 @@ const styles = {
     width: "44px",
     height: "44px",
     borderRadius: "14px",
-    border: active ? "1px solid color-mix(in srgb, var(--danger) 38%, transparent)" : "1px solid var(--border-dim)",
+    border: active
+      ? "1px solid color-mix(in srgb, var(--danger) 38%, transparent)"
+      : "1px solid var(--border-dim)",
     background: active
       ? "color-mix(in srgb, var(--danger) 14%, var(--bg-card))"
       : "color-mix(in srgb, var(--bg-card) 88%, transparent)",

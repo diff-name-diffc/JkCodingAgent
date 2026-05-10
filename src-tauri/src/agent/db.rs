@@ -20,6 +20,7 @@ pub(crate) const TOOL_RETRY_CONTEXT_PREFIX: &str = "[工具调用失败，已交
 pub struct DispatcherSessionRecord {
     pub id: String,
     pub project_id: String,
+    pub kind: DispatcherSessionKind,
     pub title: String,
     pub mode: DispatcherMode,
     pub active_plan_path: Option<String>,
@@ -68,6 +69,37 @@ impl DispatcherMode {
         match value.as_str() {
             "plan" => Self::Plan,
             _ => Self::Default,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatcherSessionKind {
+    Project,
+    Chat,
+}
+
+impl DispatcherSessionKind {
+    pub fn from_wire(value: &str) -> Result<Self> {
+        match value.trim() {
+            "" | "project" => Ok(Self::Project),
+            "chat" => Ok(Self::Chat),
+            other => anyhow::bail!("invalid dispatcher session kind: {other}"),
+        }
+    }
+
+    pub fn as_sql_value(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Chat => "chat",
+        }
+    }
+
+    fn from_sql_value(value: String) -> Self {
+        match value.as_str() {
+            "chat" => Self::Chat,
+            _ => Self::Project,
         }
     }
 }
@@ -347,23 +379,28 @@ impl DispatcherDb {
 
     // ── Sessions ──────────────────────────────────────────────
 
-    pub fn list_sessions(&self, project_id: &str) -> Result<Vec<DispatcherSessionRecord>> {
+    pub fn list_sessions(
+        &self,
+        project_id: &str,
+        kind: DispatcherSessionKind,
+    ) -> Result<Vec<DispatcherSessionRecord>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, title, mode, active_plan_path, created_at, updated_at
+            "SELECT id, project_id, kind, title, mode, active_plan_path, created_at, updated_at
              FROM dispatcher_sessions
-             WHERE project_id = ?1
+             WHERE project_id = ?1 AND kind = ?2
              ORDER BY updated_at DESC",
         )?;
-        let rows = stmt.query_map(params![project_id], |row| {
+        let rows = stmt.query_map(params![project_id, kind.as_sql_value()], |row| {
             Ok(DispatcherSessionRecord {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
-                title: row.get(2)?,
-                mode: DispatcherMode::from_sql_value(row.get(3)?),
-                active_plan_path: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
+                kind: DispatcherSessionKind::from_sql_value(row.get(2)?),
+                title: row.get(3)?,
+                mode: DispatcherMode::from_sql_value(row.get(4)?),
+                active_plan_path: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
             })
         })?;
 
@@ -375,12 +412,14 @@ impl DispatcherDb {
         &self,
         project_id: &str,
         title: &str,
+        kind: DispatcherSessionKind,
         mode: DispatcherMode,
         active_plan_path: Option<&str>,
     ) -> Result<DispatcherSessionRecord> {
         let record = DispatcherSessionRecord {
             id: Uuid::new_v4().to_string(),
             project_id: project_id.to_string(),
+            kind,
             title: title.to_string(),
             mode,
             active_plan_path: active_plan_path.map(str::to_string),
@@ -390,11 +429,12 @@ impl DispatcherDb {
 
         let conn = self.connect()?;
         conn.execute(
-            "INSERT INTO dispatcher_sessions (id, project_id, title, mode, active_plan_path, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, mode, active_plan_path, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 record.id,
                 record.project_id,
+                record.kind.as_sql_value(),
                 record.title,
                 record.mode.as_sql_value(),
                 record.active_plan_path,
@@ -428,7 +468,7 @@ impl DispatcherDb {
         }
 
         conn.query_row(
-            "SELECT id, project_id, title, mode, active_plan_path, created_at, updated_at
+            "SELECT id, project_id, kind, title, mode, active_plan_path, created_at, updated_at
              FROM dispatcher_sessions
              WHERE id = ?1",
             params![session_id],
@@ -436,11 +476,12 @@ impl DispatcherDb {
                 Ok(DispatcherSessionRecord {
                     id: row.get(0)?,
                     project_id: row.get(1)?,
-                    title: row.get(2)?,
-                    mode: DispatcherMode::from_sql_value(row.get(3)?),
-                    active_plan_path: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    kind: DispatcherSessionKind::from_sql_value(row.get(2)?),
+                    title: row.get(3)?,
+                    mode: DispatcherMode::from_sql_value(row.get(4)?),
+                    active_plan_path: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                 })
             },
         )
@@ -1309,6 +1350,7 @@ impl DispatcherDb {
             CREATE TABLE IF NOT EXISTS dispatcher_sessions (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'project',
                 title TEXT NOT NULL,
                 mode TEXT NOT NULL DEFAULT 'default',
                 active_plan_path TEXT,
@@ -1435,6 +1477,18 @@ impl DispatcherDb {
             "context_cleared",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_sessions",
+            "kind",
+            "TEXT NOT NULL DEFAULT 'project'",
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dispatcher_sessions_project_kind
+             ON dispatcher_sessions(project_id, kind, updated_at DESC)",
+            [],
+        )
+        .context("create dispatcher session project kind index")?;
         ensure_column_exists(
             &conn,
             "dispatcher_sessions",
@@ -1742,8 +1796,8 @@ mod tests {
 
     use super::{
         ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb,
-        DispatcherMessageUsageStats, DispatcherMode, DispatcherSessionTokenUsageSource,
-        PlanInteraction, PlanQuestionOption, ToolArtifactDraft,
+        DispatcherMessageUsageStats, DispatcherMode, DispatcherSessionKind,
+        DispatcherSessionTokenUsageSource, PlanInteraction, PlanQuestionOption, ToolArtifactDraft,
     };
     use crate::agent::llm::{LlmPromptTokensDetails, LlmUsage};
 
@@ -1792,7 +1846,13 @@ mod tests {
     fn update_session_title_persists_latest_title() {
         let (db, root) = create_test_db();
         let session = db
-            .create_session("project-1", "新会话", DispatcherMode::Default, None)
+            .create_session(
+                "project-1",
+                "新会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
             .unwrap();
 
         let updated = db
@@ -1804,9 +1864,99 @@ mod tests {
         assert_eq!(updated.project_id, "project-1");
         assert!(updated.updated_at >= session.updated_at);
         assert_eq!(
-            db.list_sessions("project-1").unwrap()[0].title,
+            db.list_sessions("project-1", DispatcherSessionKind::Project)
+                .unwrap()[0]
+                .title,
             "修复会话命名"
         );
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn session_kind_isolates_project_and_plain_chat_sessions() {
+        let (db, root) = create_test_db();
+        db.create_session(
+            "project-1",
+            "项目会话",
+            DispatcherSessionKind::Project,
+            DispatcherMode::Default,
+            None,
+        )
+        .unwrap();
+        db.create_session(
+            "__global_chat__",
+            "普通聊天",
+            DispatcherSessionKind::Chat,
+            DispatcherMode::Default,
+            None,
+        )
+        .unwrap();
+
+        let project_sessions = db
+            .list_sessions("project-1", DispatcherSessionKind::Project)
+            .unwrap();
+        let chat_sessions = db
+            .list_sessions("__global_chat__", DispatcherSessionKind::Chat)
+            .unwrap();
+
+        assert_eq!(project_sessions.len(), 1);
+        assert_eq!(project_sessions[0].kind, DispatcherSessionKind::Project);
+        assert_eq!(project_sessions[0].title, "项目会话");
+        assert_eq!(chat_sessions.len(), 1);
+        assert_eq!(chat_sessions[0].kind, DispatcherSessionKind::Chat);
+        assert_eq!(chat_sessions[0].title, "普通聊天");
+        assert!(db
+            .list_sessions("project-1", DispatcherSessionKind::Chat)
+            .unwrap()
+            .is_empty());
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn session_kind_migration_defaults_legacy_rows_to_project() {
+        let root =
+            std::env::temp_dir().join(format!("jkcodingagent-db-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create temp db root");
+        let path = root.join("dispatcher.sqlite3");
+        let conn = rusqlite::Connection::open(&path).expect("open legacy db");
+        conn.execute_batch(
+            "
+            CREATE TABLE dispatcher_sessions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'default',
+                active_plan_path TEXT,
+                checklist_json TEXT,
+                plan_interaction_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO dispatcher_sessions (
+                id, project_id, title, mode, active_plan_path, created_at, updated_at
+            ) VALUES (
+                'legacy-session', 'project-1', '旧项目会话', 'default', NULL,
+                '2026-05-09T00:00:00Z', '2026-05-09T00:00:00Z'
+            );
+            ",
+        )
+        .expect("create legacy dispatcher sessions table");
+        drop(conn);
+
+        let db = DispatcherDb::new(path).expect("migrate dispatcher db");
+        let project_sessions = db
+            .list_sessions("project-1", DispatcherSessionKind::Project)
+            .unwrap();
+
+        assert_eq!(project_sessions.len(), 1);
+        assert_eq!(project_sessions[0].id, "legacy-session");
+        assert_eq!(project_sessions[0].kind, DispatcherSessionKind::Project);
+        assert!(db
+            .list_sessions("project-1", DispatcherSessionKind::Chat)
+            .unwrap()
+            .is_empty());
 
         cleanup_test_db(root);
     }
@@ -1940,7 +2090,13 @@ mod tests {
     fn session_runtime_state_defaults_to_default_mode() {
         let (db, root) = create_test_db();
         let session = db
-            .create_session("project-1", "新会话", DispatcherMode::Default, None)
+            .create_session(
+                "project-1",
+                "新会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
             .unwrap();
 
         let state = db.get_session_runtime_state(&session.id).unwrap();
@@ -1961,7 +2117,13 @@ mod tests {
     fn visible_message_usage_stats_round_trip() {
         let (db, root) = create_test_db();
         let session = db
-            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .create_session(
+                "project-1",
+                "测试会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
             .unwrap();
         let stats = sample_message_usage_stats();
 
@@ -1981,7 +2143,13 @@ mod tests {
     fn tool_result_separates_display_content_from_context_payload() {
         let (db, root) = create_test_db();
         let session = db
-            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .create_session(
+                "project-1",
+                "测试会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
             .unwrap();
         db.add_visible_message(&session.id, "user", "检查工具结果")
             .unwrap();
@@ -2023,7 +2191,13 @@ mod tests {
     fn clear_messages_removes_tool_artifacts_for_session() {
         let (db, root) = create_test_db();
         let session = db
-            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .create_session(
+                "project-1",
+                "测试会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
             .unwrap();
         db.update_checklist(
             &session.id,
@@ -2087,7 +2261,13 @@ mod tests {
     fn clear_context_keeps_visible_messages_but_excludes_them_from_llm_history() {
         let (db, root) = create_test_db();
         let session = db
-            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .create_session(
+                "project-1",
+                "测试会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
             .unwrap();
 
         db.add_visible_message(&session.id, "user", "旧需求")
@@ -2115,7 +2295,13 @@ mod tests {
     fn clear_checklist_removes_only_step_plan_state() {
         let (db, root) = create_test_db();
         let session = db
-            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .create_session(
+                "project-1",
+                "测试会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
             .unwrap();
         db.update_checklist(
             &session.id,
@@ -2159,7 +2345,13 @@ mod tests {
     fn delete_session_removes_tool_artifacts_with_session() {
         let (db, root) = create_test_db();
         let session = db
-            .create_session("project-1", "测试会话", DispatcherMode::Default, None)
+            .create_session(
+                "project-1",
+                "测试会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
             .unwrap();
         let message = db
             .add_visible_tool_result(
@@ -2175,7 +2367,10 @@ mod tests {
 
         db.delete_session(&session.id).unwrap();
 
-        assert!(db.list_sessions("project-1").unwrap().is_empty());
+        assert!(db
+            .list_sessions("project-1", DispatcherSessionKind::Project)
+            .unwrap()
+            .is_empty());
         assert!(db
             .get_tool_artifact(&session.id, &message.tool_artifacts[0].id)
             .is_err());

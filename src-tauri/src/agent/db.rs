@@ -962,25 +962,40 @@ impl DispatcherDb {
              WHERE workspace_id = ?1 AND visible = 1
              ORDER BY created_at ASC, rowid ASC",
         )?;
-        let rows = stmt.query_map(params![workspace_id], |row| {
-            Ok(DispatcherMessageRecord {
-                id: row.get(0)?,
-                workspace_id: row.get(1)?,
-                role: row.get(2)?,
-                content: row.get(3)?,
-                context_payload: row.get(4)?,
-                tool_call_id: row.get(5)?,
-                tool_name: row.get(6)?,
-                tool_result_mode: row.get(7)?,
-                tool_artifacts: parse_tool_artifact_refs(row.get::<_, Option<String>>(8)?),
-                tool_calls_json: row.get(9)?,
-                usage_stats: parse_message_usage_stats(row.get::<_, Option<String>>(10)?)?,
-                created_at: row.get(11)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![workspace_id], map_dispatcher_message_record)?;
 
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("load visible dispatcher messages")
+    }
+
+    /// Load recent complete visible dialogues for session title generation.
+    ///
+    /// The cutoff is based on user-started turns, so the latest user message and its
+    /// following assistant/tool messages stay together instead of being clipped by a
+    /// raw message count.
+    pub fn list_recent_visible_dialogue_messages(
+        &self,
+        workspace_id: &str,
+        max_dialogues: usize,
+    ) -> Result<Vec<DispatcherMessageRecord>> {
+        let conn = self.connect()?;
+        let cutoff_rowid = self.find_dialogue_cutoff_rowid(&conn, workspace_id, max_dialogues)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
+             FROM dispatcher_messages
+             WHERE workspace_id = ?1
+               AND visible = 1
+               AND context_cleared = 0
+               AND rowid >= ?2
+             ORDER BY created_at ASC, rowid ASC",
+        )?;
+        let rows = stmt.query_map(
+            params![workspace_id, cutoff_rowid],
+            map_dispatcher_message_record,
+        )?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("load recent visible dispatcher dialogue messages")
     }
 
     /// Load only the recent dialogue window for one dispatcher session.
@@ -1702,6 +1717,25 @@ fn map_chat_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatMessage
     })
 }
 
+fn map_dispatcher_message_record(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<DispatcherMessageRecord> {
+    Ok(DispatcherMessageRecord {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        role: row.get(2)?,
+        content: row.get(3)?,
+        context_payload: row.get(4)?,
+        tool_call_id: row.get(5)?,
+        tool_name: row.get(6)?,
+        tool_result_mode: row.get(7)?,
+        tool_artifacts: parse_tool_artifact_refs(row.get::<_, Option<String>>(8)?),
+        tool_calls_json: row.get(9)?,
+        usage_stats: parse_message_usage_stats(row.get::<_, Option<String>>(10)?)?,
+        created_at: row.get(11)?,
+    })
+}
+
 fn parse_tool_artifact_refs(raw: Option<String>) -> Vec<DispatcherToolArtifactRef> {
     raw.as_deref()
         .and_then(|json| serde_json::from_str::<Vec<DispatcherToolArtifactRef>>(json).ok())
@@ -2287,6 +2321,56 @@ mod tests {
         assert_eq!(llm_history.len(), 1);
         assert_eq!(llm_history[0].role, "user");
         assert_eq!(llm_history[0].content, "新需求");
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn recent_visible_dialogue_messages_keep_complete_latest_turns() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session(
+                "project-1",
+                "测试会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
+            .unwrap();
+
+        db.add_visible_message(&session.id, "user", "第一轮需求")
+            .unwrap();
+        db.add_visible_message(&session.id, "assistant", "第一轮回复")
+            .unwrap();
+        db.add_visible_message(&session.id, "user", "第二轮需求")
+            .unwrap();
+        db.add_visible_tool_result(
+            &session.id,
+            "第二轮工具摘要",
+            "第二轮工具上下文",
+            Some("call-1"),
+            Some("exec"),
+            Some("summary"),
+            &[],
+        )
+        .unwrap();
+        db.add_visible_message(&session.id, "assistant", "第二轮回复")
+            .unwrap();
+        db.add_visible_message(&session.id, "user", "第三轮需求")
+            .unwrap();
+
+        let recent = db
+            .list_recent_visible_dialogue_messages(&session.id, 2)
+            .unwrap();
+        let contents = recent
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            contents,
+            vec!["第二轮需求", "第二轮工具摘要", "第二轮回复", "第三轮需求"]
+        );
 
         cleanup_test_db(root);
     }

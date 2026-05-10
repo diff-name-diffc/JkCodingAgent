@@ -16,7 +16,8 @@ const HIGH_FIDELITY_SUMMARY_THRESHOLD_CHARS: usize = 1_000;
 const SUMMARY_TIMEOUT_SECS: u64 = 120;
 const SUMMARY_DEBUG_PREVIEW_CHARS: usize = 1_200;
 const SESSION_TITLE_SOURCE_MAX_CHARS: usize = 6_000;
-const SESSION_TITLE_MAX_CHARS: usize = 24;
+const SESSION_TITLE_MESSAGE_MAX_CHARS: usize = 1_200;
+const SESSION_TITLE_MAX_CHARS: usize = 10;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SummaryError {
@@ -57,6 +58,12 @@ pub struct PreparedToolResult {
     pub display_content: String,
     pub result_mode: &'static str,
     pub artifacts: Vec<ToolArtifactDraft>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionTitleMessage {
+    pub role: String,
+    pub content: String,
 }
 
 pub async fn prepare_tool_result<FStart, FDelta, FUsage>(
@@ -173,7 +180,8 @@ where
 pub async fn summarize_session_title<FUsage>(
     provider: &OpenAiCompatProvider,
     summary_model: &str,
-    user_prompt: &str,
+    messages: &[SessionTitleMessage],
+    fallback_source: &str,
     on_usage: FUsage,
 ) -> Result<String, SummaryError>
 where
@@ -182,13 +190,13 @@ where
     let raw_title = summarize_with_model(
         provider,
         summary_model,
-        build_session_title_prompt(user_prompt),
+        build_session_title_prompt(messages, fallback_source),
         |_| {},
         on_usage,
     )
     .await?;
 
-    Ok(normalize_session_title(&raw_title, user_prompt))
+    Ok(normalize_session_title(&raw_title, fallback_source))
 }
 
 pub fn fallback_session_title(user_prompt: &str) -> String {
@@ -316,18 +324,63 @@ fn build_dispatch_summary_prompt(dispatch_result: &str) -> String {
     )
 }
 
-fn build_session_title_prompt(user_prompt: &str) -> String {
-    let prompt = truncate_session_title_source(user_prompt);
+fn build_session_title_prompt(messages: &[SessionTitleMessage], fallback_source: &str) -> String {
+    let source = build_session_title_source(messages, fallback_source);
+    let prompt = truncate_session_title_source(&source);
     format!(
-        "你是桌面 AI 编程工具的会话标题生成器。请根据用户最新问题生成一个简洁中文标题。\n\
+        "你是桌面 AI 编程工具的会话标题生成器。请根据最近多条聊天消息生成一个极短中文标题。\n\
 要求：\n\
 - 只输出标题本身，不要解释，不要加引号、编号、Markdown 或“标题：”前缀。\n\
-- 标题应概括用户这次要推进的核心任务，避免使用“新会话”“问题”“任务”等空泛词。\n\
-- 优先保留关键对象、模块、错误或功能名。\n\
-- 最长 {SESSION_TITLE_MAX_CHARS} 个字符；建议 4-8 个中文字符。\n\n\
-用户最新问题：\n{}",
+- 标题必须是 5-10 个中文字符；不要超过 10 个字符。\n\
+- 标题应是名词短语，概括最后一轮完整对话的核心任务；如果最后用户消息是“另外/继续/这个”等追加要求，必须结合前文对象。\n\
+- 优先保留关键模块、功能、错误或对象；删除“帮我”“看看”“优化一下”“问题”“任务”等水词。\n\
+- 不要输出完整句子，不要包含标点。\n\n\
+最近对话如下（按时间顺序；最后一轮优先）：\n{}",
         prompt.trim()
     )
+}
+
+fn build_session_title_source(messages: &[SessionTitleMessage], fallback_source: &str) -> String {
+    let mut source = String::new();
+
+    for message in messages {
+        let content = truncate_session_title_message(&message.content);
+        if content.trim().is_empty() {
+            continue;
+        }
+
+        source.push_str("【");
+        source.push_str(session_title_role_label(&message.role));
+        source.push_str("】\n");
+        source.push_str(content.trim());
+        source.push_str("\n\n");
+    }
+
+    if source.trim().is_empty() {
+        fallback_source.trim().to_string()
+    } else {
+        source
+    }
+}
+
+fn session_title_role_label(role: &str) -> &'static str {
+    match role {
+        "user" => "用户",
+        "assistant" => "助手",
+        "tool" => "工具结果",
+        _ => "消息",
+    }
+}
+
+fn truncate_session_title_message(source: &str) -> String {
+    let mut truncated = source
+        .chars()
+        .take(SESSION_TITLE_MESSAGE_MAX_CHARS)
+        .collect::<String>();
+    if source.chars().count() > SESSION_TITLE_MESSAGE_MAX_CHARS {
+        truncated.push_str("\n...");
+    }
+    truncated
 }
 
 fn truncate_session_title_source(source: &str) -> String {
@@ -379,7 +432,7 @@ fn clean_title_line(raw: &str) -> String {
             )
     });
 
-    trimmed.split_whitespace().collect::<Vec<_>>().join(" ")
+    trimmed.split_whitespace().collect::<Vec<_>>().join("")
 }
 
 fn truncate_title(title: String) -> String {
@@ -716,9 +769,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        build_artifact_preview, build_prompt_preview, build_summary_debug_context,
-        decide_tool_result_action, extract_tagged_block, fallback_session_title,
-        normalize_session_title, normalize_tool_output, parse_dual_tool_summary, ToolResultAction,
+        build_artifact_preview, build_prompt_preview, build_session_title_prompt,
+        build_session_title_source, build_summary_debug_context, decide_tool_result_action,
+        extract_tagged_block, fallback_session_title, normalize_session_title,
+        normalize_tool_output, parse_dual_tool_summary, SessionTitleMessage, ToolResultAction,
     };
     use crate::agent::llm::OpenAiCompatProvider;
 
@@ -842,19 +896,52 @@ mod tests {
     #[test]
     fn session_title_normalization_removes_common_prefixes() {
         let title = normalize_session_title("标题：`优化 Agent 会话命名`", "用户问题");
-        assert_eq!(title, "优化 Agent 会话命名");
+        assert_eq!(title, "优化Agent会话命");
     }
 
     #[test]
     fn session_title_falls_back_to_prompt_when_model_is_generic() {
         let title = normalize_session_title("新会话", "修复会话标题一直显示新会话的问题");
-        assert_eq!(title, "修复会话标题一直显示新会话的问题");
+        assert_eq!(title, "修复会话标题一直显示");
     }
 
     #[test]
     fn fallback_session_title_truncates_long_prompt() {
         let title =
             fallback_session_title("请帮我实现一个非常非常非常非常非常非常长的会话标题生成逻辑");
-        assert!(title.chars().count() <= 24);
+        assert!(title.chars().count() <= 10);
+    }
+
+    #[test]
+    fn session_title_prompt_uses_recent_dialogue_context() {
+        let prompt = build_session_title_prompt(
+            &[
+                SessionTitleMessage {
+                    role: "user".to_string(),
+                    content: "优化聊天 Markdown 代码块样式".to_string(),
+                },
+                SessionTitleMessage {
+                    role: "assistant".to_string(),
+                    content: "已调整亮色和暗色代码块主题。".to_string(),
+                },
+                SessionTitleMessage {
+                    role: "user".to_string(),
+                    content: "另外标题也太长了".to_string(),
+                },
+            ],
+            "另外标题也太长了",
+        );
+
+        assert!(prompt.contains("最近多条聊天消息"));
+        assert!(prompt.contains("5-10 个中文字符"));
+        assert!(prompt.contains("如果最后用户消息是“另外/继续/这个”等追加要求"));
+        assert!(prompt.contains("【用户】\n优化聊天 Markdown 代码块样式"));
+        assert!(prompt.contains("【助手】\n已调整亮色和暗色代码块主题。"));
+    }
+
+    #[test]
+    fn session_title_source_falls_back_when_dialogue_is_empty() {
+        let source = build_session_title_source(&[], "修复标题生成");
+        assert_eq!(source, "修复标题生成");
     }
 }

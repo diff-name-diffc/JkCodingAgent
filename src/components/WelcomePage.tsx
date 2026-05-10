@@ -99,7 +99,7 @@ export function WelcomePage({
   const [query, setQuery] = useState("");
   const [hov, setHov] = useState<string | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
-  const [view, setView] = useState<"projects" | "chat" | "analytics" | "knowledge">("projects");
+  const [view, setView] = useState<"projects" | "chat" | "analytics" | "knowledge">("chat");
 
   const filtered = useMemo(() => {
     if (!query.trim()) return projects;
@@ -130,16 +130,16 @@ export function WelcomePage({
           <nav style={s.sidebarNav}>
             <div style={s.sidebarSectionTitle}>工作区</div>
             <SidebarItem
-              icon={<Layers size={15} />}
-              label="项目"
-              active={view === "projects"}
-              onClick={() => setView("projects")}
-            />
-            <SidebarItem
               icon={<MessageCircle size={15} />}
               label="聊天"
               active={view === "chat"}
               onClick={() => setView("chat")}
+            />
+            <SidebarItem
+              icon={<Layers size={15} />}
+              label="项目"
+              active={view === "projects"}
+              onClick={() => setView("projects")}
             />
             <SidebarItem
               icon={<BarChart2 size={15} />}

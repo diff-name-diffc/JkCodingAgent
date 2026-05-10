@@ -19,10 +19,12 @@ use super::llm::OpenAiCompatProvider;
 use super::runtime::{
     AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent, DispatcherSubprocessRegistry,
 };
-use super::summary::{fallback_session_title, summarize_session_title};
+use super::summary::{fallback_session_title, summarize_session_title, SessionTitleMessage};
 use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::project::mcp::ProjectMcpRegistry;
 use crate::shared::TaskManager;
+
+const SESSION_TITLE_RECENT_DIALOGUES: usize = 3;
 
 pub struct DispatcherState {
     agent: tokio::sync::Mutex<DispatcherAgent>,
@@ -284,16 +286,17 @@ fn spawn_session_title_update(
     state: &DispatcherState,
     app: &AppHandle,
     workspace_id: &str,
-    content: &str,
+    fallback_content: &str,
+    generation: u64,
 ) {
-    let generation = state.begin_title_generation(workspace_id);
     let app = app.clone();
     let db = state.db.clone();
     let workspace_id = workspace_id.to_string();
-    let content = content.to_string();
+    let fallback_content = fallback_content.to_string();
 
     tokio::spawn(async move {
-        let title = generate_session_title(db.clone(), workspace_id.clone(), content).await;
+        let title =
+            generate_session_title(db.clone(), workspace_id.clone(), fallback_content).await;
         let state = app.state::<DispatcherState>();
         if !state.finish_latest_title_generation(&workspace_id, generation) {
             return;
@@ -327,8 +330,46 @@ fn spawn_session_title_update(
     });
 }
 
-async fn generate_session_title(db: DispatcherDb, workspace_id: String, content: String) -> String {
-    let fallback = fallback_session_title(&content);
+async fn generate_session_title(
+    db: DispatcherDb,
+    workspace_id: String,
+    fallback_content: String,
+) -> String {
+    let title_messages_db = db.clone();
+    let title_messages_workspace_id = workspace_id.clone();
+    let title_messages = tokio::task::spawn_blocking(move || {
+        title_messages_db.list_recent_visible_dialogue_messages(
+            &title_messages_workspace_id,
+            SESSION_TITLE_RECENT_DIALOGUES,
+        )
+    })
+    .await;
+
+    let title_messages = match title_messages {
+        Ok(Ok(messages)) => messages,
+        Ok(Err(error)) => {
+            eprintln!("failed to load dispatcher title dialogue context: {error}");
+            Vec::new()
+        }
+        Err(error) => {
+            eprintln!("dispatcher title dialogue context task failed: {error}");
+            Vec::new()
+        }
+    };
+    let fallback_source = title_messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user" && !message.content.trim().is_empty())
+        .map(|message| message.content.clone())
+        .unwrap_or_else(|| fallback_content.clone());
+    let fallback = fallback_session_title(&fallback_source);
+    let title_messages = title_messages
+        .into_iter()
+        .map(|message| SessionTitleMessage {
+            role: message.role,
+            content: message.content,
+        })
+        .collect::<Vec<_>>();
     let provider_db = db.clone();
     let provider_config =
         tokio::task::spawn_blocking(move || resolve_title_provider(&provider_db)).await;
@@ -352,19 +393,25 @@ async fn generate_session_title(db: DispatcherDb, workspace_id: String, content:
     let usage_db = db.clone();
     let usage_workspace_id = workspace_id.clone();
     let usage_summary_model = summary_model.clone();
-    match summarize_session_title(&provider, &summary_model, &content, move |usage| {
-        if let Err(error) = usage_db.upsert_session_token_usage(
-            &usage_workspace_id,
-            &usage_summary_model,
-            DispatcherSessionTokenUsageSource::Summary,
-            usage,
-        ) {
-            eprintln!(
-                "failed to persist dispatcher title token usage for workspace {} and model {}: {}",
-                usage_workspace_id, usage_summary_model, error
-            );
+    match summarize_session_title(
+        &provider,
+        &summary_model,
+        &title_messages,
+        &fallback_source,
+        move |usage| {
+            if let Err(error) = usage_db.upsert_session_token_usage(
+                &usage_workspace_id,
+                &usage_summary_model,
+                DispatcherSessionTokenUsageSource::Summary,
+                usage,
+            ) {
+                eprintln!(
+                    "failed to persist dispatcher title token usage for workspace {} and model {}: {}",
+                    usage_workspace_id, usage_summary_model, error
+                );
+            }
         }
-    })
+    )
     .await
     {
         Ok(title) => title,
@@ -434,7 +481,7 @@ pub async fn dispatcher_send_message(
     mode: Option<String>,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
-    spawn_session_title_update(&state, &app, &workspace_id, &content);
+    let title_generation = state.begin_title_generation(&workspace_id);
     let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
         .map_err(|error| error.to_string())?;
     state
@@ -470,6 +517,7 @@ pub async fn dispatcher_send_message(
         .map_err(|error| error.to_string());
     drop(agent);
     state.finish_run(&workspace_id, run_handle.generation);
+    spawn_session_title_update(&state, &app, &workspace_id, &content, title_generation);
     result
 }
 
@@ -481,7 +529,7 @@ pub async fn dispatcher_send_plain_chat_message(
     content: String,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
-    spawn_session_title_update(&state, &app, &workspace_id, &content);
+    let title_generation = state.begin_title_generation(&workspace_id);
     state
         .db
         .set_session_mode(&workspace_id, DispatcherMode::Default)
@@ -512,6 +560,7 @@ pub async fn dispatcher_send_plain_chat_message(
         .map_err(|error| error.to_string());
     drop(agent);
     state.finish_run(&workspace_id, run_handle.generation);
+    spawn_session_title_update(&state, &app, &workspace_id, &content, title_generation);
     result
 }
 

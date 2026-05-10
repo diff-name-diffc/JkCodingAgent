@@ -5,6 +5,14 @@ import type { KnowledgeModelConfig, KnowledgeSettings } from "../../types";
 import s from "../../styles";
 
 const emptyModel: KnowledgeModelConfig = { url: "", apiKey: "", model: "" };
+type ModelKind = "text" | "vision" | "embedding";
+type TestFeedback = { status: "success" | "error"; message: string };
+
+const emptyTestFeedback: Record<ModelKind, TestFeedback | null> = {
+  text: null,
+  vision: null,
+  embedding: null,
+};
 
 export function defaultKnowledgeSettings(): KnowledgeSettings {
   return {
@@ -23,7 +31,9 @@ export function KnowledgeSettingsPanel({
 }) {
   const [draft, setDraft] = useState(settings);
   const [saving, setSaving] = useState(false);
-  const [testMessage, setTestMessage] = useState<string | null>(null);
+  const [testingKind, setTestingKind] = useState<ModelKind | null>(null);
+  const [testFeedback, setTestFeedback] = useState<Record<ModelKind, TestFeedback | null>>(emptyTestFeedback);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   useEffect(() => {
     setDraft(settings);
@@ -35,25 +45,30 @@ export function KnowledgeSettingsPanel({
 
   async function save() {
     setSaving(true);
-    setTestMessage(null);
+    setSaveMessage(null);
     try {
       const saved = await invoke<KnowledgeSettings>("knowledge_save_settings", { settings: draft });
       onSettingsSaved(saved);
-      setTestMessage("配置已保存");
+      setSaveMessage("配置已保存");
     } catch (error) {
-      setTestMessage(String(error));
+      setSaveMessage(String(error));
     } finally {
       setSaving(false);
     }
   }
 
-  async function test(kind: "text" | "vision" | "embedding") {
-    setTestMessage("测试中...");
+  async function test(kind: ModelKind) {
+    if (testingKind) return;
+    setTestingKind(kind);
+    setSaveMessage(null);
+    setTestFeedback((prev) => ({ ...prev, [kind]: null }));
     try {
       const message = await invoke<string>("knowledge_test_model", { kind, settings: draft });
-      setTestMessage(message);
+      setTestFeedback((prev) => ({ ...prev, [kind]: { status: "success", message } }));
     } catch (error) {
-      setTestMessage(String(error));
+      setTestFeedback((prev) => ({ ...prev, [kind]: { status: "error", message: String(error) } }));
+    } finally {
+      setTestingKind(null);
     }
   }
 
@@ -65,6 +80,9 @@ export function KnowledgeSettingsPanel({
         value={draft.textModel}
         onChange={(patch) => updateModel("textModel", patch)}
         onTest={() => test("text")}
+        testing={testingKind === "text"}
+        disabled={testingKind !== null || saving}
+        feedback={testFeedback.text}
       />
       <ModelSection
         title="多模态模型"
@@ -72,6 +90,9 @@ export function KnowledgeSettingsPanel({
         value={draft.visionModel}
         onChange={(patch) => updateModel("visionModel", patch)}
         onTest={() => test("vision")}
+        testing={testingKind === "vision"}
+        disabled={testingKind !== null || saving}
+        feedback={testFeedback.vision}
       />
       <ModelSection
         title="Embedding 模型"
@@ -79,16 +100,22 @@ export function KnowledgeSettingsPanel({
         value={draft.embeddingModel}
         onChange={(patch) => updateModel("embeddingModel", patch)}
         onTest={() => test("embedding")}
+        testing={testingKind === "embedding"}
+        disabled={testingKind !== null || saving}
+        feedback={testFeedback.embedding}
       />
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <button style={s.knowledgeSmallBtn} onClick={save} disabled={saving}>
+        <button style={s.knowledgeSmallBtn} type="button" onClick={save} disabled={saving || testingKind !== null}>
           {saving ? <Zap size={14} /> : <Save size={14} />}
           保存配置
         </button>
-        {testMessage && (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--text-muted)", fontSize: 12 }}>
+        {saveMessage && (
+          <span
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--text-muted)", fontSize: 12 }}
+            aria-live="polite"
+          >
             <Check size={13} />
-            {testMessage}
+            {saveMessage}
           </span>
         )}
       </div>
@@ -102,12 +129,18 @@ function ModelSection({
   value,
   onChange,
   onTest,
+  testing,
+  disabled,
+  feedback,
 }: {
   title: string;
   description: string;
   value: KnowledgeModelConfig;
   onChange: (patch: Partial<KnowledgeModelConfig>) => void;
   onTest: () => void;
+  testing: boolean;
+  disabled: boolean;
+  feedback: TestFeedback | null;
 }) {
   return (
     <section style={s.knowledgeCard}>
@@ -145,10 +178,24 @@ function ModelSection({
           />
         </label>
       </div>
-      <button style={{ ...s.knowledgeSmallBtn, marginTop: 12 }} onClick={onTest}>
-        <Zap size={14} />
-        测试
-      </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
+        <button style={s.knowledgeSmallBtn} type="button" onClick={onTest} disabled={disabled}>
+          <Zap size={14} />
+          {testing ? "测试中..." : "测试"}
+        </button>
+        {testing ? (
+          <span style={{ color: "var(--text-muted)", fontSize: 12 }} aria-live="polite">
+            测试中...
+          </span>
+        ) : feedback ? (
+          <span
+            style={{ color: feedback.status === "success" ? "var(--success)" : "var(--danger)", fontSize: 12 }}
+            aria-live="polite"
+          >
+            {feedback.message}
+          </span>
+        ) : null}
+      </div>
     </section>
   );
 }

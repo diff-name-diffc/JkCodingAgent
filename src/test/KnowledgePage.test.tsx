@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { KnowledgePage } from "../components/knowledge/KnowledgePage";
+import { KnowledgeSettingsPanel } from "../components/knowledge/KnowledgeSettingsPanel";
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset://${path}`,
@@ -132,6 +133,46 @@ describe("KnowledgePage", () => {
     await waitFor(() => {
       expect(confirmMock).toHaveBeenCalled();
       expect(invokeMock).toHaveBeenCalledWith("knowledge_delete_collection", { collectionId: "kc-1" });
+    });
+  });
+
+  it("wires knowledge model test buttons to the Tauri command", async () => {
+    const settings = {
+      textModel: { url: "https://api.example.com/v1", apiKey: "sk-text", model: "text-model" },
+      visionModel: { url: "https://api.example.com/v1", apiKey: "sk-vision", model: "vision-model" },
+      embeddingModel: { url: "https://api.example.com/v1", apiKey: "sk-embedding", model: "embedding-model" },
+    };
+    invokeMock.mockResolvedValue("text ok：pong");
+
+    render(<KnowledgeSettingsPanel settings={settings} onSettingsSaved={vi.fn()} />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "测试" })[0]);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("knowledge_test_model", {
+        kind: "text",
+        settings,
+      });
+      expect(screen.getByText("text ok：pong")).toHaveStyle({ color: "var(--success)" });
+    });
+  });
+
+  it("shows failed model test feedback next to the clicked button", async () => {
+    const settings = {
+      textModel: { url: "https://api.example.com/v1", apiKey: "sk-text", model: "text-model" },
+      visionModel: { url: "https://api.example.com/v1", apiKey: "sk-vision", model: "vision-model" },
+      embeddingModel: { url: "https://api.example.com/v1", apiKey: "sk-embedding", model: "embedding-model" },
+    };
+    invokeMock.mockRejectedValue("文本模型 API Key 未配置");
+
+    render(<KnowledgeSettingsPanel settings={settings} onSettingsSaved={vi.fn()} />);
+
+    const button = screen.getAllByRole("button", { name: "测试" })[0];
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(screen.getByText("文本模型 API Key 未配置")).toHaveStyle({ color: "var(--danger)" });
+      expect(button.parentElement).toHaveTextContent("文本模型 API Key 未配置");
     });
   });
 });

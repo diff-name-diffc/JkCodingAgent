@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use anyhow::{anyhow, Result};
 use arrow_array::{
     ArrayRef, FixedSizeListArray, Float32Array, RecordBatch, StringArray, UInt32Array,
@@ -33,7 +35,7 @@ pub struct ChunkSearchHit {
     pub score: f32,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LanceVectorStats {
     pub page_count: usize,
     pub chunk_count: usize,
@@ -135,6 +137,10 @@ pub async fn delete_page(collection_root: &Path, page_path: &str) -> Result<()> 
 }
 
 pub async fn stats(collection_root: &Path) -> Result<LanceVectorStats> {
+    if let Some(cached) = crate::knowledge::cache::load_stats_cache(collection_root) {
+        return Ok(cached);
+    }
+
     let db = connect(&db_path(collection_root)).execute().await?;
     let tables = db.table_names().execute().await?;
     if !tables.contains(&TABLE_V2.to_string()) {

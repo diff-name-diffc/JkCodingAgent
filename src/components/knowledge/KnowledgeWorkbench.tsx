@@ -1,8 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import Editor from "@monaco-editor/react";
-import { BookOpen, GitGraph, RefreshCw, Save, Search, Settings, Upload, ListChecks } from "lucide-react";
+import {
+  BookOpen,
+  GitGraph,
+  RefreshCw,
+  Save,
+  Search,
+  Settings,
+  Upload,
+  ListChecks,
+} from "lucide-react";
 import type {
   KnowledgeCollection,
   KnowledgeGraph,
@@ -43,6 +52,9 @@ export function KnowledgeWorkbench({
   const [jobs, setJobs] = useState<KnowledgeIngestJob[]>([]);
   const [stats, setStats] = useState<KnowledgeVectorStats | null>(null);
   const [graph, setGraph] = useState<KnowledgeGraph | null>(null);
+  const [graphSelectedPath, setGraphSelectedPath] = useState<string | null>(null);
+  const [graphPageContent, setGraphPageContent] = useState<KnowledgePageContent | null>(null);
+  const [graphPageLoading, setGraphPageLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<KnowledgeSearchResult[]>([]);
   const [message, setMessage] = useState<string | null>(null);
@@ -50,26 +62,32 @@ export function KnowledgeWorkbench({
 
   const selectedRelativePath = selectedPage?.relativePath ?? null;
 
-  useEffect(() => {
-    const collectionId = collection?.id;
-    setSelectedPage(null);
-    setPageContent(null);
-    setDraft("");
-    setGraph(null);
-    setSearchResults([]);
-    if (!collectionId) return;
-    void loadCollectionData(collectionId);
-  }, [collection?.id]);
+  const prevImportTokenRef = useRef(importRefreshToken);
 
   useEffect(() => {
-    if (!collection?.id || importRefreshToken === 0) return;
-    void loadCollectionData(collection.id);
+    const collectionId = collection?.id;
+    const isImportRefresh = importRefreshToken !== prevImportTokenRef.current;
+    prevImportTokenRef.current = importRefreshToken;
+
+    if (!collectionId) return;
+
+    if (!isImportRefresh) {
+      setSelectedPage(null);
+      setPageContent(null);
+      setDraft("");
+      setGraph(null);
+      setGraphSelectedPath(null);
+      setGraphPageContent(null);
+      setSearchResults([]);
+    }
+    void loadCollectionData(collectionId);
   }, [collection?.id, importRefreshToken]);
 
   useEffect(() => {
-    if (!collection || !selectedRelativePath) return;
+    const collectionId = collection?.id;
+    if (!collectionId || !selectedRelativePath) return;
     invoke<KnowledgePageContent>("knowledge_read_page", {
-      collectionId: collection.id,
+      collectionId,
       relativePath: selectedRelativePath,
     })
       .then((page) => {
@@ -77,7 +95,33 @@ export function KnowledgeWorkbench({
         setDraft(page.content);
       })
       .catch((error) => setMessage(String(error)));
-  }, [collection, selectedRelativePath]);
+  }, [collection?.id, selectedRelativePath]);
+
+  useEffect(() => {
+    const collectionId = collection?.id;
+    if (!collectionId || tab !== "graph" || !graphSelectedPath) return;
+
+    let cancelled = false;
+    setGraphPageLoading(true);
+    setGraphPageContent(null);
+    invoke<KnowledgePageContent>("knowledge_read_page", {
+      collectionId,
+      relativePath: graphSelectedPath,
+    })
+      .then((page) => {
+        if (!cancelled) setGraphPageContent(page);
+      })
+      .catch((error) => {
+        if (!cancelled) setMessage(String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setGraphPageLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [collection?.id, graphSelectedPath, tab]);
 
   async function loadPages() {
     if (!collection) return;
@@ -86,18 +130,25 @@ export function KnowledgeWorkbench({
     });
     setPages(nextPages);
     if (selectedPage) {
-      setSelectedPage(nextPages.find((page) => page.relativePath === selectedPage.relativePath) ?? null);
+      setSelectedPage(
+        nextPages.find((page) => page.relativePath === selectedPage.relativePath) ?? null,
+      );
     }
   }
 
   async function loadCollectionData(collectionId: string) {
-    await Promise.all([
-      invoke<KnowledgePageSummary[]>("knowledge_list_pages", { collectionId }).then(setPages),
-      invoke<KnowledgeIngestJob[]>("knowledge_get_ingest_jobs", { collectionId }).then(setJobs),
-      invoke<KnowledgeVectorStats>("knowledge_vector_stats", { collectionId })
-        .then(setStats)
-        .catch(() => undefined),
-    ]).catch((error) => setMessage(String(error)));
+    const results = await Promise.allSettled([
+      invoke<KnowledgePageSummary[]>("knowledge_list_pages", { collectionId }),
+      invoke<KnowledgeIngestJob[]>("knowledge_get_ingest_jobs", { collectionId }),
+      invoke<KnowledgeVectorStats>("knowledge_vector_stats", { collectionId }),
+    ]);
+    if (results[0].status === "fulfilled") setPages(results[0].value);
+    if (results[1].status === "fulfilled") setJobs(results[1].value);
+    if (results[2].status === "fulfilled") setStats(results[2].value);
+    const errors = results
+      .filter((r): r is PromiseRejectedResult => r.status === "rejected")
+      .map((r) => String(r.reason));
+    if (errors.length > 0) setMessage(errors.join("; "));
   }
 
   async function loadJobs() {
@@ -173,6 +224,10 @@ export function KnowledgeWorkbench({
         collectionId: collection.id,
       });
       setGraph(nextGraph);
+      if (graphSelectedPath && !nextGraph.nodes.some((node) => node.path === graphSelectedPath)) {
+        setGraphSelectedPath(null);
+        setGraphPageContent(null);
+      }
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -224,7 +279,9 @@ export function KnowledgeWorkbench({
       <main style={s.knowledgeMain}>
         <div style={{ ...s.emptyState, background: "var(--bg-panel)" }}>
           <BookOpen size={42} color="var(--text-hint)" />
-          <div style={{ marginTop: 14, fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>
+          <div
+            style={{ marginTop: 14, fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}
+          >
             选择或创建一个知识库集合
           </div>
         </div>
@@ -238,11 +295,18 @@ export function KnowledgeWorkbench({
         <div style={{ minWidth: 0 }}>
           <div style={s.knowledgeTitle}>{collection.name}</div>
           <div style={s.knowledgeSubtitle}>
-            {stats ? `${stats.pageCount} 页 · ${stats.chunkCount} chunks · ${stats.dimension || 0} 维` : "知识库集合"}
+            {stats
+              ? `${stats.pageCount} 页 · ${stats.chunkCount} chunks · ${stats.dimension || 0} 维`
+              : "知识库集合"}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button style={s.knowledgeSmallBtn} onClick={onImportSources} disabled={busy} aria-label="导入源文件">
+          <button
+            style={s.knowledgeSmallBtn}
+            onClick={onImportSources}
+            disabled={busy}
+            aria-label="导入源文件"
+          >
             <Upload size={14} />
             导入
           </button>
@@ -255,11 +319,42 @@ export function KnowledgeWorkbench({
 
       <div style={{ ...s.knowledgeTopbar, height: 48, justifyContent: "space-between" }}>
         <div style={s.knowledgeTabs}>
-          <TabButton icon={<BookOpen size={14} />} active={tab === "pages"} label="页面" onClick={() => setTab("pages")} />
-          <TabButton icon={<Search size={14} />} active={tab === "search"} label="搜索" onClick={() => setTab("search")} />
-          <TabButton icon={<GitGraph size={14} />} active={tab === "graph"} label="图谱" onClick={() => { setTab("graph"); void buildGraph(); }} />
-          <TabButton icon={<Settings size={14} />} active={tab === "settings"} label="设置" onClick={() => setTab("settings")} />
-          <TabButton icon={<ListChecks size={14} />} active={tab === "jobs"} label="任务" onClick={() => { setTab("jobs"); void loadJobs(); }} />
+          <TabButton
+            icon={<BookOpen size={14} />}
+            active={tab === "pages"}
+            label="页面"
+            onClick={() => setTab("pages")}
+          />
+          <TabButton
+            icon={<Search size={14} />}
+            active={tab === "search"}
+            label="搜索"
+            onClick={() => setTab("search")}
+          />
+          <TabButton
+            icon={<GitGraph size={14} />}
+            active={tab === "graph"}
+            label="图谱"
+            onClick={() => {
+              setTab("graph");
+              void buildGraph();
+            }}
+          />
+          <TabButton
+            icon={<Settings size={14} />}
+            active={tab === "settings"}
+            label="设置"
+            onClick={() => setTab("settings")}
+          />
+          <TabButton
+            icon={<ListChecks size={14} />}
+            active={tab === "jobs"}
+            label="任务"
+            onClick={() => {
+              setTab("jobs");
+              void loadJobs();
+            }}
+          />
         </div>
         {message && <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{message}</span>}
       </div>
@@ -275,43 +370,73 @@ export function KnowledgeWorkbench({
           onSearch={runSearch}
           onOpen={(result) => {
             setTab("pages");
-            const page = pages.find((item) => item.relativePath === result.relativePath);
-            setSelectedPage(page ?? {
-              collectionId: result.collectionId,
-              path: result.path,
-              relativePath: result.relativePath,
-              title: result.title,
-              pageType: result.pageType,
-              tags: [],
-            });
+            const page =
+              result.collectionId === collection.id
+                ? pages.find((item) => item.relativePath === result.relativePath)
+                : null;
+            setSelectedPage(
+              page ?? {
+                collectionId: result.collectionId,
+                path: result.path,
+                relativePath: result.relativePath,
+                title: result.title,
+                pageType: result.pageType,
+                tags: [],
+              },
+            );
           }}
         />
       ) : tab === "graph" ? (
         <KnowledgeGraphView
           graph={graph}
-          onOpenPage={(relativePath) => {
-            setTab("pages");
-            setSelectedPage(pages.find((page) => page.relativePath === relativePath) ?? null);
+          selectedPath={graphSelectedPath}
+          selectedPage={graphPageContent}
+          pageLoading={graphPageLoading}
+          onSelectPage={setGraphSelectedPath}
+          onClosePage={() => {
+            setGraphSelectedPath(null);
+            setGraphPageContent(null);
           }}
+          renderPageContent={(content) => (
+            <MarkdownRenderer
+              content={resolveKnowledgeImageUrls(content, collection.rootPath, convertFileSrc)}
+              variant="document"
+            />
+          )}
         />
       ) : tab === "jobs" ? (
-        <JobsPanel jobs={jobs} busy={busy} onRefresh={loadJobs} onCancel={cancelJob} onRetry={retryJob} />
+        <JobsPanel
+          jobs={jobs}
+          busy={busy}
+          onRefresh={loadJobs}
+          onCancel={cancelJob}
+          onRetry={retryJob}
+        />
       ) : (
         <div style={s.knowledgeContent}>
-          <PageList groupedPages={groupedPages} selectedPage={selectedPage} onSelect={setSelectedPage} />
+          <PageList
+            groupedPages={groupedPages}
+            selectedPage={selectedPage}
+            onSelect={setSelectedPage}
+          />
           <div style={s.knowledgeEditorPane}>
             <div style={s.knowledgeEditorColumn}>
               <div style={{ ...s.knowledgeTopbar, height: 44 }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>
                   {pageContent?.relativePath ?? "未选择页面"}
                 </span>
-                <button style={s.knowledgeSmallBtn} onClick={savePage} disabled={!pageContent || busy}>
+                <button
+                  style={s.knowledgeSmallBtn}
+                  onClick={savePage}
+                  disabled={!pageContent || busy}
+                >
                   <Save size={14} />
                   保存
                 </button>
               </div>
               <div style={{ flex: 1, minHeight: 0 }}>
                 <Editor
+                  key={pageContent?.relativePath ?? "__empty__"}
                   language="markdown"
                   theme="vs-dark"
                   value={draft}
@@ -322,7 +447,10 @@ export function KnowledgeWorkbench({
             </div>
             <div style={s.knowledgePreview}>
               {draft ? (
-                <MarkdownRenderer content={resolveKnowledgeImageUrls(draft, collection.rootPath, convertFileSrc)} variant="document" />
+                <MarkdownRenderer
+                  content={resolveKnowledgeImageUrls(draft, collection.rootPath, convertFileSrc)}
+                  variant="document"
+                />
               ) : (
                 <div style={{ color: "var(--text-muted)", fontSize: 13 }}>选择页面后查看预览。</div>
               )}
@@ -334,7 +462,17 @@ export function KnowledgeWorkbench({
   );
 }
 
-function TabButton({ icon, label, active, onClick }: { icon: React.ReactNode; label: string; active: boolean; onClick: () => void }) {
+function TabButton({
+  icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
       style={{

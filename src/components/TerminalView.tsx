@@ -96,7 +96,8 @@ export function TerminalView({
       if (initialSnapshot) {
         term.write(initialSnapshot, () => {
           if (initialData) {
-            term.write(initialData, completeRestore);
+            writer.write(initialData);
+            completeRestore();
             return;
           }
           completeRestore();
@@ -104,7 +105,8 @@ export function TerminalView({
         return;
       }
       if (initialData) {
-        term.write(initialData, completeRestore);
+        writer.write(initialData);
+        completeRestore();
         return;
       }
       completeRestore();

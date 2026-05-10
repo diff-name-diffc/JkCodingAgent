@@ -192,6 +192,8 @@ export function ProjectPage({
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
   const dispatcherChatRef = useRef<DispatcherChatHandle>(null);
   const fileViewerRef = useRef<FileViewerHandle>(null);
+  const activeSessionIdRef = useRef(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
   /** Track task_id → owning dispatcher session for result injection */
   const pendingDispatchRef = useRef<
     Map<string, { taskId: string; dispatchId: string; sessionId: string }>
@@ -220,6 +222,15 @@ export function ProjectPage({
         .sort((left, right) => right.startedAt - left.startedAt),
     [allSubProcesses, dismissedSubProcessIds],
   );
+  const subprocessRunningSessionIds = useMemo(() => {
+    const runningSessionIds = new Set<string>();
+    for (const subProcess of allSubProcesses) {
+      if (subProcess.status === "running") {
+        runningSessionIds.add(subProcess.sessionId);
+      }
+    }
+    return runningSessionIds;
+  }, [allSubProcesses]);
   const activeVisibleSubTabId = activeSessionId
     ? (activeSubTabIdBySession[activeSessionId] ?? null)
     : null;
@@ -353,7 +364,11 @@ export function ProjectPage({
         dispatchId,
         taskId,
       })
-        .then((state) => dispatcherChatRef.current?.applyRuntimeState(state))
+        .then((state) => {
+          if (activeSessionIdRef.current === sessionId) {
+            dispatcherChatRef.current?.applyRuntimeState(state);
+          }
+        })
         .catch(console.error);
       idleInjectedTaskIdsRef.current.delete(taskId);
       closedSubprocessTaskIdsRef.current.delete(taskId);
@@ -720,6 +735,7 @@ export function ProjectPage({
         <SessionPanel
           project={project}
           activeSessionId={activeSessionId}
+          subprocessRunningSessionIds={subprocessRunningSessionIds}
           onSelectSession={(sessionId) => {
             setActiveSessionId(sessionId);
             if (sessionId) {

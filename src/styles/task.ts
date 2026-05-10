@@ -198,6 +198,16 @@ export const task = {
     whiteSpace: "nowrap",
   },
   taskCardSub: { fontSize: 11, color: "var(--text-muted)", marginTop: 1 },
+  taskCardActions: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    flexShrink: 0,
+  },
+  sessionRunningIcon: {
+    color: "var(--accent)",
+    flexShrink: 0,
+  },
   taskDeleteBtn: {
     flexShrink: 0,
     width: 22,

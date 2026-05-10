@@ -12,7 +12,6 @@ import type { KeyboardEvent } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import {
   Play,
-  User,
   Sparkles,
   Send,
   Square,
@@ -42,6 +41,8 @@ import type {
   ProjectMcpStatus,
   SubProcess,
 } from "../types";
+import assistantAvatarUrl from "../assets/dispatcher-assistant-avatar.png";
+import userAvatarUrl from "../assets/dispatcher-user-avatar.png";
 import { useDashScopeAsr } from "../hooks/useDashScopeAsr";
 import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTokenUsage";
 import { formatElapsedMmSs, formatTokenCount, isImeComposing } from "../utils";
@@ -205,7 +206,7 @@ const UserMessageBubble = memo(function UserMessageBubble({
   return (
     <div style={styles.messageBubbleWrap(true)}>
       <div style={styles.messageAvatar(true)}>
-        <User size={15} color="#fff" />
+        <img src={userAvatarUrl} alt="用户头像" style={styles.messageAvatarImage} />
       </div>
       <div style={styles.messageBubbleColumn(true)}>
         <div style={styles.messageBubble(true)}>
@@ -241,7 +242,7 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
   return (
     <div style={styles.messageBubbleWrap(false)}>
       <div style={styles.messageAvatar(false)}>
-        <Sparkles size={14} color="var(--accent)" />
+        <img src={assistantAvatarUrl} alt="AI 头像" style={styles.messageAvatarImage} />
       </div>
       <div style={styles.assistantTurnStack}>
         {tools.length > 0 && (
@@ -896,6 +897,105 @@ interface PendingDispatchApproval {
   permissionMode: string;
 }
 
+interface DispatcherLiveSessionState {
+  hasPendingRun: boolean;
+  isLoading: boolean;
+  streamingSegments: AssistantTurnSegment[];
+  liveToolCalls: ToolActivityItem[];
+  assistantPlaceholder: string | null;
+  runError: string | null;
+  pendingDispatches: PendingDispatchApproval[];
+  activeUsageStats: DispatcherMessageUsageStats | null;
+  activeUsageStatsReceivedAt: number;
+  usageClockNow: number;
+}
+
+function createIdleLiveSessionState(): DispatcherLiveSessionState {
+  const now = Date.now();
+  return {
+    hasPendingRun: false,
+    isLoading: false,
+    streamingSegments: [],
+    liveToolCalls: [],
+    assistantPlaceholder: null,
+    runError: null,
+    pendingDispatches: [],
+    activeUsageStats: null,
+    activeUsageStatsReceivedAt: now,
+    usageClockNow: now,
+  };
+}
+
+const dispatcherLiveSessionStates = new Map<string, DispatcherLiveSessionState>();
+const dispatcherActiveRunIds = new Map<string, number>();
+const dispatcherLiveSessionSubscribers = new Map<
+  string,
+  Set<(state: DispatcherLiveSessionState) => void>
+>();
+const dispatcherMessageSubscribers = new Map<
+  string,
+  Set<(messages: DispatcherMessage[]) => void>
+>();
+
+function notifyDispatcherLiveSessionSubscribers(
+  sessionId: string,
+  state: DispatcherLiveSessionState,
+) {
+  dispatcherLiveSessionSubscribers.get(sessionId)?.forEach((subscriber) => subscriber(state));
+}
+
+function subscribeDispatcherLiveSession(
+  sessionId: string,
+  subscriber: (state: DispatcherLiveSessionState) => void,
+) {
+  const subscribers = dispatcherLiveSessionSubscribers.get(sessionId) ?? new Set();
+  subscribers.add(subscriber);
+  dispatcherLiveSessionSubscribers.set(sessionId, subscribers);
+  return () => {
+    subscribers.delete(subscriber);
+    if (subscribers.size === 0) {
+      dispatcherLiveSessionSubscribers.delete(sessionId);
+    }
+  };
+}
+
+function notifyDispatcherMessages(sessionId: string, messages: DispatcherMessage[]) {
+  if (messages.length === 0) return;
+  dispatcherMessageSubscribers.get(sessionId)?.forEach((subscriber) => subscriber(messages));
+}
+
+function subscribeDispatcherMessages(
+  sessionId: string,
+  subscriber: (messages: DispatcherMessage[]) => void,
+) {
+  const subscribers = dispatcherMessageSubscribers.get(sessionId) ?? new Set();
+  subscribers.add(subscriber);
+  dispatcherMessageSubscribers.set(sessionId, subscribers);
+  return () => {
+    subscribers.delete(subscriber);
+    if (subscribers.size === 0) {
+      dispatcherMessageSubscribers.delete(sessionId);
+    }
+  };
+}
+
+function isLiveSessionRunning(state: DispatcherLiveSessionState | undefined): boolean {
+  return Boolean(state?.hasPendingRun || state?.isLoading);
+}
+
+export function getDispatcherSessionRunning(sessionId: string): boolean {
+  return isLiveSessionRunning(dispatcherLiveSessionStates.get(sessionId));
+}
+
+export function subscribeDispatcherSessionRunning(
+  sessionId: string,
+  subscriber: (isRunning: boolean) => void,
+) {
+  return subscribeDispatcherLiveSession(sessionId, (state) => {
+    subscriber(isLiveSessionRunning(state));
+  });
+}
+
 export interface DispatcherChatHandle {
   /** Inject dispatch result and continue the agent conversation */
   continueWithResult: (
@@ -982,7 +1082,6 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const inputComposingRef = useRef(false);
     const currentSessionIdRef = useRef(sessionId);
     currentSessionIdRef.current = sessionId;
-    const activeRunRef = useRef(0);
     const historyLoadRef = useRef(0);
     const activeUsageStatsReceivedAtRef = useRef(Date.now());
     const runQueuesRef = useRef<Map<string, Promise<void>>>(new Map());
@@ -1022,6 +1121,42 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       [activeUsageStats, usageClockNow],
     );
 
+    const applyLiveSessionState = useCallback((state: DispatcherLiveSessionState) => {
+      setHasPendingRun(state.hasPendingRun);
+      setIsLoading(state.isLoading);
+      setStreamingSegments(state.streamingSegments);
+      setLiveToolCalls(state.liveToolCalls);
+      setAssistantPlaceholder(state.assistantPlaceholder);
+      setRunError(state.runError);
+      setPendingDispatches(state.pendingDispatches);
+      activeUsageStatsReceivedAtRef.current = state.activeUsageStatsReceivedAt;
+      setActiveUsageStats(state.activeUsageStats);
+      setUsageClockNow(state.usageClockNow);
+    }, []);
+
+    const getLiveSessionState = useCallback((targetSessionId: string) => {
+      const existing = dispatcherLiveSessionStates.get(targetSessionId);
+      if (existing) return existing;
+      const created = createIdleLiveSessionState();
+      dispatcherLiveSessionStates.set(targetSessionId, created);
+      return created;
+    }, []);
+
+    const updateLiveSessionState = useCallback(
+      (
+        targetSessionId: string,
+        updater: (state: DispatcherLiveSessionState) => DispatcherLiveSessionState,
+      ) => {
+        const next = updater(getLiveSessionState(targetSessionId));
+        dispatcherLiveSessionStates.set(targetSessionId, next);
+        notifyDispatcherLiveSessionSubscribers(targetSessionId, next);
+        if (currentSessionIdRef.current === targetSessionId) {
+          applyLiveSessionState(next);
+        }
+      },
+      [applyLiveSessionState, getLiveSessionState],
+    );
+
     const scrollMessageListToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
       const element = messageListRef.current;
       if (!element) return;
@@ -1056,23 +1191,14 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     // session must not overwrite the currently selected session.
     useEffect(() => {
       const loadId = ++historyLoadRef.current;
-      activeRunRef.current += 1;
       shouldStickToBottomRef.current = true;
       setMessages([]);
-      setIsLoading(false);
       setIsStopping(false);
-      setHasPendingRun(false);
-      setStreamingSegments([]);
-      setLiveToolCalls([]);
-      setAssistantPlaceholder(null);
-      setRunError(null);
-      setPendingDispatches([]);
+      applyLiveSessionState(getLiveSessionState(sessionId));
       setChecklist(null);
       setPlanInteraction(null);
       setActivePlanPath(null);
       setImplementingPlan(false);
-      setActiveUsageStats(null);
-      setUsageClockNow(Date.now());
 
       invoke<DispatcherMessage[]>("dispatcher_list_messages", {
         workspaceId: sessionId,
@@ -1080,7 +1206,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         .then((loaded) => {
           if (currentSessionIdRef.current !== sessionId || historyLoadRef.current !== loadId)
             return;
-          setMessages(loaded.filter((message) => message.workspaceId === sessionId));
+          setMessages((prev) =>
+            mergeDispatcherMessages(
+              loaded.filter((message) => message.workspaceId === sessionId),
+              prev.filter((message) => message.workspaceId === sessionId),
+            ),
+          );
         })
         .catch(console.error);
       invoke<DispatcherSessionRuntimeState>("dispatcher_get_session_runtime_state", {
@@ -1095,7 +1226,25 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           setActivePlanPath(state.activePlanPath ?? null);
         })
         .catch(console.error);
-    }, [sessionId]);
+    }, [applyLiveSessionState, getLiveSessionState, sessionId]);
+
+    useEffect(
+      () => subscribeDispatcherLiveSession(sessionId, applyLiveSessionState),
+      [applyLiveSessionState, sessionId],
+    );
+
+    useEffect(
+      () =>
+        subscribeDispatcherMessages(sessionId, (incoming) => {
+          setMessages((prev) =>
+            mergeDispatcherMessages(
+              prev,
+              incoming.filter((message) => message.workspaceId === sessionId),
+            ),
+          );
+        }),
+      [sessionId],
+    );
 
     useEffect(() => {
       if (!shouldStickToBottomRef.current) return;
@@ -1113,85 +1262,119 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       (targetSessionId: string, runId: number) => {
         const onEvent = new Channel<DispatcherAgentEvent>();
         onEvent.onmessage = (event) => {
-          const isCurrentRun =
-            currentSessionIdRef.current === targetSessionId && activeRunRef.current === runId;
+          const isActiveRun = dispatcherActiveRunIds.get(targetSessionId) === runId;
+          const isCurrentSession = currentSessionIdRef.current === targetSessionId;
           switch (event.event) {
             case "started":
               break;
             case "assistantStarted":
-              if (!isCurrentRun) return;
-              setAssistantPlaceholder("正在分析问题...");
+              if (!isActiveRun) return;
+              updateLiveSessionState(targetSessionId, (state) => ({
+                ...state,
+                assistantPlaceholder: "正在分析问题...",
+              }));
               break;
             case "modelSwitched":
-              if (!isCurrentRun) return;
-              setAssistantPlaceholder(`已检测到图片，自动切换到视觉模型 ${event.data.toModel}。`);
-              setStreamingSegments((prev) =>
-                appendAssistantTextSegment(
-                  prev,
+              if (!isActiveRun) return;
+              updateLiveSessionState(targetSessionId, (state) => ({
+                ...state,
+                assistantPlaceholder: `已检测到图片，自动切换到视觉模型 ${event.data.toModel}。`,
+                streamingSegments: appendAssistantTextSegment(
+                  state.streamingSegments,
                   `> ${event.data.reason}，已从 ${event.data.fromModel} 自动切换到视觉模型 ${event.data.toModel}。\n\n`,
                 ),
-              );
+              }));
               break;
             case "userMessage":
-              if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
-              setMessages((prev) => [...prev, event.data.message]);
+              if (!isActiveRun || event.data.message.workspaceId !== targetSessionId) return;
+              notifyDispatcherMessages(targetSessionId, [event.data.message]);
               break;
             case "assistantDelta":
-              if (!isCurrentRun) return;
-              setAssistantPlaceholder(null);
-              setStreamingSegments((prev) => appendAssistantTextSegment(prev, event.data.delta));
+              if (!isActiveRun) return;
+              updateLiveSessionState(targetSessionId, (state) => ({
+                ...state,
+                assistantPlaceholder: null,
+                streamingSegments: appendAssistantTextSegment(
+                  state.streamingSegments,
+                  event.data.delta,
+                ),
+              }));
               break;
             case "assistantMessage":
-              if (!isCurrentRun || event.data.message.workspaceId !== targetSessionId) return;
-              setAssistantPlaceholder(null);
-              setStreamingSegments((prev) =>
-                prev.filter((segment) => segment.kind === "tool-summary"),
-              );
-              setMessages((prev) => [...prev, event.data.message]);
+              if (!isActiveRun || event.data.message.workspaceId !== targetSessionId) return;
+              updateLiveSessionState(targetSessionId, (state) => ({
+                ...state,
+                assistantPlaceholder: null,
+                streamingSegments: state.streamingSegments.filter(
+                  (segment) => segment.kind === "tool-summary",
+                ),
+              }));
+              notifyDispatcherMessages(targetSessionId, [event.data.message]);
               break;
             case "runUsageUpdated":
-              if (!isCurrentRun || event.data.workspaceId !== targetSessionId) return;
-              activeUsageStatsReceivedAtRef.current = Date.now();
-              setActiveUsageStats(event.data.stats);
-              setUsageClockNow(Date.now());
+              if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
+              {
+                const now = Date.now();
+                updateLiveSessionState(targetSessionId, (state) => ({
+                  ...state,
+                  activeUsageStats: event.data.stats,
+                  activeUsageStatsReceivedAt: now,
+                  usageClockNow: now,
+                }));
+              }
               void refreshSessionTokenUsage(targetSessionId);
               break;
             case "toolPlanned":
-              if (!isCurrentRun) return;
-              setAssistantPlaceholder("正在规划工具调用...");
-              setLiveToolCalls((prev) => planLiveToolActivity(prev, event.data));
+              if (!isActiveRun) return;
+              updateLiveSessionState(targetSessionId, (state) => ({
+                ...state,
+                assistantPlaceholder: "正在规划工具调用...",
+                liveToolCalls: planLiveToolActivity(state.liveToolCalls, event.data),
+              }));
               break;
             case "toolStarted":
-              if (!isCurrentRun) return;
-              setAssistantPlaceholder("正在执行工具...");
-              setLiveToolCalls((prev) => startLiveToolActivity(prev, event.data));
+              if (!isActiveRun) return;
+              updateLiveSessionState(targetSessionId, (state) => ({
+                ...state,
+                assistantPlaceholder: "正在执行工具...",
+                liveToolCalls: startLiveToolActivity(state.liveToolCalls, event.data),
+              }));
               break;
             case "toolSummaryStarted":
-              if (!isCurrentRun) return;
+              if (!isActiveRun) return;
               break;
             case "toolSummaryDelta":
-              if (!isCurrentRun) return;
-              setStreamingSegments((prev) => appendToolSummarySegment(prev, event.data));
+              if (!isActiveRun) return;
+              updateLiveSessionState(targetSessionId, (state) => ({
+                ...state,
+                streamingSegments: appendToolSummarySegment(
+                  state.streamingSegments,
+                  event.data,
+                ),
+              }));
               break;
             case "toolFinished":
-              if (!isCurrentRun) return;
-              setLiveToolCalls((prev) => finishLiveToolActivity(prev, event.data));
+              if (!isActiveRun) return;
+              updateLiveSessionState(targetSessionId, (state) => ({
+                ...state,
+                liveToolCalls: finishLiveToolActivity(state.liveToolCalls, event.data),
+              }));
               break;
             case "checklistPlanUpdated":
-              if (!isCurrentRun) return;
+              if (!isActiveRun || !isCurrentSession) return;
               setChecklist(event.data.state);
               break;
             case "planQuestionRequested":
-              if (!isCurrentRun) return;
+              if (!isActiveRun || !isCurrentSession) return;
               setPlanInteraction(event.data.interaction);
               break;
             case "planDocumentOpened":
-              if (!isCurrentRun) return;
+              if (!isActiveRun || !isCurrentSession) return;
               setActivePlanPath(event.data.planPath);
               onOpenPlanDocument?.(event.data.planPath);
               break;
             case "planReady":
-              if (!isCurrentRun) return;
+              if (!isActiveRun || !isCurrentSession) return;
               setPlanInteraction(event.data.interaction);
               if (event.data.interaction.kind === "ready") {
                 setActivePlanPath(event.data.interaction.planPath);
@@ -1199,7 +1382,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               }
               break;
             case "planImplemented":
-              if (!isCurrentRun) return;
+              if (!isActiveRun || !isCurrentSession) return;
               setActivePlanPath(event.data.implementedPath);
               setPlanInteraction(null);
               onOpenPlanDocument?.(event.data.implementedPath);
@@ -1218,11 +1401,14 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                   permissionMode,
                   targetSessionId,
                 );
-              } else if (isCurrentRun) {
-                setPendingDispatches((prev) => [
-                  ...prev,
-                  { dispatchId, agent, description, taskPrompt, permissionMode },
-                ]);
+              } else if (isActiveRun) {
+                updateLiveSessionState(targetSessionId, (state) => ({
+                  ...state,
+                  pendingDispatches: [
+                    ...state.pendingDispatches,
+                    { dispatchId, agent, description, taskPrompt, permissionMode },
+                  ],
+                }));
               }
               break;
             }
@@ -1235,26 +1421,20 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               break;
             }
             case "finished":
-              if (!isCurrentRun) return;
-              setMessages((prev) =>
-                mergeDispatcherMessages(
-                  prev,
-                  event.data.messages.filter((message) => message.workspaceId === targetSessionId),
-                ),
+              if (!isActiveRun) return;
+              notifyDispatcherMessages(
+                targetSessionId,
+                event.data.messages.filter((message) => message.workspaceId === targetSessionId),
               );
               void refreshSessionTokenUsage(targetSessionId);
-              setHasPendingRun(false);
-              setIsLoading(false);
-              setStreamingSegments([]);
-              setLiveToolCalls([]);
-              setAssistantPlaceholder(null);
-              setActiveUsageStats(null);
+              dispatcherActiveRunIds.delete(targetSessionId);
+              updateLiveSessionState(targetSessionId, () => createIdleLiveSessionState());
               break;
           }
         };
         return onEvent;
       },
-      [isPlainChat, onOpenPlanDocument, refreshSessionTokenUsage],
+      [isPlainChat, onOpenPlanDocument, refreshSessionTokenUsage, updateLiveSessionState],
     );
 
     const enqueueDispatcherRun = useCallback(
@@ -1266,33 +1446,30 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         const queued = previous
           .catch(() => undefined)
           .then(async () => {
-            const isCurrentSession = currentSessionIdRef.current === targetSessionId;
-            const runId = isCurrentSession ? ++activeRunRef.current : activeRunRef.current;
-
-            if (isCurrentSession) {
-              setHasPendingRun(true);
-              setIsLoading(true);
-              setStreamingSegments([]);
-              setLiveToolCalls([]);
-              setAssistantPlaceholder(null);
-              setRunError(null);
-              activeUsageStatsReceivedAtRef.current = Date.now();
-              setActiveUsageStats(createEmptyUsageStats());
-              setUsageClockNow(Date.now());
-            }
+            const runId = (dispatcherActiveRunIds.get(targetSessionId) ?? 0) + 1;
+            dispatcherActiveRunIds.set(targetSessionId, runId);
+            const now = Date.now();
+            updateLiveSessionState(targetSessionId, () => ({
+              ...createIdleLiveSessionState(),
+              hasPendingRun: true,
+              isLoading: true,
+              activeUsageStats: createEmptyUsageStats(),
+              activeUsageStatsReceivedAt: now,
+              usageClockNow: now,
+            }));
 
             const onEvent = createEventChannel(targetSessionId, runId);
 
             try {
               await runner(onEvent);
             } finally {
-              if (
-                currentSessionIdRef.current === targetSessionId &&
-                activeRunRef.current === runId
-              ) {
-                setHasPendingRun(false);
-                setIsLoading(false);
-                setActiveUsageStats(null);
+              if (dispatcherActiveRunIds.get(targetSessionId) === runId) {
+                updateLiveSessionState(targetSessionId, (state) => ({
+                  ...state,
+                  hasPendingRun: false,
+                  isLoading: false,
+                  activeUsageStats: null,
+                }));
               }
             }
           });
@@ -1307,7 +1484,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           }
         }
       },
-      [createEventChannel],
+      [createEventChannel, updateLiveSessionState],
     );
 
     const sendUserMessage = useCallback(
@@ -1322,7 +1499,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
         setInput("");
         setAttachedImages([]);
-        setPendingDispatches([]);
+        updateLiveSessionState(targetSessionId, (state) => ({
+          ...state,
+          pendingDispatches: [],
+        }));
         if (currentSessionIdRef.current === targetSessionId) {
           shouldStickToBottomRef.current = true;
           window.requestAnimationFrame(() => scrollMessageListToBottom());
@@ -1356,10 +1536,21 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           });
         } catch (err) {
           console.error("发送消息失败:", err);
-          setRunError(`${isPlainChat ? "聊天" : "调度智能体"}执行失败：${toErrorMessage(err)}`);
+          updateLiveSessionState(targetSessionId, (state) => ({
+            ...state,
+            runError: `${isPlainChat ? "聊天" : "调度智能体"}执行失败：${toErrorMessage(err)}`,
+          }));
         }
       },
-      [enqueueDispatcherRun, isPlainChat, mode, projectPath, scrollMessageListToBottom, sessionId],
+      [
+        enqueueDispatcherRun,
+        isPlainChat,
+        mode,
+        projectPath,
+        scrollMessageListToBottom,
+        sessionId,
+        updateLiveSessionState,
+      ],
     );
 
     const voiceInput = useDashScopeAsr({
@@ -1430,9 +1621,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           targetSessionId = sessionId,
           dispatchId?: string,
         ) => {
-          if (currentSessionIdRef.current === targetSessionId) {
-            setPendingDispatches([]);
-          }
+          updateLiveSessionState(targetSessionId, (state) => ({
+            ...state,
+            pendingDispatches: [],
+          }));
 
           try {
             if (isPlainChat) {
@@ -1450,7 +1642,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             });
           } catch (err) {
             console.error("dispatcher_continue_after_dispatch 失败:", err);
-            setRunError(`调度智能体继续执行失败：${toErrorMessage(err)}`);
+            updateLiveSessionState(targetSessionId, (state) => ({
+              ...state,
+              runError: `调度智能体继续执行失败：${toErrorMessage(err)}`,
+            }));
           }
         },
         applyRuntimeState: (state: DispatcherSessionRuntimeState) => {
@@ -1460,7 +1655,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           setActivePlanPath(state.activePlanPath ?? null);
         },
       }),
-      [enqueueDispatcherRun, isPlainChat, projectPath, sessionId],
+      [enqueueDispatcherRun, isPlainChat, projectPath, sessionId, updateLiveSessionState],
     );
 
     const handleKeyDown = useCallback(
@@ -1488,15 +1683,21 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         const agent = currentPendingDispatch?.agent ?? "claude";
         const pm = currentPendingDispatch?.permissionMode ?? "full_access";
         const description = currentPendingDispatch?.description ?? "未命名子任务";
-        setPendingDispatches((prev) => prev.slice(1));
+        updateLiveSessionState(sessionId, (state) => ({
+          ...state,
+          pendingDispatches: state.pendingDispatches.slice(1),
+        }));
         onDispatchApproved?.(dispatchId, agent, description, taskPrompt, pm, sessionId);
       },
-      [currentPendingDispatch, onDispatchApproved, sessionId],
+      [currentPendingDispatch, onDispatchApproved, sessionId, updateLiveSessionState],
     );
 
     const handleRejectDispatch = useCallback(
       (dispatchId: string) => {
-        setPendingDispatches((prev) => prev.slice(1));
+        updateLiveSessionState(sessionId, (state) => ({
+          ...state,
+          pendingDispatches: state.pendingDispatches.slice(1),
+        }));
         invoke<DispatcherSessionRuntimeState>("dispatcher_clear_checklist_dispatch", {
           sessionId,
           dispatchId,
@@ -1507,7 +1708,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           .catch(console.error);
         onDispatchRejected?.(dispatchId);
       },
-      [onDispatchRejected, sessionId],
+      [onDispatchRejected, sessionId, updateLiveSessionState],
     );
 
     const handleToggleAutoApprove = useCallback(async () => {
@@ -1540,10 +1741,13 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           setActivePlanPath(state.activePlanPath ?? null);
         } catch (err) {
           setMode(previousMode);
-          setRunError(`切换模式失败：${toErrorMessage(err)}`);
+          updateLiveSessionState(sessionId, (state) => ({
+            ...state,
+            runError: `切换模式失败：${toErrorMessage(err)}`,
+          }));
         }
       },
-      [mode, sessionId],
+      [mode, sessionId, updateLiveSessionState],
     );
 
     const handleModeToggle = useCallback(
@@ -1573,12 +1777,15 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           setPlanInteraction(null);
           await sendUserMessage(content, [], sessionId, "default");
         } catch (err) {
-          setRunError(`实施计划失败：${toErrorMessage(err)}`);
+          updateLiveSessionState(sessionId, (state) => ({
+            ...state,
+            runError: `实施计划失败：${toErrorMessage(err)}`,
+          }));
         } finally {
           setImplementingPlan(false);
         }
       },
-      [handleModeChange, sendUserMessage, sessionId],
+      [handleModeChange, sendUserMessage, sessionId, updateLiveSessionState],
     );
 
     const handleImplementPlanWithClearedContext = useCallback(
@@ -1592,12 +1799,15 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           setChecklist(null);
           await sendUserMessage(content, [], sessionId, "default");
         } catch (err) {
-          setRunError(`清除上下文后实施失败：${toErrorMessage(err)}`);
+          updateLiveSessionState(sessionId, (state) => ({
+            ...state,
+            runError: `清除上下文后实施失败：${toErrorMessage(err)}`,
+          }));
         } finally {
           setImplementingPlan(false);
         }
       },
-      [handleModeChange, sendUserMessage, sessionId],
+      [handleModeChange, sendUserMessage, sessionId, updateLiveSessionState],
     );
 
     const handleStayInPlanMode = useCallback(() => {
@@ -2525,7 +2735,14 @@ const styles = {
       : "0 8px 18px -10px rgba(0,0,0,0.12)",
     flexShrink: 0,
     marginTop: "2px",
+    overflow: "hidden",
   }),
+  messageAvatarImage: {
+    width: "100%",
+    height: "100%",
+    display: "block",
+    objectFit: "cover" as const,
+  },
   messageBubble: (isUser: boolean) => ({
     maxWidth: isUser ? "min(760px, calc(100% - 96px))" : "100%",
     minWidth: 0,

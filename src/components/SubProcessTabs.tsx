@@ -89,9 +89,9 @@ export function SubProcessTabs({
       </div>
 
       {/* Terminal content area */}
-      {activeSubProcess && (
-        <div style={styles.content}>
-          {activeSubProcess.status === "pending_approval" ? (
+      {(activeSubProcess || mountedTerminals.length > 0) && (
+        <div style={{ ...styles.content, display: activeSubProcess ? "flex" : "none" }}>
+          {activeSubProcess?.status === "pending_approval" ? (
             <div style={styles.terminalPlaceholder}>
               <span>⏳ 等待审批...</span>
             </div>

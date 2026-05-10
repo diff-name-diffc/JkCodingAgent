@@ -27,7 +27,8 @@ use crate::shared::TaskManager;
 const SESSION_TITLE_RECENT_DIALOGUES: usize = 3;
 
 pub struct DispatcherState {
-    agent: tokio::sync::Mutex<DispatcherAgent>,
+    config: DispatcherAgentConfig,
+    project_mcp_registry: ProjectMcpRegistry,
     subprocesses: Arc<DispatcherSubprocessRegistry>,
     db: DispatcherDb,
     active_runs: Mutex<HashMap<String, ActiveRunEntry>>,
@@ -52,17 +53,10 @@ impl DispatcherState {
         let config = DispatcherAgentConfig::load()?;
         let db = DispatcherDb::new(config.db_path.clone())?;
         let subprocesses = Arc::new(DispatcherSubprocessRegistry::default());
-        let mut agent =
-            DispatcherAgent::new(config, project_mcp_registry, Arc::clone(&subprocesses));
-
-        if let Ok(Some(settings)) = db.get_settings() {
-            agent.apply_settings(&settings);
-            agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
-            agent.set_context_debug(settings.context_debug);
-        }
 
         Ok(Self {
-            agent: tokio::sync::Mutex::new(agent),
+            config,
+            project_mcp_registry,
             subprocesses,
             db,
             active_runs: Mutex::new(HashMap::new()),
@@ -70,6 +64,22 @@ impl DispatcherState {
             title_generations: Mutex::new(HashMap::new()),
             next_title_generation: AtomicU64::new(1),
         })
+    }
+
+    fn build_run_agent(&self) -> DispatcherAgent {
+        let mut agent = DispatcherAgent::new(
+            self.config.clone(),
+            self.project_mcp_registry.clone(),
+            Arc::clone(&self.subprocesses),
+        );
+
+        if let Ok(Some(settings)) = self.db.get_settings() {
+            agent.apply_settings(&settings);
+            agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
+            agent.set_context_debug(settings.context_debug);
+        }
+
+        agent
     }
 
     fn begin_run(&self, workspace_id: &str) -> ActiveRunHandle {
@@ -495,15 +505,8 @@ pub async fn dispatcher_send_message(
             .map_err(|error| error.to_string())?;
     }
 
-    if let Ok(Some(settings)) = state.db.get_settings() {
-        let mut agent = state.agent.lock().await;
-        agent.apply_settings(&settings);
-        agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
-        agent.set_context_debug(settings.context_debug);
-    }
-
     let run_handle = state.begin_run(&workspace_id);
-    let agent = state.agent.lock().await;
+    let agent = state.build_run_agent();
     let result = agent
         .run(
             &state.db,
@@ -515,7 +518,6 @@ pub async fn dispatcher_send_message(
         )
         .await
         .map_err(|error| error.to_string());
-    drop(agent);
     state.finish_run(&workspace_id, run_handle.generation);
     spawn_session_title_update(&state, &app, &workspace_id, &content, title_generation);
     result
@@ -539,15 +541,8 @@ pub async fn dispatcher_send_plain_chat_message(
         .set_plan_interaction(&workspace_id, None)
         .map_err(|error| error.to_string())?;
 
-    if let Ok(Some(settings)) = state.db.get_settings() {
-        let mut agent = state.agent.lock().await;
-        agent.apply_settings(&settings);
-        agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
-        agent.set_context_debug(settings.context_debug);
-    }
-
     let run_handle = state.begin_run(&workspace_id);
-    let agent = state.agent.lock().await;
+    let agent = state.build_run_agent();
     let result = agent
         .run_plain_chat(
             &state.db,
@@ -558,7 +553,6 @@ pub async fn dispatcher_send_plain_chat_message(
         )
         .await
         .map_err(|error| error.to_string());
-    drop(agent);
     state.finish_run(&workspace_id, run_handle.generation);
     spawn_session_title_update(&state, &app, &workspace_id, &content, title_generation);
     result
@@ -726,10 +720,6 @@ pub async fn dispatcher_save_settings(
         )
         .map_err(|error| error.to_string())?;
 
-    let mut agent = state.agent.lock().await;
-    agent.apply_settings(&record);
-    agent.set_auto_approve_dispatch(record.auto_approve_dispatch);
-    agent.set_context_debug(record.context_debug);
     Ok(record)
 }
 
@@ -752,10 +742,6 @@ pub async fn dispatcher_set_auto_approve_dispatch(
         .db
         .set_auto_approve_dispatch(auto_approve_dispatch)
         .map_err(|error| error.to_string())?;
-    let mut agent = state.agent.lock().await;
-    agent.apply_settings(&record);
-    agent.set_auto_approve_dispatch(record.auto_approve_dispatch);
-    agent.set_context_debug(record.context_debug);
     Ok(record)
 }
 
@@ -769,8 +755,8 @@ pub async fn dispatcher_continue_after_dispatch(
     dispatch_id: Option<String>,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
-    let agent = state.agent.lock().await;
     let run_handle = state.begin_run(&workspace_id);
+    let agent = state.build_run_agent();
     let result = agent
         .continue_after_dispatch(
             &state.db,
@@ -784,7 +770,6 @@ pub async fn dispatcher_continue_after_dispatch(
         )
         .await
         .map_err(|error| error.to_string());
-    drop(agent);
     state.finish_run(&workspace_id, run_handle.generation);
     result
 }

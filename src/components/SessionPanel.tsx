@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Search, ChevronLeft, PanelLeftClose, Plus, Trash2 } from "lucide-react";
+import { Search, ChevronLeft, PanelLeftClose, Plus, Trash2, LoaderCircle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -7,6 +7,7 @@ import type { Project, ThemeMode, DispatcherSession } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
 import { BranchBar } from "./task-panel/BranchBar";
+import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
 import s from "../styles";
 
 function formatTime(timestampStr: string) {
@@ -37,10 +38,12 @@ export function SessionPanel({
   systemPrefersDark,
   onThemeModeChange,
   onToggleTheme,
+  subprocessRunningSessionIds = new Set<string>(),
 }: {
   project: Project;
   activeSessionId: string | null;
   onSelectSession: (id: string | null) => void;
+  subprocessRunningSessionIds?: Set<string>;
   onBack: () => void;
   onCollapse: () => void;
   isDark: boolean;
@@ -123,6 +126,9 @@ export function SessionPanel({
       cancelled = true;
     };
   }, [handleNewSession, onSelectSession, project.id]);
+
+  const sessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
+  const dispatcherRunningSessionIds = useDispatcherSessionRunningSet(sessionIds);
 
   async function handleDeleteSession(id: string) {
     const ok = await confirm("确定永久删除这个会话吗？", {
@@ -208,31 +214,41 @@ export function SessionPanel({
       {/* Session list */}
       <div style={s.taskListScroll}>
         {filtered.length === 0 && <div style={s.taskListEmpty}>没有找到会话</div>}
-        {filtered.map((session) => (
-          <div
-            key={session.id}
-            onClick={() => onSelectSession(session.id)}
-            style={{
-              ...s.taskCard,
-              background: activeSessionId === session.id ? "var(--bg-selected)" : "transparent",
-            }}
-          >
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={s.taskCardTitle}>{session.title}</div>
-              <div style={s.taskCardSub}>{formatTime(session.updatedAt)}</div>
-            </div>
-            <button
-              style={s.taskDeleteBtn}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDeleteSession(session.id);
+        {filtered.map((session) => {
+          const isRunning =
+            dispatcherRunningSessionIds.has(session.id) ||
+            subprocessRunningSessionIds.has(session.id);
+          return (
+            <div
+              key={session.id}
+              onClick={() => onSelectSession(session.id)}
+              style={{
+                ...s.taskCard,
+                background: activeSessionId === session.id ? "var(--bg-selected)" : "transparent",
               }}
-              title="删除会话"
             >
-              <Trash2 size={13} color="var(--text-muted)" />
-            </button>
-          </div>
-        ))}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={s.taskCardTitle}>{session.title}</div>
+                <div style={s.taskCardSub}>{formatTime(session.updatedAt)}</div>
+              </div>
+              <div style={s.taskCardActions}>
+                {isRunning && (
+                  <LoaderCircle size={13} className="spin" style={s.sessionRunningIcon} />
+                )}
+                <button
+                  style={s.taskDeleteBtn}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteSession(session.id);
+                  }}
+                  title="删除会话"
+                >
+                  <Trash2 size={13} color="var(--text-muted)" />
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       <div style={s.taskPanelFooter}>

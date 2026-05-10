@@ -56,6 +56,7 @@ export const LIGHT_THEME = {
 const HIGH_WATER = 128 * 1024; // 128 KB：超过时停止写入
 const LOW_WATER = 16 * 1024; // 16 KB：恢复写入
 const MAX_PENDING_BYTES = 2 * 1024 * 1024; // 2 MB：暂停期间最多缓存的数据
+const MAX_WRITE_CHUNK = 32 * 1024; // xterm 大块写入会卡 UI，分片让恢复和直播都能喘气
 const INPUT_FLUSH_DELAY_MS = 8;
 
 interface SmartWriter {
@@ -107,13 +108,10 @@ export function createSmartWriter(term: Terminal): SmartWriter {
     compactPendingQueue();
   }
 
-  function enqueuePending(data: string, callback?: () => void) {
+  function enqueuePending(data: string, callback?: () => void, limitBytes = true) {
     state.pendingChunks.push({ data, callback });
     state.pendingBytes += data.length;
-    while (
-      state.pendingBytes > MAX_PENDING_BYTES &&
-      state.pendingHead < state.pendingChunks.length
-    ) {
+    while (limitBytes && state.pendingBytes > MAX_PENDING_BYTES && state.pendingHead < state.pendingChunks.length) {
       dropOldestPendingChunk();
     }
   }
@@ -150,6 +148,14 @@ export function createSmartWriter(term: Terminal): SmartWriter {
   }
 
   function write(data: string, callback?: () => void) {
+    if (data.length > MAX_WRITE_CHUNK) {
+      for (let offset = 0; offset < data.length; offset += MAX_WRITE_CHUNK) {
+        const end = offset + MAX_WRITE_CHUNK;
+        enqueuePending(data.slice(offset, end), end >= data.length ? callback : undefined, false);
+      }
+      drainPending();
+      return;
+    }
     if (state.paused || state.selectionPaused || state.watermark >= HIGH_WATER) {
       if (state.watermark >= HIGH_WATER) state.paused = true;
       enqueuePending(data, callback);

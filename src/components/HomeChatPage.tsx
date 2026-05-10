@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { MessageCircle, Plus, Search, Trash2 } from "lucide-react";
+import { LoaderCircle, MessageCircle, Plus, Search, Trash2 } from "lucide-react";
 import type { DispatcherSession, ThemeMode } from "../types";
 import { DispatcherChat } from "./DispatcherChat";
 import { AppSettingsDialog } from "./AppSettingsDialog";
+import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
 import s from "../styles";
 
 const CHAT_SCOPE_ID = "__global_chat__";
@@ -65,6 +66,9 @@ export function HomeChatPage({
       creatingSessionRef.current = false;
     }
   }, []);
+
+  const sessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
+  const runningSessionIds = useDispatcherSessionRunningSet(sessionIds);
 
   useEffect(() => {
     const unlisten = listen<DispatcherSession>("dispatcher-session-updated", (event) => {
@@ -188,16 +192,21 @@ export function HomeChatPage({
                 <div style={s.taskCardTitle}>{session.title}</div>
                 <div style={s.taskCardSub}>{formatTime(session.updatedAt)}</div>
               </div>
-              <button
-                style={s.taskDeleteBtn}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  handleDeleteSession(session.id);
-                }}
-                title="删除聊天"
-              >
-                <Trash2 size={13} color="var(--text-muted)" />
-              </button>
+              <div style={s.taskCardActions}>
+                {runningSessionIds.has(session.id) && (
+                  <LoaderCircle size={13} className="spin" style={s.sessionRunningIcon} />
+                )}
+                <button
+                  style={s.taskDeleteBtn}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleDeleteSession(session.id);
+                  }}
+                  title="删除聊天"
+                >
+                  <Trash2 size={13} color="var(--text-muted)" />
+                </button>
+              </div>
             </div>
           ))}
         </div>

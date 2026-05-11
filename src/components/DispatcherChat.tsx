@@ -2744,7 +2744,8 @@ const styles = {
     objectFit: "cover" as const,
   },
   messageBubble: (isUser: boolean) => ({
-    maxWidth: isUser ? "min(760px, calc(100% - 96px))" : "100%",
+    width: isUser ? "fit-content" : "100%",
+    maxWidth: "100%",
     minWidth: 0,
     padding: "14px 16px",
     borderRadius: isUser ? "22px 22px 8px 22px" : "22px 22px 22px 8px",
@@ -2758,11 +2759,13 @@ const styles = {
       : "0 16px 32px rgba(15, 23, 42, 0.05)",
     fontSize: "14px",
     lineHeight: "1.7",
-    wordBreak: "break-word" as const,
+    overflowWrap: "break-word" as const,
+    wordBreak: "normal" as const,
     userSelect: "text" as const,
     WebkitUserSelect: "text" as const,
   }),
   messageBubbleColumn: (isUser: boolean) => ({
+    width: "min(760px, calc(100% - 96px))",
     maxWidth: "min(760px, calc(100% - 96px))",
     minWidth: 0,
     display: "flex",
@@ -2816,6 +2819,7 @@ const styles = {
     fontFamily: "var(--font-ui)",
   },
   assistantTurnStack: {
+    width: "min(760px, calc(100% - 96px))",
     maxWidth: "min(760px, calc(100% - 96px))",
     display: "flex",
     flexDirection: "column" as const,

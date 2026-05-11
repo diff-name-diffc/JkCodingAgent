@@ -50,10 +50,10 @@ anyhow = "1"
 ropey = "1"
 sha2 = "0.10"
 pdfium-render = "0.9"
-zip = "2"
+zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
 calamine = "0.34.0"
 docx-rs = "0.4.20"
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 lancedb = "0.27.2"
 arrow-array = "57"
 arrow-schema = "57"

@@ -3025,8 +3025,7 @@ const styles = {
     zIndex: 100,
   },
   approvalDialog: {
-    width: "90%",
-    maxWidth: "520px",
+    width: "min(560px, calc(100% - 16px))",
     background: "var(--bg-card)",
     border: "1px solid var(--border-medium)",
     borderRadius: "16px",

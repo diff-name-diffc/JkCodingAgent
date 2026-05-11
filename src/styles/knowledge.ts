@@ -390,8 +390,7 @@ export const knowledge = {
     background: "rgba(0, 0, 0, 0.34)",
   },
   knowledgeDialogBox: {
-    width: 380,
-    maxWidth: "calc(100vw - 48px)",
+    width: "min(460px, calc(100vw - 16px))",
     display: "flex",
     flexDirection: "column",
     gap: 14,

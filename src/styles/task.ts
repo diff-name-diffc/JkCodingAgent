@@ -114,7 +114,7 @@ export const task = {
     whiteSpace: "nowrap" as const,
   },
   branchDialogBox: {
-    width: 360,
+    width: "min(460px, calc(100vw - 16px))",
     background: "var(--bg-card)",
     border: "1px solid var(--border-medium)",
     borderRadius: 12,

@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 const DEFAULT_DASHSCOPE_WS_URL: &str = "wss://dashscope.aliyuncs.com/api-ws/v1/inference";
 const DEFAULT_DASHSCOPE_INTL_WS_URL: &str = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference";
+const MAX_PENDING_AUDIO_CHUNKS: usize = 256;
 
 #[derive(Clone, Default)]
 pub struct VoiceAsrManager {
@@ -201,6 +202,11 @@ async fn run_voice_asr_session_inner(
                         if state.started {
                             send_audio_chunk(&mut writer, &audio_base64).await?;
                         } else {
+                            if state.pending_audio.len() >= MAX_PENDING_AUDIO_CHUNKS {
+                                return Err(format!(
+                                    "实时识别启动过慢，待发送音频已达到 {MAX_PENDING_AUDIO_CHUNKS} 块上限"
+                                ));
+                            }
                             state.pending_audio.push(audio_base64);
                         }
                     }

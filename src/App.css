@@ -622,6 +622,18 @@ body {
   word-break: normal;
   font-family: var(--font-ui);
 }
+
+.dispatcher-message-list,
+.dispatcher-message-list :where(p, li, pre, code, span, div, table, th, td, blockquote) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.dispatcher-message-list :where(button, button *) {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .markdown-surface--chat {
   font-size: 14px;
   line-height: 1.72;

@@ -49,9 +49,7 @@ pub(crate) fn save_stats_cache(
     collection_root: &Path,
     stats: &super::vector_store::LanceVectorStats,
 ) -> Result<()> {
-    let path = collection_root
-        .join(".llm-wiki")
-        .join("stats-cache.json");
+    let path = collection_root.join(".llm-wiki").join("stats-cache.json");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -63,20 +61,15 @@ pub(crate) fn save_stats_cache(
 pub(crate) fn load_stats_cache(
     collection_root: &Path,
 ) -> Option<super::vector_store::LanceVectorStats> {
-    let path = collection_root
-        .join(".llm-wiki")
-        .join("stats-cache.json");
+    let path = collection_root.join(".llm-wiki").join("stats-cache.json");
     let content = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&content).ok()
 }
 
 #[tauri::command]
-pub async fn knowledge_vector_stats(
-    collection_id: String,
-) -> Result<KnowledgeVectorStats, String> {
+pub async fn knowledge_vector_stats(collection_id: String) -> Result<KnowledgeVectorStats, String> {
     let collection = spawn_blocking_string(move || find_collection(&collection_id)).await?;
-    let root =
-        collection_root_checked(&collection).map_err(|error| error.to_string())?;
+    let root = collection_root_checked(&collection).map_err(|error| error.to_string())?;
     let stats = super::vector_store::stats(&root)
         .await
         .map_err(|error| error.to_string())?;

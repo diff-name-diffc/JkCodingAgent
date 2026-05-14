@@ -2,7 +2,10 @@ use std::fs;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tokio::task;
+use tokio::{
+    task,
+    time::{timeout, Duration},
+};
 
 use super::common::{
     boolish_arg, collect_entries, non_empty_string_array_arg, render_labeled_sections,
@@ -31,6 +34,8 @@ struct ReadFileTool;
 struct WriteFileTool;
 struct EditFileTool;
 struct ListDirTool;
+
+const FILE_IO_TIMEOUT_SECS: u64 = 30;
 
 #[async_trait]
 impl AgentTool for ReadFileTool {
@@ -71,23 +76,27 @@ impl AgentTool for ReadFileTool {
         let limit = usize_arg(args, "limit").unwrap_or(2000).max(1);
         let context = context.clone();
 
-        match task::spawn_blocking(move || {
-            let sections = paths
-                .iter()
-                .map(|path| {
-                    (
-                        format!("read_file path={path}"),
-                        read_file_lines(path, offset, limit, &context),
-                    )
-                })
-                .collect::<Vec<_>>();
+        match timeout(
+            Duration::from_secs(FILE_IO_TIMEOUT_SECS),
+            task::spawn_blocking(move || {
+                let sections = paths
+                    .iter()
+                    .map(|path| {
+                        (
+                            format!("read_file path={path}"),
+                            read_file_lines(path, offset, limit, &context),
+                        )
+                    })
+                    .collect::<Vec<_>>();
 
-            render_single_or_grouped_sections(sections)
-        })
+                render_single_or_grouped_sections(sections)
+            }),
+        )
         .await
         {
-            Ok(output) => output,
-            Err(error) => format!("读取文件任务失败：{error}"),
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => format!("读取文件任务失败：{error}"),
+            Err(_) => format!("读取文件超时（{FILE_IO_TIMEOUT_SECS} 秒）"),
         }
     }
 }
@@ -125,22 +134,30 @@ impl AgentTool for WriteFileTool {
             return "错误：缺少必填参数 content".to_string();
         };
 
-        let file_path = match resolve_path(context, &path) {
-            Ok(path) => path,
-            Err(message) => return message,
-        };
-        if let Some(parent) = file_path.parent() {
-            if let Err(error) = fs::create_dir_all(parent) {
-                return format!("创建父目录失败：{error}");
+        let context = context.clone();
+        match tokio::task::spawn_blocking(move || {
+            let file_path = match resolve_path(&context, &path) {
+                Ok(path) => path,
+                Err(message) => return message,
+            };
+            if let Some(parent) = file_path.parent() {
+                if let Err(error) = fs::create_dir_all(parent) {
+                    return format!("创建父目录失败：{error}");
+                }
             }
-        }
-        match fs::write(&file_path, &content) {
-            Ok(()) => format!(
-                "写入成功：{} 字符 -> {}",
-                content.len(),
-                file_path.display()
-            ),
-            Err(error) => format!("写入文件失败：{error}"),
+            match fs::write(&file_path, &content) {
+                Ok(()) => format!(
+                    "写入成功：{} 字符 -> {}",
+                    content.len(),
+                    file_path.display()
+                ),
+                Err(error) => format!("写入文件失败：{error}"),
+            }
+        })
+        .await
+        {
+            Ok(output) => output,
+            Err(error) => format!("写入文件任务失败：{error}"),
         }
     }
 }
@@ -184,29 +201,37 @@ impl AgentTool for EditFileTool {
         };
         let replace_all = boolish_arg(args, "replace_all").unwrap_or(false);
 
-        let file_path = match resolve_path(context, &path) {
-            Ok(path) => path,
-            Err(message) => return message,
-        };
-        let Ok(content) = fs::read_to_string(&file_path) else {
-            return format!("错误：文件不存在或不可读：{path}");
-        };
-        if !content.contains(&old_text) {
-            return format!("错误：在 {path} 中未找到 old_text");
-        }
-        if !replace_all && content.matches(&old_text).count() > 1 {
-            return "错误：old_text 命中多处，请补充上下文或设置 replace_all=true".to_string();
-        }
+        let context = context.clone();
+        match tokio::task::spawn_blocking(move || {
+            let file_path = match resolve_path(&context, &path) {
+                Ok(path) => path,
+                Err(message) => return message,
+            };
+            let Ok(content) = fs::read_to_string(&file_path) else {
+                return format!("错误：文件不存在或不可读：{path}");
+            };
+            if !content.contains(&old_text) {
+                return format!("错误：在 {path} 中未找到 old_text");
+            }
+            if !replace_all && content.matches(&old_text).count() > 1 {
+                return "错误：old_text 命中多处，请补充上下文或设置 replace_all=true".to_string();
+            }
 
-        let updated = if replace_all {
-            content.replace(&old_text, &new_text)
-        } else {
-            content.replacen(&old_text, &new_text, 1)
-        };
+            let updated = if replace_all {
+                content.replace(&old_text, &new_text)
+            } else {
+                content.replacen(&old_text, &new_text, 1)
+            };
 
-        match fs::write(&file_path, updated) {
-            Ok(()) => format!("编辑成功：{}", file_path.display()),
-            Err(error) => format!("编辑文件失败：{error}"),
+            match fs::write(&file_path, updated) {
+                Ok(()) => format!("编辑成功：{}", file_path.display()),
+                Err(error) => format!("编辑文件失败：{error}"),
+            }
+        })
+        .await
+        {
+            Ok(output) => output,
+            Err(error) => format!("编辑文件任务失败：{error}"),
         }
     }
 }
@@ -295,6 +320,12 @@ fn read_file_lines(path: &str, offset: usize, limit: usize, context: &ToolContex
         return format!("错误：{path} 是目录，不是文件");
     }
 
+    match fs::metadata(&file_path) {
+        Ok(meta) if meta.len() > 2 * 1024 * 1024 => {
+            return format!("错误：文件过大（{} bytes），超过 2MB 读取限制", meta.len());
+        }
+        _ => {}
+    }
     match fs::read_to_string(&file_path) {
         Ok(content) => {
             let start = offset.saturating_sub(1);
@@ -357,9 +388,13 @@ mod tests {
 
     fn tool_context(workspace: std::path::PathBuf) -> ToolContext {
         ToolContext {
+            workspace_id: "test-workspace".to_string(),
             workspace,
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
+            app_handle: None,
+            llm_provider: None,
+            vision_model: String::new(),
         }
     }
 

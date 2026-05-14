@@ -102,6 +102,12 @@ export function useDashScopeAsr({
   const stoppedRef = useRef(false);
   const onTranscriptReadyRef = useRef(onTranscriptReady);
   onTranscriptReadyRef.current = onTranscriptReady;
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      unmountedRef.current = true;
+    };
+  }, []);
 
   const cleanupMedia = useCallback(async () => {
     const processor = processorRef.current;
@@ -290,6 +296,7 @@ export function useDashScopeAsr({
           finishingRef.current = true;
           void (async () => {
             await finalizeRecording("finish");
+            if (unmountedRef.current) return;
             await onTranscriptReadyRef.current(text);
           })();
           break;

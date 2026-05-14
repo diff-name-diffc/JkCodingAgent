@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use super::collection::collection_root_checked;
 use super::embed::fetch_embedding;
 use super::pages::{list_pages_inner, parse_page_meta, strip_frontmatter};
-use super::types::{KnowledgeSearchResult, KnowledgePageSummary};
+use super::types::{KnowledgePageSummary, KnowledgeSearchResult};
 use super::utils::spawn_blocking_string;
 
 fn token_rank_pages(
@@ -161,7 +161,10 @@ async fn search_collection_inner(
             .unwrap_or(0.0);
         let rrf = token_rank_no.map(rrf_score).unwrap_or(0.0)
             + vector_rank_no.map(rrf_score).unwrap_or(0.0);
-        let content = content_cache.get(&page_path).map(String::as_str).unwrap_or("");
+        let content = content_cache
+            .get(&page_path)
+            .map(String::as_str)
+            .unwrap_or("");
         let meta = parse_page_meta(content, std::path::Path::new(&page_path));
         let snippet = vector_scores
             .get(&page_path)
@@ -213,7 +216,10 @@ pub(crate) async fn search_collections(
     let collection_count = if allowed.is_empty() {
         collections.len()
     } else {
-        collections.iter().filter(|c| allowed.contains(&c.id)).count()
+        collections
+            .iter()
+            .filter(|c| allowed.contains(&c.id))
+            .count()
     };
     let per_collection = if collection_count == 0 {
         return Ok(Vec::new());

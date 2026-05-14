@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { LoaderCircle, MessageCircle, Plus, Search, Trash2 } from "lucide-react";
-import type { DispatcherSession, ThemeMode } from "../types";
+import { LoaderCircle, MessageCircle, MonitorDot, Plus, Search, Trash2 } from "lucide-react";
+import type { BrowserStatus, DispatcherSession, ThemeMode } from "../types";
 import { DispatcherChat } from "./DispatcherChat";
 import { AppSettingsDialog } from "./AppSettingsDialog";
+import { BrowserPanel } from "./BrowserPanel";
+import { useDockedBrowserPanel } from "../hooks/useDockedBrowserPanel";
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
 import s from "../styles";
 
@@ -43,6 +45,8 @@ export function HomeChatPage({
   const [sessions, setSessions] = useState<DispatcherSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showBrowserPanel, setShowBrowserPanel] = useState(false);
+  const browserPanel = useDockedBrowserPanel("nezha.chat.browserPanelWidth");
   const creatingSessionRef = useRef(false);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
@@ -82,6 +86,21 @@ export function HomeChatPage({
           : [updatedSession, ...prev];
         return sortSessionsByUpdatedAt(next);
       });
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<BrowserStatus>("browser-status", (event) => {
+      if (
+        event.payload.sessionId === activeSessionIdRef.current &&
+        event.payload.state !== "closed"
+      ) {
+        setShowBrowserPanel(true);
+      }
     });
 
     return () => {
@@ -173,6 +192,14 @@ export function HomeChatPage({
             <Plus size={14} strokeWidth={2.5} />
             新建聊天
           </button>
+          <button
+            style={s.chatNewSessionBtn}
+            onClick={() => setShowBrowserPanel((value) => !value)}
+            title="CloakBrowser"
+          >
+            <MonitorDot size={14} strokeWidth={2.5} />
+            浏览器
+          </button>
         </div>
 
         <div style={s.taskDivider} />
@@ -224,6 +251,31 @@ export function HomeChatPage({
           <div style={s.chatEmptyPane}>正在创建聊天...</div>
         )}
       </div>
+
+      {showBrowserPanel && (
+        <div style={{ position: "relative", display: "flex", flexShrink: 0 }}>
+          <div
+            onMouseDown={browserPanel.handleResizeStart}
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: 5,
+              cursor: "col-resize",
+              zIndex: 10,
+            }}
+          />
+          <BrowserPanel
+            sessionId={activeSessionId}
+            width={browserPanel.effectiveWidth}
+            active={showBrowserPanel}
+            expanded={browserPanel.expanded}
+            onToggleExpanded={browserPanel.toggleExpanded}
+            onClose={() => setShowBrowserPanel(false)}
+          />
+        </div>
+      )}
 
       {showSettings && (
         <AppSettingsDialog

@@ -87,6 +87,25 @@ export interface ProjectMcpStatus {
   configError?: string;
 }
 
+export interface BrowserStatus {
+  sessionId: string;
+  state: "booting" | "starting" | "downloading" | "launching" | "ready" | "closed" | string;
+  url?: string | null;
+  message?: string | null;
+}
+
+export interface BrowserFrameEvent {
+  sessionId: string;
+  data: string;
+  width: number;
+  height: number;
+}
+
+export interface BrowserLogEvent {
+  sessionId: string;
+  message: string;
+}
+
 export function isActiveTaskStatus(status: TaskStatus): boolean {
   return status === "pending" || status === "running" || status === "input_required";
 }
@@ -146,6 +165,8 @@ export interface DispatcherMessage {
   workspaceId: string;
   role: "user" | "assistant" | "tool";
   content: string;
+  thinkingContent?: string | null;
+  thinkingElapsedMs?: number | null;
   toolCallId?: string;
   toolName?: string;
   toolResultMode?: DispatcherToolResultMode;
@@ -270,6 +291,10 @@ export type DispatcherAgentEvent =
       data: { fromModel: string; toModel: string; reason: string };
     }
   | { event: "assistantDelta"; data: { messageId: string; delta: string } }
+  | {
+      event: "assistantThinkingDelta";
+      data: { messageId: string; delta: string; elapsedMs: number };
+    }
   | { event: "assistantMessage"; data: { message: DispatcherMessage } }
   | {
       event: "runUsageUpdated";

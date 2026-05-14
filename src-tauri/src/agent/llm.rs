@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Context, Result};
 use futures::StreamExt;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -102,7 +102,10 @@ pub struct RequestedToolCall {
 pub struct LlmResponse {
     pub status_code: u16,
     pub content: String,
+    pub thinking_content: String,
+    pub thinking_elapsed_ms: u64,
     pub tool_calls: Vec<RequestedToolCall>,
+    pub raw_response: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<LlmUsage>,
 }
@@ -129,6 +132,8 @@ pub struct LlmRequestBodySnapshot {
     pub temperature: f32,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
@@ -144,9 +149,19 @@ pub struct LlmResponseSnapshot {
 pub struct LlmResponseBodySnapshot {
     pub model: String,
     pub content: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub thinking_content: String,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub thinking_elapsed_ms: u64,
     pub tool_calls: Vec<RequestedToolCall>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub raw_response: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<LlmUsage>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -200,7 +215,10 @@ impl OpenAiCompatProvider {
         temperature: f32,
     ) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .expect("build http client"),
             api_key,
             api_base,
             model,
@@ -227,6 +245,7 @@ impl OpenAiCompatProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
+        enable_thinking: bool,
     ) -> LlmRequestSnapshot {
         LlmRequestSnapshot {
             method: "POST".to_string(),
@@ -241,6 +260,7 @@ impl OpenAiCompatProvider {
                 max_tokens: self.max_tokens,
                 temperature: self.temperature,
                 stream: true,
+                enable_thinking: enable_thinking.then_some(true),
                 stream_options: Some(StreamOptions {
                     include_usage: true,
                 }),
@@ -259,7 +279,10 @@ impl OpenAiCompatProvider {
             body: LlmResponseBodySnapshot {
                 model: self.model.clone(),
                 content: response.content.clone(),
+                thinking_content: response.thinking_content.clone(),
+                thinking_elapsed_ms: response.thinking_elapsed_ms,
                 tool_calls: response.tool_calls.clone(),
+                raw_response: response.raw_response.clone(),
                 usage: response.usage.clone(),
             },
         }
@@ -271,7 +294,28 @@ impl OpenAiCompatProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
         enable_multimodal: bool,
+        on_delta: impl FnMut(&str),
+    ) -> Result<LlmResponse> {
+        self.chat_stream_with_thinking(
+            messages,
+            tools,
+            enable_multimodal,
+            false,
+            on_delta,
+            |_, _| {},
+        )
+        .await
+    }
+
+    /// Streaming chat completion with optional model-side thinking enabled.
+    pub async fn chat_stream_with_thinking(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+        enable_multimodal: bool,
+        enable_thinking: bool,
         mut on_delta: impl FnMut(&str),
+        mut on_thinking_delta: impl FnMut(&str, u64),
     ) -> Result<LlmResponse> {
         if !self.is_configured() {
             return Err(anyhow!("LLM API Key 尚未配置。"));
@@ -279,13 +323,14 @@ impl OpenAiCompatProvider {
 
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
         let api_messages = build_api_messages(messages, enable_multimodal);
-        let request = StreamChatRequest {
+        let mut request = StreamChatRequest {
             model: &self.model,
             messages: &api_messages,
             max_tokens: self.max_tokens,
             temperature: self.temperature,
             tools: if tools.is_empty() { None } else { Some(tools) },
             stream: true,
+            enable_thinking: enable_thinking.then_some(true),
             stream_options: Some(StreamOptions {
                 include_usage: true,
             }),
@@ -293,14 +338,50 @@ impl OpenAiCompatProvider {
 
         let response = self
             .client
-            .post(url)
+            .post(&url)
             .bearer_auth(&self.api_key)
             .json(&request)
             .send()
             .await
             .context("发送流式对话请求失败")?;
 
-        let status = response.status();
+        let mut status = response.status();
+        let response = if status.is_success() {
+            response
+        } else {
+            let body = response.text().await.context("读取 LLM 错误响应失败")?;
+            if should_retry_without_stream_options(status, &body, request.stream_options.is_some())
+            {
+                request.stream_options = None;
+                let retry_response = self
+                    .client
+                    .post(&url)
+                    .bearer_auth(&self.api_key)
+                    .json(&request)
+                    .send()
+                    .await
+                    .context("发送无 stream_options 的流式对话重试请求失败")?;
+                status = retry_response.status();
+                if status.is_success() {
+                    retry_response
+                } else {
+                    let retry_body = retry_response
+                        .text()
+                        .await
+                        .context("读取 LLM 重试错误响应失败")?;
+                    return Err(anyhow!(
+                        "LLM 请求失败，HTTP {}：{}；去除 stream_options 后仍失败，HTTP {}：{}",
+                        StatusCode::BAD_REQUEST,
+                        body,
+                        status,
+                        retry_body
+                    ));
+                }
+            } else {
+                return Err(anyhow!("LLM 请求失败，HTTP {}：{}", status, body));
+            }
+        };
+
         if !status.is_success() {
             let body = response.text().await.context("读取 LLM 错误响应失败")?;
             return Err(anyhow!("LLM 请求失败，HTTP {}：{}", status, body));
@@ -309,12 +390,19 @@ impl OpenAiCompatProvider {
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
         let mut content = String::new();
+        let mut thinking_content = String::new();
+        let mut thinking_started_at: Option<std::time::Instant> = None;
+        let mut thinking_elapsed_ms = 0_u64;
+        let mut raw_response = String::new();
         let mut usage: Option<LlmUsage> = None;
         // index -> (id, name, accumulated_arguments)
         let mut tc_map: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
 
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.context("读取流式响应分片失败")?;
+            if buffer.len() > 1_000_000 {
+                return Err(anyhow!("SSE 行超过最大缓冲区大小"));
+            }
             buffer.push_str(&String::from_utf8_lossy(&bytes));
 
             // Process complete lines from the buffer
@@ -333,6 +421,7 @@ impl OpenAiCompatProvider {
                 if data == "[DONE]" {
                     break;
                 }
+                append_raw_response(&mut raw_response, data);
 
                 let chunk: StreamChunk = serde_json::from_str(data)
                     .with_context(|| format!("解析 LLM 流式响应失败：{data}"))?;
@@ -346,6 +435,16 @@ impl OpenAiCompatProvider {
                 let Some(choice) = choices.first() else {
                     continue;
                 };
+
+                if let Some(reasoning) = choice.delta.thinking_delta() {
+                    if !reasoning.is_empty() {
+                        let started_at =
+                            thinking_started_at.get_or_insert_with(std::time::Instant::now);
+                        thinking_elapsed_ms = started_at.elapsed().as_millis() as u64;
+                        thinking_content.push_str(reasoning);
+                        on_thinking_delta(reasoning, thinking_elapsed_ms);
+                    }
+                }
 
                 // Content delta
                 if let Some(c) = &choice.delta.content {
@@ -376,16 +475,84 @@ impl OpenAiCompatProvider {
             }
         }
 
+        let (visible_content, tagged_thinking) = split_tagged_thinking(&content);
+        if !tagged_thinking.trim().is_empty() {
+            if !thinking_content.trim().is_empty() {
+                thinking_content.push_str("\n\n");
+            }
+            thinking_content.push_str(tagged_thinking.trim());
+        }
+
         // Build final tool calls from accumulated fragments
         let tool_calls = build_requested_tool_calls(tc_map)?;
 
         Ok(LlmResponse {
             status_code: status.as_u16(),
-            content,
+            content: visible_content,
+            thinking_content,
+            thinking_elapsed_ms,
             tool_calls,
+            raw_response,
             usage,
         })
     }
+}
+
+fn split_tagged_thinking(content: &str) -> (String, String) {
+    let lower = content.to_ascii_lowercase();
+    let mut visible = String::new();
+    let mut thinking_blocks = Vec::new();
+    let mut cursor = 0usize;
+
+    while let Some(start_rel) = lower[cursor..].find("<think>") {
+        let start = cursor + start_rel;
+        let body_start = start + "<think>".len();
+        let Some(end_rel) = lower[body_start..].find("</think>") else {
+            break;
+        };
+        let end = body_start + end_rel;
+        let tag_end = end + "</think>".len();
+
+        visible.push_str(&content[cursor..start]);
+        let thinking = content[body_start..end].trim();
+        if !thinking.is_empty() {
+            thinking_blocks.push(thinking.to_string());
+        }
+        cursor = tag_end;
+    }
+
+    visible.push_str(&content[cursor..]);
+
+    (visible.trim().to_string(), thinking_blocks.join("\n\n"))
+}
+
+const MAX_RAW_RESPONSE_CHARS: usize = 20_000;
+
+fn append_raw_response(raw_response: &mut String, data: &str) {
+    if raw_response.chars().count() >= MAX_RAW_RESPONSE_CHARS {
+        return;
+    }
+    if !raw_response.is_empty() {
+        raw_response.push('\n');
+    }
+    raw_response.push_str(data);
+    *raw_response = truncate_for_display(
+        raw_response,
+        MAX_RAW_RESPONSE_CHARS,
+        "\n...[LLM 原始响应已截断]",
+    );
+}
+
+fn should_retry_without_stream_options(
+    status: StatusCode,
+    response_body: &str,
+    has_stream_options: bool,
+) -> bool {
+    has_stream_options
+        && status == StatusCode::BAD_REQUEST
+        && (response_body.contains("Required body invalid")
+            || response_body.contains("stream_options")
+            || response_body.contains("request body"))
 }
 
 fn build_requested_tool_calls(
@@ -631,6 +798,8 @@ struct StreamChatRequest<'a> {
     temperature: f32,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    enable_thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a [ToolDefinition]>,
@@ -658,7 +827,19 @@ struct StreamChoice {
 #[derive(Deserialize)]
 struct StreamDelta {
     content: Option<String>,
+    reasoning_content: Option<String>,
+    reasoning: Option<String>,
+    thinking: Option<String>,
     tool_calls: Option<Vec<StreamToolCall>>,
+}
+
+impl StreamDelta {
+    fn thinking_delta(&self) -> Option<&str> {
+        self.reasoning_content
+            .as_deref()
+            .or(self.reasoning.as_deref())
+            .or(self.thinking.as_deref())
+    }
 }
 
 #[derive(Deserialize)]
@@ -678,8 +859,11 @@ struct StreamFunctionCall {
 mod tests {
     use std::collections::BTreeMap;
 
+    use reqwest::StatusCode;
+
     use super::{
-        build_api_message_content, build_requested_tool_calls, messages_contain_inline_images,
+        append_raw_response, build_api_message_content, build_requested_tool_calls,
+        messages_contain_inline_images, should_retry_without_stream_options, split_tagged_thinking,
         ApiMessageContent, ApiMessageContentPart, ChatMessage, StreamChunk,
     };
 
@@ -706,6 +890,67 @@ mod tests {
         assert_eq!(usage.completion_tokens, 45);
         assert_eq!(usage.total_tokens, 366);
         assert_eq!(usage.cached_tokens(), 128);
+    }
+
+    #[test]
+    fn stream_chunk_supports_reasoning_content_delta() {
+        let chunk = serde_json::from_str::<StreamChunk>(
+            r#"{
+                "choices": [{
+                    "delta": {
+                        "reasoning_content": "先拆问题",
+                        "content": null
+                    }
+                }]
+            }"#,
+        )
+        .expect("parse reasoning chunk");
+
+        let delta = &chunk.choices.first().expect("choice").delta;
+        assert_eq!(delta.thinking_delta(), Some("先拆问题"));
+    }
+
+    #[test]
+    fn split_tagged_thinking_removes_complete_think_blocks() {
+        let (visible, thinking) =
+            split_tagged_thinking("开头\n<think>先拆问题</think>\n结论\n<THINK>再校验</THINK>");
+
+        assert_eq!(visible, "开头\n\n结论");
+        assert_eq!(thinking, "先拆问题\n\n再校验");
+    }
+
+    #[test]
+    fn retries_body_format_errors_without_stream_options_only_when_relevant() {
+        assert!(should_retry_without_stream_options(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"Required body invalid, please check the request body format."}}"#,
+            true,
+        ));
+        assert!(!should_retry_without_stream_options(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"Required body invalid, please check the request body format."}}"#,
+            false,
+        ));
+        assert!(!should_retry_without_stream_options(
+            StatusCode::UNAUTHORIZED,
+            r#"{"error":{"message":"Required body invalid"}}"#,
+            true,
+        ));
+    }
+
+    #[test]
+    fn keeps_raw_stream_payload_for_diagnostics() {
+        let mut raw_response = String::new();
+
+        append_raw_response(&mut raw_response, r#"{"choices":[]}"#);
+        append_raw_response(
+            &mut raw_response,
+            r#"{"usage":{"prompt_tokens":1,"completion_tokens":0,"total_tokens":1}}"#,
+        );
+
+        assert!(raw_response.contains(r#""choices":[]"#));
+        assert!(raw_response.contains(r#""usage""#));
+        assert_eq!(raw_response.lines().count(), 2);
     }
 
     #[test]

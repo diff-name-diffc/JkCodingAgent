@@ -12,6 +12,7 @@ use super::llm::{ChatMessage, LlmUsage, OutboundToolCall};
 use super::summary::ToolArtifactDraft;
 
 const MAX_LLM_DIALOGUES: usize = 5;
+const MAX_DIALOGUE_QUERY_LIMIT: usize = 50;
 const DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS: u64 = 1_000_000;
 pub(crate) const TOOL_RETRY_CONTEXT_PREFIX: &str = "[工具调用失败，已交回模型修正重试]";
 
@@ -201,6 +202,8 @@ pub struct DispatcherMessageRecord {
     pub workspace_id: String,
     pub role: String,
     pub content: String,
+    pub thinking_content: Option<String>,
+    pub thinking_elapsed_ms: Option<u64>,
     #[serde(skip_serializing)]
     pub context_payload: Option<String>,
     pub tool_call_id: Option<String>,
@@ -272,6 +275,8 @@ struct NewDispatcherMessage<'a> {
     workspace_id: &'a str,
     role: &'a str,
     content: &'a str,
+    thinking_content: Option<&'a str>,
+    thinking_elapsed_ms: u64,
     context_payload: Option<&'a str>,
     tool_call_id: Option<&'a str>,
     tool_name: Option<&'a str>,
@@ -720,6 +725,8 @@ impl DispatcherDb {
             workspace_id,
             role,
             content,
+            thinking_content: None,
+            thinking_elapsed_ms: 0,
             context_payload: None,
             tool_call_id: None,
             tool_name: None,
@@ -738,10 +745,31 @@ impl DispatcherDb {
         content: &str,
         usage_stats: &DispatcherMessageUsageStats,
     ) -> Result<DispatcherMessageRecord> {
+        self.add_visible_message_with_usage_and_thinking(
+            workspace_id,
+            role,
+            content,
+            usage_stats,
+            None,
+            0,
+        )
+    }
+
+    pub fn add_visible_message_with_usage_and_thinking(
+        &self,
+        workspace_id: &str,
+        role: &str,
+        content: &str,
+        usage_stats: &DispatcherMessageUsageStats,
+        thinking_content: Option<&str>,
+        thinking_elapsed_ms: u64,
+    ) -> Result<DispatcherMessageRecord> {
         self.add_message(NewDispatcherMessage {
             workspace_id,
             role,
             content,
+            thinking_content,
+            thinking_elapsed_ms,
             context_payload: None,
             tool_call_id: None,
             tool_name: None,
@@ -763,10 +791,38 @@ impl DispatcherDb {
         tool_result_mode: Option<&str>,
         tool_calls: Option<&[OutboundToolCall]>,
     ) -> Result<DispatcherMessageRecord> {
+        self.add_visible_message_with_tools_and_thinking(
+            workspace_id,
+            role,
+            content,
+            tool_call_id,
+            tool_name,
+            tool_result_mode,
+            tool_calls,
+            None,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_visible_message_with_tools_and_thinking(
+        &self,
+        workspace_id: &str,
+        role: &str,
+        content: &str,
+        tool_call_id: Option<&str>,
+        tool_name: Option<&str>,
+        tool_result_mode: Option<&str>,
+        tool_calls: Option<&[OutboundToolCall]>,
+        thinking_content: Option<&str>,
+        thinking_elapsed_ms: u64,
+    ) -> Result<DispatcherMessageRecord> {
         self.add_message(NewDispatcherMessage {
             workspace_id,
             role,
             content,
+            thinking_content,
+            thinking_elapsed_ms,
             context_payload: None,
             tool_call_id,
             tool_name,
@@ -792,6 +848,8 @@ impl DispatcherDb {
             workspace_id,
             role: "tool",
             content,
+            thinking_content: None,
+            thinking_elapsed_ms: 0,
             context_payload: Some(context_payload),
             tool_call_id,
             tool_name,
@@ -940,6 +998,8 @@ impl DispatcherDb {
             workspace_id,
             role,
             content,
+            thinking_content: None,
+            thinking_elapsed_ms: 0,
             context_payload: None,
             tool_call_id,
             tool_name,
@@ -957,7 +1017,7 @@ impl DispatcherDb {
     ) -> Result<Vec<DispatcherMessageRecord>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
+            "SELECT id, workspace_id, role, content, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
              FROM dispatcher_messages
              WHERE workspace_id = ?1 AND visible = 1
              ORDER BY created_at ASC, rowid ASC",
@@ -981,7 +1041,7 @@ impl DispatcherDb {
         let conn = self.connect()?;
         let cutoff_rowid = self.find_dialogue_cutoff_rowid(&conn, workspace_id, max_dialogues)?;
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
+            "SELECT id, workspace_id, role, content, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
              FROM dispatcher_messages
              WHERE workspace_id = ?1
                AND visible = 1
@@ -1236,6 +1296,14 @@ impl DispatcherDb {
             workspace_id: params.workspace_id.to_string(),
             role: params.role.to_string(),
             content: params.content.to_string(),
+            thinking_content: params
+                .thinking_content
+                .filter(|content| !content.trim().is_empty())
+                .map(|s| s.to_string()),
+            thinking_elapsed_ms: params
+                .thinking_content
+                .filter(|content| !content.trim().is_empty())
+                .map(|_| params.thinking_elapsed_ms),
             context_payload: params.context_payload.map(|s| s.to_string()),
             tool_call_id: params.tool_call_id.map(|s| s.to_string()),
             tool_name: params.tool_name.map(|s| s.to_string()),
@@ -1255,14 +1323,16 @@ impl DispatcherDb {
 
         tx.execute(
             "INSERT INTO dispatcher_messages (
-                id, workspace_id, role, content, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, visible, created_at
+                id, workspace_id, role, content, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, visible, created_at
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 &record.id,
                 &record.workspace_id,
                 &record.role,
                 &record.content,
+                &record.thinking_content,
+                &record.thinking_elapsed_ms,
                 &record.context_payload,
                 &record.tool_call_id,
                 &record.tool_name,
@@ -1383,6 +1453,8 @@ impl DispatcherDb {
                 workspace_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                thinking_content TEXT,
+                thinking_elapsed_ms INTEGER,
                 context_payload TEXT,
                 tool_call_id TEXT,
                 tool_name TEXT,
@@ -1483,6 +1555,13 @@ impl DispatcherDb {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         ensure_column_exists(&conn, "dispatcher_messages", "context_payload", "TEXT")?;
+        ensure_column_exists(&conn, "dispatcher_messages", "thinking_content", "TEXT")?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_messages",
+            "thinking_elapsed_ms",
+            "INTEGER",
+        )?;
         ensure_column_exists(&conn, "dispatcher_messages", "tool_result_mode", "TEXT")?;
         ensure_column_exists(&conn, "dispatcher_messages", "tool_artifacts_json", "TEXT")?;
         ensure_column_exists(&conn, "dispatcher_messages", "usage_stats_json", "TEXT")?;
@@ -1531,6 +1610,7 @@ impl DispatcherDb {
         workspace_id: &str,
         max_dialogues: usize,
     ) -> Result<i64> {
+        let max_dialogues = max_dialogues.clamp(1, MAX_DIALOGUE_QUERY_LIMIT);
         let mut stmt = conn.prepare(
             "SELECT rowid
              FROM dispatcher_messages
@@ -1725,14 +1805,16 @@ fn map_dispatcher_message_record(
         workspace_id: row.get(1)?,
         role: row.get(2)?,
         content: row.get(3)?,
-        context_payload: row.get(4)?,
-        tool_call_id: row.get(5)?,
-        tool_name: row.get(6)?,
-        tool_result_mode: row.get(7)?,
-        tool_artifacts: parse_tool_artifact_refs(row.get::<_, Option<String>>(8)?),
-        tool_calls_json: row.get(9)?,
-        usage_stats: parse_message_usage_stats(row.get::<_, Option<String>>(10)?)?,
-        created_at: row.get(11)?,
+        thinking_content: row.get(4)?,
+        thinking_elapsed_ms: row.get(5)?,
+        context_payload: row.get(6)?,
+        tool_call_id: row.get(7)?,
+        tool_name: row.get(8)?,
+        tool_result_mode: row.get(9)?,
+        tool_artifacts: parse_tool_artifact_refs(row.get::<_, Option<String>>(10)?),
+        tool_calls_json: row.get(11)?,
+        usage_stats: parse_message_usage_stats(row.get::<_, Option<String>>(12)?)?,
+        created_at: row.get(13)?,
     })
 }
 

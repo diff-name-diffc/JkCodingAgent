@@ -7,10 +7,10 @@ use sha2::{Digest, Sha256};
 
 use super::collection::{collection_root_checked, touch_collection};
 use super::embed::{call_text_model, enrich_source_text_with_image_captions};
-use super::types::{FileBlock, KnowledgeIngestJob, KnowledgeSettings, KnowledgeCollection};
+use super::types::{FileBlock, KnowledgeCollection, KnowledgeIngestJob, KnowledgeSettings};
 use super::utils::{
-    is_cancelled, normalize_path_string, now_ms, remove_cancel_token,
-    spawn_blocking_string, today, title_from_slug, yaml_escape,
+    is_cancelled, normalize_path_string, now_ms, remove_cancel_token, spawn_blocking_string,
+    title_from_slug, today, yaml_escape,
 };
 
 const MAX_SOURCE_CHARS: usize = 120_000;
@@ -118,9 +118,7 @@ fn ensure_wiki_markdown_path(collection: &KnowledgeCollection, path: &Path) -> R
     let canonical_root = root
         .canonicalize()
         .or_else(|_| Ok::<_, anyhow::Error>(root.clone()))?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("页面路径缺少父目录"))?;
+    let parent = path.parent().ok_or_else(|| anyhow!("页面路径缺少父目录"))?;
     let canonical_parent = parent
         .canonicalize()
         .or_else(|_| Ok::<_, anyhow::Error>(parent.to_path_buf()))?;
@@ -171,10 +169,7 @@ fn sanitize_markdown_page(content: &str) -> String {
     s.trim().to_string() + "\n"
 }
 
-fn copy_source_into_collection(
-    collection: &KnowledgeCollection,
-    source: &Path,
-) -> Result<PathBuf> {
+fn copy_source_into_collection(collection: &KnowledgeCollection, source: &Path) -> Result<PathBuf> {
     let root = collection_root_checked(collection)?;
     let dest_dir = root.join("raw/sources");
     fs::create_dir_all(&dest_dir)?;
@@ -363,8 +358,7 @@ pub(crate) async fn ingest_one_source_inner(
             content
         };
         if let Some(parent) = page_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| fail_job(job.clone(), anyhow!(error)))?;
+            fs::create_dir_all(parent).map_err(|error| fail_job(job.clone(), anyhow!(error)))?;
         }
         crate::project::atomic_write(&page_path, &final_content)
             .map_err(|error| fail_job(job.clone(), anyhow!(error)))?;
@@ -417,13 +411,11 @@ pub async fn knowledge_import_sources(
     paths: Vec<String>,
 ) -> Result<Vec<KnowledgeIngestJob>, String> {
     let settings = spawn_blocking_string(super::settings::load_settings).await?;
-    if settings.text_model.url.trim().is_empty()
-        || settings.text_model.model.trim().is_empty()
-    {
+    if settings.text_model.url.trim().is_empty() || settings.text_model.model.trim().is_empty() {
         return Err("知识库文本模型未配置，无法导入。".to_string());
     }
-    let collection = spawn_blocking_string(move || super::collection::find_collection(&collection_id))
-        .await?;
+    let collection =
+        spawn_blocking_string(move || super::collection::find_collection(&collection_id)).await?;
     let mut jobs = Vec::new();
 
     for path in paths {

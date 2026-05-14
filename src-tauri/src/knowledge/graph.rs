@@ -4,9 +4,7 @@ use anyhow::Result;
 
 use super::collection::find_collection;
 use super::pages::list_pages_inner;
-use super::types::{
-    KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode,
-};
+use super::types::{KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode};
 use super::utils::{page_slug, slugify, spawn_blocking_string};
 
 fn extract_wikilinks(content: &str) -> Vec<String> {
@@ -60,9 +58,7 @@ fn normalize_source_name(name: String) -> String {
         .to_string()
 }
 
-fn build_graph_inner(
-    collection: &super::types::KnowledgeCollection,
-) -> Result<KnowledgeGraph> {
+fn build_graph_inner(collection: &super::types::KnowledgeCollection) -> Result<KnowledgeGraph> {
     let pages = list_pages_inner(collection)?;
     let mut slug_to_path = HashMap::new();
     let mut path_to_title = HashMap::new();

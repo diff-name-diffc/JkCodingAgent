@@ -17,7 +17,7 @@ const PTY_EMIT_MAX_BATCH_BYTES: usize = 64 * 1024;
 const PTY_IDLE_OUTPUT_MAX_BYTES: usize = 256 * 1024;
 /// 有界 channel 容量：满时 reader 线程阻塞，反压传播至 OS 内核 PTY 缓冲区，
 /// 最终使写入进程（Claude/Codex）的 write() 系统调用阻塞，从源头限流。
-const PTY_EMIT_CHANNEL_CAPACITY: usize = 32;
+const PTY_EMIT_CHANNEL_CAPACITY: usize = 256;
 
 fn has_task_session(app: &AppHandle, task_id: &str, is_codex: bool) -> bool {
     let tm = app.state::<TaskManager>();
@@ -29,13 +29,13 @@ fn has_task_session(app: &AppHandle, task_id: &str, is_codex: bool) -> bool {
 }
 
 /// 任务结束后，等待会话注册完成，最长等待 500ms。
-fn wait_for_session(app: &AppHandle, task_id: &str, is_codex: bool) {
+async fn wait_for_session(app: &AppHandle, task_id: &str, is_codex: bool) {
     let deadline = Instant::now() + SESSION_WAIT_MAX;
     while Instant::now() < deadline {
         if has_task_session(app, task_id, is_codex) {
             return;
         }
-        std::thread::sleep(SESSION_WAIT_POLL);
+        tokio::time::sleep(SESSION_WAIT_POLL).await;
     }
 }
 
@@ -222,12 +222,12 @@ fn spawn_pty_reader(
                         flush_pty_batch(&emit_app, &emit_id, event_name, id_key, &mut batch);
                         let force = force_idle_flag
                             .as_ref()
-                            .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+                            .map(|f| f.load(std::sync::atomic::Ordering::Acquire))
                             .unwrap_or(false);
 
                         if force {
                             if let Some(flag) = force_idle_flag.as_ref() {
-                                flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                                flag.store(false, std::sync::atomic::Ordering::Release);
                             }
                             if let Some(ref cb) = idle_callback {
                                 if !accumulated_output.is_empty() {
@@ -291,8 +291,8 @@ fn spawn_pty_reader(
 }
 
 /// 在后台线程中轮询子进程退出状态，退出后调用 finalize_task_exit。
-fn spawn_exit_monitor(app: AppHandle, task_id: String, is_codex: bool) {
-    tokio::task::spawn_blocking(move || loop {
+async fn spawn_exit_monitor(app: AppHandle, task_id: String, is_codex: bool) {
+    loop {
         let exit_status = {
             let tm = app.state::<TaskManager>();
             match tm.try_wait_child(&task_id) {
@@ -318,7 +318,7 @@ fn spawn_exit_monitor(app: AppHandle, task_id: String, is_codex: bool) {
                         Some(status.exit_code())
                     };
                     // 等待会话注册完成
-                    wait_for_session(&app, &task_id, is_codex);
+                    wait_for_session(&app, &task_id, is_codex).await;
                     finalize_task_exit(&app, &task_id, exit_ok, exit_code, None);
                 }
                 Err(error) => {
@@ -328,8 +328,8 @@ fn spawn_exit_monitor(app: AppHandle, task_id: String, is_codex: bool) {
             return;
         }
 
-        std::thread::sleep(Duration::from_millis(100));
-    });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// 为 Claude 命令构建 CommandBuilder，并根据 permission_mode 添加权限标志。
@@ -374,85 +374,91 @@ pub async fn start_dispatcher_subprocess(
         return Err(format!("未知 Agent：{agent}"));
     }
 
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: rows.unwrap_or(50),
-            cols: cols.unwrap_or(220),
-            pixel_width: 0,
-            pixel_height: 0,
+    // Clone values needed after spawn_blocking
+    let project_path_for_post = project_path.clone();
+    let agent_for_post = agent.clone();
+
+    let (master, writer, child, reader, is_codex, pre_session_id) =
+        tokio::task::spawn_blocking(move || {
+            let pair = native_pty_system()
+                .openpty(PtySize {
+                    rows: rows.unwrap_or(50),
+                    cols: cols.unwrap_or(220),
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| e.to_string())?;
+
+            let config = read_project_config(project_path.clone())?;
+            let final_prompt = if config.agent.prompt_prefix.is_empty() {
+                prompt.clone()
+            } else {
+                format!("{}\n{}", config.agent.prompt_prefix, prompt)
+            };
+
+            let agent_bin = get_agent_bin_checked(&agent)?;
+            let is_codex = agent == "codex";
+
+            let saved_claude_version = config.agent.claude_version.clone();
+            let use_explicit_session =
+                !is_codex && claude_version_gte(&saved_claude_version, "2.1.87");
+
+            let pre_session_id = if use_explicit_session {
+                Some(uuid::Uuid::new_v4().to_string())
+            } else {
+                None
+            };
+
+            let mut cmd = if is_codex {
+                let mut c = CommandBuilder::new(&agent_bin);
+                c.arg("--");
+                c.arg(&final_prompt);
+                c
+            } else {
+                let mut c = build_claude_cmd(&agent_bin, &permission_mode);
+                if let Some(ref sid) = pre_session_id {
+                    c.arg("--session-id");
+                    c.arg(sid);
+                }
+                c.arg("--");
+                c.arg(&final_prompt);
+                c
+            };
+            cmd.cwd(&project_path);
+            setup_env(&mut cmd);
+
+            let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+            drop(pair.slave);
+            let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+            let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+
+            Ok::<_, String>((pair.master, writer, child, reader, is_codex, pre_session_id))
         })
-        .map_err(|e| e.to_string())?;
+        .await
+        .map_err(|e| format!("spawn_blocking 失败: {e}"))??;
 
-    // 若配置了项目级 prompt_prefix，则拼接到提示词前
-    let config = read_project_config(project_path.clone())?;
-    let final_prompt = if config.agent.prompt_prefix.is_empty() {
-        prompt.clone()
-    } else {
-        format!("{}\n{}", config.agent.prompt_prefix, prompt)
-    };
-
-    let agent_bin = get_agent_bin_checked(&agent)?;
-    let is_codex = agent == "codex";
-
-    // 读取项目配置中已保存的 Claude 版本，用于判断是否支持 --session-id
-    let saved_claude_version = config.agent.claude_version.clone();
-    let use_explicit_session = !is_codex && claude_version_gte(&saved_claude_version, "2.1.87");
-
-    // 预生成 session id（仅 Claude >= 2.1.87 使用）
-    let pre_session_id = if use_explicit_session {
-        Some(uuid::Uuid::new_v4().to_string())
-    } else {
-        None
-    };
-
-    let mut cmd = if is_codex {
-        let mut c = CommandBuilder::new(&agent_bin);
-        c.arg("--");
-        c.arg(&final_prompt);
-        c
-    } else {
-        let mut c = build_claude_cmd(&agent_bin, &permission_mode);
-        // Claude >= 2.1.87：通过 --session-id 指定会话，跳过 /status 发现
-        if let Some(ref sid) = pre_session_id {
-            c.arg("--session-id");
-            c.arg(sid);
-        }
-        // 用 `--` 显式结束选项解析，避免以 `-` 开头的提示词首行被 Claude CLI 误判为参数。
-        c.arg("--");
-        c.arg(&final_prompt);
-        c
-    };
-    cmd.cwd(&project_path);
-    setup_env(&mut cmd);
-
-    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
-    drop(pair.slave);
-    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    task_manager.insert_pty_handles(&task_id, pair.master, writer, child);
+    task_manager.insert_pty_handles(&task_id, master, writer, child);
 
     let _ = app.emit(
         "task-status",
         serde_json::json!({ "task_id": task_id, "status": "running" }),
     );
 
-    // 用于将 PTY 输出转发给 session watcher 的 channel
     let (session_tx, session_rx) = std::sync::mpsc::channel::<String>();
     spawn_status_session_watcher(
         app.clone(),
         task_id.clone(),
-        project_path.clone(),
+        project_path_for_post,
         is_codex,
         session_rx,
         pre_session_id,
     );
-    // Register dispatcher subprocess BEFORE spawning PTY reader to avoid race condition.
-    // This must happen synchronously before spawn_pty_reader so the idle callback is attached.
+
     let force_idle = dispatcher_state.register_subprocess(
         &dispatcher_session_id,
         &task_id,
         &dispatcher_dispatch_id,
-        &agent,
+        &agent_for_post,
         &dispatcher_description,
     );
 
@@ -485,7 +491,7 @@ pub async fn start_dispatcher_subprocess(
         None,
         Some(force_idle),
     );
-    spawn_exit_monitor(app, task_id, is_codex);
+    tokio::spawn(spawn_exit_monitor(app, task_id, is_codex));
 
     Ok(())
 }
@@ -519,57 +525,66 @@ pub async fn resume_dispatcher_subprocess(
         return Err(format!("未知 Agent：{agent}"));
     }
 
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: rows.unwrap_or(50),
-            cols: cols.unwrap_or(220),
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| e.to_string())?;
+    let agent_for_post = agent.clone();
+    let project_path_for_post = project_path.clone();
+    let session_id_for_post = session_id.clone();
 
-    let agent_bin = get_agent_bin_checked(&agent)?;
-    let mut cmd = if agent == "codex" {
-        let mut c = CommandBuilder::new(&agent_bin);
-        c.arg("resume");
-        c.arg(&session_id);
-        c
-    } else {
-        // resume 时 session_id 已知，使用 --resume 标志
-        let mut c = build_claude_cmd(&agent_bin, &permission_mode);
-        c.arg("--resume");
-        c.arg(&session_id);
-        c
-    };
-    cmd.cwd(&project_path);
-    setup_env(&mut cmd);
+    let (master, writer, child, reader) = tokio::task::spawn_blocking(move || {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: rows.unwrap_or(50),
+                cols: cols.unwrap_or(220),
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string())?;
 
-    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
-    drop(pair.slave);
-    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    task_manager.insert_pty_handles(&task_id, pair.master, writer, child);
+        let agent_bin = get_agent_bin_checked(&agent)?;
+        let mut cmd = if agent == "codex" {
+            let mut c = CommandBuilder::new(&agent_bin);
+            c.arg("resume");
+            c.arg(&session_id);
+            c
+        } else {
+            let mut c = build_claude_cmd(&agent_bin, &permission_mode);
+            c.arg("--resume");
+            c.arg(&session_id);
+            c
+        };
+        cmd.cwd(&project_path);
+        setup_env(&mut cmd);
+
+        let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+        drop(pair.slave);
+        let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+
+        Ok::<_, String>((pair.master, writer, child, reader))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking 失败: {e}"))??;
+
+    task_manager.insert_pty_handles(&task_id, master, writer, child);
 
     let _ = app.emit(
         "task-status",
         serde_json::json!({ "task_id": task_id, "status": "running" }),
     );
 
-    let is_codex = agent == "codex";
+    let is_codex = agent_for_post == "codex";
 
-    // resume 时 session_id 已知，直接查找文件并开始监视
     spawn_resume_session_watcher(
         app.clone(),
         task_id.clone(),
-        project_path.clone(),
-        session_id,
+        project_path_for_post,
+        session_id_for_post,
         is_codex,
     );
     let force_idle = dispatcher_state.register_subprocess(
         &dispatcher_session_id,
         &task_id,
         &dispatcher_dispatch_id,
-        &agent,
+        &agent_for_post,
         &dispatcher_description,
     );
     let idle_cb: Option<Box<dyn Fn(String) + Send>> = {
@@ -600,18 +615,19 @@ pub async fn resume_dispatcher_subprocess(
         None,
         Some(force_idle),
     );
-    spawn_exit_monitor(app, task_id, is_codex);
+    tokio::spawn(spawn_exit_monitor(app, task_id, is_codex));
 
     Ok(())
 }
 
 #[tauri::command]
-pub async fn send_input(
-    task_manager: State<'_, TaskManager>,
-    task_id: String,
-    data: String,
-) -> Result<(), String> {
-    task_manager.write_to_pty(&task_id, data.as_bytes(), false)
+pub async fn send_input(app: AppHandle, task_id: String, data: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let tm = app.state::<TaskManager>();
+        tm.write_to_pty(&task_id, data.as_bytes(), false)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking 失败: {e}"))?
 }
 
 #[tauri::command]
@@ -647,25 +663,32 @@ pub async fn open_shell(
         task_manager.remove_pty_handles(&shell_id);
     }
 
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: rows.unwrap_or(24),
-            cols: cols.unwrap_or(120),
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| e.to_string())?;
+    let (master, writer, child, reader) = tokio::task::spawn_blocking(move || {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: rows.unwrap_or(24),
+                cols: cols.unwrap_or(120),
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string())?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let mut cmd = CommandBuilder::new(&shell);
-    cmd.cwd(&project_path);
-    setup_env(&mut cmd);
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let mut cmd = CommandBuilder::new(&shell);
+        cmd.cwd(&project_path);
+        setup_env(&mut cmd);
 
-    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
-    drop(pair.slave);
-    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    task_manager.insert_pty_handles(&shell_id, pair.master, writer, child);
+        let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+        drop(pair.slave);
+        let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+
+        Ok::<_, String>((pair.master, writer, child, reader))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking 失败: {e}"))??;
+
+    task_manager.insert_pty_handles(&shell_id, master, writer, child);
 
     // Shell 退出后清理 TaskManager 中的残留句柄
     let app_cleanup = app.clone();

@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { KeyboardEvent } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   Play,
   Sparkles,
@@ -24,9 +25,13 @@ import {
   FileText,
   Check,
   Copy,
+  Brain,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import type {
   AgentType,
+  BrowserStatus,
   ChecklistPlanState,
   DispatchFeedbackState,
   DispatcherMessage,
@@ -52,11 +57,13 @@ import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import {
   appendAssistantTextSegment,
   appendToolSummarySegment,
+  type AssistantThinkingBlock,
   type AssistantTurnSegment,
   buildDispatcherDisplayItems,
   finishLiveToolActivity,
   planLiveToolActivity,
   startLiveToolActivity,
+  updateLiveBrowserToolActivity,
 } from "./dispatcherChatView";
 
 const MESSAGE_LIST_BOTTOM_THRESHOLD = 48;
@@ -225,17 +232,26 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
   tools,
   workspaceId,
   usageStats,
+  thinking,
   placeholderText,
 }: {
   segments: AssistantTurnSegment[];
   tools: ToolActivityItem[];
   workspaceId: string;
   usageStats?: DispatcherMessageUsageStats | null;
+  thinking?: AssistantThinkingBlock | null;
   placeholderText?: string | null;
 }) {
   const visibleSegments = segments.filter((segment) => segment.text.trim());
   const visiblePlaceholder = placeholderText?.trim() ?? "";
-  if (visibleSegments.length === 0 && tools.length === 0 && !visiblePlaceholder && !usageStats) {
+  const visibleThinking = thinking?.text.trim() ? thinking : null;
+  if (
+    visibleSegments.length === 0 &&
+    tools.length === 0 &&
+    !visiblePlaceholder &&
+    !usageStats &&
+    !visibleThinking
+  ) {
     return null;
   }
 
@@ -249,6 +265,9 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
           <div style={styles.assistantTurnSection}>
             <ToolActivityBubble tools={tools} workspaceId={workspaceId} />
           </div>
+        )}
+        {visibleThinking && (
+          <ThinkingBlock text={visibleThinking.text} elapsedMs={visibleThinking.elapsedMs} />
         )}
         {visiblePlaceholder && (
           <div style={styles.assistantTurnSection}>
@@ -281,6 +300,46 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
           );
         })}
         {usageStats && <AssistantUsageStats stats={usageStats} />}
+      </div>
+    </div>
+  );
+});
+
+const ThinkingBlock = memo(function ThinkingBlock({
+  text,
+  elapsedMs,
+}: {
+  text: string;
+  elapsedMs: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const trimmedText = text.trim();
+  if (!trimmedText) {
+    return null;
+  }
+
+  return (
+    <div style={styles.assistantTurnSection}>
+      <div style={styles.thinkingCard}>
+        <button
+          type="button"
+          style={styles.thinkingHeader}
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          title={expanded ? "收起思考过程" : "展开思考过程"}
+        >
+          <span style={styles.thinkingBadge}>
+            <Brain size={13} />
+            Think
+          </span>
+          <span style={styles.thinkingMeta}>思考 {formatElapsedMmSs(elapsedMs)}</span>
+          {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+        </button>
+        {expanded && (
+          <div style={styles.thinkingBody}>
+            <MarkdownRenderer content={trimmedText} variant="chat" />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -319,6 +378,31 @@ const PlanModeToggleButton = memo(function PlanModeToggleButton({
       aria-pressed={active}
     >
       Plan
+    </button>
+  );
+});
+
+const ThinkingToggleButton = memo(function ThinkingToggleButton({
+  active,
+  disabled,
+  onToggle,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      style={styles.thinkingToggleBtn(active)}
+      onClick={onToggle}
+      disabled={disabled}
+      title={active ? "关闭深度思考" : "开启深度思考"}
+      aria-label={active ? "关闭深度思考" : "开启深度思考"}
+      aria-pressed={active}
+    >
+      <Brain size={15} />
+      <span>{active ? "深思" : "思考"}</span>
     </button>
   );
 });
@@ -547,6 +631,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   isStopping,
   isRecordingVoice,
   autoApprove,
+  thinkingEnabled,
   sessionTokenUsages,
   voiceTranscript,
   voiceError,
@@ -560,6 +645,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onStop,
   onResume,
   onToggleMode,
+  onToggleThinking,
   onToggleVoiceInput,
   onDismissVoiceError,
   onKeyDown,
@@ -577,6 +663,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   isStopping: boolean;
   isRecordingVoice: boolean;
   autoApprove: boolean;
+  thinkingEnabled: boolean;
   sessionTokenUsages: DispatcherSessionTokenUsage[];
   voiceTranscript: string;
   voiceError: string | null;
@@ -590,6 +677,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   onStop: () => void;
   onResume: () => void;
   onToggleMode: (mode: DispatcherMode) => void;
+  onToggleThinking: () => void;
   onToggleVoiceInput: () => void;
   onDismissVoiceError: () => void;
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -687,6 +775,11 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
             <div style={styles.emptyComposerPrimaryRow}>
               <SessionTokenUsageIndicators entries={sessionTokenUsages} />
               {!isPlainChat && <PlanModeToggleButton mode={mode} onToggleMode={onToggleMode} />}
+              <ThinkingToggleButton
+                active={thinkingEnabled}
+                onToggle={onToggleThinking}
+                disabled={composerMode === "stop" || isStopping}
+              />
               <button
                 type="button"
                 style={styles.voiceBtn(isRecordingVoice)}
@@ -901,6 +994,7 @@ interface DispatcherLiveSessionState {
   hasPendingRun: boolean;
   isLoading: boolean;
   streamingSegments: AssistantTurnSegment[];
+  liveThinking: AssistantThinkingBlock | null;
   liveToolCalls: ToolActivityItem[];
   assistantPlaceholder: string | null;
   runError: string | null;
@@ -916,6 +1010,7 @@ function createIdleLiveSessionState(): DispatcherLiveSessionState {
     hasPendingRun: false,
     isLoading: false,
     streamingSegments: [],
+    liveThinking: null,
     liveToolCalls: [],
     assistantPlaceholder: null,
     runError: null,
@@ -1037,6 +1132,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [isStopping, setIsStopping] = useState(false);
     const [hasPendingRun, setHasPendingRun] = useState(false);
     const [streamingSegments, setStreamingSegments] = useState<AssistantTurnSegment[]>([]);
+    const [liveThinking, setLiveThinking] = useState<AssistantThinkingBlock | null>(null);
     const [liveToolCalls, setLiveToolCalls] = useState<ToolActivityItem[]>([]);
     const [assistantPlaceholder, setAssistantPlaceholder] = useState<string | null>(null);
     const [runError, setRunError] = useState<string | null>(null);
@@ -1047,6 +1143,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [planInteraction, setPlanInteraction] = useState<PlanInteraction | null>(null);
     const [activePlanPath, setActivePlanPath] = useState<string | null>(null);
     const [implementingPlan, setImplementingPlan] = useState(false);
+    const [thinkingEnabled, setThinkingEnabled] = useState(false);
     const [activeUsageStats, setActiveUsageStats] = useState<DispatcherMessageUsageStats | null>(
       null,
     );
@@ -1087,6 +1184,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const runQueuesRef = useRef<Map<string, Promise<void>>>(new Map());
     const autoApproveRef = useRef(autoApprove);
     autoApproveRef.current = autoApprove;
+    const thinkingEnabledRef = useRef(thinkingEnabled);
+    thinkingEnabledRef.current = thinkingEnabled;
     const onDispatchApprovedRef = useRef(onDispatchApproved);
     onDispatchApprovedRef.current = onDispatchApproved;
     const onDispatchContinueRef = useRef(onDispatchContinue);
@@ -1125,6 +1224,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       setHasPendingRun(state.hasPendingRun);
       setIsLoading(state.isLoading);
       setStreamingSegments(state.streamingSegments);
+      setLiveThinking(state.liveThinking);
       setLiveToolCalls(state.liveToolCalls);
       setAssistantPlaceholder(state.assistantPlaceholder);
       setRunError(state.runError);
@@ -1156,6 +1256,27 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       },
       [applyLiveSessionState, getLiveSessionState],
     );
+
+    useEffect(() => {
+      const unlisten = listen<BrowserStatus>("browser-status", (event) => {
+        const status = event.payload;
+        const targetSessionId = status.sessionId;
+        updateLiveSessionState(targetSessionId, (state) => ({
+          ...state,
+          assistantPlaceholder:
+            state.liveToolCalls.some(
+              (tool) => tool.status === "running" && tool.name.startsWith("browser_"),
+            )
+              ? status.message || "正在执行浏览器操作..."
+              : state.assistantPlaceholder,
+          liveToolCalls: updateLiveBrowserToolActivity(state.liveToolCalls, status),
+        }));
+      });
+
+      return () => {
+        unlisten.then((fn) => fn());
+      };
+    }, [updateLiveSessionState]);
 
     const scrollMessageListToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
       const element = messageListRef.current;
@@ -1252,6 +1373,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }, [
       messages,
       streamingSegments,
+      liveThinking,
       assistantPlaceholder,
       liveToolCalls,
       runError,
@@ -1300,11 +1422,23 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 ),
               }));
               break;
+            case "assistantThinkingDelta":
+              if (!isActiveRun) return;
+              updateLiveSessionState(targetSessionId, (state) => ({
+                ...state,
+                assistantPlaceholder: null,
+                liveThinking: {
+                  text: `${state.liveThinking?.text ?? ""}${event.data.delta}`,
+                  elapsedMs: event.data.elapsedMs,
+                },
+              }));
+              break;
             case "assistantMessage":
               if (!isActiveRun || event.data.message.workspaceId !== targetSessionId) return;
               updateLiveSessionState(targetSessionId, (state) => ({
                 ...state,
                 assistantPlaceholder: null,
+                liveThinking: null,
                 streamingSegments: state.streamingSegments.filter(
                   (segment) => segment.kind === "tool-summary",
                 ),
@@ -1522,6 +1656,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               await invoke<DispatcherAgentTurn>("dispatcher_send_plain_chat_message", {
                 workspaceId: targetSessionId,
                 content,
+                enableThinking: thinkingEnabledRef.current,
                 onEvent,
               });
             } else {
@@ -1530,6 +1665,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 projectPath,
                 content,
                 mode: targetMode,
+                enableThinking: thinkingEnabledRef.current,
                 onEvent,
               });
             }
@@ -1637,6 +1773,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 dispatchResult: result,
                 dispatchState,
                 dispatchId,
+                enableThinking: thinkingEnabledRef.current,
                 onEvent,
               });
             });
@@ -1758,6 +1895,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       [handleModeChange, mode],
     );
 
+    const handleToggleThinking = useCallback(() => {
+      setThinkingEnabled((value) => !value);
+    }, []);
+
     const handleAnswerPlanQuestion = useCallback(
       async (answer: string) => {
         if (planInteraction?.kind !== "question") return;
@@ -1836,6 +1977,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const isEmpty =
       messages.length === 0 &&
       !hasLiveSegments &&
+      !liveThinking &&
       liveToolCalls.length === 0 &&
       !hasAssistantPlaceholder;
 
@@ -1847,6 +1989,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             <span style={styles.headerIcon}>{isPlainChat ? "💬" : "🤖"}</span>
             <span style={styles.headerTitle}>{isPlainChat ? "聊天" : "调度智能体"}</span>
             {!isPlainChat && activePlanPath && <span style={styles.headerPlanBadge}>Plan</span>}
+            {thinkingEnabled && <span style={styles.headerThinkingBadge}>Think</span>}
             {isLoading && <span style={styles.thinkingDot} />}
           </div>
           <div style={styles.headerRight}>
@@ -1900,7 +2043,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         </div>
 
         {/* Messages */}
-        <div ref={messageListRef} style={styles.messageList} onScroll={handleMessageListScroll}>
+        <div
+          ref={messageListRef}
+          className="dispatcher-message-list"
+          style={styles.messageList}
+          onScroll={handleMessageListScroll}
+        >
           {runError && <div style={styles.runErrorBanner}>{runError}</div>}
           {isEmpty && !isPlainChat && (
             <InteractionDrawer
@@ -1923,6 +2071,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               isStopping={isStopping}
               isRecordingVoice={isRecordingVoice}
               autoApprove={autoApprove}
+              thinkingEnabled={thinkingEnabled}
               sessionTokenUsages={sessionTokenUsageEntries}
               voiceTranscript={voiceTranscript}
               voiceError={voiceError}
@@ -1936,6 +2085,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onStop={handleStop}
               onResume={handleResume}
               onToggleMode={handleModeToggle}
+              onToggleThinking={handleToggleThinking}
               onToggleVoiceInput={toggleVoiceRecording}
               onDismissVoiceError={clearVoiceError}
               onKeyDown={handleKeyDown}
@@ -1960,10 +2110,12 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 tools={item.turn.tools}
                 workspaceId={sessionId}
                 usageStats={item.turn.usageStats}
+                thinking={item.turn.thinking}
               />
             ),
           )}
           {(hasLiveSegments ||
+            liveThinking ||
             liveToolCalls.length > 0 ||
             hasAssistantPlaceholder ||
             liveUsageStats) && (
@@ -1972,6 +2124,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               tools={liveToolCalls}
               workspaceId={sessionId}
               usageStats={liveUsageStats}
+              thinking={liveThinking}
               placeholderText={assistantPlaceholder}
             />
           )}
@@ -2033,6 +2186,11 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 placeholder={isPlainChat ? "发送普通聊天消息..." : "给调度智能体发送消息..."}
               />
               {!isPlainChat && <PlanModeToggleButton mode={mode} onToggleMode={handleModeToggle} />}
+              <ThinkingToggleButton
+                active={thinkingEnabled}
+                onToggle={handleToggleThinking}
+                disabled={composerMode === "stop" || isStopping}
+              />
               <button
                 style={styles.voiceBtn(isRecordingVoice)}
                 onClick={toggleVoiceRecording}
@@ -2161,6 +2319,15 @@ const styles = {
     fontSize: 10,
     fontWeight: 800,
   },
+  headerThinkingBadge: {
+    border: "1px solid color-mix(in srgb, var(--warning, #d97706) 28%, var(--border-dim))",
+    borderRadius: 999,
+    padding: "3px 7px",
+    color: "var(--warning, #d97706)",
+    background: "color-mix(in srgb, var(--warning, #d97706) 10%, transparent)",
+    fontSize: 10,
+    fontWeight: 800,
+  },
   thinkingDot: {
     width: "8px",
     height: "8px",
@@ -2189,6 +2356,27 @@ const styles = {
     fontWeight: 700,
     cursor: "pointer",
     boxShadow: active ? "0 12px 24px -18px var(--accent)" : "var(--shadow-xs)",
+  }),
+  thinkingToggleBtn: (active: boolean) => ({
+    height: "34px",
+    padding: "0 11px",
+    borderRadius: "12px",
+    border: active
+      ? "1px solid color-mix(in srgb, var(--warning, #d97706) 52%, transparent)"
+      : "1px solid var(--border-dim)",
+    background: active
+      ? "color-mix(in srgb, var(--warning, #d97706) 14%, var(--bg-card))"
+      : "color-mix(in srgb, var(--bg-card) 88%, transparent)",
+    color: active ? "var(--warning, #d97706)" : "var(--text-secondary)",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: "pointer",
+    flexShrink: 0,
+    boxShadow: active ? "0 12px 24px -18px var(--warning, #d97706)" : "var(--shadow-xs)",
   }),
   headerBtn: {
     padding: "6px 10px",
@@ -2874,6 +3062,55 @@ const styles = {
     background:
       "linear-gradient(180deg, rgba(217,119,6,0.08), color-mix(in srgb, var(--bg-card) 94%, transparent))",
     boxShadow: "0 16px 32px rgba(15, 23, 42, 0.05)",
+  },
+  thinkingCard: {
+    width: "100%",
+    borderRadius: "18px 18px 18px 8px",
+    border: "1px solid color-mix(in srgb, var(--warning, #d97706) 20%, var(--border-dim))",
+    background:
+      "linear-gradient(180deg, color-mix(in srgb, var(--warning, #d97706) 8%, var(--bg-card)), color-mix(in srgb, var(--bg-card) 92%, transparent))",
+    overflow: "hidden",
+    boxShadow: "0 14px 28px rgba(15, 23, 42, 0.04)",
+  },
+  thinkingHeader: {
+    width: "100%",
+    border: "none",
+    background: "transparent",
+    color: "var(--text-secondary)",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "9px 12px",
+    cursor: "pointer",
+    fontSize: 12,
+    fontWeight: 700,
+    textAlign: "left" as const,
+  },
+  thinkingBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "3px 8px",
+    borderRadius: 999,
+    background: "color-mix(in srgb, var(--warning, #d97706) 14%, transparent)",
+    color: "var(--warning, #d97706)",
+    flexShrink: 0,
+  },
+  thinkingMeta: {
+    flex: 1,
+    minWidth: 0,
+    color: "var(--text-muted)",
+    fontFamily: "var(--font-mono)",
+    fontSize: 11,
+  },
+  thinkingBody: {
+    borderTop: "1px solid color-mix(in srgb, var(--warning, #d97706) 14%, var(--border-dim))",
+    padding: "11px 13px 13px",
+    color: "var(--text-secondary)",
+    fontSize: 13,
+    lineHeight: 1.65,
+    userSelect: "text" as const,
+    WebkitUserSelect: "text" as const,
   },
   toolSummaryHeader: {
     display: "flex",

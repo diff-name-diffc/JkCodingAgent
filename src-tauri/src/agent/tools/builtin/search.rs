@@ -290,24 +290,33 @@ fn run_glob_query(path: &str, pattern: &str, max_results: usize, context: &ToolC
             Err(error) => return format!("glob 搜索失败：{error}"),
         }
     }
-    matches.sort_by_key(|path| {
-        fs::metadata(path)
-            .and_then(|metadata| metadata.modified())
-            .ok()
-    });
-    matches.reverse();
+    let mut matches_with_metadata = matches
+        .into_iter()
+        .map(|path| {
+            let modified = fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .ok();
+            (path, modified)
+        })
+        .collect::<Vec<_>>();
+    matches_with_metadata.sort_by_key(|(_, modified)| *modified);
+    matches_with_metadata.reverse();
 
-    if matches.is_empty() {
+    if matches_with_metadata.is_empty() {
         return format!("未找到匹配文件：{}", dir_path.display());
     }
 
-    let mut lines = matches
+    let mut lines = matches_with_metadata
         .iter()
         .take(max_results)
-        .map(|path| rel(path, &dir_path))
+        .map(|(path, _)| rel(path, &dir_path))
         .collect::<Vec<_>>();
-    if matches.len() > max_results {
-        lines.push(format!("...（已显示 {} / {}）", max_results, matches.len()));
+    if matches_with_metadata.len() > max_results {
+        lines.push(format!(
+            "...（已显示 {} / {}）",
+            max_results,
+            matches_with_metadata.len()
+        ));
     }
     lines.join("\n")
 }
@@ -393,13 +402,15 @@ async fn run_grep_query(
 
     command.arg(pattern).arg(&target);
 
-    let output = match command.output().await {
-        Ok(output) => output,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return "错误：未找到 ripgrep (`rg`) 可执行文件，无法执行 grep 搜索".to_string();
-        }
-        Err(error) => return format!("执行 grep 搜索失败：{error}"),
-    };
+    let output =
+        match tokio::time::timeout(std::time::Duration::from_secs(60), command.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return "错误：未找到 ripgrep (`rg`) 可执行文件，无法执行 grep 搜索".to_string();
+            }
+            Ok(Err(error)) => return format!("执行 grep 搜索失败：{error}"),
+            Err(_) => return "grep 搜索超时（60 秒）".to_string(),
+        };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -593,9 +604,13 @@ mod tests {
 
         let workspace = create_workspace();
         let context = ToolContext {
+            workspace_id: "test-workspace".to_string(),
             workspace: workspace.clone(),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
+            app_handle: None,
+            llm_provider: None,
+            vision_model: String::new(),
         };
 
         let output = GrepTool
@@ -625,9 +640,13 @@ mod tests {
 
         let workspace = create_workspace();
         let context = ToolContext {
+            workspace_id: "test-workspace".to_string(),
             workspace: workspace.clone(),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
+            app_handle: None,
+            llm_provider: None,
+            vision_model: String::new(),
         };
 
         let output = GrepTool
@@ -652,9 +671,13 @@ mod tests {
     async fn glob_groups_multiple_patterns() {
         let workspace = create_workspace();
         let context = ToolContext {
+            workspace_id: "test-workspace".to_string(),
             workspace: workspace.clone(),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
+            app_handle: None,
+            llm_provider: None,
+            vision_model: String::new(),
         };
 
         let output = GlobTool
@@ -683,9 +706,13 @@ mod tests {
 
         let workspace = create_workspace();
         let context = ToolContext {
+            workspace_id: "test-workspace".to_string(),
             workspace: workspace.clone(),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
+            app_handle: None,
+            llm_provider: None,
+            vision_model: String::new(),
         };
 
         let output = GrepTool

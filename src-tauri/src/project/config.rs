@@ -30,6 +30,18 @@ codex_version = ""
 [git]
 # 生成提交信息时使用的提示词
 commit_prompt = "你是一名资深软件工程师，请基于给定的 Git diff 生成提交信息。\n要求：\n1. 使用祈使句，直接描述本次改动。\n2. 第一行格式为 type(scope): summary，尽量不超过 50 个字符。\n3. type 仅使用 feat、fix、refactor、docs、style、test、chore。\n4. 如需补充说明，空一行后用 1-3 行说明原因、影响或验证重点。\n5. 只输出提交信息正文，不要解释，不要 Markdown。"
+
+[browser]
+# 是否允许内置 Aha Agent 启动 CloakBrowser
+enabled = true
+# 可选代理，例如 "http://user:pass@host:8080" 或 "socks5://host:1080"
+proxy = ""
+# 浏览器 locale / timezone，留空则使用 CloakBrowser 默认值
+locale = ""
+timezone = ""
+# 右侧抽屉镜像视口尺寸
+viewport_width = 1280
+viewport_height = 800
 "#;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -49,9 +61,40 @@ pub struct GitConfig {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct BrowserConfig {
+    #[serde(default = "default_browser_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub proxy: String,
+    #[serde(default)]
+    pub locale: String,
+    #[serde(default)]
+    pub timezone: String,
+    #[serde(default = "default_browser_viewport_width")]
+    pub viewport_width: u32,
+    #[serde(default = "default_browser_viewport_height")]
+    pub viewport_height: u32,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_browser_enabled(),
+            proxy: String::new(),
+            locale: String::new(),
+            timezone: String::new(),
+            viewport_width: default_browser_viewport_width(),
+            viewport_height: default_browser_viewport_height(),
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ProjectConfig {
     pub agent: AgentConfig,
     pub git: GitConfig,
+    #[serde(default)]
+    pub browser: BrowserConfig,
 }
 
 impl Default for ProjectConfig {
@@ -66,8 +109,21 @@ impl Default for ProjectConfig {
             git: GitConfig {
                 commit_prompt: DEFAULT_COMMIT_PROMPT.to_string(),
             },
+            browser: BrowserConfig::default(),
         }
     }
+}
+
+fn default_browser_enabled() -> bool {
+    true
+}
+
+fn default_browser_viewport_width() -> u32 {
+    1280
+}
+
+fn default_browser_viewport_height() -> u32 {
+    800
 }
 
 fn should_refresh_prompt_prefix(prompt_prefix: &str) -> bool {
@@ -189,7 +245,7 @@ pub fn write_agent_config_file(agent: String, content: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        should_refresh_prompt_prefix, DEFAULT_AGENT_PROMPT_PREFIX,
+        should_refresh_prompt_prefix, ProjectConfig, DEFAULT_AGENT_PROMPT_PREFIX,
         LEGACY_DEFAULT_AGENT_PROMPT_PREFIX, PREVIOUS_DEFAULT_AGENT_PROMPT_PREFIX,
     };
 
@@ -208,5 +264,24 @@ mod tests {
     fn keeps_custom_prompt_prefix() {
         assert!(!should_refresh_prompt_prefix("请始终使用英文输出。"));
         assert!(!should_refresh_prompt_prefix(DEFAULT_AGENT_PROMPT_PREFIX));
+    }
+
+    #[test]
+    fn project_config_accepts_missing_browser_section() {
+        let raw = r#"
+[agent]
+default = "claude"
+prompt_prefix = ""
+claude_version = ""
+codex_version = ""
+
+[git]
+commit_prompt = "commit"
+"#;
+        let config: ProjectConfig = toml::from_str(raw).expect("parse legacy project config");
+
+        assert!(config.browser.enabled);
+        assert_eq!(config.browser.viewport_width, 1280);
+        assert_eq!(config.browser.viewport_height, 800);
     }
 }

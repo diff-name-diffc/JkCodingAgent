@@ -1,6 +1,6 @@
 import { getPathBasename, isSameOrChildPath, replacePathPrefix } from "../utils/filePaths";
 
-type RightPanel = "files" | "git-changes" | "git-history" | null;
+type RightPanel = "files" | "git-changes" | "git-history" | "browser" | null;
 
 type OpenFileTab = { id: string; path: string; name: string };
 

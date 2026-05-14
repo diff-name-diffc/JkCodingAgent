@@ -517,7 +517,12 @@ fn default_result_mode(tool_name: &str) -> ToolResultMode {
 
 fn tool_output_kind(tool_name: &str) -> ToolOutputKind {
     match tool_name {
-        "read_file" | "list_dir" | "glob" | "grep" => ToolOutputKind::Exact,
+        "read_file"
+        | "list_dir"
+        | "glob"
+        | "grep"
+        | "browser_read_text"
+        | "browser_visual_analyze" => ToolOutputKind::Exact,
         "exec" => ToolOutputKind::Command,
         "write_file" | "edit_file" => ToolOutputKind::Mutation,
         "message" => ToolOutputKind::Message,

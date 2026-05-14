@@ -8,6 +8,7 @@ import {
   type OpenFileTab,
   type RightPanel,
 } from "./projectPanelsFileState";
+import { useDockedBrowserPanel } from "./useDockedBrowserPanel";
 
 export function useProjectPanels() {
   const [rightPanel, setRightPanel] = useState<RightPanel>(null);
@@ -22,14 +23,21 @@ export function useProjectPanels() {
   const [openDiff, setOpenDiff] = useState<OpenDiff | null>(null);
   const [rightPanelWidth, setRightPanelWidth] = useState(280);
   const [terminalHeight, setTerminalHeight] = useState(240);
+  const browserPanel = useDockedBrowserPanel("nezha.project.browserPanelWidth");
+  const rightPanelRef = useRef(rightPanel);
   const rightPanelWidthRef = useRef(rightPanelWidth);
+  rightPanelRef.current = rightPanel;
   rightPanelWidthRef.current = rightPanelWidth;
   const terminalHeightRef = useRef(terminalHeight);
   terminalHeightRef.current = terminalHeight;
   const nextFileTabIdRef = useRef(0);
 
-  const handleTogglePanel = useCallback((panel: "files" | "git-changes" | "git-history") => {
+  const handleTogglePanel = useCallback((panel: Exclude<RightPanel, null>) => {
     setRightPanel((prev) => (prev === panel ? null : panel));
+  }, []);
+
+  const handleOpenPanel = useCallback((panel: Exclude<RightPanel, null>) => {
+    setRightPanel(panel);
   }, []);
 
   const handleFileSelect = useCallback((path: string, name: string) => {
@@ -155,6 +163,11 @@ export function useProjectPanels() {
   }, []);
 
   const handleRightResizeStart = useCallback((e: React.MouseEvent) => {
+    if (rightPanelRef.current === "browser") {
+      browserPanel.handleResizeStart(e);
+      return;
+    }
+
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = rightPanelWidthRef.current;
@@ -172,7 +185,7 @@ export function useProjectPanels() {
     document.body.style.userSelect = "none";
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
-  }, []);
+  }, [browserPanel]);
 
   const handleTerminalResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -200,7 +213,8 @@ export function useProjectPanels() {
     openFiles: openFilesState.tabs,
     activeFileTabId: openFilesState.activeTabId,
     openDiff,
-    rightPanelWidth,
+    rightPanelWidth: rightPanel === "browser" ? browserPanel.effectiveWidth : rightPanelWidth,
+    browserPanelExpanded: browserPanel.expanded,
     terminalHeight,
     setOpenDiff,
     handleTogglePanel,
@@ -219,7 +233,9 @@ export function useProjectPanels() {
     showEditorWorkbench,
     clearFileAndDiff,
     handleRightResizeStart,
+    handleToggleBrowserPanelExpanded: browserPanel.toggleExpanded,
     handleTerminalResizeStart,
+    handleOpenPanel,
   };
 }
 export type { OpenFileTab };

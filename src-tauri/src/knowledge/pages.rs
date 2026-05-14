@@ -6,12 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 
 use super::collection::{collection_root_checked, find_collection, touch_collection};
-use super::types::{
-    KnowledgePageContent, KnowledgePageSummary, PageMeta,
-};
-use super::utils::{
-    normalize_path_string, spawn_blocking_string, title_from_slug,
-};
+use super::types::{KnowledgePageContent, KnowledgePageSummary, PageMeta};
+use super::utils::{normalize_path_string, spawn_blocking_string, title_from_slug};
 
 pub(crate) fn relative_to_collection(
     collection: &super::types::KnowledgeCollection,
@@ -53,9 +49,7 @@ fn ensure_wiki_markdown_path(
     let canonical_root = root
         .canonicalize()
         .or_else(|_| Ok::<_, anyhow::Error>(root.clone()))?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("页面路径缺少父目录"))?;
+    let parent = path.parent().ok_or_else(|| anyhow!("页面路径缺少父目录"))?;
     let canonical_parent = parent
         .canonicalize()
         .or_else(|_| Ok::<_, anyhow::Error>(parent.to_path_buf()))?;

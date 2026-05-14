@@ -1,10 +1,11 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use parking_lot::Mutex;
 use serde::Serialize;
 
 const DEBUG_LOG_DIR: &str = "logs";
@@ -51,9 +52,13 @@ impl ContextDebugLogger {
             return;
         }
 
-        if let Err(error) = append_log_entry(&self.project_root, event, metadata, sections) {
-            eprintln!("failed to write context debug log: {error:#}");
-        }
+        let project_root = self.project_root.clone();
+        let event = event.to_string();
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) = append_log_entry(&project_root, &event, metadata, sections) {
+                eprintln!("failed to write context debug log: {error:#}");
+            }
+        });
     }
 }
 
@@ -68,10 +73,7 @@ fn append_log_entry(
     metadata: Vec<(String, String)>,
     sections: Vec<DebugSection>,
 ) -> Result<()> {
-    let _guard = DEBUG_LOG_WRITE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap();
+    let _guard = DEBUG_LOG_WRITE_LOCK.get_or_init(|| Mutex::new(())).lock();
 
     let log_dir = project_root.join(DEBUG_LOG_DIR);
     fs::create_dir_all(&log_dir).with_context(|| format!("create {}", log_dir.display()))?;

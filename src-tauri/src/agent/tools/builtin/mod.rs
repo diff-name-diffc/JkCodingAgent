@@ -1,13 +1,15 @@
+mod browser;
 mod common;
 mod filesystem;
 mod knowledge;
 mod search;
 mod shell;
+mod time;
 
 use super::registry::AgentTool;
 
 pub(super) fn builtin_tools() -> Vec<Box<dyn AgentTool>> {
-    vec![
+    let mut tools = vec![
         filesystem::read_file_tool(),
         filesystem::write_file_tool(),
         filesystem::edit_file_tool(),
@@ -16,7 +18,10 @@ pub(super) fn builtin_tools() -> Vec<Box<dyn AgentTool>> {
         search::grep_tool(),
         knowledge::search_knowledge_base_tool(),
         knowledge::read_knowledge_page_tool(),
+        time::current_time_tool(),
         shell::exec_tool(),
         shell::message_tool(),
-    ]
+    ];
+    tools.extend(browser::browser_tools());
+    tools
 }

@@ -122,16 +122,6 @@ export function useTerminalManager() {
 
     function drainPendingOutputs() {
       rafId = 0;
-      if (
-        (
-          navigator as unknown as {
-            scheduling?: { isInputPending?: () => boolean };
-          }
-        ).scheduling?.isInputPending?.()
-      ) {
-        rafId = requestAnimationFrame(drainPendingOutputs);
-        return;
-      }
       let bytesThisFrame = 0;
       for (const [taskId, chunks] of pendingOutputs) {
         const joined = chunks.length === 1 ? chunks[0] : chunks.join("");
@@ -149,7 +139,8 @@ export function useTerminalManager() {
           break;
         }
       }
-      if (pendingOutputs.size > 0 && !rafId) {
+      // Always re-schedule RAF if there are still pending outputs to drain
+      if (pendingOutputs.size > 0) {
         rafId = requestAnimationFrame(drainPendingOutputs);
       }
     }

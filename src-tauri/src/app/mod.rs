@@ -1,6 +1,6 @@
 use crate::agent::DispatcherState;
 use crate::{
-    agent, knowledge, platform, project, scm, shared::TaskManager, task_runtime, workspace,
+    agent, browser, knowledge, platform, project, scm, shared::TaskManager, task_runtime, workspace,
 };
 use tauri::Manager;
 
@@ -27,6 +27,7 @@ pub fn run() {
         })
         .manage(build_task_manager())
         .manage(dispatcher_state)
+        .manage(browser::BrowserManager::default())
         .manage(agent::voice::VoiceAsrManager::default())
         .manage(project_mcp_registry)
         .manage(workspace::RopeManager::new())
@@ -41,6 +42,14 @@ pub fn run() {
             task_runtime::pty::resize_pty,
             task_runtime::pty::open_shell,
             task_runtime::pty::kill_shell,
+            browser::browser_start,
+            browser::browser_start_plain_chat,
+            browser::browser_import_chrome_profile,
+            browser::browser_list_chrome_profile_candidates,
+            browser::browser_stop,
+            browser::browser_click_at,
+            browser::browser_go_back,
+            browser::browser_get_status,
             workspace::fs::read_dir_entries,
             workspace::fs::read_file_content,
             workspace::fs::read_image_preview,

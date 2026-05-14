@@ -1,16 +1,16 @@
+pub(crate) mod cache;
+pub(crate) mod chunk;
+pub(crate) mod collection;
+pub(crate) mod document;
+pub(crate) mod embed;
+pub(crate) mod graph;
+pub(crate) mod ingest;
+pub(crate) mod jobs;
+pub(crate) mod pages;
+pub(crate) mod search;
+pub(crate) mod settings;
 pub(crate) mod types;
 pub(crate) mod utils;
-pub(crate) mod collection;
-pub(crate) mod settings;
-pub(crate) mod embed;
-pub(crate) mod pages;
-pub(crate) mod chunk;
-pub(crate) mod ingest;
-pub(crate) mod search;
-pub(crate) mod graph;
-pub(crate) mod jobs;
-pub(crate) mod cache;
-pub(crate) mod document;
 pub mod vector_store;
 
 pub(crate) const COLLECTIONS_FILE: &str = "collections.json";

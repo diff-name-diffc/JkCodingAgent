@@ -548,12 +548,12 @@ fn watch_claude_session(app: AppHandle, task_id: String, session_path: PathBuf) 
 
     let mut offset = 0u64;
     let mut partial = String::new();
-    let mut waiting_for_user = false;
+    let mut task_state = ClaudeTaskState::default();
 
     while is_task_active(&app, &task_id) {
         if let Ok(lines) = read_session_lines_since(&session_path, &mut offset, &mut partial) {
             for line in lines {
-                process_claude_session_line(&app, &task_id, &line, &mut waiting_for_user);
+                task_state.process_line(&app, &task_id, &line);
             }
         }
 
@@ -568,51 +568,98 @@ fn watch_claude_session(app: AppHandle, task_id: String, session_path: PathBuf) 
     }
 }
 
-fn process_claude_session_line(
-    app: &AppHandle,
-    task_id: &str,
-    line: &str,
-    waiting_for_user: &mut bool,
-) {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-        return;
+#[derive(Default)]
+struct ClaudeTaskState {
+    waiting_for_user: bool,
+}
+
+impl ClaudeTaskState {
+    fn process_line(&mut self, app: &AppHandle, task_id: &str, line: &str) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
+
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("assistant") => self.process_assistant(app, task_id, &value),
+            Some("user") => self.process_user(app, task_id, &value),
+            Some("system") => self.process_system(app, task_id, &value),
+            _ => {}
+        }
+    }
+
+    fn process_assistant(&mut self, app: &AppHandle, task_id: &str, value: &serde_json::Value) {
+        match claude_assistant_stop_reason(value) {
+            // tool_use 是 Claude 暂停等待用户批准或拒绝工具调用的明确信号。
+            Some("tool_use") => self.set_waiting_for_user(app, task_id, true),
+            Some("end_turn") => self.complete_turn(app, task_id),
+            _ => {}
+        }
+    }
+
+    fn process_user(&mut self, app: &AppHandle, task_id: &str, value: &serde_json::Value) {
+        if self.waiting_for_user && claude_user_resumes_turn(value) {
+            self.set_waiting_for_user(app, task_id, false);
+        }
+    }
+
+    fn process_system(&mut self, app: &AppHandle, task_id: &str, value: &serde_json::Value) {
+        if claude_system_marks_turn_complete(value) {
+            self.complete_turn(app, task_id);
+        }
+    }
+
+    fn complete_turn(&mut self, app: &AppHandle, task_id: &str) {
+        self.set_waiting_for_user(app, task_id, true);
+        force_dispatcher_idle(app, task_id);
+    }
+
+    fn set_waiting_for_user(&mut self, app: &AppHandle, task_id: &str, waiting: bool) {
+        if self.waiting_for_user == waiting {
+            return;
+        }
+
+        self.waiting_for_user = waiting;
+        emit_active_task_status(
+            app,
+            task_id,
+            if waiting { "input_required" } else { "running" },
+        );
+    }
+}
+
+fn claude_assistant_stop_reason(value: &serde_json::Value) -> Option<&str> {
+    value
+        .get("message")
+        .and_then(|m| m.get("stop_reason"))
+        .and_then(serde_json::Value::as_str)
+}
+
+fn claude_user_resumes_turn(value: &serde_json::Value) -> bool {
+    if value.get("isMeta").and_then(serde_json::Value::as_bool) == Some(true) {
+        return false;
+    }
+
+    let Some(message) = value.get("message") else {
+        return false;
     };
 
-    match value.get("type").and_then(serde_json::Value::as_str) {
-        Some("assistant") => {
-            // stop_reason == "tool_use" 是 Claude 暂停等待用户批准或拒绝工具调用的明确信号
-            let stop_reason = value
-                .get("message")
-                .and_then(|m| m.get("stop_reason"))
-                .and_then(serde_json::Value::as_str);
-
-            if stop_reason == Some("tool_use") && !*waiting_for_user {
-                *waiting_for_user = true;
-                emit_active_task_status(app, task_id, "input_required");
-            } else if stop_reason == Some("end_turn") {
-                force_dispatcher_idle(app, task_id);
-            }
-        }
-        Some("user") => {
-            // tool_result 条目表示用户已执行操作（批准或拒绝）
-            let has_tool_result = value
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(serde_json::Value::as_array)
-                .map(|content| {
-                    content.iter().any(|item| {
-                        item.get("type").and_then(serde_json::Value::as_str) == Some("tool_result")
-                    })
-                })
-                .unwrap_or(false);
-
-            if has_tool_result && *waiting_for_user {
-                *waiting_for_user = false;
-                emit_active_task_status(app, task_id, "running");
-            }
-        }
-        _ => {}
+    if message.get("role").and_then(serde_json::Value::as_str) != Some("user") {
+        return false;
     }
+
+    match message.get("content") {
+        Some(serde_json::Value::String(content)) => !content.trim().is_empty(),
+        Some(serde_json::Value::Array(content)) => !content.is_empty(),
+        Some(_) => true,
+        None => false,
+    }
+}
+
+fn claude_system_marks_turn_complete(value: &serde_json::Value) -> bool {
+    matches!(
+        value.get("subtype").and_then(serde_json::Value::as_str),
+        Some("turn_duration")
+    )
 }
 
 // ── Session messages (for conversation view) ──────────────────────────────────
@@ -646,12 +693,31 @@ pub(crate) enum SessionContent {
 
 #[tauri::command]
 pub async fn read_session_messages(session_path: String) -> Result<Vec<SessionMessage>, String> {
-    let content = std::fs::read_to_string(&session_path).map_err(|e| e.to_string())?;
-    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-    if is_codex_format(&lines) {
-        Ok(parse_codex_session(&lines))
+    use tokio::io::AsyncBufReadExt;
+
+    let file = tokio::fs::File::open(&session_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines_reader = reader.lines();
+    let mut owned_lines: Vec<String> = Vec::new();
+    const MAX_LINES: usize = 50000;
+
+    while let Some(line) = lines_reader.next_line().await.map_err(|e| e.to_string())? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if owned_lines.len() >= MAX_LINES {
+            break;
+        }
+        owned_lines.push(line);
+    }
+
+    let line_refs: Vec<&str> = owned_lines.iter().map(|s| s.as_str()).collect();
+    if is_codex_format(&line_refs) {
+        Ok(parse_codex_session(&line_refs))
     } else {
-        Ok(parse_claude_session(&lines))
+        Ok(parse_claude_session(&line_refs))
     }
 }
 
@@ -1623,6 +1689,49 @@ mod tests {
         });
 
         assert!(assistant_message_completes_turn(Some(&payload)));
+    }
+
+    #[test]
+    fn claude_end_turn_and_turn_duration_mark_turn_complete() {
+        let assistant = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": [{ "type": "text", "text": "已完成。" }]
+            }
+        });
+        let duration = serde_json::json!({
+            "type": "system",
+            "subtype": "turn_duration"
+        });
+
+        assert_eq!(claude_assistant_stop_reason(&assistant), Some("end_turn"));
+        assert!(claude_system_marks_turn_complete(&duration));
+    }
+
+    #[test]
+    fn claude_real_user_message_resumes_waiting_turn() {
+        let meta_user = serde_json::json!({
+            "type": "user",
+            "isMeta": true,
+            "message": { "role": "user", "content": "" }
+        });
+        let user_prompt = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": "继续处理下一步" }
+        });
+        let tool_result = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "tool_result", "tool_use_id": "toolu_1" }]
+            }
+        });
+
+        assert!(!claude_user_resumes_turn(&meta_user));
+        assert!(claude_user_resumes_turn(&user_prompt));
+        assert!(claude_user_resumes_turn(&tool_result));
     }
 
     #[test]

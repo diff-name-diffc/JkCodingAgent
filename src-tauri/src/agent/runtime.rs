@@ -12,7 +12,7 @@ use futures::future::join_all;
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::ipc::Channel;
+use tauri::{ipc::Channel, AppHandle};
 use tokio::sync::watch;
 
 use super::config::DispatcherAgentConfig;
@@ -24,8 +24,8 @@ use super::db::{
 };
 use super::debug::{render_json, ContextDebugLogger, DebugSection};
 use super::llm::{
-    messages_contain_inline_images, ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider,
-    OutboundToolCall, RequestedToolCall,
+    messages_contain_inline_images, ChatMessage, FunctionCall, LlmResponse, LlmUsage,
+    OpenAiCompatProvider, OutboundToolCall, RequestedToolCall,
 };
 use super::prompt::{build_system_prompt, PromptBundle, PromptSection};
 use super::summary::{prepare_tool_result, summarize_dispatch_result};
@@ -70,9 +70,7 @@ impl DispatchFeedbackState {
             Self::RoundCompleted => {
                 "[系统通知] 子任务当前轮次已完成，但子进程仍在运行，可继续注入后续指令，也可在确认无需继续后主动退出。请先分析执行状态，再决定下一步："
             }
-            Self::ProcessDone => {
-                "[系统通知] 子任务进程已结束。请根据以下执行结果总结反馈："
-            }
+            Self::ProcessDone => "[系统通知] 子任务进程已结束。请根据以下执行结果总结反馈：",
             Self::ProcessFailed => {
                 "[系统通知] 子任务进程已失败退出。请根据以下执行结果分析问题并决定下一步："
             }
@@ -115,6 +113,11 @@ pub enum AgentEvent {
     AssistantDelta {
         message_id: String,
         delta: String,
+    },
+    AssistantThinkingDelta {
+        message_id: String,
+        delta: String,
+        elapsed_ms: u64,
     },
     AssistantMessage {
         message: DispatcherMessageRecord,
@@ -230,6 +233,7 @@ pub struct DispatcherAgent {
     provider: Mutex<OpenAiCompatProvider>,
     summary_model: Mutex<String>,
     vision_model: Mutex<String>,
+    app_handle: Option<AppHandle>,
     tools: ToolRegistry,
     project_mcp_registry: ProjectMcpRegistry,
     subprocesses: Arc<DispatcherSubprocessRegistry>,
@@ -498,7 +502,7 @@ impl DispatcherSubprocessRegistry {
             .iter()
             .find(|item| item.task_id == task_id)
         {
-            item.force_idle.store(true, Ordering::Relaxed);
+            item.force_idle.store(true, Ordering::Release);
         }
     }
 
@@ -533,12 +537,18 @@ impl DispatcherAgent {
         Self {
             summary_model: Mutex::new(normalize_summary_model(&config.summary_model)),
             vision_model: Mutex::new(config.vision_model.trim().to_string()),
+            app_handle: None,
             config,
             provider: Mutex::new(provider),
             tools: ToolRegistry::default_tools(project_mcp_registry.clone()),
             project_mcp_registry,
             subprocesses,
         }
+    }
+
+    pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
+        self.app_handle = Some(app_handle);
+        self
     }
 
     pub fn apply_settings(&self, settings: &DispatcherSettingsRecord) {
@@ -639,6 +649,7 @@ impl DispatcherAgent {
         workspace_id: &str,
         workspace_path: &str,
         user_message: &str,
+        enable_thinking: bool,
         on_event: Channel<AgentEvent>,
         cancel_rx: watch::Receiver<bool>,
     ) -> Result<AgentTurn> {
@@ -684,6 +695,7 @@ impl DispatcherAgent {
                 &workspace,
                 &on_event,
                 &provider,
+                enable_thinking,
                 cancel_rx,
                 &mut usage_tracker,
             )
@@ -707,6 +719,7 @@ impl DispatcherAgent {
         dispatch_result: &str,
         dispatch_state: DispatchFeedbackState,
         dispatch_id: Option<&str>,
+        enable_thinking: bool,
         on_event: Channel<AgentEvent>,
         mut cancel_rx: watch::Receiver<bool>,
     ) -> Result<AgentTurn> {
@@ -843,6 +856,7 @@ impl DispatcherAgent {
                 &workspace,
                 &on_event,
                 &provider,
+                enable_thinking,
                 cancel_rx,
                 &mut usage_tracker,
             )
@@ -863,8 +877,9 @@ impl DispatcherAgent {
         db: &DispatcherDb,
         workspace_id: &str,
         user_message: &str,
+        enable_thinking: bool,
         on_event: Channel<AgentEvent>,
-        mut cancel_rx: watch::Receiver<bool>,
+        cancel_rx: watch::Receiver<bool>,
     ) -> Result<AgentTurn> {
         emit(
             &on_event,
@@ -886,93 +901,19 @@ impl DispatcherAgent {
         }
 
         let mut usage_tracker = RunUsageTracker::new();
-        let history_messages = db.load_llm_history(workspace_id)?;
-        let request_provider =
-            self.provider_for_messages(&provider, &history_messages, &on_event, true)?;
-        let mut messages = vec![ChatMessage::system(build_plain_chat_system_prompt())];
-        messages.extend(history_messages.clone());
-
-        let stream_msg_id = uuid::Uuid::new_v4().to_string();
-        emit(
-            &on_event,
-            AgentEvent::AssistantStarted {
-                message_id: stream_msg_id.clone(),
-            },
-        );
-
-        let event_ref = &on_event;
-        let msg_id_ref = stream_msg_id.clone();
-        let streamed_text = Arc::new(Mutex::new(String::new()));
-        let streamed_text_ref = Arc::clone(&streamed_text);
-        let on_delta = move |delta: &str| {
-            let mut partial = streamed_text_ref.lock();
-            partial.push_str(delta);
-            let _ = event_ref.send(AgentEvent::AssistantDelta {
-                message_id: msg_id_ref.clone(),
-                delta: delta.to_string(),
-            });
-        };
-
-        let response = tokio::select! {
-            _ = wait_for_cancellation(&mut cancel_rx) => {
-                let partial = streamed_text.lock().clone();
-                let reply = emit_plain_chat_stop_and_finish(
-                    db,
-                    workspace_id,
-                    &on_event,
-                    &partial,
-                    &usage_tracker,
-                )?;
-                let messages = db.list_visible_messages(workspace_id)?;
-                emit(
-                    &on_event,
-                    AgentEvent::Finished {
-                        messages: messages.clone(),
-                    },
-                );
-                return Ok(AgentTurn { reply, messages });
-            }
-            response = request_provider.chat_stream(
-                &messages,
-                &[],
-                messages_contain_inline_images(&history_messages),
-                on_delta,
-            ) => response
-        }?;
-
-        if let Some(usage) = response.usage.as_ref() {
-            record_run_token_usage(
+        let workspace = self.plain_chat_browser_workspace().await?;
+        let reply = self
+            .run_plain_chat_loop(
                 db,
                 workspace_id,
-                request_provider.model(),
-                DispatcherSessionTokenUsageSource::Primary,
-                usage,
-                &mut usage_tracker,
+                &workspace,
                 &on_event,
-            );
-        }
-
-        if !response.tool_calls.is_empty() {
-            anyhow::bail!(
-                "普通聊天链路禁止工具调用，但模型返回了 {} 个工具调用。",
-                response.tool_calls.len()
-            );
-        }
-
-        let content = response.content.trim().to_string();
-        if content.is_empty() {
-            anyhow::bail!("LLM 返回了空响应，无法继续执行。");
-        }
-
-        let usage_stats = usage_tracker.snapshot();
-        let reply =
-            db.add_visible_message_with_usage(workspace_id, "assistant", &content, &usage_stats)?;
-        emit(
-            &on_event,
-            AgentEvent::AssistantMessage {
-                message: reply.clone(),
-            },
-        );
+                &provider,
+                enable_thinking,
+                cancel_rx,
+                &mut usage_tracker,
+            )
+            .await?;
         let messages = db.list_visible_messages(workspace_id)?;
         emit(
             &on_event,
@@ -983,69 +924,52 @@ impl DispatcherAgent {
         Ok(AgentTurn { reply, messages })
     }
 
-    async fn run_llm_loop(
+    async fn run_plain_chat_loop(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
         workspace: &Path,
         on_event: &Channel<AgentEvent>,
         provider: &OpenAiCompatProvider,
+        enable_thinking: bool,
         cancel_rx: watch::Receiver<bool>,
         usage_tracker: &mut RunUsageTracker,
     ) -> Result<DispatcherMessageRecord> {
-        let debug_logger = ContextDebugLogger::new(self.context_debug_enabled(), workspace);
         let tool_context = ToolContext {
+            workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: self.config.restrict_to_workspace,
+            app_handle: self.app_handle.clone(),
+            llm_provider: Some(provider.clone()),
+            vision_model: self.vision_model(),
         };
+        let allowed_tool_names = plain_chat_tool_allowlist()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        let tool_definitions = self.tools.definitions_for_workspace(
+            workspace,
+            Some(allowed_tool_names.iter().map(String::as_str)),
+            false,
+        );
 
-        for iteration in 0..self.config.max_tool_iterations {
+        for _ in 0..self.config.max_tool_iterations {
             if cancellation_requested(&cancel_rx) {
-                return self.emit_stop_and_finish(
+                return emit_plain_chat_stop_and_finish(
                     db,
                     workspace_id,
                     on_event,
                     "",
-                    Some(usage_tracker),
+                    usage_tracker,
                 );
             }
 
-            let runtime_state = db.get_session_runtime_state(workspace_id)?;
-            let tool_definitions =
-                self.tool_definitions_for_workspace(workspace_id, workspace, &runtime_state);
-            let allowed_tool_names = tool_definitions
-                .iter()
-                .map(|tool| tool.function.name.clone())
-                .collect::<HashSet<_>>();
-            let prompt_snapshot = self.build_system_prompt_for_workspace(
-                workspace_id,
-                workspace,
-                &tool_definitions,
-                &runtime_state,
-            )?;
             let history_messages = db.load_llm_history(workspace_id)?;
             let request_provider =
-                self.provider_for_messages(provider, &history_messages, on_event, iteration == 0)?;
-            let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
+                self.provider_for_messages(provider, &history_messages, on_event, true)?;
+            let mut messages = vec![ChatMessage::system(build_plain_chat_system_prompt())];
             messages.extend(history_messages.clone());
-            let request_snapshot =
-                request_provider.build_request_snapshot(&messages, &tool_definitions);
-
-            debug_logger.log(
-                "发送大模型请求",
-                vec![
-                    ("工作区".to_string(), workspace_id.to_string()),
-                    ("轮次".to_string(), (iteration + 1).to_string()),
-                    ("模型".to_string(), request_provider.model().to_string()),
-                    ("消息数".to_string(), messages.len().to_string()),
-                    ("工具数".to_string(), tool_definitions.len().to_string()),
-                ],
-                vec![DebugSection::new(
-                    "实际请求",
-                    render_json(&request_snapshot),
-                )],
-            );
 
             let stream_msg_id = uuid::Uuid::new_v4().to_string();
             emit(
@@ -1057,6 +981,7 @@ impl DispatcherAgent {
 
             let event_ref = on_event;
             let msg_id_ref = stream_msg_id.clone();
+            let thinking_msg_id_ref = stream_msg_id.clone();
             let streamed_text = Arc::new(Mutex::new(String::new()));
             let streamed_text_ref = Arc::clone(&streamed_text);
             let on_delta = move |delta: &str| {
@@ -1067,27 +992,37 @@ impl DispatcherAgent {
                     delta: delta.to_string(),
                 });
             };
+            let thinking_event_ref = on_event;
+            let on_thinking_delta = move |delta: &str, elapsed_ms: u64| {
+                let _ = thinking_event_ref.send(AgentEvent::AssistantThinkingDelta {
+                    message_id: thinking_msg_id_ref.clone(),
+                    delta: delta.to_string(),
+                    elapsed_ms,
+                });
+            };
 
             let mut stream_cancel_rx = cancel_rx.clone();
             let response = tokio::select! {
                 _ = wait_for_cancellation(&mut stream_cancel_rx) => {
                     let partial = streamed_text.lock().clone();
-                    return self.emit_stop_and_finish(
+                    return emit_plain_chat_stop_and_finish(
                         db,
                         workspace_id,
                         on_event,
                         &partial,
-                        Some(usage_tracker),
+                        usage_tracker,
                     );
                 }
-                response = request_provider.chat_stream(
+                response = request_provider.chat_stream_with_thinking(
                     &messages,
                     &tool_definitions,
                     messages_contain_inline_images(&history_messages),
+                    enable_thinking,
                     on_delta,
+                    on_thinking_delta,
                 ) => response
             }?;
-            let response_snapshot = request_provider.build_response_snapshot(&response);
+
             if let Some(usage) = response.usage.as_ref() {
                 record_run_token_usage(
                     db,
@@ -1100,35 +1035,19 @@ impl DispatcherAgent {
                 );
             }
 
-            debug_logger.log(
-                "收到大模型响应",
-                vec![
-                    ("工作区".to_string(), workspace_id.to_string()),
-                    ("轮次".to_string(), (iteration + 1).to_string()),
-                    ("模型".to_string(), request_provider.model().to_string()),
-                    ("状态码".to_string(), response.status_code.to_string()),
-                    (
-                        "工具调用数".to_string(),
-                        response.tool_calls.len().to_string(),
-                    ),
-                ],
-                vec![DebugSection::new(
-                    "实际响应",
-                    render_json(&response_snapshot),
-                )],
-            );
-
             if response.tool_calls.is_empty() {
                 let content = response.content.trim().to_string();
                 if content.is_empty() {
-                    anyhow::bail!("LLM 返回了空响应且没有工具调用，无法继续执行。");
+                    anyhow::bail!("{}", empty_llm_response_error(&response));
                 }
                 let usage_stats = usage_tracker.snapshot();
-                let reply = db.add_visible_message_with_usage(
+                let reply = db.add_visible_message_with_usage_and_thinking(
                     workspace_id,
                     "assistant",
                     &content,
                     &usage_stats,
+                    Some(&response.thinking_content),
+                    response.thinking_elapsed_ms,
                 )?;
                 emit(
                     on_event,
@@ -1165,7 +1084,7 @@ impl DispatcherAgent {
                 );
             }
 
-            db.add_visible_message_with_tools(
+            db.add_visible_message_with_tools_and_thinking(
                 workspace_id,
                 "assistant",
                 &response.content,
@@ -1173,6 +1092,344 @@ impl DispatcherAgent {
                 None,
                 None,
                 Some(&tool_calls_payload),
+                Some(&response.thinking_content),
+                response.thinking_elapsed_ms,
+            )?;
+
+            for tool_call in response.tool_calls {
+                if cancellation_requested(&cancel_rx) {
+                    return emit_plain_chat_stop_and_finish(
+                        db,
+                        workspace_id,
+                        on_event,
+                        "",
+                        usage_tracker,
+                    );
+                }
+                emit(
+                    on_event,
+                    AgentEvent::ToolStarted {
+                        tool_call_id: Some(tool_call.id.clone()),
+                        name: tool_call.name.clone(),
+                        arguments: serde_json::to_string(&tool_call.arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
+                );
+
+                let raw_result = if allowed_tool_names.contains(&tool_call.name) {
+                    self.tools
+                        .execute(&tool_call.name, &tool_call.arguments, &tool_context)
+                        .await
+                } else {
+                    disallowed_tool_result(&tool_call.name)
+                };
+
+                let summary_model = self.summary_model();
+                let tool_result = prepare_tool_result(
+                    &request_provider,
+                    &summary_model,
+                    &tool_call.name,
+                    &tool_call.arguments,
+                    &raw_result,
+                    |result_mode| {
+                        emit(
+                            on_event,
+                            AgentEvent::ToolSummaryStarted {
+                                tool_call_id: Some(tool_call.id.clone()),
+                                name: tool_call.name.clone(),
+                                result_mode: result_mode.to_string(),
+                            },
+                        );
+                    },
+                    |delta| {
+                        emit(
+                            on_event,
+                            AgentEvent::ToolSummaryDelta {
+                                tool_call_id: Some(tool_call.id.clone()),
+                                name: tool_call.name.clone(),
+                                delta: delta.to_string(),
+                                result_mode: "conservative_summary".to_string(),
+                            },
+                        );
+                    },
+                    |usage| {
+                        record_run_token_usage(
+                            db,
+                            workspace_id,
+                            &summary_model,
+                            DispatcherSessionTokenUsageSource::Summary,
+                            usage,
+                            usage_tracker,
+                            on_event,
+                        );
+                    },
+                )
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "普通聊天工具结果摘要失败，tool={}, summary_model={}：{}",
+                        tool_call.name,
+                        summary_model,
+                        error.message()
+                    )
+                })?;
+
+                let tool_message = db.add_visible_tool_result(
+                    workspace_id,
+                    &tool_result.display_content,
+                    &tool_result.context_payload,
+                    Some(&tool_call.id),
+                    Some(&tool_call.name),
+                    Some(tool_result.result_mode),
+                    &tool_result.artifacts,
+                )?;
+                emit(
+                    on_event,
+                    AgentEvent::ToolFinished {
+                        tool_call_id: Some(tool_call.id.clone()),
+                        name: tool_call.name.clone(),
+                        display_text: tool_message.content.clone(),
+                        result_mode: tool_result.result_mode.to_string(),
+                        detail_refs: tool_message.tool_artifacts.clone(),
+                    },
+                );
+            }
+        }
+
+        anyhow::bail!(
+            "已达到最大工具迭代次数（{}），本轮聊天被终止。请检查模型是否陷入浏览器工具调用循环。",
+            self.config.max_tool_iterations
+        )
+    }
+
+    async fn plain_chat_browser_workspace(&self) -> Result<PathBuf> {
+        let workspace = self.config.root_dir.join("plain-chat-browser");
+        let config_dir = workspace.join(".jkcodingagent");
+        let create_dir = config_dir.clone();
+        tokio::task::spawn_blocking(move || fs::create_dir_all(&create_dir))
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("create plain chat browser workspace panicked: {error}")
+            })?
+            .with_context(|| format!("create {}", config_dir.display()))?;
+        Ok(workspace)
+    }
+
+    async fn run_llm_loop(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        workspace: &Path,
+        on_event: &Channel<AgentEvent>,
+        provider: &OpenAiCompatProvider,
+        enable_thinking: bool,
+        cancel_rx: watch::Receiver<bool>,
+        usage_tracker: &mut RunUsageTracker,
+    ) -> Result<DispatcherMessageRecord> {
+        let debug_logger = ContextDebugLogger::new(self.context_debug_enabled(), workspace);
+        let tool_context = ToolContext {
+            workspace_id: workspace_id.to_string(),
+            workspace: workspace.to_path_buf(),
+            exec_timeout_secs: self.config.exec_timeout_secs,
+            restrict_to_workspace: self.config.restrict_to_workspace,
+            app_handle: self.app_handle.clone(),
+            llm_provider: Some(provider.clone()),
+            vision_model: self.vision_model(),
+        };
+
+        for iteration in 0..self.config.max_tool_iterations {
+            if cancellation_requested(&cancel_rx) {
+                return self.emit_stop_and_finish(
+                    db,
+                    workspace_id,
+                    on_event,
+                    "",
+                    Some(usage_tracker),
+                );
+            }
+
+            let runtime_state = db.get_session_runtime_state(workspace_id)?;
+            let tool_definitions =
+                self.tool_definitions_for_workspace(workspace_id, workspace, &runtime_state);
+            let allowed_tool_names = tool_definitions
+                .iter()
+                .map(|tool| tool.function.name.clone())
+                .collect::<HashSet<_>>();
+            let prompt_snapshot = self
+                .build_system_prompt_for_workspace(
+                    workspace_id,
+                    workspace,
+                    &tool_definitions,
+                    &runtime_state,
+                )
+                .await?;
+            let history_messages = db.load_llm_history(workspace_id)?;
+            let request_provider =
+                self.provider_for_messages(provider, &history_messages, on_event, iteration == 0)?;
+            let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
+            messages.extend(history_messages.clone());
+            let request_snapshot = request_provider.build_request_snapshot(
+                &messages,
+                &tool_definitions,
+                enable_thinking,
+            );
+
+            debug_logger.log(
+                "发送大模型请求",
+                vec![
+                    ("工作区".to_string(), workspace_id.to_string()),
+                    ("轮次".to_string(), (iteration + 1).to_string()),
+                    ("模型".to_string(), request_provider.model().to_string()),
+                    ("消息数".to_string(), messages.len().to_string()),
+                    ("工具数".to_string(), tool_definitions.len().to_string()),
+                ],
+                vec![DebugSection::new(
+                    "实际请求",
+                    render_json(&request_snapshot),
+                )],
+            );
+
+            let stream_msg_id = uuid::Uuid::new_v4().to_string();
+            emit(
+                on_event,
+                AgentEvent::AssistantStarted {
+                    message_id: stream_msg_id.clone(),
+                },
+            );
+
+            let event_ref = on_event;
+            let msg_id_ref = stream_msg_id.clone();
+            let thinking_msg_id_ref = stream_msg_id.clone();
+            let streamed_text = Arc::new(Mutex::new(String::new()));
+            let streamed_text_ref = Arc::clone(&streamed_text);
+            let on_delta = move |delta: &str| {
+                let mut partial = streamed_text_ref.lock();
+                partial.push_str(delta);
+                let _ = event_ref.send(AgentEvent::AssistantDelta {
+                    message_id: msg_id_ref.clone(),
+                    delta: delta.to_string(),
+                });
+            };
+            let thinking_event_ref = on_event;
+            let on_thinking_delta = move |delta: &str, elapsed_ms: u64| {
+                let _ = thinking_event_ref.send(AgentEvent::AssistantThinkingDelta {
+                    message_id: thinking_msg_id_ref.clone(),
+                    delta: delta.to_string(),
+                    elapsed_ms,
+                });
+            };
+
+            let mut stream_cancel_rx = cancel_rx.clone();
+            let response = tokio::select! {
+                _ = wait_for_cancellation(&mut stream_cancel_rx) => {
+                    let partial = streamed_text.lock().clone();
+                    return self.emit_stop_and_finish(
+                        db,
+                        workspace_id,
+                        on_event,
+                        &partial,
+                        Some(usage_tracker),
+                    );
+                }
+                response = request_provider.chat_stream_with_thinking(
+                    &messages,
+                    &tool_definitions,
+                    messages_contain_inline_images(&history_messages),
+                    enable_thinking,
+                    on_delta,
+                    on_thinking_delta,
+                ) => response
+            }?;
+            let response_snapshot = request_provider.build_response_snapshot(&response);
+            if let Some(usage) = response.usage.as_ref() {
+                record_run_token_usage(
+                    db,
+                    workspace_id,
+                    request_provider.model(),
+                    DispatcherSessionTokenUsageSource::Primary,
+                    usage,
+                    usage_tracker,
+                    on_event,
+                );
+            }
+
+            debug_logger.log(
+                "收到大模型响应",
+                vec![
+                    ("工作区".to_string(), workspace_id.to_string()),
+                    ("轮次".to_string(), (iteration + 1).to_string()),
+                    ("模型".to_string(), request_provider.model().to_string()),
+                    ("状态码".to_string(), response.status_code.to_string()),
+                    (
+                        "工具调用数".to_string(),
+                        response.tool_calls.len().to_string(),
+                    ),
+                ],
+                vec![DebugSection::new(
+                    "实际响应",
+                    render_json(&response_snapshot),
+                )],
+            );
+
+            if response.tool_calls.is_empty() {
+                let content = response.content.trim().to_string();
+                if content.is_empty() {
+                    anyhow::bail!("{}", empty_llm_response_error(&response));
+                }
+                let usage_stats = usage_tracker.snapshot();
+                let reply = db.add_visible_message_with_usage_and_thinking(
+                    workspace_id,
+                    "assistant",
+                    &content,
+                    &usage_stats,
+                    Some(&response.thinking_content),
+                    response.thinking_elapsed_ms,
+                )?;
+                emit(
+                    on_event,
+                    AgentEvent::AssistantMessage {
+                        message: reply.clone(),
+                    },
+                );
+                return Ok(reply);
+            }
+
+            let tool_calls_payload = response
+                .tool_calls
+                .iter()
+                .map(|call| OutboundToolCall {
+                    id: call.id.clone(),
+                    kind: "function".to_string(),
+                    function: FunctionCall {
+                        name: call.name.clone(),
+                        arguments: serde_json::to_string(&call.arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
+                })
+                .collect::<Vec<_>>();
+
+            for tool_call in &response.tool_calls {
+                emit(
+                    on_event,
+                    AgentEvent::ToolPlanned {
+                        tool_call_id: Some(tool_call.id.clone()),
+                        name: tool_call.name.clone(),
+                        arguments: serde_json::to_string(&tool_call.arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
+                );
+            }
+
+            db.add_visible_message_with_tools_and_thinking(
+                workspace_id,
+                "assistant",
+                &response.content,
+                None,
+                None,
+                None,
+                Some(&tool_calls_payload),
+                Some(&response.thinking_content),
+                response.thinking_elapsed_ms,
             )?;
 
             let mut protocol_state =
@@ -1580,18 +1837,21 @@ impl DispatcherAgent {
         )
     }
 
-    fn build_system_prompt(&self) -> Result<PromptBundle> {
-        build_system_prompt(&self.config.root_dir)
+    async fn build_system_prompt(&self) -> Result<PromptBundle> {
+        let root = self.config.root_dir.clone();
+        tokio::task::spawn_blocking(move || build_system_prompt(&root))
+            .await
+            .map_err(|e| anyhow::anyhow!("build_system_prompt panicked: {e}"))?
     }
 
-    fn build_system_prompt_for_workspace(
+    async fn build_system_prompt_for_workspace(
         &self,
         workspace_id: &str,
         workspace: &Path,
         tool_definitions: &[crate::agent::llm::ToolDefinition],
         runtime_state: &DispatcherSessionRuntimeState,
     ) -> Result<SystemPromptSnapshot> {
-        let mut prompt_bundle = self.build_system_prompt()?;
+        let mut prompt_bundle = self.build_system_prompt().await?;
         let mode_block = build_dispatcher_mode_block(runtime_state);
         prompt_bundle.sections.push(PromptSection {
             label: "Runtime Planning Mode".to_string(),
@@ -2845,6 +3105,17 @@ fn disallowed_tool_result(tool_name: &str) -> String {
     )
 }
 
+fn empty_llm_response_error(response: &LlmResponse) -> String {
+    let raw_response = response.raw_response.trim();
+    let response_detail = if raw_response.is_empty() {
+        "<空>".to_string()
+    } else {
+        truncate_for_display(raw_response, 4_000, "\n...[LLM 接口响应内容已截断]")
+    };
+
+    format!("LLM 返回了空响应且没有工具调用，无法继续执行。\nLLM 接口响应内容：\n{response_detail}")
+}
+
 fn build_tool_retry_context(tool_call: &super::llm::RequestedToolCall, error: &str) -> String {
     let arguments =
         serde_json::to_string_pretty(&tool_call.arguments).unwrap_or_else(|_| "{}".to_string());
@@ -3106,7 +3377,12 @@ fn build_plain_chat_system_prompt() -> String {
         "# 普通聊天",
         "",
         "你是桌面客户端中的普通聊天助手。",
-        "当前会话不是项目 Agent 会话，没有项目目录、文件系统、终端、MCP、子进程或任何工具能力。",
+        "当前会话不是项目 Agent 会话，没有项目目录、文件系统、终端、MCP 或子进程能力。",
+        "你可以按需使用浏览器工具打开网页、点击、输入、等待、读取页面可访问性树快照、请求视觉辅助分析和关闭浏览器，用于网页自动化与公开信息检索。",
+        "需要当前日期、时间、时区或时间戳时，调用 get_current_time，不要猜测系统时间。",
+        "浏览器自动化统一使用 ref：先调用 browser_read_text 获取 Accessibility Tree 快照，再使用快照中的 ref 调用点击、输入或局部读取工具；不要使用 CSS selector。",
+        "浏览器工具只代表当前普通聊天会话中的临时浏览器，不代表用户本地项目环境。",
+        "检索问题信息时，优先打开明确网址；没有网址时可打开搜索引擎结果页并读取页面文本，不要伪造检索结果。",
         "不要声称已经读取、修改或执行了本地文件；如果用户要求操作项目或文件，请说明普通聊天不具备该能力，并建议切换到项目会话。",
         "可以基于用户直接提供的文本、代码片段、错误信息或图片进行解释、分析、改写和建议。",
         "默认使用简体中文，表达直接、清晰、面向有经验的开发者。",
@@ -3213,9 +3489,32 @@ fn default_mode_tool_allowlist() -> HashSet<&'static str> {
         "grep",
         "search_knowledge_base",
         "read_knowledge_page",
+        "get_current_time",
         "exec",
+        "browser_open_url",
+        "browser_click",
+        "browser_type",
+        "browser_press",
+        "browser_wait_for",
+        "browser_read_text",
+        "browser_visual_analyze",
+        "browser_close",
         "message",
         "update_plan",
+    ])
+}
+
+fn plain_chat_tool_allowlist() -> HashSet<&'static str> {
+    HashSet::from([
+        "browser_open_url",
+        "get_current_time",
+        "browser_click",
+        "browser_type",
+        "browser_press",
+        "browser_wait_for",
+        "browser_read_text",
+        "browser_visual_analyze",
+        "browser_close",
     ])
 }
 
@@ -3225,6 +3524,7 @@ fn plan_mode_tool_allowlist() -> HashSet<&'static str> {
         "list_dir",
         "glob",
         "grep",
+        "get_current_time",
         "exec",
         "message",
         "ask_plan_question",
@@ -3296,7 +3596,7 @@ fn render_available_tools_block(tool_definitions: &[crate::agent::llm::ToolDefin
 
     let mut lines = vec![
         "# 当前实际可用工具".to_string(),
-        "以下列表来自本轮运行时实际注入的工具定义，优先级高于静态 TOOLS.md。".to_string(),
+        "以下列表来自本轮运行时实际注入的工具定义，是当前可调用工具的唯一准确信息源。".to_string(),
     ];
 
     let mut tools = tool_definitions
@@ -3328,11 +3628,11 @@ mod tests {
         build_checklist_state, build_dispatcher_mode_block, build_plain_chat_system_prompt,
         build_protocol_waiting_message, collect_recent_exploration_entries,
         complete_checklist_dispatch, default_mode_tool_allowlist, parse_update_plan,
-        plan_mode_tool_allowlist, readonly_tool_run_end, reserve_checklist_dispatch,
-        resolve_plan_path, should_include_latest_user_goal, start_checklist_dispatch,
-        DispatchAgent, DispatcherAgent, DispatcherSubprocessRegistry, PlanPathAccess,
-        PlannedSubprocessState, ProtocolBatchState, ProtocolToolAction, RegisteredSubprocess,
-        RegisteredSubprocessPhase,
+        plain_chat_tool_allowlist, plan_mode_tool_allowlist, readonly_tool_run_end,
+        reserve_checklist_dispatch, resolve_plan_path, should_include_latest_user_goal,
+        start_checklist_dispatch, DispatchAgent, DispatcherAgent, DispatcherSubprocessRegistry,
+        PlanPathAccess, PlannedSubprocessState, ProtocolBatchState, ProtocolToolAction,
+        RegisteredSubprocess, RegisteredSubprocessPhase,
     };
     use super::{ChecklistStepStatus, DispatcherMode, DispatcherSessionRuntimeState};
     use crate::agent::config::DispatcherAgentConfig;
@@ -3570,12 +3870,28 @@ mod tests {
     }
 
     #[test]
-    fn plain_chat_prompt_and_request_do_not_expose_tools_or_workspace() {
+    fn plain_chat_prompt_exposes_only_browser_and_time_tools() {
         let prompt = build_plain_chat_system_prompt();
         assert!(prompt.contains("普通聊天"));
         assert!(prompt.contains("没有项目目录"));
-        assert!(prompt.contains("任何工具能力"));
+        assert!(prompt.contains("浏览器工具"));
 
+        let workspace = temp_workspace("plain-chat-tools");
+        let config = test_dispatcher_config(workspace.clone());
+        let agent = DispatcherAgent::new(
+            config,
+            ProjectMcpRegistry::default(),
+            Arc::new(DispatcherSubprocessRegistry::default()),
+        );
+        let allowed = plain_chat_tool_allowlist();
+        let tool_definitions =
+            agent
+                .tools
+                .definitions_for_workspace(&workspace, Some(allowed.iter().copied()), false);
+        let tools = tool_definitions
+            .iter()
+            .map(|tool| tool.function.name.clone())
+            .collect::<Vec<_>>();
         let provider = OpenAiCompatProvider::new(
             "test-key".to_string(),
             "https://example.com/v1".to_string(),
@@ -3583,9 +3899,21 @@ mod tests {
             1024,
             0.1,
         );
-        let snapshot = provider.build_request_snapshot(&[ChatMessage::system(prompt)], &[]);
+        let snapshot = provider.build_request_snapshot(
+            &[ChatMessage::system(prompt)],
+            &tool_definitions,
+            false,
+        );
 
-        assert!(snapshot.body.tools.is_none());
+        assert!(tools.iter().any(|name| name == "browser_open_url"));
+        assert!(tools.iter().any(|name| name == "browser_read_text"));
+        assert!(tools.iter().any(|name| name == "browser_visual_analyze"));
+        assert!(tools.iter().any(|name| name == "get_current_time"));
+        assert!(!tools.iter().any(|name| name == "browser_screenshot"));
+        assert!(!tools.iter().any(|name| name == "read_file"));
+        assert!(!tools.iter().any(|name| name == "exec"));
+        assert!(snapshot.body.tools.is_some());
+        let _ = fs::remove_dir_all(&workspace);
     }
 
     #[test]
@@ -3648,6 +3976,15 @@ mod tests {
         assert!(default_tools.iter().any(|name| name == "update_plan"));
         assert!(default_tools.iter().any(|name| name == "dispatch_claude"));
         assert!(default_tools.iter().any(|name| name == "dispatch_codex"));
+        assert!(default_tools.iter().any(|name| name == "get_current_time"));
+        assert!(default_tools.iter().any(|name| name == "browser_open_url"));
+        assert!(default_tools.iter().any(|name| name == "browser_read_text"));
+        assert!(default_tools
+            .iter()
+            .any(|name| name == "browser_visual_analyze"));
+        assert!(!default_tools
+            .iter()
+            .any(|name| name == "browser_screenshot"));
 
         let plan_state = DispatcherSessionRuntimeState {
             mode: DispatcherMode::Plan,
@@ -3662,12 +3999,18 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(plan_tools.iter().any(|name| name == "create_plan_document"));
         assert!(plan_tools.iter().any(|name| name == "read_file"));
+        assert!(plan_tools.iter().any(|name| name == "get_current_time"));
         assert!(!plan_tools.iter().any(|name| name == "update_plan"));
         assert!(!plan_tools.iter().any(|name| name == "dispatch_claude"));
         assert!(!plan_tools.iter().any(|name| name == "write_file"));
+        assert!(!plan_tools.iter().any(|name| name == "browser_open_url"));
 
         assert!(default_mode_tool_allowlist().contains("update_plan"));
+        assert!(default_mode_tool_allowlist().contains("browser_open_url"));
+        assert!(default_mode_tool_allowlist().contains("get_current_time"));
+        assert!(plain_chat_tool_allowlist().contains("get_current_time"));
         assert!(plan_mode_tool_allowlist().contains("present_plan"));
+        assert!(plan_mode_tool_allowlist().contains("get_current_time"));
         let _ = fs::remove_dir_all(&workspace);
     }
 

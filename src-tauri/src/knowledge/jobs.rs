@@ -1,4 +1,3 @@
-
 use anyhow::{anyhow, Result};
 
 use super::collection::find_collection;
@@ -89,11 +88,5 @@ pub async fn knowledge_retry_ingest(job_id: String) -> Result<KnowledgeIngestJob
 
     let collection = find_collection(&job.collection_id).map_err(|e| e.to_string())?;
     update_job_status(&job_id, "running", "正在重试").map_err(|e| e.to_string())?;
-    super::ingest::ingest_one_source_with_job(
-        collection,
-        job.source_path,
-        settings,
-        job_id,
-    )
-    .await
+    super::ingest::ingest_one_source_with_job(collection, job.source_path, settings, job_id).await
 }

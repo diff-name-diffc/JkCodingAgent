@@ -41,7 +41,6 @@ pub(super) fn build_system_prompt(root: &Path) -> Result<PromptBundle> {
 
     push_file_if_exists(&mut sections, "SOUL", root.join("SOUL.md"))?;
     push_file_if_exists(&mut sections, "USER", root.join("USER.md"))?;
-    push_file_if_exists(&mut sections, "TOOLS", root.join("TOOLS.md"))?;
 
     let skills_dir = root.join("skills");
     if skills_dir.exists() {
@@ -112,4 +111,35 @@ fn push_file_if_exists(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::build_system_prompt;
+
+    #[test]
+    fn system_prompt_ignores_persisted_tools_file() {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-prompt-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create prompt root");
+        fs::write(root.join("SOUL.md"), "# Soul\n").expect("write soul");
+        fs::write(root.join("USER.md"), "# User\n").expect("write user");
+        fs::write(root.join("TOOLS.md"), "stale hard-coded tool list").expect("write tools");
+
+        let prompt = build_system_prompt(&root).expect("build prompt");
+
+        assert!(prompt.content.contains("# Soul"));
+        assert!(prompt.content.contains("# User"));
+        assert!(!prompt.content.contains("stale hard-coded tool list"));
+        assert!(!prompt
+            .sections
+            .iter()
+            .any(|section| section.label == "TOOLS"));
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

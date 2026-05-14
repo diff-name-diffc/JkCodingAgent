@@ -1,5 +1,6 @@
 mod agent;
 mod app;
+mod browser;
 mod knowledge;
 mod platform;
 mod project;

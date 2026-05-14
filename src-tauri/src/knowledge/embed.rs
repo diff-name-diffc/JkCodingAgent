@@ -56,8 +56,7 @@ pub(crate) async fn fetch_embedding(
         let status = response.status();
         let body = response.text().await.map_err(|error| error.to_string())?;
         if status.is_success() {
-            let value: Value =
-                serde_json::from_str(&body).map_err(|error| error.to_string())?;
+            let value: Value = serde_json::from_str(&body).map_err(|error| error.to_string())?;
             return parse_embedding_response(&value)
                 .ok_or_else(|| "embedding 响应中未找到 data[0].embedding".to_string());
         }

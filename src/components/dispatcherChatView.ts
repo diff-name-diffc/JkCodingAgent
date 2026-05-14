@@ -1,4 +1,5 @@
 import type {
+  BrowserStatus,
   DispatcherMessage,
   DispatcherMessageUsageStats,
   DispatcherToolArtifactRef,
@@ -18,6 +19,7 @@ interface DispatcherAssistantTurn {
   id: string;
   tools: ToolActivityItem[];
   segments: AssistantTurnSegment[];
+  thinking: AssistantThinkingBlock | null;
   usageStats?: DispatcherMessageUsageStats;
 }
 
@@ -27,6 +29,11 @@ export interface AssistantTurnSegment {
   toolCallId?: string;
   toolName?: string;
   resultMode?: DispatcherToolResultMode;
+}
+
+export interface AssistantThinkingBlock {
+  text: string;
+  elapsedMs: number;
 }
 
 type DispatcherDisplayItem =
@@ -48,6 +55,7 @@ export function buildDispatcherDisplayItems(
       id: `assistant-turn-${seedId}`,
       tools: [],
       segments: [],
+      thinking: null,
     };
     items.push({
       kind: "assistant",
@@ -72,6 +80,7 @@ export function buildDispatcherDisplayItems(
 
     if (message.role === "assistant") {
       mergeTurnUsageStats(turn, message.usageStats);
+      mergeTurnThinking(turn, message.thinkingContent, message.thinkingElapsedMs);
 
       const toolCalls = parseToolCalls(message.toolCallsJson);
       for (const toolCall of toolCalls) {
@@ -122,6 +131,7 @@ export function buildDispatcherDisplayItems(
   return items.filter(
     (item) =>
       item.kind === "user" ||
+      Boolean(item.turn.thinking?.text.trim()) ||
       item.turn.tools.length > 0 ||
       item.turn.segments.some((segment) => segment.text.trim()),
   );
@@ -203,6 +213,27 @@ export function finishLiveToolActivity(
     status: "completed",
   });
   return nextTools;
+}
+
+export function updateLiveBrowserToolActivity(
+  tools: ToolActivityItem[],
+  status: BrowserStatus,
+): ToolActivityItem[] {
+  const message = status.message?.trim() || browserStateLabel(status.state);
+  if (!message) return tools;
+
+  const nextTools = [...tools];
+  for (let index = nextTools.length - 1; index >= 0; index -= 1) {
+    const tool = nextTools[index];
+    if (tool.status === "running" && tool.name.startsWith("browser_")) {
+      nextTools[index] = {
+        ...tool,
+        displayText: message,
+      };
+      return nextTools;
+    }
+  }
+  return tools;
 }
 
 export function appendAssistantTextSegment(
@@ -299,6 +330,25 @@ function upsertToolActivity(tools: ToolActivityItem[], incoming: ToolActivityIte
   };
 }
 
+function browserStateLabel(state: string): string {
+  switch (state) {
+    case "starting":
+      return "正在启动浏览器";
+    case "launching":
+      return "正在启动有头浏览器";
+    case "downloading":
+      return "正在下载浏览器资源";
+    case "busy":
+      return "正在执行浏览器操作";
+    case "ready":
+      return "浏览器已就绪";
+    case "closed":
+      return "浏览器已关闭";
+    default:
+      return state;
+  }
+}
+
 function mergeTurnUsageStats(
   turn: DispatcherAssistantTurn,
   incoming: DispatcherMessageUsageStats | null | undefined,
@@ -317,6 +367,30 @@ function mergeTurnUsageStats(
     completionTokens: turn.usageStats.completionTokens + incoming.completionTokens,
     totalTokens: turn.usageStats.totalTokens + incoming.totalTokens,
     elapsedMs: Math.max(turn.usageStats.elapsedMs, incoming.elapsedMs),
+  };
+}
+
+function mergeTurnThinking(
+  turn: DispatcherAssistantTurn,
+  content: string | null | undefined,
+  elapsedMs: number | null | undefined,
+) {
+  const text = content?.trim();
+  if (!text) {
+    return;
+  }
+
+  if (!turn.thinking) {
+    turn.thinking = {
+      text,
+      elapsedMs: elapsedMs ?? 0,
+    };
+    return;
+  }
+
+  turn.thinking = {
+    text: `${turn.thinking.text}\n\n${text}`,
+    elapsedMs: turn.thinking.elapsedMs + (elapsedMs ?? 0),
   };
 }
 

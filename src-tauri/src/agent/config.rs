@@ -77,55 +77,6 @@ const LEGACY_DEFAULT_USER: &str = r#"# User Preferences
 The user is an experienced developer. Be concise, factual, and implementation-oriented.
 "#;
 
-const DEFAULT_TOOLS: &str = r#"# 工具说明
-
-这些工具用于调查代码、收集上下文、构造任务和调度执行。
-
-- `read_file`：读取文件内容并保留行号，理解实现时优先使用。
-- `list_dir` / `glob`：查看目录结构、按路径模式搜索文件、缩小调查范围。
-- `grep`：在 glob 缩小范围后继续按内容精确匹配，优先用于定位符号、配置键、错误文本和调用点。
-- `exec`：执行命令获取事实，例如搜索符号、查看 Git 状态、运行构建或测试；优先使用只读命令。
-- `write_file` / `edit_file`：只用于极小范围修补、验证性修改或维护调度文件；不要把自己变成主要实现代理。
-- `update_plan`：Default 模式下维护输入框上方 Checklist；Plan 模式禁用。仅复杂任务使用；一旦决定使用，必须在探索和委派前先创建本次任务规划步骤。Checklist 会随 `dispatch_claude` / `dispatch_codex` 子任务进入运行中，并在子任务终态回流后完成对应步骤。
-- `ask_plan_question` / `create_plan_document` / `read_plan_document` / `replace_plan_document` / `edit_plan_document` / `present_plan`：Plan 模式专用，只能围绕 `.jkcodingagent/plan/*.md` 生成和完善计划书。
-- `mark_plan_implemented`：Default 模式下，实施完成后把计划书重命名为 `*-已实现.md`。
-- `dispatch_claude`：把任务交给 Claude 执行，适合新功能、快速试错和探索性调试。
-- `dispatch_codex`：把任务交给 Codex 执行，适合重构、结构整理和需要严格验证的任务。
-- `message`：在调查或协调完成后，向用户输出最终结论。
-
-使用原则：
-- 简单任务可以不调用 `update_plan`；复杂任务一旦需要 Checklist，先调用 `update_plan` 展示本次任务规划步骤，再进行探索、委派或执行。
-- 先调查再委派，先定位再下结论。
-- 探索代码默认遵循：必要时先 update_plan → glob 缩小文件范围 → grep 精确匹配内容 → read_file 加载确认；若信息仍不足，再继续下一轮收缩。
-- 独立的 `read_file` / `list_dir` / `glob` / `grep` 调用可以在同一轮同时返回，系统会并发执行连续的只读探索工具。
-- `read_file` / `list_dir` 使用 `paths`；`glob` / `grep` 使用 `patterns` 和 `paths`。结果会按路径或模式分段。
-- 调查工具可通过 `result_mode` 控制写回主调度上下文的方式：`full` 保留精确信息，`summary` 仅压缩写回上下文，不会覆盖前端展示文案或详细结果引用，`auto` 由系统按工具类型判断。
-- `read_file` / `list_dir` / `glob` / `grep` 默认更适合 `full`，因为后续判断通常依赖精确文本或文件列表。
-- `exec` 默认更适合 `auto`；只看成败、统计或阶段结论时可显式用 `summary`，需要原始报错或精确输出时用 `full`。
-- 委派时必须提供自包含的任务说明。
-- Plan 模式必须先探索，再在信息不足时提问，最后生成计划书并调用 `present_plan`；不得编码，不得委派，不得调用 `update_plan`。
-- 文件名包含 `-已实现.md` 的计划代表已经落地，只能作为历史记录参考，不能重复实施。
-- 子任务回流到主调度时默认只同步任务摘要，不回灌完整终端日志；如果需要更多原始事实，应继续下发更具体的子任务，或直接使用本地调查工具补证据。
-- 如果 Claude 与 Codex 可并行推进不同工作流，可以在同一轮同时调用多个 `dispatch_*`。
-- 同一 agent 在同一 session 中不能重复 dispatch；若已有活跃进程，应改用 continue/exit。
-- 继续或退出子会话时，必须使用对应代理家族的工具。
-"#;
-
-const LEGACY_DEFAULT_TOOLS: &str = r#"# Tools
-
-Available tools are exposed as OpenAI-compatible function tools.
-
-- read_file: read text files with line numbers.
-- write_file: write a text file within the active workspace.
-- edit_file: replace exact text in a file within the active workspace.
-- list_dir: list files and directories.
-- glob: find files by glob pattern.
-- grep: search text with ripgrep after narrowing the candidate files with glob.
-- exec: run shell commands in the active workspace.
-- dispatch_claude: delegate a coding task to a Claude Code agent running in a real terminal. Prefer it for faster exploration, new functionality, and algorithm work.
-- dispatch_codex: delegate a coding task to a Codex agent running in a real terminal. Prefer it for careful refactoring, structural cleanup, and risk-sensitive modifications.
-"#;
-
 #[derive(Debug, Clone)]
 pub struct DispatcherAgentConfig {
     pub root_dir: PathBuf,
@@ -161,11 +112,6 @@ impl DispatcherAgentConfig {
             root_dir.join("USER.md"),
             DEFAULT_USER,
             &[LEGACY_DEFAULT_USER],
-        )?;
-        sync_bundled_prompt_file(
-            root_dir.join("TOOLS.md"),
-            DEFAULT_TOOLS,
-            &[LEGACY_DEFAULT_TOOLS],
         )?;
         write_if_missing(root_dir.join("memory").join("MEMORY.md"), "# 记忆\n\n")?;
 

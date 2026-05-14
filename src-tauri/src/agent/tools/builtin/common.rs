@@ -137,13 +137,7 @@ pub(super) fn resolve_path(context: &ToolContext, raw_path: &str) -> Result<Path
             .workspace
             .canonicalize()
             .map_err(|error| format!("解析工作区路径失败：{error}"))?;
-        let candidate = if normalized.exists() {
-            normalized
-                .canonicalize()
-                .map_err(|error| format!("解析路径失败：{error}"))?
-        } else {
-            normalized
-        };
+        let candidate = canonicalize_existing_prefix(&normalized)?;
         if !candidate.starts_with(&workspace) {
             return Err(format!("错误：禁止访问工作区之外的路径：{raw_path}"));
         }
@@ -151,6 +145,35 @@ pub(super) fn resolve_path(context: &ToolContext, raw_path: &str) -> Result<Path
     }
 
     Ok(normalized)
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf, String> {
+    let mut missing_components = Vec::new();
+    let mut cursor = path;
+
+    loop {
+        match fs::symlink_metadata(cursor) {
+            Ok(_) => {
+                let mut resolved = cursor
+                    .canonicalize()
+                    .map_err(|error| format!("解析路径失败：{error}"))?;
+                for component in missing_components.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let Some(name) = cursor.file_name() else {
+                    return Err(format!("解析路径失败：{}", path.display()));
+                };
+                missing_components.push(name.to_os_string());
+                cursor = cursor
+                    .parent()
+                    .ok_or_else(|| format!("解析路径失败：{}", path.display()))?;
+            }
+            Err(error) => return Err(format!("读取路径元数据失败：{error}")),
+        }
+    }
 }
 
 pub(super) fn lexical_normalize(path: &Path) -> PathBuf {
@@ -238,4 +261,58 @@ pub(super) fn is_dangerous(command: &str) -> bool {
     DANGEROUS_PATTERNS
         .iter()
         .any(|pattern| lower.contains(pattern))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::resolve_path;
+    use crate::agent::tools::ToolContext;
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{name}-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn tool_context(workspace: PathBuf) -> ToolContext {
+        ToolContext {
+            workspace_id: "test-workspace".to_string(),
+            workspace,
+            exec_timeout_secs: 30,
+            restrict_to_workspace: true,
+            app_handle: None,
+            llm_provider: None,
+            vision_model: String::new(),
+        }
+    }
+
+    #[test]
+    fn resolve_path_allows_missing_child_inside_workspace() {
+        let workspace = temp_path("jkcodingagent-common-path-test");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let context = tool_context(workspace.clone());
+
+        let resolved = resolve_path(&context, "new/nested/file.txt").expect("resolve path");
+
+        assert!(resolved.starts_with(workspace.canonicalize().expect("canonical workspace")));
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_path_rejects_missing_child_below_symlinked_parent() {
+        let workspace = temp_path("jkcodingagent-common-workspace-test");
+        let outside = temp_path("jkcodingagent-common-outside-test");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::create_dir_all(&outside).expect("create outside");
+        std::os::unix::fs::symlink(&outside, workspace.join("escape")).expect("create symlink");
+        let context = tool_context(workspace.clone());
+
+        let error = resolve_path(&context, "escape/passwd").expect_err("reject escaped path");
+
+        assert!(error.contains("禁止访问工作区之外"));
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(outside);
+    }
 }

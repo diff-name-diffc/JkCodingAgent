@@ -206,8 +206,8 @@ pub(crate) async fn reindex_collection_inner(
 pub async fn knowledge_reindex_collection(
     collection_id: String,
 ) -> Result<KnowledgeVectorStats, String> {
-    let collection = spawn_blocking_string(move || super::collection::find_collection(&collection_id))
-        .await?;
+    let collection =
+        spawn_blocking_string(move || super::collection::find_collection(&collection_id)).await?;
     let settings = spawn_blocking_string(super::settings::load_settings).await?;
     reindex_collection_inner(&collection, &settings).await
 }

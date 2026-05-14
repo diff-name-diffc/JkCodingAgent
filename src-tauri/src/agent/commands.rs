@@ -21,6 +21,7 @@ use super::runtime::{
 };
 use super::summary::{fallback_session_title, summarize_session_title, SessionTitleMessage};
 use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
+use crate::browser::BrowserManager;
 use crate::project::mcp::ProjectMcpRegistry;
 use crate::shared::TaskManager;
 
@@ -489,6 +490,7 @@ pub async fn dispatcher_send_message(
     project_path: String,
     content: String,
     mode: Option<String>,
+    enable_thinking: Option<bool>,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let title_generation = state.begin_title_generation(&workspace_id);
@@ -506,13 +508,14 @@ pub async fn dispatcher_send_message(
     }
 
     let run_handle = state.begin_run(&workspace_id);
-    let agent = state.build_run_agent();
+    let agent = state.build_run_agent().with_app_handle(app.clone());
     let result = agent
         .run(
             &state.db,
             &workspace_id,
             &project_path,
             &content,
+            enable_thinking.unwrap_or(false),
             on_event,
             run_handle.cancel_rx,
         )
@@ -529,6 +532,7 @@ pub async fn dispatcher_send_plain_chat_message(
     app: AppHandle,
     workspace_id: String,
     content: String,
+    enable_thinking: Option<bool>,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let title_generation = state.begin_title_generation(&workspace_id);
@@ -542,12 +546,13 @@ pub async fn dispatcher_send_plain_chat_message(
         .map_err(|error| error.to_string())?;
 
     let run_handle = state.begin_run(&workspace_id);
-    let agent = state.build_run_agent();
+    let agent = state.build_run_agent().with_app_handle(app.clone());
     let result = agent
         .run_plain_chat(
             &state.db,
             &workspace_id,
             &content,
+            enable_thinking.unwrap_or(false),
             on_event,
             run_handle.cancel_rx,
         )
@@ -748,15 +753,17 @@ pub async fn dispatcher_set_auto_approve_dispatch(
 #[tauri::command]
 pub async fn dispatcher_continue_after_dispatch(
     state: tauri::State<'_, DispatcherState>,
+    app: AppHandle,
     workspace_id: String,
     project_path: String,
     dispatch_result: String,
     dispatch_state: String,
     dispatch_id: Option<String>,
+    enable_thinking: Option<bool>,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let run_handle = state.begin_run(&workspace_id);
-    let agent = state.build_run_agent();
+    let agent = state.build_run_agent().with_app_handle(app);
     let result = agent
         .continue_after_dispatch(
             &state.db,
@@ -765,6 +772,7 @@ pub async fn dispatcher_continue_after_dispatch(
             &dispatch_result,
             DispatchFeedbackState::from_wire(&dispatch_state),
             dispatch_id.as_deref(),
+            enable_thinking.unwrap_or(false),
             on_event,
             run_handle.cancel_rx,
         )
@@ -800,8 +808,14 @@ pub fn dispatcher_clear_checklist_dispatch(
 }
 
 #[tauri::command]
-pub fn dispatcher_stop_run(state: tauri::State<'_, DispatcherState>, workspace_id: String) -> bool {
-    state.stop_run(&workspace_id)
+pub async fn dispatcher_stop_run(
+    state: tauri::State<'_, DispatcherState>,
+    browser_manager: tauri::State<'_, BrowserManager>,
+    workspace_id: String,
+) -> Result<bool, String> {
+    let stopped = state.stop_run(&workspace_id);
+    let _ = browser_manager.stop(&workspace_id).await;
+    Ok(stopped)
 }
 
 #[tauri::command]

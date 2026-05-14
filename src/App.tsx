@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { open as openDialog, confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -16,16 +16,6 @@ function persistProjects(projects: Project[], onError: (msg: string) => void) {
   invoke("save_projects", { projects }).catch((e: unknown) => {
     console.error(e);
     onError(`保存项目列表失败：${String(e)}`);
-  });
-}
-
-function persistProjectTasks(projectId: string, allTasks: Task[], onError: (msg: string) => void) {
-  invoke("save_project_tasks", {
-    projectId,
-    tasks: allTasks.filter((t) => t.projectId === projectId),
-  }).catch((e: unknown) => {
-    console.error(e);
-    onError(`保存任务失败（项目 ${projectId}）：${String(e)}`);
   });
 }
 
@@ -50,6 +40,29 @@ function App() {
   const [mountedProjectIds, setMountedProjectIds] = useState<string[]>([]);
 
   const tm = useTerminalManager();
+
+  // ── Debounced task persistence ─────────────────────────────────────────────
+  const persistTimersRef = useRef<Record<string, number>>({});
+
+  const debouncedPersistProjectTasks = useCallback(
+    (projectId: string, allTasks: Task[]) => {
+      const timers = persistTimersRef.current;
+      if (timers[projectId]) {
+        window.clearTimeout(timers[projectId]);
+      }
+      timers[projectId] = window.setTimeout(() => {
+        delete timers[projectId];
+        invoke("save_project_tasks", {
+          projectId,
+          tasks: allTasks.filter((t) => t.projectId === projectId),
+        }).catch((e: unknown) => {
+          console.error(e);
+          showToast(`保存任务失败（项目 ${projectId}）：${String(e)}`);
+        });
+      }, 400);
+    },
+    [showToast],
+  );
 
   const mountProject = useCallback((projectId: string) => {
     setMountedProjectIds((prev) => (prev.includes(projectId) ? prev : [...prev, projectId]));
@@ -127,8 +140,7 @@ function App() {
       p1.then((fn) => fn());
       p2.then((fn) => fn());
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [tm, showToast]);
 
   async function handleOpen() {
     const selected = await openDialog({ directory: true, multiple: false });
@@ -258,7 +270,7 @@ function App() {
     };
     setTasks((prev) => {
       const next = [task, ...prev];
-      persistProjectTasks(task.projectId, next, showToast);
+      debouncedPersistProjectTasks(task.projectId, next);
       return next;
     });
 
@@ -270,28 +282,34 @@ function App() {
     return task.id;
   }
 
-  function deleteTasks(taskIds: string[]) {
+  async function deleteTasks(taskIds: string[]) {
     if (taskIds.length === 0) return;
 
+    // Phase 1: snapshot tasks to delete, stop active ones on backend first
+    let deletingTasks: Task[] = [];
     setTasks((prev) => {
       const toDelete = new Set(taskIds);
-      const deletingTasks = prev.filter((task) => toDelete.has(task.id));
-
+      deletingTasks = prev.filter((task) => toDelete.has(task.id));
       if (deletingTasks.length === 0) return prev;
+      return prev;
+    });
+    if (deletingTasks.length === 0) return;
 
-      deletingTasks
-        .filter((task) => isActiveTaskStatus(task.status))
-        .forEach((task) => {
-          invoke("stop_task", { taskId: task.id }).catch(
-            (e: unknown) => {
-              showToast(`停止任务失败：${String(e)}`);
-            },
-          );
-        });
+    const activeTasks = deletingTasks.filter((task) => isActiveTaskStatus(task.status));
+    await Promise.allSettled(
+      activeTasks.map((task) =>
+        invoke("stop_task", { taskId: task.id }).catch((e: unknown) => {
+          showToast(`停止任务失败：${String(e)}`);
+        }),
+      ),
+    );
 
+    // Phase 2: remove from state and persist
+    const toDelete = new Set(taskIds);
+    setTasks((prev) => {
       const next = prev.filter((task) => !toDelete.has(task.id));
       const affectedProjectIds = new Set(deletingTasks.map((t) => t.projectId));
-      affectedProjectIds.forEach((pid) => persistProjectTasks(pid, next, showToast));
+      affectedProjectIds.forEach((pid) => debouncedPersistProjectTasks(pid, next));
       return next;
     });
 
@@ -307,7 +325,7 @@ function App() {
     });
     if (!ok) return;
     const projectTaskIds = tasks.filter((t) => t.projectId === projectId).map((t) => t.id);
-    deleteTasks(projectTaskIds);
+    await deleteTasks(projectTaskIds);
     setProjects((prev) => {
       const next = prev.filter((p) => p.id !== projectId);
       persistProjects(next, showToast);
@@ -351,7 +369,7 @@ function App() {
 
       if (changed) {
         const task = next.find((t) => t.id === taskId);
-        if (task) persistProjectTasks(task.projectId, next, showToast);
+        if (task) debouncedPersistProjectTasks(task.projectId, next);
       }
       return changed ? next : prev;
     });
@@ -377,7 +395,7 @@ function App() {
 
       if (changed) {
         const task = next.find((t) => t.id === taskId);
-        if (task) persistProjectTasks(task.projectId, next, showToast);
+        if (task) debouncedPersistProjectTasks(task.projectId, next);
       }
       return changed ? next : prev;
     });

@@ -12,6 +12,7 @@ import type {
   DispatchFeedbackState,
   TaskStatus,
   DispatcherSessionRuntimeState,
+  BrowserStatus,
 } from "../types";
 import { cleanTerminalOutput } from "../utils/ansiStrip";
 import { FileExplorer } from "./FileExplorer";
@@ -23,6 +24,7 @@ import { GitDiffViewer } from "./GitDiffViewer";
 import { ProjectRail } from "./ProjectRail";
 import { RightToolbar } from "./RightToolbar";
 import { ShellTerminalPanel, type ShellTerminalPanelHandle } from "./ShellTerminalPanel";
+import { BrowserPanel } from "./BrowserPanel";
 import { DispatcherChat, type DispatcherChatHandle } from "./DispatcherChat";
 import { McpStatusDialog } from "./McpStatusDialog";
 import { SubProcessTabs } from "./SubProcessTabs";
@@ -152,6 +154,7 @@ export function ProjectPage({
     activeFileTabId,
     openDiff,
     rightPanelWidth,
+    browserPanelExpanded,
     terminalHeight,
     setOpenDiff,
     handleTogglePanel,
@@ -170,7 +173,9 @@ export function ProjectPage({
     showEditorWorkbench,
     clearFileAndDiff,
     handleRightResizeStart,
+    handleToggleBrowserPanelExpanded,
     handleTerminalResizeStart,
+    handleOpenPanel,
   } = useProjectPanels();
 
   const [showShellTerminal, setShowShellTerminal] = useState(false);
@@ -215,6 +220,8 @@ export function ProjectPage({
         .sort((left, right) => right.startedAt - left.startedAt),
     [project.id, tasks],
   );
+  const allSubProcessesRef = useRef(allSubProcesses);
+  allSubProcessesRef.current = allSubProcesses;
   const subProcesses = useMemo(
     () =>
       allSubProcesses
@@ -245,6 +252,13 @@ export function ProjectPage({
   const showSessionPane = showSessionWorkbench;
   const showEditorPane = editorWorkbenchVisible && hasEditorWorkbenchContent;
   const workbenchColumnCount = Number(showSessionPane) + Number(showEditorPane);
+
+  const handleSelectSession = useCallback((sessionId: string | null) => {
+    setActiveSessionId(sessionId);
+    if (sessionId) {
+      setShowSessionWorkbench(true);
+    }
+  }, []);
 
   const handleEditorPaneResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -332,6 +346,23 @@ export function ProjectPage({
     refreshMcpStatus().catch(console.error);
   }, [refreshMcpStatus, visible]);
 
+  useEffect(() => {
+    if (!visible) return;
+    const unsub = listen<BrowserStatus>("browser-status", (event) => {
+      if (event.payload.sessionId === activeSessionIdRef.current && event.payload.state !== "closed") {
+        handleOpenPanel("browser");
+      }
+    });
+    return () => {
+      unsub.then((fn) => fn());
+    };
+  }, [handleOpenPanel, visible]);
+
+  useEffect(() => {
+    if (visible || !activeSessionId) return;
+    invoke("browser_stop", { sessionId: activeSessionId }).catch(console.error);
+  }, [activeSessionId, visible]);
+
   // ── Dispatcher sub-process handlers ──
   const handleDispatchApproved = useCallback(
     (
@@ -381,7 +412,7 @@ export function ProjectPage({
   useEffect(() => {
     const unsub = listen<{ task_id: string; status: string }>("task-status", (e) => {
       const { task_id, status } = e.payload;
-      const targetSubProcess = allSubProcesses.find((sp) => sp.id === task_id);
+      const targetSubProcess = allSubProcessesRef.current.find((sp) => sp.id === task_id);
       if (!targetSubProcess) return;
       const routeKey = getSubProcessRouteKey(targetSubProcess.sessionId, targetSubProcess.agent);
 
@@ -467,7 +498,7 @@ export function ProjectPage({
     return () => {
       unsub.then((fn) => fn());
     };
-  }, [allSubProcesses, getTaskRestoreState]);
+  }, [getTaskRestoreState]);
 
   // 监听 session watcher 发出的“当前轮次完成”信号，允许在同一子进程内继续注入。
   useEffect(() => {
@@ -476,7 +507,7 @@ export function ProjectPage({
       if (closedSubprocessTaskIdsRef.current.has(task_id)) return;
       if (exitedSubprocessesRef.current.has(task_id)) return;
       if (idleInjectedTaskIdsRef.current.has(task_id)) return;
-      const targetSubProcess = allSubProcesses.find((sp) => sp.id === task_id);
+      const targetSubProcess = allSubProcessesRef.current.find((sp) => sp.id === task_id);
       if (!targetSubProcess) return;
 
       const cleaned = cleanTerminalOutput(output);
@@ -502,7 +533,7 @@ export function ProjectPage({
     return () => {
       unsub.then((fn) => fn());
     };
-  }, [allSubProcesses]);
+  }, []);  // allSubProcesses accessed via ref to avoid listener re-registration
 
   const handleDispatchRejected = useCallback((_dispatchId: string) => {
     // No-op for now, the agent already recorded the rejection
@@ -736,12 +767,7 @@ export function ProjectPage({
           project={project}
           activeSessionId={activeSessionId}
           subprocessRunningSessionIds={subprocessRunningSessionIds}
-          onSelectSession={(sessionId) => {
-            setActiveSessionId(sessionId);
-            if (sessionId) {
-              setShowSessionWorkbench(true);
-            }
-          }}
+          onSelectSession={handleSelectSession}
           onBack={onBack}
           onCollapse={() => setSessionSidebarCollapsed(true)}
           isDark={isDark}
@@ -1058,6 +1084,19 @@ export function ProjectPage({
                 onCommitSelect={handleCommitSelect}
                 onFileClick={handleCommitFileClick}
                 width={rightPanelWidth}
+              />
+            </ErrorBoundary>
+          )}
+          {rightPanel === "browser" && (
+            <ErrorBoundary label="CloakBrowser">
+              <BrowserPanel
+                sessionId={activeSessionId}
+                projectPath={project.path}
+                width={rightPanelWidth}
+                active={visible}
+                expanded={browserPanelExpanded}
+                onToggleExpanded={handleToggleBrowserPanelExpanded}
+                onClose={() => handleTogglePanel("browser")}
               />
             </ErrorBoundary>
           )}

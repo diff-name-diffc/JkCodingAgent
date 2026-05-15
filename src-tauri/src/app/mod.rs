@@ -1,6 +1,7 @@
 use crate::agent::DispatcherState;
 use crate::{
-    agent, browser, knowledge, platform, project, scm, shared::TaskManager, task_runtime, workspace,
+    agent, browser, chat_images, knowledge, platform, project, scm, shared::TaskManager, task_runtime,
+    workspace,
 };
 use tauri::Manager;
 
@@ -50,6 +51,8 @@ pub fn run() {
             browser::browser_click_at,
             browser::browser_go_back,
             browser::browser_get_status,
+            chat_images::save_chat_image,
+            chat_images::read_chat_image_file,
             workspace::fs::read_dir_entries,
             workspace::fs::read_file_content,
             workspace::fs::read_image_preview,

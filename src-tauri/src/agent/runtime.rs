@@ -649,6 +649,7 @@ impl DispatcherAgent {
         workspace_id: &str,
         workspace_path: &str,
         user_message: &str,
+        user_segments_json: Option<String>,
         enable_thinking: bool,
         on_event: Channel<AgentEvent>,
         cancel_rx: watch::Receiver<bool>,
@@ -678,7 +679,7 @@ impl DispatcherAgent {
             .await
             .map_err(anyhow::Error::msg)
             .context("刷新项目 MCP 状态失败")?;
-        let user = db.add_visible_message(workspace_id, "user", user_message)?;
+        let user = db.add_visible_message(workspace_id, "user", user_message, user_segments_json)?;
         emit(&on_event, AgentEvent::UserMessage { message: user });
 
         let provider = self.provider.lock().clone();
@@ -745,7 +746,7 @@ impl DispatcherAgent {
             }
         }
         let result_msg =
-            db.add_visible_message(workspace_id, "assistant", dispatch_state.visible_message())?;
+            db.add_visible_message(workspace_id, "assistant", dispatch_state.visible_message(), None)?;
         emit(
             &on_event,
             AgentEvent::AssistantMessage {
@@ -877,6 +878,7 @@ impl DispatcherAgent {
         db: &DispatcherDb,
         workspace_id: &str,
         user_message: &str,
+        user_segments_json: Option<String>,
         enable_thinking: bool,
         on_event: Channel<AgentEvent>,
         cancel_rx: watch::Receiver<bool>,
@@ -890,7 +892,7 @@ impl DispatcherAgent {
         db.clear_checklist(workspace_id)
             .context("clear stale checklist before plain chat turn")?;
 
-        let user = db.add_visible_message(workspace_id, "user", user_message)?;
+        let user = db.add_visible_message(workspace_id, "user", user_message, user_segments_json)?;
         emit(&on_event, AgentEvent::UserMessage { message: user });
 
         let provider = self.provider.lock().clone();
@@ -943,6 +945,9 @@ impl DispatcherAgent {
             app_handle: self.app_handle.clone(),
             llm_provider: Some(provider.clone()),
             vision_model: self.vision_model(),
+            image_model_url: self.config.image_model_url.clone(),
+            image_model_api_key: self.config.image_model_api_key.clone(),
+            image_model: self.config.image_model.clone(),
         };
         let allowed_tool_names = plain_chat_tool_allowlist()
             .into_iter()
@@ -1235,6 +1240,9 @@ impl DispatcherAgent {
             app_handle: self.app_handle.clone(),
             llm_provider: Some(provider.clone()),
             vision_model: self.vision_model(),
+            image_model_url: self.config.image_model_url.clone(),
+            image_model_api_key: self.config.image_model_api_key.clone(),
+            image_model: self.config.image_model.clone(),
         };
 
         for iteration in 0..self.config.max_tool_iterations {
@@ -2624,7 +2632,7 @@ impl DispatcherAgent {
         let reply = if let Some(usage_stats) = usage_stats.as_ref() {
             db.add_visible_message_with_usage(workspace_id, "assistant", &content, usage_stats)?
         } else {
-            db.add_visible_message(workspace_id, "assistant", &content)?
+            db.add_visible_message(workspace_id, "assistant", &content, None)?
         };
         emit(
             on_event,
@@ -3386,6 +3394,17 @@ fn build_plain_chat_system_prompt() -> String {
         "不要声称已经读取、修改或执行了本地文件；如果用户要求操作项目或文件，请说明普通聊天不具备该能力，并建议切换到项目会话。",
         "可以基于用户直接提供的文本、代码片段、错误信息或图片进行解释、分析、改写和建议。",
         "默认使用简体中文，表达直接、清晰、面向有经验的开发者。",
+        "",
+        "## 图片生成与引用",
+        "",
+        "- 你可以调用 generate_image 工具根据文本描述生成图片。",
+        "- 工具返回结果中会包含该图片的本地绝对路径（如 /Users/<username>/.jkcodingagent/chat-images/<slug>/<image-id>.png）。",
+        "- 如果你想在回答中展示生成的图片，请直接使用 Markdown 图片引用语法，引用工具返回的原始本地绝对路径即可。",
+        "- 正确格式示例：如果工具返回的本地路径是 /Users/alice/.jkcodingagent/chat-images/untitled/abc123.png，",
+        "  则在回答中写：![生成的风景图片](/Users/alice/.jkcodingagent/chat-images/untitled/abc123.png)",
+        "- 注意：",
+        "    - 直接使用工具返回的原始本地绝对路径即可，不需要添加任何协议前缀（如 file:// 或 asset://）。",
+        "    - 路径中的空格和特殊字符不需要额外编码。",
     ]
     .join("\n")
 }
@@ -3515,6 +3534,7 @@ fn plain_chat_tool_allowlist() -> HashSet<&'static str> {
         "browser_read_text",
         "browser_visual_analyze",
         "browser_close",
+        "generate_image",
     ])
 }
 

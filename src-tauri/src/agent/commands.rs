@@ -489,6 +489,7 @@ pub async fn dispatcher_send_message(
     workspace_id: String,
     project_path: String,
     content: String,
+    segments_json: Option<String>,
     mode: Option<String>,
     enable_thinking: Option<bool>,
     on_event: tauri::ipc::Channel<AgentEvent>,
@@ -515,6 +516,7 @@ pub async fn dispatcher_send_message(
             &workspace_id,
             &project_path,
             &content,
+            segments_json,
             enable_thinking.unwrap_or(false),
             on_event,
             run_handle.cancel_rx,
@@ -532,6 +534,7 @@ pub async fn dispatcher_send_plain_chat_message(
     app: AppHandle,
     workspace_id: String,
     content: String,
+    segments_json: Option<String>,
     enable_thinking: Option<bool>,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
@@ -552,6 +555,7 @@ pub async fn dispatcher_send_plain_chat_message(
             &state.db,
             &workspace_id,
             &content,
+            segments_json,
             enable_thinking.unwrap_or(false),
             on_event,
             run_handle.cancel_rx,
@@ -709,6 +713,9 @@ pub async fn dispatcher_save_settings(
     asr_websocket_url: String,
     auto_approve_dispatch: bool,
     context_debug: bool,
+    image_model_url: String,
+    image_model_api_key: String,
+    image_model: String,
 ) -> Result<DispatcherSettingsRecord, String> {
     let record = state
         .db
@@ -722,6 +729,9 @@ pub async fn dispatcher_save_settings(
             &asr_websocket_url,
             auto_approve_dispatch,
             context_debug,
+            &image_model_url,
+            &image_model_api_key,
+            &image_model,
         )
         .map_err(|error| error.to_string())?;
 

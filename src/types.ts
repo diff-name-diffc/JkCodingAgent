@@ -158,13 +158,75 @@ export interface UsageSnapshot {
   fetchedAt: number;
 }
 
+// ── Content Segments ─────────────────────────────────────────────────────────
+
+export type ContentSegmentType = "text" | "image" | "file";
+
+export interface ContentSegment {
+  id: string;
+  type: ContentSegmentType;
+}
+
+export interface TextSegment extends ContentSegment {
+  type: "text";
+  text: string;
+}
+
+export interface ImageSegment extends ContentSegment {
+  type: "image";
+  imageId: string;
+  path: string;
+  alt?: string;
+  width?: number;
+  height?: number;
+  mimeType?: string;
+  source: "user_paste" | "tool_generate" | "file_attach";
+  generationPrompt?: string;
+}
+
+export interface FileSegment extends ContentSegment {
+  type: "file";
+  fileId: string;
+  path: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+}
+
+export type AnyContentSegment = TextSegment | ImageSegment | FileSegment;
+
+// ── Image Generation Tool ────────────────────────────────────────────────────
+// TODO: image generation tool not yet implemented
+
+export interface ImageGenerationInput {
+  prompt: string;
+  width?: number;
+  height?: number;
+  style?: string;
+  negativePrompt?: string;
+  model?: string;
+  seed?: number;
+}
+
+export interface ImageGenerationOutput {
+  imageId: string;
+  path: string;
+  width: number;
+  height: number;
+  mimeType: string;
+  generationPrompt: string;
+  generationParams: Record<string, unknown>;
+  createdAt: string;
+}
+
 // ── Dispatcher Agent ─────────────────────────────────────────────────────────
 
 export interface DispatcherMessage {
   id: string;
   workspaceId: string;
   role: "user" | "assistant" | "tool";
-  content: string;
+  segments: AnyContentSegment[];
+  content: string; // derived from segments for backward compat
   thinkingContent?: string | null;
   thinkingElapsedMs?: number | null;
   toolCallId?: string;

@@ -786,6 +786,24 @@ body {
   object-fit: cover;
 }
 
+.markdown-image-loading,
+.markdown-image-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 60px;
+  padding: 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border-radius: 8px;
+}
+.markdown-image-error {
+  color: var(--text-error);
+}
+
 .markdown-image-overlay {
   position: fixed;
   inset: 0;

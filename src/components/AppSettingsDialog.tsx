@@ -693,6 +693,9 @@ function AhaAgentPanel() {
   const [visionModel, setVisionModel] = useState("");
   const [asrApiKey, setAsrApiKey] = useState("");
   const [asrWebsocketUrl, setAsrWebsocketUrl] = useState("");
+  const [imageModelUrl, setImageModelUrl] = useState("");
+  const [imageModelApiKey, setImageModelApiKey] = useState("");
+  const [imageModel, setImageModel] = useState("");
   const [autoApprove, setAutoApprove] = useState(false);
   const [contextDebug, setContextDebug] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -718,6 +721,9 @@ function AhaAgentPanel() {
       asrWebsocketUrl: string;
       autoApproveDispatch: boolean;
       contextDebug: boolean;
+      imageModelUrl: string;
+      imageModelApiKey: string;
+      imageModel: string;
     } | null>("dispatcher_get_settings")
       .then((settings) => {
         if (!settings) return;
@@ -728,6 +734,9 @@ function AhaAgentPanel() {
         setVisionModel(settings.visionModel ?? "");
         setAsrApiKey(settings.asrApiKey ?? "");
         setAsrWebsocketUrl(settings.asrWebsocketUrl ?? "");
+        setImageModelUrl(settings.imageModelUrl ?? "https://dashscope.aliyuncs.com/api/v1");
+        setImageModelApiKey(settings.imageModelApiKey ?? "");
+        setImageModel(settings.imageModel ?? "qwen-image-2.0-pro");
         setAutoApprove(settings.autoApproveDispatch);
         setContextDebug(settings.contextDebug);
       })
@@ -750,6 +759,9 @@ function AhaAgentPanel() {
         asrWebsocketUrl: string;
         autoApproveDispatch: boolean;
         contextDebug: boolean;
+        imageModelUrl: string;
+        imageModelApiKey: string;
+        imageModel: string;
       }>("dispatcher_save_settings", {
         apiBase,
         apiKey,
@@ -760,6 +772,9 @@ function AhaAgentPanel() {
         asrWebsocketUrl,
         autoApproveDispatch: autoApprove,
         contextDebug,
+        imageModelUrl,
+        imageModelApiKey,
+        imageModel,
       });
       if (savedSettings.contextDebug !== contextDebug) {
         setContextDebug(savedSettings.contextDebug);
@@ -1066,6 +1081,43 @@ function AhaAgentPanel() {
               <span style={hintStyle}>
                 用户上传图片时自动切换到该模型；留空时图片请求会停止并提示配置缺失。
               </span>
+            </div>
+
+            <div>
+              <label style={labelStyle}>图像模型地址</label>
+              <input
+                style={inputStyle}
+                value={imageModelUrl}
+                onChange={(e) => setImageModelUrl(e.target.value)}
+                placeholder="https://dashscope.aliyuncs.com/api/v1"
+                spellCheck={false}
+              />
+              <span style={hintStyle}>图片生成 API 基础地址，默认使用 DashScope</span>
+            </div>
+
+            <div>
+              <label style={labelStyle}>图像模型 API Key</label>
+              <input
+                style={inputStyle}
+                type={showKey ? "text" : "password"}
+                value={imageModelApiKey}
+                onChange={(e) => setImageModelApiKey(e.target.value)}
+                placeholder="留空则回退 DASHSCOPE_API_KEY"
+                spellCheck={false}
+              />
+              <span style={hintStyle}>图片生成专用 API Key，留空时回退到主 API Key</span>
+            </div>
+
+            <div>
+              <label style={labelStyle}>图像模型名称</label>
+              <input
+                style={inputStyle}
+                value={imageModel}
+                onChange={(e) => setImageModel(e.target.value)}
+                placeholder="qwen-image-2.0-pro"
+                spellCheck={false}
+              />
+              <span style={hintStyle}>图片生成模型名称，如 qwen-image-2.0-pro</span>
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>

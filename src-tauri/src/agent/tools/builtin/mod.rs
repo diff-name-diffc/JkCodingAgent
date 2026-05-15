@@ -1,6 +1,7 @@
 mod browser;
 mod common;
 mod filesystem;
+mod image_generation;
 mod knowledge;
 mod search;
 mod shell;
@@ -21,6 +22,7 @@ pub(super) fn builtin_tools() -> Vec<Box<dyn AgentTool>> {
         time::current_time_tool(),
         shell::exec_tool(),
         shell::message_tool(),
+        image_generation::generate_image_tool(),
     ];
     tools.extend(browser::browser_tools());
     tools

@@ -284,6 +284,9 @@ mod tests {
             app_handle: None,
             llm_provider: None,
             vision_model: String::new(),
+            image_model_url: String::new(),
+            image_model_api_key: String::new(),
+            image_model: String::new(),
         }
     }
 

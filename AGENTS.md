@@ -231,3 +231,55 @@ commit_prompt = "..."     # generate_commit_message 使用的提示词
 - **Codex**：`<project-path>/.codex/sessions/*.jsonl`
 
 会话通过项目路径、提示词文本和创建时间戳与任务进行匹配。兜底方案是从智能体退出时打印的终端输出中提取会话 ID。这是 UI 在无需直接 API 集成的情况下，将已启动进程与其会话日志关联起来的实现方式。
+
+---
+
+## 会话与项目资源清理规范
+
+### 核心要求
+
+**删除会话或清空会话时，必须同步清理其绑定的所有关联资源**，包括但不限于：
+1. **数据库表记录**（已实现级联删除，但需确认完整性）
+2. **图片文件**（存储在文件系统中，必须显式删除）
+3. **工具产物文件**
+4. **会话相关的临时文件和缓存**
+
+### 当前问题
+
+**会话删除（`delete_session`）和清空（`clear_messages`）存在的问题：**
+
+1. **`chat_images` 表记录通过外键级联删除，但图片文件未清理：**
+   - `chat_images` 表定义了外键约束：`FOREIGN KEY (message_id) REFERENCES dispatcher_messages(id) ON DELETE CASCADE`
+   - 当 `dispatcher_messages` 记录被删除时，`chat_images` 的数据库记录会自动级联删除
+   - **但 `path` 字段指向的实际图片文件（`~/.jkcodingagent/chat-images/{session-title-slug}/`）不会被删除，导致文件系统残留**
+
+2. **`delete_session` 清理的表：**
+   - `dispatcher_tool_artifacts` ✓
+   - `dispatcher_session_token_usage` ✓
+   - `dispatcher_messages` ✓（级联删除 `chat_images` 记录）
+   - `dispatcher_sessions` ✓
+   - **缺失：图片文件清理** ✗
+
+3. **`clear_messages` 清理的表：**
+   - `dispatcher_tool_artifacts` ✓
+   - `dispatcher_session_token_usage` ✓
+   - `dispatcher_messages` ✓（级联删除 `chat_images` 记录）
+   - `dispatcher_sessions`（更新 checklist_json 等字段）✓
+   - **缺失：图片文件清理** ✗
+
+### 修复要求
+
+**新增聊天会话或相关功能时，必须处理以下资源清理：**
+
+1. **删除/清空会话前，先查询并删除关联的图片文件：**
+   - 通过 `chat_images` 表的 `workspace_id` 查询该会话的所有图片路径
+   - 删除文件系统中的实际图片文件
+   - 再执行数据库记录删除（数据库级联会自动清理 `chat_images` 记录）
+
+2. **项目删除时的资源清理：**
+   - 目前缺少项目删除的后端命令和前端 UI
+   - 如后续实现项目删除，必须遍历删除该项目下所有会话的关联资源
+
+3. **新增资源时的清理约定：**
+   - 任何与会话绑定的文件资源（图片、附件、缓存等），在会话删除或清空时必须同步清理
+   - 不得仅依赖数据库级联删除，必须同时清理文件系统资源

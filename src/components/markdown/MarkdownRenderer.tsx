@@ -10,7 +10,12 @@ import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { MarkdownImage } from "./MarkdownImage";
 
 function customUrlTransform(url: string) {
-  if (url.startsWith("data:image/") || url.startsWith("asset://") || url.startsWith("http://asset.localhost/")) {
+  if (
+    url.startsWith("data:image/") ||
+    url.startsWith("asset://") ||
+    url.startsWith("http://asset.localhost/") ||
+    url.startsWith("/")
+  ) {
     return url;
   }
   return defaultUrlTransform(url);

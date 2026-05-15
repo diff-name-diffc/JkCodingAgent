@@ -9,7 +9,7 @@ import {
   useMemo,
 } from "react";
 import type { KeyboardEvent } from "react";
-import { invoke, Channel } from "@tauri-apps/api/core";
+import { invoke, Channel, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   Play,
@@ -42,6 +42,7 @@ import type {
   DispatcherSessionRuntimeState,
   DispatcherSessionTokenUsage,
   DispatcherSettings,
+  ImageSegment,
   PlanInteraction,
   ProjectMcpStatus,
   SubProcess,
@@ -242,12 +243,44 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
   thinking?: AssistantThinkingBlock | null;
   placeholderText?: string | null;
 }) {
-  const visibleSegments = segments.filter((segment) => segment.text.trim());
+  const { enrichedTools, displaySegments } = useMemo(() => {
+    const summaryMap = new Map<string, string>();
+    const displaySegments: AssistantTurnSegment[] = [];
+
+    for (const segment of segments) {
+      if (segment.kind === "tool-summary") {
+        const key = segment.toolCallId ?? segment.toolName;
+        if (key) {
+          const existing = summaryMap.get(key) ?? "";
+          summaryMap.set(key, existing + segment.text);
+        }
+        continue;
+      }
+      if (segment.text.trim()) {
+        displaySegments.push(segment);
+      }
+    }
+
+    const enriched = tools.map((tool) => {
+      let summary = summaryMap.get(tool.key);
+      if (!summary && tool.name) {
+        summary = summaryMap.get(tool.name);
+      }
+      if (summary) {
+        return { ...tool, summaryText: summary };
+      }
+      return tool;
+    });
+
+    return { enrichedTools: enriched, displaySegments };
+  }, [segments, tools]);
+
+  const visibleSegments = displaySegments;
   const visiblePlaceholder = placeholderText?.trim() ?? "";
   const visibleThinking = thinking?.text.trim() ? thinking : null;
   if (
     visibleSegments.length === 0 &&
-    tools.length === 0 &&
+    enrichedTools.length === 0 &&
     !visiblePlaceholder &&
     !usageStats &&
     !visibleThinking
@@ -261,9 +294,9 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
         <img src={assistantAvatarUrl} alt="AI 头像" style={styles.messageAvatarImage} />
       </div>
       <div style={styles.assistantTurnStack}>
-        {tools.length > 0 && (
+        {enrichedTools.length > 0 && (
           <div style={styles.assistantTurnSection}>
-            <ToolActivityBubble tools={tools} workspaceId={workspaceId} />
+            <ToolActivityBubble tools={enrichedTools} workspaceId={workspaceId} />
           </div>
         )}
         {visibleThinking && (
@@ -284,18 +317,14 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
 
           return (
             <div key={`${segment.kind}-${segment.toolCallId ?? segment.toolName ?? index}`}>
-              {segment.kind === "tool-summary" ? (
-                <ToolSummaryBlock segment={segment} />
-              ) : (
-                <div style={styles.assistantTurnSection}>
-                  <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
-                    <div style={styles.markdownBody}>
-                      <MarkdownRenderer content={segmentText} variant="chat" />
-                    </div>
+              <div style={styles.assistantTurnSection}>
+                <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
+                  <div style={styles.markdownBody}>
+                    <MarkdownRenderer content={segmentText} variant="chat" />
                   </div>
-                  <BubbleCopyButton text={segmentText} isUser={false} />
                 </div>
-              )}
+                <BubbleCopyButton text={segmentText} isUser={false} />
+              </div>
             </div>
           );
         })}
@@ -404,29 +433,6 @@ const ThinkingToggleButton = memo(function ThinkingToggleButton({
       <Brain size={15} />
       <span>{active ? "深思" : "思考"}</span>
     </button>
-  );
-});
-
-const ToolSummaryBlock = memo(function ToolSummaryBlock({
-  segment,
-}: {
-  segment: AssistantTurnSegment;
-}) {
-  return (
-    <div style={styles.assistantTurnSection}>
-      <div style={styles.toolSummaryCard}>
-        <div style={styles.toolSummaryHeader}>
-          <span style={styles.toolSummaryBadge}>工具摘要</span>
-          {segment.toolName && <span style={styles.toolSummaryName}>{segment.toolName}</span>}
-          {segment.resultMode === "conservative_summary" && (
-            <span style={styles.toolSummaryMode}>高保真压缩</span>
-          )}
-        </div>
-        <div style={styles.markdownBody}>
-          <MarkdownRenderer content={segment.text.trim()} variant="chat" />
-        </div>
-      </div>
-    </div>
   );
 });
 
@@ -669,7 +675,7 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
   voiceError: string | null;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   layoutMode: "single" | "split";
-  attachedImages: string[];
+  attachedImages: ImageSegment[];
   onChangeInput: (value: string) => void;
   onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   onRemoveImage: (index: number) => void;
@@ -724,9 +730,9 @@ const EmptyConversationLauncher = memo(function EmptyConversationLauncher({
         <div style={styles.emptyComposerInputShell()}>
           {attachedImages.length > 0 && (
             <div style={styles.attachedImagesContainer}>
-              {attachedImages.map((src, idx) => (
+              {attachedImages.map((img, idx) => (
                 <div key={idx} style={styles.attachedImageWrapper}>
-                  <img src={src} alt="pasted" style={styles.attachedImage} />
+                  <img src={convertFileSrc(img.path)} alt={img.alt || "pasted"} style={styles.attachedImage} />
                   <button
                     style={styles.removeImageBtn}
                     onClick={() => onRemoveImage(idx)}
@@ -1127,7 +1133,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
   ) {
     const [messages, setMessages] = useState<DispatcherMessage[]>([]);
     const [input, setInput] = useState("");
-    const [attachedImages, setAttachedImages] = useState<string[]>([]);
+    const [attachedImages, setAttachedImages] = useState<ImageSegment[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [isStopping, setIsStopping] = useState(false);
     const [hasPendingRun, setHasPendingRun] = useState(false);
@@ -1159,15 +1165,36 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           const blob = items[i].getAsFile();
           if (blob) {
             const reader = new FileReader();
-            reader.onload = (event) => {
+            reader.onload = async (event) => {
               const base64 = event.target?.result as string;
-              setAttachedImages((prev) => [...prev, base64]);
+              const base64Data = base64.split(",")[1];
+              try {
+                const result = await invoke<{ imageId: string; path: string }>("save_chat_image", {
+                  sessionId,
+                  sessionTitle: "",
+                  imageDataBase64: base64Data,
+                  mimeType: blob.type,
+                });
+                setAttachedImages((prev) => [
+                  ...prev,
+                  {
+                    id: crypto.randomUUID(),
+                    type: "image",
+                    imageId: result.imageId,
+                    path: result.path,
+                    source: "user_paste",
+                    mimeType: blob.type,
+                  } as ImageSegment,
+                ]);
+              } catch (err) {
+                console.error("保存图片失败:", err);
+              }
             };
             reader.readAsDataURL(blob);
           }
         }
       }
-    }, []);
+    }, [sessionId]);
 
     const handleRemoveImage = useCallback((index: number) => {
       setAttachedImages((prev) => prev.filter((_, i) => i !== index));
@@ -1624,7 +1651,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const sendUserMessage = useCallback(
       async (
         rawText: string,
-        images: string[] = [],
+        images: ImageSegment[] = [],
         targetSessionId = sessionId,
         targetMode: DispatcherMode = mode,
       ) => {
@@ -1642,20 +1669,27 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           window.requestAnimationFrame(() => scrollMessageListToBottom());
         }
 
-        // If images are present, embed them in the content.
-        // The backend/LLM will receive this as part of the prompt.
-        let content = text;
-        if (images.length > 0) {
-          const imageMarkdown = images.map((img) => `![image](${img})\n`).join("");
-          content = imageMarkdown + content;
+        // Build segments JSON for the backend
+        const segments: Array<{ type: string; [key: string]: unknown }> = [];
+        for (const img of images) {
+          segments.push({ ...img });
         }
+        if (text) {
+          segments.push({
+            id: crypto.randomUUID(),
+            type: "text",
+            text,
+          });
+        }
+        const segmentsJson = JSON.stringify(segments);
 
         try {
           await enqueueDispatcherRun(targetSessionId, async (onEvent) => {
             if (isPlainChat) {
               await invoke<DispatcherAgentTurn>("dispatcher_send_plain_chat_message", {
                 workspaceId: targetSessionId,
-                content,
+                content: text,
+                segmentsJson,
                 enableThinking: thinkingEnabledRef.current,
                 onEvent,
               });
@@ -1663,7 +1697,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
                 workspaceId: targetSessionId,
                 projectPath,
-                content,
+                content: text,
+                segmentsJson,
                 mode: targetMode,
                 enableThinking: thinkingEnabledRef.current,
                 onEvent,
@@ -2153,9 +2188,9 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             <div style={styles.inputArea}>
               {attachedImages.length > 0 && (
                 <div style={styles.attachedImagesContainer}>
-                  {attachedImages.map((src, idx) => (
+                  {attachedImages.map((img, idx) => (
                     <div key={idx} style={styles.attachedImageWrapper}>
-                      <img src={src} alt="pasted" style={styles.attachedImage} />
+                      <img src={convertFileSrc(img.path)} alt={img.alt || "pasted"} style={styles.attachedImage} />
                       <button
                         style={styles.removeImageBtn}
                         onClick={() => handleRemoveImage(idx)}

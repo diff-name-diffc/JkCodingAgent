@@ -16,6 +16,70 @@ const MAX_DIALOGUE_QUERY_LIMIT: usize = 50;
 const DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS: u64 = 1_000_000;
 pub(crate) const TOOL_RETRY_CONTEXT_PREFIX: &str = "[工具调用失败，已交回模型修正重试]";
 
+// ── Content Segments ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ContentSegment {
+    Text {
+        id: String,
+        text: String,
+    },
+    Image {
+        id: String,
+        image_id: String,
+        path: String,
+        alt: Option<String>,
+        width: Option<u32>,
+        height: Option<u32>,
+        mime_type: Option<String>,
+        source: String,
+        generation_prompt: Option<String>,
+    },
+    File {
+        id: String,
+        file_id: String,
+        path: String,
+        file_name: String,
+        mime_type: String,
+        size: u64,
+    },
+}
+
+impl ContentSegment {
+    pub fn to_markdown(&self) -> String {
+        match self {
+            ContentSegment::Text { text, .. } => text.clone(),
+            ContentSegment::Image { alt, path, .. } => {
+                format!("![{}]({})", alt.as_deref().unwrap_or("image"), path)
+            }
+            ContentSegment::File { .. } => String::new(),
+        }
+    }
+}
+
+pub fn segments_to_markdown(segments: &[ContentSegment]) -> String {
+    segments
+        .iter()
+        .map(|s| s.to_markdown())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn content_to_segments_json(content: &str) -> String {
+    let segments = vec![ContentSegment::Text {
+        id: Uuid::new_v4().to_string(),
+        text: content.to_string(),
+    }];
+    serde_json::to_string(&segments).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn parse_segments_json(segments_json: &str) -> Vec<ContentSegment> {
+    serde_json::from_str(segments_json).unwrap_or_default()
+}
+
+// ── Records ─────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DispatcherSessionRecord {
@@ -41,6 +105,9 @@ pub struct DispatcherSettingsRecord {
     pub asr_websocket_url: String,
     pub auto_approve_dispatch: bool,
     pub context_debug: bool,
+    pub image_model_url: String,
+    pub image_model_api_key: String,
+    pub image_model: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
@@ -202,6 +269,7 @@ pub struct DispatcherMessageRecord {
     pub workspace_id: String,
     pub role: String,
     pub content: String,
+    pub segments_json: String,
     pub thinking_content: Option<String>,
     pub thinking_elapsed_ms: Option<u64>,
     #[serde(skip_serializing)]
@@ -275,6 +343,7 @@ struct NewDispatcherMessage<'a> {
     workspace_id: &'a str,
     role: &'a str,
     content: &'a str,
+    segments_json: Option<String>,
     thinking_content: Option<&'a str>,
     thinking_elapsed_ms: u64,
     context_payload: Option<&'a str>,
@@ -299,7 +368,7 @@ impl DispatcherDb {
     pub fn get_settings(&self) -> Result<Option<DispatcherSettingsRecord>> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug FROM dispatcher_settings WHERE id = 'default'",
+            "SELECT api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model FROM dispatcher_settings WHERE id = 'default'",
             [],
             |row| {
                 Ok(DispatcherSettingsRecord {
@@ -312,6 +381,9 @@ impl DispatcherDb {
                     asr_websocket_url: row.get(6)?,
                     auto_approve_dispatch: row.get::<_, i32>(7)? != 0,
                     context_debug: row.get::<_, i32>(8)? != 0,
+                    image_model_url: row.get(9)?,
+                    image_model_api_key: row.get(10)?,
+                    image_model: row.get(11)?,
                 })
             },
         )
@@ -330,15 +402,18 @@ impl DispatcherDb {
         asr_websocket_url: &str,
         auto_approve_dispatch: bool,
         context_debug: bool,
+        image_model_url: &str,
+        image_model_api_key: &str,
+        image_model: &str,
     ) -> Result<DispatcherSettingsRecord> {
         let conn = self.connect()?;
         let auto_approve_int = if auto_approve_dispatch { 1 } else { 0 };
         let context_debug_int = if context_debug { 1 } else { 0 };
         let normalized_summary_model = normalize_summary_model(summary_model);
         conn.execute(
-            "INSERT INTO dispatcher_settings (id, api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug)
-             VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(id) DO UPDATE SET api_base = ?1, api_key = ?2, model = ?3, summary_model = ?4, vision_model = ?5, asr_api_key = ?6, asr_websocket_url = ?7, auto_approve_dispatch = ?8, context_debug = ?9",
+            "INSERT INTO dispatcher_settings (id, api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model)
+             VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(id) DO UPDATE SET api_base = ?1, api_key = ?2, model = ?3, summary_model = ?4, vision_model = ?5, asr_api_key = ?6, asr_websocket_url = ?7, auto_approve_dispatch = ?8, context_debug = ?9, image_model_url = ?10, image_model_api_key = ?11, image_model = ?12",
             params![
                 api_base.trim(),
                 api_key.trim(),
@@ -348,7 +423,10 @@ impl DispatcherDb {
                 asr_api_key.trim(),
                 asr_websocket_url.trim(),
                 auto_approve_int,
-                context_debug_int
+                context_debug_int,
+                image_model_url.trim(),
+                image_model_api_key.trim(),
+                image_model.trim()
             ],
         )
         .context("save dispatcher settings")?;
@@ -362,6 +440,9 @@ impl DispatcherDb {
             asr_websocket_url: asr_websocket_url.trim().to_string(),
             auto_approve_dispatch,
             context_debug,
+            image_model_url: image_model_url.trim().to_string(),
+            image_model_api_key: image_model_api_key.trim().to_string(),
+            image_model: image_model.trim().to_string(),
         })
     }
 
@@ -505,6 +586,18 @@ impl DispatcherDb {
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
         )?;
+        // Delete associated image files before removing database records
+        {
+            let mut stmt = tx.prepare(
+                "SELECT path FROM chat_images WHERE workspace_id = ?1",
+            )?;
+            let paths: Vec<String> = stmt
+                .query_map(params![session_id], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for path in paths {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
         tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![session_id],
@@ -720,11 +813,13 @@ impl DispatcherDb {
         workspace_id: &str,
         role: &str,
         content: &str,
+        segments_json: Option<String>,
     ) -> Result<DispatcherMessageRecord> {
         self.add_message(NewDispatcherMessage {
             workspace_id,
             role,
             content,
+            segments_json,
             thinking_content: None,
             thinking_elapsed_ms: 0,
             context_payload: None,
@@ -768,6 +863,7 @@ impl DispatcherDb {
             workspace_id,
             role,
             content,
+            segments_json: None,
             thinking_content,
             thinking_elapsed_ms,
             context_payload: None,
@@ -821,6 +917,7 @@ impl DispatcherDb {
             workspace_id,
             role,
             content,
+            segments_json: None,
             thinking_content,
             thinking_elapsed_ms,
             context_payload: None,
@@ -848,6 +945,7 @@ impl DispatcherDb {
             workspace_id,
             role: "tool",
             content,
+            segments_json: None,
             thinking_content: None,
             thinking_elapsed_ms: 0,
             context_payload: Some(context_payload),
@@ -922,7 +1020,7 @@ impl DispatcherDb {
 
         let assistant_messages = {
             let mut stmt = tx.prepare(
-                "SELECT id, content, tool_calls_json
+                "SELECT id, segments_json, tool_calls_json
                  FROM dispatcher_messages
                  WHERE workspace_id = ?1
                    AND role = 'assistant'
@@ -940,7 +1038,7 @@ impl DispatcherDb {
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
 
-        for (message_id, content, tool_calls_json) in assistant_messages {
+        for (message_id, segments_json, tool_calls_json) in assistant_messages {
             let Ok(mut tool_calls) =
                 serde_json::from_str::<Vec<OutboundToolCall>>(&tool_calls_json)
             else {
@@ -952,6 +1050,7 @@ impl DispatcherDb {
                 continue;
             }
 
+            let content = segments_to_markdown(&parse_segments_json(&segments_json));
             if tool_calls.is_empty() && content.trim().is_empty() {
                 tx.execute(
                     "DELETE FROM dispatcher_tool_artifacts WHERE message_id = ?1",
@@ -998,6 +1097,7 @@ impl DispatcherDb {
             workspace_id,
             role,
             content,
+            segments_json: None,
             thinking_content: None,
             thinking_elapsed_ms: 0,
             context_payload: None,
@@ -1017,7 +1117,7 @@ impl DispatcherDb {
     ) -> Result<Vec<DispatcherMessageRecord>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, role, content, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
+            "SELECT id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
              FROM dispatcher_messages
              WHERE workspace_id = ?1 AND visible = 1
              ORDER BY created_at ASC, rowid ASC",
@@ -1041,7 +1141,7 @@ impl DispatcherDb {
         let conn = self.connect()?;
         let cutoff_rowid = self.find_dialogue_cutoff_rowid(&conn, workspace_id, max_dialogues)?;
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, role, content, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
+            "SELECT id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
              FROM dispatcher_messages
              WHERE workspace_id = ?1
                AND visible = 1
@@ -1070,12 +1170,38 @@ impl DispatcherDb {
             self.find_dialogue_cutoff_rowid(&conn, workspace_id, MAX_LLM_DIALOGUES)?;
 
         let mut stmt = conn.prepare(
-            "SELECT role, COALESCE(context_payload, content), tool_call_id, tool_name, tool_calls_json
+            "SELECT role, segments_json, context_payload, tool_call_id, tool_name, tool_calls_json
              FROM dispatcher_messages
              WHERE workspace_id = ?1 AND rowid >= ?2 AND context_cleared = 0
              ORDER BY rowid ASC",
         )?;
-        let rows = stmt.query_map(params![workspace_id, cutoff_rowid], map_chat_message_row)?;
+        let rows = stmt.query_map(params![workspace_id, cutoff_rowid], |row| {
+            let role: String = row.get(0)?;
+            let segments_json: String = row.get(1)?;
+            let context_payload: Option<String> = row.get(2)?;
+            let tool_call_id: Option<String> = row.get(3)?;
+            let tool_name: Option<String> = row.get(4)?;
+            let tool_calls_json: Option<String> = row.get(5)?;
+
+            let content = if let Some(payload) = context_payload {
+                payload
+            } else {
+                let segments = parse_segments_json(&segments_json);
+                segments_to_markdown(&segments)
+            };
+
+            let tool_calls = tool_calls_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<Vec<OutboundToolCall>>(json).ok());
+
+            Ok(ChatMessage {
+                role,
+                content,
+                tool_call_id,
+                name: tool_name,
+                tool_calls,
+            })
+        })?;
 
         let mut messages = rows
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -1114,6 +1240,18 @@ impl DispatcherDb {
             params![workspace_id],
         )
         .context("clear dispatcher session token usage")?;
+        // Delete associated image files before removing database records
+        {
+            let mut stmt = tx.prepare(
+                "SELECT path FROM chat_images WHERE workspace_id = ?1",
+            )?;
+            let paths: Vec<String> = stmt
+                .query_map(params![workspace_id], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for path in paths {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
         tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![workspace_id],
@@ -1291,11 +1429,17 @@ impl DispatcherDb {
             .transpose()
             .context("serialize dispatcher message usage stats")?;
 
+        let segments_json = params
+            .segments_json
+            .unwrap_or_else(|| content_to_segments_json(params.content));
+        let content = segments_to_markdown(&parse_segments_json(&segments_json));
+
         let mut record = DispatcherMessageRecord {
             id: Uuid::new_v4().to_string(),
             workspace_id: params.workspace_id.to_string(),
             role: params.role.to_string(),
-            content: params.content.to_string(),
+            content,
+            segments_json,
             thinking_content: params
                 .thinking_content
                 .filter(|content| !content.trim().is_empty())
@@ -1323,14 +1467,14 @@ impl DispatcherDb {
 
         tx.execute(
             "INSERT INTO dispatcher_messages (
-                id, workspace_id, role, content, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, visible, created_at
+                id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, visible, created_at
              )
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 &record.id,
                 &record.workspace_id,
                 &record.role,
-                &record.content,
+                &record.segments_json,
                 &record.thinking_content,
                 &record.thinking_elapsed_ms,
                 &record.context_payload,
@@ -1452,7 +1596,7 @@ impl DispatcherDb {
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
                 role TEXT NOT NULL,
-                content TEXT NOT NULL,
+                segments_json TEXT NOT NULL DEFAULT '[]',
                 thinking_content TEXT,
                 thinking_elapsed_ms INTEGER,
                 context_payload TEXT,
@@ -1469,6 +1613,31 @@ impl DispatcherDb {
 
             CREATE INDEX IF NOT EXISTS idx_dispatcher_messages_workspace_created
             ON dispatcher_messages(workspace_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS chat_images (
+                id TEXT PRIMARY KEY,
+                image_id TEXT NOT NULL UNIQUE,
+                workspace_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                segment_index INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                alt TEXT,
+                width INTEGER,
+                height INTEGER,
+                mime_type TEXT,
+                source TEXT,
+                generation_prompt TEXT,
+                vector_embedding_json TEXT,
+                text_description TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (message_id) REFERENCES dispatcher_messages(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_images_workspace
+            ON chat_images(workspace_id, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_chat_images_message
+            ON chat_images(message_id);
 
             CREATE TABLE IF NOT EXISTS dispatcher_tool_artifacts (
                 id TEXT PRIMARY KEY,
@@ -1501,7 +1670,10 @@ impl DispatcherDb {
                 asr_api_key TEXT NOT NULL DEFAULT '',
                 asr_websocket_url TEXT NOT NULL DEFAULT '',
                 auto_approve_dispatch INTEGER NOT NULL DEFAULT 0,
-                context_debug INTEGER NOT NULL DEFAULT 0
+                context_debug INTEGER NOT NULL DEFAULT 0,
+                image_model_url TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1',
+                image_model_api_key TEXT NOT NULL DEFAULT '',
+                image_model TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'
             );
 
             CREATE TABLE IF NOT EXISTS dispatcher_session_token_usage (
@@ -1554,7 +1726,26 @@ impl DispatcherDb {
             "context_debug",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_settings",
+            "image_model_url",
+            "TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1'",
+        )?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_settings",
+            "image_model_api_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_settings",
+            "image_model",
+            "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'",
+        )?;
         ensure_column_exists(&conn, "dispatcher_messages", "context_payload", "TEXT")?;
+        ensure_column_exists(&conn, "dispatcher_messages", "segments_json", "TEXT NOT NULL DEFAULT '[]'")?;
         ensure_column_exists(&conn, "dispatcher_messages", "thinking_content", "TEXT")?;
         ensure_column_exists(
             &conn,
@@ -1800,11 +1991,14 @@ fn map_chat_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatMessage
 fn map_dispatcher_message_record(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<DispatcherMessageRecord> {
+    let segments_json: String = row.get(3)?;
+    let content = segments_to_markdown(&parse_segments_json(&segments_json));
     Ok(DispatcherMessageRecord {
         id: row.get(0)?,
         workspace_id: row.get(1)?,
         role: row.get(2)?,
-        content: row.get(3)?,
+        content,
+        segments_json,
         thinking_content: row.get(4)?,
         thinking_elapsed_ms: row.get(5)?,
         context_payload: row.get(6)?,

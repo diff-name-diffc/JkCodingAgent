@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight, FileSearch, LoaderCircle, Wrench } from "lucide-react";
+import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import type {
   DispatcherToolArtifact,
   DispatcherToolArtifactRef,
@@ -16,6 +17,7 @@ export interface ToolActivityItem {
   detailRefs?: DispatcherToolArtifactRef[];
   resultMode?: DispatcherToolResultMode;
   status: "planned" | "running" | "completed";
+  summaryText?: string;
 }
 
 interface ToolActivityBubbleProps {
@@ -182,7 +184,16 @@ export function ToolActivityBubble({
                   )}
 
                   {showSummaryInConversation && (
-                    <div style={styles.infoState}>压缩后的展示结果已在会话流中展示，用于体现执行进度。</div>
+                    <div style={styles.block}>
+                      <div style={styles.blockLabel}>结果摘要</div>
+                      {tool.summaryText ? (
+                        <div style={styles.summaryContent}>
+                          <MarkdownRenderer content={tool.summaryText} variant="chat" />
+                        </div>
+                      ) : (
+                        <div style={styles.infoState}>摘要内容将在处理完成后展示。</div>
+                      )}
+                    </div>
                   )}
 
                   {detailRefs.length > 0 && (
@@ -564,6 +575,15 @@ const styles = {
     color: "var(--text-secondary)",
     fontSize: 12,
     lineHeight: 1.5,
+  },
+  summaryContent: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: "var(--bg-card)",
+    border: "1px solid var(--border-dim)",
+    color: "var(--text-primary)",
+    fontSize: 12.5,
+    lineHeight: 1.6,
   },
   pendingText: {
     padding: "10px 12px",

@@ -13,4 +13,7 @@ pub struct ToolContext {
     pub app_handle: Option<AppHandle>,
     pub llm_provider: Option<OpenAiCompatProvider>,
     pub vision_model: String,
+    pub image_model_url: String,
+    pub image_model_api_key: String,
+    pub image_model: String,
 }

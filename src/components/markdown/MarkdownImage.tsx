@@ -1,10 +1,77 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { X } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 
-export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+function isLocalImagePath(src: string): boolean {
+  return src.startsWith("/") || src.startsWith("file://");
+}
+
+interface MarkdownImageProps {
+  src?: string;
+  alt?: string;
+}
+
+export function MarkdownImage({ src, alt }: MarkdownImageProps) {
   const [isEnlarged, setIsEnlarged] = useState(false);
+  const [resolvedSrc, setResolvedSrc] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const latestSrcRef = useRef<string | undefined>(undefined);
 
-  if (!src) return null;
+  useEffect(() => {
+    if (!src) {
+      setResolvedSrc("");
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
+    latestSrcRef.current = src;
+
+    if (!isLocalImagePath(src)) {
+      setResolvedSrc(src);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    const path = src.startsWith("file://") ? src.slice(7) : src;
+
+    invoke<{ dataUrl: string }>("read_chat_image_file", { path })
+      .then((result) => {
+        if (latestSrcRef.current !== src) return;
+        setResolvedSrc(result.dataUrl);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (latestSrcRef.current !== src) return;
+        setError(typeof err === "string" ? err : "无法加载图片");
+        setLoading(false);
+      });
+  }, [src]);
+
+  if (loading) {
+    return (
+      <div className="markdown-image-thumbnail-wrap">
+        <div className="markdown-image-loading">加载中...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="markdown-image-thumbnail-wrap">
+        <div className="markdown-image-error" title={error}>
+          图片加载失败
+        </div>
+      </div>
+    );
+  }
+
+  if (!resolvedSrc) return null;
 
   return (
     <>
@@ -13,7 +80,7 @@ export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
         onClick={() => setIsEnlarged(true)}
         title="点击放大"
       >
-        <img src={src} alt={alt} className="markdown-image-thumbnail" />
+        <img src={resolvedSrc} alt={alt} className="markdown-image-thumbnail" />
       </div>
 
       {isEnlarged && (
@@ -23,7 +90,7 @@ export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
           </button>
           <div className="markdown-image-enlarged-container">
             <img
-              src={src}
+              src={resolvedSrc}
               alt={alt}
               className="markdown-image-enlarged"
               onClick={(e) => e.stopPropagation()}

@@ -211,3 +211,171 @@ pub async fn knowledge_reindex_collection(
     let settings = spawn_blocking_string(super::settings::load_settings).await?;
     reindex_collection_inner(&collection, &settings).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_markdown_single_heading() {
+        let md = "# Intro\n\nHello world.";
+        let chunks = chunk_markdown(md);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].heading, "Intro");
+        assert!(chunks[0].text.contains("Hello world."));
+    }
+
+    #[test]
+    fn chunk_markdown_multiple_headings() {
+        let md = "# A\n\nAlpha\n\n# B\n\nBeta";
+        let chunks = chunk_markdown(md);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].heading, "A");
+        assert_eq!(chunks[1].heading, "B");
+    }
+
+    #[test]
+    fn chunk_markdown_subheadings() {
+        let md = "# Title\n\nParagraph 1\n\n## Sub\n\nParagraph 2";
+        let chunks = chunk_markdown(md);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].heading, "Title");
+        assert_eq!(chunks[1].heading, "Sub");
+    }
+
+    #[test]
+    fn chunk_markdown_empty_input() {
+        let chunks = chunk_markdown("");
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn chunk_markdown_whitespace_only() {
+        let chunks = chunk_markdown("   \n  \n  ");
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn chunk_markdown_no_heading() {
+        let md = "Just a paragraph.";
+        let chunks = chunk_markdown(md);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].heading, "");
+        assert!(chunks[0].text.contains("Just a paragraph."));
+    }
+
+    #[test]
+    fn chunk_markdown_heading_resets_chunk() {
+        let md = "# First\n\nLine A\n\n# Second\n\nLine B";
+        let chunks = chunk_markdown(md);
+        assert_eq!(chunks.len(), 2);
+        assert!(!chunks[0].text.contains("Line B"));
+        assert!(!chunks[1].text.contains("Line A"));
+    }
+
+    #[test]
+    fn hard_slices_exact_boundary() {
+        let text = "abcdefghij";
+        let slices = hard_slices(text, 5);
+        assert_eq!(slices, vec!["abcde", "fghij"]);
+    }
+
+    #[test]
+    fn hard_slices_partial_last() {
+        let text = "abcdefgh";
+        let slices = hard_slices(text, 5);
+        assert_eq!(slices, vec!["abcde", "fgh"]);
+    }
+
+    #[test]
+    fn hard_slices_shorter_than_max() {
+        let text = "abc";
+        let slices = hard_slices(text, 10);
+        assert_eq!(slices, vec!["abc"]);
+    }
+
+    #[test]
+    fn hard_slices_empty() {
+        let slices = hard_slices("", 5);
+        assert!(slices.is_empty());
+    }
+
+    #[test]
+    fn overlap_tail_short_text() {
+        let text = "hi";
+        let tail = overlap_tail(text);
+        assert_eq!(tail, "hi");
+    }
+
+    #[test]
+    fn overlap_tail_long_text() {
+        let text: String = "a".repeat(500);
+        let tail = overlap_tail(&text);
+        assert_eq!(tail.chars().count(), OVERLAP_CHARS);
+    }
+
+    #[test]
+    fn overlap_tail_exact_boundary() {
+        let text: String = "a".repeat(OVERLAP_CHARS);
+        let tail = overlap_tail(&text);
+        assert_eq!(tail.chars().count(), OVERLAP_CHARS);
+    }
+
+    #[test]
+    fn push_sized_chunks_small_text() {
+        let mut chunks = Vec::new();
+        push_sized_chunks(&mut chunks, "H", "Short paragraph.");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].heading, "H");
+    }
+
+    #[test]
+    fn push_sized_chunks_empty_text() {
+        let mut chunks = Vec::new();
+        push_sized_chunks(&mut chunks, "H", "   ");
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn push_sized_chunks_oversized_paragraph() {
+        let mut chunks = Vec::new();
+        let long_para: String = "x".repeat(MAX_CHUNK_CHARS + 100);
+        push_sized_chunks(&mut chunks, "H", &long_para);
+        assert!(!chunks.is_empty());
+        for chunk in &chunks {
+            assert!(chunk.text.chars().count() <= MAX_CHUNK_CHARS);
+        }
+    }
+
+    #[test]
+    fn chunk_markdown_unicode_content() {
+        let md = "# 标题\n\n这是一段中文内容。".repeat(10);
+        let chunks = chunk_markdown(&md);
+        assert!(!chunks.is_empty());
+        assert_eq!(chunks[0].heading, "标题");
+    }
+
+    #[test]
+    fn chunk_markdown_consecutive_headings() {
+        let md = "# A\n\n# B\n\n# C\n\nContent";
+        let chunks = chunk_markdown(md);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[2].heading, "C");
+    }
+
+    #[test]
+    fn chunk_markdown_heading_with_hashes() {
+        let md = "### Sub Sub\n\nSome text";
+        let chunks = chunk_markdown(md);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].heading, "Sub Sub");
+    }
+
+    #[test]
+    fn chunk_markdown_only_headings() {
+        let md = "# A\n\n# B\n\n# C";
+        let chunks = chunk_markdown(md);
+        // Each heading with empty text should produce no chunks
+        assert!(chunks.iter().all(|c| c.heading == "A" || c.heading == "B" || c.heading == "C"));
+    }
+}

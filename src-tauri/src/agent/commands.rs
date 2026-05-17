@@ -834,6 +834,47 @@ pub async fn dispatcher_stop_run(
     Ok(stopped)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_summary_model_name_returns_trimmed_input() {
+        assert_eq!(
+            normalize_summary_model_name("  deepseek-v4-flash  "),
+            "deepseek-v4-flash"
+        );
+    }
+
+    #[test]
+    fn normalize_summary_model_name_returns_default_for_empty() {
+        assert_eq!(normalize_summary_model_name(""), DEFAULT_SUMMARY_MODEL);
+    }
+
+    #[test]
+    fn normalize_summary_model_name_returns_default_for_whitespace_only() {
+        assert_eq!(normalize_summary_model_name("   "), DEFAULT_SUMMARY_MODEL);
+    }
+
+    #[test]
+    fn normalize_summary_model_name_preserves_valid_name() {
+        assert_eq!(normalize_summary_model_name("qwen3.6-plus"), "qwen3.6-plus");
+    }
+
+    #[test]
+    fn normalize_summary_model_name_handles_single_char() {
+        assert_eq!(normalize_summary_model_name("a"), "a");
+    }
+
+    #[test]
+    fn normalize_summary_model_name_trims_tabs_and_spaces() {
+        assert_eq!(
+            normalize_summary_model_name("\t deepseek-v4-flash \t"),
+            "deepseek-v4-flash"
+        );
+    }
+}
+
 #[tauri::command]
 pub fn dispatcher_start_voice_input(
     state: tauri::State<'_, DispatcherState>,

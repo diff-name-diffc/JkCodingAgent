@@ -315,6 +315,8 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use serde_json::json;
+
     use super::resolve_path;
     use crate::agent::tools::ToolContext;
 
@@ -367,5 +369,529 @@ mod tests {
         assert!(error.contains("禁止访问工作区之外"));
         let _ = fs::remove_dir_all(workspace);
         let _ = fs::remove_dir_all(outside);
+    }
+
+    // --- Argument parsing tests ---
+
+    #[test]
+    fn string_arg_returns_value_when_present() {
+        let args = json!({"name": "test-value"});
+        assert_eq!(super::string_arg(&args, "name"), Some("test-value".to_string()));
+    }
+
+    #[test]
+    fn string_arg_returns_none_when_missing() {
+        let args = json!({"other": "value"});
+        assert_eq!(super::string_arg(&args, "name"), None);
+    }
+
+    #[test]
+    fn string_arg_returns_none_for_non_string() {
+        let args = json!({"name": 42});
+        assert_eq!(super::string_arg(&args, "name"), None);
+    }
+
+    #[test]
+    fn string_arg_returns_none_for_null() {
+        let args = json!({"name": null});
+        assert_eq!(super::string_arg(&args, "name"), None);
+    }
+
+    #[test]
+    fn string_array_arg_returns_vec_when_present() {
+        let args = json!({"paths": ["/a", "/b", "/c"]});
+        assert_eq!(
+            super::string_array_arg(&args, "paths"),
+            Some(vec!["/a".to_string(), "/b".to_string(), "/c".to_string()])
+        );
+    }
+
+    #[test]
+    fn string_array_arg_skips_non_string_elements() {
+        let args = json!({"paths": ["/a", 42, "/c"]});
+        assert_eq!(
+            super::string_array_arg(&args, "paths"),
+            Some(vec!["/a".to_string(), "/c".to_string()])
+        );
+    }
+
+    #[test]
+    fn string_array_arg_returns_none_for_non_array() {
+        let args = json!({"paths": "single"});
+        assert_eq!(super::string_array_arg(&args, "paths"), None);
+    }
+
+    #[test]
+    fn string_array_arg_returns_none_when_missing() {
+        let args = json!({});
+        assert_eq!(super::string_array_arg(&args, "paths"), None);
+    }
+
+    #[test]
+    fn non_empty_string_array_arg_filters_empty_strings() {
+        let args = json!({"items": ["a", "", "  ", "b"]});
+        assert_eq!(
+            super::non_empty_string_array_arg(&args, "items"),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+    }
+
+    #[test]
+    fn non_empty_string_array_arg_returns_none_when_all_empty() {
+        let args = json!({"items": ["", "  ", "   "]});
+        assert_eq!(super::non_empty_string_array_arg(&args, "items"), None);
+    }
+
+    #[test]
+    fn non_empty_string_array_arg_returns_none_when_missing() {
+        let args = json!({});
+        assert_eq!(super::non_empty_string_array_arg(&args, "items"), None);
+    }
+
+    #[test]
+    fn string_list_arg_combines_single_and_list() {
+        let args = json!({"path": "/single", "paths": ["/a", "/b"]});
+        let result = super::string_list_arg(&args, "path", "paths").unwrap();
+        assert_eq!(result, vec!["/single".to_string(), "/a".to_string(), "/b".to_string()]);
+    }
+
+    #[test]
+    fn string_list_arg_works_with_single_only() {
+        let args = json!({"path": "/single"});
+        let result = super::string_list_arg(&args, "path", "paths").unwrap();
+        assert_eq!(result, vec!["/single".to_string()]);
+    }
+
+    #[test]
+    fn string_list_arg_works_with_list_only() {
+        let args = json!({"paths": ["/a", "/b"]});
+        let result = super::string_list_arg(&args, "path", "paths").unwrap();
+        assert_eq!(result, vec!["/a".to_string(), "/b".to_string()]);
+    }
+
+    #[test]
+    fn string_list_arg_deduplicates() {
+        let args = json!({"path": "/a", "paths": ["/a", "/b"]});
+        let result = super::string_list_arg(&args, "path", "paths").unwrap();
+        assert_eq!(result, vec!["/a".to_string(), "/b".to_string()]);
+    }
+
+    #[test]
+    fn string_list_arg_filters_empty() {
+        let args = json!({"paths": ["", "  ", "/a"]});
+        let result = super::string_list_arg(&args, "path", "paths").unwrap();
+        assert_eq!(result, vec!["/a".to_string()]);
+    }
+
+    #[test]
+    fn string_list_arg_errors_when_both_missing() {
+        let args = json!({});
+        let error = super::string_list_arg(&args, "path", "paths").unwrap_err();
+        assert!(error.contains("缺少必填参数"));
+    }
+
+    #[test]
+    fn usize_arg_returns_value_when_present() {
+        let args = json!({"count": 42});
+        assert_eq!(super::usize_arg(&args, "count"), Some(42));
+    }
+
+    #[test]
+    fn usize_arg_returns_none_for_non_number() {
+        let args = json!({"count": "not a number"});
+        assert_eq!(super::usize_arg(&args, "count"), None);
+    }
+
+    #[test]
+    fn usize_arg_returns_none_when_missing() {
+        let args = json!({});
+        assert_eq!(super::usize_arg(&args, "count"), None);
+    }
+
+    #[test]
+    fn u64_arg_returns_value_when_present() {
+        let args = json!({"timeout": 300});
+        assert_eq!(super::u64_arg(&args, "timeout"), Some(300));
+    }
+
+    #[test]
+    fn u64_arg_returns_none_for_float() {
+        let args = json!({"timeout": 3.14});
+        assert_eq!(super::u64_arg(&args, "timeout"), None);
+    }
+
+    #[test]
+    fn boolish_arg_accepts_bool_true() {
+        let args = json!({"flag": true});
+        assert_eq!(super::boolish_arg(&args, "flag"), Some(true));
+    }
+
+    #[test]
+    fn boolish_arg_accepts_bool_false() {
+        let args = json!({"flag": false});
+        assert_eq!(super::boolish_arg(&args, "flag"), Some(false));
+    }
+
+    #[test]
+    fn boolish_arg_accepts_string_true() {
+        let args = json!({"flag": "true"});
+        assert_eq!(super::boolish_arg(&args, "flag"), Some(true));
+    }
+
+    #[test]
+    fn boolish_arg_accepts_string_true_case_insensitive() {
+        let args = json!({"flag": "TRUE"});
+        assert_eq!(super::boolish_arg(&args, "flag"), Some(true));
+    }
+
+    #[test]
+    fn boolish_arg_string_false_yields_some_false() {
+        let args = json!({"flag": "false"});
+        // "false".eq_ignore_ascii_case("true") is false => .map returns Some(false)
+        assert_eq!(super::boolish_arg(&args, "flag"), Some(false));
+    }
+
+    #[test]
+    fn boolish_arg_returns_none_for_non_bool_non_string() {
+        let args = json!({"flag": 42});
+        assert_eq!(super::boolish_arg(&args, "flag"), None);
+    }
+
+    // --- with_result_mode_parameter tests ---
+
+    #[test]
+    fn with_result_mode_parameter_adds_result_mode_property() {
+        let schema = json!({"type": "object", "properties": {}});
+        let result = super::with_result_mode_parameter(schema, "auto", "test guidance");
+        let props = result.get("properties").unwrap().as_object().unwrap();
+        assert!(props.contains_key("result_mode"));
+        let rm = &props["result_mode"];
+        assert_eq!(rm["default"], "auto");
+        assert!(rm["description"].as_str().unwrap().contains("test guidance"));
+    }
+
+    #[test]
+    fn with_result_mode_parameter_preserves_existing_properties() {
+        let schema = json!({"type": "object", "properties": {"path": {"type": "string"}}});
+        let result = super::with_result_mode_parameter(schema, "full", "");
+        let props = result.get("properties").unwrap().as_object().unwrap();
+        assert!(props.contains_key("path"));
+        assert!(props.contains_key("result_mode"));
+    }
+
+    #[test]
+    fn with_result_mode_parameter_returns_unchanged_without_properties() {
+        let schema = json!({"type": "object"});
+        let result = super::with_result_mode_parameter(schema, "auto", "");
+        assert!(result.get("properties").is_none());
+    }
+
+    // --- is_noise tests ---
+
+    #[test]
+    fn is_noise_detects_known_noise_dirs() {
+        assert!(super::is_noise(std::ffi::OsStr::new("node_modules")));
+        assert!(super::is_noise(std::ffi::OsStr::new(".git")));
+        assert!(super::is_noise(std::ffi::OsStr::new("__pycache__")));
+        assert!(super::is_noise(std::ffi::OsStr::new("target")));
+        assert!(super::is_noise(std::ffi::OsStr::new("dist")));
+        assert!(super::is_noise(std::ffi::OsStr::new("build")));
+        assert!(super::is_noise(std::ffi::OsStr::new(".venv")));
+    }
+
+    #[test]
+    fn is_noise_allows_normal_names() {
+        assert!(!super::is_noise(std::ffi::OsStr::new("src")));
+        assert!(!super::is_noise(std::ffi::OsStr::new("lib")));
+        assert!(!super::is_noise(std::ffi::OsStr::new("tests")));
+        assert!(!super::is_noise(std::ffi::OsStr::new("README.md")));
+    }
+
+    #[test]
+    fn is_noise_allows_dotfiles_with_exceptions() {
+        assert!(!super::is_noise(std::ffi::OsStr::new(".env")));
+        assert!(!super::is_noise(std::ffi::OsStr::new(".gitignore")));
+        assert!(!super::is_noise(std::ffi::OsStr::new(".dockerignore")));
+    }
+
+    #[test]
+    fn is_noise_rejects_hidden_files() {
+        assert!(super::is_noise(std::ffi::OsStr::new(".DS_Store")));
+        assert!(super::is_noise(std::ffi::OsStr::new(".cache")));
+    }
+
+    // --- is_dangerous tests ---
+
+    #[test]
+    fn is_dangerous_detects_rm_rf_root() {
+        assert!(super::is_dangerous("rm -rf /"));
+        assert!(super::is_dangerous("rm -rf /*"));
+    }
+
+    #[test]
+    fn is_dangerous_detects_dd_patterns() {
+        assert!(super::is_dangerous("dd if=/dev/zero of=/dev/sda"));
+        assert!(super::is_dangerous("dd if=/dev/random of=disk.img"));
+    }
+
+    #[test]
+    fn is_dangerous_detects_shutdown_commands() {
+        assert!(super::is_dangerous("shutdown now"));
+        assert!(super::is_dangerous("reboot"));
+    }
+
+    #[test]
+    fn is_dangerous_detects_piped_remote_execution() {
+        // The pattern is substring match on "curl | sh" (with spaces as-is)
+        assert!(super::is_dangerous("curl | sh"));
+        assert!(super::is_dangerous("wget | bash"));
+        assert!(super::is_dangerous("curl | sudo"));
+    }
+
+    #[test]
+    fn is_dangerous_is_case_insensitive() {
+        assert!(super::is_dangerous("RM -RF /"));
+        assert!(super::is_dangerous("Reboot"));
+    }
+
+    #[test]
+    fn is_dangerous_allows_safe_commands() {
+        assert!(!super::is_dangerous("ls -la"));
+        assert!(!super::is_dangerous("cargo build"));
+        assert!(!super::is_dangerous("git status"));
+        assert!(!super::is_dangerous("echo hello"));
+    }
+
+    // --- lexical_normalize tests ---
+
+    #[test]
+    fn lexical_normalize_removes_dot_components() {
+        let path = std::path::Path::new("/home/user/./project/./file.txt");
+        let normalized = super::lexical_normalize(path);
+        assert_eq!(normalized, std::path::PathBuf::from("/home/user/project/file.txt"));
+    }
+
+    #[test]
+    fn lexical_normalize_resolves_parent_dir() {
+        let path = std::path::Path::new("/home/user/project/../other/file.txt");
+        let normalized = super::lexical_normalize(path);
+        assert_eq!(normalized, std::path::PathBuf::from("/home/user/other/file.txt"));
+    }
+
+    #[test]
+    fn lexical_normalize_handles_mixed_dots() {
+        let path = std::path::Path::new("/a/b/../c/./d");
+        let normalized = super::lexical_normalize(path);
+        assert_eq!(normalized, std::path::PathBuf::from("/a/c/d"));
+    }
+
+    #[test]
+    fn lexical_normalize_preserves_clean_path() {
+        let path = std::path::Path::new("/home/user/project");
+        let normalized = super::lexical_normalize(path);
+        assert_eq!(normalized, std::path::PathBuf::from("/home/user/project"));
+    }
+
+    #[test]
+    fn lexical_normalize_empty_path() {
+        let path = std::path::Path::new("");
+        let normalized = super::lexical_normalize(path);
+        assert_eq!(normalized, std::path::PathBuf::new());
+    }
+
+    // --- render_labeled_sections tests ---
+
+    #[test]
+    fn render_labeled_sections_formats_single_section() {
+        let result = super::render_labeled_sections(vec![("Files".to_string(), "a.rs\nb.rs".to_string())]);
+        assert_eq!(result, "## Files\na.rs\nb.rs");
+    }
+
+    #[test]
+    fn render_labeled_sections_joins_multiple_sections() {
+        let result = super::render_labeled_sections(vec![
+            ("Section A".to_string(), "content a".to_string()),
+            ("Section B".to_string(), "content b".to_string()),
+        ]);
+        assert!(result.contains("## Section A"));
+        assert!(result.contains("content a"));
+        assert!(result.contains("## Section B"));
+        assert!(result.contains("content b"));
+    }
+
+    #[test]
+    fn render_labeled_sections_shows_no_result_for_empty_body() {
+        let result = super::render_labeled_sections(vec![("Empty".to_string(), "  ".to_string())]);
+        assert!(result.contains("[无结果]"));
+    }
+
+    // --- rel helper tests ---
+
+    #[test]
+    fn rel_strips_prefix_when_matching() {
+        let path = std::path::Path::new("/home/user/project/src/main.rs");
+        let root = std::path::Path::new("/home/user/project");
+        assert_eq!(super::rel(path, root), "src/main.rs");
+    }
+
+    #[test]
+    fn rel_returns_full_path_when_prefix_does_not_match() {
+        let path = std::path::Path::new("/other/path/file.txt");
+        let root = std::path::Path::new("/home/user/project");
+        assert_eq!(super::rel(path, root), "/other/path/file.txt");
+    }
+
+    // --- resolve_path tests ---
+
+    #[test]
+    fn resolve_path_allows_absolute_path_inside_workspace() {
+        let workspace = temp_path("jkcodingagent-common-abs-path");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let context = tool_context(workspace.clone());
+
+        let resolved = resolve_path(&context, workspace.to_string_lossy().as_ref()).expect("resolve");
+        assert!(resolved.starts_with(workspace.canonicalize().expect("canonicalize")));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn resolve_path_rejects_absolute_path_outside_workspace() {
+        let workspace = temp_path("jkcodingagent-common-abs-outside");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let context = tool_context(workspace.clone());
+
+        let error = resolve_path(&context, "/etc/passwd").expect_err("reject outside");
+        assert!(error.contains("禁止访问工作区之外"));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn resolve_path_allows_relative_path_inside_workspace() {
+        let workspace = temp_path("jkcodingagent-common-rel-path");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let context = tool_context(workspace.clone());
+
+        let resolved = resolve_path(&context, "src/main.rs").expect("resolve");
+        assert!(resolved.starts_with(workspace.canonicalize().expect("canonicalize")));
+        assert!(resolved.to_string_lossy().ends_with("src/main.rs"));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn resolve_path_unrestricted_allows_outside() {
+        let workspace = temp_path("jkcodingagent-common-unrestricted");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let mut context = tool_context(workspace.clone());
+        context.restrict_to_workspace = false;
+
+        let resolved = resolve_path(&context, "/tmp/some-file.txt").expect("resolve");
+        assert_eq!(resolved, std::path::PathBuf::from("/tmp/some-file.txt"));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn resolve_path_allows_extra_dir() {
+        let workspace = temp_path("jkcodingagent-common-extra-workspace");
+        let extra = temp_path("jkcodingagent-common-extra-dir");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::create_dir_all(&extra).expect("create extra dir");
+        let mut context = tool_context(workspace.clone());
+        context.extra_allowed_dirs = vec![extra.clone()];
+
+        let resolved = resolve_path(&context, extra.to_string_lossy().as_ref()).expect("resolve");
+        assert!(resolved.starts_with(extra.canonicalize().expect("canonicalize")));
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(extra);
+    }
+
+    // --- collect_entries tests ---
+
+    #[test]
+    fn collect_entries_lists_files_and_dirs() {
+        let dir = temp_path("jkcodingagent-common-collect");
+        let sub = dir.join("subdir");
+        fs::create_dir_all(&sub).expect("create subdir");
+        fs::write(dir.join("file.txt"), "hello").expect("write file");
+        fs::write(sub.join("nested.txt"), "world").expect("write nested");
+
+        let mut entries = Vec::new();
+        super::collect_entries(&dir, &dir, false, 100, &mut entries);
+
+        assert!(entries.iter().any(|e| e.contains("[dir] subdir/")));
+        assert!(entries.iter().any(|e| e.contains("[file] file.txt")));
+        // Non-recursive should not include nested file
+        assert!(!entries.iter().any(|e| e.contains("nested.txt")));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn collect_entries_recursive_lists_nested() {
+        let dir = temp_path("jkcodingagent-common-collect-recursive");
+        let sub = dir.join("subdir");
+        fs::create_dir_all(&sub).expect("create subdir");
+        fs::write(sub.join("nested.txt"), "world").expect("write nested");
+
+        let mut entries = Vec::new();
+        super::collect_entries(&dir, &dir, true, 100, &mut entries);
+
+        assert!(entries.iter().any(|e| e.contains("nested.txt")));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn collect_entries_respects_max_entries() {
+        let dir = temp_path("jkcodingagent-common-collect-max");
+        fs::create_dir_all(&dir).expect("create dir");
+        for i in 0..20 {
+            fs::write(dir.join(format!("file{i}.txt")), "").expect("write file");
+        }
+
+        let mut entries = Vec::new();
+        super::collect_entries(&dir, &dir, false, 5, &mut entries);
+
+        // Should have at most 5 regular entries + 1 "... (5 entries shown)" marker
+        assert!(entries.len() <= 6);
+        assert!(entries.iter().any(|e| e.contains("entries shown")));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn collect_entries_skips_noise_dirs() {
+        let dir = temp_path("jkcodingagent-common-collect-noise");
+        let node_modules = dir.join("node_modules");
+        let src = dir.join("src");
+        fs::create_dir_all(&node_modules).expect("create node_modules");
+        fs::create_dir_all(&src).expect("create src");
+        fs::write(node_modules.join("lib.js"), "").expect("write lib");
+        fs::write(src.join("main.rs"), "").expect("write main");
+
+        let mut entries = Vec::new();
+        super::collect_entries(&dir, &dir, true, 100, &mut entries);
+
+        assert!(!entries.iter().any(|e| e.contains("node_modules")));
+        assert!(entries.iter().any(|e| e.contains("src")));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn collect_entries_handles_nonexistent_dir() {
+        let mut entries = Vec::new();
+        super::collect_entries(
+            std::path::Path::new("/nonexistent/path"),
+            std::path::Path::new("/nonexistent/path"),
+            false,
+            100,
+            &mut entries,
+        );
+        assert!(entries.is_empty());
     }
 }

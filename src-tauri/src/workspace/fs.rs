@@ -335,7 +335,42 @@ pub async fn list_project_files(project_path: String) -> Result<Vec<String>, Str
 
 #[cfg(test)]
 mod tests {
-    use super::{should_ignore_entry_name, should_ignore_project_file};
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let id = TEST_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        std::env::temp_dir().join(format!("nezha_fs_{}_{}", prefix, id))
+    }
+
+    /// Helper: create a unique temp directory.
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(prefix: &str) -> Self {
+            let path = unique_test_dir(prefix);
+            let _ = fs::create_dir_all(&path);
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    // ── should_ignore_entry_name tests ────────────────────────────────────
 
     #[test]
     fn ignores_ds_store_in_directory_entries() {
@@ -348,6 +383,344 @@ mod tests {
         assert!(should_ignore_project_file(".DS_Store"));
         assert!(should_ignore_project_file("src/.DS_Store"));
         assert!(!should_ignore_project_file("src/main.ts"));
+    }
+
+    #[test]
+    fn ignores_common_dirs() {
+        for &dir in IGNORED_DIRS {
+            assert!(should_ignore_entry_name(dir, true), "should ignore dir: {}", dir);
+        }
+    }
+
+    #[test]
+    fn does_not_ignore_normal_dirs() {
+        assert!(!should_ignore_entry_name("src", true));
+        assert!(!should_ignore_entry_name("lib", true));
+        assert!(!should_ignore_entry_name("components", true));
+    }
+
+    #[test]
+    fn ignores_only_files_not_dirs_for_ds_store() {
+        assert!(should_ignore_entry_name(".DS_Store", false));
+        // is_dir=false with a directory name should not trigger dir ignores
+        assert!(!should_ignore_entry_name("node_modules", false));
+    }
+
+    #[test]
+    fn does_not_ignore_normal_files() {
+        assert!(!should_ignore_entry_name("main.rs", false));
+        assert!(!should_ignore_entry_name("index.ts", false));
+        assert!(!should_ignore_entry_name("package.json", false));
+    }
+
+    // ── should_ignore_project_file tests ──────────────────────────────────
+
+    #[test]
+    fn ignores_ds_store_at_various_depths() {
+        assert!(should_ignore_project_file(".DS_Store"));
+        assert!(should_ignore_project_file("src/.DS_Store"));
+        assert!(should_ignore_project_file("a/b/c/.DS_Store"));
+    }
+
+    #[test]
+    fn does_not_ignore_normal_project_files() {
+        assert!(!should_ignore_project_file("src/main.ts"));
+        assert!(!should_ignore_project_file("README.md"));
+        assert!(!should_ignore_project_file("Cargo.toml"));
+    }
+
+    // ── previewable_image_mime_type tests ─────────────────────────────────
+
+    #[test]
+    fn recognizes_png() {
+        assert_eq!(
+            previewable_image_mime_type(Path::new("photo.png")),
+            Some("image/png")
+        );
+    }
+
+    #[test]
+    fn recognizes_jpg() {
+        assert_eq!(
+            previewable_image_mime_type(Path::new("photo.jpg")),
+            Some("image/jpeg")
+        );
+    }
+
+    #[test]
+    fn recognizes_jpeg() {
+        assert_eq!(
+            previewable_image_mime_type(Path::new("photo.jpeg")),
+            Some("image/jpeg")
+        );
+    }
+
+    #[test]
+    fn recognizes_gif() {
+        assert_eq!(
+            previewable_image_mime_type(Path::new("anim.gif")),
+            Some("image/gif")
+        );
+    }
+
+    #[test]
+    fn recognizes_webp() {
+        assert_eq!(
+            previewable_image_mime_type(Path::new("img.webp")),
+            Some("image/webp")
+        );
+    }
+
+    #[test]
+    fn recognizes_bmp() {
+        assert_eq!(
+            previewable_image_mime_type(Path::new("img.bmp")),
+            Some("image/bmp")
+        );
+    }
+
+    #[test]
+    fn recognizes_svg() {
+        assert_eq!(
+            previewable_image_mime_type(Path::new("icon.svg")),
+            Some("image/svg+xml")
+        );
+    }
+
+    #[test]
+    fn returns_none_for_text_file() {
+        assert_eq!(previewable_image_mime_type(Path::new("doc.txt")), None);
+    }
+
+    #[test]
+    fn returns_none_for_no_extension() {
+        assert_eq!(previewable_image_mime_type(Path::new("Makefile")), None);
+    }
+
+    #[test]
+    fn returns_none_for_non_image_extension() {
+        assert_eq!(previewable_image_mime_type(Path::new("file.rs")), None);
+        assert_eq!(previewable_image_mime_type(Path::new("file.pdf")), None);
+    }
+
+    #[test]
+    fn recognizes_uppercase_extension() {
+        assert_eq!(
+            previewable_image_mime_type(Path::new("photo.PNG")),
+            Some("image/png")
+        );
+        assert_eq!(
+            previewable_image_mime_type(Path::new("photo.Jpeg")),
+            Some("image/jpeg")
+        );
+    }
+
+    // ── validate_path_within tests ────────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_relative_path() {
+        let result = validate_path_within("relative/path", "/some/root");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("absolute"));
+    }
+
+    #[test]
+    fn validate_rejects_nonexistent_path() {
+        let result = validate_path_within("/nonexistent/file.txt", "/nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("resolve"));
+    }
+
+    #[test]
+    fn validate_accepts_file_within_root() {
+        let tmp = TempDir::new("fs_validate");
+        let root = tmp.path();
+        let file = root.join("test.txt");
+        fs::write(&file, "hi").expect("write");
+
+        let result = validate_path_within(file.to_str().unwrap(), root.to_str().unwrap());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_path_outside_root() {
+        let tmp1 = TempDir::new("fs_validate_out1");
+        let tmp2 = TempDir::new("fs_validate_out2");
+        let file = tmp2.path().join("secret.txt");
+        fs::write(&file, "hi").expect("write");
+
+        let result = validate_path_within(file.to_str().unwrap(), tmp1.path().to_str().unwrap());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("outside"));
+    }
+
+    #[test]
+    fn validate_accepts_deeply_nested_file() {
+        let tmp = TempDir::new("fs_validate_deep");
+        let root = tmp.path();
+        let deep = root.join("a/b/c");
+        fs::create_dir_all(&deep).expect("mkdir");
+        let file = deep.join("file.txt");
+        fs::write(&file, "hi").expect("write");
+
+        let result = validate_path_within(file.to_str().unwrap(), root.to_str().unwrap());
+        assert!(result.is_ok());
+    }
+
+    // ── validate_new_path_within tests ────────────────────────────────────
+
+    #[test]
+    fn validate_new_rejects_relative_path() {
+        let result = validate_new_path_within("relative/path", "/some/root");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("absolute"));
+    }
+
+    #[test]
+    fn validate_new_rejects_nonexistent_parent() {
+        let result = validate_new_path_within("/nonexistent/newfile.txt", "/nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_new_accepts_new_file_in_existing_dir() {
+        let tmp = TempDir::new("fs_validate_new");
+        let root = tmp.path();
+        let existing = root.join("existing.txt");
+        fs::write(&existing, "hi").expect("write");
+        let new_file = root.join("newfile.txt");
+
+        let result = validate_new_path_within(new_file.to_str().unwrap(), root.to_str().unwrap());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_new_rejects_outside_root() {
+        let tmp1 = TempDir::new("fs_validate_new1");
+        let tmp2 = TempDir::new("fs_validate_new2");
+        let existing = tmp2.path().join("file.txt");
+        fs::write(&existing, "hi").expect("write");
+
+        let new_file = tmp2.path().join("new.txt");
+        let result = validate_new_path_within(new_file.to_str().unwrap(), tmp1.path().to_str().unwrap());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("outside"));
+    }
+
+    // ── ensure_not_project_root tests ─────────────────────────────────────
+
+    #[test]
+    fn ensure_not_project_root_rejects_root_itself() {
+        let tmp = TempDir::new("fs_root");
+        let root = tmp.path();
+        fs::write(root.join(".gitkeep"), "").expect("write");
+
+        let result = ensure_not_project_root(root, root.to_str().unwrap());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Cannot modify the project root"));
+    }
+
+    #[test]
+    fn ensure_not_project_root_allows_subdirectory() {
+        let tmp = TempDir::new("fs_root_sub");
+        let root = tmp.path();
+        let sub = root.join("subdir");
+        fs::create_dir_all(&sub).expect("mkdir");
+
+        let result = ensure_not_project_root(&sub, root.to_str().unwrap());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ensure_not_project_root_allows_file() {
+        let tmp = TempDir::new("fs_root_file");
+        let root = tmp.path();
+        let file = root.join("file.txt");
+        fs::write(&file, "hi").expect("write");
+
+        let result = ensure_not_project_root(&file, root.to_str().unwrap());
+        assert!(result.is_ok());
+    }
+
+    // ── FsEntry serialization tests ───────────────────────────────────────
+
+    #[test]
+    fn fs_entry_serializes_correctly() {
+        let entry = FsEntry {
+            name: "test.rs".to_string(),
+            path: "/project/test.rs".to_string(),
+            is_dir: false,
+            extension: Some("rs".to_string()),
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(json.contains("\"name\""));
+        assert!(json.contains("\"is_dir\":false"));
+        assert!(json.contains("\"extension\":\"rs\""));
+    }
+
+    #[test]
+    fn fs_entry_dir_serializes_with_true() {
+        let entry = FsEntry {
+            name: "src".to_string(),
+            path: "/project/src".to_string(),
+            is_dir: true,
+            extension: None,
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(json.contains("\"is_dir\":true"));
+        assert!(json.contains("\"extension\":null"));
+    }
+
+    // ── ImagePreviewData serialization tests ──────────────────────────────
+
+    #[test]
+    fn image_preview_data_serializes_camel_case() {
+        let data = ImagePreviewData {
+            data_url: "data:image/png;base64,abc".to_string(),
+            mime_type: "image/png".to_string(),
+            byte_length: 12345,
+        };
+        let json = serde_json::to_string(&data).expect("serialize");
+        assert!(json.contains("\"dataUrl\""));
+        assert!(json.contains("\"mimeType\""));
+        assert!(json.contains("\"byteLength\":12345"));
+    }
+
+    // ── FileMeta serialization tests ──────────────────────────────────────
+
+    #[test]
+    fn file_meta_serializes_camel_case() {
+        let meta = FileMeta {
+            size_bytes: 1024,
+            line_count: 42,
+            is_text: true,
+        };
+        let json = serde_json::to_string(&meta).expect("serialize");
+        assert!(json.contains("\"sizeBytes\":1024"));
+        assert!(json.contains("\"lineCount\":42"));
+        assert!(json.contains("\"isText\":true"));
+    }
+
+    // ── IGNORED_DIRS and IGNORED_FILES constants ──────────────────────────
+
+    #[test]
+    fn ignored_dirs_contains_expected_entries() {
+        assert!(IGNORED_DIRS.contains(&".git"));
+        assert!(IGNORED_DIRS.contains(&"node_modules"));
+        assert!(IGNORED_DIRS.contains(&"target"));
+        assert!(IGNORED_DIRS.contains(&"dist"));
+        assert!(IGNORED_DIRS.contains(&"__pycache__"));
+        assert!(IGNORED_DIRS.contains(&".venv"));
+    }
+
+    #[test]
+    fn ignored_files_contains_ds_store() {
+        assert!(IGNORED_FILES.contains(&".DS_Store"));
+    }
+
+    #[test]
+    fn max_image_preview_is_10mb() {
+        assert_eq!(MAX_IMAGE_PREVIEW_BYTES, 10 * 1024 * 1024);
     }
 }
 

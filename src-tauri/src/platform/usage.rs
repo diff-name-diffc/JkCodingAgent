@@ -456,3 +456,361 @@ fn unavailable<T>(reason: impl Into<String>) -> UsageSource<T> {
         reason: reason.into(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── parse_percent_value ──────────────────────────────────────────────────
+
+    #[test]
+    fn percent_parses_fraction_0_to_1() {
+        // Claude returns utilization as 0.0-1.0
+        let value = json!(0.45);
+        assert_eq!(parse_percent_value(&value), Some(45));
+    }
+
+    #[test]
+    fn percent_parses_fraction_zero() {
+        let value = json!(0.0);
+        assert_eq!(parse_percent_value(&value), Some(0));
+    }
+
+    #[test]
+    fn percent_parses_fraction_one() {
+        let value = json!(1.0);
+        assert_eq!(parse_percent_value(&value), Some(100));
+    }
+
+    #[test]
+    fn percent_parses_whole_number_0_to_100() {
+        let value = json!(75);
+        assert_eq!(parse_percent_value(&value), Some(75));
+    }
+
+    #[test]
+    fn percent_parses_string_number() {
+        let value = json!("0.6");
+        assert_eq!(parse_percent_value(&value), Some(60));
+    }
+
+    #[test]
+    fn percent_parses_string_whole() {
+        let value = json!("80");
+        assert_eq!(parse_percent_value(&value), Some(80));
+    }
+
+    #[test]
+    fn percent_clamps_above_100() {
+        let value = json!(150.0);
+        assert_eq!(parse_percent_value(&value), Some(100));
+    }
+
+    #[test]
+    fn percent_clamps_below_0() {
+        let value = json!(-10.0);
+        assert_eq!(parse_percent_value(&value), Some(0));
+    }
+
+    #[test]
+    fn percent_returns_none_for_null() {
+        let value = json!(null);
+        assert_eq!(parse_percent_value(&value), None);
+    }
+
+    #[test]
+    fn percent_returns_none_for_non_numeric_string() {
+        let value = json!("abc");
+        assert_eq!(parse_percent_value(&value), None);
+    }
+
+    #[test]
+    fn percent_rounds_correctly() {
+        // 0.333 * 100 = 33.3 -> rounds to 33
+        let value = json!(0.333);
+        assert_eq!(parse_percent_value(&value), Some(33));
+        // 0.666 * 100 = 66.6 -> rounds to 67
+        let value = json!(0.666);
+        assert_eq!(parse_percent_value(&value), Some(67));
+    }
+
+    #[test]
+    fn percent_parses_small_fraction() {
+        // 0.005 -> 0.5% -> rounds to 1
+        let value = json!(0.005);
+        assert_eq!(parse_percent_value(&value), Some(1));
+    }
+
+    // ── parse_reset_value ────────────────────────────────────────────────────
+
+    #[test]
+    fn reset_parses_integer() {
+        let value = json!(1717027200);
+        assert_eq!(parse_reset_value(&value), Some(1717027200));
+    }
+
+    #[test]
+    fn reset_parses_string_integer() {
+        let value = json!("1717027200");
+        assert_eq!(parse_reset_value(&value), Some(1717027200));
+    }
+
+    #[test]
+    fn reset_parses_rfc3339_string() {
+        let value = json!("2025-05-30T00:00:00Z");
+        let result = parse_reset_value(&value);
+        assert!(result.is_some());
+        // The exact timestamp depends on timezone handling, just verify it parses
+        assert!(result.unwrap() > 0);
+    }
+
+    #[test]
+    fn reset_returns_none_for_null() {
+        let value = json!(null);
+        assert_eq!(parse_reset_value(&value), None);
+    }
+
+    #[test]
+    fn reset_returns_none_for_invalid_string() {
+        let value = json!("not-a-date");
+        assert_eq!(parse_reset_value(&value), None);
+    }
+
+    // ── parse_claude_window ──────────────────────────────────────────────────
+
+    #[test]
+    fn claude_window_parses_valid_input() {
+        let value = json!({
+            "utilization": 0.75,
+            "resets_at": 1717027200
+        });
+        let window = parse_claude_window(&value).unwrap();
+        assert_eq!(window.used_percent, 75);
+        assert_eq!(window.remaining_percent, 25);
+        assert_eq!(window.reset_at, Some(1717027200));
+    }
+
+    #[test]
+    fn claude_window_returns_none_without_utilization() {
+        let value = json!({"resets_at": 1717027200});
+        assert!(parse_claude_window(&value).is_none());
+    }
+
+    #[test]
+    fn claude_window_handles_missing_reset() {
+        let value = json!({"utilization": 0.5});
+        let window = parse_claude_window(&value).unwrap();
+        assert_eq!(window.used_percent, 50);
+        assert_eq!(window.reset_at, None);
+    }
+
+    // ── parse_codex_window ───────────────────────────────────────────────────
+
+    #[test]
+    fn codex_window_parses_integer_percent() {
+        // Codex returns usedPercent as an integer 0-100, not a fraction
+        let value = json!({
+            "usedPercent": 60,
+            "resetsAt": 1717027200
+        });
+        let window = parse_codex_window(&value).unwrap();
+        assert_eq!(window.used_percent, 60);
+        assert_eq!(window.remaining_percent, 40);
+        assert_eq!(window.reset_at, Some(1717027200));
+    }
+
+    #[test]
+    fn codex_window_parses_string_percent() {
+        let value = json!({
+            "usedPercent": "45"
+        });
+        let window = parse_codex_window(&value).unwrap();
+        assert_eq!(window.used_percent, 45);
+        assert_eq!(window.remaining_percent, 55);
+    }
+
+    #[test]
+    fn codex_window_returns_none_without_used_percent() {
+        let value = json!({"resetsAt": 123});
+        assert!(parse_codex_window(&value).is_none());
+    }
+
+    #[test]
+    fn codex_window_clamps_to_100() {
+        let value = json!({"usedPercent": 200});
+        let window = parse_codex_window(&value).unwrap();
+        assert_eq!(window.used_percent, 100);
+        assert_eq!(window.remaining_percent, 0);
+    }
+
+    #[test]
+    fn codex_window_clamps_negative() {
+        let value = json!({"usedPercent": -50});
+        let window = parse_codex_window(&value).unwrap();
+        assert_eq!(window.used_percent, 0);
+        assert_eq!(window.remaining_percent, 100);
+    }
+
+    #[test]
+    fn codex_window_saturating_sub_for_remaining() {
+        // Edge case: ensure remaining_percent uses saturating_sub
+        let value = json!({"usedPercent": 100});
+        let window = parse_codex_window(&value).unwrap();
+        assert_eq!(window.remaining_percent, 0);
+    }
+
+    // ── parse_codex_usage ────────────────────────────────────────────────────
+
+    #[test]
+    fn codex_usage_extracts_account_info() {
+        let account = json!({
+            "account": {
+                "email": "user@example.com",
+                "planType": "pro"
+            }
+        });
+        let rate_limits = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "primary": {"usedPercent": 30},
+                    "secondary": {"usedPercent": 10}
+                }
+            }
+        });
+
+        let data = parse_codex_usage(account, rate_limits);
+        assert_eq!(data.email, Some("user@example.com".to_string()));
+        assert_eq!(data.plan_type, Some("pro".to_string()));
+        assert!(data.primary.is_some());
+        assert!(data.secondary.is_some());
+        assert_eq!(data.primary.unwrap().used_percent, 30);
+        assert_eq!(data.secondary.unwrap().used_percent, 10);
+    }
+
+    #[test]
+    fn codex_usage_handles_empty_rate_limits() {
+        let account = json!({});
+        let rate_limits = json!({});
+        let data = parse_codex_usage(account, rate_limits);
+        assert!(data.email.is_none());
+        assert!(data.plan_type.is_none());
+        assert!(data.primary.is_none());
+        assert!(data.secondary.is_none());
+    }
+
+    #[test]
+    fn codex_usage_falls_back_to_first_rate_limit() {
+        // When "codex" key is absent, falls back to the first value
+        let account = json!({});
+        let rate_limits = json!({
+            "rateLimitsByLimitId": {
+                "other-plan": {
+                    "primary": {"usedPercent": 55}
+                }
+            }
+        });
+        let data = parse_codex_usage(account, rate_limits);
+        assert!(data.primary.is_some());
+        assert_eq!(data.primary.unwrap().used_percent, 55);
+    }
+
+    #[test]
+    fn codex_usage_falls_back_to_rate_limits_key() {
+        let account = json!({});
+        let rate_limits = json!({
+            "rateLimits": {
+                "primary": {"usedPercent": 42}
+            }
+        });
+        let data = parse_codex_usage(account, rate_limits);
+        assert!(data.primary.is_some());
+        assert_eq!(data.primary.unwrap().used_percent, 42);
+    }
+
+    // ── UsageSource serialization ────────────────────────────────────────────
+
+    #[test]
+    fn usage_source_available_serializes() {
+        let source: UsageSource<u8> = UsageSource::Available { data: 42 };
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(json.contains("\"status\":\"available\""));
+        assert!(json.contains("\"data\":42"));
+    }
+
+    #[test]
+    fn usage_source_unavailable_serializes() {
+        let source: UsageSource<u8> = UsageSource::Unavailable {
+            reason: "test reason".to_string(),
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(json.contains("\"status\":\"unavailable\""));
+        assert!(json.contains("test reason"));
+    }
+
+    // ── unavailable helper ───────────────────────────────────────────────────
+
+    #[test]
+    fn unavailable_helper_creates_correct_variant() {
+        let source: UsageSource<String> = unavailable("some reason");
+        match source {
+            UsageSource::Unavailable { reason } => {
+                assert_eq!(reason, "some reason");
+            }
+            UsageSource::Available { .. } => panic!("expected Unavailable"),
+        }
+    }
+
+    // ── UsageWindow remaining_percent ────────────────────────────────────────
+
+    #[test]
+    fn usage_window_remaining_at_boundary() {
+        let window = UsageWindow {
+            used_percent: 0,
+            remaining_percent: 100,
+            reset_at: None,
+        };
+        assert_eq!(window.remaining_percent, 100);
+
+        let window = UsageWindow {
+            used_percent: 100,
+            remaining_percent: 0,
+            reset_at: None,
+        };
+        assert_eq!(window.remaining_percent, 0);
+    }
+
+    // ── ClaudeUsageData serialization ────────────────────────────────────────
+
+    #[test]
+    fn claude_usage_data_serializes_with_rename() {
+        let data = ClaudeUsageData {
+            five_hour: Some(UsageWindow {
+                used_percent: 50,
+                remaining_percent: 50,
+                reset_at: Some(1234567890),
+            }),
+            seven_day: None,
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"fiveHour\""));
+        assert!(json.contains("\"sevenDay\""));
+        assert!(json.contains("\"usedPercent\""));
+        assert!(json.contains("\"remainingPercent\""));
+        assert!(json.contains("\"resetAt\""));
+    }
+
+    // ── CodexUsageData serialization ─────────────────────────────────────────
+
+    #[test]
+    fn codex_usage_data_serializes_with_rename() {
+        let data = CodexUsageData {
+            email: Some("test@test.com".to_string()),
+            plan_type: Some("free".to_string()),
+            primary: None,
+            secondary: None,
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"planType\""));
+    }
+}

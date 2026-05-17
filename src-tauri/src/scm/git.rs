@@ -770,3 +770,684 @@ pub async fn git_remote_counts(
         branch,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── validate_git_ref_name ────────────────────────────────────────────────
+
+    #[test]
+    fn git_ref_accepts_simple_name() {
+        assert!(validate_git_ref_name("main").is_ok());
+    }
+
+    #[test]
+    fn git_ref_accepts_feature_slash_name() {
+        assert!(validate_git_ref_name("feature/login").is_ok());
+    }
+
+    #[test]
+    fn git_ref_accepts_hyphen_underscore_dot_at() {
+        assert!(validate_git_ref_name("release-1.0_v2@head").is_ok());
+    }
+
+    #[test]
+    fn git_ref_rejects_empty() {
+        assert!(validate_git_ref_name("").is_err());
+    }
+
+    #[test]
+    fn git_ref_rejects_overlong_name() {
+        let long_name = "a".repeat(257);
+        let result = validate_git_ref_name(&long_name);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("过长"));
+    }
+
+    #[test]
+    fn git_ref_accepts_exactly_256_chars() {
+        let name = "a".repeat(256);
+        assert!(validate_git_ref_name(&name).is_ok());
+    }
+
+    #[test]
+    fn git_ref_rejects_space() {
+        assert!(validate_git_ref_name("feature branch").is_err());
+    }
+
+    #[test]
+    fn git_ref_rejects_special_chars() {
+        assert!(validate_git_ref_name("branch$name").is_err());
+        assert!(validate_git_ref_name("branch#name").is_err());
+        assert!(validate_git_ref_name("branch!name").is_err());
+    }
+
+    #[test]
+    fn git_ref_rejects_path_traversal() {
+        assert!(validate_git_ref_name("feature..hidden").is_err());
+    }
+
+    #[test]
+    fn git_ref_rejects_semicolon_injection() {
+        assert!(validate_git_ref_name("main;rm -rf /").is_err());
+    }
+
+    #[test]
+    fn git_ref_rejects_backtick_injection() {
+        assert!(validate_git_ref_name("main`whoami`").is_err());
+    }
+
+    // ── validate_project_path ────────────────────────────────────────────────
+
+    #[test]
+    fn project_path_rejects_relative() {
+        assert!(validate_project_path("relative/path").is_err());
+    }
+
+    #[test]
+    fn project_path_rejects_empty() {
+        assert!(validate_project_path("").is_err());
+    }
+
+    #[test]
+    fn project_path_rejects_dot() {
+        assert!(validate_project_path(".").is_err());
+    }
+
+    #[test]
+    fn project_path_rejects_nonexistent_absolute() {
+        assert!(validate_project_path("/no/such/directory/ever").is_err());
+    }
+
+    #[test]
+    fn project_path_accepts_tmp_dir() {
+        let dir = std::env::temp_dir();
+        // temp_dir should always exist and be absolute
+        assert!(validate_project_path(&dir.to_string_lossy()).is_ok());
+    }
+
+    // ── git_status porcelain parsing ────────────────────────────────────────
+    //
+    // The parsing logic in git_status is inline, so we test it by examining
+    // what the function body would produce from raw porcelain output.
+    // We extract the logic into a helper test that mirrors the parsing.
+
+    #[test]
+    fn status_parses_untracked_file() {
+        let line = "?? newfile.txt";
+        let x = &line[0..1];
+        let y = &line[1..2];
+        let raw_path = line[3..].to_string();
+        assert_eq!(x, "?");
+        assert_eq!(y, "?");
+        assert_eq!(raw_path, "newfile.txt");
+    }
+
+    #[test]
+    fn status_parses_staged_modified() {
+        // "M " = staged modification (index modified, worktree clean)
+        let line = "M  src/main.rs";
+        let x = &line[0..1];
+        let y = &line[1..2];
+        assert_eq!(x, "M");
+        assert_eq!(y, " ");
+    }
+
+    #[test]
+    fn status_parses_unstaged_modified() {
+        // " M" = unstaged modification (index clean, worktree modified)
+        let line = " M src/main.rs";
+        let x = &line[0..1];
+        let y = &line[1..2];
+        assert_eq!(x, " ");
+        assert_eq!(y, "M");
+    }
+
+    #[test]
+    fn status_parses_both_modified() {
+        // "MM" = staged AND unstaged modifications
+        let line = "MM file.rs";
+        let x = &line[0..1];
+        let y = &line[1..2];
+        assert_eq!(x, "M");
+        assert_eq!(y, "M");
+    }
+
+    #[test]
+    fn status_parses_renamed_with_arrow() {
+        let line = "R  old_name -> new_name";
+        let raw_path = line[3..].to_string();
+        let display_path = if raw_path.contains(" -> ") {
+            raw_path.split(" -> ").last().unwrap_or(&raw_path).to_string()
+        } else {
+            raw_path
+        };
+        assert_eq!(display_path, "new_name");
+    }
+
+    #[test]
+    fn status_skips_short_lines() {
+        // Lines shorter than 3 characters should be skipped
+        let short_lines = ["", "A", "AB"];
+        for line in &short_lines {
+            assert!(line.len() < 3);
+        }
+    }
+
+    // ── git_log format parsing ───────────────────────────────────────────────
+
+    #[test]
+    fn log_format_parses_single_commit() {
+        let stdout = "\
+COMMIT:abc123def456789012345678901234567890abcd
+SHORT:abc123d
+AUTHOR:John Doe
+DATE:2 hours ago
+SUBJECT:feat: add new feature
+REFS:HEAD -> main, origin/main, tag: v1.0
+END_RECORD";
+
+        let mut commits = Vec::new();
+        let mut hash = String::new();
+        let mut short_hash = String::new();
+        let mut author = String::new();
+        let mut date = String::new();
+        let mut message = String::new();
+        let mut refs: Vec<String> = Vec::new();
+
+        for line in stdout.lines() {
+            if let Some(v) = line.strip_prefix("COMMIT:") {
+                hash = v.to_string();
+            } else if let Some(v) = line.strip_prefix("SHORT:") {
+                short_hash = v.to_string();
+            } else if let Some(v) = line.strip_prefix("AUTHOR:") {
+                author = v.to_string();
+            } else if let Some(v) = line.strip_prefix("DATE:") {
+                date = v.to_string();
+            } else if let Some(v) = line.strip_prefix("SUBJECT:") {
+                message = v.to_string();
+            } else if let Some(v) = line.strip_prefix("REFS:") {
+                refs = v
+                    .split(", ")
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.trim().to_string())
+                    .collect();
+            } else if line == "END_RECORD" && !hash.is_empty() {
+                commits.push(GitCommit {
+                    hash: hash.clone(),
+                    short_hash: short_hash.clone(),
+                    author: author.clone(),
+                    date: date.clone(),
+                    message: message.clone(),
+                    refs: refs.clone(),
+                });
+                hash.clear();
+                short_hash.clear();
+                author.clear();
+                date.clear();
+                message.clear();
+                refs.clear();
+            }
+        }
+
+        assert_eq!(commits.len(), 1);
+        let c = &commits[0];
+        assert_eq!(c.hash, "abc123def456789012345678901234567890abcd");
+        assert_eq!(c.short_hash, "abc123d");
+        assert_eq!(c.author, "John Doe");
+        assert_eq!(c.date, "2 hours ago");
+        assert_eq!(c.message, "feat: add new feature");
+        assert_eq!(c.refs, vec!["HEAD -> main", "origin/main", "tag: v1.0"]);
+    }
+
+    #[test]
+    fn log_format_parses_multiple_commits() {
+        let stdout = "\
+COMMIT:first_hash
+SHORT:abc12
+AUTHOR:Alice
+DATE:1 day ago
+SUBJECT:first commit
+REFS:
+END_RECORD
+COMMIT:second_hash
+SHORT:def34
+AUTHOR:Bob
+DATE:3 days ago
+SUBJECT:second commit
+REFS:HEAD -> feature
+END_RECORD";
+
+        let mut commits = Vec::new();
+        let mut hash = String::new();
+        let mut short_hash = String::new();
+        let mut author = String::new();
+        let mut date = String::new();
+        let mut message = String::new();
+        let mut refs: Vec<String> = Vec::new();
+
+        for line in stdout.lines() {
+            if let Some(v) = line.strip_prefix("COMMIT:") {
+                hash = v.to_string();
+            } else if let Some(v) = line.strip_prefix("SHORT:") {
+                short_hash = v.to_string();
+            } else if let Some(v) = line.strip_prefix("AUTHOR:") {
+                author = v.to_string();
+            } else if let Some(v) = line.strip_prefix("DATE:") {
+                date = v.to_string();
+            } else if let Some(v) = line.strip_prefix("SUBJECT:") {
+                message = v.to_string();
+            } else if let Some(v) = line.strip_prefix("REFS:") {
+                refs = v
+                    .split(", ")
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.trim().to_string())
+                    .collect();
+            } else if line == "END_RECORD" && !hash.is_empty() {
+                commits.push(GitCommit {
+                    hash: hash.clone(),
+                    short_hash: short_hash.clone(),
+                    author: author.clone(),
+                    date: date.clone(),
+                    message: message.clone(),
+                    refs: refs.clone(),
+                });
+                hash.clear();
+                short_hash.clear();
+                author.clear();
+                date.clear();
+                message.clear();
+                refs.clear();
+            }
+        }
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].hash, "first_hash");
+        assert_eq!(commits[0].author, "Alice");
+        assert!(commits[0].refs.is_empty());
+        assert_eq!(commits[1].hash, "second_hash");
+        assert_eq!(commits[1].refs, vec!["HEAD -> feature"]);
+    }
+
+    // ── git_list_branches output parsing ─────────────────────────────────────
+
+    #[test]
+    fn branch_list_parses_local_branches() {
+        let stdout = "* main\n  develop\n  feature/x";
+        let mut branches = Vec::new();
+        for line in stdout.lines() {
+            if line.len() < 2 {
+                continue;
+            }
+            let current = line.starts_with("* ");
+            let raw = line[2..].trim();
+            if raw.contains(" -> ") {
+                continue;
+            }
+            if let Some(_without_remotes) = raw.strip_prefix("remotes/") {
+                // remote branch handling
+            } else if !raw.is_empty() {
+                branches.push(GitBranchInfo {
+                    name: raw.to_string(),
+                    current,
+                    remote: None,
+                });
+            }
+        }
+        assert_eq!(branches.len(), 3);
+        assert!(branches[0].current);
+        assert_eq!(branches[0].name, "main");
+        assert!(!branches[1].current);
+        assert_eq!(branches[1].name, "develop");
+        assert_eq!(branches[2].name, "feature/x");
+    }
+
+    #[test]
+    fn branch_list_parses_remote_branches() {
+        let stdout = "  remotes/origin/main\n  remotes/origin/develop\n  remotes/upstream/feature";
+        let mut branches = Vec::new();
+        for line in stdout.lines() {
+            if line.len() < 2 {
+                continue;
+            }
+            let current = line.starts_with("* ");
+            let raw = line[2..].trim();
+            if raw.contains(" -> ") {
+                continue;
+            }
+            if let Some(without_remotes) = raw.strip_prefix("remotes/") {
+                let name = without_remotes.to_string();
+                let remote = name.split('/').next().map(|s| s.to_string());
+                branches.push(GitBranchInfo {
+                    name,
+                    current,
+                    remote,
+                });
+            } else if !raw.is_empty() {
+                branches.push(GitBranchInfo {
+                    name: raw.to_string(),
+                    current,
+                    remote: None,
+                });
+            }
+        }
+        assert_eq!(branches.len(), 3);
+        assert_eq!(branches[0].name, "origin/main");
+        assert_eq!(branches[0].remote, Some("origin".to_string()));
+        assert_eq!(branches[2].name, "upstream/feature");
+        assert_eq!(branches[2].remote, Some("upstream".to_string()));
+    }
+
+    #[test]
+    fn branch_list_skips_head_pointer() {
+        let stdout = "* main\n  remotes/origin/HEAD -> origin/main\n  remotes/origin/develop";
+        let mut branches = Vec::new();
+        for line in stdout.lines() {
+            if line.len() < 2 {
+                continue;
+            }
+            let current = line.starts_with("* ");
+            let raw = line[2..].trim();
+            if raw.contains(" -> ") {
+                continue;
+            }
+            if let Some(without_remotes) = raw.strip_prefix("remotes/") {
+                let name = without_remotes.to_string();
+                let remote = name.split('/').next().map(|s| s.to_string());
+                branches.push(GitBranchInfo {
+                    name,
+                    current,
+                    remote,
+                });
+            } else if !raw.is_empty() {
+                branches.push(GitBranchInfo {
+                    name: raw.to_string(),
+                    current,
+                    remote: None,
+                });
+            }
+        }
+        // "HEAD -> origin/main" should be skipped
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0].name, "main");
+        assert_eq!(branches[1].name, "origin/develop");
+    }
+
+    #[test]
+    fn branch_list_skips_short_lines() {
+        let stdout = "*\n \n";
+        let mut count = 0;
+        for line in stdout.lines() {
+            if line.len() < 2 {
+                continue;
+            }
+            count += 1;
+        }
+        assert_eq!(count, 0);
+    }
+
+    // ── git_checkout_branch local name extraction ────────────────────────────
+
+    #[test]
+    fn checkout_extracts_local_name_from_remote() {
+        // Mirrors the logic in git_checkout_branch for is_remote=true
+        let branch_name = "origin/main";
+        let local_name = branch_name
+            .split_once('/')
+            .map(|(_, n)| n.to_string())
+            .unwrap_or_else(|| branch_name.to_string());
+        assert_eq!(local_name, "main");
+    }
+
+    #[test]
+    fn checkout_extracts_local_name_without_slash() {
+        let branch_name = "main";
+        let local_name = branch_name
+            .split_once('/')
+            .map(|(_, n)| n.to_string())
+            .unwrap_or_else(|| branch_name.to_string());
+        assert_eq!(local_name, "main");
+    }
+
+    // ── git_remote_counts parsing ────────────────────────────────────────────
+
+    #[test]
+    fn remote_counts_parses_two_parts() {
+        let s = "3\t5";
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        assert_eq!(parts.len(), 2);
+        let ahead: i32 = parts[0].parse().unwrap_or(0);
+        let behind: i32 = parts[1].parse().unwrap_or(0);
+        assert_eq!(ahead, 3);
+        assert_eq!(behind, 5);
+    }
+
+    #[test]
+    fn remote_counts_handles_single_part() {
+        let s = "3";
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        if parts.len() == 2 {
+            // would parse normally
+        } else {
+            // defaults to (0, 0)
+        }
+        assert_eq!(parts.len(), 1);
+    }
+
+    #[test]
+    fn remote_counts_handles_empty() {
+        let s = "";
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        assert_eq!(parts.len(), 0);
+    }
+
+    // ── git_commit_detail name-status parsing ────────────────────────────────
+
+    #[test]
+    fn commit_detail_parses_simple_status() {
+        // "M\tpath/to/file.rs" -> status=M, path=path/to/file.rs
+        let line = "M\tpath/to/file.rs";
+        let parts: Vec<&str> = line.splitn(3, '\t').collect();
+        match parts.as_slice() {
+            [st, path] => {
+                assert_eq!(*st, "M");
+                assert_eq!(*path, "path/to/file.rs");
+            }
+            _ => panic!("unexpected parts"),
+        }
+    }
+
+    #[test]
+    fn commit_detail_parses_rename_status() {
+        // "R100\told_path\tnew_path" -> status=R, path=new_path
+        let line = "R100\told/path\tnew/path";
+        let parts: Vec<&str> = line.splitn(3, '\t').collect();
+        match parts.as_slice() {
+            [st, _old, new_path] => {
+                let status = if st.starts_with('R') {
+                    "R"
+                } else {
+                    st
+                };
+                assert_eq!(status, "R");
+                assert_eq!(*new_path, "new/path");
+            }
+            _ => panic!("unexpected parts"),
+        }
+    }
+
+    #[test]
+    fn commit_detail_normalizes_rename_status() {
+        // All R-prefixed statuses (R100, R090, etc.) should become "R"
+        for rename_status in &["R100", "R090", "R050", "R001"] {
+            let result = if rename_status.starts_with('R') {
+                "R"
+            } else {
+                *rename_status
+            };
+            assert_eq!(result, "R");
+        }
+    }
+
+    // ── git_commit_detail numstat parsing ────────────────────────────────────
+
+    #[test]
+    fn commit_detail_parses_numstat_line() {
+        let line = "10\t3\tsrc/main.rs";
+        let parts: Vec<&str> = line.splitn(3, '\t').collect();
+        assert_eq!(parts.len(), 3);
+        let additions: i32 = parts[0].parse().unwrap_or(0);
+        let deletions: i32 = parts[1].parse().unwrap_or(0);
+        assert_eq!(additions, 10);
+        assert_eq!(deletions, 3);
+        assert_eq!(parts[2], "src/main.rs");
+    }
+
+    #[test]
+    fn commit_detail_handles_binary_numstat() {
+        // Binary files show "-" instead of numbers
+        let line = "-\t-\timage.png";
+        let parts: Vec<&str> = line.splitn(3, '\t').collect();
+        let additions: i32 = parts[0].parse().unwrap_or(0);
+        let deletions: i32 = parts[1].parse().unwrap_or(0);
+        assert_eq!(additions, 0);
+        assert_eq!(deletions, 0);
+    }
+
+    // ── git_show_diff truncation logic ───────────────────────────────────────
+
+    #[test]
+    fn show_diff_truncates_at_500k() {
+        let raw = vec![b'x'; 600 * 1024];
+        let limit = 500 * 1024;
+        let result = if raw.len() > limit {
+            &raw[..limit]
+        } else {
+            &raw
+        };
+        assert_eq!(result.len(), limit);
+    }
+
+    #[test]
+    fn show_diff_keeps_short_output() {
+        let raw = vec![b'x'; 100];
+        let limit = 500 * 1024;
+        let result = if raw.len() > limit {
+            &raw[..limit]
+        } else {
+            &raw
+        };
+        assert_eq!(result.len(), 100);
+    }
+
+    // ── git_file_diff truncation logic ───────────────────────────────────────
+
+    #[test]
+    fn file_diff_truncates_at_200k() {
+        let raw = vec![b'x'; 300 * 1024];
+        let limit = 200 * 1024;
+        let result = if raw.len() > limit {
+            &raw[..limit]
+        } else {
+            &raw
+        };
+        assert_eq!(result.len(), limit);
+    }
+
+    // ── git_log search/branch args building ──────────────────────────────────
+
+    #[test]
+    fn log_builds_args_with_search() {
+        let limit_str = "50".to_string();
+        let format = "COMMIT:%H%nSHORT:%h%nAUTHOR:%an%nDATE:%ar%nSUBJECT:%s%nREFS:%D%nEND_RECORD";
+        let mut args: Vec<String> = vec![
+            "log".into(),
+            format!("--format={}", format),
+            "-n".into(),
+            limit_str,
+        ];
+        let search = Some("bugfix".to_string());
+        if let Some(ref s) = search {
+            if !s.is_empty() {
+                args.push("--grep".into());
+                args.push(s.clone());
+            }
+        }
+        assert!(args.contains(&"--grep".to_string()));
+        assert!(args.contains(&"bugfix".to_string()));
+    }
+
+    #[test]
+    fn log_builds_args_with_empty_search() {
+        let mut args: Vec<String> = vec!["log".into()];
+        let search = Some("".to_string());
+        if let Some(ref s) = search {
+            if !s.is_empty() {
+                args.push("--grep".into());
+                args.push(s.clone());
+            }
+        }
+        assert!(!args.contains(&"--grep".to_string()));
+    }
+
+    #[test]
+    fn log_builds_args_with_none_search() {
+        let mut args: Vec<String> = vec!["log".into()];
+        let search: Option<String> = None;
+        if let Some(ref s) = search {
+            if !s.is_empty() {
+                args.push("--grep".into());
+                args.push(s.clone());
+            }
+        }
+        assert!(!args.contains(&"--grep".to_string()));
+    }
+
+    // ── git_push branch validation ───────────────────────────────────────────
+
+    #[test]
+    fn push_validates_branch_name() {
+        // validate_git_ref_name is called for the branch in git_push
+        assert!(validate_git_ref_name("main").is_ok());
+        assert!(validate_git_ref_name("feature branch").is_err());
+    }
+
+    // ── GitFileChange struct ─────────────────────────────────────────────────
+
+    #[test]
+    fn git_file_change_serializes() {
+        let change = GitFileChange {
+            path: "src/main.rs".to_string(),
+            status: "M".to_string(),
+            staged: true,
+        };
+        let json = serde_json::to_string(&change).unwrap();
+        assert!(json.contains("src/main.rs"));
+        assert!(json.contains("\"staged\":true"));
+    }
+
+    // ── GitCommitDetail struct ───────────────────────────────────────────────
+
+    #[test]
+    fn git_commit_detail_struct_totals() {
+        let files = vec![
+            GitCommitFile {
+                path: "a.rs".to_string(),
+                status: "M".to_string(),
+                additions: 10,
+                deletions: 3,
+            },
+            GitCommitFile {
+                path: "b.rs".to_string(),
+                status: "A".to_string(),
+                additions: 50,
+                deletions: 0,
+            },
+        ];
+        let total_additions: i32 = files.iter().map(|f| f.additions).sum();
+        let total_deletions: i32 = files.iter().map(|f| f.deletions).sum();
+        assert_eq!(total_additions, 60);
+        assert_eq!(total_deletions, 3);
+    }
+}

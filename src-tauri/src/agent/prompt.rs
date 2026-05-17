@@ -142,4 +142,161 @@ mod tests {
 
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn system_prompt_includes_builtin_dispatch_guidance() {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-prompt-builtin-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create prompt root");
+
+        let prompt = build_system_prompt(&root).expect("build prompt");
+        assert!(prompt.content.contains("内置调度规则"));
+        assert!(prompt.content.contains("dispatch_claude"));
+        assert!(prompt.content.contains("dispatch_codex"));
+        assert!(prompt
+            .sections
+            .iter()
+            .any(|section| section.label == "内置调度规则"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn system_prompt_includes_skill_sections() {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-prompt-skills-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let skills_dir = root.join("skills").join("my-skill");
+        fs::create_dir_all(&skills_dir).expect("create skill dir");
+        fs::write(skills_dir.join("SKILL.md"), "# My Skill\n\nDo something useful.")
+            .expect("write skill");
+
+        let prompt = build_system_prompt(&root).expect("build prompt");
+        assert!(prompt.content.contains("已启用技能"));
+        assert!(prompt.content.contains("My Skill"));
+        assert!(prompt.content.contains("Do something useful"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn system_prompt_includes_memory_when_present() {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-prompt-memory-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let memory_dir = root.join("memory");
+        fs::create_dir_all(&memory_dir).expect("create memory dir");
+        fs::write(memory_dir.join("MEMORY.md"), "# Memory\n\nRemember this.")
+            .expect("write memory");
+
+        let prompt = build_system_prompt(&root).expect("build prompt");
+        assert!(prompt.content.contains("记忆"));
+        assert!(prompt.content.contains("Remember this"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn system_prompt_omits_memory_when_absent() {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-prompt-no-memory-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create root");
+
+        let prompt = build_system_prompt(&root).expect("build prompt");
+        assert!(!prompt
+            .sections
+            .iter()
+            .any(|section| section.label == "记忆"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn system_prompt_omits_skills_when_no_skill_md() {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-prompt-no-skills-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let skills_dir = root.join("skills").join("empty-skill");
+        fs::create_dir_all(&skills_dir).expect("create skills dir");
+        // No SKILL.md inside
+
+        let prompt = build_system_prompt(&root).expect("build prompt");
+        assert!(!prompt
+            .sections
+            .iter()
+            .any(|section| section.label == "已启用技能"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn system_prompt_sections_have_correct_labels() {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-prompt-labels-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create root");
+        fs::write(root.join("SOUL.md"), "# Soul\n").expect("write soul");
+        fs::write(root.join("USER.md"), "# User\n").expect("write user");
+
+        let prompt = build_system_prompt(&root).expect("build prompt");
+        let labels: Vec<&str> = prompt.sections.iter().map(|s| s.label.as_str()).collect();
+        assert!(labels.contains(&"SOUL"));
+        assert!(labels.contains(&"USER"));
+        assert!(labels.contains(&"内置调度规则"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn system_prompt_handles_multiple_skills_sorted() {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-prompt-multi-skill-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let skill_b = root.join("skills").join("b-skill");
+        let skill_a = root.join("skills").join("a-skill");
+        fs::create_dir_all(&skill_b).expect("create b dir");
+        fs::create_dir_all(&skill_a).expect("create a dir");
+        fs::write(skill_b.join("SKILL.md"), "# B Skill\n\nSecond skill.")
+            .expect("write b");
+        fs::write(skill_a.join("SKILL.md"), "# A Skill\n\nFirst skill.")
+            .expect("write a");
+
+        let prompt = build_system_prompt(&root).expect("build prompt");
+        let skills_section = prompt
+            .sections
+            .iter()
+            .find(|s| s.label == "已启用技能")
+            .expect("skills section exists");
+
+        // Skills should be sorted: a-skill before b-skill
+        let a_pos = skills_section.content.find("A Skill").expect("find a");
+        let b_pos = skills_section.content.find("B Skill").expect("find b");
+        assert!(a_pos < b_pos);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn system_prompt_empty_dir_produces_only_builtin() {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-prompt-empty-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create root");
+
+        let prompt = build_system_prompt(&root).expect("build prompt");
+        assert_eq!(prompt.sections.len(), 1);
+        assert_eq!(prompt.sections[0].label, "内置调度规则");
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

@@ -952,4 +952,355 @@ mod tests {
         let err = run_guarded::<(), _>("test", || panic!("boom")).unwrap_err();
         assert!(err.contains("boom"));
     }
+
+    #[test]
+    fn source_slug_special_characters() {
+        assert_eq!(
+            source_slug(Path::new("report (final) #2.docx")),
+            "report-final-2"
+        );
+    }
+
+    #[test]
+    fn source_slug_unicode() {
+        let slug = source_slug(Path::new("中文报告.pdf"));
+        assert!(!slug.is_empty());
+    }
+
+    #[test]
+    fn source_slug_no_extension() {
+        let slug = source_slug(Path::new("/tmp/README"));
+        assert_eq!(slug, "readme");
+    }
+
+    #[test]
+    fn source_slug_empty_stem() {
+        let slug = source_slug(Path::new(".hidden"));
+        assert_eq!(slug, "hidden");
+    }
+
+    #[test]
+    fn source_slug_consecutive_special_chars() {
+        let slug = source_slug(Path::new("a---b___c.pdf"));
+        assert!(!slug.contains("---"));
+        assert_eq!(slug, "a-b-c");
+    }
+
+    #[test]
+    fn source_slug_long_name_no_trailing_dash() {
+        let slug = source_slug(Path::new("hello!!!.pdf"));
+        assert!(!slug.ends_with('-'));
+        assert_eq!(slug, "hello");
+    }
+
+    #[test]
+    fn guess_mime_from_name_png() {
+        assert_eq!(
+            guess_mime_from_name("image.png"),
+            Some("image/png".to_string())
+        );
+    }
+
+    #[test]
+    fn guess_mime_from_name_jpeg() {
+        assert_eq!(
+            guess_mime_from_name("photo.jpg"),
+            Some("image/jpeg".to_string())
+        );
+    }
+
+    #[test]
+    fn guess_mime_from_name_jpeg_extension() {
+        assert_eq!(
+            guess_mime_from_name("photo.jpeg"),
+            Some("image/jpeg".to_string())
+        );
+    }
+
+    #[test]
+    fn guess_mime_from_name_gif() {
+        assert_eq!(
+            guess_mime_from_name("anim.gif"),
+            Some("image/gif".to_string())
+        );
+    }
+
+    #[test]
+    fn guess_mime_from_name_webp() {
+        assert_eq!(
+            guess_mime_from_name("modern.webp"),
+            Some("image/webp".to_string())
+        );
+    }
+
+    #[test]
+    fn guess_mime_from_name_bmp() {
+        assert_eq!(
+            guess_mime_from_name("old.bmp"),
+            Some("image/bmp".to_string())
+        );
+    }
+
+    #[test]
+    fn guess_mime_from_name_ico() {
+        assert_eq!(
+            guess_mime_from_name("favicon.ico"),
+            Some("image/x-icon".to_string())
+        );
+    }
+
+    #[test]
+    fn guess_mime_from_name_tiff() {
+        assert_eq!(
+            guess_mime_from_name("scan.tif"),
+            Some("image/tiff".to_string())
+        );
+    }
+
+    #[test]
+    fn guess_mime_from_name_tiff_extension() {
+        assert_eq!(
+            guess_mime_from_name("scan.tiff"),
+            Some("image/tiff".to_string())
+        );
+    }
+
+    #[test]
+    fn guess_mime_from_name_unknown() {
+        assert_eq!(guess_mime_from_name("file.xyz"), None);
+    }
+
+    #[test]
+    fn guess_mime_from_name_no_extension() {
+        assert_eq!(guess_mime_from_name("file"), None);
+    }
+
+    #[test]
+    fn guess_mime_from_name_case_insensitive() {
+        assert_eq!(
+            guess_mime_from_name("photo.PNG"),
+            Some("image/png".to_string())
+        );
+    }
+
+    #[test]
+    fn ext_for_mime_known_types() {
+        assert_eq!(ext_for_mime("image/png"), "png");
+        assert_eq!(ext_for_mime("image/jpeg"), "jpg");
+        assert_eq!(ext_for_mime("image/gif"), "gif");
+        assert_eq!(ext_for_mime("image/webp"), "webp");
+        assert_eq!(ext_for_mime("image/bmp"), "bmp");
+        assert_eq!(ext_for_mime("image/x-icon"), "ico");
+        assert_eq!(ext_for_mime("image/tiff"), "tiff");
+    }
+
+    #[test]
+    fn ext_for_mime_unknown() {
+        assert_eq!(ext_for_mime("application/octet-stream"), "bin");
+    }
+
+    #[test]
+    fn is_media_path_all_prefixes() {
+        assert!(is_media_path("ppt/media/img.png"));
+        assert!(is_media_path("word/media/img.png"));
+        assert!(is_media_path("xl/media/img.png"));
+    }
+
+    #[test]
+    fn is_media_path_case_sensitive() {
+        // The function lowercases, so uppercase should work
+        assert!(is_media_path("PPT/MEDIA/IMG.PNG"));
+    }
+
+    #[test]
+    fn is_media_path_non_media() {
+        assert!(!is_media_path("content.xml"));
+        assert!(!is_media_path("docProps/app.xml"));
+        assert!(!is_media_path("rels/.rels"));
+    }
+
+    #[test]
+    fn sha256_hex_known_value() {
+        let hash = sha256_hex(b"");
+        // SHA-256 of empty string
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn sha256_hex_hello() {
+        let hash = sha256_hex(b"hello");
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn sha256_hex_deterministic() {
+        let h1 = sha256_hex(b"test data");
+        let h2 = sha256_hex(b"test data");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn sha256_hex_different_inputs() {
+        let h1 = sha256_hex(b"input a");
+        let h2 = sha256_hex(b"input b");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn decode_xml_entities_basic() {
+        assert_eq!(decode_xml_entities("&amp;"), "&");
+        assert_eq!(decode_xml_entities("&lt;"), "<");
+        assert_eq!(decode_xml_entities("&gt;"), ">");
+        assert_eq!(decode_xml_entities("&quot;"), "\"");
+        assert_eq!(decode_xml_entities("&apos;"), "'");
+    }
+
+    #[test]
+    fn decode_xml_entities_newlines() {
+        assert_eq!(decode_xml_entities("line1&#10;line2"), "line1\nline2");
+    }
+
+    #[test]
+    fn decode_xml_entities_carriage_return() {
+        assert_eq!(decode_xml_entities("a&#13;b"), "ab");
+    }
+
+    #[test]
+    fn decode_xml_entities_mixed() {
+        assert_eq!(
+            decode_xml_entities("&lt;p&gt;Hello &amp; world&lt;/p&gt;"),
+            "<p>Hello & world</p>"
+        );
+    }
+
+    #[test]
+    fn decode_xml_entities_no_entities() {
+        assert_eq!(decode_xml_entities("plain text"), "plain text");
+    }
+
+    #[test]
+    fn panic_guard_returns_ok() {
+        let result = run_guarded("test", || Ok(42));
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn panic_guard_returns_err() {
+        let result: Result<(), String> = run_guarded("test", || Err("my error".to_string()));
+        assert_eq!(result.unwrap_err(), "my error");
+    }
+
+    #[test]
+    fn panic_guard_string_panic() {
+        let err = run_guarded::<(), _>("label", || panic!("string panic")).unwrap_err();
+        assert!(err.contains("string panic"));
+        assert!(err.contains("label"));
+    }
+
+    #[test]
+    fn panic_guard_non_string_panic() {
+        let err = run_guarded::<(), _>("test", || panic!("{}", 1234u32)).unwrap_err();
+        assert!(err.contains("1234"));
+    }
+
+    #[test]
+    fn extract_options_default() {
+        let opts = ExtractOptions::default();
+        assert_eq!(opts.min_width, 100);
+        assert_eq!(opts.min_height, 100);
+        assert_eq!(opts.max_images, 500);
+    }
+
+    #[test]
+    fn saved_image_serialization() {
+        let img = SavedImage {
+            index: 1,
+            mime_type: "image/png".to_string(),
+            page: Some(2),
+            width: 800,
+            height: 600,
+            rel_path: "media/test/img-1.png".to_string(),
+            abs_path: "/tmp/media/test/img-1.png".to_string(),
+            sha256: "abc123".to_string(),
+        };
+        let json = serde_json::to_string(&img).unwrap();
+        assert!(json.contains("\"mimeType\""));
+        assert!(json.contains("\"relPath\""));
+        assert!(json.contains("\"absPath\""));
+        let parsed: SavedImage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.index, 1);
+        assert_eq!(parsed.width, 800);
+    }
+
+    #[test]
+    fn saved_image_page_none() {
+        let img = SavedImage {
+            index: 1,
+            mime_type: "image/png".to_string(),
+            page: None,
+            width: 100,
+            height: 100,
+            rel_path: "media/test.png".to_string(),
+            abs_path: "/tmp/test.png".to_string(),
+            sha256: "hash".to_string(),
+        };
+        let json = serde_json::to_string(&img).unwrap();
+        let parsed: SavedImage = serde_json::from_str(&json).unwrap();
+        assert!(parsed.page.is_none());
+    }
+
+    #[test]
+    fn append_markdown_table_empty() {
+        let mut result = String::new();
+        append_markdown_table(&mut result, vec![]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn append_markdown_table_single_row() {
+        let mut result = String::new();
+        append_markdown_table(&mut result, vec![vec!["A".to_string(), "B".to_string()]]);
+        assert!(result.contains("| A | B |"));
+        assert!(result.contains("| --- | --- |"));
+    }
+
+    #[test]
+    fn append_markdown_table_multiple_rows() {
+        let mut result = String::new();
+        append_markdown_table(
+            &mut result,
+            vec![
+                vec!["H1".to_string(), "H2".to_string()],
+                vec!["D1".to_string(), "D2".to_string()],
+            ],
+        );
+        assert!(result.contains("H1"));
+        assert!(result.contains("D1"));
+        // Header separator after first row
+        let lines: Vec<&str> = result.lines().collect();
+        assert!(lines[1].contains("---"));
+    }
+
+    #[test]
+    fn append_markdown_table_escapes_pipes() {
+        let mut result = String::new();
+        append_markdown_table(&mut result, vec![vec!["a|b".to_string()]]);
+        assert!(result.contains("a\\|b"));
+    }
+
+    #[test]
+    fn append_markdown_table_pads_uneven_rows() {
+        let mut result = String::new();
+        append_markdown_table(
+            &mut result,
+            vec![
+                vec!["A".to_string(), "B".to_string(), "C".to_string()],
+                vec!["D".to_string()],
+            ],
+        );
+        assert!(result.contains("D"));
+    }
 }

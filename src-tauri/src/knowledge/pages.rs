@@ -319,3 +319,253 @@ pub async fn knowledge_delete_page(
         .await
         .map_err(|error| error.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_frontmatter_with_frontmatter() {
+        let content = "---\ntitle: Test\ntype: concept\n---\n\nBody text";
+        assert_eq!(strip_frontmatter(content), "Body text");
+    }
+
+    #[test]
+    fn strip_frontmatter_without_frontmatter() {
+        let content = "Just plain text";
+        assert_eq!(strip_frontmatter(content), "Just plain text");
+    }
+
+    #[test]
+    fn strip_frontmatter_empty_frontmatter() {
+        // Empty frontmatter (--- immediately followed by ---) has no closing
+        // "\n---" because the inner rest is empty, so it is NOT stripped.
+        let content = "---\n---\n\nBody";
+        assert_eq!(strip_frontmatter(content), content);
+    }
+
+    #[test]
+    fn strip_frontmatter_only_opening() {
+        let content = "---\nNo closing frontmatter";
+        assert_eq!(strip_frontmatter(content), content);
+    }
+
+    #[test]
+    fn extract_frontmatter_array_inline_array() {
+        let content = "---\ntags: [\"a\", \"b\", \"c\"]\n---\n\nBody";
+        let tags = extract_frontmatter_array(content, "tags");
+        assert!(tags.contains("a"));
+        assert!(tags.contains("b"));
+        assert!(tags.contains("c"));
+        assert_eq!(tags.len(), 3);
+    }
+
+    #[test]
+    fn extract_frontmatter_array_block_format() {
+        let content = "---\ntags:\n  - alpha\n  - beta\n---\n\nBody";
+        let tags = extract_frontmatter_array(content, "tags");
+        assert!(tags.contains("alpha"));
+        assert!(tags.contains("beta"));
+        assert_eq!(tags.len(), 2);
+    }
+
+    #[test]
+    fn extract_frontmatter_array_missing_key() {
+        let content = "---\ntitle: Test\n---\n\nBody";
+        let tags = extract_frontmatter_array(content, "tags");
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn extract_frontmatter_array_no_frontmatter() {
+        let content = "No frontmatter here";
+        let tags = extract_frontmatter_array(content, "tags");
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn extract_frontmatter_array_quoted_values() {
+        let content = "---\nsources: [\"file.pdf\", \"doc.docx\"]\n---\n\nBody";
+        let sources = extract_frontmatter_array(content, "sources");
+        assert!(sources.contains("file.pdf"));
+        assert!(sources.contains("doc.docx"));
+    }
+
+    #[test]
+    fn extract_frontmatter_array_single_quotes() {
+        let content = "---\ntags: ['a', 'b']\n---\n\nBody";
+        let tags = extract_frontmatter_array(content, "tags");
+        assert!(tags.contains("a"));
+        assert!(tags.contains("b"));
+    }
+
+    #[test]
+    fn extract_frontmatter_array_empty_inline() {
+        let content = "---\ntags: []\n---\n\nBody";
+        let tags = extract_frontmatter_array(content, "tags");
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn extract_frontmatter_array_stops_at_next_key() {
+        let content = "---\ntags:\n  - a\n  - b\ntitle: Test\n---\n\nBody";
+        let tags = extract_frontmatter_array(content, "tags");
+        assert_eq!(tags.len(), 2);
+    }
+
+    #[test]
+    fn parse_page_meta_with_frontmatter() {
+        let content = "---\ntitle: My Title\ntype: entity\ntags: [\"tag1\"]\nupdated: 2026-01-01\n---\n\nBody";
+        let meta = parse_page_meta(content, Path::new("wiki/my-title.md"));
+        assert_eq!(meta.title, "My Title");
+        assert_eq!(meta.page_type, "entity");
+        assert!(meta.tags.contains(&"tag1".to_string()));
+        assert_eq!(meta.updated, Some("2026-01-01".to_string()));
+    }
+
+    #[test]
+    fn parse_page_meta_without_frontmatter_uses_filename() {
+        let content = "Just body text";
+        let meta = parse_page_meta(content, Path::new("wiki/my-test-page.md"));
+        assert_eq!(meta.title, "My Test Page");
+        assert_eq!(meta.page_type, "concept");
+        assert!(meta.tags.is_empty());
+        assert!(meta.updated.is_none());
+    }
+
+    #[test]
+    fn parse_page_meta_missing_title_uses_filename() {
+        let content = "---\ntype: concept\n---\n\nBody";
+        let meta = parse_page_meta(content, Path::new("wiki/untitled.md"));
+        assert_eq!(meta.title, "Untitled");
+    }
+
+    #[test]
+    fn frontmatter_block_valid() {
+        let content = "---\ntitle: Test\n---\nBody";
+        let fm = frontmatter_block(content);
+        assert!(fm.is_some());
+        assert!(fm.unwrap().contains("title: Test"));
+    }
+
+    #[test]
+    fn frontmatter_block_missing() {
+        let content = "No frontmatter";
+        let fm = frontmatter_block(content);
+        assert!(fm.is_none());
+    }
+
+    #[test]
+    fn frontmatter_block_multiline() {
+        let content = "---\ntitle: Test\ntype: concept\ntags: [\"a\"]\n---\nBody";
+        let fm = frontmatter_block(content).unwrap();
+        assert!(fm.contains("title: Test"));
+        assert!(fm.contains("type: concept"));
+        assert!(fm.contains("tags:"));
+    }
+
+    #[test]
+    fn collect_md_files_empty_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "jkcodingagent-pages-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut out = Vec::new();
+        collect_md_files(&dir, &mut out).unwrap();
+        assert!(out.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn collect_md_files_finds_md() {
+        let dir = std::env::temp_dir().join(format!(
+            "jkcodingagent-pages-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("test.md"), "# Test").unwrap();
+        std::fs::write(dir.join("ignore.txt"), "ignored").unwrap();
+
+        let mut out = Vec::new();
+        collect_md_files(&dir, &mut out).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].ends_with("test.md"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn collect_md_files_recursive() {
+        let dir = std::env::temp_dir().join(format!(
+            "jkcodingagent-pages-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let subdir = dir.join("sub");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(dir.join("a.md"), "# A").unwrap();
+        std::fs::write(subdir.join("b.md"), "# B").unwrap();
+
+        let mut out = Vec::new();
+        collect_md_files(&dir, &mut out).unwrap();
+        assert_eq!(out.len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn collect_md_files_nonexistent_dir() {
+        // Returns Ok(()) for nonexistent dirs — graceful no-op.
+        let mut out = Vec::new();
+        let result = collect_md_files(Path::new("/nonexistent/path"), &mut out);
+        assert!(result.is_ok());
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn read_first_kb_small_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "jkcodingagent-pages-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("small.txt");
+        std::fs::write(&file, "Hello World").unwrap();
+        let content = read_first_kb(&file, 1);
+        assert_eq!(content, "Hello World");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_first_kb_truncates() {
+        let dir = std::env::temp_dir().join(format!(
+            "jkcodingagent-pages-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("large.txt");
+        // 3 KB of data
+        let data = "A".repeat(3 * 1024);
+        std::fs::write(&file, &data).unwrap();
+        let content = read_first_kb(&file, 1);
+        assert_eq!(content.len(), 1024);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_first_kb_missing_file() {
+        let content = read_first_kb(Path::new("/nonexistent/file.txt"), 1);
+        assert!(content.is_empty());
+    }
+
+    #[test]
+    fn strip_frontmatter_preserves_body_whitespace() {
+        let content = "---\ntitle: Test\n---\n\n# Heading\n\nParagraph";
+        assert_eq!(strip_frontmatter(content), "# Heading\n\nParagraph");
+    }
+
+    #[test]
+    fn extract_frontmatter_array_deduplication() {
+        let content = "---\ntags: [\"a\", \"a\", \"b\"]\n---\n\nBody";
+        let tags = extract_frontmatter_array(content, "tags");
+        assert_eq!(tags.len(), 2);
+    }
+}

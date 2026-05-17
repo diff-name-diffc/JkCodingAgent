@@ -778,6 +778,7 @@ mod tests {
         build_session_title_source, build_summary_debug_context, decide_tool_result_action,
         extract_tagged_block, fallback_session_title, normalize_session_title,
         normalize_tool_output, parse_dual_tool_summary, SessionTitleMessage, ToolResultAction,
+        SESSION_TITLE_MAX_CHARS, HIGH_FIDELITY_SUMMARY_THRESHOLD_CHARS,
     };
     use crate::agent::llm::OpenAiCompatProvider;
 
@@ -948,5 +949,440 @@ mod tests {
     fn session_title_source_falls_back_when_dialogue_is_empty() {
         let source = build_session_title_source(&[], "修复标题生成");
         assert_eq!(source, "修复标题生成");
+    }
+
+    // --- Additional tests for uncovered functions ---
+
+    #[test]
+    fn session_title_source_builds_from_messages() {
+        let messages = vec![
+            SessionTitleMessage { role: "user".to_string(), content: "hello".to_string() },
+            SessionTitleMessage { role: "assistant".to_string(), content: "world".to_string() },
+        ];
+        let source = build_session_title_source(&messages, "fallback");
+        assert!(source.contains("【用户】"));
+        assert!(source.contains("hello"));
+        assert!(source.contains("【助手】"));
+        assert!(source.contains("world"));
+    }
+
+    #[test]
+    fn session_title_source_skips_empty_messages() {
+        let messages = vec![
+            SessionTitleMessage { role: "user".to_string(), content: "  ".to_string() },
+            SessionTitleMessage { role: "assistant".to_string(), content: "actual content".to_string() },
+        ];
+        let source = build_session_title_source(&messages, "fallback");
+        assert!(!source.contains("【用户】"));
+        assert!(source.contains("【助手】"));
+        assert!(source.contains("actual content"));
+    }
+
+    #[test]
+    fn session_title_role_label_maps_known_roles() {
+        assert_eq!(super::session_title_role_label("user"), "用户");
+        assert_eq!(super::session_title_role_label("assistant"), "助手");
+        assert_eq!(super::session_title_role_label("tool"), "工具结果");
+    }
+
+    #[test]
+    fn session_title_role_label_defaults_for_unknown() {
+        assert_eq!(super::session_title_role_label("system"), "消息");
+        assert_eq!(super::session_title_role_label("unknown"), "消息");
+    }
+
+    #[test]
+    fn truncate_session_title_message_short_input_unchanged() {
+        let msg = "short message";
+        let truncated = super::truncate_session_title_message(msg);
+        assert_eq!(truncated, msg);
+    }
+
+    #[test]
+    fn truncate_session_title_message_long_input_is_cut() {
+        let long_msg = "x".repeat(2000);
+        let truncated = super::truncate_session_title_message(&long_msg);
+        assert!(truncated.len() < long_msg.len());
+        assert!(truncated.ends_with("\n..."));
+    }
+
+    #[test]
+    fn truncate_session_title_source_short_input_unchanged() {
+        let source = "short source content";
+        let truncated = super::truncate_session_title_source(source);
+        assert_eq!(truncated, source);
+    }
+
+    #[test]
+    fn truncate_session_title_source_long_input_is_cut() {
+        let long_source = "y".repeat(10000);
+        let truncated = super::truncate_session_title_source(&long_source);
+        assert!(truncated.len() < long_source.len());
+        assert!(truncated.ends_with("\n..."));
+    }
+
+    #[test]
+    fn clean_title_line_strips_markdown_prefixes() {
+        assert_eq!(super::clean_title_line("# Hello"), "Hello");
+        assert_eq!(super::clean_title_line("## World"), "World");
+        assert_eq!(super::clean_title_line("> Quote"), "Quote");
+        // split_whitespace().join("") removes all internal whitespace
+        assert_eq!(super::clean_title_line("- List item"), "Listitem");
+        assert_eq!(super::clean_title_line("* Bold item"), "Bolditem");
+    }
+
+    #[test]
+    fn clean_title_line_strips_chinese_title_prefix() {
+        assert_eq!(super::clean_title_line("标题：测试标题"), "测试标题");
+        assert_eq!(super::clean_title_line("标题:测试标题"), "测试标题");
+        assert_eq!(super::clean_title_line("会话标题：会话名称"), "会话名称");
+    }
+
+    #[test]
+    fn clean_title_line_strips_quotes_and_punctuation() {
+        assert_eq!(super::clean_title_line("'测试'"), "测试");
+        assert_eq!(super::clean_title_line("\"test\""), "test");
+        assert_eq!(super::clean_title_line("`code`"), "code");
+    }
+
+    #[test]
+    fn clean_title_line_returns_empty_for_empty_input() {
+        assert_eq!(super::clean_title_line(""), "");
+        assert_eq!(super::clean_title_line("   "), "");
+    }
+
+    #[test]
+    fn clean_title_line_skips_blank_leading_lines() {
+        assert_eq!(super::clean_title_line("\n\nactual title"), "actualtitle");
+    }
+
+    #[test]
+    fn truncate_title_caps_at_max_chars() {
+        let long_title = "很长的标题".repeat(5); // 25 chars
+        let truncated = super::truncate_title(long_title);
+        assert_eq!(truncated.chars().count(), SESSION_TITLE_MAX_CHARS);
+    }
+
+    #[test]
+    fn truncate_title_short_input_unchanged() {
+        let short = "短标题";
+        let truncated = super::truncate_title(short.to_string());
+        assert_eq!(truncated, "短标题");
+    }
+
+    #[test]
+    fn normalize_session_title_returns_fallback_when_model_says_new_session() {
+        let title = normalize_session_title("新会话", "实际用户问题");
+        assert_eq!(title, "实际用户问题");
+    }
+
+    #[test]
+    fn normalize_session_title_returns_fallback_when_model_returns_empty() {
+        let title = normalize_session_title("", "用户原始问题");
+        assert_eq!(title, "用户原始问题");
+    }
+
+    #[test]
+    fn normalize_session_title_prefers_model_output_when_valid() {
+        let title = normalize_session_title("代码重构优化", "用户原始问题");
+        assert_eq!(title, "代码重构优化");
+    }
+
+    #[test]
+    fn normalize_session_title_truncates_long_model_output() {
+        let long = "这是一个非常非常非常长的标题不应该被完整保留";
+        let title = normalize_session_title(long, "fallback");
+        assert!(title.chars().count() <= SESSION_TITLE_MAX_CHARS);
+    }
+
+    #[test]
+    fn tool_output_kind_maps_known_tools() {
+        assert_eq!(super::tool_output_kind("read_file"), super::ToolOutputKind::Exact);
+        assert_eq!(super::tool_output_kind("list_dir"), super::ToolOutputKind::Exact);
+        assert_eq!(super::tool_output_kind("glob"), super::ToolOutputKind::Exact);
+        assert_eq!(super::tool_output_kind("grep"), super::ToolOutputKind::Exact);
+        assert_eq!(super::tool_output_kind("browser_read_text"), super::ToolOutputKind::Exact);
+        assert_eq!(super::tool_output_kind("browser_visual_analyze"), super::ToolOutputKind::Exact);
+        assert_eq!(super::tool_output_kind("exec"), super::ToolOutputKind::Command);
+        assert_eq!(super::tool_output_kind("write_file"), super::ToolOutputKind::Mutation);
+        assert_eq!(super::tool_output_kind("edit_file"), super::ToolOutputKind::Mutation);
+        assert_eq!(super::tool_output_kind("generate_image"), super::ToolOutputKind::Mutation);
+        assert_eq!(super::tool_output_kind("edit_image"), super::ToolOutputKind::Mutation);
+        assert_eq!(super::tool_output_kind("message"), super::ToolOutputKind::Message);
+        assert_eq!(super::tool_output_kind("unknown_tool"), super::ToolOutputKind::Other);
+    }
+
+    #[test]
+    fn default_result_mode_returns_full_for_exact_tools() {
+        assert_eq!(super::default_result_mode("read_file"), super::ToolResultMode::Full);
+    }
+
+    #[test]
+    fn default_result_mode_returns_auto_for_command_tools() {
+        assert_eq!(super::default_result_mode("exec"), super::ToolResultMode::Auto);
+    }
+
+    #[test]
+    fn default_result_mode_returns_auto_for_unknown_tools() {
+        assert_eq!(super::default_result_mode("custom_tool"), super::ToolResultMode::Auto);
+    }
+
+    #[test]
+    fn requested_result_mode_parses_known_modes() {
+        assert_eq!(
+            super::requested_result_mode(&json!({"result_mode": "auto"})),
+            Some(super::ToolResultMode::Auto)
+        );
+        assert_eq!(
+            super::requested_result_mode(&json!({"result_mode": "full"})),
+            Some(super::ToolResultMode::Full)
+        );
+        assert_eq!(
+            super::requested_result_mode(&json!({"result_mode": "summary"})),
+            Some(super::ToolResultMode::Summary)
+        );
+    }
+
+    #[test]
+    fn requested_result_mode_returns_none_for_unknown_mode() {
+        assert_eq!(
+            super::requested_result_mode(&json!({"result_mode": "unknown"})),
+            None
+        );
+    }
+
+    #[test]
+    fn requested_result_mode_returns_none_when_missing() {
+        assert_eq!(super::requested_result_mode(&json!({})), None);
+    }
+
+    #[test]
+    fn requested_result_mode_is_case_insensitive() {
+        assert_eq!(
+            super::requested_result_mode(&json!({"result_mode": "FULL"})),
+            Some(super::ToolResultMode::Full)
+        );
+        assert_eq!(
+            super::requested_result_mode(&json!({"result_mode": "Summary"})),
+            Some(super::ToolResultMode::Summary)
+        );
+    }
+
+    #[test]
+    fn summarize_if_large_enough_keeps_raw_for_short_output() {
+        let action = super::summarize_if_large_enough("short");
+        assert_eq!(action, ToolResultAction::KeepRaw);
+    }
+
+    #[test]
+    fn summarize_if_large_enough_summarizes_for_large_output() {
+        let large = "x".repeat(HIGH_FIDELITY_SUMMARY_THRESHOLD_CHARS + 1);
+        let action = super::summarize_if_large_enough(&large);
+        assert_eq!(action, ToolResultAction::HighFidelitySummarize);
+    }
+
+    #[test]
+    fn exceeds_limits_detects_char_limit() {
+        let text = "a".repeat(100);
+        assert!(super::exceeds_limits(&text, 99, 200));
+        assert!(!super::exceeds_limits(&text, 101, 200));
+    }
+
+    #[test]
+    fn exceeds_limits_detects_line_limit() {
+        let text = "line1\nline2\nline3";
+        assert!(super::exceeds_limits(text, 100, 2));
+        assert!(!super::exceeds_limits(text, 100, 4));
+    }
+
+    #[test]
+    fn tool_result_mode_label_returns_correct_strings() {
+        assert_eq!(super::tool_result_mode_label(ToolResultAction::KeepRaw), "raw");
+        assert_eq!(
+            super::tool_result_mode_label(ToolResultAction::HighFidelitySummarize),
+            "conservative_summary"
+        );
+    }
+
+    #[test]
+    fn looks_like_code_or_precise_retrieval_detects_code_blocks() {
+        assert!(super::looks_like_code_or_precise_retrieval("```rust\nfn main() {}\n```"));
+    }
+
+    #[test]
+    fn looks_like_code_or_precise_retrieval_detects_numbered_lines() {
+        let numbered = "1|first line\n2|second line\n3|third line";
+        assert!(super::looks_like_code_or_precise_retrieval(numbered));
+    }
+
+    #[test]
+    fn looks_like_code_or_precise_retrieval_detects_rust_code() {
+        let code = "fn main() {\n  pub fn helper() {}\n  impl Foo {}\n}";
+        assert!(super::looks_like_code_or_precise_retrieval(code));
+    }
+
+    #[test]
+    fn looks_like_code_or_precise_retrieval_detects_python_code() {
+        let code = "def foo():\n  import os\n  class Bar:\n    pass";
+        assert!(super::looks_like_code_or_precise_retrieval(code));
+    }
+
+    #[test]
+    fn looks_like_code_or_precise_retrieval_rejects_plain_text() {
+        assert!(!super::looks_like_code_or_precise_retrieval("This is just plain text output"));
+    }
+
+    #[test]
+    fn should_keep_raw_for_exactness_keeps_exact_tools() {
+        assert!(super::should_keep_raw_for_exactness(
+            "read_file",
+            super::ToolOutputKind::Exact,
+            "output"
+        ));
+    }
+
+    #[test]
+    fn should_keep_raw_for_exactness_keeps_message_tool() {
+        assert!(super::should_keep_raw_for_exactness(
+            "message",
+            super::ToolOutputKind::Message,
+            "output"
+        ));
+    }
+
+    #[test]
+    fn should_keep_raw_for_exactness_keeps_code_output() {
+        assert!(super::should_keep_raw_for_exactness(
+            "exec",
+            super::ToolOutputKind::Command,
+            "```js\nconsole.log('hi');\n```"
+        ));
+    }
+
+    #[test]
+    fn build_dispatch_summary_prompt_contains_required_structure() {
+        let prompt = super::build_dispatch_summary_prompt("test result");
+        assert!(prompt.contains("【子任务回流摘要】"));
+        assert!(prompt.contains("状态："));
+        assert!(prompt.contains("已完成："));
+        assert!(prompt.contains("阻塞/风险："));
+        assert!(prompt.contains("关键证据："));
+        assert!(prompt.contains("建议下一步："));
+        assert!(prompt.contains("test result"));
+    }
+
+    #[test]
+    fn build_dual_tool_summary_prompt_contains_tag_format() {
+        let prompt = super::build_dual_tool_summary_prompt("exec", "some output");
+        assert!(prompt.contains("<DISPLAY_SUMMARY>"));
+        assert!(prompt.contains("</DISPLAY_SUMMARY>"));
+        assert!(prompt.contains("<CONTEXT_PAYLOAD>"));
+        assert!(prompt.contains("</CONTEXT_PAYLOAD>"));
+        assert!(prompt.contains("some output"));
+    }
+
+    #[test]
+    fn parse_dual_tool_summary_falls_back_when_tags_missing() {
+        let output = "just plain text without tags".to_string();
+        let (context, display) = parse_dual_tool_summary(output.clone());
+        assert_eq!(context, output);
+        assert_eq!(display, output);
+    }
+
+    #[test]
+    fn parse_dual_tool_summary_falls_back_when_context_empty() {
+        let output = "<CONTEXT_PAYLOAD>\n\n</CONTEXT_PAYLOAD>\n<DISPLAY_SUMMARY>\nreal\n</DISPLAY_SUMMARY>".to_string();
+        let (context, display) = parse_dual_tool_summary(output);
+        // Falls back to full output since one tag is empty
+        assert_eq!(context, display);
+    }
+
+    #[test]
+    fn extract_tagged_block_returns_none_for_missing_tag() {
+        assert_eq!(extract_tagged_block("no tags here", "MISSING"), None);
+    }
+
+    #[test]
+    fn extract_tagged_block_returns_none_for_empty_content() {
+        assert_eq!(extract_tagged_block("<A>\n   \n</A>", "A"), None);
+    }
+
+    #[test]
+    fn build_raw_tool_artifact_fields_are_correct() {
+        let artifact = super::build_raw_tool_artifact("grep", "line1\nline2\nline3");
+        assert_eq!(artifact.kind, "tool_raw_output");
+        assert_eq!(artifact.title, "grep 原始结果");
+        assert_eq!(artifact.content, "line1\nline2\nline3");
+        assert_eq!(artifact.char_count, 17);
+        assert_eq!(artifact.line_count, 3);
+    }
+
+    #[test]
+    fn build_artifact_preview_caps_at_160_chars() {
+        let long_line = "x".repeat(200);
+        let preview = build_artifact_preview(&long_line);
+        assert!(preview.len() <= 170); // 160 chars + "..."
+        assert!(preview.ends_with("..."));
+    }
+
+    #[test]
+    fn build_artifact_preview_returns_default_for_blank_input() {
+        let preview = build_artifact_preview("\n  \n  \n");
+        assert_eq!(preview, "原始结果为空白或仅包含空行");
+    }
+
+    #[test]
+    fn tag_block_stream_emits_nothing_before_start_tag() {
+        let mut stream = super::TaggedBlockStream::new("DISPLAY_SUMMARY");
+        assert_eq!(stream.push("some text without tag"), "");
+    }
+
+    #[test]
+    fn tag_block_stream_emits_content_after_start_tag() {
+        let mut stream = super::TaggedBlockStream::new("A");
+        let tag = "<A>hello</A>";
+        let emitted = stream.push(tag);
+        assert!(emitted.contains("hello"));
+    }
+
+    #[test]
+    fn tag_block_stream_handles_incremental_push() {
+        let mut stream = super::TaggedBlockStream::new("A");
+        assert_eq!(stream.push("<A>"), "");
+        let emitted = stream.push("content");
+        assert!(emitted.contains("content"));
+    }
+
+    #[test]
+    fn tag_block_stream_returns_empty_for_empty_delta() {
+        let mut stream = super::TaggedBlockStream::new("A");
+        assert_eq!(stream.push(""), "");
+    }
+
+    #[test]
+    fn normalize_tool_output_removes_trailing_spaces() {
+        let result = normalize_tool_output("hello   ");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn normalize_tool_output_collapses_consecutive_blank_lines() {
+        let result = normalize_tool_output("line1\n   \n   \nline2");
+        assert_eq!(result, "line1\n\n\nline2");
+    }
+
+    #[test]
+    fn build_session_title_prompt_includes_fallback_when_messages_empty() {
+        let prompt = build_session_title_prompt(&[], "fallback prompt text");
+        assert!(prompt.contains("fallback prompt text"));
+    }
+
+    #[test]
+    fn tool_summary_focus_returns_non_empty_for_known_tools() {
+        assert!(!super::tool_summary_focus("read_file").is_empty());
+        assert!(!super::tool_summary_focus("glob").is_empty());
+        assert!(!super::tool_summary_focus("grep").is_empty());
+        assert!(!super::tool_summary_focus("exec").is_empty());
+        assert!(!super::tool_summary_focus("unknown").is_empty());
     }
 }

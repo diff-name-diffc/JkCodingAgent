@@ -342,4 +342,238 @@ mod tests {
         assert_eq!(stats.page_count, 1);
         assert_eq!(stats.chunk_count, 1);
     }
+
+    // --- Pure function tests (no async, no DB) ---
+
+    #[test]
+    fn page_id_deterministic() {
+        let id1 = page_id("wiki/test.md");
+        let id2 = page_id("wiki/test.md");
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn page_id_different_paths() {
+        let id1 = page_id("wiki/a.md");
+        let id2 = page_id("wiki/b.md");
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn page_id_length() {
+        let id = page_id("wiki/test.md");
+        assert_eq!(id.len(), 64); // SHA-256 hex
+    }
+
+    #[test]
+    fn db_path_format() {
+        let root = std::path::PathBuf::from("/tmp/test");
+        let path = db_path(&root);
+        assert!(path.contains(".llm-wiki"));
+        assert!(path.contains("lancedb"));
+        assert!(!path.contains('\\'));
+    }
+
+    #[test]
+    fn db_path_backslash_normalized() {
+        let root = std::path::PathBuf::from(r"C:\Users\test");
+        let path = db_path(&root);
+        assert!(!path.contains('\\'));
+    }
+
+    #[test]
+    fn make_schema_has_expected_fields() {
+        let schema = make_schema(128);
+        let field_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert!(field_names.contains(&"chunk_id"));
+        assert!(field_names.contains(&"page_id"));
+        assert!(field_names.contains(&"page_path"));
+        assert!(field_names.contains(&"page_title"));
+        assert!(field_names.contains(&"page_type"));
+        assert!(field_names.contains(&"chunk_index"));
+        assert!(field_names.contains(&"chunk_text"));
+        assert!(field_names.contains(&"heading_path"));
+        assert!(field_names.contains(&"vector"));
+    }
+
+    #[test]
+    fn make_schema_vector_dimension() {
+        let schema = make_schema(384);
+        let vector_field = schema.field_with_name("vector").unwrap();
+        if let DataType::FixedSizeList(_, dim) = vector_field.data_type() {
+            assert_eq!(*dim, 384);
+        } else {
+            panic!("Expected FixedSizeList for vector field");
+        }
+    }
+
+    #[test]
+    fn make_batch_correct_row_count() {
+        let dim = 4;
+        let schema = make_schema(dim);
+        let chunks = vec![
+            chunk("wiki/a.md", 0, 0.1),
+            chunk("wiki/b.md", 1, 0.5),
+            chunk("wiki/c.md", 2, 0.9),
+        ];
+        let batch = make_batch(schema, &chunks, dim).unwrap();
+        assert_eq!(batch.num_rows(), 3);
+    }
+
+    #[test]
+    fn make_batch_dimension_mismatch_fails() {
+        let dim = 4;
+        let schema = make_schema(dim);
+        let mut bad_chunk = chunk("wiki/a.md", 0, 0.1);
+        bad_chunk.vector = vec![0.1, 0.2]; // Wrong dimension
+        let result = make_batch(schema, &[bad_chunk], dim);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn make_batch_chunk_id_format() {
+        let dim = 4;
+        let schema = make_schema(dim);
+        let chunks = vec![chunk("wiki/a.md", 0, 0.1)];
+        let batch = make_batch(schema, &chunks, dim).unwrap();
+        let chunk_ids = batch
+            .column_by_name("chunk_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let chunk_id = chunk_ids.value(0);
+        assert!(chunk_id.contains('#'));
+    }
+
+    #[test]
+    fn lance_vector_stats_default() {
+        let stats = LanceVectorStats::default();
+        assert_eq!(stats.page_count, 0);
+        assert_eq!(stats.chunk_count, 0);
+        assert_eq!(stats.dimension, 0);
+    }
+
+    #[test]
+    fn lance_vector_stats_serde_roundtrip() {
+        let stats = LanceVectorStats {
+            page_count: 10,
+            chunk_count: 50,
+            dimension: 384,
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        let parsed: LanceVectorStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.page_count, 10);
+        assert_eq!(parsed.chunk_count, 50);
+        assert_eq!(parsed.dimension, 384);
+    }
+
+    #[test]
+    fn stored_chunk_debug() {
+        let c = StoredChunk {
+            page_path: "wiki/a.md".to_string(),
+            page_title: "Test".to_string(),
+            page_type: "concept".to_string(),
+            chunk_idx: 0,
+            heading: "Intro".to_string(),
+            chunk_text: "Hello".to_string(),
+            vector: vec![0.1],
+        };
+        let debug = format!("{:?}", c);
+        assert!(debug.contains("wiki/a.md"));
+    }
+
+    #[test]
+    fn chunk_search_hit_debug() {
+        let hit = ChunkSearchHit {
+            page_path: "wiki/a.md".to_string(),
+            chunk_text: "text".to_string(),
+            score: 0.95,
+        };
+        let debug = format!("{:?}", hit);
+        assert!(debug.contains("wiki/a.md"));
+    }
+
+    #[tokio::test]
+    async fn replace_empty_chunks_returns_default_stats() {
+        let root = tmp_root();
+        let result = replace_all_chunks(&root, vec![]).await.unwrap();
+        assert_eq!(result.page_count, 0);
+        assert_eq!(result.chunk_count, 0);
+        assert_eq!(result.dimension, 0);
+    }
+
+    #[tokio::test]
+    async fn replace_all_chunks_replaces_existing() {
+        let root = tmp_root();
+        replace_all_chunks(&root, vec![chunk("wiki/a.md", 0, 0.1)])
+            .await
+            .unwrap();
+        let stats1 = stats(&root).await.unwrap();
+        assert_eq!(stats1.chunk_count, 1);
+
+        replace_all_chunks(
+            &root,
+            vec![chunk("wiki/b.md", 0, 0.5), chunk("wiki/c.md", 0, 0.9)],
+        )
+        .await
+        .unwrap();
+        let stats2 = stats(&root).await.unwrap();
+        assert_eq!(stats2.chunk_count, 2);
+        assert_eq!(stats2.page_count, 2);
+    }
+
+    #[tokio::test]
+    async fn replace_all_chunks_rejects_zero_dimension() {
+        let root = tmp_root();
+        let mut bad_chunk = chunk("wiki/a.md", 0, 0.1);
+        bad_chunk.vector = vec![];
+        let result = replace_all_chunks(&root, vec![bad_chunk]).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn search_chunks_empty_table_returns_empty() {
+        let root = tmp_root();
+        let hits = search_chunks(&root, vec![0.1, 0.2, 0.3, 0.4], 5)
+            .await
+            .unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stats_empty_db_returns_default() {
+        let root = tmp_root();
+        let s = stats(&root).await.unwrap();
+        assert_eq!(s.page_count, 0);
+        assert_eq!(s.chunk_count, 0);
+    }
+
+    #[tokio::test]
+    async fn drop_legacy_table_no_v1_is_ok() {
+        let root = tmp_root();
+        let result = drop_legacy_table(&root).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delete_page_nonexistent_is_ok() {
+        let root = tmp_root();
+        let result = delete_page(&root, "wiki/nonexistent.md").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn multiple_chunks_same_page() {
+        let root = tmp_root();
+        let chunks = vec![
+            chunk("wiki/a.md", 0, 0.1),
+            chunk("wiki/a.md", 1, 0.2),
+            chunk("wiki/a.md", 2, 0.3),
+        ];
+        replace_all_chunks(&root, chunks).await.unwrap();
+        let s = stats(&root).await.unwrap();
+        assert_eq!(s.page_count, 1);
+        assert_eq!(s.chunk_count, 3);
+    }
 }

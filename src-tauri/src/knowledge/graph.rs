@@ -167,3 +167,167 @@ pub async fn knowledge_build_graph(collection_id: String) -> Result<KnowledgeGra
     })
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_wikilinks_basic() {
+        let content = "See [[Target A]] for more.";
+        let links = extract_wikilinks(content);
+        assert_eq!(links, vec!["Target A"]);
+    }
+
+    #[test]
+    fn extract_wikilinks_multiple() {
+        let content = "Link to [[Alpha]] and [[Beta]].";
+        let links = extract_wikilinks(content);
+        assert_eq!(links, vec!["Alpha", "Beta"]);
+    }
+
+    #[test]
+    fn extract_wikilinks_with_alias() {
+        let content = "See [[Target|Display Text]] here.";
+        let links = extract_wikilinks(content);
+        assert_eq!(links, vec!["Target"]);
+    }
+
+    #[test]
+    fn extract_wikilinks_unclosed_brackets() {
+        let content = "No link [[here";
+        let links = extract_wikilinks(content);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn extract_wikilinks_empty_target() {
+        let content = "Link to [[ ]] empty.";
+        let links = extract_wikilinks(content);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn extract_wikilinks_no_links() {
+        let content = "Just plain text without any links.";
+        let links = extract_wikilinks(content);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn extract_wikilinks_consecutive() {
+        let content = "[[A]][[B]][[C]]";
+        let links = extract_wikilinks(content);
+        assert_eq!(links, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn extract_wikilinks_with_spaces() {
+        let content = "See [[  Spaced Target  ]] here.";
+        let links = extract_wikilinks(content);
+        assert_eq!(links, vec!["Spaced Target"]);
+    }
+
+    #[test]
+    fn ordered_pair_alphabetical() {
+        let (a, b) = ordered_pair("alpha", "beta");
+        assert_eq!(a, "alpha");
+        assert_eq!(b, "beta");
+    }
+
+    #[test]
+    fn ordered_pair_reverse() {
+        let (a, b) = ordered_pair("beta", "alpha");
+        assert_eq!(a, "alpha");
+        assert_eq!(b, "beta");
+    }
+
+    #[test]
+    fn ordered_pair_equal() {
+        let (a, b) = ordered_pair("same", "same");
+        assert_eq!(a, "same");
+        assert_eq!(b, "same");
+    }
+
+    #[test]
+    fn add_edge_weight_new_edge() {
+        let mut edges = BTreeMap::new();
+        add_edge_weight(
+            &mut edges,
+            ("a".to_string(), "b".to_string()),
+            3.0,
+            "wikilink",
+        );
+        let entry = edges.get(&("a".to_string(), "b".to_string())).unwrap();
+        assert!((entry.0 - 3.0).abs() < f32::EPSILON);
+        assert_eq!(entry.1, "wikilink");
+    }
+
+    #[test]
+    fn add_edge_weight_accumulates() {
+        let mut edges = BTreeMap::new();
+        let pair = ("a".to_string(), "b".to_string());
+        add_edge_weight(&mut edges, pair.clone(), 3.0, "wikilink");
+        add_edge_weight(&mut edges, pair.clone(), 2.0, "source-overlap");
+        let entry = edges.get(&pair).unwrap();
+        assert!((entry.0 - 5.0).abs() < f32::EPSILON);
+        assert!(entry.1.contains("wikilink"));
+        assert!(entry.1.contains("source-overlap"));
+    }
+
+    #[test]
+    fn add_edge_weight_same_reason_not_duplicated() {
+        let mut edges = BTreeMap::new();
+        let pair = ("a".to_string(), "b".to_string());
+        add_edge_weight(&mut edges, pair.clone(), 1.0, "wikilink");
+        add_edge_weight(&mut edges, pair.clone(), 1.0, "wikilink");
+        let entry = edges.get(&pair).unwrap();
+        assert!((entry.0 - 2.0).abs() < f32::EPSILON);
+        assert_eq!(entry.1, "wikilink");
+    }
+
+    #[test]
+    fn normalize_source_name_simple() {
+        assert_eq!(normalize_source_name("test.pdf".to_string()), "test.pdf");
+    }
+
+    #[test]
+    fn normalize_source_name_with_path() {
+        assert_eq!(
+            normalize_source_name("path/to/source.md".to_string()),
+            "source.md"
+        );
+    }
+
+    #[test]
+    fn normalize_source_name_with_backslashes() {
+        // Backslashes are not path separators on Unix; only forward slashes are.
+        // The function treats the whole string as a filename.
+        assert_eq!(
+            normalize_source_name("path\\to\\source.md".to_string()),
+            "path\\to\\source.md"
+        );
+    }
+
+    #[test]
+    fn normalize_source_name_escaped_quotes() {
+        assert_eq!(
+            normalize_source_name("my\\\"file.pdf".to_string()),
+            "my\"file.pdf"
+        );
+    }
+
+    #[test]
+    fn extract_wikilinks_empty_input() {
+        let links = extract_wikilinks("");
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn extract_wikilinks_nested_brackets() {
+        // Only outermost [[ ]] should match
+        let content = "[[Outer]]";
+        let links = extract_wikilinks(content);
+        assert_eq!(links, vec!["Outer"]);
+    }
+}

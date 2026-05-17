@@ -1450,4 +1450,820 @@ END_RECORD";
         assert_eq!(total_additions, 60);
         assert_eq!(total_deletions, 3);
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Integration tests — real git commands against temporary repositories
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    use std::fs;
+
+    /// Create a temporary directory, `git init`, configure user, and make an
+    /// initial commit so the repo has a HEAD. Returns the TempDir (caller must
+    /// keep it alive) and the canonical absolute path as a String.
+    fn setup_repo() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path();
+
+        // git init
+        let out = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .expect("git init");
+        assert!(out.status.success(), "git init failed: {}", String::from_utf8_lossy(&out.stderr));
+
+        // configure user so commits work
+        for (key, val) in [("user.email", "test@test.com"), ("user.name", "Test")] {
+            let o = std::process::Command::new("git")
+                .args(["config", key, val])
+                .current_dir(path)
+                .output()
+                .expect("git config");
+            assert!(o.status.success(), "git config {} failed", key);
+        }
+
+        // initial commit so HEAD exists
+        fs::write(path.join("README.md"), "# test\n").expect("write README");
+        let o = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(path)
+            .output()
+            .expect("git add");
+        assert!(o.status.success(), "git add failed");
+        let o = std::process::Command::new("git")
+            .args(["commit", "-m", "initial commit"])
+            .current_dir(path)
+            .output()
+            .expect("git commit");
+        assert!(o.status.success(), "initial commit failed: {}", String::from_utf8_lossy(&o.stderr));
+
+        // Use canonical path to avoid validate_project_path mismatch on macOS
+        // (/var vs /private/var symlink).
+        let canonical = path.canonicalize().expect("canonicalize");
+        (dir, canonical.to_string_lossy().into_owned())
+    }
+
+    // ── git_status ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn status_empty_repo() {
+        let (_dir, repo) = setup_repo();
+        let changes = git_status(repo).await.expect("git_status");
+        assert!(changes.is_empty(), "clean repo should have no changes");
+    }
+
+    #[tokio::test]
+    async fn status_untracked_file() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("new_file.txt"), "hello").expect("write");
+
+        let changes = git_status(repo).await.expect("git_status");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "new_file.txt");
+        assert_eq!(changes[0].status, "?");
+        assert!(!changes[0].staged);
+    }
+
+    #[tokio::test]
+    async fn status_staged_modified() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("README.md"), "# modified\n").expect("write");
+        // stage it
+        let o = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+        assert!(o.status.success());
+
+        let changes = git_status(repo).await.expect("git_status");
+        assert!(changes.iter().any(|c| c.path == "README.md" && c.staged && c.status == "M"),
+            "expected staged modified README.md, got {} changes", changes.len());
+    }
+
+    #[tokio::test]
+    async fn status_unstaged_modified() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("README.md"), "# unstaged\n").expect("write");
+        // do NOT stage
+
+        let changes = git_status(repo).await.expect("git_status");
+        assert!(changes.iter().any(|c| c.path == "README.md" && !c.staged && c.status == "M"),
+            "expected unstaged modified README.md, got {} changes", changes.len());
+    }
+
+    #[tokio::test]
+    async fn status_both_staged_and_unstaged() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        // stage first version
+        fs::write(repo_path.join("README.md"), "v1\n").expect("write");
+        let o = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+        assert!(o.status.success());
+        // then modify again without staging
+        fs::write(repo_path.join("README.md"), "v2\n").expect("write");
+
+        let changes = git_status(repo).await.expect("git_status");
+        let staged = changes.iter().find(|c| c.staged);
+        let unstaged = changes.iter().find(|c| !c.staged);
+        assert!(staged.is_some(), "should have a staged change");
+        assert!(unstaged.is_some(), "should have an unstaged change");
+        assert_eq!(staged.unwrap().status, "M");
+        assert_eq!(unstaged.unwrap().status, "M");
+    }
+
+    #[tokio::test]
+    async fn status_multiple_untracked() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("a.txt"), "a").expect("write");
+        fs::write(repo_path.join("b.rs"), "fn main(){}").expect("write");
+        fs::create_dir(repo_path.join("subdir")).expect("mkdir");
+        fs::write(repo_path.join("subdir/c.toml"), "[pkg]").expect("write");
+
+        let changes = git_status(repo).await.expect("git_status");
+        let untracked: Vec<_> = changes.iter().filter(|c| c.status == "?").collect();
+        assert!(untracked.len() >= 3, "expected at least 3 untracked files, got {}", untracked.len());
+    }
+
+    // ── git_log ─────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn log_initial_commit() {
+        let (_dir, repo) = setup_repo();
+        let commits = git_log(repo, 50, None, None).await.expect("git_log");
+        assert_eq!(commits.len(), 1, "initial repo should have exactly 1 commit");
+        assert_eq!(commits[0].message, "initial commit");
+        assert!(!commits[0].hash.is_empty());
+        assert!(!commits[0].short_hash.is_empty());
+        assert_eq!(commits[0].author, "Test");
+    }
+
+    #[tokio::test]
+    async fn log_multiple_commits() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+
+        // add second commit
+        fs::write(repo_path.join("second.txt"), "second").expect("write");
+        let o = std::process::Command::new("git")
+            .args(["add", "second.txt"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+        assert!(o.status.success());
+        let o = std::process::Command::new("git")
+            .args(["commit", "-m", "second commit"])
+            .current_dir(&repo)
+            .output()
+            .expect("git commit");
+        assert!(o.status.success());
+
+        let commits = git_log(repo, 50, None, None).await.expect("git_log");
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].message, "second commit"); // newest first
+        assert_eq!(commits[1].message, "initial commit");
+    }
+
+    #[tokio::test]
+    async fn log_limit() {
+        let (_dir, repo) = setup_repo();
+        let commits = git_log(repo, 1, None, None).await.expect("git_log");
+        assert_eq!(commits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn log_search_filter() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+
+        fs::write(repo_path.join("feature.txt"), "feat").expect("write");
+        let o = std::process::Command::new("git")
+            .args(["add", "feature.txt"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+        assert!(o.status.success());
+        let o = std::process::Command::new("git")
+            .args(["commit", "-m", "add feature module"])
+            .current_dir(&repo)
+            .output()
+            .expect("git commit");
+        assert!(o.status.success());
+
+        let commits = git_log(repo, 50, Some("feature module".into()), None).await.expect("git_log");
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].message, "add feature module");
+    }
+
+    #[tokio::test]
+    async fn log_search_no_match() {
+        let (_dir, repo) = setup_repo();
+        let commits = git_log(repo, 50, Some("zzzz_nonexistent".into()), None).await.expect("git_log");
+        assert!(commits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn log_refs_contains_head() {
+        let (_dir, repo) = setup_repo();
+        let commits = git_log(repo, 50, None, None).await.expect("git_log");
+        assert_eq!(commits.len(), 1);
+        // refs should include "HEAD -> main" (or master depending on git config)
+        let refs_str = commits[0].refs.join(", ");
+        assert!(refs_str.contains("HEAD"), "refs should contain HEAD, got: {}", refs_str);
+    }
+
+    // ── git_list_branches ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_branches_initial() {
+        let (_dir, repo) = setup_repo();
+        let branches = git_list_branches(repo).await.expect("git_list_branches");
+        assert!(!branches.is_empty(), "should have at least one branch");
+        let current: Vec<_> = branches.iter().filter(|b| b.current).collect();
+        assert_eq!(current.len(), 1, "exactly one current branch");
+        assert!(current[0].remote.is_none(), "local branch should have no remote");
+    }
+
+    #[tokio::test]
+    async fn list_branches_multiple() {
+        let (_dir, repo) = setup_repo();
+        // create branches
+        for name in &["feature/a", "bugfix/b"] {
+            let o = std::process::Command::new("git")
+                .args(["branch", name])
+                .current_dir(&repo)
+                .output()
+                .expect("git branch");
+            assert!(o.status.success(), "git branch {} failed: {}", name, String::from_utf8_lossy(&o.stderr));
+        }
+
+        let branches = git_list_branches(repo).await.expect("git_list_branches");
+        let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
+        assert!(names.contains(&"feature/a"), "branches should contain feature/a, got: {:?}", names);
+        assert!(names.contains(&"bugfix/b"), "branches should contain bugfix/b, got: {:?}", names);
+    }
+
+    #[tokio::test]
+    async fn list_branches_with_remote() {
+        let (_dir, repo) = setup_repo();
+
+        // create a bare repo as "remote"
+        let remote_dir = tempfile::tempdir().expect("remote temp dir");
+        let o = std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(remote_dir.path())
+            .output()
+            .expect("git init --bare");
+        assert!(o.status.success());
+        let remote_path = remote_dir.path().to_string_lossy().into_owned();
+
+        let o = std::process::Command::new("git")
+            .args(["remote", "add", "origin", &remote_path])
+            .current_dir(&repo)
+            .output()
+            .expect("git remote add");
+        assert!(o.status.success());
+
+        // push so remote branch exists
+        let current_branch = {
+            let out = std::process::Command::new("git")
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .current_dir(&repo)
+                .output()
+                .expect("git rev-parse");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let o = std::process::Command::new("git")
+            .args(["push", "-u", "origin", &current_branch])
+            .current_dir(&repo)
+            .output()
+            .expect("git push");
+        assert!(o.status.success(), "push failed: {}", String::from_utf8_lossy(&o.stderr));
+
+        // keep remote_dir alive through the assertion
+        let branches = git_list_branches(repo).await.expect("git_list_branches");
+        let remotes: Vec<_> = branches.iter().filter(|b| b.remote.is_some()).collect();
+        assert!(!remotes.is_empty(), "should have at least one remote branch");
+        // remote branch names should be like "origin/main"
+        assert!(remotes[0].name.starts_with("origin/"), "remote branch name should start with origin/, got: {}", remotes[0].name);
+        drop(remote_dir);
+    }
+
+    // ── git_create_branch ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_branch_success() {
+        let (_dir, repo) = setup_repo();
+        // get current branch name to pass as from_branch
+        let current = get_current_branch(&repo);
+
+        git_create_branch(repo.clone(), "feature/new".into(), current)
+            .await
+            .expect("git_create_branch");
+
+        let branches = git_list_branches(repo).await.expect("git_list_branches");
+        let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
+        assert!(names.contains(&"feature/new"), "should contain feature/new");
+    }
+
+    #[tokio::test]
+    async fn create_branch_invalid_name() {
+        let (_dir, repo) = setup_repo();
+        let result = git_create_branch(repo, "bad name!".into(), "main".into()).await;
+        assert!(result.is_err(), "should reject invalid branch name");
+    }
+
+    // ── git_checkout_branch ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn checkout_branch_local() {
+        let (_dir, repo) = setup_repo();
+        // create another branch first
+        let o = std::process::Command::new("git")
+            .args(["branch", "develop"])
+            .current_dir(&repo)
+            .output()
+            .expect("git branch");
+        assert!(o.status.success());
+
+        git_checkout_branch(repo.clone(), "develop".into(), false)
+            .await
+            .expect("git_checkout_branch");
+
+        let current = get_current_branch(&repo);
+        assert_eq!(current, "develop", "should be on develop after checkout");
+    }
+
+    #[tokio::test]
+    async fn checkout_branch_invalid_name() {
+        let (_dir, repo) = setup_repo();
+        let result = git_checkout_branch(repo, "bad;name".into(), false).await;
+        assert!(result.is_err(), "should reject invalid branch name");
+    }
+
+    // ── git_show_diff ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn show_diff_returns_diff() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+
+        // create second commit with changes
+        fs::write(repo_path.join("README.md"), "# updated\n").expect("write");
+        let o = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+        assert!(o.status.success());
+        let o = std::process::Command::new("git")
+            .args(["commit", "-m", "update readme"])
+            .current_dir(&repo)
+            .output()
+            .expect("git commit");
+        assert!(o.status.success());
+
+        // get the commit hash
+        let commits = git_log(repo.clone(), 1, None, None).await.expect("git_log");
+        let hash = commits[0].hash.clone();
+
+        let diff = git_show_diff(repo, hash).await.expect("git_show_diff");
+        assert!(!diff.is_empty(), "diff should not be empty");
+        assert!(diff.contains("updated"), "diff should mention 'updated'");
+    }
+
+    // ── git_file_diff ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn file_diff_staged() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("README.md"), "# staged change\n").expect("write");
+        let o = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+        assert!(o.status.success());
+
+        let diff = git_file_diff(repo, "README.md".into(), true).await.expect("git_file_diff");
+        assert!(!diff.is_empty(), "staged diff should not be empty");
+        assert!(diff.contains("staged change"), "diff should contain new content");
+    }
+
+    #[tokio::test]
+    async fn file_diff_unstaged() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("README.md"), "# unstaged change\n").expect("write");
+
+        let diff = git_file_diff(repo, "README.md".into(), false).await.expect("git_file_diff");
+        assert!(!diff.is_empty(), "unstaged diff should not be empty");
+    }
+
+    #[tokio::test]
+    async fn file_diff_untracked_file() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("untracked.txt"), "brand new file").expect("write");
+
+        let diff = git_file_diff(repo, "untracked.txt".into(), false).await.expect("git_file_diff");
+        assert!(!diff.is_empty(), "untracked file diff should use --no-index fallback");
+        assert!(diff.contains("brand new file"), "diff should contain file content");
+    }
+
+    #[tokio::test]
+    async fn file_diff_clean_file() {
+        let (_dir, repo) = setup_repo();
+        // A clean tracked file produces empty output from `git diff`, so
+        // git_file_diff falls back to `--no-index /dev/null <path>` which
+        // produces the full file content as a diff. Verify the fallback works.
+        let diff = git_file_diff(repo, "README.md".into(), false).await.expect("git_file_diff");
+        assert!(!diff.is_empty(), "git_file_diff --no-index fallback should produce output for clean files");
+    }
+
+    // ── git_stage / git_unstage ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn stage_file() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("new.txt"), "content").expect("write");
+
+        git_stage(repo.clone(), "new.txt".into()).await.expect("git_stage");
+
+        let changes = git_status(repo).await.expect("git_status");
+        let staged: Vec<_> = changes.iter().filter(|c| c.staged).collect();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].path, "new.txt");
+    }
+
+    #[tokio::test]
+    async fn unstage_file() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("README.md"), "modified").expect("write");
+        let o = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+        assert!(o.status.success());
+
+        // verify it is staged
+        let changes = git_status(repo.clone()).await.expect("git_status");
+        assert!(changes.iter().any(|c| c.staged && c.path == "README.md"));
+
+        git_unstage(repo.clone(), "README.md".into()).await.expect("git_unstage");
+
+        let changes = git_status(repo).await.expect("git_status");
+        assert!(changes.iter().all(|c| !c.staged), "nothing should be staged after unstage");
+    }
+
+    #[tokio::test]
+    async fn stage_nonexistent_file_fails() {
+        let (_dir, repo) = setup_repo();
+        let result = git_stage(repo, "no_such_file.xyz".into()).await;
+        assert!(result.is_err(), "staging nonexistent file should fail");
+    }
+
+    // ── git_stage_all / git_unstage_all ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn stage_all() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("a.txt"), "a").expect("write");
+        fs::write(repo_path.join("b.txt"), "b").expect("write");
+
+        git_stage_all(repo.clone()).await.expect("git_stage_all");
+
+        let changes = git_status(repo).await.expect("git_status");
+        assert!(changes.iter().all(|c| c.staged), "all changes should be staged");
+        assert_eq!(changes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn unstage_all() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("a.txt"), "a").expect("write");
+        fs::write(repo_path.join("README.md"), "mod").expect("write");
+        let o = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+        assert!(o.status.success());
+
+        // verify all staged
+        let changes = git_status(repo.clone()).await.expect("git_status");
+        assert!(changes.iter().all(|c| c.staged));
+
+        git_unstage_all(repo.clone()).await.expect("git_unstage_all");
+
+        let changes = git_status(repo).await.expect("git_status");
+        assert!(changes.iter().all(|c| !c.staged), "nothing should be staged after unstage_all");
+    }
+
+    // ── git_commit ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn commit_staged_change() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("new.txt"), "content").expect("write");
+        git_stage(repo.clone(), "new.txt".into()).await.expect("stage");
+
+        git_commit(repo.clone(), "add new file".into()).await.expect("git_commit");
+
+        let commits = git_log(repo, 50, None, None).await.expect("git_log");
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].message, "add new file");
+    }
+
+    #[tokio::test]
+    async fn commit_nothing_staged_fails() {
+        let (_dir, repo) = setup_repo();
+        let result = git_commit(repo, "should fail".into()).await;
+        assert!(result.is_err(), "commit with nothing staged should fail");
+    }
+
+    // ── git_remote_counts ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn remote_counts_no_remote() {
+        let (_dir, repo) = setup_repo();
+        // no remote configured — git_remote_counts should still succeed, reporting 0/0
+        let counts = git_remote_counts(repo, None).await.expect("git_remote_counts");
+        assert_eq!(counts.ahead, 0);
+        assert_eq!(counts.behind, 0);
+    }
+
+    #[tokio::test]
+    async fn remote_counts_with_local_bare() {
+        let (_dir, repo) = setup_repo();
+        let remote_dir = tempfile::tempdir().expect("remote temp dir");
+        let o = std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(remote_dir.path())
+            .output()
+            .expect("git init --bare");
+        assert!(o.status.success());
+        let remote_path = remote_dir.path().to_string_lossy().into_owned();
+
+        let o = std::process::Command::new("git")
+            .args(["remote", "add", "origin", &remote_path])
+            .current_dir(&repo)
+            .output()
+            .expect("git remote add");
+        assert!(o.status.success());
+
+        let current_branch = get_current_branch(&repo);
+        let o = std::process::Command::new("git")
+            .args(["push", "-u", "origin", &current_branch])
+            .current_dir(&repo)
+            .output()
+            .expect("git push");
+        assert!(o.status.success(), "push failed: {}", String::from_utf8_lossy(&o.stderr));
+
+        let counts = git_remote_counts(repo, None).await.expect("git_remote_counts");
+        assert_eq!(counts.ahead, 0, "just pushed, should be 0 ahead");
+        assert_eq!(counts.behind, 0, "just pushed, should be 0 behind");
+        assert!(!counts.branch.is_empty());
+
+        drop(remote_dir);
+    }
+
+    #[tokio::test]
+    async fn remote_counts_ahead_after_local_commit() {
+        let (_dir, repo) = setup_repo();
+        let remote_dir = tempfile::tempdir().expect("remote temp dir");
+        let o = std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(remote_dir.path())
+            .output()
+            .expect("git init --bare");
+        assert!(o.status.success());
+        let remote_path = remote_dir.path().to_string_lossy().into_owned();
+
+        let o = std::process::Command::new("git")
+            .args(["remote", "add", "origin", &remote_path])
+            .current_dir(&repo)
+            .output()
+            .expect("git remote add");
+        assert!(o.status.success());
+
+        let current_branch = get_current_branch(&repo);
+        let o = std::process::Command::new("git")
+            .args(["push", "-u", "origin", &current_branch])
+            .current_dir(&repo)
+            .output()
+            .expect("git push");
+        assert!(o.status.success(), "push failed: {}", String::from_utf8_lossy(&o.stderr));
+
+        // make another commit locally without pushing
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("extra.txt"), "extra").expect("write");
+        let o = std::process::Command::new("git")
+            .args(["add", "extra.txt"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+        assert!(o.status.success());
+        let o = std::process::Command::new("git")
+            .args(["commit", "-m", "local only"])
+            .current_dir(&repo)
+            .output()
+            .expect("git commit");
+        assert!(o.status.success());
+
+        let counts = git_remote_counts(repo, None).await.expect("git_remote_counts");
+        assert_eq!(counts.ahead, 1, "should be 1 commit ahead");
+
+        drop(remote_dir);
+    }
+
+    // ── git_commit_detail ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn commit_detail_initial_commit() {
+        let (_dir, repo) = setup_repo();
+        let commits = git_log(repo.clone(), 1, None, None).await.expect("git_log");
+        let hash = commits[0].hash.clone();
+
+        let detail = git_commit_detail(repo, hash).await.expect("git_commit_detail");
+        assert_eq!(detail.message, "initial commit");
+        assert_eq!(detail.author, "Test");
+        assert!(!detail.hash.is_empty());
+        assert!(!detail.short_hash.is_empty());
+        // Root commits have no parent, so diff-tree returns no file entries.
+        // This is a known limitation — the files vec will be empty.
+        assert!(detail.files.is_empty(), "root commit has no parent, diff-tree returns empty");
+        assert_eq!(detail.total_additions, 0);
+        assert_eq!(detail.total_deletions, 0);
+    }
+
+    #[tokio::test]
+    async fn commit_detail_with_modifications() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("README.md"), "# completely new content\n").expect("write");
+        let o = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+        assert!(o.status.success());
+        let o = std::process::Command::new("git")
+            .args(["commit", "-m", "rewrite readme"])
+            .current_dir(&repo)
+            .output()
+            .expect("git commit");
+        assert!(o.status.success());
+
+        let commits = git_log(repo.clone(), 1, None, None).await.expect("git_log");
+        let hash = commits[0].hash.clone();
+
+        let detail = git_commit_detail(repo, hash).await.expect("git_commit_detail");
+        assert_eq!(detail.message, "rewrite readme");
+        assert!(detail.total_additions > 0, "should have additions");
+        assert!(detail.total_deletions > 0, "should have deletions from old content");
+    }
+
+    #[tokio::test]
+    async fn commit_detail_invalid_hash() {
+        let (_dir, repo) = setup_repo();
+        let result = git_commit_detail(repo, "0000000000".into()).await;
+        // git_commit_detail does not check git exit status, so it returns Ok
+        // with empty fields for an invalid hash. This test documents that behavior.
+        match result {
+            Ok(detail) => {
+                assert!(detail.hash.is_empty(), "invalid hash should produce empty detail fields");
+                assert!(detail.message.is_empty());
+            }
+            Err(_) => {
+                // If the function is improved to check exit status, this is also acceptable.
+            }
+        }
+    }
+
+    // ── git_push / git_pull with local bare remote ─────────────────────────────
+
+    #[tokio::test]
+    async fn push_to_local_bare() {
+        let (_dir, repo) = setup_repo();
+        let remote_dir = tempfile::tempdir().expect("remote temp dir");
+        let o = std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(remote_dir.path())
+            .output()
+            .expect("git init --bare");
+        assert!(o.status.success());
+        let remote_path = remote_dir.path().to_string_lossy().into_owned();
+
+        let o = std::process::Command::new("git")
+            .args(["remote", "add", "origin", &remote_path])
+            .current_dir(&repo)
+            .output()
+            .expect("git remote add");
+        assert!(o.status.success());
+
+        let branch = get_current_branch(&repo);
+        let result = git_push(repo.clone(), Some(branch)).await;
+        assert!(result.is_ok(), "push should succeed: {:?}", result);
+
+        drop(remote_dir);
+    }
+
+    #[tokio::test]
+    async fn pull_from_local_bare() {
+        let (_dir, repo) = setup_repo();
+        let remote_dir = tempfile::tempdir().expect("remote temp dir");
+        let o = std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(remote_dir.path())
+            .output()
+            .expect("git init --bare");
+        assert!(o.status.success());
+        let remote_path = remote_dir.path().to_string_lossy().into_owned();
+
+        let o = std::process::Command::new("git")
+            .args(["remote", "add", "origin", &remote_path])
+            .current_dir(&repo)
+            .output()
+            .expect("git remote add");
+        assert!(o.status.success());
+
+        let branch = get_current_branch(&repo);
+        // push first so there's something to pull
+        let o = std::process::Command::new("git")
+            .args(["push", "-u", "origin", &branch])
+            .current_dir(&repo)
+            .output()
+            .expect("git push");
+        assert!(o.status.success(), "push failed: {}", String::from_utf8_lossy(&o.stderr));
+
+        // pull should succeed (already up to date)
+        let result = git_pull(repo).await;
+        assert!(result.is_ok(), "pull should succeed: {:?}", result);
+
+        drop(remote_dir);
+    }
+
+    // ── git_show_file_diff ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn show_file_diff_for_commit() {
+        let (_dir, repo) = setup_repo();
+        let repo_path = Path::new(&repo);
+        fs::write(repo_path.join("README.md"), "# updated in commit\n").expect("write");
+        let o = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+        assert!(o.status.success());
+        let o = std::process::Command::new("git")
+            .args(["commit", "-m", "update readme"])
+            .current_dir(&repo)
+            .output()
+            .expect("git commit");
+        assert!(o.status.success());
+
+        let commits = git_log(repo.clone(), 1, None, None).await.expect("git_log");
+        let hash = commits[0].hash.clone();
+
+        let diff = git_show_file_diff(repo, hash, "README.md".into())
+            .await
+            .expect("git_show_file_diff");
+        assert!(!diff.is_empty());
+        assert!(diff.contains("updated in commit"));
+    }
+
+    // ── generate_commit_message — skipped (needs external agent binary) ─────────
+
+    // generate_commit_message spawns `claude` or `codex` as external processes.
+    // Testing it would require those binaries to be installed, so we skip it here.
+    // The underlying git diff --staged logic is already covered by stage/commit tests.
+
+    // ── Helper ──────────────────────────────────────────────────────────────────
+
+    fn get_current_branch(repo: &str) -> String {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .expect("git rev-parse HEAD");
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
 }

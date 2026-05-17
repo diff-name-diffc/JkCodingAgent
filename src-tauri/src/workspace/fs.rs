@@ -1,7 +1,7 @@
 use base64::Engine;
 use std::path::Path;
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub(crate) struct FsEntry {
     name: String,
     path: String,
@@ -9,7 +9,7 @@ pub(crate) struct FsEntry {
     extension: Option<String>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImagePreviewData {
     data_url: String,
@@ -721,6 +721,772 @@ mod tests {
     #[test]
     fn max_image_preview_is_10mb() {
         assert_eq!(MAX_IMAGE_PREVIEW_BYTES, 10 * 1024 * 1024);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Integration tests — exercise the Tauri command functions directly
+    // ══════════════════════════════════════════════════════════════════════════
+
+    // ── read_dir_entries ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn read_dir_entries_lists_files_and_dirs() {
+        let tmp = TempDir::new("readdir");
+        let root = tmp.path();
+        fs::write(root.join("hello.txt"), "hi").unwrap();
+        fs::create_dir(root.join("subdir")).unwrap();
+        fs::write(root.join("subdir/nested.txt"), "deep").unwrap();
+
+        let entries = read_dir_entries(
+            root.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"hello.txt"), "should list hello.txt");
+        assert!(names.contains(&"subdir"), "should list subdir");
+    }
+
+    #[tokio::test]
+    async fn read_dir_entries_sorts_dirs_before_files() {
+        let tmp = TempDir::new("readdir_sort");
+        let root = tmp.path();
+        fs::write(root.join("aaa.txt"), "").unwrap();
+        fs::create_dir(root.join("zzz_dir")).unwrap();
+
+        let entries = read_dir_entries(
+            root.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(entries[0].is_dir, "directory should come first");
+        assert!(!entries[1].is_dir, "file should come after");
+    }
+
+    #[tokio::test]
+    async fn read_dir_entries_filters_ignored_dirs() {
+        let tmp = TempDir::new("readdir_ignored");
+        let root = tmp.path();
+        fs::create_dir(root.join("node_modules")).unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::create_dir(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "").unwrap();
+
+        let entries = read_dir_entries(
+            root.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(!names.contains(&"node_modules"), "should filter node_modules");
+        assert!(!names.contains(&".git"), "should filter .git");
+        assert!(names.contains(&"src"), "should list src");
+    }
+
+    #[tokio::test]
+    async fn read_dir_entries_filters_ds_store() {
+        let tmp = TempDir::new("readdir_ds");
+        let root = tmp.path();
+        fs::write(root.join(".DS_Store"), "junk").unwrap();
+        fs::write(root.join("good.txt"), "data").unwrap();
+
+        let entries = read_dir_entries(
+            root.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(!names.contains(&".DS_Store"));
+        assert!(names.contains(&"good.txt"));
+    }
+
+    #[tokio::test]
+    async fn read_dir_entries_rejects_path_outside_project() {
+        let tmp1 = TempDir::new("readdir_out1");
+        let tmp2 = TempDir::new("readdir_out2");
+        fs::write(tmp2.path().join("secret.txt"), "nope").unwrap();
+
+        let result = read_dir_entries(
+            tmp2.path().to_str().unwrap().to_string(),
+            tmp1.path().to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("outside"));
+    }
+
+    // ── read_file_content ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn read_file_content_reads_text_file() {
+        let tmp = TempDir::new("readfile");
+        let root = tmp.path();
+        let file = root.join("test.txt");
+        fs::write(&file, "hello world").unwrap();
+
+        let content = read_file_content(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(content, "hello world");
+    }
+
+    #[tokio::test]
+    async fn read_file_content_reads_empty_file() {
+        let tmp = TempDir::new("readfile_empty");
+        let root = tmp.path();
+        let file = root.join("empty.txt");
+        fs::write(&file, "").unwrap();
+
+        let content = read_file_content(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(content, "");
+    }
+
+    #[tokio::test]
+    async fn read_file_content_rejects_file_over_2mb() {
+        let tmp = TempDir::new("readfile_big");
+        let root = tmp.path();
+        let file = root.join("big.bin");
+        let big_content = vec![0u8; 2 * 1024 * 1024 + 1];
+        fs::write(&file, &big_content).unwrap();
+
+        let result = read_file_content(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("too large"),
+            "error should mention file size, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_content_rejects_path_outside_project() {
+        let tmp1 = TempDir::new("readfile_out1");
+        let tmp2 = TempDir::new("readfile_out2");
+        let secret = tmp2.path().join("secret.txt");
+        fs::write(&secret, "nope").unwrap();
+
+        let result = read_file_content(
+            secret.to_str().unwrap().to_string(),
+            tmp1.path().to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("outside"));
+    }
+
+    #[tokio::test]
+    async fn read_file_content_rejects_nonexistent_file() {
+        let tmp = TempDir::new("readfile_nofile");
+        let root = tmp.path();
+        let file = root.join("does_not_exist.txt");
+
+        let result = read_file_content(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_file_content_reads_file_at_exactly_2mb() {
+        let tmp = TempDir::new("readfile_exact2m");
+        let root = tmp.path();
+        let file = root.join("exact.txt");
+        let content = "a".repeat(2 * 1024 * 1024);
+        fs::write(&file, &content).unwrap();
+
+        let result = read_file_content(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 2 * 1024 * 1024);
+    }
+
+    // ── write_file_content ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn write_file_content_overwrites_existing_file() {
+        let tmp = TempDir::new("writefile");
+        let root = tmp.path();
+        let file = root.join("existing.txt");
+        fs::write(&file, "old content").unwrap();
+
+        write_file_content(
+            file.to_str().unwrap().to_string(),
+            "new content".to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&file).unwrap(), "new content");
+    }
+
+    #[tokio::test]
+    async fn write_file_content_rejects_path_outside_project() {
+        let tmp1 = TempDir::new("writefile_out1");
+        let tmp2 = TempDir::new("writefile_out2");
+        let file = tmp2.path().join("evil.txt");
+        fs::write(&file, "data").unwrap();
+
+        let result = write_file_content(
+            file.to_str().unwrap().to_string(),
+            "hacked".to_string(),
+            tmp1.path().to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("outside"));
+    }
+
+    // ── get_file_meta ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_file_meta_returns_size_and_line_count() {
+        let tmp = TempDir::new("meta");
+        let root = tmp.path();
+        let file = root.join("code.rs");
+        fs::write(&file, "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
+
+        let meta = get_file_meta(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(meta.size_bytes > 0);
+        assert!(meta.line_count >= 3, "should count at least 3 lines");
+        assert!(meta.is_text, "Rust source should be detected as text");
+    }
+
+    #[tokio::test]
+    async fn get_file_meta_detects_binary_file() {
+        let tmp = TempDir::new("meta_bin");
+        let root = tmp.path();
+        let file = root.join("binary.dat");
+        fs::write(&file, b"hello\x00world").unwrap();
+
+        let meta = get_file_meta(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!meta.is_text, "file with NUL bytes should be detected as binary");
+    }
+
+    #[tokio::test]
+    async fn get_file_meta_empty_file() {
+        let tmp = TempDir::new("meta_empty");
+        let root = tmp.path();
+        let file = root.join("empty.txt");
+        fs::write(&file, "").unwrap();
+
+        let meta = get_file_meta(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(meta.size_bytes, 0);
+        assert_eq!(meta.line_count, 0, "empty file should have 0 lines");
+    }
+
+    #[tokio::test]
+    async fn get_file_meta_rejects_path_outside_project() {
+        let tmp1 = TempDir::new("meta_out1");
+        let tmp2 = TempDir::new("meta_out2");
+        let file = tmp2.path().join("file.txt");
+        fs::write(&file, "data").unwrap();
+
+        let result = get_file_meta(
+            file.to_str().unwrap().to_string(),
+            tmp1.path().to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    // ── read_file_chunk ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn read_file_chunk_reads_specified_lines() {
+        let tmp = TempDir::new("chunk");
+        let root = tmp.path();
+        let file = root.join("lines.txt");
+        fs::write(&file, "line0\nline1\nline2\nline3\nline4\n").unwrap();
+
+        let lines = read_file_chunk(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+            1,
+            2,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(lines, vec!["line1", "line2"]);
+    }
+
+    #[tokio::test]
+    async fn read_file_chunk_from_beginning() {
+        let tmp = TempDir::new("chunk_start");
+        let root = tmp.path();
+        let file = root.join("data.txt");
+        fs::write(&file, "first\nsecond\nthird\n").unwrap();
+
+        let lines = read_file_chunk(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+            0,
+            2,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(lines, vec!["first", "second"]);
+    }
+
+    #[tokio::test]
+    async fn read_file_chunk_beyond_end_returns_available() {
+        let tmp = TempDir::new("chunk_beyond");
+        let root = tmp.path();
+        let file = root.join("short.txt");
+        fs::write(&file, "only\n").unwrap();
+
+        let lines = read_file_chunk(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+            0,
+            100,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(lines, vec!["only"]);
+    }
+
+    #[tokio::test]
+    async fn read_file_chunk_rejects_path_outside_project() {
+        let tmp1 = TempDir::new("chunk_out1");
+        let tmp2 = TempDir::new("chunk_out2");
+        let file = tmp2.path().join("file.txt");
+        fs::write(&file, "data").unwrap();
+
+        let result = read_file_chunk(
+            file.to_str().unwrap().to_string(),
+            tmp1.path().to_str().unwrap().to_string(),
+            0,
+            10,
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    // ── move_fs_entry ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn move_fs_entry_renames_file() {
+        let tmp = TempDir::new("move");
+        let root = tmp.path();
+        let src = root.join("old.txt");
+        let dst = root.join("new.txt");
+        fs::write(&src, "data").unwrap();
+
+        move_fs_entry(
+            src.to_str().unwrap().to_string(),
+            dst.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!src.exists(), "source should be gone");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "data");
+    }
+
+    #[tokio::test]
+    async fn move_fs_entry_moves_directory() {
+        let tmp = TempDir::new("move_dir");
+        let root = tmp.path();
+        let src = root.join("old_dir");
+        let dst = root.join("new_dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("inner.txt"), "content").unwrap();
+
+        move_fs_entry(
+            src.to_str().unwrap().to_string(),
+            dst.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!src.exists());
+        assert!(dst.join("inner.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn move_fs_entry_rejects_source_outside_project() {
+        let tmp1 = TempDir::new("move_out1");
+        let tmp2 = TempDir::new("move_out2");
+        let src = tmp2.path().join("file.txt");
+        fs::write(&src, "data").unwrap();
+
+        let result = move_fs_entry(
+            src.to_str().unwrap().to_string(),
+            tmp1.path().join("dest.txt").to_str().unwrap().to_string(),
+            tmp1.path().to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn move_fs_entry_rejects_project_root() {
+        let tmp = TempDir::new("move_root");
+        let root = tmp.path();
+        fs::write(root.join(".gitkeep"), "").unwrap();
+
+        let result = move_fs_entry(
+            root.to_str().unwrap().to_string(),
+            root.join("elsewhere").to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("project root"));
+    }
+
+    #[tokio::test]
+    async fn move_fs_entry_rejects_destination_outside_project() {
+        let tmp1 = TempDir::new("move_dst1");
+        let tmp2 = TempDir::new("move_dst2");
+        let src = tmp1.path().join("file.txt");
+        fs::write(&src, "data").unwrap();
+
+        let result = move_fs_entry(
+            src.to_str().unwrap().to_string(),
+            tmp2.path().join("evil.txt").to_str().unwrap().to_string(),
+            tmp1.path().to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    // ── delete_fs_entry ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn delete_fs_entry_removes_file() {
+        let tmp = TempDir::new("delete_file");
+        let root = tmp.path();
+        let file = root.join("to_delete.txt");
+        fs::write(&file, "bye").unwrap();
+        assert!(file.exists());
+
+        delete_fs_entry(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!file.exists(), "file should be deleted");
+    }
+
+    #[tokio::test]
+    async fn delete_fs_entry_removes_directory_recursively() {
+        let tmp = TempDir::new("delete_dir");
+        let root = tmp.path();
+        let dir = root.join("to_delete_dir");
+        fs::create_dir_all(dir.join("nested")).unwrap();
+        fs::write(dir.join("nested/file.txt"), "data").unwrap();
+
+        delete_fs_entry(
+            dir.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!dir.exists(), "directory should be deleted");
+    }
+
+    #[tokio::test]
+    async fn delete_fs_entry_rejects_project_root() {
+        let tmp = TempDir::new("delete_root");
+        let root = tmp.path();
+        fs::write(root.join(".gitkeep"), "").unwrap();
+
+        let result = delete_fs_entry(
+            root.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("project root"));
+    }
+
+    #[tokio::test]
+    async fn delete_fs_entry_rejects_path_outside_project() {
+        let tmp1 = TempDir::new("delete_out1");
+        let tmp2 = TempDir::new("delete_out2");
+        let file = tmp2.path().join("file.txt");
+        fs::write(&file, "data").unwrap();
+
+        let result = delete_fs_entry(
+            file.to_str().unwrap().to_string(),
+            tmp1.path().to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    // ── read_image_preview ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn read_image_preview_reads_png_file() {
+        let tmp = TempDir::new("imgpreview");
+        let root = tmp.path();
+        let img_path = root.join("test.png");
+
+        let img = image::RgbImage::from_pixel(1, 1, image::Rgb([255, 0, 0]));
+        img.save(&img_path).unwrap();
+
+        let preview = read_image_preview(
+            img_path.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(preview.data_url.starts_with("data:image/png;base64,"));
+        assert_eq!(preview.mime_type, "image/png");
+        assert!(preview.byte_length > 0);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(preview.data_url.trim_start_matches("data:image/png;base64,"))
+            .unwrap();
+        assert!(!decoded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_image_preview_rejects_non_image() {
+        let tmp = TempDir::new("imgpreview_noimg");
+        let root = tmp.path();
+        let file = root.join("data.txt");
+        fs::write(&file, "not an image").unwrap();
+
+        let result = read_image_preview(
+            file.to_str().unwrap().to_string(),
+            root.to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unsupported image format"));
+    }
+
+    #[tokio::test]
+    async fn read_image_preview_rejects_path_outside_project() {
+        let tmp1 = TempDir::new("imgpreview_out1");
+        let tmp2 = TempDir::new("imgpreview_out2");
+        let img = tmp2.path().join("test.png");
+        let pixels = image::RgbImage::from_pixel(1, 1, image::Rgb([0, 0, 0]));
+        pixels.save(&img).unwrap();
+
+        let result = read_image_preview(
+            img.to_str().unwrap().to_string(),
+            tmp1.path().to_str().unwrap().to_string(),
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    // ── list_project_files ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_project_files_lists_tracked_and_untracked() {
+        let tmp = TempDir::new("listfiles");
+        let root = tmp.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(root)
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(root)
+            .output()
+            .expect("git config name");
+
+        fs::write(root.join("tracked.txt"), "data").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "tracked.txt"])
+            .current_dir(root)
+            .output()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .expect("git commit");
+
+        fs::write(root.join("untracked.txt"), "new").unwrap();
+
+        let files = list_project_files(root.to_str().unwrap().to_string())
+            .await
+            .unwrap();
+
+        assert!(
+            files.iter().any(|f| f == "tracked.txt"),
+            "should list tracked files"
+        );
+        assert!(
+            files.iter().any(|f| f == "untracked.txt"),
+            "should list untracked files"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_project_files_ignores_ds_store() {
+        let tmp = TempDir::new("listfiles_ds");
+        let root = tmp.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(root)
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(root)
+            .output()
+            .expect("git config name");
+
+        fs::write(root.join("good.txt"), "").unwrap();
+        fs::write(root.join(".DS_Store"), "").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .expect("git commit");
+
+        let files = list_project_files(root.to_str().unwrap().to_string())
+            .await
+            .unwrap();
+
+        assert!(
+            !files.iter().any(|f| f.contains(".DS_Store")),
+            "should not list .DS_Store"
+        );
+        assert!(
+            files.iter().any(|f| f == "good.txt"),
+            "should list normal files"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_project_files_lists_nested_files() {
+        let tmp = TempDir::new("listfiles_nested");
+        let root = tmp.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(root)
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(root)
+            .output()
+            .expect("git config name");
+
+        fs::create_dir_all(root.join("src/utils")).unwrap();
+        fs::write(root.join("src/main.rs"), "").unwrap();
+        fs::write(root.join("src/utils/helpers.rs"), "").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .expect("git commit");
+
+        let files = list_project_files(root.to_str().unwrap().to_string())
+            .await
+            .unwrap();
+
+        assert!(
+            files.iter().any(|f| f == "src/main.rs"),
+            "should list nested files"
+        );
+        assert!(
+            files.iter().any(|f| f == "src/utils/helpers.rs"),
+            "should list deeply nested files"
+        );
     }
 }
 

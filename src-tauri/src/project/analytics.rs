@@ -676,4 +676,186 @@ mod tests {
         assert_eq!(m.output_tokens, 200);
         assert_eq!(m.tool_calls, 1);
     }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Additional integration tests for analytics commands
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[tokio::test]
+    async fn read_session_metrics_with_multiple_tool_calls_and_messages() {
+        let dir = unique_dir("multi_msg");
+        let path = dir.join("session.jsonl");
+        write_jsonl(
+            &path,
+            &[
+                r#"{"type":"assistant","timestamp":"2025-01-01T00:00:00.000Z","message":{"usage":{"input_tokens":500,"output_tokens":100},"content":[{"type":"tool_use","name":"read_file"},{"type":"tool_use","name":"write_file"}]}}"#,
+                r#"{"type":"human","timestamp":"2025-01-01T00:00:10.000Z","message":{"content":"now fix it"}}"#,
+                r#"{"type":"assistant","timestamp":"2025-01-01T00:00:15.000Z","message":{"usage":{"input_tokens":800,"output_tokens":300},"content":[{"type":"tool_use","name":"exec"},{"type":"text","text":"done"}]}}"#,
+            ],
+        );
+
+        let m = read_session_metrics(path.to_string_lossy().to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(m.input_tokens, 1300); // 500 + 800
+        assert_eq!(m.output_tokens, 400); // 100 + 300
+        assert_eq!(m.tool_calls, 3); // 2 + 1
+        assert!((m.duration_secs - 15.0).abs() < 0.1, "duration should be ~15s");
+    }
+
+    #[tokio::test]
+    async fn read_session_metrics_with_empty_jsonl() {
+        let dir = unique_dir("empty_jsonl");
+        let path = dir.join("empty.jsonl");
+        write_jsonl(&path, &["", "", ""]);
+
+        let m = read_session_metrics(path.to_string_lossy().to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(m.input_tokens, 0);
+        assert_eq!(m.output_tokens, 0);
+        assert_eq!(m.tool_calls, 0);
+        assert_eq!(m.duration_secs, 0.0);
+    }
+
+    #[tokio::test]
+    async fn read_session_metrics_with_only_human_messages() {
+        let dir = unique_dir("human_only");
+        let path = dir.join("human.jsonl");
+        write_jsonl(
+            &path,
+            &[
+                r#"{"type":"human","timestamp":"2025-01-01T00:00:00Z","message":{"usage":{"input_tokens":999}}}"#,
+                r#"{"type":"human","timestamp":"2025-01-01T00:01:00Z","message":{"usage":{"input_tokens":888}}}"#,
+            ],
+        );
+
+        let m = read_session_metrics(path.to_string_lossy().to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(m.input_tokens, 0);
+        assert_eq!(m.output_tokens, 0);
+        assert_eq!(m.tool_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn read_session_metrics_with_timestamp_but_no_usage() {
+        let dir = unique_dir("no_usage_ts");
+        let path = dir.join("session.jsonl");
+        write_jsonl(
+            &path,
+            &[
+                r#"{"type":"assistant","timestamp":"2025-01-01T00:00:00.000Z","message":{"content":[{"type":"text","text":"thinking..."}]}}"#,
+                r#"{"type":"assistant","timestamp":"2025-01-01T00:00:30.500Z","message":{"content":[{"type":"text","text":"done"}]}}"#,
+            ],
+        );
+
+        let m = read_session_metrics(path.to_string_lossy().to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(m.input_tokens, 0);
+        assert_eq!(m.output_tokens, 0);
+        assert_eq!(m.tool_calls, 0);
+        assert!(
+            (m.duration_secs - 30.5).abs() < 0.1,
+            "duration should be computed from timestamps even without usage"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_session_metrics_malformed_timestamp_ignored() {
+        let dir = unique_dir("bad_ts");
+        let path = dir.join("session.jsonl");
+        write_jsonl(
+            &path,
+            &[
+                r#"{"type":"assistant","timestamp":"not-a-date","message":{"usage":{"input_tokens":10},"content":[]}}"#,
+                r#"{"type":"assistant","timestamp":"2025-01-01T00:00:00.000Z","message":{"usage":{"input_tokens":20},"content":[]}}"#,
+            ],
+        );
+
+        let m = read_session_metrics(path.to_string_lossy().to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(m.input_tokens, 30);
+    }
+
+    #[tokio::test]
+    async fn read_session_metrics_mixed_valid_and_invalid_lines() {
+        let dir = unique_dir("mixed_lines");
+        let path = dir.join("session.jsonl");
+        write_jsonl(
+            &path,
+            &[
+                "this is not json at all",
+                r#"{"type":"assistant","timestamp":"2025-01-01T00:00:00Z","message":{"usage":{"input_tokens":42,"output_tokens":7},"content":[]}}"#,
+                "",
+                r#"{"type":"assistant","timestamp":"2025-01-01T00:00:05Z","message":{"usage":{"input_tokens":8},"content":[{"type":"tool_use","name":"grep"}]}}"#,
+                r#"{"broken json"#,
+            ],
+        );
+
+        let m = read_session_metrics(path.to_string_lossy().to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(m.input_tokens, 50); // 42 + 8
+        assert_eq!(m.output_tokens, 7);
+        assert_eq!(m.tool_calls, 1);
+    }
+
+    // ── parse_session_metrics_from_path edge cases ────────────────────────────
+
+    #[test]
+    fn parse_metrics_large_token_values() {
+        let dir = unique_dir("large_tokens");
+        let path = dir.join("session.jsonl");
+        write_jsonl(
+            &path,
+            &[
+                r#"{"type":"assistant","timestamp":"2025-01-01T00:00:00Z","message":{"usage":{"input_tokens":4294967295,"output_tokens":4294967295},"content":[]}}"#,
+            ],
+        );
+
+        let m = parse_session_metrics_from_path(&path);
+        assert_eq!(m.input_tokens, 4294967295);
+        assert_eq!(m.output_tokens, 4294967295);
+    }
+
+    #[test]
+    fn parse_metrics_zero_token_values() {
+        let dir = unique_dir("zero_tokens");
+        let path = dir.join("session.jsonl");
+        write_jsonl(
+            &path,
+            &[
+                r#"{"type":"assistant","timestamp":"2025-01-01T00:00:00Z","message":{"usage":{"input_tokens":0,"output_tokens":0},"content":[]}}"#,
+            ],
+        );
+
+        let m = parse_session_metrics_from_path(&path);
+        assert_eq!(m.input_tokens, 0);
+        assert_eq!(m.output_tokens, 0);
+    }
+
+    #[test]
+    fn parse_metrics_duration_never_negative() {
+        let dir = unique_dir("neg_dur");
+        let path = dir.join("session.jsonl");
+        write_jsonl(
+            &path,
+            &[
+                r#"{"type":"assistant","timestamp":"2025-01-01T00:01:00.000Z","message":{"usage":{},"content":[]}}"#,
+                r#"{"type":"assistant","timestamp":"2025-01-01T00:00:00.000Z","message":{"usage":{},"content":[]}}"#,
+            ],
+        );
+
+        let m = parse_session_metrics_from_path(&path);
+        assert!(m.duration_secs >= 0.0);
+    }
 }

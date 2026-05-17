@@ -248,4 +248,233 @@ mod tests {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap();
         assert_eq!(dir, home.join(".jkcodingagent"));
     }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Integration tests for save_chat_image command
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[tokio::test]
+    async fn save_chat_image_creates_png_file() {
+        let img = image::RgbImage::from_pixel(1, 1, image::Rgb([255, 0, 0]));
+        let mut png_bytes = std::io::Cursor::new(Vec::new());
+        image::ImageEncoder::write_image(
+            image::codecs::png::PngEncoder::new(&mut png_bytes),
+            &img,
+            img.width(),
+            img.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes.into_inner());
+
+        let result = save_chat_image(
+            "test-session-id".to_string(),
+            "My Test Session".to_string(),
+            b64,
+            "image/png".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!result.image_id.is_empty(), "image_id should be a non-empty UUID");
+        assert!(
+            result.path.contains("my-test-session"),
+            "path should contain slugified session title, got: {}",
+            result.path
+        );
+        assert!(result.path.ends_with(".png"), "path should end with .png");
+
+        let file_path = std::path::PathBuf::from(&result.path);
+        assert!(file_path.exists(), "image file should exist on disk");
+        let metadata = std::fs::metadata(&file_path).unwrap();
+        assert!(metadata.len() > 0, "file should not be empty");
+
+        if let Some(parent) = file_path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    #[tokio::test]
+    async fn save_chat_image_creates_jpg_file() {
+        let img = image::RgbImage::from_pixel(1, 1, image::Rgb([0, 255, 0]));
+        let mut jpg_bytes = std::io::Cursor::new(Vec::new());
+        image::ImageEncoder::write_image(
+            image::codecs::jpeg::JpegEncoder::new(&mut jpg_bytes),
+            &img,
+            img.width(),
+            img.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&jpg_bytes.into_inner());
+
+        let result = save_chat_image(
+            "test-session-id".to_string(),
+            "JPEG Session".to_string(),
+            b64,
+            "image/jpeg".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.path.ends_with(".jpg"), "should use .jpg extension for jpeg");
+
+        let file_path = std::path::PathBuf::from(&result.path);
+        assert!(file_path.exists());
+        if let Some(parent) = file_path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    #[tokio::test]
+    async fn save_chat_image_creates_webp_file() {
+        let img = image::RgbImage::from_pixel(1, 1, image::Rgb([0, 0, 255]));
+        let mut webp_bytes = std::io::Cursor::new(Vec::new());
+        image::ImageEncoder::write_image(
+            image::codecs::webp::WebPEncoder::new_lossless(&mut webp_bytes),
+            &img,
+            img.width(),
+            img.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&webp_bytes.into_inner());
+
+        let result = save_chat_image(
+            "test-session-id".to_string(),
+            "WebP Session".to_string(),
+            b64,
+            "image/webp".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.path.ends_with(".webp"), "should use .webp extension");
+
+        let file_path = std::path::PathBuf::from(&result.path);
+        assert!(file_path.exists());
+        if let Some(parent) = file_path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    #[tokio::test]
+    async fn save_chat_image_unknown_mime_defaults_to_png() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"fake-image-data");
+
+        let result = save_chat_image(
+            "test-session-id".to_string(),
+            "Unknown Mime".to_string(),
+            b64,
+            "image/svg+xml".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.path.ends_with(".png"),
+            "unknown mime types should default to .png extension"
+        );
+
+        let file_path = std::path::PathBuf::from(&result.path);
+        assert!(file_path.exists());
+        let written = std::fs::read(&file_path).unwrap();
+        assert_eq!(written, b"fake-image-data");
+
+        if let Some(parent) = file_path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    #[tokio::test]
+    async fn save_chat_image_invalid_base64_returns_error() {
+        let result = save_chat_image(
+            "test-session-id".to_string(),
+            "Bad Base64".to_string(),
+            "not valid base64!!!".to_string(),
+            "image/png".to_string(),
+        )
+        .await;
+
+        assert!(result.is_err(), "invalid base64 should return an error");
+    }
+
+    #[tokio::test]
+    async fn save_chat_image_empty_title_uses_untitled() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"tiny-image");
+
+        let result = save_chat_image(
+            "test-session-id".to_string(),
+            "".to_string(),
+            b64,
+            "image/png".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.path.contains("untitled"),
+            "empty title should slugify to 'untitled', got path: {}",
+            result.path
+        );
+
+        let file_path = std::path::PathBuf::from(&result.path);
+        if let Some(parent) = file_path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    #[tokio::test]
+    async fn save_chat_image_generates_unique_ids() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"data");
+
+        let r1 = save_chat_image(
+            "s1".to_string(),
+            "Unique Test A".to_string(),
+            b64.clone(),
+            "image/png".to_string(),
+        )
+        .await
+        .unwrap();
+        let r2 = save_chat_image(
+            "s2".to_string(),
+            "Unique Test A".to_string(),
+            b64,
+            "image/png".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(r1.image_id, r2.image_id, "each save should produce a unique image_id");
+
+        for path in [&r1.path, &r2.path] {
+            let fp = std::path::PathBuf::from(path);
+            if let Some(parent) = fp.parent() {
+                let _ = std::fs::remove_dir_all(parent);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn save_chat_image_preserves_file_content_exactly() {
+        let original_bytes: Vec<u8> = (0..255).collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&original_bytes);
+
+        let result = save_chat_image(
+            "test-session-id".to_string(),
+            "Roundtrip".to_string(),
+            b64,
+            "image/png".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let on_disk = std::fs::read(&result.path).unwrap();
+        assert_eq!(on_disk, original_bytes, "file content should match original bytes exactly");
+
+        let file_path = std::path::PathBuf::from(&result.path);
+        if let Some(parent) = file_path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
 }

@@ -62,6 +62,9 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.25"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.dev]
 debug = 0
 codegen-units = 256

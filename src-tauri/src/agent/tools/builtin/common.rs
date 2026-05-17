@@ -172,12 +172,20 @@ pub(super) fn resolve_path(context: &ToolContext, raw_path: &str) -> Result<Path
     let normalized = lexical_normalize(&joined);
 
     if context.restrict_to_workspace {
+        let candidate = canonicalize_existing_prefix(&normalized)?;
+
         let workspace = context
             .workspace
             .canonicalize()
             .map_err(|error| format!("解析工作区路径失败：{error}"))?;
-        let candidate = canonicalize_existing_prefix(&normalized)?;
-        if !candidate.starts_with(&workspace) {
+
+        let in_workspace = candidate.starts_with(&workspace);
+        let in_extra = context.extra_allowed_dirs.iter().any(|dir| {
+            dir.canonicalize()
+                .is_ok_and(|canonical| candidate.starts_with(canonical))
+        });
+
+        if !in_workspace && !in_extra {
             return Err(format!("错误：禁止访问工作区之外的路径：{raw_path}"));
         }
         return Ok(candidate);
@@ -321,6 +329,7 @@ mod tests {
             session_title: "test-session".to_string(),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
+            extra_allowed_dirs: vec![],
             app_handle: None,
             llm_provider: None,
             vision_model: String::new(),

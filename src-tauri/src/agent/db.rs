@@ -1890,17 +1890,6 @@ impl DispatcherDb {
         .context("add_visible_message_with_usage_and_thinking spawn_blocking")?
     }
 
-    pub async fn list_visible_messages_async(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Vec<DispatcherMessageRecord>> {
-        let db = self.clone();
-        let wid = workspace_id.to_string();
-        tokio::task::spawn_blocking(move || db.list_visible_messages(&wid))
-            .await
-            .context("list_visible_messages spawn_blocking")?
-    }
-
     pub async fn load_llm_history_async(
         &self,
         workspace_id: &str,
@@ -1929,24 +1918,6 @@ impl DispatcherDb {
         tokio::task::spawn_blocking(move || db.get_session_title(&wid))
             .await
             .context("get_session_title spawn_blocking")?
-    }
-
-    pub async fn save_token_usage_async(
-        &self,
-        workspace_id: &str,
-        model: &str,
-        source: DispatcherSessionTokenUsageSource,
-        usage: &LlmUsage,
-    ) -> Result<DispatcherSessionTokenUsageRecord> {
-        let db = self.clone();
-        let wid = workspace_id.to_string();
-        let model = model.to_string();
-        let usage = usage.clone();
-        tokio::task::spawn_blocking(move || {
-            db.upsert_session_token_usage(&wid, &model, source, &usage)
-        })
-        .await
-        .context("save_token_usage spawn_blocking")?
     }
 
     pub async fn add_visible_message_with_tools_and_thinking_async(
@@ -2196,21 +2167,6 @@ fn latest_user_message_rowid(conn: &Connection, workspace_id: &str) -> Result<i6
         |row| row.get(0),
     )
     .context("load latest dispatcher user message rowid")
-}
-
-fn map_chat_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatMessage> {
-    let tool_calls_json: Option<String> = row.get(4)?;
-    let tool_calls = tool_calls_json
-        .as_deref()
-        .and_then(|json| serde_json::from_str::<Vec<OutboundToolCall>>(json).ok());
-
-    Ok(ChatMessage {
-        role: row.get(0)?,
-        content: row.get(1)?,
-        tool_call_id: row.get(2)?,
-        name: row.get(3)?,
-        tool_calls,
-    })
 }
 
 fn map_dispatcher_message_record(
@@ -2686,7 +2642,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        db.add_visible_message(&session.id, "user", "检查工具结果")
+        db.add_visible_message(&session.id, "user", "检查工具结果", None)
             .unwrap();
         let message = db
             .add_visible_tool_result(
@@ -2805,12 +2761,12 @@ mod tests {
             )
             .unwrap();
 
-        db.add_visible_message(&session.id, "user", "旧需求")
+        db.add_visible_message(&session.id, "user", "旧需求", None)
             .unwrap();
-        db.add_visible_message(&session.id, "assistant", "旧回复")
+        db.add_visible_message(&session.id, "assistant", "旧回复", None)
             .unwrap();
         db.clear_context_messages(&session.id).unwrap();
-        db.add_visible_message(&session.id, "user", "新需求")
+        db.add_visible_message(&session.id, "user", "新需求", None)
             .unwrap();
 
         let visible_messages = db.list_visible_messages(&session.id).unwrap();
@@ -2839,11 +2795,11 @@ mod tests {
             )
             .unwrap();
 
-        db.add_visible_message(&session.id, "user", "第一轮需求")
+        db.add_visible_message(&session.id, "user", "第一轮需求", None)
             .unwrap();
-        db.add_visible_message(&session.id, "assistant", "第一轮回复")
+        db.add_visible_message(&session.id, "assistant", "第一轮回复", None)
             .unwrap();
-        db.add_visible_message(&session.id, "user", "第二轮需求")
+        db.add_visible_message(&session.id, "user", "第二轮需求", None)
             .unwrap();
         db.add_visible_tool_result(
             &session.id,
@@ -2855,9 +2811,9 @@ mod tests {
             &[],
         )
         .unwrap();
-        db.add_visible_message(&session.id, "assistant", "第二轮回复")
+        db.add_visible_message(&session.id, "assistant", "第二轮回复", None)
             .unwrap();
-        db.add_visible_message(&session.id, "user", "第三轮需求")
+        db.add_visible_message(&session.id, "user", "第三轮需求", None)
             .unwrap();
 
         let recent = db

@@ -13,8 +13,6 @@ use super::utils::{
     title_from_slug, today, yaml_escape,
 };
 
-const MAX_SOURCE_CHARS: usize = 120_000;
-
 fn analysis_system_prompt() -> String {
     let today = today();
     format!(

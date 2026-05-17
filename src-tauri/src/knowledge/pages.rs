@@ -157,15 +157,6 @@ fn trim_yaml_scalar(value: &str) -> String {
         .to_string()
 }
 
-fn normalize_source_name(name: String) -> String {
-    let unescaped = name.replace("\\\"", "\"").replace("\\\\", "\\");
-    Path::new(&unescaped)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(&unescaped)
-        .to_string()
-}
-
 pub(crate) fn parse_page_meta(content: &str, path: &Path) -> PageMeta {
     let frontmatter = frontmatter_block(content).unwrap_or_default();
     PageMeta {

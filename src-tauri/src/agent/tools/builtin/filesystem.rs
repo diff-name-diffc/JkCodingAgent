@@ -393,6 +393,7 @@ mod tests {
             session_title: "test-session".to_string(),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
+            extra_allowed_dirs: vec![],
             app_handle: None,
             llm_provider: None,
             vision_model: String::new(),

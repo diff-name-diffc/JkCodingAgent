@@ -319,6 +319,35 @@ enum PlanningToolOutcome {
     WaitForUser(String),
 }
 
+struct IterationContext {
+    runtime_state: DispatcherSessionRuntimeState,
+    tool_definitions: Vec<crate::agent::llm::ToolDefinition>,
+    allowed_tool_names: HashSet<String>,
+    messages: Vec<ChatMessage>,
+    request_provider: OpenAiCompatProvider,
+    debug_logger: ContextDebugLogger,
+}
+
+enum LlmStreamOutcome {
+    Cancelled(String),
+    Response(LlmResponse),
+}
+
+struct ToolCallsOutcome {
+    saw_retryable_tool_error: bool,
+    planning_waiting_message: Option<String>,
+    final_message: Option<String>,
+    protocol_actions: Vec<ProtocolToolAction>,
+}
+
+enum SingleToolDisposition {
+    Handled,
+    HandledWithRetry,
+    WaitForUser(String),
+    ProtocolAction(ProtocolToolAction),
+    NeedsSummary,
+}
+
 impl ProtocolBatchState {
     fn new(subprocesses: Vec<RegisteredSubprocess>) -> Self {
         let by_agent = subprocesses
@@ -984,6 +1013,9 @@ impl DispatcherAgent {
             session_title,
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: self.config.restrict_to_workspace,
+            extra_allowed_dirs: dirs::home_dir()
+                .map(|h| vec![h.join(".jkcodingagent")])
+                .unwrap_or_default(),
             app_handle: self.app_handle.clone(),
             llm_provider: Some(provider.clone()),
             vision_model: self.vision_model(),
@@ -1274,613 +1306,71 @@ impl DispatcherAgent {
         cancel_rx: watch::Receiver<bool>,
         usage_tracker: &mut RunUsageTracker,
     ) -> Result<DispatcherMessageRecord> {
-        let debug_logger = ContextDebugLogger::new(self.context_debug_enabled(), workspace);
-        let session_title = db.get_session_title_async(workspace_id).await.unwrap_or_else(|_| "untitled".to_string());
-        let tool_context = ToolContext {
-            workspace_id: workspace_id.to_string(),
-            workspace: workspace.to_path_buf(),
-            session_title,
-            exec_timeout_secs: self.config.exec_timeout_secs,
-            restrict_to_workspace: self.config.restrict_to_workspace,
-            app_handle: self.app_handle.clone(),
-            llm_provider: Some(provider.clone()),
-            vision_model: self.vision_model(),
-            image_model_url: self.image_model_url(),
-            image_model_api_key: self.image_model_api_key(),
-            image_model: self.image_model(),
-            image_edit_model: self.image_edit_model(),
-        };
+        let tool_context = self.build_tool_context(db, workspace_id, workspace, provider).await;
 
         for iteration in 0..self.config.max_tool_iterations {
             if cancellation_requested(&cancel_rx) {
                 return self.emit_stop_and_finish(
-                    db,
-                    workspace_id,
-                    on_event,
-                    "",
-                    Some(usage_tracker),
+                    db, workspace_id, on_event, "", Some(usage_tracker),
                 );
             }
 
-            let runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
-            let tool_definitions =
-                self.tool_definitions_for_workspace(workspace_id, workspace, &runtime_state);
-            let allowed_tool_names = tool_definitions
-                .iter()
-                .map(|tool| tool.function.name.clone())
-                .collect::<HashSet<_>>();
-            let prompt_snapshot = self
-                .build_system_prompt_for_workspace(
-                    workspace_id,
-                    workspace,
-                    &tool_definitions,
-                    &runtime_state,
+            let ctx = self
+                .prepare_iteration_context(
+                    db, workspace_id, workspace, on_event, provider, enable_thinking, iteration,
                 )
                 .await?;
-            let history_messages = db.load_llm_history_async(workspace_id).await?;
-            let request_provider =
-                self.provider_for_messages(provider, &history_messages, on_event, iteration == 0)?;
-            let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
-            messages.extend(history_messages.clone());
-            let request_snapshot = request_provider.build_request_snapshot(
-                &messages,
-                &tool_definitions,
-                enable_thinking,
-            );
 
-            debug_logger.log(
-                "发送大模型请求",
-                vec![
-                    ("工作区".to_string(), workspace_id.to_string()),
-                    ("轮次".to_string(), (iteration + 1).to_string()),
-                    ("模型".to_string(), request_provider.model().to_string()),
-                    ("消息数".to_string(), messages.len().to_string()),
-                    ("工具数".to_string(), tool_definitions.len().to_string()),
-                ],
-                vec![DebugSection::new(
-                    "实际请求",
-                    render_json(&request_snapshot),
-                )],
-            );
-
-            let stream_msg_id = uuid::Uuid::new_v4().to_string();
-            emit(
-                on_event,
-                AgentEvent::AssistantStarted {
-                    message_id: stream_msg_id.clone(),
-                },
-            );
-
-            let event_ref = on_event;
-            let msg_id_ref = stream_msg_id.clone();
-            let thinking_msg_id_ref = stream_msg_id.clone();
-            let streamed_text = Arc::new(Mutex::new(String::new()));
-            let streamed_text_ref = Arc::clone(&streamed_text);
-            let on_delta = move |delta: &str| {
-                let mut partial = streamed_text_ref.lock();
-                partial.push_str(delta);
-                let _ = event_ref.send(AgentEvent::AssistantDelta {
-                    message_id: msg_id_ref.clone(),
-                    delta: delta.to_string(),
-                });
-            };
-            let thinking_event_ref = on_event;
-            let on_thinking_delta = move |delta: &str, elapsed_ms: u64| {
-                let _ = thinking_event_ref.send(AgentEvent::AssistantThinkingDelta {
-                    message_id: thinking_msg_id_ref.clone(),
-                    delta: delta.to_string(),
-                    elapsed_ms,
-                });
-            };
-
-            let mut stream_cancel_rx = cancel_rx.clone();
-            let response = tokio::select! {
-                _ = wait_for_cancellation(&mut stream_cancel_rx) => {
-                    let partial = streamed_text.lock().clone();
-                    return self.emit_stop_and_finish(
-                        db,
-                        workspace_id,
-                        on_event,
-                        &partial,
-                        Some(usage_tracker),
-                    );
-                }
-                response = request_provider.chat_stream_with_thinking(
-                    &messages,
-                    &tool_definitions,
-                    messages_contain_inline_images(&history_messages),
-                    enable_thinking,
-                    on_delta,
-                    on_thinking_delta,
-                ) => response
-            }?;
-            let response_snapshot = request_provider.build_response_snapshot(&response);
-            if let Some(usage) = response.usage.as_ref() {
-                record_run_token_usage(
+            let response = match self
+                .stream_llm_response(
                     db,
                     workspace_id,
-                    request_provider.model(),
-                    DispatcherSessionTokenUsageSource::Primary,
-                    usage,
-                    usage_tracker,
                     on_event,
-                );
-            }
-
-            debug_logger.log(
-                "收到大模型响应",
-                vec![
-                    ("工作区".to_string(), workspace_id.to_string()),
-                    ("轮次".to_string(), (iteration + 1).to_string()),
-                    ("模型".to_string(), request_provider.model().to_string()),
-                    ("状态码".to_string(), response.status_code.to_string()),
-                    (
-                        "工具调用数".to_string(),
-                        response.tool_calls.len().to_string(),
-                    ),
-                ],
-                vec![DebugSection::new(
-                    "实际响应",
-                    render_json(&response_snapshot),
-                )],
-            );
+                    &ctx.request_provider,
+                    &ctx.messages,
+                    &ctx.tool_definitions,
+                    enable_thinking,
+                    cancel_rx.clone(),
+                    usage_tracker,
+                    &ctx.debug_logger,
+                    iteration,
+                )
+                .await?
+            {
+                LlmStreamOutcome::Cancelled(partial) => {
+                    return self.emit_stop_and_finish(
+                        db, workspace_id, on_event, &partial, Some(usage_tracker),
+                    );
+                }
+                LlmStreamOutcome::Response(r) => r,
+            };
 
             if response.tool_calls.is_empty() {
-                let content = response.content.trim().to_string();
-                if content.is_empty() {
-                    anyhow::bail!("{}", empty_llm_response_error(&response));
-                }
-                let usage_stats = usage_tracker.snapshot();
-                let reply = db.add_visible_message_with_usage_and_thinking_async(
-                    workspace_id,
-                    "assistant",
-                    &content,
-                    &usage_stats,
-                    Some(&response.thinking_content),
-                    response.thinking_elapsed_ms,
-                ).await?;
-                emit(
-                    on_event,
-                    AgentEvent::AssistantMessage {
-                        message: reply.clone(),
-                    },
-                );
-                return Ok(reply);
+                return self
+                    .handle_no_tool_response(db, workspace_id, on_event, &response, usage_tracker)
+                    .await;
             }
 
-            let tool_calls_payload = response
-                .tool_calls
-                .iter()
-                .map(|call| OutboundToolCall {
-                    id: call.id.clone(),
-                    kind: "function".to_string(),
-                    function: FunctionCall {
-                        name: call.name.clone(),
-                        arguments: serde_json::to_string(&call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string()),
-                    },
-                })
-                .collect::<Vec<_>>();
-
-            for tool_call in &response.tool_calls {
-                emit(
-                    on_event,
-                    AgentEvent::ToolPlanned {
-                        tool_call_id: Some(tool_call.id.clone()),
-                        name: tool_call.name.clone(),
-                        arguments: serde_json::to_string(&tool_call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string()),
-                    },
-                );
-            }
-
-            db.add_visible_message_with_tools_and_thinking_async(
-                workspace_id,
-                "assistant",
-                &response.content,
-                None,
-                None,
-                None,
-                Some(&tool_calls_payload),
-                Some(&response.thinking_content),
-                response.thinking_elapsed_ms,
-            ).await?;
-
-            let mut protocol_state =
-                ProtocolBatchState::new(self.active_subprocesses_for_workspace(workspace_id));
-            let mut protocol_actions = Vec::new();
-            let mut planning_waiting_message: Option<String> = None;
-            let mut final_message: Option<String> = None;
-            let mut saw_retryable_tool_error = false;
-
-            let tool_calls = response.tool_calls;
-            let preprocessed_tool_call_ids = self
-                .execute_update_plan_calls_first(
+            let outcome = self
+                .execute_tool_calls(
                     db,
                     workspace_id,
                     workspace,
                     on_event,
-                    &tool_calls,
-                    &runtime_state,
-                    &allowed_tool_names,
+                    response,
+                    &ctx.runtime_state,
+                    &ctx.allowed_tool_names,
+                    &tool_context,
+                    &cancel_rx,
+                    &ctx.request_provider,
+                    usage_tracker,
                 )
                 .await?;
-            let mut tool_call_index = 0usize;
-            while tool_call_index < tool_calls.len() {
-                if cancellation_requested(&cancel_rx) {
-                    return self.emit_stop_and_finish(
-                        db,
-                        workspace_id,
-                        on_event,
-                        "",
-                        Some(usage_tracker),
-                    );
-                }
-                if preprocessed_tool_call_ids.contains(&tool_calls[tool_call_index].id) {
-                    tool_call_index += 1;
-                    continue;
-                }
 
-                let readonly_end = readonly_tool_run_end(&tool_calls, tool_call_index);
-                let ready_tool_results = if readonly_end.saturating_sub(tool_call_index) >= 2 {
-                    let run = &tool_calls[tool_call_index..readonly_end];
-                    let results = self
-                        .execute_parallel_readonly_tools(
-                            run,
-                            &tool_context,
-                            on_event,
-                            &allowed_tool_names,
-                        )
-                        .await;
-                    let items = run
-                        .iter()
-                        .cloned()
-                        .zip(results)
-                        .collect::<Vec<(RequestedToolCall, String)>>();
-                    tool_call_index = readonly_end;
-                    items
-                } else {
-                    let tool_call = tool_calls[tool_call_index].clone();
-                    tool_call_index += 1;
-                    emit(
-                        on_event,
-                        AgentEvent::ToolStarted {
-                            tool_call_id: Some(tool_call.id.clone()),
-                            name: tool_call.name.clone(),
-                            arguments: serde_json::to_string(&tool_call.arguments)
-                                .unwrap_or_else(|_| "{}".to_string()),
-                        },
-                    );
-                    let result = if allowed_tool_names.contains(&tool_call.name) {
-                        self.tools
-                            .execute(&tool_call.name, &tool_call.arguments, &tool_context)
-                            .await
-                    } else {
-                        disallowed_tool_result(&tool_call.name)
-                    };
-                    vec![(tool_call, result)]
-                };
-
-                for (tool_call, result) in ready_tool_results {
-                    if cancellation_requested(&cancel_rx) {
-                        return self.emit_stop_and_finish(
-                            db,
-                            workspace_id,
-                            on_event,
-                            "",
-                            Some(usage_tracker),
-                        );
-                    }
-                    if preprocessed_tool_call_ids.contains(&tool_call.id) {
-                        continue;
-                    }
-
-                    let tool_arguments = serde_json::to_string_pretty(&tool_call.arguments)
-                        .unwrap_or_else(|_| "{}".to_string());
-
-                    match self
-                        .execute_planning_tool(
-                            db,
-                            workspace_id,
-                            workspace,
-                            on_event,
-                            &tool_call,
-                            &runtime_state,
-                        )
-                        .await
-                    {
-                        Ok(Some(PlanningToolOutcome::ToolResult(result))) => {
-                            let tool_message = db.add_visible_tool_result_async(
-                                workspace_id,
-                                &result,
-                                &result,
-                                Some(&tool_call.id),
-                                Some(&tool_call.name),
-                                Some("raw"),
-                                &[],
-                            ).await?;
-                            emit(
-                                on_event,
-                                AgentEvent::ToolFinished {
-                                    tool_call_id: Some(tool_call.id.clone()),
-                                    name: tool_call.name.clone(),
-                                    display_text: tool_message.content.clone(),
-                                    result_mode: "raw".to_string(),
-                                    detail_refs: Vec::new(),
-                                },
-                            );
-                            continue;
-                        }
-                        Ok(Some(PlanningToolOutcome::WaitForUser(result))) => {
-                            let tool_message = db.add_visible_tool_result_async(
-                                workspace_id,
-                                &result,
-                                &result,
-                                Some(&tool_call.id),
-                                Some(&tool_call.name),
-                                Some("raw"),
-                                &[],
-                            ).await?;
-                            emit(
-                                on_event,
-                                AgentEvent::ToolFinished {
-                                    tool_call_id: Some(tool_call.id.clone()),
-                                    name: tool_call.name.clone(),
-                                    display_text: tool_message.content.clone(),
-                                    result_mode: "raw".to_string(),
-                                    detail_refs: Vec::new(),
-                                },
-                            );
-                            planning_waiting_message = Some(result);
-                            continue;
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            if is_retryable_tool_error(&tool_call.name, &error) {
-                                self.emit_tool_retry_feedback(
-                                    db,
-                                    workspace_id,
-                                    on_event,
-                                    &tool_call,
-                                    &error,
-                                )?;
-                                saw_retryable_tool_error = true;
-                            } else {
-                                self.emit_tool_error(
-                                    db,
-                                    workspace_id,
-                                    on_event,
-                                    &tool_call,
-                                    &error,
-                                )?;
-                            }
-                            continue;
-                        }
-                    }
-
-                    match self.plan_protocol_action(
-                        db,
-                        workspace_id,
-                        &tool_call,
-                        &mut protocol_state,
-                    ) {
-                        Ok(Some(action)) => {
-                            if let ProtocolToolAction::Exit { agent, .. } = &action {
-                                self.mark_agent_exit_requested(workspace_id, agent.slug());
-                            }
-                            self.emit_protocol_action(
-                                db,
-                                workspace_id,
-                                on_event,
-                                &tool_call,
-                                &action,
-                            )?;
-                            protocol_actions.push(action);
-                            continue;
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            if is_retryable_tool_error(&tool_call.name, &error) {
-                                self.emit_tool_retry_feedback(
-                                    db,
-                                    workspace_id,
-                                    on_event,
-                                    &tool_call,
-                                    &error,
-                                )?;
-                                saw_retryable_tool_error = true;
-                            } else {
-                                self.emit_tool_error(
-                                    db,
-                                    workspace_id,
-                                    on_event,
-                                    &tool_call,
-                                    &error,
-                                )?;
-                            }
-                            continue;
-                        }
-                    }
-
-                    if is_retryable_tool_error(&tool_call.name, &result) {
-                        self.emit_tool_retry_feedback(
-                            db,
-                            workspace_id,
-                            on_event,
-                            &tool_call,
-                            &result,
-                        )?;
-                        saw_retryable_tool_error = true;
-                        continue;
-                    }
-
-                    let summary_model = self.summary_model();
-                    let tool_result = match prepare_tool_result(
-                        &request_provider,
-                        &summary_model,
-                        &tool_call.name,
-                        &tool_call.arguments,
-                        &result,
-                        |result_mode| {
-                            emit(
-                                on_event,
-                                AgentEvent::ToolSummaryStarted {
-                                    tool_call_id: Some(tool_call.id.clone()),
-                                    name: tool_call.name.clone(),
-                                    result_mode: result_mode.to_string(),
-                                },
-                            );
-                        },
-                        |delta| {
-                            emit(
-                                on_event,
-                                AgentEvent::ToolSummaryDelta {
-                                    tool_call_id: Some(tool_call.id.clone()),
-                                    name: tool_call.name.clone(),
-                                    delta: delta.to_string(),
-                                    result_mode: "conservative_summary".to_string(),
-                                },
-                            );
-                        },
-                        |usage| {
-                            record_run_token_usage(
-                                db,
-                                workspace_id,
-                                &summary_model,
-                                DispatcherSessionTokenUsageSource::Summary,
-                                usage,
-                                usage_tracker,
-                                on_event,
-                            );
-                        },
-                    )
-                    .await
-                    {
-                        Ok(summary) => summary,
-                        Err(error) => {
-                            debug_logger.log(
-                                "工具结果摘要失败",
-                                vec![
-                                    ("工作区".to_string(), workspace_id.to_string()),
-                                    ("轮次".to_string(), (iteration + 1).to_string()),
-                                    ("工具名".to_string(), tool_call.name.clone()),
-                                    ("工具调用ID".to_string(), tool_call.id.clone()),
-                                ],
-                                vec![
-                                    DebugSection::new(
-                                        "摘要调用",
-                                        error.debug_context().to_string(),
-                                    ),
-                                    DebugSection::new("工具参数", tool_arguments.clone()),
-                                    DebugSection::new("失败原因", error.message().to_string()),
-                                ],
-                            );
-                            anyhow::bail!(
-                                "工具结果摘要失败，tool={}, summary_model={}：{}",
-                                tool_call.name,
-                                summary_model,
-                                error.message()
-                            );
-                        }
-                    };
-
-                    let tool_message = db.add_visible_tool_result_async(
-                        workspace_id,
-                        &tool_result.display_content,
-                        &tool_result.context_payload,
-                        Some(&tool_call.id),
-                        Some(&tool_call.name),
-                        Some(tool_result.result_mode),
-                        &tool_result.artifacts,
-                    ).await?;
-
-                    emit(
-                        on_event,
-                        AgentEvent::ToolFinished {
-                            tool_call_id: Some(tool_call.id.clone()),
-                            name: tool_call.name.clone(),
-                            display_text: tool_message.content.clone(),
-                            result_mode: tool_result.result_mode.to_string(),
-                            detail_refs: tool_message.tool_artifacts.clone(),
-                        },
-                    );
-
-                    if let Err(error) = db.compact_successful_tool_retry(
-                        workspace_id,
-                        &tool_call.name,
-                        &tool_call.id,
-                    ) {
-                        eprintln!(
-                            "failed to compact dispatcher tool retry messages for workspace {} and tool {}: {}",
-                            workspace_id, tool_call.name, error
-                        );
-                    }
-
-                    if tool_call.name == "message" {
-                        if let Some(content) = extract_message_content(&tool_call.arguments) {
-                            final_message = Some(content);
-                        }
-                    }
-                }
-            }
-
-            if saw_retryable_tool_error {
-                continue;
-            }
-
-            if let Some(waiting_content) = planning_waiting_message {
-                let usage_stats = usage_tracker.snapshot();
-                let waiting_msg = db.add_visible_message_with_usage(
-                    workspace_id,
-                    "assistant",
-                    &waiting_content,
-                    &usage_stats,
-                )?;
-                emit(
-                    on_event,
-                    AgentEvent::AssistantMessage {
-                        message: waiting_msg.clone(),
-                    },
-                );
-                return Ok(waiting_msg);
-            }
-
-            if !protocol_actions.is_empty() {
-                let waiting_content = build_protocol_waiting_message(
-                    &protocol_actions,
-                    self.auto_approve_dispatch(),
-                    final_message.as_deref(),
-                );
-                let usage_stats = usage_tracker.snapshot();
-                let waiting_msg = db.add_visible_message_with_usage(
-                    workspace_id,
-                    "assistant",
-                    &waiting_content,
-                    &usage_stats,
-                )?;
-                emit(
-                    on_event,
-                    AgentEvent::AssistantMessage {
-                        message: waiting_msg.clone(),
-                    },
-                );
-                return Ok(waiting_msg);
-            }
-
-            if let Some(final_message) = final_message {
-                let usage_stats = usage_tracker.snapshot();
-                let reply = db.add_visible_message_with_usage(
-                    workspace_id,
-                    "assistant",
-                    &final_message,
-                    &usage_stats,
-                )?;
-                emit(
-                    on_event,
-                    AgentEvent::AssistantMessage {
-                        message: reply.clone(),
-                    },
-                );
+            if let Some(reply) = self
+                .resolve_loop_outcome(db, workspace_id, on_event, outcome, usage_tracker)
+                .await?
+            {
                 return Ok(reply);
             }
         }
@@ -1889,6 +1379,707 @@ impl DispatcherAgent {
             "已达到最大工具迭代次数（{}），本轮执行被终止。请检查模型是否陷入工具调用循环或计划协议未收口。",
             self.config.max_tool_iterations
         )
+    }
+
+    async fn build_tool_context(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        workspace: &Path,
+        provider: &OpenAiCompatProvider,
+    ) -> ToolContext {
+        let session_title = db
+            .get_session_title_async(workspace_id)
+            .await
+            .unwrap_or_else(|_| "untitled".to_string());
+        ToolContext {
+            workspace_id: workspace_id.to_string(),
+            workspace: workspace.to_path_buf(),
+            session_title,
+            exec_timeout_secs: self.config.exec_timeout_secs,
+            restrict_to_workspace: self.config.restrict_to_workspace,
+            extra_allowed_dirs: dirs::home_dir()
+                .map(|h| vec![h.join(".jkcodingagent")])
+                .unwrap_or_default(),
+            app_handle: self.app_handle.clone(),
+            llm_provider: Some(provider.clone()),
+            vision_model: self.vision_model(),
+            image_model_url: self.image_model_url(),
+            image_model_api_key: self.image_model_api_key(),
+            image_model: self.image_model(),
+            image_edit_model: self.image_edit_model(),
+        }
+    }
+
+    async fn prepare_iteration_context(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        workspace: &Path,
+        on_event: &Channel<AgentEvent>,
+        provider: &OpenAiCompatProvider,
+        enable_thinking: bool,
+        iteration: usize,
+    ) -> Result<IterationContext> {
+        let debug_logger = ContextDebugLogger::new(self.context_debug_enabled(), workspace);
+
+        let runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
+        let tool_definitions =
+            self.tool_definitions_for_workspace(workspace_id, workspace, &runtime_state);
+        let allowed_tool_names = tool_definitions
+            .iter()
+            .map(|tool| tool.function.name.clone())
+            .collect::<HashSet<_>>();
+        let prompt_snapshot = self
+            .build_system_prompt_for_workspace(
+                workspace_id,
+                workspace,
+                &tool_definitions,
+                &runtime_state,
+            )
+            .await?;
+        let history_messages = db.load_llm_history_async(workspace_id).await?;
+        let request_provider =
+            self.provider_for_messages(provider, &history_messages, on_event, iteration == 0)?;
+        let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
+        messages.extend(history_messages.clone());
+        let request_snapshot = request_provider.build_request_snapshot(
+            &messages,
+            &tool_definitions,
+            enable_thinking,
+        );
+
+        debug_logger.log(
+            "发送大模型请求",
+            vec![
+                ("工作区".to_string(), workspace_id.to_string()),
+                ("轮次".to_string(), (iteration + 1).to_string()),
+                ("模型".to_string(), request_provider.model().to_string()),
+                ("消息数".to_string(), messages.len().to_string()),
+                ("工具数".to_string(), tool_definitions.len().to_string()),
+            ],
+            vec![DebugSection::new(
+                "实际请求",
+                render_json(&request_snapshot),
+            )],
+        );
+
+        Ok(IterationContext {
+            runtime_state,
+            tool_definitions,
+            allowed_tool_names,
+            messages,
+            request_provider,
+            debug_logger,
+        })
+    }
+
+    async fn stream_llm_response(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        request_provider: &OpenAiCompatProvider,
+        messages: &[ChatMessage],
+        tool_definitions: &[crate::agent::llm::ToolDefinition],
+        enable_thinking: bool,
+        cancel_rx: watch::Receiver<bool>,
+        usage_tracker: &mut RunUsageTracker,
+        debug_logger: &ContextDebugLogger,
+        iteration: usize,
+    ) -> Result<LlmStreamOutcome> {
+        let stream_msg_id = uuid::Uuid::new_v4().to_string();
+        emit(
+            on_event,
+            AgentEvent::AssistantStarted {
+                message_id: stream_msg_id.clone(),
+            },
+        );
+
+        let event_ref = on_event;
+        let msg_id_ref = stream_msg_id.clone();
+        let thinking_msg_id_ref = stream_msg_id.clone();
+        let streamed_text = Arc::new(Mutex::new(String::new()));
+        let streamed_text_ref = Arc::clone(&streamed_text);
+        let on_delta = move |delta: &str| {
+            let mut partial = streamed_text_ref.lock();
+            partial.push_str(delta);
+            let _ = event_ref.send(AgentEvent::AssistantDelta {
+                message_id: msg_id_ref.clone(),
+                delta: delta.to_string(),
+            });
+        };
+        let thinking_event_ref = on_event;
+        let on_thinking_delta = move |delta: &str, elapsed_ms: u64| {
+            let _ = thinking_event_ref.send(AgentEvent::AssistantThinkingDelta {
+                message_id: thinking_msg_id_ref.clone(),
+                delta: delta.to_string(),
+                elapsed_ms,
+            });
+        };
+
+        let mut stream_cancel_rx = cancel_rx;
+        let response = tokio::select! {
+            _ = wait_for_cancellation(&mut stream_cancel_rx) => {
+                let partial = streamed_text.lock().clone();
+                return Ok(LlmStreamOutcome::Cancelled(partial));
+            }
+            response = request_provider.chat_stream_with_thinking(
+                messages,
+                tool_definitions,
+                messages_contain_inline_images(&messages[1..]),
+                enable_thinking,
+                on_delta,
+                on_thinking_delta,
+            ) => response
+        }?;
+
+        let response_snapshot = request_provider.build_response_snapshot(&response);
+        if let Some(usage) = response.usage.as_ref() {
+            record_run_token_usage(
+                db,
+                workspace_id,
+                request_provider.model(),
+                DispatcherSessionTokenUsageSource::Primary,
+                usage,
+                usage_tracker,
+                on_event,
+            );
+        }
+
+        debug_logger.log(
+            "收到大模型响应",
+            vec![
+                ("工作区".to_string(), workspace_id.to_string()),
+                ("轮次".to_string(), (iteration + 1).to_string()),
+                ("模型".to_string(), request_provider.model().to_string()),
+                ("状态码".to_string(), response.status_code.to_string()),
+                (
+                    "工具调用数".to_string(),
+                    response.tool_calls.len().to_string(),
+                ),
+            ],
+            vec![DebugSection::new(
+                "实际响应",
+                render_json(&response_snapshot),
+            )],
+        );
+
+        Ok(LlmStreamOutcome::Response(response))
+    }
+
+    async fn emit_raw_tool_result(
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        tool_call: &RequestedToolCall,
+        result: &str,
+    ) -> Result<()> {
+        let tool_message = db
+            .add_visible_tool_result_async(
+                workspace_id,
+                result,
+                result,
+                Some(&tool_call.id),
+                Some(&tool_call.name),
+                Some("raw"),
+                &[],
+            )
+            .await?;
+        emit(
+            on_event,
+            AgentEvent::ToolFinished {
+                tool_call_id: Some(tool_call.id.clone()),
+                name: tool_call.name.clone(),
+                display_text: tool_message.content.clone(),
+                result_mode: "raw".to_string(),
+                detail_refs: Vec::new(),
+            },
+        );
+        Ok(())
+    }
+
+    async fn handle_no_tool_response(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        response: &LlmResponse,
+        usage_tracker: &RunUsageTracker,
+    ) -> Result<DispatcherMessageRecord> {
+        let content = response.content.trim().to_string();
+        if content.is_empty() {
+            anyhow::bail!("{}", empty_llm_response_error(response));
+        }
+        let usage_stats = usage_tracker.snapshot();
+        let reply = db
+            .add_visible_message_with_usage_and_thinking_async(
+                workspace_id,
+                "assistant",
+                &content,
+                &usage_stats,
+                Some(&response.thinking_content),
+                response.thinking_elapsed_ms,
+            )
+            .await?;
+        emit(
+            on_event,
+            AgentEvent::AssistantMessage {
+                message: reply.clone(),
+            },
+        );
+        Ok(reply)
+    }
+
+    /// Execute all tool calls from an LLM response. Tool calls run in two phases:
+    /// first `update_plan` calls are preprocessed, then remaining calls execute in order
+    /// (with adjacent readonly tools parallelized).
+    async fn execute_tool_calls(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        workspace: &Path,
+        on_event: &Channel<AgentEvent>,
+        response: LlmResponse,
+        runtime_state: &DispatcherSessionRuntimeState,
+        allowed_tool_names: &HashSet<String>,
+        tool_context: &ToolContext,
+        cancel_rx: &watch::Receiver<bool>,
+        request_provider: &OpenAiCompatProvider,
+        usage_tracker: &mut RunUsageTracker,
+    ) -> Result<ToolCallsOutcome> {
+        // Move tool_calls out; content/thinking fields remain accessible for the DB save.
+        let tool_calls = response.tool_calls;
+        let tool_calls_payload = tool_calls
+            .iter()
+            .map(|call| OutboundToolCall {
+                id: call.id.clone(),
+                kind: "function".to_string(),
+                function: FunctionCall {
+                    name: call.name.clone(),
+                    arguments: serde_json::to_string(&call.arguments)
+                        .unwrap_or_else(|_| "{}".to_string()),
+                },
+            })
+            .collect::<Vec<_>>();
+
+        for tool_call in &tool_calls {
+            emit(
+                on_event,
+                AgentEvent::ToolPlanned {
+                    tool_call_id: Some(tool_call.id.clone()),
+                    name: tool_call.name.clone(),
+                    arguments: serde_json::to_string(&tool_call.arguments)
+                        .unwrap_or_else(|_| "{}".to_string()),
+                },
+            );
+        }
+
+        db.add_visible_message_with_tools_and_thinking_async(
+            workspace_id,
+            "assistant",
+            &response.content,
+            None,
+            None,
+            None,
+            Some(&tool_calls_payload),
+            Some(&response.thinking_content),
+            response.thinking_elapsed_ms,
+        )
+        .await?;
+
+        let mut protocol_state =
+            ProtocolBatchState::new(self.active_subprocesses_for_workspace(workspace_id));
+        let mut protocol_actions = Vec::new();
+        let mut planning_waiting_message: Option<String> = None;
+        let mut final_message: Option<String> = None;
+        let mut saw_retryable_tool_error = false;
+
+        // Phase 1: preprocess all update_plan calls before other tools execute.
+        let preprocessed_tool_call_ids = self
+            .execute_update_plan_calls_first(
+                db,
+                workspace_id,
+                workspace,
+                on_event,
+                &tool_calls,
+                runtime_state,
+                allowed_tool_names,
+            )
+            .await?;
+
+        // Phase 2: execute remaining tool calls in order, parallelizing adjacent readonly ones.
+        let mut tool_call_index = 0usize;
+        let mut cancelled = false;
+        'outer: while tool_call_index < tool_calls.len() {
+            if cancellation_requested(cancel_rx) {
+                break;
+            }
+            if preprocessed_tool_call_ids.contains(&tool_calls[tool_call_index].id) {
+                tool_call_index += 1;
+                continue;
+            }
+
+            let readonly_end = readonly_tool_run_end(&tool_calls, tool_call_index);
+            let ready_tool_results = if readonly_end.saturating_sub(tool_call_index) >= 2 {
+                let run = &tool_calls[tool_call_index..readonly_end];
+                let results = self
+                    .execute_parallel_readonly_tools(run, tool_context, on_event, allowed_tool_names)
+                    .await;
+                let items = run
+                    .iter()
+                    .cloned()
+                    .zip(results)
+                    .collect::<Vec<(RequestedToolCall, String)>>();
+                tool_call_index = readonly_end;
+                items
+            } else {
+                let tool_call = tool_calls[tool_call_index].clone();
+                tool_call_index += 1;
+                emit(
+                    on_event,
+                    AgentEvent::ToolStarted {
+                        tool_call_id: Some(tool_call.id.clone()),
+                        name: tool_call.name.clone(),
+                        arguments: serde_json::to_string(&tool_call.arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
+                );
+                let result = if allowed_tool_names.contains(&tool_call.name) {
+                    self.tools
+                        .execute(&tool_call.name, &tool_call.arguments, tool_context)
+                        .await
+                } else {
+                    disallowed_tool_result(&tool_call.name)
+                };
+                vec![(tool_call, result)]
+            };
+
+            for (tool_call, result) in ready_tool_results {
+                if cancellation_requested(cancel_rx) {
+                    cancelled = true;
+                    break 'outer;
+                }
+                if preprocessed_tool_call_ids.contains(&tool_call.id) {
+                    continue;
+                }
+
+                match self.process_single_tool_call(
+                    db,
+                    workspace_id,
+                    workspace,
+                    on_event,
+                    &tool_call,
+                    runtime_state,
+                    &mut protocol_state,
+                )
+                .await?
+                {
+                    SingleToolDisposition::Handled => {}
+                    SingleToolDisposition::HandledWithRetry => {
+                        saw_retryable_tool_error = true;
+                    }
+                    SingleToolDisposition::WaitForUser(msg) => {
+                        planning_waiting_message = Some(msg);
+                    }
+                    SingleToolDisposition::ProtocolAction(action) => {
+                        protocol_actions.push(action);
+                    }
+                    SingleToolDisposition::NeedsSummary => {
+                        if is_retryable_tool_error(&tool_call.name, &result) {
+                            self.emit_tool_retry_feedback(
+                                db, workspace_id, on_event, &tool_call, &result,
+                            )?;
+                            saw_retryable_tool_error = true;
+                            continue;
+                        }
+
+                        let summary_model = self.summary_model();
+                        let tool_result = self
+                            .summarize_and_persist_tool_result(
+                                db,
+                                workspace_id,
+                                on_event,
+                                request_provider,
+                                &summary_model,
+                                &tool_call,
+                                &result,
+                                usage_tracker,
+                            )
+                            .await?;
+
+                        if let Err(error) = db.compact_successful_tool_retry(
+                            workspace_id,
+                            &tool_call.name,
+                            &tool_call.id,
+                        ) {
+                            eprintln!(
+                                "failed to compact dispatcher tool retry messages for workspace {} and tool {}: {}",
+                                workspace_id, tool_call.name, error
+                            );
+                        }
+
+                        if tool_call.name == "message" {
+                            if let Some(content) = extract_message_content(&tool_call.arguments) {
+                                final_message = Some(content);
+                            }
+                        }
+                        let _ = tool_result; // persisted and emitted above
+                    }
+                }
+            }
+        }
+
+        let _ = cancelled; // cancellation is checked by the outer loop on next iteration
+
+        Ok(ToolCallsOutcome {
+            saw_retryable_tool_error,
+            planning_waiting_message,
+            final_message,
+            protocol_actions,
+        })
+    }
+
+    /// Classify a single tool call through the planning/protocol priority waterfall.
+    /// Returns the disposition so the caller can decide what to do with the result.
+    async fn process_single_tool_call(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        workspace: &Path,
+        on_event: &Channel<AgentEvent>,
+        tool_call: &RequestedToolCall,
+        runtime_state: &DispatcherSessionRuntimeState,
+        protocol_state: &mut ProtocolBatchState,
+    ) -> Result<SingleToolDisposition> {
+        // Priority 1: planning tools (update_plan, present_plan, etc.)
+        match self
+            .execute_planning_tool(db, workspace_id, workspace, on_event, tool_call, runtime_state)
+            .await
+        {
+            Ok(Some(PlanningToolOutcome::ToolResult(res))) => {
+                Self::emit_raw_tool_result(db, workspace_id, on_event, tool_call, &res).await?;
+                return Ok(SingleToolDisposition::Handled);
+            }
+            Ok(Some(PlanningToolOutcome::WaitForUser(res))) => {
+                Self::emit_raw_tool_result(db, workspace_id, on_event, tool_call, &res).await?;
+                return Ok(SingleToolDisposition::WaitForUser(res));
+            }
+            Ok(None) => {} // not a planning tool — fall through to protocol check
+            Err(error) => {
+                let is_retryable = is_retryable_tool_error(&tool_call.name, &error);
+                self.handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)?;
+                return Ok(if is_retryable {
+                    SingleToolDisposition::HandledWithRetry
+                } else {
+                    SingleToolDisposition::Handled
+                });
+            }
+        }
+
+        // Priority 2: protocol actions (dispatch, continue, exit subprocess)
+        match self.plan_protocol_action(db, workspace_id, tool_call, protocol_state) {
+            Ok(Some(action)) => {
+                if let ProtocolToolAction::Exit { agent, .. } = &action {
+                    self.mark_agent_exit_requested(workspace_id, agent.slug());
+                }
+                self.emit_protocol_action(db, workspace_id, on_event, tool_call, &action)?;
+                return Ok(SingleToolDisposition::ProtocolAction(action));
+            }
+            Ok(None) => {} // not a protocol action — fall through
+            Err(error) => {
+                let is_retryable = is_retryable_tool_error(&tool_call.name, &error);
+                self.handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)?;
+                return Ok(if is_retryable {
+                    SingleToolDisposition::HandledWithRetry
+                } else {
+                    SingleToolDisposition::Handled
+                });
+            }
+        }
+
+        // Priority 3: neither planning nor protocol — needs standard summary processing
+        Ok(SingleToolDisposition::NeedsSummary)
+    }
+
+    async fn summarize_and_persist_tool_result(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        request_provider: &OpenAiCompatProvider,
+        summary_model: &str,
+        tool_call: &RequestedToolCall,
+        result: &str,
+        usage_tracker: &mut RunUsageTracker,
+    ) -> Result<()> {
+        let tool_result = match prepare_tool_result(
+            request_provider,
+            summary_model,
+            &tool_call.name,
+            &tool_call.arguments,
+            result,
+            |result_mode| {
+                emit(
+                    on_event,
+                    AgentEvent::ToolSummaryStarted {
+                        tool_call_id: Some(tool_call.id.clone()),
+                        name: tool_call.name.clone(),
+                        result_mode: result_mode.to_string(),
+                    },
+                );
+            },
+            |delta| {
+                emit(
+                    on_event,
+                    AgentEvent::ToolSummaryDelta {
+                        tool_call_id: Some(tool_call.id.clone()),
+                        name: tool_call.name.clone(),
+                        delta: delta.to_string(),
+                        result_mode: "conservative_summary".to_string(),
+                    },
+                );
+            },
+            |usage| {
+                record_run_token_usage(
+                    db,
+                    workspace_id,
+                    summary_model,
+                    DispatcherSessionTokenUsageSource::Summary,
+                    usage,
+                    usage_tracker,
+                    on_event,
+                );
+            },
+        )
+        .await
+        {
+            Ok(summary) => summary,
+            Err(error) => {
+                let tool_arguments = serde_json::to_string_pretty(&tool_call.arguments)
+                    .unwrap_or_else(|_| "{}".to_string());
+                anyhow::bail!(
+                    "工具结果摘要失败，tool={}, summary_model={}：{}\n调试上下文：{}\n工具参数：{}",
+                    tool_call.name,
+                    summary_model,
+                    error.message(),
+                    error.debug_context(),
+                    tool_arguments,
+                );
+            }
+        };
+
+        let tool_message = db
+            .add_visible_tool_result_async(
+                workspace_id,
+                &tool_result.display_content,
+                &tool_result.context_payload,
+                Some(&tool_call.id),
+                Some(&tool_call.name),
+                Some(tool_result.result_mode),
+                &tool_result.artifacts,
+            )
+            .await?;
+
+        emit(
+            on_event,
+            AgentEvent::ToolFinished {
+                tool_call_id: Some(tool_call.id.clone()),
+                name: tool_call.name.clone(),
+                display_text: tool_message.content.clone(),
+                result_mode: tool_result.result_mode.to_string(),
+                detail_refs: tool_message.tool_artifacts.clone(),
+            },
+        );
+
+        Ok(())
+    }
+
+    fn handle_tool_call_error(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        tool_call: &RequestedToolCall,
+        error: &str,
+    ) -> Result<()> {
+        if is_retryable_tool_error(&tool_call.name, error) {
+            self.emit_tool_retry_feedback(db, workspace_id, on_event, tool_call, error)?;
+        } else {
+            self.emit_tool_error(db, workspace_id, on_event, tool_call, error)?;
+        }
+        Ok(())
+    }
+
+    async fn resolve_loop_outcome(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        outcome: ToolCallsOutcome,
+        usage_tracker: &RunUsageTracker,
+    ) -> Result<Option<DispatcherMessageRecord>> {
+        if outcome.saw_retryable_tool_error {
+            return Ok(None);
+        }
+
+        if let Some(waiting_content) = outcome.planning_waiting_message {
+            let usage_stats = usage_tracker.snapshot();
+            let waiting_msg = db.add_visible_message_with_usage(
+                workspace_id,
+                "assistant",
+                &waiting_content,
+                &usage_stats,
+            )?;
+            emit(
+                on_event,
+                AgentEvent::AssistantMessage {
+                    message: waiting_msg.clone(),
+                },
+            );
+            return Ok(Some(waiting_msg));
+        }
+
+        if !outcome.protocol_actions.is_empty() {
+            let waiting_content = build_protocol_waiting_message(
+                &outcome.protocol_actions,
+                self.auto_approve_dispatch(),
+                outcome.final_message.as_deref(),
+            );
+            let usage_stats = usage_tracker.snapshot();
+            let waiting_msg = db.add_visible_message_with_usage(
+                workspace_id,
+                "assistant",
+                &waiting_content,
+                &usage_stats,
+            )?;
+            emit(
+                on_event,
+                AgentEvent::AssistantMessage {
+                    message: waiting_msg.clone(),
+                },
+            );
+            return Ok(Some(waiting_msg));
+        }
+
+        if let Some(final_message) = outcome.final_message {
+            let usage_stats = usage_tracker.snapshot();
+            let reply = db.add_visible_message_with_usage(
+                workspace_id,
+                "assistant",
+                &final_message,
+                &usage_stats,
+            )?;
+            emit(
+                on_event,
+                AgentEvent::AssistantMessage {
+                    message: reply.clone(),
+                },
+            );
+            return Ok(Some(reply));
+        }
+
+        Ok(None)
     }
 
     async fn build_system_prompt(&self) -> Result<PromptBundle> {
@@ -4144,6 +4335,10 @@ mod tests {
             max_tool_iterations: 4,
             exec_timeout_secs: 5,
             restrict_to_workspace: true,
+            image_model_url: String::new(),
+            image_model_api_key: String::new(),
+            image_model: String::new(),
+            image_edit_model: String::new(),
             auto_approve_dispatch: false,
             context_debug: false,
         }

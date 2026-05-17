@@ -911,27 +911,13 @@ function mergeDispatcherMessages(
   current: DispatcherMessage[],
   incoming: DispatcherMessage[],
 ): DispatcherMessage[] {
-  if (current.length === 0) {
-    return incoming;
-  }
-  if (incoming.length === 0) {
-    return current;
-  }
-
-  const mergedById = new Map(current.map((message) => [message.id, message] as const));
-  for (const message of incoming) {
-    mergedById.set(message.id, message);
-  }
-
-  const existingIds = new Set(current.map((message) => message.id));
-  const orderedIds = [
-    ...current.map((message) => message.id),
-    ...incoming.filter((message) => !existingIds.has(message.id)).map((message) => message.id),
-  ];
-
-  return orderedIds
-    .map((messageId) => mergedById.get(messageId))
-    .filter((message): message is DispatcherMessage => Boolean(message));
+  if (incoming.length === 0) return current;
+  const merged = new Map(current.map((m) => [m.id, m] as const));
+  for (const m of incoming) merged.set(m.id, m);
+  return [...merged.values()].sort((a, b) => {
+    const cmp = a.createdAt.localeCompare(b.createdAt);
+    return cmp !== 0 ? cmp : a.id.localeCompare(b.id);
+  });
 }
 
 export function buildPlanQuestionAnswer(
@@ -1421,6 +1407,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               updateLiveSessionState(targetSessionId, (state) => ({
                 ...state,
                 assistantPlaceholder: "正在分析问题...",
+                liveThinking: null,
+                streamingSegments: state.streamingSegments.filter(
+                  (segment) => segment.kind === "tool-summary",
+                ),
               }));
               break;
             case "modelSwitched":

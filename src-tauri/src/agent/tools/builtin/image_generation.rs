@@ -27,6 +27,7 @@ impl AgentTool for GenerateImageTool {
             "type": "object",
             "properties": {
                 "prompt": { "type": "string", "description": "图片描述文本，详细描述要生成的图片内容" },
+                "image_name": { "type": "string", "description": "图片文件名（可选，不含扩展名）。用于生成可读的文件名，如 'logo-design'" },
                 "width": { "type": "integer", "description": "图片宽度（可选）" },
                 "height": { "type": "integer", "description": "图片高度（可选）" },
                 "style": { "type": "string", "description": "图片风格（可选）" },
@@ -43,6 +44,7 @@ impl AgentTool for GenerateImageTool {
             return "错误：缺少必填参数 prompt".to_string();
         };
 
+        let image_name = string_arg(args, "image_name");
         let width = args.get("width").and_then(|v| v.as_u64().map(|v| v as u32));
         let height = args.get("height").and_then(|v| v.as_u64().map(|v| v as u32));
         let style = string_arg(args, "style");
@@ -52,6 +54,7 @@ impl AgentTool for GenerateImageTool {
 
         let input = ImageGenerationInput {
             prompt,
+            image_name,
             width,
             height,
             style,
@@ -70,8 +73,7 @@ impl AgentTool for GenerateImageTool {
 
         match generate_image(
             input,
-            context.workspace_id.clone(),
-            context.workspace_id.clone(),
+            context.session_title.clone(),
             api_key,
             base_url,
             default_model,

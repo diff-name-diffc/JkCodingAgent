@@ -9,13 +9,6 @@ pub struct SaveChatImageResult {
     pub path: String,
 }
 
-/// Result of reading a chat image
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReadChatImageResult {
-    pub data_url: String,
-}
-
 /// Save a chat image to the file system.
 /// Images are stored under `~/.jkcodingagent/chat-images/{session-title-slug}/`.
 #[tauri::command]
@@ -48,49 +41,6 @@ pub async fn save_chat_image(
     Ok(SaveChatImageResult {
         image_id: image_id.clone(),
         path: file_path.to_string_lossy().to_string(),
-    })
-}
-
-/// Read a chat image file and return as base64 data URL.
-#[tauri::command]
-pub async fn read_chat_image_file(path: String) -> Result<ReadChatImageResult, String> {
-    // Validate the path is within the chat-images directory
-    let app_dir = app_data_dir()?;
-    let chat_images_dir = app_dir.join("chat-images");
-    let target = std::path::Path::new(&path);
-
-    // Basic path validation: must be absolute and under chat-images
-    if !target.is_absolute() {
-        return Err("Path must be absolute".to_string());
-    }
-
-    let canonical_target = target.canonicalize().map_err(|e| e.to_string())?;
-    let canonical_chat_images = chat_images_dir.canonicalize().map_err(|e| e.to_string())?;
-
-    if !canonical_target.starts_with(&canonical_chat_images) {
-        return Err("Path is outside the allowed chat-images directory".to_string());
-    }
-
-    // Read file and encode as base64
-    let bytes = std::fs::read(&canonical_target).map_err(|e| e.to_string())?;
-
-    // Detect mime type from extension
-    let mime_type = canonical_target
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| match ext.to_lowercase().as_str() {
-            "png" => "image/png",
-            "jpg" | "jpeg" => "image/jpeg",
-            "webp" => "image/webp",
-            "gif" => "image/gif",
-            _ => "image/png",
-        })
-        .unwrap_or("image/png");
-
-    let base64_data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-
-    Ok(ReadChatImageResult {
-        data_url: format!("data:{};base64,{}", mime_type, base64_data),
     })
 }
 

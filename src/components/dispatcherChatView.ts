@@ -92,8 +92,15 @@ export function buildDispatcherDisplayItems(
         });
       }
 
+      // When the assistant message contains tool calls, its text content is
+      // preliminary reasoning that will be superseded by the follow-up
+      // response after tool execution.  Rendering it as a separate bubble
+      // alongside the final answer produces visually duplicated content, so
+      // we only push the text segment for assistant messages WITHOUT tool
+      // calls (the final/terminal response in the LLM loop).
+      const hasToolCalls = toolCalls.length > 0;
       const content = message.content.trim();
-      if (content) {
+      if (content && !hasToolCalls) {
         pushAssistantSegment(turn.segments, {
           kind: "assistant-text",
           text: content,

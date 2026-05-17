@@ -606,11 +606,16 @@ mod tests {
         let context = ToolContext {
             workspace_id: "test-workspace".to_string(),
             workspace: workspace.clone(),
+            session_title: "test-session".to_string(),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
             app_handle: None,
             llm_provider: None,
             vision_model: String::new(),
+            image_model_url: String::new(),
+            image_model_api_key: String::new(),
+            image_model: String::new(),
+            image_edit_model: String::new(),
         };
 
         let output = GrepTool
@@ -642,11 +647,16 @@ mod tests {
         let context = ToolContext {
             workspace_id: "test-workspace".to_string(),
             workspace: workspace.clone(),
+            session_title: "test-session".to_string(),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
             app_handle: None,
             llm_provider: None,
             vision_model: String::new(),
+            image_model_url: String::new(),
+            image_model_api_key: String::new(),
+            image_model: String::new(),
+            image_edit_model: String::new(),
         };
 
         let output = GrepTool
@@ -673,11 +683,16 @@ mod tests {
         let context = ToolContext {
             workspace_id: "test-workspace".to_string(),
             workspace: workspace.clone(),
+            session_title: "test-session".to_string(),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
             app_handle: None,
             llm_provider: None,
             vision_model: String::new(),
+            image_model_url: String::new(),
+            image_model_api_key: String::new(),
+            image_model: String::new(),
+            image_edit_model: String::new(),
         };
 
         let output = GlobTool
@@ -708,11 +723,16 @@ mod tests {
         let context = ToolContext {
             workspace_id: "test-workspace".to_string(),
             workspace: workspace.clone(),
+            session_title: "test-session".to_string(),
             exec_timeout_secs: 30,
             restrict_to_workspace: true,
             app_handle: None,
             llm_provider: None,
             vision_model: String::new(),
+            image_model_url: String::new(),
+            image_model_api_key: String::new(),
+            image_model: String::new(),
+            image_edit_model: String::new(),
         };
 
         let output = GrepTool

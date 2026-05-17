@@ -27,7 +27,7 @@
         "scope": {
           "requireLiteralLeadingDot": false,
           "allow": [
-            "/Users/jk/.jkcodingagent/**"
+            "$HOME/.jkcodingagent/**"
           ]
         }
       }

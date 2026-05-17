@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { X } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 function isLocalImagePath(src: string): boolean {
   return src.startsWith("/") || src.startsWith("file://");
@@ -38,19 +38,18 @@ export function MarkdownImage({ src, alt }: MarkdownImageProps) {
     setLoading(true);
     setError(null);
 
-    const path = src.startsWith("file://") ? src.slice(7) : src;
-
-    invoke<{ dataUrl: string }>("read_chat_image_file", { path })
-      .then((result) => {
-        if (latestSrcRef.current !== src) return;
-        setResolvedSrc(result.dataUrl);
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (latestSrcRef.current !== src) return;
-        setError(typeof err === "string" ? err : "无法加载图片");
-        setLoading(false);
-      });
+    try {
+      let path = src.startsWith("file://") ? src.slice(7) : src;
+      // Markdown parsers may percent-encode non-ASCII chars in src;
+      // decode first so convertFileSrc doesn't double-encode them.
+      try { path = decodeURIComponent(path); } catch { /* not encoded, use as-is */ }
+      const assetUrl = convertFileSrc(path);
+      setResolvedSrc(assetUrl);
+      setLoading(false);
+    } catch (err) {
+      setError("无法加载图片");
+      setLoading(false);
+    }
   }, [src]);
 
   if (loading) {

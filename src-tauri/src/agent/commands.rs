@@ -716,6 +716,7 @@ pub async fn dispatcher_save_settings(
     image_model_url: String,
     image_model_api_key: String,
     image_model: String,
+    image_edit_model: String,
 ) -> Result<DispatcherSettingsRecord, String> {
     let record = state
         .db
@@ -732,6 +733,7 @@ pub async fn dispatcher_save_settings(
             &image_model_url,
             &image_model_api_key,
             &image_model,
+            &image_edit_model,
         )
         .map_err(|error| error.to_string())?;
 

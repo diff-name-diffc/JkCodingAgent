@@ -696,6 +696,7 @@ function AhaAgentPanel() {
   const [imageModelUrl, setImageModelUrl] = useState("");
   const [imageModelApiKey, setImageModelApiKey] = useState("");
   const [imageModel, setImageModel] = useState("");
+  const [imageEditModel, setImageEditModel] = useState("");
   const [autoApprove, setAutoApprove] = useState(false);
   const [contextDebug, setContextDebug] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -724,6 +725,7 @@ function AhaAgentPanel() {
       imageModelUrl: string;
       imageModelApiKey: string;
       imageModel: string;
+      imageEditModel: string;
     } | null>("dispatcher_get_settings")
       .then((settings) => {
         if (!settings) return;
@@ -737,6 +739,7 @@ function AhaAgentPanel() {
         setImageModelUrl(settings.imageModelUrl ?? "https://dashscope.aliyuncs.com/api/v1");
         setImageModelApiKey(settings.imageModelApiKey ?? "");
         setImageModel(settings.imageModel ?? "qwen-image-2.0-pro");
+        setImageEditModel(settings.imageEditModel ?? "");
         setAutoApprove(settings.autoApproveDispatch);
         setContextDebug(settings.contextDebug);
       })
@@ -762,6 +765,7 @@ function AhaAgentPanel() {
         imageModelUrl: string;
         imageModelApiKey: string;
         imageModel: string;
+        imageEditModel: string;
       }>("dispatcher_save_settings", {
         apiBase,
         apiKey,
@@ -775,6 +779,7 @@ function AhaAgentPanel() {
         imageModelUrl,
         imageModelApiKey,
         imageModel,
+        imageEditModel,
       });
       if (savedSettings.contextDebug !== contextDebug) {
         setContextDebug(savedSettings.contextDebug);
@@ -1118,6 +1123,18 @@ function AhaAgentPanel() {
                 spellCheck={false}
               />
               <span style={hintStyle}>图片生成模型名称，如 qwen-image-2.0-pro</span>
+            </div>
+
+            <div>
+              <label style={labelStyle}>图片编辑模型名称</label>
+              <input
+                style={inputStyle}
+                value={imageEditModel}
+                onChange={(e) => setImageEditModel(e.target.value)}
+                placeholder="qwen-image-2.0-pro"
+                spellCheck={false}
+              />
+              <span style={hintStyle}>图片编辑模型名称，留空则使用图像模型名称</span>
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>

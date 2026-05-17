@@ -937,9 +937,11 @@ impl DispatcherAgent {
         cancel_rx: watch::Receiver<bool>,
         usage_tracker: &mut RunUsageTracker,
     ) -> Result<DispatcherMessageRecord> {
+        let session_title = db.get_session_title(workspace_id).unwrap_or_else(|_| "untitled".to_string());
         let tool_context = ToolContext {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
+            session_title,
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: self.config.restrict_to_workspace,
             app_handle: self.app_handle.clone(),
@@ -948,6 +950,7 @@ impl DispatcherAgent {
             image_model_url: self.config.image_model_url.clone(),
             image_model_api_key: self.config.image_model_api_key.clone(),
             image_model: self.config.image_model.clone(),
+            image_edit_model: self.config.image_edit_model.clone(),
         };
         let allowed_tool_names = plain_chat_tool_allowlist()
             .into_iter()
@@ -1232,9 +1235,11 @@ impl DispatcherAgent {
         usage_tracker: &mut RunUsageTracker,
     ) -> Result<DispatcherMessageRecord> {
         let debug_logger = ContextDebugLogger::new(self.context_debug_enabled(), workspace);
+        let session_title = db.get_session_title(workspace_id).unwrap_or_else(|_| "untitled".to_string());
         let tool_context = ToolContext {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
+            session_title,
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: self.config.restrict_to_workspace,
             app_handle: self.app_handle.clone(),
@@ -1243,6 +1248,7 @@ impl DispatcherAgent {
             image_model_url: self.config.image_model_url.clone(),
             image_model_api_key: self.config.image_model_api_key.clone(),
             image_model: self.config.image_model.clone(),
+            image_edit_model: self.config.image_edit_model.clone(),
         };
 
         for iteration in 0..self.config.max_tool_iterations {
@@ -3397,7 +3403,8 @@ fn build_plain_chat_system_prompt() -> String {
         "",
         "## 图片生成与引用",
         "",
-        "- 你可以调用 generate_image 工具根据文本描述生成图片。",
+        "- 你可以调用 generate_image 工具根据文本描述生成图片。建议提供 image_name 参数为图片指定可读的文件名（如 'logo-design'），否则会使用随机 ID。",
+        "- 你可以调用 edit_image 工具对现有图片进行编辑（例如修改风格、添加元素、调整细节等）。需要提供图片的本地绝对路径（file:// 前缀会自动去除）和编辑描述。建议提供 image_name 参数指定输出文件名。",
         "- 工具返回结果中会包含该图片的本地绝对路径（如 /Users/<username>/.jkcodingagent/chat-images/<slug>/<image-id>.png）。",
         "- 如果你想在回答中展示生成的图片，请直接使用 Markdown 图片引用语法，引用工具返回的原始本地绝对路径即可。",
         "- 正确格式示例：如果工具返回的本地路径是 /Users/alice/.jkcodingagent/chat-images/untitled/abc123.png，",
@@ -3535,6 +3542,7 @@ fn plain_chat_tool_allowlist() -> HashSet<&'static str> {
         "browser_visual_analyze",
         "browser_close",
         "generate_image",
+        "edit_image",
     ])
 }
 

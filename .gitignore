@@ -35,3 +35,8 @@ knowledge
 !src-tauri/src/knowledge/
 !src-tauri/src/knowledge/**
 .gitnexus
+
+# Temporary / generated files
+.swarm/
+ruvector.db
+*.bak

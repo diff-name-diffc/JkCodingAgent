@@ -108,6 +108,7 @@ pub struct DispatcherSettingsRecord {
     pub image_model_url: String,
     pub image_model_api_key: String,
     pub image_model: String,
+    pub image_edit_model: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
@@ -368,7 +369,7 @@ impl DispatcherDb {
     pub fn get_settings(&self) -> Result<Option<DispatcherSettingsRecord>> {
         let conn = self.connect()?;
         conn.query_row(
-            "SELECT api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model FROM dispatcher_settings WHERE id = 'default'",
+            "SELECT api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model, image_edit_model FROM dispatcher_settings WHERE id = 'default'",
             [],
             |row| {
                 Ok(DispatcherSettingsRecord {
@@ -384,6 +385,7 @@ impl DispatcherDb {
                     image_model_url: row.get(9)?,
                     image_model_api_key: row.get(10)?,
                     image_model: row.get(11)?,
+                    image_edit_model: row.get(12)?,
                 })
             },
         )
@@ -405,15 +407,16 @@ impl DispatcherDb {
         image_model_url: &str,
         image_model_api_key: &str,
         image_model: &str,
+        image_edit_model: &str,
     ) -> Result<DispatcherSettingsRecord> {
         let conn = self.connect()?;
         let auto_approve_int = if auto_approve_dispatch { 1 } else { 0 };
         let context_debug_int = if context_debug { 1 } else { 0 };
         let normalized_summary_model = normalize_summary_model(summary_model);
         conn.execute(
-            "INSERT INTO dispatcher_settings (id, api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model)
-             VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-             ON CONFLICT(id) DO UPDATE SET api_base = ?1, api_key = ?2, model = ?3, summary_model = ?4, vision_model = ?5, asr_api_key = ?6, asr_websocket_url = ?7, auto_approve_dispatch = ?8, context_debug = ?9, image_model_url = ?10, image_model_api_key = ?11, image_model = ?12",
+            "INSERT INTO dispatcher_settings (id, api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model, image_edit_model)
+             VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(id) DO UPDATE SET api_base = ?1, api_key = ?2, model = ?3, summary_model = ?4, vision_model = ?5, asr_api_key = ?6, asr_websocket_url = ?7, auto_approve_dispatch = ?8, context_debug = ?9, image_model_url = ?10, image_model_api_key = ?11, image_model = ?12, image_edit_model = ?13",
             params![
                 api_base.trim(),
                 api_key.trim(),
@@ -426,7 +429,8 @@ impl DispatcherDb {
                 context_debug_int,
                 image_model_url.trim(),
                 image_model_api_key.trim(),
-                image_model.trim()
+                image_model.trim(),
+                image_edit_model.trim()
             ],
         )
         .context("save dispatcher settings")?;
@@ -443,6 +447,7 @@ impl DispatcherDb {
             image_model_url: image_model_url.trim().to_string(),
             image_model_api_key: image_model_api_key.trim().to_string(),
             image_model: image_model.trim().to_string(),
+            image_edit_model: image_edit_model.trim().to_string(),
         })
     }
 
@@ -608,6 +613,20 @@ impl DispatcherDb {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn get_session_title(&self, session_id: &str) -> Result<String> {
+        let conn = self.connect()?;
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM dispatcher_sessions WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("load dispatcher session title")?
+            .unwrap_or_else(|| "untitled".to_string());
+        Ok(title)
     }
 
     pub fn get_session_runtime_state(
@@ -1673,7 +1692,8 @@ impl DispatcherDb {
                 context_debug INTEGER NOT NULL DEFAULT 0,
                 image_model_url TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1',
                 image_model_api_key TEXT NOT NULL DEFAULT '',
-                image_model TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'
+                image_model TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro',
+                image_edit_model TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS dispatcher_session_token_usage (
@@ -1743,6 +1763,12 @@ impl DispatcherDb {
             "dispatcher_settings",
             "image_model",
             "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'",
+        )?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_settings",
+            "image_edit_model",
+            "TEXT NOT NULL DEFAULT ''",
         )?;
         ensure_column_exists(&conn, "dispatcher_messages", "context_payload", "TEXT")?;
         ensure_column_exists(&conn, "dispatcher_messages", "segments_json", "TEXT NOT NULL DEFAULT '[]'")?;

@@ -89,6 +89,7 @@ pub struct DispatcherAgentConfig {
     pub image_model_url: String,
     pub image_model_api_key: String,
     pub image_model: String,
+    pub image_edit_model: String,
     pub max_tokens: u32,
     pub temperature: f32,
     pub max_tool_iterations: usize,
@@ -140,6 +141,8 @@ impl DispatcherAgentConfig {
                 .or_else(|_| std::env::var("OPENAI_API_KEY"))
                 .unwrap_or_default(),
             image_model: std::env::var("IMAGE_MODEL_NAME")
+                .unwrap_or_else(|_| "qwen-image-2.0-pro".to_string()),
+            image_edit_model: std::env::var("IMAGE_EDIT_MODEL_NAME")
                 .unwrap_or_else(|_| "qwen-image-2.0-pro".to_string()),
             max_tokens: 8192,
             temperature: 0.1,

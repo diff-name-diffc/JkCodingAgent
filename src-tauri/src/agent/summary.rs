@@ -524,7 +524,7 @@ fn tool_output_kind(tool_name: &str) -> ToolOutputKind {
         | "browser_read_text"
         | "browser_visual_analyze" => ToolOutputKind::Exact,
         "exec" => ToolOutputKind::Command,
-        "write_file" | "edit_file" => ToolOutputKind::Mutation,
+        "write_file" | "edit_file" | "generate_image" | "edit_image" => ToolOutputKind::Mutation,
         "message" => ToolOutputKind::Message,
         _ => ToolOutputKind::Other,
     }

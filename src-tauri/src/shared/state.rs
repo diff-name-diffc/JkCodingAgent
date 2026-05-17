@@ -6,6 +6,29 @@ use std::sync::Arc;
 
 use crate::task_runtime::session::{ClaudeSessionInfo, CodexSessionInfo};
 
+/// Lightweight cancellation token: clone-able, signal via `cancel()`, poll via `is_cancelled()`.
+#[derive(Clone)]
+pub(crate) struct CancellationToken {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl CancellationToken {
+    pub(crate) fn new() -> Self {
+        Self {
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 pub(crate) type SharedPtyMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 pub(crate) type SharedPtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 pub(crate) type SharedChildHandle = Arc<Mutex<Box<dyn Child + Send + Sync>>>;
@@ -24,6 +47,8 @@ pub struct TaskManager {
     pub(crate) codex_sessions: Mutex<HashMap<String, CodexSessionInfo>>,
     pub(crate) claude_sessions: Mutex<HashMap<String, ClaudeSessionInfo>>,
     pub(crate) claimed_session_paths: Mutex<std::collections::HashSet<String>>,
+    /// Cancellation tokens for session watcher threads — cancel on task cleanup.
+    pub(crate) session_watchers: Mutex<HashMap<String, CancellationToken>>,
 }
 
 impl TaskManager {
@@ -95,17 +120,21 @@ impl TaskManager {
         child.kill().map_err(|err| err.to_string())
     }
 
-    /// Atomically remove a task or shell from all PTY maps.
+    /// Atomically remove a task or shell from all PTY maps and cancel session watchers.
     /// Locks are acquired in a fixed order to prevent deadlocks.
     pub(crate) fn remove_pty_handles(&self, id: &str) {
         let mut masters = self.pty_masters.lock();
         let mut writers = self.pty_writers.lock();
         let mut children = self.child_handles.lock();
         let mut intents = self.task_termination_intents.lock();
+        let mut watchers = self.session_watchers.lock();
 
         masters.remove(id);
         writers.remove(id);
         children.remove(id);
         intents.remove(id);
+        if let Some(token) = watchers.remove(id) {
+            token.cancel();
+        }
     }
 }

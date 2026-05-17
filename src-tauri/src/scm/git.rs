@@ -7,6 +7,30 @@ use crate::shared::truncate_for_display;
 
 // ── 辅助函数 ─────────────────────────────────────────────────────────────────
 
+/// Validate a Git ref name (branch, tag, etc.) against a whitelist of safe characters.
+fn validate_git_ref_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("分支名不能为空".to_string());
+    }
+    if name.len() > 256 {
+        return Err(format!("分支名过长（{} 字符），上限 256", name.len()));
+    }
+    let is_safe = name.chars().all(|c| {
+        c.is_alphanumeric() || c == '/' || c == '-' || c == '_' || c == '.' || c == '@'
+    });
+    if !is_safe {
+        return Err(format!(
+            "分支名 '{}' 包含非法字符，仅允许字母、数字、/、-、_、.、@",
+            name
+        ));
+    }
+    // Block path traversal patterns
+    if name.contains("..") {
+        return Err(format!("分支名 '{}' 包含非法路径遍历模式", name));
+    }
+    Ok(())
+}
+
 /// Validate that project_path is absolute and looks like a real project directory.
 fn validate_project_path(project_path: &str) -> Result<(), String> {
     let path = Path::new(project_path);
@@ -29,24 +53,26 @@ fn validate_project_path(project_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 执行 git 命令并返回原始 Output。
-/// 泛型 S 允许同时接受 `&[&str]` 和 `&[String]`。
-fn run_git<S: AsRef<std::ffi::OsStr>>(
+/// 执行 git 命令并返回原始 Output（spawn_blocking 版本，不阻塞 Tokio 运行时）。
+async fn run_git<S: AsRef<std::ffi::OsStr>>(
     project_path: &str,
     args: &[S],
 ) -> Result<std::process::Output, String> {
-    validate_project_path(project_path)?;
-
-    std::process::Command::new("git")
-        .args(args)
-        .current_dir(project_path)
-        .output()
-        .map_err(|e| e.to_string())
+    let pp = project_path.to_string();
+    let args: Vec<String> = args.iter().map(|s| s.as_ref().to_string_lossy().into_owned()).collect();
+    tokio::task::spawn_blocking(move || {
+        validate_project_path(&pp)?;
+        std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&pp)
+            .output()
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Git 命令线程错误：{}", e))?
 }
 
 /// 带超时的 git 命令执行。
-/// 使用 tokio::task::spawn_blocking 将阻塞操作移到线程池，
-/// 并用 tokio::time::timeout 限制最长执行时间。
 async fn run_git_with_timeout(
     project_path: String,
     args: Vec<String>,
@@ -68,9 +94,9 @@ async fn run_git_with_timeout(
     .map_err(|e| format!("Git 命令线程错误：{}", e))?
 }
 
-/// 执行 git 命令，若退出码非零则将 stderr 作为错误返回。
-fn run_git_check<S: AsRef<std::ffi::OsStr>>(project_path: &str, args: &[S]) -> Result<(), String> {
-    let output = run_git(project_path, args)?;
+/// 执行 git 命令，若退出码非零则将 stderr 作为错误返回（spawn_blocking 版本）。
+async fn run_git_check<S: AsRef<std::ffi::OsStr>>(project_path: &str, args: &[S]) -> Result<(), String> {
+    let output = run_git(project_path, args).await?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -84,7 +110,7 @@ pub async fn generate_commit_message(project_path: String) -> Result<String, Str
     use std::process::Command;
 
     // 1. Get staged diff
-    let diff_output = run_git(&project_path, &["diff", "--staged"])?;
+    let diff_output = run_git(&project_path, &["diff", "--staged"]).await?;
     let diff = String::from_utf8_lossy(&diff_output.stdout).into_owned();
     if diff.trim().is_empty() {
         return Err("没有可用于生成提交信息的已暂存变更。".to_string());
@@ -250,7 +276,7 @@ pub(crate) struct GitBranchInfo {
 
 #[tauri::command]
 pub async fn git_list_branches(project_path: String) -> Result<Vec<GitBranchInfo>, String> {
-    let output = run_git(&project_path, &["branch", "-a"])?;
+    let output = run_git(&project_path, &["branch", "-a"]).await?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut branches = Vec::new();
     for line in stdout.lines() {
@@ -289,6 +315,7 @@ pub async fn git_checkout_branch(
     branch_name: String,
     is_remote: bool,
 ) -> Result<(), String> {
+    validate_git_ref_name(&branch_name)?;
     let args: Vec<String> = if is_remote {
         // "origin/main" -> local name "main", track remote
         let local_name = branch_name
@@ -305,7 +332,7 @@ pub async fn git_checkout_branch(
     } else {
         vec!["checkout".into(), branch_name.clone()]
     };
-    run_git_check(&project_path, &args)
+    run_git_check(&project_path, &args).await
 }
 
 #[tauri::command]
@@ -314,10 +341,13 @@ pub async fn git_create_branch(
     branch_name: String,
     from_branch: String,
 ) -> Result<(), String> {
+    validate_git_ref_name(&branch_name)?;
+    validate_git_ref_name(&from_branch)?;
     run_git_check(
         &project_path,
         &["checkout", "-b", &branch_name, &from_branch],
     )
+    .await
 }
 
 #[tauri::command]
@@ -337,11 +367,13 @@ pub async fn git_log(
     ];
     if let Some(ref s) = search {
         if !s.is_empty() {
-            args.push(format!("--grep={}", s));
+            args.push("--grep".into());
+            args.push(s.clone());
         }
     }
     if let Some(ref b) = branch {
         if !b.is_empty() {
+            validate_git_ref_name(b)?;
             args.push(b.clone());
         }
     }
@@ -427,7 +459,8 @@ pub async fn git_commit_detail(
             "--format=HASH:%H%nSHORT:%h%nAUTHOR:%an%nDATE:%ar%nSUBJECT:%s",
             &commit_hash,
         ],
-    )?;
+    )
+    .await?;
 
     let info_str = String::from_utf8_lossy(&info_out.stdout).into_owned();
     let mut hash = String::new();
@@ -458,7 +491,8 @@ pub async fn git_commit_detail(
             "--name-status",
             &commit_hash,
         ],
-    )?;
+    )
+    .await?;
 
     let mut file_statuses: HashMap<String, String> = HashMap::new();
     for line in String::from_utf8_lossy(&ns_out.stdout).lines() {
@@ -497,7 +531,8 @@ pub async fn git_commit_detail(
             "--numstat",
             &commit_hash,
         ],
-    )?;
+    )
+    .await?;
 
     let mut files = Vec::new();
     let mut total_additions = 0i32;
@@ -605,27 +640,27 @@ pub async fn git_file_diff(
 
 #[tauri::command]
 pub async fn git_stage(project_path: String, file_path: String) -> Result<(), String> {
-    run_git_check(&project_path, &["add", "--", &file_path])
+    run_git_check(&project_path, &["add", "--", &file_path]).await
 }
 
 #[tauri::command]
 pub async fn git_unstage(project_path: String, file_path: String) -> Result<(), String> {
-    run_git_check(&project_path, &["restore", "--staged", "--", &file_path])
+    run_git_check(&project_path, &["restore", "--staged", "--", &file_path]).await
 }
 
 #[tauri::command]
 pub async fn git_stage_all(project_path: String) -> Result<(), String> {
-    run_git_check(&project_path, &["add", "-A"])
+    run_git_check(&project_path, &["add", "-A"]).await
 }
 
 #[tauri::command]
 pub async fn git_unstage_all(project_path: String) -> Result<(), String> {
-    run_git_check(&project_path, &["restore", "--staged", "."])
+    run_git_check(&project_path, &["restore", "--staged", "."]).await
 }
 
 #[tauri::command]
 pub async fn git_commit(project_path: String, message: String) -> Result<(), String> {
-    run_git_check(&project_path, &["commit", "-m", &message])
+    run_git_check(&project_path, &["commit", "-m", &message]).await
 }
 
 #[tauri::command]
@@ -637,7 +672,8 @@ pub async fn git_show_file_diff(
     let output = run_git(
         &project_path,
         &["show", "--format=", &commit_hash, "--", &file_path],
-    )?;
+    )
+    .await?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
@@ -653,12 +689,15 @@ pub async fn git_show_file_diff(
 
 #[tauri::command]
 pub async fn git_push(project_path: String, branch: Option<String>) -> Result<String, String> {
+    if let Some(ref b) = &branch {
+        validate_git_ref_name(b)?;
+    }
     let mut args = vec!["push".to_string()];
     if let Some(ref b) = branch.filter(|s| !s.is_empty()) {
         args.push("origin".to_string());
         args.push(b.clone());
     }
-    let output = run_git(&project_path, &args)?;
+    let output = run_git(&project_path, &args).await?;
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -672,7 +711,7 @@ pub async fn git_push(project_path: String, branch: Option<String>) -> Result<St
 
 #[tauri::command]
 pub async fn git_pull(project_path: String) -> Result<String, String> {
-    let output = run_git(&project_path, &["pull"])?;
+    let output = run_git(&project_path, &["pull"]).await?;
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -699,7 +738,7 @@ pub async fn git_remote_counts(
     let branch = if let Some(b) = branch.filter(|s| !s.is_empty()) {
         b
     } else {
-        let branch_out = run_git(&project_path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        let branch_out = run_git(&project_path, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
         String::from_utf8_lossy(&branch_out.stdout)
             .trim()
             .to_string()
@@ -709,7 +748,8 @@ pub async fn git_remote_counts(
     let rev_out = run_git(
         &project_path,
         &["rev-list", "--count", "--left-right", &rev_str],
-    );
+    )
+    .await;
 
     let (ahead, behind) = match rev_out {
         Ok(o) if o.status.success() => {

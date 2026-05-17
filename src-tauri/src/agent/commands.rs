@@ -83,20 +83,24 @@ impl DispatcherState {
         agent
     }
 
-    fn begin_run(&self, workspace_id: &str) -> ActiveRunHandle {
+    fn begin_run(&self, workspace_id: &str) -> Result<ActiveRunHandle, String> {
+        let mut active_runs = self.active_runs.lock();
+        if active_runs.contains_key(workspace_id) {
+            return Err(format!("会话 {} 已在运行中，请等待当前任务完成", workspace_id));
+        }
         let generation = self.next_run_generation.fetch_add(1, Ordering::Relaxed);
         let (stop_tx, cancel_rx) = watch::channel(false);
-        self.active_runs.lock().insert(
+        active_runs.insert(
             workspace_id.to_string(),
             ActiveRunEntry {
                 generation,
                 stop_tx,
             },
         );
-        ActiveRunHandle {
+        Ok(ActiveRunHandle {
             generation,
             cancel_rx,
-        }
+        })
     }
 
     pub(crate) fn register_subprocess(
@@ -508,7 +512,7 @@ pub async fn dispatcher_send_message(
             .map_err(|error| error.to_string())?;
     }
 
-    let run_handle = state.begin_run(&workspace_id);
+    let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
     let agent = state.build_run_agent().with_app_handle(app.clone());
     let result = agent
         .run(
@@ -548,7 +552,7 @@ pub async fn dispatcher_send_plain_chat_message(
         .set_plan_interaction(&workspace_id, None)
         .map_err(|error| error.to_string())?;
 
-    let run_handle = state.begin_run(&workspace_id);
+    let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
     let agent = state.build_run_agent().with_app_handle(app.clone());
     let result = agent
         .run_plain_chat(
@@ -774,7 +778,7 @@ pub async fn dispatcher_continue_after_dispatch(
     enable_thinking: Option<bool>,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
-    let run_handle = state.begin_run(&workspace_id);
+    let run_handle = state.begin_run(&workspace_id)?;
     let agent = state.build_run_agent().with_app_handle(app);
     let result = agent
         .continue_after_dispatch(

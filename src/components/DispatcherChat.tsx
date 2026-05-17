@@ -1042,6 +1042,11 @@ function subscribeDispatcherLiveSession(
     subscribers.delete(subscriber);
     if (subscribers.size === 0) {
       dispatcherLiveSessionSubscribers.delete(sessionId);
+      // Auto-GC: if no message subscribers either, clear stale state
+      if ((dispatcherMessageSubscribers.get(sessionId)?.size ?? 0) === 0) {
+        dispatcherLiveSessionStates.delete(sessionId);
+        dispatcherActiveRunIds.delete(sessionId);
+      }
     }
   };
 }
@@ -1062,12 +1067,37 @@ function subscribeDispatcherMessages(
     subscribers.delete(subscriber);
     if (subscribers.size === 0) {
       dispatcherMessageSubscribers.delete(sessionId);
+      if ((dispatcherLiveSessionSubscribers.get(sessionId)?.size ?? 0) === 0) {
+        dispatcherLiveSessionStates.delete(sessionId);
+        dispatcherActiveRunIds.delete(sessionId);
+      }
     }
   };
 }
 
 function isLiveSessionRunning(state: DispatcherLiveSessionState | undefined): boolean {
   return Boolean(state?.hasPendingRun || state?.isLoading);
+}
+
+/** Clean up all module-level state for a session to prevent memory leaks. */
+export function cleanupDispatcherSession(sessionId: string) {
+  dispatcherLiveSessionStates.delete(sessionId);
+  dispatcherActiveRunIds.delete(sessionId);
+  dispatcherLiveSessionSubscribers.delete(sessionId);
+  dispatcherMessageSubscribers.delete(sessionId);
+}
+
+/** GC sessions that have no active subscribers. */
+export function gcDispatcherSessions() {
+  for (const id of dispatcherLiveSessionStates.keys()) {
+    const hasSubscribers =
+      (dispatcherLiveSessionSubscribers.get(id)?.size ?? 0) > 0 ||
+      (dispatcherMessageSubscribers.get(id)?.size ?? 0) > 0;
+    if (!hasSubscribers) {
+      dispatcherLiveSessionStates.delete(id);
+      dispatcherActiveRunIds.delete(id);
+    }
+  }
 }
 
 export function getDispatcherSessionRunning(sessionId: string): boolean {
@@ -1205,6 +1235,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     onDispatchContinueRef.current = onDispatchContinue;
     const onDispatchExitRef = useRef(onDispatchExit);
     onDispatchExitRef.current = onDispatchExit;
+    const pendingNotifyRaf = useRef<number | null>(null);
+    const pendingNotifySessions = useRef(new Set<string>());
     const sessionSubProcesses = useMemo(
       () => _subProcesses.filter((subProcess) => subProcess.sessionId === sessionId),
       [_subProcesses, sessionId],
@@ -1262,7 +1294,24 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       ) => {
         const next = updater(getLiveSessionState(targetSessionId));
         dispatcherLiveSessionStates.set(targetSessionId, next);
-        notifyDispatcherLiveSessionSubscribers(targetSessionId, next);
+        // Batch subscriber notifications via rAF to prevent render storms
+        // during high-frequency streaming (~50 tokens/s).
+        if (!pendingNotifySessions.current.has(targetSessionId)) {
+          pendingNotifySessions.current.add(targetSessionId);
+          if (pendingNotifyRaf.current === null) {
+            pendingNotifyRaf.current = requestAnimationFrame(() => {
+              for (const sid of pendingNotifySessions.current) {
+                const state = dispatcherLiveSessionStates.get(sid);
+                if (state) {
+                  notifyDispatcherLiveSessionSubscribers(sid, state);
+                }
+              }
+              pendingNotifySessions.current.clear();
+              pendingNotifyRaf.current = null;
+            });
+          }
+        }
+        // Always update current session state immediately for responsiveness
         if (currentSessionIdRef.current === targetSessionId) {
           applyLiveSessionState(next);
         }
@@ -1311,6 +1360,17 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       }, 1000);
       return () => window.clearInterval(timer);
     }, [activeUsageStats]);
+
+    // Clean up pending rAF on unmount
+    useEffect(() => {
+      return () => {
+        if (pendingNotifyRaf.current !== null) {
+          cancelAnimationFrame(pendingNotifyRaf.current);
+          pendingNotifyRaf.current = null;
+        }
+        pendingNotifySessions.current.clear();
+      };
+    }, []);
 
     // Load settings (for auto-approve flag)
     useEffect(() => {

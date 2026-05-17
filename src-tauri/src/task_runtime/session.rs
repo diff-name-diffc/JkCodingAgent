@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::agent::DispatcherState;
+use crate::shared::CancellationToken;
 use crate::shared::TaskManager;
 
 #[derive(Clone)]
@@ -164,6 +165,7 @@ fn watch_codex_session(
     task_id: String,
     session_path: PathBuf,
     project_path: PathBuf,
+    cancel: CancellationToken,
 ) {
     use notify::{RecursiveMode, Watcher};
 
@@ -179,7 +181,7 @@ fn watch_codex_session(
     let mut partial = String::new();
     let mut task_state = CodexTaskState::default();
 
-    while is_task_active(&app, &task_id) {
+    while is_task_active(&app, &task_id) && !cancel.is_cancelled() {
         if let Ok(lines) = read_session_lines_since(&session_path, &mut offset, &mut partial) {
             for line in lines {
                 task_state.process_line(&app, &task_id, &line, &project_path);
@@ -535,7 +537,12 @@ fn claude_sessions_dir_for_project(project_path: &str) -> Option<PathBuf> {
     Some(home.join(".claude").join("projects").join(encoded))
 }
 
-fn watch_claude_session(app: AppHandle, task_id: String, session_path: PathBuf) {
+fn watch_claude_session(
+    app: AppHandle,
+    task_id: String,
+    session_path: PathBuf,
+    cancel: CancellationToken,
+) {
     use notify::{RecursiveMode, Watcher};
 
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
@@ -550,7 +557,7 @@ fn watch_claude_session(app: AppHandle, task_id: String, session_path: PathBuf) 
     let mut partial = String::new();
     let mut task_state = ClaudeTaskState::default();
 
-    while is_task_active(&app, &task_id) {
+    while is_task_active(&app, &task_id) && !cancel.is_cancelled() {
         if let Ok(lines) = read_session_lines_since(&session_path, &mut offset, &mut partial) {
             for line in lines {
                 task_state.process_line(&app, &task_id, &line);
@@ -1299,11 +1306,18 @@ pub(crate) fn register_and_watch_session(
 
     let app_clone = app.clone();
     let tid = task_id.to_string();
+    let cancel = CancellationToken::new();
+    {
+        let tm = app.state::<TaskManager>();
+        tm.session_watchers
+            .lock()
+            .insert(tid.clone(), cancel.clone());
+    }
     if is_codex {
         let pp = PathBuf::from(project_path);
-        thread::spawn(move || watch_codex_session(app_clone, tid, path, pp));
+        thread::spawn(move || watch_codex_session(app_clone, tid, path, pp, cancel));
     } else {
-        thread::spawn(move || watch_claude_session(app_clone, tid, path));
+        thread::spawn(move || watch_claude_session(app_clone, tid, path, cancel));
     }
 }
 

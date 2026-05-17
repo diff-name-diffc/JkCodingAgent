@@ -1,13 +1,48 @@
-import { memo, useDeferredValue, useMemo } from "react";
+import { memo, useDeferredValue, useEffect, useMemo, useState } from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { MarkdownImage } from "./MarkdownImage";
+
+const safeSchema = {
+  ...defaultSchema,
+  tagNames: [
+    ...(defaultSchema.tagNames || []),
+    "video",
+    "audio",
+    "source",
+    "details",
+    "summary",
+  ],
+  attributes: {
+    ...defaultSchema.attributes,
+    "*": [...(defaultSchema.attributes?.["*"] || []), "className", "style"],
+    video: ["src", "controls", "width", "height", "muted", "autoplay", "loop"],
+    audio: ["src", "controls"],
+    source: ["src", "type"],
+    details: ["open"],
+    img: [
+      "src",
+      "alt",
+      "width",
+      "height",
+      "loading",
+      ...(defaultSchema.attributes?.img || []),
+    ],
+    a: ["href", "target", "rel", ...(defaultSchema.attributes?.a || [])],
+    code: ["className"],
+    span: ["className", "style", ...(defaultSchema.attributes?.span || [])],
+    div: ["className", "style"],
+    td: ["align", "className"],
+    th: ["align", "className"],
+  },
+};
 
 function customUrlTransform(url: string) {
   if (
@@ -47,7 +82,7 @@ function normalizeSingleLineMathBlocks(content: string) {
       const trimmed = line.trim();
 
       if (trimmed.startsWith("$$") && trimmed.endsWith("$$") && trimmed.length > 4) {
-        return `${leadingWhitespace}$$\n${trimmed.slice(2, -2).trim()}\n${leadingWhitespace}$$`;
+        return `${leadingWhitespace}$$\n${leadingWhitespace}${trimmed.slice(2, -2).trim()}\n${leadingWhitespace}$$`;
       }
 
       return line;
@@ -82,6 +117,8 @@ const markdownComponents: Components = {
   },
 };
 
+const LARGE_TEXT_THRESHOLD = 10_000;
+
 export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,
   variant = "chat",
@@ -95,11 +132,35 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
     [deferredContent],
   );
 
+  // Defer full markdown rendering for large texts to avoid blocking the main thread
+  const isLarge = normalizedContent.length > LARGE_TEXT_THRESHOLD;
+  const [readyForRender, setReadyForRender] = useState(false);
+
+  useEffect(() => {
+    if (!isLarge) {
+      setReadyForRender(true);
+      return;
+    }
+    setReadyForRender(false);
+    const id = requestAnimationFrame(() => setReadyForRender(true));
+    return () => cancelAnimationFrame(id);
+  }, [isLarge, normalizedContent]);
+
+  if (isLarge && !readyForRender) {
+    return (
+      <div className={`markdown-surface markdown-surface--${variant}`}>
+        <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+          {normalizedContent}
+        </pre>
+      </div>
+    );
+  }
+
   return (
     <div className={`markdown-surface markdown-surface--${variant}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeRaw, rehypeKatex]}
+        rehypePlugins={[rehypeRaw, [rehypeSanitize, safeSchema], rehypeKatex]}
         components={markdownComponents}
         urlTransform={customUrlTransform}
       >

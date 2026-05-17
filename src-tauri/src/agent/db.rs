@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, types::Type, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -337,6 +339,7 @@ pub struct DispatcherSessionTokenUsageRecord {
 
 #[derive(Debug, Clone)]
 pub struct DispatcherDb {
+    pool: Pool<SqliteConnectionManager>,
     path: PathBuf,
 }
 
@@ -359,7 +362,16 @@ struct NewDispatcherMessage<'a> {
 
 impl DispatcherDb {
     pub fn new(path: PathBuf) -> Result<Self> {
-        let db = Self { path };
+        let manager = SqliteConnectionManager::file(&path)
+            .with_init(|conn| {
+                conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+                Ok(())
+            });
+        let pool = Pool::builder()
+            .max_size(4)
+            .build(manager)
+            .with_context(|| format!("创建数据库连接池失败：{}", path.display()))?;
+        let db = Self { pool, path };
         db.init()?;
         Ok(db)
     }
@@ -367,7 +379,7 @@ impl DispatcherDb {
     // ── Settings ──────────────────────────────────────────────
 
     pub fn get_settings(&self) -> Result<Option<DispatcherSettingsRecord>> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         conn.query_row(
             "SELECT api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model, image_edit_model FROM dispatcher_settings WHERE id = 'default'",
             [],
@@ -409,7 +421,7 @@ impl DispatcherDb {
         image_model: &str,
         image_edit_model: &str,
     ) -> Result<DispatcherSettingsRecord> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let auto_approve_int = if auto_approve_dispatch { 1 } else { 0 };
         let context_debug_int = if context_debug { 1 } else { 0 };
         let normalized_summary_model = normalize_summary_model(summary_model);
@@ -455,7 +467,7 @@ impl DispatcherDb {
         &self,
         auto_approve_dispatch: bool,
     ) -> Result<DispatcherSettingsRecord> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let auto_approve_int = if auto_approve_dispatch { 1 } else { 0 };
         conn.execute(
             "INSERT INTO dispatcher_settings (id, auto_approve_dispatch)
@@ -475,7 +487,7 @@ impl DispatcherDb {
         project_id: &str,
         kind: DispatcherSessionKind,
     ) -> Result<Vec<DispatcherSessionRecord>> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, project_id, kind, title, mode, active_plan_path, created_at, updated_at
              FROM dispatcher_sessions
@@ -518,7 +530,7 @@ impl DispatcherDb {
             updated_at: now(),
         };
 
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO dispatcher_sessions (id, project_id, kind, title, mode, active_plan_path, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -544,7 +556,7 @@ impl DispatcherDb {
         title: &str,
     ) -> Result<Option<DispatcherSessionRecord>> {
         let updated_at = now();
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let changed = conn
             .execute(
                 "UPDATE dispatcher_sessions
@@ -581,7 +593,7 @@ impl DispatcherDb {
     }
 
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
-        let mut conn = self.connect()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
@@ -616,7 +628,7 @@ impl DispatcherDb {
     }
 
     pub fn get_session_title(&self, session_id: &str) -> Result<String> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let title: String = conn
             .query_row(
                 "SELECT title FROM dispatcher_sessions WHERE id = ?1",
@@ -633,7 +645,7 @@ impl DispatcherDb {
         &self,
         session_id: &str,
     ) -> Result<DispatcherSessionRuntimeState> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let (mode, active_plan_path, checklist_json, plan_interaction_json) = conn
             .query_row(
                 "SELECT mode, active_plan_path, checklist_json, plan_interaction_json
@@ -666,7 +678,7 @@ impl DispatcherDb {
         session_id: &str,
         mode: DispatcherMode,
     ) -> Result<DispatcherSessionRuntimeState> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let changed = conn
             .execute(
                 "UPDATE dispatcher_sessions
@@ -687,7 +699,7 @@ impl DispatcherDb {
         checklist: &ChecklistPlanState,
     ) -> Result<DispatcherSessionRuntimeState> {
         let checklist_json = serde_json::to_string(checklist).context("serialize checklist")?;
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let changed = conn
             .execute(
                 "UPDATE dispatcher_sessions
@@ -703,7 +715,7 @@ impl DispatcherDb {
     }
 
     pub fn clear_checklist(&self, session_id: &str) -> Result<DispatcherSessionRuntimeState> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let changed = conn
             .execute(
                 "UPDATE dispatcher_sessions
@@ -790,7 +802,7 @@ impl DispatcherDb {
             .map(serde_json::to_string)
             .transpose()
             .context("serialize plan interaction")?;
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let changed = conn
             .execute(
                 "UPDATE dispatcher_sessions
@@ -810,7 +822,7 @@ impl DispatcherDb {
         session_id: &str,
         plan_path: Option<&str>,
     ) -> Result<DispatcherSessionRuntimeState> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let changed = conn
             .execute(
                 "UPDATE dispatcher_sessions
@@ -984,7 +996,7 @@ impl DispatcherDb {
         tool_name: &str,
         current_tool_call_id: &str,
     ) -> Result<()> {
-        let mut conn = self.connect()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let cutoff_rowid = latest_user_message_rowid(&tx, workspace_id)?;
         let retry_context_pattern = format!("{TOOL_RETRY_CONTEXT_PREFIX}%");
@@ -1134,7 +1146,7 @@ impl DispatcherDb {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<DispatcherMessageRecord>> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
              FROM dispatcher_messages
@@ -1157,7 +1169,7 @@ impl DispatcherDb {
         workspace_id: &str,
         max_dialogues: usize,
     ) -> Result<Vec<DispatcherMessageRecord>> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let cutoff_rowid = self.find_dialogue_cutoff_rowid(&conn, workspace_id, max_dialogues)?;
         let mut stmt = conn.prepare(
             "SELECT id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
@@ -1184,7 +1196,7 @@ impl DispatcherDb {
     /// - One project can have multiple dispatcher sessions; history is isolated by session id.
     /// - Only the most recent `MAX_LLM_DIALOGUES` user-started dialogues are injected into the LLM.
     pub fn load_llm_history(&self, workspace_id: &str) -> Result<Vec<ChatMessage>> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let cutoff_rowid =
             self.find_dialogue_cutoff_rowid(&conn, workspace_id, MAX_LLM_DIALOGUES)?;
 
@@ -1235,7 +1247,7 @@ impl DispatcherDb {
     }
 
     pub fn clear_context_messages(&self, workspace_id: &str) -> Result<()> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE dispatcher_messages
              SET context_cleared = 1
@@ -1247,7 +1259,7 @@ impl DispatcherDb {
     }
 
     pub fn clear_messages(&self, workspace_id: &str) -> Result<()> {
-        let mut conn = self.connect()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
@@ -1310,7 +1322,7 @@ impl DispatcherDb {
             context_window_capacity: default_context_window_capacity(model),
             updated_at,
         };
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO dispatcher_session_token_usage (
                 workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens,
@@ -1376,7 +1388,7 @@ impl DispatcherDb {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<DispatcherSessionTokenUsageRecord>> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens,
                     cached_tokens, context_window_tokens, context_window_capacity, updated_at
@@ -1408,7 +1420,7 @@ impl DispatcherDb {
         workspace_id: &str,
         artifact_id: &str,
     ) -> Result<DispatcherToolArtifactRecord> {
-        let conn = self.connect()?;
+        let conn = self.conn()?;
         conn.query_row(
             "SELECT id, workspace_id, message_id, tool_call_id, tool_name, title, kind, preview, content, char_count, line_count, created_at
              FROM dispatcher_tool_artifacts
@@ -1477,7 +1489,7 @@ impl DispatcherDb {
             created_at: now(),
         };
 
-        let mut conn = self.connect()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute(
             "UPDATE dispatcher_sessions SET updated_at = ?1 WHERE id = ?2",
@@ -1589,7 +1601,7 @@ impl DispatcherDb {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create db directory {}", parent.display()))?;
         }
-        let mut conn = self.connect()?;
+        let mut conn = self.conn()?;
         conn.execute_batch(
             "
             PRAGMA journal_mode = WAL;
@@ -1817,8 +1829,195 @@ impl DispatcherDb {
         Ok(())
     }
 
-    fn connect(&self) -> Result<Connection> {
-        Connection::open(&self.path).with_context(|| format!("open {}", self.path.display()))
+    fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>> {
+        self.pool.get().with_context(|| "获取数据库连接")
+    }
+
+    // ── Async wrappers for use in async contexts (spawn_blocking) ──
+
+    pub async fn clear_checklist_async(&self, workspace_id: &str) -> Result<DispatcherSessionRuntimeState> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || db.clear_checklist(&wid))
+            .await
+            .context("clear_checklist spawn_blocking")?
+    }
+
+    pub async fn add_visible_message_async(
+        &self,
+        workspace_id: &str,
+        role: &str,
+        content: &str,
+        segments_json: Option<String>,
+    ) -> Result<DispatcherMessageRecord> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        let role = role.to_string();
+        let content = content.to_string();
+        tokio::task::spawn_blocking(move || {
+            db.add_visible_message(&wid, &role, &content, segments_json)
+        })
+        .await
+        .context("add_visible_message spawn_blocking")?
+    }
+
+    pub async fn add_visible_message_with_usage_and_thinking_async(
+        &self,
+        workspace_id: &str,
+        role: &str,
+        content: &str,
+        usage_stats: &DispatcherMessageUsageStats,
+        thinking_content: Option<&str>,
+        thinking_elapsed_ms: u64,
+    ) -> Result<DispatcherMessageRecord> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        let role = role.to_string();
+        let content = content.to_string();
+        let usage = usage_stats.clone();
+        let thinking = thinking_content.map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            db.add_visible_message_with_usage_and_thinking(
+                &wid,
+                &role,
+                &content,
+                &usage,
+                thinking.as_deref(),
+                thinking_elapsed_ms,
+            )
+        })
+        .await
+        .context("add_visible_message_with_usage_and_thinking spawn_blocking")?
+    }
+
+    pub async fn list_visible_messages_async(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<DispatcherMessageRecord>> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || db.list_visible_messages(&wid))
+            .await
+            .context("list_visible_messages spawn_blocking")?
+    }
+
+    pub async fn load_llm_history_async(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<ChatMessage>> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || db.load_llm_history(&wid))
+            .await
+            .context("load_llm_history spawn_blocking")?
+    }
+
+    pub async fn get_session_runtime_state_async(
+        &self,
+        workspace_id: &str,
+    ) -> Result<DispatcherSessionRuntimeState> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || db.get_session_runtime_state(&wid))
+            .await
+            .context("get_session_runtime_state spawn_blocking")?
+    }
+
+    pub async fn get_session_title_async(&self, workspace_id: &str) -> Result<String> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || db.get_session_title(&wid))
+            .await
+            .context("get_session_title spawn_blocking")?
+    }
+
+    pub async fn save_token_usage_async(
+        &self,
+        workspace_id: &str,
+        model: &str,
+        source: DispatcherSessionTokenUsageSource,
+        usage: &LlmUsage,
+    ) -> Result<DispatcherSessionTokenUsageRecord> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        let model = model.to_string();
+        let usage = usage.clone();
+        tokio::task::spawn_blocking(move || {
+            db.upsert_session_token_usage(&wid, &model, source, &usage)
+        })
+        .await
+        .context("save_token_usage spawn_blocking")?
+    }
+
+    pub async fn add_visible_message_with_tools_and_thinking_async(
+        &self,
+        workspace_id: &str,
+        role: &str,
+        content: &str,
+        tool_call_id: Option<&str>,
+        tool_name: Option<&str>,
+        tool_result_mode: Option<&str>,
+        tool_calls: Option<&[OutboundToolCall]>,
+        thinking_content: Option<&str>,
+        thinking_elapsed_ms: u64,
+    ) -> Result<DispatcherMessageRecord> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        let role = role.to_string();
+        let content = content.to_string();
+        let tool_call_id = tool_call_id.map(str::to_string);
+        let tool_name = tool_name.map(str::to_string);
+        let tool_result_mode = tool_result_mode.map(str::to_string);
+        let tool_calls = tool_calls.map(|c| c.to_vec());
+        let thinking = thinking_content.map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            db.add_visible_message_with_tools_and_thinking(
+                &wid,
+                &role,
+                &content,
+                tool_call_id.as_deref(),
+                tool_name.as_deref(),
+                tool_result_mode.as_deref(),
+                tool_calls.as_deref(),
+                thinking.as_deref(),
+                thinking_elapsed_ms,
+            )
+        })
+        .await
+        .context("add_visible_message_with_tools_and_thinking spawn_blocking")?
+    }
+
+    pub async fn add_visible_tool_result_async(
+        &self,
+        workspace_id: &str,
+        content: &str,
+        context_payload: &str,
+        tool_call_id: Option<&str>,
+        tool_name: Option<&str>,
+        tool_result_mode: Option<&str>,
+        tool_artifacts: &[ToolArtifactDraft],
+    ) -> Result<DispatcherMessageRecord> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        let content = content.to_string();
+        let context_payload = context_payload.to_string();
+        let tool_call_id = tool_call_id.map(str::to_string);
+        let tool_name = tool_name.map(str::to_string);
+        let tool_result_mode = tool_result_mode.map(str::to_string);
+        let artifacts = tool_artifacts.to_vec();
+        tokio::task::spawn_blocking(move || {
+            db.add_visible_tool_result(
+                &wid,
+                &content,
+                &context_payload,
+                tool_call_id.as_deref(),
+                tool_name.as_deref(),
+                tool_result_mode.as_deref(),
+                &artifacts,
+            )
+        })
+        .await
+        .context("add_visible_tool_result spawn_blocking")?
     }
 
     fn find_dialogue_cutoff_rowid(

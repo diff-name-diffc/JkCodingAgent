@@ -59,6 +59,8 @@ arrow-array = "57"
 arrow-schema = "57"
 rmcp = { version = "1.4.0", default-features = false, features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-client-unix-socket"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+r2d2 = "0.8.10"
+r2d2_sqlite = "0.25"
 
 [profile.dev]
 debug = 0

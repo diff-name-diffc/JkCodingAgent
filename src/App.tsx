@@ -43,6 +43,8 @@ function App() {
 
   // ── Debounced task persistence ─────────────────────────────────────────────
   const persistTimersRef = useRef<Record<string, number>>({});
+  const tasksRef = useRef<Task[]>([]);
+  tasksRef.current = tasks;
 
   const debouncedPersistProjectTasks = useCallback(
     (projectId: string, allTasks: Task[]) => {
@@ -147,7 +149,7 @@ function App() {
     if (!selected) return;
     const path = selected as string;
     const name = path.split("/").pop() || path;
-    const project: Project = { id: `${Date.now()}`, name, path, lastOpenedAt: Date.now() };
+    const project: Project = { id: crypto.randomUUID(), name, path, lastOpenedAt: Date.now() };
     setProjects((prev) => {
       const next = [project, ...prev.filter((p) => p.path !== path)];
       persistProjects(next, showToast);
@@ -257,7 +259,7 @@ function App() {
     },
   ): string {
     const task: Task = {
-      id: `${Date.now()}`,
+      id: crypto.randomUUID(),
       projectId: project.id,
       prompt,
       agent,
@@ -285,17 +287,11 @@ function App() {
   async function deleteTasks(taskIds: string[]) {
     if (taskIds.length === 0) return;
 
-    // Phase 1: snapshot tasks to delete, stop active ones on backend first
-    let deletingTasks: Task[] = [];
-    setTasks((prev) => {
-      const toDelete = new Set(taskIds);
-      deletingTasks = prev.filter((task) => toDelete.has(task.id));
-      if (deletingTasks.length === 0) return prev;
-      return prev;
-    });
-    if (deletingTasks.length === 0) return;
-
-    const activeTasks = deletingTasks.filter((task) => isActiveTaskStatus(task.status));
+    // Phase 1: stop active tasks on backend (read via ref, not setTasks)
+    const toDelete = new Set(taskIds);
+    const activeTasks = tasksRef.current.filter(
+      (t) => toDelete.has(t.id) && isActiveTaskStatus(t.status),
+    );
     await Promise.allSettled(
       activeTasks.map((task) =>
         invoke("stop_task", { taskId: task.id }).catch((e: unknown) => {
@@ -304,11 +300,13 @@ function App() {
       ),
     );
 
-    // Phase 2: remove from state and persist
-    const toDelete = new Set(taskIds);
+    // Phase 2: atomically remove from state and persist
     setTasks((prev) => {
       const next = prev.filter((task) => !toDelete.has(task.id));
-      const affectedProjectIds = new Set(deletingTasks.map((t) => t.projectId));
+      if (next.length === prev.length) return prev;
+      const affectedProjectIds = new Set(
+        prev.filter((t) => toDelete.has(t.id)).map((t) => t.projectId),
+      );
       affectedProjectIds.forEach((pid) => debouncedPersistProjectTasks(pid, next));
       return next;
     });

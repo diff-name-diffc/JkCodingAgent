@@ -53,13 +53,15 @@ export function BrowserPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const imageRef = useRef<HTMLImageElement>(new Image());
+
   const drawFrame = useCallback((frame: BrowserFrameEvent) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const image = new Image();
+    const image = imageRef.current;
     image.onload = () => {
       canvas.width = frame.width || image.width;
       canvas.height = frame.height || image.height;

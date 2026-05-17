@@ -231,12 +231,20 @@ impl RunUsageTracker {
 pub struct DispatcherAgent {
     config: DispatcherAgentConfig,
     provider: Mutex<OpenAiCompatProvider>,
-    summary_model: Mutex<String>,
-    vision_model: Mutex<String>,
+    models: Mutex<Models>,
     app_handle: Option<AppHandle>,
     tools: ToolRegistry,
     project_mcp_registry: ProjectMcpRegistry,
     subprocesses: Arc<DispatcherSubprocessRegistry>,
+}
+
+struct Models {
+    summary_model: String,
+    vision_model: String,
+    image_model_url: String,
+    image_model_api_key: String,
+    image_model: String,
+    image_edit_model: String,
 }
 
 #[derive(Default)]
@@ -535,8 +543,14 @@ impl DispatcherAgent {
         );
 
         Self {
-            summary_model: Mutex::new(normalize_summary_model(&config.summary_model)),
-            vision_model: Mutex::new(config.vision_model.trim().to_string()),
+            models: Mutex::new(Models {
+                summary_model: normalize_summary_model(&config.summary_model),
+                vision_model: config.vision_model.trim().to_string(),
+                image_model_url: config.image_model_url.clone(),
+                image_model_api_key: config.image_model_api_key.clone(),
+                image_model: config.image_model.clone(),
+                image_edit_model: config.image_edit_model.clone(),
+            }),
             app_handle: None,
             config,
             provider: Mutex::new(provider),
@@ -552,38 +566,47 @@ impl DispatcherAgent {
     }
 
     pub fn apply_settings(&self, settings: &DispatcherSettingsRecord) {
-        let mut provider = self.provider.lock();
-        *provider = OpenAiCompatProvider::new(
-            if settings.api_key.is_empty() {
-                self.config.api_key.clone()
-            } else {
-                settings.api_key.clone()
-            },
-            if settings.api_base.is_empty() {
-                self.config.api_base.clone()
-            } else {
-                settings.api_base.clone()
-            },
-            if settings.model.is_empty() {
-                self.config.model.clone()
-            } else {
-                settings.model.clone()
-            },
-            self.config.max_tokens,
-            self.config.temperature,
-        );
-        let mut summary_model = self.summary_model.lock();
-        *summary_model = if settings.summary_model.trim().is_empty() {
-            normalize_summary_model(&self.config.summary_model)
-        } else {
-            normalize_summary_model(&settings.summary_model)
-        };
-        let mut vision_model = self.vision_model.lock();
-        *vision_model = if settings.vision_model.trim().is_empty() {
-            self.config.vision_model.trim().to_string()
-        } else {
-            settings.vision_model.trim().to_string()
-        };
+        {
+            let mut provider = self.provider.lock();
+            *provider = OpenAiCompatProvider::new(
+                if settings.api_key.is_empty() {
+                    self.config.api_key.clone()
+                } else {
+                    settings.api_key.clone()
+                },
+                if settings.api_base.is_empty() {
+                    self.config.api_base.clone()
+                } else {
+                    settings.api_base.clone()
+                },
+                if settings.model.is_empty() {
+                    self.config.model.clone()
+                } else {
+                    settings.model.clone()
+                },
+                self.config.max_tokens,
+                self.config.temperature,
+            );
+        }
+        let mut models = self.models.lock();
+        if !settings.summary_model.trim().is_empty() {
+            models.summary_model = normalize_summary_model(&settings.summary_model);
+        }
+        if !settings.vision_model.trim().is_empty() {
+            models.vision_model = settings.vision_model.trim().to_string();
+        }
+        if !settings.image_model_url.trim().is_empty() {
+            models.image_model_url = settings.image_model_url.trim().to_string();
+        }
+        if !settings.image_model_api_key.trim().is_empty() {
+            models.image_model_api_key = settings.image_model_api_key.trim().to_string();
+        }
+        if !settings.image_model.trim().is_empty() {
+            models.image_model = settings.image_model.trim().to_string();
+        }
+        if !settings.image_edit_model.trim().is_empty() {
+            models.image_edit_model = settings.image_edit_model.trim().to_string();
+        }
     }
 
     pub fn auto_approve_dispatch(&self) -> bool {
@@ -599,11 +622,27 @@ impl DispatcherAgent {
     }
 
     fn summary_model(&self) -> String {
-        self.summary_model.lock().clone()
+        self.models.lock().summary_model.clone()
     }
 
     fn vision_model(&self) -> String {
-        self.vision_model.lock().clone()
+        self.models.lock().vision_model.clone()
+    }
+
+    fn image_model_url(&self) -> String {
+        self.models.lock().image_model_url.clone()
+    }
+
+    fn image_model_api_key(&self) -> String {
+        self.models.lock().image_model_api_key.clone()
+    }
+
+    fn image_model(&self) -> String {
+        self.models.lock().image_model.clone()
+    }
+
+    fn image_edit_model(&self) -> String {
+        self.models.lock().image_edit_model.clone()
     }
 
     fn provider_for_messages(
@@ -660,7 +699,8 @@ impl DispatcherAgent {
                 workspace_id: workspace_id.to_string(),
             },
         );
-        db.clear_checklist(workspace_id)
+        db.clear_checklist_async(workspace_id)
+            .await
             .context("clear stale checklist before new dispatcher turn")?;
         emit(
             &on_event,
@@ -679,7 +719,7 @@ impl DispatcherAgent {
             .await
             .map_err(anyhow::Error::msg)
             .context("刷新项目 MCP 状态失败")?;
-        let user = db.add_visible_message(workspace_id, "user", user_message, user_segments_json)?;
+        let user = db.add_visible_message_async(workspace_id, "user", user_message, user_segments_json).await?;
         emit(&on_event, AgentEvent::UserMessage { message: user });
 
         let provider = self.provider.lock().clone();
@@ -947,10 +987,10 @@ impl DispatcherAgent {
             app_handle: self.app_handle.clone(),
             llm_provider: Some(provider.clone()),
             vision_model: self.vision_model(),
-            image_model_url: self.config.image_model_url.clone(),
-            image_model_api_key: self.config.image_model_api_key.clone(),
-            image_model: self.config.image_model.clone(),
-            image_edit_model: self.config.image_edit_model.clone(),
+            image_model_url: self.image_model_url(),
+            image_model_api_key: self.image_model_api_key(),
+            image_model: self.image_model(),
+            image_edit_model: self.image_edit_model(),
         };
         let allowed_tool_names = plain_chat_tool_allowlist()
             .into_iter()
@@ -1049,14 +1089,14 @@ impl DispatcherAgent {
                     anyhow::bail!("{}", empty_llm_response_error(&response));
                 }
                 let usage_stats = usage_tracker.snapshot();
-                let reply = db.add_visible_message_with_usage_and_thinking(
+                let reply = db.add_visible_message_with_usage_and_thinking_async(
                     workspace_id,
                     "assistant",
                     &content,
                     &usage_stats,
                     Some(&response.thinking_content),
                     response.thinking_elapsed_ms,
-                )?;
+                ).await?;
                 emit(
                     on_event,
                     AgentEvent::AssistantMessage {
@@ -1092,7 +1132,7 @@ impl DispatcherAgent {
                 );
             }
 
-            db.add_visible_message_with_tools_and_thinking(
+            db.add_visible_message_with_tools_and_thinking_async(
                 workspace_id,
                 "assistant",
                 &response.content,
@@ -1102,7 +1142,7 @@ impl DispatcherAgent {
                 Some(&tool_calls_payload),
                 Some(&response.thinking_content),
                 response.thinking_elapsed_ms,
-            )?;
+            ).await?;
 
             for tool_call in response.tool_calls {
                 if cancellation_requested(&cancel_rx) {
@@ -1182,7 +1222,7 @@ impl DispatcherAgent {
                     )
                 })?;
 
-                let tool_message = db.add_visible_tool_result(
+                let tool_message = db.add_visible_tool_result_async(
                     workspace_id,
                     &tool_result.display_content,
                     &tool_result.context_payload,
@@ -1190,7 +1230,7 @@ impl DispatcherAgent {
                     Some(&tool_call.name),
                     Some(tool_result.result_mode),
                     &tool_result.artifacts,
-                )?;
+                ).await?;
                 emit(
                     on_event,
                     AgentEvent::ToolFinished {
@@ -1235,7 +1275,7 @@ impl DispatcherAgent {
         usage_tracker: &mut RunUsageTracker,
     ) -> Result<DispatcherMessageRecord> {
         let debug_logger = ContextDebugLogger::new(self.context_debug_enabled(), workspace);
-        let session_title = db.get_session_title(workspace_id).unwrap_or_else(|_| "untitled".to_string());
+        let session_title = db.get_session_title_async(workspace_id).await.unwrap_or_else(|_| "untitled".to_string());
         let tool_context = ToolContext {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
@@ -1245,10 +1285,10 @@ impl DispatcherAgent {
             app_handle: self.app_handle.clone(),
             llm_provider: Some(provider.clone()),
             vision_model: self.vision_model(),
-            image_model_url: self.config.image_model_url.clone(),
-            image_model_api_key: self.config.image_model_api_key.clone(),
-            image_model: self.config.image_model.clone(),
-            image_edit_model: self.config.image_edit_model.clone(),
+            image_model_url: self.image_model_url(),
+            image_model_api_key: self.image_model_api_key(),
+            image_model: self.image_model(),
+            image_edit_model: self.image_edit_model(),
         };
 
         for iteration in 0..self.config.max_tool_iterations {
@@ -1262,7 +1302,7 @@ impl DispatcherAgent {
                 );
             }
 
-            let runtime_state = db.get_session_runtime_state(workspace_id)?;
+            let runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
             let tool_definitions =
                 self.tool_definitions_for_workspace(workspace_id, workspace, &runtime_state);
             let allowed_tool_names = tool_definitions
@@ -1277,7 +1317,7 @@ impl DispatcherAgent {
                     &runtime_state,
                 )
                 .await?;
-            let history_messages = db.load_llm_history(workspace_id)?;
+            let history_messages = db.load_llm_history_async(workspace_id).await?;
             let request_provider =
                 self.provider_for_messages(provider, &history_messages, on_event, iteration == 0)?;
             let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
@@ -1391,14 +1431,14 @@ impl DispatcherAgent {
                     anyhow::bail!("{}", empty_llm_response_error(&response));
                 }
                 let usage_stats = usage_tracker.snapshot();
-                let reply = db.add_visible_message_with_usage_and_thinking(
+                let reply = db.add_visible_message_with_usage_and_thinking_async(
                     workspace_id,
                     "assistant",
                     &content,
                     &usage_stats,
                     Some(&response.thinking_content),
                     response.thinking_elapsed_ms,
-                )?;
+                ).await?;
                 emit(
                     on_event,
                     AgentEvent::AssistantMessage {
@@ -1434,7 +1474,7 @@ impl DispatcherAgent {
                 );
             }
 
-            db.add_visible_message_with_tools_and_thinking(
+            db.add_visible_message_with_tools_and_thinking_async(
                 workspace_id,
                 "assistant",
                 &response.content,
@@ -1444,7 +1484,7 @@ impl DispatcherAgent {
                 Some(&tool_calls_payload),
                 Some(&response.thinking_content),
                 response.thinking_elapsed_ms,
-            )?;
+            ).await?;
 
             let mut protocol_state =
                 ProtocolBatchState::new(self.active_subprocesses_for_workspace(workspace_id));
@@ -1550,7 +1590,7 @@ impl DispatcherAgent {
                         .await
                     {
                         Ok(Some(PlanningToolOutcome::ToolResult(result))) => {
-                            let tool_message = db.add_visible_tool_result(
+                            let tool_message = db.add_visible_tool_result_async(
                                 workspace_id,
                                 &result,
                                 &result,
@@ -1558,7 +1598,7 @@ impl DispatcherAgent {
                                 Some(&tool_call.name),
                                 Some("raw"),
                                 &[],
-                            )?;
+                            ).await?;
                             emit(
                                 on_event,
                                 AgentEvent::ToolFinished {
@@ -1572,7 +1612,7 @@ impl DispatcherAgent {
                             continue;
                         }
                         Ok(Some(PlanningToolOutcome::WaitForUser(result))) => {
-                            let tool_message = db.add_visible_tool_result(
+                            let tool_message = db.add_visible_tool_result_async(
                                 workspace_id,
                                 &result,
                                 &result,
@@ -1580,7 +1620,7 @@ impl DispatcherAgent {
                                 Some(&tool_call.name),
                                 Some("raw"),
                                 &[],
-                            )?;
+                            ).await?;
                             emit(
                                 on_event,
                                 AgentEvent::ToolFinished {
@@ -1744,7 +1784,7 @@ impl DispatcherAgent {
                         }
                     };
 
-                    let tool_message = db.add_visible_tool_result(
+                    let tool_message = db.add_visible_tool_result_async(
                         workspace_id,
                         &tool_result.display_content,
                         &tool_result.context_payload,
@@ -1752,7 +1792,7 @@ impl DispatcherAgent {
                         Some(&tool_call.name),
                         Some(tool_result.result_mode),
                         &tool_result.artifacts,
-                    )?;
+                    ).await?;
 
                     emit(
                         on_event,
@@ -2160,7 +2200,7 @@ impl DispatcherAgent {
             {
                 Ok(Some(PlanningToolOutcome::ToolResult(result)))
                 | Ok(Some(PlanningToolOutcome::WaitForUser(result))) => {
-                    let tool_message = db.add_visible_tool_result(
+                    let tool_message = db.add_visible_tool_result_async(
                         workspace_id,
                         &result,
                         &result,
@@ -2168,7 +2208,7 @@ impl DispatcherAgent {
                         Some(&tool_call.name),
                         Some("raw"),
                         &[],
-                    )?;
+                    ).await?;
                     emit(
                         on_event,
                         AgentEvent::ToolFinished {

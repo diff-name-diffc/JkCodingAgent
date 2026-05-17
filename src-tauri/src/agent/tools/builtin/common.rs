@@ -28,16 +28,55 @@ const NOISE: &[&str] = &[
 ];
 
 const DANGEROUS_PATTERNS: &[&str] = &[
+    // Destructive file operations
     "rm -rf /",
     "rm -rf /*",
+    "rm -rf ~",
+    "rm -rf ~/",
+    "rm -rf *",
+    // Disk/filesystem destruction
     "mkfs",
-    "dd if=",
+    "dd if=/dev/zero",
+    "dd if=/dev/random",
+    "dd if=/dev/urandom",
+    // System shutdown/control
     "shutdown",
     "reboot",
     "halt",
     "poweroff",
-    "format",
+    "init 0",
+    "init 6",
+    // Permission escalation / open permissions
+    "chmod 777",
+    "chmod -r 777",
+    "chown root",
+    // Fork bombs
     ":(){:|:&};:",
+    "fork bomb",
+    // Remote code execution patterns
+    "curl | sh",
+    "curl | bash",
+    "curl | sudo",
+    "wget | sh",
+    "wget | bash",
+    "wget | sudo",
+    // Package manager piped install
+    "curl | apt",
+    "curl | yum",
+    // Kernel/module operations
+    "rmmod",
+    "insmod",
+    "modprobe",
+    // Network dangerous
+    "iptables -f",
+    "ip route flush",
+    // Overwrite boot/EFI
+    "dd of=/dev/sda",
+    "dd of=/dev/nvme",
+    "dd of=/dev/hda",
+    // macOS-specific
+    "diskutil erasevolume",
+    "diskutil erasedisk",
 ];
 
 pub(super) fn string_arg(args: &Value, key: &str) -> Option<String> {

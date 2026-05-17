@@ -11,7 +11,7 @@ use crate::shared::{TaskManager, TaskTerminationIntent};
 
 const SESSION_WAIT_POLL: Duration = Duration::from_millis(50);
 const SESSION_WAIT_MAX: Duration = Duration::from_millis(500);
-const PTY_READ_BUFFER_SIZE: usize = 32 * 1024;
+const PTY_READ_BUFFER_SIZE: usize = 64 * 1024;
 const PTY_EMIT_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 const PTY_EMIT_MAX_BATCH_BYTES: usize = 64 * 1024;
 const PTY_IDLE_OUTPUT_MAX_BYTES: usize = 256 * 1024;

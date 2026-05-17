@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::common::string_arg;
+use super::common::{resolve_path, string_arg};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 use crate::tools::image_generator::edit_image;
@@ -37,13 +37,24 @@ impl AgentTool for EditImageTool {
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        let Some(image_path) = string_arg(args, "image_path") else {
+        let Some(raw_image_path) = string_arg(args, "image_path") else {
             return "错误：缺少必填参数 image_path".to_string();
         };
 
         let Some(prompt) = string_arg(args, "prompt") else {
             return "错误：缺少必填参数 prompt".to_string();
         };
+
+        // 去除可能的 file:// 前缀，再校验路径合法性
+        let raw_image_path = raw_image_path.strip_prefix("file://").unwrap_or(&raw_image_path);
+        let image_path = match resolve_path(context, raw_image_path) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+
+        if !image_path.exists() {
+            return format!("错误：图片文件不存在：{}", image_path.display());
+        }
 
         let image_name = string_arg(args, "image_name");
         let width = args.get("width").and_then(|v| v.as_u64().map(|v| v as u32));
@@ -61,15 +72,8 @@ impl AgentTool for EditImageTool {
             return "错误：图片编辑 API Key 未配置，请先在设置中配置".to_string();
         }
 
-        // 去除可能的 file:// 前缀
-        let image_path = image_path.strip_prefix("file://").unwrap_or(&image_path);
-
-        if !std::path::Path::new(&image_path).exists() {
-            return format!("错误：图片文件不存在：{}", image_path);
-        }
-
         match edit_image(
-            &image_path,
+            image_path.to_str().unwrap_or(raw_image_path),
             prompt,
             image_name,
             width,

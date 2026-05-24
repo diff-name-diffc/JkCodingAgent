@@ -66,6 +66,7 @@ pub struct SessionTitleMessage {
     pub content: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare_tool_result<FStart, FDelta, FUsage>(
     provider: &OpenAiCompatProvider,
     summary_model: &str,
@@ -349,7 +350,7 @@ fn build_session_title_source(messages: &[SessionTitleMessage], fallback_source:
             continue;
         }
 
-        source.push_str("【");
+        source.push('【');
         source.push_str(session_title_role_label(&message.role));
         source.push_str("】\n");
         source.push_str(content.trim());
@@ -417,7 +418,7 @@ fn clean_title_line(raw: &str) -> String {
         .unwrap_or_default();
 
     let without_prefix = line
-        .trim_start_matches(|ch: char| matches!(ch, '-' | '*' | '#' | '>' | ' ' | '\t'))
+        .trim_start_matches(['-', '*', '#', '>', ' ', '\t'])
         .trim_start_matches("标题：")
         .trim_start_matches("标题:")
         .trim_start_matches("会话标题：")

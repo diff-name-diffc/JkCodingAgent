@@ -1,7 +1,7 @@
 use crate::agent::DispatcherState;
 use crate::{
-    agent, browser, chat_images, knowledge, platform, project, scm, shared::TaskManager, task_runtime,
-    workspace,
+    agent, browser, chat_images, knowledge, platform, project, scm, shared::TaskManager,
+    task_runtime, workspace,
 };
 use tauri::Manager;
 
@@ -146,6 +146,7 @@ pub fn run() {
             agent::commands::dispatcher_save_settings,
             agent::commands::dispatcher_set_auto_approve_dispatch,
             agent::commands::dispatcher_fetch_models,
+            agent::commands::dispatcher_test_model,
             agent::commands::dispatcher_continue_after_dispatch,
             agent::commands::dispatcher_attach_checklist_subprocess,
             agent::commands::dispatcher_clear_checklist_dispatch,

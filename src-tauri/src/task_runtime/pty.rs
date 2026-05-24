@@ -180,6 +180,7 @@ fn trim_output_tail(text: &mut String, max_bytes: usize) {
 /// - `idle_callback`：可选回调，仅在 session watcher 显式判定“当前轮次完成”时触发，
 ///   参数为自上次触发以来累积的原始输出文本。可重复触发以支持多轮会话。
 /// - `on_finish`：PTY 关闭后执行的可选清理回调
+#[allow(clippy::too_many_arguments)]
 fn spawn_pty_reader(
     app: AppHandle,
     id: String,
@@ -355,6 +356,7 @@ fn build_claude_cmd(agent_bin: &str, permission_mode: &str) -> CommandBuilder {
 // ── Tauri 命令 ───────────────────────────────────────────────────────────────
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn start_dispatcher_subprocess(
     app: AppHandle,
     task_manager: State<'_, TaskManager>,
@@ -505,6 +507,7 @@ pub async fn stop_task(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn resume_dispatcher_subprocess(
     app: AppHandle,
     task_manager: State<'_, TaskManager>,

@@ -85,7 +85,7 @@ fn read_session_lines_since(
 
     let mut chunk = String::new();
     file.read_to_string(&mut chunk)?;
-    *offset += chunk.as_bytes().len() as u64;
+    *offset += chunk.len() as u64;
 
     if chunk.is_empty() {
         return Ok(Vec::new());
@@ -416,7 +416,7 @@ fn looks_like_read_only_command(cmd: &str) -> bool {
     }
 
     trimmed
-        .split(|c| matches!(c, ';' | '|' | '&' | '\n'))
+        .split([';', '|', '&', '\n'])
         .map(str::trim)
         .filter(|segment| !segment.is_empty())
         .all(is_read_only_segment)
@@ -441,7 +441,7 @@ fn is_read_only_segment(segment: &str) -> bool {
         "pwd" | "ls" | "rg" | "grep" | "cat" | "head" | "tail" | "wc" | "stat" | "which"
         | "type" | "uname" | "date" | "ps" | "env" | "printenv" | "echo" | "printf" => true,
         "sed" => {
-            tokens.iter().any(|token| *token == "-n")
+            tokens.contains(&"-n")
                 && !tokens.iter().any(|token| token.starts_with("-i"))
         }
         "find" => !tokens

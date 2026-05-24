@@ -330,7 +330,7 @@ fn detect_version(binary: &str) -> Option<String> {
     let text = String::from_utf8_lossy(&output.stdout);
     // 找第一个以数字开头的 token（形如 "1.2.3"）
     text.split_whitespace()
-        .find(|s| s.chars().next().map_or(false, |c| c.is_ascii_digit()))
+        .find(|s| s.chars().next().is_some_and(|c| c.is_ascii_digit()))
         .map(|s| s.to_string())
 }
 

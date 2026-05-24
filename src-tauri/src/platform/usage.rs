@@ -300,10 +300,7 @@ fn read_codex_usage_blocking_once(
     let _ = child.kill();
     let _ = child.wait();
 
-    match result {
-        Ok(data) => Ok(data),
-        Err(reason) => Err(reason),
-    }
+    result
 }
 
 fn write_json_line(stdin: &mut dyn Write, value: &Value) -> Result<(), String> {
@@ -339,10 +336,7 @@ fn wait_for_result(
             .recv_timeout(remaining)
             .map_err(|_| format!("Codex app-server closed before response {expected_id}."))??;
 
-        let matches_id = message
-            .get("id")
-            .and_then(Value::as_i64)
-            .map_or(false, |id| id == expected_id);
+        let matches_id = message.get("id").and_then(Value::as_i64) == Some(expected_id);
         if !matches_id {
             continue;
         }

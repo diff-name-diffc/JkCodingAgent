@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(test)]
 use std::path::Path;
 use std::time::Duration;
 
@@ -15,9 +16,9 @@ fn validate_git_ref_name(name: &str) -> Result<(), String> {
     if name.len() > 256 {
         return Err(format!("分支名过长（{} 字符），上限 256", name.len()));
     }
-    let is_safe = name.chars().all(|c| {
-        c.is_alphanumeric() || c == '/' || c == '-' || c == '_' || c == '.' || c == '@'
-    });
+    let is_safe = name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '/' || c == '-' || c == '_' || c == '.' || c == '@');
     if !is_safe {
         return Err(format!(
             "分支名 '{}' 包含非法字符，仅允许字母、数字、/、-、_、.、@",
@@ -32,6 +33,7 @@ fn validate_git_ref_name(name: &str) -> Result<(), String> {
 }
 
 /// Validate that project_path is absolute and looks like a real project directory.
+#[cfg(test)]
 fn validate_project_path(project_path: &str) -> Result<(), String> {
     let path = Path::new(project_path);
     if !path.is_absolute() {
@@ -59,9 +61,11 @@ async fn run_git<S: AsRef<std::ffi::OsStr>>(
     args: &[S],
 ) -> Result<std::process::Output, String> {
     let pp = project_path.to_string();
-    let args: Vec<String> = args.iter().map(|s| s.as_ref().to_string_lossy().into_owned()).collect();
+    let args: Vec<String> = args
+        .iter()
+        .map(|s| s.as_ref().to_string_lossy().into_owned())
+        .collect();
     tokio::task::spawn_blocking(move || {
-        validate_project_path(&pp)?;
         std::process::Command::new("git")
             .args(&args)
             .current_dir(&pp)
@@ -81,7 +85,6 @@ async fn run_git_with_timeout(
     tokio::time::timeout(
         timeout,
         tokio::task::spawn_blocking(move || {
-            validate_project_path(&project_path)?;
             std::process::Command::new("git")
                 .args(&args)
                 .current_dir(&project_path)
@@ -95,7 +98,10 @@ async fn run_git_with_timeout(
 }
 
 /// 执行 git 命令，若退出码非零则将 stderr 作为错误返回（spawn_blocking 版本）。
-async fn run_git_check<S: AsRef<std::ffi::OsStr>>(project_path: &str, args: &[S]) -> Result<(), String> {
+async fn run_git_check<S: AsRef<std::ffi::OsStr>>(
+    project_path: &str,
+    args: &[S],
+) -> Result<(), String> {
     let output = run_git(project_path, args).await?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
@@ -144,7 +150,7 @@ pub async fn generate_commit_message(project_path: String) -> Result<String, Str
         "/usr/sbin".to_string(),
         "/sbin".to_string(),
     ];
-    let mut path_parts: Vec<String> = extra_paths.iter().cloned().collect();
+    let mut path_parts: Vec<String> = extra_paths.to_vec();
     for p in current_path.split(':') {
         if !p.is_empty() && !path_parts.contains(&p.to_string()) {
             path_parts.push(p.to_string());
@@ -451,18 +457,34 @@ pub async fn git_commit_detail(
     project_path: String,
     commit_hash: String,
 ) -> Result<GitCommitDetail, String> {
-    let info_out = run_git(
-        &project_path,
-        &[
-            "show",
-            "--no-patch",
-            "--format=HASH:%H%nSHORT:%h%nAUTHOR:%an%nDATE:%ar%nSUBJECT:%s",
-            &commit_hash,
-        ],
-    )
-    .await?;
+    // Run all 3 git commands in parallel instead of sequentially
+    let info_args: Vec<&str> = vec![
+        "show",
+        "--no-patch",
+        "--format=HASH:%H%nSHORT:%h%nAUTHOR:%an%nDATE:%ar%nSUBJECT:%s",
+        &commit_hash,
+    ];
+    let ns_args: Vec<&str> = vec![
+        "diff-tree",
+        "--no-commit-id",
+        "-r",
+        "--name-status",
+        &commit_hash,
+    ];
+    let num_args: Vec<&str> = vec![
+        "diff-tree",
+        "--no-commit-id",
+        "-r",
+        "--numstat",
+        &commit_hash,
+    ];
+    let (info_out, ns_out, num_out) = tokio::try_join!(
+        run_git(&project_path, &info_args),
+        run_git(&project_path, &ns_args),
+        run_git(&project_path, &num_args),
+    )?;
 
-    let info_str = String::from_utf8_lossy(&info_out.stdout).into_owned();
+    let info_str = String::from_utf8_lossy(&info_out.stdout);
     let mut hash = String::new();
     let mut short_hash = String::new();
     let mut author = String::new();
@@ -481,18 +503,6 @@ pub async fn git_commit_detail(
             message = v.to_string();
         }
     }
-
-    let ns_out = run_git(
-        &project_path,
-        &[
-            "diff-tree",
-            "--no-commit-id",
-            "-r",
-            "--name-status",
-            &commit_hash,
-        ],
-    )
-    .await?;
 
     let mut file_statuses: HashMap<String, String> = HashMap::new();
     for line in String::from_utf8_lossy(&ns_out.stdout).lines() {
@@ -521,18 +531,6 @@ pub async fn git_commit_detail(
             _ => {}
         }
     }
-
-    let num_out = run_git(
-        &project_path,
-        &[
-            "diff-tree",
-            "--no-commit-id",
-            "-r",
-            "--numstat",
-            &commit_hash,
-        ],
-    )
-    .await?;
 
     let mut files = Vec::new();
     let mut total_additions = 0i32;
@@ -753,8 +751,9 @@ pub async fn git_remote_counts(
 
     let (ahead, behind) = match rev_out {
         Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            let parts: Vec<&str> = s.split_whitespace().collect();
+            let s = String::from_utf8_lossy(&o.stdout);
+            let trimmed = s.trim();
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
             if parts.len() == 2 {
                 (parts[0].parse().unwrap_or(0), parts[1].parse().unwrap_or(0))
             } else {
@@ -774,6 +773,7 @@ pub async fn git_remote_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     // ── validate_git_ref_name ────────────────────────────────────────────────
 
@@ -919,7 +919,11 @@ mod tests {
         let line = "R  old_name -> new_name";
         let raw_path = line[3..].to_string();
         let display_path = if raw_path.contains(" -> ") {
-            raw_path.split(" -> ").last().unwrap_or(&raw_path).to_string()
+            raw_path
+                .split(" -> ")
+                .last()
+                .unwrap_or(&raw_path)
+                .to_string()
         } else {
             raw_path
         };
@@ -1265,11 +1269,7 @@ END_RECORD";
         let parts: Vec<&str> = line.splitn(3, '\t').collect();
         match parts.as_slice() {
             [st, _old, new_path] => {
-                let status = if st.starts_with('R') {
-                    "R"
-                } else {
-                    st
-                };
+                let status = if st.starts_with('R') { "R" } else { st };
                 assert_eq!(status, "R");
                 assert_eq!(*new_path, "new/path");
             }
@@ -1431,7 +1431,7 @@ END_RECORD";
 
     #[test]
     fn git_commit_detail_struct_totals() {
-        let files = vec![
+        let files = [
             GitCommitFile {
                 path: "a.rs".to_string(),
                 status: "M".to_string(),
@@ -1470,7 +1470,11 @@ END_RECORD";
             .current_dir(path)
             .output()
             .expect("git init");
-        assert!(out.status.success(), "git init failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         // configure user so commits work
         for (key, val) in [("user.email", "test@test.com"), ("user.name", "Test")] {
@@ -1495,7 +1499,11 @@ END_RECORD";
             .current_dir(path)
             .output()
             .expect("git commit");
-        assert!(o.status.success(), "initial commit failed: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(
+            o.status.success(),
+            "initial commit failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
 
         // Use canonical path to avoid validate_project_path mismatch on macOS
         // (/var vs /private/var symlink).
@@ -1539,8 +1547,13 @@ END_RECORD";
         assert!(o.status.success());
 
         let changes = git_status(repo).await.expect("git_status");
-        assert!(changes.iter().any(|c| c.path == "README.md" && c.staged && c.status == "M"),
-            "expected staged modified README.md, got {} changes", changes.len());
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.path == "README.md" && c.staged && c.status == "M"),
+            "expected staged modified README.md, got {} changes",
+            changes.len()
+        );
     }
 
     #[tokio::test]
@@ -1551,8 +1564,13 @@ END_RECORD";
         // do NOT stage
 
         let changes = git_status(repo).await.expect("git_status");
-        assert!(changes.iter().any(|c| c.path == "README.md" && !c.staged && c.status == "M"),
-            "expected unstaged modified README.md, got {} changes", changes.len());
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.path == "README.md" && !c.staged && c.status == "M"),
+            "expected unstaged modified README.md, got {} changes",
+            changes.len()
+        );
     }
 
     #[tokio::test]
@@ -1590,7 +1608,11 @@ END_RECORD";
 
         let changes = git_status(repo).await.expect("git_status");
         let untracked: Vec<_> = changes.iter().filter(|c| c.status == "?").collect();
-        assert!(untracked.len() >= 3, "expected at least 3 untracked files, got {}", untracked.len());
+        assert!(
+            untracked.len() >= 3,
+            "expected at least 3 untracked files, got {}",
+            untracked.len()
+        );
     }
 
     // ── git_log ─────────────────────────────────────────────────────────────────
@@ -1599,7 +1621,11 @@ END_RECORD";
     async fn log_initial_commit() {
         let (_dir, repo) = setup_repo();
         let commits = git_log(repo, 50, None, None).await.expect("git_log");
-        assert_eq!(commits.len(), 1, "initial repo should have exactly 1 commit");
+        assert_eq!(
+            commits.len(),
+            1,
+            "initial repo should have exactly 1 commit"
+        );
         assert_eq!(commits[0].message, "initial commit");
         assert!(!commits[0].hash.is_empty());
         assert!(!commits[0].short_hash.is_empty());
@@ -1658,7 +1684,9 @@ END_RECORD";
             .expect("git commit");
         assert!(o.status.success());
 
-        let commits = git_log(repo, 50, Some("feature module".into()), None).await.expect("git_log");
+        let commits = git_log(repo, 50, Some("feature module".into()), None)
+            .await
+            .expect("git_log");
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].message, "add feature module");
     }
@@ -1666,7 +1694,9 @@ END_RECORD";
     #[tokio::test]
     async fn log_search_no_match() {
         let (_dir, repo) = setup_repo();
-        let commits = git_log(repo, 50, Some("zzzz_nonexistent".into()), None).await.expect("git_log");
+        let commits = git_log(repo, 50, Some("zzzz_nonexistent".into()), None)
+            .await
+            .expect("git_log");
         assert!(commits.is_empty());
     }
 
@@ -1677,7 +1707,11 @@ END_RECORD";
         assert_eq!(commits.len(), 1);
         // refs should include "HEAD -> main" (or master depending on git config)
         let refs_str = commits[0].refs.join(", ");
-        assert!(refs_str.contains("HEAD"), "refs should contain HEAD, got: {}", refs_str);
+        assert!(
+            refs_str.contains("HEAD"),
+            "refs should contain HEAD, got: {}",
+            refs_str
+        );
     }
 
     // ── git_list_branches ───────────────────────────────────────────────────────
@@ -1689,7 +1723,10 @@ END_RECORD";
         assert!(!branches.is_empty(), "should have at least one branch");
         let current: Vec<_> = branches.iter().filter(|b| b.current).collect();
         assert_eq!(current.len(), 1, "exactly one current branch");
-        assert!(current[0].remote.is_none(), "local branch should have no remote");
+        assert!(
+            current[0].remote.is_none(),
+            "local branch should have no remote"
+        );
     }
 
     #[tokio::test]
@@ -1702,13 +1739,26 @@ END_RECORD";
                 .current_dir(&repo)
                 .output()
                 .expect("git branch");
-            assert!(o.status.success(), "git branch {} failed: {}", name, String::from_utf8_lossy(&o.stderr));
+            assert!(
+                o.status.success(),
+                "git branch {} failed: {}",
+                name,
+                String::from_utf8_lossy(&o.stderr)
+            );
         }
 
         let branches = git_list_branches(repo).await.expect("git_list_branches");
         let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
-        assert!(names.contains(&"feature/a"), "branches should contain feature/a, got: {:?}", names);
-        assert!(names.contains(&"bugfix/b"), "branches should contain bugfix/b, got: {:?}", names);
+        assert!(
+            names.contains(&"feature/a"),
+            "branches should contain feature/a, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"bugfix/b"),
+            "branches should contain bugfix/b, got: {:?}",
+            names
+        );
     }
 
     #[tokio::test]
@@ -1746,14 +1796,25 @@ END_RECORD";
             .current_dir(&repo)
             .output()
             .expect("git push");
-        assert!(o.status.success(), "push failed: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(
+            o.status.success(),
+            "push failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
 
         // keep remote_dir alive through the assertion
         let branches = git_list_branches(repo).await.expect("git_list_branches");
         let remotes: Vec<_> = branches.iter().filter(|b| b.remote.is_some()).collect();
-        assert!(!remotes.is_empty(), "should have at least one remote branch");
+        assert!(
+            !remotes.is_empty(),
+            "should have at least one remote branch"
+        );
         // remote branch names should be like "origin/main"
-        assert!(remotes[0].name.starts_with("origin/"), "remote branch name should start with origin/, got: {}", remotes[0].name);
+        assert!(
+            remotes[0].name.starts_with("origin/"),
+            "remote branch name should start with origin/, got: {}",
+            remotes[0].name
+        );
         drop(remote_dir);
     }
 
@@ -1854,9 +1915,14 @@ END_RECORD";
             .expect("git add");
         assert!(o.status.success());
 
-        let diff = git_file_diff(repo, "README.md".into(), true).await.expect("git_file_diff");
+        let diff = git_file_diff(repo, "README.md".into(), true)
+            .await
+            .expect("git_file_diff");
         assert!(!diff.is_empty(), "staged diff should not be empty");
-        assert!(diff.contains("staged change"), "diff should contain new content");
+        assert!(
+            diff.contains("staged change"),
+            "diff should contain new content"
+        );
     }
 
     #[tokio::test]
@@ -1865,7 +1931,9 @@ END_RECORD";
         let repo_path = Path::new(&repo);
         fs::write(repo_path.join("README.md"), "# unstaged change\n").expect("write");
 
-        let diff = git_file_diff(repo, "README.md".into(), false).await.expect("git_file_diff");
+        let diff = git_file_diff(repo, "README.md".into(), false)
+            .await
+            .expect("git_file_diff");
         assert!(!diff.is_empty(), "unstaged diff should not be empty");
     }
 
@@ -1875,9 +1943,17 @@ END_RECORD";
         let repo_path = Path::new(&repo);
         fs::write(repo_path.join("untracked.txt"), "brand new file").expect("write");
 
-        let diff = git_file_diff(repo, "untracked.txt".into(), false).await.expect("git_file_diff");
-        assert!(!diff.is_empty(), "untracked file diff should use --no-index fallback");
-        assert!(diff.contains("brand new file"), "diff should contain file content");
+        let diff = git_file_diff(repo, "untracked.txt".into(), false)
+            .await
+            .expect("git_file_diff");
+        assert!(
+            !diff.is_empty(),
+            "untracked file diff should use --no-index fallback"
+        );
+        assert!(
+            diff.contains("brand new file"),
+            "diff should contain file content"
+        );
     }
 
     #[tokio::test]
@@ -1886,8 +1962,13 @@ END_RECORD";
         // A clean tracked file produces empty output from `git diff`, so
         // git_file_diff falls back to `--no-index /dev/null <path>` which
         // produces the full file content as a diff. Verify the fallback works.
-        let diff = git_file_diff(repo, "README.md".into(), false).await.expect("git_file_diff");
-        assert!(!diff.is_empty(), "git_file_diff --no-index fallback should produce output for clean files");
+        let diff = git_file_diff(repo, "README.md".into(), false)
+            .await
+            .expect("git_file_diff");
+        assert!(
+            !diff.is_empty(),
+            "git_file_diff --no-index fallback should produce output for clean files"
+        );
     }
 
     // ── git_stage / git_unstage ─────────────────────────────────────────────────
@@ -1898,7 +1979,9 @@ END_RECORD";
         let repo_path = Path::new(&repo);
         fs::write(repo_path.join("new.txt"), "content").expect("write");
 
-        git_stage(repo.clone(), "new.txt".into()).await.expect("git_stage");
+        git_stage(repo.clone(), "new.txt".into())
+            .await
+            .expect("git_stage");
 
         let changes = git_status(repo).await.expect("git_status");
         let staged: Vec<_> = changes.iter().filter(|c| c.staged).collect();
@@ -1922,10 +2005,15 @@ END_RECORD";
         let changes = git_status(repo.clone()).await.expect("git_status");
         assert!(changes.iter().any(|c| c.staged && c.path == "README.md"));
 
-        git_unstage(repo.clone(), "README.md".into()).await.expect("git_unstage");
+        git_unstage(repo.clone(), "README.md".into())
+            .await
+            .expect("git_unstage");
 
         let changes = git_status(repo).await.expect("git_status");
-        assert!(changes.iter().all(|c| !c.staged), "nothing should be staged after unstage");
+        assert!(
+            changes.iter().all(|c| !c.staged),
+            "nothing should be staged after unstage"
+        );
     }
 
     #[tokio::test]
@@ -1947,7 +2035,10 @@ END_RECORD";
         git_stage_all(repo.clone()).await.expect("git_stage_all");
 
         let changes = git_status(repo).await.expect("git_status");
-        assert!(changes.iter().all(|c| c.staged), "all changes should be staged");
+        assert!(
+            changes.iter().all(|c| c.staged),
+            "all changes should be staged"
+        );
         assert_eq!(changes.len(), 2);
     }
 
@@ -1968,10 +2059,15 @@ END_RECORD";
         let changes = git_status(repo.clone()).await.expect("git_status");
         assert!(changes.iter().all(|c| c.staged));
 
-        git_unstage_all(repo.clone()).await.expect("git_unstage_all");
+        git_unstage_all(repo.clone())
+            .await
+            .expect("git_unstage_all");
 
         let changes = git_status(repo).await.expect("git_status");
-        assert!(changes.iter().all(|c| !c.staged), "nothing should be staged after unstage_all");
+        assert!(
+            changes.iter().all(|c| !c.staged),
+            "nothing should be staged after unstage_all"
+        );
     }
 
     // ── git_commit ──────────────────────────────────────────────────────────────
@@ -1981,9 +2077,13 @@ END_RECORD";
         let (_dir, repo) = setup_repo();
         let repo_path = Path::new(&repo);
         fs::write(repo_path.join("new.txt"), "content").expect("write");
-        git_stage(repo.clone(), "new.txt".into()).await.expect("stage");
+        git_stage(repo.clone(), "new.txt".into())
+            .await
+            .expect("stage");
 
-        git_commit(repo.clone(), "add new file".into()).await.expect("git_commit");
+        git_commit(repo.clone(), "add new file".into())
+            .await
+            .expect("git_commit");
 
         let commits = git_log(repo, 50, None, None).await.expect("git_log");
         assert_eq!(commits.len(), 2);
@@ -2003,7 +2103,9 @@ END_RECORD";
     async fn remote_counts_no_remote() {
         let (_dir, repo) = setup_repo();
         // no remote configured — git_remote_counts should still succeed, reporting 0/0
-        let counts = git_remote_counts(repo, None).await.expect("git_remote_counts");
+        let counts = git_remote_counts(repo, None)
+            .await
+            .expect("git_remote_counts");
         assert_eq!(counts.ahead, 0);
         assert_eq!(counts.behind, 0);
     }
@@ -2033,9 +2135,15 @@ END_RECORD";
             .current_dir(&repo)
             .output()
             .expect("git push");
-        assert!(o.status.success(), "push failed: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(
+            o.status.success(),
+            "push failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
 
-        let counts = git_remote_counts(repo, None).await.expect("git_remote_counts");
+        let counts = git_remote_counts(repo, None)
+            .await
+            .expect("git_remote_counts");
         assert_eq!(counts.ahead, 0, "just pushed, should be 0 ahead");
         assert_eq!(counts.behind, 0, "just pushed, should be 0 behind");
         assert!(!counts.branch.is_empty());
@@ -2068,7 +2176,11 @@ END_RECORD";
             .current_dir(&repo)
             .output()
             .expect("git push");
-        assert!(o.status.success(), "push failed: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(
+            o.status.success(),
+            "push failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
 
         // make another commit locally without pushing
         let repo_path = Path::new(&repo);
@@ -2086,7 +2198,9 @@ END_RECORD";
             .expect("git commit");
         assert!(o.status.success());
 
-        let counts = git_remote_counts(repo, None).await.expect("git_remote_counts");
+        let counts = git_remote_counts(repo, None)
+            .await
+            .expect("git_remote_counts");
         assert_eq!(counts.ahead, 1, "should be 1 commit ahead");
 
         drop(remote_dir);
@@ -2100,14 +2214,19 @@ END_RECORD";
         let commits = git_log(repo.clone(), 1, None, None).await.expect("git_log");
         let hash = commits[0].hash.clone();
 
-        let detail = git_commit_detail(repo, hash).await.expect("git_commit_detail");
+        let detail = git_commit_detail(repo, hash)
+            .await
+            .expect("git_commit_detail");
         assert_eq!(detail.message, "initial commit");
         assert_eq!(detail.author, "Test");
         assert!(!detail.hash.is_empty());
         assert!(!detail.short_hash.is_empty());
         // Root commits have no parent, so diff-tree returns no file entries.
         // This is a known limitation — the files vec will be empty.
-        assert!(detail.files.is_empty(), "root commit has no parent, diff-tree returns empty");
+        assert!(
+            detail.files.is_empty(),
+            "root commit has no parent, diff-tree returns empty"
+        );
         assert_eq!(detail.total_additions, 0);
         assert_eq!(detail.total_deletions, 0);
     }
@@ -2133,10 +2252,15 @@ END_RECORD";
         let commits = git_log(repo.clone(), 1, None, None).await.expect("git_log");
         let hash = commits[0].hash.clone();
 
-        let detail = git_commit_detail(repo, hash).await.expect("git_commit_detail");
+        let detail = git_commit_detail(repo, hash)
+            .await
+            .expect("git_commit_detail");
         assert_eq!(detail.message, "rewrite readme");
         assert!(detail.total_additions > 0, "should have additions");
-        assert!(detail.total_deletions > 0, "should have deletions from old content");
+        assert!(
+            detail.total_deletions > 0,
+            "should have deletions from old content"
+        );
     }
 
     #[tokio::test]
@@ -2147,7 +2271,10 @@ END_RECORD";
         // with empty fields for an invalid hash. This test documents that behavior.
         match result {
             Ok(detail) => {
-                assert!(detail.hash.is_empty(), "invalid hash should produce empty detail fields");
+                assert!(
+                    detail.hash.is_empty(),
+                    "invalid hash should produce empty detail fields"
+                );
                 assert!(detail.message.is_empty());
             }
             Err(_) => {
@@ -2210,7 +2337,11 @@ END_RECORD";
             .current_dir(&repo)
             .output()
             .expect("git push");
-        assert!(o.status.success(), "push failed: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(
+            o.status.success(),
+            "push failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
 
         // pull should succeed (already up to date)
         let result = git_pull(repo).await;

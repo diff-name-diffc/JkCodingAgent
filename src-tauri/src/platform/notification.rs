@@ -38,21 +38,11 @@ struct RemoteNotification {
 
 // ── Local storage types ──────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct NotificationStore {
     read_ids: Vec<String>,
     last_fetched_at: Option<String>,
     cached_notifications: Option<Vec<RemoteNotification>>,
-}
-
-impl Default for NotificationStore {
-    fn default() -> Self {
-        Self {
-            read_ids: vec![],
-            last_fetched_at: None,
-            cached_notifications: None,
-        }
-    }
 }
 
 // ── Frontend-facing types ────────────────────────────────────────────────────
@@ -667,7 +657,7 @@ mod tests {
 
     #[test]
     fn notification_result_counts_unread() {
-        let items = vec![
+        let items = [
             NotificationItem {
                 id: "1".to_string(),
                 notif_type: "info".to_string(),
@@ -710,7 +700,7 @@ mod tests {
 
     #[test]
     fn notification_result_no_unread_popup_when_read() {
-        let items = vec![NotificationItem {
+        let items = [NotificationItem {
             id: "1".to_string(),
             notif_type: "info".to_string(),
             level: "info".to_string(),

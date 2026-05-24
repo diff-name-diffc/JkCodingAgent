@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn u64_arg_returns_none_for_float() {
-        let args = json!({"timeout": 3.14});
+        let args = json!({"timeout": 2.5});
         assert_eq!(super::u64_arg(&args, "timeout"), None);
     }
 

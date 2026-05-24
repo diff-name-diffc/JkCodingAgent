@@ -112,7 +112,7 @@ fn build_graph_inner(collection: &super::types::KnowledgeCollection) -> Result<K
         for source in sources {
             source_to_pages
                 .entry(source.clone())
-                .or_insert_with(|| Vec::new())
+                .or_default()
                 .push(page_path);
         }
     }

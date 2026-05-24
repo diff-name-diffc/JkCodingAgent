@@ -1,26 +1,30 @@
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use parking_lot::Mutex;
+use reqwest::Client;
+use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::watch;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::config::{DispatcherAgentConfig, DEFAULT_SUMMARY_MODEL};
+use super::config::{DEFAULT_SUMMARY_MODEL, DispatcherAgentConfig};
 use super::db::{
-    DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherSessionKind,
-    DispatcherSessionRecord, DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord,
-    DispatcherSessionTokenUsageSource, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
+    DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherModelConfig,
+    DispatcherSessionKind, DispatcherSessionRecord, DispatcherSessionRuntimeState,
+    DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
+    DispatcherSettingsModelConfigs, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
 };
-use super::llm;
 use super::llm::OpenAiCompatProvider;
+use super::llm::{self, ChatMessage};
 use super::runtime::{
     AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent, DispatcherSubprocessRegistry,
 };
-use super::summary::{fallback_session_title, summarize_session_title, SessionTitleMessage};
-use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
+use super::summary::{SessionTitleMessage, fallback_session_title, summarize_session_title};
+use super::voice::{VoiceAsrConfig, VoiceAsrManager, resolve_dashscope_websocket_url};
 use crate::browser::BrowserManager;
 use crate::project::mcp::ProjectMcpRegistry;
 use crate::shared::TaskManager;
@@ -47,6 +51,40 @@ struct ActiveRunEntry {
 struct ActiveRunHandle {
     generation: u64,
     cancel_rx: watch::Receiver<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatcherSaveSettingsPayload {
+    api_base: String,
+    api_key: String,
+    model: String,
+    summary_model: String,
+    vision_model: String,
+    asr_api_key: String,
+    asr_websocket_url: String,
+    auto_approve_dispatch: bool,
+    context_debug: bool,
+    image_model_url: String,
+    image_model_api_key: String,
+    image_model: String,
+    image_edit_model: String,
+    chat_model_config: Option<DispatcherModelConfig>,
+    summary_model_config: Option<DispatcherModelConfig>,
+    vision_model_config: Option<DispatcherModelConfig>,
+    image_model_config: Option<DispatcherModelConfig>,
+    image_edit_model_config: Option<DispatcherModelConfig>,
+    asr_model_config: Option<DispatcherModelConfig>,
+    tts_model_config: Option<DispatcherModelConfig>,
+    embedding_model_config: Option<DispatcherModelConfig>,
+    chat_model_configs: Option<Vec<DispatcherModelConfig>>,
+    summary_model_configs: Option<Vec<DispatcherModelConfig>>,
+    vision_model_configs: Option<Vec<DispatcherModelConfig>>,
+    image_model_configs: Option<Vec<DispatcherModelConfig>>,
+    image_edit_model_configs: Option<Vec<DispatcherModelConfig>>,
+    asr_model_configs: Option<Vec<DispatcherModelConfig>>,
+    tts_model_configs: Option<Vec<DispatcherModelConfig>>,
+    embedding_model_configs: Option<Vec<DispatcherModelConfig>>,
 }
 
 impl DispatcherState {
@@ -86,7 +124,10 @@ impl DispatcherState {
     fn begin_run(&self, workspace_id: &str) -> Result<ActiveRunHandle, String> {
         let mut active_runs = self.active_runs.lock();
         if active_runs.contains_key(workspace_id) {
-            return Err(format!("会话 {} 已在运行中，请等待当前任务完成", workspace_id));
+            return Err(format!(
+                "会话 {} 已在运行中，请等待当前任务完成",
+                workspace_id
+            ));
         }
         let generation = self.next_run_generation.fetch_add(1, Ordering::Relaxed);
         let (stop_tx, cancel_rx) = watch::channel(false);
@@ -487,6 +528,7 @@ fn normalize_summary_model_name(model: &str) -> String {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn dispatcher_send_message(
     state: tauri::State<'_, DispatcherState>,
     app: AppHandle,
@@ -708,36 +750,42 @@ pub fn dispatcher_delete_session(
 #[tauri::command]
 pub async fn dispatcher_save_settings(
     state: tauri::State<'_, DispatcherState>,
-    api_base: String,
-    api_key: String,
-    model: String,
-    summary_model: String,
-    vision_model: String,
-    asr_api_key: String,
-    asr_websocket_url: String,
-    auto_approve_dispatch: bool,
-    context_debug: bool,
-    image_model_url: String,
-    image_model_api_key: String,
-    image_model: String,
-    image_edit_model: String,
+    settings: DispatcherSaveSettingsPayload,
 ) -> Result<DispatcherSettingsRecord, String> {
     let record = state
         .db
-        .save_settings(
-            &api_base,
-            &api_key,
-            &model,
-            &summary_model,
-            &vision_model,
-            &asr_api_key,
-            &asr_websocket_url,
-            auto_approve_dispatch,
-            context_debug,
-            &image_model_url,
-            &image_model_api_key,
-            &image_model,
-            &image_edit_model,
+        .save_settings_with_model_configs(
+            &settings.api_base,
+            &settings.api_key,
+            &settings.model,
+            &settings.summary_model,
+            &settings.vision_model,
+            &settings.asr_api_key,
+            &settings.asr_websocket_url,
+            settings.auto_approve_dispatch,
+            settings.context_debug,
+            &settings.image_model_url,
+            &settings.image_model_api_key,
+            &settings.image_model,
+            &settings.image_edit_model,
+            DispatcherSettingsModelConfigs {
+                chat_model_config: settings.chat_model_config,
+                summary_model_config: settings.summary_model_config,
+                vision_model_config: settings.vision_model_config,
+                image_model_config: settings.image_model_config,
+                image_edit_model_config: settings.image_edit_model_config,
+                asr_model_config: settings.asr_model_config,
+                tts_model_config: settings.tts_model_config,
+                embedding_model_config: settings.embedding_model_config,
+                chat_model_configs: settings.chat_model_configs,
+                summary_model_configs: settings.summary_model_configs,
+                vision_model_configs: settings.vision_model_configs,
+                image_model_configs: settings.image_model_configs,
+                image_edit_model_configs: settings.image_edit_model_configs,
+                asr_model_configs: settings.asr_model_configs,
+                tts_model_configs: settings.tts_model_configs,
+                embedding_model_configs: settings.embedding_model_configs,
+            },
         )
         .map_err(|error| error.to_string())?;
 
@@ -755,6 +803,124 @@ pub async fn dispatcher_fetch_models(
 }
 
 #[tauri::command]
+pub async fn dispatcher_test_model(
+    kind: String,
+    config: DispatcherModelConfig,
+) -> Result<String, String> {
+    test_dispatcher_model(&kind, config)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn test_dispatcher_model(kind: &str, config: DispatcherModelConfig) -> Result<String> {
+    match kind {
+        "chat" => test_chat_compatible_model("聊天主模型", config, false).await,
+        "summary" => test_chat_compatible_model("摘要模型", config, false).await,
+        "vision" => test_chat_compatible_model("视觉模型", config, true).await,
+        "embedding" => test_embedding_model(config).await,
+        "asr" => test_required_model_config("ASR 模型", &config)
+            .map(|_| "ASR 配置字段完整，未启动真实录音会话。".to_string()),
+        "image" => test_endpoint_reachable_model("图片模型", config).await,
+        "imageEdit" => test_endpoint_reachable_model("图片编辑模型", config).await,
+        "tts" => test_endpoint_reachable_model("TTS 模型", config).await,
+        other => Err(anyhow!("未知模型类型：{other}")),
+    }
+}
+
+async fn test_chat_compatible_model(
+    label: &str,
+    config: DispatcherModelConfig,
+    enable_multimodal: bool,
+) -> Result<String> {
+    test_required_model_config(label, &config)?;
+    let provider = OpenAiCompatProvider::new(config.api_key, config.url, config.model, 64, 0.0);
+    let messages = vec![ChatMessage::system("只输出 pong。".to_string())];
+    let response = provider
+        .chat_stream(&messages, &[], enable_multimodal, |_| {})
+        .await
+        .with_context(|| format!("{label} 测试请求失败"))?;
+    let content = response.content.trim();
+    if content.is_empty() {
+        anyhow::bail!("{label} 返回空内容");
+    }
+    Ok(format!("{label} ok：{content}"))
+}
+
+async fn test_embedding_model(config: DispatcherModelConfig) -> Result<String> {
+    test_required_model_config("文本向量模型", &config)?;
+    let endpoint = embedding_endpoint(&config.url);
+    let response = Client::new()
+        .post(&endpoint)
+        .bearer_auth(config.api_key.trim())
+        .json(&serde_json::json!({
+            "model": config.model.trim(),
+            "input": "ping"
+        }))
+        .send()
+        .await
+        .context("发送文本向量模型测试请求失败")?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!("文本向量模型测试失败，HTTP {status}：{body}");
+    }
+    let value: Value = serde_json::from_str(&body).context("解析文本向量模型响应失败")?;
+    let dimension = value
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("embedding"))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .ok_or_else(|| anyhow!("文本向量模型响应中未找到 data[0].embedding"))?;
+
+    Ok(format!("文本向量模型 ok，维度 {dimension}"))
+}
+
+async fn test_endpoint_reachable_model(
+    label: &str,
+    config: DispatcherModelConfig,
+) -> Result<String> {
+    test_required_model_config(label, &config)?;
+    let response = Client::new()
+        .get(config.url.trim())
+        .bearer_auth(config.api_key.trim())
+        .send()
+        .await
+        .with_context(|| format!("{label} 端点连通性测试失败"))?;
+    let status = response.status();
+    if status.is_server_error() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("{label} 端点返回 HTTP {status}：{body}");
+    }
+    Ok(format!("{label} 配置字段完整，端点 HTTP {status} 可达。"))
+}
+
+fn test_required_model_config(label: &str, config: &DispatcherModelConfig) -> Result<()> {
+    if config.url.trim().is_empty() {
+        anyhow::bail!("{label} URL 未配置");
+    }
+    if config.api_key.trim().is_empty() {
+        anyhow::bail!("{label} API Key 未配置");
+    }
+    if config.model.trim().is_empty() {
+        anyhow::bail!("{label} 模型名称未配置");
+    }
+    Ok(())
+}
+
+fn embedding_endpoint(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.ends_with("/embeddings") {
+        trimmed.to_string()
+    } else if trimmed.ends_with("/v1") {
+        format!("{trimmed}/embeddings")
+    } else {
+        format!("{trimmed}/v1/embeddings")
+    }
+}
+
+#[tauri::command]
 pub async fn dispatcher_set_auto_approve_dispatch(
     state: tauri::State<'_, DispatcherState>,
     auto_approve_dispatch: bool,
@@ -767,6 +933,7 @@ pub async fn dispatcher_set_auto_approve_dispatch(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn dispatcher_continue_after_dispatch(
     state: tauri::State<'_, DispatcherState>,
     app: AppHandle,

@@ -56,6 +56,7 @@ pub struct ImageGenerationOutput {
 ///   }
 /// }
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub async fn edit_image(
     image_path: &str,
     prompt: String,

@@ -247,6 +247,26 @@ struct Models {
     image_edit_model: String,
 }
 
+struct ModelsSnapshot {
+    vision_model: String,
+    image_model_url: String,
+    image_model_api_key: String,
+    image_model: String,
+    image_edit_model: String,
+}
+
+impl Models {
+    fn snapshot(&self) -> ModelsSnapshot {
+        ModelsSnapshot {
+            vision_model: self.vision_model.clone(),
+            image_model_url: self.image_model_url.clone(),
+            image_model_api_key: self.image_model_api_key.clone(),
+            image_model: self.image_model.clone(),
+            image_edit_model: self.image_edit_model.clone(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct DispatcherSubprocessRegistry {
     subprocesses: Mutex<Vec<RegisteredSubprocess>>,
@@ -658,22 +678,6 @@ impl DispatcherAgent {
         self.models.lock().vision_model.clone()
     }
 
-    fn image_model_url(&self) -> String {
-        self.models.lock().image_model_url.clone()
-    }
-
-    fn image_model_api_key(&self) -> String {
-        self.models.lock().image_model_api_key.clone()
-    }
-
-    fn image_model(&self) -> String {
-        self.models.lock().image_model.clone()
-    }
-
-    fn image_edit_model(&self) -> String {
-        self.models.lock().image_edit_model.clone()
-    }
-
     fn provider_for_messages(
         &self,
         provider: &OpenAiCompatProvider,
@@ -711,6 +715,7 @@ impl DispatcherAgent {
         self.config.context_debug = value;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run(
         &self,
         db: &DispatcherDb,
@@ -748,7 +753,9 @@ impl DispatcherAgent {
             .await
             .map_err(anyhow::Error::msg)
             .context("刷新项目 MCP 状态失败")?;
-        let user = db.add_visible_message_async(workspace_id, "user", user_message, user_segments_json).await?;
+        let user = db
+            .add_visible_message_async(workspace_id, "user", user_message, user_segments_json)
+            .await?;
         emit(&on_event, AgentEvent::UserMessage { message: user });
 
         let provider = self.provider.lock().clone();
@@ -781,6 +788,7 @@ impl DispatcherAgent {
         Ok(AgentTurn { reply, messages })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn continue_after_dispatch(
         &self,
         db: &DispatcherDb,
@@ -814,8 +822,12 @@ impl DispatcherAgent {
                 );
             }
         }
-        let result_msg =
-            db.add_visible_message(workspace_id, "assistant", dispatch_state.visible_message(), None)?;
+        let result_msg = db.add_visible_message(
+            workspace_id,
+            "assistant",
+            dispatch_state.visible_message(),
+            None,
+        )?;
         emit(
             &on_event,
             AgentEvent::AssistantMessage {
@@ -942,6 +954,7 @@ impl DispatcherAgent {
         Ok(AgentTurn { reply, messages })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_plain_chat(
         &self,
         db: &DispatcherDb,
@@ -961,7 +974,8 @@ impl DispatcherAgent {
         db.clear_checklist(workspace_id)
             .context("clear stale checklist before plain chat turn")?;
 
-        let user = db.add_visible_message(workspace_id, "user", user_message, user_segments_json)?;
+        let user =
+            db.add_visible_message(workspace_id, "user", user_message, user_segments_json)?;
         emit(&on_event, AgentEvent::UserMessage { message: user });
 
         let provider = self.provider.lock().clone();
@@ -995,6 +1009,7 @@ impl DispatcherAgent {
         Ok(AgentTurn { reply, messages })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_plain_chat_loop(
         &self,
         db: &DispatcherDb,
@@ -1006,7 +1021,10 @@ impl DispatcherAgent {
         cancel_rx: watch::Receiver<bool>,
         usage_tracker: &mut RunUsageTracker,
     ) -> Result<DispatcherMessageRecord> {
-        let session_title = db.get_session_title(workspace_id).unwrap_or_else(|_| "untitled".to_string());
+        let session_title = db
+            .get_session_title(workspace_id)
+            .unwrap_or_else(|_| "untitled".to_string());
+        let ms = self.models.lock().snapshot();
         let tool_context = ToolContext {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
@@ -1018,11 +1036,11 @@ impl DispatcherAgent {
                 .unwrap_or_default(),
             app_handle: self.app_handle.clone(),
             llm_provider: Some(provider.clone()),
-            vision_model: self.vision_model(),
-            image_model_url: self.image_model_url(),
-            image_model_api_key: self.image_model_api_key(),
-            image_model: self.image_model(),
-            image_edit_model: self.image_edit_model(),
+            vision_model: ms.vision_model,
+            image_model_url: ms.image_model_url,
+            image_model_api_key: ms.image_model_api_key,
+            image_model: ms.image_model,
+            image_edit_model: ms.image_edit_model,
         };
         let allowed_tool_names = plain_chat_tool_allowlist()
             .into_iter()
@@ -1121,14 +1139,16 @@ impl DispatcherAgent {
                     anyhow::bail!("{}", empty_llm_response_error(&response));
                 }
                 let usage_stats = usage_tracker.snapshot();
-                let reply = db.add_visible_message_with_usage_and_thinking_async(
-                    workspace_id,
-                    "assistant",
-                    &content,
-                    &usage_stats,
-                    Some(&response.thinking_content),
-                    response.thinking_elapsed_ms,
-                ).await?;
+                let reply = db
+                    .add_visible_message_with_usage_and_thinking_async(
+                        workspace_id,
+                        "assistant",
+                        &content,
+                        &usage_stats,
+                        Some(&response.thinking_content),
+                        response.thinking_elapsed_ms,
+                    )
+                    .await?;
                 emit(
                     on_event,
                     AgentEvent::AssistantMessage {
@@ -1138,28 +1158,36 @@ impl DispatcherAgent {
                 return Ok(reply);
             }
 
-            let tool_calls_payload = response
+            let tool_calls_payload: Vec<OutboundToolCall> = response
                 .tool_calls
                 .iter()
-                .map(|call| OutboundToolCall {
-                    id: call.id.clone(),
-                    kind: "function".to_string(),
-                    function: FunctionCall {
-                        name: call.name.clone(),
-                        arguments: serde_json::to_string(&call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string()),
-                    },
+                .map(|call| {
+                    let args_json =
+                        serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string());
+                    OutboundToolCall {
+                        id: call.id.clone(),
+                        kind: "function".to_string(),
+                        function: FunctionCall {
+                            name: call.name.clone(),
+                            arguments: args_json,
+                        },
+                    }
                 })
-                .collect::<Vec<_>>();
+                .collect();
 
-            for tool_call in &response.tool_calls {
+            // Pre-serialize arguments for reuse across events and DB storage.
+            let args_map: std::collections::HashMap<&str, &str> = tool_calls_payload
+                .iter()
+                .map(|tc| (tc.id.as_str(), tc.function.arguments.as_str()))
+                .collect();
+
+            for tc in &tool_calls_payload {
                 emit(
                     on_event,
                     AgentEvent::ToolPlanned {
-                        tool_call_id: Some(tool_call.id.clone()),
-                        name: tool_call.name.clone(),
-                        arguments: serde_json::to_string(&tool_call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string()),
+                        tool_call_id: Some(tc.id.clone()),
+                        name: tc.function.name.clone(),
+                        arguments: tc.function.arguments.clone(),
                     },
                 );
             }
@@ -1174,7 +1202,8 @@ impl DispatcherAgent {
                 Some(&tool_calls_payload),
                 Some(&response.thinking_content),
                 response.thinking_elapsed_ms,
-            ).await?;
+            )
+            .await?;
 
             for tool_call in response.tool_calls {
                 if cancellation_requested(&cancel_rx) {
@@ -1186,13 +1215,16 @@ impl DispatcherAgent {
                         usage_tracker,
                     );
                 }
+                let tool_args_json = args_map
+                    .get(tool_call.id.as_str())
+                    .unwrap_or(&"{}")
+                    .to_string();
                 emit(
                     on_event,
                     AgentEvent::ToolStarted {
                         tool_call_id: Some(tool_call.id.clone()),
                         name: tool_call.name.clone(),
-                        arguments: serde_json::to_string(&tool_call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string()),
+                        arguments: tool_args_json,
                     },
                 );
 
@@ -1254,15 +1286,17 @@ impl DispatcherAgent {
                     )
                 })?;
 
-                let tool_message = db.add_visible_tool_result_async(
-                    workspace_id,
-                    &tool_result.display_content,
-                    &tool_result.context_payload,
-                    Some(&tool_call.id),
-                    Some(&tool_call.name),
-                    Some(tool_result.result_mode),
-                    &tool_result.artifacts,
-                ).await?;
+                let tool_message = db
+                    .add_visible_tool_result_async(
+                        workspace_id,
+                        &tool_result.display_content,
+                        &tool_result.context_payload,
+                        Some(&tool_call.id),
+                        Some(&tool_call.name),
+                        Some(tool_result.result_mode),
+                        &tool_result.artifacts,
+                    )
+                    .await?;
                 emit(
                     on_event,
                     AgentEvent::ToolFinished {
@@ -1295,6 +1329,7 @@ impl DispatcherAgent {
         Ok(workspace)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_llm_loop(
         &self,
         db: &DispatcherDb,
@@ -1306,18 +1341,30 @@ impl DispatcherAgent {
         cancel_rx: watch::Receiver<bool>,
         usage_tracker: &mut RunUsageTracker,
     ) -> Result<DispatcherMessageRecord> {
-        let tool_context = self.build_tool_context(db, workspace_id, workspace, provider).await;
+        let tool_context = self
+            .build_tool_context(db, workspace_id, workspace, provider)
+            .await;
 
         for iteration in 0..self.config.max_tool_iterations {
             if cancellation_requested(&cancel_rx) {
                 return self.emit_stop_and_finish(
-                    db, workspace_id, on_event, "", Some(usage_tracker),
+                    db,
+                    workspace_id,
+                    on_event,
+                    "",
+                    Some(usage_tracker),
                 );
             }
 
             let ctx = self
                 .prepare_iteration_context(
-                    db, workspace_id, workspace, on_event, provider, enable_thinking, iteration,
+                    db,
+                    workspace_id,
+                    workspace,
+                    on_event,
+                    provider,
+                    enable_thinking,
+                    iteration,
                 )
                 .await?;
 
@@ -1339,7 +1386,11 @@ impl DispatcherAgent {
             {
                 LlmStreamOutcome::Cancelled(partial) => {
                     return self.emit_stop_and_finish(
-                        db, workspace_id, on_event, &partial, Some(usage_tracker),
+                        db,
+                        workspace_id,
+                        on_event,
+                        &partial,
+                        Some(usage_tracker),
                     );
                 }
                 LlmStreamOutcome::Response(r) => r,
@@ -1392,6 +1443,7 @@ impl DispatcherAgent {
             .get_session_title_async(workspace_id)
             .await
             .unwrap_or_else(|_| "untitled".to_string());
+        let ms = self.models.lock().snapshot();
         ToolContext {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
@@ -1403,14 +1455,15 @@ impl DispatcherAgent {
                 .unwrap_or_default(),
             app_handle: self.app_handle.clone(),
             llm_provider: Some(provider.clone()),
-            vision_model: self.vision_model(),
-            image_model_url: self.image_model_url(),
-            image_model_api_key: self.image_model_api_key(),
-            image_model: self.image_model(),
-            image_edit_model: self.image_edit_model(),
+            vision_model: ms.vision_model,
+            image_model_url: ms.image_model_url,
+            image_model_api_key: ms.image_model_api_key,
+            image_model: ms.image_model,
+            image_edit_model: ms.image_edit_model,
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_iteration_context(
         &self,
         db: &DispatcherDb,
@@ -1443,11 +1496,8 @@ impl DispatcherAgent {
             self.provider_for_messages(provider, &history_messages, on_event, iteration == 0)?;
         let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
         messages.extend(history_messages.clone());
-        let request_snapshot = request_provider.build_request_snapshot(
-            &messages,
-            &tool_definitions,
-            enable_thinking,
-        );
+        let request_snapshot =
+            request_provider.build_request_snapshot(&messages, &tool_definitions, enable_thinking);
 
         debug_logger.log(
             "发送大模型请求",
@@ -1474,6 +1524,7 @@ impl DispatcherAgent {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn stream_llm_response(
         &self,
         db: &DispatcherDb,
@@ -1634,6 +1685,7 @@ impl DispatcherAgent {
     /// Execute all tool calls from an LLM response. Tool calls run in two phases:
     /// first `update_plan` calls are preprocessed, then remaining calls execute in order
     /// (with adjacent readonly tools parallelized).
+    #[allow(clippy::too_many_arguments)]
     async fn execute_tool_calls(
         &self,
         db: &DispatcherDb,
@@ -1650,18 +1702,26 @@ impl DispatcherAgent {
     ) -> Result<ToolCallsOutcome> {
         // Move tool_calls out; content/thinking fields remain accessible for the DB save.
         let tool_calls = response.tool_calls;
-        let tool_calls_payload = tool_calls
+        let tool_calls_payload: Vec<OutboundToolCall> = tool_calls
             .iter()
-            .map(|call| OutboundToolCall {
-                id: call.id.clone(),
-                kind: "function".to_string(),
-                function: FunctionCall {
-                    name: call.name.clone(),
-                    arguments: serde_json::to_string(&call.arguments)
-                        .unwrap_or_else(|_| "{}".to_string()),
-                },
+            .map(|call| {
+                let args_json =
+                    serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string());
+                OutboundToolCall {
+                    id: call.id.clone(),
+                    kind: "function".to_string(),
+                    function: FunctionCall {
+                        name: call.name.clone(),
+                        arguments: args_json,
+                    },
+                }
             })
-            .collect::<Vec<_>>();
+            .collect();
+
+        let args_map: std::collections::HashMap<&str, &str> = tool_calls_payload
+            .iter()
+            .map(|tc| (tc.id.as_str(), tc.function.arguments.as_str()))
+            .collect();
 
         for tool_call in &tool_calls {
             emit(
@@ -1669,8 +1729,10 @@ impl DispatcherAgent {
                 AgentEvent::ToolPlanned {
                     tool_call_id: Some(tool_call.id.clone()),
                     name: tool_call.name.clone(),
-                    arguments: serde_json::to_string(&tool_call.arguments)
-                        .unwrap_or_else(|_| "{}".to_string()),
+                    arguments: args_map
+                        .get(tool_call.id.as_str())
+                        .unwrap_or(&"{}")
+                        .to_string(),
                 },
             );
         }
@@ -1724,7 +1786,12 @@ impl DispatcherAgent {
             let ready_tool_results = if readonly_end.saturating_sub(tool_call_index) >= 2 {
                 let run = &tool_calls[tool_call_index..readonly_end];
                 let results = self
-                    .execute_parallel_readonly_tools(run, tool_context, on_event, allowed_tool_names)
+                    .execute_parallel_readonly_tools(
+                        run,
+                        tool_context,
+                        on_event,
+                        allowed_tool_names,
+                    )
                     .await;
                 let items = run
                     .iter()
@@ -1736,13 +1803,16 @@ impl DispatcherAgent {
             } else {
                 let tool_call = tool_calls[tool_call_index].clone();
                 tool_call_index += 1;
+                let tool_args_json = args_map
+                    .get(tool_call.id.as_str())
+                    .unwrap_or(&"{}")
+                    .to_string();
                 emit(
                     on_event,
                     AgentEvent::ToolStarted {
                         tool_call_id: Some(tool_call.id.clone()),
                         name: tool_call.name.clone(),
-                        arguments: serde_json::to_string(&tool_call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string()),
+                        arguments: tool_args_json,
                     },
                 );
                 let result = if allowed_tool_names.contains(&tool_call.name) {
@@ -1764,16 +1834,17 @@ impl DispatcherAgent {
                     continue;
                 }
 
-                match self.process_single_tool_call(
-                    db,
-                    workspace_id,
-                    workspace,
-                    on_event,
-                    &tool_call,
-                    runtime_state,
-                    &mut protocol_state,
-                )
-                .await?
+                match self
+                    .process_single_tool_call(
+                        db,
+                        workspace_id,
+                        workspace,
+                        on_event,
+                        &tool_call,
+                        runtime_state,
+                        &mut protocol_state,
+                    )
+                    .await?
                 {
                     SingleToolDisposition::Handled => {}
                     SingleToolDisposition::HandledWithRetry => {
@@ -1788,14 +1859,18 @@ impl DispatcherAgent {
                     SingleToolDisposition::NeedsSummary => {
                         if is_retryable_tool_error(&tool_call.name, &result) {
                             self.emit_tool_retry_feedback(
-                                db, workspace_id, on_event, &tool_call, &result,
+                                db,
+                                workspace_id,
+                                on_event,
+                                &tool_call,
+                                &result,
                             )?;
                             saw_retryable_tool_error = true;
                             continue;
                         }
 
                         let summary_model = self.summary_model();
-                        let tool_result = self
+                        self
                             .summarize_and_persist_tool_result(
                                 db,
                                 workspace_id,
@@ -1824,7 +1899,6 @@ impl DispatcherAgent {
                                 final_message = Some(content);
                             }
                         }
-                        let _ = tool_result; // persisted and emitted above
                     }
                 }
             }
@@ -1842,6 +1916,7 @@ impl DispatcherAgent {
 
     /// Classify a single tool call through the planning/protocol priority waterfall.
     /// Returns the disposition so the caller can decide what to do with the result.
+    #[allow(clippy::too_many_arguments)]
     async fn process_single_tool_call(
         &self,
         db: &DispatcherDb,
@@ -1854,7 +1929,14 @@ impl DispatcherAgent {
     ) -> Result<SingleToolDisposition> {
         // Priority 1: planning tools (update_plan, present_plan, etc.)
         match self
-            .execute_planning_tool(db, workspace_id, workspace, on_event, tool_call, runtime_state)
+            .execute_planning_tool(
+                db,
+                workspace_id,
+                workspace,
+                on_event,
+                tool_call,
+                runtime_state,
+            )
             .await
         {
             Ok(Some(PlanningToolOutcome::ToolResult(res))) => {
@@ -1902,6 +1984,7 @@ impl DispatcherAgent {
         Ok(SingleToolDisposition::NeedsSummary)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn summarize_and_persist_tool_result(
         &self,
         db: &DispatcherDb,
@@ -2351,6 +2434,7 @@ impl DispatcherAgent {
         results
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_update_plan_calls_first(
         &self,
         db: &DispatcherDb,
@@ -2391,15 +2475,17 @@ impl DispatcherAgent {
             {
                 Ok(Some(PlanningToolOutcome::ToolResult(result)))
                 | Ok(Some(PlanningToolOutcome::WaitForUser(result))) => {
-                    let tool_message = db.add_visible_tool_result_async(
-                        workspace_id,
-                        &result,
-                        &result,
-                        Some(&tool_call.id),
-                        Some(&tool_call.name),
-                        Some("raw"),
-                        &[],
-                    ).await?;
+                    let tool_message = db
+                        .add_visible_tool_result_async(
+                            workspace_id,
+                            &result,
+                            &result,
+                            Some(&tool_call.id),
+                            Some(&tool_call.name),
+                            Some("raw"),
+                            &[],
+                        )
+                        .await?;
                     emit(
                         on_event,
                         AgentEvent::ToolFinished {

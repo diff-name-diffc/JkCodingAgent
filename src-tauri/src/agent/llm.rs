@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
+use base64::Engine;
 use futures::StreamExt;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -322,7 +324,7 @@ impl OpenAiCompatProvider {
         }
 
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
-        let api_messages = build_api_messages(messages, enable_multimodal);
+        let api_messages = build_api_messages(messages, enable_multimodal).await?;
         let mut request = StreamChatRequest {
             model: &self.model,
             messages: &api_messages,
@@ -403,12 +405,13 @@ impl OpenAiCompatProvider {
             if buffer.len() > 1_000_000 {
                 return Err(anyhow!("SSE 行超过最大缓冲区大小"));
             }
-            buffer.push_str(&String::from_utf8_lossy(&bytes));
+            buffer.push_str(std::str::from_utf8(&bytes).unwrap_or(""));
 
             // Process complete lines from the buffer
             while let Some(newline_pos) = buffer.find('\n') {
-                let line = buffer[..newline_pos].trim_end().to_string();
-                buffer = buffer[newline_pos + 1..].to_string();
+                let line_end = buffer[..newline_pos].trim_end().len();
+                let line = buffer[..line_end].to_string();
+                buffer.drain(..newline_pos + 1);
 
                 if line.is_empty() || line.starts_with(':') {
                     continue;
@@ -581,32 +584,38 @@ fn build_requested_tool_calls(
         .collect()
 }
 
-fn build_api_messages(messages: &[ChatMessage], enable_multimodal: bool) -> Vec<ApiChatMessage> {
-    messages
-        .iter()
-        .map(|message| ApiChatMessage {
+async fn build_api_messages(
+    messages: &[ChatMessage],
+    enable_multimodal: bool,
+) -> Result<Vec<ApiChatMessage>> {
+    let mut api_messages = Vec::with_capacity(messages.len());
+
+    for message in messages {
+        api_messages.push(ApiChatMessage {
             role: message.role.clone(),
             content: if enable_multimodal && message.role == "user" {
-                build_api_message_content(&message.content)
+                build_api_message_content(&message.content).await?
             } else {
                 ApiMessageContent::Text(message.content.clone())
             },
             tool_calls: message.tool_calls.clone(),
             tool_call_id: message.tool_call_id.clone(),
             name: message.name.clone(),
-        })
-        .collect()
+        });
+    }
+
+    Ok(api_messages)
 }
 
-fn build_api_message_content(content: &str) -> ApiMessageContent {
-    let parts = extract_multimodal_parts(content);
+async fn build_api_message_content(content: &str) -> Result<ApiMessageContent> {
+    let parts = extract_multimodal_parts(content).await?;
     if parts
         .iter()
         .any(|part| matches!(part, ApiMessageContentPart::ImageUrl { .. }))
     {
-        ApiMessageContent::Parts(parts)
+        Ok(ApiMessageContent::Parts(parts))
     } else {
-        ApiMessageContent::Text(content.to_string())
+        Ok(ApiMessageContent::Text(content.to_string()))
     }
 }
 
@@ -614,7 +623,7 @@ fn content_contains_inline_image(content: &str) -> bool {
     extract_inline_image_urls(content).next().is_some()
 }
 
-fn extract_multimodal_parts(content: &str) -> Vec<ApiMessageContentPart> {
+async fn extract_multimodal_parts(content: &str) -> Result<Vec<ApiMessageContentPart>> {
     let mut parts = Vec::new();
     let mut cursor = 0usize;
 
@@ -623,7 +632,9 @@ fn extract_multimodal_parts(content: &str) -> Vec<ApiMessageContentPart> {
             push_text_part(&mut parts, &content[cursor..image.start]);
         }
         parts.push(ApiMessageContentPart::ImageUrl {
-            image_url: ApiImageUrl { url: image.url },
+            image_url: ApiImageUrl {
+                url: image_url_for_api(&image.url).await?,
+            },
         });
         cursor = image.end;
     }
@@ -632,7 +643,7 @@ fn extract_multimodal_parts(content: &str) -> Vec<ApiMessageContentPart> {
         push_text_part(&mut parts, &content[cursor..]);
     }
 
-    parts
+    Ok(parts)
 }
 
 fn push_text_part(parts: &mut Vec<ApiMessageContentPart>, text: &str) {
@@ -684,7 +695,7 @@ impl Iterator for InlineImageUrlIter<'_> {
             let url = &self.content[url_start..url_end];
             self.search_from = end;
 
-            if url.starts_with("data:image/") {
+            if is_supported_image_reference(url) {
                 return Some(InlineImageUrl {
                     start,
                     end,
@@ -694,6 +705,80 @@ impl Iterator for InlineImageUrlIter<'_> {
         }
 
         None
+    }
+}
+
+fn is_supported_image_reference(url: &str) -> bool {
+    url.starts_with("data:image/") || local_image_path(url).is_ok()
+}
+
+async fn image_url_for_api(url: &str) -> Result<String> {
+    if url.starts_with("data:image/") {
+        return Ok(url.to_string());
+    }
+
+    let path = local_image_path(url)?;
+    tokio::task::spawn_blocking(move || local_image_to_data_url(&path))
+        .await
+        .context("读取本地图片任务失败")?
+}
+
+fn local_image_path(url: &str) -> Result<PathBuf> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("图片路径为空");
+    }
+
+    let path = Path::new(trimmed);
+    if !path.is_absolute() {
+        anyhow::bail!("图片路径必须是绝对路径：{trimmed}");
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        anyhow::bail!("图片路径不能包含父目录跳转：{trimmed}");
+    }
+
+    image_mime_from_path(path)?;
+    Ok(path.to_path_buf())
+}
+
+const MAX_INLINE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+
+fn local_image_to_data_url(path: &Path) -> Result<String> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("读取图片元数据失败：{}", path.display()))?;
+    if !metadata.is_file() {
+        anyhow::bail!("图片路径不是文件：{}", path.display());
+    }
+    if metadata.len() > MAX_INLINE_IMAGE_BYTES {
+        anyhow::bail!(
+            "图片文件过大：{}，当前限制为 {} MB",
+            path.display(),
+            MAX_INLINE_IMAGE_BYTES / 1024 / 1024
+        );
+    }
+
+    let mime = image_mime_from_path(path)?;
+    let bytes = std::fs::read(path).with_context(|| format!("读取图片失败：{}", path.display()))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{mime};base64,{encoded}"))
+}
+
+fn image_mime_from_path(path: &Path) -> Result<&'static str> {
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    match ext.as_str() {
+        "png" => Ok("image/png"),
+        "jpg" | "jpeg" => Ok("image/jpeg"),
+        "webp" => Ok("image/webp"),
+        "gif" => Ok("image/gif"),
+        _ => anyhow::bail!("不支持的图片格式：{}", path.display()),
     }
 }
 
@@ -730,7 +815,7 @@ pub async fn fetch_models(api_base: &str, api_key: &str) -> Result<Vec<String>> 
 
         let total = parsed.output.total;
         let page_size = parsed.output.page_size.max(1);
-        let total_pages = (total + page_size - 1) / page_size;
+        let total_pages = total.div_ceil(page_size);
 
         for page in 2..=total_pages.min(30) {
             let page_url = format!("{}?page_no={}&page_size={}", base_url, page, page_size);
@@ -1016,9 +1101,27 @@ mod tests {
     }
 
     #[test]
-    fn converts_markdown_data_images_to_openai_parts() {
+    fn detects_local_markdown_images_in_user_messages() {
+        let image_path = std::env::temp_dir()
+            .join("jkcodingagent-vision-detect.png")
+            .to_string_lossy()
+            .to_string();
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: format!("看这里 ![image]({image_path})"),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+
+        assert!(messages_contain_inline_images(&messages));
+    }
+
+    #[tokio::test]
+    async fn converts_markdown_data_images_to_openai_parts() {
         let content = "先看图\n![image](data:image/png;base64,aaa)\n再解释";
-        let ApiMessageContent::Parts(parts) = build_api_message_content(content) else {
+        let ApiMessageContent::Parts(parts) = build_api_message_content(content).await.unwrap()
+        else {
             panic!("expected multimodal parts");
         };
 
@@ -1026,5 +1129,31 @@ mod tests {
         assert!(matches!(parts[0], ApiMessageContentPart::Text { .. }));
         assert!(matches!(parts[1], ApiMessageContentPart::ImageUrl { .. }));
         assert!(matches!(parts[2], ApiMessageContentPart::Text { .. }));
+    }
+
+    #[tokio::test]
+    async fn converts_local_markdown_images_to_data_url_parts() {
+        let dir = std::env::temp_dir().join(format!(
+            "jkcodingagent-vision-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("pasted.png");
+        std::fs::write(&path, b"image-bytes").expect("write fake image bytes");
+        let content = format!("先看图\n![image]({})\n再解释", path.display());
+
+        let ApiMessageContent::Parts(parts) = build_api_message_content(&content).await.unwrap()
+        else {
+            panic!("expected multimodal parts");
+        };
+
+        assert_eq!(parts.len(), 3);
+        let ApiMessageContentPart::ImageUrl { image_url } = &parts[1] else {
+            panic!("expected image_url part");
+        };
+        assert!(image_url.url.starts_with("data:image/png;base64,"));
+        assert!(!image_url.url.contains(path.to_string_lossy().as_ref()));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

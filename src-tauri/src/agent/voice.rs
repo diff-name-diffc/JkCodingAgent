@@ -370,7 +370,7 @@ async fn maybe_send_finish(
         }
     });
     writer
-        .send(Message::Text(finish_task.to_string().into()))
+        .send(Message::Text(finish_task.to_string()))
         .await
         .map_err(|error| format!("发送实时识别结束命令失败：{error}"))?;
     state.finish_sent = true;
@@ -406,7 +406,7 @@ async fn send_run_task(
         }
     });
     writer
-        .send(Message::Text(run_task.to_string().into()))
+        .send(Message::Text(run_task.to_string()))
         .await
         .map_err(|error| format!("发送实时识别启动命令失败：{error}"))
 }

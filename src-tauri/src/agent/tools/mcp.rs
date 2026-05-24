@@ -42,12 +42,8 @@ impl DynamicToolProvider for McpToolBridge {
         let snapshot = self
             .project_mcp_registry
             .cached_for_workspace(&context.workspace);
-        let Some(snapshot) = snapshot else {
-            return None;
-        };
-        if snapshot.tool_by_name(name).is_none() {
-            return None;
-        }
+        let snapshot = snapshot?;
+        snapshot.tool_by_name(name)?;
 
         Some(
             self.project_mcp_registry

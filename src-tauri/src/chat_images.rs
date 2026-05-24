@@ -265,7 +265,7 @@ mod tests {
             image::ExtendedColorType::Rgb8,
         )
         .unwrap();
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes.into_inner());
+        let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes.into_inner());
 
         let result = save_chat_image(
             "test-session-id".to_string(),
@@ -306,7 +306,7 @@ mod tests {
             image::ExtendedColorType::Rgb8,
         )
         .unwrap();
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&jpg_bytes.into_inner());
+        let b64 = base64::engine::general_purpose::STANDARD.encode(jpg_bytes.into_inner());
 
         let result = save_chat_image(
             "test-session-id".to_string(),
@@ -338,7 +338,7 @@ mod tests {
             image::ExtendedColorType::Rgb8,
         )
         .unwrap();
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&webp_bytes.into_inner());
+        let b64 = base64::engine::general_purpose::STANDARD.encode(webp_bytes.into_inner());
 
         let result = save_chat_image(
             "test-session-id".to_string(),

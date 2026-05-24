@@ -1,11 +1,12 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, types::Type, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params, types::Type};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -16,12 +17,19 @@ use super::summary::ToolArtifactDraft;
 const MAX_LLM_DIALOGUES: usize = 5;
 const MAX_DIALOGUE_QUERY_LIMIT: usize = 50;
 const DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS: u64 = 1_000_000;
+const DEFAULT_IMAGE_MODEL_URL: &str = "https://dashscope.aliyuncs.com/api/v1";
+const DEFAULT_IMAGE_MODEL: &str = "qwen-image-2.0-pro";
+const DEFAULT_ASR_MODEL: &str = "fun-asr-realtime";
 pub(crate) const TOOL_RETRY_CONTEXT_PREFIX: &str = "[工具调用失败，已交回模型修正重试]";
 
 // ── Content Segments ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ContentSegment {
     Text {
         id: String,
@@ -80,6 +88,139 @@ fn parse_segments_json(segments_json: &str) -> Vec<ContentSegment> {
     serde_json::from_str(segments_json).unwrap_or_default()
 }
 
+fn safe_absolute_image_path(path: &str) -> Result<PathBuf> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("chat image path is empty");
+    }
+
+    let path = Path::new(trimmed);
+    if !path.is_absolute() {
+        anyhow::bail!("chat image path must be absolute: {trimmed}");
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        anyhow::bail!("chat image path must not contain parent traversal: {trimmed}");
+    }
+
+    Ok(path.to_path_buf())
+}
+
+fn insert_chat_images(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+    message_id: &str,
+    segments: &[ContentSegment],
+    created_at: &str,
+) -> Result<()> {
+    for (index, segment) in segments.iter().enumerate() {
+        let ContentSegment::Image {
+            image_id,
+            path,
+            alt,
+            width,
+            height,
+            mime_type,
+            source,
+            generation_prompt,
+            ..
+        } = segment
+        else {
+            continue;
+        };
+
+        let safe_path = safe_absolute_image_path(path)?;
+        tx.execute(
+            "INSERT INTO chat_images (
+                id, image_id, workspace_id, message_id, segment_index, path, alt, width, height, mime_type, source, generation_prompt, created_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(image_id) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                message_id = excluded.message_id,
+                segment_index = excluded.segment_index,
+                path = excluded.path,
+                alt = excluded.alt,
+                width = excluded.width,
+                height = excluded.height,
+                mime_type = excluded.mime_type,
+                source = excluded.source,
+                generation_prompt = excluded.generation_prompt,
+                created_at = excluded.created_at",
+            params![
+                Uuid::new_v4().to_string(),
+                image_id,
+                workspace_id,
+                message_id,
+                index as i64,
+                safe_path.to_string_lossy().as_ref(),
+                alt,
+                width.map(i64::from),
+                height.map(i64::from),
+                mime_type,
+                source,
+                generation_prompt,
+                created_at,
+            ],
+        )
+        .context("insert chat image")?;
+    }
+
+    Ok(())
+}
+
+fn delete_chat_image_resources(tx: &rusqlite::Transaction<'_>, workspace_id: &str) -> Result<()> {
+    let mut paths = HashSet::new();
+    {
+        let mut stmt = tx
+            .prepare("SELECT path FROM chat_images WHERE workspace_id = ?1")
+            .context("load chat image paths")?;
+        let indexed_paths = stmt
+            .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("collect chat image paths")?;
+        paths.extend(indexed_paths);
+    }
+    {
+        let mut stmt = tx
+            .prepare("SELECT segments_json FROM dispatcher_messages WHERE workspace_id = ?1")
+            .context("load dispatcher message segments for image cleanup")?;
+        let segments_json = stmt
+            .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("collect dispatcher message segments for image cleanup")?;
+        for json in segments_json {
+            for segment in parse_segments_json(&json) {
+                if let ContentSegment::Image { path, .. } = segment {
+                    paths.insert(path);
+                }
+            }
+        }
+    }
+
+    for path in paths {
+        let safe_path = safe_absolute_image_path(&path)?;
+        match std::fs::remove_file(&safe_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("remove chat image {}", safe_path.display()));
+            }
+        }
+    }
+
+    tx.execute(
+        "DELETE FROM chat_images WHERE workspace_id = ?1",
+        params![workspace_id],
+    )
+    .context("delete chat image records")?;
+
+    Ok(())
+}
+
 // ── Records ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +234,75 @@ pub struct DispatcherSessionRecord {
     pub active_plan_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatcherModelConfig {
+    pub url: String,
+    pub api_key: String,
+    pub model: String,
+    #[serde(default = "default_model_config_active")]
+    pub active: bool,
+}
+
+fn default_model_config_active() -> bool {
+    true
+}
+
+impl DispatcherModelConfig {
+    pub fn new(url: &str, api_key: &str, model: &str) -> Self {
+        Self {
+            url: url.trim().to_string(),
+            api_key: api_key.trim().to_string(),
+            model: model.trim().to_string(),
+            active: true,
+        }
+    }
+
+    fn trimmed(self) -> Self {
+        Self {
+            url: self.url.trim().to_string(),
+            api_key: self.api_key.trim().to_string(),
+            model: self.model.trim().to_string(),
+            active: self.active,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.url.trim().is_empty() && self.api_key.trim().is_empty() && self.model.trim().is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DispatcherSettingsModelConfigs {
+    pub chat_model_config: Option<DispatcherModelConfig>,
+    pub summary_model_config: Option<DispatcherModelConfig>,
+    pub vision_model_config: Option<DispatcherModelConfig>,
+    pub image_model_config: Option<DispatcherModelConfig>,
+    pub image_edit_model_config: Option<DispatcherModelConfig>,
+    pub asr_model_config: Option<DispatcherModelConfig>,
+    pub tts_model_config: Option<DispatcherModelConfig>,
+    pub embedding_model_config: Option<DispatcherModelConfig>,
+    pub chat_model_configs: Option<Vec<DispatcherModelConfig>>,
+    pub summary_model_configs: Option<Vec<DispatcherModelConfig>>,
+    pub vision_model_configs: Option<Vec<DispatcherModelConfig>>,
+    pub image_model_configs: Option<Vec<DispatcherModelConfig>>,
+    pub image_edit_model_configs: Option<Vec<DispatcherModelConfig>>,
+    pub asr_model_configs: Option<Vec<DispatcherModelConfig>>,
+    pub tts_model_configs: Option<Vec<DispatcherModelConfig>>,
+    pub embedding_model_configs: Option<Vec<DispatcherModelConfig>>,
+}
+
+struct DispatcherSettingsConfigLists {
+    chat_model_configs: Vec<DispatcherModelConfig>,
+    summary_model_configs: Vec<DispatcherModelConfig>,
+    vision_model_configs: Vec<DispatcherModelConfig>,
+    image_model_configs: Vec<DispatcherModelConfig>,
+    image_edit_model_configs: Vec<DispatcherModelConfig>,
+    asr_model_configs: Vec<DispatcherModelConfig>,
+    tts_model_configs: Vec<DispatcherModelConfig>,
+    embedding_model_configs: Vec<DispatcherModelConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +321,192 @@ pub struct DispatcherSettingsRecord {
     pub image_model_api_key: String,
     pub image_model: String,
     pub image_edit_model: String,
+    pub chat_model_config: DispatcherModelConfig,
+    pub summary_model_config: DispatcherModelConfig,
+    pub vision_model_config: DispatcherModelConfig,
+    pub image_model_config: DispatcherModelConfig,
+    pub image_edit_model_config: DispatcherModelConfig,
+    pub asr_model_config: DispatcherModelConfig,
+    pub tts_model_config: DispatcherModelConfig,
+    pub embedding_model_config: DispatcherModelConfig,
+    pub chat_model_configs: Vec<DispatcherModelConfig>,
+    pub summary_model_configs: Vec<DispatcherModelConfig>,
+    pub vision_model_configs: Vec<DispatcherModelConfig>,
+    pub image_model_configs: Vec<DispatcherModelConfig>,
+    pub image_edit_model_configs: Vec<DispatcherModelConfig>,
+    pub asr_model_configs: Vec<DispatcherModelConfig>,
+    pub tts_model_configs: Vec<DispatcherModelConfig>,
+    pub embedding_model_configs: Vec<DispatcherModelConfig>,
+}
+
+fn model_config_or_legacy(
+    url: String,
+    api_key: String,
+    model: String,
+    legacy_url: &str,
+    legacy_api_key: &str,
+    legacy_model: &str,
+) -> DispatcherModelConfig {
+    let config = DispatcherModelConfig::new(&url, &api_key, &model);
+    if config.is_empty() {
+        DispatcherModelConfig::new(legacy_url, legacy_api_key, legacy_model)
+    } else {
+        config
+    }
+}
+
+fn fallback_image_edit_model<'a>(image_model: &'a str, image_edit_model: &'a str) -> &'a str {
+    let trimmed = image_edit_model.trim();
+    if trimmed.is_empty() {
+        image_model.trim()
+    } else {
+        trimmed
+    }
+}
+
+fn normalize_model_configs(configs: Vec<DispatcherModelConfig>) -> Vec<DispatcherModelConfig> {
+    let mut normalized = configs
+        .into_iter()
+        .map(DispatcherModelConfig::trimmed)
+        .filter(|config| !config.is_empty())
+        .collect::<Vec<_>>();
+    if normalized.is_empty() {
+        return normalized;
+    }
+
+    let active_index = normalized
+        .iter()
+        .position(|config| config.active)
+        .unwrap_or(0);
+    for (index, config) in normalized.iter_mut().enumerate() {
+        config.active = index == active_index;
+    }
+    normalized
+}
+
+fn active_or_first_config(configs: &[DispatcherModelConfig]) -> Option<DispatcherModelConfig> {
+    configs
+        .iter()
+        .find(|config| config.active)
+        .or_else(|| configs.first())
+        .cloned()
+}
+
+fn configs_or_single_config(
+    configs: Option<Vec<DispatcherModelConfig>>,
+    single_config: Option<DispatcherModelConfig>,
+    fallback: DispatcherModelConfig,
+) -> Vec<DispatcherModelConfig> {
+    let normalized = configs.map(normalize_model_configs).unwrap_or_default();
+    if !normalized.is_empty() {
+        return normalized;
+    }
+
+    let single = single_config.unwrap_or(fallback);
+    normalize_model_configs(vec![single])
+}
+
+fn serialize_model_configs(configs: &[DispatcherModelConfig], label: &str) -> Result<String> {
+    serde_json::to_string(configs).with_context(|| format!("serialize {label} model configs"))
+}
+
+fn parse_model_configs_column(
+    raw: Option<String>,
+    column_index: usize,
+) -> rusqlite::Result<Vec<DispatcherModelConfig>> {
+    raw.as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            serde_json::from_str::<Vec<DispatcherModelConfig>>(value)
+                .map(normalize_model_configs)
+                .map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        column_index,
+                        Type::Text,
+                        Box::new(error),
+                    )
+                })
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+fn build_settings_record(
+    configs: DispatcherSettingsConfigLists,
+    auto_approve_dispatch: bool,
+    context_debug: bool,
+) -> DispatcherSettingsRecord {
+    let chat_model_configs = normalize_model_configs(configs.chat_model_configs);
+    let summary_model_configs = normalize_model_configs(configs.summary_model_configs);
+    let vision_model_configs = normalize_model_configs(configs.vision_model_configs);
+    let image_model_configs = normalize_model_configs(configs.image_model_configs);
+    let image_edit_model_configs = normalize_model_configs(configs.image_edit_model_configs);
+    let asr_model_configs = normalize_model_configs(configs.asr_model_configs);
+    let tts_model_configs = normalize_model_configs(configs.tts_model_configs);
+    let embedding_model_configs = normalize_model_configs(configs.embedding_model_configs);
+    let chat_model_config = active_or_first_config(&chat_model_configs).unwrap_or_default();
+    let mut summary_model_config =
+        active_or_first_config(&summary_model_configs).unwrap_or_default();
+    let vision_model_config = active_or_first_config(&vision_model_configs).unwrap_or_default();
+    let mut image_model_config = active_or_first_config(&image_model_configs).unwrap_or_default();
+    let mut image_edit_model_config =
+        active_or_first_config(&image_edit_model_configs).unwrap_or_default();
+    let mut asr_model_config = active_or_first_config(&asr_model_configs).unwrap_or_default();
+    let tts_model_config = active_or_first_config(&tts_model_configs).unwrap_or_default();
+    let embedding_model_config =
+        active_or_first_config(&embedding_model_configs).unwrap_or_default();
+
+    summary_model_config.model = normalize_summary_model(&summary_model_config.model);
+    if image_model_config.url.is_empty() {
+        image_model_config.url = DEFAULT_IMAGE_MODEL_URL.to_string();
+    }
+    if image_model_config.model.is_empty() {
+        image_model_config.model = DEFAULT_IMAGE_MODEL.to_string();
+    }
+    if image_edit_model_config.url.is_empty() {
+        image_edit_model_config.url = image_model_config.url.clone();
+    }
+    if image_edit_model_config.api_key.is_empty() {
+        image_edit_model_config.api_key = image_model_config.api_key.clone();
+    }
+    if image_edit_model_config.model.is_empty() {
+        image_edit_model_config.model = image_model_config.model.clone();
+    }
+    if asr_model_config.model.is_empty() {
+        asr_model_config.model = DEFAULT_ASR_MODEL.to_string();
+    }
+
+    DispatcherSettingsRecord {
+        api_base: chat_model_config.url.clone(),
+        api_key: chat_model_config.api_key.clone(),
+        model: chat_model_config.model.clone(),
+        summary_model: summary_model_config.model.clone(),
+        vision_model: vision_model_config.model.clone(),
+        asr_api_key: asr_model_config.api_key.clone(),
+        asr_websocket_url: asr_model_config.url.clone(),
+        auto_approve_dispatch,
+        context_debug,
+        image_model_url: image_model_config.url.clone(),
+        image_model_api_key: image_model_config.api_key.clone(),
+        image_model: image_model_config.model.clone(),
+        image_edit_model: image_edit_model_config.model.clone(),
+        chat_model_config,
+        summary_model_config,
+        vision_model_config,
+        image_model_config,
+        image_edit_model_config,
+        asr_model_config,
+        tts_model_config,
+        embedding_model_config,
+        chat_model_configs,
+        summary_model_configs,
+        vision_model_configs,
+        image_model_configs,
+        image_edit_model_configs,
+        asr_model_configs,
+        tts_model_configs,
+        embedding_model_configs,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
@@ -362,11 +758,12 @@ struct NewDispatcherMessage<'a> {
 
 impl DispatcherDb {
     pub fn new(path: PathBuf) -> Result<Self> {
-        let manager = SqliteConnectionManager::file(&path)
-            .with_init(|conn| {
-                conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
-                Ok(())
-            });
+        let manager = SqliteConnectionManager::file(&path).with_init(|conn| {
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;",
+            )?;
+            Ok(())
+        });
         let pool = Pool::builder()
             .max_size(4)
             .build(manager)
@@ -381,31 +778,146 @@ impl DispatcherDb {
     pub fn get_settings(&self) -> Result<Option<DispatcherSettingsRecord>> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model, image_edit_model FROM dispatcher_settings WHERE id = 'default'",
+            "SELECT api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model, image_edit_model,
+                    chat_model_url, chat_model_api_key, chat_model_name,
+                    summary_model_url, summary_model_api_key, summary_model_name,
+                    vision_model_url, vision_model_api_key, vision_model_name,
+                    image_model_config_url, image_model_config_api_key, image_model_config_name,
+                    image_edit_model_url, image_edit_model_api_key, image_edit_model_name,
+                    asr_model_url, asr_model_api_key, asr_model_name,
+                    tts_model_url, tts_model_api_key, tts_model_name,
+                    embedding_model_url, embedding_model_api_key, embedding_model_name,
+                    chat_model_configs_json, summary_model_configs_json, vision_model_configs_json,
+                    image_model_configs_json, image_edit_model_configs_json, asr_model_configs_json,
+                    tts_model_configs_json, embedding_model_configs_json
+             FROM dispatcher_settings WHERE id = 'default'",
             [],
             |row| {
-                Ok(DispatcherSettingsRecord {
-                    api_base: row.get(0)?,
-                    api_key: row.get(1)?,
-                    model: row.get(2)?,
-                    summary_model: row.get(3)?,
-                    vision_model: row.get(4)?,
-                    asr_api_key: row.get(5)?,
-                    asr_websocket_url: row.get(6)?,
-                    auto_approve_dispatch: row.get::<_, i32>(7)? != 0,
-                    context_debug: row.get::<_, i32>(8)? != 0,
-                    image_model_url: row.get(9)?,
-                    image_model_api_key: row.get(10)?,
-                    image_model: row.get(11)?,
-                    image_edit_model: row.get(12)?,
-                })
+                let legacy_api_base: String = row.get(0)?;
+                let legacy_api_key: String = row.get(1)?;
+                let legacy_model: String = row.get(2)?;
+                let legacy_summary_model: String = row.get(3)?;
+                let legacy_vision_model: String = row.get(4)?;
+                let legacy_asr_api_key: String = row.get(5)?;
+                let legacy_asr_websocket_url: String = row.get(6)?;
+                let legacy_image_model_url: String = row.get(9)?;
+                let legacy_image_model_api_key: String = row.get(10)?;
+                let legacy_image_model: String = row.get(11)?;
+                let legacy_image_edit_model: String = row.get(12)?;
+
+                let chat_model_config = model_config_or_legacy(
+                    row.get(13)?,
+                    row.get(14)?,
+                    row.get(15)?,
+                    &legacy_api_base,
+                    &legacy_api_key,
+                    &legacy_model,
+                );
+                let summary_model_config = model_config_or_legacy(
+                    row.get(16)?,
+                    row.get(17)?,
+                    row.get(18)?,
+                    &legacy_api_base,
+                    &legacy_api_key,
+                    &legacy_summary_model,
+                );
+                let vision_model_config = model_config_or_legacy(
+                    row.get(19)?,
+                    row.get(20)?,
+                    row.get(21)?,
+                    &legacy_api_base,
+                    &legacy_api_key,
+                    &legacy_vision_model,
+                );
+                let image_model_config = model_config_or_legacy(
+                    row.get(22)?,
+                    row.get(23)?,
+                    row.get(24)?,
+                    &legacy_image_model_url,
+                    &legacy_image_model_api_key,
+                    &legacy_image_model,
+                );
+                let image_edit_model_config = model_config_or_legacy(
+                    row.get(25)?,
+                    row.get(26)?,
+                    row.get(27)?,
+                    &legacy_image_model_url,
+                    &legacy_image_model_api_key,
+                    fallback_image_edit_model(&legacy_image_model, &legacy_image_edit_model),
+                );
+                let asr_model_config = model_config_or_legacy(
+                    row.get(28)?,
+                    row.get(29)?,
+                    row.get(30)?,
+                    &legacy_asr_websocket_url,
+                    &legacy_asr_api_key,
+                    DEFAULT_ASR_MODEL,
+                );
+                let tts_model_config = DispatcherModelConfig::new(
+                    &row.get::<_, String>(31)?,
+                    &row.get::<_, String>(32)?,
+                    &row.get::<_, String>(33)?,
+                );
+                let embedding_model_config = DispatcherModelConfig::new(
+                    &row.get::<_, String>(34)?,
+                    &row.get::<_, String>(35)?,
+                    &row.get::<_, String>(36)?,
+                );
+
+                Ok(build_settings_record(
+                    DispatcherSettingsConfigLists {
+                        chat_model_configs: configs_or_single_config(
+                            Some(parse_model_configs_column(row.get(37)?, 37)?),
+                            Some(chat_model_config.clone()),
+                            chat_model_config,
+                        ),
+                        summary_model_configs: configs_or_single_config(
+                            Some(parse_model_configs_column(row.get(38)?, 38)?),
+                            Some(summary_model_config.clone()),
+                            summary_model_config,
+                        ),
+                        vision_model_configs: configs_or_single_config(
+                            Some(parse_model_configs_column(row.get(39)?, 39)?),
+                            Some(vision_model_config.clone()),
+                            vision_model_config,
+                        ),
+                        image_model_configs: configs_or_single_config(
+                            Some(parse_model_configs_column(row.get(40)?, 40)?),
+                            Some(image_model_config.clone()),
+                            image_model_config,
+                        ),
+                        image_edit_model_configs: configs_or_single_config(
+                            Some(parse_model_configs_column(row.get(41)?, 41)?),
+                            Some(image_edit_model_config.clone()),
+                            image_edit_model_config,
+                        ),
+                        asr_model_configs: configs_or_single_config(
+                            Some(parse_model_configs_column(row.get(42)?, 42)?),
+                            Some(asr_model_config.clone()),
+                            asr_model_config,
+                        ),
+                        tts_model_configs: configs_or_single_config(
+                            Some(parse_model_configs_column(row.get(43)?, 43)?),
+                            Some(tts_model_config.clone()),
+                            tts_model_config,
+                        ),
+                        embedding_model_configs: configs_or_single_config(
+                            Some(parse_model_configs_column(row.get(44)?, 44)?),
+                            Some(embedding_model_config.clone()),
+                            embedding_model_config,
+                        ),
+                    },
+                    row.get::<_, i32>(7)? != 0,
+                    row.get::<_, i32>(8)? != 0,
+                ))
             },
         )
         .optional()
         .context("load dispatcher settings")
     }
 
-    pub fn save_settings(
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_settings_with_model_configs(
         &self,
         api_base: &str,
         api_key: &str,
@@ -420,47 +932,195 @@ impl DispatcherDb {
         image_model_api_key: &str,
         image_model: &str,
         image_edit_model: &str,
+        model_configs: DispatcherSettingsModelConfigs,
     ) -> Result<DispatcherSettingsRecord> {
         let conn = self.conn()?;
         let auto_approve_int = if auto_approve_dispatch { 1 } else { 0 };
         let context_debug_int = if context_debug { 1 } else { 0 };
-        let normalized_summary_model = normalize_summary_model(summary_model);
+        let chat_model_config = model_configs
+            .chat_model_config
+            .unwrap_or_else(|| DispatcherModelConfig::new(api_base, api_key, model))
+            .trimmed();
+        let summary_model_config = model_configs
+            .summary_model_config
+            .unwrap_or_else(|| {
+                DispatcherModelConfig::new(
+                    api_base,
+                    api_key,
+                    &normalize_summary_model(summary_model),
+                )
+            })
+            .trimmed();
+        let vision_model_config = model_configs
+            .vision_model_config
+            .unwrap_or_else(|| DispatcherModelConfig::new(api_base, api_key, vision_model))
+            .trimmed();
+        let image_model_config = model_configs
+            .image_model_config
+            .unwrap_or_else(|| {
+                DispatcherModelConfig::new(image_model_url, image_model_api_key, image_model)
+            })
+            .trimmed();
+        let image_edit_model_config = model_configs
+            .image_edit_model_config
+            .unwrap_or_else(|| {
+                DispatcherModelConfig::new(
+                    image_model_url,
+                    image_model_api_key,
+                    fallback_image_edit_model(image_model, image_edit_model),
+                )
+            })
+            .trimmed();
+        let asr_model_config = model_configs
+            .asr_model_config
+            .unwrap_or_else(|| {
+                DispatcherModelConfig::new(asr_websocket_url, asr_api_key, DEFAULT_ASR_MODEL)
+            })
+            .trimmed();
+        let tts_model_config = model_configs.tts_model_config.unwrap_or_default().trimmed();
+        let embedding_model_config = model_configs
+            .embedding_model_config
+            .unwrap_or_default()
+            .trimmed();
+        let record = build_settings_record(
+            DispatcherSettingsConfigLists {
+                chat_model_configs: configs_or_single_config(
+                    model_configs.chat_model_configs,
+                    Some(chat_model_config.clone()),
+                    chat_model_config,
+                ),
+                summary_model_configs: configs_or_single_config(
+                    model_configs.summary_model_configs,
+                    Some(summary_model_config.clone()),
+                    summary_model_config,
+                ),
+                vision_model_configs: configs_or_single_config(
+                    model_configs.vision_model_configs,
+                    Some(vision_model_config.clone()),
+                    vision_model_config,
+                ),
+                image_model_configs: configs_or_single_config(
+                    model_configs.image_model_configs,
+                    Some(image_model_config.clone()),
+                    image_model_config,
+                ),
+                image_edit_model_configs: configs_or_single_config(
+                    model_configs.image_edit_model_configs,
+                    Some(image_edit_model_config.clone()),
+                    image_edit_model_config,
+                ),
+                asr_model_configs: configs_or_single_config(
+                    model_configs.asr_model_configs,
+                    Some(asr_model_config.clone()),
+                    asr_model_config,
+                ),
+                tts_model_configs: configs_or_single_config(
+                    model_configs.tts_model_configs,
+                    Some(tts_model_config.clone()),
+                    tts_model_config,
+                ),
+                embedding_model_configs: configs_or_single_config(
+                    model_configs.embedding_model_configs,
+                    Some(embedding_model_config.clone()),
+                    embedding_model_config,
+                ),
+            },
+            auto_approve_dispatch,
+            context_debug,
+        );
+        let chat_model_configs_json = serialize_model_configs(&record.chat_model_configs, "chat")?;
+        let summary_model_configs_json =
+            serialize_model_configs(&record.summary_model_configs, "summary")?;
+        let vision_model_configs_json =
+            serialize_model_configs(&record.vision_model_configs, "vision")?;
+        let image_model_configs_json =
+            serialize_model_configs(&record.image_model_configs, "image")?;
+        let image_edit_model_configs_json =
+            serialize_model_configs(&record.image_edit_model_configs, "image edit")?;
+        let asr_model_configs_json = serialize_model_configs(&record.asr_model_configs, "asr")?;
+        let tts_model_configs_json = serialize_model_configs(&record.tts_model_configs, "tts")?;
+        let embedding_model_configs_json =
+            serialize_model_configs(&record.embedding_model_configs, "embedding")?;
+
         conn.execute(
-            "INSERT INTO dispatcher_settings (id, api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model, image_edit_model)
-             VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-             ON CONFLICT(id) DO UPDATE SET api_base = ?1, api_key = ?2, model = ?3, summary_model = ?4, vision_model = ?5, asr_api_key = ?6, asr_websocket_url = ?7, auto_approve_dispatch = ?8, context_debug = ?9, image_model_url = ?10, image_model_api_key = ?11, image_model = ?12, image_edit_model = ?13",
+            "INSERT INTO dispatcher_settings (
+                id, api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model, image_edit_model,
+                chat_model_url, chat_model_api_key, chat_model_name,
+                summary_model_url, summary_model_api_key, summary_model_name,
+                vision_model_url, vision_model_api_key, vision_model_name,
+                image_model_config_url, image_model_config_api_key, image_model_config_name,
+                image_edit_model_url, image_edit_model_api_key, image_edit_model_name,
+                asr_model_url, asr_model_api_key, asr_model_name,
+                tts_model_url, tts_model_api_key, tts_model_name,
+                embedding_model_url, embedding_model_api_key, embedding_model_name,
+                chat_model_configs_json, summary_model_configs_json, vision_model_configs_json,
+                image_model_configs_json, image_edit_model_configs_json, asr_model_configs_json,
+                tts_model_configs_json, embedding_model_configs_json
+             )
+             VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)
+             ON CONFLICT(id) DO UPDATE SET
+                api_base = ?1, api_key = ?2, model = ?3, summary_model = ?4, vision_model = ?5, asr_api_key = ?6, asr_websocket_url = ?7, auto_approve_dispatch = ?8, context_debug = ?9, image_model_url = ?10, image_model_api_key = ?11, image_model = ?12, image_edit_model = ?13,
+                chat_model_url = ?14, chat_model_api_key = ?15, chat_model_name = ?16,
+                summary_model_url = ?17, summary_model_api_key = ?18, summary_model_name = ?19,
+                vision_model_url = ?20, vision_model_api_key = ?21, vision_model_name = ?22,
+                image_model_config_url = ?23, image_model_config_api_key = ?24, image_model_config_name = ?25,
+                image_edit_model_url = ?26, image_edit_model_api_key = ?27, image_edit_model_name = ?28,
+                asr_model_url = ?29, asr_model_api_key = ?30, asr_model_name = ?31,
+                tts_model_url = ?32, tts_model_api_key = ?33, tts_model_name = ?34,
+                embedding_model_url = ?35, embedding_model_api_key = ?36, embedding_model_name = ?37,
+                chat_model_configs_json = ?38, summary_model_configs_json = ?39, vision_model_configs_json = ?40,
+                image_model_configs_json = ?41, image_edit_model_configs_json = ?42, asr_model_configs_json = ?43,
+                tts_model_configs_json = ?44, embedding_model_configs_json = ?45",
             params![
-                api_base.trim(),
-                api_key.trim(),
-                model.trim(),
-                &normalized_summary_model,
-                vision_model.trim(),
-                asr_api_key.trim(),
-                asr_websocket_url.trim(),
+                &record.api_base,
+                &record.api_key,
+                &record.model,
+                &record.summary_model,
+                &record.vision_model,
+                &record.asr_api_key,
+                &record.asr_websocket_url,
                 auto_approve_int,
                 context_debug_int,
-                image_model_url.trim(),
-                image_model_api_key.trim(),
-                image_model.trim(),
-                image_edit_model.trim()
+                &record.image_model_url,
+                &record.image_model_api_key,
+                &record.image_model,
+                &record.image_edit_model,
+                &record.chat_model_config.url,
+                &record.chat_model_config.api_key,
+                &record.chat_model_config.model,
+                &record.summary_model_config.url,
+                &record.summary_model_config.api_key,
+                &record.summary_model_config.model,
+                &record.vision_model_config.url,
+                &record.vision_model_config.api_key,
+                &record.vision_model_config.model,
+                &record.image_model_config.url,
+                &record.image_model_config.api_key,
+                &record.image_model_config.model,
+                &record.image_edit_model_config.url,
+                &record.image_edit_model_config.api_key,
+                &record.image_edit_model_config.model,
+                &record.asr_model_config.url,
+                &record.asr_model_config.api_key,
+                &record.asr_model_config.model,
+                &record.tts_model_config.url,
+                &record.tts_model_config.api_key,
+                &record.tts_model_config.model,
+                &record.embedding_model_config.url,
+                &record.embedding_model_config.api_key,
+                &record.embedding_model_config.model,
+                &chat_model_configs_json,
+                &summary_model_configs_json,
+                &vision_model_configs_json,
+                &image_model_configs_json,
+                &image_edit_model_configs_json,
+                &asr_model_configs_json,
+                &tts_model_configs_json,
+                &embedding_model_configs_json,
             ],
         )
         .context("save dispatcher settings")?;
-        Ok(DispatcherSettingsRecord {
-            api_base: api_base.trim().to_string(),
-            api_key: api_key.trim().to_string(),
-            model: model.trim().to_string(),
-            summary_model: normalized_summary_model,
-            vision_model: vision_model.trim().to_string(),
-            asr_api_key: asr_api_key.trim().to_string(),
-            asr_websocket_url: asr_websocket_url.trim().to_string(),
-            auto_approve_dispatch,
-            context_debug,
-            image_model_url: image_model_url.trim().to_string(),
-            image_model_api_key: image_model_api_key.trim().to_string(),
-            image_model: image_model.trim().to_string(),
-            image_edit_model: image_edit_model.trim().to_string(),
-        })
+        Ok(record)
     }
 
     pub fn set_auto_approve_dispatch(
@@ -603,18 +1263,7 @@ impl DispatcherDb {
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
         )?;
-        // Delete associated image files before removing database records
-        {
-            let mut stmt = tx.prepare(
-                "SELECT path FROM chat_images WHERE workspace_id = ?1",
-            )?;
-            let paths: Vec<String> = stmt
-                .query_map(params![session_id], |row| row.get(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            for path in paths {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
+        delete_chat_image_resources(&tx, session_id)?;
         tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![session_id],
@@ -908,6 +1557,7 @@ impl DispatcherDb {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_visible_message_with_tools(
         &self,
         workspace_id: &str,
@@ -962,6 +1612,7 @@ impl DispatcherDb {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_visible_tool_result(
         &self,
         workspace_id: &str,
@@ -1114,6 +1765,7 @@ impl DispatcherDb {
             .context("commit dispatcher successful retry compaction")
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_hidden_message(
         &self,
         workspace_id: &str,
@@ -1271,18 +1923,7 @@ impl DispatcherDb {
             params![workspace_id],
         )
         .context("clear dispatcher session token usage")?;
-        // Delete associated image files before removing database records
-        {
-            let mut stmt = tx.prepare(
-                "SELECT path FROM chat_images WHERE workspace_id = ?1",
-            )?;
-            let paths: Vec<String> = stmt
-                .query_map(params![workspace_id], |row| row.get(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            for path in paths {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
+        delete_chat_image_resources(&tx, workspace_id)?;
         tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![workspace_id],
@@ -1463,7 +2104,8 @@ impl DispatcherDb {
         let segments_json = params
             .segments_json
             .unwrap_or_else(|| content_to_segments_json(params.content));
-        let content = segments_to_markdown(&parse_segments_json(&segments_json));
+        let segments = parse_segments_json(&segments_json);
+        let content = segments_to_markdown(&segments);
 
         let mut record = DispatcherMessageRecord {
             id: Uuid::new_v4().to_string(),
@@ -1521,6 +2163,14 @@ impl DispatcherDb {
         )
         .context("insert dispatcher message")?;
 
+        insert_chat_images(
+            &tx,
+            &record.workspace_id,
+            &record.id,
+            &segments,
+            &record.created_at,
+        )?;
+
         if !params.tool_artifacts.is_empty() {
             let artifacts = self.insert_tool_artifacts(
                 &tx,
@@ -1546,6 +2196,7 @@ impl DispatcherDb {
         Ok(record)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_tool_artifacts(
         &self,
         tx: &rusqlite::Transaction<'_>,
@@ -1602,6 +2253,19 @@ impl DispatcherDb {
                 .with_context(|| format!("create db directory {}", parent.display()))?;
         }
         let mut conn = self.conn()?;
+
+        // Fast path: if schema is already at the expected version, skip all DDL.
+        const SCHEMA_VERSION: i32 = 3;
+        let current_version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap_or(0);
+        if current_version >= SCHEMA_VERSION {
+            // Still need to set WAL mode on first open of each connection.
+            conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+                .context("set pragmas")?;
+            return Ok(());
+        }
+
         conn.execute_batch(
             "
             PRAGMA journal_mode = WAL;
@@ -1644,6 +2308,9 @@ impl DispatcherDb {
 
             CREATE INDEX IF NOT EXISTS idx_dispatcher_messages_workspace_created
             ON dispatcher_messages(workspace_id, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_dispatcher_messages_workspace_context_role
+            ON dispatcher_messages(workspace_id, context_cleared, role, created_at);
 
             CREATE TABLE IF NOT EXISTS chat_images (
                 id TEXT PRIMARY KEY,
@@ -1705,7 +2372,39 @@ impl DispatcherDb {
                 image_model_url TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1',
                 image_model_api_key TEXT NOT NULL DEFAULT '',
                 image_model TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro',
-                image_edit_model TEXT NOT NULL DEFAULT ''
+                image_edit_model TEXT NOT NULL DEFAULT '',
+                chat_model_url TEXT NOT NULL DEFAULT '',
+                chat_model_api_key TEXT NOT NULL DEFAULT '',
+                chat_model_name TEXT NOT NULL DEFAULT '',
+                summary_model_url TEXT NOT NULL DEFAULT '',
+                summary_model_api_key TEXT NOT NULL DEFAULT '',
+                summary_model_name TEXT NOT NULL DEFAULT '',
+                vision_model_url TEXT NOT NULL DEFAULT '',
+                vision_model_api_key TEXT NOT NULL DEFAULT '',
+                vision_model_name TEXT NOT NULL DEFAULT '',
+                image_model_config_url TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1',
+                image_model_config_api_key TEXT NOT NULL DEFAULT '',
+                image_model_config_name TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro',
+                image_edit_model_url TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1',
+                image_edit_model_api_key TEXT NOT NULL DEFAULT '',
+                image_edit_model_name TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro',
+                asr_model_url TEXT NOT NULL DEFAULT '',
+                asr_model_api_key TEXT NOT NULL DEFAULT '',
+                asr_model_name TEXT NOT NULL DEFAULT 'fun-asr-realtime',
+                tts_model_url TEXT NOT NULL DEFAULT '',
+                tts_model_api_key TEXT NOT NULL DEFAULT '',
+                tts_model_name TEXT NOT NULL DEFAULT '',
+                embedding_model_url TEXT NOT NULL DEFAULT '',
+                embedding_model_api_key TEXT NOT NULL DEFAULT '',
+                embedding_model_name TEXT NOT NULL DEFAULT '',
+                chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                vision_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                image_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                image_edit_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                asr_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                tts_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                embedding_model_configs_json TEXT NOT NULL DEFAULT '[]'
             );
 
             CREATE TABLE IF NOT EXISTS dispatcher_session_token_usage (
@@ -1782,8 +2481,15 @@ impl DispatcherDb {
             "image_edit_model",
             "TEXT NOT NULL DEFAULT ''",
         )?;
+        ensure_dispatcher_model_config_columns(&conn)?;
+        migrate_dispatcher_model_configs(&conn)?;
         ensure_column_exists(&conn, "dispatcher_messages", "context_payload", "TEXT")?;
-        ensure_column_exists(&conn, "dispatcher_messages", "segments_json", "TEXT NOT NULL DEFAULT '[]'")?;
+        ensure_column_exists(
+            &conn,
+            "dispatcher_messages",
+            "segments_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
         ensure_column_exists(&conn, "dispatcher_messages", "thinking_content", "TEXT")?;
         ensure_column_exists(
             &conn,
@@ -1826,6 +2532,11 @@ impl DispatcherDb {
             "plan_interaction_json",
             "TEXT",
         )?;
+
+        // Mark schema as fully migrated.
+        conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION))
+            .context("set user_version")?;
+
         Ok(())
     }
 
@@ -1835,7 +2546,10 @@ impl DispatcherDb {
 
     // ── Async wrappers for use in async contexts (spawn_blocking) ──
 
-    pub async fn clear_checklist_async(&self, workspace_id: &str) -> Result<DispatcherSessionRuntimeState> {
+    pub async fn clear_checklist_async(
+        &self,
+        workspace_id: &str,
+    ) -> Result<DispatcherSessionRuntimeState> {
         let db = self.clone();
         let wid = workspace_id.to_string();
         tokio::task::spawn_blocking(move || db.clear_checklist(&wid))
@@ -1890,10 +2604,7 @@ impl DispatcherDb {
         .context("add_visible_message_with_usage_and_thinking spawn_blocking")?
     }
 
-    pub async fn load_llm_history_async(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Vec<ChatMessage>> {
+    pub async fn load_llm_history_async(&self, workspace_id: &str) -> Result<Vec<ChatMessage>> {
         let db = self.clone();
         let wid = workspace_id.to_string();
         tokio::task::spawn_blocking(move || db.load_llm_history(&wid))
@@ -1920,6 +2631,7 @@ impl DispatcherDb {
             .context("get_session_title spawn_blocking")?
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn add_visible_message_with_tools_and_thinking_async(
         &self,
         workspace_id: &str,
@@ -1958,6 +2670,7 @@ impl DispatcherDb {
         .context("add_visible_message_with_tools_and_thinking spawn_blocking")?
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn add_visible_tool_result_async(
         &self,
         workspace_id: &str,
@@ -2133,6 +2846,104 @@ fn ensure_column_exists(
     }
 }
 
+fn ensure_dispatcher_model_config_columns(conn: &Connection) -> Result<()> {
+    for (column, definition) in [
+        ("chat_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("chat_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("chat_model_name", "TEXT NOT NULL DEFAULT ''"),
+        ("summary_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("summary_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("summary_model_name", "TEXT NOT NULL DEFAULT ''"),
+        ("vision_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("vision_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("vision_model_name", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "image_model_config_url",
+            "TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1'",
+        ),
+        ("image_model_config_api_key", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "image_model_config_name",
+            "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'",
+        ),
+        (
+            "image_edit_model_url",
+            "TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1'",
+        ),
+        ("image_edit_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "image_edit_model_name",
+            "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'",
+        ),
+        ("asr_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("asr_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("asr_model_name", "TEXT NOT NULL DEFAULT 'fun-asr-realtime'"),
+        ("tts_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("tts_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("tts_model_name", "TEXT NOT NULL DEFAULT ''"),
+        ("embedding_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("embedding_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("embedding_model_name", "TEXT NOT NULL DEFAULT ''"),
+        ("chat_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("summary_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("vision_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("image_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        (
+            "image_edit_model_configs_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        ),
+        ("asr_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tts_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("embedding_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ] {
+        ensure_column_exists(conn, "dispatcher_settings", column, definition)?;
+    }
+
+    Ok(())
+}
+
+fn migrate_dispatcher_model_configs(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE dispatcher_settings SET
+            chat_model_url = CASE WHEN trim(chat_model_url) = '' THEN api_base ELSE chat_model_url END,
+            chat_model_api_key = CASE WHEN trim(chat_model_api_key) = '' THEN api_key ELSE chat_model_api_key END,
+            chat_model_name = CASE WHEN trim(chat_model_name) = '' THEN model ELSE chat_model_name END,
+            summary_model_url = CASE WHEN trim(summary_model_url) = '' THEN api_base ELSE summary_model_url END,
+            summary_model_api_key = CASE WHEN trim(summary_model_api_key) = '' THEN api_key ELSE summary_model_api_key END,
+            summary_model_name = CASE WHEN trim(summary_model_name) = '' THEN summary_model ELSE summary_model_name END,
+            vision_model_url = CASE WHEN trim(vision_model_url) = '' THEN api_base ELSE vision_model_url END,
+            vision_model_api_key = CASE WHEN trim(vision_model_api_key) = '' THEN api_key ELSE vision_model_api_key END,
+            vision_model_name = CASE WHEN trim(vision_model_name) = '' THEN vision_model ELSE vision_model_name END,
+            image_model_config_url = CASE WHEN trim(image_model_config_url) = '' THEN image_model_url ELSE image_model_config_url END,
+            image_model_config_api_key = CASE WHEN trim(image_model_config_api_key) = '' THEN image_model_api_key ELSE image_model_config_api_key END,
+            image_model_config_name = CASE WHEN trim(image_model_config_name) = '' THEN image_model ELSE image_model_config_name END,
+            image_edit_model_url = CASE WHEN trim(image_edit_model_url) = '' THEN image_model_url ELSE image_edit_model_url END,
+            image_edit_model_api_key = CASE WHEN trim(image_edit_model_api_key) = '' THEN image_model_api_key ELSE image_edit_model_api_key END,
+            image_edit_model_name = CASE WHEN trim(image_edit_model_name) = '' THEN COALESCE(NULLIF(trim(image_edit_model), ''), image_model) ELSE image_edit_model_name END,
+            asr_model_url = CASE WHEN trim(asr_model_url) = '' THEN asr_websocket_url ELSE asr_model_url END,
+            asr_model_api_key = CASE WHEN trim(asr_model_api_key) = '' THEN asr_api_key ELSE asr_model_api_key END,
+            asr_model_name = CASE WHEN trim(asr_model_name) = '' THEN 'fun-asr-realtime' ELSE asr_model_name END",
+        [],
+    )
+    .context("migrate dispatcher model configs")?;
+
+    conn.execute(
+        "UPDATE dispatcher_settings SET
+            chat_model_configs_json = CASE WHEN trim(chat_model_configs_json) = '' THEN '[]' ELSE chat_model_configs_json END,
+            summary_model_configs_json = CASE WHEN trim(summary_model_configs_json) = '' THEN '[]' ELSE summary_model_configs_json END,
+            vision_model_configs_json = CASE WHEN trim(vision_model_configs_json) = '' THEN '[]' ELSE vision_model_configs_json END,
+            image_model_configs_json = CASE WHEN trim(image_model_configs_json) = '' THEN '[]' ELSE image_model_configs_json END,
+            image_edit_model_configs_json = CASE WHEN trim(image_edit_model_configs_json) = '' THEN '[]' ELSE image_edit_model_configs_json END,
+            asr_model_configs_json = CASE WHEN trim(asr_model_configs_json) = '' THEN '[]' ELSE asr_model_configs_json END,
+            tts_model_configs_json = CASE WHEN trim(tts_model_configs_json) = '' THEN '[]' ELSE tts_model_configs_json END,
+            embedding_model_configs_json = CASE WHEN trim(embedding_model_configs_json) = '' THEN '[]' ELSE embedding_model_configs_json END",
+        [],
+    )
+    .context("migrate dispatcher model config lists")?;
+
+    Ok(())
+}
+
 fn now() -> String {
     Utc::now().to_rfc3339()
 }
@@ -2287,9 +3098,11 @@ mod tests {
 
     use super::{
         ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb,
-        DispatcherMessageUsageStats, DispatcherMode, DispatcherSessionKind,
-        DispatcherSessionTokenUsageSource, PlanInteraction, PlanQuestionOption, ToolArtifactDraft,
+        DispatcherMessageUsageStats, DispatcherMode, DispatcherModelConfig, DispatcherSessionKind,
+        DispatcherSessionTokenUsageSource, DispatcherSettingsModelConfigs, PlanInteraction,
+        PlanQuestionOption, ToolArtifactDraft, DEFAULT_ASR_MODEL,
     };
+    use crate::agent::config::DEFAULT_SUMMARY_MODEL;
     use crate::agent::llm::{LlmPromptTokensDetails, LlmUsage};
 
     fn create_test_db() -> (DispatcherDb, PathBuf) {
@@ -2331,6 +3144,186 @@ mod tests {
             total_tokens: 165,
             elapsed_ms: 12_345,
         }
+    }
+
+    #[test]
+    fn save_settings_maps_legacy_fields_into_model_configs() {
+        let (db, root) = create_test_db();
+
+        let saved = db
+            .save_settings_with_model_configs(
+                " https://chat.example.com/v1 ",
+                " sk-chat ",
+                " chat-main ",
+                " ",
+                " vision-main ",
+                " sk-asr ",
+                " wss://asr.example.com/ws ",
+                true,
+                true,
+                " https://image.example.com/api/v1 ",
+                " sk-image ",
+                " image-gen ",
+                "",
+                DispatcherSettingsModelConfigs::default(),
+            )
+            .unwrap();
+
+        assert_eq!(saved.chat_model_config.url, "https://chat.example.com/v1");
+        assert_eq!(saved.chat_model_config.api_key, "sk-chat");
+        assert_eq!(saved.chat_model_config.model, "chat-main");
+        assert_eq!(saved.summary_model_config.model, DEFAULT_SUMMARY_MODEL);
+        assert_eq!(saved.vision_model_config.model, "vision-main");
+        assert_eq!(saved.asr_model_config.url, "wss://asr.example.com/ws");
+        assert_eq!(saved.asr_model_config.api_key, "sk-asr");
+        assert_eq!(saved.asr_model_config.model, DEFAULT_ASR_MODEL);
+        assert_eq!(saved.image_edit_model_config.model, "image-gen");
+        assert_eq!(saved.image_edit_model, "image-gen");
+
+        let loaded = db.get_settings().unwrap().unwrap();
+        assert_eq!(loaded.chat_model_config, saved.chat_model_config);
+        assert_eq!(loaded.image_edit_model_config.model, "image-gen");
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn save_settings_with_structured_configs_preserves_legacy_compat_fields() {
+        let (db, root) = create_test_db();
+
+        let saved = db
+            .save_settings_with_model_configs(
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                false,
+                false,
+                "",
+                "",
+                "",
+                "",
+                DispatcherSettingsModelConfigs {
+                    chat_model_config: Some(DispatcherModelConfig::new(
+                        "https://chat.example.com/v1",
+                        "sk-chat",
+                        "chat-main",
+                    )),
+                    summary_model_config: Some(DispatcherModelConfig::new(
+                        "https://summary.example.com/v1",
+                        "sk-summary",
+                        "",
+                    )),
+                    vision_model_config: Some(DispatcherModelConfig::new(
+                        "https://vision.example.com/v1",
+                        "sk-vision",
+                        "vision-main",
+                    )),
+                    image_model_config: Some(DispatcherModelConfig::new(
+                        "https://image.example.com/api/v1",
+                        "sk-image",
+                        "image-gen",
+                    )),
+                    image_edit_model_config: Some(DispatcherModelConfig::new("", "", "")),
+                    asr_model_config: Some(DispatcherModelConfig::new(
+                        "wss://asr.example.com/ws",
+                        "sk-asr",
+                        "",
+                    )),
+                    tts_model_config: Some(DispatcherModelConfig::new(
+                        "https://tts.example.com/v1",
+                        "sk-tts",
+                        "tts-main",
+                    )),
+                    embedding_model_config: Some(DispatcherModelConfig::new(
+                        "https://embed.example.com/v1",
+                        "sk-embed",
+                        "embed-main",
+                    )),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(saved.api_base, "https://chat.example.com/v1");
+        assert_eq!(saved.api_key, "sk-chat");
+        assert_eq!(saved.model, "chat-main");
+        assert_eq!(saved.summary_model, DEFAULT_SUMMARY_MODEL);
+        assert_eq!(saved.vision_model, "vision-main");
+        assert_eq!(saved.image_model_url, "https://image.example.com/api/v1");
+        assert_eq!(saved.image_model_api_key, "sk-image");
+        assert_eq!(saved.image_model, "image-gen");
+        assert_eq!(saved.image_edit_model, "image-gen");
+        assert_eq!(saved.asr_websocket_url, "wss://asr.example.com/ws");
+        assert_eq!(saved.asr_api_key, "sk-asr");
+        assert_eq!(saved.asr_model_config.model, DEFAULT_ASR_MODEL);
+        assert_eq!(saved.tts_model_config.model, "tts-main");
+        assert_eq!(saved.embedding_model_config.model, "embed-main");
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn save_settings_uses_active_provider_from_model_config_lists() {
+        let (db, root) = create_test_db();
+
+        let saved = db
+            .save_settings_with_model_configs(
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                false,
+                false,
+                "",
+                "",
+                "",
+                "",
+                DispatcherSettingsModelConfigs {
+                    chat_model_configs: Some(vec![
+                        DispatcherModelConfig {
+                            url: "https://chat-a.example.com/v1".to_string(),
+                            api_key: "sk-a".to_string(),
+                            model: "chat-a".to_string(),
+                            active: false,
+                        },
+                        DispatcherModelConfig {
+                            url: "https://chat-b.example.com/v1".to_string(),
+                            api_key: "sk-b".to_string(),
+                            model: "chat-b".to_string(),
+                            active: true,
+                        },
+                    ]),
+                    image_model_configs: Some(vec![DispatcherModelConfig::new(
+                        "https://image.example.com/api/v1",
+                        "sk-image",
+                        "image-gen",
+                    )]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(saved.api_base, "https://chat-b.example.com/v1");
+        assert_eq!(saved.api_key, "sk-b");
+        assert_eq!(saved.model, "chat-b");
+        assert_eq!(saved.chat_model_config.model, "chat-b");
+        assert_eq!(saved.chat_model_configs.len(), 2);
+        assert!(!saved.chat_model_configs[0].active);
+        assert!(saved.chat_model_configs[1].active);
+
+        let loaded = db.get_settings().unwrap().unwrap();
+        assert_eq!(loaded.model, "chat-b");
+        assert_eq!(loaded.chat_model_configs.len(), 2);
+        assert!(loaded.chat_model_configs[1].active);
+
+        cleanup_test_db(root);
     }
 
     #[test]
@@ -2626,6 +3619,143 @@ mod tests {
         let visible_messages = db.list_visible_messages(&session.id).unwrap();
         assert_eq!(visible_messages.len(), 1);
         assert_eq!(visible_messages[0].usage_stats, Some(stats));
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn user_image_segments_are_indexed_in_chat_images() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session(
+                "project-1",
+                "图片会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
+            .unwrap();
+        let image_path = root.join("pasted.png");
+        fs::write(&image_path, b"image-bytes").expect("write image");
+        let segments_json = serde_json::json!([
+            {
+                "type": "image",
+                "id": "seg-image-1",
+                "imageId": "image-1",
+                "path": image_path.to_string_lossy(),
+                "alt": "截图",
+                "mimeType": "image/png",
+                "source": "user_paste"
+            },
+            {
+                "type": "text",
+                "id": "seg-text-1",
+                "text": "请看这张图"
+            }
+        ])
+        .to_string();
+
+        let message = db
+            .add_visible_message(&session.id, "user", "请看这张图", Some(segments_json))
+            .unwrap();
+
+        let conn = db.conn().unwrap();
+        let indexed: (String, String, String, i64) = conn
+            .query_row(
+                "SELECT image_id, message_id, path, segment_index FROM chat_images WHERE workspace_id = ?1",
+                rusqlite::params![&session.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(indexed.0, "image-1");
+        assert_eq!(indexed.1, message.id);
+        assert_eq!(indexed.2, image_path.to_string_lossy());
+        assert_eq!(indexed.3, 0);
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn clear_messages_removes_chat_image_files_and_records() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session(
+                "project-1",
+                "图片清理会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
+            .unwrap();
+        let image_path = root.join("pasted.png");
+        fs::write(&image_path, b"image-bytes").expect("write image");
+        let segments_json = serde_json::json!([
+            {
+                "type": "image",
+                "id": "seg-image-1",
+                "imageId": "image-1",
+                "path": image_path.to_string_lossy(),
+                "mimeType": "image/png",
+                "source": "user_paste"
+            }
+        ])
+        .to_string();
+        db.add_visible_message(&session.id, "user", "", Some(segments_json))
+            .unwrap();
+
+        db.clear_messages(&session.id).unwrap();
+
+        assert!(!image_path.exists());
+        let conn = db.conn().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_images WHERE workspace_id = ?1",
+                rusqlite::params![&session.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn clear_messages_removes_legacy_unindexed_chat_image_files() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session(
+                "project-1",
+                "旧图片清理会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+            )
+            .unwrap();
+        let image_path = root.join("legacy.png");
+        fs::write(&image_path, b"legacy-image").expect("write image");
+        let segments_json = serde_json::json!([
+            {
+                "type": "image",
+                "id": "seg-image-legacy",
+                "imageId": "legacy-image-1",
+                "path": image_path.to_string_lossy(),
+                "mimeType": "image/png",
+                "source": "user_paste"
+            }
+        ])
+        .to_string();
+        db.add_visible_message(&session.id, "user", "", Some(segments_json))
+            .unwrap();
+        let conn = db.conn().unwrap();
+        conn.execute(
+            "DELETE FROM chat_images WHERE workspace_id = ?1",
+            rusqlite::params![&session.id],
+        )
+        .unwrap();
+
+        db.clear_messages(&session.id).unwrap();
+
+        assert!(!image_path.exists());
 
         cleanup_test_db(root);
     }

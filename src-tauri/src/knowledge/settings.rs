@@ -3,7 +3,6 @@ use std::future::Future;
 use std::time::Duration;
 
 use anyhow::Result;
-use serde_json;
 
 use super::types::{KnowledgeModelConfig, KnowledgeSettings};
 use super::utils::{spawn_blocking_string, truncate_chars};

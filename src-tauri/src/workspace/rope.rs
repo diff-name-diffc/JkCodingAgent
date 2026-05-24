@@ -5,6 +5,20 @@ use std::path::{Path, PathBuf};
 
 const MAX_UNDO_STACK: usize = 10;
 
+/// Strip trailing `\r\n` or `\n` in-place — avoids the double allocation of
+/// `.trim_end_matches('\n').trim_end_matches('\r').to_string()`.
+fn strip_trailing_newline(s: &mut String) {
+    let len = s.len();
+    if len > 0 && s.as_bytes()[len - 1] == b'\n' {
+        let cut = if len > 1 && s.as_bytes()[len - 2] == b'\r' {
+            len - 2
+        } else {
+            len - 1
+        };
+        s.truncate(cut);
+    }
+}
+
 /// Manages in-memory Rope edit sessions keyed by file-viewer tabs.
 pub struct RopeManager {
     sessions: Mutex<HashMap<String, RopeSession>>,
@@ -174,13 +188,9 @@ pub fn rope_read_lines(
     let mut lines = Vec::with_capacity(end.saturating_sub(start));
     for idx in start..end {
         let line = session.rope.line(idx);
-        let line_text = line.to_string();
-        lines.push(
-            line_text
-                .trim_end_matches('\n')
-                .trim_end_matches('\r')
-                .to_string(),
-        );
+        let mut line_text = line.to_string();
+        strip_trailing_newline(&mut line_text);
+        lines.push(line_text);
     }
 
     Ok(lines)
@@ -220,10 +230,8 @@ pub fn rope_edit(
 
     session.push_undo_snapshot();
 
-    if delete_count > 0 {
-        if delete_end > char_offset {
-            session.rope.remove(char_offset..delete_end);
-        }
+    if delete_count > 0 && delete_end > char_offset {
+        session.rope.remove(char_offset..delete_end);
     }
 
     if !insert_text.is_empty() {
@@ -457,7 +465,7 @@ mod tests {
     struct TestRopeEnv {
         manager: RopeManager,
         _tmp: TempDir,
-        file_path: PathBuf,
+        _file_path: PathBuf,
     }
 
     impl TestRopeEnv {
@@ -477,12 +485,15 @@ mod tests {
                 undo_stack: Vec::new(),
                 redo_stack: Vec::new(),
             };
-            manager.sessions.lock().insert("test-session".to_string(), session);
+            manager
+                .sessions
+                .lock()
+                .insert("test-session".to_string(), session);
 
             Self {
                 manager,
                 _tmp: tmp,
-                file_path,
+                _file_path: file_path,
             }
         }
 
@@ -794,10 +805,7 @@ mod tests {
         let file_path = root.join("test.txt");
         fs::write(&file_path, "content").expect("write file");
 
-        let result = validate_path_within(
-            file_path.to_str().unwrap(),
-            root.to_str().unwrap(),
-        );
+        let result = validate_path_within(file_path.to_str().unwrap(), root.to_str().unwrap());
         assert!(result.is_ok());
     }
 
@@ -808,10 +816,8 @@ mod tests {
         let file_path = tmp2.path().join("test.txt");
         fs::write(&file_path, "content").expect("write file");
 
-        let result = validate_path_within(
-            file_path.to_str().unwrap(),
-            tmp1.path().to_str().unwrap(),
-        );
+        let result =
+            validate_path_within(file_path.to_str().unwrap(), tmp1.path().to_str().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("outside"));
     }

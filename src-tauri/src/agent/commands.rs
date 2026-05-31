@@ -799,7 +799,7 @@ pub async fn dispatcher_fetch_models(
 ) -> Result<Vec<String>, String> {
     llm::fetch_models(&api_base, &api_key)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| format_anyhow_chain(error))
 }
 
 #[tauri::command]
@@ -809,7 +809,7 @@ pub async fn dispatcher_test_model(
 ) -> Result<String, String> {
     test_dispatcher_model(&kind, config)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| format_anyhow_chain(error))
 }
 
 async fn test_dispatcher_model(kind: &str, config: DispatcherModelConfig) -> Result<String> {
@@ -833,21 +833,23 @@ async fn test_chat_compatible_model(
     enable_multimodal: bool,
 ) -> Result<String> {
     test_required_model_config(label, &config)?;
+    let model_name = config.model.trim().to_string();
     let provider = OpenAiCompatProvider::new(config.api_key, config.url, config.model, 64, 0.0);
     let messages = vec![ChatMessage::system("只输出 pong。".to_string())];
     let response = provider
         .chat_stream(&messages, &[], enable_multimodal, |_| {})
         .await
-        .with_context(|| format!("{label} 测试请求失败"))?;
-    let content = response.content.trim();
+        .with_context(|| format!("{label} 测试请求失败（模型 {model_name}）"))?;
+    let content = response.content.trim().to_string();
     if content.is_empty() {
-        anyhow::bail!("{label} 返回空内容");
+        anyhow::bail!("{label}（{model_name}）返回空内容");
     }
-    Ok(format!("{label} ok：{content}"))
+    Ok(format!("{label} ok（{model_name}）：{content}"))
 }
 
 async fn test_embedding_model(config: DispatcherModelConfig) -> Result<String> {
     test_required_model_config("文本向量模型", &config)?;
+    let model_name = config.model.trim().to_string();
     let endpoint = embedding_endpoint(&config.url);
     let response = Client::new()
         .post(&endpoint)
@@ -858,13 +860,14 @@ async fn test_embedding_model(config: DispatcherModelConfig) -> Result<String> {
         }))
         .send()
         .await
-        .context("发送文本向量模型测试请求失败")?;
+        .with_context(|| format!("文本向量模型请求失败（模型 {model_name}，端点 {endpoint}）"))?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        anyhow::bail!("文本向量模型测试失败，HTTP {status}：{body}");
+        anyhow::bail!("文本向量模型（{model_name}）测试失败，HTTP {status}：{body}");
     }
-    let value: Value = serde_json::from_str(&body).context("解析文本向量模型响应失败")?;
+    let value: Value = serde_json::from_str(&body)
+        .with_context(|| format!("文本向量模型（{model_name}）响应解析失败，响应内容：{}", &body[..body.len().min(500)]))?;
     let dimension = value
         .get("data")
         .and_then(Value::as_array)
@@ -872,9 +875,12 @@ async fn test_embedding_model(config: DispatcherModelConfig) -> Result<String> {
         .and_then(|item| item.get("embedding"))
         .and_then(Value::as_array)
         .map(Vec::len)
-        .ok_or_else(|| anyhow!("文本向量模型响应中未找到 data[0].embedding"))?;
+        .ok_or_else(|| {
+            let preview = &body[..body.len().min(300)];
+            anyhow!("文本向量模型（{model_name}）响应中未找到 data[0].embedding，响应结构：{preview}")
+        })?;
 
-    Ok(format!("文本向量模型 ok，维度 {dimension}"))
+    Ok(format!("文本向量模型 ok（{model_name}），维度 {dimension}"))
 }
 
 async fn test_endpoint_reachable_model(
@@ -882,31 +888,47 @@ async fn test_endpoint_reachable_model(
     config: DispatcherModelConfig,
 ) -> Result<String> {
     test_required_model_config(label, &config)?;
+    let model_name = config.model.trim().to_string();
+    let url = config.url.trim().to_string();
     let response = Client::new()
-        .get(config.url.trim())
+        .get(&url)
         .bearer_auth(config.api_key.trim())
         .send()
         .await
-        .with_context(|| format!("{label} 端点连通性测试失败"))?;
+        .with_context(|| format!("{label} 端点连通性测试失败（模型 {model_name}，端点 {url}）"))?;
     let status = response.status();
     if status.is_server_error() {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("{label} 端点返回 HTTP {status}：{body}");
+        anyhow::bail!("{label}（{model_name}）端点返回 HTTP {status}：{body}");
     }
-    Ok(format!("{label} 配置字段完整，端点 HTTP {status} 可达。"))
+    if status.is_client_error() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "{label}（{model_name}）端点返回 HTTP {status}（请检查 API Key 和 URL），响应：{body}"
+        );
+    }
+    Ok(format!("{label} ok（{model_name}），端点 HTTP {status} 可达"))
 }
 
 fn test_required_model_config(label: &str, config: &DispatcherModelConfig) -> Result<()> {
     if config.url.trim().is_empty() {
-        anyhow::bail!("{label} URL 未配置");
+        anyhow::bail!("{label} URL 未配置（请在 API Base URL 中填入服务商端点地址）");
     }
     if config.api_key.trim().is_empty() {
-        anyhow::bail!("{label} API Key 未配置");
+        anyhow::bail!("{label} API Key 未配置（请在 API Key 中填入服务商提供的密钥）");
     }
     if config.model.trim().is_empty() {
-        anyhow::bail!("{label} 模型名称未配置");
+        anyhow::bail!("{label} 模型名称未配置（请在 Model 中填入具体模型 ID，如 gpt-4o）");
     }
     Ok(())
+}
+
+fn format_anyhow_chain(error: anyhow::Error) -> String {
+    error
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join("：")
 }
 
 fn embedding_endpoint(url: &str) -> String {

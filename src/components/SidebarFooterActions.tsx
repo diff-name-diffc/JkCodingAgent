@@ -1,10 +1,13 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Settings, Moon, Sun } from "lucide-react";
 import type { ThemeMode } from "../types";
-import { AppSettingsDialog } from "./AppSettingsDialog";
 import { NotificationBell } from "./NotificationBell";
 import { UsagePopover } from "./UsagePopover";
 import s from "../styles";
+
+const AppSettingsDialog = lazy(() =>
+  import("./AppSettingsDialog").then((module) => ({ default: module.AppSettingsDialog })),
+);
 
 export function SidebarFooterActions({
   isDark,
@@ -47,13 +50,15 @@ export function SidebarFooterActions({
       </div>
 
       {showAppSettings && (
-        <AppSettingsDialog
-          isDark={isDark}
-          themeMode={themeMode}
-          systemPrefersDark={systemPrefersDark}
-          onThemeModeChange={onThemeModeChange}
-          onClose={() => setShowAppSettings(false)}
-        />
+        <Suspense fallback={null}>
+          <AppSettingsDialog
+            isDark={isDark}
+            themeMode={themeMode}
+            systemPrefersDark={systemPrefersDark}
+            onThemeModeChange={onThemeModeChange}
+            onClose={() => setShowAppSettings(false)}
+          />
+        </Suspense>
       )}
     </>
   );

@@ -370,26 +370,17 @@ fn normalize_model_configs(configs: Vec<DispatcherModelConfig>) -> Vec<Dispatche
         .map(DispatcherModelConfig::trimmed)
         .filter(|config| !config.is_empty())
         .collect::<Vec<_>>();
-    if normalized.is_empty() {
-        return normalized;
-    }
 
-    let active_index = normalized
-        .iter()
-        .position(|config| config.active)
-        .unwrap_or(0);
-    for (index, config) in normalized.iter_mut().enumerate() {
-        config.active = index == active_index;
+    if let Some(active_index) = normalized.iter().position(|config| config.active) {
+        for (index, config) in normalized.iter_mut().enumerate() {
+            config.active = index == active_index;
+        }
     }
     normalized
 }
 
-fn active_or_first_config(configs: &[DispatcherModelConfig]) -> Option<DispatcherModelConfig> {
-    configs
-        .iter()
-        .find(|config| config.active)
-        .or_else(|| configs.first())
-        .cloned()
+fn active_config(configs: &[DispatcherModelConfig]) -> Option<DispatcherModelConfig> {
+    configs.iter().find(|config| config.active).cloned()
 }
 
 fn configs_or_single_config(
@@ -397,12 +388,33 @@ fn configs_or_single_config(
     single_config: Option<DispatcherModelConfig>,
     fallback: DispatcherModelConfig,
 ) -> Vec<DispatcherModelConfig> {
-    let normalized = configs.map(normalize_model_configs).unwrap_or_default();
-    if !normalized.is_empty() {
-        return normalized;
+    if let Some(configs) = configs {
+        let normalized = normalize_model_configs(configs);
+        let single_is_empty = single_config
+            .as_ref()
+            .map(DispatcherModelConfig::is_empty)
+            .unwrap_or_else(|| fallback.is_empty());
+        if !normalized.is_empty() || single_is_empty {
+            return normalized;
+        }
     }
 
     let single = single_config.unwrap_or(fallback);
+    normalize_model_configs(vec![single])
+}
+
+fn payload_configs_or_single_config(
+    configs: Option<Vec<DispatcherModelConfig>>,
+    single_config: Option<DispatcherModelConfig>,
+    fallback: DispatcherModelConfig,
+) -> Vec<DispatcherModelConfig> {
+    if let Some(configs) = configs {
+        return normalize_model_configs(configs);
+    }
+
+    let single = single_config
+        .filter(|config| !config.is_empty())
+        .unwrap_or(fallback);
     normalize_model_configs(vec![single])
 }
 
@@ -444,35 +456,42 @@ fn build_settings_record(
     let asr_model_configs = normalize_model_configs(configs.asr_model_configs);
     let tts_model_configs = normalize_model_configs(configs.tts_model_configs);
     let embedding_model_configs = normalize_model_configs(configs.embedding_model_configs);
-    let chat_model_config = active_or_first_config(&chat_model_configs).unwrap_or_default();
-    let mut summary_model_config =
-        active_or_first_config(&summary_model_configs).unwrap_or_default();
-    let vision_model_config = active_or_first_config(&vision_model_configs).unwrap_or_default();
-    let mut image_model_config = active_or_first_config(&image_model_configs).unwrap_or_default();
-    let mut image_edit_model_config =
-        active_or_first_config(&image_edit_model_configs).unwrap_or_default();
-    let mut asr_model_config = active_or_first_config(&asr_model_configs).unwrap_or_default();
-    let tts_model_config = active_or_first_config(&tts_model_configs).unwrap_or_default();
-    let embedding_model_config =
-        active_or_first_config(&embedding_model_configs).unwrap_or_default();
+    let chat_model_config = active_config(&chat_model_configs).unwrap_or_default();
+    let mut summary_model_config = active_config(&summary_model_configs).unwrap_or_default();
+    let vision_model_config = active_config(&vision_model_configs).unwrap_or_default();
+    let mut image_model_config = active_config(&image_model_configs).unwrap_or_default();
+    let mut image_edit_model_config = active_config(&image_edit_model_configs).unwrap_or_default();
+    let mut asr_model_config = active_config(&asr_model_configs).unwrap_or_default();
+    let tts_model_config = active_config(&tts_model_configs).unwrap_or_default();
+    let embedding_model_config = active_config(&embedding_model_configs).unwrap_or_default();
 
-    summary_model_config.model = normalize_summary_model(&summary_model_config.model);
-    if image_model_config.url.is_empty() {
+    if !summary_model_config.is_empty() {
+        summary_model_config.model = normalize_summary_model(&summary_model_config.model);
+    }
+    if !image_model_config.is_empty() && image_model_config.url.is_empty() {
         image_model_config.url = DEFAULT_IMAGE_MODEL_URL.to_string();
     }
-    if image_model_config.model.is_empty() {
+    if !image_model_config.is_empty() && image_model_config.model.is_empty() {
         image_model_config.model = DEFAULT_IMAGE_MODEL.to_string();
     }
-    if image_edit_model_config.url.is_empty() {
-        image_edit_model_config.url = image_model_config.url.clone();
+    if !image_edit_model_config.is_empty() && image_edit_model_config.url.is_empty() {
+        image_edit_model_config.url = if image_model_config.url.is_empty() {
+            DEFAULT_IMAGE_MODEL_URL.to_string()
+        } else {
+            image_model_config.url.clone()
+        };
     }
-    if image_edit_model_config.api_key.is_empty() {
+    if !image_edit_model_config.is_empty() && image_edit_model_config.api_key.is_empty() {
         image_edit_model_config.api_key = image_model_config.api_key.clone();
     }
-    if image_edit_model_config.model.is_empty() {
-        image_edit_model_config.model = image_model_config.model.clone();
+    if !image_edit_model_config.is_empty() && image_edit_model_config.model.is_empty() {
+        image_edit_model_config.model = if image_model_config.model.is_empty() {
+            DEFAULT_IMAGE_MODEL.to_string()
+        } else {
+            image_model_config.model.clone()
+        };
     }
-    if asr_model_config.model.is_empty() {
+    if !asr_model_config.is_empty() && asr_model_config.model.is_empty() {
         asr_model_config.model = DEFAULT_ASR_MODEL.to_string();
     }
 
@@ -963,12 +982,25 @@ impl DispatcherDb {
             .trimmed();
         let image_edit_model_config = model_configs
             .image_edit_model_config
+            .filter(|config| !config.is_empty())
             .unwrap_or_else(|| {
-                DispatcherModelConfig::new(
-                    image_model_url,
-                    image_model_api_key,
-                    fallback_image_edit_model(image_model, image_edit_model),
-                )
+                let fallback_url = if image_model_url.trim().is_empty() {
+                    &image_model_config.url
+                } else {
+                    image_model_url
+                };
+                let fallback_api_key = if image_model_api_key.trim().is_empty() {
+                    &image_model_config.api_key
+                } else {
+                    image_model_api_key
+                };
+                let fallback_model = fallback_image_edit_model(image_model, image_edit_model);
+                let fallback_model = if fallback_model.is_empty() {
+                    image_model_config.model.as_str()
+                } else {
+                    fallback_model
+                };
+                DispatcherModelConfig::new(fallback_url, fallback_api_key, fallback_model)
             })
             .trimmed();
         let asr_model_config = model_configs
@@ -984,42 +1016,42 @@ impl DispatcherDb {
             .trimmed();
         let record = build_settings_record(
             DispatcherSettingsConfigLists {
-                chat_model_configs: configs_or_single_config(
+                chat_model_configs: payload_configs_or_single_config(
                     model_configs.chat_model_configs,
                     Some(chat_model_config.clone()),
                     chat_model_config,
                 ),
-                summary_model_configs: configs_or_single_config(
+                summary_model_configs: payload_configs_or_single_config(
                     model_configs.summary_model_configs,
                     Some(summary_model_config.clone()),
                     summary_model_config,
                 ),
-                vision_model_configs: configs_or_single_config(
+                vision_model_configs: payload_configs_or_single_config(
                     model_configs.vision_model_configs,
                     Some(vision_model_config.clone()),
                     vision_model_config,
                 ),
-                image_model_configs: configs_or_single_config(
+                image_model_configs: payload_configs_or_single_config(
                     model_configs.image_model_configs,
                     Some(image_model_config.clone()),
                     image_model_config,
                 ),
-                image_edit_model_configs: configs_or_single_config(
+                image_edit_model_configs: payload_configs_or_single_config(
                     model_configs.image_edit_model_configs,
                     Some(image_edit_model_config.clone()),
                     image_edit_model_config,
                 ),
-                asr_model_configs: configs_or_single_config(
+                asr_model_configs: payload_configs_or_single_config(
                     model_configs.asr_model_configs,
                     Some(asr_model_config.clone()),
                     asr_model_config,
                 ),
-                tts_model_configs: configs_or_single_config(
+                tts_model_configs: payload_configs_or_single_config(
                     model_configs.tts_model_configs,
                     Some(tts_model_config.clone()),
                     tts_model_config,
                 ),
-                embedding_model_configs: configs_or_single_config(
+                embedding_model_configs: payload_configs_or_single_config(
                     model_configs.embedding_model_configs,
                     Some(embedding_model_config.clone()),
                     embedding_model_config,

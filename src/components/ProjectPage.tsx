@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { lazy, Suspense, useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -15,24 +15,50 @@ import type {
   BrowserStatus,
 } from "../types";
 import { cleanTerminalOutput } from "../utils/ansiStrip";
-import { FileExplorer } from "./FileExplorer";
 import { SessionPanel } from "./SessionPanel";
-import { FileViewer, type FileViewerHandle } from "./FileViewer";
-import { GitChanges } from "./GitChanges";
-import { GitHistory } from "./GitHistory";
-import { GitDiffViewer } from "./GitDiffViewer";
+import type { FileViewerHandle } from "./FileViewer";
 import { ProjectRail } from "./ProjectRail";
 import { RightToolbar } from "./RightToolbar";
-import { ShellTerminalPanel, type ShellTerminalPanelHandle } from "./ShellTerminalPanel";
-import { BrowserPanel } from "./BrowserPanel";
-import { DispatcherChat, type DispatcherChatHandle } from "./DispatcherChat";
-import { McpStatusDialog } from "./McpStatusDialog";
-import { SubProcessTabs } from "./SubProcessTabs";
-import { AppSettingsDialog } from "./AppSettingsDialog";
+import type { ShellTerminalPanelHandle } from "./ShellTerminalPanel";
+import type { DispatcherChatHandle } from "./DispatcherChat";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useProjectPanels } from "../hooks/useProjectPanels";
 import { getPathBasename } from "../utils/filePaths";
 import s from "../styles";
+
+const FileExplorer = lazy(() =>
+  import("./FileExplorer").then((module) => ({ default: module.FileExplorer })),
+);
+const FileViewer = lazy(() =>
+  import("./FileViewer").then((module) => ({ default: module.FileViewer })),
+);
+const GitChanges = lazy(() =>
+  import("./GitChanges").then((module) => ({ default: module.GitChanges })),
+);
+const GitHistory = lazy(() =>
+  import("./GitHistory").then((module) => ({ default: module.GitHistory })),
+);
+const GitDiffViewer = lazy(() =>
+  import("./GitDiffViewer").then((module) => ({ default: module.GitDiffViewer })),
+);
+const ShellTerminalPanel = lazy(() =>
+  import("./ShellTerminalPanel").then((module) => ({ default: module.ShellTerminalPanel })),
+);
+const BrowserPanel = lazy(() =>
+  import("./BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
+);
+const DispatcherChat = lazy(() =>
+  import("./DispatcherChat").then((module) => ({ default: module.DispatcherChat })),
+);
+const McpStatusDialog = lazy(() =>
+  import("./McpStatusDialog").then((module) => ({ default: module.McpStatusDialog })),
+);
+const SubProcessTabs = lazy(() =>
+  import("./SubProcessTabs").then((module) => ({ default: module.SubProcessTabs })),
+);
+const AppSettingsDialog = lazy(() =>
+  import("./AppSettingsDialog").then((module) => ({ default: module.AppSettingsDialog })),
+);
 
 function getSubProcessAgentLabel(agent: AgentType): string {
   return agent === "claude" ? "Claude" : "Codex";
@@ -84,6 +110,26 @@ function toSubProcess(task: Task): SubProcess | null {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function LazyPaneFallback({ label = "加载中..." }: { label?: string }) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        minWidth: 0,
+        minHeight: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "var(--text-muted)",
+        fontSize: 13,
+        background: "var(--bg-panel)",
+      }}
+    >
+      {label}
+    </div>
+  );
 }
 
 export function ProjectPage({
@@ -826,39 +872,41 @@ export function ProjectPage({
                     </div>
                   )}
                 >
-                  {activeSessionId ? (
-                    <DispatcherChat
-                      ref={dispatcherChatRef}
-                      sessionId={activeSessionId}
-                      projectPath={project.path}
-                      mcpStatus={mcpStatus}
-                      mcpChecking={mcpChecking}
-                      layoutMode={showEditorPane ? "split" : "single"}
-                      subProcesses={allSubProcesses}
-                      onDispatchApproved={handleDispatchApproved}
-                      onDispatchRejected={handleDispatchRejected}
-                      onDispatchContinue={handleDispatchContinue}
-                      onDispatchExit={handleDispatchExit}
-                      onStopActiveRun={handleStopSessionSubProcesses}
-                      onResumeStoppedRun={handleResumeSessionSubProcesses}
-                      onOpenMcpStatus={() => setShowMcpStatus(true)}
-                      onOpenSettings={() => setShowDispatcherSettings(true)}
-                      onOpenPlanDocument={handleOpenPlanDocument}
-                      onClosePanel={() => setShowSessionWorkbench(false)}
-                    />
-                  ) : (
-                    <div
-                      style={{
-                        flex: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        color: "var(--text-muted)",
-                      }}
-                    >
-                      正在创建会话...
-                    </div>
-                  )}
+                  <Suspense fallback={<LazyPaneFallback label="会话加载中..." />}>
+                    {activeSessionId ? (
+                      <DispatcherChat
+                        ref={dispatcherChatRef}
+                        sessionId={activeSessionId}
+                        projectPath={project.path}
+                        mcpStatus={mcpStatus}
+                        mcpChecking={mcpChecking}
+                        layoutMode={showEditorPane ? "split" : "single"}
+                        subProcesses={allSubProcesses}
+                        onDispatchApproved={handleDispatchApproved}
+                        onDispatchRejected={handleDispatchRejected}
+                        onDispatchContinue={handleDispatchContinue}
+                        onDispatchExit={handleDispatchExit}
+                        onStopActiveRun={handleStopSessionSubProcesses}
+                        onResumeStoppedRun={handleResumeSessionSubProcesses}
+                        onOpenMcpStatus={() => setShowMcpStatus(true)}
+                        onOpenSettings={() => setShowDispatcherSettings(true)}
+                        onOpenPlanDocument={handleOpenPlanDocument}
+                        onClosePanel={() => setShowSessionWorkbench(false)}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          flex: 1,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        正在创建会话...
+                      </div>
+                    )}
+                  </Suspense>
                 </ErrorBoundary>
               </div>
             )}
@@ -910,49 +958,51 @@ export function ProjectPage({
                     </div>
                   )}
                 >
-                  {openDiff ? (
-                    openDiff.kind === "file" ? (
-                      <GitDiffViewer
-                        projectPath={project.path}
-                        mode="file"
-                        filePath={openDiff.filePath}
-                        staged={openDiff.staged}
-                        title={openDiff.label}
-                        onClose={() => setOpenDiff(null)}
-                      />
-                    ) : openDiff.kind === "commit-file" ? (
-                      <GitDiffViewer
-                        projectPath={project.path}
-                        mode="commit-file"
-                        commitHash={openDiff.hash}
-                        filePath={openDiff.filePath}
-                        title={openDiff.label}
-                        onClose={() => setOpenDiff(null)}
-                      />
+                  <Suspense fallback={<LazyPaneFallback label="编辑器加载中..." />}>
+                    {openDiff ? (
+                      openDiff.kind === "file" ? (
+                        <GitDiffViewer
+                          projectPath={project.path}
+                          mode="file"
+                          filePath={openDiff.filePath}
+                          staged={openDiff.staged}
+                          title={openDiff.label}
+                          onClose={() => setOpenDiff(null)}
+                        />
+                      ) : openDiff.kind === "commit-file" ? (
+                        <GitDiffViewer
+                          projectPath={project.path}
+                          mode="commit-file"
+                          commitHash={openDiff.hash}
+                          filePath={openDiff.filePath}
+                          title={openDiff.label}
+                          onClose={() => setOpenDiff(null)}
+                        />
+                      ) : (
+                        <GitDiffViewer
+                          projectPath={project.path}
+                          mode="commit"
+                          commitHash={openDiff.hash}
+                          title={openDiff.message}
+                          onClose={() => setOpenDiff(null)}
+                        />
+                      )
                     ) : (
-                      <GitDiffViewer
+                      <FileViewer
+                        ref={fileViewerRef}
+                        tabs={openFiles}
+                        activeTabId={activeFileTabId}
                         projectPath={project.path}
-                        mode="commit"
-                        commitHash={openDiff.hash}
-                        title={openDiff.message}
-                        onClose={() => setOpenDiff(null)}
+                        onSelectTab={handleFileTabSelect}
+                        onCloseTab={handleFileTabClose}
+                        onCloseOtherTabs={handleCloseOtherFileTabs}
+                        onCloseTabsToRight={handleCloseTabsToRight}
+                        onCloseAllTabs={handleCloseAllFileTabs}
+                        onHide={hideEditorWorkbench}
+                        isDark={isDark}
                       />
-                    )
-                  ) : (
-                    <FileViewer
-                      ref={fileViewerRef}
-                      tabs={openFiles}
-                      activeTabId={activeFileTabId}
-                      projectPath={project.path}
-                      onSelectTab={handleFileTabSelect}
-                      onCloseTab={handleFileTabClose}
-                      onCloseOtherTabs={handleCloseOtherFileTabs}
-                      onCloseTabsToRight={handleCloseTabsToRight}
-                      onCloseAllTabs={handleCloseAllFileTabs}
-                      onHide={hideEditorWorkbench}
-                      isDark={isDark}
-                    />
-                  )}
+                    )}
+                  </Suspense>
                 </ErrorBoundary>
               </div>
             )}
@@ -1001,40 +1051,44 @@ export function ProjectPage({
         </div>
         {/* Sub-process terminal tabs */}
         {subProcesses.length > 0 && (
-          <SubProcessTabs
-            subProcesses={subProcesses}
-            activeSessionId={activeSessionId}
-            activeTabId={activeVisibleSubTabId}
-            onSelectTab={(id) => {
-              if (!activeSessionId) return;
-              setActiveSubTabIdBySession((prev) => ({
-                ...prev,
-                [activeSessionId]: prev[activeSessionId] === id ? null : id,
-              }));
-            }}
-            onCloseTab={handleCloseSubTab}
-            height={subTerminalHeight}
-            onResizeStart={handleSubTerminalResizeStart}
-            isDark={isDark}
-            onInput={onInput}
-            onResize={onResize}
-            onRegisterTerminal={onRegisterTerminal}
-            onTerminalReady={onTerminalReady}
-            onSnapshot={onSnapshot}
-            getRestoreState={getTaskRestoreState}
-          />
+          <Suspense fallback={null}>
+            <SubProcessTabs
+              subProcesses={subProcesses}
+              activeSessionId={activeSessionId}
+              activeTabId={activeVisibleSubTabId}
+              onSelectTab={(id) => {
+                if (!activeSessionId) return;
+                setActiveSubTabIdBySession((prev) => ({
+                  ...prev,
+                  [activeSessionId]: prev[activeSessionId] === id ? null : id,
+                }));
+              }}
+              onCloseTab={handleCloseSubTab}
+              height={subTerminalHeight}
+              onResizeStart={handleSubTerminalResizeStart}
+              isDark={isDark}
+              onInput={onInput}
+              onResize={onResize}
+              onRegisterTerminal={onRegisterTerminal}
+              onTerminalReady={onTerminalReady}
+              onSnapshot={onSnapshot}
+              getRestoreState={getTaskRestoreState}
+            />
+          </Suspense>
         )}
         {showShellTerminal && (
-          <ShellTerminalPanel
-            ref={shellRef}
-            projectPath={project.path}
-            projectId={project.id}
-            isActive={visible}
-            onClose={() => setShowShellTerminal(false)}
-            isDark={isDark}
-            height={terminalHeight}
-            onResizeStart={handleTerminalResizeStart}
-          />
+          <Suspense fallback={null}>
+            <ShellTerminalPanel
+              ref={shellRef}
+              projectPath={project.path}
+              projectId={project.id}
+              isActive={visible}
+              onClose={() => setShowShellTerminal(false)}
+              isDark={isDark}
+              height={terminalHeight}
+              onResizeStart={handleTerminalResizeStart}
+            />
+          </Suspense>
         )}
       </div>
 
@@ -1054,50 +1108,58 @@ export function ProjectPage({
           />
           {rightPanel === "files" && (
             <ErrorBoundary label="文件浏览器">
-              <FileExplorer
-                projectPath={project.path}
-                projectName={project.name}
-                onFileSelect={handleFileSelect}
-                onFileRename={handleFileTreeRename}
-                onFileDelete={handleFileTreeDelete}
-                openFilePaths={openFiles.map((tab) => tab.path)}
-                isDark={isDark}
-                active={visible}
-                width={rightPanelWidth}
-              />
+              <Suspense fallback={<LazyPaneFallback label="文件列表加载中..." />}>
+                <FileExplorer
+                  projectPath={project.path}
+                  projectName={project.name}
+                  onFileSelect={handleFileSelect}
+                  onFileRename={handleFileTreeRename}
+                  onFileDelete={handleFileTreeDelete}
+                  openFilePaths={openFiles.map((tab) => tab.path)}
+                  isDark={isDark}
+                  active={visible}
+                  width={rightPanelWidth}
+                />
+              </Suspense>
             </ErrorBoundary>
           )}
           {rightPanel === "git-changes" && (
             <ErrorBoundary label="Git 变更">
-              <GitChanges
-                projectPath={project.path}
-                currentTaskCreatedAt={null}
-                onFileSelect={handleDiffFileSelect}
-                width={rightPanelWidth}
-              />
+              <Suspense fallback={<LazyPaneFallback label="Git 变更加载中..." />}>
+                <GitChanges
+                  projectPath={project.path}
+                  currentTaskCreatedAt={null}
+                  onFileSelect={handleDiffFileSelect}
+                  width={rightPanelWidth}
+                />
+              </Suspense>
             </ErrorBoundary>
           )}
           {rightPanel === "git-history" && (
             <ErrorBoundary label="Git 历史">
-              <GitHistory
-                projectPath={project.path}
-                onCommitSelect={handleCommitSelect}
-                onFileClick={handleCommitFileClick}
-                width={rightPanelWidth}
-              />
+              <Suspense fallback={<LazyPaneFallback label="Git 历史加载中..." />}>
+                <GitHistory
+                  projectPath={project.path}
+                  onCommitSelect={handleCommitSelect}
+                  onFileClick={handleCommitFileClick}
+                  width={rightPanelWidth}
+                />
+              </Suspense>
             </ErrorBoundary>
           )}
           {rightPanel === "browser" && (
             <ErrorBoundary label="CloakBrowser">
-              <BrowserPanel
-                sessionId={activeSessionId}
-                projectPath={project.path}
-                width={rightPanelWidth}
-                active={visible}
-                expanded={browserPanelExpanded}
-                onToggleExpanded={handleToggleBrowserPanelExpanded}
-                onClose={() => handleTogglePanel("browser")}
-              />
+              <Suspense fallback={<LazyPaneFallback label="浏览器加载中..." />}>
+                <BrowserPanel
+                  sessionId={activeSessionId}
+                  projectPath={project.path}
+                  width={rightPanelWidth}
+                  active={visible}
+                  expanded={browserPanelExpanded}
+                  onToggleExpanded={handleToggleBrowserPanelExpanded}
+                  onClose={() => handleTogglePanel("browser")}
+                />
+              </Suspense>
             </ErrorBoundary>
           )}
         </div>
@@ -1111,30 +1173,34 @@ export function ProjectPage({
       />
 
       {showDispatcherSettings && (
-        <AppSettingsDialog
-          isDark={isDark}
-          themeMode={themeMode}
-          systemPrefersDark={systemPrefersDark}
-          onThemeModeChange={onThemeModeChange}
-          initialTab="aha"
-          onClose={() => setShowDispatcherSettings(false)}
-        />
+        <Suspense fallback={null}>
+          <AppSettingsDialog
+            isDark={isDark}
+            themeMode={themeMode}
+            systemPrefersDark={systemPrefersDark}
+            onThemeModeChange={onThemeModeChange}
+            initialTab="aha"
+            onClose={() => setShowDispatcherSettings(false)}
+          />
+        </Suspense>
       )}
 
       {showMcpStatus && (
-        <McpStatusDialog
-          projectPath={project.path}
-          status={mcpStatus}
-          checking={mcpChecking}
-          updatingServer={mcpUpdatingServer}
-          onRefresh={() => {
-            refreshMcpStatus().catch(console.error);
-          }}
-          onToggleServerEnabled={(serverName, enabled) => {
-            handleToggleMcpServerEnabled(serverName, enabled).catch(console.error);
-          }}
-          onClose={() => setShowMcpStatus(false)}
-        />
+        <Suspense fallback={null}>
+          <McpStatusDialog
+            projectPath={project.path}
+            status={mcpStatus}
+            checking={mcpChecking}
+            updatingServer={mcpUpdatingServer}
+            onRefresh={() => {
+              refreshMcpStatus().catch(console.error);
+            }}
+            onToggleServerEnabled={(serverName, enabled) => {
+              handleToggleMcpServerEnabled(serverName, enabled).catch(console.error);
+            }}
+            onClose={() => setShowMcpStatus(false)}
+          />
+        </Suspense>
       )}
     </div>
   );

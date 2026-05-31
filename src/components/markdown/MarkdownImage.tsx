@@ -42,11 +42,15 @@ export function MarkdownImage({ src, alt }: MarkdownImageProps) {
       let path = src.startsWith("file://") ? src.slice(7) : src;
       // Markdown parsers may percent-encode non-ASCII chars in src;
       // decode first so convertFileSrc doesn't double-encode them.
-      try { path = decodeURIComponent(path); } catch { /* not encoded, use as-is */ }
+      try {
+        path = decodeURIComponent(path);
+      } catch {
+        // not encoded, use as-is
+      }
       const assetUrl = convertFileSrc(path);
       setResolvedSrc(assetUrl);
       setLoading(false);
-    } catch (err) {
+    } catch {
       setError("无法加载图片");
       setLoading(false);
     }

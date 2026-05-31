@@ -20,10 +20,12 @@ export function MarkdownCodeBlock({
   code,
   language,
   compact = false,
+  streaming = false,
 }: {
   code: string;
   language?: string | null;
   compact?: boolean;
+  streaming?: boolean;
 }) {
   const isDark = useIsDarkTheme();
   const fallbackHtml = useMemo(() => renderPlainCodeHtml(code), [code]);
@@ -33,9 +35,13 @@ export function MarkdownCodeBlock({
     () => (language?.trim() ? language.trim().toLowerCase() : "text"),
     [language],
   );
-  const renderedHtml = highlighted?.code === code ? highlighted.html : fallbackHtml;
+  // During streaming, always use plain fallback to avoid highlight↔fallback flash
+  const renderedHtml = streaming
+    ? fallbackHtml
+    : (highlighted?.code === code ? highlighted.html : fallbackHtml);
 
   useEffect(() => {
+    if (streaming) return;
     let cancelled = false;
     setHighlighted({ code, html: fallbackHtml });
 
@@ -54,7 +60,7 @@ export function MarkdownCodeBlock({
     return () => {
       cancelled = true;
     };
-  }, [code, fallbackHtml, isDark, resolvedLanguage]);
+  }, [code, fallbackHtml, isDark, resolvedLanguage, streaming]);
 
   useEffect(() => {
     if (!copied) {

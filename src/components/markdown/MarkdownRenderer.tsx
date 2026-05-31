@@ -1,4 +1,4 @@
-import { memo, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -9,6 +9,8 @@ import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { MarkdownImage } from "./MarkdownImage";
+
+const StreamingContext = createContext(false);
 
 const safeSchema = {
   ...defaultSchema,
@@ -100,7 +102,7 @@ const markdownComponents: Components = {
       return <code className="markdown-inline-code">{rawCode}</code>;
     }
 
-    return <MarkdownCodeBlock code={rawCode} language={language} compact />;
+    return <StreamingCodeBlock code={rawCode} language={language} />;
   },
   pre({ children }) {
     return <>{children}</>;
@@ -117,19 +119,41 @@ const markdownComponents: Components = {
   },
 };
 
+/** Reads streaming flag from context and passes to MarkdownCodeBlock */
+function StreamingCodeBlock({ code, language }: { code: string; language?: string | null }) {
+  const streaming = useContext(StreamingContext);
+  return <MarkdownCodeBlock code={code} language={language} compact streaming={streaming} />;
+}
+
 const LARGE_TEXT_THRESHOLD = 10_000;
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,
   variant = "chat",
+  streaming = false,
 }: {
   content: string;
   variant?: "chat" | "document";
+  streaming?: boolean;
 }) {
-  const deferredContent = useDeferredValue(content);
+  // When streaming, throttle markdown parse to ~7fps to avoid 50/s full AST re-parses
+  const [throttledContent, setThrottledContent] = useState(content);
+  const latestContentRef = useRef(content);
+
+  useEffect(() => {
+    latestContentRef.current = content;
+    if (!streaming) {
+      setThrottledContent(content);
+      return;
+    }
+    const id = setTimeout(() => setThrottledContent(latestContentRef.current), 150);
+    return () => clearTimeout(id);
+  }, [content, streaming]);
+
+  const effectiveContent = streaming ? throttledContent : content;
   const normalizedContent = useMemo(
-    () => normalizeSingleLineMathBlocks(deferredContent),
-    [deferredContent],
+    () => normalizeSingleLineMathBlocks(effectiveContent),
+    [effectiveContent],
   );
 
   // Defer full markdown rendering for large texts to avoid blocking the main thread
@@ -158,6 +182,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 
   return (
     <div className={`markdown-surface markdown-surface--${variant}`}>
+      <StreamingContext.Provider value={streaming}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeRaw, [rehypeSanitize, safeSchema], rehypeKatex]}
@@ -166,6 +191,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       >
         {normalizedContent}
       </ReactMarkdown>
+      </StreamingContext.Provider>
     </div>
   );
 });

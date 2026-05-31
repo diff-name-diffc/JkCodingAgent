@@ -1,6 +1,6 @@
 interface ShikiHighlighter {
   codeToHtml: (code: string, options: { lang: string; theme: string }) => string;
-  loadLanguage: (language: string) => Promise<void>;
+  loadLanguage: (language: unknown) => Promise<void>;
   getLoadedLanguages: () => string[];
 }
 
@@ -24,18 +24,41 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   txt: "plaintext",
 };
 
+const LANGUAGE_LOADERS: Record<string, () => Promise<unknown>> = {
+  bash: () => import("shiki/dist/langs/bash.mjs"),
+  css: () => import("shiki/dist/langs/css.mjs"),
+  html: () => import("shiki/dist/langs/html.mjs"),
+  js: () => import("shiki/dist/langs/js.mjs"),
+  jsx: () => import("shiki/dist/langs/jsx.mjs"),
+  json: () => import("shiki/dist/langs/json.mjs"),
+  md: () => import("shiki/dist/langs/md.mjs"),
+  python: () => import("shiki/dist/langs/python.mjs"),
+  rust: () => import("shiki/dist/langs/rust.mjs"),
+  toml: () => import("shiki/dist/langs/toml.mjs"),
+  ts: () => import("shiki/dist/langs/ts.mjs"),
+  tsx: () => import("shiki/dist/langs/tsx.mjs"),
+  yaml: () => import("shiki/dist/langs/yaml.mjs"),
+};
+
 let highlighterPromise: Promise<ShikiHighlighter> | null = null;
 const attemptedLanguages = new Set<string>(["plaintext"]);
 
 async function getHighlighter() {
   if (!highlighterPromise) {
-    highlighterPromise = import("shiki").then(async ({ createHighlighter }) => {
-      const highlighter = (await createHighlighter({
-        themes: ["github-dark", "github-light"],
-        langs: ["plaintext"],
-      })) as unknown as ShikiHighlighter;
-      return highlighter;
-    });
+    highlighterPromise = Promise.all([
+      import("shiki/core"),
+      import("shiki/dist/engine-javascript.mjs"),
+      import("shiki/dist/themes/github-dark.mjs"),
+      import("shiki/dist/themes/github-light.mjs"),
+    ]).then(
+      async ([{ createHighlighterCore }, { createJavaScriptRegexEngine }, darkTheme, lightTheme]) => {
+        const highlighter = (await createHighlighterCore({
+          engine: createJavaScriptRegexEngine(),
+          themes: [darkTheme.default, lightTheme.default],
+        })) as unknown as ShikiHighlighter;
+        return highlighter;
+      },
+    );
   }
 
   return highlighterPromise;
@@ -53,12 +76,18 @@ function normalizeLanguage(language?: string | null) {
 async function ensureLanguage(language?: string | null) {
   const highlighter = await getHighlighter();
   const normalized = normalizeLanguage(language);
+  const loadLanguage = LANGUAGE_LOADERS[normalized];
 
-  if (!attemptedLanguages.has(normalized) && !highlighter.getLoadedLanguages().includes(normalized)) {
+  if (
+    loadLanguage &&
+    !attemptedLanguages.has(normalized) &&
+    !highlighter.getLoadedLanguages().includes(normalized)
+  ) {
     attemptedLanguages.add(normalized);
 
     try {
-      await highlighter.loadLanguage(normalized);
+      const module = await loadLanguage();
+      await highlighter.loadLanguage((module as { default?: unknown }).default ?? module);
     } catch {
       return "plaintext";
     }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   getDispatcherSessionRunning,
   subscribeDispatcherSessionRunning,
-} from "../components/DispatcherChat";
+} from "../components/dispatcherSessionStore";
 
 function sameStringSet(left: Set<string>, right: Set<string>) {
   if (left.size !== right.size) return false;

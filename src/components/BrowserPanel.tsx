@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CSSProperties, MouseEvent } from "react";
+import type { CSSProperties, KeyboardEvent, MouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm, open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -134,7 +134,7 @@ export function BrowserPanel({
     if (!sessionId || busy) return;
 
     let candidates: BrowserProfileCandidate[] = [];
-    let scanMessage = "";
+    let scanMessage: string;
     try {
       candidates = await invoke<BrowserProfileCandidate[]>(
         "browser_list_chrome_profile_candidates",
@@ -217,6 +217,63 @@ export function BrowserPanel({
       setError(String(reason));
     }
   }, [status?.url]);
+
+  const [urlInput, setUrlInput] = useState("");
+  const [isEditingUrl, setIsEditingUrl] = useState(false);
+  const urlInputRef = useRef<HTMLInputElement>(null);
+
+  // Sync urlInput from status when not editing
+  useEffect(() => {
+    if (!isEditingUrl) {
+      setUrlInput(status?.url || "about:blank");
+    }
+  }, [isEditingUrl, status?.url]);
+
+  const navigateToUrl = useCallback(async () => {
+    if (!sessionId || busy) return;
+    let url = urlInput.trim();
+    if (!url || url === "about:blank") {
+      setIsEditingUrl(false);
+      return;
+    }
+    // Auto-prepend https:// if missing
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      url = "https://" + url;
+      setUrlInput(url);
+    }
+    setIsEditingUrl(false);
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("browser_navigate", {
+        sessionId,
+        url,
+        projectPath: projectPath || null,
+      });
+      await refreshStatus();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, projectPath, refreshStatus, sessionId, urlInput]);
+
+  const reloadPage = useCallback(async () => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("browser_reload", {
+        sessionId,
+        projectPath: projectPath || null,
+      });
+      await refreshStatus();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, projectPath, refreshStatus, sessionId]);
 
   const handleCanvasClick = useCallback(
     async (event: MouseEvent<HTMLCanvasElement>) => {
@@ -343,9 +400,6 @@ export function BrowserPanel({
           >
             <ArrowLeft size={14} />
           </button>
-          <button type="button" title="刷新状态" onClick={refreshStatus} style={iconButton}>
-            <RefreshCw size={14} />
-          </button>
           <button
             type="button"
             title="启动浏览器"
@@ -402,17 +456,114 @@ export function BrowserPanel({
 
       <div
         style={{
-          padding: 8,
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          padding: "4px 8px",
           borderBottom: "1px solid var(--border-dim)",
-          fontSize: 11,
-          color: "var(--text-hint)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+          background: "var(--bg-card)",
         }}
-        title={status?.url ?? ""}
       >
-        {status?.url || "about:blank"}
+        <button
+          type="button"
+          title="刷新页面"
+          onClick={reloadPage}
+          disabled={!sessionId || !connected || busy}
+          style={iconButton}
+        >
+          <RefreshCw size={13} />
+        </button>
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            height: 26,
+            borderRadius: 6,
+            border: isEditingUrl
+              ? "1px solid var(--accent)"
+              : "1px solid var(--border-dim)",
+            background: "var(--bg-sidebar)",
+            padding: "0 8px",
+            gap: 5,
+            minWidth: 0,
+          }}
+        >
+          {connected && status?.url && status.url !== "about:blank" && status.url.startsWith("https://") && (
+            <span
+              style={{
+                fontSize: 10,
+                color: "var(--accent)",
+                flexShrink: 0,
+                fontWeight: 600,
+              }}
+            >
+              🔒
+            </span>
+          )}
+          {isEditingUrl ? (
+            <input
+              ref={urlInputRef}
+              type="text"
+              value={urlInput}
+              onChange={(e) => setUrlInput(e.target.value)}
+              onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  navigateToUrl();
+                } else if (e.key === "Escape") {
+                  setIsEditingUrl(false);
+                  setUrlInput(status?.url || "about:blank");
+                }
+              }}
+              onBlur={() => {
+                // Navigate on blur if URL changed
+                if (urlInput.trim() && urlInput.trim() !== (status?.url || "about:blank")) {
+                  navigateToUrl();
+                } else {
+                  setIsEditingUrl(false);
+                }
+              }}
+              autoFocus
+              style={{
+                flex: 1,
+                border: "none",
+                outline: "none",
+                background: "transparent",
+                color: "var(--text-primary)",
+                fontSize: 11.5,
+                fontFamily: "var(--font-mono)",
+                minWidth: 0,
+                padding: 0,
+              }}
+            />
+          ) : (
+            <span
+              onClick={() => {
+                setIsEditingUrl(true);
+                setUrlInput(status?.url || "");
+                setTimeout(() => urlInputRef.current?.select(), 0);
+              }}
+              style={{
+                flex: 1,
+                fontSize: 11.5,
+                fontFamily: "var(--font-mono)",
+                color: status?.url && status.url !== "about:blank"
+                  ? "var(--text-secondary)"
+                  : "var(--text-hint)",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                cursor: "text",
+                lineHeight: "26px",
+                minWidth: 0,
+              }}
+              title={status?.url ?? ""}
+            >
+              {status?.url || "about:blank"}
+            </span>
+          )}
+        </div>
       </div>
 
       <div

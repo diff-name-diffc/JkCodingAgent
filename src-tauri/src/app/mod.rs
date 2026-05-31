@@ -50,6 +50,8 @@ pub fn run() {
             browser::browser_stop,
             browser::browser_click_at,
             browser::browser_go_back,
+            browser::browser_navigate,
+            browser::browser_reload,
             browser::browser_get_status,
             chat_images::save_chat_image,
             workspace::fs::read_dir_entries,

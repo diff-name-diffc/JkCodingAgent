@@ -189,7 +189,14 @@ function ModelSection({
           </span>
         ) : feedback ? (
           <span
-            style={{ color: feedback.status === "success" ? "var(--success)" : "var(--danger)", fontSize: 12 }}
+            style={{
+              color: feedback.status === "success" ? "var(--success)" : "var(--danger)",
+              fontSize: 12,
+              lineHeight: 1.45,
+              wordBreak: "break-all",
+              overflowWrap: "break-word",
+              maxWidth: "100%",
+            }}
             aria-live="polite"
           >
             {feedback.message}

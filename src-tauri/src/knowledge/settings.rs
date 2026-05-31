@@ -101,13 +101,13 @@ fn validate_model_config(
     require_api_key: bool,
 ) -> Result<(), String> {
     if model.url.trim().is_empty() {
-        return Err(format!("{label} URL 未配置"));
+        return Err(format!("{label} URL 未配置（请在 API Base URL 中填入服务商端点地址）"));
     }
     if model.model.trim().is_empty() {
-        return Err(format!("{label} Model 未配置"));
+        return Err(format!("{label} Model 未配置（请填入具体模型 ID）"));
     }
     if require_api_key && model.api_key.trim().is_empty() {
-        return Err(format!("{label} API Key 未配置"));
+        return Err(format!("{label} API Key 未配置（请填入服务商提供的密钥）"));
     }
     Ok(())
 }
@@ -118,5 +118,5 @@ where
 {
     tokio::time::timeout(Duration::from_secs(MODEL_TEST_TIMEOUT_SECS), future)
         .await
-        .map_err(|_| format!("{label}测试超时（>{MODEL_TEST_TIMEOUT_SECS}s）"))?
+        .map_err(|_| format!("{label}测试超时（>{MODEL_TEST_TIMEOUT_SECS}s），请检查网络连接和 URL 是否正确"))?
 }

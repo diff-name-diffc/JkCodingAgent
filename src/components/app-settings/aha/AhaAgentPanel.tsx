@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Check,
   ChevronDown,
+  Circle,
   Database,
   Eye,
   EyeOff,
@@ -71,13 +72,13 @@ function normalizeProviders(
   const normalized = providers
     .filter(Boolean)
     .map((provider) => cloneModel(provider))
-    .filter((provider) => provider.url || provider.apiKey || provider.model);
+    .filter((provider) => provider.active || provider.url || provider.apiKey || provider.model);
   if (normalized.length === 0) return [];
 
   const activeIndex = normalized.findIndex((provider) => provider.active);
   return normalized.map((provider, index) => ({
     ...provider,
-    active: index === (activeIndex >= 0 ? activeIndex : 0),
+    active: activeIndex >= 0 ? index === activeIndex : false,
   }));
 }
 
@@ -90,8 +91,12 @@ function normalizeDraftProviders(
   const activeIndex = normalized.findIndex((provider) => provider.active);
   return normalized.map((provider, index) => ({
     ...provider,
-    active: index === (activeIndex >= 0 ? activeIndex : 0),
+    active: activeIndex >= 0 ? index === activeIndex : false,
   }));
+}
+
+function hasProviderValue(provider: Partial<DispatcherModelConfig> | null | undefined): boolean {
+  return Boolean(provider?.url?.trim() || provider?.apiKey?.trim() || provider?.model?.trim());
 }
 
 function providersFromSettings(
@@ -102,12 +107,36 @@ function providersFromSettings(
   const normalized = normalizeProviders(providers ?? []);
   if (normalized.length > 0) return normalized;
 
-  const singleProvider = normalizeProviders([single ?? legacy]);
-  return singleProvider.length > 0 ? singleProvider : [cloneModel(legacy)];
+  const singleProvider = normalizeProviders([hasProviderValue(single) ? single : legacy]);
+  return singleProvider;
 }
 
 function activeProvider(providers: DispatcherModelConfig[]): DispatcherModelConfig {
-  return providers.find((provider) => provider.active) ?? providers[0] ?? cloneModel(null);
+  return providers.find((provider) => provider.active) ?? emptyProvider();
+}
+
+function activeProviderWithFallback(
+  kind: ModelKind,
+  providers: DispatcherModelConfig[],
+  imageProvider?: DispatcherModelConfig,
+): DispatcherModelConfig {
+  const provider = activeProvider(providers);
+  if (!provider.active) return provider;
+  return withFallbacks(kind, provider, imageProvider);
+}
+
+function activeDraftProviderWithFallback(
+  kind: ModelKind,
+  providers: DispatcherModelConfig[],
+  imageProvider?: DispatcherModelConfig,
+): DispatcherModelConfig {
+  const provider = providers.find((item) => item.active);
+  if (!provider) return emptyProvider();
+  return withFallbacks(kind, provider, imageProvider);
+}
+
+function emptyProvider(): DispatcherModelConfig {
+  return { url: "", apiKey: "", model: "", active: false };
 }
 
 function withFallbacks(
@@ -228,14 +257,14 @@ export function draftToSavePayload(draft: AhaSettingsDraft) {
   const ttsProviders = normalizeProviders(draft.ttsModelConfigs);
   const embeddingProviders = normalizeProviders(draft.embeddingModelConfigs);
   const activeChat = activeProvider(chatProviders);
-  const activeSummary = withFallbacks("summary", activeProvider(summaryProviders));
+  const activeSummary = activeProviderWithFallback("summary", summaryProviders);
   const activeVision = activeProvider(visionProviders);
-  const activeImageEdit = withFallbacks(
+  const activeImageEdit = activeDraftProviderWithFallback(
     "imageEdit",
-    activeProvider(imageEditProviders),
+    draft.imageEditModelConfigs,
     activeImage,
   );
-  const activeAsr = withFallbacks("asr", activeProvider(asrProviders));
+  const activeAsr = activeProviderWithFallback("asr", asrProviders);
   const activeTts = activeProvider(ttsProviders);
   const activeEmbedding = activeProvider(embeddingProviders);
 
@@ -249,10 +278,10 @@ export function draftToSavePayload(draft: AhaSettingsDraft) {
     asrWebsocketUrl: activeAsr.url,
     autoApproveDispatch: draft.autoApproveDispatch,
     contextDebug: draft.contextDebug,
-    imageModelUrl: activeImage.url || DEFAULT_IMAGE_MODEL_URL,
+    imageModelUrl: activeImage.url,
     imageModelApiKey: activeImage.apiKey,
-    imageModel: activeImage.model || DEFAULT_IMAGE_MODEL,
-    imageEditModel: activeImageEdit.model || activeImage.model,
+    imageModel: activeImage.model,
+    imageEditModel: activeImageEdit.model,
     chatModelConfig: activeChat,
     summaryModelConfig: activeSummary,
     visionModelConfig: activeVision,
@@ -355,19 +384,14 @@ export function AhaAgentPanel() {
     const nextIndex = draft[modelKey(kind)].length;
     updateProviders(kind, (providers) => [
       ...providers,
-      { url: "", apiKey: "", model: "", active: providers.length === 0 },
+      { url: "", apiKey: "", model: "", active: !providers.some((provider) => provider.active) },
     ]);
     setExpanded((prev) => ({ ...prev, [kind]: nextIndex }));
   }
 
   function removeProvider(kind: ModelKind, index: number) {
     updateProviders(kind, (providers) => {
-      const next = providers.filter((_, providerIndex) => providerIndex !== index);
-      if (next.length === 0) return [];
-      if (!next.some((provider) => provider.active)) {
-        next[0] = { ...next[0], active: true };
-      }
-      return next;
+      return providers.filter((_, providerIndex) => providerIndex !== index);
     });
     setExpanded((prev) => ({
       ...prev,
@@ -377,10 +401,10 @@ export function AhaAgentPanel() {
 
   function activateProvider(kind: ModelKind, index: number) {
     updateProviders(kind, (providers) =>
-      providers.map((provider, providerIndex) => ({
-        ...provider,
-        active: providerIndex === index,
-      })),
+      providers.map((provider, providerIndex) => {
+        const nextActive = providerIndex === index ? !provider.active : false;
+        return { ...provider, active: nextActive };
+      }),
     );
     setExpanded((prev) => ({ ...prev, [kind]: index }));
   }
@@ -750,7 +774,6 @@ function ModelProviderSection({
             feedback={feedback[index] ?? null}
             modelList={modelLists[index] ?? []}
             fetchError={fetchError[index]}
-            canRemove={providers.length > 1}
             urlPlaceholder={urlPlaceholder}
             modelPlaceholder={modelPlaceholder}
             hideModelFetch={hideModelFetch}
@@ -777,7 +800,6 @@ function ProviderEditor({
   feedback,
   modelList,
   fetchError,
-  canRemove,
   urlPlaceholder,
   modelPlaceholder,
   hideModelFetch,
@@ -797,12 +819,12 @@ function ProviderEditor({
   feedback: Feedback | null;
   modelList: string[];
   fetchError?: string;
-  canRemove: boolean;
   urlPlaceholder: string;
   modelPlaceholder: string;
   hideModelFetch: boolean;
 }) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const filteredModels = provider.model
     ? modelList.filter((item) => item.toLowerCase().includes(provider.model.toLowerCase()))
     : modelList;
@@ -814,8 +836,21 @@ function ProviderEditor({
     }
   }, [modelList.length]);
 
+  const handleClickOutside = useCallback((event: MouseEvent) => {
+    if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+      setDropdownOpen(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (dropdownOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [dropdownOpen, handleClickOutside]);
+
   return (
-    <div style={s.ahaProvider}>
+    <div style={{ ...s.ahaProvider, ...(provider.active ? s.ahaProviderActive : {}) }}>
       <div style={s.ahaProviderHeader}>
         <button type="button" style={s.ahaProviderTitleButton} onClick={onExpandedChange}>
           <ChevronDown
@@ -825,25 +860,32 @@ function ProviderEditor({
               transition: "transform 0.15s",
             }}
           />
-          <span style={s.ahaProviderTitle}>Provider {index + 1}</span>
-          <span style={s.ahaProviderSummary}>{provider.model || provider.url || "未配置"}</span>
+          <span style={s.ahaProviderTitleWrap}>
+            <span style={s.ahaProviderTitle}>Provider {index + 1}</span>
+            <span style={s.ahaProviderSummary}>
+              {provider.model || provider.url || "未配置模型"}
+            </span>
+          </span>
         </button>
         <div style={s.ahaProviderActions}>
           <button
             type="button"
             style={provider.active ? s.ahaActiveBadge : s.ahaInactiveBadge}
             onClick={onActivate}
+            aria-pressed={provider.active}
+            title={provider.active ? "点击后取消激活" : "点击后激活当前 Provider"}
           >
-            {provider.active ? "已激活" : "设为激活"}
+            {provider.active ? <Check size={12} /> : <Circle size={12} />}
+            {provider.active ? "已激活" : "激活"}
           </button>
           <button
             type="button"
             style={{
               ...s.ahaInlineButton,
-              color: canRemove ? "var(--danger)" : "var(--text-hint)",
+              color: "var(--danger)",
             }}
             onClick={onRemove}
-            disabled={!canRemove}
+            title="删除当前 Provider"
           >
             <Trash2 size={12} />
             删除
@@ -896,7 +938,7 @@ function ProviderEditor({
                   </button>
                 )}
               </div>
-              <div style={{ position: "relative" }}>
+              <div style={{ position: "relative" }} ref={dropdownRef}>
                 <input
                   style={{ ...s.ahaInput, paddingRight: modelList.length > 0 ? 32 : 10 }}
                   value={provider.model}

@@ -2,6 +2,7 @@ import {
   useState,
   useRef,
   useEffect,
+  useLayoutEffect,
   useCallback,
   useImperativeHandle,
   forwardRef,
@@ -25,6 +26,9 @@ import {
   FileText,
   Check,
   Copy,
+  Search,
+  ArrowUp,
+  ArrowDown,
   Brain,
   ChevronDown,
   ChevronRight,
@@ -66,13 +70,114 @@ import {
   startLiveToolActivity,
   updateLiveBrowserToolActivity,
 } from "./dispatcherChatView";
+import {
+  clearDispatcherActiveRunId,
+  createIdleLiveSessionState,
+  getDispatcherActiveRunId,
+  getDispatcherLiveSessionState,
+  getOrCreateDispatcherLiveSessionState,
+  nextDispatcherActiveRunId,
+  notifyDispatcherLiveSessionSubscribers,
+  notifyDispatcherMessages,
+  setDispatcherLiveSessionState,
+  subscribeDispatcherLiveSession,
+  subscribeDispatcherMessages,
+  type DispatcherLiveSessionState,
+  type PendingDispatchApproval,
+} from "./dispatcherSessionStore";
+export { cleanupDispatcherSession, gcDispatcherSessions } from "./dispatcherSessionStore";
 
 const MESSAGE_LIST_BOTTOM_THRESHOLD = 48;
+const SEARCHABLE_CONTENT_SELECTOR = ".dispatcher-searchable-content";
+const SEARCH_MATCH_SELECTOR = "mark.dispatcher-search-match";
 
 function isMessageListNearBottom(element: HTMLDivElement): boolean {
   return (
     element.scrollHeight - element.scrollTop - element.clientHeight <= MESSAGE_LIST_BOTTOM_THRESHOLD
   );
+}
+
+function unwrapConversationSearchMatches(root: HTMLElement) {
+  const marks = Array.from(root.querySelectorAll(SEARCH_MATCH_SELECTOR));
+  for (const mark of marks) {
+    const parent = mark.parentNode;
+    if (!parent) {
+      continue;
+    }
+    parent.replaceChild(document.createTextNode(mark.textContent ?? ""), mark);
+    parent.normalize();
+  }
+}
+
+function createHighlightedTextFragment(
+  text: string,
+  query: string,
+  startIndex: number,
+): { fragment: DocumentFragment; nextIndex: number } {
+  const fragment = document.createDocumentFragment();
+  const lowerText = text.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  let cursor = 0;
+  let matchIndex = startIndex;
+
+  while (cursor < text.length) {
+    const foundAt = lowerText.indexOf(lowerQuery, cursor);
+    if (foundAt < 0) {
+      fragment.append(document.createTextNode(text.slice(cursor)));
+      break;
+    }
+
+    if (foundAt > cursor) {
+      fragment.append(document.createTextNode(text.slice(cursor, foundAt)));
+    }
+
+    const mark = document.createElement("mark");
+    mark.className = "dispatcher-search-match";
+    mark.dataset.searchMatchIndex = String(matchIndex);
+    mark.textContent = text.slice(foundAt, foundAt + query.length);
+    fragment.append(mark);
+
+    matchIndex += 1;
+    cursor = foundAt + query.length;
+  }
+
+  return { fragment, nextIndex: matchIndex };
+}
+
+function highlightConversationSearchMatches(root: HTMLElement, query: string) {
+  const searchableNodes = Array.from(root.querySelectorAll<HTMLElement>(SEARCHABLE_CONTENT_SELECTOR));
+  let nextIndex = 0;
+
+  for (const node of searchableNodes) {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, {
+      acceptNode(textNode) {
+        const value = textNode.nodeValue ?? "";
+        if (!value.toLowerCase().includes(query.toLowerCase())) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (textNode.parentElement?.closest(SEARCH_MATCH_SELECTOR)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const textNodes: Text[] = [];
+    while (walker.nextNode()) {
+      textNodes.push(walker.currentNode as Text);
+    }
+
+    for (const textNode of textNodes) {
+      const { fragment, nextIndex: updatedIndex } = createHighlightedTextFragment(
+        textNode.nodeValue ?? "",
+        query,
+        nextIndex,
+      );
+      nextIndex = updatedIndex;
+      textNode.replaceWith(fragment);
+    }
+  }
+
+  return nextIndex;
 }
 
 // ── Dispatch Approval Dialog ─────────────────────────────────────────────────
@@ -160,6 +265,19 @@ function withLiveElapsed(
   };
 }
 
+function formatTokenGenerationSpeed(completionTokens: number, elapsedMs: number): string {
+  const elapsedSeconds = elapsedMs / 1000;
+  if (completionTokens <= 0 || elapsedSeconds <= 0) {
+    return "0.0";
+  }
+
+  const tokensPerSecond = completionTokens / elapsedSeconds;
+  if (tokensPerSecond >= 100) {
+    return tokensPerSecond.toFixed(0);
+  }
+  return tokensPerSecond.toFixed(1);
+}
+
 // ── Message Bubble ───────────────────────────────────────────────────────────
 
 const BubbleCopyButton = memo(function BubbleCopyButton({
@@ -218,7 +336,7 @@ const UserMessageBubble = memo(function UserMessageBubble({
       </div>
       <div style={styles.messageBubbleColumn(true)}>
         <div style={styles.messageBubble(true)}>
-          <div style={styles.markdownBody}>
+          <div className="dispatcher-searchable-content" style={styles.markdownBody}>
             <MarkdownRenderer content={message.content} variant="chat" />
           </div>
         </div>
@@ -235,6 +353,7 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
   usageStats,
   thinking,
   placeholderText,
+  streaming = false,
 }: {
   segments: AssistantTurnSegment[];
   tools: ToolActivityItem[];
@@ -242,6 +361,7 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
   usageStats?: DispatcherMessageUsageStats | null;
   thinking?: AssistantThinkingBlock | null;
   placeholderText?: string | null;
+  streaming?: boolean;
 }) {
   const { enrichedTools, displaySegments } = useMemo(() => {
     const summaryMap = new Map<string, string>();
@@ -314,13 +434,15 @@ const AssistantTurnBubble = memo(function AssistantTurnBubble({
         )}
         {visibleSegments.map((segment, index) => {
           const segmentText = segment.text.trim();
+          const isLastSegment = index === visibleSegments.length - 1;
+          const isStreamingThis = streaming && isLastSegment && segment.kind === "assistant-text";
 
           return (
             <div key={`${segment.kind}-${segment.toolCallId ?? segment.toolName ?? index}`}>
               <div style={styles.assistantTurnSection}>
                 <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
-                  <div style={styles.markdownBody}>
-                    <MarkdownRenderer content={segmentText} variant="chat" />
+                  <div className="dispatcher-searchable-content" style={styles.markdownBody}>
+                    <MarkdownRenderer content={segmentText} variant="chat" streaming={isStreamingThis} />
                   </div>
                 </div>
                 <BubbleCopyButton text={segmentText} isUser={false} />
@@ -365,7 +487,7 @@ const ThinkingBlock = memo(function ThinkingBlock({
           {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
         {expanded && (
-          <div style={styles.thinkingBody}>
+          <div className="dispatcher-searchable-content" style={styles.thinkingBody}>
             <MarkdownRenderer content={trimmedText} variant="chat" />
           </div>
         )}
@@ -379,12 +501,15 @@ const AssistantUsageStats = memo(function AssistantUsageStats({
 }: {
   stats: DispatcherMessageUsageStats;
 }) {
+  const tokenSpeed = formatTokenGenerationSpeed(stats.completionTokens, stats.elapsedMs);
+
   return (
     <div style={styles.assistantUsageStats} title="来自模型标准 usage 字段">
       <span>总 {formatTokenCount(stats.totalTokens)}</span>
       <span>输入 {formatTokenCount(stats.promptTokens)}</span>
       <span>输出 {formatTokenCount(stats.completionTokens)}</span>
       <span>耗时：{formatElapsedMmSs(stats.elapsedMs)}</span>
+      <span>速度：{tokenSpeed} t/s</span>
     </div>
   );
 });
@@ -974,145 +1099,6 @@ interface DispatcherChatProps {
   onClosePanel?: () => void;
 }
 
-interface PendingDispatchApproval {
-  dispatchId: string;
-  agent: AgentType;
-  description: string;
-  taskPrompt: string;
-  permissionMode: string;
-}
-
-interface DispatcherLiveSessionState {
-  hasPendingRun: boolean;
-  isLoading: boolean;
-  streamingSegments: AssistantTurnSegment[];
-  liveThinking: AssistantThinkingBlock | null;
-  liveToolCalls: ToolActivityItem[];
-  assistantPlaceholder: string | null;
-  runError: string | null;
-  pendingDispatches: PendingDispatchApproval[];
-  activeUsageStats: DispatcherMessageUsageStats | null;
-  activeUsageStatsReceivedAt: number;
-  usageClockNow: number;
-}
-
-function createIdleLiveSessionState(): DispatcherLiveSessionState {
-  const now = Date.now();
-  return {
-    hasPendingRun: false,
-    isLoading: false,
-    streamingSegments: [],
-    liveThinking: null,
-    liveToolCalls: [],
-    assistantPlaceholder: null,
-    runError: null,
-    pendingDispatches: [],
-    activeUsageStats: null,
-    activeUsageStatsReceivedAt: now,
-    usageClockNow: now,
-  };
-}
-
-const dispatcherLiveSessionStates = new Map<string, DispatcherLiveSessionState>();
-const dispatcherActiveRunIds = new Map<string, number>();
-const dispatcherLiveSessionSubscribers = new Map<
-  string,
-  Set<(state: DispatcherLiveSessionState) => void>
->();
-const dispatcherMessageSubscribers = new Map<
-  string,
-  Set<(messages: DispatcherMessage[]) => void>
->();
-
-function notifyDispatcherLiveSessionSubscribers(
-  sessionId: string,
-  state: DispatcherLiveSessionState,
-) {
-  dispatcherLiveSessionSubscribers.get(sessionId)?.forEach((subscriber) => subscriber(state));
-}
-
-function subscribeDispatcherLiveSession(
-  sessionId: string,
-  subscriber: (state: DispatcherLiveSessionState) => void,
-) {
-  const subscribers = dispatcherLiveSessionSubscribers.get(sessionId) ?? new Set();
-  subscribers.add(subscriber);
-  dispatcherLiveSessionSubscribers.set(sessionId, subscribers);
-  return () => {
-    subscribers.delete(subscriber);
-    if (subscribers.size === 0) {
-      dispatcherLiveSessionSubscribers.delete(sessionId);
-      // Auto-GC: if no message subscribers either, clear stale state
-      if ((dispatcherMessageSubscribers.get(sessionId)?.size ?? 0) === 0) {
-        dispatcherLiveSessionStates.delete(sessionId);
-        dispatcherActiveRunIds.delete(sessionId);
-      }
-    }
-  };
-}
-
-function notifyDispatcherMessages(sessionId: string, messages: DispatcherMessage[]) {
-  if (messages.length === 0) return;
-  dispatcherMessageSubscribers.get(sessionId)?.forEach((subscriber) => subscriber(messages));
-}
-
-function subscribeDispatcherMessages(
-  sessionId: string,
-  subscriber: (messages: DispatcherMessage[]) => void,
-) {
-  const subscribers = dispatcherMessageSubscribers.get(sessionId) ?? new Set();
-  subscribers.add(subscriber);
-  dispatcherMessageSubscribers.set(sessionId, subscribers);
-  return () => {
-    subscribers.delete(subscriber);
-    if (subscribers.size === 0) {
-      dispatcherMessageSubscribers.delete(sessionId);
-      if ((dispatcherLiveSessionSubscribers.get(sessionId)?.size ?? 0) === 0) {
-        dispatcherLiveSessionStates.delete(sessionId);
-        dispatcherActiveRunIds.delete(sessionId);
-      }
-    }
-  };
-}
-
-function isLiveSessionRunning(state: DispatcherLiveSessionState | undefined): boolean {
-  return Boolean(state?.hasPendingRun || state?.isLoading);
-}
-
-/** Clean up all module-level state for a session to prevent memory leaks. */
-export function cleanupDispatcherSession(sessionId: string) {
-  dispatcherLiveSessionStates.delete(sessionId);
-  dispatcherActiveRunIds.delete(sessionId);
-  dispatcherLiveSessionSubscribers.delete(sessionId);
-  dispatcherMessageSubscribers.delete(sessionId);
-}
-
-/** GC sessions that have no active subscribers. */
-export function gcDispatcherSessions() {
-  for (const id of dispatcherLiveSessionStates.keys()) {
-    const hasSubscribers =
-      (dispatcherLiveSessionSubscribers.get(id)?.size ?? 0) > 0 ||
-      (dispatcherMessageSubscribers.get(id)?.size ?? 0) > 0;
-    if (!hasSubscribers) {
-      dispatcherLiveSessionStates.delete(id);
-      dispatcherActiveRunIds.delete(id);
-    }
-  }
-}
-
-export function getDispatcherSessionRunning(sessionId: string): boolean {
-  return isLiveSessionRunning(dispatcherLiveSessionStates.get(sessionId));
-}
-
-export function subscribeDispatcherSessionRunning(
-  sessionId: string,
-  subscriber: (isRunning: boolean) => void,
-) {
-  return subscribeDispatcherLiveSession(sessionId, (state) => {
-    subscriber(isLiveSessionRunning(state));
-  });
-}
-
 export interface DispatcherChatHandle {
   /** Inject dispatch result and continue the agent conversation */
   continueWithResult: (
@@ -1166,6 +1152,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [activePlanPath, setActivePlanPath] = useState<string | null>(null);
     const [implementingPlan, setImplementingPlan] = useState(false);
     const [thinkingEnabled, setThinkingEnabled] = useState(false);
+    const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
+    const [conversationSearchQuery, setConversationSearchQuery] = useState("");
+    const [conversationSearchMatchCount, setConversationSearchMatchCount] = useState(0);
+    const [activeConversationSearchIndex, setActiveConversationSearchIndex] = useState(0);
     const [activeUsageStats, setActiveUsageStats] = useState<DispatcherMessageUsageStats | null>(
       null,
     );
@@ -1217,6 +1207,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }, []);
 
     const messageListRef = useRef<HTMLDivElement>(null);
+    const conversationSearchInputRef = useRef<HTMLInputElement>(null);
     const shouldStickToBottomRef = useRef(true);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const inputComposingRef = useRef(false);
@@ -1253,6 +1244,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           : "send";
     const isComposerBusy = isLoading || isStopping;
     const displayItems = useMemo(() => buildDispatcherDisplayItems(messages), [messages]);
+    const normalizedConversationSearchQuery = conversationSearchQuery.trim();
     const currentPendingDispatch = pendingDispatches[0] ?? null;
     const mcpIndicator = getMcpIndicatorState(mcpStatus, mcpChecking);
     const {
@@ -1264,6 +1256,131 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       () => withLiveElapsed(activeUsageStats, activeUsageStatsReceivedAtRef.current, usageClockNow),
       [activeUsageStats, usageClockNow],
     );
+
+    const focusConversationSearch = useCallback(() => {
+      setConversationSearchOpen(true);
+      window.requestAnimationFrame(() => {
+        conversationSearchInputRef.current?.focus();
+        conversationSearchInputRef.current?.select();
+      });
+    }, []);
+
+    const closeConversationSearch = useCallback(() => {
+      setConversationSearchOpen(false);
+      setConversationSearchQuery("");
+      setConversationSearchMatchCount(0);
+      setActiveConversationSearchIndex(0);
+    }, []);
+
+    const moveConversationSearchMatch = useCallback(
+      (direction: 1 | -1) => {
+        setActiveConversationSearchIndex((current) => {
+          if (conversationSearchMatchCount <= 0) {
+            return 0;
+          }
+          return (
+            (current + direction + conversationSearchMatchCount) % conversationSearchMatchCount
+          );
+        });
+      },
+      [conversationSearchMatchCount],
+    );
+
+    const handleConversationSearchChange = useCallback(
+      (event: React.ChangeEvent<HTMLInputElement>) => {
+        setConversationSearchQuery(event.target.value);
+        setActiveConversationSearchIndex(0);
+      },
+      [],
+    );
+
+    const handleConversationSearchKeyDown = useCallback(
+      (event: React.KeyboardEvent<HTMLInputElement>) => {
+        if (event.key === "ArrowDown" || (event.key === "Enter" && !event.shiftKey)) {
+          event.preventDefault();
+          moveConversationSearchMatch(1);
+          return;
+        }
+        if (event.key === "ArrowUp" || (event.key === "Enter" && event.shiftKey)) {
+          event.preventDefault();
+          moveConversationSearchMatch(-1);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeConversationSearch();
+          inputRef.current?.focus();
+        }
+      },
+      [closeConversationSearch, moveConversationSearchMatch],
+    );
+
+    useEffect(() => {
+      const handleWindowKeyDown = (event: globalThis.KeyboardEvent) => {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+          event.preventDefault();
+          focusConversationSearch();
+        }
+      };
+
+      window.addEventListener("keydown", handleWindowKeyDown);
+      return () => window.removeEventListener("keydown", handleWindowKeyDown);
+    }, [focusConversationSearch]);
+
+    useLayoutEffect(() => {
+      const root = messageListRef.current;
+      if (!root) {
+        return;
+      }
+
+      unwrapConversationSearchMatches(root);
+      if (!normalizedConversationSearchQuery) {
+        setConversationSearchMatchCount(0);
+        return;
+      }
+
+      const matchCount = highlightConversationSearchMatches(root, normalizedConversationSearchQuery);
+      setConversationSearchMatchCount(matchCount);
+      setActiveConversationSearchIndex((current) => {
+        if (matchCount <= 0) {
+          return 0;
+        }
+        return current >= matchCount ? matchCount - 1 : current;
+      });
+
+      return () => {
+        unwrapConversationSearchMatches(root);
+      };
+    }, [
+      assistantPlaceholder,
+      liveThinking?.text,
+      messages,
+      normalizedConversationSearchQuery,
+      streamingSegments,
+    ]);
+
+    useLayoutEffect(() => {
+      const root = messageListRef.current;
+      if (!root || !normalizedConversationSearchQuery) {
+        return;
+      }
+
+      const matches = Array.from(root.querySelectorAll<HTMLElement>(SEARCH_MATCH_SELECTOR));
+      for (const match of matches) {
+        const isActive =
+          Number(match.dataset.searchMatchIndex) === activeConversationSearchIndex;
+        match.classList.toggle("dispatcher-search-match--active", isActive);
+      }
+
+      const activeMatch = matches.find(
+        (match) => Number(match.dataset.searchMatchIndex) === activeConversationSearchIndex,
+      );
+      activeMatch?.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    }, [
+      activeConversationSearchIndex,
+      conversationSearchMatchCount,
+      normalizedConversationSearchQuery,
+    ]);
 
     const applyLiveSessionState = useCallback((state: DispatcherLiveSessionState) => {
       setHasPendingRun(state.hasPendingRun);
@@ -1280,11 +1397,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }, []);
 
     const getLiveSessionState = useCallback((targetSessionId: string) => {
-      const existing = dispatcherLiveSessionStates.get(targetSessionId);
-      if (existing) return existing;
-      const created = createIdleLiveSessionState();
-      dispatcherLiveSessionStates.set(targetSessionId, created);
-      return created;
+      return getOrCreateDispatcherLiveSessionState(targetSessionId);
     }, []);
 
     const updateLiveSessionState = useCallback(
@@ -1293,7 +1406,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         updater: (state: DispatcherLiveSessionState) => DispatcherLiveSessionState,
       ) => {
         const next = updater(getLiveSessionState(targetSessionId));
-        dispatcherLiveSessionStates.set(targetSessionId, next);
+        setDispatcherLiveSessionState(targetSessionId, next);
         // Batch subscriber notifications via rAF to prevent render storms
         // during high-frequency streaming (~50 tokens/s).
         if (!pendingNotifySessions.current.has(targetSessionId)) {
@@ -1301,7 +1414,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           if (pendingNotifyRaf.current === null) {
             pendingNotifyRaf.current = requestAnimationFrame(() => {
               for (const sid of pendingNotifySessions.current) {
-                const state = dispatcherLiveSessionStates.get(sid);
+                const state = getDispatcherLiveSessionState(sid);
                 if (state) {
                   notifyDispatcherLiveSessionSubscribers(sid, state);
                 }
@@ -1363,12 +1476,13 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
     // Clean up pending rAF on unmount
     useEffect(() => {
+      const pendingSessions = pendingNotifySessions.current;
       return () => {
         if (pendingNotifyRaf.current !== null) {
           cancelAnimationFrame(pendingNotifyRaf.current);
           pendingNotifyRaf.current = null;
         }
-        pendingNotifySessions.current.clear();
+        pendingSessions.clear();
       };
     }, []);
 
@@ -1445,19 +1559,24 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       scrollMessageListToBottom();
     }, [
       messages,
-      streamingSegments,
       liveThinking,
-      assistantPlaceholder,
       liveToolCalls,
       runError,
       scrollMessageListToBottom,
     ]);
 
+    useEffect(() => {
+      if (!shouldStickToBottomRef.current) return;
+      if (streamingSegments.length === 0 && !assistantPlaceholder) return;
+      const id = requestAnimationFrame(() => scrollMessageListToBottom());
+      return () => cancelAnimationFrame(id);
+    }, [streamingSegments, assistantPlaceholder, scrollMessageListToBottom]);
+
     const createEventChannel = useCallback(
       (targetSessionId: string, runId: number) => {
         const onEvent = new Channel<DispatcherAgentEvent>();
         onEvent.onmessage = (event) => {
-          const isActiveRun = dispatcherActiveRunIds.get(targetSessionId) === runId;
+          const isActiveRun = getDispatcherActiveRunId(targetSessionId) === runId;
           const isCurrentSession = currentSessionIdRef.current === targetSessionId;
           switch (event.event) {
             case "started":
@@ -1638,7 +1757,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
                 event.data.messages.filter((message) => message.workspaceId === targetSessionId),
               );
               void refreshSessionTokenUsage(targetSessionId);
-              dispatcherActiveRunIds.delete(targetSessionId);
+              clearDispatcherActiveRunId(targetSessionId);
               updateLiveSessionState(targetSessionId, () => createIdleLiveSessionState());
               break;
           }
@@ -1657,8 +1776,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         const queued = previous
           .catch(() => undefined)
           .then(async () => {
-            const runId = (dispatcherActiveRunIds.get(targetSessionId) ?? 0) + 1;
-            dispatcherActiveRunIds.set(targetSessionId, runId);
+            const runId = nextDispatcherActiveRunId(targetSessionId);
             const now = Date.now();
             updateLiveSessionState(targetSessionId, () => ({
               ...createIdleLiveSessionState(),
@@ -1674,7 +1792,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             try {
               await runner(onEvent);
             } finally {
-              if (dispatcherActiveRunIds.get(targetSessionId) === runId) {
+              if (getDispatcherActiveRunId(targetSessionId) === runId) {
                 updateLiveSessionState(targetSessionId, (state) => ({
                   ...state,
                   hasPendingRun: false,
@@ -2058,6 +2176,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }, [resetSessionTokenUsage, sessionId]);
 
     const hasLiveSegments = streamingSegments.some((segment) => segment.text.trim());
+    const isStreaming = isLoading || hasPendingRun;
     const hasAssistantPlaceholder = Boolean(assistantPlaceholder?.trim());
     const isEmpty =
       messages.length === 0 &&
@@ -2078,6 +2197,67 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             {isLoading && <span style={styles.thinkingDot} />}
           </div>
           <div style={styles.headerRight}>
+            {conversationSearchOpen ? (
+              <div style={styles.conversationSearchBox}>
+                <Search size={13} />
+                <input
+                  ref={conversationSearchInputRef}
+                  style={styles.conversationSearchInput}
+                  value={conversationSearchQuery}
+                  onChange={handleConversationSearchChange}
+                  onKeyDown={handleConversationSearchKeyDown}
+                  placeholder="搜索会话"
+                  aria-label="搜索当前会话"
+                />
+                <span style={styles.conversationSearchCount}>
+                  {normalizedConversationSearchQuery
+                    ? conversationSearchMatchCount > 0
+                      ? `${activeConversationSearchIndex + 1}/${conversationSearchMatchCount}`
+                      : "0/0"
+                    : "Ctrl+F"}
+                </span>
+                <button
+                  type="button"
+                  style={styles.conversationSearchNavBtn(conversationSearchMatchCount === 0)}
+                  onClick={() => moveConversationSearchMatch(-1)}
+                  disabled={conversationSearchMatchCount === 0}
+                  title="上一个匹配"
+                  aria-label="上一个匹配"
+                >
+                  <ArrowUp size={13} />
+                </button>
+                <button
+                  type="button"
+                  style={styles.conversationSearchNavBtn(conversationSearchMatchCount === 0)}
+                  onClick={() => moveConversationSearchMatch(1)}
+                  disabled={conversationSearchMatchCount === 0}
+                  title="下一个匹配"
+                  aria-label="下一个匹配"
+                >
+                  <ArrowDown size={13} />
+                </button>
+                <button
+                  type="button"
+                  style={styles.conversationSearchNavBtn(false)}
+                  onClick={closeConversationSearch}
+                  title="关闭搜索"
+                  aria-label="关闭搜索"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                style={styles.headerBtn}
+                onClick={focusConversationSearch}
+                title="搜索当前会话 (Ctrl+F)"
+                aria-label="搜索当前会话"
+              >
+                <Search size={13} />
+                搜索
+              </button>
+            )}
             {!isPlainChat && (
               <>
                 <button
@@ -2211,6 +2391,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               usageStats={liveUsageStats}
               thinking={liveThinking}
               placeholderText={assistantPlaceholder}
+              streaming={isStreaming}
             />
           )}
         </div>
@@ -2424,8 +2605,57 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: "4px",
+    minWidth: 0,
     WebkitAppRegion: "no-drag" as const,
   },
+  conversationSearchBox: {
+    height: "30px",
+    minWidth: "260px",
+    maxWidth: "360px",
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "0 6px 0 9px",
+    border: "1px solid color-mix(in srgb, var(--accent) 28%, var(--border-dim))",
+    borderRadius: "999px",
+    background: "color-mix(in srgb, var(--bg-card) 94%, transparent)",
+    color: "var(--text-muted)",
+    boxShadow: "0 10px 24px rgba(15, 23, 42, 0.08)",
+    flexShrink: 1,
+  },
+  conversationSearchInput: {
+    width: "min(150px, 22vw)",
+    minWidth: "82px",
+    border: "none",
+    outline: "none",
+    background: "transparent",
+    color: "var(--text-primary)",
+    fontSize: "12px",
+    lineHeight: 1,
+  },
+  conversationSearchCount: {
+    minWidth: "42px",
+    color: "var(--text-hint)",
+    fontSize: "11px",
+    fontVariantNumeric: "tabular-nums" as const,
+    textAlign: "right" as const,
+    whiteSpace: "nowrap" as const,
+  },
+  conversationSearchNavBtn: (disabled: boolean) => ({
+    width: "22px",
+    height: "22px",
+    border: "1px solid transparent",
+    borderRadius: "999px",
+    background: "transparent",
+    color: disabled ? "var(--text-hint)" : "var(--text-secondary)",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: disabled ? "not-allowed" : "pointer",
+    padding: 0,
+    flexShrink: 0,
+    opacity: disabled ? 0.48 : 1,
+  }),
   modeToggleBtn: (active: boolean) => ({
     height: "34px",
     padding: "0 11px",

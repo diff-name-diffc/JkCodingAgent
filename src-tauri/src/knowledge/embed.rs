@@ -31,7 +31,13 @@ pub(crate) async fn call_text_model(
         .chat_stream(&messages, &[], true, |delta| _sink.push_str(delta))
         .await
         .map(|response| response.content)
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            error
+                .chain()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("：")
+        })
 }
 
 pub(crate) async fn fetch_embedding(

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { lazy, Suspense, useState, useMemo } from "react";
 import {
   Search,
   FolderOpen,
@@ -14,11 +14,34 @@ import type { Project, ThemeMode } from "../types";
 import { getAvatarGradient, shortenPath } from "../utils";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
-import { AnalyticsDashboard } from "./AnalyticsDashboard";
-import { KnowledgePage } from "./knowledge/KnowledgePage";
-import { HomeChatPage } from "./HomeChatPage";
 import appLogo from "../assets/app-logo.png";
 import s from "../styles";
+
+const AnalyticsDashboard = lazy(() =>
+  import("./AnalyticsDashboard").then((module) => ({ default: module.AnalyticsDashboard })),
+);
+const HomeChatPage = lazy(() =>
+  import("./HomeChatPage").then((module) => ({ default: module.HomeChatPage })),
+);
+const KnowledgePage = lazy(() =>
+  import("./knowledge/KnowledgePage").then((module) => ({ default: module.KnowledgePage })),
+);
+
+function WelcomePaneFallback() {
+  return (
+    <div
+      style={{
+        ...s.welcomePane,
+        alignItems: "center",
+        justifyContent: "center",
+        color: "var(--text-muted)",
+        fontSize: 13,
+      }}
+    >
+      加载中...
+    </div>
+  );
+}
 
 function SidebarItem({
   icon,
@@ -167,16 +190,22 @@ export function WelcomePage({
         </div>
 
         {view === "chat" ? (
-          <HomeChatPage
-            isDark={isDark}
-            themeMode={themeMode}
-            systemPrefersDark={systemPrefersDark}
-            onThemeModeChange={onThemeModeChange}
-          />
+          <Suspense fallback={<WelcomePaneFallback />}>
+            <HomeChatPage
+              isDark={isDark}
+              themeMode={themeMode}
+              systemPrefersDark={systemPrefersDark}
+              onThemeModeChange={onThemeModeChange}
+            />
+          </Suspense>
         ) : view === "analytics" ? (
-          <AnalyticsDashboard projects={projects} />
+          <Suspense fallback={<WelcomePaneFallback />}>
+            <AnalyticsDashboard projects={projects} />
+          </Suspense>
         ) : view === "knowledge" ? (
-          <KnowledgePage />
+          <Suspense fallback={<WelcomePaneFallback />}>
+            <KnowledgePage />
+          </Suspense>
         ) : (
           <div style={s.welcomePane}>
             <div style={s.searchRow}>

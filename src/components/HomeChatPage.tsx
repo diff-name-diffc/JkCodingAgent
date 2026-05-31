@@ -1,17 +1,41 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { LoaderCircle, MessageCircle, MonitorDot, Plus, Search, Trash2 } from "lucide-react";
 import type { BrowserStatus, DispatcherSession, ThemeMode } from "../types";
-import { DispatcherChat } from "./DispatcherChat";
-import { AppSettingsDialog } from "./AppSettingsDialog";
-import { BrowserPanel } from "./BrowserPanel";
 import { useDockedBrowserPanel } from "../hooks/useDockedBrowserPanel";
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
 import s from "../styles";
 
 const CHAT_SCOPE_ID = "__global_chat__";
+
+const DispatcherChat = lazy(() =>
+  import("./DispatcherChat").then((module) => ({ default: module.DispatcherChat })),
+);
+const AppSettingsDialog = lazy(() =>
+  import("./AppSettingsDialog").then((module) => ({ default: module.AppSettingsDialog })),
+);
+const BrowserPanel = lazy(() =>
+  import("./BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
+);
+
+function ChatPaneFallback({ label = "加载中..." }: { label?: string }) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "var(--text-muted)",
+        fontSize: 13,
+      }}
+    >
+      {label}
+    </div>
+  );
+}
 
 function formatTime(timestampStr: string) {
   try {
@@ -240,16 +264,18 @@ export function HomeChatPage({
       </div>
 
       <div style={s.chatMainPane}>
-        {activeSessionId ? (
-          <DispatcherChat
-            conversationKind="chat"
-            sessionId={activeSessionId}
-            layoutMode="single"
-            onOpenSettings={() => setShowSettings(true)}
-          />
-        ) : (
-          <div style={s.chatEmptyPane}>正在创建聊天...</div>
-        )}
+        <Suspense fallback={<ChatPaneFallback label="聊天加载中..." />}>
+          {activeSessionId ? (
+            <DispatcherChat
+              conversationKind="chat"
+              sessionId={activeSessionId}
+              layoutMode="single"
+              onOpenSettings={() => setShowSettings(true)}
+            />
+          ) : (
+            <div style={s.chatEmptyPane}>正在创建聊天...</div>
+          )}
+        </Suspense>
       </div>
 
       {showBrowserPanel && (
@@ -266,26 +292,30 @@ export function HomeChatPage({
               zIndex: 10,
             }}
           />
-          <BrowserPanel
-            sessionId={activeSessionId}
-            width={browserPanel.effectiveWidth}
-            active={showBrowserPanel}
-            expanded={browserPanel.expanded}
-            onToggleExpanded={browserPanel.toggleExpanded}
-            onClose={() => setShowBrowserPanel(false)}
-          />
+          <Suspense fallback={<ChatPaneFallback label="浏览器加载中..." />}>
+            <BrowserPanel
+              sessionId={activeSessionId}
+              width={browserPanel.effectiveWidth}
+              active={showBrowserPanel}
+              expanded={browserPanel.expanded}
+              onToggleExpanded={browserPanel.toggleExpanded}
+              onClose={() => setShowBrowserPanel(false)}
+            />
+          </Suspense>
         </div>
       )}
 
       {showSettings && (
-        <AppSettingsDialog
-          isDark={isDark}
-          themeMode={themeMode}
-          systemPrefersDark={systemPrefersDark}
-          onThemeModeChange={onThemeModeChange}
-          initialTab="aha"
-          onClose={() => setShowSettings(false)}
-        />
+        <Suspense fallback={null}>
+          <AppSettingsDialog
+            isDark={isDark}
+            themeMode={themeMode}
+            systemPrefersDark={systemPrefersDark}
+            onThemeModeChange={onThemeModeChange}
+            initialTab="aha"
+            onClose={() => setShowSettings(false)}
+          />
+        </Suspense>
       )}
     </div>
   );

@@ -114,6 +114,97 @@ describe("AhaAgentPanel", () => {
     });
   });
 
+  it("allows no active provider when the active badge is clicked again", async () => {
+    invokeMock.mockImplementation(async (command: string, payload?: unknown) => {
+      if (command === "dispatcher_get_settings") return settings();
+      if (command === "dispatcher_save_settings") {
+        return (payload as { settings: DispatcherSettings }).settings;
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    render(<AhaAgentPanel />);
+
+    await screen.findByText("主聊天模型");
+    fireEvent.click(screen.getAllByRole("button", { name: "已激活" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "dispatcher_save_settings",
+        expect.objectContaining({
+          settings: expect.objectContaining({
+            apiBase: "",
+            apiKey: "",
+            model: "",
+            chatModelConfigs: [expect.objectContaining({ model: "legacy-chat", active: false })],
+          }),
+        }),
+      );
+    });
+  });
+
+  it("keeps only one active provider per model kind", async () => {
+    invokeMock.mockImplementation(async (command: string, payload?: unknown) => {
+      if (command === "dispatcher_get_settings") return settings();
+      if (command === "dispatcher_save_settings") {
+        return (payload as { settings: DispatcherSettings }).settings;
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    render(<AhaAgentPanel />);
+
+    await screen.findByText("主聊天模型");
+    fireEvent.click(screen.getAllByRole("button", { name: "添加 Provider" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "激活" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "dispatcher_save_settings",
+        expect.objectContaining({
+          settings: expect.objectContaining({
+            chatModelConfigs: [
+              expect.objectContaining({ model: "legacy-chat", active: false }),
+              expect.objectContaining({ active: true }),
+            ],
+          }),
+        }),
+      );
+    });
+  });
+
+  it("deletes the last provider instead of disabling the delete button", async () => {
+    invokeMock.mockImplementation(async (command: string, payload?: unknown) => {
+      if (command === "dispatcher_get_settings") return settings();
+      if (command === "dispatcher_save_settings") {
+        return (payload as { settings: DispatcherSettings }).settings;
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    render(<AhaAgentPanel />);
+
+    await screen.findByText("主聊天模型");
+    fireEvent.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "dispatcher_save_settings",
+        expect.objectContaining({
+          settings: expect.objectContaining({
+            apiBase: "",
+            apiKey: "",
+            model: "",
+            chatModelConfigs: [],
+          }),
+        }),
+      );
+    });
+  });
+
   it("tests only the model config for the active clicked section", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === "dispatcher_get_settings") return settings();
@@ -174,7 +265,7 @@ describe("AhaAgentPanel", () => {
 
     await screen.findByText("主聊天模型");
     fireEvent.click(screen.getAllByRole("button", { name: "添加 Provider" })[0]);
-    fireEvent.click(screen.getByRole("button", { name: "Provider 2未配置" }));
+    fireEvent.click(screen.getByRole("button", { name: /Provider 2/ }));
 
     const urlInputs = screen.getAllByPlaceholderText("https://api.example.com/v1");
     fireEvent.change(urlInputs[0], { target: { value: "https://second.example.com/v1" } });
@@ -182,7 +273,7 @@ describe("AhaAgentPanel", () => {
     fireEvent.change(keyInputs[0], { target: { value: "sk-second" } });
     const modelInputs = screen.getAllByPlaceholderText("model-name");
     fireEvent.change(modelInputs[0], { target: { value: "second-chat" } });
-    fireEvent.click(screen.getByRole("button", { name: "设为激活" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "激活" })[0]);
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() => {

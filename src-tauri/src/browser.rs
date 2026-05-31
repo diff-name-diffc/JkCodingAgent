@@ -988,6 +988,58 @@ pub async fn browser_go_back(
 }
 
 #[tauri::command]
+pub async fn browser_navigate(
+    app: AppHandle,
+    manager: tauri::State<'_, BrowserManager>,
+    session_id: String,
+    url: String,
+    project_path: Option<String>,
+) -> Result<Value, String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("URL 必须以 http:// 或 https:// 开头".to_string());
+    }
+    let project_path = match project_path {
+        Some(path) if !path.trim().is_empty() => path,
+        _ => plain_chat_browser_workspace()?
+            .to_string_lossy()
+            .to_string(),
+    };
+    manager
+        .command(
+            app,
+            session_id,
+            project_path,
+            "open_url",
+            json!({ "url": url, "timeout": 30_000 }),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn browser_reload(
+    app: AppHandle,
+    manager: tauri::State<'_, BrowserManager>,
+    session_id: String,
+    project_path: Option<String>,
+) -> Result<Value, String> {
+    let project_path = match project_path {
+        Some(path) if !path.trim().is_empty() => path,
+        _ => plain_chat_browser_workspace()?
+            .to_string_lossy()
+            .to_string(),
+    };
+    manager
+        .command(
+            app,
+            session_id,
+            project_path,
+            "reload",
+            json!({ "timeout": 30_000 }),
+        )
+        .await
+}
+
+#[tauri::command]
 pub async fn browser_get_status(
     manager: tauri::State<'_, BrowserManager>,
     session_id: String,

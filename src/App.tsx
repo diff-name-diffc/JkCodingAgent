@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { open as openDialog, confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -6,11 +6,31 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Project, Task, TaskStatus, AgentType, PermissionMode, ThemeMode } from "./types";
 import { isActiveTaskStatus } from "./types";
 import { WelcomePage } from "./components/WelcomePage";
-import { ProjectPage } from "./components/ProjectPage";
 import { useToast } from "./components/Toast";
 import { useTerminalManager } from "./hooks/useTerminalManager";
 import s from "./styles";
 import "./App.css";
+
+const ProjectPage = lazy(() =>
+  import("./components/ProjectPage").then((module) => ({ default: module.ProjectPage })),
+);
+
+function AppPaneFallback() {
+  return (
+    <div
+      style={{
+        height: "100%",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "var(--text-muted)",
+        fontSize: 13,
+      }}
+    >
+      加载中...
+    </div>
+  );
+}
 
 function persistProjects(projects: Project[], onError: (msg: string) => void) {
   invoke("save_projects", { projects }).catch((e: unknown) => {
@@ -64,6 +84,80 @@ function App() {
       }, 400);
     },
     [showToast],
+  );
+
+  const updateTaskStatus = useCallback(
+    (
+      taskId: string,
+      status: TaskStatus,
+      extra?: Pick<Task, "attentionRequestedAt">,
+      failureReason?: string,
+    ) => {
+      setTasks((prev) => {
+        let changed = false;
+        const next = prev.map((task) => {
+          if (task.id !== taskId) return task;
+
+          const attentionRequestedAt =
+            status === "input_required" ? (extra?.attentionRequestedAt ?? Date.now()) : undefined;
+
+          const nextFailureReason =
+            status === "failed" ? (failureReason ?? task.failureReason) : undefined;
+
+          if (
+            task.status === status &&
+            task.attentionRequestedAt === attentionRequestedAt &&
+            task.failureReason === nextFailureReason
+          ) {
+            return task;
+          }
+
+          changed = true;
+          const updated: Task = { ...task, status, attentionRequestedAt };
+          if (nextFailureReason) updated.failureReason = nextFailureReason;
+          if (!nextFailureReason) delete updated.failureReason;
+          return updated;
+        });
+
+        if (changed) {
+          const task = next.find((t) => t.id === taskId);
+          if (task) debouncedPersistProjectTasks(task.projectId, next);
+        }
+        return changed ? next : prev;
+      });
+    },
+    [debouncedPersistProjectTasks],
+  );
+
+  const updateTaskSession = useCallback(
+    (taskId: string, sessionId: string, sessionPath: string) => {
+      setTasks((prev) => {
+        let changed = false;
+        const next = prev.map((task) => {
+          if (task.id !== taskId) return task;
+          if (task.agent === "claude") {
+            if (task.claudeSessionId === sessionId && task.claudeSessionPath === sessionPath) {
+              return task;
+            }
+            changed = true;
+            return { ...task, claudeSessionId: sessionId, claudeSessionPath: sessionPath };
+          }
+
+          if (task.codexSessionId === sessionId && task.codexSessionPath === sessionPath) {
+            return task;
+          }
+          changed = true;
+          return { ...task, codexSessionId: sessionId, codexSessionPath: sessionPath };
+        });
+
+        if (changed) {
+          const task = next.find((t) => t.id === taskId);
+          if (task) debouncedPersistProjectTasks(task.projectId, next);
+        }
+        return changed ? next : prev;
+      });
+    },
+    [debouncedPersistProjectTasks],
   );
 
   const mountProject = useCallback((projectId: string) => {
@@ -142,7 +236,7 @@ function App() {
       p1.then((fn) => fn());
       p2.then((fn) => fn());
     };
-  }, [tm, showToast]);
+  }, [tm, showToast, updateTaskSession, updateTaskStatus]);
 
   async function handleOpen() {
     const selected = await openDialog({ directory: true, multiple: false });
@@ -333,72 +427,6 @@ function App() {
     setActiveProject((prev) => (prev?.id === projectId ? null : prev));
   }
 
-  function updateTaskStatus(
-    taskId: string,
-    status: TaskStatus,
-    extra?: Pick<Task, "attentionRequestedAt">,
-    failureReason?: string,
-  ) {
-    setTasks((prev) => {
-      let changed = false;
-      const next = prev.map((task) => {
-        if (task.id !== taskId) return task;
-
-        const attentionRequestedAt =
-          status === "input_required" ? (extra?.attentionRequestedAt ?? Date.now()) : undefined;
-
-        const nextFailureReason =
-          status === "failed" ? (failureReason ?? task.failureReason) : undefined;
-
-        if (
-          task.status === status &&
-          task.attentionRequestedAt === attentionRequestedAt &&
-          task.failureReason === nextFailureReason
-        ) {
-          return task;
-        }
-
-        changed = true;
-        const updated: Task = { ...task, status, attentionRequestedAt };
-        if (nextFailureReason) updated.failureReason = nextFailureReason;
-        if (!nextFailureReason) delete updated.failureReason;
-        return updated;
-      });
-
-      if (changed) {
-        const task = next.find((t) => t.id === taskId);
-        if (task) debouncedPersistProjectTasks(task.projectId, next);
-      }
-      return changed ? next : prev;
-    });
-  }
-
-  function updateTaskSession(taskId: string, sessionId: string, sessionPath: string) {
-    setTasks((prev) => {
-      let changed = false;
-      const next = prev.map((task) => {
-        if (task.id !== taskId) return task;
-        if (task.agent === "claude") {
-          if (task.claudeSessionId === sessionId && task.claudeSessionPath === sessionPath)
-            return task;
-          changed = true;
-          return { ...task, claudeSessionId: sessionId, claudeSessionPath: sessionPath };
-        } else {
-          if (task.codexSessionId === sessionId && task.codexSessionPath === sessionPath)
-            return task;
-          changed = true;
-          return { ...task, codexSessionId: sessionId, codexSessionPath: sessionPath };
-        }
-      });
-
-      if (changed) {
-        const task = next.find((t) => t.id === taskId);
-        if (task) debouncedPersistProjectTasks(task.projectId, next);
-      }
-      return changed ? next : prev;
-    });
-  }
-
   const sortedProjects = useMemo(
     () => [...projects].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt),
     [projects],
@@ -425,47 +453,49 @@ function App() {
         }}
       >
         {mountedProjects.map((project) => (
-          <ProjectPage
-            key={project.id}
-            project={project}
-            visible={activeProject?.id === project.id}
-            allProjects={railProjects}
-            tasks={tasks}
-            getTaskRestoreState={tm.getTaskRestoreState}
-            onStartSubProcess={(taskInput) => handleStartDispatcherSubprocess(project, taskInput)}
-            onStopTask={(taskId) =>
-              invoke("stop_task", { taskId })
-                .catch((e: unknown) => {
-                  showToast(`停止任务失败：${String(e)}`);
-                })
-                .then(() => undefined)
-            }
-            onResumeTask={(task) => {
-              const sessionId = task.agent === "claude" ? task.claudeSessionId : task.codexSessionId;
-              if (!sessionId) {
-                showToast("当前任务尚未记录可恢复的会话 ID，暂时无法继续。", "warning");
-                return Promise.resolve();
+          <Suspense key={project.id} fallback={<AppPaneFallback />}>
+            <ProjectPage
+              project={project}
+              visible={activeProject?.id === project.id}
+              allProjects={railProjects}
+              tasks={tasks}
+              getTaskRestoreState={tm.getTaskRestoreState}
+              onStartSubProcess={(taskInput) => handleStartDispatcherSubprocess(project, taskInput)}
+              onStopTask={(taskId) =>
+                invoke("stop_task", { taskId })
+                  .catch((e: unknown) => {
+                    showToast(`停止任务失败：${String(e)}`);
+                  })
+                  .then(() => undefined)
               }
-              updateTaskStatus(task.id, "pending");
-              return invokeResumeDispatcherSubprocess(task, project.path).then(() => undefined);
-            }}
-            onInput={tm.handleInput}
-            onResize={tm.handleResize}
-            onRegisterTerminal={tm.handleRegisterTerminal}
-            onTerminalReady={tm.handleTerminalReady}
-            onSnapshot={tm.handleSnapshot}
-            onRetainTaskBuffers={tm.retainTaskBuffers}
-            onReleaseTaskBuffers={tm.releaseTaskBuffers}
-            onRemoveTaskBuffers={tm.removeTaskBuffers}
-            onBack={handleBack}
-            onSwitchProject={handleProjectClick}
-            onOpen={handleOpen}
-            isDark={isDark}
-            themeMode={themeMode}
-            systemPrefersDark={systemPrefersDark}
-            onThemeModeChange={setThemeMode}
-            onToggleTheme={handleToggleTheme}
-          />
+              onResumeTask={(task) => {
+                const sessionId =
+                  task.agent === "claude" ? task.claudeSessionId : task.codexSessionId;
+                if (!sessionId) {
+                  showToast("当前任务尚未记录可恢复的会话 ID，暂时无法继续。", "warning");
+                  return Promise.resolve();
+                }
+                updateTaskStatus(task.id, "pending");
+                return invokeResumeDispatcherSubprocess(task, project.path).then(() => undefined);
+              }}
+              onInput={tm.handleInput}
+              onResize={tm.handleResize}
+              onRegisterTerminal={tm.handleRegisterTerminal}
+              onTerminalReady={tm.handleTerminalReady}
+              onSnapshot={tm.handleSnapshot}
+              onRetainTaskBuffers={tm.retainTaskBuffers}
+              onReleaseTaskBuffers={tm.releaseTaskBuffers}
+              onRemoveTaskBuffers={tm.removeTaskBuffers}
+              onBack={handleBack}
+              onSwitchProject={handleProjectClick}
+              onOpen={handleOpen}
+              isDark={isDark}
+              themeMode={themeMode}
+              systemPrefersDark={systemPrefersDark}
+              onThemeModeChange={setThemeMode}
+              onToggleTheme={handleToggleTheme}
+            />
+          </Suspense>
         ))}
       </div>
       {!activeProject && (

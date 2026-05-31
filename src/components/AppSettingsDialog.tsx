@@ -7,18 +7,7 @@ import s from "../styles";
 import claudeLogo from "../assets/claude.svg";
 import chatgptLogo from "../assets/chatgpt.svg";
 import appLogo from "../assets/app-logo.png";
-
-// Reuse the same singleton highlighter as FileViewer
-import type { Highlighter } from "shiki";
-let _highlighterPromise: Promise<Highlighter> | null = null;
-function getHighlighter(): Promise<Highlighter> {
-  if (!_highlighterPromise) {
-    _highlighterPromise = import("shiki").then(({ createHighlighter }) =>
-      createHighlighter({ themes: ["github-dark", "github-light"], langs: ["json", "toml"] }),
-    );
-  }
-  return _highlighterPromise!;
-}
+import { highlightCodeToHtml } from "../utils/shiki";
 
 type NavKey = "general" | "theme" | "aha" | "claude" | "codex";
 
@@ -773,14 +762,17 @@ function AgentConfigPanel({
   // Re-highlight when content or theme changes
   useEffect(() => {
     if (fileState.status !== "loaded") return;
+    let cancelled = false;
     setHighlighted(null);
-    getHighlighter().then((hl) => {
-      const html = hl.codeToHtml(fileState.content, {
-        lang,
-        theme: isDark ? "github-dark" : "github-light",
-      });
-      setHighlighted(html);
+    highlightCodeToHtml(fileState.content, lang, isDark).then((html) => {
+      if (!cancelled) {
+        setHighlighted(html);
+      }
     });
+
+    return () => {
+      cancelled = true;
+    };
   }, [fileState, lang, isDark]);
 
   async function handleSave() {

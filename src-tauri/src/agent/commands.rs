@@ -16,11 +16,12 @@ use super::db::{
     ChatCategory, ChatSessionRecord, DispatcherDb, DispatcherMessageRecord, DispatcherMode,
     DispatcherModelConfig, DispatcherSessionKind, DispatcherSessionRecord,
     DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord,
-    DispatcherSessionTokenUsageSource, DispatcherSettingsModelConfigs,
-    DispatcherSettingsRecord, DispatcherToolArtifactRecord, ProjectSessionRecord, SessionPage,
+    DispatcherSessionTokenUsageSource, DispatcherSettingsModelConfigs, DispatcherSettingsRecord,
+    DispatcherToolArtifactRecord, ProjectSessionRecord, SessionPage,
 };
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
+use super::plain_chat::PlainChatAgent;
 use super::runtime::{
     AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent, DispatcherSubprocessRegistry,
 };
@@ -117,6 +118,16 @@ impl DispatcherState {
             agent.apply_settings(&settings);
             agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
             agent.set_context_debug(settings.context_debug);
+        }
+
+        agent
+    }
+
+    fn build_plain_chat_agent(&self) -> PlainChatAgent {
+        let agent = PlainChatAgent::new(self.config.clone());
+
+        if let Ok(Some(settings)) = self.db.get_settings() {
+            agent.apply_settings(&settings);
         }
 
         agent
@@ -608,19 +619,10 @@ pub async fn dispatcher_send_plain_chat_message(
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let title_generation = state.begin_title_generation(&workspace_id);
-    state
-        .db
-        .set_session_mode(&workspace_id, DispatcherMode::Default)
-        .map_err(|error| error.to_string())?;
-    state
-        .db
-        .set_plan_interaction(&workspace_id, None)
-        .map_err(|error| error.to_string())?;
-
     let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
-    let agent = state.build_run_agent().with_app_handle(app.clone());
+    let agent = state.build_plain_chat_agent().with_app_handle(app.clone());
     let result = agent
-        .run_plain_chat(
+        .run(
             &state.db,
             &workspace_id,
             &content,
@@ -920,7 +922,11 @@ pub async fn chat_create_category(
 ) -> Result<ChatCategory, String> {
     let db = state.db.clone();
     run_dispatcher_db("chat_create_category", move || {
-        db.create_chat_category(&name, icon.as_deref().unwrap_or(""), color.as_deref().unwrap_or(""))
+        db.create_chat_category(
+            &name,
+            icon.as_deref().unwrap_or(""),
+            color.as_deref().unwrap_or(""),
+        )
     })
     .await
 }
@@ -1395,12 +1401,16 @@ pub async fn dispatcher_exit_subprocess(
     state: tauri::State<'_, DispatcherState>,
     task_id: String,
 ) -> Result<(), String> {
-    let is_codex = is_codex_subprocess(&task_manager, &task_id);
+    task_manager
+        .set_task_termination_intent(&task_id, crate::shared::TaskTerminationIntent::Stopped);
+    task_manager.write_to_pty(&task_id, b"\x03", true)?;
 
-    if is_codex {
-        submit_subprocess_line(&task_manager, &task_id, "/exit", true).await?;
-    } else {
-        submit_subprocess_line(&task_manager, &task_id, "/exit", false).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    if has_live_subprocess(&task_manager, &task_id) {
+        task_manager
+            .set_task_termination_intent(&task_id, crate::shared::TaskTerminationIntent::Stopped);
+        let _ = task_manager.kill_child(&task_id);
     }
 
     state.mark_subprocess_exit_requested(&task_id);

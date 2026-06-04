@@ -173,6 +173,7 @@ pub async fn knowledge_delete_collection(collection_id: String) -> Result<(), St
             return Err(anyhow!("知识库集合不存在：{collection_id}"));
         };
         let collection = collections.remove(index);
+        super::jobs::cancel_and_remove_jobs_for_collection(&collection_id)?;
         let root = collection_root_checked(&collection)?;
         if root.exists() {
             fs::remove_dir_all(&root)

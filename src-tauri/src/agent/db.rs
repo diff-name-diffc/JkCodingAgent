@@ -100,7 +100,11 @@ fn parse_segments_json(segments_json: &str) -> Vec<ContentSegment> {
         Ok(segments) => segments,
         Err(e) => {
             let preview = if segments_json.len() > 500 {
-                format!("{}...(truncated, {} bytes)", &segments_json[..500], segments_json.len())
+                format!(
+                    "{}...(truncated, {} bytes)",
+                    &segments_json[..500],
+                    segments_json.len()
+                )
             } else {
                 segments_json.to_string()
             };
@@ -1589,8 +1593,9 @@ impl DispatcherDb {
         title: &str,
     ) -> Result<Option<DispatcherSessionRecord>> {
         let updated_at = now();
-        let conn = self.conn()?;
-        let changed = conn
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().context("begin update session title")?;
+        let changed = tx
             .execute(
                 "UPDATE dispatcher_sessions
                  SET title = ?1, updated_at = ?2
@@ -1603,7 +1608,19 @@ impl DispatcherDb {
             return Ok(None);
         }
 
-        conn.query_row(
+        tx.execute(
+            "UPDATE chat_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            params![title.trim(), &updated_at, session_id],
+        )
+        .context("reflect dispatcher title in chat session")?;
+        tx.execute(
+            "UPDATE project_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            params![title.trim(), &updated_at, session_id],
+        )
+        .context("reflect dispatcher title in project session")?;
+
+        let record = tx
+            .query_row(
             "SELECT id, project_id, kind, title, mode, active_plan_path, category, created_at, updated_at
              FROM dispatcher_sessions
              WHERE id = ?1",
@@ -1623,7 +1640,9 @@ impl DispatcherDb {
             },
         )
         .optional()
-        .context("load dispatcher session after title update")
+        .context("load dispatcher session after title update")?;
+        tx.commit().context("commit update session title")?;
+        Ok(record)
     }
 
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -1720,9 +1739,9 @@ impl DispatcherDb {
                 updated_at: row.get(4)?,
             })
         })?;
-        let mut items: Vec<ChatSessionRecord> =
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .context("list chat sessions paginated")?;
+        let mut items: Vec<ChatSessionRecord> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("list chat sessions paginated")?;
 
         let has_more = items.len() as i64 > page_size;
         if has_more {
@@ -1800,13 +1819,8 @@ impl DispatcherDb {
             params![session_id],
         )?;
         tx.execute(
-            "UPDATE dispatcher_sessions
-             SET checklist_json = NULL,
-                 plan_interaction_json = NULL,
-                 active_plan_path = NULL,
-                 updated_at = ?1
-             WHERE id = ?2",
-            params![now(), session_id],
+            "DELETE FROM dispatcher_sessions WHERE id = ?1",
+            params![session_id],
         )?;
         tx.commit()?;
         Ok(())
@@ -1898,23 +1912,20 @@ impl DispatcherDb {
              ORDER BY updated_at DESC
              LIMIT ?2 OFFSET ?3",
         )?;
-        let rows = stmt.query_map(
-            params![project_id, page_size, offset],
-            |row| {
-                Ok(ProjectSessionRecord {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    title: row.get(2)?,
-                    mode: DispatcherMode::from_sql_value(row.get(3)?),
-                    active_plan_path: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                })
-            },
-        )?;
-        let items: Vec<ProjectSessionRecord> =
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .context("list project sessions paginated")?;
+        let rows = stmt.query_map(params![project_id, page_size, offset], |row| {
+            Ok(ProjectSessionRecord {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                title: row.get(2)?,
+                mode: DispatcherMode::from_sql_value(row.get(3)?),
+                active_plan_path: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+        let items: Vec<ProjectSessionRecord> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("list project sessions paginated")?;
 
         let has_more = (offset + items.len() as i64) < total;
         let next_cursor = items.last().map(|s| s.updated_at.clone());
@@ -1997,13 +2008,8 @@ impl DispatcherDb {
             params![session_id],
         )?;
         tx.execute(
-            "UPDATE dispatcher_sessions
-             SET checklist_json = NULL,
-                 plan_interaction_json = NULL,
-                 active_plan_path = NULL,
-                 updated_at = ?1
-             WHERE id = ?2",
-            params![now(), session_id],
+            "DELETE FROM dispatcher_sessions WHERE id = ?1",
+            params![session_id],
         )?;
         tx.commit()?;
         Ok(())
@@ -2018,7 +2024,6 @@ impl DispatcherDb {
         .context("update project session updated_at")?;
         Ok(())
     }
-
 
     pub fn get_session_title(&self, session_id: &str) -> Result<String> {
         let conn = self.conn()?;
@@ -2777,6 +2782,11 @@ impl DispatcherDb {
             params![now(), workspace_id],
         )
         .context("clear project session planning state")?;
+        tx.execute(
+            "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![now(), workspace_id],
+        )
+        .context("update chat session updated_at after clear")?;
         tx.commit().context("commit dispatcher message cleanup")?;
         Ok(())
     }
@@ -2874,7 +2884,8 @@ impl DispatcherDb {
             parts.join(", "),
             params_vec.len()
         );
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
         let changed = conn
             .execute(&sql, params_refs.as_slice())
             .context("update chat category")?;
@@ -2908,12 +2919,20 @@ impl DispatcherDb {
 
     pub fn delete_chat_category(&self, category_id: &str) -> Result<()> {
         let mut conn = self.conn()?;
-        let tx = conn.transaction().context("begin delete category transaction")?;
+        let tx = conn
+            .transaction()
+            .context("begin delete category transaction")?;
+        let now_val = now();
         tx.execute(
-            "UPDATE dispatcher_sessions SET category = '' WHERE category = ?1",
-            params![category_id],
+            "UPDATE dispatcher_sessions SET category = '', updated_at = ?2 WHERE category = ?1",
+            params![category_id, now_val],
         )
-        .context("reassign uncategorized sessions")?;
+        .context("reassign uncategorized dispatcher sessions")?;
+        tx.execute(
+            "UPDATE chat_sessions SET category = '', updated_at = ?2 WHERE category = ?1",
+            params![category_id, now_val],
+        )
+        .context("reassign uncategorized chat sessions")?;
         tx.execute(
             "DELETE FROM chat_categories WHERE id = ?1",
             params![category_id],
@@ -2935,10 +2954,14 @@ impl DispatcherDb {
 
     pub fn reorder_chat_categories(&self, ordered_ids: &[String]) -> Result<()> {
         let mut conn = self.conn()?;
-        let tx = conn.transaction().context("begin reorder categories transaction")?;
+        let tx = conn
+            .transaction()
+            .context("begin reorder categories transaction")?;
         {
             let mut stmt = tx
-                .prepare("UPDATE chat_categories SET sort_order = ?1, updated_at = ?2 WHERE id = ?3")
+                .prepare(
+                    "UPDATE chat_categories SET sort_order = ?1, updated_at = ?2 WHERE id = ?3",
+                )
                 .context("prepare reorder statement")?;
             let now = now();
             for (order, id) in ordered_ids.iter().enumerate() {
@@ -3946,6 +3969,201 @@ impl DispatcherDb {
         .context("add_visible_tool_result spawn_blocking")?
     }
 
+    pub async fn list_visible_messages_async(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<DispatcherMessageRecord>> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || db.list_visible_messages(&wid))
+            .await
+            .context("list_visible_messages spawn_blocking")?
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_hidden_message_async(
+        &self,
+        workspace_id: &str,
+        role: &str,
+        content: &str,
+        tool_call_id: Option<&str>,
+        tool_name: Option<&str>,
+        tool_result_mode: Option<&str>,
+        tool_calls: Option<&[OutboundToolCall]>,
+    ) -> Result<DispatcherMessageRecord> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        let role = role.to_string();
+        let content = content.to_string();
+        let tool_call_id = tool_call_id.map(str::to_string);
+        let tool_name = tool_name.map(str::to_string);
+        let tool_result_mode = tool_result_mode.map(str::to_string);
+        let tool_calls = tool_calls.map(|c| c.to_vec());
+        tokio::task::spawn_blocking(move || {
+            db.add_hidden_message(
+                &wid,
+                &role,
+                &content,
+                tool_call_id.as_deref(),
+                tool_name.as_deref(),
+                tool_result_mode.as_deref(),
+                tool_calls.as_deref(),
+            )
+        })
+        .await
+        .context("add_hidden_message spawn_blocking")?
+    }
+
+    pub async fn add_visible_message_with_usage_async(
+        &self,
+        workspace_id: &str,
+        role: &str,
+        content: &str,
+        usage_stats: &DispatcherMessageUsageStats,
+    ) -> Result<DispatcherMessageRecord> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        let role = role.to_string();
+        let content = content.to_string();
+        let usage_stats = usage_stats.clone();
+        tokio::task::spawn_blocking(move || {
+            db.add_visible_message_with_usage(&wid, &role, &content, &usage_stats)
+        })
+        .await
+        .context("add_visible_message_with_usage spawn_blocking")?
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_visible_message_with_tools_async(
+        &self,
+        workspace_id: &str,
+        role: &str,
+        content: &str,
+        tool_call_id: Option<&str>,
+        tool_name: Option<&str>,
+        tool_result_mode: Option<&str>,
+        tool_calls: Option<&[OutboundToolCall]>,
+    ) -> Result<DispatcherMessageRecord> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        let role = role.to_string();
+        let content = content.to_string();
+        let tool_call_id = tool_call_id.map(str::to_string);
+        let tool_name = tool_name.map(str::to_string);
+        let tool_result_mode = tool_result_mode.map(str::to_string);
+        let tool_calls = tool_calls.map(|c| c.to_vec());
+        tokio::task::spawn_blocking(move || {
+            db.add_visible_message_with_tools(
+                &wid,
+                &role,
+                &content,
+                tool_call_id.as_deref(),
+                tool_name.as_deref(),
+                tool_result_mode.as_deref(),
+                tool_calls.as_deref(),
+            )
+        })
+        .await
+        .context("add_visible_message_with_tools spawn_blocking")?
+    }
+
+    pub async fn update_checklist_async(
+        &self,
+        session_id: &str,
+        checklist: &ChecklistPlanState,
+    ) -> Result<DispatcherSessionRuntimeState> {
+        let db = self.clone();
+        let sid = session_id.to_string();
+        let checklist = checklist.clone();
+        tokio::task::spawn_blocking(move || db.update_checklist(&sid, &checklist))
+            .await
+            .context("update_checklist spawn_blocking")?
+    }
+
+    pub async fn set_plan_interaction_async(
+        &self,
+        session_id: &str,
+        interaction: Option<&PlanInteraction>,
+    ) -> Result<DispatcherSessionRuntimeState> {
+        let db = self.clone();
+        let sid = session_id.to_string();
+        let interaction = interaction.cloned();
+        tokio::task::spawn_blocking(move || db.set_plan_interaction(&sid, interaction.as_ref()))
+            .await
+            .context("set_plan_interaction spawn_blocking")?
+    }
+
+    pub async fn set_active_plan_path_async(
+        &self,
+        session_id: &str,
+        plan_path: Option<&str>,
+    ) -> Result<DispatcherSessionRuntimeState> {
+        let db = self.clone();
+        let sid = session_id.to_string();
+        let plan_path = plan_path.map(str::to_string);
+        tokio::task::spawn_blocking(move || db.set_active_plan_path(&sid, plan_path.as_deref()))
+            .await
+            .context("set_active_plan_path spawn_blocking")?
+    }
+
+    pub async fn compact_successful_tool_retry_async(
+        &self,
+        workspace_id: &str,
+        tool_name: &str,
+        current_tool_call_id: &str,
+    ) -> Result<()> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        let tool_name = tool_name.to_string();
+        let tool_call_id = current_tool_call_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            db.compact_successful_tool_retry(&wid, &tool_name, &tool_call_id)
+        })
+        .await
+        .context("compact_successful_tool_retry spawn_blocking")?
+    }
+
+    pub async fn get_latest_user_message_content_async(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<String>> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || db.get_latest_user_message_content(&wid))
+            .await
+            .context("get_latest_user_message_content spawn_blocking")?
+    }
+
+    pub async fn list_recent_exploration_content_async(
+        &self,
+        workspace_id: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, Option<String>, String)>> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || db.list_recent_exploration_content(&wid, limit))
+            .await
+            .context("list_recent_exploration_content spawn_blocking")?
+    }
+
+    pub async fn upsert_session_token_usage_async(
+        &self,
+        workspace_id: &str,
+        model: &str,
+        source_kind: DispatcherSessionTokenUsageSource,
+        usage: &LlmUsage,
+    ) -> Result<DispatcherSessionTokenUsageRecord> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        let model = model.to_string();
+        let usage = usage.clone();
+        tokio::task::spawn_blocking(move || {
+            db.upsert_session_token_usage(&wid, &model, source_kind, &usage)
+        })
+        .await
+        .context("upsert_session_token_usage spawn_blocking")?
+    }
+
     fn find_dialogue_cutoff_rowid(
         &self,
         conn: &Connection,
@@ -4792,14 +5010,7 @@ mod tests {
     fn update_session_title_persists_latest_title() {
         let (db, root) = create_test_db();
         let session = db
-            .create_session(
-                "project-1",
-                "新会话",
-                DispatcherSessionKind::Project,
-                DispatcherMode::Default,
-                None,
-                None,
-            )
+            .create_project_session("project-1", "新会话", DispatcherMode::Default, None)
             .unwrap();
 
         let updated = db
@@ -4815,6 +5026,35 @@ mod tests {
                 .unwrap()[0]
                 .title,
             "修复会话命名"
+        );
+        assert_eq!(
+            db.list_project_sessions_paginated("project-1", 0, 10)
+                .unwrap()
+                .items[0]
+                .title,
+            "修复会话命名"
+        );
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn update_session_title_reflects_plain_chat_mirror() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_chat_session("新聊天", None)
+            .expect("create chat session");
+
+        db.update_session_title(&session.id, "面试知识点准备")
+            .unwrap()
+            .expect("session should exist");
+
+        assert_eq!(
+            db.list_chat_sessions_paginated(None, None, 10)
+                .unwrap()
+                .items[0]
+                .title,
+            "面试知识点准备"
         );
 
         cleanup_test_db(root);
@@ -5032,9 +5272,7 @@ mod tests {
         assert_eq!(chat_sessions[0].id, "legacy-chat");
 
         // chat_sessions table should contain the migrated chat session
-        let paginated = db
-            .list_chat_sessions_paginated(None, None, 10)
-            .unwrap();
+        let paginated = db.list_chat_sessions_paginated(None, None, 10).unwrap();
         assert_eq!(paginated.items.len(), 1);
         assert_eq!(paginated.items[0].id, "legacy-chat");
         assert_eq!(paginated.items[0].category, "tech");

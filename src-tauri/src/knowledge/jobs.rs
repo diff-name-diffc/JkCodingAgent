@@ -33,6 +33,20 @@ pub(crate) fn upsert_ingest_job(job: KnowledgeIngestJob) -> Result<()> {
     save_ingest_jobs(&jobs)
 }
 
+pub(crate) fn cancel_and_remove_jobs_for_collection(collection_id: &str) -> Result<()> {
+    let mut jobs = load_ingest_jobs()?;
+    let removed: Vec<_> = jobs
+        .iter()
+        .filter(|j| j.collection_id == collection_id)
+        .map(|j| j.id.clone())
+        .collect();
+    for job_id in &removed {
+        super::utils::set_cancel_token(job_id);
+    }
+    jobs.retain(|j| j.collection_id != collection_id);
+    save_ingest_jobs(&jobs)
+}
+
 pub(crate) fn update_job_status(
     job_id: &str,
     status: &str,

@@ -59,8 +59,8 @@ pub(crate) fn resolve_chat_image_id(image_id: &str) -> Result<PathBuf, String> {
 }
 
 fn scan_chat_images_dir(base: &std::path::Path, image_id: &str) -> Result<PathBuf, String> {
-    let entries = std::fs::read_dir(base)
-        .map_err(|e| format!("无法读取 chat-images 目录: {}", e))?;
+    let entries =
+        std::fs::read_dir(base).map_err(|e| format!("无法读取 chat-images 目录: {}", e))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -98,23 +98,25 @@ pub(crate) async fn resolve_chat_image_id_async(image_id: String) -> Result<Path
 
 /// Check whether a path is under the app-managed `~/.jkcodingagent/chat-images/` directory.
 pub(crate) fn is_chat_image_path(path: &std::path::Path) -> bool {
-    let Ok(dir) = chat_images_dir() else { return false };
+    let Ok(dir) = chat_images_dir() else {
+        return false;
+    };
     match path.canonicalize() {
         Ok(canonical_path) => match dir.canonicalize() {
             Ok(canonical_dir) => canonical_path.starts_with(&canonical_dir),
             Err(_) => false,
         },
         Err(_) => {
-            let normalized = path
-                .components()
-                .fold(PathBuf::new(), |mut acc, c| {
-                    match c {
-                        std::path::Component::ParentDir => { acc.pop(); }
-                        std::path::Component::CurDir => {}
-                        _ => acc.push(c),
+            let normalized = path.components().fold(PathBuf::new(), |mut acc, c| {
+                match c {
+                    std::path::Component::ParentDir => {
+                        acc.pop();
                     }
-                    acc
-                });
+                    std::path::Component::CurDir => {}
+                    _ => acc.push(c),
+                }
+                acc
+            });
             normalized.starts_with(&dir)
         }
     }
@@ -746,12 +748,7 @@ mod tests {
 
     fn make_large_png(width: u32, height: u32) -> Vec<u8> {
         let img = image::RgbaImage::from_fn(width, height, |x, y| {
-            image::Rgba([
-                (x % 256) as u8,
-                (y % 256) as u8,
-                ((x + y) % 256) as u8,
-                255,
-            ])
+            image::Rgba([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8, 255])
         });
         let mut buf = std::io::Cursor::new(Vec::new());
         image::ImageEncoder::write_image(
@@ -888,7 +885,11 @@ mod tests {
     #[test]
     fn is_chat_image_path_recognizes_canonical_path() {
         let home = dirs::home_dir().unwrap();
-        let path = home.join(".jkcodingagent").join("chat-images").join("slug").join("id.png");
+        let path = home
+            .join(".jkcodingagent")
+            .join("chat-images")
+            .join("slug")
+            .join("id.png");
         assert!(is_chat_image_path(&path));
     }
 
@@ -901,7 +902,11 @@ mod tests {
     #[test]
     fn is_chat_image_path_rejects_parent_dir() {
         let home = dirs::home_dir().unwrap();
-        let path = home.join(".jkcodingagent").join("..").join("etc").join("passwd");
+        let path = home
+            .join(".jkcodingagent")
+            .join("..")
+            .join("etc")
+            .join("passwd");
         assert!(!is_chat_image_path(&path));
     }
 
@@ -922,7 +927,11 @@ mod tests {
         .unwrap();
 
         let resolved = resolve_chat_image_id(&saved.image_id).unwrap();
-        assert!(resolved.exists(), "resolved path must exist: {:?}", resolved);
+        assert!(
+            resolved.exists(),
+            "resolved path must exist: {:?}",
+            resolved
+        );
         assert_eq!(
             resolved.to_string_lossy(),
             saved.path,

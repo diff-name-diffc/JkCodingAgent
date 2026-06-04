@@ -813,7 +813,7 @@ impl DispatcherAgent {
             )
             .await?;
 
-        let messages = db.list_visible_messages(workspace_id)?;
+        let messages = db.list_visible_messages_async(workspace_id).await?;
         emit(
             &on_event,
             AgentEvent::Finished {
@@ -841,12 +841,12 @@ impl DispatcherAgent {
         if let Some(dispatch_id) = dispatch_id {
             let checklist = match dispatch_state {
                 DispatchFeedbackState::RoundCompleted => {
-                    start_checklist_dispatch(db, workspace_id, dispatch_id)
+                    start_checklist_dispatch(db, workspace_id, dispatch_id).await
                 }
                 DispatchFeedbackState::ProcessDone
                 | DispatchFeedbackState::ProcessFailed
                 | DispatchFeedbackState::ProcessCancelled => {
-                    complete_checklist_dispatch(db, workspace_id, dispatch_id)
+                    complete_checklist_dispatch(db, workspace_id, dispatch_id).await
                 }
             }
             .map_err(anyhow::Error::msg)?;
@@ -857,12 +857,14 @@ impl DispatcherAgent {
                 );
             }
         }
-        let result_msg = db.add_visible_message(
-            workspace_id,
-            "assistant",
-            dispatch_state.visible_message(),
-            None,
-        )?;
+        let result_msg = db
+            .add_visible_message_async(
+                workspace_id,
+                "assistant",
+                dispatch_state.visible_message(),
+                None,
+            )
+            .await?;
         emit(
             &on_event,
             AgentEvent::AssistantMessage {
@@ -871,8 +873,10 @@ impl DispatcherAgent {
         );
 
         if cancellation_requested(&cancel_rx) {
-            let reply = self.emit_stop_and_finish(db, workspace_id, &on_event, "", None)?;
-            let messages = db.list_visible_messages(workspace_id)?;
+            let reply = self
+                .emit_stop_and_finish(db, workspace_id, &on_event, "", None)
+                .await?;
+            let messages = db.list_visible_messages_async(workspace_id).await?;
             emit(
                 &on_event,
                 AgentEvent::Finished {
@@ -899,8 +903,8 @@ impl DispatcherAgent {
                     &on_event,
                     "",
                     None,
-                )?;
-                let messages = db.list_visible_messages(workspace_id)?;
+                ).await?;
+                let messages = db.list_visible_messages_async(workspace_id).await?;
                 emit(
                     &on_event,
                     AgentEvent::Finished {
@@ -951,7 +955,7 @@ impl DispatcherAgent {
             summarized_dispatch_result
         );
 
-        db.add_hidden_message(
+        db.add_hidden_message_async(
             workspace_id,
             "user",
             &hidden_message,
@@ -959,7 +963,8 @@ impl DispatcherAgent {
             None,
             None,
             None,
-        )?;
+        )
+        .await?;
 
         let workspace = PathBuf::from(workspace_path);
         self.project_mcp_registry
@@ -980,7 +985,7 @@ impl DispatcherAgent {
             )
             .await?;
 
-        let messages = db.list_visible_messages(workspace_id)?;
+        let messages = db.list_visible_messages_async(workspace_id).await?;
         emit(
             &on_event,
             AgentEvent::Finished {
@@ -988,214 +993,6 @@ impl DispatcherAgent {
             },
         );
         Ok(AgentTurn { reply, messages })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn run_plain_chat(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        user_message: &str,
-        user_segments_json: Option<String>,
-        enable_thinking: bool,
-        on_event: Channel<AgentEvent>,
-        cancel_rx: watch::Receiver<bool>,
-    ) -> Result<AgentTurn> {
-        emit(
-            &on_event,
-            AgentEvent::Started {
-                workspace_id: workspace_id.to_string(),
-            },
-        );
-        db.clear_checklist(workspace_id)
-            .context("clear stale checklist before plain chat turn")?;
-
-        let user =
-            db.add_visible_message(workspace_id, "user", user_message, user_segments_json)?;
-        emit(&on_event, AgentEvent::UserMessage { message: user });
-
-        let provider = self.provider.lock().clone();
-        if !provider.is_configured() {
-            anyhow::bail!(
-                "聊天 LLM API Key 未配置。请在设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
-            );
-        }
-
-        let mut usage_tracker = RunUsageTracker::new();
-        let workspace = self.plain_chat_browser_workspace().await?;
-        let reply = self
-            .run_plain_chat_loop(
-                db,
-                workspace_id,
-                &workspace,
-                &on_event,
-                &provider,
-                enable_thinking,
-                cancel_rx,
-                &mut usage_tracker,
-            )
-            .await?;
-        let messages = db.list_visible_messages(workspace_id)?;
-        emit(
-            &on_event,
-            AgentEvent::Finished {
-                messages: messages.clone(),
-            },
-        );
-        Ok(AgentTurn { reply, messages })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn run_plain_chat_loop(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        workspace: &Path,
-        on_event: &Channel<AgentEvent>,
-        provider: &OpenAiCompatProvider,
-        enable_thinking: bool,
-        cancel_rx: watch::Receiver<bool>,
-        usage_tracker: &mut RunUsageTracker,
-    ) -> Result<DispatcherMessageRecord> {
-        let tool_context = self
-            .build_tool_context(db, workspace_id, workspace, provider)
-            .await;
-        let allowed_tool_names = plain_chat_tool_allowlist()
-            .into_iter()
-            .map(str::to_string)
-            .collect::<HashSet<_>>();
-        let tool_definitions = self.tools.definitions_for_workspace(
-            workspace,
-            Some(allowed_tool_names.iter().map(String::as_str)),
-            true,
-        );
-
-        for iteration in 0..self.config.max_tool_iterations {
-            if cancellation_requested(&cancel_rx) {
-                return emit_plain_chat_stop_and_finish(
-                    db,
-                    workspace_id,
-                    on_event,
-                    "",
-                    usage_tracker,
-                );
-            }
-
-            let history_messages = db.load_llm_history_async(workspace_id).await?;
-            let request_provider =
-                self.provider_for_messages(provider, &history_messages, on_event, true)?;
-            let mut messages = vec![ChatMessage::system(build_plain_chat_system_prompt())];
-            messages.extend(history_messages);
-
-            let debug_logger = ContextDebugLogger::new(false, workspace);
-            let response = match self
-                .stream_llm_response(
-                    db,
-                    workspace_id,
-                    on_event,
-                    &request_provider,
-                    &messages,
-                    &tool_definitions,
-                    enable_thinking,
-                    cancel_rx.clone(),
-                    usage_tracker,
-                    &debug_logger,
-                    iteration,
-                )
-                .await?
-            {
-                LlmStreamOutcome::Cancelled(partial) => {
-                    return emit_plain_chat_stop_and_finish(
-                        db,
-                        workspace_id,
-                        on_event,
-                        &partial,
-                        usage_tracker,
-                    );
-                }
-                LlmStreamOutcome::Response(r) => r,
-            };
-
-            if response.tool_calls.is_empty() {
-                return self
-                    .handle_no_tool_response(db, workspace_id, on_event, &response, usage_tracker)
-                    .await;
-            }
-
-            let (tool_calls, args_map) =
-                Self::persist_assistant_tool_calls(db, workspace_id, on_event, response).await?;
-
-            for tool_call in tool_calls {
-                if cancellation_requested(&cancel_rx) {
-                    return emit_plain_chat_stop_and_finish(
-                        db,
-                        workspace_id,
-                        on_event,
-                        "",
-                        usage_tracker,
-                    );
-                }
-                let tool_args_json = args_map
-                    .get(&tool_call.id)
-                    .unwrap_or_else(|| panic!("args_map missing tool_call id {}", tool_call.id))
-                    .clone();
-                emit(
-                    on_event,
-                    AgentEvent::ToolStarted {
-                        tool_call_id: Some(tool_call.id.clone()),
-                        name: tool_call.name.clone(),
-                        arguments: tool_args_json,
-                    },
-                );
-
-                let raw_result = if allowed_tool_names.contains(&tool_call.name) {
-                    self.tools
-                        .execute(&tool_call.name, &tool_call.arguments, &tool_context)
-                        .await
-                } else {
-                    disallowed_tool_result(&tool_call.name)
-                };
-
-                let summary_model = self.summary_model();
-                self.summarize_and_persist_tool_result(
-                    db,
-                    workspace_id,
-                    on_event,
-                    &request_provider,
-                    &summary_model,
-                    &tool_call,
-                    &raw_result,
-                    usage_tracker,
-                )
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!(
-                        "普通聊天工具结果摘要失败，tool={}, summary_model={}：{}",
-                        tool_call.name,
-                        summary_model,
-                        error
-                    )
-                })?;
-            }
-        }
-
-        anyhow::bail!(
-            "已达到最大工具迭代次数（{}），本轮聊天被终止。请检查模型是否陷入浏览器工具调用循环。",
-            self.config.max_tool_iterations
-        )
-    }
-
-    async fn plain_chat_browser_workspace(&self) -> Result<PathBuf> {
-        let workspace = self.config.root_dir.join("plain-chat-browser");
-        let config_dir = workspace.join(".jkcodingagent");
-        let create_dir = config_dir.clone();
-        tokio::task::spawn_blocking(move || fs::create_dir_all(&create_dir))
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!("create plain chat browser workspace panicked: {error}")
-            })?
-            .with_context(|| format!("create {}", config_dir.display()))?;
-        Ok(workspace)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1216,13 +1013,9 @@ impl DispatcherAgent {
 
         for iteration in 0..self.config.max_tool_iterations {
             if cancellation_requested(&cancel_rx) {
-                return self.emit_stop_and_finish(
-                    db,
-                    workspace_id,
-                    on_event,
-                    "",
-                    Some(usage_tracker),
-                );
+                return self
+                    .emit_stop_and_finish(db, workspace_id, on_event, "", Some(usage_tracker))
+                    .await;
             }
 
             let ctx = self
@@ -1254,13 +1047,15 @@ impl DispatcherAgent {
                 .await?
             {
                 LlmStreamOutcome::Cancelled(partial) => {
-                    return self.emit_stop_and_finish(
-                        db,
-                        workspace_id,
-                        on_event,
-                        &partial,
-                        Some(usage_tracker),
-                    );
+                    return self
+                        .emit_stop_and_finish(
+                            db,
+                            workspace_id,
+                            on_event,
+                            &partial,
+                            Some(usage_tracker),
+                        )
+                        .await;
                 }
                 LlmStreamOutcome::Response(r) => r,
             };
@@ -1744,7 +1539,8 @@ impl DispatcherAgent {
                                 on_event,
                                 &tool_call,
                                 &result,
-                            )?;
+                            )
+                            .await?;
                             saw_retryable_tool_error = true;
                             continue;
                         }
@@ -1762,11 +1558,14 @@ impl DispatcherAgent {
                         )
                         .await?;
 
-                        if let Err(error) = db.compact_successful_tool_retry(
-                            workspace_id,
-                            &tool_call.name,
-                            &tool_call.id,
-                        ) {
+                        if let Err(error) = db
+                            .compact_successful_tool_retry_async(
+                                workspace_id,
+                                &tool_call.name,
+                                &tool_call.id,
+                            )
+                            .await
+                        {
                             eprintln!(
                                 "failed to compact dispatcher tool retry messages for workspace {} and tool {}: {}",
                                 workspace_id, tool_call.name, error
@@ -1829,7 +1628,8 @@ impl DispatcherAgent {
             Ok(None) => {} // not a planning tool — fall through to protocol check
             Err(error) => {
                 let is_retryable = is_retryable_tool_error(&tool_call.name, &error);
-                self.handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)?;
+                self.handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)
+                    .await?;
                 return Ok(if is_retryable {
                     SingleToolDisposition::HandledWithRetry
                 } else {
@@ -1839,18 +1639,23 @@ impl DispatcherAgent {
         }
 
         // Priority 2: protocol actions (dispatch, continue, exit subprocess)
-        match self.plan_protocol_action(db, workspace_id, tool_call, protocol_state) {
+        match self
+            .plan_protocol_action(db, workspace_id, tool_call, protocol_state)
+            .await
+        {
             Ok(Some(action)) => {
                 if let ProtocolToolAction::Exit { agent, .. } = &action {
                     self.mark_agent_exit_requested(workspace_id, agent.slug());
                 }
-                self.emit_protocol_action(db, workspace_id, on_event, tool_call, &action)?;
+                self.emit_protocol_action(db, workspace_id, on_event, tool_call, &action)
+                    .await?;
                 return Ok(SingleToolDisposition::ProtocolAction(action));
             }
             Ok(None) => {} // not a protocol action — fall through
             Err(error) => {
                 let is_retryable = is_retryable_tool_error(&tool_call.name, &error);
-                self.handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)?;
+                self.handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)
+                    .await?;
                 return Ok(if is_retryable {
                     SingleToolDisposition::HandledWithRetry
                 } else {
@@ -1958,7 +1763,7 @@ impl DispatcherAgent {
         Ok(())
     }
 
-    fn handle_tool_call_error(
+    async fn handle_tool_call_error(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
@@ -1967,9 +1772,11 @@ impl DispatcherAgent {
         error: &str,
     ) -> Result<()> {
         if is_retryable_tool_error(&tool_call.name, error) {
-            self.emit_tool_retry_feedback(db, workspace_id, on_event, tool_call, error)?;
+            self.emit_tool_retry_feedback(db, workspace_id, on_event, tool_call, error)
+                .await?;
         } else {
-            self.emit_tool_error(db, workspace_id, on_event, tool_call, error)?;
+            self.emit_tool_error(db, workspace_id, on_event, tool_call, error)
+                .await?;
         }
         Ok(())
     }
@@ -1988,12 +1795,14 @@ impl DispatcherAgent {
 
         if let Some(waiting_content) = outcome.planning_waiting_message {
             let usage_stats = usage_tracker.snapshot();
-            let waiting_msg = db.add_visible_message_with_usage(
-                workspace_id,
-                "assistant",
-                &waiting_content,
-                &usage_stats,
-            )?;
+            let waiting_msg = db
+                .add_visible_message_with_usage_async(
+                    workspace_id,
+                    "assistant",
+                    &waiting_content,
+                    &usage_stats,
+                )
+                .await?;
             emit(
                 on_event,
                 AgentEvent::AssistantMessage {
@@ -2010,12 +1819,14 @@ impl DispatcherAgent {
                 outcome.final_message.as_deref(),
             );
             let usage_stats = usage_tracker.snapshot();
-            let waiting_msg = db.add_visible_message_with_usage(
-                workspace_id,
-                "assistant",
-                &waiting_content,
-                &usage_stats,
-            )?;
+            let waiting_msg = db
+                .add_visible_message_with_usage_async(
+                    workspace_id,
+                    "assistant",
+                    &waiting_content,
+                    &usage_stats,
+                )
+                .await?;
             emit(
                 on_event,
                 AgentEvent::AssistantMessage {
@@ -2027,12 +1838,14 @@ impl DispatcherAgent {
 
         if let Some(final_message) = outcome.final_message {
             let usage_stats = usage_tracker.snapshot();
-            let reply = db.add_visible_message_with_usage(
-                workspace_id,
-                "assistant",
-                &final_message,
-                &usage_stats,
-            )?;
+            let reply = db
+                .add_visible_message_with_usage_async(
+                    workspace_id,
+                    "assistant",
+                    &final_message,
+                    &usage_stats,
+                )
+                .await?;
             emit(
                 on_event,
                 AgentEvent::AssistantMessage {
@@ -2150,7 +1963,7 @@ impl DispatcherAgent {
         lines.join("\n")
     }
 
-    fn build_subprocess_task_prompt(
+    async fn build_subprocess_task_prompt(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
@@ -2158,15 +1971,18 @@ impl DispatcherAgent {
         task_description: &str,
     ) -> std::result::Result<String, String> {
         let latest_user_goal = db
-            .get_latest_user_message_content(workspace_id)
+            .get_latest_user_message_content_async(workspace_id)
+            .await
             .map_err(|error| format!("读取最新用户消息失败：{error}"))?
             .as_deref()
             .map(|text| compact_multiline(text.trim(), 240))
             .filter(|text| !text.is_empty());
         let explored_index_info = collect_recent_exploration_entries_from_db(db, workspace_id)
+            .await
             .map_err(|error| format!("读取探索上下文失败：{error}"))?;
         let active_plan_path = db
-            .get_session_runtime_state(workspace_id)
+            .get_session_runtime_state_async(workspace_id)
+            .await
             .map_err(|error| format!("读取调度运行态失败：{error}"))?
             .active_plan_path
             .filter(|path| !is_implemented_plan_path(Path::new(path)));
@@ -2378,7 +2194,8 @@ impl DispatcherAgent {
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    self.emit_tool_error(db, workspace_id, on_event, tool_call, &error)?;
+                    self.emit_tool_error(db, workspace_id, on_event, tool_call, &error)
+                        .await?;
                     processed.insert(tool_call.id.clone());
                 }
             }
@@ -2400,10 +2217,12 @@ impl DispatcherAgent {
                 ensure_mode(runtime_state.mode, DispatcherMode::Default, "update_plan")?;
                 let draft = parse_update_plan(&tool_call.arguments)?;
                 let latest_state = db
-                    .get_session_runtime_state(workspace_id)
+                    .get_session_runtime_state_async(workspace_id)
+                    .await
                     .map_err(|error| error.to_string())?;
                 let checklist = build_checklist_state(draft, latest_state.checklist.as_ref())?;
-                db.update_checklist(workspace_id, &checklist)
+                db.update_checklist_async(workspace_id, &checklist)
+                    .await
                     .map_err(|error| error.to_string())?;
                 emit(
                     on_event,
@@ -2437,7 +2256,8 @@ impl DispatcherAgent {
                         })
                         .collect(),
                 };
-                db.set_plan_interaction(workspace_id, Some(&interaction))
+                db.set_plan_interaction_async(workspace_id, Some(&interaction))
+                    .await
                     .map_err(|error| error.to_string())?;
                 emit(
                     on_event,
@@ -2458,7 +2278,8 @@ impl DispatcherAgent {
                 let (title, content) = parse_create_plan_document(&tool_call.arguments)?;
                 let plan_path = create_plan_document(workspace, &title, &content).await?;
                 let plan_path = plan_path.to_string_lossy().to_string();
-                db.set_active_plan_path(workspace_id, Some(&plan_path))
+                db.set_active_plan_path_async(workspace_id, Some(&plan_path))
+                    .await
                     .map_err(|error| error.to_string())?;
                 emit(
                     on_event,
@@ -2489,7 +2310,8 @@ impl DispatcherAgent {
                 let (path, content) = parse_replace_plan_document(&tool_call.arguments)?;
                 let plan_path = replace_plan_document(workspace, &path, &content).await?;
                 let plan_path = plan_path.to_string_lossy().to_string();
-                db.set_active_plan_path(workspace_id, Some(&plan_path))
+                db.set_active_plan_path_async(workspace_id, Some(&plan_path))
+                    .await
                     .map_err(|error| error.to_string())?;
                 emit(
                     on_event,
@@ -2512,7 +2334,8 @@ impl DispatcherAgent {
                 let plan_path =
                     edit_plan_document(workspace, &path, &old_text, &new_text, replace_all).await?;
                 let plan_path = plan_path.to_string_lossy().to_string();
-                db.set_active_plan_path(workspace_id, Some(&plan_path))
+                db.set_active_plan_path_async(workspace_id, Some(&plan_path))
+                    .await
                     .map_err(|error| error.to_string())?;
                 emit(
                     on_event,
@@ -2535,9 +2358,11 @@ impl DispatcherAgent {
                     title,
                     summary,
                 };
-                db.set_active_plan_path(workspace_id, Some(&plan_path))
+                db.set_active_plan_path_async(workspace_id, Some(&plan_path))
+                    .await
                     .map_err(|error| error.to_string())?;
-                db.set_plan_interaction(workspace_id, Some(&interaction))
+                db.set_plan_interaction_async(workspace_id, Some(&interaction))
+                    .await
                     .map_err(|error| error.to_string())?;
                 emit(
                     on_event,
@@ -2560,9 +2385,11 @@ impl DispatcherAgent {
                 let (original, implemented) = mark_plan_implemented(workspace, &path).await?;
                 let original = original.to_string_lossy().to_string();
                 let implemented = implemented.to_string_lossy().to_string();
-                db.set_active_plan_path(workspace_id, Some(&implemented))
+                db.set_active_plan_path_async(workspace_id, Some(&implemented))
+                    .await
                     .map_err(|error| error.to_string())?;
-                db.set_plan_interaction(workspace_id, None)
+                db.set_plan_interaction_async(workspace_id, None)
+                    .await
                     .map_err(|error| error.to_string())?;
                 emit(
                     on_event,
@@ -2580,7 +2407,7 @@ impl DispatcherAgent {
         }
     }
 
-    fn plan_protocol_action(
+    async fn plan_protocol_action(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
@@ -2593,8 +2420,9 @@ impl DispatcherAgent {
                 parse_dispatch_instruction(&tool_call.arguments, agent)?;
             let dispatch_id = uuid::Uuid::new_v4().to_string();
             let description = summarize_dispatch_description(&task_description);
-            let task_prompt =
-                self.build_subprocess_task_prompt(db, workspace_id, agent, &task_description)?;
+            let task_prompt = self
+                .build_subprocess_task_prompt(db, workspace_id, agent, &task_description)
+                .await?;
             protocol_state.record_dispatch(agent.slug(), &dispatch_id);
             return Ok(Some(ProtocolToolAction::Dispatch {
                 dispatch_id,
@@ -2638,7 +2466,7 @@ impl DispatcherAgent {
         Ok(None)
     }
 
-    fn emit_protocol_action(
+    async fn emit_protocol_action(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
@@ -2661,6 +2489,7 @@ impl DispatcherAgent {
                     agent.slug(),
                     description,
                 )
+                .await
                 .map_err(anyhow::Error::msg)?
                 {
                     emit(
@@ -2738,7 +2567,7 @@ impl DispatcherAgent {
                 detail_refs: Vec::new(),
             },
         );
-        db.add_visible_message_with_tools(
+        db.add_visible_message_with_tools_async(
             workspace_id,
             "tool",
             &result,
@@ -2746,9 +2575,11 @@ impl DispatcherAgent {
             Some(&tool_call.name),
             Some("raw"),
             None,
-        )?;
-        if let Err(error) =
-            db.compact_successful_tool_retry(workspace_id, &tool_call.name, &tool_call.id)
+        )
+        .await?;
+        if let Err(error) = db
+            .compact_successful_tool_retry_async(workspace_id, &tool_call.name, &tool_call.id)
+            .await
         {
             eprintln!(
                 "failed to compact dispatcher protocol retry messages for workspace {} and tool {}: {}",
@@ -2758,7 +2589,7 @@ impl DispatcherAgent {
         Ok(())
     }
 
-    fn emit_tool_retry_feedback(
+    async fn emit_tool_retry_feedback(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
@@ -2778,7 +2609,7 @@ impl DispatcherAgent {
                 detail_refs: Vec::new(),
             },
         );
-        db.add_visible_tool_result(
+        db.add_visible_tool_result_async(
             workspace_id,
             display_text,
             &context_payload,
@@ -2786,11 +2617,12 @@ impl DispatcherAgent {
             Some(&tool_call.name),
             Some("raw"),
             &[],
-        )?;
+        )
+        .await?;
         Ok(())
     }
 
-    fn emit_tool_error(
+    async fn emit_tool_error(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
@@ -2808,7 +2640,7 @@ impl DispatcherAgent {
                 detail_refs: Vec::new(),
             },
         );
-        db.add_visible_message_with_tools(
+        db.add_visible_message_with_tools_async(
             workspace_id,
             "tool",
             error,
@@ -2816,11 +2648,12 @@ impl DispatcherAgent {
             Some(&tool_call.name),
             Some("raw"),
             None,
-        )?;
+        )
+        .await?;
         Ok(())
     }
 
-    fn emit_stop_and_finish(
+    async fn emit_stop_and_finish(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
@@ -2831,9 +2664,16 @@ impl DispatcherAgent {
         let content = build_stopped_dispatch_reply(partial);
         let usage_stats = usage_tracker.map(RunUsageTracker::snapshot);
         let reply = if let Some(usage_stats) = usage_stats.as_ref() {
-            db.add_visible_message_with_usage(workspace_id, "assistant", &content, usage_stats)?
+            db.add_visible_message_with_usage_async(
+                workspace_id,
+                "assistant",
+                &content,
+                usage_stats,
+            )
+            .await?
         } else {
-            db.add_visible_message(workspace_id, "assistant", &content, None)?
+            db.add_visible_message_async(workspace_id, "assistant", &content, None)
+                .await?
         };
         emit(
             on_event,
@@ -2933,7 +2773,7 @@ fn empty_checklist_state() -> ChecklistPlanState {
     }
 }
 
-fn reserve_checklist_dispatch(
+async fn reserve_checklist_dispatch(
     db: &DispatcherDb,
     session_id: &str,
     dispatch_id: &str,
@@ -2941,7 +2781,8 @@ fn reserve_checklist_dispatch(
     description: &str,
 ) -> std::result::Result<Option<ChecklistPlanState>, String> {
     let mut state = db
-        .get_session_runtime_state(session_id)
+        .get_session_runtime_state_async(session_id)
+        .await
         .map_err(|error| error.to_string())?;
     let Some(mut checklist) = state.checklist.take() else {
         return Ok(None);
@@ -2991,18 +2832,20 @@ fn reserve_checklist_dispatch(
     checklist.updated_at = Utc::now().to_rfc3339();
 
     let state = db
-        .update_checklist(session_id, &checklist)
+        .update_checklist_async(session_id, &checklist)
+        .await
         .map_err(|error| error.to_string())?;
     Ok(state.checklist)
 }
 
-fn start_checklist_dispatch(
+async fn start_checklist_dispatch(
     db: &DispatcherDb,
     session_id: &str,
     dispatch_id: &str,
 ) -> std::result::Result<Option<ChecklistPlanState>, String> {
     let state = db
-        .get_session_runtime_state(session_id)
+        .get_session_runtime_state_async(session_id)
+        .await
         .map_err(|error| error.to_string())?;
     let Some(mut checklist) = state.checklist else {
         return Ok(None);
@@ -3019,18 +2862,20 @@ fn start_checklist_dispatch(
     item.status = ChecklistStepStatus::InProgress;
     checklist.updated_at = Utc::now().to_rfc3339();
     let state = db
-        .update_checklist(session_id, &checklist)
+        .update_checklist_async(session_id, &checklist)
+        .await
         .map_err(|error| error.to_string())?;
     Ok(state.checklist)
 }
 
-fn complete_checklist_dispatch(
+async fn complete_checklist_dispatch(
     db: &DispatcherDb,
     session_id: &str,
     dispatch_id: &str,
 ) -> std::result::Result<Option<ChecklistPlanState>, String> {
     let state = db
-        .get_session_runtime_state(session_id)
+        .get_session_runtime_state_async(session_id)
+        .await
         .map_err(|error| error.to_string())?;
     let Some(mut checklist) = state.checklist else {
         return Ok(None);
@@ -3047,7 +2892,8 @@ fn complete_checklist_dispatch(
     item.status = ChecklistStepStatus::Completed;
     checklist.updated_at = Utc::now().to_rfc3339();
     let state = db
-        .update_checklist(session_id, &checklist)
+        .update_checklist_async(session_id, &checklist)
+        .await
         .map_err(|error| error.to_string())?;
     Ok(state.checklist)
 }
@@ -3498,7 +3344,7 @@ fn collect_recent_exploration_entries(history: &[ChatMessage]) -> String {
 
 /// DB-backed variant of `collect_recent_exploration_entries` that avoids loading
 /// the full LLM history. Fetches only the recent tool/assistant rows needed.
-fn collect_recent_exploration_entries_from_db(
+async fn collect_recent_exploration_entries_from_db(
     db: &DispatcherDb,
     workspace_id: &str,
 ) -> std::result::Result<String, String> {
@@ -3506,7 +3352,8 @@ fn collect_recent_exploration_entries_from_db(
     const MAX_TOTAL_CHARS: usize = 900;
 
     let rows = db
-        .list_recent_exploration_content(workspace_id, MAX_ENTRIES)
+        .list_recent_exploration_content_async(workspace_id, MAX_ENTRIES)
+        .await
         .map_err(|error| error.to_string())?;
 
     let mut entries = Vec::new();
@@ -3606,68 +3453,6 @@ fn build_stopped_dispatch_reply(partial: &str) -> String {
     }
 }
 
-fn build_stopped_plain_chat_reply(partial: &str) -> String {
-    let trimmed = partial.trim();
-    if trimmed.is_empty() {
-        "⏹️ 本轮聊天已停止。当前会话上下文已保留，可稍后继续。".to_string()
-    } else {
-        format!(
-            "{}\n\n[本轮聊天已手动停止。当前会话上下文与以上输出均已保留，可稍后继续。]",
-            trimmed
-        )
-    }
-}
-
-fn emit_plain_chat_stop_and_finish(
-    db: &DispatcherDb,
-    workspace_id: &str,
-    on_event: &Channel<AgentEvent>,
-    partial: &str,
-    usage_tracker: &RunUsageTracker,
-) -> Result<DispatcherMessageRecord> {
-    let content = build_stopped_plain_chat_reply(partial);
-    let usage_stats = usage_tracker.snapshot();
-    let reply =
-        db.add_visible_message_with_usage(workspace_id, "assistant", &content, &usage_stats)?;
-    emit(
-        on_event,
-        AgentEvent::AssistantMessage {
-            message: reply.clone(),
-        },
-    );
-    Ok(reply)
-}
-
-fn build_plain_chat_system_prompt() -> String {
-    [
-        "# 普通聊天",
-        "",
-        "你是桌面客户端中的普通聊天助手。",
-        "当前会话不是项目 Agent 会话，没有项目目录、文件系统、终端、MCP 或子进程能力。",
-        "你可以按需使用浏览器工具打开网页、点击、输入、等待、读取页面可访问性树快照、请求视觉辅助分析和关闭浏览器，用于网页自动化与公开信息检索。",
-        "需要当前日期、时间、时区或时间戳时，调用 get_current_time，不要猜测系统时间。",
-        "浏览器自动化统一使用 ref：先调用 browser_read_text 获取 Accessibility Tree 快照，再使用快照中的 ref 调用点击、输入或局部读取工具；不要使用 CSS selector。",
-        "浏览器工具只代表当前普通聊天会话中的临时浏览器，不代表用户本地项目环境。",
-        "检索问题信息时，优先打开明确网址；没有网址时可打开搜索引擎结果页并读取页面文本，不要伪造检索结果。",
-        "不要声称已经读取、修改或执行了本地文件；如果用户要求操作项目或文件，请说明普通聊天不具备该能力，并建议切换到项目会话。",
-        "可以基于用户直接提供的文本、代码片段、错误信息或图片进行解释、分析、改写和建议。",
-        "默认使用简体中文，表达直接、清晰、面向有经验的开发者。",
-        "",
-        "## 图片生成与引用",
-        "",
-        "- 你可以调用 generate_image 工具根据文本描述生成图片。建议提供 image_name 参数为图片指定可读的文件名（如 'logo-design'），否则会使用随机 ID。",
-        "- 你可以调用 edit_image 工具对现有图片进行编辑（例如修改风格、添加元素、调整细节等）。需要提供图片的本地绝对路径（file:// 前缀会自动去除）和编辑描述。建议提供 image_name 参数指定输出文件名。",
-        "- 工具返回结果中会包含该图片的本地绝对路径（如 /Users/<username>/.jkcodingagent/chat-images/<slug>/<image-id>.png）。",
-        "- 如果你想在回答中展示生成的图片，请直接使用 Markdown 图片引用语法，引用工具返回的原始本地绝对路径即可。",
-        "- 正确格式示例：如果工具返回的本地路径是 /Users/alice/.jkcodingagent/chat-images/untitled/abc123.png，",
-        "  则在回答中写：![生成的风景图片](/Users/alice/.jkcodingagent/chat-images/untitled/abc123.png)",
-        "- 注意：",
-        "    - 直接使用工具返回的原始本地绝对路径即可，不需要添加任何协议前缀（如 file:// 或 asset://）。",
-        "    - 路径中的空格和特殊字符不需要额外编码。",
-    ]
-    .join("\n")
-}
-
 fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
     let _ = on_event.send(event);
 }
@@ -3679,12 +3464,21 @@ fn record_session_token_usage(
     source_kind: DispatcherSessionTokenUsageSource,
     usage: &LlmUsage,
 ) {
-    if let Err(error) = db.upsert_session_token_usage(workspace_id, model, source_kind, usage) {
-        eprintln!(
-            "failed to persist dispatcher session token usage for workspace {} and model {}: {}",
-            workspace_id, model, error
-        );
-    }
+    let db = db.clone();
+    let wid = workspace_id.to_string();
+    let m = model.to_string();
+    let u = usage.clone();
+    tokio::spawn(async move {
+        if let Err(error) = db
+            .upsert_session_token_usage_async(&wid, &m, source_kind, &u)
+            .await
+        {
+            eprintln!(
+                "failed to persist dispatcher session token usage for workspace {} and model {}: {}",
+                wid, m, error
+            );
+        }
+    });
 }
 
 fn record_run_token_usage(
@@ -3779,22 +3573,6 @@ fn default_mode_tool_allowlist() -> HashSet<&'static str> {
         "browser_close",
         "message",
         "update_plan",
-    ])
-}
-
-fn plain_chat_tool_allowlist() -> HashSet<&'static str> {
-    HashSet::from([
-        "browser_open_url",
-        "get_current_time",
-        "browser_click",
-        "browser_type",
-        "browser_press",
-        "browser_wait_for",
-        "browser_read_text",
-        "browser_visual_analyze",
-        "browser_close",
-        "generate_image",
-        "edit_image",
     ])
 }
 
@@ -3905,19 +3683,18 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        build_checklist_state, build_dispatcher_mode_block, build_plain_chat_system_prompt,
-        build_protocol_waiting_message, collect_recent_exploration_entries,
-        complete_checklist_dispatch, default_mode_tool_allowlist, parse_update_plan,
-        plain_chat_tool_allowlist, plan_mode_tool_allowlist, readonly_tool_run_end,
-        reserve_checklist_dispatch, resolve_plan_path, should_include_latest_user_goal,
-        start_checklist_dispatch, DispatchAgent, DispatcherAgent, DispatcherSubprocessRegistry,
-        PlanPathAccess, PlannedSubprocessState, ProtocolBatchState, ProtocolToolAction,
-        RegisteredSubprocess, RegisteredSubprocessPhase,
+        build_checklist_state, build_dispatcher_mode_block, build_protocol_waiting_message,
+        collect_recent_exploration_entries, complete_checklist_dispatch,
+        default_mode_tool_allowlist, parse_update_plan, plan_mode_tool_allowlist,
+        readonly_tool_run_end, reserve_checklist_dispatch, resolve_plan_path,
+        should_include_latest_user_goal, start_checklist_dispatch, DispatchAgent, DispatcherAgent,
+        DispatcherSubprocessRegistry, PlanPathAccess, PlannedSubprocessState, ProtocolBatchState,
+        ProtocolToolAction, RegisteredSubprocess, RegisteredSubprocessPhase,
     };
     use super::{ChecklistStepStatus, DispatcherMode, DispatcherSessionRuntimeState};
     use crate::agent::config::DispatcherAgentConfig;
     use crate::agent::db::{DispatcherDb, DispatcherSessionKind};
-    use crate::agent::llm::{ChatMessage, OpenAiCompatProvider, RequestedToolCall};
+    use crate::agent::llm::{ChatMessage, RequestedToolCall};
     use crate::project::mcp::ProjectMcpRegistry;
 
     #[test]
@@ -4099,8 +3876,8 @@ mod tests {
         assert!(error.contains("最多只能有 1 个"));
     }
 
-    #[test]
-    fn checklist_dispatch_lifecycle_reserves_starts_and_completes_step() {
+    #[tokio::test]
+    async fn checklist_dispatch_lifecycle_reserves_starts_and_completes_step() {
         let workspace = temp_workspace("checklist-dispatch-lifecycle");
         let db = DispatcherDb::new(workspace.join("dispatcher.sqlite3")).unwrap();
         let session = db
@@ -4128,6 +3905,7 @@ mod tests {
 
         let reserved =
             reserve_checklist_dispatch(&db, &session.id, "dispatch-1", "claude", "实现后端")
+                .await
                 .unwrap()
                 .unwrap();
         assert_eq!(reserved.items[0].dispatch_id.as_deref(), Some("dispatch-1"));
@@ -4136,6 +3914,7 @@ mod tests {
         db.attach_checklist_subprocess(&session.id, "dispatch-1", "task-1")
             .unwrap();
         let started = start_checklist_dispatch(&db, &session.id, "dispatch-1")
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(started.items[0].status, ChecklistStepStatus::InProgress);
@@ -4145,58 +3924,12 @@ mod tests {
         );
 
         let completed = complete_checklist_dispatch(&db, &session.id, "dispatch-1")
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(completed.items[0].status, ChecklistStepStatus::Completed);
         assert_eq!(completed.items[1].status, ChecklistStepStatus::Pending);
 
-        let _ = fs::remove_dir_all(&workspace);
-    }
-
-    #[test]
-    fn plain_chat_prompt_exposes_only_browser_and_time_tools() {
-        let prompt = build_plain_chat_system_prompt();
-        assert!(prompt.contains("普通聊天"));
-        assert!(prompt.contains("没有项目目录"));
-        assert!(prompt.contains("浏览器工具"));
-
-        let workspace = temp_workspace("plain-chat-tools");
-        let config = test_dispatcher_config(workspace.clone());
-        let agent = DispatcherAgent::new(
-            config,
-            ProjectMcpRegistry::default(),
-            Arc::new(DispatcherSubprocessRegistry::default()),
-        );
-        let allowed = plain_chat_tool_allowlist();
-        let tool_definitions =
-            agent
-                .tools
-                .definitions_for_workspace(&workspace, Some(allowed.iter().copied()), false);
-        let tools = tool_definitions
-            .iter()
-            .map(|tool| tool.function.name.clone())
-            .collect::<Vec<_>>();
-        let provider = OpenAiCompatProvider::new(
-            "test-key".to_string(),
-            "https://example.com/v1".to_string(),
-            "test-model".to_string(),
-            1024,
-            0.1,
-        );
-        let snapshot = provider.build_request_snapshot(
-            &[ChatMessage::system(prompt)],
-            &tool_definitions,
-            false,
-        );
-
-        assert!(tools.iter().any(|name| name == "browser_open_url"));
-        assert!(tools.iter().any(|name| name == "browser_read_text"));
-        assert!(tools.iter().any(|name| name == "browser_visual_analyze"));
-        assert!(tools.iter().any(|name| name == "get_current_time"));
-        assert!(!tools.iter().any(|name| name == "browser_screenshot"));
-        assert!(!tools.iter().any(|name| name == "read_file"));
-        assert!(!tools.iter().any(|name| name == "exec"));
-        assert!(snapshot.body.tools.is_some());
         let _ = fs::remove_dir_all(&workspace);
     }
 
@@ -4292,7 +4025,6 @@ mod tests {
         assert!(default_mode_tool_allowlist().contains("update_plan"));
         assert!(default_mode_tool_allowlist().contains("browser_open_url"));
         assert!(default_mode_tool_allowlist().contains("get_current_time"));
-        assert!(plain_chat_tool_allowlist().contains("get_current_time"));
         assert!(plan_mode_tool_allowlist().contains("present_plan"));
         assert!(plan_mode_tool_allowlist().contains("get_current_time"));
         let _ = fs::remove_dir_all(&workspace);

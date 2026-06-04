@@ -24,4 +24,8 @@ impl ToolRegistry {
         tools.extend(delegation::delegation_tools());
         Self::new(tools).with_dynamic_provider(mcp::mcp_tool_bridge(project_mcp_registry))
     }
+
+    pub fn plain_chat_tools() -> Self {
+        Self::new(builtin::plain_chat_tools())
+    }
 }

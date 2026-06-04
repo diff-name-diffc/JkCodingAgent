@@ -29,3 +29,13 @@ pub(super) fn builtin_tools() -> Vec<Box<dyn AgentTool>> {
     tools.extend(browser::browser_tools());
     tools
 }
+
+pub(super) fn plain_chat_tools() -> Vec<Box<dyn AgentTool>> {
+    let mut tools = vec![
+        time::current_time_tool(),
+        image_generation::generate_image_tool(),
+        image_edit::edit_image_tool(),
+    ];
+    tools.extend(browser::browser_tools());
+    tools
+}

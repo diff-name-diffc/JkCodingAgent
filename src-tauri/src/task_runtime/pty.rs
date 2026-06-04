@@ -17,7 +17,7 @@ const PTY_EMIT_MAX_BATCH_BYTES: usize = 64 * 1024;
 const PTY_IDLE_OUTPUT_MAX_BYTES: usize = 256 * 1024;
 /// 有界 channel 容量：满时 reader 线程阻塞，反压传播至 OS 内核 PTY 缓冲区，
 /// 最终使写入进程（Claude/Codex）的 write() 系统调用阻塞，从源头限流。
-const PTY_EMIT_CHANNEL_CAPACITY: usize = 256;
+const PTY_EMIT_CHANNEL_CAPACITY: usize = 1024;
 
 fn has_task_session(app: &AppHandle, task_id: &str, is_codex: bool) -> bool {
     let tm = app.state::<TaskManager>();
@@ -267,9 +267,14 @@ fn spawn_pty_reader(
                             let _ = tx.send(data.clone());
                         }
                         if let Some(ref tx) = emit_tx {
-                            match tx.send(data) {
+                            match tx.try_send(data) {
                                 Ok(()) => {}
-                                Err(err) => emit_pty_event(&app, &id, event_name, id_key, err.0),
+                                Err(std::sync::mpsc::TrySendError::Full(data)) => {
+                                    emit_pty_event(&app, &id, event_name, id_key, data);
+                                }
+                                Err(std::sync::mpsc::TrySendError::Disconnected(data)) => {
+                                    emit_pty_event(&app, &id, event_name, id_key, data);
+                                }
                             }
                         }
                     }

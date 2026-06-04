@@ -362,8 +362,7 @@ async fn save_and_return(
     let bytes_to_write = image_bytes;
 
     let saved_path = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-        let app_dir = crate::chat_images::app_data_dir()
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let app_dir = crate::chat_images::app_data_dir().map_err(|e| anyhow::anyhow!("{}", e))?;
         let images_dir = app_dir.join("chat-images").join(&slug);
         std::fs::create_dir_all(&images_dir)?;
         let file_path = images_dir.join(&file_name);

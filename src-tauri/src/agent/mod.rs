@@ -3,6 +3,7 @@ pub(crate) mod config;
 pub(crate) mod db;
 pub(crate) mod debug;
 pub(crate) mod llm;
+mod plain_chat;
 mod prompt;
 mod runtime;
 mod summary;

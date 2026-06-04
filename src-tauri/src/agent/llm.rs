@@ -315,7 +315,7 @@ impl OpenAiCompatProvider {
                 max_tokens: self.max_tokens,
                 temperature: self.temperature,
                 stream: true,
-                enable_thinking: enable_thinking.then_some(true),
+                enable_thinking: self.enable_thinking_parameter(enable_thinking),
                 stream_options: Some(StreamOptions {
                     include_usage: true,
                 }),
@@ -385,7 +385,7 @@ impl OpenAiCompatProvider {
             temperature: self.temperature,
             tools: if tools.is_empty() { None } else { Some(tools) },
             stream: true,
-            enable_thinking: enable_thinking.then_some(true),
+            enable_thinking: self.enable_thinking_parameter(enable_thinking),
             stream_options: Some(StreamOptions {
                 include_usage: true,
             }),
@@ -553,6 +553,20 @@ impl OpenAiCompatProvider {
             usage,
         })
     }
+
+    fn enable_thinking_parameter(&self, enable_thinking: bool) -> Option<bool> {
+        if enable_thinking || should_explicitly_disable_thinking(&self.model, &self.api_base) {
+            Some(enable_thinking)
+        } else {
+            None
+        }
+    }
+}
+
+fn should_explicitly_disable_thinking(model: &str, api_base: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    let api_base = api_base.to_ascii_lowercase();
+    model.contains("qwen") || model.contains("qwq") || api_base.contains("dashscope")
 }
 
 fn split_tagged_thinking(content: &str) -> (String, String) {
@@ -684,8 +698,14 @@ async fn build_api_message_content(content: &str) -> Result<ApiMessageContent> {
         eprintln!(
             "build_api_message_content: multimodal — {} parts ({} image_url, {} text)",
             parts.len(),
-            parts.iter().filter(|p| matches!(p, ApiMessageContentPart::ImageUrl { .. })).count(),
-            parts.iter().filter(|p| matches!(p, ApiMessageContentPart::Text { .. })).count(),
+            parts
+                .iter()
+                .filter(|p| matches!(p, ApiMessageContentPart::ImageUrl { .. }))
+                .count(),
+            parts
+                .iter()
+                .filter(|p| matches!(p, ApiMessageContentPart::Text { .. }))
+                .count(),
         );
         Ok(ApiMessageContent::Parts(parts))
     } else {
@@ -1043,8 +1063,9 @@ mod tests {
     use super::{
         append_raw_response, append_valid_utf8, build_api_message_content, build_api_messages,
         build_requested_tool_calls, is_supported_image_reference, messages_contain_inline_images,
-        should_retry_without_stream_options, split_tagged_thinking, ApiMessageContent,
-        ApiMessageContentPart, ChatMessage, StreamChunk,
+        should_explicitly_disable_thinking, should_retry_without_stream_options,
+        split_tagged_thinking, ApiMessageContent, ApiMessageContentPart, ChatMessage,
+        OpenAiCompatProvider, StreamChunk,
     };
 
     #[test]
@@ -1116,6 +1137,55 @@ mod tests {
             r#"{"error":{"message":"Required body invalid"}}"#,
             true,
         ));
+    }
+
+    #[test]
+    fn qwen_provider_explicitly_disables_thinking_when_requested_off() {
+        assert!(should_explicitly_disable_thinking(
+            "o-qwen3.7-plus",
+            "http://10.144.144.2:8317/v1"
+        ));
+        assert!(should_explicitly_disable_thinking(
+            "custom-model",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        ));
+        assert!(!should_explicitly_disable_thinking(
+            "gpt-4.1",
+            "https://api.openai.com/v1"
+        ));
+    }
+
+    #[test]
+    fn request_snapshot_includes_false_thinking_for_qwen_only() {
+        let messages = vec![ChatMessage::system("只输出 pong。".to_string())];
+        let qwen = OpenAiCompatProvider::new(
+            "test-key".to_string(),
+            "http://localhost:8317/v1".to_string(),
+            "o-qwen3.7-plus".to_string(),
+            64,
+            0.0,
+        );
+        let openai = OpenAiCompatProvider::new(
+            "test-key".to_string(),
+            "https://api.openai.com/v1".to_string(),
+            "gpt-4.1".to_string(),
+            64,
+            0.0,
+        );
+
+        assert_eq!(
+            qwen.build_request_snapshot(&messages, &[], false)
+                .body
+                .enable_thinking,
+            Some(false)
+        );
+        assert_eq!(
+            openai
+                .build_request_snapshot(&messages, &[], false)
+                .body
+                .enable_thinking,
+            None
+        );
     }
 
     #[test]
@@ -1357,12 +1427,7 @@ mod tests {
 
     fn make_small_test_png() -> Vec<u8> {
         let img = image::RgbaImage::from_fn(8, 8, |x, y| {
-            image::Rgba([
-                (x % 256) as u8,
-                (y % 256) as u8,
-                ((x + y) % 256) as u8,
-                255,
-            ])
+            image::Rgba([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8, 255])
         });
         let mut buf = std::io::Cursor::new(Vec::new());
         image::DynamicImage::ImageRgba8(img)

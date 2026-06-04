@@ -779,7 +779,7 @@ mod tests {
         build_session_title_source, build_summary_debug_context, decide_tool_result_action,
         extract_tagged_block, fallback_session_title, normalize_session_title,
         normalize_tool_output, parse_dual_tool_summary, SessionTitleMessage, ToolResultAction,
-        SESSION_TITLE_MAX_CHARS, HIGH_FIDELITY_SUMMARY_THRESHOLD_CHARS,
+        HIGH_FIDELITY_SUMMARY_THRESHOLD_CHARS, SESSION_TITLE_MAX_CHARS,
     };
     use crate::agent::llm::OpenAiCompatProvider;
 
@@ -957,8 +957,14 @@ mod tests {
     #[test]
     fn session_title_source_builds_from_messages() {
         let messages = vec![
-            SessionTitleMessage { role: "user".to_string(), content: "hello".to_string() },
-            SessionTitleMessage { role: "assistant".to_string(), content: "world".to_string() },
+            SessionTitleMessage {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+            },
+            SessionTitleMessage {
+                role: "assistant".to_string(),
+                content: "world".to_string(),
+            },
         ];
         let source = build_session_title_source(&messages, "fallback");
         assert!(source.contains("【用户】"));
@@ -970,8 +976,14 @@ mod tests {
     #[test]
     fn session_title_source_skips_empty_messages() {
         let messages = vec![
-            SessionTitleMessage { role: "user".to_string(), content: "  ".to_string() },
-            SessionTitleMessage { role: "assistant".to_string(), content: "actual content".to_string() },
+            SessionTitleMessage {
+                role: "user".to_string(),
+                content: "  ".to_string(),
+            },
+            SessionTitleMessage {
+                role: "assistant".to_string(),
+                content: "actual content".to_string(),
+            },
         ];
         let source = build_session_title_source(&messages, "fallback");
         assert!(!source.contains("【用户】"));
@@ -1098,34 +1110,82 @@ mod tests {
 
     #[test]
     fn tool_output_kind_maps_known_tools() {
-        assert_eq!(super::tool_output_kind("read_file"), super::ToolOutputKind::Exact);
-        assert_eq!(super::tool_output_kind("list_dir"), super::ToolOutputKind::Exact);
-        assert_eq!(super::tool_output_kind("glob"), super::ToolOutputKind::Exact);
-        assert_eq!(super::tool_output_kind("grep"), super::ToolOutputKind::Exact);
-        assert_eq!(super::tool_output_kind("browser_read_text"), super::ToolOutputKind::Exact);
-        assert_eq!(super::tool_output_kind("browser_visual_analyze"), super::ToolOutputKind::Exact);
-        assert_eq!(super::tool_output_kind("exec"), super::ToolOutputKind::Command);
-        assert_eq!(super::tool_output_kind("write_file"), super::ToolOutputKind::Mutation);
-        assert_eq!(super::tool_output_kind("edit_file"), super::ToolOutputKind::Mutation);
-        assert_eq!(super::tool_output_kind("generate_image"), super::ToolOutputKind::Mutation);
-        assert_eq!(super::tool_output_kind("edit_image"), super::ToolOutputKind::Mutation);
-        assert_eq!(super::tool_output_kind("message"), super::ToolOutputKind::Message);
-        assert_eq!(super::tool_output_kind("unknown_tool"), super::ToolOutputKind::Other);
+        assert_eq!(
+            super::tool_output_kind("read_file"),
+            super::ToolOutputKind::Exact
+        );
+        assert_eq!(
+            super::tool_output_kind("list_dir"),
+            super::ToolOutputKind::Exact
+        );
+        assert_eq!(
+            super::tool_output_kind("glob"),
+            super::ToolOutputKind::Exact
+        );
+        assert_eq!(
+            super::tool_output_kind("grep"),
+            super::ToolOutputKind::Exact
+        );
+        assert_eq!(
+            super::tool_output_kind("browser_read_text"),
+            super::ToolOutputKind::Exact
+        );
+        assert_eq!(
+            super::tool_output_kind("browser_visual_analyze"),
+            super::ToolOutputKind::Exact
+        );
+        assert_eq!(
+            super::tool_output_kind("exec"),
+            super::ToolOutputKind::Command
+        );
+        assert_eq!(
+            super::tool_output_kind("write_file"),
+            super::ToolOutputKind::Mutation
+        );
+        assert_eq!(
+            super::tool_output_kind("edit_file"),
+            super::ToolOutputKind::Mutation
+        );
+        assert_eq!(
+            super::tool_output_kind("generate_image"),
+            super::ToolOutputKind::Mutation
+        );
+        assert_eq!(
+            super::tool_output_kind("edit_image"),
+            super::ToolOutputKind::Mutation
+        );
+        assert_eq!(
+            super::tool_output_kind("message"),
+            super::ToolOutputKind::Message
+        );
+        assert_eq!(
+            super::tool_output_kind("unknown_tool"),
+            super::ToolOutputKind::Other
+        );
     }
 
     #[test]
     fn default_result_mode_returns_full_for_exact_tools() {
-        assert_eq!(super::default_result_mode("read_file"), super::ToolResultMode::Full);
+        assert_eq!(
+            super::default_result_mode("read_file"),
+            super::ToolResultMode::Full
+        );
     }
 
     #[test]
     fn default_result_mode_returns_auto_for_command_tools() {
-        assert_eq!(super::default_result_mode("exec"), super::ToolResultMode::Auto);
+        assert_eq!(
+            super::default_result_mode("exec"),
+            super::ToolResultMode::Auto
+        );
     }
 
     #[test]
     fn default_result_mode_returns_auto_for_unknown_tools() {
-        assert_eq!(super::default_result_mode("custom_tool"), super::ToolResultMode::Auto);
+        assert_eq!(
+            super::default_result_mode("custom_tool"),
+            super::ToolResultMode::Auto
+        );
     }
 
     #[test]
@@ -1198,7 +1258,10 @@ mod tests {
 
     #[test]
     fn tool_result_mode_label_returns_correct_strings() {
-        assert_eq!(super::tool_result_mode_label(ToolResultAction::KeepRaw), "raw");
+        assert_eq!(
+            super::tool_result_mode_label(ToolResultAction::KeepRaw),
+            "raw"
+        );
         assert_eq!(
             super::tool_result_mode_label(ToolResultAction::HighFidelitySummarize),
             "conservative_summary"
@@ -1207,7 +1270,9 @@ mod tests {
 
     #[test]
     fn looks_like_code_or_precise_retrieval_detects_code_blocks() {
-        assert!(super::looks_like_code_or_precise_retrieval("```rust\nfn main() {}\n```"));
+        assert!(super::looks_like_code_or_precise_retrieval(
+            "```rust\nfn main() {}\n```"
+        ));
     }
 
     #[test]
@@ -1230,7 +1295,9 @@ mod tests {
 
     #[test]
     fn looks_like_code_or_precise_retrieval_rejects_plain_text() {
-        assert!(!super::looks_like_code_or_precise_retrieval("This is just plain text output"));
+        assert!(!super::looks_like_code_or_precise_retrieval(
+            "This is just plain text output"
+        ));
     }
 
     #[test]
@@ -1292,7 +1359,9 @@ mod tests {
 
     #[test]
     fn parse_dual_tool_summary_falls_back_when_context_empty() {
-        let output = "<CONTEXT_PAYLOAD>\n\n</CONTEXT_PAYLOAD>\n<DISPLAY_SUMMARY>\nreal\n</DISPLAY_SUMMARY>".to_string();
+        let output =
+            "<CONTEXT_PAYLOAD>\n\n</CONTEXT_PAYLOAD>\n<DISPLAY_SUMMARY>\nreal\n</DISPLAY_SUMMARY>"
+                .to_string();
         let (context, display) = parse_dual_tool_summary(output);
         // Falls back to full output since one tag is empty
         assert_eq!(context, display);

@@ -376,6 +376,8 @@ mod tests {
         let md = "# A\n\n# B\n\n# C";
         let chunks = chunk_markdown(md);
         // Each heading with empty text should produce no chunks
-        assert!(chunks.iter().all(|c| c.heading == "A" || c.heading == "B" || c.heading == "C"));
+        assert!(chunks
+            .iter()
+            .all(|c| c.heading == "A" || c.heading == "B" || c.heading == "C"));
     }
 }

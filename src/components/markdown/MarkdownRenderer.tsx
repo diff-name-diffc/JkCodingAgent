@@ -7,8 +7,19 @@ import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
+import type { PythonCodeRunRecord } from "../../types";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { MarkdownImage } from "./MarkdownImage";
+
+/** Fast, non-crypto hash for stable code block identification. */
+function stableHash(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(36);
+}
 
 const StreamingContext = createContext(false);
 
@@ -44,6 +55,22 @@ const safeSchema = {
     td: ["align", "className"],
     th: ["align", "className"],
   },
+  protocols: {
+    ...(defaultSchema.protocols || {}),
+    // Allow the internal chat-image:// protocol, local data URIs, and Tauri
+    // asset:// URLs on <img src> and <a href>. Without this, rehype-sanitize
+    // strips the src attribute for any non-http(s) image reference.
+    src: [
+      ...((defaultSchema.protocols && defaultSchema.protocols.src) || ["http", "https"]),
+      "chat-image",
+      "data",
+      "asset",
+    ],
+    href: [
+      ...((defaultSchema.protocols && defaultSchema.protocols.href) || ["http", "https"]),
+      "asset",
+    ],
+  },
 };
 
 function customUrlTransform(url: string) {
@@ -51,6 +78,7 @@ function customUrlTransform(url: string) {
     url.startsWith("data:image/") ||
     url.startsWith("asset://") ||
     url.startsWith("http://asset.localhost/") ||
+    url.startsWith("chat-image://") ||
     url.startsWith("/")
   ) {
     return url;
@@ -92,37 +120,38 @@ function normalizeSingleLineMathBlocks(content: string) {
     .join("\n");
 }
 
-const markdownComponents: Components = {
-  code({ className, children }) {
-    const rawCode = String(children).replace(/\n$/, "");
-    const language = className?.match(/language-([\w-]+)/)?.[1];
-    const isBlock = Boolean(className) || rawCode.includes("\n");
-
-    if (!isBlock) {
-      return <code className="markdown-inline-code">{rawCode}</code>;
-    }
-
-    return <StreamingCodeBlock code={rawCode} language={language} />;
-  },
-  pre({ children }) {
-    return <>{children}</>;
-  },
-  table({ children }) {
-    return (
-      <div className="markdown-table-wrap">
-        <table>{children}</table>
-      </div>
-    );
-  },
-  img({ src, alt }) {
-    return <MarkdownImage src={src} alt={alt} />;
-  },
-};
-
 /** Reads streaming flag from context and passes to MarkdownCodeBlock */
-function StreamingCodeBlock({ code, language }: { code: string; language?: string | null }) {
+function StreamingCodeBlock({
+  code,
+  language,
+  messageId,
+  codeBlockIndex,
+  codeHash,
+  onRunPython,
+  runRecord,
+}: {
+  code: string;
+  language?: string | null;
+  messageId?: string;
+  codeBlockIndex?: number;
+  codeHash: string;
+  onRunPython?: (target: { messageId: string; codeBlockIndex: number; code: string; codeHash: string }) => void;
+  runRecord?: PythonCodeRunRecord | null;
+}) {
   const streaming = useContext(StreamingContext);
-  return <MarkdownCodeBlock code={code} language={language} compact streaming={streaming} />;
+  return (
+    <MarkdownCodeBlock
+      code={code}
+      language={language}
+      messageId={messageId}
+      codeBlockIndex={codeBlockIndex}
+      codeHash={codeHash}
+      onRunPython={onRunPython}
+      runRecord={runRecord}
+      compact
+      streaming={streaming}
+    />
+  );
 }
 
 const LARGE_TEXT_THRESHOLD = 10_000;
@@ -131,10 +160,16 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,
   variant = "chat",
   streaming = false,
+  messageId,
+  onRunPython,
+  pythonRunRecords,
 }: {
   content: string;
   variant?: "chat" | "document";
   streaming?: boolean;
+  messageId?: string;
+  onRunPython?: (target: { messageId: string; codeBlockIndex: number; code: string; codeHash: string }) => void;
+  pythonRunRecords?: Record<string, PythonCodeRunRecord>;
 }) {
   // When streaming, throttle markdown parse to ~7fps to avoid 50/s full AST re-parses
   const [throttledContent, setThrottledContent] = useState(content);
@@ -179,6 +214,50 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       </div>
     );
   }
+
+  let codeBlockIndex = 0;
+  const markdownComponents: Components = {
+    code({ className, children }) {
+      const rawCode = String(children).replace(/\n$/, "");
+      const language = className?.match(/language-([\w-]+)/)?.[1];
+      const isBlock = Boolean(className) || rawCode.includes("\n");
+
+      if (!isBlock) {
+        return <code className="markdown-inline-code">{rawCode}</code>;
+      }
+
+      const currentIndex = codeBlockIndex;
+      codeBlockIndex += 1;
+      const hash = stableHash(rawCode);
+      const record = messageId && pythonRunRecords
+        ? pythonRunRecords[`${messageId}:${hash}`] ?? null
+        : null;
+      return (
+        <StreamingCodeBlock
+          code={rawCode}
+          language={language}
+          messageId={messageId}
+          codeBlockIndex={currentIndex}
+          codeHash={hash}
+          onRunPython={onRunPython}
+          runRecord={record}
+        />
+      );
+    },
+    pre({ children }) {
+      return <>{children}</>;
+    },
+    table({ children }) {
+      return (
+        <div className="markdown-table-wrap">
+          <table>{children}</table>
+        </div>
+      );
+    },
+    img({ src, alt }) {
+      return <MarkdownImage src={src} alt={alt} />;
+    },
+  };
 
   return (
     <div className={`markdown-surface markdown-surface--${variant}`}>

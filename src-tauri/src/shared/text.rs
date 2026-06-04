@@ -71,7 +71,10 @@ mod tests {
 
     #[test]
     fn long_suffix_added() {
-        assert_eq!(truncate_for_display("abcdefghij", 3, " [truncated]"), "abc [truncated]");
+        assert_eq!(
+            truncate_for_display("abcdefghij", 3, " [truncated]"),
+            "abc [truncated]"
+        );
     }
 
     #[test]

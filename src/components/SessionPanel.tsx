@@ -3,6 +3,7 @@ import { Search, ChevronLeft, PanelLeftClose, Plus, Trash2, LoaderCircle } from 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
+import { cleanupDispatcherSession } from "./dispatcherSessionStore";
 import type { Project, ThemeMode, DispatcherSession } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
@@ -73,7 +74,7 @@ export function SessionPanel({
     });
 
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(() => {});
     };
   }, [project.id]);
 
@@ -139,6 +140,7 @@ export function SessionPanel({
 
     try {
       await invoke("dispatcher_delete_session", { sessionId: id });
+      cleanupDispatcherSession(id);
       const remaining = sessions.filter((session) => session.id !== id);
       setSessions(remaining);
       if (activeSessionId === id) {

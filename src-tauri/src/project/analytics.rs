@@ -359,9 +359,8 @@ mod tests {
 
     #[test]
     fn parse_metrics_from_nonexistent_file_returns_zeros() {
-        let m = parse_session_metrics_from_path(std::path::Path::new(
-            "/nonexistent_file_xyz.jsonl",
-        ));
+        let m =
+            parse_session_metrics_from_path(std::path::Path::new("/nonexistent_file_xyz.jsonl"));
         assert_eq!(m.input_tokens, 0);
         assert_eq!(m.output_tokens, 0);
         assert_eq!(m.tool_calls, 0);
@@ -549,9 +548,7 @@ mod tests {
 
     #[test]
     fn cached_metrics_returns_default_for_nonexistent() {
-        let m = parse_session_metrics_cached(std::path::Path::new(
-            "/nonexistent_cached_xyz.jsonl",
-        ));
+        let m = parse_session_metrics_cached(std::path::Path::new("/nonexistent_cached_xyz.jsonl"));
         assert_eq!(m.input_tokens, 0);
     }
 
@@ -701,7 +698,10 @@ mod tests {
         assert_eq!(m.input_tokens, 1300); // 500 + 800
         assert_eq!(m.output_tokens, 400); // 100 + 300
         assert_eq!(m.tool_calls, 3); // 2 + 1
-        assert!((m.duration_secs - 15.0).abs() < 0.1, "duration should be ~15s");
+        assert!(
+            (m.duration_secs - 15.0).abs() < 0.1,
+            "duration should be ~15s"
+        );
     }
 
     #[tokio::test]

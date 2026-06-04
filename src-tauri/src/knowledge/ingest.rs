@@ -539,8 +539,7 @@ FILE: wiki/a.md\nContent A\n\nFILE: wiki/b.md\nContent B\n";
         ));
         let page_path = tmp.join("wiki/concepts/test-page.md");
         let content = "# My Page\n\nSome body text.";
-        let result =
-            prepare_page_content(content, "source.pdf", &page_path).unwrap();
+        let result = prepare_page_content(content, "source.pdf", &page_path).unwrap();
         assert!(result.starts_with("---"));
         assert!(result.contains("title:"));
         assert!(result.contains("sources:"));
@@ -556,8 +555,7 @@ FILE: wiki/a.md\nContent A\n\nFILE: wiki/b.md\nContent B\n";
         ));
         let page_path = tmp.join("wiki/concepts/existing.md");
         let content = "---\ntype: entity\ntitle: Existing\n---\n\n# Existing\nBody.";
-        let result =
-            prepare_page_content(content, "source.pdf", &page_path).unwrap();
+        let result = prepare_page_content(content, "source.pdf", &page_path).unwrap();
         assert!(result.contains("type: entity"));
         assert!(result.contains("title: Existing"));
         assert!(result.contains("source.pdf"));
@@ -572,8 +570,7 @@ FILE: wiki/a.md\nContent A\n\nFILE: wiki/b.md\nContent B\n";
         ));
         let page_path = tmp.join("wiki/concepts/nosrc.md");
         let content = "---\ntype: concept\ntitle: No Source\n---\n\nBody.";
-        let result =
-            prepare_page_content(content, "my-file.pdf", &page_path).unwrap();
+        let result = prepare_page_content(content, "my-file.pdf", &page_path).unwrap();
         assert!(result.contains("my-file.pdf"));
         assert!(result.contains("sources:"));
         std::fs::remove_dir_all(&tmp).ok();

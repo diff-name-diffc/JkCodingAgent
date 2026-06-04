@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{Connection, OptionalExtension, params, types::Type};
+use rusqlite::{params, types::Type, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -60,8 +60,19 @@ impl ContentSegment {
     pub fn to_markdown(&self) -> String {
         match self {
             ContentSegment::Text { text, .. } => text.clone(),
-            ContentSegment::Image { alt, path, .. } => {
-                format!("![{}]({})", alt.as_deref().unwrap_or("image"), path)
+            ContentSegment::Image {
+                alt,
+                // `path` is intentionally not included in the rendered markdown
+                // output so that raw filesystem paths never appear in the
+                // content visible to the user or sent to the LLM.
+                image_id,
+                ..
+            } => {
+                format!(
+                    "![{}]({})",
+                    alt.as_deref().unwrap_or("image"),
+                    format!("chat-image://{}", image_id)
+                )
             }
             ContentSegment::File { .. } => String::new(),
         }
@@ -85,7 +96,18 @@ fn content_to_segments_json(content: &str) -> String {
 }
 
 fn parse_segments_json(segments_json: &str) -> Vec<ContentSegment> {
-    serde_json::from_str(segments_json).unwrap_or_default()
+    match serde_json::from_str(segments_json) {
+        Ok(segments) => segments,
+        Err(e) => {
+            let preview = if segments_json.len() > 500 {
+                format!("{}...(truncated, {} bytes)", &segments_json[..500], segments_json.len())
+            } else {
+                segments_json.to_string()
+            };
+            eprintln!("parse_segments_json failed: {e}\n  input: {preview}");
+            Vec::new()
+        }
+    }
 }
 
 fn safe_absolute_image_path(path: &str) -> Result<PathBuf> {
@@ -232,6 +254,19 @@ pub struct DispatcherSessionRecord {
     pub title: String,
     pub mode: DispatcherMode,
     pub active_plan_path: Option<String>,
+    pub category: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatCategory {
+    pub id: String,
+    pub name: String,
+    pub icon: String,
+    pub color: String,
+    pub sort_order: i32,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -339,20 +374,278 @@ pub struct DispatcherSettingsRecord {
     pub embedding_model_configs: Vec<DispatcherModelConfig>,
 }
 
-fn model_config_or_legacy(
-    url: String,
-    api_key: String,
-    model: String,
-    legacy_url: &str,
-    legacy_api_key: &str,
-    legacy_model: &str,
-) -> DispatcherModelConfig {
-    let config = DispatcherModelConfig::new(&url, &api_key, &model);
-    if config.is_empty() {
-        DispatcherModelConfig::new(legacy_url, legacy_api_key, legacy_model)
-    } else {
-        config
+// ── Model Slot ─────────────────────────────────────────────────
+//
+// Each model type (chat, summary, vision, …) follows the same pattern:
+//   - DB columns: (url, api_key, name) triple + JSON list column
+//   - Read fallback: JSON list → structured triple → legacy flat fields
+//   - Write: derive all three layers from the canonical list
+//
+// `ModelSlot` encodes the per-slot metadata so the read/write paths can
+// iterate instead of copy-pasting 8×.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub(crate) enum ModelSlot {
+    Chat,
+    Summary,
+    Vision,
+    Image,
+    ImageEdit,
+    Asr,
+    Tts,
+    Embedding,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModelSlotColumns {
+    url: &'static str,
+    api_key: &'static str,
+    model: &'static str,
+    json: &'static str,
+}
+
+const SETTINGS_LEGACY_COLUMNS: [&str; 13] = [
+    "api_base",
+    "api_key",
+    "model",
+    "summary_model",
+    "vision_model",
+    "asr_api_key",
+    "asr_websocket_url",
+    "auto_approve_dispatch",
+    "context_debug",
+    "image_model_url",
+    "image_model_api_key",
+    "image_model",
+    "image_edit_model",
+];
+
+const MODEL_SLOT_COLUMNS: [ModelSlotColumns; 8] = [
+    ModelSlotColumns {
+        url: "chat_model_url",
+        api_key: "chat_model_api_key",
+        model: "chat_model_name",
+        json: "chat_model_configs_json",
+    },
+    ModelSlotColumns {
+        url: "summary_model_url",
+        api_key: "summary_model_api_key",
+        model: "summary_model_name",
+        json: "summary_model_configs_json",
+    },
+    ModelSlotColumns {
+        url: "vision_model_url",
+        api_key: "vision_model_api_key",
+        model: "vision_model_name",
+        json: "vision_model_configs_json",
+    },
+    ModelSlotColumns {
+        url: "image_model_config_url",
+        api_key: "image_model_config_api_key",
+        model: "image_model_config_name",
+        json: "image_model_configs_json",
+    },
+    ModelSlotColumns {
+        url: "image_edit_model_url",
+        api_key: "image_edit_model_api_key",
+        model: "image_edit_model_name",
+        json: "image_edit_model_configs_json",
+    },
+    ModelSlotColumns {
+        url: "asr_model_url",
+        api_key: "asr_model_api_key",
+        model: "asr_model_name",
+        json: "asr_model_configs_json",
+    },
+    ModelSlotColumns {
+        url: "tts_model_url",
+        api_key: "tts_model_api_key",
+        model: "tts_model_name",
+        json: "tts_model_configs_json",
+    },
+    ModelSlotColumns {
+        url: "embedding_model_url",
+        api_key: "embedding_model_api_key",
+        model: "embedding_model_name",
+        json: "embedding_model_configs_json",
+    },
+];
+
+impl ModelSlot {
+    const ALL: [ModelSlot; 8] = [
+        ModelSlot::Chat,
+        ModelSlot::Summary,
+        ModelSlot::Vision,
+        ModelSlot::Image,
+        ModelSlot::ImageEdit,
+        ModelSlot::Asr,
+        ModelSlot::Tts,
+        ModelSlot::Embedding,
+    ];
+
+    #[allow(dead_code)]
+    fn label(self) -> &'static str {
+        match self {
+            ModelSlot::Chat => "chat",
+            ModelSlot::Summary => "summary",
+            ModelSlot::Vision => "vision",
+            ModelSlot::Image => "image",
+            ModelSlot::ImageEdit => "image edit",
+            ModelSlot::Asr => "asr",
+            ModelSlot::Tts => "tts",
+            ModelSlot::Embedding => "embedding",
+        }
     }
+
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|slot| *slot == self)
+            .expect("model slot must be listed in ModelSlot::ALL")
+    }
+
+    fn columns(self) -> &'static ModelSlotColumns {
+        &MODEL_SLOT_COLUMNS[self.index()]
+    }
+
+    /// 0-based column index where the (url, api_key, name) triple starts
+    /// in the generated settings SELECT.
+    fn config_col_offset(self) -> usize {
+        SETTINGS_LEGACY_COLUMNS.len() + self.index() * 3
+    }
+
+    /// 0-based column index for the JSON list column.
+    fn json_col(self) -> usize {
+        SETTINGS_LEGACY_COLUMNS.len() + MODEL_SLOT_COLUMNS.len() * 3 + self.index()
+    }
+
+    /// For `get_settings`: legacy columns are the same chat base (0-2) for
+    /// Chat/Summary/Vision; image legacy (9-11) for Image/ImageEdit;
+    /// asr legacy (5-6) for Asr; and no legacy fallback for TTS/Embedding.
+    fn legacy_fallback(self, row: &rusqlite::Row<'_>) -> rusqlite::Result<DispatcherModelConfig> {
+        let (url_col, key_col, model): (usize, usize, String) = match self {
+            ModelSlot::Chat => (0, 1, row.get(2)?),
+            ModelSlot::Summary => (0, 1, row.get(3)?),
+            ModelSlot::Vision => (0, 1, row.get(4)?),
+            ModelSlot::Image => (9, 10, row.get(11)?),
+            ModelSlot::ImageEdit => {
+                let image_model: String = row.get(11)?;
+                let image_edit_model: String = row.get(12)?;
+                (
+                    9,
+                    10,
+                    fallback_image_edit_model(&image_model, &image_edit_model).to_string(),
+                )
+            }
+            ModelSlot::Asr => (6, 5, DEFAULT_ASR_MODEL.to_string()),
+            ModelSlot::Tts | ModelSlot::Embedding => {
+                return Ok(DispatcherModelConfig::default());
+            }
+        };
+        let url: String = row.get(url_col)?;
+        let key: String = row.get(key_col)?;
+        Ok(DispatcherModelConfig::new(&url, &key, &model))
+    }
+
+    /// Apply per-slot defaults (url, api_key, model) when the active config
+    /// has empty fields.  Returns the (possibly modified) config.
+    fn apply_defaults(
+        self,
+        config: &mut DispatcherModelConfig,
+        image_config: &DispatcherModelConfig,
+    ) {
+        match self {
+            ModelSlot::Summary => {
+                if !config.is_empty() {
+                    config.model = normalize_summary_model(&config.model);
+                }
+            }
+            ModelSlot::Image => {
+                if !config.is_empty() && config.url.is_empty() {
+                    config.url = DEFAULT_IMAGE_MODEL_URL.to_string();
+                }
+                if !config.is_empty() && config.model.is_empty() {
+                    config.model = DEFAULT_IMAGE_MODEL.to_string();
+                }
+            }
+            ModelSlot::ImageEdit => {
+                if !config.is_empty() && config.url.is_empty() {
+                    config.url = if image_config.url.is_empty() {
+                        DEFAULT_IMAGE_MODEL_URL.to_string()
+                    } else {
+                        image_config.url.clone()
+                    };
+                }
+                if !config.is_empty() && config.api_key.is_empty() {
+                    config.api_key = image_config.api_key.clone();
+                }
+                if !config.is_empty() && config.model.is_empty() {
+                    config.model = if image_config.model.is_empty() {
+                        DEFAULT_IMAGE_MODEL.to_string()
+                    } else {
+                        image_config.model.clone()
+                    };
+                }
+            }
+            ModelSlot::Asr => {
+                if !config.is_empty() && config.model.is_empty() {
+                    config.model = DEFAULT_ASR_MODEL.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn settings_select_columns() -> Vec<&'static str> {
+    let mut columns =
+        Vec::with_capacity(SETTINGS_LEGACY_COLUMNS.len() + MODEL_SLOT_COLUMNS.len() * 4);
+    columns.extend(SETTINGS_LEGACY_COLUMNS);
+    for slot in ModelSlot::ALL {
+        let slot_columns = slot.columns();
+        columns.push(slot_columns.url);
+        columns.push(slot_columns.api_key);
+        columns.push(slot_columns.model);
+    }
+    for slot in ModelSlot::ALL {
+        columns.push(slot.columns().json);
+    }
+    columns
+}
+
+fn settings_column_index(name: &str) -> usize {
+    settings_select_columns()
+        .iter()
+        .position(|column| *column == name)
+        .unwrap_or_else(|| panic!("settings column must exist: {name}"))
+}
+
+fn settings_select_sql() -> String {
+    format!(
+        "SELECT {} FROM dispatcher_settings WHERE id = 'default'",
+        settings_select_columns().join(", ")
+    )
+}
+
+fn settings_upsert_sql() -> String {
+    let columns = settings_select_columns();
+    let placeholders = (1..=columns.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let updates = columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| format!("{column} = ?{}", index + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "INSERT INTO dispatcher_settings (id, {})
+         VALUES ('default', {placeholders})
+         ON CONFLICT(id) DO UPDATE SET {updates}",
+        columns.join(", ")
+    )
 }
 
 fn fallback_image_edit_model<'a>(image_model: &'a str, image_edit_model: &'a str) -> &'a str {
@@ -375,12 +668,75 @@ fn normalize_model_configs(configs: Vec<DispatcherModelConfig>) -> Vec<Dispatche
         for (index, config) in normalized.iter_mut().enumerate() {
             config.active = index == active_index;
         }
+    } else if let Some(first) = normalized.first_mut() {
+        first.active = true;
     }
     normalized
 }
 
 fn active_config(configs: &[DispatcherModelConfig]) -> Option<DispatcherModelConfig> {
     configs.iter().find(|config| config.active).cloned()
+}
+
+/// Read-path: merge JSON list column, structured config triple, and legacy
+/// fallback into a single canonical list for the slot.
+fn resolve_slot_configs_from_row(
+    row: &rusqlite::Row<'_>,
+    slot: ModelSlot,
+) -> rusqlite::Result<Vec<DispatcherModelConfig>> {
+    let col = slot.config_col_offset();
+    let structured = DispatcherModelConfig::new(
+        &row.get::<_, String>(col)?,
+        &row.get::<_, String>(col + 1)?,
+        &row.get::<_, String>(col + 2)?,
+    );
+    let legacy = slot.legacy_fallback(row)?;
+    let merged = model_config_or_legacy(
+        structured.url,
+        structured.api_key,
+        structured.model,
+        &legacy.url,
+        &legacy.api_key,
+        &legacy.model,
+    );
+    let json_col = slot.json_col();
+    let json_configs = parse_model_configs_column(row.get(json_col)?, json_col)?;
+    Ok(configs_or_single_config(
+        Some(json_configs),
+        Some(merged.clone()),
+        merged,
+    ))
+}
+
+/// Write-path: merge payload overrides into a canonical list for the slot.
+fn resolve_slot_configs_from_payload(
+    single_override: Option<DispatcherModelConfig>,
+    list_override: Option<Vec<DispatcherModelConfig>>,
+    fallback: DispatcherModelConfig,
+) -> Vec<DispatcherModelConfig> {
+    if let Some(configs) = list_override {
+        return normalize_model_configs(configs);
+    }
+    let single = single_override
+        .filter(|config| !config.is_empty())
+        .unwrap_or(fallback);
+    normalize_model_configs(vec![single])
+}
+
+fn model_config_or_legacy(
+    url: String,
+    api_key: String,
+    model: String,
+    legacy_url: &str,
+    legacy_api_key: &str,
+    legacy_model: &str,
+) -> DispatcherModelConfig {
+    let config = DispatcherModelConfig::new(&url, &api_key, &model);
+    if config.is_empty() {
+        DispatcherModelConfig::new(legacy_url, legacy_api_key, legacy_model)
+    } else {
+        config
+    }
 }
 
 fn configs_or_single_config(
@@ -400,21 +756,6 @@ fn configs_or_single_config(
     }
 
     let single = single_config.unwrap_or(fallback);
-    normalize_model_configs(vec![single])
-}
-
-fn payload_configs_or_single_config(
-    configs: Option<Vec<DispatcherModelConfig>>,
-    single_config: Option<DispatcherModelConfig>,
-    fallback: DispatcherModelConfig,
-) -> Vec<DispatcherModelConfig> {
-    if let Some(configs) = configs {
-        return normalize_model_configs(configs);
-    }
-
-    let single = single_config
-        .filter(|config| !config.is_empty())
-        .unwrap_or(fallback);
     normalize_model_configs(vec![single])
 }
 
@@ -448,83 +789,64 @@ fn build_settings_record(
     auto_approve_dispatch: bool,
     context_debug: bool,
 ) -> DispatcherSettingsRecord {
-    let chat_model_configs = normalize_model_configs(configs.chat_model_configs);
-    let summary_model_configs = normalize_model_configs(configs.summary_model_configs);
-    let vision_model_configs = normalize_model_configs(configs.vision_model_configs);
-    let image_model_configs = normalize_model_configs(configs.image_model_configs);
-    let image_edit_model_configs = normalize_model_configs(configs.image_edit_model_configs);
-    let asr_model_configs = normalize_model_configs(configs.asr_model_configs);
-    let tts_model_configs = normalize_model_configs(configs.tts_model_configs);
-    let embedding_model_configs = normalize_model_configs(configs.embedding_model_configs);
-    let chat_model_config = active_config(&chat_model_configs).unwrap_or_default();
-    let mut summary_model_config = active_config(&summary_model_configs).unwrap_or_default();
-    let vision_model_config = active_config(&vision_model_configs).unwrap_or_default();
-    let mut image_model_config = active_config(&image_model_configs).unwrap_or_default();
-    let mut image_edit_model_config = active_config(&image_edit_model_configs).unwrap_or_default();
-    let mut asr_model_config = active_config(&asr_model_configs).unwrap_or_default();
-    let tts_model_config = active_config(&tts_model_configs).unwrap_or_default();
-    let embedding_model_config = active_config(&embedding_model_configs).unwrap_or_default();
+    let normalized = [
+        normalize_model_configs(configs.chat_model_configs),
+        normalize_model_configs(configs.summary_model_configs),
+        normalize_model_configs(configs.vision_model_configs),
+        normalize_model_configs(configs.image_model_configs),
+        normalize_model_configs(configs.image_edit_model_configs),
+        normalize_model_configs(configs.asr_model_configs),
+        normalize_model_configs(configs.tts_model_configs),
+        normalize_model_configs(configs.embedding_model_configs),
+    ];
 
-    if !summary_model_config.is_empty() {
-        summary_model_config.model = normalize_summary_model(&summary_model_config.model);
+    let mut active: Vec<DispatcherModelConfig> = normalized
+        .iter()
+        .map(|c| active_config(c).unwrap_or_default())
+        .collect();
+
+    // ImageEdit inherits the Image slot after Image defaults are applied.
+    for slot in ModelSlot::ALL {
+        if slot != ModelSlot::ImageEdit {
+            slot.apply_defaults(&mut active[slot.index()], &DispatcherModelConfig::default());
+        }
     }
-    if !image_model_config.is_empty() && image_model_config.url.is_empty() {
-        image_model_config.url = DEFAULT_IMAGE_MODEL_URL.to_string();
-    }
-    if !image_model_config.is_empty() && image_model_config.model.is_empty() {
-        image_model_config.model = DEFAULT_IMAGE_MODEL.to_string();
-    }
-    if !image_edit_model_config.is_empty() && image_edit_model_config.url.is_empty() {
-        image_edit_model_config.url = if image_model_config.url.is_empty() {
-            DEFAULT_IMAGE_MODEL_URL.to_string()
-        } else {
-            image_model_config.url.clone()
-        };
-    }
-    if !image_edit_model_config.is_empty() && image_edit_model_config.api_key.is_empty() {
-        image_edit_model_config.api_key = image_model_config.api_key.clone();
-    }
-    if !image_edit_model_config.is_empty() && image_edit_model_config.model.is_empty() {
-        image_edit_model_config.model = if image_model_config.model.is_empty() {
-            DEFAULT_IMAGE_MODEL.to_string()
-        } else {
-            image_model_config.model.clone()
-        };
-    }
-    if !asr_model_config.is_empty() && asr_model_config.model.is_empty() {
-        asr_model_config.model = DEFAULT_ASR_MODEL.to_string();
-    }
+    let image_config_for_edit = active[ModelSlot::Image.index()].clone();
+    ModelSlot::ImageEdit.apply_defaults(
+        &mut active[ModelSlot::ImageEdit.index()],
+        &image_config_for_edit,
+    );
 
     DispatcherSettingsRecord {
-        api_base: chat_model_config.url.clone(),
-        api_key: chat_model_config.api_key.clone(),
-        model: chat_model_config.model.clone(),
-        summary_model: summary_model_config.model.clone(),
-        vision_model: vision_model_config.model.clone(),
-        asr_api_key: asr_model_config.api_key.clone(),
-        asr_websocket_url: asr_model_config.url.clone(),
+        api_base: active[ModelSlot::Chat.index()].url.clone(),
+        api_key: active[ModelSlot::Chat.index()].api_key.clone(),
+        model: active[ModelSlot::Chat.index()].model.clone(),
+        summary_model: active[ModelSlot::Summary.index()].model.clone(),
+        vision_model: active[ModelSlot::Vision.index()].model.clone(),
+        asr_api_key: active[ModelSlot::Asr.index()].api_key.clone(),
+        asr_websocket_url: active[ModelSlot::Asr.index()].url.clone(),
         auto_approve_dispatch,
         context_debug,
-        image_model_url: image_model_config.url.clone(),
-        image_model_api_key: image_model_config.api_key.clone(),
-        image_model: image_model_config.model.clone(),
-        image_edit_model: image_edit_model_config.model.clone(),
-        chat_model_config,
-        summary_model_config,
-        vision_model_config,
-        image_model_config,
-        image_edit_model_config,
-        asr_model_config,
-        tts_model_config,
-        embedding_model_config,
-        chat_model_configs,
-        summary_model_configs,
-        vision_model_configs,
-        image_model_configs,
-        image_edit_model_configs,
-        asr_model_configs,
-        tts_model_configs,
-        embedding_model_configs,
+        image_model_url: active[ModelSlot::Image.index()].url.clone(),
+        image_model_api_key: active[ModelSlot::Image.index()].api_key.clone(),
+        image_model: active[ModelSlot::Image.index()].model.clone(),
+        image_edit_model: active[ModelSlot::ImageEdit.index()].model.clone(),
+        chat_model_config: active[ModelSlot::Chat.index()].clone(),
+        summary_model_config: active[ModelSlot::Summary.index()].clone(),
+        vision_model_config: active[ModelSlot::Vision.index()].clone(),
+        image_model_config: active[ModelSlot::Image.index()].clone(),
+        image_edit_model_config: active[ModelSlot::ImageEdit.index()].clone(),
+        asr_model_config: active[ModelSlot::Asr.index()].clone(),
+        tts_model_config: active[ModelSlot::Tts.index()].clone(),
+        embedding_model_config: active[ModelSlot::Embedding.index()].clone(),
+        chat_model_configs: normalized[ModelSlot::Chat.index()].clone(),
+        summary_model_configs: normalized[ModelSlot::Summary.index()].clone(),
+        vision_model_configs: normalized[ModelSlot::Vision.index()].clone(),
+        image_model_configs: normalized[ModelSlot::Image.index()].clone(),
+        image_edit_model_configs: normalized[ModelSlot::ImageEdit.index()].clone(),
+        asr_model_configs: normalized[ModelSlot::Asr.index()].clone(),
+        tts_model_configs: normalized[ModelSlot::Tts.index()].clone(),
+        embedding_model_configs: normalized[ModelSlot::Embedding.index()].clone(),
     }
 }
 
@@ -730,6 +1052,26 @@ pub struct DispatcherToolArtifactRecord {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PythonCodeRunRecord {
+    pub run_id: String,
+    pub workspace_id: String,
+    pub message_id: String,
+    pub code_block_index: u32,
+    pub code_hash: String,
+    pub code: String,
+    pub status: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub installed_packages_json: String,
+    pub tool_events_json: String,
+    pub explanation_markdown: String,
+    pub error_reason: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DispatcherSessionTokenUsageSource {
@@ -796,141 +1138,33 @@ impl DispatcherDb {
 
     pub fn get_settings(&self) -> Result<Option<DispatcherSettingsRecord>> {
         let conn = self.conn()?;
-        conn.query_row(
-            "SELECT api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model, image_edit_model,
-                    chat_model_url, chat_model_api_key, chat_model_name,
-                    summary_model_url, summary_model_api_key, summary_model_name,
-                    vision_model_url, vision_model_api_key, vision_model_name,
-                    image_model_config_url, image_model_config_api_key, image_model_config_name,
-                    image_edit_model_url, image_edit_model_api_key, image_edit_model_name,
-                    asr_model_url, asr_model_api_key, asr_model_name,
-                    tts_model_url, tts_model_api_key, tts_model_name,
-                    embedding_model_url, embedding_model_api_key, embedding_model_name,
-                    chat_model_configs_json, summary_model_configs_json, vision_model_configs_json,
-                    image_model_configs_json, image_edit_model_configs_json, asr_model_configs_json,
-                    tts_model_configs_json, embedding_model_configs_json
-             FROM dispatcher_settings WHERE id = 'default'",
-            [],
-            |row| {
-                let legacy_api_base: String = row.get(0)?;
-                let legacy_api_key: String = row.get(1)?;
-                let legacy_model: String = row.get(2)?;
-                let legacy_summary_model: String = row.get(3)?;
-                let legacy_vision_model: String = row.get(4)?;
-                let legacy_asr_api_key: String = row.get(5)?;
-                let legacy_asr_websocket_url: String = row.get(6)?;
-                let legacy_image_model_url: String = row.get(9)?;
-                let legacy_image_model_api_key: String = row.get(10)?;
-                let legacy_image_model: String = row.get(11)?;
-                let legacy_image_edit_model: String = row.get(12)?;
+        let sql = settings_select_sql();
+        conn.query_row(&sql, [], |row| {
+            // Resolve per-slot configs via the unified helper
+            let chat = resolve_slot_configs_from_row(row, ModelSlot::Chat)?;
+            let summary = resolve_slot_configs_from_row(row, ModelSlot::Summary)?;
+            let vision = resolve_slot_configs_from_row(row, ModelSlot::Vision)?;
+            let image = resolve_slot_configs_from_row(row, ModelSlot::Image)?;
+            let image_edit = resolve_slot_configs_from_row(row, ModelSlot::ImageEdit)?;
+            let asr = resolve_slot_configs_from_row(row, ModelSlot::Asr)?;
+            let tts = resolve_slot_configs_from_row(row, ModelSlot::Tts)?;
+            let embedding = resolve_slot_configs_from_row(row, ModelSlot::Embedding)?;
 
-                let chat_model_config = model_config_or_legacy(
-                    row.get(13)?,
-                    row.get(14)?,
-                    row.get(15)?,
-                    &legacy_api_base,
-                    &legacy_api_key,
-                    &legacy_model,
-                );
-                let summary_model_config = model_config_or_legacy(
-                    row.get(16)?,
-                    row.get(17)?,
-                    row.get(18)?,
-                    &legacy_api_base,
-                    &legacy_api_key,
-                    &legacy_summary_model,
-                );
-                let vision_model_config = model_config_or_legacy(
-                    row.get(19)?,
-                    row.get(20)?,
-                    row.get(21)?,
-                    &legacy_api_base,
-                    &legacy_api_key,
-                    &legacy_vision_model,
-                );
-                let image_model_config = model_config_or_legacy(
-                    row.get(22)?,
-                    row.get(23)?,
-                    row.get(24)?,
-                    &legacy_image_model_url,
-                    &legacy_image_model_api_key,
-                    &legacy_image_model,
-                );
-                let image_edit_model_config = model_config_or_legacy(
-                    row.get(25)?,
-                    row.get(26)?,
-                    row.get(27)?,
-                    &legacy_image_model_url,
-                    &legacy_image_model_api_key,
-                    fallback_image_edit_model(&legacy_image_model, &legacy_image_edit_model),
-                );
-                let asr_model_config = model_config_or_legacy(
-                    row.get(28)?,
-                    row.get(29)?,
-                    row.get(30)?,
-                    &legacy_asr_websocket_url,
-                    &legacy_asr_api_key,
-                    DEFAULT_ASR_MODEL,
-                );
-                let tts_model_config = DispatcherModelConfig::new(
-                    &row.get::<_, String>(31)?,
-                    &row.get::<_, String>(32)?,
-                    &row.get::<_, String>(33)?,
-                );
-                let embedding_model_config = DispatcherModelConfig::new(
-                    &row.get::<_, String>(34)?,
-                    &row.get::<_, String>(35)?,
-                    &row.get::<_, String>(36)?,
-                );
-
-                Ok(build_settings_record(
-                    DispatcherSettingsConfigLists {
-                        chat_model_configs: configs_or_single_config(
-                            Some(parse_model_configs_column(row.get(37)?, 37)?),
-                            Some(chat_model_config.clone()),
-                            chat_model_config,
-                        ),
-                        summary_model_configs: configs_or_single_config(
-                            Some(parse_model_configs_column(row.get(38)?, 38)?),
-                            Some(summary_model_config.clone()),
-                            summary_model_config,
-                        ),
-                        vision_model_configs: configs_or_single_config(
-                            Some(parse_model_configs_column(row.get(39)?, 39)?),
-                            Some(vision_model_config.clone()),
-                            vision_model_config,
-                        ),
-                        image_model_configs: configs_or_single_config(
-                            Some(parse_model_configs_column(row.get(40)?, 40)?),
-                            Some(image_model_config.clone()),
-                            image_model_config,
-                        ),
-                        image_edit_model_configs: configs_or_single_config(
-                            Some(parse_model_configs_column(row.get(41)?, 41)?),
-                            Some(image_edit_model_config.clone()),
-                            image_edit_model_config,
-                        ),
-                        asr_model_configs: configs_or_single_config(
-                            Some(parse_model_configs_column(row.get(42)?, 42)?),
-                            Some(asr_model_config.clone()),
-                            asr_model_config,
-                        ),
-                        tts_model_configs: configs_or_single_config(
-                            Some(parse_model_configs_column(row.get(43)?, 43)?),
-                            Some(tts_model_config.clone()),
-                            tts_model_config,
-                        ),
-                        embedding_model_configs: configs_or_single_config(
-                            Some(parse_model_configs_column(row.get(44)?, 44)?),
-                            Some(embedding_model_config.clone()),
-                            embedding_model_config,
-                        ),
-                    },
-                    row.get::<_, i32>(7)? != 0,
-                    row.get::<_, i32>(8)? != 0,
-                ))
-            },
-        )
+            Ok(build_settings_record(
+                DispatcherSettingsConfigLists {
+                    chat_model_configs: chat,
+                    summary_model_configs: summary,
+                    vision_model_configs: vision,
+                    image_model_configs: image,
+                    image_edit_model_configs: image_edit,
+                    asr_model_configs: asr,
+                    tts_model_configs: tts,
+                    embedding_model_configs: embedding,
+                },
+                row.get::<_, i32>(settings_column_index("auto_approve_dispatch"))? != 0,
+                row.get::<_, i32>(settings_column_index("context_debug"))? != 0,
+            ))
+        })
         .optional()
         .context("load dispatcher settings")
     }
@@ -956,153 +1190,160 @@ impl DispatcherDb {
         let conn = self.conn()?;
         let auto_approve_int = if auto_approve_dispatch { 1 } else { 0 };
         let context_debug_int = if context_debug { 1 } else { 0 };
-        let chat_model_config = model_configs
-            .chat_model_config
-            .unwrap_or_else(|| DispatcherModelConfig::new(api_base, api_key, model))
-            .trimmed();
-        let summary_model_config = model_configs
-            .summary_model_config
-            .unwrap_or_else(|| {
-                DispatcherModelConfig::new(
-                    api_base,
-                    api_key,
-                    &normalize_summary_model(summary_model),
-                )
-            })
-            .trimmed();
-        let vision_model_config = model_configs
-            .vision_model_config
-            .unwrap_or_else(|| DispatcherModelConfig::new(api_base, api_key, vision_model))
-            .trimmed();
-        let image_model_config = model_configs
+
+        // Build per-slot legacy fallbacks from the flat arguments
+        let chat_fallback = DispatcherModelConfig::new(api_base, api_key, model);
+        let summary_fallback =
+            DispatcherModelConfig::new(api_base, api_key, &normalize_summary_model(summary_model));
+        let vision_fallback = DispatcherModelConfig::new(api_base, api_key, vision_model);
+        let image_fallback =
+            DispatcherModelConfig::new(image_model_url, image_model_api_key, image_model);
+        // image_edit fallback depends on the resolved image config
+        let image_resolved = model_configs
             .image_model_config
-            .unwrap_or_else(|| {
-                DispatcherModelConfig::new(image_model_url, image_model_api_key, image_model)
-            })
-            .trimmed();
-        let image_edit_model_config = model_configs
-            .image_edit_model_config
-            .filter(|config| !config.is_empty())
-            .unwrap_or_else(|| {
-                let fallback_url = if image_model_url.trim().is_empty() {
-                    &image_model_config.url
-                } else {
-                    image_model_url
-                };
-                let fallback_api_key = if image_model_api_key.trim().is_empty() {
-                    &image_model_config.api_key
-                } else {
-                    image_model_api_key
-                };
-                let fallback_model = fallback_image_edit_model(image_model, image_edit_model);
-                let fallback_model = if fallback_model.is_empty() {
-                    image_model_config.model.as_str()
-                } else {
-                    fallback_model
-                };
-                DispatcherModelConfig::new(fallback_url, fallback_api_key, fallback_model)
-            })
-            .trimmed();
-        let asr_model_config = model_configs
-            .asr_model_config
-            .unwrap_or_else(|| {
-                DispatcherModelConfig::new(asr_websocket_url, asr_api_key, DEFAULT_ASR_MODEL)
-            })
-            .trimmed();
-        let tts_model_config = model_configs.tts_model_config.unwrap_or_default().trimmed();
-        let embedding_model_config = model_configs
-            .embedding_model_config
-            .unwrap_or_default()
-            .trimmed();
+            .as_ref()
+            .filter(|c| !c.is_empty())
+            .cloned()
+            .map(|c| c.trimmed())
+            .unwrap_or_else(|| image_fallback.clone());
+        let image_edit_fallback = {
+            let fb_url = if image_model_url.trim().is_empty() {
+                image_resolved.url.as_str()
+            } else {
+                image_model_url
+            };
+            let fb_key = if image_model_api_key.trim().is_empty() {
+                image_resolved.api_key.as_str()
+            } else {
+                image_model_api_key
+            };
+            let fb_model = fallback_image_edit_model(image_model, image_edit_model);
+            let fb_model = if fb_model.is_empty() {
+                image_resolved.model.as_str()
+            } else {
+                fb_model
+            };
+            DispatcherModelConfig::new(fb_url, fb_key, fb_model)
+        };
+        let asr_fallback =
+            DispatcherModelConfig::new(asr_websocket_url, asr_api_key, DEFAULT_ASR_MODEL);
+
+        // Resolve each slot's single config, then merge into list
+        let singles: [DispatcherModelConfig; 8] = [
+            model_configs
+                .chat_model_config
+                .unwrap_or_else(|| chat_fallback.clone())
+                .trimmed(),
+            model_configs
+                .summary_model_config
+                .unwrap_or_else(|| summary_fallback.clone())
+                .trimmed(),
+            model_configs
+                .vision_model_config
+                .unwrap_or_else(|| vision_fallback.clone())
+                .trimmed(),
+            model_configs
+                .image_model_config
+                .unwrap_or_else(|| image_fallback.clone())
+                .trimmed(),
+            model_configs
+                .image_edit_model_config
+                .filter(|c| !c.is_empty())
+                .unwrap_or_else(|| image_edit_fallback.clone())
+                .trimmed(),
+            model_configs
+                .asr_model_config
+                .unwrap_or_else(|| asr_fallback.clone())
+                .trimmed(),
+            model_configs.tts_model_config.unwrap_or_default().trimmed(),
+            model_configs
+                .embedding_model_config
+                .unwrap_or_default()
+                .trimmed(),
+        ];
+        let mut lists: [Option<Vec<DispatcherModelConfig>>; 8] = [
+            model_configs.chat_model_configs,
+            model_configs.summary_model_configs,
+            model_configs.vision_model_configs,
+            model_configs.image_model_configs,
+            model_configs.image_edit_model_configs,
+            model_configs.asr_model_configs,
+            model_configs.tts_model_configs,
+            model_configs.embedding_model_configs,
+        ];
+        let fallbacks: [DispatcherModelConfig; 8] = [
+            chat_fallback,
+            summary_fallback,
+            vision_fallback,
+            image_fallback,
+            image_edit_fallback,
+            asr_fallback,
+            DispatcherModelConfig::default(),
+            DispatcherModelConfig::default(),
+        ];
+
         let record = build_settings_record(
             DispatcherSettingsConfigLists {
-                chat_model_configs: payload_configs_or_single_config(
-                    model_configs.chat_model_configs,
-                    Some(chat_model_config.clone()),
-                    chat_model_config,
+                chat_model_configs: resolve_slot_configs_from_payload(
+                    Some(singles[0].clone()),
+                    lists[0].take(),
+                    fallbacks[0].clone(),
                 ),
-                summary_model_configs: payload_configs_or_single_config(
-                    model_configs.summary_model_configs,
-                    Some(summary_model_config.clone()),
-                    summary_model_config,
+                summary_model_configs: resolve_slot_configs_from_payload(
+                    Some(singles[1].clone()),
+                    lists[1].take(),
+                    fallbacks[1].clone(),
                 ),
-                vision_model_configs: payload_configs_or_single_config(
-                    model_configs.vision_model_configs,
-                    Some(vision_model_config.clone()),
-                    vision_model_config,
+                vision_model_configs: resolve_slot_configs_from_payload(
+                    Some(singles[2].clone()),
+                    lists[2].take(),
+                    fallbacks[2].clone(),
                 ),
-                image_model_configs: payload_configs_or_single_config(
-                    model_configs.image_model_configs,
-                    Some(image_model_config.clone()),
-                    image_model_config,
+                image_model_configs: resolve_slot_configs_from_payload(
+                    Some(singles[3].clone()),
+                    lists[3].take(),
+                    fallbacks[3].clone(),
                 ),
-                image_edit_model_configs: payload_configs_or_single_config(
-                    model_configs.image_edit_model_configs,
-                    Some(image_edit_model_config.clone()),
-                    image_edit_model_config,
+                image_edit_model_configs: resolve_slot_configs_from_payload(
+                    Some(singles[4].clone()),
+                    lists[4].take(),
+                    fallbacks[4].clone(),
                 ),
-                asr_model_configs: payload_configs_or_single_config(
-                    model_configs.asr_model_configs,
-                    Some(asr_model_config.clone()),
-                    asr_model_config,
+                asr_model_configs: resolve_slot_configs_from_payload(
+                    Some(singles[5].clone()),
+                    lists[5].take(),
+                    fallbacks[5].clone(),
                 ),
-                tts_model_configs: payload_configs_or_single_config(
-                    model_configs.tts_model_configs,
-                    Some(tts_model_config.clone()),
-                    tts_model_config,
+                tts_model_configs: resolve_slot_configs_from_payload(
+                    Some(singles[6].clone()),
+                    lists[6].take(),
+                    fallbacks[6].clone(),
                 ),
-                embedding_model_configs: payload_configs_or_single_config(
-                    model_configs.embedding_model_configs,
-                    Some(embedding_model_config.clone()),
-                    embedding_model_config,
+                embedding_model_configs: resolve_slot_configs_from_payload(
+                    Some(singles[7].clone()),
+                    lists[7].take(),
+                    fallbacks[7].clone(),
                 ),
             },
             auto_approve_dispatch,
             context_debug,
         );
-        let chat_model_configs_json = serialize_model_configs(&record.chat_model_configs, "chat")?;
-        let summary_model_configs_json =
-            serialize_model_configs(&record.summary_model_configs, "summary")?;
-        let vision_model_configs_json =
-            serialize_model_configs(&record.vision_model_configs, "vision")?;
-        let image_model_configs_json =
-            serialize_model_configs(&record.image_model_configs, "image")?;
-        let image_edit_model_configs_json =
-            serialize_model_configs(&record.image_edit_model_configs, "image edit")?;
-        let asr_model_configs_json = serialize_model_configs(&record.asr_model_configs, "asr")?;
-        let tts_model_configs_json = serialize_model_configs(&record.tts_model_configs, "tts")?;
-        let embedding_model_configs_json =
-            serialize_model_configs(&record.embedding_model_configs, "embedding")?;
 
+        // Serialize JSON columns
+        let json_cols: [String; 8] = [
+            serialize_model_configs(&record.chat_model_configs, "chat")?,
+            serialize_model_configs(&record.summary_model_configs, "summary")?,
+            serialize_model_configs(&record.vision_model_configs, "vision")?,
+            serialize_model_configs(&record.image_model_configs, "image")?,
+            serialize_model_configs(&record.image_edit_model_configs, "image edit")?,
+            serialize_model_configs(&record.asr_model_configs, "asr")?,
+            serialize_model_configs(&record.tts_model_configs, "tts")?,
+            serialize_model_configs(&record.embedding_model_configs, "embedding")?,
+        ];
+
+        let sql = settings_upsert_sql();
         conn.execute(
-            "INSERT INTO dispatcher_settings (
-                id, api_base, api_key, model, summary_model, vision_model, asr_api_key, asr_websocket_url, auto_approve_dispatch, context_debug, image_model_url, image_model_api_key, image_model, image_edit_model,
-                chat_model_url, chat_model_api_key, chat_model_name,
-                summary_model_url, summary_model_api_key, summary_model_name,
-                vision_model_url, vision_model_api_key, vision_model_name,
-                image_model_config_url, image_model_config_api_key, image_model_config_name,
-                image_edit_model_url, image_edit_model_api_key, image_edit_model_name,
-                asr_model_url, asr_model_api_key, asr_model_name,
-                tts_model_url, tts_model_api_key, tts_model_name,
-                embedding_model_url, embedding_model_api_key, embedding_model_name,
-                chat_model_configs_json, summary_model_configs_json, vision_model_configs_json,
-                image_model_configs_json, image_edit_model_configs_json, asr_model_configs_json,
-                tts_model_configs_json, embedding_model_configs_json
-             )
-             VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)
-             ON CONFLICT(id) DO UPDATE SET
-                api_base = ?1, api_key = ?2, model = ?3, summary_model = ?4, vision_model = ?5, asr_api_key = ?6, asr_websocket_url = ?7, auto_approve_dispatch = ?8, context_debug = ?9, image_model_url = ?10, image_model_api_key = ?11, image_model = ?12, image_edit_model = ?13,
-                chat_model_url = ?14, chat_model_api_key = ?15, chat_model_name = ?16,
-                summary_model_url = ?17, summary_model_api_key = ?18, summary_model_name = ?19,
-                vision_model_url = ?20, vision_model_api_key = ?21, vision_model_name = ?22,
-                image_model_config_url = ?23, image_model_config_api_key = ?24, image_model_config_name = ?25,
-                image_edit_model_url = ?26, image_edit_model_api_key = ?27, image_edit_model_name = ?28,
-                asr_model_url = ?29, asr_model_api_key = ?30, asr_model_name = ?31,
-                tts_model_url = ?32, tts_model_api_key = ?33, tts_model_name = ?34,
-                embedding_model_url = ?35, embedding_model_api_key = ?36, embedding_model_name = ?37,
-                chat_model_configs_json = ?38, summary_model_configs_json = ?39, vision_model_configs_json = ?40,
-                image_model_configs_json = ?41, image_edit_model_configs_json = ?42, asr_model_configs_json = ?43,
-                tts_model_configs_json = ?44, embedding_model_configs_json = ?45",
+            &sql,
             params![
                 &record.api_base,
                 &record.api_key,
@@ -1141,14 +1382,14 @@ impl DispatcherDb {
                 &record.embedding_model_config.url,
                 &record.embedding_model_config.api_key,
                 &record.embedding_model_config.model,
-                &chat_model_configs_json,
-                &summary_model_configs_json,
-                &vision_model_configs_json,
-                &image_model_configs_json,
-                &image_edit_model_configs_json,
-                &asr_model_configs_json,
-                &tts_model_configs_json,
-                &embedding_model_configs_json,
+                &json_cols[0],
+                &json_cols[1],
+                &json_cols[2],
+                &json_cols[3],
+                &json_cols[4],
+                &json_cols[5],
+                &json_cols[6],
+                &json_cols[7],
             ],
         )
         .context("save dispatcher settings")?;
@@ -1181,7 +1422,7 @@ impl DispatcherDb {
     ) -> Result<Vec<DispatcherSessionRecord>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, kind, title, mode, active_plan_path, created_at, updated_at
+            "SELECT id, project_id, kind, title, mode, active_plan_path, category, created_at, updated_at
              FROM dispatcher_sessions
              WHERE project_id = ?1 AND kind = ?2
              ORDER BY updated_at DESC",
@@ -1194,8 +1435,9 @@ impl DispatcherDb {
                 title: row.get(3)?,
                 mode: DispatcherMode::from_sql_value(row.get(4)?),
                 active_plan_path: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                category: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
             })
         })?;
 
@@ -1210,7 +1452,9 @@ impl DispatcherDb {
         kind: DispatcherSessionKind,
         mode: DispatcherMode,
         active_plan_path: Option<&str>,
+        category: Option<&str>,
     ) -> Result<DispatcherSessionRecord> {
+        let category = category.unwrap_or("").to_string();
         let record = DispatcherSessionRecord {
             id: Uuid::new_v4().to_string(),
             project_id: project_id.to_string(),
@@ -1218,14 +1462,15 @@ impl DispatcherDb {
             title: title.to_string(),
             mode,
             active_plan_path: active_plan_path.map(str::to_string),
+            category,
             created_at: now(),
             updated_at: now(),
         };
 
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, mode, active_plan_path, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, mode, active_plan_path, category, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 record.id,
                 record.project_id,
@@ -1233,6 +1478,7 @@ impl DispatcherDb {
                 record.title,
                 record.mode.as_sql_value(),
                 record.active_plan_path,
+                record.category,
                 record.created_at,
                 record.updated_at
             ],
@@ -1263,7 +1509,7 @@ impl DispatcherDb {
         }
 
         conn.query_row(
-            "SELECT id, project_id, kind, title, mode, active_plan_path, created_at, updated_at
+            "SELECT id, project_id, kind, title, mode, active_plan_path, category, created_at, updated_at
              FROM dispatcher_sessions
              WHERE id = ?1",
             params![session_id],
@@ -1275,8 +1521,9 @@ impl DispatcherDb {
                     title: row.get(3)?,
                     mode: DispatcherMode::from_sql_value(row.get(4)?),
                     active_plan_path: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    category: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 })
             },
         )
@@ -1885,7 +2132,7 @@ impl DispatcherDb {
             self.find_dialogue_cutoff_rowid(&conn, workspace_id, MAX_LLM_DIALOGUES)?;
 
         let mut stmt = conn.prepare(
-            "SELECT role, segments_json, context_payload, tool_call_id, tool_name, tool_calls_json
+            "SELECT role, segments_json, context_payload, tool_call_id, tool_name, tool_calls_json, thinking_content
              FROM dispatcher_messages
              WHERE workspace_id = ?1 AND rowid >= ?2 AND context_cleared = 0
              ORDER BY rowid ASC",
@@ -1897,6 +2144,7 @@ impl DispatcherDb {
             let tool_call_id: Option<String> = row.get(3)?;
             let tool_name: Option<String> = row.get(4)?;
             let tool_calls_json: Option<String> = row.get(5)?;
+            let thinking_content: Option<String> = row.get(6)?;
 
             let content = if let Some(payload) = context_payload {
                 payload
@@ -1910,6 +2158,11 @@ impl DispatcherDb {
                 .and_then(|json| serde_json::from_str::<Vec<OutboundToolCall>>(json).ok());
 
             Ok(ChatMessage {
+                reasoning_content: if role == "assistant" {
+                    thinking_content.filter(|content| !content.trim().is_empty())
+                } else {
+                    None
+                },
                 role,
                 content,
                 tool_call_id,
@@ -1928,6 +2181,83 @@ impl DispatcherDb {
         }
 
         Ok(messages)
+    }
+
+    /// Fetch only the content of the latest visible user message.
+    ///
+    /// Lighter than `load_llm_history` — skips parsing tool calls, context payloads,
+    /// and dialogue cutoff calculations.
+    pub fn get_latest_user_message_content(&self, workspace_id: &str) -> Result<Option<String>> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT segments_json
+             FROM dispatcher_messages
+             WHERE workspace_id = ?1 AND role = 'user' AND visible = 1 AND context_cleared = 0
+             ORDER BY rowid DESC
+             LIMIT 1",
+            params![workspace_id],
+            |row| {
+                let segments_json: String = row.get(0)?;
+                Ok(segments_to_markdown(&parse_segments_json(&segments_json)))
+            },
+        )
+        .optional()
+        .context("load latest dispatcher user message content")
+    }
+
+    pub fn get_visible_message_content(
+        &self,
+        workspace_id: &str,
+        message_id: &str,
+    ) -> Result<Option<String>> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT segments_json
+             FROM dispatcher_messages
+             WHERE workspace_id = ?1 AND id = ?2 AND visible = 1
+             LIMIT 1",
+            params![workspace_id, message_id],
+            |row| {
+                let segments_json: String = row.get(0)?;
+                Ok(segments_to_markdown(&parse_segments_json(&segments_json)))
+            },
+        )
+        .optional()
+        .context("load dispatcher visible message content")
+    }
+
+    /// Fetch recent tool/assistant message content for subprocess context.
+    ///
+    /// Returns up to `limit` recent non-user messages (tool results and assistant replies),
+    /// each as (role, tool_name, content) tuples — enough to build exploration context
+    /// without loading the full LLM history.
+    pub fn list_recent_exploration_content(
+        &self,
+        workspace_id: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, Option<String>, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT role, tool_name, segments_json
+             FROM dispatcher_messages
+             WHERE workspace_id = ?1
+               AND role IN ('tool', 'assistant')
+               AND visible = 1
+               AND context_cleared = 0
+             ORDER BY rowid DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![workspace_id, limit as i64], |row| {
+                let role: String = row.get(0)?;
+                let tool_name: Option<String> = row.get(1)?;
+                let segments_json: String = row.get(2)?;
+                let content = segments_to_markdown(&parse_segments_json(&segments_json));
+                Ok((role, tool_name, content))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("load recent dispatcher exploration content")?;
+        Ok(rows)
     }
 
     pub fn clear_context_messages(&self, workspace_id: &str) -> Result<()> {
@@ -1972,6 +2302,175 @@ impl DispatcherDb {
         )
         .context("clear dispatcher planning state")?;
         tx.commit().context("commit dispatcher message cleanup")?;
+        Ok(())
+    }
+
+    // ── Chat categories ────────────────────────────────────────
+
+    pub fn list_chat_categories(&self) -> Result<Vec<ChatCategory>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, icon, color, sort_order, created_at, updated_at
+             FROM chat_categories
+             ORDER BY sort_order ASC, created_at ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ChatCategory {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                icon: row.get(2)?,
+                color: row.get(3)?,
+                sort_order: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("list chat categories")
+    }
+
+    pub fn create_chat_category(
+        &self,
+        name: &str,
+        icon: &str,
+        color: &str,
+    ) -> Result<ChatCategory> {
+        let now = now();
+        let conn = self.conn()?;
+        let max_order: i32 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(sort_order), -1) FROM chat_categories",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(-1);
+        let next_order = max_order + 1;
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO chat_categories (id, name, icon, color, sort_order, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, name.trim(), icon, color, next_order, now, now],
+        )
+        .context("insert chat category")?;
+        Ok(ChatCategory {
+            id,
+            name: name.trim().to_string(),
+            icon: icon.to_string(),
+            color: color.to_string(),
+            sort_order: next_order,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn update_chat_category(
+        &self,
+        category_id: &str,
+        name: Option<&str>,
+        icon: Option<&str>,
+        color: Option<&str>,
+    ) -> Result<Option<ChatCategory>> {
+        let updated = now();
+        let conn = self.conn()?;
+        let mut parts: Vec<String> = Vec::new();
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        if let Some(n) = name {
+            parts.push(format!("name = ?{}", params_vec.len() + 1));
+            params_vec.push(Box::new(n.trim().to_string()));
+        }
+        if let Some(i) = icon {
+            parts.push(format!("icon = ?{}", params_vec.len() + 1));
+            params_vec.push(Box::new(i.to_string()));
+        }
+        if let Some(c) = color {
+            parts.push(format!("color = ?{}", params_vec.len() + 1));
+            params_vec.push(Box::new(c.to_string()));
+        }
+        if parts.is_empty() {
+            return self.get_chat_category(category_id);
+        }
+        parts.push(format!("updated_at = ?{}", params_vec.len() + 1));
+        params_vec.push(Box::new(updated.clone()));
+        params_vec.push(Box::new(category_id.to_string()));
+
+        let sql = format!(
+            "UPDATE chat_categories SET {} WHERE id = ?{}",
+            parts.join(", "),
+            params_vec.len()
+        );
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let changed = conn
+            .execute(&sql, params_refs.as_slice())
+            .context("update chat category")?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        self.get_chat_category(category_id)
+    }
+
+    fn get_chat_category(&self, category_id: &str) -> Result<Option<ChatCategory>> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT id, name, icon, color, sort_order, created_at, updated_at
+             FROM chat_categories WHERE id = ?1",
+            params![category_id],
+            |row| {
+                Ok(ChatCategory {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    icon: row.get(2)?,
+                    color: row.get(3)?,
+                    sort_order: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .context("get chat category")
+    }
+
+    pub fn delete_chat_category(&self, category_id: &str) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().context("begin delete category transaction")?;
+        tx.execute(
+            "UPDATE dispatcher_sessions SET category = '' WHERE category = ?1",
+            params![category_id],
+        )
+        .context("reassign uncategorized sessions")?;
+        tx.execute(
+            "DELETE FROM chat_categories WHERE id = ?1",
+            params![category_id],
+        )
+        .context("delete chat category")?;
+        tx.commit().context("commit delete category")?;
+        Ok(())
+    }
+
+    pub fn set_session_category(&self, session_id: &str, category_id: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE dispatcher_sessions SET category = ?1, updated_at = ?2 WHERE id = ?3",
+            params![category_id, now(), session_id],
+        )
+        .context("set session category")?;
+        Ok(())
+    }
+
+    pub fn reorder_chat_categories(&self, ordered_ids: &[String]) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().context("begin reorder categories transaction")?;
+        {
+            let mut stmt = tx
+                .prepare("UPDATE chat_categories SET sort_order = ?1, updated_at = ?2 WHERE id = ?3")
+                .context("prepare reorder statement")?;
+            let now = now();
+            for (order, id) in ordered_ids.iter().enumerate() {
+                stmt.execute(params![order as i32, &now, id])
+                    .with_context(|| format!("reorder category {id}"))?;
+            }
+        }
+        tx.commit().context("commit reorder categories")?;
         Ok(())
     }
 
@@ -2119,6 +2618,100 @@ impl DispatcherDb {
         .optional()
         .context("load dispatcher tool artifact")?
         .with_context(|| format!("dispatcher tool artifact not found: {artifact_id}"))
+    }
+
+    pub fn list_python_code_runs(
+        &self,
+        workspace_id: &str,
+        message_id: Option<&str>,
+    ) -> Result<Vec<PythonCodeRunRecord>> {
+        let conn = self.conn()?;
+        let sql = if message_id.is_some() {
+            "SELECT run_id, workspace_id, message_id, code_block_index, code_hash, code, status,
+                    stdout, stderr, installed_packages_json, tool_events_json, explanation_markdown,
+                    error_reason, created_at, updated_at
+             FROM python_code_runs
+             WHERE workspace_id = ?1 AND message_id = ?2
+             ORDER BY code_block_index ASC"
+        } else {
+            "SELECT run_id, workspace_id, message_id, code_block_index, code_hash, code, status,
+                    stdout, stderr, installed_packages_json, tool_events_json, explanation_markdown,
+                    error_reason, created_at, updated_at
+             FROM python_code_runs
+             WHERE workspace_id = ?1
+             ORDER BY updated_at DESC, message_id ASC, code_block_index ASC"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = if let Some(message_id) = message_id {
+            stmt.query_map(
+                params![workspace_id, message_id],
+                map_python_code_run_record,
+            )?
+        } else {
+            stmt.query_map(params![workspace_id], map_python_code_run_record)?
+        };
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("list python code runs")
+    }
+
+    pub fn upsert_python_code_run(&self, record: &PythonCodeRunRecord) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO python_code_runs (
+                run_id, workspace_id, message_id, code_block_index, code_hash, code, status,
+                stdout, stderr, installed_packages_json, tool_events_json, explanation_markdown,
+                error_reason, created_at, updated_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             ON CONFLICT(workspace_id, message_id, code_block_index) DO UPDATE SET
+                run_id = excluded.run_id,
+                code_hash = excluded.code_hash,
+                code = excluded.code,
+                status = excluded.status,
+                stdout = excluded.stdout,
+                stderr = excluded.stderr,
+                installed_packages_json = excluded.installed_packages_json,
+                tool_events_json = excluded.tool_events_json,
+                explanation_markdown = excluded.explanation_markdown,
+                error_reason = excluded.error_reason,
+                updated_at = excluded.updated_at",
+            params![
+                &record.run_id,
+                &record.workspace_id,
+                &record.message_id,
+                record.code_block_index as i64,
+                &record.code_hash,
+                &record.code,
+                &record.status,
+                &record.stdout,
+                &record.stderr,
+                &record.installed_packages_json,
+                &record.tool_events_json,
+                &record.explanation_markdown,
+                &record.error_reason,
+                &record.created_at,
+                &record.updated_at,
+            ],
+        )
+        .context("upsert python code run")?;
+        Ok(())
+    }
+
+    pub fn clear_python_code_run(
+        &self,
+        workspace_id: &str,
+        message_id: &str,
+        code_block_index: u32,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM python_code_runs
+             WHERE workspace_id = ?1 AND message_id = ?2 AND code_block_index = ?3",
+            params![workspace_id, message_id, code_block_index as i64],
+        )
+        .context("clear python code run")?;
+        Ok(())
     }
 
     fn add_message(&self, params: NewDispatcherMessage<'_>) -> Result<DispatcherMessageRecord> {
@@ -2287,7 +2880,7 @@ impl DispatcherDb {
         let mut conn = self.conn()?;
 
         // Fast path: if schema is already at the expected version, skip all DDL.
-        const SCHEMA_VERSION: i32 = 3;
+        const SCHEMA_VERSION: i32 = 5;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -2312,6 +2905,7 @@ impl DispatcherDb {
                 active_plan_path TEXT,
                 checklist_json TEXT,
                 plan_interaction_json TEXT,
+                category TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -2455,117 +3049,166 @@ impl DispatcherDb {
 
             CREATE INDEX IF NOT EXISTS idx_dispatcher_session_token_usage_workspace_updated
             ON dispatcher_session_token_usage(workspace_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS python_code_runs (
+                run_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                code_block_index INTEGER NOT NULL,
+                code_hash TEXT NOT NULL,
+                code TEXT NOT NULL,
+                status TEXT NOT NULL,
+                stdout TEXT NOT NULL DEFAULT '',
+                stderr TEXT NOT NULL DEFAULT '',
+                installed_packages_json TEXT NOT NULL DEFAULT '[]',
+                tool_events_json TEXT NOT NULL DEFAULT '[]',
+                explanation_markdown TEXT NOT NULL DEFAULT '',
+                error_reason TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, message_id, code_block_index),
+                FOREIGN KEY (message_id) REFERENCES dispatcher_messages(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_python_code_runs_workspace_updated
+            ON python_code_runs(workspace_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS chat_categories (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                icon TEXT NOT NULL DEFAULT '',
+                color TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             ",
         )
         .context("initialize dispatcher sqlite schema")?;
-        migrate_session_token_usage_primary_key(&mut conn)?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_settings",
-            "summary_model",
-            "TEXT NOT NULL DEFAULT 'deepseek-v4-flash'",
-        )?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_settings",
-            "vision_model",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_settings",
-            "asr_api_key",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_settings",
-            "asr_websocket_url",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_settings",
-            "context_debug",
-            "INTEGER NOT NULL DEFAULT 0",
-        )?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_settings",
-            "image_model_url",
-            "TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1'",
-        )?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_settings",
-            "image_model_api_key",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_settings",
-            "image_model",
-            "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'",
-        )?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_settings",
-            "image_edit_model",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
-        ensure_dispatcher_model_config_columns(&conn)?;
-        migrate_dispatcher_model_configs(&conn)?;
-        ensure_column_exists(&conn, "dispatcher_messages", "context_payload", "TEXT")?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_messages",
-            "segments_json",
-            "TEXT NOT NULL DEFAULT '[]'",
-        )?;
-        ensure_column_exists(&conn, "dispatcher_messages", "thinking_content", "TEXT")?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_messages",
-            "thinking_elapsed_ms",
-            "INTEGER",
-        )?;
-        ensure_column_exists(&conn, "dispatcher_messages", "tool_result_mode", "TEXT")?;
-        ensure_column_exists(&conn, "dispatcher_messages", "tool_artifacts_json", "TEXT")?;
-        ensure_column_exists(&conn, "dispatcher_messages", "usage_stats_json", "TEXT")?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_messages",
-            "context_cleared",
-            "INTEGER NOT NULL DEFAULT 0",
-        )?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_sessions",
-            "kind",
-            "TEXT NOT NULL DEFAULT 'project'",
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_dispatcher_sessions_project_kind
-             ON dispatcher_sessions(project_id, kind, updated_at DESC)",
-            [],
-        )
-        .context("create dispatcher session project kind index")?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_sessions",
-            "mode",
-            "TEXT NOT NULL DEFAULT 'default'",
-        )?;
-        ensure_column_exists(&conn, "dispatcher_sessions", "active_plan_path", "TEXT")?;
-        ensure_column_exists(&conn, "dispatcher_sessions", "checklist_json", "TEXT")?;
-        ensure_column_exists(
-            &conn,
-            "dispatcher_sessions",
-            "plan_interaction_json",
-            "TEXT",
-        )?;
 
-        // Mark schema as fully migrated.
+        // Run all column additions and data migrations in a single transaction
+        // so that a failure midway rolls back cleanly instead of leaving partial schema.
+        {
+            let tx = conn.transaction().context("begin migration transaction")?;
+
+            migrate_session_token_usage_primary_key_on_tx(&tx)?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_settings",
+                "summary_model",
+                "TEXT NOT NULL DEFAULT 'deepseek-v4-flash'",
+            )?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_settings",
+                "vision_model",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_settings",
+                "asr_api_key",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_settings",
+                "asr_websocket_url",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_settings",
+                "context_debug",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_settings",
+                "image_model_url",
+                "TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1'",
+            )?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_settings",
+                "image_model_api_key",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_settings",
+                "image_model",
+                "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'",
+            )?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_settings",
+                "image_edit_model",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            ensure_dispatcher_model_config_columns_tx(&tx)?;
+            migrate_dispatcher_model_configs_tx(&tx)?;
+            ensure_column_exists_tx(&tx, "dispatcher_messages", "context_payload", "TEXT")?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_messages",
+                "segments_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )?;
+            ensure_column_exists_tx(&tx, "dispatcher_messages", "thinking_content", "TEXT")?;
+            ensure_column_exists_tx(&tx, "dispatcher_messages", "thinking_elapsed_ms", "INTEGER")?;
+            ensure_column_exists_tx(&tx, "dispatcher_messages", "tool_result_mode", "TEXT")?;
+            ensure_column_exists_tx(&tx, "dispatcher_messages", "tool_artifacts_json", "TEXT")?;
+            ensure_column_exists_tx(&tx, "dispatcher_messages", "usage_stats_json", "TEXT")?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_messages",
+                "context_cleared",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_sessions",
+                "kind",
+                "TEXT NOT NULL DEFAULT 'project'",
+            )?;
+            tx.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dispatcher_sessions_project_kind
+                 ON dispatcher_sessions(project_id, kind, updated_at DESC)",
+                [],
+            )
+            .context("create dispatcher session project kind index")?;
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_sessions",
+                "mode",
+                "TEXT NOT NULL DEFAULT 'default'",
+            )?;
+            ensure_column_exists_tx(&tx, "dispatcher_sessions", "active_plan_path", "TEXT")?;
+            ensure_column_exists_tx(&tx, "dispatcher_sessions", "checklist_json", "TEXT")?;
+            ensure_column_exists_tx(&tx, "dispatcher_sessions", "plan_interaction_json", "TEXT")?;
+            ensure_python_code_runs_table_tx(&tx)?;
+
+            ensure_chat_categories_table_tx(&tx)?;
+
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_sessions",
+                "category",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+
+            tx.execute(
+                "UPDATE dispatcher_sessions SET category = 'tech'
+                 WHERE kind = 'chat' AND (category IS NULL OR category = '')",
+                [],
+            )
+            .context("migrate existing chat sessions to tech category")?;
+
+            tx.commit().context("commit migration transaction")?;
+        }
+
+        // Mark schema as fully migrated (outside the transaction — PRAGMA is auto-commit).
         conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION))
             .context("set user_version")?;
 
@@ -2777,8 +3420,9 @@ impl DispatcherSessionTokenUsageSource {
     }
 }
 
-fn migrate_session_token_usage_primary_key(conn: &mut Connection) -> Result<()> {
-    let primary_key_columns = table_primary_key_columns(conn, "dispatcher_session_token_usage")?;
+/// Transaction-scoped variant used from within `init()`'s outer migration transaction.
+fn migrate_session_token_usage_primary_key_on_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let primary_key_columns = table_primary_key_columns(tx, "dispatcher_session_token_usage")?;
     if primary_key_columns
         .iter()
         .map(String::as_str)
@@ -2787,8 +3431,11 @@ fn migrate_session_token_usage_primary_key(conn: &mut Connection) -> Result<()> 
         return Ok(());
     }
 
-    let tx = conn.transaction()?;
-    tx.execute_batch(
+    migrate_session_token_usage_primary_key_inner(tx)
+}
+
+fn migrate_session_token_usage_primary_key_inner(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
         "
         ALTER TABLE dispatcher_session_token_usage RENAME TO dispatcher_session_token_usage_old;
 
@@ -2829,9 +3476,7 @@ fn migrate_session_token_usage_primary_key(conn: &mut Connection) -> Result<()> 
         ON dispatcher_session_token_usage(workspace_id, updated_at DESC);
         ",
     )
-    .context("migrate dispatcher session token usage primary key")?;
-    tx.commit()
-        .context("commit dispatcher session token usage primary key migration")
+    .context("migrate dispatcher session token usage primary key")
 }
 
 fn table_primary_key_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
@@ -2876,6 +3521,85 @@ fn ensure_column_exists(
             Err(error).with_context(|| format!("ensure column {column} exists on table {table}"))
         }
     }
+}
+
+/// Transaction-scoped variant used from within `init()`'s outer migration transaction.
+fn ensure_column_exists_tx(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
+    // Transaction deref's to Connection, so delegate directly.
+    ensure_column_exists(tx, table, column, definition)
+}
+
+fn ensure_python_code_runs_table_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS python_code_runs (
+            run_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            code_block_index INTEGER NOT NULL,
+            code_hash TEXT NOT NULL,
+            code TEXT NOT NULL,
+            status TEXT NOT NULL,
+            stdout TEXT NOT NULL DEFAULT '',
+            stderr TEXT NOT NULL DEFAULT '',
+            installed_packages_json TEXT NOT NULL DEFAULT '[]',
+            tool_events_json TEXT NOT NULL DEFAULT '[]',
+            explanation_markdown TEXT NOT NULL DEFAULT '',
+            error_reason TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, message_id, code_block_index),
+            FOREIGN KEY (message_id) REFERENCES dispatcher_messages(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_python_code_runs_workspace_updated
+        ON python_code_runs(workspace_id, updated_at DESC);
+        ",
+    )
+    .context("ensure python code runs table")
+}
+
+fn ensure_chat_categories_table_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS chat_categories (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            icon TEXT NOT NULL DEFAULT '',
+            color TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        ",
+    )
+    .context("create chat_categories table")?;
+
+    let ts = now();
+    let defaults: Vec<(&str, &str, &str, &str, i32)> = vec![
+        ("general", "综合", "MessageSquare", "", 0),
+        ("life", "生活", "Heart", "#F43F5E", 1),
+        ("work", "工作", "Briefcase", "#3B82F6", 2),
+        ("tech", "技术", "Code2", "#8B5CF6", 3),
+        ("learning", "学习", "GraduationCap", "#22C55E", 4),
+    ];
+    let mut stmt = tx
+        .prepare(
+            "INSERT OR IGNORE INTO chat_categories (id, name, icon, color, sort_order, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .context("prepare seed categories statement")?;
+    for (id, name, icon, color, sort_order) in defaults {
+        stmt.execute(params![id, name, icon, color, sort_order, &ts, &ts])
+            .with_context(|| format!("seed chat category {id}"))?;
+    }
+
+    Ok(())
 }
 
 fn ensure_dispatcher_model_config_columns(conn: &Connection) -> Result<()> {
@@ -2934,6 +3658,11 @@ fn ensure_dispatcher_model_config_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Transaction-scoped variant used from within `init()`'s outer migration transaction.
+fn ensure_dispatcher_model_config_columns_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    ensure_dispatcher_model_config_columns(tx)
+}
+
 fn migrate_dispatcher_model_configs(conn: &Connection) -> Result<()> {
     conn.execute(
         "UPDATE dispatcher_settings SET
@@ -2974,6 +3703,11 @@ fn migrate_dispatcher_model_configs(conn: &Connection) -> Result<()> {
     .context("migrate dispatcher model config lists")?;
 
     Ok(())
+}
+
+/// Transaction-scoped variant used from within `init()`'s outer migration transaction.
+fn migrate_dispatcher_model_configs_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    migrate_dispatcher_model_configs(tx)
 }
 
 fn now() -> String {
@@ -3033,6 +3767,26 @@ fn map_dispatcher_message_record(
         tool_calls_json: row.get(11)?,
         usage_stats: parse_message_usage_stats(row.get::<_, Option<String>>(12)?)?,
         created_at: row.get(13)?,
+    })
+}
+
+fn map_python_code_run_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<PythonCodeRunRecord> {
+    Ok(PythonCodeRunRecord {
+        run_id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        message_id: row.get(2)?,
+        code_block_index: row.get::<_, i64>(3)? as u32,
+        code_hash: row.get(4)?,
+        code: row.get(5)?,
+        status: row.get(6)?,
+        stdout: row.get(7)?,
+        stderr: row.get(8)?,
+        installed_packages_json: row.get(9)?,
+        tool_events_json: row.get(10)?,
+        explanation_markdown: row.get(11)?,
+        error_reason: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
     })
 }
 
@@ -3131,11 +3885,12 @@ mod tests {
     use super::{
         ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb,
         DispatcherMessageUsageStats, DispatcherMode, DispatcherModelConfig, DispatcherSessionKind,
-        DispatcherSessionTokenUsageSource, DispatcherSettingsModelConfigs, PlanInteraction,
-        PlanQuestionOption, ToolArtifactDraft, DEFAULT_ASR_MODEL,
+        DispatcherSessionTokenUsageSource, DispatcherSettingsModelConfigs, ModelSlot,
+        PlanInteraction, PlanQuestionOption, ToolArtifactDraft, DEFAULT_ASR_MODEL,
+        DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_MODEL_URL, SETTINGS_LEGACY_COLUMNS,
     };
     use crate::agent::config::DEFAULT_SUMMARY_MODEL;
-    use crate::agent::llm::{LlmPromptTokensDetails, LlmUsage};
+    use crate::agent::llm::{FunctionCall, LlmPromptTokensDetails, LlmUsage, OutboundToolCall};
 
     fn create_test_db() -> (DispatcherDb, PathBuf) {
         let root =
@@ -3175,6 +3930,32 @@ mod tests {
             completion_tokens: 45,
             total_tokens: 165,
             elapsed_ms: 12_345,
+        }
+    }
+
+    #[test]
+    fn settings_column_offsets_match_generated_select_columns() {
+        let columns = super::settings_select_columns();
+        assert_eq!(
+            columns.len(),
+            SETTINGS_LEGACY_COLUMNS.len() + ModelSlot::ALL.len() * 4
+        );
+        assert_eq!(
+            columns[super::settings_column_index("auto_approve_dispatch")],
+            "auto_approve_dispatch"
+        );
+        assert_eq!(
+            columns[super::settings_column_index("context_debug")],
+            "context_debug"
+        );
+
+        for slot in ModelSlot::ALL {
+            let slot_columns = slot.columns();
+            let config_col = slot.config_col_offset();
+            assert_eq!(columns[config_col], slot_columns.url);
+            assert_eq!(columns[config_col + 1], slot_columns.api_key);
+            assert_eq!(columns[config_col + 2], slot_columns.model);
+            assert_eq!(columns[slot.json_col()], slot_columns.json);
         }
     }
 
@@ -3359,6 +4140,88 @@ mod tests {
     }
 
     #[test]
+    fn model_config_lists_activate_first_entry_when_none_is_active() {
+        let (db, root) = create_test_db();
+
+        let saved = db
+            .save_settings_with_model_configs(
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                false,
+                false,
+                "",
+                "",
+                "",
+                "",
+                DispatcherSettingsModelConfigs {
+                    chat_model_configs: Some(vec![
+                        DispatcherModelConfig {
+                            url: "https://chat-a.example.com/v1".to_string(),
+                            api_key: "sk-a".to_string(),
+                            model: "chat-a".to_string(),
+                            active: false,
+                        },
+                        DispatcherModelConfig {
+                            url: "https://chat-b.example.com/v1".to_string(),
+                            api_key: "sk-b".to_string(),
+                            model: "chat-b".to_string(),
+                            active: false,
+                        },
+                    ]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(saved.model, "chat-a");
+        assert!(saved.chat_model_configs[0].active);
+        assert!(!saved.chat_model_configs[1].active);
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn image_edit_defaults_use_image_config_after_image_defaults() {
+        let (db, root) = create_test_db();
+
+        let saved = db
+            .save_settings_with_model_configs(
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                false,
+                false,
+                "",
+                "",
+                "",
+                "",
+                DispatcherSettingsModelConfigs {
+                    image_model_config: Some(DispatcherModelConfig::new("", "sk-image", "")),
+                    image_edit_model_config: Some(DispatcherModelConfig::new("", "", "")),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(saved.image_model_config.url, DEFAULT_IMAGE_MODEL_URL);
+        assert_eq!(saved.image_model_config.model, DEFAULT_IMAGE_MODEL);
+        assert_eq!(saved.image_edit_model_config.url, DEFAULT_IMAGE_MODEL_URL);
+        assert_eq!(saved.image_edit_model_config.api_key, "sk-image");
+        assert_eq!(saved.image_edit_model_config.model, DEFAULT_IMAGE_MODEL);
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
     fn update_session_title_persists_latest_title() {
         let (db, root) = create_test_db();
         let session = db
@@ -3367,6 +4230,7 @@ mod tests {
                 "新会话",
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
+                None,
                 None,
             )
             .unwrap();
@@ -3398,6 +4262,7 @@ mod tests {
             DispatcherSessionKind::Project,
             DispatcherMode::Default,
             None,
+            None,
         )
         .unwrap();
         db.create_session(
@@ -3405,6 +4270,7 @@ mod tests {
             "普通聊天",
             DispatcherSessionKind::Chat,
             DispatcherMode::Default,
+            None,
             None,
         )
         .unwrap();
@@ -3612,6 +4478,7 @@ mod tests {
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
                 None,
+                None,
             )
             .unwrap();
 
@@ -3639,6 +4506,7 @@ mod tests {
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
                 None,
+                None,
             )
             .unwrap();
         let stats = sample_message_usage_stats();
@@ -3664,6 +4532,7 @@ mod tests {
                 "图片会话",
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
+                None,
                 None,
             )
             .unwrap();
@@ -3717,6 +4586,7 @@ mod tests {
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
                 None,
+                None,
             )
             .unwrap();
         let image_path = root.join("pasted.png");
@@ -3761,6 +4631,7 @@ mod tests {
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
                 None,
+                None,
             )
             .unwrap();
         let image_path = root.join("legacy.png");
@@ -3802,6 +4673,7 @@ mod tests {
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
                 None,
+                None,
             )
             .unwrap();
         db.add_visible_message(&session.id, "user", "检查工具结果", None)
@@ -3841,6 +4713,104 @@ mod tests {
     }
 
     #[test]
+    fn load_llm_history_preserves_assistant_reasoning_content() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session(
+                "project-1",
+                "思考模式会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+                None,
+            )
+            .unwrap();
+
+        db.add_visible_message(&session.id, "user", "需要工具调用", None)
+            .unwrap();
+        db.add_visible_message_with_tools_and_thinking(
+            &session.id,
+            "assistant",
+            "准备读取文件",
+            None,
+            None,
+            None,
+            None,
+            Some("先确认路径和工具约束"),
+            42,
+        )
+        .unwrap();
+
+        let history = db.load_llm_history(&session.id).unwrap();
+        let assistant = history
+            .iter()
+            .find(|message| message.role == "assistant")
+            .expect("assistant message should be in llm history");
+
+        assert_eq!(
+            assistant.reasoning_content.as_deref(),
+            Some("先确认路径和工具约束")
+        );
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn llm_history_preserves_assistant_reasoning_content_for_tool_calls() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session(
+                "project-1",
+                "思考工具会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+                None,
+            )
+            .unwrap();
+        db.add_visible_message(&session.id, "user", "查当前时间", None)
+            .unwrap();
+        let tool_calls = vec![OutboundToolCall {
+            id: "call-1".to_string(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: "get_current_time".to_string(),
+                arguments: "{}".to_string(),
+            },
+        }];
+        db.add_visible_message_with_tools_and_thinking(
+            &session.id,
+            "assistant",
+            "",
+            None,
+            None,
+            None,
+            Some(&tool_calls),
+            Some("需要调用时间工具获取准确信息。"),
+            42,
+        )
+        .unwrap();
+
+        let history = db.load_llm_history(&session.id).unwrap();
+        let assistant = history
+            .iter()
+            .find(|message| message.role == "assistant")
+            .expect("assistant tool call message should be in llm history");
+
+        assert_eq!(
+            assistant.reasoning_content.as_deref(),
+            Some("需要调用时间工具获取准确信息。")
+        );
+        assert_eq!(
+            assistant.tool_calls.as_ref().map(Vec::len),
+            Some(1),
+            "tool calls must stay paired with the reasoning content"
+        );
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
     fn clear_messages_removes_tool_artifacts_for_session() {
         let (db, root) = create_test_db();
         let session = db
@@ -3849,6 +4819,7 @@ mod tests {
                 "测试会话",
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
+                None,
                 None,
             )
             .unwrap();
@@ -3920,6 +4891,7 @@ mod tests {
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
                 None,
+                None,
             )
             .unwrap();
 
@@ -3953,6 +4925,7 @@ mod tests {
                 "测试会话",
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
+                None,
                 None,
             )
             .unwrap();
@@ -4004,6 +4977,7 @@ mod tests {
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
                 None,
+                None,
             )
             .unwrap();
         db.update_checklist(
@@ -4054,6 +5028,7 @@ mod tests {
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
                 None,
+                None,
             )
             .unwrap();
         let message = db
@@ -4077,6 +5052,77 @@ mod tests {
         assert!(db
             .get_tool_artifact(&session.id, &message.tool_artifacts[0].id)
             .is_err());
+
+        cleanup_test_db(root);
+    }
+
+    /// Regression test: user pastes image without typing text.
+    /// The `content` passed to `add_visible_message` is "", but `segments_json`
+    /// carries the image segment.  `parse_segments_json` must succeed so that
+    /// the derived content becomes `![image](path)`, NOT an empty string.
+    /// If `parse_segments_json` silently fails (unwrap_or_default → empty vec),
+    /// the LLM receives an empty message — which is the bug we're guarding against.
+    #[test]
+    fn image_only_segment_produces_markdown_content() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session(
+                "project-1",
+                "纯图片会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Default,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let image_path = root.join("pasted.png");
+        fs::write(&image_path, b"\x89PNG\r\n\x1a\nimage-bytes").expect("write image");
+
+        // This matches exactly what the frontend sends when the user pastes
+        // an image without typing any text:
+        //   content: ""  (no text)
+        //   segmentsJson: [{type:"image", imageId:"...", path:"...", source:"user_paste", mimeType:"image/png"}]
+        let segments_json = serde_json::json!([
+            {
+                "id": "seg-1",
+                "type": "image",
+                "imageId": "img-1",
+                "path": image_path.to_string_lossy(),
+                "source": "user_paste",
+                "mimeType": "image/png"
+            }
+        ])
+        .to_string();
+
+        let message = db
+            .add_visible_message(&session.id, "user", "", Some(segments_json))
+            .unwrap();
+
+        // The derived content must be markdown image syntax, NOT empty.
+        assert!(
+            !message.content.is_empty(),
+            "image-only message content should NOT be empty, got: {:?}",
+            message.content
+        );
+        assert!(
+            message.content.contains("![image]("),
+            "expected markdown image syntax, got: {:?}",
+            message.content
+        );
+
+        // Also verify load_llm_history produces the same content
+        let history = db.load_llm_history(&session.id).unwrap();
+        let user_msg = history.iter().find(|m| m.role == "user").unwrap();
+        assert!(
+            !user_msg.content.is_empty(),
+            "LLM history user message content should NOT be empty"
+        );
+        assert!(
+            user_msg.content.contains("![image]("),
+            "LLM history should contain markdown image syntax, got: {:?}",
+            user_msg.content
+        );
 
         cleanup_test_db(root);
     }

@@ -1,9 +1,11 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::path::PathBuf;
 
 use super::common::{resolve_path, string_arg};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
+use crate::chat_images::{is_chat_image_path, resolve_chat_image_id_async};
 use crate::tools::image_generator::edit_image;
 
 pub(super) fn edit_image_tool() -> Box<dyn AgentTool> {
@@ -19,14 +21,14 @@ impl AgentTool for EditImageTool {
     }
 
     fn description(&self) -> &'static str {
-        "根据用户提供的本地图片路径和编辑描述，对图片进行编辑（如修改风格、添加元素、调整细节等）。支持指定输出尺寸。"
+        "根据用户提供的图片引用和编辑描述，对图片进行编辑（如修改风格、添加元素、调整细节等）。支持 chat-image://uuid 协议引用、本地绝对路径或相对路径。支持指定输出尺寸。"
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "image_path": { "type": "string", "description": "要编辑的图片本地绝对路径" },
+                "image_path": { "type": "string", "description": "要编辑的图片引用。支持：chat-image://uuid（对话中图片引用）、本地绝对路径、相对工作区路径" },
                 "prompt": { "type": "string", "description": "编辑描述文本，详细描述要进行的修改" },
                 "image_name": { "type": "string", "description": "输出图片文件名（可选，不含扩展名）。用于生成可读的文件名" },
                 "width": { "type": "integer", "description": "输出图片宽度（可选）" },
@@ -45,11 +47,25 @@ impl AgentTool for EditImageTool {
             return "错误：缺少必填参数 prompt".to_string();
         };
 
-        // 去除可能的 file:// 前缀，再校验路径合法性
-        let raw_image_path = raw_image_path.strip_prefix("file://").unwrap_or(&raw_image_path);
-        let image_path = match resolve_path(context, raw_image_path) {
-            Ok(p) => p,
-            Err(e) => return e,
+        let image_path = if raw_image_path.starts_with("chat-image://") {
+            match resolve_chat_image_id_async(raw_image_path.clone()).await {
+                Ok(p) => p,
+                Err(e) => return format!("错误：无法解析 chat-image 协议引用：{}", e),
+            }
+        } else {
+            let stripped = raw_image_path
+                .strip_prefix("file://")
+                .unwrap_or(&raw_image_path);
+
+            let raw_path_buf = PathBuf::from(stripped);
+            if is_chat_image_path(&raw_path_buf) {
+                raw_path_buf
+            } else {
+                match resolve_path(context, stripped) {
+                    Ok(p) => p,
+                    Err(e) => return e,
+                }
+            }
         };
 
         if !image_path.exists() {
@@ -58,7 +74,9 @@ impl AgentTool for EditImageTool {
 
         let image_name = string_arg(args, "image_name");
         let width = args.get("width").and_then(|v| v.as_u64().map(|v| v as u32));
-        let height = args.get("height").and_then(|v| v.as_u64().map(|v| v as u32));
+        let height = args
+            .get("height")
+            .and_then(|v| v.as_u64().map(|v| v as u32));
 
         let api_key = &context.image_model_api_key;
         let base_url = &context.image_model_url;
@@ -73,7 +91,7 @@ impl AgentTool for EditImageTool {
         }
 
         match edit_image(
-            image_path.to_str().unwrap_or(raw_image_path),
+            image_path.to_str().unwrap_or(&raw_image_path),
             prompt,
             image_name,
             width,
@@ -86,14 +104,13 @@ impl AgentTool for EditImageTool {
         .await
         {
             Ok(output) => {
+                let ref_uri = format!("chat-image://{}", output.image_id);
                 format!(
-                    "图片编辑成功！\n图片ID：{}\n本地路径：{}\n尺寸：{}x{}\n编辑描述：{}\n\n如果你想在回答中展示该图片，请使用以下 Markdown 引用（直接使用原始本地路径即可）：\n![图片描述]({})",
-                    output.image_id, output.path, output.width, output.height, output.generation_prompt, output.path
+                    "图片编辑成功！尺寸 {}x{}，编辑描述：{}\n\n如需在回答中展示该图片，请使用：\n![图片描述]({})",
+                    output.width, output.height, output.generation_prompt, ref_uri
                 )
             }
-            Err(e) => {
-                format!("图片编辑失败：{}", e)
-            }
+            Err(e) => format!("图片编辑失败：{}", e),
         }
     }
 }

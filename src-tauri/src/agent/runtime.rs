@@ -240,6 +240,8 @@ pub struct DispatcherAgent {
 
 struct Models {
     summary_model: String,
+    summary_api_key: String,
+    summary_api_base: String,
     vision_model: String,
     image_model_url: String,
     image_model_api_key: String,
@@ -594,6 +596,8 @@ impl DispatcherAgent {
         Self {
             models: Mutex::new(Models {
                 summary_model: normalize_summary_model(&config.summary_model),
+                summary_api_key: String::new(),
+                summary_api_base: String::new(),
                 vision_model: config.vision_model.trim().to_string(),
                 image_model_url: config.image_model_url.clone(),
                 image_model_api_key: config.image_model_api_key.clone(),
@@ -641,6 +645,13 @@ impl DispatcherAgent {
         if !settings.summary_model.trim().is_empty() {
             models.summary_model = normalize_summary_model(&settings.summary_model);
         }
+        let smc = &settings.summary_model_config;
+        if !smc.api_key.trim().is_empty() {
+            models.summary_api_key = smc.api_key.trim().to_string();
+        }
+        if !smc.url.trim().is_empty() {
+            models.summary_api_base = smc.url.trim().to_string();
+        }
         if !settings.vision_model.trim().is_empty() {
             models.vision_model = settings.vision_model.trim().to_string();
         }
@@ -672,6 +683,30 @@ impl DispatcherAgent {
 
     fn summary_model(&self) -> String {
         self.models.lock().summary_model.clone()
+    }
+
+    /// Build the provider to use for summary operations.
+    /// If `summary_model_config` has its own api_key/url, use those;
+    /// otherwise fall back to the chat provider's credentials.
+    fn summary_provider(&self, fallback: &OpenAiCompatProvider) -> OpenAiCompatProvider {
+        let models = self.models.lock();
+        let api_key = if models.summary_api_key.is_empty() {
+            fallback.api_key().to_string()
+        } else {
+            models.summary_api_key.clone()
+        };
+        let api_base = if models.summary_api_base.is_empty() {
+            fallback.api_base().to_string()
+        } else {
+            models.summary_api_base.clone()
+        };
+        OpenAiCompatProvider::new(
+            api_key,
+            api_base,
+            models.summary_model.clone(),
+            self.config.max_tokens,
+            self.config.temperature,
+        )
     }
 
     fn vision_model(&self) -> String {
@@ -854,6 +889,7 @@ impl DispatcherAgent {
             );
         }
         let summary_model = self.summary_model();
+        let summary_provider = self.summary_provider(&provider);
         let mut usage_tracker = RunUsageTracker::new();
         let summarized_dispatch_result = match tokio::select! {
             _ = wait_for_cancellation(&mut cancel_rx) => {
@@ -873,7 +909,7 @@ impl DispatcherAgent {
                 );
                 return Ok(AgentTurn { reply, messages });
             }
-            result = summarize_dispatch_result(&provider, &summary_model, dispatch_result, |usage| {
+            result = summarize_dispatch_result(&summary_provider, &summary_model, dispatch_result, |usage| {
                 record_run_token_usage(
                     db,
                     workspace_id,
@@ -1021,27 +1057,9 @@ impl DispatcherAgent {
         cancel_rx: watch::Receiver<bool>,
         usage_tracker: &mut RunUsageTracker,
     ) -> Result<DispatcherMessageRecord> {
-        let session_title = db
-            .get_session_title(workspace_id)
-            .unwrap_or_else(|_| "untitled".to_string());
-        let ms = self.models.lock().snapshot();
-        let tool_context = ToolContext {
-            workspace_id: workspace_id.to_string(),
-            workspace: workspace.to_path_buf(),
-            session_title,
-            exec_timeout_secs: self.config.exec_timeout_secs,
-            restrict_to_workspace: self.config.restrict_to_workspace,
-            extra_allowed_dirs: dirs::home_dir()
-                .map(|h| vec![h.join(".jkcodingagent")])
-                .unwrap_or_default(),
-            app_handle: self.app_handle.clone(),
-            llm_provider: Some(provider.clone()),
-            vision_model: ms.vision_model,
-            image_model_url: ms.image_model_url,
-            image_model_api_key: ms.image_model_api_key,
-            image_model: ms.image_model,
-            image_edit_model: ms.image_edit_model,
-        };
+        let tool_context = self
+            .build_tool_context(db, workspace_id, workspace, provider)
+            .await;
         let allowed_tool_names = plain_chat_tool_allowlist()
             .into_iter()
             .map(str::to_string)
@@ -1049,10 +1067,10 @@ impl DispatcherAgent {
         let tool_definitions = self.tools.definitions_for_workspace(
             workspace,
             Some(allowed_tool_names.iter().map(String::as_str)),
-            false,
+            true,
         );
 
-        for _ in 0..self.config.max_tool_iterations {
+        for iteration in 0..self.config.max_tool_iterations {
             if cancellation_requested(&cancel_rx) {
                 return emit_plain_chat_stop_and_finish(
                     db,
@@ -1063,46 +1081,30 @@ impl DispatcherAgent {
                 );
             }
 
-            let history_messages = db.load_llm_history(workspace_id)?;
+            let history_messages = db.load_llm_history_async(workspace_id).await?;
             let request_provider =
                 self.provider_for_messages(provider, &history_messages, on_event, true)?;
             let mut messages = vec![ChatMessage::system(build_plain_chat_system_prompt())];
-            messages.extend(history_messages.clone());
+            messages.extend(history_messages);
 
-            let stream_msg_id = uuid::Uuid::new_v4().to_string();
-            emit(
-                on_event,
-                AgentEvent::AssistantStarted {
-                    message_id: stream_msg_id.clone(),
-                },
-            );
-
-            let event_ref = on_event;
-            let msg_id_ref = stream_msg_id.clone();
-            let thinking_msg_id_ref = stream_msg_id.clone();
-            let streamed_text = Arc::new(Mutex::new(String::new()));
-            let streamed_text_ref = Arc::clone(&streamed_text);
-            let on_delta = move |delta: &str| {
-                let mut partial = streamed_text_ref.lock();
-                partial.push_str(delta);
-                let _ = event_ref.send(AgentEvent::AssistantDelta {
-                    message_id: msg_id_ref.clone(),
-                    delta: delta.to_string(),
-                });
-            };
-            let thinking_event_ref = on_event;
-            let on_thinking_delta = move |delta: &str, elapsed_ms: u64| {
-                let _ = thinking_event_ref.send(AgentEvent::AssistantThinkingDelta {
-                    message_id: thinking_msg_id_ref.clone(),
-                    delta: delta.to_string(),
-                    elapsed_ms,
-                });
-            };
-
-            let mut stream_cancel_rx = cancel_rx.clone();
-            let response = tokio::select! {
-                _ = wait_for_cancellation(&mut stream_cancel_rx) => {
-                    let partial = streamed_text.lock().clone();
+            let debug_logger = ContextDebugLogger::new(false, workspace);
+            let response = match self
+                .stream_llm_response(
+                    db,
+                    workspace_id,
+                    on_event,
+                    &request_provider,
+                    &messages,
+                    &tool_definitions,
+                    enable_thinking,
+                    cancel_rx.clone(),
+                    usage_tracker,
+                    &debug_logger,
+                    iteration,
+                )
+                .await?
+            {
+                LlmStreamOutcome::Cancelled(partial) => {
                     return emit_plain_chat_stop_and_finish(
                         db,
                         workspace_id,
@@ -1111,101 +1113,19 @@ impl DispatcherAgent {
                         usage_tracker,
                     );
                 }
-                response = request_provider.chat_stream_with_thinking(
-                    &messages,
-                    &tool_definitions,
-                    messages_contain_inline_images(&history_messages),
-                    enable_thinking,
-                    on_delta,
-                    on_thinking_delta,
-                ) => response
-            }?;
-
-            if let Some(usage) = response.usage.as_ref() {
-                record_run_token_usage(
-                    db,
-                    workspace_id,
-                    request_provider.model(),
-                    DispatcherSessionTokenUsageSource::Primary,
-                    usage,
-                    usage_tracker,
-                    on_event,
-                );
-            }
+                LlmStreamOutcome::Response(r) => r,
+            };
 
             if response.tool_calls.is_empty() {
-                let content = response.content.trim().to_string();
-                if content.is_empty() {
-                    anyhow::bail!("{}", empty_llm_response_error(&response));
-                }
-                let usage_stats = usage_tracker.snapshot();
-                let reply = db
-                    .add_visible_message_with_usage_and_thinking_async(
-                        workspace_id,
-                        "assistant",
-                        &content,
-                        &usage_stats,
-                        Some(&response.thinking_content),
-                        response.thinking_elapsed_ms,
-                    )
-                    .await?;
-                emit(
-                    on_event,
-                    AgentEvent::AssistantMessage {
-                        message: reply.clone(),
-                    },
-                );
-                return Ok(reply);
+                return self
+                    .handle_no_tool_response(db, workspace_id, on_event, &response, usage_tracker)
+                    .await;
             }
 
-            let tool_calls_payload: Vec<OutboundToolCall> = response
-                .tool_calls
-                .iter()
-                .map(|call| {
-                    let args_json =
-                        serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string());
-                    OutboundToolCall {
-                        id: call.id.clone(),
-                        kind: "function".to_string(),
-                        function: FunctionCall {
-                            name: call.name.clone(),
-                            arguments: args_json,
-                        },
-                    }
-                })
-                .collect();
+            let (tool_calls, args_map) =
+                Self::persist_assistant_tool_calls(db, workspace_id, on_event, response).await?;
 
-            // Pre-serialize arguments for reuse across events and DB storage.
-            let args_map: std::collections::HashMap<&str, &str> = tool_calls_payload
-                .iter()
-                .map(|tc| (tc.id.as_str(), tc.function.arguments.as_str()))
-                .collect();
-
-            for tc in &tool_calls_payload {
-                emit(
-                    on_event,
-                    AgentEvent::ToolPlanned {
-                        tool_call_id: Some(tc.id.clone()),
-                        name: tc.function.name.clone(),
-                        arguments: tc.function.arguments.clone(),
-                    },
-                );
-            }
-
-            db.add_visible_message_with_tools_and_thinking_async(
-                workspace_id,
-                "assistant",
-                &response.content,
-                None,
-                None,
-                None,
-                Some(&tool_calls_payload),
-                Some(&response.thinking_content),
-                response.thinking_elapsed_ms,
-            )
-            .await?;
-
-            for tool_call in response.tool_calls {
+            for tool_call in tool_calls {
                 if cancellation_requested(&cancel_rx) {
                     return emit_plain_chat_stop_and_finish(
                         db,
@@ -1216,9 +1136,9 @@ impl DispatcherAgent {
                     );
                 }
                 let tool_args_json = args_map
-                    .get(tool_call.id.as_str())
-                    .unwrap_or(&"{}")
-                    .to_string();
+                    .get(&tool_call.id)
+                    .unwrap_or_else(|| panic!("args_map missing tool_call id {}", tool_call.id))
+                    .clone();
                 emit(
                     on_event,
                     AgentEvent::ToolStarted {
@@ -1237,44 +1157,15 @@ impl DispatcherAgent {
                 };
 
                 let summary_model = self.summary_model();
-                let tool_result = prepare_tool_result(
+                self.summarize_and_persist_tool_result(
+                    db,
+                    workspace_id,
+                    on_event,
                     &request_provider,
                     &summary_model,
-                    &tool_call.name,
-                    &tool_call.arguments,
+                    &tool_call,
                     &raw_result,
-                    |result_mode| {
-                        emit(
-                            on_event,
-                            AgentEvent::ToolSummaryStarted {
-                                tool_call_id: Some(tool_call.id.clone()),
-                                name: tool_call.name.clone(),
-                                result_mode: result_mode.to_string(),
-                            },
-                        );
-                    },
-                    |delta| {
-                        emit(
-                            on_event,
-                            AgentEvent::ToolSummaryDelta {
-                                tool_call_id: Some(tool_call.id.clone()),
-                                name: tool_call.name.clone(),
-                                delta: delta.to_string(),
-                                result_mode: "conservative_summary".to_string(),
-                            },
-                        );
-                    },
-                    |usage| {
-                        record_run_token_usage(
-                            db,
-                            workspace_id,
-                            &summary_model,
-                            DispatcherSessionTokenUsageSource::Summary,
-                            usage,
-                            usage_tracker,
-                            on_event,
-                        );
-                    },
+                    usage_tracker,
                 )
                 .await
                 .map_err(|error| {
@@ -1282,31 +1173,9 @@ impl DispatcherAgent {
                         "普通聊天工具结果摘要失败，tool={}, summary_model={}：{}",
                         tool_call.name,
                         summary_model,
-                        error.message()
+                        error
                     )
                 })?;
-
-                let tool_message = db
-                    .add_visible_tool_result_async(
-                        workspace_id,
-                        &tool_result.display_content,
-                        &tool_result.context_payload,
-                        Some(&tool_call.id),
-                        Some(&tool_call.name),
-                        Some(tool_result.result_mode),
-                        &tool_result.artifacts,
-                    )
-                    .await?;
-                emit(
-                    on_event,
-                    AgentEvent::ToolFinished {
-                        tool_call_id: Some(tool_call.id.clone()),
-                        name: tool_call.name.clone(),
-                        display_text: tool_message.content.clone(),
-                        result_mode: tool_result.result_mode.to_string(),
-                        detail_refs: tool_message.tool_artifacts.clone(),
-                    },
-                );
             }
         }
 
@@ -1578,7 +1447,7 @@ impl DispatcherAgent {
             response = request_provider.chat_stream_with_thinking(
                 messages,
                 tool_definitions,
-                messages_contain_inline_images(&messages[1..]),
+                messages_contain_inline_images(messages),
                 enable_thinking,
                 on_delta,
                 on_thinking_delta,
@@ -1650,6 +1519,64 @@ impl DispatcherAgent {
         Ok(())
     }
 
+    /// Build tool call payloads, emit ToolPlanned events, and persist the assistant
+    /// message (with tool calls) to the database. Returns `(tool_calls, args_map)` so
+    /// callers can iterate and execute the individual tool calls.
+    async fn persist_assistant_tool_calls(
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        response: LlmResponse,
+    ) -> Result<(Vec<RequestedToolCall>, HashMap<String, String>)> {
+        let tool_calls = response.tool_calls;
+        let tool_calls_payload: Vec<OutboundToolCall> = tool_calls
+            .iter()
+            .map(|call| {
+                let args_json =
+                    serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string());
+                OutboundToolCall {
+                    id: call.id.clone(),
+                    kind: "function".to_string(),
+                    function: FunctionCall {
+                        name: call.name.clone(),
+                        arguments: args_json,
+                    },
+                }
+            })
+            .collect();
+
+        let args_map: HashMap<String, String> = tool_calls_payload
+            .iter()
+            .map(|tc| (tc.id.clone(), tc.function.arguments.clone()))
+            .collect();
+
+        for tc in &tool_calls_payload {
+            emit(
+                on_event,
+                AgentEvent::ToolPlanned {
+                    tool_call_id: Some(tc.id.clone()),
+                    name: tc.function.name.clone(),
+                    arguments: tc.function.arguments.clone(),
+                },
+            );
+        }
+
+        db.add_visible_message_with_tools_and_thinking_async(
+            workspace_id,
+            "assistant",
+            &response.content,
+            None,
+            None,
+            None,
+            Some(&tool_calls_payload),
+            Some(&response.thinking_content),
+            response.thinking_elapsed_ms,
+        )
+        .await?;
+
+        Ok((tool_calls, args_map))
+    }
+
     async fn handle_no_tool_response(
         &self,
         db: &DispatcherDb,
@@ -1700,55 +1627,8 @@ impl DispatcherAgent {
         request_provider: &OpenAiCompatProvider,
         usage_tracker: &mut RunUsageTracker,
     ) -> Result<ToolCallsOutcome> {
-        // Move tool_calls out; content/thinking fields remain accessible for the DB save.
-        let tool_calls = response.tool_calls;
-        let tool_calls_payload: Vec<OutboundToolCall> = tool_calls
-            .iter()
-            .map(|call| {
-                let args_json =
-                    serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string());
-                OutboundToolCall {
-                    id: call.id.clone(),
-                    kind: "function".to_string(),
-                    function: FunctionCall {
-                        name: call.name.clone(),
-                        arguments: args_json,
-                    },
-                }
-            })
-            .collect();
-
-        let args_map: std::collections::HashMap<&str, &str> = tool_calls_payload
-            .iter()
-            .map(|tc| (tc.id.as_str(), tc.function.arguments.as_str()))
-            .collect();
-
-        for tool_call in &tool_calls {
-            emit(
-                on_event,
-                AgentEvent::ToolPlanned {
-                    tool_call_id: Some(tool_call.id.clone()),
-                    name: tool_call.name.clone(),
-                    arguments: args_map
-                        .get(tool_call.id.as_str())
-                        .unwrap_or(&"{}")
-                        .to_string(),
-                },
-            );
-        }
-
-        db.add_visible_message_with_tools_and_thinking_async(
-            workspace_id,
-            "assistant",
-            &response.content,
-            None,
-            None,
-            None,
-            Some(&tool_calls_payload),
-            Some(&response.thinking_content),
-            response.thinking_elapsed_ms,
-        )
-        .await?;
+        let (tool_calls, args_map) =
+            Self::persist_assistant_tool_calls(db, workspace_id, on_event, response).await?;
 
         let mut protocol_state =
             ProtocolBatchState::new(self.active_subprocesses_for_workspace(workspace_id));
@@ -1804,9 +1684,9 @@ impl DispatcherAgent {
                 let tool_call = tool_calls[tool_call_index].clone();
                 tool_call_index += 1;
                 let tool_args_json = args_map
-                    .get(tool_call.id.as_str())
-                    .unwrap_or(&"{}")
-                    .to_string();
+                    .get(&tool_call.id)
+                    .cloned()
+                    .unwrap_or_else(|| "{}".to_string());
                 emit(
                     on_event,
                     AgentEvent::ToolStarted {
@@ -1870,18 +1750,17 @@ impl DispatcherAgent {
                         }
 
                         let summary_model = self.summary_model();
-                        self
-                            .summarize_and_persist_tool_result(
-                                db,
-                                workspace_id,
-                                on_event,
-                                request_provider,
-                                &summary_model,
-                                &tool_call,
-                                &result,
-                                usage_tracker,
-                            )
-                            .await?;
+                        self.summarize_and_persist_tool_result(
+                            db,
+                            workspace_id,
+                            on_event,
+                            request_provider,
+                            &summary_model,
+                            &tool_call,
+                            &result,
+                            usage_tracker,
+                        )
+                        .await?;
 
                         if let Err(error) = db.compact_successful_tool_retry(
                             workspace_id,
@@ -1996,8 +1875,9 @@ impl DispatcherAgent {
         result: &str,
         usage_tracker: &mut RunUsageTracker,
     ) -> Result<()> {
+        let summary_provider = self.summary_provider(request_provider);
         let tool_result = match prepare_tool_result(
-            request_provider,
+            &summary_provider,
             summary_model,
             &tool_call.name,
             &tool_call.arguments,
@@ -2277,16 +2157,14 @@ impl DispatcherAgent {
         _agent: DispatchAgent,
         task_description: &str,
     ) -> std::result::Result<String, String> {
-        let history = db
-            .load_llm_history(workspace_id)
-            .map_err(|error| format!("读取调度历史失败：{error}"))?;
-        let latest_user_goal = history
-            .iter()
-            .rev()
-            .find(|message| message.role == "user")
-            .map(|message| compact_multiline(message.content.trim(), 240))
+        let latest_user_goal = db
+            .get_latest_user_message_content(workspace_id)
+            .map_err(|error| format!("读取最新用户消息失败：{error}"))?
+            .as_deref()
+            .map(|text| compact_multiline(text.trim(), 240))
             .filter(|text| !text.is_empty());
-        let explored_index_info = collect_recent_exploration_entries(&history);
+        let explored_index_info = collect_recent_exploration_entries_from_db(db, workspace_id)
+            .map_err(|error| format!("读取探索上下文失败：{error}"))?;
         let active_plan_path = db
             .get_session_runtime_state(workspace_id)
             .map_err(|error| format!("读取调度运行态失败：{error}"))?
@@ -3568,6 +3446,7 @@ fn build_protocol_waiting_message(
     sections.join("\n\n")
 }
 
+#[cfg(test)]
 fn collect_recent_exploration_entries(history: &[ChatMessage]) -> String {
     const MAX_ENTRIES: usize = 3;
     const MAX_TOTAL_CHARS: usize = 900;
@@ -3614,6 +3493,62 @@ fn collect_recent_exploration_entries(history: &[ChatMessage]) -> String {
     } else {
         entries.reverse();
         entries.join("\n")
+    }
+}
+
+/// DB-backed variant of `collect_recent_exploration_entries` that avoids loading
+/// the full LLM history. Fetches only the recent tool/assistant rows needed.
+fn collect_recent_exploration_entries_from_db(
+    db: &DispatcherDb,
+    workspace_id: &str,
+) -> std::result::Result<String, String> {
+    const MAX_ENTRIES: usize = 3;
+    const MAX_TOTAL_CHARS: usize = 900;
+
+    let rows = db
+        .list_recent_exploration_content(workspace_id, MAX_ENTRIES)
+        .map_err(|error| error.to_string())?;
+
+    let mut entries = Vec::new();
+    let mut total_chars = 0usize;
+
+    // rows come in DESC order; collect then reverse for chronological order
+    for (role, tool_name, content) in rows {
+        let content = content.trim();
+        if content.is_empty() {
+            continue;
+        }
+
+        let label = match role.as_str() {
+            "tool" => tool_name
+                .map(|name| format!("工具 {}", name))
+                .unwrap_or_else(|| "工具".to_string()),
+            "assistant" => "调度结论".to_string(),
+            _ => continue,
+        };
+        let compact = compact_multiline(content, 220);
+        if compact.is_empty() {
+            continue;
+        }
+
+        let candidate = format!("- {}：{}", label, compact);
+        let candidate_len = candidate.chars().count();
+        if total_chars + candidate_len > MAX_TOTAL_CHARS && !entries.is_empty() {
+            break;
+        }
+
+        entries.push(candidate);
+        total_chars += candidate_len;
+        if entries.len() >= MAX_ENTRIES {
+            break;
+        }
+    }
+
+    if entries.is_empty() {
+        Ok(String::new())
+    } else {
+        entries.reverse();
+        Ok(entries.join("\n"))
     }
 }
 
@@ -4061,6 +3996,7 @@ mod tests {
             ChatMessage {
                 role: "user".to_string(),
                 content: "用户原始诉求".to_string(),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -4068,6 +4004,7 @@ mod tests {
             ChatMessage {
                 role: "tool".to_string(),
                 content: "读取文件 A，确认只需调整调度提示词拼装。".to_string(),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: Some("read_file".to_string()),
@@ -4075,6 +4012,7 @@ mod tests {
             ChatMessage {
                 role: "assistant".to_string(),
                 content: "当前冗长主要来自已探索索引信息和输出要求重复注入。".to_string(),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -4171,6 +4109,7 @@ mod tests {
                 "测试会话",
                 DispatcherSessionKind::Project,
                 DispatcherMode::Default,
+                None,
                 None,
             )
             .unwrap();

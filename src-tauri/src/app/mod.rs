@@ -1,7 +1,7 @@
 use crate::agent::DispatcherState;
 use crate::{
-    agent, browser, chat_images, knowledge, platform, project, scm, shared::TaskManager,
-    task_runtime, workspace,
+    agent, browser, chat_images, knowledge, platform, project, python_runner, scm,
+    shared::TaskManager, task_runtime, workspace,
 };
 use tauri::Manager;
 
@@ -30,6 +30,7 @@ pub fn run() {
         .manage(dispatcher_state)
         .manage(browser::BrowserManager::default())
         .manage(agent::voice::VoiceAsrManager::default())
+        .manage(python_runner::PythonRunnerState::default())
         .manage(project_mcp_registry)
         .manage(workspace::RopeManager::new())
         .plugin(tauri_plugin_opener::init())
@@ -48,12 +49,17 @@ pub fn run() {
             browser::browser_import_chrome_profile,
             browser::browser_list_chrome_profile_candidates,
             browser::browser_stop,
+            python_runner::python_runner_list_results,
+            python_runner::python_runner_start,
+            python_runner::python_runner_stop,
+            python_runner::python_runner_clear_result,
             browser::browser_click_at,
             browser::browser_go_back,
             browser::browser_navigate,
             browser::browser_reload,
             browser::browser_get_status,
             chat_images::save_chat_image,
+            chat_images::resolve_chat_image,
             workspace::fs::read_dir_entries,
             workspace::fs::read_file_content,
             workspace::fs::read_image_preview,
@@ -145,6 +151,12 @@ pub fn run() {
             agent::commands::dispatcher_get_session_runtime_state,
             agent::commands::dispatcher_set_session_mode,
             agent::commands::dispatcher_delete_session,
+            agent::commands::chat_list_categories,
+            agent::commands::chat_create_category,
+            agent::commands::chat_update_category,
+            agent::commands::chat_delete_category,
+            agent::commands::chat_set_session_category,
+            agent::commands::chat_reorder_categories,
             agent::commands::dispatcher_save_settings,
             agent::commands::dispatcher_set_auto_approve_dispatch,
             agent::commands::dispatcher_fetch_models,

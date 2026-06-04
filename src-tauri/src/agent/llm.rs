@@ -29,6 +29,8 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<OutboundToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -41,6 +43,7 @@ impl ChatMessage {
         Self {
             role: "system".to_string(),
             content,
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -52,6 +55,8 @@ impl ChatMessage {
 struct ApiChatMessage {
     role: String,
     content: ApiMessageContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OutboundToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -198,6 +203,46 @@ pub fn messages_contain_inline_images(messages: &[ChatMessage]) -> bool {
         .any(|message| message.role == "user" && content_contains_inline_image(&message.content))
 }
 
+fn append_valid_utf8(buffer: &mut String, leftover_bytes: &mut Vec<u8>, bytes: &[u8]) {
+    leftover_bytes.extend_from_slice(bytes);
+
+    loop {
+        match std::str::from_utf8(leftover_bytes) {
+            Ok(text) => {
+                buffer.push_str(text);
+                leftover_bytes.clear();
+                break;
+            }
+            Err(error) => {
+                let valid_len = error.valid_up_to();
+                if valid_len > 0 {
+                    buffer.push_str(
+                        std::str::from_utf8(&leftover_bytes[..valid_len])
+                            .expect("valid UTF-8 prefix"),
+                    );
+                    leftover_bytes.drain(..valid_len);
+                    continue;
+                }
+
+                if let Some(invalid_len) = error.error_len() {
+                    leftover_bytes.drain(..invalid_len);
+                    continue;
+                }
+
+                // A valid scalar can be at most 4 bytes. Anything older than that
+                // cannot be a legitimate incomplete UTF-8 tail.
+                if leftover_bytes.len() > 4 {
+                    let drop_len = leftover_bytes.len() - 4;
+                    leftover_bytes.drain(..drop_len);
+                    continue;
+                }
+
+                break;
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct OpenAiCompatProvider {
     client: Client,
@@ -235,6 +280,14 @@ impl OpenAiCompatProvider {
 
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    pub fn api_key(&self) -> &str {
+        &self.api_key
+    }
+
+    pub fn api_base(&self) -> &str {
+        &self.api_base
     }
 
     pub fn with_model(&self, model: impl Into<String>) -> Self {
@@ -391,6 +444,7 @@ impl OpenAiCompatProvider {
 
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut leftover_bytes: Vec<u8> = Vec::new();
         let mut content = String::new();
         let mut thinking_content = String::new();
         let mut thinking_started_at: Option<std::time::Instant> = None;
@@ -405,7 +459,7 @@ impl OpenAiCompatProvider {
             if buffer.len() > 1_000_000 {
                 return Err(anyhow!("SSE 行超过最大缓冲区大小"));
             }
-            buffer.push_str(std::str::from_utf8(&bytes).unwrap_or(""));
+            append_valid_utf8(&mut buffer, &mut leftover_bytes, &bytes);
 
             // Process complete lines from the buffer
             while let Some(newline_pos) = buffer.find('\n') {
@@ -598,6 +652,11 @@ async fn build_api_messages(
             } else {
                 ApiMessageContent::Text(message.content.clone())
             },
+            reasoning_content: message
+                .reasoning_content
+                .as_ref()
+                .filter(|content| message.role == "assistant" && !content.trim().is_empty())
+                .cloned(),
             tool_calls: message.tool_calls.clone(),
             tool_call_id: message.tool_call_id.clone(),
             name: message.name.clone(),
@@ -608,13 +667,32 @@ async fn build_api_messages(
 }
 
 async fn build_api_message_content(content: &str) -> Result<ApiMessageContent> {
-    let parts = extract_multimodal_parts(content).await?;
+    let parts = match extract_multimodal_parts(content).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "build_api_message_content: extract_multimodal_parts failed for {} byte content: {e:#}",
+                content.len()
+            );
+            return Ok(ApiMessageContent::Text(content.to_string()));
+        }
+    };
     if parts
         .iter()
         .any(|part| matches!(part, ApiMessageContentPart::ImageUrl { .. }))
     {
+        eprintln!(
+            "build_api_message_content: multimodal — {} parts ({} image_url, {} text)",
+            parts.len(),
+            parts.iter().filter(|p| matches!(p, ApiMessageContentPart::ImageUrl { .. })).count(),
+            parts.iter().filter(|p| matches!(p, ApiMessageContentPart::Text { .. })).count(),
+        );
         Ok(ApiMessageContent::Parts(parts))
     } else {
+        eprintln!(
+            "build_api_message_content: no image_url parts found in {} byte content, falling back to text",
+            content.len()
+        );
         Ok(ApiMessageContent::Text(content.to_string()))
     }
 }
@@ -709,12 +787,27 @@ impl Iterator for InlineImageUrlIter<'_> {
 }
 
 fn is_supported_image_reference(url: &str) -> bool {
-    url.starts_with("data:image/") || local_image_path(url).is_ok()
+    url.starts_with("data:image/")
+        || url.starts_with(crate::chat_images::CHAT_IMAGE_PROTOCOL)
+        || local_image_path(url).is_ok()
 }
 
 async fn image_url_for_api(url: &str) -> Result<String> {
     if url.starts_with("data:image/") {
         return Ok(url.to_string());
+    }
+
+    // `chat-image://<image_id>` URIs must be resolved to their filesystem path
+    // first (the path is stored in `~/.jkcodingagent/chat-images/...` and is
+    // looked up by scanning that directory). Only then can it be read and
+    // encoded as a data URL for the LLM vision API.
+    if url.starts_with(crate::chat_images::CHAT_IMAGE_PROTOCOL) {
+        let resolved = crate::chat_images::resolve_chat_image_id_async(url.to_string())
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        return tokio::task::spawn_blocking(move || local_image_to_data_url(&resolved))
+            .await
+            .context("读取 chat-image 图片任务失败")?;
     }
 
     let path = local_image_path(url)?;
@@ -944,12 +1037,14 @@ struct StreamFunctionCall {
 mod tests {
     use std::collections::BTreeMap;
 
+    use base64::Engine;
     use reqwest::StatusCode;
 
     use super::{
-        append_raw_response, build_api_message_content, build_requested_tool_calls,
-        messages_contain_inline_images, should_retry_without_stream_options, split_tagged_thinking,
-        ApiMessageContent, ApiMessageContentPart, ChatMessage, StreamChunk,
+        append_raw_response, append_valid_utf8, build_api_message_content, build_api_messages,
+        build_requested_tool_calls, is_supported_image_reference, messages_contain_inline_images,
+        should_retry_without_stream_options, split_tagged_thinking, ApiMessageContent,
+        ApiMessageContentPart, ChatMessage, StreamChunk,
     };
 
     #[test]
@@ -1084,6 +1179,7 @@ mod tests {
             ChatMessage {
                 role: "assistant".to_string(),
                 content: "![image](data:image/png;base64,aaa)".to_string(),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -1091,6 +1187,7 @@ mod tests {
             ChatMessage {
                 role: "user".to_string(),
                 content: "看这里 ![image](data:image/jpeg;base64,bbb)".to_string(),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -1109,12 +1206,69 @@ mod tests {
         let messages = vec![ChatMessage {
             role: "user".to_string(),
             content: format!("看这里 ![image]({image_path})"),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
             name: None,
         }];
 
         assert!(messages_contain_inline_images(&messages));
+    }
+
+    #[tokio::test]
+    async fn api_messages_preserve_assistant_reasoning_content_only() {
+        let messages = vec![
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: String::new(),
+                reasoning_content: Some("需要先调用工具。".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "继续".to_string(),
+                reasoning_content: Some("不应发送".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+        ];
+
+        let api_messages = build_api_messages(&messages, false).await.unwrap();
+        let json = serde_json::to_value(&api_messages).unwrap();
+
+        assert_eq!(json[0]["reasoning_content"], "需要先调用工具。");
+        assert!(json[1].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn utf8_stream_decoder_keeps_split_multibyte_tail() {
+        let mut buffer = String::new();
+        let mut leftover = Vec::new();
+        let bytes = "data: 你好\n".as_bytes();
+
+        append_valid_utf8(&mut buffer, &mut leftover, &bytes[..8]);
+        assert_eq!(buffer, "data: ");
+        assert!(!leftover.is_empty());
+
+        append_valid_utf8(&mut buffer, &mut leftover, &bytes[8..]);
+        assert_eq!(buffer, "data: 你好\n");
+        assert!(leftover.is_empty());
+    }
+
+    #[test]
+    fn utf8_stream_decoder_drops_invalid_bytes_without_losing_following_text() {
+        let mut buffer = String::new();
+        let mut leftover = Vec::new();
+
+        append_valid_utf8(&mut buffer, &mut leftover, b"data: ok ");
+        append_valid_utf8(&mut buffer, &mut leftover, &[0xF0]);
+        append_valid_utf8(&mut buffer, &mut leftover, b"after\n");
+
+        assert_eq!(buffer, "data: ok after\n");
+        assert!(leftover.is_empty());
     }
 
     #[tokio::test]
@@ -1155,5 +1309,65 @@ mod tests {
         assert!(!image_url.url.contains(path.to_string_lossy().as_ref()));
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn chat_image_protocol_is_supported_image_reference() {
+        assert!(is_supported_image_reference(
+            "chat-image://550e8400-e29b-41d4-a716-446655440000"
+        ));
+    }
+
+    #[tokio::test]
+    async fn chat_image_protocol_resolved_to_data_url() {
+        use crate::chat_images::save_chat_image;
+
+        let small = make_small_test_png();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&small);
+        let saved = save_chat_image(
+            "s".to_string(),
+            "llm-chat-image-test".to_string(),
+            b64,
+            "image/png".to_string(),
+        )
+        .await
+        .expect("save chat image");
+
+        let content = format!("看图\n![image](chat-image://{})\n请描述", saved.image_id);
+        let ApiMessageContent::Parts(parts) = build_api_message_content(&content).await.unwrap()
+        else {
+            panic!("expected multimodal parts, got text fallback");
+        };
+
+        assert_eq!(parts.len(), 3);
+        let ApiMessageContentPart::ImageUrl { image_url } = &parts[1] else {
+            panic!("expected image_url part");
+        };
+        assert!(
+            image_url.url.starts_with("data:image/png;base64,"),
+            "chat-image:// must be resolved to a data URL, got: {}",
+            &image_url.url[..image_url.url.len().min(80)]
+        );
+
+        let file_path = std::path::PathBuf::from(&saved.path);
+        if let Some(parent) = file_path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    fn make_small_test_png() -> Vec<u8> {
+        let img = image::RgbaImage::from_fn(8, 8, |x, y| {
+            image::Rgba([
+                (x % 256) as u8,
+                (y % 256) as u8,
+                ((x + y) % 256) as u8,
+                255,
+            ])
+        });
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .expect("encode test png");
+        buf.into_inner()
     }
 }

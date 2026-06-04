@@ -317,7 +317,7 @@ export function useDashScopeAsr({
     });
 
     return () => {
-      unlistenPromise.then((unlisten) => unlisten());
+      unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
   }, [cleanupMedia, finalizeRecording, workspaceId]);
 

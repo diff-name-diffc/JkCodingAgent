@@ -159,7 +159,7 @@ export function useTerminalManager() {
     });
 
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(() => {});
       if (rafId) cancelAnimationFrame(rafId);
     };
   }, [enqueueTerminalWrite]);

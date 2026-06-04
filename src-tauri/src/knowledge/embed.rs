@@ -21,6 +21,7 @@ pub(crate) async fn call_text_model(
         ChatMessage {
             role: "user".to_string(),
             content: user_prompt.to_string(),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
             name: None,

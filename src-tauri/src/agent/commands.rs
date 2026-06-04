@@ -1,19 +1,19 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::watch;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::config::{DEFAULT_SUMMARY_MODEL, DispatcherAgentConfig};
+use super::config::{DispatcherAgentConfig, DEFAULT_SUMMARY_MODEL};
 use super::db::{
-    DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherModelConfig,
+    ChatCategory, DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherModelConfig,
     DispatcherSessionKind, DispatcherSessionRecord, DispatcherSessionRuntimeState,
     DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
     DispatcherSettingsModelConfigs, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
@@ -23,8 +23,8 @@ use super::llm::{self, ChatMessage};
 use super::runtime::{
     AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent, DispatcherSubprocessRegistry,
 };
-use super::summary::{SessionTitleMessage, fallback_session_title, summarize_session_title};
-use super::voice::{VoiceAsrConfig, VoiceAsrManager, resolve_dashscope_websocket_url};
+use super::summary::{fallback_session_title, summarize_session_title, SessionTitleMessage};
+use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::browser::BrowserManager;
 use crate::project::mcp::ProjectMcpRegistry;
 use crate::shared::TaskManager;
@@ -386,6 +386,17 @@ fn spawn_session_title_update(
     });
 }
 
+async fn run_dispatcher_db<T, F>(operation: &'static str, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|error| format!("{operation} task failed: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
 async fn generate_session_title(
     db: DispatcherDb,
     workspace_id: String,
@@ -486,18 +497,29 @@ fn resolve_title_provider(db: &DispatcherDb) -> Result<(OpenAiCompatProvider, St
     let config = DispatcherAgentConfig::load()?;
     let settings = db.get_settings()?;
 
-    let api_key = settings
-        .as_ref()
-        .map(|item| item.api_key.trim())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| config.api_key.clone());
-    let api_base = settings
-        .as_ref()
-        .map(|item| item.api_base.trim())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| config.api_base.clone());
+    // Resolve credentials: prefer summary_model_config's own api_key/url,
+    // fall back to chat settings, then to env-var defaults.
+    let (api_key, api_base) = match settings.as_ref() {
+        Some(s) => {
+            let smc = &s.summary_model_config;
+            let key = if !smc.api_key.trim().is_empty() {
+                smc.api_key.trim().to_string()
+            } else if !s.api_key.trim().is_empty() {
+                s.api_key.trim().to_string()
+            } else {
+                config.api_key.clone()
+            };
+            let base = if !smc.url.trim().is_empty() {
+                smc.url.trim().to_string()
+            } else if !s.api_base.trim().is_empty() {
+                s.api_base.trim().to_string()
+            } else {
+                config.api_base.clone()
+            };
+            (key, base)
+        }
+        None => (config.api_key.clone(), config.api_base.clone()),
+    };
     let summary_model = settings
         .as_ref()
         .map(|item| item.summary_model.trim())
@@ -614,14 +636,15 @@ pub async fn dispatcher_send_plain_chat_message(
 }
 
 #[tauri::command]
-pub fn dispatcher_list_messages(
+pub async fn dispatcher_list_messages(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
 ) -> Result<Vec<DispatcherMessageRecord>, String> {
-    state
-        .db
-        .list_visible_messages(&workspace_id)
-        .map_err(|error| error.to_string())
+    let db = state.db.clone();
+    run_dispatcher_db("dispatcher_list_messages", move || {
+        db.list_visible_messages(&workspace_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -636,14 +659,15 @@ pub fn dispatcher_get_session_token_usage(
 }
 
 #[tauri::command]
-pub fn dispatcher_clear_messages(
+pub async fn dispatcher_clear_messages(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
 ) -> Result<(), String> {
-    state
-        .db
-        .clear_messages(&workspace_id)
-        .map_err(|error| error.to_string())
+    let db = state.db.clone();
+    run_dispatcher_db("dispatcher_clear_messages", move || {
+        db.clear_messages(&workspace_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -658,15 +682,16 @@ pub fn dispatcher_clear_message_context(
 }
 
 #[tauri::command]
-pub fn dispatcher_get_tool_artifact(
+pub async fn dispatcher_get_tool_artifact(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
     artifact_id: String,
 ) -> Result<DispatcherToolArtifactRecord, String> {
-    state
-        .db
-        .get_tool_artifact(&workspace_id, &artifact_id)
-        .map_err(|error| error.to_string())
+    let db = state.db.clone();
+    run_dispatcher_db("dispatcher_get_tool_artifact", move || {
+        db.get_tool_artifact(&workspace_id, &artifact_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -699,6 +724,7 @@ pub fn dispatcher_create_session(
     kind: Option<String>,
     mode: Option<String>,
     active_plan_path: Option<String>,
+    category: Option<String>,
 ) -> Result<DispatcherSessionRecord, String> {
     let kind = DispatcherSessionKind::from_wire(kind.as_deref().unwrap_or("project"))
         .map_err(|error| error.to_string())?;
@@ -706,7 +732,14 @@ pub fn dispatcher_create_session(
         .map_err(|error| error.to_string())?;
     let session = state
         .db
-        .create_session(&project_id, &title, kind, mode, active_plan_path.as_deref())
+        .create_session(
+            &project_id,
+            &title,
+            kind,
+            mode,
+            active_plan_path.as_deref(),
+            category.as_deref(),
+        )
         .map_err(|error| error.to_string())?;
     let _ = app.emit("dispatcher-session-updated", session.clone());
     Ok(session)
@@ -737,14 +770,94 @@ pub fn dispatcher_set_session_mode(
 }
 
 #[tauri::command]
-pub fn dispatcher_delete_session(
+pub async fn dispatcher_delete_session(
     state: tauri::State<'_, DispatcherState>,
     session_id: String,
 ) -> Result<(), String> {
-    state
-        .db
-        .delete_session(&session_id)
-        .map_err(|error| error.to_string())
+    let db = state.db.clone();
+    run_dispatcher_db("dispatcher_delete_session", move || {
+        db.delete_session(&session_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_list_categories(
+    state: tauri::State<'_, DispatcherState>,
+) -> Result<Vec<ChatCategory>, String> {
+    let db = state.db.clone();
+    run_dispatcher_db("chat_list_categories", move || db.list_chat_categories()).await
+}
+
+#[tauri::command]
+pub async fn chat_create_category(
+    state: tauri::State<'_, DispatcherState>,
+    name: String,
+    icon: Option<String>,
+    color: Option<String>,
+) -> Result<ChatCategory, String> {
+    let db = state.db.clone();
+    run_dispatcher_db("chat_create_category", move || {
+        db.create_chat_category(&name, icon.as_deref().unwrap_or(""), color.as_deref().unwrap_or(""))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_update_category(
+    state: tauri::State<'_, DispatcherState>,
+    category_id: String,
+    name: Option<String>,
+    icon: Option<String>,
+    color: Option<String>,
+) -> Result<Option<ChatCategory>, String> {
+    let db = state.db.clone();
+    run_dispatcher_db("chat_update_category", move || {
+        db.update_chat_category(
+            &category_id,
+            name.as_deref(),
+            icon.as_deref(),
+            color.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_delete_category(
+    state: tauri::State<'_, DispatcherState>,
+    category_id: String,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    run_dispatcher_db("chat_delete_category", move || {
+        db.delete_chat_category(&category_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_set_session_category(
+    state: tauri::State<'_, DispatcherState>,
+    session_id: String,
+    category_id: String,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    run_dispatcher_db("chat_set_session_category", move || {
+        db.set_session_category(&session_id, &category_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_reorder_categories(
+    state: tauri::State<'_, DispatcherState>,
+    ordered_ids: Vec<String>,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    run_dispatcher_db("chat_reorder_categories", move || {
+        db.reorder_chat_categories(&ordered_ids)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -866,8 +979,12 @@ async fn test_embedding_model(config: DispatcherModelConfig) -> Result<String> {
     if !status.is_success() {
         anyhow::bail!("文本向量模型（{model_name}）测试失败，HTTP {status}：{body}");
     }
-    let value: Value = serde_json::from_str(&body)
-        .with_context(|| format!("文本向量模型（{model_name}）响应解析失败，响应内容：{}", &body[..body.len().min(500)]))?;
+    let value: Value = serde_json::from_str(&body).with_context(|| {
+        format!(
+            "文本向量模型（{model_name}）响应解析失败，响应内容：{}",
+            &body[..body.len().min(500)]
+        )
+    })?;
     let dimension = value
         .get("data")
         .and_then(Value::as_array)
@@ -877,7 +994,9 @@ async fn test_embedding_model(config: DispatcherModelConfig) -> Result<String> {
         .map(Vec::len)
         .ok_or_else(|| {
             let preview = &body[..body.len().min(300)];
-            anyhow!("文本向量模型（{model_name}）响应中未找到 data[0].embedding，响应结构：{preview}")
+            anyhow!(
+                "文本向量模型（{model_name}）响应中未找到 data[0].embedding，响应结构：{preview}"
+            )
         })?;
 
     Ok(format!("文本向量模型 ok（{model_name}），维度 {dimension}"))
@@ -907,7 +1026,9 @@ async fn test_endpoint_reachable_model(
             "{label}（{model_name}）端点返回 HTTP {status}（请检查 API Key 和 URL），响应：{body}"
         );
     }
-    Ok(format!("{label} ok（{model_name}），端点 HTTP {status} 可达"))
+    Ok(format!(
+        "{label} ok（{model_name}），端点 HTTP {status} 可达"
+    ))
 }
 
 fn test_required_model_config(label: &str, config: &DispatcherModelConfig) -> Result<()> {

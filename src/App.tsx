@@ -233,8 +233,8 @@ function App() {
       },
     );
     return () => {
-      p1.then((fn) => fn());
-      p2.then((fn) => fn());
+      p1.then((fn) => fn()).catch(() => {});
+      p2.then((fn) => fn()).catch(() => {});
     };
   }, [tm, showToast, updateTaskSession, updateTaskStatus]);
 

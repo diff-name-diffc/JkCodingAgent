@@ -46,7 +46,9 @@ impl AgentTool for GenerateImageTool {
 
         let image_name = string_arg(args, "image_name");
         let width = args.get("width").and_then(|v| v.as_u64().map(|v| v as u32));
-        let height = args.get("height").and_then(|v| v.as_u64().map(|v| v as u32));
+        let height = args
+            .get("height")
+            .and_then(|v| v.as_u64().map(|v| v as u32));
         let style = string_arg(args, "style");
         let negative_prompt = string_arg(args, "negative_prompt");
         let model = string_arg(args, "model");
@@ -81,14 +83,13 @@ impl AgentTool for GenerateImageTool {
         .await
         {
             Ok(output) => {
+                let ref_uri = format!("chat-image://{}", output.image_id);
                 format!(
-                    "图片生成成功！\n图片ID：{}\n本地路径：{}\n尺寸：{}x{}\n提示词：{}\n\n如果你想在回答中展示该图片，请使用以下 Markdown 引用（直接使用原始本地路径即可）：\n![图片描述]({})",
-                    output.image_id, output.path, output.width, output.height, output.generation_prompt, output.path
+                    "图片生成成功！尺寸 {}x{}，提示词：{}\n\n如需在回答中展示该图片，请使用：\n![图片描述]({})",
+                    output.width, output.height, output.generation_prompt, ref_uri
                 )
             }
-            Err(e) => {
-                format!("图片生成失败：{}", e)
-            }
+            Err(e) => format!("图片生成失败：{}", e),
         }
     }
 }

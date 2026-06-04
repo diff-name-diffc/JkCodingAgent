@@ -336,7 +336,7 @@ export function BrowserPanel({
     ];
 
     return () => {
-      unsubs.forEach((unsub) => unsub.then((fn) => fn()));
+      unsubs.forEach((unsub) => unsub.then((fn) => fn()).catch(() => {}));
     };
   }, [drawFrame, sessionId]);
 

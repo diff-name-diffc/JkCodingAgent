@@ -332,6 +332,7 @@ impl AgentTool for VisualAnalyzeTool {
                     ChatMessage {
                         role: "user".to_string(),
                         content: prompt,
+                        reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: None,
                         name: None,

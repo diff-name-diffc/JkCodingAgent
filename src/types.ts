@@ -364,6 +364,57 @@ export interface DispatcherAgentTurn {
   messages: DispatcherMessage[];
 }
 
+export type PythonCodeRunStatus = "running" | "done" | "failed" | "stopped";
+
+export interface PythonCodeRunRecord {
+  runId: string;
+  workspaceId: string;
+  messageId: string;
+  codeBlockIndex: number;
+  codeHash: string;
+  code: string;
+  status: PythonCodeRunStatus | string;
+  stdout: string;
+  stderr: string;
+  installedPackagesJson: string;
+  toolEventsJson: string;
+  explanationMarkdown: string;
+  errorReason?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PythonRunToolEvent {
+  kind: string;
+  name: string;
+  detail: string;
+  createdAt: string;
+}
+
+export interface PythonRunEvent {
+  event: "started" | "output" | "toolStarted" | "toolFinished" | "final" | "failed" | "stopped" | string;
+  runId: string;
+  workspaceId: string;
+  messageId: string;
+  codeBlockIndex: number;
+  data: {
+    record?: PythonCodeRunRecord;
+    stdout?: string;
+    stderr?: string;
+    name?: string;
+    result?: string;
+    error?: string;
+    message?: string;
+  };
+}
+
+export interface PythonCodeRunTarget {
+  messageId: string;
+  codeBlockIndex: number;
+  code: string;
+  codeHash: string;
+}
+
 export type DispatchFeedbackState =
   | "round_completed"
   | "process_done"
@@ -447,6 +498,17 @@ export interface DispatcherSession {
   title: string;
   mode: DispatcherMode;
   activePlanPath?: string | null;
+  category: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatCategory {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  sortOrder: number;
   createdAt: string;
   updatedAt: string;
 }

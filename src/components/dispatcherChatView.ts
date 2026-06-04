@@ -26,6 +26,7 @@ interface DispatcherAssistantTurn {
 export interface AssistantTurnSegment {
   kind: "assistant-text" | "tool-summary";
   text: string;
+  messageId?: string;
   toolCallId?: string;
   toolName?: string;
   resultMode?: DispatcherToolResultMode;
@@ -104,6 +105,7 @@ export function buildDispatcherDisplayItems(
         pushAssistantSegment(turn.segments, {
           kind: "assistant-text",
           text: content,
+          messageId: message.id,
         });
       }
       continue;
@@ -127,6 +129,7 @@ export function buildDispatcherDisplayItems(
         pushAssistantSegment(turn.segments, {
           kind: "tool-summary",
           text: content,
+          messageId: message.id,
           toolCallId: message.toolCallId,
           toolName: message.toolName,
           resultMode: message.toolResultMode,

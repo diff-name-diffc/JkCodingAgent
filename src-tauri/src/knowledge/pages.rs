@@ -466,10 +466,8 @@ mod tests {
 
     #[test]
     fn collect_md_files_empty_dir() {
-        let dir = std::env::temp_dir().join(format!(
-            "jkcodingagent-pages-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("jkcodingagent-pages-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut out = Vec::new();
         collect_md_files(&dir, &mut out).unwrap();
@@ -479,10 +477,8 @@ mod tests {
 
     #[test]
     fn collect_md_files_finds_md() {
-        let dir = std::env::temp_dir().join(format!(
-            "jkcodingagent-pages-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("jkcodingagent-pages-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("test.md"), "# Test").unwrap();
         std::fs::write(dir.join("ignore.txt"), "ignored").unwrap();
@@ -496,10 +492,8 @@ mod tests {
 
     #[test]
     fn collect_md_files_recursive() {
-        let dir = std::env::temp_dir().join(format!(
-            "jkcodingagent-pages-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("jkcodingagent-pages-test-{}", uuid::Uuid::new_v4()));
         let subdir = dir.join("sub");
         std::fs::create_dir_all(&subdir).unwrap();
         std::fs::write(dir.join("a.md"), "# A").unwrap();
@@ -522,10 +516,8 @@ mod tests {
 
     #[test]
     fn read_first_kb_small_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "jkcodingagent-pages-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("jkcodingagent-pages-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("small.txt");
         std::fs::write(&file, "Hello World").unwrap();
@@ -536,10 +528,8 @@ mod tests {
 
     #[test]
     fn read_first_kb_truncates() {
-        let dir = std::env::temp_dir().join(format!(
-            "jkcodingagent-pages-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("jkcodingagent-pages-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("large.txt");
         // 3 KB of data

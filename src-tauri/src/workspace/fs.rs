@@ -388,7 +388,11 @@ mod tests {
     #[test]
     fn ignores_common_dirs() {
         for &dir in IGNORED_DIRS {
-            assert!(should_ignore_entry_name(dir, true), "should ignore dir: {}", dir);
+            assert!(
+                should_ignore_entry_name(dir, true),
+                "should ignore dir: {}",
+                dir
+            );
         }
     }
 
@@ -602,7 +606,8 @@ mod tests {
         fs::write(&existing, "hi").expect("write");
 
         let new_file = tmp2.path().join("new.txt");
-        let result = validate_new_path_within(new_file.to_str().unwrap(), tmp1.path().to_str().unwrap());
+        let result =
+            validate_new_path_within(new_file.to_str().unwrap(), tmp1.path().to_str().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("outside"));
     }
@@ -617,7 +622,9 @@ mod tests {
 
         let result = ensure_not_project_root(root, root.to_str().unwrap());
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Cannot modify the project root"));
+        assert!(result
+            .unwrap_err()
+            .contains("Cannot modify the project root"));
     }
 
     #[test]
@@ -784,7 +791,10 @@ mod tests {
         .unwrap();
 
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert!(!names.contains(&"node_modules"), "should filter node_modules");
+        assert!(
+            !names.contains(&"node_modules"),
+            "should filter node_modules"
+        );
         assert!(!names.contains(&".git"), "should filter .git");
         assert!(names.contains(&"src"), "should list src");
     }
@@ -1005,7 +1015,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!meta.is_text, "file with NUL bytes should be detected as binary");
+        assert!(
+            !meta.is_text,
+            "file with NUL bytes should be detected as binary"
+        );
     }
 
     #[tokio::test]
@@ -1305,7 +1318,11 @@ mod tests {
         assert_eq!(preview.mime_type, "image/png");
         assert!(preview.byte_length > 0);
         let decoded = base64::engine::general_purpose::STANDARD
-            .decode(preview.data_url.trim_start_matches("data:image/png;base64,"))
+            .decode(
+                preview
+                    .data_url
+                    .trim_start_matches("data:image/png;base64,"),
+            )
             .unwrap();
         assert!(!decoded.is_empty());
     }

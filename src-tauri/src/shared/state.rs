@@ -189,7 +189,10 @@ mod tests {
 
     #[test]
     fn termination_intent_equality() {
-        assert_eq!(TaskTerminationIntent::Stopped, TaskTerminationIntent::Stopped);
+        assert_eq!(
+            TaskTerminationIntent::Stopped,
+            TaskTerminationIntent::Stopped
+        );
     }
 
     #[test]

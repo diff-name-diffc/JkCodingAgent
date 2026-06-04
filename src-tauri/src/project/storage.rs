@@ -384,10 +384,7 @@ mod tests {
         atomic_write(&path, "data").expect("write");
 
         // No .*.tmp files should remain
-        let entries: Vec<_> = fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .collect();
+        let entries: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).collect();
         for entry in &entries {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') && name.ends_with(".tmp") {
@@ -405,10 +402,7 @@ mod tests {
 
         // Manually simulate load/save using the path helpers is difficult
         // because they read from HOME. Instead, verify JSON roundtrip.
-        let projects = vec![
-            sample_project("a"),
-            sample_project("b"),
-        ];
+        let projects = vec![sample_project("a"), sample_project("b")];
         let json = serde_json::to_string_pretty(&projects).expect("serialize");
         fs::write(&path, &json).expect("write file");
 
@@ -436,9 +430,7 @@ mod tests {
         let path = dir.join("projects.json");
         fs::write(&path, "not json").expect("write bad data");
 
-        let result = serde_json::from_str::<Vec<Project>>(
-            &fs::read_to_string(&path).unwrap(),
-        );
+        let result = serde_json::from_str::<Vec<Project>>(&fs::read_to_string(&path).unwrap());
         assert!(result.is_err());
     }
 
@@ -449,10 +441,7 @@ mod tests {
         let dir = unique_test_dir("task_rt");
         let path = dir.join("tasks.json");
 
-        let tasks = vec![
-            sample_task("t1", "p1"),
-            sample_task("t2", "p1"),
-        ];
+        let tasks = vec![sample_task("t1", "p1"), sample_task("t2", "p1")];
         let json = serde_json::to_string_pretty(&tasks).expect("serialize");
         fs::write(&path, &json).expect("write file");
 

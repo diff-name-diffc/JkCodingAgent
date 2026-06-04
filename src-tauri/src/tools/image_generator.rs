@@ -4,6 +4,12 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::time::Duration;
+
+use crate::chat_images::compress_image_bytes;
+
+const API_TIMEOUT_SECS: u64 = 120;
+const MAX_FILE_READ_BYTES: usize = 50_000_000;
 
 /// 图片生成工具入参
 #[derive(Debug, Clone, Deserialize)]
@@ -29,6 +35,12 @@ pub struct ImageGenerationOutput {
     pub generation_prompt: String,
     pub generation_params: serde_json::Value,
     pub created_at: String,
+}
+
+fn make_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(API_TIMEOUT_SECS))
+        .build()
 }
 
 /// 调用 DashScope API 编辑图片，保存到本地并返回结果。
@@ -72,14 +84,29 @@ pub async fn edit_image(
         anyhow::bail!("图片编辑 API Key 未配置");
     }
 
-    // 读取图片并编码为 base64
-    let image_bytes = tokio::fs::read(image_path).await
+    let image_bytes = tokio::fs::read(image_path)
+        .await
         .with_context(|| format!("无法读取图片文件: {}", image_path))?;
+
+    if image_bytes.len() > MAX_FILE_READ_BYTES {
+        anyhow::bail!(
+            "图片文件过大: {} MB (最大支持 {} MB)",
+            image_bytes.len() / 1_000_000,
+            MAX_FILE_READ_BYTES / 1_000_000
+        );
+    }
+
+    let payload_bytes = if image_bytes.len() >= crate::chat_images::COMPRESS_THRESHOLD {
+        compress_image_bytes(&image_bytes, crate::chat_images::MAX_COMPRESS_DIM)
+    } else {
+        image_bytes
+    };
+
     let mime_type = infer_mime_type(image_path);
-    let base64_image = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image_bytes);
+    let base64_image =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &payload_bytes);
     let data_uri = format!("data:{};base64,{}", mime_type, base64_image);
 
-    // 构造 size 参数
     let size = match (width, height) {
         (Some(w), Some(h)) => format!("{}*{}", w, h),
         _ => "1024*1024".to_string(),
@@ -104,9 +131,12 @@ pub async fn edit_image(
         }
     });
 
-    let client = reqwest::Client::new();
+    let client = make_client().context("构建 HTTP 客户端失败")?;
     let api_base = resolve_image_api_base(base_url);
-    let url = format!("{}/services/aigc/multimodal-generation/generation", api_base);
+    let url = format!(
+        "{}/services/aigc/multimodal-generation/generation",
+        api_base
+    );
 
     let response = client
         .post(&url)
@@ -114,12 +144,18 @@ pub async fn edit_image(
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
-        .await?;
+        .await
+        .context("图片编辑 API 请求失败（网络层）")?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("图片编辑 API 请求失败: {} - URL: {} - 请求体: {} - 响应: {}", status, url, request_body, body);
+        anyhow::bail!(
+            "图片编辑 API 请求失败: {} (model={}) - 响应: {}",
+            status,
+            default_model,
+            body
+        );
     }
 
     let response_json: serde_json::Value = response.json().await?;
@@ -132,7 +168,9 @@ pub async fn edit_image(
     let edited_image_bytes = image_response.bytes().await?;
 
     let (w, h) = extract_dimensions(&response_json);
-    save_and_return(edited_image_bytes.to_vec(), session_title,
+    save_and_return(
+        edited_image_bytes.to_vec(),
+        session_title,
         ImageGenerationInput {
             prompt: prompt.clone(),
             image_name,
@@ -146,7 +184,8 @@ pub async fn edit_image(
         default_model,
         w,
         h,
-    ).await
+    )
+    .await
 }
 
 fn infer_mime_type(path: &str) -> String {
@@ -201,7 +240,10 @@ pub async fn generate_image(
         anyhow::bail!("图片生成 API Key 未配置");
     }
 
-    let model = input.model.clone().unwrap_or_else(|| default_model.to_string());
+    let model = input
+        .model
+        .clone()
+        .unwrap_or_else(|| default_model.to_string());
 
     // 构造 size 参数，格式 "WxH"（如 "1024*1024"）
     let size = match (input.width, input.height) {
@@ -230,9 +272,12 @@ pub async fn generate_image(
         }
     });
 
-    let client = reqwest::Client::new();
+    let client = make_client().context("构建 HTTP 客户端失败")?;
     let api_base = resolve_image_api_base(base_url);
-    let url = format!("{}/services/aigc/multimodal-generation/generation", api_base);
+    let url = format!(
+        "{}/services/aigc/multimodal-generation/generation",
+        api_base
+    );
 
     let response = client
         .post(&url)
@@ -240,12 +285,18 @@ pub async fn generate_image(
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
-        .await?;
+        .await
+        .context("图片生成 API 请求失败（网络层）")?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("图片生成 API 请求失败: {} - URL: {} - 请求体: {} - 响应: {}", status, url, request_body, body);
+        anyhow::bail!(
+            "图片生成 API 请求失败: {} (model={}) - 响应: {}",
+            status,
+            model,
+            body
+        );
     }
 
     let response_json: serde_json::Value = response.json().await?;
@@ -259,7 +310,15 @@ pub async fn generate_image(
     let image_bytes = image_response.bytes().await?;
 
     let (width, height) = extract_dimensions(&response_json);
-    save_and_return(image_bytes.to_vec(), session_title, input, &model, width, height).await
+    save_and_return(
+        image_bytes.to_vec(),
+        session_title,
+        input,
+        &model,
+        width,
+        height,
+    )
+    .await
 }
 
 /// 规范化图片生成 API 基础地址，确保包含 `/api/v1` 前缀。
@@ -289,36 +348,45 @@ async fn save_and_return(
     height: u32,
 ) -> anyhow::Result<ImageGenerationOutput> {
     let image_id = uuid::Uuid::new_v4().to_string();
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("无法解析用户主目录"))?;
-    let slug = slugify(&session_title);
-    let images_dir = home.join(".jkcodingagent").join("chat-images").join(&slug);
-    std::fs::create_dir_all(&images_dir)?;
-
     let ext = "png";
-    let file_name = match &input.image_name {
-        Some(name) if !name.is_empty() => {
-            let safe = slugify(name);
-            format!("{}.{}", safe, ext)
-        }
-        _ => format!("{}.{}", image_id, ext),
-    };
-    let file_path = images_dir.join(&file_name);
-    std::fs::write(&file_path, &image_bytes)?;
+    // Always use `image_id.{ext}` as the on-disk filename so that the image
+    // can be deterministically resolved later by `resolve_chat_image_id` given
+    // only a `chat-image://<image_id>` URI.
+    let file_name = format!("{}.{}", image_id, ext);
+
+    let slug = slugify(&session_title);
+    let model_owned = model.to_string();
+    let input_clone = input;
+    let width_clone = width;
+    let height_clone = height;
+    let bytes_to_write = image_bytes;
+
+    let saved_path = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let app_dir = crate::chat_images::app_data_dir()
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let images_dir = app_dir.join("chat-images").join(&slug);
+        std::fs::create_dir_all(&images_dir)?;
+        let file_path = images_dir.join(&file_name);
+        std::fs::write(&file_path, &bytes_to_write)?;
+        Ok(file_path.to_string_lossy().to_string())
+    })
+    .await
+    .context("任务调度失败")??;
 
     Ok(ImageGenerationOutput {
-        image_id: image_id.clone(),
-        path: file_path.to_string_lossy().to_string(),
-        width,
-        height,
+        image_id,
+        path: saved_path,
+        width: width_clone,
+        height: height_clone,
         mime_type: "image/png".to_string(),
-        generation_prompt: input.prompt,
+        generation_prompt: input_clone.prompt,
         generation_params: json!({
-            "width": input.width,
-            "height": input.height,
-            "style": input.style,
-            "negative_prompt": input.negative_prompt,
-            "model": model,
-            "seed": input.seed
+            "width": input_clone.width,
+            "height": input_clone.height,
+            "style": input_clone.style,
+            "negative_prompt": input_clone.negative_prompt,
+            "model": model_owned,
+            "seed": input_clone.seed
         }),
         created_at: chrono::Utc::now().to_rfc3339(),
     })

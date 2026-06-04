@@ -462,7 +462,10 @@ mod tests {
             claude_path: "/custom/claude".to_string(),
             codex_path: "".to_string(),
         };
-        assert_eq!(get_agent_bin_from_settings(&settings, "claude"), "/custom/claude");
+        assert_eq!(
+            get_agent_bin_from_settings(&settings, "claude"),
+            "/custom/claude"
+        );
     }
 
     #[test]
@@ -480,7 +483,10 @@ mod tests {
             claude_path: "".to_string(),
             codex_path: "/custom/codex".to_string(),
         };
-        assert_eq!(get_agent_bin_from_settings(&settings, "codex"), "/custom/codex");
+        assert_eq!(
+            get_agent_bin_from_settings(&settings, "codex"),
+            "/custom/codex"
+        );
     }
 
     #[test]
@@ -499,8 +505,14 @@ mod tests {
             codex_path: "/my/codex".to_string(),
         };
         // Any agent name that isn't "codex" should return claude path
-        assert_eq!(get_agent_bin_from_settings(&settings, "unknown"), "/my/claude");
-        assert_eq!(get_agent_bin_from_settings(&settings, "other"), "/my/claude");
+        assert_eq!(
+            get_agent_bin_from_settings(&settings, "unknown"),
+            "/my/claude"
+        );
+        assert_eq!(
+            get_agent_bin_from_settings(&settings, "other"),
+            "/my/claude"
+        );
     }
 
     // ── parse_semver ─────────────────────────────────────────────────────────
@@ -563,7 +575,9 @@ mod tests {
         input.extend_from_slice(b"HOME=/Users/test\0PATH=/usr/bin\0");
 
         let result = parse_shell_env_output(&input).unwrap();
-        assert!(result.iter().any(|(k, v)| k == "HOME" && v == "/Users/test"));
+        assert!(result
+            .iter()
+            .any(|(k, v)| k == "HOME" && v == "/Users/test"));
         assert!(result.iter().any(|(k, v)| k == "PATH" && v == "/usr/bin"));
     }
 
@@ -667,7 +681,9 @@ mod tests {
     #[test]
     fn fallback_env_skips_filtered_keys() {
         let env = build_fallback_env();
-        assert!(!env.iter().any(|(k, _)| k == "PWD" || k == "OLDPWD" || k == "SHLVL" || k == "_"));
+        assert!(!env
+            .iter()
+            .any(|(k, _)| k == "PWD" || k == "OLDPWD" || k == "SHLVL" || k == "_"));
     }
 
     // ── AgentVersions ────────────────────────────────────────────────────────

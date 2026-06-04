@@ -316,8 +316,8 @@ commit_prompt = "commit"
 
     #[test]
     fn parse_full_config_toml() {
-        let config: ProjectConfig = toml::from_str(super::DEFAULT_CONFIG)
-            .expect("DEFAULT_CONFIG should parse");
+        let config: ProjectConfig =
+            toml::from_str(super::DEFAULT_CONFIG).expect("DEFAULT_CONFIG should parse");
         assert_eq!(config.agent.default, "claude");
         assert!(!config.agent.prompt_prefix.is_empty());
         assert!(config.browser.enabled);
@@ -331,18 +331,28 @@ commit_prompt = "commit"
         let serialized = toml::to_string_pretty(&original).expect("serialize");
         let deserialized: ProjectConfig = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(original.agent.default, deserialized.agent.default);
-        assert_eq!(original.agent.prompt_prefix, deserialized.agent.prompt_prefix);
+        assert_eq!(
+            original.agent.prompt_prefix,
+            deserialized.agent.prompt_prefix
+        );
         assert_eq!(original.git.commit_prompt, deserialized.git.commit_prompt);
         assert_eq!(original.browser.enabled, deserialized.browser.enabled);
-        assert_eq!(original.browser.viewport_width, deserialized.browser.viewport_width);
-        assert_eq!(original.browser.viewport_height, deserialized.browser.viewport_height);
+        assert_eq!(
+            original.browser.viewport_width,
+            deserialized.browser.viewport_width
+        );
+        assert_eq!(
+            original.browser.viewport_height,
+            deserialized.browser.viewport_height
+        );
     }
 
     #[test]
     fn config_json_roundtrip_via_serde_json() {
         let original = ProjectConfig::default();
         let json = serde_json::to_string(&original).expect("serialize to json");
-        let deserialized: ProjectConfig = serde_json::from_str(&json).expect("deserialize from json");
+        let deserialized: ProjectConfig =
+            serde_json::from_str(&json).expect("deserialize from json");
         assert_eq!(original.agent.default, deserialized.agent.default);
     }
 
@@ -467,10 +477,7 @@ enabled = false
 
     #[test]
     fn init_project_config_creates_config_file() {
-        let tmp = std::env::temp_dir().join(format!(
-            "test_config_init_{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("test_config_init_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("create tmp dir");
 
@@ -488,17 +495,14 @@ enabled = false
 
     #[test]
     fn init_project_config_idempotent() {
-        let tmp = std::env::temp_dir().join(format!(
-            "test_config_idem_{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("test_config_idem_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("create tmp dir");
 
-        let config1 = super::init_project_config(tmp.to_string_lossy().to_string())
-            .expect("first init");
-        let config2 = super::init_project_config(tmp.to_string_lossy().to_string())
-            .expect("second init");
+        let config1 =
+            super::init_project_config(tmp.to_string_lossy().to_string()).expect("first init");
+        let config2 =
+            super::init_project_config(tmp.to_string_lossy().to_string()).expect("second init");
 
         // Both should return valid configs with the same default agent
         assert_eq!(config1.agent.default, config2.agent.default);
@@ -509,10 +513,8 @@ enabled = false
 
     #[test]
     fn read_project_config_returns_default_when_no_file() {
-        let tmp = std::env::temp_dir().join(format!(
-            "test_config_read_missing_{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("test_config_read_missing_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("create tmp dir");
 
@@ -526,10 +528,7 @@ enabled = false
 
     #[test]
     fn write_then_read_project_config_roundtrip() {
-        let tmp = std::env::temp_dir().join(format!(
-            "test_config_rw_{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("test_config_rw_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("create tmp dir");
 
@@ -562,19 +561,15 @@ enabled = false
 
     #[test]
     fn write_agent_config_file_rejects_unknown_agent() {
-        let result = super::write_agent_config_file(
-            "unknown_agent".to_string(),
-            "content".to_string(),
-        );
+        let result =
+            super::write_agent_config_file("unknown_agent".to_string(), "content".to_string());
         assert!(result.is_err(), "unknown agent should return error");
     }
 
     #[test]
     fn atomic_write_creates_file() {
-        let tmp = std::env::temp_dir().join(format!(
-            "test_atomic_write_{}.txt",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("test_atomic_write_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
 
         super::super::storage::atomic_write(&tmp, "hello world").expect("atomic write");
@@ -586,10 +581,8 @@ enabled = false
 
     #[test]
     fn atomic_write_overwrites_existing_file() {
-        let tmp = std::env::temp_dir().join(format!(
-            "test_atomic_overwrite_{}.txt",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("test_atomic_overwrite_{}.txt", std::process::id()));
 
         super::super::storage::atomic_write(&tmp, "first").expect("write first");
         super::super::storage::atomic_write(&tmp, "second").expect("write second");

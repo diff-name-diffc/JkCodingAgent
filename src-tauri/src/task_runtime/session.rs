@@ -440,10 +440,7 @@ fn is_read_only_segment(segment: &str) -> bool {
     match command {
         "pwd" | "ls" | "rg" | "grep" | "cat" | "head" | "tail" | "wc" | "stat" | "which"
         | "type" | "uname" | "date" | "ps" | "env" | "printenv" | "echo" | "printf" => true,
-        "sed" => {
-            tokens.contains(&"-n")
-                && !tokens.iter().any(|token| token.starts_with("-i"))
-        }
+        "sed" => tokens.contains(&"-n") && !tokens.iter().any(|token| token.starts_with("-i")),
         "find" => !tokens
             .iter()
             .any(|token| matches!(*token, "-delete" | "-exec" | "-ok")),

@@ -450,22 +450,34 @@ mod tests {
 
     #[test]
     fn compare_versions_equal() {
-        assert_eq!(compare_versions("1.0.0", "1.0.0"), std::cmp::Ordering::Equal);
+        assert_eq!(
+            compare_versions("1.0.0", "1.0.0"),
+            std::cmp::Ordering::Equal
+        );
     }
 
     #[test]
     fn compare_versions_greater_major() {
-        assert_eq!(compare_versions("2.0.0", "1.0.0"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            compare_versions("2.0.0", "1.0.0"),
+            std::cmp::Ordering::Greater
+        );
     }
 
     #[test]
     fn compare_versions_greater_minor() {
-        assert_eq!(compare_versions("1.2.0", "1.1.0"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            compare_versions("1.2.0", "1.1.0"),
+            std::cmp::Ordering::Greater
+        );
     }
 
     #[test]
     fn compare_versions_greater_patch() {
-        assert_eq!(compare_versions("1.0.2", "1.0.1"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            compare_versions("1.0.2", "1.0.1"),
+            std::cmp::Ordering::Greater
+        );
     }
 
     #[test]
@@ -491,12 +503,18 @@ mod tests {
 
     #[test]
     fn compare_versions_non_numeric_treated_as_zero() {
-        assert_eq!(compare_versions("a.b.c", "0.0.0"), std::cmp::Ordering::Equal);
+        assert_eq!(
+            compare_versions("a.b.c", "0.0.0"),
+            std::cmp::Ordering::Equal
+        );
     }
 
     #[test]
     fn compare_versions_mixed() {
-        assert_eq!(compare_versions("1.0", "0.9.9"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            compare_versions("1.0", "0.9.9"),
+            std::cmp::Ordering::Greater
+        );
     }
 
     // ── is_valid ─────────────────────────────────────────────────────────────

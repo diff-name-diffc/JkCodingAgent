@@ -87,10 +87,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn tmp_collection_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "jkcodingagent-cache-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("jkcodingagent-cache-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join(".llm-wiki")).unwrap();
         root
     }

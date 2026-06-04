@@ -1,6 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import { X } from "lucide-react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+
+const CHAT_IMAGE_PROTOCOL = "chat-image://";
+
+function isChatImageUri(src: string): boolean {
+  return src.startsWith(CHAT_IMAGE_PROTOCOL);
+}
 
 function isLocalImagePath(src: string): boolean {
   return src.startsWith("/") || src.startsWith("file://");
@@ -27,6 +33,31 @@ export function MarkdownImage({ src, alt }: MarkdownImageProps) {
     }
 
     latestSrcRef.current = src;
+    let cancelled = false;
+
+    if (isChatImageUri(src)) {
+      setLoading(true);
+      setError(null);
+      invoke<{ imageId: string; path: string; mimeType: string }>("resolve_chat_image", {
+        imageId: src.slice(CHAT_IMAGE_PROTOCOL.length),
+      })
+        .then((result) => {
+          if (cancelled) return;
+          if (latestSrcRef.current !== src) return;
+          setResolvedSrc(convertFileSrc(result.path));
+          setLoading(false);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (latestSrcRef.current !== src) return;
+          console.error("resolve_chat_image failed:", err);
+          setError("无法加载图片");
+          setLoading(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
 
     if (!isLocalImagePath(src)) {
       setResolvedSrc(src);

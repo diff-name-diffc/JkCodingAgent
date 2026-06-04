@@ -400,7 +400,7 @@ export function ProjectPage({
       }
     });
     return () => {
-      unsub.then((fn) => fn());
+      unsub.then((fn) => fn()).catch(() => {});
     };
   }, [handleOpenPanel, visible]);
 
@@ -542,7 +542,7 @@ export function ProjectPage({
       );
     });
     return () => {
-      unsub.then((fn) => fn());
+      unsub.then((fn) => fn()).catch(() => {});
     };
   }, [getTaskRestoreState]);
 
@@ -577,7 +577,7 @@ export function ProjectPage({
       );
     });
     return () => {
-      unsub.then((fn) => fn());
+      unsub.then((fn) => fn()).catch(() => {});
     };
   }, []);  // allSubProcesses accessed via ref to avoid listener re-registration
 

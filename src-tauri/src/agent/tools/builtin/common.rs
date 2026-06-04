@@ -376,7 +376,10 @@ mod tests {
     #[test]
     fn string_arg_returns_value_when_present() {
         let args = json!({"name": "test-value"});
-        assert_eq!(super::string_arg(&args, "name"), Some("test-value".to_string()));
+        assert_eq!(
+            super::string_arg(&args, "name"),
+            Some("test-value".to_string())
+        );
     }
 
     #[test]
@@ -452,7 +455,10 @@ mod tests {
     fn string_list_arg_combines_single_and_list() {
         let args = json!({"path": "/single", "paths": ["/a", "/b"]});
         let result = super::string_list_arg(&args, "path", "paths").unwrap();
-        assert_eq!(result, vec!["/single".to_string(), "/a".to_string(), "/b".to_string()]);
+        assert_eq!(
+            result,
+            vec!["/single".to_string(), "/a".to_string(), "/b".to_string()]
+        );
     }
 
     #[test]
@@ -567,7 +573,10 @@ mod tests {
         assert!(props.contains_key("result_mode"));
         let rm = &props["result_mode"];
         assert_eq!(rm["default"], "auto");
-        assert!(rm["description"].as_str().unwrap().contains("test guidance"));
+        assert!(rm["description"]
+            .as_str()
+            .unwrap()
+            .contains("test guidance"));
     }
 
     #[test]
@@ -668,14 +677,20 @@ mod tests {
     fn lexical_normalize_removes_dot_components() {
         let path = std::path::Path::new("/home/user/./project/./file.txt");
         let normalized = super::lexical_normalize(path);
-        assert_eq!(normalized, std::path::PathBuf::from("/home/user/project/file.txt"));
+        assert_eq!(
+            normalized,
+            std::path::PathBuf::from("/home/user/project/file.txt")
+        );
     }
 
     #[test]
     fn lexical_normalize_resolves_parent_dir() {
         let path = std::path::Path::new("/home/user/project/../other/file.txt");
         let normalized = super::lexical_normalize(path);
-        assert_eq!(normalized, std::path::PathBuf::from("/home/user/other/file.txt"));
+        assert_eq!(
+            normalized,
+            std::path::PathBuf::from("/home/user/other/file.txt")
+        );
     }
 
     #[test]
@@ -703,7 +718,8 @@ mod tests {
 
     #[test]
     fn render_labeled_sections_formats_single_section() {
-        let result = super::render_labeled_sections(vec![("Files".to_string(), "a.rs\nb.rs".to_string())]);
+        let result =
+            super::render_labeled_sections(vec![("Files".to_string(), "a.rs\nb.rs".to_string())]);
         assert_eq!(result, "## Files\na.rs\nb.rs");
     }
 
@@ -749,7 +765,8 @@ mod tests {
         fs::create_dir_all(&workspace).expect("create workspace");
         let context = tool_context(workspace.clone());
 
-        let resolved = resolve_path(&context, workspace.to_string_lossy().as_ref()).expect("resolve");
+        let resolved =
+            resolve_path(&context, workspace.to_string_lossy().as_ref()).expect("resolve");
         assert!(resolved.starts_with(workspace.canonicalize().expect("canonicalize")));
 
         let _ = fs::remove_dir_all(workspace);

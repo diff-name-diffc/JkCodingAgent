@@ -171,8 +171,11 @@ mod tests {
         ));
         let skills_dir = root.join("skills").join("my-skill");
         fs::create_dir_all(&skills_dir).expect("create skill dir");
-        fs::write(skills_dir.join("SKILL.md"), "# My Skill\n\nDo something useful.")
-            .expect("write skill");
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "# My Skill\n\nDo something useful.",
+        )
+        .expect("write skill");
 
         let prompt = build_system_prompt(&root).expect("build prompt");
         assert!(prompt.content.contains("已启用技能"));
@@ -265,10 +268,8 @@ mod tests {
         let skill_a = root.join("skills").join("a-skill");
         fs::create_dir_all(&skill_b).expect("create b dir");
         fs::create_dir_all(&skill_a).expect("create a dir");
-        fs::write(skill_b.join("SKILL.md"), "# B Skill\n\nSecond skill.")
-            .expect("write b");
-        fs::write(skill_a.join("SKILL.md"), "# A Skill\n\nFirst skill.")
-            .expect("write a");
+        fs::write(skill_b.join("SKILL.md"), "# B Skill\n\nSecond skill.").expect("write b");
+        fs::write(skill_a.join("SKILL.md"), "# A Skill\n\nFirst skill.").expect("write a");
 
         let prompt = build_system_prompt(&root).expect("build prompt");
         let skills_section = prompt

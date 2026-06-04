@@ -278,12 +278,8 @@ mod tests {
         let path = dir.join("prompt.md");
         fs::write(&path, "v2 content").expect("write v2");
 
-        sync_bundled_prompt_file(
-            path.clone(),
-            "v3 content",
-            &["v1 content", "v2 content"],
-        )
-        .expect("sync succeeds");
+        sync_bundled_prompt_file(path.clone(), "v3 content", &["v1 content", "v2 content"])
+            .expect("sync succeeds");
 
         let content = fs::read_to_string(&path).expect("read back");
         assert_eq!(content, "v3 content");

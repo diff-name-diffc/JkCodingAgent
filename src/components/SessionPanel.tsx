@@ -4,12 +4,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { cleanupDispatcherSession } from "./dispatcherSessionStore";
-import type { Project, ThemeMode, DispatcherSession } from "../types";
+import type { Project, ThemeMode, ProjectSession, SessionPage } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
 import { BranchBar } from "./task-panel/BranchBar";
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
 import s from "../styles";
+
+const PROJECT_PAGE_SIZE = 30;
 
 function formatTime(timestampStr: string) {
   try {
@@ -20,7 +22,7 @@ function formatTime(timestampStr: string) {
   }
 }
 
-function sortSessionsByUpdatedAt(sessions: DispatcherSession[]) {
+function sortSessionsByUpdatedAt(sessions: ProjectSession[]) {
   return [...sessions].sort((left, right) => {
     const leftTime = Date.parse(left.updatedAt);
     const rightTime = Date.parse(right.updatedAt);
@@ -54,15 +56,19 @@ export function SessionPanel({
   onToggleTheme: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [sessions, setSessions] = useState<DispatcherSession[]>([]);
+  const [sessions, setSessions] = useState<ProjectSession[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const creatingSessionRef = useRef(false);
   const activeSessionIdRef = useRef(activeSessionId);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   activeSessionIdRef.current = activeSessionId;
 
   useEffect(() => {
-    const unlisten = listen<DispatcherSession>("dispatcher-session-updated", (event) => {
+    const unlisten = listen<ProjectSession>("dispatcher-session-updated", (event) => {
       const updatedSession = event.payload;
-      if (updatedSession.projectId !== project.id) return;
+      if (!updatedSession.projectId || updatedSession.projectId !== project.id) return;
 
       setSessions((prev) => {
         const exists = prev.some((session) => session.id === updatedSession.id);
@@ -82,7 +88,7 @@ export function SessionPanel({
     if (creatingSessionRef.current) return;
     creatingSessionRef.current = true;
     try {
-      const newSession = await invoke<DispatcherSession>("dispatcher_create_session", {
+      const newSession = await invoke<ProjectSession>("project_create_session", {
         projectId: project.id,
         title: "新会话",
       });
@@ -97,21 +103,45 @@ export function SessionPanel({
     }
   }, [onSelectSession, project.id]);
 
-  // Load sessions on mount or when project changes
+  const loadMore = useCallback(async () => {
+    if (!hasMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await invoke<SessionPage<ProjectSession>>("project_list_sessions", {
+        projectId: project.id,
+        offset: sessions.length,
+        pageSize: PROJECT_PAGE_SIZE,
+      });
+      setSessions((prev) => {
+        const existing = new Set(prev.map((s) => s.id));
+        const newItems = page.items.filter((s) => !existing.has(s.id));
+        return sortSessionsByUpdatedAt([...prev, ...newItems]);
+      });
+      setTotal(page.total);
+      setHasMore(page.hasMore);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasMore, loadingMore, project.id, sessions.length]);
+
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
       try {
-        const loaded = await invoke<DispatcherSession[]>("dispatcher_list_sessions", {
+        const page = await invoke<SessionPage<ProjectSession>>("project_list_sessions", {
           projectId: project.id,
+          offset: 0,
+          pageSize: PROJECT_PAGE_SIZE,
         });
         if (cancelled) return;
-        setSessions(loaded);
+        setSessions(page.items);
+        setTotal(page.total);
+        setHasMore(page.hasMore);
         const currentSessionId = activeSessionIdRef.current;
-        if (loaded.length > 0) {
-          if (!currentSessionId || !loaded.some((session) => session.id === currentSessionId)) {
-            onSelectSession(loaded[0].id);
+        if (page.items.length > 0) {
+          if (!currentSessionId || !page.items.some((session) => session.id === currentSessionId)) {
+            onSelectSession(page.items[0].id);
           }
         } else {
           await handleNewSession();
@@ -128,6 +158,20 @@ export function SessionPanel({
     };
   }, [handleNewSession, onSelectSession, project.id]);
 
+  useEffect(() => {
+    if (!sentinelRef.current) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !loadingMore) {
+          loadMore();
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(sentinelRef.current);
+    return () => observer.disconnect();
+  }, [hasMore, loadingMore, loadMore]);
+
   const sessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
   const dispatcherRunningSessionIds = useDispatcherSessionRunningSet(sessionIds);
 
@@ -139,10 +183,11 @@ export function SessionPanel({
     if (!ok) return;
 
     try {
-      await invoke("dispatcher_delete_session", { sessionId: id });
+      await invoke("project_delete_session", { sessionId: id });
       cleanupDispatcherSession(id);
       const remaining = sessions.filter((session) => session.id !== id);
       setSessions(remaining);
+      setTotal((prev) => Math.max(0, prev - 1));
       if (activeSessionId === id) {
         onSelectSession(remaining[0]?.id ?? null);
       }
@@ -251,6 +296,9 @@ export function SessionPanel({
             </div>
           );
         })}
+        {hasMore && (
+          <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />
+        )}
       </div>
 
       <div style={s.taskPanelFooter}>

@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { LoaderCircle, Trash2 } from "lucide-react";
-import type { DispatcherSession } from "../types";
+import type { ChatSession } from "../types";
 import s from "../styles";
 
 function formatTime(timestampStr: string) {
@@ -13,7 +13,7 @@ function formatTime(timestampStr: string) {
 }
 
 interface ChatSessionCardProps {
-  session: DispatcherSession;
+  session: ChatSession;
   isActive: boolean;
   isRunning: boolean;
   onClick: () => void;

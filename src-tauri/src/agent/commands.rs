@@ -13,10 +13,11 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::config::{DispatcherAgentConfig, DEFAULT_SUMMARY_MODEL};
 use super::db::{
-    ChatCategory, DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherModelConfig,
-    DispatcherSessionKind, DispatcherSessionRecord, DispatcherSessionRuntimeState,
-    DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
-    DispatcherSettingsModelConfigs, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
+    ChatCategory, ChatSessionRecord, DispatcherDb, DispatcherMessageRecord, DispatcherMode,
+    DispatcherModelConfig, DispatcherSessionKind, DispatcherSessionRecord,
+    DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord,
+    DispatcherSessionTokenUsageSource, DispatcherSettingsModelConfigs,
+    DispatcherSettingsRecord, DispatcherToolArtifactRecord, ProjectSessionRecord, SessionPage,
 };
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
@@ -748,35 +749,156 @@ pub fn dispatcher_create_session(
 #[tauri::command]
 pub fn dispatcher_get_session_runtime_state(
     state: tauri::State<'_, DispatcherState>,
-    session_id: String,
+    workspace_id: String,
 ) -> Result<DispatcherSessionRuntimeState, String> {
     state
         .db
-        .get_session_runtime_state(&session_id)
+        .get_session_runtime_state(&workspace_id)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub fn dispatcher_set_session_mode(
     state: tauri::State<'_, DispatcherState>,
-    session_id: String,
+    workspace_id: String,
     mode: String,
 ) -> Result<DispatcherSessionRuntimeState, String> {
     let mode = DispatcherMode::from_wire(&mode).map_err(|error| error.to_string())?;
     state
         .db
-        .set_session_mode(&session_id, mode)
+        .set_session_mode(&workspace_id, mode)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub async fn dispatcher_delete_session(
     state: tauri::State<'_, DispatcherState>,
-    session_id: String,
+    workspace_id: String,
 ) -> Result<(), String> {
     let db = state.db.clone();
     run_dispatcher_db("dispatcher_delete_session", move || {
-        db.delete_session(&session_id)
+        db.delete_session(&workspace_id)
+    })
+    .await
+}
+
+// ── v6: Chat Sessions (paginated) ─────────────────────────────
+
+#[tauri::command]
+pub async fn chat_list_sessions(
+    state: tauri::State<'_, DispatcherState>,
+    category: Option<String>,
+    cursor: Option<String>,
+    page_size: Option<i64>,
+) -> Result<SessionPage<ChatSessionRecord>, String> {
+    let db = state.db.clone();
+    let size = page_size.unwrap_or(30);
+    run_dispatcher_db("chat_list_sessions", move || {
+        db.list_chat_sessions_paginated(category.as_deref(), cursor.as_deref(), size)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_create_session(
+    state: tauri::State<'_, DispatcherState>,
+    app: AppHandle,
+    title: String,
+    category: Option<String>,
+) -> Result<ChatSessionRecord, String> {
+    let db = state.db.clone();
+    let session = run_dispatcher_db("chat_create_session", move || {
+        db.create_chat_session(&title, category.as_deref())
+    })
+    .await?;
+    let _ = app.emit("dispatcher-session-updated", session.clone());
+    Ok(session)
+}
+
+#[tauri::command]
+pub async fn chat_delete_session(
+    state: tauri::State<'_, DispatcherState>,
+    session_id: String,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    run_dispatcher_db("chat_delete_session", move || {
+        db.delete_chat_session(&session_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_update_session_title(
+    state: tauri::State<'_, DispatcherState>,
+    session_id: String,
+    title: String,
+) -> Result<Option<ChatSessionRecord>, String> {
+    let db = state.db.clone();
+    run_dispatcher_db("chat_update_session_title", move || {
+        db.update_chat_session_title(&session_id, &title)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_set_session_category_v6(
+    state: tauri::State<'_, DispatcherState>,
+    session_id: String,
+    category_id: String,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    run_dispatcher_db("chat_set_session_category_v6", move || {
+        db.set_chat_session_category(&session_id, &category_id)
+    })
+    .await
+}
+
+// ── v6: Project Sessions (paginated) ──────────────────────────
+
+#[tauri::command]
+pub async fn project_list_sessions(
+    state: tauri::State<'_, DispatcherState>,
+    project_id: String,
+    offset: Option<i64>,
+    page_size: Option<i64>,
+) -> Result<SessionPage<ProjectSessionRecord>, String> {
+    let db = state.db.clone();
+    let off = offset.unwrap_or(0);
+    let size = page_size.unwrap_or(30);
+    run_dispatcher_db("project_list_sessions", move || {
+        db.list_project_sessions_paginated(&project_id, off, size)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn project_create_session(
+    state: tauri::State<'_, DispatcherState>,
+    app: AppHandle,
+    project_id: String,
+    title: String,
+    mode: Option<String>,
+    active_plan_path: Option<String>,
+) -> Result<ProjectSessionRecord, String> {
+    let db = state.db.clone();
+    let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
+        .map_err(|e| e.to_string())?;
+    let session = run_dispatcher_db("project_create_session", move || {
+        db.create_project_session(&project_id, &title, mode, active_plan_path.as_deref())
+    })
+    .await?;
+    let _ = app.emit("dispatcher-session-updated", session.clone());
+    Ok(session)
+}
+
+#[tauri::command]
+pub async fn project_delete_session(
+    state: tauri::State<'_, DispatcherState>,
+    session_id: String,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    run_dispatcher_db("project_delete_session", move || {
+        db.delete_project_session(&session_id)
     })
     .await
 }
@@ -838,12 +960,12 @@ pub async fn chat_delete_category(
 #[tauri::command]
 pub async fn chat_set_session_category(
     state: tauri::State<'_, DispatcherState>,
-    session_id: String,
+    workspace_id: String,
     category_id: String,
 ) -> Result<(), String> {
     let db = state.db.clone();
     run_dispatcher_db("chat_set_session_category", move || {
-        db.set_session_category(&session_id, &category_id)
+        db.set_session_category(&workspace_id, &category_id)
     })
     .await
 }
@@ -1111,25 +1233,25 @@ pub async fn dispatcher_continue_after_dispatch(
 #[tauri::command]
 pub fn dispatcher_attach_checklist_subprocess(
     state: tauri::State<'_, DispatcherState>,
-    session_id: String,
+    workspace_id: String,
     dispatch_id: String,
     task_id: String,
 ) -> Result<DispatcherSessionRuntimeState, String> {
     state
         .db
-        .attach_checklist_subprocess(&session_id, &dispatch_id, &task_id)
+        .attach_checklist_subprocess(&workspace_id, &dispatch_id, &task_id)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub fn dispatcher_clear_checklist_dispatch(
     state: tauri::State<'_, DispatcherState>,
-    session_id: String,
+    workspace_id: String,
     dispatch_id: String,
 ) -> Result<DispatcherSessionRuntimeState, String> {
     state
         .db
-        .clear_checklist_dispatch(&session_id, &dispatch_id)
+        .clear_checklist_dispatch(&workspace_id, &dispatch_id)
         .map_err(|error| error.to_string())
 }
 

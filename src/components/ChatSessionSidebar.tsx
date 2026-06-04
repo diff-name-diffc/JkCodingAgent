@@ -1,20 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { MessageCircle, MonitorDot, Plus, Search } from "lucide-react";
-import type { ChatCategory, DispatcherSession } from "../types";
+import type { ChatCategory, ChatSession, SessionPage } from "../types";
 import { cleanupDispatcherSession } from "./dispatcherSessionStore";
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
 import { ChatCategorySection } from "./ChatCategorySection";
 import { ChatNewCategoryDialog } from "./ChatNewCategoryDialog";
 import s from "../styles";
 
-const CHAT_SCOPE_ID = "__global_chat__";
 const EXPANDED_STORAGE_KEY = "nezha.chat.expandedCategories";
 const DEFAULT_CHAT_CATEGORY = "tech";
+const CHAT_PAGE_SIZE = 30;
 
-function sortSessionsByUpdatedAt(sessions: DispatcherSession[]) {
+function sortSessionsByUpdatedAt(sessions: ChatSession[]) {
   return [...sessions].sort((left, right) => {
     const leftTime = Date.parse(left.updatedAt);
     const rightTime = Date.parse(right.updatedAt);
@@ -53,25 +53,64 @@ export function ChatSessionSidebar({
   onToggleBrowser,
 }: ChatSessionSidebarProps) {
   const [query, setQuery] = useState("");
-  const [sessions, setSessions] = useState<DispatcherSession[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [categories, setCategories] = useState<ChatCategory[]>([]);
   const [expandedRaw, setExpandedRaw] = useState<Set<string>>(() => loadExpanded());
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [expandedInitialized, setExpandedInitialized] = useState(false);
   const [showNewCategoryDialog, setShowNewCategoryDialog] = useState(false);
   const [editingCategory, setEditingCategory] = useState<ChatCategory | null>(null);
   const [dragOverCategoryId, setDragOverCategoryId] = useState<string | null>(null);
   const draggedSessionIdRef = useRef<string | null>(null);
   const creatingSessionRef = useRef(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
 
+  const loadInitial = useCallback(async () => {
+    const [page, cats] = await Promise.all([
+      invoke<SessionPage<ChatSession>>("chat_list_sessions", {
+        category: null,
+        cursor: null,
+        pageSize: CHAT_PAGE_SIZE,
+      }),
+      invoke<ChatCategory[]>("chat_list_categories"),
+    ]);
+    setSessions(page.items);
+    setHasMore(page.hasMore);
+    setNextCursor(page.nextCursor ?? null);
+    setCategories(cats);
+    return page.items;
+  }, []);
+
+  const loadMore = useCallback(async () => {
+    if (!hasMore || !nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await invoke<SessionPage<ChatSession>>("chat_list_sessions", {
+        category: null,
+        cursor: nextCursor,
+        pageSize: CHAT_PAGE_SIZE,
+      });
+      setSessions((prev) => {
+        const existing = new Set(prev.map((s) => s.id));
+        const newItems = page.items.filter((s) => !existing.has(s.id));
+        return sortSessionsByUpdatedAt([...prev, ...newItems]);
+      });
+      setHasMore(page.hasMore);
+      setNextCursor(page.nextCursor ?? null);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasMore, nextCursor, loadingMore]);
+
   useEffect(() => {
     const handleNew = async () => {
       try {
-        const session = await invoke<DispatcherSession>("dispatcher_create_session", {
-          projectId: CHAT_SCOPE_ID,
-          kind: "chat",
+        const session = await invoke<ChatSession>("chat_create_session", {
           title: "新聊天",
           category: DEFAULT_CHAT_CATEGORY,
         });
@@ -86,33 +125,38 @@ export function ChatSessionSidebar({
 
     let cancelled = false;
 
-    Promise.all([
-      invoke<DispatcherSession[]>("dispatcher_list_sessions", {
-        projectId: CHAT_SCOPE_ID,
-        kind: "chat",
-      }),
-      invoke<ChatCategory[]>("chat_list_categories"),
-    ]).then(([loaded, cats]) => {
+    loadInitial().then((loaded) => {
       if (cancelled) return;
-      setSessions(loaded);
-      setCategories(cats);
       const current = activeSessionIdRef.current;
       if (!current && loaded.length === 0) {
         handleNew();
       } else if (loaded.length > 0 && (!current || !loaded.some((s) => s.id === current))) {
         onActiveSessionChange(loaded[0].id);
       }
-      // Mark expanded state as initialized (use defaults if empty)
       setExpandedInitialized(true);
     }).catch((err) => console.error("加载聊天失败:", err));
 
     return () => { cancelled = true; };
-  }, [onActiveSessionChange]);
+  }, [onActiveSessionChange, loadInitial]);
 
   useEffect(() => {
-    const unlisten = listen<DispatcherSession>("dispatcher-session-updated", (event) => {
+    if (!sentinelRef.current) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !loadingMore) {
+          loadMore();
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(sentinelRef.current);
+    return () => observer.disconnect();
+  }, [hasMore, loadingMore, loadMore]);
+
+  useEffect(() => {
+    const unlisten = listen<ChatSession>("dispatcher-session-updated", (event) => {
       const u = event.payload;
-      if (u.projectId !== CHAT_SCOPE_ID || u.kind !== "chat") return;
+      if (!u.category && u.id) return;
       setSessions((prev) => {
         const exists = prev.some((s) => s.id === u.id);
         const next = exists
@@ -136,7 +180,6 @@ export function ChatSessionSidebar({
     };
   }, []);
 
-  // Auto-expand categories that contain the active session on first load
   useEffect(() => {
     if (!expandedInitialized || activeSessionId == null || sessions.length === 0) return;
     const active = sessions.find((s) => s.id === activeSessionId);
@@ -161,7 +204,7 @@ export function ChatSessionSidebar({
   }, [sessions, query]);
 
   const sessionsByCategory = useMemo(() => {
-    const map = new Map<string, DispatcherSession[]>();
+    const map = new Map<string, ChatSession[]>();
     for (const s of filtered) {
       const key = s.category || "__uncategorized__";
       if (!map.has(key)) map.set(key, []);
@@ -174,9 +217,7 @@ export function ChatSessionSidebar({
     if (creatingSessionRef.current) return;
     creatingSessionRef.current = true;
     try {
-      const session = await invoke<DispatcherSession>("dispatcher_create_session", {
-        projectId: CHAT_SCOPE_ID,
-        kind: "chat",
+      const session = await invoke<ChatSession>("chat_create_session", {
         title: "新聊天",
         category: categoryId || DEFAULT_CHAT_CATEGORY,
       });
@@ -204,7 +245,7 @@ export function ChatSessionSidebar({
     const ok = await confirm("确定永久删除这个聊天吗？", { title: "删除聊天", kind: "warning" });
     if (!ok) return;
     try {
-      await invoke("dispatcher_delete_session", { sessionId });
+      await invoke("chat_delete_session", { sessionId });
       cleanupDispatcherSession(sessionId);
       const remaining = sessions.filter((s) => s.id !== sessionId);
       setSessions(remaining);
@@ -248,10 +289,15 @@ export function ChatSessionSidebar({
     draggedSessionIdRef.current = null;
     if (!sessionId) return;
     try {
-      await invoke("chat_set_session_category", { sessionId, categoryId: categoryId === "__uncategorized__" ? "" : categoryId });
+      await invoke("chat_set_session_category_v6", {
+        sessionId,
+        categoryId: categoryId === "__uncategorized__" ? "" : categoryId,
+      });
       setSessions((prev) =>
         prev.map((s) =>
-          s.id === sessionId ? { ...s, category: categoryId === "__uncategorized__" ? "" : categoryId } : s,
+          s.id === sessionId
+            ? { ...s, category: categoryId === "__uncategorized__" ? "" : categoryId }
+            : s,
         ),
       );
       const next = new Set(expandedRaw);
@@ -302,13 +348,14 @@ export function ChatSessionSidebar({
     try {
       await invoke("chat_delete_category", { categoryId: cat.id });
       setCategories((prev) => prev.filter((c) => c.id !== cat.id));
-      setSessions((prev) => prev.map((s) => (s.category === cat.id ? { ...s, category: "" } : s)));
+      setSessions((prev) =>
+        prev.map((s) => (s.category === cat.id ? { ...s, category: "" } : s)),
+      );
     } catch (err) {
       console.error("删除分类失败:", err);
     }
   };
 
-  // Build sorted categories list; uncategorized always last
   const sortedCategories = useMemo(
     () => [...categories].sort((a, b) => a.sortOrder - b.sortOrder),
     [categories],
@@ -406,6 +453,10 @@ export function ChatSessionSidebar({
             onDrop={(e) => handleCategoryDrop("__uncategorized__", e)}
             dragOverId={dragOverCategoryId}
           />
+        )}
+
+        {hasMore && (
+          <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />
         )}
 
         {filtered.length === 0 && (

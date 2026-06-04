@@ -503,6 +503,31 @@ export interface DispatcherSession {
   updatedAt: string;
 }
 
+export interface ChatSession {
+  id: string;
+  title: string;
+  category: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectSession {
+  id: string;
+  projectId: string;
+  title: string;
+  mode: DispatcherMode;
+  activePlanPath?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SessionPage<T> {
+  items: T[];
+  total: number;
+  hasMore: boolean;
+  nextCursor?: string | null;
+}
+
 export interface ChatCategory {
   id: string;
   name: string;

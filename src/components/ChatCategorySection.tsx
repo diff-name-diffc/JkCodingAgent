@@ -9,7 +9,7 @@ import {
   Folder,
   Inbox,
 } from "lucide-react";
-import type { ChatCategory, DispatcherSession } from "../types";
+import type { ChatCategory, ChatSession } from "../types";
 import { ChatSessionCard } from "./ChatSessionCard";
 import { ChatCategoryContextMenu } from "./ChatCategoryContextMenu";
 import s from "../styles";
@@ -30,7 +30,7 @@ function resolveIcon(iconName: string): React.ElementType {
 
 interface ChatCategorySectionProps {
   category: ChatCategory | null;
-  sessions: DispatcherSession[];
+  sessions: ChatSession[];
   activeSessionId: string | null;
   runningSessionIds: Set<string>;
   onToggle: () => void;

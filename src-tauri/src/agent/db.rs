@@ -130,6 +130,29 @@ fn safe_absolute_image_path(path: &str) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+fn safe_absolute_plan_path(path: &str) -> Result<PathBuf> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("plan path is empty");
+    }
+
+    let path = Path::new(trimmed);
+    if !path.is_absolute() {
+        anyhow::bail!("plan path must be absolute: {trimmed}");
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        anyhow::bail!("plan path must not contain parent traversal: {trimmed}");
+    }
+    if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+        anyhow::bail!("plan path must be a Markdown file: {trimmed}");
+    }
+
+    Ok(path.to_path_buf())
+}
+
 fn insert_chat_images(
     tx: &rusqlite::Transaction<'_>,
     workspace_id: &str,
@@ -243,6 +266,47 @@ fn delete_chat_image_resources(tx: &rusqlite::Transaction<'_>, workspace_id: &st
     Ok(())
 }
 
+fn delete_plan_file_resources(tx: &rusqlite::Transaction<'_>, workspace_id: &str) -> Result<()> {
+    let mut paths = HashSet::new();
+
+    let mut stmt = tx
+        .prepare("SELECT active_plan_path FROM dispatcher_sessions WHERE id = ?1 AND active_plan_path IS NOT NULL")
+        .context("load dispatcher session plan path")?;
+    let dispatcher_paths = stmt
+        .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("collect dispatcher plan paths")?;
+    paths.extend(dispatcher_paths);
+
+    let mut stmt = tx
+        .prepare("SELECT active_plan_path FROM project_sessions WHERE id = ?1 AND active_plan_path IS NOT NULL")
+        .context("load project session plan path")?;
+    let project_paths = stmt
+        .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("collect project plan paths")?;
+    paths.extend(project_paths);
+
+    for path in paths {
+        let safe_path = match safe_absolute_plan_path(&path) {
+            Ok(p) => p,
+            Err(error) => {
+                eprintln!("skip invalid plan path: {error}");
+                continue;
+            }
+        };
+        match std::fs::remove_file(&safe_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                eprintln!("remove plan file {} failed: {error}", safe_path.display());
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ── Records ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,6 +321,37 @@ pub struct DispatcherSessionRecord {
     pub category: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSessionRecord {
+    pub id: String,
+    pub title: String,
+    pub category: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSessionRecord {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub mode: DispatcherMode,
+    pub active_plan_path: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPage<T> {
+    pub items: Vec<T>,
+    pub total: i64,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1543,8 +1638,17 @@ impl DispatcherDb {
             params![session_id],
         )?;
         delete_chat_image_resources(&tx, session_id)?;
+        delete_plan_file_resources(&tx, session_id)?;
         tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM chat_sessions WHERE id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM project_sessions WHERE id = ?1",
             params![session_id],
         )?;
         tx.execute(
@@ -1554,6 +1658,367 @@ impl DispatcherDb {
         tx.commit()?;
         Ok(())
     }
+
+    // ── Chat Sessions (v6) ────────────────────────────────────────
+
+    pub fn list_chat_sessions_paginated(
+        &self,
+        category: Option<&str>,
+        cursor: Option<&str>,
+        page_size: i64,
+    ) -> Result<SessionPage<ChatSessionRecord>> {
+        let conn = self.conn()?;
+        let total: i64 = if let Some(cat) = category {
+            conn.query_row(
+                "SELECT COUNT(*) FROM chat_sessions WHERE category = ?1",
+                params![cat],
+                |row| row.get(0),
+            )?
+        } else {
+            conn.query_row("SELECT COUNT(*) FROM chat_sessions", [], |row| row.get(0))?
+        };
+
+        let (where_clause, bind): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            match (category, cursor) {
+                (Some(cat), Some(cur)) => (
+                    "WHERE category = ?1 AND updated_at < ?2".into(),
+                    vec![Box::new(cat.to_string()), Box::new(cur.to_string())],
+                ),
+                (Some(cat), None) => (
+                    "WHERE category = ?1".into(),
+                    vec![Box::new(cat.to_string())],
+                ),
+                (None, Some(cur)) => (
+                    "WHERE updated_at < ?1".into(),
+                    vec![Box::new(cur.to_string())],
+                ),
+                (None, None) => (String::new(), vec![]),
+            };
+
+        let sql = format!(
+            "SELECT id, title, category, created_at, updated_at
+             FROM chat_sessions
+             {}
+             ORDER BY updated_at DESC
+             LIMIT ?{}",
+            where_clause,
+            bind.len() + 1
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            bind.iter().map(|b| b.as_ref()).collect();
+        let limit_param: i64 = page_size + 1;
+        let mut all_params: Vec<&dyn rusqlite::types::ToSql> = params_refs;
+        all_params.push(&limit_param);
+
+        let rows = stmt.query_map(all_params.as_slice(), |row| {
+            Ok(ChatSessionRecord {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                category: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })?;
+        let mut items: Vec<ChatSessionRecord> =
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("list chat sessions paginated")?;
+
+        let has_more = items.len() as i64 > page_size;
+        if has_more {
+            items.pop();
+        }
+        let next_cursor = items.last().map(|s| s.updated_at.clone());
+
+        Ok(SessionPage {
+            items,
+            total,
+            has_more,
+            next_cursor,
+        })
+    }
+
+    pub fn create_chat_session(
+        &self,
+        title: &str,
+        category: Option<&str>,
+    ) -> Result<ChatSessionRecord> {
+        let record = ChatSessionRecord {
+            id: Uuid::new_v4().to_string(),
+            title: title.to_string(),
+            category: category.unwrap_or("tech").to_string(),
+            created_at: now(),
+            updated_at: now(),
+        };
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO chat_sessions (id, title, category, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                record.id,
+                record.title,
+                record.category,
+                record.created_at,
+                record.updated_at
+            ],
+        )
+        .context("insert chat session")?;
+        conn.execute(
+            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, mode, category, created_at, updated_at)
+             VALUES (?1, '__global_chat__', 'chat', ?2, 'default', ?3, ?4, ?5)",
+            params![
+                record.id,
+                record.title,
+                record.category,
+                record.created_at,
+                record.updated_at
+            ],
+        )
+        .context("insert chat session into dispatcher_sessions")?;
+        Ok(record)
+    }
+
+    pub fn delete_chat_session(&self, session_id: &str) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        delete_chat_image_resources(&tx, session_id)?;
+        delete_plan_file_resources(&tx, session_id)?;
+        tx.execute(
+            "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM chat_sessions WHERE id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "UPDATE dispatcher_sessions
+             SET checklist_json = NULL,
+                 plan_interaction_json = NULL,
+                 active_plan_path = NULL,
+                 updated_at = ?1
+             WHERE id = ?2",
+            params![now(), session_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn update_chat_session_updated_at(&self, session_id: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![now(), session_id],
+        )
+        .context("update chat session updated_at")?;
+        Ok(())
+    }
+
+    pub fn update_chat_session_title(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<Option<ChatSessionRecord>> {
+        let updated_at = now();
+        let conn = self.conn()?;
+        let changed = conn
+            .execute(
+                "UPDATE chat_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
+                params![title.trim(), &updated_at, session_id],
+            )
+            .context("update chat session title")?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        conn.execute(
+            "UPDATE dispatcher_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            params![title.trim(), &updated_at, session_id],
+        )
+        .context("reflect chat title in dispatcher_sessions")?;
+        conn.query_row(
+            "SELECT id, title, category, created_at, updated_at
+             FROM chat_sessions WHERE id = ?1",
+            params![session_id],
+            |row| {
+                Ok(ChatSessionRecord {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    category: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .context("load chat session after title update")
+    }
+
+    pub fn set_chat_session_category(&self, session_id: &str, category_id: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE chat_sessions SET category = ?1, updated_at = ?2 WHERE id = ?3",
+            params![category_id, now(), session_id],
+        )
+        .context("set chat session category")?;
+        conn.execute(
+            "UPDATE dispatcher_sessions SET category = ?1 WHERE id = ?2",
+            params![category_id, session_id],
+        )
+        .context("reflect category in dispatcher_sessions")?;
+        Ok(())
+    }
+
+    // ── Project Sessions (v6) ─────────────────────────────────────
+
+    pub fn list_project_sessions_paginated(
+        &self,
+        project_id: &str,
+        offset: i64,
+        page_size: i64,
+    ) -> Result<SessionPage<ProjectSessionRecord>> {
+        let conn = self.conn()?;
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM project_sessions WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, title, mode, active_plan_path, created_at, updated_at
+             FROM project_sessions
+             WHERE project_id = ?1
+             ORDER BY updated_at DESC
+             LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = stmt.query_map(
+            params![project_id, page_size, offset],
+            |row| {
+                Ok(ProjectSessionRecord {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    title: row.get(2)?,
+                    mode: DispatcherMode::from_sql_value(row.get(3)?),
+                    active_plan_path: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )?;
+        let items: Vec<ProjectSessionRecord> =
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("list project sessions paginated")?;
+
+        let has_more = (offset + items.len() as i64) < total;
+        let next_cursor = items.last().map(|s| s.updated_at.clone());
+
+        Ok(SessionPage {
+            items,
+            total,
+            has_more,
+            next_cursor,
+        })
+    }
+
+    pub fn create_project_session(
+        &self,
+        project_id: &str,
+        title: &str,
+        mode: DispatcherMode,
+        active_plan_path: Option<&str>,
+    ) -> Result<ProjectSessionRecord> {
+        let record = ProjectSessionRecord {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            title: title.to_string(),
+            mode,
+            active_plan_path: active_plan_path.map(str::to_string),
+            created_at: now(),
+            updated_at: now(),
+        };
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO project_sessions (id, project_id, title, mode, active_plan_path, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                record.id,
+                record.project_id,
+                record.title,
+                record.mode.as_sql_value(),
+                record.active_plan_path,
+                record.created_at,
+                record.updated_at
+            ],
+        )
+        .context("insert project session")?;
+        conn.execute(
+            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, mode, active_plan_path, category, created_at, updated_at)
+             VALUES (?1, ?2, 'project', ?3, ?4, ?5, '', ?6, ?7)",
+            params![
+                record.id,
+                record.project_id,
+                record.title,
+                record.mode.as_sql_value(),
+                record.active_plan_path,
+                record.created_at,
+                record.updated_at
+            ],
+        )
+        .context("insert project session into dispatcher_sessions")?;
+        Ok(record)
+    }
+
+    pub fn delete_project_session(&self, session_id: &str) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        delete_chat_image_resources(&tx, session_id)?;
+        delete_plan_file_resources(&tx, session_id)?;
+        tx.execute(
+            "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM project_sessions WHERE id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "UPDATE dispatcher_sessions
+             SET checklist_json = NULL,
+                 plan_interaction_json = NULL,
+                 active_plan_path = NULL,
+                 updated_at = ?1
+             WHERE id = ?2",
+            params![now(), session_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn update_project_session_updated_at(&self, session_id: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE project_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![now(), session_id],
+        )
+        .context("update project session updated_at")?;
+        Ok(())
+    }
+
 
     pub fn get_session_title(&self, session_id: &str) -> Result<String> {
         let conn = self.conn()?;
@@ -2286,6 +2751,7 @@ impl DispatcherDb {
         )
         .context("clear dispatcher session token usage")?;
         delete_chat_image_resources(&tx, workspace_id)?;
+        delete_plan_file_resources(&tx, workspace_id)?;
         tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![workspace_id],
@@ -2301,6 +2767,16 @@ impl DispatcherDb {
             params![now(), workspace_id],
         )
         .context("clear dispatcher planning state")?;
+        tx.execute(
+            "UPDATE project_sessions
+             SET active_plan_path = NULL,
+                 checklist_json = NULL,
+                 plan_interaction_json = NULL,
+                 updated_at = ?1
+             WHERE id = ?2",
+            params![now(), workspace_id],
+        )
+        .context("clear project session planning state")?;
         tx.commit().context("commit dispatcher message cleanup")?;
         Ok(())
     }
@@ -2762,6 +3238,14 @@ impl DispatcherDb {
             "UPDATE dispatcher_sessions SET updated_at = ?1 WHERE id = ?2",
             params![&record.created_at, &record.workspace_id],
         )?;
+        tx.execute(
+            "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![&record.created_at, &record.workspace_id],
+        )?;
+        tx.execute(
+            "UPDATE project_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![&record.created_at, &record.workspace_id],
+        )?;
 
         tx.execute(
             "INSERT INTO dispatcher_messages (
@@ -2880,7 +3364,7 @@ impl DispatcherDb {
         let mut conn = self.conn()?;
 
         // Fast path: if schema is already at the expected version, skip all DDL.
-        const SCHEMA_VERSION: i32 = 5;
+        const SCHEMA_VERSION: i32 = 6;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -3206,6 +3690,89 @@ impl DispatcherDb {
             .context("migrate existing chat sessions to tech category")?;
 
             tx.commit().context("commit migration transaction")?;
+        }
+
+        // v5 → v6: split dispatcher_sessions → chat_sessions + project_sessions,
+        // delete all project-kind sessions, keep chat data only.
+        if conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='chat_sessions'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            == 0
+        {
+            let mut paths = HashSet::new();
+            {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT ci.path FROM chat_images ci
+                         INNER JOIN dispatcher_sessions ds ON ci.workspace_id = ds.id
+                         WHERE ds.kind = 'project'",
+                    )
+                    .context("v6: load project image paths")?;
+                let indexed = stmt
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .unwrap_or_default();
+                paths.extend(indexed);
+            }
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'tech',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated
+                    ON chat_sessions(updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_chat_sessions_category_updated
+                    ON chat_sessions(category, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS project_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    mode TEXT NOT NULL DEFAULT 'default',
+                    active_plan_path TEXT,
+                    checklist_json TEXT,
+                    plan_interaction_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_project_sessions_project_updated
+                    ON project_sessions(project_id, updated_at DESC);
+
+                INSERT OR IGNORE INTO chat_sessions (id, title, category, created_at, updated_at)
+                SELECT id, title, category, created_at, updated_at
+                FROM dispatcher_sessions
+                WHERE kind = 'chat';
+
+                DELETE FROM dispatcher_tool_artifacts
+                    WHERE workspace_id IN (SELECT id FROM dispatcher_sessions WHERE kind = 'project');
+                DELETE FROM dispatcher_session_token_usage
+                    WHERE workspace_id IN (SELECT id FROM dispatcher_sessions WHERE kind = 'project');
+                DELETE FROM python_code_runs
+                    WHERE workspace_id IN (SELECT id FROM dispatcher_sessions WHERE kind = 'project');
+                DELETE FROM chat_images
+                    WHERE workspace_id IN (SELECT id FROM dispatcher_sessions WHERE kind = 'project');
+                DELETE FROM dispatcher_messages
+                    WHERE workspace_id IN (SELECT id FROM dispatcher_sessions WHERE kind = 'project');
+                DELETE FROM dispatcher_sessions WHERE kind = 'project';
+
+                UPDATE chat_sessions SET category = 'tech'
+                    WHERE category IS NULL OR category = '';
+                ",
+            )
+            .context("v6 migration: split sessions and delete project-kind data")?;
+            for path in paths {
+                if let Ok(safe) = safe_absolute_image_path(&path) {
+                    let _ = std::fs::remove_file(&safe);
+                }
+            }
         }
 
         // Mark schema as fully migrated (outside the transaction — PRAGMA is auto-commit).
@@ -4305,21 +4872,140 @@ mod tests {
         let conn = rusqlite::Connection::open(&path).expect("open legacy db");
         conn.execute_batch(
             "
+            PRAGMA journal_mode = WAL;
+            PRAGMA foreign_keys = ON;
             CREATE TABLE dispatcher_sessions (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'project',
                 title TEXT NOT NULL,
                 mode TEXT NOT NULL DEFAULT 'default',
                 active_plan_path TEXT,
                 checklist_json TEXT,
                 plan_interaction_json TEXT,
+                category TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE dispatcher_messages (
+                id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, role TEXT NOT NULL,
+                segments_json TEXT NOT NULL DEFAULT '[]',
+                thinking_content TEXT, thinking_elapsed_ms INTEGER,
+                context_payload TEXT, tool_call_id TEXT, tool_name TEXT,
+                tool_result_mode TEXT, tool_artifacts_json TEXT, tool_calls_json TEXT,
+                usage_stats_json TEXT,
+                visible INTEGER NOT NULL DEFAULT 1,
+                context_cleared INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE dispatcher_tool_artifacts (
+                id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+                message_id TEXT, tool_call_id TEXT, tool_name TEXT,
+                title TEXT NOT NULL, kind TEXT NOT NULL,
+                preview TEXT NOT NULL DEFAULT '', content TEXT NOT NULL,
+                char_count INTEGER NOT NULL DEFAULT 0, line_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE dispatcher_session_token_usage (
+                workspace_id TEXT NOT NULL, model TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'primary',
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_tokens INTEGER NOT NULL DEFAULT 0,
+                context_window_tokens INTEGER NOT NULL DEFAULT 0,
+                context_window_capacity INTEGER NOT NULL DEFAULT 1000000,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, model, source_kind)
+            );
+            CREATE TABLE chat_images (
+                id TEXT PRIMARY KEY, image_id TEXT NOT NULL UNIQUE,
+                workspace_id TEXT NOT NULL, message_id TEXT NOT NULL,
+                segment_index INTEGER NOT NULL, path TEXT NOT NULL,
+                alt TEXT, width INTEGER, height INTEGER, mime_type TEXT,
+                source TEXT, generation_prompt TEXT, vector_embedding_json TEXT,
+                text_description TEXT, created_at TEXT NOT NULL,
+                FOREIGN KEY (message_id) REFERENCES dispatcher_messages(id) ON DELETE CASCADE
+            );
+            CREATE TABLE python_code_runs (
+                run_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+                message_id TEXT NOT NULL, code_block_index INTEGER NOT NULL,
+                code_hash TEXT NOT NULL, code TEXT NOT NULL,
+                status TEXT NOT NULL, stdout TEXT NOT NULL DEFAULT '',
+                stderr TEXT NOT NULL DEFAULT '',
+                installed_packages_json TEXT NOT NULL DEFAULT '[]',
+                tool_events_json TEXT NOT NULL DEFAULT '[]',
+                explanation_markdown TEXT NOT NULL DEFAULT '',
+                error_reason TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, message_id, code_block_index),
+                FOREIGN KEY (message_id) REFERENCES dispatcher_messages(id) ON DELETE CASCADE
+            );
+            CREATE TABLE chat_categories (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+                icon TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE dispatcher_settings (
+                id TEXT PRIMARY KEY DEFAULT 'default',
+                api_base TEXT NOT NULL DEFAULT '',
+                api_key TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                summary_model TEXT NOT NULL DEFAULT 'deepseek-v4-flash',
+                vision_model TEXT NOT NULL DEFAULT '',
+                asr_api_key TEXT NOT NULL DEFAULT '',
+                asr_websocket_url TEXT NOT NULL DEFAULT '',
+                auto_approve_dispatch INTEGER NOT NULL DEFAULT 0,
+                context_debug INTEGER NOT NULL DEFAULT 0,
+                image_model_url TEXT NOT NULL DEFAULT '',
+                image_model_api_key TEXT NOT NULL DEFAULT '',
+                image_model TEXT NOT NULL DEFAULT '',
+                image_edit_model TEXT NOT NULL DEFAULT '',
+                chat_model_url TEXT NOT NULL DEFAULT '',
+                chat_model_api_key TEXT NOT NULL DEFAULT '',
+                chat_model_name TEXT NOT NULL DEFAULT '',
+                summary_model_url TEXT NOT NULL DEFAULT '',
+                summary_model_api_key TEXT NOT NULL DEFAULT '',
+                summary_model_name TEXT NOT NULL DEFAULT '',
+                vision_model_url TEXT NOT NULL DEFAULT '',
+                vision_model_api_key TEXT NOT NULL DEFAULT '',
+                vision_model_name TEXT NOT NULL DEFAULT '',
+                image_model_config_url TEXT NOT NULL DEFAULT '',
+                image_model_config_api_key TEXT NOT NULL DEFAULT '',
+                image_model_config_name TEXT NOT NULL DEFAULT '',
+                image_edit_model_url TEXT NOT NULL DEFAULT '',
+                image_edit_model_api_key TEXT NOT NULL DEFAULT '',
+                image_edit_model_name TEXT NOT NULL DEFAULT '',
+                asr_model_url TEXT NOT NULL DEFAULT '',
+                asr_model_api_key TEXT NOT NULL DEFAULT '',
+                asr_model_name TEXT NOT NULL DEFAULT '',
+                tts_model_url TEXT NOT NULL DEFAULT '',
+                tts_model_api_key TEXT NOT NULL DEFAULT '',
+                tts_model_name TEXT NOT NULL DEFAULT '',
+                embedding_model_url TEXT NOT NULL DEFAULT '',
+                embedding_model_api_key TEXT NOT NULL DEFAULT '',
+                embedding_model_name TEXT NOT NULL DEFAULT '',
+                chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                vision_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                image_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                image_edit_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                asr_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                tts_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                embedding_model_configs_json TEXT NOT NULL DEFAULT '[]'
+            );
             INSERT INTO dispatcher_sessions (
-                id, project_id, title, mode, active_plan_path, created_at, updated_at
+                id, project_id, kind, title, created_at, updated_at
             ) VALUES (
-                'legacy-session', 'project-1', '旧项目会话', 'default', NULL,
+                'legacy-project', 'project-1', 'project', '旧项目会话',
+                '2026-05-09T00:00:00Z', '2026-05-09T00:00:00Z'
+            );
+            INSERT INTO dispatcher_sessions (
+                id, project_id, kind, title, category, created_at, updated_at
+            ) VALUES (
+                'legacy-chat', '__global_chat__', 'chat', '旧聊天',
+                'tech',
                 '2026-05-09T00:00:00Z', '2026-05-09T00:00:00Z'
             );
             ",
@@ -4328,17 +5014,30 @@ mod tests {
         drop(conn);
 
         let db = DispatcherDb::new(path).expect("migrate dispatcher db");
+
+        // v6 migration: project sessions deleted from dispatcher_sessions
         let project_sessions = db
             .list_sessions("project-1", DispatcherSessionKind::Project)
             .unwrap();
+        assert_eq!(
+            project_sessions.len(),
+            0,
+            "v6 should delete all project-kind rows from dispatcher_sessions"
+        );
 
-        assert_eq!(project_sessions.len(), 1);
-        assert_eq!(project_sessions[0].id, "legacy-session");
-        assert_eq!(project_sessions[0].kind, DispatcherSessionKind::Project);
-        assert!(db
-            .list_sessions("project-1", DispatcherSessionKind::Chat)
-            .unwrap()
-            .is_empty());
+        let chat_sessions = db
+            .list_sessions("__global_chat__", DispatcherSessionKind::Chat)
+            .unwrap();
+        assert_eq!(chat_sessions.len(), 1);
+        assert_eq!(chat_sessions[0].id, "legacy-chat");
+
+        // chat_sessions table should contain the migrated chat session
+        let paginated = db
+            .list_chat_sessions_paginated(None, None, 10)
+            .unwrap();
+        assert_eq!(paginated.items.len(), 1);
+        assert_eq!(paginated.items[0].id, "legacy-chat");
+        assert_eq!(paginated.items[0].category, "tech");
 
         cleanup_test_db(root);
     }
@@ -4876,6 +5575,37 @@ mod tests {
         let state = db.get_session_runtime_state(&session.id).unwrap();
         assert!(state.checklist.is_none());
         assert!(state.plan_interaction.is_none());
+        assert!(state.active_plan_path.is_none());
+
+        cleanup_test_db(root);
+    }
+
+    #[test]
+    fn clear_messages_removes_plan_file_from_disk() {
+        let (db, root) = create_test_db();
+        let session = db
+            .create_session(
+                "project-1",
+                "计划清理会话",
+                DispatcherSessionKind::Project,
+                DispatcherMode::Plan,
+                None,
+                None,
+            )
+            .unwrap();
+        let plan_dir = root.join(".jkcodingagent").join("plan");
+        fs::create_dir_all(&plan_dir).expect("create plan dir");
+        let plan_path = plan_dir.join("20260604-demo.md");
+        fs::write(&plan_path, "# 计划书\n内容").expect("write plan file");
+        db.set_active_plan_path(&session.id, Some(plan_path.to_str().unwrap()))
+            .unwrap();
+
+        assert!(plan_path.exists());
+
+        db.clear_messages(&session.id).unwrap();
+
+        assert!(!plan_path.exists());
+        let state = db.get_session_runtime_state(&session.id).unwrap();
         assert!(state.active_plan_path.is_none());
 
         cleanup_test_db(root);

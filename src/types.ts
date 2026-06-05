@@ -538,6 +538,23 @@ export interface ChatCategory {
   updatedAt: string;
 }
 
+export interface SessionKeyword {
+  workspaceId: string;
+  keyword: string;
+  weight: number;
+  createdAt: string;
+}
+
+export interface SessionSearchResult {
+  sessionId: string;
+  sessionTitle: string;
+  sessionKind: "chat" | "project";
+  category: string;
+  matchedKeywords: string[];
+  relevanceScore: number;
+  updatedAt: string;
+}
+
 export interface SubProcess {
   id: string;
   dispatchId: string;

@@ -22,6 +22,7 @@ import type {
   PythonCodeRunRecord,
   PythonCodeRunTarget,
   PythonRunEvent,
+  SessionKeyword,
   SubProcess,
 } from "../types";
 import { useDashScopeAsr } from "../hooks/useDashScopeAsr";
@@ -128,6 +129,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [pythonDrawerOpen, setPythonDrawerOpen] = useState(false);
     const [pythonRunTarget, setPythonRunTarget] = useState<PythonCodeRunTarget | null>(null);
     const [pythonRunRecords, setPythonRunRecords] = useState<Record<string, PythonCodeRunRecord>>({});
+    const [sessionKeywords, setSessionKeywords] = useState<SessionKeyword[]>([]);
 
     // ── Refs ─────────────────────────────────────────────────────
     const messageListRef = useRef<HTMLDivElement>(null);
@@ -314,6 +316,23 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }, [sessionId]);
 
     useEffect(() => {
+      invoke<SessionKeyword[]>("session_get_keywords", { workspaceId: sessionId })
+        .then(setSessionKeywords)
+        .catch(() => setSessionKeywords([]));
+      const unlisten = listen<{ workspaceId: string; keywords: SessionKeyword[] }>(
+        "session-keywords-updated",
+        (event) => {
+          if (event.payload.workspaceId === sessionId) {
+            setSessionKeywords(event.payload.keywords);
+          }
+        },
+      );
+      return () => {
+        unlisten.then((fn) => fn()).catch(() => {});
+      };
+    }, [sessionId]);
+
+    useEffect(() => {
       const unlisten = listen<PythonRunEvent>("python-run-event", (event) => {
         const payload = event.payload;
         if (payload.workspaceId !== currentSessionIdRef.current) return;
@@ -380,6 +399,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             isPlainChat={isPlainChat} thinkingEnabled={thinkingEnabled} isLoading={isLoading}
             activePlanPath={activePlanPath} autoApprove={autoApprove} mcpIndicator={mcpIndicator}
             hasMessages={messages.length > 0}
+            keywords={sessionKeywords}
+            onClickKeyword={(kw) => {
+              navigator.clipboard.writeText(kw).catch(() => {});
+            }}
             searchOpen={search.searchOpen} searchQuery={search.searchQuery}
             matchCount={search.matchCount} activeIndex={search.activeIndex}
             searchInputRef={search.searchInputRef}

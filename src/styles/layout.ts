@@ -276,6 +276,21 @@ export const layout = {
     gap: 2,
     flexShrink: 0,
   },
+  matchedKeywordsRow: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: 4,
+    marginTop: 4,
+  },
+  matchedKeywordTag: {
+    fontSize: 10,
+    padding: "1px 6px",
+    borderRadius: 4,
+    background: "var(--bg-hover)",
+    color: "var(--text-muted)",
+    border: "1px solid var(--border-dim)",
+    lineHeight: "14px",
+  },
   sessionDragOver: {
     background: "var(--bg-hover)",
     borderStyle: "dashed",

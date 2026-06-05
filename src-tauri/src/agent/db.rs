@@ -370,6 +370,41 @@ pub struct ChatCategory {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionKeywordRecord {
+    pub workspace_id: String,
+    pub keyword: String,
+    pub weight: f64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeywordAction {
+    pub action: String,
+    #[serde(default)]
+    pub keyword: Option<String>,
+    #[serde(default)]
+    pub from: Option<Vec<String>>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default)]
+    pub weight: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchResult {
+    pub session_id: String,
+    pub session_title: String,
+    pub session_kind: String,
+    pub category: String,
+    pub matched_keywords: Vec<String>,
+    pub relevance_score: f64,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DispatcherModelConfig {
@@ -1659,6 +1694,10 @@ impl DispatcherDb {
         delete_chat_image_resources(&tx, session_id)?;
         delete_plan_file_resources(&tx, session_id)?;
         tx.execute(
+            "DELETE FROM session_keywords WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![session_id],
         )?;
@@ -1810,6 +1849,10 @@ impl DispatcherDb {
         )?;
         delete_chat_image_resources(&tx, session_id)?;
         delete_plan_file_resources(&tx, session_id)?;
+        tx.execute(
+            "DELETE FROM session_keywords WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
         tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![session_id],
@@ -1999,6 +2042,10 @@ impl DispatcherDb {
         )?;
         delete_chat_image_resources(&tx, session_id)?;
         delete_plan_file_resources(&tx, session_id)?;
+        tx.execute(
+            "DELETE FROM session_keywords WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
         tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![session_id],
@@ -2758,6 +2805,11 @@ impl DispatcherDb {
         delete_chat_image_resources(&tx, workspace_id)?;
         delete_plan_file_resources(&tx, workspace_id)?;
         tx.execute(
+            "DELETE FROM session_keywords WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("clear session keywords")?;
+        tx.execute(
             "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
             params![workspace_id],
         )
@@ -2789,6 +2841,152 @@ impl DispatcherDb {
         .context("update chat session updated_at after clear")?;
         tx.commit().context("commit dispatcher message cleanup")?;
         Ok(())
+    }
+
+    // ── Session keywords ──────────────────────────────────────────
+
+    pub fn list_session_keywords(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SessionKeywordRecord>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT workspace_id, keyword, weight, created_at
+             FROM session_keywords
+             WHERE workspace_id = ?1
+             ORDER BY weight DESC, keyword ASC",
+        )?;
+        let rows = stmt.query_map(params![workspace_id], |row| {
+            Ok(SessionKeywordRecord {
+                workspace_id: row.get(0)?,
+                keyword: row.get(1)?,
+                weight: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("list_session_keywords: {}", e))
+    }
+
+    pub fn apply_keyword_actions(
+        &self,
+        workspace_id: &str,
+        actions: &[KeywordAction],
+    ) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let ts = now();
+
+        for action in actions {
+            match action.action.as_str() {
+                "add" => {
+                    let Some(keyword) = action.keyword.as_deref() else { continue };
+                    let weight = action.weight.unwrap_or(1.0);
+                    let _ = tx.execute(
+                        "INSERT INTO session_keywords (workspace_id, keyword, weight, created_at)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![workspace_id, keyword.trim(), weight, ts],
+                    );
+                }
+                "remove" => {
+                    let Some(keyword) = action.keyword.as_deref() else { continue };
+                    let _ = tx.execute(
+                        "DELETE FROM session_keywords WHERE workspace_id = ?1 AND keyword = ?2",
+                        params![workspace_id, keyword.trim()],
+                    );
+                }
+                "keep" => {
+                    // Nothing to do, keyword already persisted
+                }
+                "merge" => {
+                    let Some(to_keyword) = action.to.as_deref() else { continue };
+                    let weight = action.weight.unwrap_or(1.0);
+                    if let Some(from_keywords) = &action.from {
+                        for from_keyword in from_keywords {
+                            let _ = tx.execute(
+                                "DELETE FROM session_keywords WHERE workspace_id = ?1 AND keyword = ?2",
+                                params![workspace_id, from_keyword.trim()],
+                            );
+                        }
+                    }
+                    let _ = tx.execute(
+                        "INSERT OR REPLACE INTO session_keywords (workspace_id, keyword, weight, created_at)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![workspace_id, to_keyword.trim(), weight, ts],
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        tx.commit().context("commit keyword actions")
+    }
+
+    pub fn clear_keywords(&self, workspace_id: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM session_keywords WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("clear session keywords")?;
+        Ok(())
+    }
+
+    pub fn search_sessions_by_keywords(
+        &self,
+        query: &str,
+        limit: i64,
+        kind: Option<&str>,
+        project_id: Option<&str>,
+    ) -> Result<Vec<SessionSearchResult>> {
+        let conn = self.conn()?;
+        let pattern = format!("%{}%", query.trim());
+
+        let sql = r#"
+            SELECT
+                ds.id,
+                COALESCE(cs.title, ps.title, ds.title) AS title,
+                ds.kind,
+                COALESCE(cs.category, '') AS category,
+                ds.updated_at,
+                GROUP_CONCAT(DISTINCT sk.keyword) AS matched_keywords,
+                MAX(sk.weight) AS relevance_score
+            FROM session_keywords sk
+            JOIN dispatcher_sessions ds ON ds.id = sk.workspace_id
+            LEFT JOIN chat_sessions cs ON cs.id = ds.id AND ds.kind = 'chat'
+            LEFT JOIN project_sessions ps ON ps.id = ds.id AND ds.kind = 'project'
+            WHERE sk.keyword LIKE ?1
+              AND (?2 IS NULL OR ds.kind = ?2)
+              AND (?3 IS NULL OR ds.project_id = ?3)
+              AND (?4 IS NULL OR ps.project_id = ?4)
+            GROUP BY ds.id
+            ORDER BY relevance_score DESC, ds.updated_at DESC
+            LIMIT ?5
+        "#;
+
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(
+            params![pattern, kind, project_id, project_id, limit],
+            |row| {
+                let matched_str: String = row.get(5)?;
+                let matched_keywords: Vec<String> = matched_str
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                Ok(SessionSearchResult {
+                    session_id: row.get(0)?,
+                    session_title: row.get(1)?,
+                    session_kind: row.get(2)?,
+                    category: row.get(3)?,
+                    updated_at: row.get(4)?,
+                    matched_keywords,
+                    relevance_score: row.get(6)?,
+                })
+            },
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("search_sessions_by_keywords: {}", e))
     }
 
     // ── Chat categories ────────────────────────────────────────
@@ -3386,8 +3584,8 @@ impl DispatcherDb {
         }
         let mut conn = self.conn()?;
 
-        // Fast path: if schema is already at the expected version, skip all DDL.
-        const SCHEMA_VERSION: i32 = 6;
+    // Fast path: if schema is already at the expected version, skip all DDL.
+    const SCHEMA_VERSION: i32 = 7;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -3796,6 +3994,35 @@ impl DispatcherDb {
                     let _ = std::fs::remove_file(&safe);
                 }
             }
+        }
+
+        // v6 → v7: add session_keywords table for keyword extraction per session.
+        if conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_keywords'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            == 0
+        {
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS session_keywords (
+                    workspace_id TEXT NOT NULL,
+                    keyword TEXT NOT NULL,
+                    weight REAL NOT NULL DEFAULT 1.0,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (workspace_id, keyword),
+                    FOREIGN KEY (workspace_id) REFERENCES dispatcher_sessions(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_session_keywords_workspace
+                    ON session_keywords(workspace_id, weight DESC);
+                CREATE INDEX IF NOT EXISTS idx_session_keywords_keyword
+                    ON session_keywords(keyword);
+                ",
+            )
+            .context("v7 migration: create session_keywords table")?;
         }
 
         // Mark schema as fully migrated (outside the transaction — PRAGMA is auto-commit).

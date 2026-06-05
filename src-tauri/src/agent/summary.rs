@@ -18,6 +18,8 @@ const SUMMARY_DEBUG_PREVIEW_CHARS: usize = 1_200;
 const SESSION_TITLE_SOURCE_MAX_CHARS: usize = 6_000;
 const SESSION_TITLE_MESSAGE_MAX_CHARS: usize = 1_200;
 const SESSION_TITLE_MAX_CHARS: usize = 10;
+const SESSION_KEYWORDS_QA_MAX_CHARS: usize = 3_000;
+const SESSION_KEYWORDS_MAX: usize = 15;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SummaryError {
@@ -198,6 +200,79 @@ where
     .await?;
 
     Ok(normalize_session_title(&raw_title, fallback_source))
+}
+
+pub async fn summarize_session_keywords<FUsage>(
+    provider: &OpenAiCompatProvider,
+    summary_model: &str,
+    qa_text: &str,
+    existing_keywords_json: &str,
+    on_usage: FUsage,
+) -> Result<String, SummaryError>
+where
+    FUsage: FnMut(&LlmUsage) + Send,
+{
+    summarize_with_model(
+        provider,
+        summary_model,
+        build_keywords_prompt(qa_text, existing_keywords_json),
+        |_| {},
+        on_usage,
+    )
+    .await
+}
+
+fn build_keywords_prompt(qa_text: &str, existing_keywords_json: &str) -> String {
+    let qa_truncated = if qa_text.chars().count() > SESSION_KEYWORDS_QA_MAX_CHARS {
+        let mut t = qa_text.chars().take(SESSION_KEYWORDS_QA_MAX_CHARS).collect::<String>();
+        t.push_str("\n...(truncated)");
+        t
+    } else {
+        qa_text.to_string()
+    };
+    format!(
+        "你是一个会话关键字维护助手。你的任务是根据最新一轮对话内容，维护一组关键字来描述这个会话的主题。
+
+现有关键字（JSON 数组）：
+{existing_keywords_json}
+
+最新一轮对话（用户 + AI 助手的一问一答）：
+{qa_truncated}
+
+规则：
+1. 只输出 JSON 数组，不要添加其他任何内容（不要 markdown 代码块包裹）
+2. 最多 {max_keywords} 个关键字
+3. 关键字必须简洁：2-20 字符的术语或短语
+4. 保留仍然相关的关键字（\"keep\"）
+5. 添加新出现的主题、技术、工具、概念（\"add\"），权重 1-10
+6. 相似关键字可以合并为一个（\"merge\"）
+7. 不再相关的旧关键字标记为删除（\"remove\"）
+8. 代码标识符（函数名、类名、变量名）优先
+9. 文件名/路径保留最后一级
+
+输出格式（严格 JSON）：
+[
+  {{\"action\":\"keep\",\"keyword\":\"原关键字\"}},
+  {{\"action\":\"add\",\"keyword\":\"新关键字\",\"weight\":7.5}},
+  {{\"action\":\"merge\",\"from\":[\"旧1\",\"旧2\"],\"to\":\"合并后\",\"weight\":6.0}},
+  {{\"action\":\"remove\",\"keyword\":\"要删除的关键字\"}}
+]",
+        max_keywords = SESSION_KEYWORDS_MAX
+    )
+}
+
+pub fn parse_keyword_actions(raw: &str) -> Vec<super::db::KeywordAction> {
+    let text = raw.trim();
+    let json_str = if text.starts_with("```") {
+        text.lines()
+            .skip(1)
+            .take_while(|line| !line.trim().starts_with("```"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        text.to_string()
+    };
+    serde_json::from_str::<Vec<super::db::KeywordAction>>(&json_str).unwrap_or_default()
 }
 
 pub fn fallback_session_title(user_prompt: &str) -> String {

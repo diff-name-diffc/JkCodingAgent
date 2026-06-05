@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { cleanupDispatcherSession } from "./dispatcherSessionStore";
-import type { Project, ThemeMode, ProjectSession, SessionPage } from "../types";
+import type { Project, ThemeMode, ProjectSession, SessionPage, SessionSearchResult } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
 import { BranchBar } from "./task-panel/BranchBar";
@@ -56,6 +56,7 @@ export function SessionPanel({
   onToggleTheme: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SessionSearchResult[] | null>(null);
   const [sessions, setSessions] = useState<ProjectSession[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [, setTotal] = useState(0);
@@ -63,6 +64,7 @@ export function SessionPanel({
   const creatingSessionRef = useRef(false);
   const activeSessionIdRef = useRef(activeSessionId);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   activeSessionIdRef.current = activeSessionId;
 
   useEffect(() => {
@@ -175,6 +177,28 @@ export function SessionPanel({
   const sessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
   const dispatcherRunningSessionIds = useDispatcherSessionRunningSet(sessionIds);
 
+  useEffect(() => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setSearchResults(null);
+      return;
+    }
+    searchTimerRef.current = setTimeout(() => {
+      invoke<SessionSearchResult[]>("session_search_keywords", {
+        query: trimmed,
+        limit: 20,
+        kind: "project",
+        projectId: project.id,
+      })
+        .then(setSearchResults)
+        .catch(() => setSearchResults([]));
+    }, 260);
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, [query, project.id]);
+
   async function handleDeleteSession(id: string) {
     const ok = await confirm("确定永久删除这个会话吗？", {
       title: "删除会话",
@@ -260,44 +284,102 @@ export function SessionPanel({
 
       {/* Session list */}
       <div style={s.taskListScroll}>
-        {filtered.length === 0 && <div style={s.taskListEmpty}>没有找到会话</div>}
-        {filtered.map((session) => {
-          const isRunning =
-            dispatcherRunningSessionIds.has(session.id) ||
-            subprocessRunningSessionIds.has(session.id);
-          return (
-            <div
-              key={session.id}
-              onClick={() => onSelectSession(session.id)}
-              style={{
-                ...s.taskCard,
-                background: activeSessionId === session.id ? "var(--bg-selected)" : "transparent",
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={s.taskCardTitle}>{session.title}</div>
-                <div style={s.taskCardSub}>{formatTime(session.updatedAt)}</div>
-              </div>
-              <div style={s.taskCardActions}>
-                {isRunning && (
-                  <LoaderCircle size={13} className="spin" style={s.sessionRunningIcon} />
-                )}
-                <button
-                  style={s.taskDeleteBtn}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDeleteSession(session.id);
+        {searchResults !== null ? (
+          searchResults.length === 0 ? (
+            <div style={s.taskListEmpty}>没有找到匹配的会话</div>
+          ) : (
+            searchResults.map((r) => {
+              const isRunning =
+                dispatcherRunningSessionIds.has(r.sessionId) ||
+                subprocessRunningSessionIds.has(r.sessionId);
+              return (
+                <div
+                  key={r.sessionId}
+                  onClick={() => onSelectSession(r.sessionId)}
+                  style={{
+                    ...s.taskCard,
+                    background: activeSessionId === r.sessionId ? "var(--bg-selected)" : "transparent",
                   }}
-                  title="删除会话"
                 >
-                  <Trash2 size={13} color="var(--text-muted)" />
-                </button>
-              </div>
-            </div>
-          );
-        })}
-        {hasMore && (
-          <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={s.taskCardTitle}>{r.sessionTitle}</div>
+                    {r.matchedKeywords.length > 0 && (
+                      <div style={s.matchedKeywordsRow}>
+                        {r.matchedKeywords.slice(0, 4).map((kw) => (
+                          <span key={kw} style={s.matchedKeywordTag}>
+                            {kw}
+                          </span>
+                        ))}
+                        {r.matchedKeywords.length > 4 && (
+                          <span style={{ ...s.matchedKeywordTag, opacity: 0.6 }}>
+                            +{r.matchedKeywords.length - 4}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <div style={s.taskCardSub}>{formatTime(r.updatedAt)}</div>
+                  </div>
+                  <div style={s.taskCardActions}>
+                    {isRunning && (
+                      <LoaderCircle size={13} className="spin" style={s.sessionRunningIcon} />
+                    )}
+                    <button
+                      style={s.taskDeleteBtn}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteSession(r.sessionId);
+                      }}
+                      title="删除会话"
+                    >
+                      <Trash2 size={13} color="var(--text-muted)" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )
+        ) : (
+          <>
+            {filtered.length === 0 && <div style={s.taskListEmpty}>没有找到会话</div>}
+            {filtered.map((session) => {
+              const isRunning =
+                dispatcherRunningSessionIds.has(session.id) ||
+                subprocessRunningSessionIds.has(session.id);
+              return (
+                <div
+                  key={session.id}
+                  onClick={() => onSelectSession(session.id)}
+                  style={{
+                    ...s.taskCard,
+                    background: activeSessionId === session.id ? "var(--bg-selected)" : "transparent",
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={s.taskCardTitle}>{session.title}</div>
+                    <div style={s.taskCardSub}>{formatTime(session.updatedAt)}</div>
+                  </div>
+                  <div style={s.taskCardActions}>
+                    {isRunning && (
+                      <LoaderCircle size={13} className="spin" style={s.sessionRunningIcon} />
+                    )}
+                    <button
+                      style={s.taskDeleteBtn}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteSession(session.id);
+                      }}
+                      title="删除会话"
+                    >
+                      <Trash2 size={13} color="var(--text-muted)" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+            {hasMore && (
+              <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />
+            )}
+          </>
         )}
       </div>
 

@@ -17,7 +17,8 @@ use super::db::{
     DispatcherModelConfig, DispatcherSessionKind, DispatcherSessionRecord,
     DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord,
     DispatcherSessionTokenUsageSource, DispatcherSettingsModelConfigs, DispatcherSettingsRecord,
-    DispatcherToolArtifactRecord, ProjectSessionRecord, SessionPage,
+    DispatcherToolArtifactRecord, KeywordAction, ProjectSessionRecord, SessionKeywordRecord,
+    SessionPage, SessionSearchResult,
 };
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
@@ -25,7 +26,10 @@ use super::plain_chat::PlainChatAgent;
 use super::runtime::{
     AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent, DispatcherSubprocessRegistry,
 };
-use super::summary::{fallback_session_title, summarize_session_title, SessionTitleMessage};
+use super::summary::{
+    fallback_session_title, parse_keyword_actions, summarize_session_keywords,
+    summarize_session_title, SessionTitleMessage,
+};
 use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::browser::BrowserManager;
 use crate::project::mcp::ProjectMcpRegistry;
@@ -42,6 +46,8 @@ pub struct DispatcherState {
     next_run_generation: AtomicU64,
     title_generations: Mutex<HashMap<String, u64>>,
     next_title_generation: AtomicU64,
+    keywords_generations: Mutex<HashMap<String, u64>>,
+    next_keywords_generation: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -104,6 +110,8 @@ impl DispatcherState {
             next_run_generation: AtomicU64::new(1),
             title_generations: Mutex::new(HashMap::new()),
             next_title_generation: AtomicU64::new(1),
+            keywords_generations: Mutex::new(HashMap::new()),
+            next_keywords_generation: AtomicU64::new(1),
         })
     }
 
@@ -231,6 +239,26 @@ impl DispatcherState {
             .is_some_and(|current| *current == generation)
         {
             title_generations.remove(workspace_id);
+            return true;
+        }
+        false
+    }
+
+    fn begin_keywords_generation(&self, workspace_id: &str) -> u64 {
+        let generation = self.next_keywords_generation.fetch_add(1, Ordering::Relaxed);
+        self.keywords_generations
+            .lock()
+            .insert(workspace_id.to_string(), generation);
+        generation
+    }
+
+    fn finish_latest_keywords_generation(&self, workspace_id: &str, generation: u64) -> bool {
+        let mut keywords_generations = self.keywords_generations.lock();
+        if keywords_generations
+            .get(workspace_id)
+            .is_some_and(|current| *current == generation)
+        {
+            keywords_generations.remove(workspace_id);
             return true;
         }
         false
@@ -396,6 +424,209 @@ fn spawn_session_title_update(
             }
         }
     });
+}
+
+fn spawn_session_keywords_update(
+    state: &DispatcherState,
+    app: &AppHandle,
+    workspace_id: &str,
+    generation: u64,
+) {
+    let app = app.clone();
+    let db = state.db.clone();
+    let workspace_id = workspace_id.to_string();
+
+    tokio::spawn(async move {
+        let actions =
+            generate_session_keywords(db.clone(), workspace_id.clone()).await;
+        let state = app.state::<DispatcherState>();
+        if !state.finish_latest_keywords_generation(&workspace_id, generation) {
+            return;
+        }
+
+        if let Some(actions) = actions {
+            let apply_db = db.clone();
+            let apply_ws = workspace_id.clone();
+            let apply_result = tokio::task::spawn_blocking(move || {
+                apply_db.apply_keyword_actions(&apply_ws, &actions)
+            })
+            .await;
+
+            match apply_result {
+                Ok(Ok(())) => {
+                    let list_db = db.clone();
+                    let list_ws = workspace_id.clone();
+                    if let Ok(Ok(keywords)) = tokio::task::spawn_blocking(move || {
+                        list_db.list_session_keywords(&list_ws)
+                    })
+                    .await
+                    {
+                        let _ = app.emit(
+                            "session-keywords-updated",
+                            serde_json::json!({
+                                "workspaceId": workspace_id,
+                                "keywords": keywords,
+                            }),
+                        );
+                    }
+                }
+                Ok(Err(error)) => {
+                    eprintln!(
+                        "failed to apply keyword actions for {}: {}",
+                        workspace_id, error
+                    );
+                }
+                Err(error) => {
+                    eprintln!(
+                        "keyword actions apply task failed for {}: {}",
+                        workspace_id, error
+                    );
+                }
+            }
+        }
+    });
+}
+
+async fn generate_session_keywords(
+    db: DispatcherDb,
+    workspace_id: String,
+) -> Option<Vec<KeywordAction>> {
+    let messages_db = db.clone();
+    let messages_ws = workspace_id.clone();
+    let messages = tokio::task::spawn_blocking(move || {
+        messages_db.list_recent_visible_dialogue_messages(&messages_ws, 2)
+    })
+    .await;
+
+    let messages = match messages {
+        Ok(Ok(msgs)) => msgs,
+        Ok(Err(error)) => {
+            eprintln!("failed to load messages for keyword extraction: {error}");
+            return None;
+        }
+        Err(error) => {
+            eprintln!("keyword extraction message load task failed: {error}");
+            return None;
+        }
+    };
+    if messages.len() < 2 {
+        return None;
+    }
+
+    let keywords_db = db.clone();
+    let keywords_ws = workspace_id.clone();
+    let existing = tokio::task::spawn_blocking(move || {
+        keywords_db.list_session_keywords(&keywords_ws)
+    })
+    .await;
+
+    let existing_keywords_json = match existing {
+        Ok(Ok(records)) => {
+            let kw: Vec<serde_json::Value> = records
+                .iter()
+                .map(|r| {
+                    serde_json::json!({"keyword": r.keyword, "weight": r.weight})
+                })
+                .collect();
+            serde_json::to_string(&kw).unwrap_or_else(|_| "[]".to_string())
+        }
+        Ok(Err(error)) => {
+            eprintln!("failed to load existing keywords: {error}");
+            "[]".to_string()
+        }
+        Err(error) => {
+            eprintln!("existing keywords task failed: {error}");
+            "[]".to_string()
+        }
+    };
+
+    let qa_text = {
+        let user = messages.iter().find(|m| m.role == "user");
+        let assistant = messages.iter().find(|m| m.role == "assistant");
+        let mut s = String::new();
+        if let Some(u) = user {
+            s.push_str("【用户】\n");
+            s.push_str(&u.content);
+            s.push('\n');
+        }
+        if let Some(a) = assistant {
+            s.push_str("\n【助手】\n");
+            let text = if a.content.len() > 2000 {
+                format!("{}...", &a.content[..2000])
+            } else {
+                a.content.clone()
+            };
+            s.push_str(&text);
+            s.push('\n');
+        }
+        s
+    };
+
+    let provider_db = db.clone();
+    let provider_config =
+        tokio::task::spawn_blocking(move || resolve_title_provider(&provider_db)).await;
+
+    let (provider, summary_model) = match provider_config {
+        Ok(Ok(config)) => config,
+        Ok(Err(error)) => {
+            eprintln!("failed to resolve keywords summary provider: {error}");
+            return None;
+        }
+        Err(error) => {
+            eprintln!("keywords summary provider task failed: {error}");
+            return None;
+        }
+    };
+
+    if !provider.is_configured() {
+        return None;
+    }
+
+    let usage_db = db.clone();
+    let usage_ws = workspace_id.clone();
+    let usage_model = summary_model.clone();
+    match summarize_session_keywords(
+        &provider,
+        &summary_model,
+        &qa_text,
+        &existing_keywords_json,
+        move |usage| {
+            if let Err(error) = usage_db.upsert_session_token_usage(
+                &usage_ws,
+                &usage_model,
+                DispatcherSessionTokenUsageSource::Summary,
+                usage,
+            ) {
+                eprintln!(
+                    "failed to persist keywords token usage for workspace {}: {}",
+                    usage_ws, error
+                );
+            }
+        },
+    )
+    .await
+    {
+        Ok(raw) => {
+            let actions = parse_keyword_actions(&raw);
+            if actions.is_empty() {
+                eprintln!(
+                    "no valid keyword actions parsed from raw response (len={})",
+                    raw.len()
+                );
+                None
+            } else {
+                Some(actions)
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "failed to call summarize_session_keywords with {}: {}",
+                summary_model,
+                error.message()
+            );
+            None
+        }
+    }
 }
 
 async fn run_dispatcher_db<T, F>(operation: &'static str, f: F) -> Result<T, String>
@@ -575,6 +806,7 @@ pub async fn dispatcher_send_message(
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let title_generation = state.begin_title_generation(&workspace_id);
+    let keywords_generation = state.begin_keywords_generation(&workspace_id);
     let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
         .map_err(|error| error.to_string())?;
     state
@@ -605,6 +837,7 @@ pub async fn dispatcher_send_message(
         .map_err(|error| error.to_string());
     state.finish_run(&workspace_id, run_handle.generation);
     spawn_session_title_update(&state, &app, &workspace_id, &content, title_generation);
+    spawn_session_keywords_update(&state, &app, &workspace_id, keywords_generation);
     result
 }
 
@@ -619,6 +852,7 @@ pub async fn dispatcher_send_plain_chat_message(
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let title_generation = state.begin_title_generation(&workspace_id);
+    let keywords_generation = state.begin_keywords_generation(&workspace_id);
     let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
     let agent = state.build_plain_chat_agent().with_app_handle(app.clone());
     let result = agent
@@ -635,6 +869,7 @@ pub async fn dispatcher_send_plain_chat_message(
         .map_err(|error| error.to_string());
     state.finish_run(&workspace_id, run_handle.generation);
     spawn_session_title_update(&state, &app, &workspace_id, &content, title_generation);
+    spawn_session_keywords_update(&state, &app, &workspace_id, keywords_generation);
     result
 }
 
@@ -780,6 +1015,39 @@ pub async fn dispatcher_delete_session(
     let db = state.db.clone();
     run_dispatcher_db("dispatcher_delete_session", move || {
         db.delete_session(&workspace_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn session_get_keywords(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+) -> Result<Vec<SessionKeywordRecord>, String> {
+    let db = state.db.clone();
+    run_dispatcher_db("session_get_keywords", move || {
+        db.list_session_keywords(&workspace_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn session_search_keywords(
+    state: tauri::State<'_, DispatcherState>,
+    query: String,
+    limit: Option<i64>,
+    kind: Option<String>,
+    project_id: Option<String>,
+) -> Result<Vec<SessionSearchResult>, String> {
+    let db = state.db.clone();
+    let lim = limit.unwrap_or(20);
+    run_dispatcher_db("session_search_keywords", move || {
+        db.search_sessions_by_keywords(
+            &query,
+            lim,
+            kind.as_deref(),
+            project_id.as_deref(),
+        )
     })
     .await
 }

@@ -151,6 +151,8 @@ pub fn run() {
             agent::commands::dispatcher_get_session_runtime_state,
             agent::commands::dispatcher_set_session_mode,
             agent::commands::dispatcher_delete_session,
+            agent::commands::session_get_keywords,
+            agent::commands::session_search_keywords,
             agent::commands::chat_list_sessions,
             agent::commands::chat_create_session,
             agent::commands::chat_delete_session,

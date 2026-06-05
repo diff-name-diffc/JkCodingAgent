@@ -3,7 +3,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { MessageCircle, MonitorDot, Plus, Search } from "lucide-react";
-import type { ChatCategory, ChatSession, SessionPage } from "../types";
+import type { ChatCategory, ChatSession, SessionPage, SessionSearchResult } from "../types";
 import { cleanupDispatcherSession } from "./dispatcherSessionStore";
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
 import { ChatCategorySection } from "./ChatCategorySection";
@@ -53,6 +53,7 @@ export function ChatSessionSidebar({
   onToggleBrowser,
 }: ChatSessionSidebarProps) {
   const [query, setQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SessionSearchResult[] | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [categories, setCategories] = useState<ChatCategory[]>([]);
   const [expandedRaw, setExpandedRaw] = useState<Set<string>>(() => loadExpanded());
@@ -66,6 +67,7 @@ export function ChatSessionSidebar({
   const draggedSessionIdRef = useRef<string | null>(null);
   const creatingSessionRef = useRef(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
@@ -196,6 +198,28 @@ export function ChatSessionSidebar({
 
   const sessionIds = useMemo(() => sessions.map((s) => s.id), [sessions]);
   const runningSessionIds = useDispatcherSessionRunningSet(sessionIds);
+
+  useEffect(() => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setSearchResults(null);
+      return;
+    }
+    searchTimerRef.current = setTimeout(() => {
+      invoke<SessionSearchResult[]>("session_search_keywords", {
+        query: trimmed,
+        limit: 20,
+        kind: "chat",
+        projectId: null,
+      })
+        .then(setSearchResults)
+        .catch(() => setSearchResults([]));
+    }, 260);
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, [query]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return sessions;
@@ -403,64 +427,108 @@ export function ChatSessionSidebar({
       <div style={s.taskDivider} />
 
       <div style={s.taskListScroll as React.CSSProperties}>
-        {sortedCategories.map((cat) => {
-          const catId = cat.id;
-          const catSessions = sessionsByCategory.get(catId) ?? [];
-          return (
-            <ChatCategorySection
-              key={catId}
-              category={cat}
-              sessions={catSessions}
-              activeSessionId={activeSessionId}
-              runningSessionIds={runningSessionIds}
-              isExpanded={expandedRaw.has(catId)}
-              onToggle={() => toggleExpanded(catId)}
-              onSessionClick={onActiveSessionChange}
-              onSessionDelete={handleDeleteSession}
-              onSessionDragStart={handleCategoryDragStart}
-              onNewInCategory={() => handleCreateSession(catId)}
-              onRenameCategory={() => handleRenameCategory(cat)}
-              onDeleteCategory={() => handleDeleteCategory(cat)}
-              onDragOver={(e) => {
-                e.preventDefault();
-                setDragOverCategoryId(catId);
-                handleCategoryDragOver(e);
-              }}
-              onDrop={(e) => handleCategoryDrop(catId, e)}
-              dragOverId={dragOverCategoryId}
-            />
-          );
-        })}
+        {searchResults !== null ? (
+          searchResults.length === 0 ? (
+            <div style={s.taskListEmpty}>没有找到匹配的聊天</div>
+          ) : (
+            searchResults.map((r) => {
+              return (
+                <button
+                  key={r.sessionId}
+                  type="button"
+                  style={{
+                    ...s.sessionCard,
+                    ...(r.sessionId === activeSessionId ? { background: "var(--bg-selected)" } : {}),
+                    textAlign: "left" as const,
+                    cursor: "pointer",
+                    width: "calc(100% - 16px)",
+                    border: "none",
+                  }}
+                  onClick={() => onActiveSessionChange(r.sessionId)}
+                >
+                  <div style={s.sessionCardBody as React.CSSProperties}>
+                    <div style={s.sessionCardTitle}>{r.sessionTitle}</div>
+                    {r.matchedKeywords.length > 0 && (
+                      <div style={s.matchedKeywordsRow}>
+                        {r.matchedKeywords.slice(0, 4).map((kw) => (
+                          <span key={kw} style={s.matchedKeywordTag}>
+                            {kw}
+                          </span>
+                        ))}
+                        {r.matchedKeywords.length > 4 && (
+                          <span style={{ ...s.matchedKeywordTag, opacity: 0.6 }}>
+                            +{r.matchedKeywords.length - 4}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </button>
+              );
+            })
+          )
+        ) : (
+          <>
+            {sortedCategories.map((cat) => {
+              const catId = cat.id;
+              const catSessions = sessionsByCategory.get(catId) ?? [];
+              return (
+                <ChatCategorySection
+                  key={catId}
+                  category={cat}
+                  sessions={catSessions}
+                  activeSessionId={activeSessionId}
+                  runningSessionIds={runningSessionIds}
+                  isExpanded={expandedRaw.has(catId)}
+                  onToggle={() => toggleExpanded(catId)}
+                  onSessionClick={onActiveSessionChange}
+                  onSessionDelete={handleDeleteSession}
+                  onSessionDragStart={handleCategoryDragStart}
+                  onNewInCategory={() => handleCreateSession(catId)}
+                  onRenameCategory={() => handleRenameCategory(cat)}
+                  onDeleteCategory={() => handleDeleteCategory(cat)}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragOverCategoryId(catId);
+                    handleCategoryDragOver(e);
+                  }}
+                  onDrop={(e) => handleCategoryDrop(catId, e)}
+                  dragOverId={dragOverCategoryId}
+                />
+              );
+            })}
 
-        {showUncategorized && (
-          <ChatCategorySection
-            category={null}
-            sessions={uncategorizedSessions}
-            activeSessionId={activeSessionId}
-            runningSessionIds={runningSessionIds}
-            isExpanded={expandedRaw.has("__uncategorized__")}
-            onToggle={() => toggleExpanded("__uncategorized__")}
-            onSessionClick={onActiveSessionChange}
-            onSessionDelete={handleDeleteSession}
-            onSessionDragStart={handleCategoryDragStart}
-            onNewInCategory={() => {}}
-            onRenameCategory={() => {}}
-            onDeleteCategory={() => {}}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOverCategoryId("__uncategorized__");
-            }}
-            onDrop={(e) => handleCategoryDrop("__uncategorized__", e)}
-            dragOverId={dragOverCategoryId}
-          />
-        )}
+            {showUncategorized && (
+              <ChatCategorySection
+                category={null}
+                sessions={uncategorizedSessions}
+                activeSessionId={activeSessionId}
+                runningSessionIds={runningSessionIds}
+                isExpanded={expandedRaw.has("__uncategorized__")}
+                onToggle={() => toggleExpanded("__uncategorized__")}
+                onSessionClick={onActiveSessionChange}
+                onSessionDelete={handleDeleteSession}
+                onSessionDragStart={handleCategoryDragStart}
+                onNewInCategory={() => {}}
+                onRenameCategory={() => {}}
+                onDeleteCategory={() => {}}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOverCategoryId("__uncategorized__");
+                }}
+                onDrop={(e) => handleCategoryDrop("__uncategorized__", e)}
+                dragOverId={dragOverCategoryId}
+              />
+            )}
 
-        {hasMore && (
-          <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />
-        )}
+            {hasMore && (
+              <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />
+            )}
 
-        {filtered.length === 0 && (
-          <div style={s.taskListEmpty}>没有找到聊天</div>
+            {filtered.length === 0 && (
+              <div style={s.taskListEmpty}>没有找到聊天</div>
+            )}
+          </>
         )}
       </div>
 

@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Search, ArrowUp, ArrowDown, X } from "lucide-react";
 import { dispatcherChatStyles as styles } from "./dispatcherChatStyles";
+import type { SessionKeyword } from "../../types";
 
 interface ChatHeaderProps {
   isPlainChat: boolean;
@@ -10,6 +11,8 @@ interface ChatHeaderProps {
   autoApprove: boolean;
   mcpIndicator: { color: string; label: string };
   hasMessages: boolean;
+  keywords: SessionKeyword[];
+  onClickKeyword?: (keyword: string) => void;
   searchOpen: boolean;
   searchQuery: string;
   matchCount: number;
@@ -35,6 +38,8 @@ export const ChatHeader = memo(function ChatHeader({
   autoApprove,
   mcpIndicator,
   hasMessages,
+  keywords,
+  onClickKeyword,
   searchOpen,
   searchQuery,
   matchCount,
@@ -54,14 +59,15 @@ export const ChatHeader = memo(function ChatHeader({
   const normalizedQuery = searchQuery.trim();
 
   return (
-    <div style={styles.header}>
-      <div style={styles.headerLeft}>
-        <span style={styles.headerIcon}>{isPlainChat ? "💬" : "🤖"}</span>
-        <span style={styles.headerTitle}>{isPlainChat ? "聊天" : "调度智能体"}</span>
-        {!isPlainChat && activePlanPath && <span style={styles.headerPlanBadge}>Plan</span>}
-        {thinkingEnabled && <span style={styles.headerThinkingBadge}>Think</span>}
-        {isLoading && <span style={styles.thinkingDot} />}
-      </div>
+    <>
+      <div style={styles.header}>
+        <div style={styles.headerLeft}>
+          <span style={styles.headerIcon}>{isPlainChat ? "💬" : "🤖"}</span>
+          <span style={styles.headerTitle}>{isPlainChat ? "聊天" : "调度智能体"}</span>
+          {!isPlainChat && activePlanPath && <span style={styles.headerPlanBadge}>Plan</span>}
+          {thinkingEnabled && <span style={styles.headerThinkingBadge}>Think</span>}
+          {isLoading && <span style={styles.thinkingDot} />}
+        </div>
       <div style={styles.headerRight}>
         {searchOpen ? (
           <div style={styles.conversationSearchBox}>
@@ -171,6 +177,26 @@ export const ChatHeader = memo(function ChatHeader({
           </button>
         )}
       </div>
-    </div>
+      </div>
+      {keywords.length > 0 && (
+        <div style={styles.keywordsBar}>
+          {keywords.slice(0, 8).map((kw) => (
+            <button
+              key={kw.keyword}
+              type="button"
+              style={styles.keywordTag}
+              onClick={() => onClickKeyword?.(kw.keyword)}
+            >
+              {kw.keyword}
+            </button>
+          ))}
+          {keywords.length > 8 && (
+            <span style={{ ...styles.keywordTag, cursor: "default", opacity: 0.6 }}>
+              +{keywords.length - 8}
+            </span>
+          )}
+        </div>
+      )}
+    </>
   );
 });

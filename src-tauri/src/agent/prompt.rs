@@ -2,7 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use chrono::Local;
 use serde::Serialize;
+
+pub(super) fn current_local_time() -> String {
+    Local::now().format("%Y-%m-%d %H:%M").to_string()
+}
 
 const BUILT_IN_DISPATCH_GUIDANCE: &str = r#"# 内置调度规则
 
@@ -15,7 +20,7 @@ const BUILT_IN_DISPATCH_GUIDANCE: &str = r#"# 内置调度规则
 - 调查工具使用数组参数：`read_file` / `list_dir` 使用 `paths`，`glob` / `grep` 使用 `patterns` 与 `paths`，结果会按路径或模式分段返回。
 - 发起委派前，任务说明必须自包含：目标、背景、相关文件或符号、约束、验证方式、期望产出, 委派指令要精简准确。
 - 实施已确认的 Plan 计划书时，不要重新调用 `update_plan` 做步骤规划；直接按计划书实际内容和 Claude/Codex 擅长点拆分委派，让子 Agent 读取计划 MD 并编码，然后等待执行结果、验收、调用 `mark_plan_implemented` 收口。
-- 调查工具支持 `result_mode`：`full` 保留精确信息，`summary` 仅在内容较长时触发高保真压缩并只影响写回主上下文的内容，前端展示文案与详细结果引用会单独保留，`auto` 由系统按工具类型决定。`read_file` / `list_dir` / `glob` / `grep` / `exec` 以及任何代码、配置、精确检索结果都不应指定摘要
+- 所有调查工具支持 `compress`（是否语义压缩）和 `compress_intent`（提取意图，一句话）两个顶层参数。结果超过 1000 字符时系统会强制压缩；`compress=true` 时，必须同时填写 `compress_intent` 说明本次调用期望提取什么信息。分析代码、配置或需要精确匹配时，保持 `compress=false` 让系统根据长度自动判断；命令输出、冗余日志较多时，推荐显式 `compress=true` 并写明 `compress_intent`，例如"确认 pnpm test 是否全部通过"。
 - 子任务回流默认只同步任务摘要，不直接回灌完整终端日志；如果主调度仍缺证据，应继续下发更具体的子任务，或本地重新读文件/执行命令。
 - 如果 Claude 与 Codex 可以并行推进不同工作流，可以在同一轮同时调用多个 `dispatch_*`；系统支持批量处理。
 - 同一 session 内，同一 agent 同时最多只能有一个活跃或待启动子进程；不要对同一 agent 重复 dispatch。
@@ -86,6 +91,15 @@ pub(super) fn build_system_prompt(root: &Path) -> Result<PromptBundle> {
         label: "内置调度规则".to_string(),
         source: "builtin".to_string(),
         content: format!("---\n\n{}", BUILT_IN_DISPATCH_GUIDANCE),
+    });
+
+    sections.push(PromptSection {
+        label: "系统时间".to_string(),
+        source: "builtin".to_string(),
+        content: format!(
+            "---\n\n# 系统时间\n\n当前本地时间：{}",
+            current_local_time()
+        ),
     });
 
     let content = sections
@@ -254,6 +268,7 @@ mod tests {
         assert!(labels.contains(&"SOUL"));
         assert!(labels.contains(&"USER"));
         assert!(labels.contains(&"内置调度规则"));
+        assert!(labels.contains(&"系统时间"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -295,8 +310,44 @@ mod tests {
         fs::create_dir_all(&root).expect("create root");
 
         let prompt = build_system_prompt(&root).expect("build prompt");
-        assert_eq!(prompt.sections.len(), 1);
+        assert_eq!(prompt.sections.len(), 2);
         assert_eq!(prompt.sections[0].label, "内置调度规则");
+        assert_eq!(prompt.sections[1].label, "系统时间");
+        assert!(prompt.sections[1].content.contains("当前本地时间"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_local_time_matches_yyyy_mm_dd_hh_mm_format() {
+        let time = super::current_local_time();
+        assert_eq!(time.len(), 16, "expected YYYY-MM-DD HH:MM (16 chars), got '{time}'");
+        assert!(time[4..5].contains('-'));
+        assert!(time[7..8].contains('-'));
+        assert!(time[10..11].contains(' '));
+        assert!(time[13..14].contains(':'));
+    }
+
+    #[test]
+    fn system_prompt_includes_system_time_section_with_valid_timestamp() {
+        let root = std::env::temp_dir().join(format!(
+            "jkcodingagent-prompt-time-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create root");
+
+        let prompt = build_system_prompt(&root).expect("build prompt");
+        let time_section = prompt
+            .sections
+            .iter()
+            .find(|s| s.label == "系统时间")
+            .expect("missing 系统时间 section");
+        assert!(time_section.content.starts_with("---\n\n# 系统时间\n\n当前本地时间："));
+        let time_value = time_section
+            .content
+            .strip_prefix("---\n\n# 系统时间\n\n当前本地时间：")
+            .unwrap();
+        assert_eq!(time_value.len(), 16);
 
         let _ = fs::remove_dir_all(root);
     }

@@ -9,7 +9,7 @@ use tokio::{
 
 use super::common::{
     boolish_arg, collect_entries, non_empty_string_array_arg, render_labeled_sections,
-    resolve_path, string_arg, usize_arg, with_result_mode_parameter,
+    resolve_path, string_arg, usize_arg, with_compression_parameters,
 };
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
@@ -44,11 +44,11 @@ impl AgentTool for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "读取文本文件，输出格式为 行号|内容。分析代码时优先使用；大文件请配合 offset 和 limit 分段读取。默认保留完整结果，若只需要概览可传 result_mode=summary。"
+        "读取文本文件，输出格式为 行号|内容。分析代码时优先使用；大文件请配合 offset 和 limit 分段读取。默认关闭压缩保留完整结果，若只需定位关键符号可开启 compress=true 并写明 compress_intent。"
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -63,8 +63,8 @@ impl AgentTool for ReadFileTool {
                 },
                 "required": ["paths"]
             }),
-            "full",
-            "分析代码、配置或精确文本时优先保留完整结果；只看概览时改用 summary。",
+            false,
+            "分析代码、配置或精确文本时保持关闭保留完整结果；只定位关键符号或需要概览时可开启并写明 compress_intent。",
         )
     }
 
@@ -108,11 +108,11 @@ impl AgentTool for WriteFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "将内容写入文件。若文件已存在则覆盖；必要时自动创建父目录。仅适合小范围修改或生成文件。通常保持默认 result_mode=auto 即可。"
+        "将内容写入文件。若文件已存在则覆盖；必要时自动创建父目录。仅适合小范围修改或生成文件。通常保持默认 compress=false 即可。"
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -121,8 +121,8 @@ impl AgentTool for WriteFileTool {
                 },
                 "required": ["path", "content"]
             }),
-            "auto",
-            "写入工具通常只返回简短确认信息，一般无需显式改动。",
+            false,
+            "写入工具通常只返回简短确认信息，默认关闭压缩。",
         )
     }
 
@@ -169,11 +169,11 @@ impl AgentTool for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "通过将 old_text 替换为 new_text 来编辑文件。如果 old_text 命中多处，请补充上下文或设置 replace_all=true。通常保持默认 result_mode=auto 即可。"
+        "通过将 old_text 替换为 new_text 来编辑文件。如果 old_text 命中多处，请补充上下文或设置 replace_all=true。通常保持默认 compress=false 即可。"
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -184,8 +184,8 @@ impl AgentTool for EditFileTool {
                 },
                 "required": ["path", "old_text", "new_text"]
             }),
-            "auto",
-            "编辑工具通常只返回简短确认信息，一般无需显式改动。",
+            false,
+            "编辑工具通常只返回简短确认信息，默认关闭压缩。",
         )
     }
 
@@ -243,11 +243,11 @@ impl AgentTool for ListDirTool {
     }
 
     fn description(&self) -> &'static str {
-        "列出目录内容。需要继续深入结构时可设置 recursive=true。默认保留目录结构，若只需要概览可传 result_mode=summary。"
+        "列出目录内容。需要继续深入结构时可设置 recursive=true。默认保留目录结构，若只需要概览可设置 compress=true 并写明 compress_intent。"
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -262,8 +262,8 @@ impl AgentTool for ListDirTool {
                 },
                 "required": ["paths"]
             }),
-            "full",
-            "调查目录层级、文件名或结构差异时优先保留完整结果；只看概览时改用 summary。",
+            false,
+            "调查目录层级、文件名或结构差异时保持关闭保留完整结果；只看概览时可开启并写明 compress_intent。",
         )
     }
 

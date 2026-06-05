@@ -245,7 +245,14 @@ export interface DispatcherMessageUsageStats {
   elapsedMs: number;
 }
 
-export type DispatcherToolResultMode = "raw" | "summary" | "conservative_summary";
+export type DispatcherToolResultMode =
+  | "raw"
+  | "summary"
+  | "conservative_summary"
+  | "intent_compressed"
+  | "structured_fallback"
+  | "truncated"
+  | "pending_summary";
 
 export interface ChecklistPlanState {
   explanation?: string;

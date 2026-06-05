@@ -6,7 +6,6 @@ mod image_generation;
 mod knowledge;
 mod search;
 mod shell;
-mod time;
 
 use super::registry::AgentTool;
 
@@ -20,7 +19,6 @@ pub(super) fn builtin_tools() -> Vec<Box<dyn AgentTool>> {
         search::grep_tool(),
         knowledge::search_knowledge_base_tool(),
         knowledge::read_knowledge_page_tool(),
-        time::current_time_tool(),
         shell::exec_tool(),
         shell::message_tool(),
         image_generation::generate_image_tool(),
@@ -32,7 +30,6 @@ pub(super) fn builtin_tools() -> Vec<Box<dyn AgentTool>> {
 
 pub(super) fn plain_chat_tools() -> Vec<Box<dyn AgentTool>> {
     let mut tools = vec![
-        time::current_time_tool(),
         image_generation::generate_image_tool(),
         image_edit::edit_image_tool(),
     ];

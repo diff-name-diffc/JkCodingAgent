@@ -140,23 +140,29 @@ pub(super) fn boolish_arg(args: &Value, key: &str) -> Option<bool> {
     value.as_str().map(|flag| flag.eq_ignore_ascii_case("true"))
 }
 
-pub(super) fn with_result_mode_parameter(
+pub(super) fn with_compression_parameters(
     mut schema: Value,
-    default_mode: &str,
-    guidance: &str,
+    default_compress: bool,
+    tool_specific_guidance: &str,
 ) -> Value {
     let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
         return schema;
     };
     properties.insert(
-        "result_mode".to_string(),
+        "compress".to_string(),
+        json!({
+            "type": "boolean",
+            "description": format!(
+                "是否对工具结果进行语义压缩：调用摘要模型根据 compress_intent 描述的目的，从原始结果中提取关键信息并返回给主模型。结果超过 1000 字符时系统会强制压缩。{tool_specific_guidance}"
+            ),
+            "default": default_compress
+        }),
+    );
+    properties.insert(
+        "compress_intent".to_string(),
         json!({
             "type": "string",
-            "description": format!(
-                "控制本次工具结果写回主调度上下文的方式：auto（按工具类型自动判断）、full（尽量保留完整结果，若过长则做保守压缩）、summary（只压缩写回主调度上下文的内容，前端展示文案与详细结果引用会单独保留）。推荐默认值：{default_mode}。{guidance}"
-            ),
-            "enum": ["auto", "full", "summary"],
-            "default": default_mode
+            "description": "当 compress=true 或系统强制压缩时，用一句话描述本次工具调用期望从结果中提取什么信息；任何时候都不应为空。例如：'查找 handleToolResult 函数的实现逻辑和调用链'、'确认 pnpm test 是否全部通过以及失败项'、'获取配置文件中的端口和数据库连接信息'。"
         }),
     );
     schema
@@ -563,35 +569,38 @@ mod tests {
         assert_eq!(super::boolish_arg(&args, "flag"), None);
     }
 
-    // --- with_result_mode_parameter tests ---
+    // --- with_compression_parameters tests ---
 
     #[test]
-    fn with_result_mode_parameter_adds_result_mode_property() {
+    fn with_compression_parameters_adds_compress_and_intent_properties() {
         let schema = json!({"type": "object", "properties": {}});
-        let result = super::with_result_mode_parameter(schema, "auto", "test guidance");
+        let result = super::with_compression_parameters(schema, false, "tool-specific guidance");
         let props = result.get("properties").unwrap().as_object().unwrap();
-        assert!(props.contains_key("result_mode"));
-        let rm = &props["result_mode"];
-        assert_eq!(rm["default"], "auto");
-        assert!(rm["description"]
+        assert!(props.contains_key("compress"));
+        assert!(props.contains_key("compress_intent"));
+        let compress = &props["compress"];
+        assert_eq!(compress["default"], false);
+        assert_eq!(compress["type"], "boolean");
+        assert!(compress["description"]
             .as_str()
             .unwrap()
-            .contains("test guidance"));
+            .contains("tool-specific guidance"));
     }
 
     #[test]
-    fn with_result_mode_parameter_preserves_existing_properties() {
+    fn with_compression_parameters_preserves_existing_properties() {
         let schema = json!({"type": "object", "properties": {"path": {"type": "string"}}});
-        let result = super::with_result_mode_parameter(schema, "full", "");
+        let result = super::with_compression_parameters(schema, true, "");
         let props = result.get("properties").unwrap().as_object().unwrap();
         assert!(props.contains_key("path"));
-        assert!(props.contains_key("result_mode"));
+        assert!(props.contains_key("compress"));
+        assert!(props.contains_key("compress_intent"));
     }
 
     #[test]
-    fn with_result_mode_parameter_returns_unchanged_without_properties() {
+    fn with_compression_parameters_returns_unchanged_without_properties() {
         let schema = json!({"type": "object"});
-        let result = super::with_result_mode_parameter(schema, "auto", "");
+        let result = super::with_compression_parameters(schema, false, "");
         assert!(result.get("properties").is_none());
     }
 

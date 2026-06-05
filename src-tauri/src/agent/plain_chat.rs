@@ -8,7 +8,7 @@ use tokio::sync::watch;
 
 use super::common::{
     self, build_args_map, build_tool_calls_payload, cancellation_requested,
-    persist_assistant_message, persist_tool_calls_message, persist_tool_result,
+    persist_assistant_message, persist_tool_calls_message, persist_tool_result_with_compression,
     select_provider_for_messages, stream_llm_response, LlmStreamOutcome, UsageTracker,
 };
 use super::config::DispatcherAgentConfig;
@@ -28,6 +28,9 @@ pub struct PlainChatAgent {
     config: DispatcherAgentConfig,
     provider: Mutex<OpenAiCompatProvider>,
     vision_model: Mutex<String>,
+    summary_model: Mutex<String>,
+    summary_api_key: Mutex<String>,
+    summary_api_base: Mutex<String>,
     app_handle: Option<AppHandle>,
     tools: ToolRegistry,
 }
@@ -46,6 +49,9 @@ impl PlainChatAgent {
             config,
             provider: Mutex::new(provider),
             vision_model: Mutex::new(String::new()),
+            summary_model: Mutex::new(super::config::DEFAULT_SUMMARY_MODEL.to_string()),
+            summary_api_key: Mutex::new(String::new()),
+            summary_api_base: Mutex::new(String::new()),
             app_handle: None,
             tools: ToolRegistry::plain_chat_tools(),
         }
@@ -82,6 +88,48 @@ impl PlainChatAgent {
         if !settings.vision_model.trim().is_empty() {
             *self.vision_model.lock() = settings.vision_model.trim().to_string();
         }
+        if !settings.summary_model.trim().is_empty() {
+            *self.summary_model.lock() = settings.summary_model.trim().to_string();
+        }
+        {
+            let cfg = &settings.summary_model_config;
+            if !cfg.api_key.trim().is_empty() {
+                *self.summary_api_key.lock() = cfg.api_key.trim().to_string();
+            }
+            if !cfg.url.trim().is_empty() {
+                *self.summary_api_base.lock() = cfg.url.trim().to_string();
+            }
+        }
+    }
+
+    fn summary_model(&self) -> String {
+        self.summary_model.lock().clone()
+    }
+
+    fn summary_provider(&self, fallback: &OpenAiCompatProvider) -> OpenAiCompatProvider {
+        let api_key = {
+            let key = self.summary_api_key.lock().clone();
+            if key.is_empty() {
+                fallback.api_key().to_string()
+            } else {
+                key
+            }
+        };
+        let api_base = {
+            let base = self.summary_api_base.lock().clone();
+            if base.is_empty() {
+                fallback.api_base().to_string()
+            } else {
+                base
+            }
+        };
+        OpenAiCompatProvider::new(
+            api_key,
+            api_base,
+            self.summary_model.lock().clone(),
+            self.config.max_tokens,
+            self.config.temperature,
+        )
     }
 
     pub async fn run(
@@ -232,8 +280,8 @@ impl PlainChatAgent {
             }
 
             // Persist tool_call message, emit ToolPlanned events
-            let tool_calls_payload = build_tool_calls_payload(&response.tool_calls);
-            let args_map = build_args_map(&response.tool_calls);
+            let tool_calls_payload = build_tool_calls_payload(&response.tool_calls, &self.tools);
+            let args_map = build_args_map(&response.tool_calls, &self.tools);
 
             for tc in &tool_calls_payload {
                 common::emit(
@@ -268,12 +316,25 @@ impl PlainChatAgent {
                 )
                 .await?;
 
-            // Persist each tool result with rule-based truncation
+            let summary_provider = self.summary_provider(&request_provider);
+            let summary_model = self.summary_model();
             for (tool_call, result) in &executed {
                 if cancellation_requested(&cancel_rx) {
                     break;
                 }
-                persist_tool_result(db, workspace_id, on_event, tool_call, result).await?;
+                persist_tool_result_with_compression(
+                    db,
+                    workspace_id,
+                    on_event,
+                    tool_call,
+                    result,
+                    &summary_provider,
+                    &summary_model,
+                    |usage| {
+                        usage_tracker.record(usage);
+                    },
+                )
+                .await?;
             }
         }
 
@@ -491,26 +552,27 @@ fn build_stopped_plain_chat_reply(partial: &str) -> String {
 }
 
 fn build_plain_chat_system_prompt() -> String {
+    let current_time = super::prompt::current_local_time();
     [
-        "# 普通聊天",
-        "",
-        "你是桌面客户端中的普通聊天助手。",
-        "当前会话不是项目 Agent 会话，没有项目目录、文件系统、终端、MCP 或子进程能力。",
-        "你可以按需使用浏览器工具打开网页、点击、输入、等待、读取页面可访问性树快照、请求视觉辅助分析和关闭浏览器，用于网页自动化与公开信息检索。",
-        "需要当前日期、时间、时区或时间戳时，调用 get_current_time，不要猜测系统时间。",
-        "浏览器自动化统一使用 ref：先调用 browser_read_text 获取 Accessibility Tree 快照，再使用快照中的 ref 调用点击、输入或局部读取工具；不要使用 CSS selector。",
-        "浏览器工具只代表当前普通聊天会话中的临时浏览器，不代表用户本地项目环境。",
-        "检索问题信息时，优先打开明确网址；没有网址时可打开搜索引擎结果页并读取页面文本，不要伪造检索结果。",
-        "不要声称已经读取、修改或执行了本地文件；如果用户要求操作项目或文件，请说明普通聊天不具备该能力，并建议切换到项目会话。",
-        "可以基于用户直接提供的文本、代码片段、错误信息或图片进行解释、分析、改写和建议。",
-        "默认使用简体中文，表达直接、清晰、面向有经验的开发者。",
-        "",
-        "## 图片生成与引用",
-        "",
-        "- 你可以调用 generate_image 工具根据文本描述生成图片。建议提供 image_name 参数为图片命名。",
-        "- 你可以调用 edit_image 工具对现有图片进行编辑。需要提供图片的本地绝对路径。",
-        "- 工具返回结果中会包含该图片的本地绝对路径。",
-        "- 如果你想在回答中展示生成的图片，直接使用 Markdown 图片引用语法引用工具返回的原始本地绝对路径即可。",
+        "# 普通聊天".to_string(),
+        String::new(),
+        "你是桌面客户端中的普通聊天助手。".to_string(),
+        format!("当前本地时间：{current_time}"),
+        "当前会话不是项目 Agent 会话，没有项目目录、文件系统、终端、MCP 或子进程能力。".to_string(),
+        "你可以按需使用浏览器工具打开网页、点击、输入、等待、读取页面可访问性树快照、请求视觉辅助分析和关闭浏览器，用于网页自动化与公开信息检索。".to_string(),
+        "浏览器自动化统一使用 ref：先调用 browser_read_text 获取 Accessibility Tree 快照，再使用快照中的 ref 调用点击、输入或局部读取工具；不要使用 CSS selector。".to_string(),
+        "浏览器工具只代表当前普通聊天会话中的临时浏览器，不代表用户本地项目环境。".to_string(),
+        "检索问题信息时，优先打开明确网址；没有网址时可打开搜索引擎结果页并读取页面文本，不要伪造检索结果。".to_string(),
+        "不要声称已经读取、修改或执行了本地文件；如果用户要求操作项目或文件，请说明普通聊天不具备该能力，并建议切换到项目会话。".to_string(),
+        "可以基于用户直接提供的文本、代码片段、错误信息或图片进行解释、分析、改写和建议。".to_string(),
+        "默认使用简体中文，表达直接、清晰、面向有经验的开发者。".to_string(),
+        String::new(),
+        "## 图片生成与引用".to_string(),
+        String::new(),
+        "- 你可以调用 generate_image 工具根据文本描述生成图片。建议提供 image_name 参数为图片命名。".to_string(),
+        "- 你可以调用 edit_image 工具对现有图片进行编辑。需要提供图片的本地绝对路径。".to_string(),
+        "- 工具返回结果中会包含该图片的本地绝对路径。".to_string(),
+        "- 如果你想在回答中展示生成的图片，直接使用 Markdown 图片引用语法引用工具返回的原始本地绝对路径即可。".to_string(),
     ]
     .join("\n")
 }
@@ -550,6 +612,8 @@ mod tests {
 
         assert!(prompt.contains("普通聊天"));
         assert!(prompt.contains("没有项目目录"));
+        assert!(prompt.contains("当前本地时间"));
+        assert!(prompt.contains("20"));
         assert!(!prompt.contains("dispatch_claude"));
         assert!(!prompt.contains("update_plan"));
     }
@@ -566,8 +630,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(tools.iter().any(|name| name == "browser_open_url"));
-        assert!(tools.iter().any(|name| name == "get_current_time"));
         assert!(tools.iter().any(|name| name == "generate_image"));
+        assert!(!tools.iter().any(|name| name == "get_current_time"));
         assert!(!tools.iter().any(|name| name == "read_file"));
         assert!(!tools.iter().any(|name| name == "exec"));
         assert!(!tools.iter().any(|name| name == "dispatch_claude"));

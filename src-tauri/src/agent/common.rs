@@ -17,6 +17,7 @@ use super::llm::{
     OpenAiCompatProvider, OutboundToolCall, RequestedToolCall, ToolDefinition,
 };
 use super::runtime::AgentEvent;
+use super::tools::ToolRegistry;
 
 // ─── Usage Tracking ────────────────────────────────────────────────────────────
 
@@ -167,7 +168,11 @@ fn normalized_total_tokens(usage: &LlmUsage) -> u64 {
     }
 }
 
-// ─── Tool Result Preparation (Hybrid: Rule-Based + Optional LLM Summary) ──────
+// ─── Tool Result Preparation (Hybrid: Forced 1000-char + Intent-Driven Summary) ─
+
+/// If a tool result exceeds this threshold in characters, compression is forced
+/// regardless of the model's `compress` parameter.
+pub const FORCED_COMPRESS_THRESHOLD: usize = 1_000;
 
 pub struct PreparedToolResult {
     pub display_content: String,
@@ -175,11 +180,13 @@ pub struct PreparedToolResult {
     pub result_mode: &'static str,
     pub raw_output: String,
     pub needs_summary: bool,
+    /// 模型调用工具时声明的信息提取意图（一句话描述期望从结果中提取什么）
+    pub compress_intent: Option<String>,
 }
 
 pub fn prepare_tool_result(
-    tool_name: &str,
-    _args: &serde_json::Value,
+    _tool_name: &str,
+    args: &serde_json::Value,
     raw_output: &str,
 ) -> PreparedToolResult {
     let trimmed = raw_output.trim();
@@ -190,65 +197,42 @@ pub fn prepare_tool_result(
             result_mode: "raw",
             raw_output: String::new(),
             needs_summary: false,
+            compress_intent: None,
         };
     }
 
-    let threshold = tool_summary_threshold(tool_name);
+    let model_compress = args.get("compress").and_then(|v| v.as_bool()).unwrap_or(false);
+    let compress_intent = args
+        .get("compress_intent")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
     let char_count = trimmed.chars().count();
+    let exceeds_threshold = char_count > FORCED_COMPRESS_THRESHOLD;
 
-    if char_count <= threshold && should_keep_raw(trimmed) {
-        return PreparedToolResult {
+    let needs_summary = model_compress || exceeds_threshold;
+
+    if needs_summary {
+        PreparedToolResult {
+            display_content: String::new(),
+            context_payload: String::new(),
+            result_mode: "pending_summary",
+            raw_output: trimmed.to_string(),
+            needs_summary: true,
+            compress_intent,
+        }
+    } else {
+        PreparedToolResult {
             display_content: trimmed.to_string(),
             context_payload: trimmed.to_string(),
             result_mode: "raw",
             raw_output: trimmed.to_string(),
             needs_summary: false,
-        };
+            compress_intent,
+        }
     }
-
-    if char_count <= threshold {
-        return PreparedToolResult {
-            display_content: trimmed.to_string(),
-            context_payload: trimmed.to_string(),
-            result_mode: "raw",
-            raw_output: trimmed.to_string(),
-            needs_summary: false,
-        };
-    }
-
-    PreparedToolResult {
-        display_content: String::new(),
-        context_payload: String::new(),
-        result_mode: "pending_summary",
-        raw_output: trimmed.to_string(),
-        needs_summary: true,
-    }
-}
-
-fn tool_summary_threshold(tool_name: &str) -> usize {
-    match tool_name {
-        "read_file" | "list_dir" | "glob" | "grep"
-        | "browser_read_text" | "browser_visual_analyze" => 16_000,
-        "exec" => 4_000,
-        "write_file" | "edit_file" | "generate_image" | "edit_image" | "message" => 8_000,
-        _ => 4_000,
-    }
-}
-
-fn should_keep_raw(output: &str) -> bool {
-    if output.contains("```") {
-        return true;
-    }
-    output.chars().count() <= 200
-}
-
-pub fn truncate_tool_result_hard(raw_output: &str, max_chars: usize) -> String {
-    let char_count = raw_output.chars().count();
-    if char_count <= max_chars {
-        return raw_output.to_string();
-    }
-    let truncated = raw_output.chars().take(max_chars).collect::<String>();
-    format!("{truncated}\n\n[已截断：{char_count} 字符 → {} 字符]", truncated.chars().count())
 }
 
 // ─── Tool Result Persistence ─────────────────────────────────────────────────────
@@ -286,46 +270,109 @@ pub async fn persist_tool_result_raw(
     Ok(tool_message)
 }
 
-pub async fn persist_tool_result(
+/// Shared summary-aware tool result persistence used by both dispatcher and plain chat.
+/// Calls the summary model if the result exceeds `FORCED_COMPRESS_THRESHOLD` or the model
+/// requested compression via `compress=true`. On summary failure, falls back to
+/// rule-based structured extraction (zero LLM call), then to hard truncation.
+#[allow(clippy::too_many_arguments)]
+pub async fn persist_tool_result_with_compression<FUsage>(
     db: &DispatcherDb,
     workspace_id: &str,
     on_event: &Channel<AgentEvent>,
     tool_call: &RequestedToolCall,
     result: &str,
-) -> Result<DispatcherMessageRecord> {
+    summary_provider: &OpenAiCompatProvider,
+    summary_model: &str,
+    on_usage: FUsage,
+) -> Result<DispatcherMessageRecord>
+where
+    FUsage: FnMut(&LlmUsage) + Send,
+{
+    use crate::agent::summary::{extract_structured_summary, summarize_tool_result};
+
     let prepared = prepare_tool_result(&tool_call.name, &tool_call.arguments, result);
 
-    let (display, context, mode) = if prepared.needs_summary {
-        let truncated = truncate_tool_result_hard(&prepared.raw_output, 12_000);
-        (truncated.clone(), truncated, "truncated")
-    } else {
-        (prepared.display_content, prepared.context_payload, prepared.result_mode)
-    };
+    if !prepared.needs_summary {
+        let tool_message = db
+            .add_visible_tool_result_async(
+                workspace_id,
+                &prepared.display_content,
+                &prepared.context_payload,
+                Some(&tool_call.id),
+                Some(&tool_call.name),
+                Some(prepared.result_mode),
+                &[build_tool_artifact(&tool_call.name, result)],
+            )
+            .await?;
+        emit(
+            on_event,
+            AgentEvent::ToolFinished {
+                tool_call_id: Some(tool_call.id.clone()),
+                name: tool_call.name.clone(),
+                display_text: tool_message.content.clone(),
+                result_mode: prepared.result_mode.to_string(),
+                detail_refs: tool_message.tool_artifacts.clone(),
+            },
+        );
+        return Ok(tool_message);
+    }
 
-    let tool_message = db
-        .add_visible_tool_result_async(
-            workspace_id,
-            &display,
-            &context,
-            Some(&tool_call.id),
-            Some(&tool_call.name),
-            Some(mode),
-            &[build_tool_artifact(&tool_call.name, result)],
-        )
-        .await?;
+    let user_question = db
+        .get_latest_user_message_content_async(workspace_id)
+        .await
+        .ok()
+        .flatten();
+    let user_question_ref = user_question.as_deref();
 
-    emit(
-        on_event,
-        AgentEvent::ToolFinished {
-            tool_call_id: Some(tool_call.id.clone()),
-            name: tool_call.name.clone(),
-            display_text: tool_message.content.clone(),
-            result_mode: mode.to_string(),
-            detail_refs: tool_message.tool_artifacts.clone(),
-        },
-    );
-
-    Ok(tool_message)
+    match summarize_tool_result(
+        summary_provider,
+        summary_model,
+        &tool_call.name,
+        &prepared.raw_output,
+        user_question_ref,
+        prepared.compress_intent.as_deref(),
+        on_usage,
+    )
+    .await
+    {
+        Ok(summary) => {
+            let mode = if prepared.compress_intent.is_some() {
+                "intent_compressed"
+            } else {
+                "conservative_summary"
+            };
+            persist_tool_result_with_summary(
+                db,
+                workspace_id,
+                on_event,
+                tool_call,
+                result,
+                summary.display_content,
+                summary.context_payload,
+                mode,
+            )
+            .await
+        }
+        Err(error) => {
+            eprintln!(
+                "summarize_tool_result failed for {}: {}, falling back to structured extraction",
+                tool_call.name,
+                error.message()
+            );
+            let structured = extract_structured_summary(&tool_call.name, &prepared.raw_output);
+            persist_tool_result_with_summary(
+                db,
+                workspace_id,
+                on_event,
+                tool_call,
+                result,
+                structured.clone(),
+                structured,
+                "structured_fallback",
+            )
+            .await
+        }
+    }
 }
 
 pub async fn persist_tool_result_with_summary(
@@ -398,11 +445,16 @@ pub async fn persist_tool_calls_message(
     .await
 }
 
-pub fn build_tool_calls_payload(tool_calls: &[RequestedToolCall]) -> Vec<OutboundToolCall> {
+pub fn build_tool_calls_payload(
+    tool_calls: &[RequestedToolCall],
+    registry: &ToolRegistry,
+) -> Vec<OutboundToolCall> {
     tool_calls
         .iter()
         .map(|call| {
-            let args_json = serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string());
+            let enriched = registry.effective_args(&call.name, &call.arguments);
+            let args_json =
+                serde_json::to_string(&enriched).unwrap_or_else(|_| "{}".to_string());
             OutboundToolCall {
                 id: call.id.clone(),
                 kind: "function".to_string(),
@@ -415,11 +467,16 @@ pub fn build_tool_calls_payload(tool_calls: &[RequestedToolCall]) -> Vec<Outboun
         .collect()
 }
 
-pub fn build_args_map(tool_calls: &[RequestedToolCall]) -> HashMap<String, String> {
+pub fn build_args_map(
+    tool_calls: &[RequestedToolCall],
+    registry: &ToolRegistry,
+) -> HashMap<String, String> {
     tool_calls
         .iter()
         .map(|tc| {
-            let args_json = serde_json::to_string(&tc.arguments).unwrap_or_else(|_| "{}".to_string());
+            let enriched = registry.effective_args(&tc.name, &tc.arguments);
+            let args_json =
+                serde_json::to_string(&enriched).unwrap_or_else(|_| "{}".to_string());
             (tc.id.clone(), args_json)
         })
         .collect()

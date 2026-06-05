@@ -32,7 +32,7 @@ use super::llm::{
     OpenAiCompatProvider, RequestedToolCall,
 };
 use super::prompt::{build_system_prompt, PromptBundle, PromptSection};
-use super::summary::{summarize_dispatch_result, summarize_tool_result};
+use super::summary::summarize_dispatch_result;
 use super::tools::{
     parse_ask_plan_question, parse_continue_instruction, parse_create_plan_document,
     parse_dispatch_instruction, parse_edit_plan_document, parse_exit_instruction,
@@ -1243,8 +1243,8 @@ impl DispatcherAgent {
     ) -> Result<ToolCallsOutcome> {
         // Persist tool calls and emit ToolPlanned events
         let tool_calls = response.tool_calls.clone();
-        let tool_calls_payload = build_tool_calls_payload(&tool_calls);
-        let args_map = build_args_map(&tool_calls);
+        let tool_calls_payload = build_tool_calls_payload(&tool_calls, &self.tools);
+        let args_map = build_args_map(&tool_calls, &self.tools);
 
         for tc in &tool_calls_payload {
             emit(
@@ -1365,73 +1365,29 @@ impl DispatcherAgent {
                             continue;
                         }
 
-                        let prepared = common::prepare_tool_result(
-                            &tool_call.name,
-                            &tool_call.arguments,
+                        let summary_model = self.summary_model();
+                        let summary_provider = self.summary_provider(request_provider);
+                        common::persist_tool_result_with_compression(
+                            db,
+                            workspace_id,
+                            on_event,
+                            &tool_call,
                             &result,
-                        );
-
-                        if prepared.needs_summary {
-                            let summary_model = self.summary_model();
-                            let summary_provider = self.summary_provider(request_provider);
-                            match summarize_tool_result(
-                                &summary_provider,
-                                &summary_model,
-                                &tool_call.name,
-                                &prepared.raw_output,
-                                |usage| {
-                                    record_run_token_usage(
-                                        db,
-                                        workspace_id,
-                                        &summary_model,
-                                        DispatcherSessionTokenUsageSource::Summary,
-                                        usage,
-                                        usage_tracker,
-                                        on_event,
-                                    );
-                                },
-                            )
-                            .await
-                            {
-                                Ok(summary) => {
-                                    common::persist_tool_result_with_summary(
-                                        db,
-                                        workspace_id,
-                                        on_event,
-                                        &tool_call,
-                                        &result,
-                                        summary.display_content,
-                                        summary.context_payload,
-                                        "conservative_summary",
-                                    )
-                                    .await?;
-                                }
-                                Err(error) => {
-                                    eprintln!(
-                                        "summarize_tool_result failed for {}: {}, falling back to hard truncation",
-                                        tool_call.name,
-                                        error.message()
-                                    );
-                                    common::persist_tool_result(
-                                        db,
-                                        workspace_id,
-                                        on_event,
-                                        &tool_call,
-                                        &result,
-                                    )
-                                    .await?;
-                                }
-                            }
-                        } else {
-                            common::persist_tool_result(
-                                db,
-                                workspace_id,
-                                on_event,
-                                &tool_call,
-                                &result,
-                            )
-                            .await?;
-                        }
+                            &summary_provider,
+                            &summary_model,
+                            |usage| {
+                                record_run_token_usage(
+                                    db,
+                                    workspace_id,
+                                    &summary_model,
+                                    DispatcherSessionTokenUsageSource::Summary,
+                                    usage,
+                                    usage_tracker,
+                                    on_event,
+                                );
+                            },
+                        )
+                        .await?;
 
                         if let Err(error) = db
                             .compact_successful_tool_retry_async(
@@ -1883,12 +1839,13 @@ impl DispatcherAgent {
         allowed_tool_names: &HashSet<String>,
     ) -> Vec<String> {
         for tool_call in tool_calls {
+            let enriched = self.tools.effective_args(&tool_call.name, &tool_call.arguments);
             emit(
                 on_event,
                 AgentEvent::ToolStarted {
                     tool_call_id: Some(tool_call.id.clone()),
                     name: tool_call.name.clone(),
-                    arguments: serde_json::to_string(&tool_call.arguments)
+                    arguments: serde_json::to_string(&enriched)
                         .unwrap_or_else(|_| "{}".to_string()),
                 },
             );
@@ -3256,7 +3213,6 @@ fn default_mode_tool_allowlist() -> HashSet<&'static str> {
         "grep",
         "search_knowledge_base",
         "read_knowledge_page",
-        "get_current_time",
         "exec",
         "browser_open_url",
         "browser_click",
@@ -3277,7 +3233,6 @@ fn plan_mode_tool_allowlist() -> HashSet<&'static str> {
         "list_dir",
         "glob",
         "grep",
-        "get_current_time",
         "exec",
         "message",
         "ask_plan_question",
@@ -3689,7 +3644,6 @@ mod tests {
         assert!(default_tools.iter().any(|name| name == "update_plan"));
         assert!(default_tools.iter().any(|name| name == "dispatch_claude"));
         assert!(default_tools.iter().any(|name| name == "dispatch_codex"));
-        assert!(default_tools.iter().any(|name| name == "get_current_time"));
         assert!(default_tools.iter().any(|name| name == "browser_open_url"));
         assert!(default_tools.iter().any(|name| name == "browser_read_text"));
         assert!(default_tools
@@ -3712,7 +3666,6 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(plan_tools.iter().any(|name| name == "create_plan_document"));
         assert!(plan_tools.iter().any(|name| name == "read_file"));
-        assert!(plan_tools.iter().any(|name| name == "get_current_time"));
         assert!(!plan_tools.iter().any(|name| name == "update_plan"));
         assert!(!plan_tools.iter().any(|name| name == "dispatch_claude"));
         assert!(!plan_tools.iter().any(|name| name == "write_file"));
@@ -3720,9 +3673,7 @@ mod tests {
 
         assert!(default_mode_tool_allowlist().contains("update_plan"));
         assert!(default_mode_tool_allowlist().contains("browser_open_url"));
-        assert!(default_mode_tool_allowlist().contains("get_current_time"));
         assert!(plan_mode_tool_allowlist().contains("present_plan"));
-        assert!(plan_mode_tool_allowlist().contains("get_current_time"));
         let _ = fs::remove_dir_all(&workspace);
     }
 

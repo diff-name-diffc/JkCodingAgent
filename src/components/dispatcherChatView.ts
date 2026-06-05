@@ -428,6 +428,11 @@ function pushAssistantSegment(segments: AssistantTurnSegment[], incoming: Assist
 
 function shouldRenderToolSummaryInline(
   mode: DispatcherToolResultMode | undefined,
-): mode is Exclude<DispatcherToolResultMode, "raw"> {
-  return mode === "summary" || mode === "conservative_summary";
+): mode is Exclude<DispatcherToolResultMode, "raw" | "pending_summary" | "truncated"> {
+  return (
+    mode === "summary" ||
+    mode === "conservative_summary" ||
+    mode === "intent_compressed" ||
+    mode === "structured_fallback"
+  );
 }

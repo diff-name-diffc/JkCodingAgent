@@ -5951,7 +5951,7 @@ mod tests {
             id: "call-1".to_string(),
             kind: "function".to_string(),
             function: FunctionCall {
-                name: "get_current_time".to_string(),
+                name: "read_file".to_string(),
                 arguments: "{}".to_string(),
             },
         }];

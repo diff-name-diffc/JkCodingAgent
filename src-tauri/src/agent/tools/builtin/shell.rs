@@ -6,7 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
-use super::common::{is_dangerous, string_arg, u64_arg, with_result_mode_parameter};
+use super::common::{is_dangerous, string_arg, u64_arg, with_compression_parameters};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 
@@ -36,11 +36,11 @@ impl AgentTool for ExecTool {
     }
 
     fn description(&self) -> &'static str {
-        "在当前工作区执行 shell 命令并返回输出。适合搜索、构建、测试、查看 git 信息；优先使用只读命令。默认自动判断；查精确报错用 result_mode=full，只看结论用 result_mode=summary。"
+        "在当前工作区执行 shell 命令并返回输出。适合搜索、构建、测试、查看 git 信息；优先使用只读命令。默认开启压缩（compress=true）并需填写 compress_intent；需要保留原始报错原文时设 compress=false。"
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -49,8 +49,8 @@ impl AgentTool for ExecTool {
                 },
                 "required": ["command"]
             }),
-            "auto",
-            "命令输出噪声通常较大：只看成败、统计或阶段性结论时选 summary；要保留原始报错、测试明细或精确文本时选 full。",
+            true,
+            "命令输出噪声通常较大，推荐开启压缩并在 compress_intent 中说明想看什么（例如'确认 pnpm build 是否成功'）；要保留原始报错、测试明细时设 compress=false。",
         )
     }
 
@@ -185,11 +185,11 @@ impl AgentTool for MessageTool {
     }
 
     fn description(&self) -> &'static str {
-        "向用户发送最终回复。通常在调查完成、结果整理完成或协调结束后使用。通常保持默认 result_mode=auto 即可。"
+        "向用户发送最终回复。通常在调查完成、结果整理完成或协调结束后使用。通常保持默认 compress=false 即可。"
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -197,8 +197,8 @@ impl AgentTool for MessageTool {
                 },
                 "required": ["content"]
             }),
-            "auto",
-            "消息工具一般只返回简短确认信息，无需显式改动。",
+            false,
+            "消息工具一般只返回简短确认信息，默认关闭压缩。",
         )
     }
 

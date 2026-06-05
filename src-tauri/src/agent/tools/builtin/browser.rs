@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tauri::Manager;
 
-use super::common::{string_arg, u64_arg, with_result_mode_parameter};
+use super::common::{string_arg, u64_arg, with_compression_parameters};
 use crate::agent::llm::ChatMessage;
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
@@ -41,7 +41,7 @@ impl AgentTool for OpenUrlTool {
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -50,8 +50,8 @@ impl AgentTool for OpenUrlTool {
                 },
                 "required": ["url"]
             }),
-            "auto",
-            "浏览器操作结果通常较短，默认即可。",
+            false,
+            "浏览器操作结果通常较短，默认关闭压缩。",
         )
     }
 
@@ -82,7 +82,7 @@ impl AgentTool for ClickTool {
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -91,8 +91,8 @@ impl AgentTool for ClickTool {
                 },
                 "required": ["ref"]
             }),
-            "auto",
-            "点击结果很短，默认即可。",
+            false,
+            "点击结果很短，默认关闭压缩。",
         )
     }
 
@@ -123,7 +123,7 @@ impl AgentTool for TypeTool {
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -133,8 +133,8 @@ impl AgentTool for TypeTool {
                 },
                 "required": ["ref", "text"]
             }),
-            "auto",
-            "输入结果很短，默认即可。",
+            false,
+            "输入结果很短，默认关闭压缩。",
         )
     }
 
@@ -166,7 +166,7 @@ impl AgentTool for PressTool {
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -174,8 +174,8 @@ impl AgentTool for PressTool {
                 },
                 "required": ["key"]
             }),
-            "auto",
-            "按键结果很短，默认即可。",
+            false,
+            "按键结果很短，默认关闭压缩。",
         )
     }
 
@@ -198,7 +198,7 @@ impl AgentTool for WaitForTool {
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -210,8 +210,8 @@ impl AgentTool for WaitForTool {
                     "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 30000", "minimum": 1 }
                 }
             }),
-            "auto",
-            "等待结果很短，默认即可。",
+            false,
+            "等待结果很短，默认关闭压缩。",
         )
     }
 
@@ -239,7 +239,7 @@ impl AgentTool for ReadTextTool {
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -248,8 +248,8 @@ impl AgentTool for ReadTextTool {
                     "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 30000", "minimum": 1 }
                 }
             }),
-            "full",
-            "可访问性树快照经常是后续定位和判断依据，默认保留完整结果。",
+            false,
+            "可访问性树快照经常是后续定位和判断依据，默认关闭压缩；只看页面概览时可开启并写明 compress_intent。",
         )
     }
 
@@ -278,7 +278,7 @@ impl AgentTool for VisualAnalyzeTool {
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -287,8 +287,8 @@ impl AgentTool for VisualAnalyzeTool {
                 },
                 "required": ["instruction"]
             }),
-            "full",
-            "视觉分析结果已由轻量模型压缩为文本，默认保留完整结果。",
+            false,
+            "视觉分析结果已由轻量模型压缩为文本，默认关闭压缩保留完整结果。",
         )
     }
 
@@ -368,10 +368,10 @@ impl AgentTool for CloseTool {
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({ "type": "object", "properties": {} }),
-            "auto",
-            "关闭结果很短，默认即可。",
+            false,
+            "关闭结果很短，默认关闭压缩。",
         )
     }
 

@@ -10,7 +10,7 @@ use tokio::{process::Command, task};
 
 use super::common::{
     boolish_arg, is_noise, non_empty_string_array_arg, rel, render_labeled_sections, resolve_path,
-    string_arg, string_array_arg, string_list_arg, usize_arg, with_result_mode_parameter,
+    string_arg, string_array_arg, string_list_arg, usize_arg, with_compression_parameters,
 };
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
@@ -63,11 +63,11 @@ impl AgentTool for GlobTool {
     }
 
     fn description(&self) -> &'static str {
-        "按 glob 模式查找文件，结果按修改时间倒序排列。适合快速缩小文件范围。默认保留匹配文件列表，若只需要概览可传 result_mode=summary。"
+        "按 glob 模式查找文件，结果按修改时间倒序排列。适合快速缩小文件范围。默认保留匹配文件列表，若只需要概览可设置 compress=true 并写明 compress_intent。"
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -90,8 +90,8 @@ impl AgentTool for GlobTool {
                     { "required": ["patterns"] }
                 ]
             }),
-            "full",
-            "当后续需要精确文件列表时保留完整结果；只看分布或概况时改用 summary。",
+            false,
+            "当后续需要精确文件列表时保持关闭保留完整结果；只看分布或概况时可开启并写明 compress_intent。",
         )
     }
 
@@ -133,11 +133,11 @@ impl AgentTool for GrepTool {
     }
 
     fn description(&self) -> &'static str {
-        "使用 ripgrep 在工作区内搜索文本。推荐先用 glob 缩小文件范围，再用 grep 精确定位符号、配置键或错误文本，最后再 read_file 读取确认。默认保留精确结果。"
+        "使用 ripgrep 在工作区内搜索文本。推荐先用 glob 缩小文件范围，再用 grep 精确定位符号、配置键或错误文本，最后再 read_file 读取确认。默认关闭压缩保留精确匹配结果，结果很长时可设置 compress=true 并写明 compress_intent。"
     }
 
     fn parameters(&self) -> Value {
-        with_result_mode_parameter(
+        with_compression_parameters(
             json!({
                 "type": "object",
                 "properties": {
@@ -207,8 +207,8 @@ impl AgentTool for GrepTool {
                     { "required": ["patterns"] }
                 ]
             }),
-            "full",
-            "grep 是精确检索工具，通常应保留原始匹配行与行号；只在非常长且用户只要概览时再改用 summary。",
+            false,
+            "grep 是精确检索工具，通常应关闭压缩保留原始匹配行与行号；只在结果很长且只需要概览时可开启并写明 compress_intent。",
         )
     }
 

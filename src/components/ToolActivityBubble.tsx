@@ -272,6 +272,12 @@ function toolResultModeLabel(mode: DispatcherToolResultMode): string {
       return "摘要";
     case "conservative_summary":
       return "高保真压缩";
+    case "intent_compressed":
+      return "语义压缩";
+    case "structured_fallback":
+      return "结构化提取";
+    case "truncated":
+      return "已截断";
     case "raw":
     default:
       return "原文";
@@ -280,17 +286,21 @@ function toolResultModeLabel(mode: DispatcherToolResultMode): string {
 
 function toolModeBadgeStyle(mode: DispatcherToolResultMode): CSSProperties {
   const accent =
-    mode === "summary"
+    mode === "summary" || mode === "intent_compressed"
       ? "var(--accent)"
-      : mode === "conservative_summary"
+      : mode === "conservative_summary" || mode === "structured_fallback"
         ? "var(--warning, #d97706)"
-        : "var(--text-hint)";
+        : mode === "truncated"
+          ? "var(--danger, #dc2626)"
+          : "var(--text-hint)";
   const background =
-    mode === "summary"
+    mode === "summary" || mode === "intent_compressed"
       ? "color-mix(in srgb, var(--accent) 12%, transparent)"
-      : mode === "conservative_summary"
+      : mode === "conservative_summary" || mode === "structured_fallback"
         ? "rgba(217,119,6,0.12)"
-        : "var(--bg-hover)";
+        : mode === "truncated"
+          ? "rgba(220,38,38,0.12)"
+          : "var(--bg-hover)";
 
   return {
     ...styles.modeBadge,
@@ -301,7 +311,12 @@ function toolModeBadgeStyle(mode: DispatcherToolResultMode): CSSProperties {
 }
 
 function shouldDisplaySummaryInConversation(mode: DispatcherToolResultMode | undefined): boolean {
-  return mode === "summary" || mode === "conservative_summary";
+  return (
+    mode === "summary" ||
+    mode === "conservative_summary" ||
+    mode === "intent_compressed" ||
+    mode === "structured_fallback"
+  );
 }
 
 const styles = {

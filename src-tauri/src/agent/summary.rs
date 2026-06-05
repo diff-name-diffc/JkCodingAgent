@@ -83,13 +83,15 @@ where
     .await
 }
 
-// ─── Tool Result Summary (LLM-based, only for large tool outputs) ───────────────
+// ─── Tool Result Summary (LLM-based, intent-aware) ─────────────────────────────
 
 pub async fn summarize_tool_result<FUsage>(
     provider: &OpenAiCompatProvider,
     summary_model: &str,
     tool_name: &str,
     raw_output: &str,
+    user_question: Option<&str>,
+    compress_intent: Option<&str>,
     on_usage: FUsage,
 ) -> Result<ToolSummaryResult, SummaryError>
 where
@@ -98,7 +100,12 @@ where
     let normalized = normalize_tool_output(raw_output);
     let normalized_trimmed = normalized.trim();
 
-    let prompt = build_dual_tool_summary_prompt(tool_name, normalized_trimmed);
+    let prompt = build_tool_summary_prompt(
+        tool_name,
+        normalized_trimmed,
+        user_question,
+        compress_intent,
+    );
     let summary = summarize_with_model(provider, summary_model, prompt, |_| {}, on_usage).await?;
     let (context_payload, display_content) = parse_dual_tool_summary(summary);
 
@@ -115,34 +122,78 @@ where
     })
 }
 
-fn build_dual_tool_summary_prompt(tool_name: &str, raw_output: &str) -> String {
+/// Build the summary prompt. Two branches:
+/// - With `compress_intent`: intent-focused extraction (user_question + intent + raw_output)
+/// - Without intent: general high-fidelity compression with user_question context
+fn build_tool_summary_prompt(
+    tool_name: &str,
+    raw_output: &str,
+    user_question: Option<&str>,
+    compress_intent: Option<&str>,
+) -> String {
     let focus = tool_summary_focus(tool_name);
-    let truncated_output = if raw_output.chars().count() > DUAL_TOOL_SUMMARY_CONTEXT_MAX_CHARS {
-        let truncated = raw_output.chars().take(DUAL_TOOL_SUMMARY_CONTEXT_MAX_CHARS).collect::<String>();
-        format!("{truncated}\n\n[原始输出已截断至 {} 字符，原文共 {} 字符]",
-            truncated.chars().count(), raw_output.chars().count())
-    } else {
-        raw_output.to_string()
-    };
+    let truncated_output = truncate_for_summary(raw_output);
+
+    if let Some(intent) = compress_intent {
+        let user_ctx = user_question
+            .filter(|q| !q.trim().is_empty())
+            .map(|q| format!("\n<用户原始问题>\n{q}\n</用户原始问题>\n"))
+            .unwrap_or_default();
+
+        return format!(
+            "你是调度 Agent 的工具结果信息提取器。模型调用此工具的目的是：\n\
+             <提取意图>\n{intent}\n</提取意图>\n\
+             {user_ctx}\
+             要求：\n\
+             - 只保留与「提取意图」直接相关的事实，不要猜测，不要添加原文没有的信息。\n\
+             - 与提取意图无关的信息可以忽略；相关的路径、行号、符号名、配置键、错误文本、命令结果必须保留。\n\
+             - 如果内容主要是代码、配置、逐行检索结果、文件清单或其他精确检索输出，只能做最轻量压缩，严禁改写代码含义、删除关键行号、文件名或配置键；{focus}\n\
+             - 输出必须严格分成两个区块，且只能使用下面的标签，不能额外添加解释、标题或 Markdown 代码块。\n\
+             - `<DISPLAY_SUMMARY>`：写给前端用户展示，人类友好，用 1-3 句话概括本次工具调用针对提取意图发现了什么关键信息。\n\
+             - `<CONTEXT_PAYLOAD>`：写给主模型上下文，高信息密度，保留与意图相关的关键实体名、文件路径、符号名、行号、错误文本和数量。\n\
+             - 严格使用以下格式：\n\
+             <DISPLAY_SUMMARY>\n...\n</DISPLAY_SUMMARY>\n\
+             <CONTEXT_PAYLOAD>\n...\n</CONTEXT_PAYLOAD>\n\
+             工具名：{tool_name}\n\
+             工具原始输出如下：\n{truncated_output}"
+        );
+    }
+
+    let user_ctx = user_question
+        .filter(|q| !q.trim().is_empty())
+        .map(|q| format!("当前用户问题是：\n{q}\n"))
+        .unwrap_or_default();
 
     format!(
-        "你在为调度 Agent 生成两份不同用途的工具结果：一份用于继续注入模型上下文，一份用于前端展示给用户。\n\
-要求：\n\
-- 只保留原文里明确出现的事实，不要猜测。\n\
-- 输出必须严格分成两个区块，且只能使用下面的标签，不要额外添加解释、标题或 Markdown 代码块。\n\
-- `<DISPLAY_SUMMARY>`：写给前端展示，要求对人类更友好，聚焦结论、关键事实和为什么值得关注，可以比上下文回写更易读，但不能脱离原文事实。\n\
-- `<CONTEXT_PAYLOAD>`：写给主模型，要求高信息密度，尽量保留原始顺序、关键实体名、文件路径、符号名、配置键、错误文本、数量和退出状态；如果内容主要是代码、配置、逐行检索结果、文件清单或其他精确检索输出，只能做最轻量压缩，严禁改写代码含义、删除关键行号、文件名或配置键；{focus}\n\
-- 如果内容是命令输出，优先保留命令结果、失败原因、关键日志、测试失败项和退出状态。\n\
-- 需要压缩，但不要过度归纳；宁可稍长，也不要丢掉影响后续判断的细节。\n\
-- 严格使用以下格式输出：\n\
-<DISPLAY_SUMMARY>\n\
-...\n\
-</DISPLAY_SUMMARY>\n\
-<CONTEXT_PAYLOAD>\n\
-...\n\
-</CONTEXT_PAYLOAD>\n\
-工具名：{tool_name}\n\
-工具原始输出如下：\n{truncated_output}"
+        "你在为调度 Agent 生成两份不同用途的工具结果摘要：一份用于继续注入模型上下文，一份用于前端展示给用户。\n\
+         {user_ctx}\
+         要求：\n\
+         - 只保留原文里明确出现的事实，不要猜测。\n\
+         - 输出必须严格分成两个区块，且只能使用下面的标签，不要额外添加解释、标题或 Markdown 代码块。\n\
+         - `<DISPLAY_SUMMARY>`：写给前端展示，要求对人类更友好，聚焦结论、关键事实和为什么值得关注，可以比上下文回写更易读，但不能脱离原文事实。\n\
+         - `<CONTEXT_PAYLOAD>`：写给主模型，要求高信息密度，尽量保留原始顺序、关键实体名、文件路径、符号名、配置键、错误文本、数量和退出状态；\
+           如果内容主要是代码、配置、逐行检索结果、文件清单或其他精确检索输出，只能做最轻量压缩，严禁改写代码含义、删除关键行号、文件名或配置键；{focus}\n\
+         - 如果内容是命令输出，优先保留命令结果、失败原因、关键日志、测试失败项和退出状态。\n\
+         - 需要压缩，但不要过度归纳；宁可稍长，也不要丢掉影响后续判断的细节。\n\
+         - 严格使用以下格式输出：\n\
+         <DISPLAY_SUMMARY>\n...\n</DISPLAY_SUMMARY>\n\
+         <CONTEXT_PAYLOAD>\n...\n</CONTEXT_PAYLOAD>\n\
+         工具名：{tool_name}\n\
+         工具原始输出如下：\n{truncated_output}"
+    )
+}
+
+fn truncate_for_summary(raw_output: &str) -> String {
+    let char_count = raw_output.chars().count();
+    if char_count <= DUAL_TOOL_SUMMARY_CONTEXT_MAX_CHARS {
+        return raw_output.to_string();
+    }
+    let truncated: String = raw_output
+        .chars()
+        .take(DUAL_TOOL_SUMMARY_CONTEXT_MAX_CHARS)
+        .collect();
+    format!(
+        "{truncated}\n\n[原始输出已截断至 {DUAL_TOOL_SUMMARY_CONTEXT_MAX_CHARS} 字符，原文共 {char_count} 字符]"
     )
 }
 
@@ -236,6 +287,148 @@ fn extract_tagged_block(output: &str, tag: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+// ─── Rule-Based Structured Extraction (zero-LLM fallback) ──────────────────────
+
+const STRUCTURED_SUMMARY_MAX_CHARS: usize = 8_000;
+const STRUCTURED_SUMMARY_BODY_CHARS: usize = 6_000;
+
+/// Pure rule-based extraction of key information from a tool result.
+/// Zero LLM calls. Used as fallback when the summary model fails, reducing
+/// the probability of the main model's content-moderation filter firing by
+/// stripping large code blocks and repetitive log lines.
+pub fn extract_structured_summary(tool_name: &str, raw_output: &str) -> String {
+    let mut sections: Vec<String> = Vec::new();
+    let char_count = raw_output.chars().count();
+    let line_count = raw_output.lines().count();
+
+    sections.push(format!("[{tool_name}: {char_count} chars, {line_count} lines]"));
+
+    match tool_name {
+        "exec" => {
+            let lines: Vec<&str> = raw_output.lines().collect();
+            if let Some(exit) = lines.iter().rev().find(|l| {
+                let t = l.trim().to_lowercase();
+                t.starts_with('$')
+                    || t.contains("exit")
+                    || t.starts_with("error")
+                    || t.starts_with("退出状态")
+            }) {
+                sections.push(format!("退出/状态: {exit}"));
+            }
+            let errors: Vec<&&str> = lines
+                .iter()
+                .filter(|l| {
+                    let t = l.trim().to_lowercase();
+                    t.contains("error")
+                        || t.contains("fail")
+                        || t.contains("panic")
+                        || t.contains("failed")
+                        || t.contains("失败")
+                })
+                .take(10)
+                .collect();
+            if !errors.is_empty() {
+                sections.push(format!(
+                    "错误/失败:\n{}",
+                    errors
+                        .iter()
+                        .map(|s| **s)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+            let head: Vec<&str> = lines.iter().take(20).copied().collect();
+            sections.push(head.join("\n"));
+            if lines.len() > 30 {
+                sections.push(format!("...(省略 {} 行)...", lines.len() - 30));
+                let tail: Vec<&str> = lines.iter().rev().take(10).rev().copied().collect();
+                sections.push(tail.join("\n"));
+            }
+        }
+        "read_file" => {
+            let symbols: Vec<&str> = raw_output
+                .lines()
+                .filter(|l| {
+                    // Strip leading line-number prefix (e.g., "1|  " or "42 |  ")
+                    let stripped = l
+                        .split_once('|')
+                        .map(|(_, rest)| rest)
+                        .unwrap_or(l);
+                    let t = stripped.trim();
+                    t.starts_with("fn ")
+                        || t.starts_with("pub fn")
+                        || t.starts_with("pub(crate)")
+                        || t.starts_with("async fn")
+                        || t.starts_with("pub async fn")
+                        || t.starts_with("class ")
+                        || t.starts_with("def ")
+                        || t.starts_with("import ")
+                        || t.starts_with("from ")
+                        || t.starts_with("const ")
+                        || t.starts_with("interface ")
+                        || t.starts_with("type ")
+                        || t.starts_with("export ")
+                        || t.starts_with("struct ")
+                        || t.starts_with("enum ")
+                })
+                .take(50)
+                .collect();
+            if !symbols.is_empty() {
+                sections.push(format!(
+                    "符号定义:\n{}",
+                    symbols.into_iter().collect::<Vec<_>>().join("\n")
+                ));
+            }
+            sections.push(truncate_middle(raw_output, STRUCTURED_SUMMARY_BODY_CHARS, "代码体"));
+        }
+        "grep" => {
+            let matches: Vec<&str> = raw_output
+                .lines()
+                .filter(|l| l.contains(':') || l.contains("-->"))
+                .take(100)
+                .collect();
+            sections.push(matches.into_iter().collect::<Vec<_>>().join("\n"));
+            let total = raw_output.lines().count();
+            if total > 100 {
+                sections.push(format!("...(共 {total} 条匹配)..."));
+            }
+        }
+        "glob" | "list_dir" => {
+            let entries: Vec<&str> = raw_output.lines().take(200).collect();
+            sections.push(entries.into_iter().collect::<Vec<_>>().join("\n"));
+            let total = raw_output.lines().count();
+            if total > 200 {
+                sections.push(format!("...(共 {total} 项)..."));
+            }
+        }
+        _ => {
+            sections.push(truncate_middle(
+                raw_output,
+                STRUCTURED_SUMMARY_BODY_CHARS,
+                "内容",
+            ));
+        }
+    }
+
+    let result = sections.join("\n");
+    if result.chars().count() > STRUCTURED_SUMMARY_MAX_CHARS {
+        truncate_middle(&result, STRUCTURED_SUMMARY_MAX_CHARS, "摘要")
+    } else {
+        result
+    }
+}
+
+fn truncate_middle(text: &str, max_chars: usize, label: &str) -> String {
+    let chars = text.chars().count();
+    if chars <= max_chars {
+        return text.to_string();
+    }
+    let half = max_chars / 2;
+    let head: String = text.chars().take(half).collect();
+    let tail: String = text.chars().skip(chars - half).collect();
+    format!("{head}\n[...省略 {} {label}字符...]\n{tail}", chars - max_chars)
 }
 
 // ─── Session Title Generation (uses LLM) ──────────────────────────────────────────
@@ -557,10 +750,11 @@ fn exceeds_limits(raw_output: &str, max_chars: usize, max_lines: usize) -> bool 
 mod tests {
     use super::{
         build_dispatch_summary_prompt, build_prompt_preview, build_session_title_prompt,
-        build_session_title_source, build_summary_debug_context, exceeds_limits,
-        fallback_session_title, normalize_session_title, session_title_role_label,
-        truncate_session_title_message, truncate_session_title_source,
-        truncate_title, clean_title_line, SessionTitleMessage, SESSION_TITLE_MAX_CHARS,
+        build_session_title_source, build_summary_debug_context, build_tool_summary_prompt,
+        exceeds_limits, extract_structured_summary, fallback_session_title,
+        normalize_session_title, session_title_role_label, truncate_middle,
+        truncate_session_title_message, truncate_session_title_source, truncate_title,
+        clean_title_line, SessionTitleMessage, SESSION_TITLE_MAX_CHARS,
     };
     use crate::agent::llm::OpenAiCompatProvider;
 
@@ -738,5 +932,134 @@ mod tests {
     fn normalize_session_title_returns_fallback_when_model_returns_empty() {
         let title = normalize_session_title("", "用户原始问题");
         assert_eq!(title, "用户原始问题");
+    }
+
+    // ── extract_structured_summary tests ──
+
+    #[test]
+    fn structured_summary_exec_preserves_exit_status_and_errors() {
+        let output = "compiling...\nERROR: missing semicolon\nwarning: unused\nexit 1";
+        let summary = extract_structured_summary("exec", output);
+        assert!(summary.contains("[exec:"));
+        assert!(summary.contains("ERROR: missing semicolon") || summary.contains("错误/失败"));
+    }
+
+    #[test]
+    fn structured_summary_exec_truncates_head_tail_when_long() {
+        let mut lines = Vec::new();
+        for i in 0..100 {
+            lines.push(format!("line {i}"));
+        }
+        let output = lines.join("\n");
+        let summary = extract_structured_summary("exec", &output);
+        assert!(summary.contains("...(省略"));
+    }
+
+    #[test]
+    fn structured_summary_read_file_extracts_symbols() {
+        let output = "1|import os\n2|from pathlib import Path\n3|class MyClass:\n4|    def my_method(self):\n5|        pass";
+        let summary = extract_structured_summary("read_file", output);
+        assert!(summary.contains("符号定义"));
+        assert!(summary.contains("class MyClass"));
+    }
+
+    #[test]
+    fn structured_summary_grep_preserves_match_lines() {
+        let output = "src/foo.rs:42:fn bar()\nsrc/baz.rs:10:fn qux()\n--\n5 files matched";
+        let summary = extract_structured_summary("grep", output);
+        assert!(summary.contains("src/foo.rs:42"));
+        assert!(summary.contains("src/baz.rs:10"));
+    }
+
+    #[test]
+    fn structured_summary_glob_lists_entries() {
+        let output = "src/main.rs\nsrc/lib.rs\nsrc/agent/mod.rs";
+        let summary = extract_structured_summary("glob", output);
+        assert!(summary.contains("src/main.rs"));
+        assert!(summary.contains("src/lib.rs"));
+    }
+
+    #[test]
+    fn structured_summary_respects_max_chars_limit() {
+        let huge = "x".repeat(20_000);
+        let summary = extract_structured_summary("exec", &huge);
+        assert!(summary.chars().count() <= 8_500);
+    }
+
+    // ── truncate_middle tests ──
+
+    #[test]
+    fn truncate_middle_returns_input_when_short() {
+        let text = "short text";
+        assert_eq!(truncate_middle(text, 100, "test"), "short text");
+    }
+
+    #[test]
+    fn truncate_middle_splits_head_and_tail() {
+        let text = "a".repeat(100);
+        let result = truncate_middle(&text, 20, "chars");
+        assert!(result.contains("...省略"));
+        assert!(result.len() > 20); // head + tail + bracket text
+    }
+
+    // ── build_tool_summary_prompt tests ──
+
+    #[test]
+    fn tool_summary_prompt_without_intent_uses_general_compression() {
+        let prompt = build_tool_summary_prompt("exec", "build output", None, None);
+        assert!(prompt.contains("两份不同用途"));
+        assert!(prompt.contains("<DISPLAY_SUMMARY>"));
+        assert!(prompt.contains("<CONTEXT_PAYLOAD>"));
+        assert!(prompt.contains("exec"));
+        assert!(prompt.contains("build output"));
+    }
+
+    #[test]
+    fn tool_summary_prompt_with_intent_uses_focused_extraction() {
+        let prompt = build_tool_summary_prompt(
+            "exec",
+            "build output with errors",
+            None,
+            Some("确认 pnpm build 是否成功"),
+        );
+        assert!(prompt.contains("信息提取器"));
+        assert!(prompt.contains("提取意图"));
+        assert!(prompt.contains("确认 pnpm build 是否成功"));
+        assert!(prompt.contains("<DISPLAY_SUMMARY>"));
+        assert!(prompt.contains("<CONTEXT_PAYLOAD>"));
+    }
+
+    #[test]
+    fn tool_summary_prompt_with_intent_injects_user_question() {
+        let prompt = build_tool_summary_prompt(
+            "exec",
+            "test output",
+            Some("修复 CI 测试失败的问题"),
+            Some("确认 pnpm test 是否全部通过"),
+        );
+        assert!(prompt.contains("用户原始问题"));
+        assert!(prompt.contains("修复 CI 测试失败的问题"));
+        assert!(prompt.contains("确认 pnpm test 是否全部通过"));
+    }
+
+    #[test]
+    fn tool_summary_prompt_without_intent_injects_user_question_inline() {
+        let prompt = build_tool_summary_prompt(
+            "grep",
+            "grep results",
+            Some("找到 handleToolResult 函数"),
+            None,
+        );
+        assert!(prompt.contains("当前用户问题"));
+        assert!(prompt.contains("找到 handleToolResult 函数"));
+    }
+
+    #[test]
+    fn tool_summary_prompt_empty_user_question_not_injected() {
+        let with_empty = build_tool_summary_prompt("exec", "output", Some(""), Some("intent"));
+        assert!(!with_empty.contains("<用户原始问题>"));
+
+        let with_none = build_tool_summary_prompt("exec", "output", None, Some("intent"));
+        assert!(!with_none.contains("<用户原始问题>"));
     }
 }

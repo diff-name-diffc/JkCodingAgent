@@ -93,4 +93,29 @@ impl ToolRegistry {
             }
         }
     }
+
+    pub fn effective_args(&self, tool_name: &str, args: &Value) -> Value {
+        let Some(tool) = self.tools.iter().find(|t| t.name() == tool_name) else {
+            return args.clone();
+        };
+        let schema = tool.parameters();
+        let Some(properties) = schema.get("properties").and_then(|v| v.as_object()) else {
+            return args.clone();
+        };
+
+        let mut result = args.clone();
+        let obj = match result.as_object_mut() {
+            Some(obj) => obj,
+            None => return args.clone(),
+        };
+
+        for (key, prop_schema) in properties {
+            if !obj.contains_key(key) {
+                if let Some(default_val) = prop_schema.get("default") {
+                    obj.insert(key.clone(), default_val.clone());
+                }
+            }
+        }
+        result
+    }
 }

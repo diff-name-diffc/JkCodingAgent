@@ -15,6 +15,7 @@ const MAX_FILE_READ_BYTES: usize = 50_000_000;
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImageGenerationInput {
     pub prompt: String,
+    #[allow(dead_code)]
     pub image_name: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,

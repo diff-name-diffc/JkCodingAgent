@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::config::DEFAULT_SUMMARY_MODEL;
 use super::llm::{ChatMessage, LlmUsage, OutboundToolCall};
-use super::summary::ToolArtifactDraft;
+
 
 const MAX_LLM_DIALOGUES: usize = 5;
 const MAX_DIALOGUE_QUERY_LIMIT: usize = 50;
@@ -1169,6 +1169,16 @@ pub struct DispatcherToolArtifactRef {
     pub created_at: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolArtifactDraft {
+    pub kind: String,
+    pub title: String,
+    pub preview: String,
+    pub content: String,
+    pub char_count: usize,
+    pub line_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DispatcherToolArtifactRecord {
@@ -1869,6 +1879,7 @@ impl DispatcherDb {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn update_chat_session_updated_at(&self, session_id: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -2062,6 +2073,7 @@ impl DispatcherDb {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn update_project_session_updated_at(&self, session_id: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -2922,6 +2934,7 @@ impl DispatcherDb {
         tx.commit().context("commit keyword actions")
     }
 
+    #[allow(dead_code)]
     pub fn clear_keywords(&self, workspace_id: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(

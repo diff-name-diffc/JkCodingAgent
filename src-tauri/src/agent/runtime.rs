@@ -4,7 +4,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -15,6 +14,11 @@ use serde_json::Value;
 use tauri::{ipc::Channel, AppHandle};
 use tokio::sync::watch;
 
+use super::common::{
+    self, build_args_map, build_tool_calls_payload, cancellation_requested,
+    persist_tool_calls_message, persist_tool_result_raw,
+    stream_llm_response, wait_for_cancellation, LlmStreamOutcome, UsageTracker,
+};
 use super::config::DispatcherAgentConfig;
 use super::db::{
     ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb,
@@ -24,11 +28,11 @@ use super::db::{
 };
 use super::debug::{render_json, ContextDebugLogger, DebugSection};
 use super::llm::{
-    messages_contain_inline_images, ChatMessage, FunctionCall, LlmResponse, LlmUsage,
-    OpenAiCompatProvider, OutboundToolCall, RequestedToolCall,
+    messages_contain_inline_images, ChatMessage, LlmResponse, LlmUsage,
+    OpenAiCompatProvider, RequestedToolCall,
 };
 use super::prompt::{build_system_prompt, PromptBundle, PromptSection};
-use super::summary::{prepare_tool_result, summarize_dispatch_result};
+use super::summary::{summarize_dispatch_result, summarize_tool_result};
 use super::tools::{
     parse_ask_plan_question, parse_continue_instruction, parse_create_plan_document,
     parse_dispatch_instruction, parse_edit_plan_document, parse_exit_instruction,
@@ -136,11 +140,13 @@ pub enum AgentEvent {
         name: String,
         arguments: String,
     },
+    #[allow(dead_code)]
     ToolSummaryStarted {
         tool_call_id: Option<String>,
         name: String,
         result_mode: String,
     },
+    #[allow(dead_code)]
     ToolSummaryDelta {
         tool_call_id: Option<String>,
         name: String,
@@ -193,40 +199,6 @@ pub enum AgentEvent {
     },
 }
 
-#[derive(Debug)]
-struct RunUsageTracker {
-    started_at: Instant,
-    prompt_tokens: u64,
-    completion_tokens: u64,
-    total_tokens: u64,
-}
-
-impl RunUsageTracker {
-    fn new() -> Self {
-        Self {
-            started_at: Instant::now(),
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-        }
-    }
-
-    fn record(&mut self, usage: &LlmUsage) -> DispatcherMessageUsageStats {
-        self.prompt_tokens += usage.prompt_tokens;
-        self.completion_tokens += usage.completion_tokens;
-        self.total_tokens += normalized_total_tokens(usage);
-        self.snapshot()
-    }
-
-    fn snapshot(&self) -> DispatcherMessageUsageStats {
-        DispatcherMessageUsageStats {
-            prompt_tokens: self.prompt_tokens,
-            completion_tokens: self.completion_tokens,
-            total_tokens: self.total_tokens,
-            elapsed_ms: self.started_at.elapsed().as_millis() as u64,
-        }
-    }
-}
 
 pub struct DispatcherAgent {
     config: DispatcherAgentConfig,
@@ -350,10 +322,6 @@ struct IterationContext {
     debug_logger: ContextDebugLogger,
 }
 
-enum LlmStreamOutcome {
-    Cancelled(String),
-    Response(LlmResponse),
-}
 
 struct ToolCallsOutcome {
     saw_retryable_tool_error: bool,
@@ -799,7 +767,7 @@ impl DispatcherAgent {
                 "主 Agent LLM API Key 未配置。请在 Dispatcher 设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
             );
         }
-        let mut usage_tracker = RunUsageTracker::new();
+        let mut usage_tracker = UsageTracker::new();
         let reply = self
             .run_llm_loop(
                 db,
@@ -894,7 +862,7 @@ impl DispatcherAgent {
         }
         let summary_model = self.summary_model();
         let summary_provider = self.summary_provider(&provider);
-        let mut usage_tracker = RunUsageTracker::new();
+        let mut usage_tracker = UsageTracker::new();
         let summarized_dispatch_result = match tokio::select! {
             _ = wait_for_cancellation(&mut cancel_rx) => {
                 let reply = self.emit_stop_and_finish(
@@ -1005,7 +973,7 @@ impl DispatcherAgent {
         provider: &OpenAiCompatProvider,
         enable_thinking: bool,
         cancel_rx: watch::Receiver<bool>,
-        usage_tracker: &mut RunUsageTracker,
+        usage_tracker: &mut UsageTracker,
     ) -> Result<DispatcherMessageRecord> {
         let tool_context = self
             .build_tool_context(db, workspace_id, workspace, provider)
@@ -1199,214 +1167,65 @@ impl DispatcherAgent {
         tool_definitions: &[crate::agent::llm::ToolDefinition],
         enable_thinking: bool,
         cancel_rx: watch::Receiver<bool>,
-        usage_tracker: &mut RunUsageTracker,
+        usage_tracker: &mut UsageTracker,
         debug_logger: &ContextDebugLogger,
         iteration: usize,
     ) -> Result<LlmStreamOutcome> {
-        let stream_msg_id = uuid::Uuid::new_v4().to_string();
-        emit(
-            on_event,
-            AgentEvent::AssistantStarted {
-                message_id: stream_msg_id.clone(),
-            },
-        );
-
-        let event_ref = on_event;
-        let msg_id_ref = stream_msg_id.clone();
-        let thinking_msg_id_ref = stream_msg_id.clone();
-        let streamed_text = Arc::new(Mutex::new(String::new()));
-        let streamed_text_ref = Arc::clone(&streamed_text);
-        let on_delta = move |delta: &str| {
-            let mut partial = streamed_text_ref.lock();
-            partial.push_str(delta);
-            let _ = event_ref.send(AgentEvent::AssistantDelta {
-                message_id: msg_id_ref.clone(),
-                delta: delta.to_string(),
-            });
-        };
-        let thinking_event_ref = on_event;
-        let on_thinking_delta = move |delta: &str, elapsed_ms: u64| {
-            let _ = thinking_event_ref.send(AgentEvent::AssistantThinkingDelta {
-                message_id: thinking_msg_id_ref.clone(),
-                delta: delta.to_string(),
-                elapsed_ms,
-            });
-        };
-
-        let mut stream_cancel_rx = cancel_rx;
-        let response = tokio::select! {
-            _ = wait_for_cancellation(&mut stream_cancel_rx) => {
-                let partial = streamed_text.lock().clone();
-                return Ok(LlmStreamOutcome::Cancelled(partial));
-            }
-            response = request_provider.chat_stream_with_thinking(
-                messages,
-                tool_definitions,
-                messages_contain_inline_images(messages),
-                enable_thinking,
-                on_delta,
-                on_thinking_delta,
-            ) => response
-        }?;
-
-        let response_snapshot = request_provider.build_response_snapshot(&response);
-        if let Some(usage) = response.usage.as_ref() {
-            record_run_token_usage(
-                db,
-                workspace_id,
-                request_provider.model(),
-                DispatcherSessionTokenUsageSource::Primary,
-                usage,
-                usage_tracker,
-                on_event,
-            );
-        }
-
+        let request_snapshot = request_provider.build_request_snapshot(messages, tool_definitions, enable_thinking);
         debug_logger.log(
-            "收到大模型响应",
+            "发送大模型请求",
             vec![
                 ("工作区".to_string(), workspace_id.to_string()),
                 ("轮次".to_string(), (iteration + 1).to_string()),
                 ("模型".to_string(), request_provider.model().to_string()),
-                ("状态码".to_string(), response.status_code.to_string()),
-                (
-                    "工具调用数".to_string(),
-                    response.tool_calls.len().to_string(),
-                ),
+                ("消息数".to_string(), messages.len().to_string()),
+                ("工具数".to_string(), tool_definitions.len().to_string()),
             ],
             vec![DebugSection::new(
-                "实际响应",
-                render_json(&response_snapshot),
+                "实际请求",
+                render_json(&request_snapshot),
             )],
         );
 
-        Ok(LlmStreamOutcome::Response(response))
-    }
-
-    async fn emit_raw_tool_result(
-        db: &DispatcherDb,
-        workspace_id: &str,
-        on_event: &Channel<AgentEvent>,
-        tool_call: &RequestedToolCall,
-        result: &str,
-    ) -> Result<()> {
-        let tool_message = db
-            .add_visible_tool_result_async(
-                workspace_id,
-                result,
-                result,
-                Some(&tool_call.id),
-                Some(&tool_call.name),
-                Some("raw"),
-                &[],
-            )
-            .await?;
-        emit(
-            on_event,
-            AgentEvent::ToolFinished {
-                tool_call_id: Some(tool_call.id.clone()),
-                name: tool_call.name.clone(),
-                display_text: tool_message.content.clone(),
-                result_mode: "raw".to_string(),
-                detail_refs: Vec::new(),
-            },
-        );
-        Ok(())
-    }
-
-    /// Build tool call payloads, emit ToolPlanned events, and persist the assistant
-    /// message (with tool calls) to the database. Returns `(tool_calls, args_map)` so
-    /// callers can iterate and execute the individual tool calls.
-    async fn persist_assistant_tool_calls(
-        db: &DispatcherDb,
-        workspace_id: &str,
-        on_event: &Channel<AgentEvent>,
-        response: LlmResponse,
-    ) -> Result<(Vec<RequestedToolCall>, HashMap<String, String>)> {
-        let tool_calls = response.tool_calls;
-        let tool_calls_payload: Vec<OutboundToolCall> = tool_calls
-            .iter()
-            .map(|call| {
-                let args_json =
-                    serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string());
-                OutboundToolCall {
-                    id: call.id.clone(),
-                    kind: "function".to_string(),
-                    function: FunctionCall {
-                        name: call.name.clone(),
-                        arguments: args_json,
-                    },
-                }
-            })
-            .collect();
-
-        let args_map: HashMap<String, String> = tool_calls_payload
-            .iter()
-            .map(|tc| (tc.id.clone(), tc.function.arguments.clone()))
-            .collect();
-
-        for tc in &tool_calls_payload {
-            emit(
-                on_event,
-                AgentEvent::ToolPlanned {
-                    tool_call_id: Some(tc.id.clone()),
-                    name: tc.function.name.clone(),
-                    arguments: tc.function.arguments.clone(),
-                },
-            );
-        }
-
-        db.add_visible_message_with_tools_and_thinking_async(
+        let outcome = stream_llm_response(
+            db,
             workspace_id,
-            "assistant",
-            &response.content,
-            None,
-            None,
-            None,
-            Some(&tool_calls_payload),
-            Some(&response.thinking_content),
-            response.thinking_elapsed_ms,
+            request_provider.model(),
+            DispatcherSessionTokenUsageSource::Primary,
+            usage_tracker,
+            on_event,
+            request_provider,
+            messages,
+            tool_definitions,
+            enable_thinking,
+            cancel_rx,
         )
         .await?;
 
-        Ok((tool_calls, args_map))
-    }
-
-    async fn handle_no_tool_response(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        on_event: &Channel<AgentEvent>,
-        response: &LlmResponse,
-        usage_tracker: &RunUsageTracker,
-    ) -> Result<DispatcherMessageRecord> {
-        let content = response.content.trim().to_string();
-        if content.is_empty() {
-            anyhow::bail!("{}", empty_llm_response_error(response));
+        if let LlmStreamOutcome::Response(ref response) = outcome {
+            let response_snapshot = request_provider.build_response_snapshot(response);
+            debug_logger.log(
+                "收到大模型响应",
+                vec![
+                    ("工作区".to_string(), workspace_id.to_string()),
+                    ("轮次".to_string(), (iteration + 1).to_string()),
+                    ("模型".to_string(), request_provider.model().to_string()),
+                    ("状态码".to_string(), response.status_code.to_string()),
+                    (
+                        "工具调用数".to_string(),
+                        response.tool_calls.len().to_string(),
+                    ),
+                ],
+                vec![DebugSection::new(
+                    "实际响应",
+                    render_json(&response_snapshot),
+                )],
+            );
         }
-        let usage_stats = usage_tracker.snapshot();
-        let reply = db
-            .add_visible_message_with_usage_and_thinking_async(
-                workspace_id,
-                "assistant",
-                &content,
-                &usage_stats,
-                Some(&response.thinking_content),
-                response.thinking_elapsed_ms,
-            )
-            .await?;
-        emit(
-            on_event,
-            AgentEvent::AssistantMessage {
-                message: reply.clone(),
-            },
-        );
-        Ok(reply)
+
+        Ok(outcome)
     }
 
-    /// Execute all tool calls from an LLM response. Tool calls run in two phases:
-    /// first `update_plan` calls are preprocessed, then remaining calls execute in order
-    /// (with adjacent readonly tools parallelized).
     #[allow(clippy::too_many_arguments)]
     async fn execute_tool_calls(
         &self,
@@ -1420,10 +1239,33 @@ impl DispatcherAgent {
         tool_context: &ToolContext,
         cancel_rx: &watch::Receiver<bool>,
         request_provider: &OpenAiCompatProvider,
-        usage_tracker: &mut RunUsageTracker,
+        usage_tracker: &mut UsageTracker,
     ) -> Result<ToolCallsOutcome> {
-        let (tool_calls, args_map) =
-            Self::persist_assistant_tool_calls(db, workspace_id, on_event, response).await?;
+        // Persist tool calls and emit ToolPlanned events
+        let tool_calls = response.tool_calls.clone();
+        let tool_calls_payload = build_tool_calls_payload(&tool_calls);
+        let args_map = build_args_map(&tool_calls);
+
+        for tc in &tool_calls_payload {
+            emit(
+                on_event,
+                AgentEvent::ToolPlanned {
+                    tool_call_id: Some(tc.id.clone()),
+                    name: tc.function.name.clone(),
+                    arguments: tc.function.arguments.clone(),
+                },
+            );
+        }
+
+        persist_tool_calls_message(
+            db,
+            workspace_id,
+            &response.content,
+            &tool_calls_payload,
+            &response.thinking_content,
+            Some(response.thinking_elapsed_ms),
+        )
+        .await?;
 
         let mut protocol_state =
             ProtocolBatchState::new(self.active_subprocesses_for_workspace(workspace_id));
@@ -1432,32 +1274,14 @@ impl DispatcherAgent {
         let mut final_message: Option<String> = None;
         let mut saw_retryable_tool_error = false;
 
-        // Phase 1: preprocess all update_plan calls before other tools execute.
-        let preprocessed_tool_call_ids = self
-            .execute_update_plan_calls_first(
-                db,
-                workspace_id,
-                workspace,
-                on_event,
-                &tool_calls,
-                runtime_state,
-                allowed_tool_names,
-            )
-            .await?;
-
-        // Phase 2: execute remaining tool calls in order, parallelizing adjacent readonly ones.
+        // Execute tool calls in order, parallelizing adjacent readonly ones
         let mut tool_call_index = 0usize;
-        let mut cancelled = false;
         'outer: while tool_call_index < tool_calls.len() {
             if cancellation_requested(cancel_rx) {
                 break;
             }
-            if preprocessed_tool_call_ids.contains(&tool_calls[tool_call_index].id) {
-                tool_call_index += 1;
-                continue;
-            }
 
-            let readonly_end = readonly_tool_run_end(&tool_calls, tool_call_index);
+            let readonly_end = common::readonly_tool_run_end(&tool_calls, tool_call_index);
             let ready_tool_results = if readonly_end.saturating_sub(tool_call_index) >= 2 {
                 let run = &tool_calls[tool_call_index..readonly_end];
                 let results = self
@@ -1502,11 +1326,7 @@ impl DispatcherAgent {
 
             for (tool_call, result) in ready_tool_results {
                 if cancellation_requested(cancel_rx) {
-                    cancelled = true;
                     break 'outer;
-                }
-                if preprocessed_tool_call_ids.contains(&tool_call.id) {
-                    continue;
                 }
 
                 match self
@@ -1545,18 +1365,73 @@ impl DispatcherAgent {
                             continue;
                         }
 
-                        let summary_model = self.summary_model();
-                        self.summarize_and_persist_tool_result(
-                            db,
-                            workspace_id,
-                            on_event,
-                            request_provider,
-                            &summary_model,
-                            &tool_call,
+                        let prepared = common::prepare_tool_result(
+                            &tool_call.name,
+                            &tool_call.arguments,
                             &result,
-                            usage_tracker,
-                        )
-                        .await?;
+                        );
+
+                        if prepared.needs_summary {
+                            let summary_model = self.summary_model();
+                            let summary_provider = self.summary_provider(request_provider);
+                            match summarize_tool_result(
+                                &summary_provider,
+                                &summary_model,
+                                &tool_call.name,
+                                &prepared.raw_output,
+                                |usage| {
+                                    record_run_token_usage(
+                                        db,
+                                        workspace_id,
+                                        &summary_model,
+                                        DispatcherSessionTokenUsageSource::Summary,
+                                        usage,
+                                        usage_tracker,
+                                        on_event,
+                                    );
+                                },
+                            )
+                            .await
+                            {
+                                Ok(summary) => {
+                                    common::persist_tool_result_with_summary(
+                                        db,
+                                        workspace_id,
+                                        on_event,
+                                        &tool_call,
+                                        &result,
+                                        summary.display_content,
+                                        summary.context_payload,
+                                        "conservative_summary",
+                                    )
+                                    .await?;
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "summarize_tool_result failed for {}: {}, falling back to hard truncation",
+                                        tool_call.name,
+                                        error.message()
+                                    );
+                                    common::persist_tool_result(
+                                        db,
+                                        workspace_id,
+                                        on_event,
+                                        &tool_call,
+                                        &result,
+                                    )
+                                    .await?;
+                                }
+                            }
+                        } else {
+                            common::persist_tool_result(
+                                db,
+                                workspace_id,
+                                on_event,
+                                &tool_call,
+                                &result,
+                            )
+                            .await?;
+                        }
 
                         if let Err(error) = db
                             .compact_successful_tool_retry_async(
@@ -1581,8 +1456,6 @@ impl DispatcherAgent {
                 }
             }
         }
-
-        let _ = cancelled; // cancellation is checked by the outer loop on next iteration
 
         Ok(ToolCallsOutcome {
             saw_retryable_tool_error,
@@ -1618,11 +1491,11 @@ impl DispatcherAgent {
             .await
         {
             Ok(Some(PlanningToolOutcome::ToolResult(res))) => {
-                Self::emit_raw_tool_result(db, workspace_id, on_event, tool_call, &res).await?;
+                persist_tool_result_raw(db, workspace_id, on_event, tool_call, &res).await?;
                 return Ok(SingleToolDisposition::Handled);
             }
             Ok(Some(PlanningToolOutcome::WaitForUser(res))) => {
-                Self::emit_raw_tool_result(db, workspace_id, on_event, tool_call, &res).await?;
+                persist_tool_result_raw(db, workspace_id, on_event, tool_call, &res).await?;
                 return Ok(SingleToolDisposition::WaitForUser(res));
             }
             Ok(None) => {} // not a planning tool — fall through to protocol check
@@ -1668,100 +1541,7 @@ impl DispatcherAgent {
         Ok(SingleToolDisposition::NeedsSummary)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn summarize_and_persist_tool_result(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        on_event: &Channel<AgentEvent>,
-        request_provider: &OpenAiCompatProvider,
-        summary_model: &str,
-        tool_call: &RequestedToolCall,
-        result: &str,
-        usage_tracker: &mut RunUsageTracker,
-    ) -> Result<()> {
-        let summary_provider = self.summary_provider(request_provider);
-        let tool_result = match prepare_tool_result(
-            &summary_provider,
-            summary_model,
-            &tool_call.name,
-            &tool_call.arguments,
-            result,
-            |result_mode| {
-                emit(
-                    on_event,
-                    AgentEvent::ToolSummaryStarted {
-                        tool_call_id: Some(tool_call.id.clone()),
-                        name: tool_call.name.clone(),
-                        result_mode: result_mode.to_string(),
-                    },
-                );
-            },
-            |delta| {
-                emit(
-                    on_event,
-                    AgentEvent::ToolSummaryDelta {
-                        tool_call_id: Some(tool_call.id.clone()),
-                        name: tool_call.name.clone(),
-                        delta: delta.to_string(),
-                        result_mode: "conservative_summary".to_string(),
-                    },
-                );
-            },
-            |usage| {
-                record_run_token_usage(
-                    db,
-                    workspace_id,
-                    summary_model,
-                    DispatcherSessionTokenUsageSource::Summary,
-                    usage,
-                    usage_tracker,
-                    on_event,
-                );
-            },
-        )
-        .await
-        {
-            Ok(summary) => summary,
-            Err(error) => {
-                let tool_arguments = serde_json::to_string_pretty(&tool_call.arguments)
-                    .unwrap_or_else(|_| "{}".to_string());
-                anyhow::bail!(
-                    "工具结果摘要失败，tool={}, summary_model={}：{}\n调试上下文：{}\n工具参数：{}",
-                    tool_call.name,
-                    summary_model,
-                    error.message(),
-                    error.debug_context(),
-                    tool_arguments,
-                );
-            }
-        };
 
-        let tool_message = db
-            .add_visible_tool_result_async(
-                workspace_id,
-                &tool_result.display_content,
-                &tool_result.context_payload,
-                Some(&tool_call.id),
-                Some(&tool_call.name),
-                Some(tool_result.result_mode),
-                &tool_result.artifacts,
-            )
-            .await?;
-
-        emit(
-            on_event,
-            AgentEvent::ToolFinished {
-                tool_call_id: Some(tool_call.id.clone()),
-                name: tool_call.name.clone(),
-                display_text: tool_message.content.clone(),
-                result_mode: tool_result.result_mode.to_string(),
-                detail_refs: tool_message.tool_artifacts.clone(),
-            },
-        );
-
-        Ok(())
-    }
 
     async fn handle_tool_call_error(
         &self,
@@ -1787,7 +1567,7 @@ impl DispatcherAgent {
         workspace_id: &str,
         on_event: &Channel<AgentEvent>,
         outcome: ToolCallsOutcome,
-        usage_tracker: &RunUsageTracker,
+        usage_tracker: &UsageTracker,
     ) -> Result<Option<DispatcherMessageRecord>> {
         if outcome.saw_retryable_tool_error {
             return Ok(None);
@@ -2126,81 +1906,6 @@ impl DispatcherAgent {
         .await;
 
         results
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn execute_update_plan_calls_first(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        workspace: &Path,
-        on_event: &Channel<AgentEvent>,
-        tool_calls: &[RequestedToolCall],
-        runtime_state: &DispatcherSessionRuntimeState,
-        allowed_tool_names: &HashSet<String>,
-    ) -> Result<HashSet<String>> {
-        let mut processed = HashSet::new();
-        for tool_call in tool_calls
-            .iter()
-            .filter(|tool_call| tool_call.name == "update_plan")
-        {
-            if !allowed_tool_names.contains(&tool_call.name) {
-                continue;
-            }
-            emit(
-                on_event,
-                AgentEvent::ToolStarted {
-                    tool_call_id: Some(tool_call.id.clone()),
-                    name: tool_call.name.clone(),
-                    arguments: serde_json::to_string(&tool_call.arguments)
-                        .unwrap_or_else(|_| "{}".to_string()),
-                },
-            );
-            match self
-                .execute_planning_tool(
-                    db,
-                    workspace_id,
-                    workspace,
-                    on_event,
-                    tool_call,
-                    runtime_state,
-                )
-                .await
-            {
-                Ok(Some(PlanningToolOutcome::ToolResult(result)))
-                | Ok(Some(PlanningToolOutcome::WaitForUser(result))) => {
-                    let tool_message = db
-                        .add_visible_tool_result_async(
-                            workspace_id,
-                            &result,
-                            &result,
-                            Some(&tool_call.id),
-                            Some(&tool_call.name),
-                            Some("raw"),
-                            &[],
-                        )
-                        .await?;
-                    emit(
-                        on_event,
-                        AgentEvent::ToolFinished {
-                            tool_call_id: Some(tool_call.id.clone()),
-                            name: tool_call.name.clone(),
-                            display_text: tool_message.content.clone(),
-                            result_mode: "raw".to_string(),
-                            detail_refs: Vec::new(),
-                        },
-                    );
-                    processed.insert(tool_call.id.clone());
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    self.emit_tool_error(db, workspace_id, on_event, tool_call, &error)
-                        .await?;
-                    processed.insert(tool_call.id.clone());
-                }
-            }
-        }
-        Ok(processed)
     }
 
     async fn execute_planning_tool(
@@ -2653,16 +2358,48 @@ impl DispatcherAgent {
         Ok(())
     }
 
+    async fn handle_no_tool_response(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        response: &LlmResponse,
+        usage_tracker: &UsageTracker,
+    ) -> Result<DispatcherMessageRecord> {
+        let content = response.content.trim().to_string();
+        if content.is_empty() {
+            anyhow::bail!("{}", empty_llm_response_error(response));
+        }
+        let usage_stats = usage_tracker.snapshot();
+        let reply = db
+            .add_visible_message_with_usage_and_thinking_async(
+                workspace_id,
+                "assistant",
+                &content,
+                &usage_stats,
+                Some(&response.thinking_content),
+                response.thinking_elapsed_ms,
+            )
+            .await?;
+        emit(
+            on_event,
+            AgentEvent::AssistantMessage {
+                message: reply.clone(),
+            },
+        );
+        Ok(reply)
+    }
+
     async fn emit_stop_and_finish(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
         on_event: &Channel<AgentEvent>,
         partial: &str,
-        usage_tracker: Option<&RunUsageTracker>,
+        usage_tracker: Option<&UsageTracker>,
     ) -> Result<DispatcherMessageRecord> {
         let content = build_stopped_dispatch_reply(partial);
-        let usage_stats = usage_tracker.map(RunUsageTracker::snapshot);
+        let usage_stats = usage_tracker.map(UsageTracker::snapshot);
         let reply = if let Some(usage_stats) = usage_stats.as_ref() {
             db.add_visible_message_with_usage_async(
                 workspace_id,
@@ -3136,24 +2873,6 @@ fn extract_message_content(arguments: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn is_parallel_readonly_tool_call(tool_call: &RequestedToolCall) -> bool {
-    matches!(
-        tool_call.name.as_str(),
-        "read_file" | "list_dir" | "glob" | "grep"
-    )
-}
-
-fn readonly_tool_run_end(tool_calls: &[RequestedToolCall], start: usize) -> usize {
-    tool_calls
-        .iter()
-        .enumerate()
-        .skip(start)
-        .find_map(|(index, tool_call)| {
-            (!is_parallel_readonly_tool_call(tool_call)).then_some(index)
-        })
-        .unwrap_or(tool_calls.len())
-}
-
 fn disallowed_tool_result(tool_name: &str) -> String {
     format!(
         "错误：禁止调用工具 '{tool_name}'；它未在当前模式或运行状态的可用工具列表中。请改用系统提示中列出的当前实际可用工具。"
@@ -3425,22 +3144,6 @@ fn summarize_dispatch_description(task_description: &str) -> String {
     }
 }
 
-fn cancellation_requested(cancel_rx: &watch::Receiver<bool>) -> bool {
-    *cancel_rx.borrow()
-}
-
-async fn wait_for_cancellation(cancel_rx: &mut watch::Receiver<bool>) {
-    if cancellation_requested(cancel_rx) {
-        return;
-    }
-
-    while cancel_rx.changed().await.is_ok() {
-        if cancellation_requested(cancel_rx) {
-            return;
-        }
-    }
-}
-
 fn build_stopped_dispatch_reply(partial: &str) -> String {
     let trimmed = partial.trim();
     if trimmed.is_empty() {
@@ -3487,7 +3190,7 @@ fn record_run_token_usage(
     model: &str,
     source_kind: DispatcherSessionTokenUsageSource,
     usage: &LlmUsage,
-    tracker: &mut RunUsageTracker,
+    tracker: &mut UsageTracker,
     on_event: &Channel<AgentEvent>,
 ) {
     record_session_token_usage(db, workspace_id, model, source_kind, usage);
@@ -3499,14 +3202,6 @@ fn record_run_token_usage(
             stats,
         },
     );
-}
-
-fn normalized_total_tokens(usage: &LlmUsage) -> u64 {
-    if usage.total_tokens > 0 {
-        usage.total_tokens
-    } else {
-        usage.prompt_tokens + usage.completion_tokens
-    }
 }
 
 fn normalize_summary_model(model: &str) -> String {
@@ -3686,12 +3381,13 @@ mod tests {
         build_checklist_state, build_dispatcher_mode_block, build_protocol_waiting_message,
         collect_recent_exploration_entries, complete_checklist_dispatch,
         default_mode_tool_allowlist, parse_update_plan, plan_mode_tool_allowlist,
-        readonly_tool_run_end, reserve_checklist_dispatch, resolve_plan_path,
+        reserve_checklist_dispatch, resolve_plan_path,
         should_include_latest_user_goal, start_checklist_dispatch, DispatchAgent, DispatcherAgent,
         DispatcherSubprocessRegistry, PlanPathAccess, PlannedSubprocessState, ProtocolBatchState,
         ProtocolToolAction, RegisteredSubprocess, RegisteredSubprocessPhase,
     };
     use super::{ChecklistStepStatus, DispatcherMode, DispatcherSessionRuntimeState};
+    use crate::agent::common::readonly_tool_run_end;
     use crate::agent::config::DispatcherAgentConfig;
     use crate::agent::db::{DispatcherDb, DispatcherSessionKind};
     use crate::agent::llm::{ChatMessage, RequestedToolCall};

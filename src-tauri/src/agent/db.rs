@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -506,6 +507,8 @@ pub struct DispatcherSettingsRecord {
     pub asr_model_configs: Vec<DispatcherModelConfig>,
     pub tts_model_configs: Vec<DispatcherModelConfig>,
     pub embedding_model_configs: Vec<DispatcherModelConfig>,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
 }
 
 // ── Model Slot ─────────────────────────────────────────────────
@@ -733,7 +736,7 @@ impl ModelSlot {
 
 fn settings_select_columns() -> Vec<&'static str> {
     let mut columns =
-        Vec::with_capacity(SETTINGS_LEGACY_COLUMNS.len() + MODEL_SLOT_COLUMNS.len() * 4);
+        Vec::with_capacity(SETTINGS_LEGACY_COLUMNS.len() + MODEL_SLOT_COLUMNS.len() * 4 + 1);
     columns.extend(SETTINGS_LEGACY_COLUMNS);
     for slot in ModelSlot::ALL {
         let slot_columns = slot.columns();
@@ -744,6 +747,7 @@ fn settings_select_columns() -> Vec<&'static str> {
     for slot in ModelSlot::ALL {
         columns.push(slot.columns().json);
     }
+    columns.push("allowed_tools_json");
     columns
 }
 
@@ -922,6 +926,7 @@ fn build_settings_record(
     configs: DispatcherSettingsConfigLists,
     auto_approve_dispatch: bool,
     context_debug: bool,
+    allowed_tools: Vec<String>,
 ) -> DispatcherSettingsRecord {
     let normalized = [
         normalize_model_configs(configs.chat_model_configs),
@@ -981,6 +986,7 @@ fn build_settings_record(
         asr_model_configs: normalized[ModelSlot::Asr.index()].clone(),
         tts_model_configs: normalized[ModelSlot::Tts.index()].clone(),
         embedding_model_configs: normalized[ModelSlot::Embedding.index()].clone(),
+        allowed_tools,
     }
 }
 
@@ -1011,6 +1017,81 @@ impl DispatcherMode {
         match value.as_str() {
             "plan" => Self::Plan,
             _ => Self::Default,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentContext {
+    Project,
+    Chat,
+}
+
+impl AgentContext {
+    pub fn from_wire(value: &str) -> Result<Self> {
+        match value.trim() {
+            "project" | "" => Ok(Self::Project),
+            "chat" => Ok(Self::Chat),
+            other => anyhow::bail!("invalid agent context: {other}"),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Chat => "chat",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AhaContextConfig {
+    #[serde(default)]
+    pub chat_model_configs: Vec<DispatcherModelConfig>,
+    #[serde(default)]
+    pub summary_model_configs: Vec<DispatcherModelConfig>,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AhaSharedModels {
+    #[serde(default)]
+    pub vision_model_configs: Vec<DispatcherModelConfig>,
+    #[serde(default)]
+    pub image_model_configs: Vec<DispatcherModelConfig>,
+    #[serde(default)]
+    pub image_edit_model_configs: Vec<DispatcherModelConfig>,
+    #[serde(default)]
+    pub asr_model_configs: Vec<DispatcherModelConfig>,
+    #[serde(default)]
+    pub tts_model_configs: Vec<DispatcherModelConfig>,
+    #[serde(default)]
+    pub embedding_model_configs: Vec<DispatcherModelConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AhaSettingsV2 {
+    pub shared: AhaSharedModels,
+    pub project: AhaContextConfig,
+    pub chat: AhaContextConfig,
+    pub auto_approve_dispatch: bool,
+    pub context_debug: bool,
+}
+
+impl Default for AhaSettingsV2 {
+    fn default() -> Self {
+        Self {
+            shared: AhaSharedModels::default(),
+            project: AhaContextConfig::default(),
+            chat: AhaContextConfig::default(),
+            auto_approve_dispatch: false,
+            context_debug: false,
         }
     }
 }
@@ -1240,7 +1321,7 @@ pub struct DispatcherSessionTokenUsageRecord {
 
 #[derive(Debug, Clone)]
 pub struct DispatcherDb {
-    pool: Pool<SqliteConnectionManager>,
+    pool: Arc<Pool<SqliteConnectionManager>>,
     path: PathBuf,
 }
 
@@ -1273,9 +1354,16 @@ impl DispatcherDb {
             .max_size(4)
             .build(manager)
             .with_context(|| format!("创建数据库连接池失败：{}", path.display()))?;
-        let db = Self { pool, path };
+        let db = Self {
+            pool: Arc::new(pool),
+            path,
+        };
         db.init()?;
         Ok(db)
+    }
+
+    pub fn pool(&self) -> Arc<Pool<SqliteConnectionManager>> {
+        Arc::clone(&self.pool)
     }
 
     // ── Settings ──────────────────────────────────────────────
@@ -1294,6 +1382,11 @@ impl DispatcherDb {
             let tts = resolve_slot_configs_from_row(row, ModelSlot::Tts)?;
             let embedding = resolve_slot_configs_from_row(row, ModelSlot::Embedding)?;
 
+            let allowed_tools: Vec<String> = row
+                .get::<_, Option<String>>(settings_column_index("allowed_tools_json"))?
+                .and_then(|json| serde_json::from_str(&json).ok())
+                .unwrap_or_default();
+
             Ok(build_settings_record(
                 DispatcherSettingsConfigLists {
                     chat_model_configs: chat,
@@ -1307,6 +1400,7 @@ impl DispatcherDb {
                 },
                 row.get::<_, i32>(settings_column_index("auto_approve_dispatch"))? != 0,
                 row.get::<_, i32>(settings_column_index("context_debug"))? != 0,
+                allowed_tools,
             ))
         })
         .optional()
@@ -1330,6 +1424,7 @@ impl DispatcherDb {
         image_model: &str,
         image_edit_model: &str,
         model_configs: DispatcherSettingsModelConfigs,
+        allowed_tools: Vec<String>,
     ) -> Result<DispatcherSettingsRecord> {
         let conn = self.conn()?;
         let auto_approve_int = if auto_approve_dispatch { 1 } else { 0 };
@@ -1471,6 +1566,7 @@ impl DispatcherDb {
             },
             auto_approve_dispatch,
             context_debug,
+            allowed_tools.clone(),
         );
 
         // Serialize JSON columns
@@ -1534,6 +1630,8 @@ impl DispatcherDb {
                 &json_cols[5],
                 &json_cols[6],
                 &json_cols[7],
+                &serde_json::to_string(&allowed_tools)
+                    .context("serialize allowed_tools")?,
             ],
         )
         .context("save dispatcher settings")?;
@@ -1555,6 +1653,191 @@ impl DispatcherDb {
         .context("save dispatcher auto-approve setting")?;
         self.get_settings()?
             .context("load dispatcher settings after auto-approve update")
+    }
+
+    // ── Settings v2 (project / chat split) ─────────────────────
+
+    fn parse_model_configs_json(raw: &str) -> Vec<DispatcherModelConfig> {
+        serde_json::from_str::<Vec<DispatcherModelConfig>>(raw)
+            .unwrap_or_default()
+            .into_iter()
+            .map(DispatcherModelConfig::trimmed)
+            .filter(|c| !c.is_empty())
+            .collect()
+    }
+
+    fn serialize_json(configs: &[DispatcherModelConfig]) -> String {
+        serde_json::to_string(configs).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    pub fn get_settings_v2(&self) -> Result<AhaSettingsV2> {
+        let conn = self.conn()?;
+        let sql = "SELECT
+            shared_vision_model_configs_json,
+            shared_image_model_configs_json,
+            shared_image_edit_model_configs_json,
+            shared_asr_model_configs_json,
+            shared_tts_model_configs_json,
+            shared_embedding_model_configs_json,
+            project_chat_model_configs_json,
+            project_summary_model_configs_json,
+            project_allowed_tools_json,
+            chat_agent_chat_model_configs_json,
+            chat_agent_summary_model_configs_json,
+            chat_agent_allowed_tools_json,
+            auto_approve_dispatch,
+            context_debug
+        FROM dispatcher_settings_v2 WHERE id = 'default'";
+
+        match conn.query_row(sql, [], |row| {
+            Ok(AhaSettingsV2 {
+                shared: AhaSharedModels {
+                    vision_model_configs: Self::parse_model_configs_json(
+                        &row.get::<_, String>(0)?,
+                    ),
+                    image_model_configs: Self::parse_model_configs_json(
+                        &row.get::<_, String>(1)?,
+                    ),
+                    image_edit_model_configs: Self::parse_model_configs_json(
+                        &row.get::<_, String>(2)?,
+                    ),
+                    asr_model_configs: Self::parse_model_configs_json(
+                        &row.get::<_, String>(3)?,
+                    ),
+                    tts_model_configs: Self::parse_model_configs_json(
+                        &row.get::<_, String>(4)?,
+                    ),
+                    embedding_model_configs: Self::parse_model_configs_json(
+                        &row.get::<_, String>(5)?,
+                    ),
+                },
+                project: AhaContextConfig {
+                    chat_model_configs: Self::parse_model_configs_json(
+                        &row.get::<_, String>(6)?,
+                    ),
+                    summary_model_configs: Self::parse_model_configs_json(
+                        &row.get::<_, String>(7)?,
+                    ),
+                    allowed_tools: {
+                        let raw: String = row.get(8)?;
+                        serde_json::from_str(&raw).unwrap_or_default()
+                    },
+                },
+                chat: AhaContextConfig {
+                    chat_model_configs: Self::parse_model_configs_json(
+                        &row.get::<_, String>(9)?,
+                    ),
+                    summary_model_configs: Self::parse_model_configs_json(
+                        &row.get::<_, String>(10)?,
+                    ),
+                    allowed_tools: {
+                        let raw: String = row.get(11)?;
+                        serde_json::from_str(&raw).unwrap_or_default()
+                    },
+                },
+                auto_approve_dispatch: row.get::<_, i32>(12)? != 0,
+                context_debug: row.get::<_, i32>(13)? != 0,
+            })
+        }) {
+            Ok(settings) => Ok(settings),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(AhaSettingsV2::default()),
+            Err(e) => Err(e).context("load dispatcher settings v2"),
+        }
+    }
+
+    pub fn save_settings_v2(&self, settings: &AhaSettingsV2) -> Result<AhaSettingsV2> {
+        let conn = self.conn()?;
+        let shared = &settings.shared;
+        let project = &settings.project;
+        let chat = &settings.chat;
+        let auto_approve_int = if settings.auto_approve_dispatch { 1 } else { 0 };
+        let context_debug_int = if settings.context_debug { 1 } else { 0 };
+
+        let shared_vision = Self::serialize_json(&shared.vision_model_configs);
+        let shared_image = Self::serialize_json(&shared.image_model_configs);
+        let shared_image_edit = Self::serialize_json(&shared.image_edit_model_configs);
+        let shared_asr = Self::serialize_json(&shared.asr_model_configs);
+        let shared_tts = Self::serialize_json(&shared.tts_model_configs);
+        let shared_embedding = Self::serialize_json(&shared.embedding_model_configs);
+
+        let project_chat = Self::serialize_json(&project.chat_model_configs);
+        let project_summary = Self::serialize_json(&project.summary_model_configs);
+        let project_tools = serde_json::to_string(&project.allowed_tools).unwrap_or_else(|_| "[]".to_string());
+
+        let chat_agent_chat = Self::serialize_json(&chat.chat_model_configs);
+        let chat_agent_summary = Self::serialize_json(&chat.summary_model_configs);
+        let chat_agent_tools = serde_json::to_string(&chat.allowed_tools).unwrap_or_else(|_| "[]".to_string());
+
+        let sql = "INSERT INTO dispatcher_settings_v2 (
+            id,
+            shared_vision_model_configs_json,
+            shared_image_model_configs_json,
+            shared_image_edit_model_configs_json,
+            shared_asr_model_configs_json,
+            shared_tts_model_configs_json,
+            shared_embedding_model_configs_json,
+            project_chat_model_configs_json,
+            project_summary_model_configs_json,
+            project_allowed_tools_json,
+            chat_agent_chat_model_configs_json,
+            chat_agent_summary_model_configs_json,
+            chat_agent_allowed_tools_json,
+            auto_approve_dispatch,
+            context_debug
+        ) VALUES (
+            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            shared_vision_model_configs_json = ?1,
+            shared_image_model_configs_json = ?2,
+            shared_image_edit_model_configs_json = ?3,
+            shared_asr_model_configs_json = ?4,
+            shared_tts_model_configs_json = ?5,
+            shared_embedding_model_configs_json = ?6,
+            project_chat_model_configs_json = ?7,
+            project_summary_model_configs_json = ?8,
+            project_allowed_tools_json = ?9,
+            chat_agent_chat_model_configs_json = ?10,
+            chat_agent_summary_model_configs_json = ?11,
+            chat_agent_allowed_tools_json = ?12,
+            auto_approve_dispatch = ?13,
+            context_debug = ?14";
+
+        conn.execute(
+            sql,
+            params![
+                &shared_vision,
+                &shared_image,
+                &shared_image_edit,
+                &shared_asr,
+                &shared_tts,
+                &shared_embedding,
+                &project_chat,
+                &project_summary,
+                &project_tools,
+                &chat_agent_chat,
+                &chat_agent_summary,
+                &chat_agent_tools,
+                auto_approve_int,
+                context_debug_int,
+            ],
+        )
+        .context("save dispatcher settings v2")?;
+
+        self.get_settings_v2()
+    }
+
+    pub fn get_settings_for_context(&self, context: AgentContext) -> Result<AhaContextConfig> {
+        let settings = self.get_settings_v2()?;
+        Ok(match context {
+            AgentContext::Project => settings.project,
+            AgentContext::Chat => settings.chat,
+        })
+    }
+
+    pub fn get_shared_models(&self) -> Result<AhaSharedModels> {
+        let settings = self.get_settings_v2()?;
+        Ok(settings.shared)
     }
 
     // ── Sessions ──────────────────────────────────────────────
@@ -3598,7 +3881,7 @@ impl DispatcherDb {
         let mut conn = self.conn()?;
 
     // Fast path: if schema is already at the expected version, skip all DDL.
-    const SCHEMA_VERSION: i32 = 7;
+    const SCHEMA_VERSION: i32 = 10;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -3748,7 +4031,8 @@ impl DispatcherDb {
                 image_edit_model_configs_json TEXT NOT NULL DEFAULT '[]',
                 asr_model_configs_json TEXT NOT NULL DEFAULT '[]',
                 tts_model_configs_json TEXT NOT NULL DEFAULT '[]',
-                embedding_model_configs_json TEXT NOT NULL DEFAULT '[]'
+                embedding_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                allowed_tools_json TEXT NOT NULL DEFAULT '[]'
             );
 
             CREATE TABLE IF NOT EXISTS dispatcher_session_token_usage (
@@ -3799,6 +4083,36 @@ impl DispatcherDb {
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS sub_agents (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                description TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                enabled     INTEGER NOT NULL DEFAULT 1,
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS session_sub_agents (
+                session_id   TEXT NOT NULL,
+                sub_agent_id TEXT NOT NULL,
+                PRIMARY KEY (session_id, sub_agent_id),
+                FOREIGN KEY (session_id) REFERENCES dispatcher_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS global_sub_agents (
+                sub_agent_id TEXT PRIMARY KEY,
+                FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS context_sub_agents (
+                context      TEXT NOT NULL,
+                sub_agent_id TEXT NOT NULL,
+                PRIMARY KEY (context, sub_agent_id),
+                FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
             );
             ",
         )
@@ -3923,6 +4237,16 @@ impl DispatcherDb {
             )
             .context("migrate existing chat sessions to tech category")?;
 
+            super::sub_agent::db::ensure_sub_agent_tables_tx(&tx)?;
+            super::sub_agent::db::seed_browser_agent_if_missing_tx(&tx)?;
+
+            ensure_column_exists_tx(
+                &tx,
+                "dispatcher_settings",
+                "allowed_tools_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )?;
+
             tx.commit().context("commit migration transaction")?;
         }
 
@@ -4036,6 +4360,95 @@ impl DispatcherDb {
                 ",
             )
             .context("v7 migration: create session_keywords table")?;
+        }
+
+        // v7 → v8: add sub_agents, session_sub_agents, global_sub_agents tables.
+        if conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sub_agents'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            == 0
+        {
+            {
+                let tx = conn.transaction().context("v8: begin sub_agent migration")?;
+                super::sub_agent::db::ensure_sub_agent_tables_tx(&tx)?;
+                super::sub_agent::db::seed_browser_agent_if_missing_tx(&tx)?;
+                tx.commit().context("v8: commit sub_agent migration")?;
+            }
+        }
+
+        // v8 → v9: aha settings v2 — split project / chat agent configs.
+        //         Adds dispatcher_settings_v2 table and context column to sub_agents.
+        if conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dispatcher_settings_v2'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            == 0
+        {
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS dispatcher_settings_v2 (
+                    id TEXT PRIMARY KEY DEFAULT 'default',
+
+                    -- Shared models (JSON arrays of DispatcherModelConfig)
+                    shared_vision_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_image_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_image_edit_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_asr_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_tts_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_embedding_model_configs_json TEXT NOT NULL DEFAULT '[]',
+
+                    -- Project context
+                    project_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    project_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    project_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+
+                    -- Chat context
+                    chat_agent_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    chat_agent_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    chat_agent_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+
+                    -- Shared behavior flags
+                    auto_approve_dispatch INTEGER NOT NULL DEFAULT 0,
+                    context_debug INTEGER NOT NULL DEFAULT 0
+                );
+
+                ALTER TABLE sub_agents ADD COLUMN context TEXT NOT NULL DEFAULT 'project';
+                ",
+            )
+            .context("v9 migration: create dispatcher_settings_v2 and add sub_agents.context")?;
+        }
+
+        // v9 → v10: remove context column from sub_agents; sub-agents are now global
+        //           entities. Context associations move to context_sub_agents table.
+        let has_context_col = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('sub_agents') WHERE name = 'context'")
+            .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+            .unwrap_or(0);
+
+        if has_context_col > 0 {
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS context_sub_agents (
+                    context      TEXT NOT NULL,
+                    sub_agent_id TEXT NOT NULL,
+                    PRIMARY KEY (context, sub_agent_id),
+                    FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
+                );
+
+                INSERT OR IGNORE INTO context_sub_agents (context, sub_agent_id)
+                    SELECT context, id FROM sub_agents WHERE context IS NOT NULL;
+
+                ALTER TABLE sub_agents DROP COLUMN context;
+                ",
+            )
+            .context("v10 migration: contextualize sub_agents → context_sub_agents")?;
         }
 
         // Mark schema as fully migrated (outside the transaction — PRAGMA is auto-commit).
@@ -4963,7 +5376,7 @@ mod tests {
         let columns = super::settings_select_columns();
         assert_eq!(
             columns.len(),
-            SETTINGS_LEGACY_COLUMNS.len() + ModelSlot::ALL.len() * 4
+            SETTINGS_LEGACY_COLUMNS.len() + ModelSlot::ALL.len() * 4 + 1
         );
         assert_eq!(
             columns[super::settings_column_index("auto_approve_dispatch")],
@@ -5004,6 +5417,7 @@ mod tests {
                 " image-gen ",
                 "",
                 DispatcherSettingsModelConfigs::default(),
+                vec![],
             )
             .unwrap();
 
@@ -5083,6 +5497,7 @@ mod tests {
                     )),
                     ..Default::default()
                 },
+                vec![],
             )
             .unwrap();
 
@@ -5145,6 +5560,7 @@ mod tests {
                     )]),
                     ..Default::default()
                 },
+                vec![],
             )
             .unwrap();
 
@@ -5200,6 +5616,7 @@ mod tests {
                     ]),
                     ..Default::default()
                 },
+                vec![],
             )
             .unwrap();
 
@@ -5234,6 +5651,7 @@ mod tests {
                     image_edit_model_config: Some(DispatcherModelConfig::new("", "", "")),
                     ..Default::default()
                 },
+                vec![],
             )
             .unwrap();
 
@@ -5473,7 +5891,8 @@ mod tests {
                 image_edit_model_configs_json TEXT NOT NULL DEFAULT '[]',
                 asr_model_configs_json TEXT NOT NULL DEFAULT '[]',
                 tts_model_configs_json TEXT NOT NULL DEFAULT '[]',
-                embedding_model_configs_json TEXT NOT NULL DEFAULT '[]'
+                embedding_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                allowed_tools_json TEXT NOT NULL DEFAULT '[]'
             );
             INSERT INTO dispatcher_sessions (
                 id, project_id, kind, title, created_at, updated_at

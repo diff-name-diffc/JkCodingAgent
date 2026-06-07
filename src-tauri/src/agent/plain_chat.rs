@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
@@ -13,7 +14,7 @@ use super::common::{
 };
 use super::config::DispatcherAgentConfig;
 use super::db::{
-    DispatcherDb, DispatcherMessageRecord,
+    AgentContext, AhaSettingsV2, DispatcherDb, DispatcherMessageRecord,
     DispatcherSessionTokenUsageSource, DispatcherSettingsRecord,
 };
 use super::llm::{
@@ -21,6 +22,7 @@ use super::llm::{
     RequestedToolCall, ToolDefinition,
 };
 use super::runtime::{AgentEvent, AgentTurn};
+use super::sub_agent::SubAgentManager;
 use super::tools::ToolRegistry;
 use crate::shared::truncate_for_display;
 
@@ -32,11 +34,13 @@ pub struct PlainChatAgent {
     summary_api_key: Mutex<String>,
     summary_api_base: Mutex<String>,
     app_handle: Option<AppHandle>,
-    tools: ToolRegistry,
+    tools: Arc<ToolRegistry>,
+    allowed_tools: Mutex<Vec<String>>,
+    sub_agent_manager: Option<Arc<SubAgentManager>>,
 }
 
 impl PlainChatAgent {
-    pub fn new(config: DispatcherAgentConfig) -> Self {
+    pub fn new(config: DispatcherAgentConfig, sub_agent_manager: Option<Arc<SubAgentManager>>) -> Self {
         let provider = OpenAiCompatProvider::new(
             config.api_key.clone(),
             config.api_base.clone(),
@@ -44,6 +48,16 @@ impl PlainChatAgent {
             config.max_tokens,
             config.temperature,
         );
+
+        let mut registry = ToolRegistry::plain_chat_tools();
+        if let Some(manager) = &sub_agent_manager {
+            registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(
+                Arc::clone(manager),
+            )));
+            registry.add_tool(Box::new(super::sub_agent::ListSubAgentsTool::new(
+                Arc::clone(manager),
+            )));
+        }
 
         Self {
             config,
@@ -53,7 +67,9 @@ impl PlainChatAgent {
             summary_api_key: Mutex::new(String::new()),
             summary_api_base: Mutex::new(String::new()),
             app_handle: None,
-            tools: ToolRegistry::plain_chat_tools(),
+            tools: Arc::new(registry),
+            allowed_tools: Mutex::new(Vec::new()),
+            sub_agent_manager,
         }
     }
 
@@ -100,6 +116,59 @@ impl PlainChatAgent {
                 *self.summary_api_base.lock() = cfg.url.trim().to_string();
             }
         }
+        *self.allowed_tools.lock() = settings.allowed_tools.clone();
+    }
+
+    pub fn apply_settings_v2(&self, settings: &AhaSettingsV2, context: AgentContext) {
+        let ctx_config = match context {
+            AgentContext::Project => &settings.project,
+            AgentContext::Chat => &settings.chat,
+        };
+        let shared = &settings.shared;
+
+        let active_chat = ctx_config
+            .chat_model_configs
+            .iter()
+            .find(|c| c.active)
+            .or_else(|| ctx_config.chat_model_configs.first());
+        let active_summary = ctx_config
+            .summary_model_configs
+            .iter()
+            .find(|c| c.active)
+            .or_else(|| ctx_config.summary_model_configs.first());
+        let active_vision = shared
+            .vision_model_configs
+            .iter()
+            .find(|c| c.active)
+            .or_else(|| shared.vision_model_configs.first());
+
+        if let Some(chat) = active_chat {
+            let mut provider = self.provider.lock();
+            *provider = OpenAiCompatProvider::new(
+                if chat.api_key.is_empty() { self.config.api_key.clone() } else { chat.api_key.clone() },
+                if chat.url.is_empty() { self.config.api_base.clone() } else { chat.url.clone() },
+                if chat.model.is_empty() { self.config.model.clone() } else { chat.model.clone() },
+                self.config.max_tokens,
+                self.config.temperature,
+            );
+        }
+        if let Some(v) = active_vision {
+            if !v.model.trim().is_empty() {
+                *self.vision_model.lock() = v.model.trim().to_string();
+            }
+        }
+        if let Some(smc) = active_summary {
+            if !smc.model.trim().is_empty() {
+                *self.summary_model.lock() = smc.model.trim().to_string();
+            }
+            if !smc.api_key.trim().is_empty() {
+                *self.summary_api_key.lock() = smc.api_key.trim().to_string();
+            }
+            if !smc.url.trim().is_empty() {
+                *self.summary_api_base.lock() = smc.url.trim().to_string();
+            }
+        }
+        *self.allowed_tools.lock() = ctx_config.allowed_tools.clone();
     }
 
     fn summary_model(&self) -> String {
@@ -221,7 +290,8 @@ impl PlainChatAgent {
                 iteration == 0,
             )?;
 
-            let mut messages = vec![ChatMessage::system(build_plain_chat_system_prompt())];
+            let system_prompt = self.build_effective_system_prompt(workspace_id);
+            let mut messages = vec![ChatMessage::system(system_prompt)];
             messages.extend(history_messages);
 
             // Stream LLM response
@@ -489,12 +559,54 @@ impl PlainChatAgent {
             image_model_api_key: String::new(),
             image_model: String::new(),
             image_edit_model: String::new(),
+            sub_agent_tool_registry: Some(Arc::clone(&self.tools)),
         }
     }
 
+    fn build_effective_system_prompt(&self, workspace_id: &str) -> String {
+        let mut prompt = build_plain_chat_system_prompt();
+        if let Some(manager) = &self.sub_agent_manager {
+            if let Ok(agents) = manager.get_enabled_for_session(workspace_id) {
+                if !agents.is_empty() {
+                    prompt.push_str("\n\n## 当前可用子智能体\n\n");
+                    prompt.push_str("以下是当前会话已启用的子智能体，你可以直接调用：\n\n");
+                    for agent in &agents {
+                        prompt.push_str(&format!(
+                            "- **{}** (`{}`): {}\n",
+                            agent.agent_name, agent.agent_id, agent.description
+                        ));
+                    }
+                    prompt.push_str("\n使用方式：调用 call_sub_agent(agent_id, task) 来让子智能体处理特定任务。\n");
+                }
+            }
+        }
+        prompt
+    }
+
     fn build_tool_definitions(&self, workspace: &Path) -> Vec<ToolDefinition> {
-        self.tools
-            .definitions_for_workspace(workspace, Option::<std::iter::Empty<&str>>::None, false)
+        let configured = self.allowed_tools.lock().clone();
+        if configured.is_empty() {
+            self.tools
+                .definitions_for_workspace(workspace, Option::<std::iter::Empty<&str>>::None, false)
+        } else {
+            let allowed_refs: Vec<&str> = configured.iter().map(|s| s.as_str()).collect();
+            let mut defs = self.tools
+                .definitions_for_workspace(workspace, Some(allowed_refs.iter().copied()), false);
+            let has_call = defs.iter().any(|d| d.function.name == "call_sub_agent");
+            let has_list = defs.iter().any(|d| d.function.name == "list_sub_agents");
+            if !has_call || !has_list {
+                let all_defs = self.tools
+                    .definitions_for_workspace(workspace, Option::<std::iter::Empty<&str>>::None, false);
+                for def in all_defs {
+                    if (def.function.name == "call_sub_agent" && !has_call)
+                        || (def.function.name == "list_sub_agents" && !has_list)
+                    {
+                        defs.push(def);
+                    }
+                }
+            }
+            defs
+        }
     }
 }
 
@@ -567,6 +679,11 @@ fn build_plain_chat_system_prompt() -> String {
         "可以基于用户直接提供的文本、代码片段、错误信息或图片进行解释、分析、改写和建议。".to_string(),
         "默认使用简体中文，表达直接、清晰、面向有经验的开发者。".to_string(),
         String::new(),
+        "## 子智能体".to_string(),
+        String::new(),
+        "- 你可以调用 list_sub_agents 查看当前可用的子智能体列表。".to_string(),
+        "- 使用 call_sub_agent(agent_id, task) 调用子智能体处理特定领域的复杂任务。子智能体拥有独立的执行上下文，内部工具调用对你透明，你只会收到最终结果。".to_string(),
+        String::new(),
         "## 图片生成与引用".to_string(),
         String::new(),
         "- 你可以调用 generate_image 工具根据文本描述生成图片。建议提供 image_name 参数为图片命名。".to_string(),
@@ -622,7 +739,7 @@ mod tests {
     fn plain_chat_agent_has_no_project_tools_or_dynamic_mcp() {
         let root =
             std::env::temp_dir().join(format!("plain-chat-agent-tools-{}", uuid::Uuid::new_v4()));
-        let agent = PlainChatAgent::new(test_config(root.clone()));
+        let agent = PlainChatAgent::new(test_config(root.clone()), None);
         let tools = agent
             .build_tool_definitions(&root)
             .into_iter()

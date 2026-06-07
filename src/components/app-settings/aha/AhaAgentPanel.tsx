@@ -4,57 +4,56 @@ import {
   Check,
   ChevronDown,
   Circle,
-  Database,
   Eye,
   EyeOff,
-  ImageIcon,
   MessageCircle,
-  Mic,
   Plus,
   RefreshCw,
   Trash2,
+  Wrench,
   type LucideIcon,
+  Users,
   Zap,
+  FolderKanban,
+  MessageSquare,
+  Cpu,
 } from "lucide-react";
-import type { DispatcherModelConfig, DispatcherSettings } from "../../../types";
+import type {
+  AhaContextConfig,
+  AhaSettingsV2,
+  AhaSharedModels,
+  AgentContext,
+  DispatcherModelConfig,
+} from "../../../types";
 import s from "../../../styles";
+import { SubAgentManagePanel } from "../sub-agents/SubAgentManagePanel";
+import { ContextSubAgentPicker } from "../sub-agents/ContextSubAgentPicker";
 
 const DEFAULT_SUMMARY_MODEL = "deepseek-v4-flash";
 const DEFAULT_IMAGE_MODEL_URL = "https://dashscope.aliyuncs.com/api/v1";
 const DEFAULT_IMAGE_MODEL = "qwen-image-2.0-pro";
 const DEFAULT_ASR_MODEL = "fun-asr-realtime";
 
-type AhaTab = "chat" | "vision" | "image" | "voice" | "embedding";
-type ModelKind =
-  | "chat"
-  | "summary"
-  | "vision"
-  | "image"
-  | "imageEdit"
-  | "asr"
-  | "tts"
-  | "embedding";
+type TopTab = "shared" | "project" | "chat" | "sub_agents";
+type AgentSubTab = "models" | "tools" | "sub_agents";
+type SharedModelKind = "vision" | "image" | "imageEdit" | "asr" | "tts" | "embedding";
+type ContextModelKind = "chat" | "summary";
 type Feedback = { status: "success" | "error"; message: string };
 
-type AhaSettingsDraft = {
-  chatModelConfigs: DispatcherModelConfig[];
-  summaryModelConfigs: DispatcherModelConfig[];
-  visionModelConfigs: DispatcherModelConfig[];
-  imageModelConfigs: DispatcherModelConfig[];
-  imageEditModelConfigs: DispatcherModelConfig[];
-  asrModelConfigs: DispatcherModelConfig[];
-  ttsModelConfigs: DispatcherModelConfig[];
-  embeddingModelConfigs: DispatcherModelConfig[];
-  autoApproveDispatch: boolean;
-  contextDebug: boolean;
-};
+type TopTabItem = { key: TopTab; label: string; icon: LucideIcon };
+type AgentSubTabItem = { key: AgentSubTab; label: string; icon: LucideIcon };
 
-const tabs: Array<{ key: AhaTab; label: string; icon: LucideIcon }> = [
-  { key: "chat", label: "聊天主模型", icon: MessageCircle },
-  { key: "vision", label: "视觉模型", icon: Eye },
-  { key: "image", label: "图片模型", icon: ImageIcon },
-  { key: "voice", label: "语音模型", icon: Mic },
-  { key: "embedding", label: "文本向量模型", icon: Database },
+const TOP_TABS: TopTabItem[] = [
+  { key: "shared", label: "通用模型", icon: Cpu },
+  { key: "project", label: "项目智能体", icon: FolderKanban },
+  { key: "chat", label: "聊天智能体", icon: MessageSquare },
+  { key: "sub_agents", label: "子智能体", icon: Users },
+];
+
+const AGENT_SUB_TABS: AgentSubTabItem[] = [
+  { key: "models", label: "主模型", icon: MessageCircle },
+  { key: "tools", label: "工具配置", icon: Wrench },
+  { key: "sub_agents", label: "子智能体", icon: Users },
 ];
 
 function cloneModel(model?: Partial<DispatcherModelConfig> | null): DispatcherModelConfig {
@@ -69,361 +68,96 @@ function cloneModel(model?: Partial<DispatcherModelConfig> | null): DispatcherMo
 function normalizeProviders(
   providers: Array<Partial<DispatcherModelConfig> | null | undefined>,
 ): DispatcherModelConfig[] {
-  const normalized = providers
-    .filter(Boolean)
-    .map((provider) => cloneModel(provider))
-    .filter((provider) => provider.active || provider.url || provider.apiKey || provider.model);
+  const normalized = providers.filter(Boolean).map((p) => cloneModel(p));
   if (normalized.length === 0) return [];
-
-  const activeIndex = normalized.findIndex((provider) => provider.active);
-  return normalized.map((provider, index) => ({
-    ...provider,
-    active: activeIndex >= 0 ? index === activeIndex : false,
+  const activeIndex = normalized.findIndex((p) => p.active);
+  return normalized.map((p, i) => ({
+    ...p,
+    active: activeIndex >= 0 ? i === activeIndex : false,
   }));
-}
-
-function normalizeDraftProviders(
-  providers: Array<Partial<DispatcherModelConfig> | null | undefined>,
-): DispatcherModelConfig[] {
-  const normalized = providers.filter(Boolean).map((provider) => cloneModel(provider));
-  if (normalized.length === 0) return [];
-
-  const activeIndex = normalized.findIndex((provider) => provider.active);
-  return normalized.map((provider, index) => ({
-    ...provider,
-    active: activeIndex >= 0 ? index === activeIndex : false,
-  }));
-}
-
-function hasProviderValue(provider: Partial<DispatcherModelConfig> | null | undefined): boolean {
-  return Boolean(provider?.url?.trim() || provider?.apiKey?.trim() || provider?.model?.trim());
-}
-
-function providersFromSettings(
-  providers: DispatcherModelConfig[] | undefined,
-  single: DispatcherModelConfig | undefined,
-  legacy: DispatcherModelConfig,
-): DispatcherModelConfig[] {
-  const normalized = normalizeProviders(providers ?? []);
-  if (normalized.length > 0) return normalized;
-
-  const singleProvider = normalizeProviders([hasProviderValue(single) ? single : legacy]);
-  return singleProvider;
-}
-
-function activeProvider(providers: DispatcherModelConfig[]): DispatcherModelConfig {
-  return providers.find((provider) => provider.active) ?? emptyProvider();
-}
-
-function activeProviderWithFallback(
-  kind: ModelKind,
-  providers: DispatcherModelConfig[],
-  imageProvider?: DispatcherModelConfig,
-): DispatcherModelConfig {
-  const provider = activeProvider(providers);
-  if (!provider.active) return provider;
-  return withFallbacks(kind, provider, imageProvider);
-}
-
-function activeDraftProviderWithFallback(
-  kind: ModelKind,
-  providers: DispatcherModelConfig[],
-  imageProvider?: DispatcherModelConfig,
-): DispatcherModelConfig {
-  const provider = providers.find((item) => item.active);
-  if (!provider) return emptyProvider();
-  return withFallbacks(kind, provider, imageProvider);
 }
 
 function emptyProvider(): DispatcherModelConfig {
   return { url: "", apiKey: "", model: "", active: false };
 }
 
-function withFallbacks(
-  kind: ModelKind,
-  provider: DispatcherModelConfig,
-  imageProvider?: DispatcherModelConfig,
-): DispatcherModelConfig {
-  if (kind === "summary") {
-    return { ...provider, model: provider.model || DEFAULT_SUMMARY_MODEL };
-  }
-  if (kind === "image") {
-    return {
-      ...provider,
-      url: provider.url || DEFAULT_IMAGE_MODEL_URL,
-      model: provider.model || DEFAULT_IMAGE_MODEL,
-    };
-  }
-  if (kind === "imageEdit") {
-    return {
-      url: provider.url || imageProvider?.url || DEFAULT_IMAGE_MODEL_URL,
-      apiKey: provider.apiKey || imageProvider?.apiKey || "",
-      model: provider.model || imageProvider?.model || DEFAULT_IMAGE_MODEL,
-      active: provider.active,
-    };
-  }
-  if (kind === "asr") {
-    return { ...provider, model: provider.model || DEFAULT_ASR_MODEL };
-  }
-  return provider;
-}
-
-export function settingsToDraft(settings: DispatcherSettings | null): AhaSettingsDraft {
-  const legacyChat = cloneModel({
-    url: settings?.apiBase,
-    apiKey: settings?.apiKey,
-    model: settings?.model,
-  });
-  const legacySummary = cloneModel({
-    url: settings?.apiBase,
-    apiKey: settings?.apiKey,
-    model: settings?.summaryModel || DEFAULT_SUMMARY_MODEL,
-  });
-  const legacyVision = cloneModel({
-    url: settings?.apiBase,
-    apiKey: settings?.apiKey,
-    model: settings?.visionModel,
-  });
-  const legacyImage = cloneModel({
-    url: settings?.imageModelUrl || DEFAULT_IMAGE_MODEL_URL,
-    apiKey: settings?.imageModelApiKey,
-    model: settings?.imageModel || DEFAULT_IMAGE_MODEL,
-  });
-  const legacyImageEdit = cloneModel({
-    url: settings?.imageModelUrl || DEFAULT_IMAGE_MODEL_URL,
-    apiKey: settings?.imageModelApiKey,
-    model: settings?.imageEditModel || settings?.imageModel || DEFAULT_IMAGE_MODEL,
-  });
-  const legacyAsr = cloneModel({
-    url: settings?.asrWebsocketUrl,
-    apiKey: settings?.asrApiKey,
-    model: DEFAULT_ASR_MODEL,
-  });
-
-  return {
-    chatModelConfigs: providersFromSettings(
-      settings?.chatModelConfigs,
-      settings?.chatModelConfig,
-      legacyChat,
-    ),
-    summaryModelConfigs: providersFromSettings(
-      settings?.summaryModelConfigs,
-      settings?.summaryModelConfig,
-      legacySummary,
-    ),
-    visionModelConfigs: providersFromSettings(
-      settings?.visionModelConfigs,
-      settings?.visionModelConfig,
-      legacyVision,
-    ),
-    imageModelConfigs: providersFromSettings(
-      settings?.imageModelConfigs,
-      settings?.imageModelConfig,
-      legacyImage,
-    ),
-    imageEditModelConfigs: providersFromSettings(
-      settings?.imageEditModelConfigs,
-      settings?.imageEditModelConfig,
-      legacyImageEdit,
-    ),
-    asrModelConfigs: providersFromSettings(
-      settings?.asrModelConfigs,
-      settings?.asrModelConfig,
-      legacyAsr,
-    ),
-    ttsModelConfigs: normalizeProviders(settings?.ttsModelConfigs ?? [settings?.ttsModelConfig]),
-    embeddingModelConfigs: normalizeProviders(
-      settings?.embeddingModelConfigs ?? [settings?.embeddingModelConfig],
-    ),
-    autoApproveDispatch: settings?.autoApproveDispatch ?? false,
-    contextDebug: settings?.contextDebug ?? false,
-  };
-}
-
-export function draftToSavePayload(draft: AhaSettingsDraft) {
-  const chatProviders = normalizeProviders(draft.chatModelConfigs);
-  const summaryProviders = normalizeProviders(draft.summaryModelConfigs);
-  const visionProviders = normalizeProviders(draft.visionModelConfigs);
-  const imageProviders = normalizeProviders(draft.imageModelConfigs).map((provider) =>
-    withFallbacks("image", provider),
-  );
-  const activeImage = activeProvider(imageProviders);
-  const imageEditProviders = normalizeProviders(draft.imageEditModelConfigs).map((provider) =>
-    withFallbacks("imageEdit", provider, activeImage),
-  );
-  const asrProviders = normalizeProviders(draft.asrModelConfigs).map((provider) =>
-    withFallbacks("asr", provider),
-  );
-  const ttsProviders = normalizeProviders(draft.ttsModelConfigs);
-  const embeddingProviders = normalizeProviders(draft.embeddingModelConfigs);
-  const activeChat = activeProvider(chatProviders);
-  const activeSummary = activeProviderWithFallback("summary", summaryProviders);
-  const activeVision = activeProvider(visionProviders);
-  const activeImageEdit = activeDraftProviderWithFallback(
-    "imageEdit",
-    draft.imageEditModelConfigs,
-    activeImage,
-  );
-  const activeAsr = activeProviderWithFallback("asr", asrProviders);
-  const activeTts = activeProvider(ttsProviders);
-  const activeEmbedding = activeProvider(embeddingProviders);
-
-  return {
-    apiBase: activeChat.url,
-    apiKey: activeChat.apiKey,
-    model: activeChat.model,
-    summaryModel: activeSummary.model,
-    visionModel: activeVision.model,
-    asrApiKey: activeAsr.apiKey,
-    asrWebsocketUrl: activeAsr.url,
-    autoApproveDispatch: draft.autoApproveDispatch,
-    contextDebug: draft.contextDebug,
-    imageModelUrl: activeImage.url,
-    imageModelApiKey: activeImage.apiKey,
-    imageModel: activeImage.model,
-    imageEditModel: activeImageEdit.model,
-    chatModelConfig: activeChat,
-    summaryModelConfig: activeSummary,
-    visionModelConfig: activeVision,
-    imageModelConfig: activeImage,
-    imageEditModelConfig: activeImageEdit,
-    asrModelConfig: activeAsr,
-    ttsModelConfig: activeTts,
-    embeddingModelConfig: activeEmbedding,
-    chatModelConfigs: chatProviders,
-    summaryModelConfigs: summaryProviders.map((provider) => withFallbacks("summary", provider)),
-    visionModelConfigs: visionProviders,
-    imageModelConfigs: imageProviders,
-    imageEditModelConfigs: imageEditProviders,
-    asrModelConfigs: asrProviders,
-    ttsModelConfigs: ttsProviders,
-    embeddingModelConfigs: embeddingProviders,
-  };
+function activeProvider(providers: DispatcherModelConfig[]): DispatcherModelConfig {
+  return providers.find((p) => p.active) ?? emptyProvider();
 }
 
 export function AhaAgentPanel() {
-  const [activeTab, setActiveTab] = useState<AhaTab>("chat");
-  const [draft, setDraft] = useState<AhaSettingsDraft>(() => settingsToDraft(null));
+  const [activeTopTab, setActiveTopTab] = useState<TopTab>("shared");
+  const [activeSubTab, setActiveSubTab] = useState<AgentSubTab>("models");
+
+  const [shared, setShared] = useState<AhaSharedModels>({
+    visionModelConfigs: [],
+    imageModelConfigs: [],
+    imageEditModelConfigs: [],
+    asrModelConfigs: [],
+    ttsModelConfigs: [],
+    embeddingModelConfigs: [],
+  });
+  const [project, setProject] = useState<AhaContextConfig>({
+    chatModelConfigs: [],
+    summaryModelConfigs: [],
+    allowedTools: [],
+  });
+  const [chat, setChat] = useState<AhaContextConfig>({
+    chatModelConfigs: [],
+    summaryModelConfigs: [],
+    allowedTools: [],
+  });
+  const [autoApprove, setAutoApprove] = useState(false);
+  const [contextDebug, setContextDebug] = useState(false);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
-  const [expanded, setExpanded] = useState<Record<ModelKind, number>>({
-    chat: 0,
-    summary: 0,
-    vision: 0,
-    image: 0,
-    imageEdit: 0,
-    asr: 0,
-    tts: 0,
-    embedding: 0,
-  });
-  const [testing, setTesting] = useState<{ kind: ModelKind; index: number } | null>(null);
-  const [feedback, setFeedback] = useState<Record<ModelKind, Partial<Record<number, Feedback>>>>({
-    chat: {},
-    summary: {},
-    vision: {},
-    image: {},
-    imageEdit: {},
-    asr: {},
-    tts: {},
-    embedding: {},
-  });
-  const [modelLists, setModelLists] = useState<
-    Record<ModelKind, Partial<Record<number, string[]>>>
-  >({
-    chat: {},
-    summary: {},
-    vision: {},
-    image: {},
-    imageEdit: {},
-    asr: {},
-    tts: {},
-    embedding: {},
-  });
-  const [fetching, setFetching] = useState<{ kind: ModelKind; index: number } | null>(null);
-  const [fetchError, setFetchError] = useState<Record<ModelKind, Partial<Record<number, string>>>>({
-    chat: {},
-    summary: {},
-    vision: {},
-    image: {},
-    imageEdit: {},
-    asr: {},
-    tts: {},
-    embedding: {},
-  });
+
+  const [expanded, setExpanded] = useState<Record<string, number>>({});
+  const [testing, setTesting] = useState<{ key: string; index: number } | null>(null);
+  const [feedback, setFeedback] = useState<Record<string, Partial<Record<number, Feedback>>>>({});
+  const [modelLists, setModelLists] = useState<Record<string, Partial<Record<number, string[]>>>>(
+    {},
+  );
+  const [fetching, setFetching] = useState<{ key: string; index: number } | null>(null);
+  const [fetchError, setFetchError] = useState<Record<string, Partial<Record<number, string>>>>(
+    {},
+  );
 
   useEffect(() => {
-    invoke<DispatcherSettings | null>("dispatcher_get_settings")
-      .then((settings) => setDraft(settingsToDraft(settings)))
+    invoke<AhaSettingsV2>("aha_get_settings_v2")
+      .then((settings) => {
+        setShared(settings.shared);
+        setProject(settings.project);
+        setChat(settings.chat);
+        setAutoApprove(settings.autoApproveDispatch);
+        setContextDebug(settings.contextDebug);
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
-
-  function updateProviders(
-    kind: ModelKind,
-    updater: (providers: DispatcherModelConfig[]) => DispatcherModelConfig[],
-  ) {
-    const key = modelKey(kind);
-    setDraft((prev) => ({
-      ...prev,
-      [key]: normalizeDraftProviders(updater(prev[key])),
-    }));
-  }
-
-  function updateProvider(kind: ModelKind, index: number, patch: Partial<DispatcherModelConfig>) {
-    updateProviders(kind, (providers) =>
-      providers.map((provider, providerIndex) =>
-        providerIndex === index ? { ...provider, ...patch } : provider,
-      ),
-    );
-  }
-
-  function addProvider(kind: ModelKind) {
-    const nextIndex = draft[modelKey(kind)].length;
-    updateProviders(kind, (providers) => [
-      ...providers,
-      { url: "", apiKey: "", model: "", active: !providers.some((provider) => provider.active) },
-    ]);
-    setExpanded((prev) => ({ ...prev, [kind]: nextIndex }));
-  }
-
-  function removeProvider(kind: ModelKind, index: number) {
-    updateProviders(kind, (providers) => {
-      return providers.filter((_, providerIndex) => providerIndex !== index);
-    });
-    setExpanded((prev) => ({
-      ...prev,
-      [kind]: Math.max(0, Math.min(prev[kind], draft[modelKey(kind)].length - 2)),
-    }));
-  }
-
-  function activateProvider(kind: ModelKind, index: number) {
-    updateProviders(kind, (providers) =>
-      providers.map((provider, providerIndex) => {
-        const nextActive = providerIndex === index ? !provider.active : false;
-        return { ...provider, active: nextActive };
-      }),
-    );
-    setExpanded((prev) => ({ ...prev, [kind]: index }));
-  }
 
   async function handleSave() {
     setSaving(true);
     setSaved(false);
     setSaveError(null);
     try {
-      const savedSettings = await invoke<DispatcherSettings>("dispatcher_save_settings", {
-        settings: draftToSavePayload(draft),
-      });
-      setDraft(settingsToDraft(savedSettings));
-      if (savedSettings.contextDebug !== draft.contextDebug) {
-        setSaveError(
-          "上下文调试开关尚未被后端接受。若刚修改了 src-tauri 代码，请重启 pnpm tauri dev 后再保存一次。",
-        );
-        return;
-      }
+      const payload: AhaSettingsV2 = {
+        shared,
+        project,
+        chat,
+        autoApproveDispatch: autoApprove,
+        contextDebug,
+      };
+      const result = await invoke<AhaSettingsV2>("aha_save_settings_v2", { settings: payload });
+      setShared(result.shared);
+      setProject(result.project);
+      setChat(result.chat);
+      setAutoApprove(result.autoApproveDispatch);
+      setContextDebug(result.contextDebug);
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2000);
     } catch (error) {
@@ -433,157 +167,269 @@ export function AhaAgentPanel() {
     }
   }
 
-  async function testModel(kind: ModelKind, index: number) {
+  function updateSharedProviders(
+    kind: SharedModelKind,
+    updater: (providers: DispatcherModelConfig[]) => DispatcherModelConfig[],
+  ) {
+    const fieldMap: Record<SharedModelKind, keyof AhaSharedModels> = {
+      vision: "visionModelConfigs",
+      image: "imageModelConfigs",
+      imageEdit: "imageEditModelConfigs",
+      asr: "asrModelConfigs",
+      tts: "ttsModelConfigs",
+      embedding: "embeddingModelConfigs",
+    };
+    const field = fieldMap[kind];
+    setShared((prev) => ({
+      ...prev,
+      [field]: normalizeProviders(updater(prev[field])),
+    }));
+  }
+
+  function updateContextProviders(
+    context: AgentContext,
+    kind: ContextModelKind,
+    updater: (providers: DispatcherModelConfig[]) => DispatcherModelConfig[],
+  ) {
+    const setter = context === "project" ? setProject : setChat;
+    const field = kind === "chat" ? "chatModelConfigs" : "summaryModelConfigs";
+    setter((prev) => ({
+      ...prev,
+      [field]: normalizeProviders(updater(prev[field])),
+    }));
+  }
+
+  function addProvider(key: string, providers: DispatcherModelConfig[]) {
+    const nextIndex = providers.length;
+    setExpanded((prev) => ({ ...prev, [key]: nextIndex }));
+    return [
+      ...providers,
+      { url: "", apiKey: "", model: "", active: !providers.some((p) => p.active) },
+    ] as DispatcherModelConfig[];
+  }
+
+  function removeProvider(key: string, providers: DispatcherModelConfig[], index: number) {
+    setExpanded((prev) => ({
+      ...prev,
+      [key]: Math.max(0, Math.min(prev[key] ?? 0, providers.length - 2)),
+    }));
+    return providers.filter((_, i) => i !== index);
+  }
+
+  async function testModel(key: string, index: number, config: DispatcherModelConfig) {
     if (testing) return;
-    const config = draft[modelKey(kind)][index];
-    setTesting({ kind, index });
-    setFeedback((prev) => ({ ...prev, [kind]: { ...prev[kind], [index]: undefined } }));
+    setTesting({ key, index });
+    setFeedback((prev) => ({ ...prev, [key]: { ...prev[key], [index]: undefined } }));
     try {
+      const kind = key.replace(/-[0-9]+$/, "").replace(/^shared-/, "").replace(/^ctx-[^-]+-/, "");
       const message = await invoke<string>("dispatcher_test_model", { kind, config });
       setFeedback((prev) => ({
         ...prev,
-        [kind]: { ...prev[kind], [index]: { status: "success", message } },
+        [key]: { ...prev[key], [index]: { status: "success", message } },
       }));
     } catch (error) {
       setFeedback((prev) => ({
         ...prev,
-        [kind]: { ...prev[kind], [index]: { status: "error", message: String(error) } },
+        [key]: { ...prev[key], [index]: { status: "error", message: String(error) } },
       }));
     } finally {
       setTesting(null);
     }
   }
 
-  async function fetchModels(kind: ModelKind, index: number) {
-    const config = draft[modelKey(kind)][index];
-    setFetching({ kind, index });
-    setFetchError((prev) => ({ ...prev, [kind]: { ...prev[kind], [index]: "" } }));
+  async function fetchModels(key: string, index: number, config: DispatcherModelConfig) {
+    setFetching({ key, index });
+    setFetchError((prev) => ({ ...prev, [key]: { ...prev[key], [index]: "" } }));
     try {
       const models = await invoke<string[]>("dispatcher_fetch_models", {
         apiBase: config.url,
         apiKey: config.apiKey,
       });
-      setModelLists((prev) => ({ ...prev, [kind]: { ...prev[kind], [index]: models } }));
+      setModelLists((prev) => ({ ...prev, [key]: { ...prev[key], [index]: models } }));
     } catch (error) {
-      setModelLists((prev) => ({ ...prev, [kind]: { ...prev[kind], [index]: [] } }));
-      setFetchError((prev) => ({ ...prev, [kind]: { ...prev[kind], [index]: String(error) } }));
+      setModelLists((prev) => ({ ...prev, [key]: { ...prev[key], [index]: [] } }));
+      setFetchError((prev) => ({ ...prev, [key]: { ...prev[key], [index]: String(error) } }));
     } finally {
       setFetching(null);
     }
   }
 
-  function modelSection(
-    kind: ModelKind,
+  function sharedSection(
+    kind: SharedModelKind,
     title: string,
     description: string,
     options: SectionOptions = {},
   ) {
+    const providers = shared[
+      ({
+        vision: "visionModelConfigs",
+        image: "imageModelConfigs",
+        imageEdit: "imageEditModelConfigs",
+        asr: "asrModelConfigs",
+        tts: "ttsModelConfigs",
+        embedding: "embeddingModelConfigs",
+      } as Record<SharedModelKind, keyof AhaSharedModels>)[kind]
+    ];
+    const key = `shared-${kind}`;
     return (
       <ModelProviderSection
         title={title}
         description={description}
-        providers={draft[modelKey(kind)]}
-        expandedIndex={expanded[kind]}
+        providers={providers}
+        expandedIndex={expanded[key] ?? 0}
         showKey={showKey}
-        onExpandedChange={(index) => setExpanded((prev) => ({ ...prev, [kind]: index }))}
-        onChange={(index, patch) => updateProvider(kind, index, patch)}
-        onAdd={() => addProvider(kind)}
-        onRemove={(index) => removeProvider(kind, index)}
-        onActivate={(index) => activateProvider(kind, index)}
-        onTest={(index) => testModel(kind, index)}
-        onFetchModels={(index) => fetchModels(kind, index)}
-        testing={testing?.kind === kind ? testing.index : null}
-        fetching={fetching?.kind === kind ? fetching.index : null}
-        feedback={feedback[kind]}
-        modelLists={modelLists[kind]}
-        fetchError={fetchError[kind]}
+        onExpandedChange={(index) => setExpanded((prev) => ({ ...prev, [key]: index }))}
+        onChange={(index, patch) =>
+          updateSharedProviders(kind, (ps) =>
+            ps.map((p, i) => (i === index ? { ...p, ...patch } : p)),
+          )
+        }
+        onAdd={() => updateSharedProviders(kind, (ps) => addProvider(key, ps))}
+        onRemove={(index) =>
+          updateSharedProviders(kind, (ps) => removeProvider(key, ps, index))
+        }
+        onActivate={(index) =>
+          updateSharedProviders(kind, (ps) =>
+            ps.map((p, i) => ({ ...p, active: i === index ? !p.active : false })),
+          )
+        }
+        onTest={(index) => testModel(key, index, providers[index])}
+        onFetchModels={(index) => fetchModels(key, index, providers[index])}
+        testing={testing?.key === key ? testing.index : null}
+        fetching={fetching?.key === key ? fetching.index : null}
+        feedback={feedback[key] ?? {}}
+        modelLists={modelLists[key] ?? {}}
+        fetchError={fetchError[key] ?? {}}
         {...options}
       />
     );
   }
 
-  function renderActiveBody() {
-    if (activeTab === "chat") {
-      return (
-        <>
-          {modelSection("chat", "主聊天模型", "Aha 对话和工具调用的主模型。")}
-          {modelSection(
-            "summary",
-            "摘要模型",
-            "用于工具结果、子任务输出和会话标题摘要；留空时使用默认模型。",
-            {
-              modelPlaceholder: DEFAULT_SUMMARY_MODEL,
-            },
-          )}
-        </>
-      );
-    }
-
-    if (activeTab === "vision") {
-      return modelSection(
-        "vision",
-        "视觉模型",
-        "用户上传图片时使用的多模态模型。留空时图片请求会提示配置缺失。",
-      );
-    }
-
-    if (activeTab === "image") {
-      return (
-        <>
-          {modelSection("image", "图片生成模型", "generate_image 工具使用的图片生成模型。", {
-            urlPlaceholder: DEFAULT_IMAGE_MODEL_URL,
-            modelPlaceholder: DEFAULT_IMAGE_MODEL,
-          })}
-          {modelSection(
-            "imageEdit",
-            "图片编辑模型",
-            "edit_image 工具使用的图片编辑模型；模型名留空时保存层回退到当前图片生成模型。",
-            {
-              urlPlaceholder: DEFAULT_IMAGE_MODEL_URL,
-              modelPlaceholder:
-                activeProvider(draft.imageModelConfigs).model || DEFAULT_IMAGE_MODEL,
-            },
-          )}
-        </>
-      );
-    }
-
-    if (activeTab === "voice") {
-      return (
-        <>
-          {modelSection(
-            "asr",
-            "ASR 模型",
-            "实时语音识别配置。URL 为 WebSocket 地址；测试不会启动真实录音会话。",
-            {
-              urlPlaceholder: "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
-              modelPlaceholder: DEFAULT_ASR_MODEL,
-              hideModelFetch: true,
-            },
-          )}
-          {modelSection(
-            "tts",
-            "TTS 模型",
-            "预留的文本转语音模型配置；本次只保存和测试，不接入运行链路。",
-          )}
-        </>
-      );
-    }
-
-    return modelSection(
-      "embedding",
-      "文本向量模型",
-      "预留的向量模型配置；本次只保存和测试，不改变知识库或 Aha 运行链路。",
+  function contextSection(
+    context: AgentContext,
+    kind: ContextModelKind,
+    title: string,
+    description: string,
+    options: SectionOptions = {},
+  ) {
+    const state = context === "project" ? project : chat;
+    const providers = state[kind === "chat" ? "chatModelConfigs" : "summaryModelConfigs"];
+    const key = `ctx-${context}-${kind}`;
+    return (
+      <ModelProviderSection
+        title={title}
+        description={description}
+        providers={providers}
+        expandedIndex={expanded[key] ?? 0}
+        showKey={showKey}
+        onExpandedChange={(index) => setExpanded((prev) => ({ ...prev, [key]: index }))}
+        onChange={(index, patch) =>
+          updateContextProviders(context, kind, (ps) =>
+            ps.map((p, i) => (i === index ? { ...p, ...patch } : p)),
+          )
+        }
+        onAdd={() => updateContextProviders(context, kind, (ps) => addProvider(key, ps))}
+        onRemove={(index) =>
+          updateContextProviders(context, kind, (ps) => removeProvider(key, ps, index))
+        }
+        onActivate={(index) =>
+          updateContextProviders(context, kind, (ps) =>
+            ps.map((p, i) => ({ ...p, active: i === index ? !p.active : false })),
+          )
+        }
+        onTest={(index) => testModel(key, index, providers[index])}
+        onFetchModels={(index) => fetchModels(key, index, providers[index])}
+        testing={testing?.key === key ? testing.index : null}
+        fetching={fetching?.key === key ? fetching.index : null}
+        feedback={feedback[key] ?? {}}
+        modelLists={modelLists[key] ?? {}}
+        fetchError={fetchError[key] ?? {}}
+        {...options}
+      />
     );
   }
+
+  function renderSharedTab() {
+    const activeImage = activeProvider(shared.imageModelConfigs);
+    return (
+      <>
+        {sharedSection("vision", "视觉模型", "用户上传图片时使用的多模态模型。")}
+        {sharedSection("image", "图片生成模型", "generate_image 工具使用的图片生成模型。", {
+          urlPlaceholder: DEFAULT_IMAGE_MODEL_URL,
+          modelPlaceholder: DEFAULT_IMAGE_MODEL,
+        })}
+        {sharedSection(
+          "imageEdit",
+          "图片编辑模型",
+          "edit_image 工具使用的图片编辑模型。",
+          {
+            urlPlaceholder: DEFAULT_IMAGE_MODEL_URL,
+            modelPlaceholder: activeImage.model || DEFAULT_IMAGE_MODEL,
+          },
+        )}
+        {sharedSection(
+          "asr",
+          "ASR 模型",
+          "实时语音识别配置。URL 为 WebSocket 地址。",
+          {
+            urlPlaceholder: "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+            modelPlaceholder: DEFAULT_ASR_MODEL,
+            hideModelFetch: true,
+          },
+        )}
+        {sharedSection("tts", "TTS 模型", "预留的文本转语音模型配置。")}
+        {sharedSection("embedding", "文本向量模型", "预留的向量模型配置。")}
+      </>
+    );
+  }
+
+  function renderContextModelsTab(context: AgentContext) {
+    const label = context === "project" ? "项目" : "聊天";
+    return (
+      <>
+        {contextSection(context, "chat", `${label}主模型`, `${label}对话和工具调用的主模型。`)}
+        {contextSection(
+          context,
+          "summary",
+          `${label}摘要模型`,
+          `用于工具结果、子任务输出和会话标题摘要；留空时使用默认模型。`,
+          { modelPlaceholder: DEFAULT_SUMMARY_MODEL },
+        )}
+      </>
+    );
+  }
+
+  function renderToolsTab(context: AgentContext) {
+    const state = context === "project" ? project : chat;
+    const setContext = context === "project" ? setProject : setChat;
+    return (
+      <ToolsTab
+        allowedTools={state.allowedTools}
+        onChange={(next) => setContext((prev) => ({ ...prev, allowedTools: next }))}
+      />
+    );
+  }
+
+  function renderAgentTab(context: AgentContext) {
+    if (activeSubTab === "sub_agents") {
+      return <ContextSubAgentPicker context={context} />;
+    }
+    if (activeSubTab === "tools") {
+      return renderToolsTab(context);
+    }
+    return renderContextModelsTab(context);
+  }
+
+  const showSubTabs = activeTopTab === "project" || activeTopTab === "chat";
+  const agentContext: AgentContext = activeTopTab === "project" ? "project" : "chat";
 
   return (
     <>
       <div style={s.ahaPanel}>
-        <div style={s.ahaTabs} role="tablist" aria-label="Aha 模型配置类型">
-          {tabs.map((tab) => {
+        <div style={s.ahaTabs} role="tablist" aria-label="Aha 配置分类">
+          {TOP_TABS.map((tab) => {
             const Icon = tab.icon;
-            const selected = activeTab === tab.key;
+            const selected = activeTopTab === tab.key;
             return (
               <button
                 key={tab.key}
@@ -596,7 +442,11 @@ export function AhaAgentPanel() {
                   borderColor: selected ? "var(--border-medium)" : "transparent",
                   color: selected ? "var(--text-primary)" : "var(--text-muted)",
                 }}
-                onClick={() => setActiveTab(tab.key)}
+                onClick={() => {
+                  setActiveTopTab(tab.key);
+                  if (tab.key !== "shared" && tab.key !== "sub_agents")
+                    setActiveSubTab("models");
+                }}
               >
                 <Icon size={14} />
                 {tab.label}
@@ -604,93 +454,261 @@ export function AhaAgentPanel() {
             );
           })}
         </div>
-        <div style={s.ahaBody}>
-          {loading ? (
-            <div style={{ color: "var(--text-hint)", fontSize: 13 }}>加载中...</div>
-          ) : (
-            <div style={s.ahaContent}>
-              <div style={{ ...s.ahaActionRow, justifyContent: "flex-end" }}>
-                <button
-                  type="button"
-                  style={s.ahaGhostButton}
-                  onClick={() => setShowKey((value) => !value)}
-                >
-                  {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                  {showKey ? "隐藏 Key" : "显示 Key"}
-                </button>
-              </div>
-              {renderActiveBody()}
-              <BehaviorSection
-                autoApprove={draft.autoApproveDispatch}
-                contextDebug={draft.contextDebug}
-                onAutoApproveChange={(value) =>
-                  setDraft((prev) => ({ ...prev, autoApproveDispatch: value }))
-                }
-                onContextDebugChange={(value) =>
-                  setDraft((prev) => ({ ...prev, contextDebug: value }))
-                }
-              />
-            </div>
-          )}
-        </div>
-      </div>
-      <div style={s.settingsFooter}>
-        {saveError && (
-          <span style={{ ...s.ahaFeedback, color: "var(--danger)", marginRight: "auto" }}>
-            {saveError}
-          </span>
-        )}
-        {saved && (
-          <span
+
+        {showSubTabs && (
+          <div
             style={{
-              ...s.ahaFeedback,
-              display: "inline-flex",
-              alignItems: "center",
+              display: "flex",
               gap: 4,
-              color: "var(--success)",
-              marginRight: saveError ? 12 : "auto",
+              padding: "8px 20px 4px",
+              borderBottom: "1px solid var(--border-dim)",
             }}
+            role="tablist"
+            aria-label="智能体子类"
           >
-            <Check size={12} /> 已保存
-          </span>
+            {AGENT_SUB_TABS.map((tab) => {
+              const Icon = tab.icon;
+              const selected = activeSubTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  style={{
+                    ...s.ahaTab,
+                    height: 28,
+                    fontSize: 11.5,
+                    background: selected ? "var(--bg-subtle)" : "transparent",
+                    borderColor: selected ? "var(--border-dim)" : "transparent",
+                    color: selected ? "var(--text-primary)" : "var(--text-muted)",
+                  }}
+                  onClick={() => setActiveSubTab(tab.key)}
+                >
+                  <Icon size={13} />
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
         )}
-        <button
-          type="button"
-          style={{ ...s.modalSaveBtn, opacity: saving ? 0.5 : 1 }}
-          onClick={handleSave}
-          disabled={saving}
-        >
-          {saving ? "保存中..." : "保存"}
-        </button>
+
+        {activeTopTab === "sub_agents" ? (
+          <SubAgentManagePanel />
+        ) : showSubTabs && activeSubTab === "sub_agents" ? (
+          <ContextSubAgentPicker context={agentContext} />
+        ) : (
+          <div style={s.ahaBody}>
+            {loading ? (
+              <div style={{ color: "var(--text-hint)", fontSize: 13 }}>加载中...</div>
+            ) : (
+              <div style={s.ahaContent}>
+                {activeTopTab !== "shared" && (
+                  <div style={{ ...s.ahaActionRow, justifyContent: "flex-end" }}>
+                    <button
+                      type="button"
+                      style={s.ahaGhostButton}
+                      onClick={() => setShowKey((v) => !v)}
+                    >
+                      {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                      {showKey ? "隐藏 Key" : "显示 Key"}
+                    </button>
+                  </div>
+                )}
+                {activeTopTab === "shared" && renderSharedTab()}
+                {activeTopTab === "project" && renderAgentTab("project")}
+                {activeTopTab === "chat" && renderAgentTab("chat")}
+                {activeTopTab !== "shared" && activeSubTab === "models" && (
+                  <BehaviorSection
+                    autoApprove={autoApprove}
+                    contextDebug={contextDebug}
+                    onAutoApproveChange={setAutoApprove}
+                    onContextDebugChange={setContextDebug}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
+      {activeTopTab !== "sub_agents" && !(showSubTabs && activeSubTab === "sub_agents") && (
+        <div style={s.settingsFooter}>
+          {saveError && (
+            <span style={{ ...s.ahaFeedback, color: "var(--danger)", marginRight: "auto" }}>
+              {saveError}
+            </span>
+          )}
+          {saved && (
+            <span
+              style={{
+                ...s.ahaFeedback,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                color: "var(--success)",
+                marginRight: saveError ? 12 : "auto",
+              }}
+            >
+              <Check size={12} /> 已保存
+            </span>
+          )}
+          <button
+            type="button"
+            style={{ ...s.modalSaveBtn, opacity: saving ? 0.5 : 1 }}
+            onClick={handleSave}
+            disabled={saving}
+          >
+            {saving ? "保存中..." : "保存"}
+          </button>
+        </div>
+      )}
     </>
   );
 }
 
-function modelKey(
-  kind: ModelKind,
-): keyof Pick<
-  AhaSettingsDraft,
-  | "chatModelConfigs"
-  | "summaryModelConfigs"
-  | "visionModelConfigs"
-  | "imageModelConfigs"
-  | "imageEditModelConfigs"
-  | "asrModelConfigs"
-  | "ttsModelConfigs"
-  | "embeddingModelConfigs"
-> {
-  const keys = {
-    chat: "chatModelConfigs",
-    summary: "summaryModelConfigs",
-    vision: "visionModelConfigs",
-    image: "imageModelConfigs",
-    imageEdit: "imageEditModelConfigs",
-    asr: "asrModelConfigs",
-    tts: "ttsModelConfigs",
-    embedding: "embeddingModelConfigs",
-  } as const;
-  return keys[kind];
+function ToolsTab({
+  allowedTools,
+  onChange,
+}: {
+  allowedTools: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [availableTools, setAvailableTools] = useState<
+    Array<{ name: string; description: string }>
+  >([]);
+  useEffect(() => {
+    invoke<Array<{ name: string; description: string }>>("sub_agent_list_tools")
+      .then(setAvailableTools)
+      .catch(() => {});
+  }, []);
+
+  const selectedSet = new Set(allowedTools);
+  const selectedList = availableTools.filter((t) => selectedSet.has(t.name));
+  const unselectedList = availableTools.filter((t) => !selectedSet.has(t.name));
+
+  function toggleTool(name: string) {
+    const next = selectedSet.has(name)
+      ? allowedTools.filter((t) => t !== name)
+      : [...allowedTools, name];
+    onChange(next);
+  }
+
+  return (
+    <div style={s.ahaSection}>
+      <div style={s.ahaSectionTitle}>工具配置</div>
+      <div style={{ ...s.ahaSectionDescription, marginBottom: 12 }}>
+        选择当前智能体可使用的工具。未选择时使用默认工具集。
+      </div>
+      <div style={s.ahaField}>
+        <label style={s.ahaLabel}>
+          已选工具 ({selectedList.length})
+          {selectedList.length === 0 && (
+            <span style={{ color: "var(--text-hint)", fontWeight: 400, marginLeft: 8 }}>
+              使用默认工具集
+            </span>
+          )}
+        </label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {selectedList.length === 0 && (
+            <span style={s.ahaHint}>未做任何选择，使用全部默认工具</span>
+          )}
+          {selectedList.map((tool) => (
+            <label
+              key={tool.name}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "6px 8px",
+                borderRadius: 6,
+                background: "var(--bg-subtle)",
+                cursor: "pointer",
+              }}
+            >
+              <input type="checkbox" checked onChange={() => toggleTool(tool.name)} />
+              <span style={{ fontSize: 12, fontFamily: "var(--font-mono)" }}>{tool.name}</span>
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {tool.description.slice(0, 50)}
+                {tool.description.length > 50 ? "..." : ""}
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <div style={s.ahaField}>
+        <label style={s.ahaLabel}>可选工具</label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {unselectedList.map((tool) => (
+            <label
+              key={tool.name}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "6px 8px",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+            >
+              <input type="checkbox" checked={false} onChange={() => toggleTool(tool.name)} />
+              <span style={{ fontSize: 12, fontFamily: "var(--font-mono)" }}>{tool.name}</span>
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {tool.description.slice(0, 50)}
+                {tool.description.length > 50 ? "..." : ""}
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BehaviorSection({
+  autoApprove,
+  contextDebug,
+  onAutoApproveChange,
+  onContextDebugChange,
+}: {
+  autoApprove: boolean;
+  contextDebug: boolean;
+  onAutoApproveChange: (value: boolean) => void;
+  onContextDebugChange: (value: boolean) => void;
+}) {
+  return (
+    <section style={{ ...s.ahaSection, borderBottom: "none", paddingBottom: 0 }}>
+      <div>
+        <div style={s.ahaSectionTitle}>行为</div>
+        <div style={s.ahaSectionDescription}>
+          这些开关影响智能体执行方式（项目和聊天共享）。
+        </div>
+      </div>
+      <label style={s.ahaToggleRow}>
+        <input
+          type="checkbox"
+          checked={autoApprove}
+          onChange={(e) => onAutoApproveChange(e.target.checked)}
+          style={{ accentColor: "var(--accent)", cursor: "pointer", width: 14, height: 14 }}
+        />
+        <span style={{ fontSize: 12.5, color: "var(--text-primary)" }}>自动批准操作</span>
+      </label>
+      <span style={{ ...s.ahaHint, marginLeft: 22 }}>
+        开启后，智能体在运行子任务前不再额外请求确认。
+      </span>
+      <label style={s.ahaToggleRow}>
+        <input
+          type="checkbox"
+          checked={contextDebug}
+          onChange={(e) => onContextDebugChange(e.target.checked)}
+          style={{ accentColor: "var(--accent)", cursor: "pointer", width: 14, height: 14 }}
+        />
+        <span style={{ fontSize: 12.5, color: "var(--text-primary)" }}>上下文调试日志</span>
+      </label>
+      <span style={{ ...s.ahaHint, marginLeft: 22 }}>
+        仅在调试时开启。日志文件位于项目根目录的 <code>logs/agent.debug</code>。
+      </span>
+    </section>
+  );
 }
 
 type SectionOptions = {
@@ -880,10 +898,7 @@ function ProviderEditor({
           </button>
           <button
             type="button"
-            style={{
-              ...s.ahaInlineButton,
-              color: "var(--danger)",
-            }}
+            style={{ ...s.ahaInlineButton, color: "var(--danger)" }}
             onClick={onRemove}
             title="删除当前 Provider"
           >
@@ -900,7 +915,7 @@ function ProviderEditor({
               <input
                 style={s.ahaInput}
                 value={provider.url}
-                onChange={(event) => onChange({ url: event.target.value })}
+                onChange={(e) => onChange({ url: e.target.value })}
                 placeholder={urlPlaceholder}
                 spellCheck={false}
               />
@@ -911,20 +926,13 @@ function ProviderEditor({
                 style={s.ahaInput}
                 type={showKey ? "text" : "password"}
                 value={provider.apiKey}
-                onChange={(event) => onChange({ apiKey: event.target.value })}
+                onChange={(e) => onChange({ apiKey: e.target.value })}
                 placeholder="sk-..."
                 spellCheck={false}
               />
             </label>
             <div style={s.ahaField}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 10,
-                }}
-              >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={s.ahaLabel}>模型名称</span>
                 {!hideModelFetch && (
                   <button
@@ -942,8 +950,8 @@ function ProviderEditor({
                 <input
                   style={{ ...s.ahaInput, paddingRight: modelList.length > 0 ? 32 : 10 }}
                   value={provider.model}
-                  onChange={(event) => {
-                    onChange({ model: event.target.value });
+                  onChange={(e) => {
+                    onChange({ model: e.target.value });
                     if (modelList.length > 0) setDropdownOpen(true);
                   }}
                   onFocus={() => {
@@ -955,7 +963,7 @@ function ProviderEditor({
                 {modelList.length > 0 && (
                   <button
                     type="button"
-                    onClick={() => setDropdownOpen((open) => !open)}
+                    onClick={() => setDropdownOpen((o) => !o)}
                     style={s.ahaDropdownToggle}
                     aria-label="展开模型列表"
                   >
@@ -971,14 +979,7 @@ function ProviderEditor({
                 {dropdownOpen && modelList.length > 0 && (
                   <div style={s.ahaDropdown}>
                     {filteredModels.length === 0 ? (
-                      <div
-                        style={{
-                          padding: "8px 12px",
-                          fontSize: 12,
-                          color: "var(--text-hint)",
-                          textAlign: "center",
-                        }}
-                      >
+                      <div style={{ padding: "8px 12px", fontSize: 12, color: "var(--text-hint)" }}>
                         没有匹配的模型
                       </div>
                     ) : (
@@ -991,8 +992,7 @@ function ProviderEditor({
                             width: "100%",
                             textAlign: "left",
                             border: "none",
-                            color:
-                              item === provider.model ? "var(--accent)" : "var(--text-primary)",
+                            color: item === provider.model ? "var(--accent)" : "var(--text-primary)",
                             background:
                               item === provider.model ? "var(--accent-subtle)" : "transparent",
                           }}
@@ -1009,7 +1009,9 @@ function ProviderEditor({
                 )}
               </div>
               {fetchError && (
-                <span style={{ ...s.ahaHint, color: "var(--danger)" }}>获取失败：{fetchError}</span>
+                <span style={{ ...s.ahaHint, color: "var(--danger)" }}>
+                  获取失败：{fetchError}
+                </span>
               )}
             </div>
           </div>
@@ -1033,52 +1035,5 @@ function ProviderEditor({
         </>
       )}
     </div>
-  );
-}
-
-function BehaviorSection({
-  autoApprove,
-  contextDebug,
-  onAutoApproveChange,
-  onContextDebugChange,
-}: {
-  autoApprove: boolean;
-  contextDebug: boolean;
-  onAutoApproveChange: (value: boolean) => void;
-  onContextDebugChange: (value: boolean) => void;
-}) {
-  return (
-    <section style={{ ...s.ahaSection, borderBottom: "none", paddingBottom: 0 }}>
-      <div>
-        <div style={s.ahaSectionTitle}>行为</div>
-        <div style={s.ahaSectionDescription}>
-          这些开关不属于模型配置，但会影响 Aha 智能体执行方式。
-        </div>
-      </div>
-      <label style={s.ahaToggleRow}>
-        <input
-          type="checkbox"
-          checked={autoApprove}
-          onChange={(event) => onAutoApproveChange(event.target.checked)}
-          style={{ accentColor: "var(--accent)", cursor: "pointer", width: 14, height: 14 }}
-        />
-        <span style={{ fontSize: 12.5, color: "var(--text-primary)" }}>自动批准操作</span>
-      </label>
-      <span style={{ ...s.ahaHint, marginLeft: 22 }}>
-        开启后，Aha 智能体在运行子任务前不再额外请求确认。
-      </span>
-      <label style={s.ahaToggleRow}>
-        <input
-          type="checkbox"
-          checked={contextDebug}
-          onChange={(event) => onContextDebugChange(event.target.checked)}
-          style={{ accentColor: "var(--accent)", cursor: "pointer", width: 14, height: 14 }}
-        />
-        <span style={{ fontSize: 12.5, color: "var(--text-primary)" }}>上下文调试日志</span>
-      </label>
-      <span style={{ ...s.ahaHint, marginLeft: 22 }}>
-        仅在调试时开启。日志文件位于项目根目录的 <code>logs/agent.debug</code>。
-      </span>
-    </section>
   );
 }

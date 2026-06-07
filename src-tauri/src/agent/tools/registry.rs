@@ -8,7 +8,7 @@ use super::context::ToolContext;
 use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
 
 #[async_trait]
-pub(crate) trait AgentTool: Send + Sync {
+pub trait AgentTool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn parameters(&self) -> Value;
@@ -40,6 +40,17 @@ impl ToolRegistry {
     ) -> Self {
         self.dynamic_provider = Some(dynamic_provider);
         self
+    }
+
+    pub fn add_tool(&mut self, tool: Box<dyn AgentTool>) {
+        self.tools.push(tool);
+    }
+
+    pub fn tool_names_and_descriptions(&self) -> Vec<(String, String)> {
+        self.tools
+            .iter()
+            .map(|t| (t.name().to_string(), t.description().to_string()))
+            .collect()
     }
 
     pub fn definitions_for_workspace<'a, I>(

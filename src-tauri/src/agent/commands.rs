@@ -13,12 +13,12 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::config::{DispatcherAgentConfig, DEFAULT_SUMMARY_MODEL};
 use super::db::{
-    ChatCategory, ChatSessionRecord, DispatcherDb, DispatcherMessageRecord, DispatcherMode,
-    DispatcherModelConfig, DispatcherSessionKind, DispatcherSessionRecord,
-    DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord,
-    DispatcherSessionTokenUsageSource, DispatcherSettingsModelConfigs, DispatcherSettingsRecord,
-    DispatcherToolArtifactRecord, KeywordAction, ProjectSessionRecord, SessionKeywordRecord,
-    SessionPage, SessionSearchResult,
+    AgentContext, AhaContextConfig, AhaSettingsV2, AhaSharedModels, ChatCategory, ChatSessionRecord,
+    DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherModelConfig,
+    DispatcherSessionKind, DispatcherSessionRecord, DispatcherSessionRuntimeState,
+    DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
+    DispatcherSettingsModelConfigs, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
+    KeywordAction, ProjectSessionRecord, SessionKeywordRecord, SessionPage, SessionSearchResult,
 };
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
@@ -26,10 +26,12 @@ use super::plain_chat::PlainChatAgent;
 use super::runtime::{
     AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent, DispatcherSubprocessRegistry,
 };
+use super::sub_agent::SubAgentManager;
 use super::summary::{
     fallback_session_title, parse_keyword_actions, summarize_session_keywords,
     summarize_session_title, SessionTitleMessage,
 };
+use super::tools::ToolRegistry;
 use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::browser::BrowserManager;
 use crate::project::mcp::ProjectMcpRegistry;
@@ -48,6 +50,8 @@ pub struct DispatcherState {
     next_title_generation: AtomicU64,
     keywords_generations: Mutex<HashMap<String, u64>>,
     next_keywords_generation: AtomicU64,
+    sub_agent_manager: Option<Arc<SubAgentManager>>,
+    registered_tools: Mutex<Option<Vec<(String, String)>>>,
 }
 
 #[derive(Clone)]
@@ -93,6 +97,7 @@ pub struct DispatcherSaveSettingsPayload {
     asr_model_configs: Option<Vec<DispatcherModelConfig>>,
     tts_model_configs: Option<Vec<DispatcherModelConfig>>,
     embedding_model_configs: Option<Vec<DispatcherModelConfig>>,
+    allowed_tools: Option<Vec<String>>,
 }
 
 impl DispatcherState {
@@ -100,6 +105,15 @@ impl DispatcherState {
         let config = DispatcherAgentConfig::load()?;
         let db = DispatcherDb::new(config.db_path.clone())?;
         let subprocesses = Arc::new(DispatcherSubprocessRegistry::default());
+        let sub_agent_manager =
+            Arc::new(SubAgentManager::new(db.pool()));
+        if let Err(e) = sub_agent_manager.load_all() {
+            eprintln!("failed to load sub_agent configs: {}", e);
+        }
+
+        let initial_tool_registry =
+            ToolRegistry::default_tools(project_mcp_registry.clone());
+        let initial_tool_names = initial_tool_registry.tool_names_and_descriptions();
 
         Ok(Self {
             config,
@@ -112,7 +126,21 @@ impl DispatcherState {
             next_title_generation: AtomicU64::new(1),
             keywords_generations: Mutex::new(HashMap::new()),
             next_keywords_generation: AtomicU64::new(1),
+            sub_agent_manager: Some(sub_agent_manager),
+            registered_tools: Mutex::new(Some(initial_tool_names)),
         })
+    }
+
+    pub fn sub_agent_manager(&self) -> Option<Arc<SubAgentManager>> {
+        self.sub_agent_manager.clone()
+    }
+
+    pub fn registered_tool_names(&self) -> Option<Vec<(String, String)>> {
+        self.registered_tools.lock().clone()
+    }
+
+    pub fn set_registered_tools(&self, tools: Vec<(String, String)>) {
+        *self.registered_tools.lock() = Some(tools);
     }
 
     fn build_run_agent(&self) -> DispatcherAgent {
@@ -120,21 +148,32 @@ impl DispatcherState {
             self.config.clone(),
             self.project_mcp_registry.clone(),
             Arc::clone(&self.subprocesses),
+            self.sub_agent_manager.clone(),
         );
 
-        if let Ok(Some(settings)) = self.db.get_settings() {
+        if let Ok(v2) = self.db.get_settings_v2() {
+            agent.apply_settings_v2(&v2, AgentContext::Project);
+            agent.set_auto_approve_dispatch(v2.auto_approve_dispatch);
+            agent.set_context_debug(v2.context_debug);
+        } else if let Ok(Some(settings)) = self.db.get_settings() {
             agent.apply_settings(&settings);
             agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
             agent.set_context_debug(settings.context_debug);
+        }
+
+        if self.registered_tool_names().is_none() {
+            self.set_registered_tools(agent.tools_arc().tool_names_and_descriptions());
         }
 
         agent
     }
 
     fn build_plain_chat_agent(&self) -> PlainChatAgent {
-        let agent = PlainChatAgent::new(self.config.clone());
+        let agent = PlainChatAgent::new(self.config.clone(), self.sub_agent_manager.clone());
 
-        if let Ok(Some(settings)) = self.db.get_settings() {
+        if let Ok(v2) = self.db.get_settings_v2() {
+            agent.apply_settings_v2(&v2, AgentContext::Chat);
+        } else if let Ok(Some(settings)) = self.db.get_settings() {
             agent.apply_settings(&settings);
         }
 
@@ -1295,6 +1334,7 @@ pub async fn dispatcher_save_settings(
                 tts_model_configs: settings.tts_model_configs,
                 embedding_model_configs: settings.embedding_model_configs,
             },
+            settings.allowed_tools.unwrap_or_default(),
         )
         .map_err(|error| error.to_string())?;
 
@@ -1469,6 +1509,46 @@ pub async fn dispatcher_set_auto_approve_dispatch(
         .set_auto_approve_dispatch(auto_approve_dispatch)
         .map_err(|error| error.to_string())?;
     Ok(record)
+}
+
+#[tauri::command]
+pub async fn aha_get_settings_v2(
+    state: tauri::State<'_, DispatcherState>,
+) -> Result<AhaSettingsV2, String> {
+    state.db.get_settings_v2().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn aha_save_settings_v2(
+    state: tauri::State<'_, DispatcherState>,
+    settings: AhaSettingsV2,
+) -> Result<AhaSettingsV2, String> {
+    state
+        .db
+        .save_settings_v2(&settings)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn aha_get_context_config(
+    state: tauri::State<'_, DispatcherState>,
+    context: String,
+) -> Result<AhaContextConfig, String> {
+    let ctx = AgentContext::from_wire(&context).map_err(|e| e.to_string())?;
+    state
+        .db
+        .get_settings_for_context(ctx)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn aha_get_shared_models(
+    state: tauri::State<'_, DispatcherState>,
+) -> Result<AhaSharedModels, String> {
+    state
+        .db
+        .get_shared_models()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

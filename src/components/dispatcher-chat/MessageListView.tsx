@@ -1,4 +1,4 @@
-import { memo, type RefObject } from "react";
+import { memo, useMemo, type RefObject } from "react";
 import type {
   ChecklistPlanState,
   DispatcherMessageUsageStats,
@@ -10,6 +10,11 @@ import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcher
 import type { ToolActivityItem } from "../ToolActivityBubble";
 import { UserMessageBubble, AssistantTurnBubble } from "./MessageBubbles";
 import { InteractionDrawer } from "./InteractionDrawer";
+import { SubAgentExecutionCard } from "../SubAgentExecutionView";
+import {
+  extractAgentIdsFromToolInput,
+  useSubAgentSessions,
+} from "../subAgentEventStore";
 import { dispatcherChatStyles as styles } from "./dispatcherChatStyles";
 
 interface MessageListProps {
@@ -37,6 +42,16 @@ interface MessageListProps {
   pythonRunRecords?: Record<string, PythonCodeRunRecord>;
 }
 
+function extractSubAgentIdsFromTools(tools: ToolActivityItem[]): string[] {
+  const ids: string[] = [];
+  for (const tool of tools) {
+    if (tool.name !== "call_sub_agent") continue;
+    const agentId = extractAgentIdsFromToolInput(tool.input);
+    if (agentId) ids.push(agentId);
+  }
+  return ids;
+}
+
 export const MessageList = memo(function MessageList({
   displayItems,
   streamingSegments,
@@ -61,8 +76,14 @@ export const MessageList = memo(function MessageList({
   onRunPython,
   pythonRunRecords,
 }: MessageListProps) {
+  const subAgentSessions = useSubAgentSessions(sessionId);
+
   const hasLiveSegments = streamingSegments.some((segment) => segment.text.trim());
   const hasAssistantPlaceholder = Boolean(assistantPlaceholder?.trim());
+  const liveSubAgentIds = useMemo(
+    () => extractSubAgentIdsFromTools(liveToolCalls),
+    [liveToolCalls],
+  );
 
   return (
     <div
@@ -83,36 +104,68 @@ export const MessageList = memo(function MessageList({
           onStayInPlanMode={onStayInPlanMode}
         />
       )}
-      {displayItems.map((item) =>
-        item.kind === "user" ? (
-          <UserMessageBubble key={item.id} message={item.message} onRunPython={onRunPython} pythonRunRecords={pythonRunRecords} />
-        ) : (
-          <AssistantTurnBubble
-            key={item.id}
-            segments={item.turn.segments}
-            tools={item.turn.tools}
-            workspaceId={sessionId}
-            usageStats={item.turn.usageStats}
-            thinking={item.turn.thinking}
-            onRunPython={onRunPython}
-            pythonRunRecords={pythonRunRecords}
-          />
-        ),
-      )}
+      {displayItems.map((item) => {
+        if (item.kind === "user") {
+          return (
+            <UserMessageBubble
+              key={item.id}
+              message={item.message}
+              onRunPython={onRunPython}
+              pythonRunRecords={pythonRunRecords}
+            />
+          );
+        }
+        const turnSubAgentIds = extractSubAgentIdsFromTools(item.turn.tools);
+        const turnCards = turnSubAgentIds
+          .map((agentId) => subAgentSessions[agentId])
+          .filter(Boolean);
+        return (
+          <div key={item.id}>
+            {turnCards.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "8px 0" }}>
+                {turnCards.map((session) => (
+                  <SubAgentExecutionCard key={session.agentId} session={session} />
+                ))}
+              </div>
+            )}
+            <AssistantTurnBubble
+              segments={item.turn.segments}
+              tools={item.turn.tools}
+              workspaceId={sessionId}
+              usageStats={item.turn.usageStats}
+              thinking={item.turn.thinking}
+              onRunPython={onRunPython}
+              pythonRunRecords={pythonRunRecords}
+            />
+          </div>
+        );
+      })}
       {(hasLiveSegments ||
         liveThinking ||
         liveToolCalls.length > 0 ||
         hasAssistantPlaceholder ||
         liveUsageStats) && (
-        <AssistantTurnBubble
-          segments={streamingSegments}
-          tools={liveToolCalls}
-          workspaceId={sessionId}
-          usageStats={liveUsageStats}
-          thinking={liveThinking}
-          placeholderText={assistantPlaceholder}
-          streaming={isStreaming}
-        />
+        <div>
+          {liveSubAgentIds.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "8px 0" }}>
+              {liveSubAgentIds
+                .map((agentId) => subAgentSessions[agentId])
+                .filter(Boolean)
+                .map((session) => (
+                  <SubAgentExecutionCard key={session.agentId} session={session} />
+                ))}
+            </div>
+          )}
+          <AssistantTurnBubble
+            segments={streamingSegments}
+            tools={liveToolCalls}
+            workspaceId={sessionId}
+            usageStats={liveUsageStats}
+            thinking={liveThinking}
+            placeholderText={assistantPlaceholder}
+            streaming={isStreaming}
+          />
+        </div>
       )}
     </div>
   );

@@ -293,7 +293,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             ),
           );
         }).catch(console.error);
-      invoke<DispatcherSessionRuntimeState>("dispatcher_get_session_runtime_state", { sessionId })
+      invoke<DispatcherSessionRuntimeState>("dispatcher_get_session_runtime_state", { workspaceId: sessionId })
         .then((state) => {
           if (currentSessionIdRef.current !== sessionId || historyLoadRef.current !== loadId) return;
           setMode(state.mode); setChecklist(state.checklist ?? null);
@@ -450,7 +450,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onOpenMcpStatus={() => onOpenMcpStatus?.()}
               onToggleAutoApprove={handlers.handleToggleAutoApprove}
               onCompositionStart={() => { inputComposingRef.current = true; }}
-              onCompositionEnd={() => { inputComposingRef.current = false; }}
+              onCompositionEnd={() => { setTimeout(() => { inputComposingRef.current = false; }, 200); }}
             />
           )}
           {(!isEmpty || isPlainChat) && (
@@ -470,7 +470,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onToggleMode={handlers.handleModeToggle} onToggleThinking={handlers.handleToggleThinking}
               onToggleVoiceInput={voiceInput.toggleRecording} onDismissVoiceError={voiceInput.clearError}
               onCompositionStart={() => { inputComposingRef.current = true; }}
-              onCompositionEnd={() => { inputComposingRef.current = false; }}
+              onCompositionEnd={() => { setTimeout(() => { inputComposingRef.current = false; }, 200); }}
               onAnswerPlanQuestion={handlers.handleAnswerPlanQuestion}
               onImplementPlan={handlers.handleImplementPlan}
               onImplementPlanWithClearedContext={handlers.handleImplementPlanWithClearedContext}

@@ -1,8 +1,10 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use tauri::AppHandle;
 
 use crate::agent::llm::OpenAiCompatProvider;
+use crate::agent::tools::registry::ToolRegistry;
 
 #[derive(Clone)]
 pub struct ToolContext {
@@ -20,4 +22,5 @@ pub struct ToolContext {
     pub image_model_api_key: String,
     pub image_model: String,
     pub image_edit_model: String,
+    pub sub_agent_tool_registry: Option<Arc<ToolRegistry>>,
 }

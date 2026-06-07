@@ -13,7 +13,7 @@ pub use planning::{
     parse_ask_plan_question, parse_create_plan_document, parse_edit_plan_document,
     parse_present_plan, parse_replace_plan_document, parse_update_plan, UpdatePlanDraft,
 };
-pub use registry::ToolRegistry;
+pub use registry::{AgentTool, ToolRegistry};
 
 use crate::project::mcp::ProjectMcpRegistry;
 

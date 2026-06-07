@@ -21,8 +21,8 @@ use super::common::{
 };
 use super::config::DispatcherAgentConfig;
 use super::db::{
-    ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb,
-    DispatcherMessageRecord, DispatcherMessageUsageStats, DispatcherMode,
+    AgentContext, AhaSettingsV2, ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus,
+    DispatcherDb, DispatcherMessageRecord, DispatcherMessageUsageStats, DispatcherMode,
     DispatcherSessionRuntimeState, DispatcherSessionTokenUsageSource, DispatcherSettingsRecord,
     DispatcherToolArtifactRef, PlanInteraction, PlanQuestionOption, TOOL_RETRY_CONTEXT_PREFIX,
 };
@@ -205,9 +205,11 @@ pub struct DispatcherAgent {
     provider: Mutex<OpenAiCompatProvider>,
     models: Mutex<Models>,
     app_handle: Option<AppHandle>,
-    tools: ToolRegistry,
+    tools: Arc<ToolRegistry>,
     project_mcp_registry: ProjectMcpRegistry,
     subprocesses: Arc<DispatcherSubprocessRegistry>,
+    allowed_tools: Mutex<Vec<String>>,
+    sub_agent_manager: Option<Arc<super::sub_agent::SubAgentManager>>,
 }
 
 struct Models {
@@ -552,6 +554,7 @@ impl DispatcherAgent {
         config: DispatcherAgentConfig,
         project_mcp_registry: ProjectMcpRegistry,
         subprocesses: Arc<DispatcherSubprocessRegistry>,
+        sub_agent_manager: Option<Arc<super::sub_agent::SubAgentManager>>,
     ) -> Self {
         let provider = OpenAiCompatProvider::new(
             config.api_key.clone(),
@@ -560,6 +563,16 @@ impl DispatcherAgent {
             config.max_tokens,
             config.temperature,
         );
+
+        let mut registry = ToolRegistry::default_tools(project_mcp_registry.clone());
+        if let Some(manager) = &sub_agent_manager {
+            registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(
+                Arc::clone(manager),
+            )));
+            registry.add_tool(Box::new(super::sub_agent::ListSubAgentsTool::new(
+                Arc::clone(manager),
+            )));
+        }
 
         Self {
             models: Mutex::new(Models {
@@ -575,10 +588,16 @@ impl DispatcherAgent {
             app_handle: None,
             config,
             provider: Mutex::new(provider),
-            tools: ToolRegistry::default_tools(project_mcp_registry.clone()),
+            tools: Arc::new(registry),
             project_mcp_registry,
             subprocesses,
+            allowed_tools: Mutex::new(Vec::new()),
+            sub_agent_manager,
         }
+    }
+
+    pub fn tools_arc(&self) -> Arc<ToolRegistry> {
+        Arc::clone(&self.tools)
     }
 
     pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
@@ -635,6 +654,92 @@ impl DispatcherAgent {
         if !settings.image_edit_model.trim().is_empty() {
             models.image_edit_model = settings.image_edit_model.trim().to_string();
         }
+        *self.allowed_tools.lock() = settings.allowed_tools.clone();
+    }
+
+    pub fn apply_settings_v2(
+        &self,
+        settings: &AhaSettingsV2,
+        context: AgentContext,
+    ) {
+        let ctx_config = match context {
+            AgentContext::Project => &settings.project,
+            AgentContext::Chat => &settings.chat,
+        };
+        let shared = &settings.shared;
+
+        let active_chat = ctx_config
+            .chat_model_configs
+            .iter()
+            .find(|c| c.active)
+            .or_else(|| ctx_config.chat_model_configs.first());
+        let active_summary = ctx_config
+            .summary_model_configs
+            .iter()
+            .find(|c| c.active)
+            .or_else(|| ctx_config.summary_model_configs.first());
+        let active_vision = shared
+            .vision_model_configs
+            .iter()
+            .find(|c| c.active)
+            .or_else(|| shared.vision_model_configs.first());
+        let active_image = shared
+            .image_model_configs
+            .iter()
+            .find(|c| c.active)
+            .or_else(|| shared.image_model_configs.first());
+        let active_image_edit = shared
+            .image_edit_model_configs
+            .iter()
+            .find(|c| c.active)
+            .or_else(|| shared.image_edit_model_configs.first())
+            .or(active_image);
+
+        if let Some(chat) = active_chat {
+            let mut provider = self.provider.lock();
+            *provider = OpenAiCompatProvider::new(
+                if chat.api_key.is_empty() { self.config.api_key.clone() } else { chat.api_key.clone() },
+                if chat.url.is_empty() { self.config.api_base.clone() } else { chat.url.clone() },
+                if chat.model.is_empty() { self.config.model.clone() } else { chat.model.clone() },
+                self.config.max_tokens,
+                self.config.temperature,
+            );
+        }
+
+        let mut models = self.models.lock();
+        if let Some(smc) = active_summary {
+            if !smc.model.trim().is_empty() {
+                models.summary_model = normalize_summary_model(&smc.model);
+            }
+            if !smc.api_key.trim().is_empty() {
+                models.summary_api_key = smc.api_key.trim().to_string();
+            }
+            if !smc.url.trim().is_empty() {
+                models.summary_api_base = smc.url.trim().to_string();
+            }
+        }
+        if let Some(v) = active_vision {
+            if !v.model.trim().is_empty() {
+                models.vision_model = v.model.trim().to_string();
+            }
+        }
+        if let Some(img) = active_image {
+            if !img.url.trim().is_empty() {
+                models.image_model_url = img.url.trim().to_string();
+            }
+            if !img.api_key.trim().is_empty() {
+                models.image_model_api_key = img.api_key.trim().to_string();
+            }
+            if !img.model.trim().is_empty() {
+                models.image_model = img.model.trim().to_string();
+            }
+        }
+        if let Some(ie) = active_image_edit {
+            if !ie.model.trim().is_empty() {
+                models.image_edit_model = ie.model.trim().to_string();
+            }
+        }
+        *self.allowed_tools.lock() = ctx_config.allowed_tools.clone();
     }
 
     pub fn auto_approve_dispatch(&self) -> bool {
@@ -1092,6 +1197,7 @@ impl DispatcherAgent {
             image_model_api_key: ms.image_model_api_key,
             image_model: ms.image_model,
             image_edit_model: ms.image_edit_model,
+            sub_agent_tool_registry: Some(Arc::clone(&self.tools)),
         }
     }
 
@@ -1652,6 +1758,16 @@ impl DispatcherAgent {
             prompt_bundle.content.push_str("\n\n---\n\n");
             prompt_bundle.content.push_str(&mcp_block);
         }
+        let sub_agent_block = self.build_sub_agent_block(workspace_id);
+        if !sub_agent_block.is_empty() {
+            prompt_bundle.sections.push(PromptSection {
+                label: "Sub-Agent State".to_string(),
+                source: "runtime::sub_agents".to_string(),
+                content: sub_agent_block.clone(),
+            });
+            prompt_bundle.content.push_str("\n\n---\n\n");
+            prompt_bundle.content.push_str(&sub_agent_block);
+        }
         Ok(SystemPromptSnapshot {
             rendered: prompt_bundle.content,
         })
@@ -1696,6 +1812,30 @@ impl DispatcherAgent {
                 .to_string(),
         );
 
+        lines.join("\n")
+    }
+
+    fn build_sub_agent_block(&self, workspace_id: &str) -> String {
+        let Some(manager) = &self.sub_agent_manager else {
+            return String::new();
+        };
+        let Ok(agents) = manager.get_enabled_for_session(workspace_id) else {
+            return String::new();
+        };
+        if agents.is_empty() {
+            return String::new();
+        }
+
+        let mut lines = vec![
+            "# 当前可用子智能体".to_string(),
+            "以下是当前会话已启用的子智能体，你可以直接调用 call_sub_agent(agent_id, task) 来处理特定领域的复杂任务：".to_string(),
+        ];
+        for agent in &agents {
+            lines.push(format!(
+                "- **{}** (`{}`): {}",
+                agent.agent_name, agent.agent_id, agent.description
+            ));
+        }
         lines.join("\n")
     }
 
@@ -1761,6 +1901,14 @@ impl DispatcherAgent {
             DispatcherMode::Default => default_mode_tool_allowlist(),
             DispatcherMode::Plan => plan_mode_tool_allowlist(),
         };
+
+        let configured = self.allowed_tools.lock().clone();
+        if !configured.is_empty() {
+            let configured_set: HashSet<String> = configured.into_iter().collect();
+            allowed.retain(|name| configured_set.contains(*name));
+            allowed.insert("call_sub_agent");
+            allowed.insert("list_sub_agents");
+        }
 
         let include_dynamic = runtime_state.mode == DispatcherMode::Default;
 
@@ -3214,16 +3362,10 @@ fn default_mode_tool_allowlist() -> HashSet<&'static str> {
         "search_knowledge_base",
         "read_knowledge_page",
         "exec",
-        "browser_open_url",
-        "browser_click",
-        "browser_type",
-        "browser_press",
-        "browser_wait_for",
-        "browser_read_text",
-        "browser_visual_analyze",
-        "browser_close",
         "message",
         "update_plan",
+        "call_sub_agent",
+        "list_sub_agents",
     ])
 }
 
@@ -3628,6 +3770,7 @@ mod tests {
             config,
             ProjectMcpRegistry::default(),
             Arc::new(DispatcherSubprocessRegistry::default()),
+            None,
         );
 
         let default_state = DispatcherSessionRuntimeState {
@@ -3644,11 +3787,13 @@ mod tests {
         assert!(default_tools.iter().any(|name| name == "update_plan"));
         assert!(default_tools.iter().any(|name| name == "dispatch_claude"));
         assert!(default_tools.iter().any(|name| name == "dispatch_codex"));
-        assert!(default_tools.iter().any(|name| name == "browser_open_url"));
-        assert!(default_tools.iter().any(|name| name == "browser_read_text"));
-        assert!(default_tools
+        assert!(!default_tools.iter().any(|name| name == "browser_open_url"));
+        assert!(!default_tools.iter().any(|name| name == "browser_read_text"));
+        assert!(!default_tools
             .iter()
             .any(|name| name == "browser_visual_analyze"));
+        assert!(!default_tools.iter().any(|name| name == "call_sub_agent"));
+        assert!(!default_tools.iter().any(|name| name == "list_sub_agents"));
         assert!(!default_tools
             .iter()
             .any(|name| name == "browser_screenshot"));
@@ -3672,7 +3817,8 @@ mod tests {
         assert!(!plan_tools.iter().any(|name| name == "browser_open_url"));
 
         assert!(default_mode_tool_allowlist().contains("update_plan"));
-        assert!(default_mode_tool_allowlist().contains("browser_open_url"));
+        assert!(!default_mode_tool_allowlist().contains("browser_open_url"));
+        assert!(default_mode_tool_allowlist().contains("call_sub_agent"));
         assert!(plan_mode_tool_allowlist().contains("present_plan"));
         let _ = fs::remove_dir_all(&workspace);
     }

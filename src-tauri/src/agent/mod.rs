@@ -8,6 +8,7 @@ mod plain_chat;
 mod prompt;
 mod runtime;
 mod summary;
+pub mod sub_agent;
 pub mod tools;
 pub mod voice;
 

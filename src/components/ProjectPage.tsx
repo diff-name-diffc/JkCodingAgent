@@ -437,7 +437,7 @@ export function ProjectPage({
       interactiveSubProcessRef.current.set(getSubProcessRouteKey(sessionId, agent), taskId);
       pendingDispatchRef.current.set(taskId, { taskId, dispatchId, sessionId });
       invoke<DispatcherSessionRuntimeState>("dispatcher_attach_checklist_subprocess", {
-        sessionId,
+        workspaceId: sessionId,
         dispatchId,
         taskId,
       })

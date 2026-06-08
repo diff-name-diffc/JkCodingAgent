@@ -21,6 +21,7 @@ interface MessageListProps {
   displayItems: ReturnType<typeof import("../dispatcherChatView").buildDispatcherDisplayItems>;
   streamingSegments: AssistantTurnSegment[];
   liveThinking: AssistantThinkingBlock | null;
+  showThinking: boolean;
   liveToolCalls: ToolActivityItem[];
   assistantPlaceholder: string | null;
   liveUsageStats: DispatcherMessageUsageStats | null;
@@ -56,6 +57,7 @@ export const MessageList = memo(function MessageList({
   displayItems,
   streamingSegments,
   liveThinking,
+  showThinking,
   liveToolCalls,
   assistantPlaceholder,
   liveUsageStats,
@@ -133,7 +135,7 @@ export const MessageList = memo(function MessageList({
               tools={item.turn.tools}
               workspaceId={sessionId}
               usageStats={item.turn.usageStats}
-              thinking={item.turn.thinking}
+              thinking={showThinking ? item.turn.thinking : null}
               onRunPython={onRunPython}
               pythonRunRecords={pythonRunRecords}
             />
@@ -161,7 +163,7 @@ export const MessageList = memo(function MessageList({
             tools={liveToolCalls}
             workspaceId={sessionId}
             usageStats={liveUsageStats}
-            thinking={liveThinking}
+            thinking={showThinking ? liveThinking : null}
             placeholderText={assistantPlaceholder}
             streaming={isStreaming}
           />

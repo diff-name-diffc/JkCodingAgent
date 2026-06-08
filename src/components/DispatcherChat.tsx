@@ -125,7 +125,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [planInteraction, setPlanInteraction] = useState<PlanInteraction | null>(null);
     const [activePlanPath, setActivePlanPath] = useState<string | null>(null);
     const [implementingPlan, setImplementingPlan] = useState(false);
-    const [thinkingEnabled, setThinkingEnabled] = useState(false);
+    const [thinkingEnabled, setThinkingEnabled] = useState(true);
     const [pythonDrawerOpen, setPythonDrawerOpen] = useState(false);
     const [pythonRunTarget, setPythonRunTarget] = useState<PythonCodeRunTarget | null>(null);
     const [pythonRunRecords, setPythonRunRecords] = useState<Record<string, PythonCodeRunRecord>>({});
@@ -141,8 +141,6 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const shouldStickToBottomRef = useRef(true);
     const autoApproveRef = useRef(autoApprove);
     autoApproveRef.current = autoApprove;
-    const thinkingEnabledRef = useRef(thinkingEnabled);
-    thinkingEnabledRef.current = thinkingEnabled;
     const onDispatchApprovedRef = useRef(onDispatchApproved);
     onDispatchApprovedRef.current = onDispatchApproved;
     const onDispatchContinueRef = useRef(onDispatchContinue);
@@ -169,7 +167,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }, []);
 
     const actions = useDispatcherActions({
-      sessionId, projectPath, isPlainChat, mode, thinkingEnabledRef,
+      sessionId, projectPath, isPlainChat, mode,
       updateLiveSessionState, scrollMessageListToBottom, currentSessionIdRef,
       refreshSessionTokenUsage, onOpenPlanDocument, autoApproveRef,
       onDispatchApprovedRef, onDispatchContinueRef, onDispatchExitRef,
@@ -416,7 +414,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           />
           <MessageList
             displayItems={displayItems} streamingSegments={streamingSegments}
-            liveThinking={liveThinking} liveToolCalls={liveToolCalls}
+            liveThinking={liveThinking} showThinking={thinkingEnabled}
+            liveToolCalls={liveToolCalls}
             assistantPlaceholder={assistantPlaceholder} liveUsageStats={liveUsageStats}
             isStreaming={isLoading || hasPendingRun} isEmpty={isEmpty} isPlainChat={isPlainChat}
             runError={runError} sessionId={sessionId} checklist={checklist}

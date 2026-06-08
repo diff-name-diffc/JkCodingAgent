@@ -46,7 +46,6 @@ export interface UseDispatcherActionsOptions {
   projectPath: string;
   isPlainChat: boolean;
   mode: DispatcherMode;
-  thinkingEnabledRef: React.RefObject<boolean>;
   updateLiveSessionState: LiveSessionUpdater;
   scrollMessageListToBottom: () => void;
   currentSessionIdRef: React.RefObject<string>;
@@ -107,7 +106,6 @@ export function useDispatcherActions({
   projectPath,
   isPlainChat,
   mode,
-  thinkingEnabledRef,
   updateLiveSessionState,
   scrollMessageListToBottom,
   currentSessionIdRef,
@@ -424,7 +422,6 @@ export function useDispatcherActions({
               workspaceId: targetSessionId,
               content: text,
               segmentsJson,
-              enableThinking: thinkingEnabledRef.current,
               onEvent,
             });
           } else {
@@ -434,7 +431,6 @@ export function useDispatcherActions({
               content: text,
               segmentsJson,
               mode: targetMode,
-              enableThinking: thinkingEnabledRef.current,
               onEvent,
             });
           }
@@ -458,7 +454,6 @@ export function useDispatcherActions({
       setAttachedImages,
       setInput,
       shouldStickToBottomRef,
-      thinkingEnabledRef,
       updateLiveSessionState,
     ],
   );
@@ -484,7 +479,6 @@ export function useDispatcherActions({
             dispatchResult: result,
             dispatchState,
             dispatchId,
-            enableThinking: thinkingEnabledRef.current,
             onEvent,
           });
         });
@@ -496,7 +490,7 @@ export function useDispatcherActions({
         }));
       }
     },
-    [enqueueDispatcherRun, isPlainChat, projectPath, sessionId, thinkingEnabledRef, updateLiveSessionState],
+    [enqueueDispatcherRun, isPlainChat, projectPath, sessionId, updateLiveSessionState],
   );
 
   const applyRuntimeState = useCallback(

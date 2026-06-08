@@ -362,7 +362,7 @@ impl OpenAiCompatProvider {
         .await
     }
 
-    /// Streaming chat completion with optional model-side thinking enabled.
+    /// Streaming chat completion. Thinking output follows the model/provider default behavior.
     pub async fn chat_stream_with_thinking(
         &self,
         messages: &[ChatMessage],
@@ -398,12 +398,13 @@ impl OpenAiCompatProvider {
             .json(&request)
             .send()
             .await
-            .context("发送流式对话请求失败")?;
+            .with_context(|| format!("发送流式对话请求失败：model={} url={}", self.model, url))?;
 
         let mut status = response.status();
         let response = if status.is_success() {
             response
         } else {
+            let initial_status = status;
             let body = response.text().await.context("读取 LLM 错误响应失败")?;
             if should_retry_without_stream_options(status, &body, request.stream_options.is_some())
             {
@@ -415,7 +416,12 @@ impl OpenAiCompatProvider {
                     .json(&request)
                     .send()
                     .await
-                    .context("发送无 stream_options 的流式对话重试请求失败")?;
+                    .with_context(|| {
+                        format!(
+                            "发送无 stream_options 的流式对话重试请求失败：model={} url={}",
+                            self.model, url
+                        )
+                    })?;
                 status = retry_response.status();
                 if status.is_success() {
                     retry_response
@@ -425,21 +431,19 @@ impl OpenAiCompatProvider {
                         .await
                         .context("读取 LLM 重试错误响应失败")?;
                     return Err(anyhow!(
-                        "LLM 请求失败，HTTP {}：{}；去除 stream_options 后仍失败，HTTP {}：{}",
-                        StatusCode::BAD_REQUEST,
-                        body,
-                        status,
-                        retry_body
+                        "{}；去除 stream_options 后仍失败：{}",
+                        format_llm_http_error(initial_status, &body),
+                        format_llm_http_error(status, &retry_body)
                     ));
                 }
             } else {
-                return Err(anyhow!("LLM 请求失败，HTTP {}：{}", status, body));
+                return Err(anyhow!("{}", format_llm_http_error(initial_status, &body)));
             }
         };
 
         if !status.is_success() {
             let body = response.text().await.context("读取 LLM 错误响应失败")?;
-            return Err(anyhow!("LLM 请求失败，HTTP {}：{}", status, body));
+            return Err(anyhow!("{}", format_llm_http_error(status, &body)));
         }
 
         let mut stream = response.bytes_stream();
@@ -555,18 +559,19 @@ impl OpenAiCompatProvider {
     }
 
     fn enable_thinking_parameter(&self, enable_thinking: bool) -> Option<bool> {
-        if enable_thinking || should_explicitly_disable_thinking(&self.model, &self.api_base) {
-            Some(enable_thinking)
-        } else {
-            None
-        }
+        let _ = enable_thinking;
+        None
     }
 }
 
-fn should_explicitly_disable_thinking(model: &str, api_base: &str) -> bool {
-    let model = model.to_ascii_lowercase();
-    let api_base = api_base.to_ascii_lowercase();
-    model.contains("qwen") || model.contains("qwq") || api_base.contains("dashscope")
+fn format_llm_http_error(status: StatusCode, body: &str) -> String {
+    let body = body.trim();
+    let detail = if body.is_empty() {
+        "<空响应体>".to_string()
+    } else {
+        truncate_for_display(body, 4_000, "\n...[LLM 错误响应已截断]")
+    };
+    format!("LLM 请求失败，HTTP {}：{}", status, detail)
 }
 
 fn split_tagged_thinking(content: &str) -> (String, String) {
@@ -1063,9 +1068,8 @@ mod tests {
     use super::{
         append_raw_response, append_valid_utf8, build_api_message_content, build_api_messages,
         build_requested_tool_calls, is_supported_image_reference, messages_contain_inline_images,
-        should_explicitly_disable_thinking, should_retry_without_stream_options,
-        split_tagged_thinking, ApiMessageContent, ApiMessageContentPart, ChatMessage,
-        OpenAiCompatProvider, StreamChunk,
+        should_retry_without_stream_options, split_tagged_thinking, ApiMessageContent,
+        ApiMessageContentPart, ChatMessage, OpenAiCompatProvider, StreamChunk,
     };
 
     #[test]
@@ -1140,23 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_provider_explicitly_disables_thinking_when_requested_off() {
-        assert!(should_explicitly_disable_thinking(
-            "o-qwen3.7-plus",
-            "http://10.144.144.2:8317/v1"
-        ));
-        assert!(should_explicitly_disable_thinking(
-            "custom-model",
-            "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        ));
-        assert!(!should_explicitly_disable_thinking(
-            "gpt-4.1",
-            "https://api.openai.com/v1"
-        ));
-    }
-
-    #[test]
-    fn request_snapshot_includes_false_thinking_for_qwen_only() {
+    fn request_snapshot_omits_thinking_parameter_for_all_models() {
         let messages = vec![ChatMessage::system("只输出 pong。".to_string())];
         let qwen = OpenAiCompatProvider::new(
             "test-key".to_string(),
@@ -1177,7 +1165,13 @@ mod tests {
             qwen.build_request_snapshot(&messages, &[], false)
                 .body
                 .enable_thinking,
-            Some(false)
+            None
+        );
+        assert_eq!(
+            qwen.build_request_snapshot(&messages, &[], true)
+                .body
+                .enable_thinking,
+            None
         );
         assert_eq!(
             openai

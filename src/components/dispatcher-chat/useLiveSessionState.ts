@@ -100,13 +100,14 @@ export function useLiveSessionState(sessionId: string): UseLiveSessionStateResul
   }, [updateLiveSessionState]);
 
   // Usage clock timer — ticks every second while stats are active
+  const hasActiveUsageStats = Boolean(liveState.activeUsageStats);
   useEffect(() => {
-    if (!liveState.activeUsageStats) return;
+    if (!hasActiveUsageStats) return;
     const timer = window.setInterval(() => {
       setLiveState((prev) => ({ ...prev, usageClockNow: Date.now() }));
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [!!liveState.activeUsageStats]);
+  }, [hasActiveUsageStats]);
 
   // Clean up pending rAF on unmount
   useEffect(() => {

@@ -40,12 +40,12 @@ export const ThinkingToggleButton = memo(function ThinkingToggleButton({
       style={styles.thinkingToggleBtn(active)}
       onClick={onToggle}
       disabled={disabled}
-      title={active ? "关闭深度思考" : "开启深度思考"}
-      aria-label={active ? "关闭深度思考" : "开启深度思考"}
+      title={active ? "隐藏思考内容" : "显示思考内容"}
+      aria-label={active ? "隐藏思考内容" : "显示思考内容"}
       aria-pressed={active}
     >
       <Brain size={15} />
-      <span>{active ? "深思" : "思考"}</span>
+      <span>思考</span>
     </button>
   );
 });

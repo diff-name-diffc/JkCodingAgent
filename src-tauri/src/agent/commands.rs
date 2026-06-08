@@ -11,7 +11,7 @@ use tokio::time::{sleep, Duration};
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::config::{DispatcherAgentConfig, DEFAULT_SUMMARY_MODEL};
+use super::config::DispatcherAgentConfig;
 use super::db::{
     AgentContext, AhaContextConfig, AhaSettingsV2, AhaSharedModels, ChatCategory, ChatSessionRecord,
     DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherModelConfig,
@@ -422,6 +422,7 @@ fn spawn_session_title_update(
     app: &AppHandle,
     workspace_id: &str,
     fallback_content: &str,
+    context: AgentContext,
     generation: u64,
 ) {
     let app = app.clone();
@@ -431,7 +432,8 @@ fn spawn_session_title_update(
 
     tokio::spawn(async move {
         let title =
-            generate_session_title(db.clone(), workspace_id.clone(), fallback_content).await;
+            generate_session_title(db.clone(), workspace_id.clone(), fallback_content, context)
+                .await;
         let state = app.state::<DispatcherState>();
         if !state.finish_latest_title_generation(&workspace_id, generation) {
             return;
@@ -469,6 +471,7 @@ fn spawn_session_keywords_update(
     state: &DispatcherState,
     app: &AppHandle,
     workspace_id: &str,
+    context: AgentContext,
     generation: u64,
 ) {
     let app = app.clone();
@@ -477,7 +480,7 @@ fn spawn_session_keywords_update(
 
     tokio::spawn(async move {
         let actions =
-            generate_session_keywords(db.clone(), workspace_id.clone()).await;
+            generate_session_keywords(db.clone(), workspace_id.clone(), context).await;
         let state = app.state::<DispatcherState>();
         if !state.finish_latest_keywords_generation(&workspace_id, generation) {
             return;
@@ -529,6 +532,7 @@ fn spawn_session_keywords_update(
 async fn generate_session_keywords(
     db: DispatcherDb,
     workspace_id: String,
+    context: AgentContext,
 ) -> Option<Vec<KeywordAction>> {
     let messages_db = db.clone();
     let messages_ws = workspace_id.clone();
@@ -603,7 +607,7 @@ async fn generate_session_keywords(
 
     let provider_db = db.clone();
     let provider_config =
-        tokio::task::spawn_blocking(move || resolve_title_provider(&provider_db)).await;
+        tokio::task::spawn_blocking(move || resolve_summary_provider(&provider_db, context)).await;
 
     let (provider, summary_model) = match provider_config {
         Ok(Ok(config)) => config,
@@ -683,6 +687,7 @@ async fn generate_session_title(
     db: DispatcherDb,
     workspace_id: String,
     fallback_content: String,
+    context: AgentContext,
 ) -> String {
     let title_messages_db = db.clone();
     let title_messages_workspace_id = workspace_id.clone();
@@ -721,7 +726,7 @@ async fn generate_session_title(
         .collect::<Vec<_>>();
     let provider_db = db.clone();
     let provider_config =
-        tokio::task::spawn_blocking(move || resolve_title_provider(&provider_db)).await;
+        tokio::task::spawn_blocking(move || resolve_summary_provider(&provider_db, context)).await;
 
     let (provider, summary_model) = match provider_config {
         Ok(Ok(config)) => config,
@@ -775,60 +780,45 @@ async fn generate_session_title(
     }
 }
 
-fn resolve_title_provider(db: &DispatcherDb) -> Result<(OpenAiCompatProvider, String)> {
+fn resolve_summary_provider(
+    db: &DispatcherDb,
+    context: AgentContext,
+) -> Result<(OpenAiCompatProvider, String)> {
     let config = DispatcherAgentConfig::load()?;
-    let settings = db.get_settings()?;
-
-    // Resolve credentials: prefer summary_model_config's own api_key/url,
-    // fall back to chat settings, then to env-var defaults.
-    let (api_key, api_base) = match settings.as_ref() {
-        Some(s) => {
-            let smc = &s.summary_model_config;
-            let key = if !smc.api_key.trim().is_empty() {
-                smc.api_key.trim().to_string()
-            } else if !s.api_key.trim().is_empty() {
-                s.api_key.trim().to_string()
-            } else {
-                config.api_key.clone()
-            };
-            let base = if !smc.url.trim().is_empty() {
-                smc.url.trim().to_string()
-            } else if !s.api_base.trim().is_empty() {
-                s.api_base.trim().to_string()
-            } else {
-                config.api_base.clone()
-            };
-            (key, base)
-        }
-        None => (config.api_key.clone(), config.api_base.clone()),
+    let settings_v2 = db.get_settings_v2()?;
+    let context_config = match context {
+        AgentContext::Project => &settings_v2.project,
+        AgentContext::Chat => &settings_v2.chat,
     };
-    let summary_model = settings
-        .as_ref()
-        .map(|item| item.summary_model.trim())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| config.summary_model.clone());
-    let summary_model = normalize_summary_model_name(&summary_model);
+    let summary = context_config
+        .summary_model_configs
+        .iter()
+        .find(|item| item.active)
+        .or_else(|| context_config.summary_model_configs.first())
+        .ok_or_else(|| anyhow!("未配置 {:?} 摘要模型", context))?;
+    let summary_model = summary.model.trim();
+    if summary_model.is_empty() {
+        return Err(anyhow!("未配置 {:?} 摘要模型名称", context));
+    }
 
     Ok((
         OpenAiCompatProvider::new(
-            api_key,
-            api_base,
-            summary_model.clone(),
+            if summary.api_key.trim().is_empty() {
+                config.api_key.clone()
+            } else {
+                summary.api_key.trim().to_string()
+            },
+            if summary.url.trim().is_empty() {
+                config.api_base.clone()
+            } else {
+                summary.url.trim().to_string()
+            },
+            summary_model.to_string(),
             96,
             config.temperature,
         ),
-        summary_model,
+        summary_model.to_string(),
     ))
-}
-
-fn normalize_summary_model_name(model: &str) -> String {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        DEFAULT_SUMMARY_MODEL.to_string()
-    } else {
-        trimmed.to_string()
-    }
 }
 
 #[tauri::command]
@@ -875,8 +865,21 @@ pub async fn dispatcher_send_message(
         .await
         .map_err(|error| error.to_string());
     state.finish_run(&workspace_id, run_handle.generation);
-    spawn_session_title_update(&state, &app, &workspace_id, &content, title_generation);
-    spawn_session_keywords_update(&state, &app, &workspace_id, keywords_generation);
+    spawn_session_title_update(
+        &state,
+        &app,
+        &workspace_id,
+        &content,
+        AgentContext::Project,
+        title_generation,
+    );
+    spawn_session_keywords_update(
+        &state,
+        &app,
+        &workspace_id,
+        AgentContext::Project,
+        keywords_generation,
+    );
     result
 }
 
@@ -907,8 +910,21 @@ pub async fn dispatcher_send_plain_chat_message(
         .await
         .map_err(|error| error.to_string());
     state.finish_run(&workspace_id, run_handle.generation);
-    spawn_session_title_update(&state, &app, &workspace_id, &content, title_generation);
-    spawn_session_keywords_update(&state, &app, &workspace_id, keywords_generation);
+    spawn_session_title_update(
+        &state,
+        &app,
+        &workspace_id,
+        &content,
+        AgentContext::Chat,
+        title_generation,
+    );
+    spawn_session_keywords_update(
+        &state,
+        &app,
+        &workspace_id,
+        AgentContext::Chat,
+        keywords_generation,
+    );
     result
 }
 
@@ -1618,47 +1634,6 @@ pub async fn dispatcher_stop_run(
     let stopped = state.stop_run(&workspace_id);
     let _ = browser_manager.stop(&workspace_id).await;
     Ok(stopped)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_summary_model_name_returns_trimmed_input() {
-        assert_eq!(
-            normalize_summary_model_name("  deepseek-v4-flash  "),
-            "deepseek-v4-flash"
-        );
-    }
-
-    #[test]
-    fn normalize_summary_model_name_returns_default_for_empty() {
-        assert_eq!(normalize_summary_model_name(""), DEFAULT_SUMMARY_MODEL);
-    }
-
-    #[test]
-    fn normalize_summary_model_name_returns_default_for_whitespace_only() {
-        assert_eq!(normalize_summary_model_name("   "), DEFAULT_SUMMARY_MODEL);
-    }
-
-    #[test]
-    fn normalize_summary_model_name_preserves_valid_name() {
-        assert_eq!(normalize_summary_model_name("qwen3.6-plus"), "qwen3.6-plus");
-    }
-
-    #[test]
-    fn normalize_summary_model_name_handles_single_char() {
-        assert_eq!(normalize_summary_model_name("a"), "a");
-    }
-
-    #[test]
-    fn normalize_summary_model_name_trims_tabs_and_spaces() {
-        assert_eq!(
-            normalize_summary_model_name("\t deepseek-v4-flash \t"),
-            "deepseek-v4-flash"
-        );
-    }
 }
 
 #[tauri::command]

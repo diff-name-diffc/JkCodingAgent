@@ -3,7 +3,11 @@ import { Search, ChevronLeft, PanelLeftClose, Plus, Trash2, LoaderCircle } from 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { cleanupDispatcherSession } from "./dispatcherSessionStore";
+import {
+  cleanupDispatcherSession,
+  withDispatcherSessionRunning,
+  withDispatcherSessionsRunning,
+} from "./dispatcherSessionStore";
 import type { Project, ThemeMode, ProjectSession, SessionPage, SessionSearchResult } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
@@ -69,7 +73,7 @@ export function SessionPanel({
 
   useEffect(() => {
     const unlisten = listen<ProjectSession>("dispatcher-session-updated", (event) => {
-      const updatedSession = event.payload;
+      const updatedSession = withDispatcherSessionRunning(event.payload);
       if (!updatedSession.projectId || updatedSession.projectId !== project.id) return;
 
       setSessions((prev) => {
@@ -90,10 +94,10 @@ export function SessionPanel({
     if (creatingSessionRef.current) return;
     creatingSessionRef.current = true;
     try {
-      const newSession = await invoke<ProjectSession>("project_create_session", {
+      const newSession = withDispatcherSessionRunning(await invoke<ProjectSession>("project_create_session", {
         projectId: project.id,
         title: "新会话",
-      });
+      }));
       setSessions((prev) =>
         prev.some((session) => session.id === newSession.id) ? prev : [newSession, ...prev],
       );
@@ -116,7 +120,7 @@ export function SessionPanel({
       });
       setSessions((prev) => {
         const existing = new Set(prev.map((s) => s.id));
-        const newItems = page.items.filter((s) => !existing.has(s.id));
+        const newItems = withDispatcherSessionsRunning(page.items.filter((s) => !existing.has(s.id)));
         return sortSessionsByUpdatedAt([...prev, ...newItems]);
       });
       setTotal(page.total);
@@ -137,13 +141,14 @@ export function SessionPanel({
           pageSize: PROJECT_PAGE_SIZE,
         });
         if (cancelled) return;
-        setSessions(page.items);
+        const items = withDispatcherSessionsRunning(page.items);
+        setSessions(items);
         setTotal(page.total);
         setHasMore(page.hasMore);
         const currentSessionId = activeSessionIdRef.current;
-        if (page.items.length > 0) {
-          if (!currentSessionId || !page.items.some((session) => session.id === currentSessionId)) {
-            onSelectSession(page.items[0].id);
+        if (items.length > 0) {
+          if (!currentSessionId || !items.some((session) => session.id === currentSessionId)) {
+            onSelectSession(items[0].id);
           }
         } else {
           await handleNewSession();
@@ -343,6 +348,7 @@ export function SessionPanel({
             {filtered.length === 0 && <div style={s.taskListEmpty}>没有找到会话</div>}
             {filtered.map((session) => {
               const isRunning =
+                Boolean(session.isRunning) ||
                 dispatcherRunningSessionIds.has(session.id) ||
                 subprocessRunningSessionIds.has(session.id);
               return (

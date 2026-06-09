@@ -159,7 +159,7 @@ export const ChatCategorySection = memo(function ChatCategorySection({
           key={session.id}
           session={session}
           isActive={activeSessionId === session.id}
-          isRunning={runningSessionIds.has(session.id)}
+          isRunning={Boolean(session.isRunning) || runningSessionIds.has(session.id)}
           onClick={() => onSessionClick(session.id)}
           onDelete={(e) => onSessionDelete(session.id, e)}
           onDragStart={(e) => onSessionDragStart(session.id, e)}

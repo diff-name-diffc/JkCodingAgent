@@ -13,12 +13,13 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::config::DispatcherAgentConfig;
 use super::db::{
-    AgentContext, AhaContextConfig, AhaSettingsV2, AhaSharedModels, ChatCategory, ChatSessionRecord,
-    DispatcherDb, DispatcherMessageRecord, DispatcherMode, DispatcherModelConfig,
-    DispatcherSessionKind, DispatcherSessionRecord, DispatcherSessionRuntimeState,
-    DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
-    DispatcherSettingsModelConfigs, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
-    KeywordAction, ProjectSessionRecord, SessionKeywordRecord, SessionPage, SessionSearchResult,
+    AgentContext, AhaContextConfig, AhaSettingsV2, AhaSharedModels, ChatCategory,
+    ChatSessionRecord, DispatcherDb, DispatcherMessageRecord, DispatcherMode,
+    DispatcherModelConfig, DispatcherSessionKind, DispatcherSessionRecord,
+    DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord,
+    DispatcherSessionTokenUsageSource, DispatcherSettingsModelConfigs, DispatcherSettingsRecord,
+    DispatcherToolArtifactRecord, KeywordAction, ProjectSessionRecord, SessionKeywordRecord,
+    SessionPage, SessionSearchResult,
 };
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
@@ -105,14 +106,12 @@ impl DispatcherState {
         let config = DispatcherAgentConfig::load()?;
         let db = DispatcherDb::new(config.db_path.clone())?;
         let subprocesses = Arc::new(DispatcherSubprocessRegistry::default());
-        let sub_agent_manager =
-            Arc::new(SubAgentManager::new(db.pool()));
+        let sub_agent_manager = Arc::new(SubAgentManager::new(db.pool()));
         if let Err(e) = sub_agent_manager.load_all() {
             eprintln!("failed to load sub_agent configs: {}", e);
         }
 
-        let initial_tool_registry =
-            ToolRegistry::default_tools(project_mcp_registry.clone());
+        let initial_tool_registry = ToolRegistry::default_tools(project_mcp_registry.clone());
         let initial_tool_names = initial_tool_registry.tool_names_and_descriptions();
 
         Ok(Self {
@@ -284,7 +283,9 @@ impl DispatcherState {
     }
 
     fn begin_keywords_generation(&self, workspace_id: &str) -> u64 {
-        let generation = self.next_keywords_generation.fetch_add(1, Ordering::Relaxed);
+        let generation = self
+            .next_keywords_generation
+            .fetch_add(1, Ordering::Relaxed);
         self.keywords_generations
             .lock()
             .insert(workspace_id.to_string(), generation);
@@ -479,8 +480,7 @@ fn spawn_session_keywords_update(
     let workspace_id = workspace_id.to_string();
 
     tokio::spawn(async move {
-        let actions =
-            generate_session_keywords(db.clone(), workspace_id.clone(), context).await;
+        let actions = generate_session_keywords(db.clone(), workspace_id.clone(), context).await;
         let state = app.state::<DispatcherState>();
         if !state.finish_latest_keywords_generation(&workspace_id, generation) {
             return;
@@ -498,10 +498,9 @@ fn spawn_session_keywords_update(
                 Ok(Ok(())) => {
                     let list_db = db.clone();
                     let list_ws = workspace_id.clone();
-                    if let Ok(Ok(keywords)) = tokio::task::spawn_blocking(move || {
-                        list_db.list_session_keywords(&list_ws)
-                    })
-                    .await
+                    if let Ok(Ok(keywords)) =
+                        tokio::task::spawn_blocking(move || list_db.list_session_keywords(&list_ws))
+                            .await
                     {
                         let _ = app.emit(
                             "session-keywords-updated",
@@ -558,18 +557,14 @@ async fn generate_session_keywords(
 
     let keywords_db = db.clone();
     let keywords_ws = workspace_id.clone();
-    let existing = tokio::task::spawn_blocking(move || {
-        keywords_db.list_session_keywords(&keywords_ws)
-    })
-    .await;
+    let existing =
+        tokio::task::spawn_blocking(move || keywords_db.list_session_keywords(&keywords_ws)).await;
 
     let existing_keywords_json = match existing {
         Ok(Ok(records)) => {
             let kw: Vec<serde_json::Value> = records
                 .iter()
-                .map(|r| {
-                    serde_json::json!({"keyword": r.keyword, "weight": r.weight})
-                })
+                .map(|r| serde_json::json!({"keyword": r.keyword, "weight": r.weight}))
                 .collect();
             serde_json::to_string(&kw).unwrap_or_else(|_| "[]".to_string())
         }
@@ -1097,12 +1092,7 @@ pub async fn session_search_keywords(
     let db = state.db.clone();
     let lim = limit.unwrap_or(20);
     run_dispatcher_db("session_search_keywords", move || {
-        db.search_sessions_by_keywords(
-            &query,
-            lim,
-            kind.as_deref(),
-            project_id.as_deref(),
-        )
+        db.search_sessions_by_keywords(&query, lim, kind.as_deref(), project_id.as_deref())
     })
     .await
 }
@@ -1531,7 +1521,10 @@ pub async fn dispatcher_set_auto_approve_dispatch(
 pub async fn aha_get_settings_v2(
     state: tauri::State<'_, DispatcherState>,
 ) -> Result<AhaSettingsV2, String> {
-    state.db.get_settings_v2().map_err(|error| error.to_string())
+    state
+        .db
+        .get_settings_v2()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

@@ -48,11 +48,13 @@ export function createIdleLiveSessionState(): DispatcherLiveSessionState {
 }
 
 const dispatcherLiveSessionStates = new Map<string, DispatcherLiveSessionState>();
+const dispatcherSessionRunningStates = new Map<string, boolean>();
 const dispatcherActiveRunIds = new Map<string, number>();
 const dispatcherLiveSessionSubscribers = new Map<
   string,
   Set<(state: DispatcherLiveSessionState) => void>
 >();
+const dispatcherRunningSubscribers = new Map<string, Set<(isRunning: boolean) => void>>();
 const dispatcherMessageSubscribers = new Map<
   string,
   Set<(messages: DispatcherMessage[]) => void>
@@ -60,6 +62,14 @@ const dispatcherMessageSubscribers = new Map<
 
 function isLiveSessionRunning(state: DispatcherLiveSessionState | undefined): boolean {
   return Boolean(state?.hasPendingRun || state?.isLoading);
+}
+
+function setDispatcherSessionRunningState(sessionId: string, running: boolean) {
+  if (running) {
+    dispatcherSessionRunningStates.set(sessionId, true);
+  } else {
+    dispatcherSessionRunningStates.delete(sessionId);
+  }
 }
 
 export function getDispatcherLiveSessionState(sessionId: string) {
@@ -71,6 +81,7 @@ export function setDispatcherLiveSessionState(
   state: DispatcherLiveSessionState,
 ) {
   dispatcherLiveSessionStates.set(sessionId, state);
+  setDispatcherSessionRunningState(sessionId, isLiveSessionRunning(state));
 }
 
 export function getOrCreateDispatcherLiveSessionState(sessionId: string) {
@@ -86,6 +97,17 @@ export function notifyDispatcherLiveSessionSubscribers(
   state: DispatcherLiveSessionState,
 ) {
   dispatcherLiveSessionSubscribers.get(sessionId)?.forEach((subscriber) => subscriber(state));
+  const running = isLiveSessionRunning(state);
+  setDispatcherSessionRunningState(sessionId, running);
+  dispatcherRunningSubscribers.get(sessionId)?.forEach((subscriber) => subscriber(running));
+}
+
+function hasSessionSubscribers(sessionId: string): boolean {
+  return (
+    (dispatcherLiveSessionSubscribers.get(sessionId)?.size ?? 0) > 0 ||
+    (dispatcherMessageSubscribers.get(sessionId)?.size ?? 0) > 0 ||
+    (dispatcherRunningSubscribers.get(sessionId)?.size ?? 0) > 0
+  );
 }
 
 export function subscribeDispatcherLiveSession(
@@ -99,7 +121,7 @@ export function subscribeDispatcherLiveSession(
     subscribers.delete(subscriber);
     if (subscribers.size === 0) {
       dispatcherLiveSessionSubscribers.delete(sessionId);
-      if ((dispatcherMessageSubscribers.get(sessionId)?.size ?? 0) === 0) {
+      if (!hasSessionSubscribers(sessionId)) {
         dispatcherLiveSessionStates.delete(sessionId);
         dispatcherActiveRunIds.delete(sessionId);
       }
@@ -123,7 +145,7 @@ export function subscribeDispatcherMessages(
     subscribers.delete(subscriber);
     if (subscribers.size === 0) {
       dispatcherMessageSubscribers.delete(sessionId);
-      if ((dispatcherLiveSessionSubscribers.get(sessionId)?.size ?? 0) === 0) {
+      if (!hasSessionSubscribers(sessionId)) {
         dispatcherLiveSessionStates.delete(sessionId);
         dispatcherActiveRunIds.delete(sessionId);
       }
@@ -133,17 +155,16 @@ export function subscribeDispatcherMessages(
 
 export function cleanupDispatcherSession(sessionId: string) {
   dispatcherLiveSessionStates.delete(sessionId);
+  dispatcherSessionRunningStates.delete(sessionId);
   dispatcherActiveRunIds.delete(sessionId);
   dispatcherLiveSessionSubscribers.delete(sessionId);
+  dispatcherRunningSubscribers.delete(sessionId);
   dispatcherMessageSubscribers.delete(sessionId);
 }
 
 export function gcDispatcherSessions() {
   for (const id of dispatcherLiveSessionStates.keys()) {
-    const hasSubscribers =
-      (dispatcherLiveSessionSubscribers.get(id)?.size ?? 0) > 0 ||
-      (dispatcherMessageSubscribers.get(id)?.size ?? 0) > 0;
-    if (!hasSubscribers) {
+    if (!hasSessionSubscribers(id)) {
       dispatcherLiveSessionStates.delete(id);
       dispatcherActiveRunIds.delete(id);
     }
@@ -151,16 +172,35 @@ export function gcDispatcherSessions() {
 }
 
 export function getDispatcherSessionRunning(sessionId: string): boolean {
-  return isLiveSessionRunning(dispatcherLiveSessionStates.get(sessionId));
+  return dispatcherSessionRunningStates.get(sessionId) ?? isLiveSessionRunning(dispatcherLiveSessionStates.get(sessionId));
+}
+
+export function withDispatcherSessionRunning<T extends { id: string; isRunning?: boolean }>(
+  session: T,
+): T {
+  const isRunning = getDispatcherSessionRunning(session.id);
+  return session.isRunning === isRunning ? session : { ...session, isRunning };
+}
+
+export function withDispatcherSessionsRunning<T extends { id: string; isRunning?: boolean }>(
+  sessions: T[],
+): T[] {
+  return sessions.map(withDispatcherSessionRunning);
 }
 
 export function subscribeDispatcherSessionRunning(
   sessionId: string,
   subscriber: (isRunning: boolean) => void,
 ) {
-  return subscribeDispatcherLiveSession(sessionId, (state) => {
-    subscriber(isLiveSessionRunning(state));
-  });
+  const subscribers = dispatcherRunningSubscribers.get(sessionId) ?? new Set();
+  subscribers.add(subscriber);
+  dispatcherRunningSubscribers.set(sessionId, subscribers);
+  return () => {
+    subscribers.delete(subscriber);
+    if (subscribers.size === 0) {
+      dispatcherRunningSubscribers.delete(sessionId);
+    }
+  };
 }
 
 export function getDispatcherActiveRunId(sessionId: string) {

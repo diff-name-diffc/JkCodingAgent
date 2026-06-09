@@ -8,6 +8,88 @@ use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 use crate::browser::BrowserManager;
 
+const DEFAULT_BROWSER_TIMEOUT_MS: u64 = 60_000;
+
+/// Browser error classification for LLM-aware error handling.
+#[derive(Debug, Clone, PartialEq)]
+enum BrowserErrorKind {
+    /// Element ref expired due to page navigation or DOM change.
+    /// Recoverable: auto-fetch fresh snapshot and let LLM retry.
+    RefExpired,
+    /// System-level error (process crash, network failure, etc.).
+    /// Fatal: report immediately, no auto-recovery.
+    System,
+    /// Transient behavioral error (timeout, page not ready, etc.).
+    /// Recoverable: LLM can adjust strategy and retry.
+    Behavioral,
+}
+
+fn classify_browser_error(error: &str) -> BrowserErrorKind {
+    if error.starts_with("[ref_expired]") {
+        BrowserErrorKind::RefExpired
+    } else if error.contains("超时")
+        || error.contains("Timeout")
+        || error.contains("timeout")
+        || error.contains("尚未启动")
+        || error.contains("not ready")
+    {
+        BrowserErrorKind::Behavioral
+    } else {
+        BrowserErrorKind::System
+    }
+}
+
+/// When a ref-expired error is detected, automatically fetch a fresh accessibility
+/// snapshot so the LLM receives up-to-date element refs in the same turn.
+async fn auto_recover_snapshot(context: &ToolContext, original_error: &str) -> String {
+    let recovery_result = run_browser_command_value(
+        context,
+        "read_text",
+        json!({
+            "ref": Value::Null,
+            "maxNodes": 600,
+            "timeout": timeout_arg(&json!({"timeout": 30_000}))
+        }),
+    )
+    .await;
+
+    match recovery_result {
+        Ok(snapshot_value) => {
+            let snapshot_text = format_browser_result(snapshot_value);
+            format!(
+                "[ref_expired] {original_error}\n\n\
+                ⚠️ 页面元素引用已失效（可能是页面发生了导航或内容变化）。\n\
+                已自动获取最新页面快照，请基于以下新快照重新选择目标元素：\n\n\
+                {snapshot_text}"
+            )
+        }
+        Err(recovery_error) => {
+            format!(
+                "[ref_expired] {original_error}\n\n\
+                ⚠️ 页面元素引用已失效。尝试自动获取新快照时也失败了：{recovery_error}\n\
+                请先调用 browser_read_text 获取最新快照，再重试操作。"
+            )
+        }
+    }
+}
+
+/// Format a browser error with LLM-friendly guidance based on error classification.
+async fn handle_browser_error(context: &ToolContext, error: String) -> String {
+    match classify_browser_error(&error) {
+        BrowserErrorKind::RefExpired => auto_recover_snapshot(context, &error).await,
+        BrowserErrorKind::Behavioral => {
+            format!(
+                "{error}\n\n提示：这是一个可恢复的行为错误。请检查当前页面状态，\
+                必要时重新调用 browser_read_text 获取最新快照后重试操作。"
+            )
+        }
+        BrowserErrorKind::System => {
+            // System errors: report loudly, no auto-recovery
+            format!("❌ 浏览器系统错误：{error}")
+        }
+    }
+}
+
 pub(super) fn browser_tools() -> Vec<Box<dyn AgentTool>> {
     vec![
         Box::new(OpenUrlTool),
@@ -46,7 +128,7 @@ impl AgentTool for OpenUrlTool {
                 "type": "object",
                 "properties": {
                     "url": { "type": "string", "description": "要打开的 URL，必须包含 http:// 或 https://" },
-                    "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 30000", "minimum": 1 }
+                    "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 60000", "minimum": 1 }
                 },
                 "required": ["url"]
             }),
@@ -87,7 +169,7 @@ impl AgentTool for ClickTool {
                 "type": "object",
                 "properties": {
                     "ref": { "type": "string", "description": "browser_read_text 返回的元素 ref，例如 r12" },
-                    "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 30000", "minimum": 1 }
+                    "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 60000", "minimum": 1 }
                 },
                 "required": ["ref"]
             }),
@@ -100,7 +182,7 @@ impl AgentTool for ClickTool {
         let Some(ref_id) = string_arg(args, "ref") else {
             return "错误：缺少必填参数 ref；请先调用 browser_read_text 获取元素 ref".to_string();
         };
-        run_browser_command(
+        match run_browser_command_value(
             context,
             "click",
             json!({
@@ -109,6 +191,10 @@ impl AgentTool for ClickTool {
             }),
         )
         .await
+        {
+            Ok(value) => format_browser_result(value),
+            Err(error) => handle_browser_error(context, error).await,
+        }
     }
 }
 
@@ -129,7 +215,7 @@ impl AgentTool for TypeTool {
                 "properties": {
                     "ref": { "type": "string", "description": "browser_read_text 返回的输入元素 ref，例如 r12" },
                     "text": { "type": "string", "description": "要输入的文本" },
-                    "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 30000", "minimum": 1 }
+                    "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 60000", "minimum": 1 }
                 },
                 "required": ["ref", "text"]
             }),
@@ -146,12 +232,16 @@ impl AgentTool for TypeTool {
         let Some(text) = string_arg(args, "text") else {
             return "错误：缺少必填参数 text".to_string();
         };
-        run_browser_command(
+        match run_browser_command_value(
             context,
             "type",
             json!({ "ref": ref_id, "text": text, "timeout": timeout_arg(args) }),
         )
         .await
+        {
+            Ok(value) => format_browser_result(value),
+            Err(error) => handle_browser_error(context, error).await,
+        }
     }
 }
 
@@ -207,7 +297,7 @@ impl AgentTool for WaitForTool {
                         "description": "Playwright load state",
                         "enum": ["load", "domcontentloaded", "networkidle"]
                     },
-                    "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 30000", "minimum": 1 }
+                    "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 60000", "minimum": 1 }
                 }
             }),
             false,
@@ -245,7 +335,7 @@ impl AgentTool for ReadTextTool {
                 "properties": {
                     "ref": { "type": "string", "description": "可选。读取某个已知 ref 对应元素的局部 Accessibility Tree；不传则读取整个页面并刷新 ref 映射。" },
                     "max_nodes": { "type": "integer", "description": "最多返回的可访问性节点数，默认 600", "minimum": 1 },
-                    "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 30000", "minimum": 1 }
+                    "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 60000", "minimum": 1 }
                 }
             }),
             false,
@@ -283,7 +373,7 @@ impl AgentTool for VisualAnalyzeTool {
                 "type": "object",
                 "properties": {
                     "instruction": { "type": "string", "description": "视觉分析指令：说明当前任务需要关注的页面内容、控件、布局、状态、异常或截图区域线索。" },
-                    "timeout": { "type": "integer", "description": "截图超时时间，单位毫秒，默认 30000", "minimum": 1 }
+                    "timeout": { "type": "integer", "description": "截图超时时间，单位毫秒，默认 60000", "minimum": 1 }
                 },
                 "required": ["instruction"]
             }),
@@ -391,7 +481,23 @@ impl AgentTool for CloseTool {
 async fn run_browser_command(context: &ToolContext, method: &str, params: Value) -> String {
     match run_browser_command_value(context, method, params).await {
         Ok(value) => format_browser_result(value),
-        Err(error) => format!("错误：{error}"),
+        Err(error) => {
+            // For non-ref tools, classify errors but skip auto-snapshot
+            let kind = classify_browser_error(&error);
+            match kind {
+                BrowserErrorKind::Behavioral => {
+                    format!(
+                        "{error}\n\n提示：这是一个可恢复的行为错误。请检查当前页面状态，\
+                        必要时重新调用 browser_read_text 获取最新快照后重试操作。"
+                    )
+                }
+                BrowserErrorKind::System => format!("❌ 浏览器系统错误：{error}"),
+                BrowserErrorKind::RefExpired => {
+                    // Should not happen for non-ref tools, but handle gracefully
+                    handle_browser_error(context, error).await
+                }
+            }
+        }
     }
 }
 
@@ -416,7 +522,9 @@ async fn run_browser_command_value(
 }
 
 fn timeout_arg(args: &Value) -> u64 {
-    u64_arg(args, "timeout").unwrap_or(30_000).max(1)
+    u64_arg(args, "timeout")
+        .unwrap_or(DEFAULT_BROWSER_TIMEOUT_MS)
+        .max(1)
 }
 
 fn build_visual_analysis_prompt(instruction: &str, data_url: &str) -> String {

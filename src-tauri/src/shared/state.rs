@@ -1,6 +1,7 @@
 use parking_lot::Mutex;
 use portable_pty::{Child, ExitStatus, MasterPty, PtySize};
-use std::collections::HashMap;
+use serde::Serialize;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::sync::Arc;
 
@@ -33,6 +34,99 @@ pub(crate) type SharedPtyMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 pub(crate) type SharedPtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 pub(crate) type SharedChildHandle = Arc<Mutex<Box<dyn Child + Send + Sync>>>;
 
+const SESSION_OUTPUT_MAX_BYTES: usize = 10 * 1024 * 1024;
+const SESSION_OUTPUT_MAX_CHUNKS: usize = 512;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ManagedPtyKind {
+    Agent,
+    Shell,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ManagedPtyStatus {
+    Running,
+    Stopping,
+    Finished,
+    Released,
+}
+
+#[derive(Debug)]
+struct SessionOutputBuffer {
+    chunks: VecDeque<String>,
+    bytes: usize,
+    dropped_bytes: usize,
+    seq: u64,
+}
+
+impl Default for SessionOutputBuffer {
+    fn default() -> Self {
+        Self {
+            chunks: VecDeque::new(),
+            bytes: 0,
+            dropped_bytes: 0,
+            seq: 0,
+        }
+    }
+}
+
+impl SessionOutputBuffer {
+    fn push(&mut self, data: &str) -> u64 {
+        self.seq += 1;
+        self.bytes += data.len();
+        self.chunks.push_back(data.to_string());
+
+        while self.bytes > SESSION_OUTPUT_MAX_BYTES {
+            let Some(chunk) = self.chunks.pop_front() else {
+                self.bytes = 0;
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(chunk.len());
+            self.dropped_bytes += chunk.len();
+        }
+
+        if self.chunks.len() > SESSION_OUTPUT_MAX_CHUNKS {
+            let merged = self.chunks.iter().map(String::as_str).collect::<String>();
+            self.chunks.clear();
+            self.chunks.push_back(merged);
+        }
+
+        self.seq
+    }
+
+    fn snapshot(&self) -> ManagedPtySnapshot {
+        ManagedPtySnapshot {
+            output: self.chunks.iter().map(String::as_str).collect::<String>(),
+            seq: self.seq,
+            dropped_bytes: self.dropped_bytes,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ManagedPtySession {
+    kind: ManagedPtyKind,
+    status: ManagedPtyStatus,
+    output: SessionOutputBuffer,
+}
+
+impl ManagedPtySession {
+    fn new(kind: ManagedPtyKind) -> Self {
+        Self {
+            kind,
+            status: ManagedPtyStatus::Running,
+            output: SessionOutputBuffer::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ManagedPtySnapshot {
+    pub output: String,
+    pub seq: u64,
+    pub dropped_bytes: usize,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TaskTerminationIntent {
     Stopped,
@@ -49,6 +143,7 @@ pub struct TaskManager {
     pub(crate) claimed_session_paths: Mutex<std::collections::HashSet<String>>,
     /// Cancellation tokens for session watcher threads — cancel on task cleanup.
     pub(crate) session_watchers: Mutex<HashMap<String, CancellationToken>>,
+    managed_sessions: Mutex<HashMap<String, ManagedPtySession>>,
 }
 
 impl TaskManager {
@@ -69,6 +164,27 @@ impl TaskManager {
         writer: Box<dyn Write + Send>,
         child: Box<dyn Child + Send + Sync>,
     ) {
+        self.insert_pty_handles_for_kind(id, ManagedPtyKind::Agent, master, writer, child);
+    }
+
+    pub(crate) fn insert_shell_pty_handles(
+        &self,
+        id: &str,
+        master: Box<dyn MasterPty + Send>,
+        writer: Box<dyn Write + Send>,
+        child: Box<dyn Child + Send + Sync>,
+    ) {
+        self.insert_pty_handles_for_kind(id, ManagedPtyKind::Shell, master, writer, child);
+    }
+
+    fn insert_pty_handles_for_kind(
+        &self,
+        id: &str,
+        kind: ManagedPtyKind,
+        master: Box<dyn MasterPty + Send>,
+        writer: Box<dyn Write + Send>,
+        child: Box<dyn Child + Send + Sync>,
+    ) {
         self.pty_masters
             .lock()
             .insert(id.to_string(), Arc::new(Mutex::new(master)));
@@ -78,6 +194,9 @@ impl TaskManager {
         self.child_handles
             .lock()
             .insert(id.to_string(), Arc::new(Mutex::new(child)));
+        self.managed_sessions
+            .lock()
+            .insert(id.to_string(), ManagedPtySession::new(kind));
     }
 
     pub(crate) fn write_to_pty(&self, id: &str, data: &[u8], flush: bool) -> Result<(), String> {
@@ -112,12 +231,35 @@ impl TaskManager {
     }
 
     pub(crate) fn kill_child(&self, id: &str) -> Result<(), String> {
+        if let Some(session) = self.managed_sessions.lock().get_mut(id) {
+            session.status = ManagedPtyStatus::Stopping;
+        }
         let child = self.child_handles.lock().get(id).cloned();
         let Some(child) = child else {
             return Ok(());
         };
         let mut child = child.lock();
         child.kill().map_err(|err| err.to_string())
+    }
+
+    pub(crate) fn append_output(&self, id: &str, data: &str) -> Option<u64> {
+        let mut sessions = self.managed_sessions.lock();
+        let session = sessions.get_mut(id)?;
+        Some(session.output.push(data))
+    }
+
+    pub fn output_snapshot(&self, id: &str) -> Result<ManagedPtySnapshot, String> {
+        let sessions = self.managed_sessions.lock();
+        let Some(session) = sessions.get(id) else {
+            return Err(format!("找不到会话 {id} 的后端输出快照"));
+        };
+        Ok(session.output.snapshot())
+    }
+
+    pub(crate) fn mark_finished(&self, id: &str) {
+        if let Some(session) = self.managed_sessions.lock().get_mut(id) {
+            session.status = ManagedPtyStatus::Finished;
+        }
     }
 
     /// Atomically remove a task or shell from all PTY maps and cancel session watchers.
@@ -128,6 +270,7 @@ impl TaskManager {
         let mut children = self.child_handles.lock();
         let mut intents = self.task_termination_intents.lock();
         let mut watchers = self.session_watchers.lock();
+        let mut sessions = self.managed_sessions.lock();
 
         masters.remove(id);
         writers.remove(id);
@@ -136,6 +279,34 @@ impl TaskManager {
         if let Some(token) = watchers.remove(id) {
             token.cancel();
         }
+        if let Some(session) = sessions.get_mut(id) {
+            session.status = ManagedPtyStatus::Released;
+        }
+        if sessions
+            .get(id)
+            .is_some_and(|session| session.kind == ManagedPtyKind::Shell)
+        {
+            sessions.remove(id);
+        }
+    }
+
+    pub(crate) fn shutdown_all(&self) {
+        let ids = self
+            .child_handles
+            .lock()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in ids {
+            let _ = self.kill_child(&id);
+            self.remove_pty_handles(&id);
+        }
+    }
+}
+
+impl Drop for TaskManager {
+    fn drop(&mut self) {
+        self.shutdown_all();
     }
 }
 

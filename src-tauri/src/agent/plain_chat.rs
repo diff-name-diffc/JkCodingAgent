@@ -18,11 +18,10 @@ use super::db::{
     DispatcherSessionTokenUsageSource, DispatcherSettingsRecord,
 };
 use super::llm::{
-    ChatMessage, LlmResponse, OpenAiCompatProvider,
-    RequestedToolCall, ToolDefinition,
+    ChatMessage, LlmResponse, OpenAiCompatProvider, RequestedToolCall, ToolDefinition,
 };
 use super::runtime::{AgentEvent, AgentTurn};
-use super::sub_agent::SubAgentManager;
+use super::sub_agent::{tool::sub_agent_failure_message, SubAgentManager};
 use super::tools::ToolRegistry;
 use crate::shared::truncate_for_display;
 
@@ -40,7 +39,10 @@ pub struct PlainChatAgent {
 }
 
 impl PlainChatAgent {
-    pub fn new(config: DispatcherAgentConfig, sub_agent_manager: Option<Arc<SubAgentManager>>) -> Self {
+    pub fn new(
+        config: DispatcherAgentConfig,
+        sub_agent_manager: Option<Arc<SubAgentManager>>,
+    ) -> Self {
         let provider = OpenAiCompatProvider::new(
             config.api_key.clone(),
             config.api_base.clone(),
@@ -51,9 +53,9 @@ impl PlainChatAgent {
 
         let mut registry = ToolRegistry::plain_chat_tools();
         if let Some(manager) = &sub_agent_manager {
-            registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(
-                Arc::clone(manager),
-            )));
+            registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(Arc::clone(
+                manager,
+            ))));
             registry.add_tool(Box::new(super::sub_agent::ListSubAgentsTool::new(
                 Arc::clone(manager),
             )));
@@ -145,9 +147,21 @@ impl PlainChatAgent {
         if let Some(chat) = active_chat {
             let mut provider = self.provider.lock();
             *provider = OpenAiCompatProvider::new(
-                if chat.api_key.is_empty() { self.config.api_key.clone() } else { chat.api_key.clone() },
-                if chat.url.is_empty() { self.config.api_base.clone() } else { chat.url.clone() },
-                if chat.model.is_empty() { self.config.model.clone() } else { chat.model.clone() },
+                if chat.api_key.is_empty() {
+                    self.config.api_key.clone()
+                } else {
+                    chat.api_key.clone()
+                },
+                if chat.url.is_empty() {
+                    self.config.api_base.clone()
+                } else {
+                    chat.url.clone()
+                },
+                if chat.model.is_empty() {
+                    self.config.model.clone()
+                } else {
+                    chat.model.clone()
+                },
                 self.config.max_tokens,
                 self.config.temperature,
             );
@@ -268,7 +282,9 @@ impl PlainChatAgent {
         cancel_rx: watch::Receiver<bool>,
         usage_tracker: &mut UsageTracker,
     ) -> Result<DispatcherMessageRecord> {
-        let tool_context = self.build_tool_context(db, workspace_id, workspace, provider).await;
+        let tool_context = self
+            .build_tool_context(db, workspace_id, workspace, provider)
+            .await;
         let tool_definitions = self.build_tool_definitions(workspace);
         let allowed_tool_names = tool_definitions
             .iter()
@@ -450,7 +466,10 @@ impl PlainChatAgent {
                             .execute(&tool_call.name, &tool_call.arguments, tool_context)
                             .await
                     } else {
-                        format!("错误：禁止调用工具 '{}'；请检查可用工具列表。", tool_call.name)
+                        format!(
+                            "错误：禁止调用工具 '{}'；请检查可用工具列表。",
+                            tool_call.name
+                        )
                     }
                 }))
                 .await;
@@ -458,6 +477,9 @@ impl PlainChatAgent {
             for (tool_call, result) in readonly_run.iter().zip(readonly_results) {
                 if cancellation_requested(cancel_rx) {
                     return Ok(results);
+                }
+                if let Some(message) = sub_agent_failure_message(&result) {
+                    anyhow::bail!("{}", message);
                 }
                 results.push((tool_call.clone(), result));
             }
@@ -483,8 +505,14 @@ impl PlainChatAgent {
                         .execute(&tool_call.name, &tool_call.arguments, tool_context)
                         .await
                 } else {
-                    format!("错误：禁止调用工具 '{}'；请检查可用工具列表。", tool_call.name)
+                    format!(
+                        "错误：禁止调用工具 '{}'；请检查可用工具列表。",
+                        tool_call.name
+                    )
                 };
+                if let Some(message) = sub_agent_failure_message(&result) {
+                    anyhow::bail!("{}", message);
+                }
                 results.push((tool_call.clone(), result));
             }
 
@@ -511,8 +539,14 @@ impl PlainChatAgent {
                         .execute(&tool_call.name, &tool_call.arguments, tool_context)
                         .await
                 } else {
-                    format!("错误：禁止调用工具 '{}'；请检查可用工具列表。", tool_call.name)
+                    format!(
+                        "错误：禁止调用工具 '{}'；请检查可用工具列表。",
+                        tool_call.name
+                    )
                 };
+                if let Some(message) = sub_agent_failure_message(&result) {
+                    anyhow::bail!("{}", message);
+                }
                 results.push((tool_call.clone(), result));
             }
             Ok(results)
@@ -560,6 +594,8 @@ impl PlainChatAgent {
             image_model: String::new(),
             image_edit_model: String::new(),
             sub_agent_tool_registry: Some(Arc::clone(&self.tools)),
+            current_sub_agent_id: None,
+            current_sub_agent_name: None,
         }
     }
 
@@ -586,17 +622,26 @@ impl PlainChatAgent {
     fn build_tool_definitions(&self, workspace: &Path) -> Vec<ToolDefinition> {
         let configured = self.allowed_tools.lock().clone();
         if configured.is_empty() {
-            self.tools
-                .definitions_for_workspace(workspace, Option::<std::iter::Empty<&str>>::None, false)
+            self.tools.definitions_for_workspace(
+                workspace,
+                Option::<std::iter::Empty<&str>>::None,
+                false,
+            )
         } else {
             let allowed_refs: Vec<&str> = configured.iter().map(|s| s.as_str()).collect();
-            let mut defs = self.tools
-                .definitions_for_workspace(workspace, Some(allowed_refs.iter().copied()), false);
+            let mut defs = self.tools.definitions_for_workspace(
+                workspace,
+                Some(allowed_refs.iter().copied()),
+                false,
+            );
             let has_call = defs.iter().any(|d| d.function.name == "call_sub_agent");
             let has_list = defs.iter().any(|d| d.function.name == "list_sub_agents");
             if !has_call || !has_list {
-                let all_defs = self.tools
-                    .definitions_for_workspace(workspace, Option::<std::iter::Empty<&str>>::None, false);
+                let all_defs = self.tools.definitions_for_workspace(
+                    workspace,
+                    Option::<std::iter::Empty<&str>>::None,
+                    false,
+                );
                 for def in all_defs {
                     if (def.function.name == "call_sub_agent" && !has_call)
                         || (def.function.name == "list_sub_agents" && !has_list)
@@ -673,6 +718,7 @@ fn build_plain_chat_system_prompt() -> String {
         "当前会话不是项目 Agent 会话，没有项目目录、文件系统、终端、MCP 或子进程能力。".to_string(),
         "你可以按需使用浏览器工具打开网页、点击、输入、等待、读取页面可访问性树快照、请求视觉辅助分析和关闭浏览器，用于网页自动化与公开信息检索。".to_string(),
         "浏览器自动化统一使用 ref：先调用 browser_read_text 获取 Accessibility Tree 快照，再使用快照中的 ref 调用点击、输入或局部读取工具；不要使用 CSS selector。".to_string(),
+        "元素 ref 只在最近一次 browser_read_text 快照中有效。页面导航或内容变化后旧 ref 会失效，收到 ref 失效错误时系统会自动附上新快照，基于新快照重新选择元素即可。".to_string(),
         "浏览器工具只代表当前普通聊天会话中的临时浏览器，不代表用户本地项目环境。".to_string(),
         "检索问题信息时，优先打开明确网址；没有网址时可打开搜索引擎结果页并读取页面文本，不要伪造检索结果。".to_string(),
         "不要声称已经读取、修改或执行了本地文件；如果用户要求操作项目或文件，请说明普通聊天不具备该能力，并建议切换到项目会话。".to_string(),

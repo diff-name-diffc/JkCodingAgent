@@ -112,7 +112,10 @@ where
     if context_payload.is_empty() && display_content.is_empty() {
         return Err(SummaryError::new(
             format!("工具结果摘要返回空内容：{tool_name}"),
-            format!("tool_name={tool_name}, output_chars={}", raw_output.chars().count()),
+            format!(
+                "tool_name={tool_name}, output_chars={}",
+                raw_output.chars().count()
+            ),
         ));
     }
 
@@ -303,7 +306,9 @@ pub fn extract_structured_summary(tool_name: &str, raw_output: &str) -> String {
     let char_count = raw_output.chars().count();
     let line_count = raw_output.lines().count();
 
-    sections.push(format!("[{tool_name}: {char_count} chars, {line_count} lines]"));
+    sections.push(format!(
+        "[{tool_name}: {char_count} chars, {line_count} lines]"
+    ));
 
     match tool_name {
         "exec" => {
@@ -332,11 +337,7 @@ pub fn extract_structured_summary(tool_name: &str, raw_output: &str) -> String {
             if !errors.is_empty() {
                 sections.push(format!(
                     "错误/失败:\n{}",
-                    errors
-                        .iter()
-                        .map(|s| **s)
-                        .collect::<Vec<_>>()
-                        .join("\n")
+                    errors.iter().map(|s| **s).collect::<Vec<_>>().join("\n")
                 ));
             }
             let head: Vec<&str> = lines.iter().take(20).copied().collect();
@@ -352,10 +353,7 @@ pub fn extract_structured_summary(tool_name: &str, raw_output: &str) -> String {
                 .lines()
                 .filter(|l| {
                     // Strip leading line-number prefix (e.g., "1|  " or "42 |  ")
-                    let stripped = l
-                        .split_once('|')
-                        .map(|(_, rest)| rest)
-                        .unwrap_or(l);
+                    let stripped = l.split_once('|').map(|(_, rest)| rest).unwrap_or(l);
                     let t = stripped.trim();
                     t.starts_with("fn ")
                         || t.starts_with("pub fn")
@@ -381,7 +379,11 @@ pub fn extract_structured_summary(tool_name: &str, raw_output: &str) -> String {
                     symbols.into_iter().collect::<Vec<_>>().join("\n")
                 ));
             }
-            sections.push(truncate_middle(raw_output, STRUCTURED_SUMMARY_BODY_CHARS, "代码体"));
+            sections.push(truncate_middle(
+                raw_output,
+                STRUCTURED_SUMMARY_BODY_CHARS,
+                "代码体",
+            ));
         }
         "grep" => {
             let matches: Vec<&str> = raw_output
@@ -428,7 +430,10 @@ fn truncate_middle(text: &str, max_chars: usize, label: &str) -> String {
     let half = max_chars / 2;
     let head: String = text.chars().take(half).collect();
     let tail: String = text.chars().skip(chars - half).collect();
-    format!("{head}\n[...省略 {} {label}字符...]\n{tail}", chars - max_chars)
+    format!(
+        "{head}\n[...省略 {} {label}字符...]\n{tail}",
+        chars - max_chars
+    )
 }
 
 // ─── Session Title Generation (uses LLM) ──────────────────────────────────────────
@@ -691,8 +696,18 @@ fn clean_title_line(raw: &str) -> String {
         ch.is_whitespace()
             || matches!(
                 ch,
-                '"' | '\'' | '`' | '\u{201C}' | '\u{201D}' | '\u{2018}' | '\u{2019}'
-                    | '。' | '，' | ',' | '.' | '：' | ':'
+                '"' | '\''
+                    | '`'
+                    | '\u{201C}'
+                    | '\u{201D}'
+                    | '\u{2018}'
+                    | '\u{2019}'
+                    | '。'
+                    | '，'
+                    | ','
+                    | '.'
+                    | '：'
+                    | ':'
             )
     });
 
@@ -705,7 +720,10 @@ fn truncate_title(title: String) -> String {
 
 fn build_keywords_prompt(qa_text: &str, existing_keywords_json: &str) -> String {
     let qa_truncated = if qa_text.chars().count() > SESSION_KEYWORDS_QA_MAX_CHARS {
-        let mut t = qa_text.chars().take(SESSION_KEYWORDS_QA_MAX_CHARS).collect::<String>();
+        let mut t = qa_text
+            .chars()
+            .take(SESSION_KEYWORDS_QA_MAX_CHARS)
+            .collect::<String>();
         t.push_str("\n...(truncated)");
         t
     } else {
@@ -751,10 +769,10 @@ mod tests {
     use super::{
         build_dispatch_summary_prompt, build_prompt_preview, build_session_title_prompt,
         build_session_title_source, build_summary_debug_context, build_tool_summary_prompt,
-        exceeds_limits, extract_structured_summary, fallback_session_title,
+        clean_title_line, exceeds_limits, extract_structured_summary, fallback_session_title,
         normalize_session_title, session_title_role_label, truncate_middle,
         truncate_session_title_message, truncate_session_title_source, truncate_title,
-        clean_title_line, SessionTitleMessage, SESSION_TITLE_MAX_CHARS,
+        SessionTitleMessage, SESSION_TITLE_MAX_CHARS,
     };
     use crate::agent::llm::OpenAiCompatProvider;
 
@@ -808,7 +826,8 @@ mod tests {
 
     #[test]
     fn fallback_session_title_truncates_long_prompt() {
-        let title = fallback_session_title("请帮我实现一个非常非常非常非常非常非常长的会话标题生成逻辑");
+        let title =
+            fallback_session_title("请帮我实现一个非常非常非常非常非常非常长的会话标题生成逻辑");
         assert!(title.chars().count() <= 10);
     }
 

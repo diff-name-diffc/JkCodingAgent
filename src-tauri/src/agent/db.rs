@@ -14,7 +14,6 @@ use uuid::Uuid;
 use super::config::DEFAULT_SUMMARY_MODEL;
 use super::llm::{ChatMessage, LlmUsage, OutboundToolCall};
 
-
 const MAX_LLM_DIALOGUES: usize = 5;
 const MAX_DIALOGUE_QUERY_LIMIT: usize = 50;
 const DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS: u64 = 1_000_000;
@@ -1630,8 +1629,7 @@ impl DispatcherDb {
                 &json_cols[5],
                 &json_cols[6],
                 &json_cols[7],
-                &serde_json::to_string(&allowed_tools)
-                    .context("serialize allowed_tools")?,
+                &serde_json::to_string(&allowed_tools).context("serialize allowed_tools")?,
             ],
         )
         .context("save dispatcher settings")?;
@@ -1692,29 +1690,19 @@ impl DispatcherDb {
         match conn.query_row(sql, [], |row| {
             Ok(AhaSettingsV2 {
                 shared: AhaSharedModels {
-                    vision_model_configs: Self::parse_model_configs_json(
-                        &row.get::<_, String>(0)?,
-                    ),
-                    image_model_configs: Self::parse_model_configs_json(
-                        &row.get::<_, String>(1)?,
-                    ),
+                    vision_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(0)?),
+                    image_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(1)?),
                     image_edit_model_configs: Self::parse_model_configs_json(
                         &row.get::<_, String>(2)?,
                     ),
-                    asr_model_configs: Self::parse_model_configs_json(
-                        &row.get::<_, String>(3)?,
-                    ),
-                    tts_model_configs: Self::parse_model_configs_json(
-                        &row.get::<_, String>(4)?,
-                    ),
+                    asr_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(3)?),
+                    tts_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(4)?),
                     embedding_model_configs: Self::parse_model_configs_json(
                         &row.get::<_, String>(5)?,
                     ),
                 },
                 project: AhaContextConfig {
-                    chat_model_configs: Self::parse_model_configs_json(
-                        &row.get::<_, String>(6)?,
-                    ),
+                    chat_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(6)?),
                     summary_model_configs: Self::parse_model_configs_json(
                         &row.get::<_, String>(7)?,
                     ),
@@ -1724,9 +1712,7 @@ impl DispatcherDb {
                     },
                 },
                 chat: AhaContextConfig {
-                    chat_model_configs: Self::parse_model_configs_json(
-                        &row.get::<_, String>(9)?,
-                    ),
+                    chat_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(9)?),
                     summary_model_configs: Self::parse_model_configs_json(
                         &row.get::<_, String>(10)?,
                     ),
@@ -1762,11 +1748,13 @@ impl DispatcherDb {
 
         let project_chat = Self::serialize_json(&project.chat_model_configs);
         let project_summary = Self::serialize_json(&project.summary_model_configs);
-        let project_tools = serde_json::to_string(&project.allowed_tools).unwrap_or_else(|_| "[]".to_string());
+        let project_tools =
+            serde_json::to_string(&project.allowed_tools).unwrap_or_else(|_| "[]".to_string());
 
         let chat_agent_chat = Self::serialize_json(&chat.chat_model_configs);
         let chat_agent_summary = Self::serialize_json(&chat.summary_model_configs);
-        let chat_agent_tools = serde_json::to_string(&chat.allowed_tools).unwrap_or_else(|_| "[]".to_string());
+        let chat_agent_tools =
+            serde_json::to_string(&chat.allowed_tools).unwrap_or_else(|_| "[]".to_string());
 
         let sql = "INSERT INTO dispatcher_settings_v2 (
             id,
@@ -3140,10 +3128,7 @@ impl DispatcherDb {
 
     // ── Session keywords ──────────────────────────────────────────
 
-    pub fn list_session_keywords(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Vec<SessionKeywordRecord>> {
+    pub fn list_session_keywords(&self, workspace_id: &str) -> Result<Vec<SessionKeywordRecord>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT workspace_id, keyword, weight, created_at
@@ -3175,7 +3160,9 @@ impl DispatcherDb {
         for action in actions {
             match action.action.as_str() {
                 "add" => {
-                    let Some(keyword) = action.keyword.as_deref() else { continue };
+                    let Some(keyword) = action.keyword.as_deref() else {
+                        continue;
+                    };
                     let weight = action.weight.unwrap_or(1.0);
                     let _ = tx.execute(
                         "INSERT INTO session_keywords (workspace_id, keyword, weight, created_at)
@@ -3184,7 +3171,9 @@ impl DispatcherDb {
                     );
                 }
                 "remove" => {
-                    let Some(keyword) = action.keyword.as_deref() else { continue };
+                    let Some(keyword) = action.keyword.as_deref() else {
+                        continue;
+                    };
                     let _ = tx.execute(
                         "DELETE FROM session_keywords WHERE workspace_id = ?1 AND keyword = ?2",
                         params![workspace_id, keyword.trim()],
@@ -3194,7 +3183,9 @@ impl DispatcherDb {
                     // Nothing to do, keyword already persisted
                 }
                 "merge" => {
-                    let Some(to_keyword) = action.to.as_deref() else { continue };
+                    let Some(to_keyword) = action.to.as_deref() else {
+                        continue;
+                    };
                     let weight = action.weight.unwrap_or(1.0);
                     if let Some(from_keywords) = &action.from {
                         for from_keyword in from_keywords {
@@ -3880,8 +3871,8 @@ impl DispatcherDb {
         }
         let mut conn = self.conn()?;
 
-    // Fast path: if schema is already at the expected version, skip all DDL.
-    const SCHEMA_VERSION: i32 = 10;
+        // Fast path: if schema is already at the expected version, skip all DDL.
+        const SCHEMA_VERSION: i32 = 11;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -4373,7 +4364,9 @@ impl DispatcherDb {
             == 0
         {
             {
-                let tx = conn.transaction().context("v8: begin sub_agent migration")?;
+                let tx = conn
+                    .transaction()
+                    .context("v8: begin sub_agent migration")?;
                 super::sub_agent::db::ensure_sub_agent_tables_tx(&tx)?;
                 super::sub_agent::db::seed_browser_agent_if_missing_tx(&tx)?;
                 tx.commit().context("v8: commit sub_agent migration")?;
@@ -4449,6 +4442,16 @@ impl DispatcherDb {
                 ",
             )
             .context("v10 migration: contextualize sub_agents → context_sub_agents")?;
+        }
+
+        // v10 → v11: refresh browser-agent default timeout from 180s → 600s (10 min).
+        {
+            let tx = conn
+                .transaction()
+                .context("v11: begin browser-agent timeout refresh")?;
+            super::sub_agent::db::seed_browser_agent_force_tx(&tx)?;
+            tx.commit()
+                .context("v11: commit browser-agent timeout refresh")?;
         }
 
         // Mark schema as fully migrated (outside the transaction — PRAGMA is auto-commit).

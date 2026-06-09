@@ -48,8 +48,8 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
       cloakbrowser:
-        specifier: ^0.3.27
-        version: 0.3.27(playwright-core@1.59.1)
+        specifier: ^0.3.31
+        version: 0.3.31(playwright-core@1.59.1)
       katex:
         specifier: ^0.16.45
         version: 0.16.45
@@ -1444,13 +1444,13 @@ packages:
     resolution: {integrity: sha512-+IxzY9BZOQd/XuYPRmrvEVjF/nqj5kgT4kEq7VofrDoM1MxoRjEWkrCC3EtLi59TVawxTAn+orJwFQcrqEN1+g==}
     engines: {node: '>=18'}
 
-  cloakbrowser@0.3.27:
-    resolution: {integrity: sha512-EjTI+Ux8XaCDHKDOLFOt6Tsv2g6AhQPQjIL1GqAazcxk+BAg8FfFxtSHYdVcvldsXSW8RpPEz8N3AX54vEjzBg==}
+  cloakbrowser@0.3.31:
+    resolution: {integrity: sha512-HtwlpwFKd5FJh4jjCS5awsScWIKB9ofNSTkHLSEh/9JH0Hv1L79zu0MExSMOCP1nzOsgrohbacwwWocuKloQ1A==}
     engines: {node: '>=20.0.0'}
     hasBin: true
     peerDependencies:
       mmdb-lib: '>=2.0.0'
-      playwright-core: '>=1.40.0'
+      playwright-core: '>=1.53.0'
       puppeteer-core: '>=21.0.0'
       socks-proxy-agent: '>=10.0.0'
     peerDependenciesMeta:
@@ -4269,7 +4269,7 @@ snapshots:
 
   chownr@3.0.0: {}
 
-  cloakbrowser@0.3.27(playwright-core@1.59.1):
+  cloakbrowser@0.3.31(playwright-core@1.59.1):
     dependencies:
       tar: 7.5.15
     optionalDependencies:

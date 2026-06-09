@@ -89,9 +89,11 @@ export interface ProjectMcpStatus {
 
 export interface BrowserStatus {
   sessionId: string;
-  state: "booting" | "starting" | "downloading" | "launching" | "ready" | "closed" | string;
+  state: "booting" | "starting" | "downloading" | "launching" | "ready" | "minimized" | "page_closed" | "closed" | string;
   url?: string | null;
   message?: string | null;
+  minimized?: boolean;
+  hasHeadedWindow?: boolean;
 }
 
 export interface BrowserFrameEvent {
@@ -542,6 +544,7 @@ export interface ChatSession {
   category: string;
   createdAt: string;
   updatedAt: string;
+  isRunning?: boolean;
 }
 
 export interface ProjectSession {
@@ -552,6 +555,7 @@ export interface ProjectSession {
   activePlanPath?: string | null;
   createdAt: string;
   updatedAt: string;
+  isRunning?: boolean;
 }
 
 export interface SessionPage<T> {
@@ -739,7 +743,8 @@ export type SubAgentEventType =
   | "Started"
   | "ToolStarted"
   | "ToolFinished"
-  | "LlmDelta"
+  | "Progress"
+  | "llmDelta"
   | "Finished"
   | "Failed";
 
@@ -752,6 +757,7 @@ export interface SubAgentEvent {
     toolName?: string;
     arguments?: Record<string, unknown>;
     resultPreview?: string;
+    message?: string;
     delta?: string;
     result?: string;
     iterations?: number;

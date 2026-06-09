@@ -22,10 +22,13 @@ impl ToolRegistry {
         let mut tools = builtin::builtin_tools();
         tools.extend(planning::planning_tools());
         tools.extend(delegation::delegation_tools());
+        tools.push(crate::agent::sub_agent::notify_user_progress_tool());
         Self::new(tools).with_dynamic_provider(mcp::mcp_tool_bridge(project_mcp_registry))
     }
 
     pub fn plain_chat_tools() -> Self {
-        Self::new(builtin::plain_chat_tools())
+        let mut tools = builtin::plain_chat_tools();
+        tools.push(crate::agent::sub_agent::notify_user_progress_tool());
+        Self::new(tools)
     }
 }

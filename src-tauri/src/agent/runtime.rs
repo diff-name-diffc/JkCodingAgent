@@ -16,8 +16,8 @@ use tokio::sync::watch;
 
 use super::common::{
     self, build_args_map, build_tool_calls_payload, cancellation_requested,
-    persist_tool_calls_message, persist_tool_result_raw,
-    stream_llm_response, wait_for_cancellation, LlmStreamOutcome, UsageTracker,
+    persist_tool_calls_message, persist_tool_result_raw, stream_llm_response,
+    wait_for_cancellation, LlmStreamOutcome, UsageTracker,
 };
 use super::config::DispatcherAgentConfig;
 use super::db::{
@@ -28,10 +28,11 @@ use super::db::{
 };
 use super::debug::{render_json, ContextDebugLogger, DebugSection};
 use super::llm::{
-    messages_contain_inline_images, ChatMessage, LlmResponse, LlmUsage,
-    OpenAiCompatProvider, RequestedToolCall,
+    messages_contain_inline_images, ChatMessage, LlmResponse, LlmUsage, OpenAiCompatProvider,
+    RequestedToolCall,
 };
 use super::prompt::{build_system_prompt, PromptBundle, PromptSection};
+use super::sub_agent::tool::sub_agent_failure_message;
 use super::summary::summarize_dispatch_result;
 use super::tools::{
     parse_ask_plan_question, parse_continue_instruction, parse_create_plan_document,
@@ -199,7 +200,6 @@ pub enum AgentEvent {
     },
 }
 
-
 pub struct DispatcherAgent {
     config: DispatcherAgentConfig,
     provider: Mutex<OpenAiCompatProvider>,
@@ -323,7 +323,6 @@ struct IterationContext {
     request_provider: OpenAiCompatProvider,
     debug_logger: ContextDebugLogger,
 }
-
 
 struct ToolCallsOutcome {
     saw_retryable_tool_error: bool,
@@ -566,9 +565,9 @@ impl DispatcherAgent {
 
         let mut registry = ToolRegistry::default_tools(project_mcp_registry.clone());
         if let Some(manager) = &sub_agent_manager {
-            registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(
-                Arc::clone(manager),
-            )));
+            registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(Arc::clone(
+                manager,
+            ))));
             registry.add_tool(Box::new(super::sub_agent::ListSubAgentsTool::new(
                 Arc::clone(manager),
             )));
@@ -657,11 +656,7 @@ impl DispatcherAgent {
         *self.allowed_tools.lock() = settings.allowed_tools.clone();
     }
 
-    pub fn apply_settings_v2(
-        &self,
-        settings: &AhaSettingsV2,
-        context: AgentContext,
-    ) {
+    pub fn apply_settings_v2(&self, settings: &AhaSettingsV2, context: AgentContext) {
         let ctx_config = match context {
             AgentContext::Project => &settings.project,
             AgentContext::Chat => &settings.chat,
@@ -698,9 +693,21 @@ impl DispatcherAgent {
         if let Some(chat) = active_chat {
             let mut provider = self.provider.lock();
             *provider = OpenAiCompatProvider::new(
-                if chat.api_key.is_empty() { self.config.api_key.clone() } else { chat.api_key.clone() },
-                if chat.url.is_empty() { self.config.api_base.clone() } else { chat.url.clone() },
-                if chat.model.is_empty() { self.config.model.clone() } else { chat.model.clone() },
+                if chat.api_key.is_empty() {
+                    self.config.api_key.clone()
+                } else {
+                    chat.api_key.clone()
+                },
+                if chat.url.is_empty() {
+                    self.config.api_base.clone()
+                } else {
+                    chat.url.clone()
+                },
+                if chat.model.is_empty() {
+                    self.config.model.clone()
+                } else {
+                    chat.model.clone()
+                },
                 self.config.max_tokens,
                 self.config.temperature,
             );
@@ -1198,6 +1205,8 @@ impl DispatcherAgent {
             image_model: ms.image_model,
             image_edit_model: ms.image_edit_model,
             sub_agent_tool_registry: Some(Arc::clone(&self.tools)),
+            current_sub_agent_id: None,
+            current_sub_agent_name: None,
         }
     }
 
@@ -1277,7 +1286,8 @@ impl DispatcherAgent {
         debug_logger: &ContextDebugLogger,
         iteration: usize,
     ) -> Result<LlmStreamOutcome> {
-        let request_snapshot = request_provider.build_request_snapshot(messages, tool_definitions, enable_thinking);
+        let request_snapshot =
+            request_provider.build_request_snapshot(messages, tool_definitions, enable_thinking);
         debug_logger.log(
             "发送大模型请求",
             vec![
@@ -1433,6 +1443,9 @@ impl DispatcherAgent {
             for (tool_call, result) in ready_tool_results {
                 if cancellation_requested(cancel_rx) {
                     break 'outer;
+                }
+                if let Some(message) = sub_agent_failure_message(&result) {
+                    anyhow::bail!("{}", message);
                 }
 
                 match self
@@ -1602,8 +1615,6 @@ impl DispatcherAgent {
         // Priority 3: neither planning nor protocol — needs standard summary processing
         Ok(SingleToolDisposition::NeedsSummary)
     }
-
-
 
     async fn handle_tool_call_error(
         &self,
@@ -1987,7 +1998,9 @@ impl DispatcherAgent {
         allowed_tool_names: &HashSet<String>,
     ) -> Vec<String> {
         for tool_call in tool_calls {
-            let enriched = self.tools.effective_args(&tool_call.name, &tool_call.arguments);
+            let enriched = self
+                .tools
+                .effective_args(&tool_call.name, &tool_call.arguments);
             emit(
                 on_event,
                 AgentEvent::ToolStarted {
@@ -3478,10 +3491,10 @@ mod tests {
         build_checklist_state, build_dispatcher_mode_block, build_protocol_waiting_message,
         collect_recent_exploration_entries, complete_checklist_dispatch,
         default_mode_tool_allowlist, parse_update_plan, plan_mode_tool_allowlist,
-        reserve_checklist_dispatch, resolve_plan_path,
-        should_include_latest_user_goal, start_checklist_dispatch, DispatchAgent, DispatcherAgent,
-        DispatcherSubprocessRegistry, PlanPathAccess, PlannedSubprocessState, ProtocolBatchState,
-        ProtocolToolAction, RegisteredSubprocess, RegisteredSubprocessPhase,
+        reserve_checklist_dispatch, resolve_plan_path, should_include_latest_user_goal,
+        start_checklist_dispatch, DispatchAgent, DispatcherAgent, DispatcherSubprocessRegistry,
+        PlanPathAccess, PlannedSubprocessState, ProtocolBatchState, ProtocolToolAction,
+        RegisteredSubprocess, RegisteredSubprocessPhase,
     };
     use super::{ChecklistStepStatus, DispatcherMode, DispatcherSessionRuntimeState};
     use crate::agent::common::readonly_tool_run_end;

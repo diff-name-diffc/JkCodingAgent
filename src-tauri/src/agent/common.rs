@@ -122,7 +122,15 @@ pub async fn stream_llm_response(
     }?;
 
     if let Some(usage) = response.usage.as_ref() {
-        record_usage(db, workspace_id, model, source_kind, usage, usage_tracker, on_event);
+        record_usage(
+            db,
+            workspace_id,
+            model,
+            source_kind,
+            usage,
+            usage_tracker,
+            on_event,
+        );
     }
 
     Ok(LlmStreamOutcome::Response(response))
@@ -142,7 +150,10 @@ fn record_usage(
     let m = model.to_string();
     let u = usage.clone();
     tokio::spawn(async move {
-        if let Err(error) = db.upsert_session_token_usage_async(&wid, &m, source_kind, &u).await {
+        if let Err(error) = db
+            .upsert_session_token_usage_async(&wid, &m, source_kind, &u)
+            .await
+        {
             eprintln!(
                 "failed to persist session token usage for workspace {} and model {}: {}",
                 wid, m, error
@@ -201,7 +212,10 @@ pub fn prepare_tool_result(
         };
     }
 
-    let model_compress = args.get("compress").and_then(|v| v.as_bool()).unwrap_or(false);
+    let model_compress = args
+        .get("compress")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let compress_intent = args
         .get("compress_intent")
         .and_then(|v| v.as_str())
@@ -439,7 +453,11 @@ pub async fn persist_tool_calls_message(
         None,
         None,
         Some(tool_calls),
-        if thinking_content.is_empty() { None } else { Some(thinking_content) },
+        if thinking_content.is_empty() {
+            None
+        } else {
+            Some(thinking_content)
+        },
         thinking_elapsed_ms.unwrap_or(0),
     )
     .await
@@ -453,8 +471,7 @@ pub fn build_tool_calls_payload(
         .iter()
         .map(|call| {
             let enriched = registry.effective_args(&call.name, &call.arguments);
-            let args_json =
-                serde_json::to_string(&enriched).unwrap_or_else(|_| "{}".to_string());
+            let args_json = serde_json::to_string(&enriched).unwrap_or_else(|_| "{}".to_string());
             OutboundToolCall {
                 id: call.id.clone(),
                 kind: "function".to_string(),
@@ -475,8 +492,7 @@ pub fn build_args_map(
         .iter()
         .map(|tc| {
             let enriched = registry.effective_args(&tc.name, &tc.arguments);
-            let args_json =
-                serde_json::to_string(&enriched).unwrap_or_else(|_| "{}".to_string());
+            let args_json = serde_json::to_string(&enriched).unwrap_or_else(|_| "{}".to_string());
             (tc.id.clone(), args_json)
         })
         .collect()
@@ -496,9 +512,7 @@ pub fn select_provider_for_messages(
     }
 
     if vision_model.trim().is_empty() {
-        anyhow::bail!(
-            "检测到用户上传了图片，但视觉模型未配置。请先在设置中配置视觉模型后重试。"
-        );
+        anyhow::bail!("检测到用户上传了图片，但视觉模型未配置。请先在设置中配置视觉模型后重试。");
     }
 
     let selected = provider.with_model(vision_model.trim());

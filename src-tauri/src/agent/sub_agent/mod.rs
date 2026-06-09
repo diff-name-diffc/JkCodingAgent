@@ -6,4 +6,4 @@ pub mod runtime;
 pub mod tool;
 
 pub use manager::SubAgentManager;
-pub use tool::{ListSubAgentsTool, SubAgentTool};
+pub use tool::{notify_user_progress_tool, ListSubAgentsTool, SubAgentTool};

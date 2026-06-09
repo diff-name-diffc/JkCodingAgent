@@ -321,7 +321,11 @@ mod tests {
     #[test]
     fn current_local_time_matches_yyyy_mm_dd_hh_mm_format() {
         let time = super::current_local_time();
-        assert_eq!(time.len(), 16, "expected YYYY-MM-DD HH:MM (16 chars), got '{time}'");
+        assert_eq!(
+            time.len(),
+            16,
+            "expected YYYY-MM-DD HH:MM (16 chars), got '{time}'"
+        );
         assert!(time[4..5].contains('-'));
         assert!(time[7..8].contains('-'));
         assert!(time[10..11].contains(' '));
@@ -342,7 +346,9 @@ mod tests {
             .iter()
             .find(|s| s.label == "系统时间")
             .expect("missing 系统时间 section");
-        assert!(time_section.content.starts_with("---\n\n# 系统时间\n\n当前本地时间："));
+        assert!(time_section
+            .content
+            .starts_with("---\n\n# 系统时间\n\n当前本地时间："));
         let time_value = time_section
             .content
             .strip_prefix("---\n\n# 系统时间\n\n当前本地时间：")

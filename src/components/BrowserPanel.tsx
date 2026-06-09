@@ -10,6 +10,9 @@ import {
   KeyRound,
   Maximize2,
   Minimize2,
+  Monitor,
+  MonitorDown,
+  MonitorUp,
   Power,
   RefreshCw,
   Square,
@@ -36,6 +39,8 @@ interface Props {
   expanded?: boolean;
   onToggleExpanded?: () => void;
   onClose?: () => void;
+  onMinimize?: () => void;
+  onReopen?: () => void;
 }
 
 export function BrowserPanel({
@@ -46,6 +51,8 @@ export function BrowserPanel({
   expanded = false,
   onToggleExpanded,
   onClose,
+  onMinimize,
+  onReopen,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<BrowserStatus | null>(null);
@@ -341,7 +348,8 @@ export function BrowserPanel({
   }, [drawFrame, sessionId]);
 
   const state = status?.state ?? "closed";
-  const connected = state !== "closed";
+  const connected = state !== "closed" && state !== "page_closed";
+  const pageClosed = state === "page_closed";
   const statusText = sessionId
     ? status?.message
       ? `${state} · ${status.message}`
@@ -409,6 +417,27 @@ export function BrowserPanel({
           >
             <Power size={14} />
           </button>
+          {status?.hasHeadedWindow && !status?.minimized ? (
+            <button
+              type="button"
+              title="最小化窗口"
+              onClick={onMinimize}
+              disabled={!sessionId || busy || !connected}
+              style={iconButton}
+            >
+              <MonitorDown size={14} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              title={status?.hasHeadedWindow ? "恢复窗口" : "打开独立窗口"}
+              onClick={onReopen}
+              disabled={!sessionId || busy || !connected}
+              style={iconButton}
+            >
+              <Monitor size={14} />
+            </button>
+          )}
           <button
             type="button"
             title="关闭浏览器"
@@ -571,26 +600,95 @@ export function BrowserPanel({
           flex: 1,
           minHeight: 0,
           display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
+          flexDirection: "column",
           background: "var(--bg-panel)",
-          overflow: "auto",
+          overflow: "hidden",
+          position: "relative",
         }}
       >
-        {sessionId ? (
-          <canvas
-            ref={canvasRef}
-            onClick={handleCanvasClick}
-            style={{
-              width: "100%",
-              height: "auto",
-              display: "block",
-              background: "var(--bg-card)",
-              cursor: busy ? "progress" : "pointer",
-            }}
-          />
+        {sessionId && connected ? (
+          <>
+            <canvas
+              ref={canvasRef}
+              onClick={handleCanvasClick}
+              style={{
+                width: "100%",
+                height: "100%",
+                display: "block",
+                background: "var(--bg-card)",
+                cursor: busy ? "progress" : "pointer",
+                objectFit: "contain",
+              }}
+            />
+            {status?.minimized && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 8,
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  background: "rgba(0,0,0,0.7)",
+                  color: "#fff",
+                  fontSize: 11,
+                  padding: "4px 10px",
+                  borderRadius: 12,
+                  pointerEvents: "none",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                窗口已最小化 · 可在面板中点击操作
+              </div>
+            )}
+          </>
         ) : (
-          <div style={{ color: "var(--text-hint)", fontSize: 12 }}>选择一个会话后可启动浏览器</div>
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 16,
+              padding: 24,
+            }}
+          >
+            {sessionId ? (
+              <>
+                {pageClosed && (
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ color: "var(--text-muted)", fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                      浏览器窗口已关闭
+                    </div>
+                    <button
+                      type="button"
+                      title="重新打开窗口"
+                      onClick={onReopen}
+                      disabled={!sessionId || busy}
+                      style={{
+                        ...iconButton,
+                        width: "auto",
+                        padding: "6px 14px",
+                        gap: 6,
+                        display: "inline-flex",
+                        fontSize: 12,
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      <MonitorUp size={14} />
+                      重新打开
+                    </button>
+                  </div>
+                )}
+                {!connected && !pageClosed && (
+                  <div style={{ color: "var(--text-hint)", fontSize: 12 }}>
+                    点击上方 ⚡ 按钮启动浏览器
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ color: "var(--text-hint)", fontSize: 12 }}>选择一个会话后可启动浏览器</div>
+            )}
+          </div>
         )}
       </div>
 

@@ -12,6 +12,13 @@ let currentUrl = null;
 let downloadsDir = null;
 let elementRefs = new Map();
 let nextElementRefId = 1;
+let savedBounds = null;
+let headlessMode = false;
+let isHeadedWindowOpen = false;
+let currentViewport = null;
+let storedOptions = null;
+let refsInvalidatedByNavigation = false;
+let lastSnapshotRefCount = 0;
 
 function write(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -40,6 +47,12 @@ function respond(id, result) {
 
 function reject(id, error) {
   write({ id, ok: false, error: error instanceof Error ? error.message : String(error) });
+}
+
+function rejectStructured(id, errorType, message, extra = null) {
+  const response = { id, ok: false, error: message, errorType };
+  if (extra) Object.assign(response, extra);
+  write(response);
 }
 
 async function importCloakBrowser() {
@@ -113,11 +126,27 @@ async function ensureStarted(params) {
   }
 
   const viewport = params.viewport || { width: 1280, height: 800 };
+  currentViewport = viewport;
+  headlessMode = Boolean(params.headless);
+  storedOptions = { ...params };
+  await launchContext(params, viewport);
+}
+
+async function launchContext(params, viewport) {
+  const cloak = await importCloakBrowser();
+  if (typeof cloak.binaryInfo === "function") {
+    const info = cloak.binaryInfo();
+    if (!info.installed) {
+      status("downloading", "正在下载 CloakBrowser patched Chromium");
+      await cloak.ensureBinary();
+    }
+  }
+
   downloadsDir = join(params.userDataDir, "downloads");
   await mkdir(downloadsDir, { recursive: true });
   const options = {
     userDataDir: params.userDataDir,
-    headless: true,
+    headless: headlessMode,
     humanize: true,
     viewport,
     acceptDownloads: true,
@@ -133,27 +162,148 @@ async function ensureStarted(params) {
   status("launching", "正在启动嵌入式 CloakBrowser");
   context = await cloak.launchPersistentContext(options);
   page = context.pages()[0] || (await context.newPage());
-  page.on("framenavigated", (frame) => {
-    if (frame === page.mainFrame()) {
-      currentUrl = page.url();
-      clearElementRefs();
-      status("ready", null);
-    }
-  });
-  page.on("download", (download) => {
-    const suggested = download.suggestedFilename();
-    status("downloading", `正在下载：${suggested}`);
-    log(`检测到下载：${suggested}`);
-  });
-  page.on("close", () => status("closed", "浏览器页面已关闭"));
-
+  attachPageListeners(page);
   currentUrl = page.url();
   await startScreencast(page, viewport);
   status("ready", null);
 }
 
+function attachPageListeners(targetPage) {
+  targetPage.on("framenavigated", (frame) => {
+    if (frame === targetPage.mainFrame()) {
+      currentUrl = targetPage.url();
+      const hadRefs = elementRefs.size > 0;
+      clearElementRefs();
+      if (hadRefs) refsInvalidatedByNavigation = true;
+      status("ready", null);
+    }
+  });
+  targetPage.on("download", (download) => {
+    const suggested = download.suggestedFilename();
+    status("downloading", `正在下载：${suggested}`);
+    log(`检测到下载：${suggested}`);
+  });
+  targetPage.on("close", () => {
+    status("closed", "浏览器页面已关闭");
+    if (!headlessMode) {
+      isHeadedWindowOpen = false;
+      write({ event: "page_closed", sessionId });
+    }
+  });
+}
+
+async function reopenWindow() {
+  const viewport = currentViewport || { width: 1280, height: 800 };
+
+  if (headlessMode) {
+    if (!storedOptions) throw new Error("浏览器选项不可用，无法启动独立窗口");
+    const reopenUrl = currentUrl;
+    try { await context?.close(); } catch { /* ignore */ }
+    cleanupCdp();
+    context = null;
+    page = null;
+    headlessMode = false;
+    await launchContext(storedOptions, viewport);
+    isHeadedWindowOpen = true;
+    if (reopenUrl && reopenUrl !== "about:blank") {
+      try { await page.goto(reopenUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { /* keep current */ }
+    }
+    return { ok: true, url: page.url(), headed: true };
+  }
+
+  if (!!page) {
+    if (!isHeadedWindowOpen) {
+      try { await restoreWindow(); } catch { /* already visible */ }
+    }
+    try { await page.bringToFront(); } catch { /* ignore */ }
+    return { ok: true, url: currentUrl, headed: true };
+  }
+
+  if (!context) {
+    if (!storedOptions) throw new Error("浏览器上下文已关闭，无法重新打开");
+    const reopenUrl = currentUrl;
+    try { await context?.close(); } catch { /* ignore */ }
+    cleanupCdp();
+    context = null;
+    await launchContext(storedOptions, viewport);
+    isHeadedWindowOpen = true;
+    if (reopenUrl && reopenUrl !== "about:blank") {
+      try { await page.goto(reopenUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { /* keep current */ }
+    }
+    return { ok: true, url: page.url(), headed: true };
+  }
+
+  const reopenUrl = currentUrl;
+  page = await context.newPage();
+  attachPageListeners(page);
+  await startScreencast(page, viewport);
+  if (reopenUrl && reopenUrl !== "about:blank") {
+    try { await page.goto(reopenUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { /* keep current */ }
+  }
+  currentUrl = page.url();
+  isHeadedWindowOpen = true;
+  return { ok: true, url: currentUrl, headed: true };
+}
+
+function cleanupCdp() {
+  if (cdp) {
+    cdp.send("Page.stopScreencast").catch(() => undefined);
+    cdp.detach().catch(() => undefined);
+    cdp = null;
+  }
+}
+
+async function focusWindow() {
+  if (!cdp || !page) throw new Error("浏览器尚未就绪");
+  const { windowId } = await cdp.send("Browser.getWindowForTarget");
+  const info = await cdp.send("Browser.getWindowBounds", { windowId });
+  const bounds = info.bounds || {};
+  const x = Math.max(0, bounds.left ?? 100);
+  const y = Math.max(0, bounds.top ?? 100);
+  const width = bounds.width ?? 1280;
+  const height = bounds.height ?? 800;
+  await cdp.send("Browser.setWindowBounds", { windowId, bounds: { left: x, top: y, width, height } });
+  await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
+}
+
+async function ensureWindowCdp() {
+  if (cdp && page) return cdp;
+  if (!page) throw new Error("浏览器页面不可用");
+  cdp = await page.context().newCDPSession(page);
+  return cdp;
+}
+
+async function minimizeWindow() {
+  if (headlessMode) throw new Error("当前处于无窗口模式，无需最小化");
+  const session = await ensureWindowCdp();
+  const { windowId } = await session.send("Browser.getWindowForTarget");
+  const info = await session.send("Browser.getWindowBounds", { windowId });
+  const bounds = info.bounds || {};
+  if ((bounds.left ?? 0) >= 0 && (bounds.top ?? 0) >= 0) {
+    savedBounds = { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height };
+  }
+  await session.send("Browser.setWindowBounds", {
+    windowId,
+    bounds: { left: -32000, top: -32000, width: 1, height: 1 },
+  });
+  isHeadedWindowOpen = false;
+}
+
+async function restoreWindow() {
+  if (headlessMode) throw new Error("当前处于无窗口模式，无需恢复");
+  const session = await ensureWindowCdp();
+  const { windowId } = await session.send("Browser.getWindowForTarget");
+  const bounds = savedBounds || { left: 100, top: 100, width: 1280, height: 800 };
+  await session.send("Browser.setWindowBounds", {
+    windowId,
+    bounds: { ...bounds, windowState: "normal" },
+  });
+  savedBounds = null;
+  isHeadedWindowOpen = true;
+}
+
 function timeout(params) {
-  return Math.max(1, Number(params.timeout || 30000));
+  return Math.max(1, Number(params.timeout || 60000));
 }
 
 function isLikelyDownloadAbort(error) {
@@ -163,7 +313,8 @@ function isLikelyDownloadAbort(error) {
 
 function clearElementRefs() {
   elementRefs = new Map();
-  nextElementRefId = 1;
+  // Do NOT reset nextElementRefId — keep globally unique ref IDs
+  // so stale refs from a previous snapshot never collide with new ones.
 }
 
 function normalizeRef(ref) {
@@ -176,7 +327,10 @@ function refTarget(ref) {
   const normalized = normalizeRef(ref);
   const target = elementRefs.get(normalized);
   if (!target) {
-    throw new Error(`未知或已失效的元素 ref：${normalized}。请重新调用 browser_read_text 获取最新快照`);
+    const err = new Error(`未知或已失效的元素 ref：${normalized}。请重新调用 browser_read_text 获取最新快照`);
+    err.errorType = "ref_expired";
+    err.expiredRef = normalized;
+    throw err;
   }
   return target;
 }
@@ -294,6 +448,7 @@ async function readAccessibilitySnapshot(params = {}) {
     let nodes;
     const backendNodeId = params.ref ? refTarget(params.ref).backendNodeId : null;
     clearElementRefs();
+    refsInvalidatedByNavigation = false;
     if (backendNodeId) {
       const result = await cdp.send("Accessibility.getPartialAXTree", {
         backendNodeId,
@@ -307,6 +462,7 @@ async function readAccessibilitySnapshot(params = {}) {
 
     const snapshot = formatAXTree(nodes, params);
     currentUrl = page.url();
+    lastSnapshotRefCount = elementRefs.size;
     status("ready", null);
     return {
       text: `# Accessibility Tree Snapshot\nurl: ${currentUrl || ""}\nnode_count: ${nodes.length}\ntruncated: ${snapshot.truncated}\n\n${snapshot.text}`,
@@ -413,6 +569,21 @@ async function run(method, params = {}) {
   }
 
   switch (method) {
+    case "minimize_window": {
+      await minimizeWindow();
+      return { ok: true };
+    }
+    case "restore_window": {
+      await restoreWindow();
+      return { ok: true, url: currentUrl };
+    }
+    case "focus_window": {
+      await focusWindow();
+      return { ok: true, url: currentUrl };
+    }
+    case "reopen_window": {
+      return reopenWindow();
+    }
     case "open_url": {
       if (!params.url) throw new Error("缺少必填参数 url");
       const result = await runWithDownloadFeedback(
@@ -503,7 +674,16 @@ rl.on("line", async (line) => {
   try {
     respond(request.id, await run(request.method, request.params || {}));
   } catch (error) {
-    reject(request.id, error);
+    if (error.errorType) {
+      rejectStructured(request.id, error.errorType, error.message, {
+        expiredRef: error.expiredRef || null,
+        refsInvalidatedByNavigation,
+        currentUrl,
+        lastSnapshotRefCount,
+      });
+    } else {
+      reject(request.id, error);
+    }
   }
 });
 

@@ -618,6 +618,8 @@ mod tests {
             image_model: String::new(),
             image_edit_model: String::new(),
             sub_agent_tool_registry: None,
+            current_sub_agent_id: None,
+            current_sub_agent_name: None,
         };
 
         let output = GrepTool
@@ -661,6 +663,8 @@ mod tests {
             image_model: String::new(),
             image_edit_model: String::new(),
             sub_agent_tool_registry: None,
+            current_sub_agent_id: None,
+            current_sub_agent_name: None,
         };
 
         let output = GrepTool
@@ -699,6 +703,8 @@ mod tests {
             image_model: String::new(),
             image_edit_model: String::new(),
             sub_agent_tool_registry: None,
+            current_sub_agent_id: None,
+            current_sub_agent_name: None,
         };
 
         let output = GlobTool
@@ -741,6 +747,8 @@ mod tests {
             image_model: String::new(),
             image_edit_model: String::new(),
             sub_agent_tool_registry: None,
+            current_sub_agent_id: None,
+            current_sub_agent_name: None,
         };
 
         let output = GrepTool

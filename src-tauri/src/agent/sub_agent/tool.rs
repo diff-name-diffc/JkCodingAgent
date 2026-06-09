@@ -2,10 +2,27 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use tauri::Emitter;
 
 use super::manager::SubAgentManager;
-use super::runtime::SubAgentRuntime;
+use super::runtime::{SubAgentEvent, SubAgentEventPayload, SubAgentRuntime};
 use crate::agent::tools::{AgentTool, ToolContext};
+
+pub const SUB_AGENT_FAILURE_PREFIX: &str = "__SUB_AGENT_FAILURE__:";
+
+pub fn sub_agent_failure(message: impl AsRef<str>) -> String {
+    format!("{}{}", SUB_AGENT_FAILURE_PREFIX, message.as_ref())
+}
+
+pub fn sub_agent_failure_message(result: &str) -> Option<&str> {
+    result.strip_prefix(SUB_AGENT_FAILURE_PREFIX)
+}
+
+pub struct NotifyUserProgressTool;
+
+pub fn notify_user_progress_tool() -> Box<dyn AgentTool> {
+    Box::new(NotifyUserProgressTool)
+}
 
 pub struct SubAgentTool {
     manager: Arc<SubAgentManager>,
@@ -15,6 +32,79 @@ impl SubAgentTool {
     pub fn new(manager: Arc<SubAgentManager>) -> Self {
         Self { manager }
     }
+}
+
+#[async_trait]
+impl AgentTool for NotifyUserProgressTool {
+    fn name(&self) -> &'static str {
+        "notify_user_progress"
+    }
+
+    fn description(&self) -> &'static str {
+        "子智能体专用：向用户主动发送阶段性进度、当前发现、阻塞点或下一步计划。适合长时间任务中每完成一个有意义阶段调用一次，消息会直接展示在正文中。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "给用户看的简洁进度说明，应说明当前状态、已完成内容、正在做什么或遇到的阻塞。"
+                }
+            },
+            "required": ["message"]
+        })
+    }
+
+    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+        let message = args
+            .get("message")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(message) = message else {
+            return sub_agent_failure("错误：message 参数不能为空");
+        };
+
+        let Some(agent_id) = context.current_sub_agent_id.as_deref() else {
+            return sub_agent_failure("错误：notify_user_progress 只能由子智能体调用");
+        };
+        let agent_name = context
+            .current_sub_agent_name
+            .as_deref()
+            .unwrap_or(agent_id)
+            .to_string();
+        let Some(app_handle) = &context.app_handle else {
+            return sub_agent_failure("错误：无法发送子智能体进度通知，缺少 AppHandle");
+        };
+
+        let visible_message = trim_progress_message(message);
+        if let Err(error) = app_handle.emit(
+            "sub-agent-event",
+            SubAgentEventPayload {
+                session_id: context.workspace_id.clone(),
+                event: SubAgentEvent::Progress {
+                    agent_id: agent_id.to_string(),
+                    agent_name,
+                    message: visible_message.clone(),
+                },
+            },
+        ) {
+            return sub_agent_failure(format!("错误：发送进度通知失败：{error}"));
+        }
+
+        format!("已通知用户：{visible_message}")
+    }
+}
+
+fn trim_progress_message(message: &str) -> String {
+    const MAX_CHARS: usize = 2_000;
+    let trimmed = message.trim();
+    if trimmed.chars().count() <= MAX_CHARS {
+        return trimmed.to_string();
+    }
+    format!("{}...", trimmed.chars().take(MAX_CHARS).collect::<String>())
 }
 
 #[async_trait]
@@ -55,35 +145,40 @@ impl AgentTool for SubAgentTool {
             .unwrap_or_default();
 
         if agent_id.is_empty() {
-            return "错误：agent_id 参数不能为空".to_string();
+            return sub_agent_failure("错误：agent_id 参数不能为空");
         }
         if task.is_empty() {
-            return "错误：task 参数不能为空".to_string();
+            return sub_agent_failure("错误：task 参数不能为空");
         }
 
         let config = match self.manager.get(agent_id) {
             Some(c) if c.enabled => c,
-            Some(_) => return format!("错误：子智能体 '{}' 已被禁用", agent_id),
-            None => return format!("错误：未找到子智能体 '{}'", agent_id),
+            Some(_) => return sub_agent_failure(format!("错误：子智能体 '{}' 已被禁用", agent_id)),
+            None => return sub_agent_failure(format!("错误：未找到子智能体 '{}'", agent_id)),
         };
 
         let Some(parent_provider) = &context.llm_provider else {
-            return "错误：无法获取主 Agent 的 LLM Provider 配置".to_string();
+            return sub_agent_failure("错误：无法获取主 Agent 的 LLM Provider 配置");
         };
 
         let Some(parent_tools) = context.sub_agent_tool_registry.as_ref() else {
-            return "错误：工具注册表不支持子智能体调用".to_string();
+            return sub_agent_failure("错误：工具注册表不支持子智能体调用");
         };
 
         let app_handle = context.app_handle.clone();
         let session_id = context.workspace_id.clone();
 
-        match SubAgentRuntime::build(&config, parent_provider, Arc::clone(parent_tools), context.clone()) {
+        match SubAgentRuntime::build(
+            &config,
+            parent_provider,
+            Arc::clone(parent_tools),
+            context.clone(),
+        ) {
             Ok(runtime) => match runtime.execute(task, app_handle, &session_id).await {
                 Ok(result) => result,
-                Err(e) => format!("子智能体执行失败：{}", e),
+                Err(e) => sub_agent_failure(format!("子智能体执行失败：{}", e)),
             },
-            Err(e) => format!("子智能体初始化失败：{}", e),
+            Err(e) => sub_agent_failure(format!("子智能体初始化失败：{}", e)),
         }
     }
 }
@@ -132,9 +227,7 @@ impl AgentTool for ListSubAgentsTool {
                 config.agent_name, config.agent_id, config.description
             ));
         }
-        output.push_str(
-            "使用 call_sub_agent(agent_id=\"...\", task=\"...\") 来调用子智能体。",
-        );
+        output.push_str("使用 call_sub_agent(agent_id=\"...\", task=\"...\") 来调用子智能体。");
         output
     }
 }

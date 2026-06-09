@@ -4,7 +4,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { MessageCircle, MonitorDot, Plus, Search } from "lucide-react";
 import type { ChatCategory, ChatSession, SessionPage, SessionSearchResult } from "../types";
-import { cleanupDispatcherSession } from "./dispatcherSessionStore";
+import {
+  cleanupDispatcherSession,
+  withDispatcherSessionRunning,
+  withDispatcherSessionsRunning,
+} from "./dispatcherSessionStore";
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
 import { ChatCategorySection } from "./ChatCategorySection";
 import { ChatNewCategoryDialog } from "./ChatNewCategoryDialog";
@@ -81,11 +85,12 @@ export function ChatSessionSidebar({
       }),
       invoke<ChatCategory[]>("chat_list_categories"),
     ]);
-    setSessions(page.items);
+    const items = withDispatcherSessionsRunning(page.items);
+    setSessions(items);
     setHasMore(page.hasMore);
     setNextCursor(page.nextCursor ?? null);
     setCategories(cats);
-    return page.items;
+    return items;
   }, []);
 
   const loadMore = useCallback(async () => {
@@ -99,7 +104,7 @@ export function ChatSessionSidebar({
       });
       setSessions((prev) => {
         const existing = new Set(prev.map((s) => s.id));
-        const newItems = page.items.filter((s) => !existing.has(s.id));
+        const newItems = withDispatcherSessionsRunning(page.items.filter((s) => !existing.has(s.id)));
         return sortSessionsByUpdatedAt([...prev, ...newItems]);
       });
       setHasMore(page.hasMore);
@@ -112,10 +117,10 @@ export function ChatSessionSidebar({
   useEffect(() => {
     const handleNew = async () => {
       try {
-        const session = await invoke<ChatSession>("chat_create_session", {
+        const session = withDispatcherSessionRunning(await invoke<ChatSession>("chat_create_session", {
           title: "新聊天",
           category: DEFAULT_CHAT_CATEGORY,
-        });
+        }));
         setSessions((prev) =>
           prev.some((s) => s.id === session.id) ? prev : sortSessionsByUpdatedAt([session, ...prev]),
         );
@@ -159,11 +164,12 @@ export function ChatSessionSidebar({
     const unlisten = listen<ChatSession>("dispatcher-session-updated", (event) => {
       const u = event.payload;
       if (!u.category && u.id) return;
+      const updated = withDispatcherSessionRunning(u);
       setSessions((prev) => {
-        const exists = prev.some((s) => s.id === u.id);
+        const exists = prev.some((s) => s.id === updated.id);
         const next = exists
-          ? prev.map((s) => (s.id === u.id ? u : s))
-          : [u, ...prev];
+          ? prev.map((s) => (s.id === updated.id ? updated : s))
+          : [updated, ...prev];
         return sortSessionsByUpdatedAt(next);
       });
     });
@@ -241,10 +247,10 @@ export function ChatSessionSidebar({
     if (creatingSessionRef.current) return;
     creatingSessionRef.current = true;
     try {
-      const session = await invoke<ChatSession>("chat_create_session", {
+      const session = withDispatcherSessionRunning(await invoke<ChatSession>("chat_create_session", {
         title: "新聊天",
         category: categoryId || DEFAULT_CHAT_CATEGORY,
-      });
+      }));
       setSessions((prev) =>
         prev.some((s) => s.id === session.id)
           ? prev

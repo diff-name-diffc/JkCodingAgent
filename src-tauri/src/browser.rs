@@ -24,6 +24,10 @@ pub struct BrowserStatus {
     pub state: String,
     pub url: Option<String>,
     pub message: Option<String>,
+    #[serde(default)]
+    pub minimized: bool,
+    #[serde(default)]
+    pub has_headed_window: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -42,6 +46,8 @@ pub struct BrowserManager {
 
 struct BrowserProcess {
     session_id: String,
+    #[allow(dead_code)]
+    project_path: String,
     stdin: Mutex<ChildStdin>,
     child: Mutex<Child>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
@@ -89,8 +95,9 @@ impl BrowserManager {
         }
         let profile_directory = options.profile_directory.clone();
         let user_data_dir = options.user_data_dir;
+        let project_path_str = project_path.to_string_lossy().to_string();
 
-        let process = spawn_sidecar(&app, &session_id).await?;
+        let process = spawn_sidecar(&app, &session_id, &project_path_str).await?;
         self.sessions
             .lock()
             .await
@@ -102,6 +109,7 @@ impl BrowserManager {
                 json!({
                     "sessionId": session_id,
                     "userDataDir": user_data_dir,
+                    "headless": true,
                     "proxy": empty_to_null(&options.config.proxy),
                     "locale": empty_to_null(&options.config.locale),
                     "timezone": empty_to_null(&options.config.timezone),
@@ -117,7 +125,8 @@ impl BrowserManager {
 
         match start_result {
             Ok(value) => {
-                let status = status_from_value(&value).unwrap_or_else(|| process.status());
+                let status =
+                    status_from_value(&value, false, false).unwrap_or_else(|| process.status());
                 Ok(status)
             }
             Err(error) => {
@@ -150,7 +159,82 @@ impl BrowserManager {
                 state: "closed".to_string(),
                 url: None,
                 message: None,
+                minimized: false,
+                has_headed_window: false,
             })
+    }
+
+    pub async fn minimize(&self, session_id: &str) -> Result<BrowserStatus, String> {
+        let process = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| format!("未找到会话：{session_id}"))?;
+        process
+            .request_with_timeout("minimize_window", json!({}), Duration::from_secs(10))
+            .await?;
+        {
+            let mut s = process.status.lock();
+            s.minimized = true;
+            s.state = "minimized".to_string();
+        }
+        Ok(process.status())
+    }
+
+    pub async fn restore(&self, session_id: &str) -> Result<BrowserStatus, String> {
+        let process = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| format!("未找到会话：{session_id}"))?;
+        process
+            .request_with_timeout("restore_window", json!({}), Duration::from_secs(10))
+            .await?;
+        {
+            let mut s = process.status.lock();
+            s.minimized = false;
+            s.state = "ready".to_string();
+        }
+        Ok(process.status())
+    }
+
+    pub async fn reopen(&self, session_id: &str) -> Result<BrowserStatus, String> {
+        let process = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| format!("未找到会话：{session_id}"))?;
+        let result = process
+            .request_with_timeout("reopen_window", json!({}), Duration::from_secs(15))
+            .await?;
+        let headed = result
+            .get("headed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        {
+            let mut s = process.status.lock();
+            s.minimized = false;
+            s.state = "ready".to_string();
+            if headed {
+                s.has_headed_window = true;
+            }
+        }
+        Ok(process.status())
+    }
+
+    pub async fn list_sessions(&self) -> Vec<BrowserStatus> {
+        self.sessions
+            .lock()
+            .await
+            .values()
+            .map(|process| process.status())
+            .collect()
     }
 
     pub async fn command(
@@ -617,7 +701,11 @@ fn plain_chat_browser_workspace() -> Result<PathBuf, String> {
     Ok(workspace)
 }
 
-async fn spawn_sidecar(app: &AppHandle, session_id: &str) -> Result<Arc<BrowserProcess>, String> {
+async fn spawn_sidecar(
+    app: &AppHandle,
+    session_id: &str,
+    project_path: &str,
+) -> Result<Arc<BrowserProcess>, String> {
     let driver_path = resolve_driver_path(app)?;
     let node_path = resolve_node_path(app);
     let node_modules_hint = resolve_node_modules_hint(app);
@@ -658,6 +746,7 @@ async fn spawn_sidecar(app: &AppHandle, session_id: &str) -> Result<Arc<BrowserP
 
     let process = Arc::new(BrowserProcess {
         session_id: session_id.to_string(),
+        project_path: project_path.to_string(),
         stdin: Mutex::new(stdin),
         child: Mutex::new(child),
         pending: Mutex::new(HashMap::new()),
@@ -666,6 +755,8 @@ async fn spawn_sidecar(app: &AppHandle, session_id: &str) -> Result<Arc<BrowserP
             state: "starting".to_string(),
             url: None,
             message: Some("正在启动 CloakBrowser sidecar".to_string()),
+            minimized: false,
+            has_headed_window: false,
         }),
         next_id: AtomicU64::new(1),
     });
@@ -694,11 +785,22 @@ fn spawn_stdout_reader(
                 let result = if value.get("ok").and_then(Value::as_bool).unwrap_or(false) {
                     Ok(value.get("result").cloned().unwrap_or(Value::Null))
                 } else {
-                    Err(value
+                    let error_msg = value
                         .get("error")
                         .and_then(Value::as_str)
                         .unwrap_or("CloakBrowser sidecar 返回未知错误")
-                        .to_string())
+                        .to_string();
+                    let error_type = value
+                        .get("errorType")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let formatted = if error_type.is_empty() {
+                        error_msg
+                    } else {
+                        format!("[{error_type}] {error_msg}")
+                    };
+                    Err(formatted)
                 };
                 if let Some(tx) = process.pending.lock().await.remove(&id) {
                     let _ = tx.send(result);
@@ -708,10 +810,30 @@ fn spawn_stdout_reader(
 
             match value.get("event").and_then(Value::as_str) {
                 Some("status") => {
-                    if let Some(status) = status_from_value(&value) {
+                    let current_minimized = process.status().minimized;
+                    let current_has_headed_window = process.status().has_headed_window;
+                    let event_name = value.get("event").and_then(Value::as_str);
+                    let opened_this_event = event_name == Some("opened")
+                        || value
+                            .get("opened")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                    let has_headed_window = current_has_headed_window || opened_this_event;
+                    if let Some(status) =
+                        status_from_value(&value, current_minimized, has_headed_window)
+                    {
                         *process.status.lock() = status.clone();
                         let _ = app.emit("browser-status", status);
                     }
+                }
+                Some("page_closed") => {
+                    let mut s = process.status();
+                    s.state = "page_closed".to_string();
+                    s.minimized = false;
+                    s.has_headed_window = false;
+                    s.message = Some("浏览器窗口已关闭，可在面板中重新打开".to_string());
+                    *process.status.lock() = s.clone();
+                    let _ = app.emit("browser-status", s);
                 }
                 Some("frame") => {
                     let data = value
@@ -744,6 +866,8 @@ fn spawn_stdout_reader(
             state: "closed".to_string(),
             url: process.status().url,
             message: Some("CloakBrowser sidecar 已退出".to_string()),
+            minimized: false,
+            has_headed_window: false,
         };
         *process.status.lock() = closed.clone();
         let mut pending = process.pending.lock().await;
@@ -774,20 +898,37 @@ fn emit_log(app: &AppHandle, session_id: &str, message: String) {
     );
 }
 
-fn status_from_value(value: &Value) -> Option<BrowserStatus> {
+fn status_from_value(
+    value: &Value,
+    current_minimized: bool,
+    current_has_headed_window: bool,
+) -> Option<BrowserStatus> {
     let status_value = value.get("status").unwrap_or(value);
     let session_id = status_value
         .get("sessionId")
         .or_else(|| value.get("sessionId"))?
         .as_str()?
         .to_string();
+    let state = status_value
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let minimized = if state == "minimized" {
+        true
+    } else if state == "closed" {
+        false
+    } else {
+        current_minimized
+    };
+    let has_headed_window = if state == "closed" {
+        false
+    } else {
+        current_has_headed_window
+    };
     Some(BrowserStatus {
         session_id,
-        state: status_value
-            .get("state")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string(),
+        state,
         url: status_value
             .get("url")
             .and_then(Value::as_str)
@@ -796,6 +937,8 @@ fn status_from_value(value: &Value) -> Option<BrowserStatus> {
             .get("message")
             .and_then(Value::as_str)
             .map(str::to_string),
+        minimized,
+        has_headed_window,
     })
 }
 
@@ -1045,4 +1188,44 @@ pub async fn browser_get_status(
     session_id: String,
 ) -> Result<BrowserStatus, String> {
     Ok(manager.status(&session_id).await)
+}
+
+#[tauri::command]
+pub async fn browser_minimize(
+    app: AppHandle,
+    manager: tauri::State<'_, BrowserManager>,
+    session_id: String,
+) -> Result<(), String> {
+    let status = manager.minimize(&session_id).await?;
+    let _ = app.emit("browser-status", status);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn browser_restore(
+    app: AppHandle,
+    manager: tauri::State<'_, BrowserManager>,
+    session_id: String,
+) -> Result<(), String> {
+    let status = manager.restore(&session_id).await?;
+    let _ = app.emit("browser-status", status);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn browser_reopen(
+    app: AppHandle,
+    manager: tauri::State<'_, BrowserManager>,
+    session_id: String,
+) -> Result<(), String> {
+    let status = manager.reopen(&session_id).await?;
+    let _ = app.emit("browser-status", status);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn browser_list_sessions(
+    manager: tauri::State<'_, BrowserManager>,
+) -> Result<Vec<BrowserStatus>, String> {
+    Ok(manager.list_sessions().await)
 }

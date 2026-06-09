@@ -23,4 +23,6 @@ pub struct ToolContext {
     pub image_model: String,
     pub image_edit_model: String,
     pub sub_agent_tool_registry: Option<Arc<ToolRegistry>>,
+    pub current_sub_agent_id: Option<String>,
+    pub current_sub_agent_name: Option<String>,
 }

@@ -59,6 +59,9 @@ const SubProcessTabs = lazy(() =>
 const AppSettingsDialog = lazy(() =>
   import("./AppSettingsDialog").then((module) => ({ default: module.AppSettingsDialog })),
 );
+const BrowserDock = lazy(() =>
+  import("./BrowserDock").then((module) => ({ default: module.BrowserDock })),
+);
 
 function getSubProcessAgentLabel(agent: AgentType): string {
   return agent === "claude" ? "Claude" : "Codex";
@@ -395,7 +398,12 @@ export function ProjectPage({
   useEffect(() => {
     if (!visible) return;
     const unsub = listen<BrowserStatus>("browser-status", (event) => {
-      if (event.payload.sessionId === activeSessionIdRef.current && event.payload.state !== "closed") {
+      const { sessionId, state } = event.payload;
+      if (
+        sessionId === activeSessionIdRef.current &&
+        state !== "closed" &&
+        state !== "page_closed"
+      ) {
         handleOpenPanel("browser");
       }
     });
@@ -404,10 +412,74 @@ export function ProjectPage({
     };
   }, [handleOpenPanel, visible]);
 
+  const [dockedBrowsers, setDockedBrowsers] = useState<
+    Map<string, { sessionId: string; url: string | null; state: string }>
+  >(new Map());
+
   useEffect(() => {
-    if (visible || !activeSessionId) return;
-    invoke("browser_stop", { sessionId: activeSessionId }).catch(console.error);
-  }, [activeSessionId, visible]);
+    const unsubs = [
+      listen<BrowserStatus>("browser-status", (event) => {
+        const { sessionId, state, url } = event.payload;
+        if (state === "minimized" || state === "page_closed") {
+          setDockedBrowsers((prev) => {
+            const next = new Map(prev);
+            next.set(sessionId, { sessionId, url: url ?? null, state });
+            return next;
+          });
+        } else if (state !== "closed") {
+          setDockedBrowsers((prev) => {
+            if (!prev.has(sessionId)) return prev;
+            const next = new Map(prev);
+            next.delete(sessionId);
+            return next;
+          });
+        }
+      }),
+    ];
+    return () => {
+      unsubs.forEach((u) => u.then((fn) => fn()).catch(() => {}));
+    };
+  }, []);
+
+  const handleMinimizeBrowser = useCallback(() => {
+    if (!activeSessionId) return;
+    invoke("browser_minimize", { sessionId: activeSessionId }).catch(console.error);
+    handleTogglePanel("browser");
+  }, [activeSessionId, handleTogglePanel]);
+
+  const handleRestoreBrowser = useCallback(
+    (sessionId: string) => {
+      invoke("browser_restore", { sessionId })
+        .then(() => {
+          handleOpenPanel("browser");
+          setActiveSessionId((prev) => (prev === sessionId ? prev : sessionId));
+        })
+        .catch(console.error);
+    },
+    [handleOpenPanel],
+  );
+
+  const handleCloseDockedBrowser = useCallback((sessionId: string) => {
+    invoke("browser_stop", { sessionId })
+      .then(() => {
+        setDockedBrowsers((prev) => {
+          const next = new Map(prev);
+          next.delete(sessionId);
+          return next;
+        });
+      })
+      .catch(console.error);
+  }, []);
+
+  const handleReopenBrowser = useCallback(() => {
+    if (!activeSessionId) return;
+    invoke("browser_reopen", { sessionId: activeSessionId }).catch(console.error);
+  }, [activeSessionId]);
+
+  const dockedSessions = useMemo(
+    () => Array.from(dockedBrowsers.values()),
+    [dockedBrowsers],
+  );
 
   // ── Dispatcher sub-process handlers ──
   const handleDispatchApproved = useCallback(
@@ -1158,6 +1230,8 @@ export function ProjectPage({
                   expanded={browserPanelExpanded}
                   onToggleExpanded={handleToggleBrowserPanelExpanded}
                   onClose={() => handleTogglePanel("browser")}
+                  onMinimize={handleMinimizeBrowser}
+                  onReopen={handleReopenBrowser}
                 />
               </Suspense>
             </ErrorBoundary>
@@ -1199,6 +1273,16 @@ export function ProjectPage({
               handleToggleMcpServerEnabled(serverName, enabled).catch(console.error);
             }}
             onClose={() => setShowMcpStatus(false)}
+          />
+        </Suspense>
+      )}
+
+      {dockedSessions.length > 0 && (
+        <Suspense fallback={null}>
+          <BrowserDock
+            sessions={dockedSessions}
+            onRestore={handleRestoreBrowser}
+            onClose={handleCloseDockedBrowser}
           />
         </Suspense>
       )}

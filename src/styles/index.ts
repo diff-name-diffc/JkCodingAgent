@@ -6,6 +6,7 @@ import { dialogs } from "./dialogs";
 import { layout } from "./layout";
 import { knowledge } from "./knowledge";
 import { panels } from "./panels";
+import { subAgent } from "./subAgent";
 import { task } from "./task";
 import { terminal } from "./terminal";
 
@@ -14,6 +15,7 @@ const s = {
   ...layout,
   ...knowledge,
   ...panels,
+  ...subAgent,
   ...terminal,
   ...dialogs,
   ...task,

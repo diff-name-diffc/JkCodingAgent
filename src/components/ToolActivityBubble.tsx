@@ -3,6 +3,11 @@ import type { CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight, FileSearch, LoaderCircle, Wrench } from "lucide-react";
 import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
+import { SubAgentExecutionCard } from "./SubAgentExecutionView";
+import {
+  extractAgentIdsFromToolInput,
+  useSubAgentSessions,
+} from "./subAgentEventStore";
 import type {
   DispatcherToolArtifact,
   DispatcherToolArtifactRef,
@@ -38,6 +43,7 @@ export function ToolActivityBubble({
   const [artifactCache, setArtifactCache] = useState<Record<string, DispatcherToolArtifact>>({});
   const [artifactLoading, setArtifactLoading] = useState<Record<string, boolean>>({});
   const [artifactErrors, setArtifactErrors] = useState<Record<string, string>>({});
+  const subAgentSessions = useSubAgentSessions(workspaceId);
 
   const runningCount = useMemo(
     () => tools.filter((tool) => tool.status === "running").length,
@@ -114,6 +120,9 @@ export function ToolActivityBubble({
           const detailRefs = tool.detailRefs ?? [];
           const hasDisplayText = Boolean(tool.displayText?.trim());
           const showSummaryInConversation = shouldDisplaySummaryInConversation(tool.resultMode);
+          const subAgentId =
+            tool.name === "call_sub_agent" ? extractAgentIdsFromToolInput(tool.input) : null;
+          const subAgentSession = subAgentId ? subAgentSessions[subAgentId] : null;
 
           return (
             <div
@@ -145,6 +154,11 @@ export function ToolActivityBubble({
                   )}
                   {detailRefs.length > 0 && (
                     <span style={styles.refBadge}>详细引用 {detailRefs.length}</span>
+                  )}
+                  {subAgentSession && (
+                    <span style={subAgentStatusStyle(subAgentSession.status)}>
+                      子智能体{formatSubAgentStatus(subAgentSession)}
+                    </span>
                   )}
                 </div>
                 <div style={styles.itemRightWrap}>
@@ -193,6 +207,13 @@ export function ToolActivityBubble({
                       ) : (
                         <div style={styles.infoState}>摘要内容将在处理完成后展示。</div>
                       )}
+                    </div>
+                  )}
+
+                  {subAgentSession && (
+                    <div style={styles.block}>
+                      <div style={styles.blockLabel}>子智能体运行状态</div>
+                      <SubAgentExecutionCard session={subAgentSession} autoExpand={false} />
                     </div>
                   )}
 
@@ -264,6 +285,27 @@ export function ToolActivityBubble({
       </div>
     </div>
   );
+}
+
+function formatSubAgentStatus(session: { status: "running" | "completed" | "failed" }): string {
+  if (session.status === "running") return "执行中";
+  if (session.status === "failed") return "失败";
+  return "完成";
+}
+
+function subAgentStatusStyle(status: "running" | "completed" | "failed"): CSSProperties {
+  const color =
+    status === "running"
+      ? "var(--accent)"
+      : status === "failed"
+        ? "var(--danger, #dc2626)"
+        : "var(--success)";
+  return {
+    ...styles.subAgentBadge,
+    color,
+    borderColor: `color-mix(in srgb, ${color} 28%, transparent)`,
+    background: `color-mix(in srgb, ${color} 10%, transparent)`,
+  };
 }
 
 function toolResultModeLabel(mode: DispatcherToolResultMode): string {
@@ -448,6 +490,17 @@ const styles = {
     fontSize: 10.5,
     fontWeight: 700,
     lineHeight: 1.2,
+  },
+  subAgentBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "2px 7px",
+    borderRadius: 999,
+    border: "1px solid var(--border-dim)",
+    fontSize: 10.5,
+    fontWeight: 700,
+    lineHeight: 1.2,
+    flexShrink: 0,
   },
   itemRightWrap: {
     display: "flex",

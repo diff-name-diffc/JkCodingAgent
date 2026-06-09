@@ -66,8 +66,7 @@ pub fn ensure_sub_agent_tables_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> 
 
 pub fn seed_browser_agent_force_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     let config = SubAgentConfig::browser_agent_default();
-    let config_json =
-        serde_json::to_string(&config).context("serialize browser-agent config")?;
+    let config_json = serde_json::to_string(&config).context("serialize browser-agent config")?;
 
     tx.execute(
         "INSERT OR REPLACE INTO sub_agents (id, name, description, config_json, enabled, created_at, updated_at)
@@ -131,7 +130,9 @@ impl SubAgentDb {
     }
 
     fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>> {
-        self.pool.get().with_context(|| "get sub_agent db connection")
+        self.pool
+            .get()
+            .with_context(|| "get sub_agent db connection")
     }
 
     pub fn list_all(&self) -> Result<Vec<SubAgentRecord>> {
@@ -168,8 +169,7 @@ impl SubAgentDb {
 
     pub fn create(&self, config: &SubAgentConfig) -> Result<SubAgentRecord> {
         let conn = self.conn()?;
-        let config_json =
-            serde_json::to_string(config).context("serialize sub_agent config")?;
+        let config_json = serde_json::to_string(config).context("serialize sub_agent config")?;
         let now = Utc::now().timestamp_millis();
 
         let created_at = if config.created_at > 0 {
@@ -211,8 +211,7 @@ impl SubAgentDb {
 
     pub fn update(&self, id: &str, config: &SubAgentConfig) -> Result<SubAgentRecord> {
         let conn = self.conn()?;
-        let config_json =
-            serde_json::to_string(config).context("serialize sub_agent config")?;
+        let config_json = serde_json::to_string(config).context("serialize sub_agent config")?;
         let now = Utc::now().timestamp_millis();
 
         let affected = conn
@@ -240,12 +239,21 @@ impl SubAgentDb {
 
     pub fn delete(&self, id: &str) -> Result<()> {
         let conn = self.conn()?;
-        conn.execute("DELETE FROM global_sub_agents WHERE sub_agent_id = ?1", params![id])
-            .context("delete global_sub_agents")?;
-        conn.execute("DELETE FROM session_sub_agents WHERE sub_agent_id = ?1", params![id])
-            .context("delete session_sub_agents")?;
-        conn.execute("DELETE FROM context_sub_agents WHERE sub_agent_id = ?1", params![id])
-            .context("delete context_sub_agents")?;
+        conn.execute(
+            "DELETE FROM global_sub_agents WHERE sub_agent_id = ?1",
+            params![id],
+        )
+        .context("delete global_sub_agents")?;
+        conn.execute(
+            "DELETE FROM session_sub_agents WHERE sub_agent_id = ?1",
+            params![id],
+        )
+        .context("delete session_sub_agents")?;
+        conn.execute(
+            "DELETE FROM context_sub_agents WHERE sub_agent_id = ?1",
+            params![id],
+        )
+        .context("delete context_sub_agents")?;
         conn.execute("DELETE FROM sub_agents WHERE id = ?1", params![id])
             .context("delete sub_agent")?;
         Ok(())

@@ -26,6 +26,12 @@ interface TerminalWriteState {
   generation: number;
 }
 
+interface PtyOutputSnapshot {
+  output: string;
+  seq: number;
+  dropped_bytes: number;
+}
+
 function createTaskBuffer(): TaskBuffer {
   return { chunks: [], totalLen: 0, droppedLen: 0 };
 }
@@ -240,12 +246,30 @@ export function useTerminalManager() {
       const state = resetTerminalWriteState(taskId);
       if (fn) {
         terminalWriteRefs.current[taskId] = fn;
+        const existingBuffer = taskBufferRef.current[taskId];
+        if (!existingBuffer || getBufferAbsLen(existingBuffer) === 0) {
+          invoke<PtyOutputSnapshot>("get_pty_output_snapshot", { taskId })
+            .then((snapshot) => {
+              const currentState = terminalWriteStateRef.current[taskId];
+              if (!currentState || currentState.generation !== state.generation) return;
+              if (!terminalWriteRefs.current[taskId] || !snapshot.output) return;
+
+              const buf = taskBufferRef.current[taskId] ?? createTaskBuffer();
+              if (getBufferAbsLen(buf) > 0) return;
+              pushToBuffer(buf, snapshot.output);
+              taskBufferRef.current[taskId] = buf;
+              enqueueTerminalWrite(taskId, snapshot.output);
+            })
+            .catch(() => {
+              // 新建终端早于后端会话注册时会没有快照；实时事件会继续接管输出。
+            });
+        }
       } else {
         delete terminalWriteRefs.current[taskId];
       }
       return state.generation;
     },
-    [resetTerminalWriteState],
+    [enqueueTerminalWrite, resetTerminalWriteState],
   );
 
   const handleTerminalReady = useCallback((taskId: string, generation: number) => {

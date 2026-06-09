@@ -84,9 +84,7 @@ impl SubAgentConfig {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
         {
-            return Err(anyhow!(
-                "agent_id 仅支持小写字母、数字、下划线和短横线"
-            ));
+            return Err(anyhow!("agent_id 仅支持小写字母、数字、下划线和短横线"));
         }
         if !self
             .agent_id
@@ -135,6 +133,16 @@ impl SubAgentConfig {
                 "1. 使用 browser_read_text 获取页面可访问性树快照，获取元素 ref\n",
                 "2. 使用 ref 与具体元素交互（click, type）\n",
                 "3. 使用 browser_visual_analyze 进行视觉分析（仅在文本信息不足时使用）\n\n",
+                "## 元素引用（ref）规则——极其重要\n",
+                "- ref 只在最近一次 browser_read_text 返回的快照中有效\n",
+                "- 任何可能导致页面变化的操作（点击链接/按钮、表单提交、URL 导航）后，旧 ref 可能失效\n",
+                "- 如果收到 'ref 已失效' 错误，系统会自动附上最新快照，你必须基于新快照中的 ref 重新定位目标元素\n",
+                "- 绝不要在不同快照之间混用 ref 编号\n",
+                "- 每次页面变化后，优先重新调用 browser_read_text 而不是复用旧 ref\n\n",
+                "## 错误处理\n",
+                "- 元素引用失效：系统会自动获取新快照并附在错误响应中，基于新快照重试即可\n",
+                "- 超时错误：检查页面是否加载完成，可用 browser_wait_for 等待后再试\n",
+                "- 系统错误（进程崩溃等）：这些不可恢复，直接向用户报告\n\n",
                 "## 输出规范\n",
                 "- 完成任务后，输出结构化的信息提取结果\n",
                 "- 如果搜索未找到结果，明确说明并建议替代方案\n",
@@ -159,7 +167,7 @@ impl SubAgentConfig {
             max_iterations: 25,
             max_output_tokens: 4096,
             temperature: 0.7,
-            timeout_secs: 180,
+            timeout_secs: 600,
             enabled: true,
             created_at: chrono::Utc::now().timestamp_millis(),
             updated_at: chrono::Utc::now().timestamp_millis(),

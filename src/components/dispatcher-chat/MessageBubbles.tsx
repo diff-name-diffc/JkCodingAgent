@@ -149,11 +149,15 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
     return { enrichedTools: enriched, displaySegments };
   }, [segments, tools]);
 
-  const visibleSegments = displaySegments;
+  const visibleTextSegments = displaySegments
+    .map((segment) => segment.text.trim())
+    .filter(Boolean);
+  const visibleText = visibleTextSegments.join("\n\n");
+  const lastTextSegment = displaySegments[displaySegments.length - 1];
   const visiblePlaceholder = placeholderText?.trim() ?? "";
   const visibleThinking = thinking?.text.trim() ? thinking : null;
   if (
-    visibleSegments.length === 0 &&
+    !visibleText &&
     enrichedTools.length === 0 &&
     !visiblePlaceholder &&
     !usageStats &&
@@ -186,33 +190,23 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
             </div>
           </div>
         )}
-        {visibleSegments.map((segment, index) => {
-          const segmentText = segment.text.trim();
-          const isLastSegment = index === visibleSegments.length - 1;
-          const isStreamingThis = streaming && isLastSegment && segment.kind === "assistant-text";
-          if (!segmentText && segment.kind !== "tool-summary") {
-            return null;
-          }
-          return (
-            <div key={`${segment.kind}-${segment.toolCallId ?? segment.toolName ?? index}`}>
-              <div style={styles.assistantTurnSection}>
-                <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
-                  <div className="dispatcher-searchable-content" style={styles.markdownBody}>
-                    <MarkdownRenderer
-                      content={segmentText}
-                      variant="chat"
-                      streaming={isStreamingThis}
-                      messageId={segment.messageId}
-                      onRunPython={!isStreamingThis ? onRunPython : undefined}
-                      pythonRunRecords={pythonRunRecords}
-                    />
-                  </div>
-                </div>
-                <BubbleCopyButton text={segmentText} isUser={false} />
+        {visibleText && (
+          <div style={styles.assistantTurnSection}>
+            <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
+              <div className="dispatcher-searchable-content" style={styles.markdownBody}>
+                <MarkdownRenderer
+                  content={visibleText}
+                  variant="chat"
+                  streaming={streaming}
+                  messageId={lastTextSegment?.messageId}
+                  onRunPython={!streaming ? onRunPython : undefined}
+                  pythonRunRecords={pythonRunRecords}
+                />
               </div>
             </div>
-          );
-        })}
+            <BubbleCopyButton text={visibleText} isUser={false} />
+          </div>
+        )}
         {usageStats && <AssistantUsageStats stats={usageStats} />}
       </div>
     </div>

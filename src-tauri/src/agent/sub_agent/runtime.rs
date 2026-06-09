@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::Emitter;
 use tauri::AppHandle;
+use tauri::Emitter;
 
 use super::config::SubAgentConfig;
 use crate::agent::llm::{
@@ -47,27 +47,51 @@ impl SubAgentUsage {
 #[serde(tag = "event", content = "data")]
 pub enum SubAgentEvent {
     Started {
+        #[serde(rename = "agentId")]
         agent_id: String,
         #[serde(rename = "agentName")]
         agent_name: String,
         task: String,
     },
     ToolStarted {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        #[serde(rename = "agentName")]
+        agent_name: String,
         #[serde(rename = "toolName")]
         tool_name: String,
         arguments: Value,
     },
     ToolFinished {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        #[serde(rename = "agentName")]
+        agent_name: String,
         #[serde(rename = "toolName")]
         tool_name: String,
         #[serde(rename = "resultPreview")]
         result_preview: String,
     },
+    Progress {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        #[serde(rename = "agentName")]
+        agent_name: String,
+        message: String,
+    },
     #[serde(rename = "llmDelta")]
     LlmDelta {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        #[serde(rename = "agentName")]
+        agent_name: String,
         delta: String,
     },
     Finished {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        #[serde(rename = "agentName")]
+        agent_name: String,
         result: String,
         iterations: u32,
         #[serde(rename = "elapsedMs")]
@@ -76,6 +100,10 @@ pub enum SubAgentEvent {
         token_usage: SubAgentUsage,
     },
     Failed {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        #[serde(rename = "agentName")]
+        agent_name: String,
         error: String,
     },
 }
@@ -135,6 +163,10 @@ impl SubAgentRuntime {
             )
         };
 
+        let mut tool_context = tool_context;
+        tool_context.current_sub_agent_id = Some(config.agent_id.clone());
+        tool_context.current_sub_agent_name = Some(config.agent_name.clone());
+
         Ok(Self {
             config: config.clone(),
             provider,
@@ -169,10 +201,7 @@ impl SubAgentRuntime {
             );
         }
 
-        let user_prompt = self
-            .config
-            .user_prompt_template
-            .replace("{{task}}", task);
+        let user_prompt = self.config.user_prompt_template.replace("{{task}}", task);
 
         let mut messages = vec![
             ChatMessage::system(self.config.system_prompt.clone()),
@@ -186,8 +215,12 @@ impl SubAgentRuntime {
             },
         ];
 
-        let allowed_set: HashSet<&str> =
-            self.config.allowed_tools.iter().map(|s| s.as_str()).collect();
+        let allowed_set: HashSet<&str> = self
+            .config
+            .allowed_tools
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
 
         let tool_definitions = self.tool_registry.definitions_for_workspace(
             &self.tool_context.workspace,
@@ -207,6 +240,8 @@ impl SubAgentRuntime {
                         SubAgentEventPayload {
                             session_id: session_id.to_string(),
                             event: SubAgentEvent::Failed {
+                                agent_id: self.config.agent_id.clone(),
+                                agent_name: self.config.agent_name.clone(),
                                 error: err_msg.clone(),
                             },
                         },
@@ -217,7 +252,7 @@ impl SubAgentRuntime {
 
             last_iteration = iteration + 1;
 
-            let response = self
+            let response = match self
                 .provider
                 .chat_stream_with_thinking(
                     &messages,
@@ -231,6 +266,8 @@ impl SubAgentRuntime {
                                 SubAgentEventPayload {
                                     session_id: session_id.to_string(),
                                     event: SubAgentEvent::LlmDelta {
+                                        agent_id: self.config.agent_id.clone(),
+                                        agent_name: self.config.agent_name.clone(),
                                         delta: delta.to_string(),
                                     },
                                 },
@@ -239,7 +276,18 @@ impl SubAgentRuntime {
                     },
                     |_delta: &str, _elapsed: u64| {},
                 )
-                .await?;
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    let err_msg = format!(
+                        "子智能体 '{}' 模型请求失败：{}",
+                        self.config.agent_id, error
+                    );
+                    self.emit_failed(&app_handle, session_id, &err_msg);
+                    anyhow::bail!("{}", err_msg);
+                }
+            };
 
             if let Some(usage_info) = response.usage.as_ref() {
                 usage.record(usage_info);
@@ -253,6 +301,8 @@ impl SubAgentRuntime {
                         SubAgentEventPayload {
                             session_id: session_id.to_string(),
                             event: SubAgentEvent::Finished {
+                                agent_id: self.config.agent_id.clone(),
+                                agent_name: self.config.agent_name.clone(),
                                 result: result.clone(),
                                 iterations: last_iteration,
                                 elapsed_ms: start.elapsed().as_millis() as u64,
@@ -281,8 +331,7 @@ impl SubAgentRuntime {
                             kind: "function".to_string(),
                             function: FunctionCall {
                                 name: tc.name.clone(),
-                                arguments: serde_json::to_string(&tc.arguments)
-                                    .unwrap_or_default(),
+                                arguments: serde_json::to_string(&tc.arguments).unwrap_or_default(),
                             },
                         })
                         .collect(),
@@ -299,6 +348,8 @@ impl SubAgentRuntime {
                         SubAgentEventPayload {
                             session_id: session_id.to_string(),
                             event: SubAgentEvent::ToolStarted {
+                                agent_id: self.config.agent_id.clone(),
+                                agent_name: self.config.agent_name.clone(),
                                 tool_name: tc.name.clone(),
                                 arguments: tc.arguments.clone(),
                             },
@@ -311,8 +362,19 @@ impl SubAgentRuntime {
                     .execute(&tc.name, &tc.arguments, &self.tool_context)
                     .await;
 
-                let result_preview = if result.len() > 200 {
-                    format!("{}...", &result[..200])
+                if is_tool_error_result(&result) {
+                    let err_msg = format!(
+                        "子智能体 '{}' 内部工具 '{}' 执行失败：{}",
+                        self.config.agent_id,
+                        tc.name,
+                        result.trim()
+                    );
+                    self.emit_failed(&app_handle, session_id, &err_msg);
+                    anyhow::bail!("{}", err_msg);
+                }
+
+                let result_preview = if result.chars().count() > 200 {
+                    format!("{}...", result.chars().take(200).collect::<String>())
                 } else {
                     result.clone()
                 };
@@ -323,6 +385,8 @@ impl SubAgentRuntime {
                         SubAgentEventPayload {
                             session_id: session_id.to_string(),
                             event: SubAgentEvent::ToolFinished {
+                                agent_id: self.config.agent_id.clone(),
+                                agent_name: self.config.agent_name.clone(),
                                 tool_name: tc.name.clone(),
                                 result_preview: result_preview.clone(),
                             },
@@ -352,6 +416,8 @@ impl SubAgentRuntime {
                 SubAgentEventPayload {
                     session_id: session_id.to_string(),
                     event: SubAgentEvent::Failed {
+                        agent_id: self.config.agent_id.clone(),
+                        agent_name: self.config.agent_name.clone(),
                         error: err_msg.clone(),
                     },
                 },
@@ -359,4 +425,25 @@ impl SubAgentRuntime {
         }
         anyhow::bail!("{}", err_msg)
     }
+
+    fn emit_failed(&self, app_handle: &Option<AppHandle>, session_id: &str, error: &str) {
+        if let Some(handle) = app_handle {
+            let _ = handle.emit(
+                "sub-agent-event",
+                SubAgentEventPayload {
+                    session_id: session_id.to_string(),
+                    event: SubAgentEvent::Failed {
+                        agent_id: self.config.agent_id.clone(),
+                        agent_name: self.config.agent_name.clone(),
+                        error: error.to_string(),
+                    },
+                },
+            );
+        }
+    }
+}
+
+fn is_tool_error_result(result: &str) -> bool {
+    let trimmed = result.trim_start();
+    trimmed.starts_with("错误：") || trimmed.starts_with("__SUB_AGENT_FAILURE__:")
 }

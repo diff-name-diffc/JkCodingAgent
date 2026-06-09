@@ -7,7 +7,7 @@ use super::session::{spawn_resume_session_watcher, spawn_status_session_watcher}
 use crate::agent::DispatcherState;
 use crate::platform::{claude_version_gte, get_agent_bin_checked, get_login_shell_env};
 use crate::project::read_project_config;
-use crate::shared::{TaskManager, TaskTerminationIntent};
+use crate::shared::{ManagedPtySnapshot, TaskManager, TaskTerminationIntent};
 
 const SESSION_WAIT_POLL: Duration = Duration::from_millis(50);
 const SESSION_WAIT_MAX: Duration = Duration::from_millis(500);
@@ -53,6 +53,7 @@ fn finalize_task_exit(
 
     {
         let tm = app.state::<TaskManager>();
+        tm.mark_finished(task_id);
         tm.remove_pty_handles(task_id);
 
         let codex_info = tm.codex_sessions.lock().remove(task_id);
@@ -142,12 +143,16 @@ enum PtyEmitMode {
 }
 
 fn emit_pty_event(app: &AppHandle, id: &str, event_name: &str, id_key: &str, data: String) {
+    let seq = app.state::<TaskManager>().append_output(id, &data);
     let mut payload = serde_json::Map::new();
     payload.insert(
         id_key.to_string(),
         serde_json::Value::String(id.to_string()),
     );
     payload.insert("data".to_string(), serde_json::Value::String(data));
+    if let Some(seq) = seq {
+        payload.insert("seq".to_string(), serde_json::Value::from(seq));
+    }
     let _ = app.emit(event_name, serde_json::Value::Object(payload));
 }
 
@@ -640,20 +645,33 @@ pub async fn send_input(app: AppHandle, task_id: String, data: String) -> Result
 
 #[tauri::command]
 pub async fn resize_pty(
-    task_manager: State<'_, TaskManager>,
+    app: AppHandle,
     task_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    task_manager.resize_registered_pty(
-        &task_id,
-        PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        },
-    )
+    tokio::task::spawn_blocking(move || {
+        let task_manager = app.state::<TaskManager>();
+        task_manager.resize_registered_pty(
+            &task_id,
+            PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking 失败: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_pty_output_snapshot(
+    task_manager: State<'_, TaskManager>,
+    task_id: String,
+) -> Result<ManagedPtySnapshot, String> {
+    task_manager.output_snapshot(&task_id)
 }
 
 #[tauri::command]
@@ -696,7 +714,7 @@ pub async fn open_shell(
     .await
     .map_err(|e| format!("spawn_blocking 失败: {e}"))??;
 
-    task_manager.insert_pty_handles(&shell_id, master, writer, child);
+    task_manager.insert_shell_pty_handles(&shell_id, master, writer, child);
 
     // Shell 退出后清理 TaskManager 中的残留句柄
     let app_cleanup = app.clone();

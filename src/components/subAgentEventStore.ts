@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { SubAgentEventPayload } from "../types";
+import type { SubAgentEventPayload, SubAgentUsage } from "../types";
 
 export interface EventLine {
   id: string;
@@ -9,13 +9,48 @@ export interface EventLine {
   timestamp: number;
 }
 
+export type SubAgentPhase =
+  | "initializing"
+  | "thinking"
+  | "tool_calling"
+  | "generating"
+  | "completed"
+  | "failed";
+
+export interface SubAgentToolCall {
+  id: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  resultPreview?: string;
+  startedAt: number;
+  finishedAt?: number;
+  durationMs?: number;
+  status: "running" | "completed" | "failed";
+}
+
 export interface SubAgentSession {
   agentId: string;
   name: string;
   task: string;
+  responseText: string;
+  progressMessages: SubAgentProgressMessage[];
   events: EventLine[];
   elapsed: number;
   status: "running" | "completed" | "failed";
+  phase: SubAgentPhase;
+  toolCalls: SubAgentToolCall[];
+  finishedResult?: string;
+  finishedError?: string;
+  tokenUsage?: SubAgentUsage;
+  iterations?: number;
+}
+
+export interface SubAgentProgressMessage {
+  id: string;
+  agentId: string;
+  agentName: string;
+  text: string;
+  timestamp: number;
 }
 
 type SessionMap = Record<string, SubAgentSession>;
@@ -54,8 +89,11 @@ function buildEventText(eventType: string, data: SubAgentEventPayload["data"]): 
     const preview = (data.resultPreview ?? "").slice(0, 80);
     return `◀ ${data.toolName ?? ""}: ${preview}`;
   }
-  if (eventType === "LlmDelta") {
-    return `💬 ${(data.delta ?? "").slice(0, 120)}`;
+  if (eventType === "Progress") {
+    return `进度通知：${data.message ?? ""}`;
+  }
+  if (eventType === "llmDelta") {
+    return `响应片段：${(data.delta ?? "").slice(0, 120)}`;
   }
   if (eventType === "Finished") {
     const totalTokens = data.tokenUsage?.totalTokens ?? 0;
@@ -88,36 +126,129 @@ function registerGlobalListener(): void {
     let task: string;
     let status: "running" | "completed" | "failed";
     let elapsed: number;
+    let phase: SubAgentPhase;
+    let toolCalls: SubAgentToolCall[];
+    let finishedResult: string | undefined;
+    let finishedError: string | undefined;
+    let tokenUsage: SubAgentUsage | undefined;
+    let iterations: number | undefined;
 
     if (eventType === "Started") {
       name = data.agentName ?? agentId;
       task = data.task ?? "";
       status = "running";
       elapsed = 0;
+      phase = "initializing";
+      toolCalls = [];
       starts[storeKey] = now;
     } else if (eventType === "Finished") {
       name = existing?.name ?? agentId;
       task = existing?.task ?? "";
       status = "completed";
       elapsed = data.elapsedMs ?? 0;
+      phase = "completed";
+      toolCalls = existing?.toolCalls ?? [];
+      finishedResult = data.result ?? existing?.finishedResult;
+      tokenUsage = data.tokenUsage ?? existing?.tokenUsage;
+      iterations = data.iterations ?? existing?.iterations;
     } else if (eventType === "Failed") {
       name = existing?.name ?? agentId;
       task = existing?.task ?? "";
       status = "failed";
       elapsed = now - (starts[storeKey] ?? now);
+      phase = "failed";
+      toolCalls = existing?.toolCalls ?? [];
+      finishedError = data.error ?? existing?.finishedError;
     } else {
       name = existing?.name ?? agentId;
       task = existing?.task ?? "";
       status = existing?.status ?? "running";
       elapsed = now - (starts[storeKey] ?? now);
+      toolCalls = existing?.toolCalls ? [...existing.toolCalls] : [];
+
+      if (eventType === "ToolStarted") {
+        phase = "tool_calling";
+        const toolCallId = `${agentId}-${data.toolName}-${now}`;
+        toolCalls.push({
+          id: toolCallId,
+          toolName: data.toolName ?? "",
+          arguments: data.arguments ?? {},
+          startedAt: now,
+          status: "running",
+        });
+      } else if (eventType === "ToolFinished") {
+        // Keep current phase, but update the last running tool call
+        phase = existing?.phase ?? "tool_calling";
+        const lastRunning = [...toolCalls].reverse().find(
+          (tc) => tc.status === "running" && tc.toolName === (data.toolName ?? "")
+        );
+        if (lastRunning) {
+          const idx = toolCalls.findIndex((tc) => tc.id === lastRunning.id);
+          if (idx !== -1) {
+            toolCalls[idx] = {
+              ...toolCalls[idx],
+              resultPreview: data.resultPreview,
+              finishedAt: now,
+              durationMs: now - toolCalls[idx].startedAt,
+              status: "completed",
+            };
+          }
+        }
+      } else if (eventType === "llmDelta") {
+        // If we have tool calls, we're generating the final response; otherwise thinking
+        phase = toolCalls.length > 0 ? "generating" : "thinking";
+      } else {
+        phase = existing?.phase ?? "initializing";
+      }
+
+      finishedResult = existing?.finishedResult;
+      finishedError = existing?.finishedError;
+      tokenUsage = existing?.tokenUsage;
+      iterations = existing?.iterations;
     }
 
     const text = buildEventText(eventType, data);
     const eventId = `${agentId}-${now}-${Math.random().toString(36).slice(2, 6)}`;
     const newEvent: EventLine = { id: eventId, type: eventType, text, timestamp: now };
-    const events = [...(existing?.events ?? []), newEvent].slice(-50);
+    const events = text ? [...(existing?.events ?? []), newEvent].slice(-50) : existing?.events ?? [];
+    const responseText =
+      eventType === "llmDelta"
+        ? `${existing?.responseText ?? ""}${data.delta ?? ""}`
+        : eventType === "Started"
+          ? ""
+          : existing?.responseText ?? "";
+    const progressMessages =
+      eventType === "Progress" && data.message?.trim()
+        ? [
+            ...(existing?.progressMessages ?? []),
+            {
+              id: eventId,
+              agentId,
+              agentName: name,
+              text: data.message.trim(),
+              timestamp: now,
+            },
+          ].slice(-20)
+        : eventType === "Started"
+          ? []
+          : existing?.progressMessages ?? [];
 
-    sessionMap[agentId] = { agentId, name, task, events, elapsed, status };
+    sessionMap[agentId] = {
+      agentId,
+      name,
+      task,
+      responseText,
+      progressMessages,
+      events,
+      elapsed,
+      status,
+      phase,
+      toolCalls,
+      finishedResult,
+      finishedError,
+      tokenUsage,
+      iterations,
+    };
     notify();
   });
 }
@@ -139,6 +270,13 @@ export function useSubAgentSessions(sessionId: string): SessionMap {
   }, [sessionId]);
 
   return snapshot;
+}
+
+export function useSubAgentProgressMessages(sessionId: string): SubAgentProgressMessage[] {
+  const sessions = useSubAgentSessions(sessionId);
+  return Object.values(sessions)
+    .flatMap((session) => session.progressMessages)
+    .sort((left, right) => left.timestamp - right.timestamp);
 }
 
 export function extractAgentIdsFromToolInput(input: string | undefined): string | null {

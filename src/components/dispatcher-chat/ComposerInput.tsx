@@ -1,6 +1,7 @@
-import { memo, type RefObject } from "react";
+import { memo, useCallback, type RefObject } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { X, Mic, Play, Send, Square } from "lucide-react";
+import { useComposedInput } from "../../hooks/useComposedInput";
 import type {
   ChecklistPlanState,
   DispatcherMode,
@@ -50,13 +51,10 @@ interface ComposerInputProps {
   onSend: () => void;
   onStop: () => void;
   onResume: () => void;
-  onKeyDown: (e: React.KeyboardEvent) => void;
   onToggleMode: (mode: DispatcherMode) => void;
   onToggleThinking: () => void;
   onToggleVoiceInput: () => void;
   onDismissVoiceError: () => void;
-  onCompositionStart: () => void;
-  onCompositionEnd: () => void;
   onAnswerPlanQuestion: (answer: string) => void;
   onImplementPlan: (interaction: Extract<PlanInteraction, { kind: "ready" }>) => void;
   onImplementPlanWithClearedContext: (interaction: Extract<PlanInteraction, { kind: "ready" }>) => void;
@@ -88,18 +86,29 @@ export const ComposerInput = memo(function ComposerInput({
   onSend,
   onStop,
   onResume,
-  onKeyDown,
   onToggleMode,
   onToggleThinking,
   onToggleVoiceInput,
   onDismissVoiceError,
-  onCompositionStart,
-  onCompositionEnd,
   onAnswerPlanQuestion,
   onImplementPlan,
   onImplementPlanWithClearedContext,
   onStayInPlanMode,
 }: ComposerInputProps) {
+  const onEnter = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key !== "Enter" || e.shiftKey) return;
+      e.preventDefault();
+      if (composerMode === "stop") return;
+      if (composerMode === "resume" && !input.trim()) {
+        onResume();
+        return;
+      }
+      if (composerMode === "send") onSend();
+    },
+    [composerMode, input, onSend, onResume],
+  );
+  const composed = useComposedInput(onEnter);
   return (
     <>
       {!isPlainChat && (
@@ -147,9 +156,9 @@ export const ComposerInput = memo(function ComposerInput({
           value={input}
           onChange={(e) => onChangeInput(e.target.value)}
           onPaste={onPaste}
-          onCompositionStart={onCompositionStart}
-          onCompositionEnd={onCompositionEnd}
-          onKeyDown={onKeyDown}
+          onCompositionStart={composed.onCompositionStart}
+          onCompositionEnd={composed.onCompositionEnd}
+          onKeyDown={composed.handleKeyDown}
           rows={1}
           disabled={composerMode === "stop" || isStopping}
           placeholder={isPlainChat ? "发送普通聊天消息..." : "给调度智能体发送消息..."}

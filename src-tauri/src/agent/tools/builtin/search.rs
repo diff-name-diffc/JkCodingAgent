@@ -406,7 +406,7 @@ async fn run_grep_query(
         match tokio::time::timeout(std::time::Duration::from_secs(60), command.output()).await {
             Ok(Ok(output)) => output,
             Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                return "错误：未找到 ripgrep (`rg`) 可执行文件，无法执行 grep 搜索".to_string();
+                return run_grep_fallback(pattern, &search_path, options).await;
             }
             Ok(Err(error)) => return format!("执行 grep 搜索失败：{error}"),
             Err(_) => return "grep 搜索超时（60 秒）".to_string(),
@@ -427,6 +427,138 @@ async fn run_grep_query(
         return format!("未找到匹配内容：{pattern}");
     }
     rendered
+}
+
+async fn run_grep_fallback(
+    pattern: &str,
+    search_path: &std::path::Path,
+    options: &GrepOptions,
+) -> String {
+    let mut command = Command::new("grep");
+    command.arg("-rn").arg("--no-color");
+
+    if options.match_mode == "fixed" {
+        command.arg("-F");
+    }
+    if matches!(options.case_sensitive, Some(false) | None) {
+        command.arg("-i");
+    }
+    if options.word {
+        command.arg("-w");
+    }
+    if options.context_before == options.context_after && options.context_before > 0 {
+        command.arg("-C").arg(options.context_before.to_string());
+    } else {
+        if options.context_before > 0 {
+            command.arg("-B").arg(options.context_before.to_string());
+        }
+        if options.context_after > 0 {
+            command.arg("-A").arg(options.context_after.to_string());
+        }
+    }
+    for glob in &options.include {
+        command.arg(format!("--include={glob}"));
+    }
+    for glob in &options.exclude {
+        command.arg(format!("--exclude={glob}"));
+    }
+
+    command.arg(pattern).arg(search_path);
+
+    let output =
+        match tokio::time::timeout(std::time::Duration::from_secs(60), command.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return "错误：未找到 ripgrep (`rg`) 或系统 grep，无法执行搜索".to_string();
+            }
+            Ok(Err(error)) => return format!("grep 回退搜索失败：{error}"),
+            Err(_) => return "grep 回退搜索超时（60 秒）".to_string(),
+        };
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let status = output.status.code().unwrap_or_default();
+    if status != 0 && status != 1 {
+        return format!(
+            "grep 回退搜索失败，退出状态：{}",
+            output.status
+        );
+    }
+    if stdout.trim().is_empty() {
+        return format!("未找到匹配内容：{pattern}");
+    }
+    render_grep_fallback_output(&stdout, options.max_files, options.files_with_matches)
+}
+
+fn render_grep_fallback_output(stdout: &str, max_files: usize, files_with_matches: bool) -> String {
+    let mut file_results: Vec<(String, Vec<String>)> = Vec::new();
+    let mut file_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut total_matches = 0usize;
+
+    for line in stdout.lines() {
+        let Some(colon_pos) = line.find(':') else {
+            continue;
+        };
+        let path = &line[..colon_pos];
+        if is_noise(std::ffi::OsStr::new(
+            std::path::Path::new(path)
+                .file_name()
+                .unwrap_or_default(),
+        )) {
+            continue;
+        }
+        let rest = &line[colon_pos + 1..];
+        let is_match = rest
+            .find(':')
+            .is_some_and(|p| rest[..p].chars().all(|c| c.is_ascii_digit()));
+
+        if !is_match {
+            continue;
+        }
+
+        let entry = match file_index.get(path) {
+            Some(&idx) => Some(idx),
+            None if file_results.len() < max_files => {
+                let idx = file_results.len();
+                file_results.push((path.to_string(), Vec::new()));
+                file_index.insert(path.to_string(), idx);
+                Some(idx)
+            }
+            None => None,
+        };
+        if let Some(idx) = entry {
+            total_matches += 1;
+            if files_with_matches {
+                continue;
+            }
+            file_results[idx].1.push(rest.to_string());
+        }
+    }
+
+    let matched_files = file_results
+        .iter()
+        .filter(|(_, lines)| !lines.is_empty())
+        .collect::<Vec<_>>();
+    if matched_files.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = vec![format!(
+        "共 {} 个文件 / {} 处匹配 (grep 回退)",
+        matched_files.len(),
+        total_matches
+    )];
+
+    if files_with_matches {
+        lines.extend(matched_files.iter().map(|(path, _)| path.clone()));
+        return lines.join("\n");
+    }
+
+    for (path, file_lines) in matched_files {
+        lines.push(String::new());
+        lines.push(path.clone());
+        lines.extend(file_lines.iter().cloned());
+    }
+    lines.join("\n")
 }
 
 fn workspace_relative_target(workspace: &std::path::Path, target: &std::path::Path) -> String {

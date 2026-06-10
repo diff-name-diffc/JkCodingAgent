@@ -64,12 +64,30 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
       setError("Agent ID 不能为空");
       return;
     }
+    if (draft.agentId.length > 64) {
+      setError("Agent ID 长度不能超过 64");
+      return;
+    }
+    if (
+      !/^[a-z0-9][a-z0-9_-]*$/.test(draft.agentId)
+    ) {
+      setError("Agent ID 仅支持小写字母、数字、下划线和短横线，且必须以小写字母或数字开头");
+      return;
+    }
     if (!draft.agentName.trim()) {
       setError("显示名称不能为空");
       return;
     }
+    if (draft.agentName.length > 64) {
+      setError("显示名称长度不能超过 64");
+      return;
+    }
     if (!draft.description.trim()) {
       setError("功能描述不能为空");
+      return;
+    }
+    if (draft.description.length > 512) {
+      setError("功能描述长度不能超过 512");
       return;
     }
     if (!draft.systemPrompt.trim()) {
@@ -79,6 +97,26 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
     if (draft.allowedTools.length === 0) {
       setError("至少选择一个工具");
       setActiveTab("tools");
+      return;
+    }
+    if (draft.maxIterations < 1 || draft.maxIterations > 100) {
+      setError("最大迭代轮次必须在 1-100 之间");
+      setActiveTab("runtime");
+      return;
+    }
+    if (draft.maxOutputTokens < 256 || draft.maxOutputTokens > 65536) {
+      setError("最大输出 Token 必须在 256-65536 之间");
+      setActiveTab("runtime");
+      return;
+    }
+    if (draft.temperature < 0 || draft.temperature > 2) {
+      setError("Temperature 必须在 0-2 之间");
+      setActiveTab("runtime");
+      return;
+    }
+    if (draft.timeoutSecs < 10 || draft.timeoutSecs > 1200) {
+      setError("超时时间必须在 10-1200 秒之间");
+      setActiveTab("runtime");
       return;
     }
     setError("");

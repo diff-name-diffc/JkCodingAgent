@@ -116,8 +116,8 @@ impl SubAgentConfig {
         if self.temperature < 0.0 || self.temperature > 2.0 {
             return Err(anyhow!("temperature 必须在 0-2 之间"));
         }
-        if self.timeout_secs < 10 || self.timeout_secs > 600 {
-            return Err(anyhow!("timeout_secs 必须在 10-600 之间"));
+        if self.timeout_secs < 10 || self.timeout_secs > 1200 {
+            return Err(anyhow!("timeout_secs 必须在 10-1200 之间"));
         }
         Ok(())
     }

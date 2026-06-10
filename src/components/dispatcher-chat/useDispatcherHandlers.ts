@@ -29,10 +29,8 @@ export interface UseDispatcherHandlersOptions {
   planInteraction: PlanInteraction | null;
   // Refs
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
-  inputComposingRef: React.RefObject<boolean>;
   shouldStickToBottomRef: React.RefObject<boolean>;
   // Derived
-  composerMode: "send" | "stop" | "resume";
   isLoading: boolean;
   currentPendingDispatch: { dispatchId: string; agent: AgentType; description: string; taskPrompt: string; permissionMode: string } | null;
   // Callbacks from other hooks
@@ -82,7 +80,6 @@ export interface UseDispatcherHandlersResult {
   handleSend: () => Promise<void>;
   onStop: () => Promise<void>;
   onResume: () => Promise<void>;
-  handleKeyDown: (e: React.KeyboardEvent) => void;
   handleApproveDispatch: (dispatchId: string, taskPrompt: string) => void;
   handleRejectDispatch: (dispatchId: string) => void;
   handleToggleAutoApprove: () => Promise<void>;
@@ -106,9 +103,7 @@ export function useDispatcherHandlers({
   mode,
   planInteraction,
   inputRef,
-  inputComposingRef,
   shouldStickToBottomRef,
-  composerMode,
   isLoading,
   currentPendingDispatch,
   actions,
@@ -251,24 +246,6 @@ export function useDispatcherHandlers({
   const onResume = useCallback(async () => {
     await onResumeStoppedRun?.(sessionId);
   }, [onResumeStoppedRun, sessionId]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (composerMode === "stop") return;
-      if (inputComposingRef.current) return;
-      // IME composing check via native event
-      if ("isComposing" in e && (e as unknown as { isComposing: boolean }).isComposing) return;
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        if (composerMode === "resume" && !input.trim()) {
-          onResume();
-          return;
-        }
-        handleSend();
-      }
-    },
-    [composerMode, handleSend, input, onResume, inputComposingRef],
-  );
 
   // ── Dispatch approval ───────────────────────────────────────
   const handleApproveDispatch = useCallback(
@@ -439,7 +416,6 @@ export function useDispatcherHandlers({
     handleSend,
     onStop,
     onResume,
-    handleKeyDown,
     handleApproveDispatch,
     handleRejectDispatch,
     handleToggleAutoApprove,

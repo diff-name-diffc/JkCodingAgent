@@ -3,16 +3,24 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::AppHandle;
 use tauri::Emitter;
+use tokio::time::timeout;
 
 use super::config::SubAgentConfig;
+use crate::agent::common::{classify_tool_result, is_parallel_readonly_tool_call, ToolOutcome};
 use crate::agent::llm::{
-    ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider, OutboundToolCall,
+    ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider, OutboundToolCall, RequestedToolCall,
 };
 use crate::agent::tools::{ToolContext, ToolRegistry};
+
+const SUB_AGENT_RESULT_MAX_CHARS: usize = 32_000;
+const SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS: u64 = 120;
+const SUB_AGENT_DEFAULT_MAX_TOOL_RETRIES: u32 = 3;
+const NESTED_SUB_AGENT_TOOLS: &[&str] = &["call_sub_agent", "list_sub_agents"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentUsage {
@@ -121,6 +129,7 @@ pub struct SubAgentRuntime {
     provider: OpenAiCompatProvider,
     tool_registry: Arc<ToolRegistry>,
     tool_context: ToolContext,
+    tool_definitions: Vec<crate::agent::llm::ToolDefinition>,
 }
 
 impl SubAgentRuntime {
@@ -167,11 +176,26 @@ impl SubAgentRuntime {
         tool_context.current_sub_agent_id = Some(config.agent_id.clone());
         tool_context.current_sub_agent_name = Some(config.agent_name.clone());
 
+        let excluded: HashSet<&str> = NESTED_SUB_AGENT_TOOLS.iter().copied().collect();
+        let allowed_set: HashSet<&str> = config
+            .allowed_tools
+            .iter()
+            .filter(|s| !excluded.contains(s.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+
+        let tool_definitions = tool_registry.definitions_for_workspace(
+            &tool_context.workspace,
+            Some(allowed_set.iter().copied()),
+            false,
+        );
+
         Ok(Self {
             config: config.clone(),
             provider,
             tool_registry,
             tool_context,
+            tool_definitions,
         })
     }
 
@@ -182,8 +206,10 @@ impl SubAgentRuntime {
         session_id: &str,
     ) -> Result<String> {
         let start = Instant::now();
-        let timeout = Duration::from_secs(self.config.timeout_secs);
+        let overall_timeout = Duration::from_secs(self.config.timeout_secs);
+        let llm_request_timeout = Duration::from_secs(SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS);
         let mut usage = SubAgentUsage::default();
+        let mut total_retries: u32 = 0;
         #[allow(unused_assignments)]
         let mut last_iteration: u32 = 0;
 
@@ -215,74 +241,57 @@ impl SubAgentRuntime {
             },
         ];
 
-        let allowed_set: HashSet<&str> = self
-            .config
-            .allowed_tools
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
-
-        let tool_definitions = self.tool_registry.definitions_for_workspace(
-            &self.tool_context.workspace,
-            Some(allowed_set.iter().copied()),
-            false,
-        );
-
         for iteration in 0..self.config.max_iterations {
-            if start.elapsed() > timeout {
+            if start.elapsed() > overall_timeout {
                 let err_msg = format!(
                     "子智能体 '{}' 执行超时（{}秒）",
                     self.config.agent_id, self.config.timeout_secs
                 );
-                if let Some(handle) = &app_handle {
-                    let _ = handle.emit(
-                        "sub-agent-event",
-                        SubAgentEventPayload {
-                            session_id: session_id.to_string(),
-                            event: SubAgentEvent::Failed {
-                                agent_id: self.config.agent_id.clone(),
-                                agent_name: self.config.agent_name.clone(),
-                                error: err_msg.clone(),
-                            },
-                        },
-                    );
-                }
+                self.emit_failed(&app_handle, session_id, &err_msg);
                 anyhow::bail!("{}", err_msg);
             }
 
             last_iteration = iteration + 1;
 
-            let response = match self
-                .provider
-                .chat_stream_with_thinking(
-                    &messages,
-                    &tool_definitions,
-                    false,
-                    false,
-                    |delta: &str| {
-                        if let Some(handle) = &app_handle {
-                            let _ = handle.emit(
-                                "sub-agent-event",
-                                SubAgentEventPayload {
-                                    session_id: session_id.to_string(),
-                                    event: SubAgentEvent::LlmDelta {
-                                        agent_id: self.config.agent_id.clone(),
-                                        agent_name: self.config.agent_name.clone(),
-                                        delta: delta.to_string(),
-                                    },
-                                },
-                            );
-                        }
-                    },
-                    |_delta: &str, _elapsed: u64| {},
-                )
-                .await
-            {
-                Ok(response) => response,
-                Err(error) => {
+            let on_delta = |delta: &str| {
+                if let Some(handle) = &app_handle {
+                    let _ = handle.emit(
+                        "sub-agent-event",
+                        SubAgentEventPayload {
+                            session_id: session_id.to_string(),
+                            event: SubAgentEvent::LlmDelta {
+                                agent_id: self.config.agent_id.clone(),
+                                agent_name: self.config.agent_name.clone(),
+                                delta: delta.to_string(),
+                            },
+                        },
+                    );
+                }
+            };
+
+            let llm_future = self.provider.chat_stream_with_thinking(
+                &messages,
+                &self.tool_definitions,
+                false,
+                false,
+                on_delta,
+                |_delta: &str, _elapsed: u64| {},
+            );
+
+            let response = match timeout(llm_request_timeout, llm_future).await {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => {
                     let err_msg = format!(
                         "子智能体 '{}' 模型请求失败：{}",
                         self.config.agent_id, error
+                    );
+                    self.emit_failed(&app_handle, session_id, &err_msg);
+                    anyhow::bail!("{}", err_msg);
+                }
+                Err(_) => {
+                    let err_msg = format!(
+                        "子智能体 '{}' 单次模型请求超时（{}秒）",
+                        self.config.agent_id, SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS
                     );
                     self.emit_failed(&app_handle, session_id, &err_msg);
                     anyhow::bail!("{}", err_msg);
@@ -341,68 +350,85 @@ impl SubAgentRuntime {
             };
             messages.push(assistant_msg);
 
-            for tc in &response.tool_calls {
-                if let Some(handle) = &app_handle {
-                    let _ = handle.emit(
-                        "sub-agent-event",
-                        SubAgentEventPayload {
-                            session_id: session_id.to_string(),
-                            event: SubAgentEvent::ToolStarted {
-                                agent_id: self.config.agent_id.clone(),
-                                agent_name: self.config.agent_name.clone(),
-                                tool_name: tc.name.clone(),
-                                arguments: tc.arguments.clone(),
-                            },
-                        },
-                    );
+            let tool_calls = response.tool_calls;
+            let mut tc_index = 0usize;
+
+            while tc_index < tool_calls.len() {
+                let readonly_end = readonly_tool_run_end(&tool_calls, tc_index);
+
+                let executed: Vec<(&RequestedToolCall, String)> =
+                    if readonly_end.saturating_sub(tc_index) >= 2 {
+                        let run = &tool_calls[tc_index..readonly_end];
+                        self.execute_parallel_readonly_tools(
+                            run,
+                            &app_handle,
+                            session_id,
+                            &mut usage,
+                        )
+                        .await
+                    } else {
+                        let tc = &tool_calls[tc_index];
+                        let result = self
+                            .execute_single_tool(tc, &app_handle, session_id, &mut usage)
+                            .await;
+                        vec![(tc, result)]
+                    };
+
+                for (tc, result) in executed {
+                    let outcome = classify_tool_result(&result);
+                    match outcome {
+                        ToolOutcome::RecoverableError { message } => {
+                            total_retries += 1;
+                            if total_retries > SUB_AGENT_DEFAULT_MAX_TOOL_RETRIES {
+                                let err_msg = format!(
+                                    "子智能体 '{}' 工具 '{}' 连续参数错误已达上限（{}次），终止执行：{}",
+                                    self.config.agent_id,
+                                    tc.name,
+                                    SUB_AGENT_DEFAULT_MAX_TOOL_RETRIES,
+                                    message
+                                );
+                                self.emit_failed(&app_handle, session_id, &err_msg);
+                                anyhow::bail!("{}", err_msg);
+                            }
+                            let retry_hint = format!(
+                                "工具调用因参数错误失败，请检查参数后重新调用。\n错误信息：{message}"
+                            );
+                            messages.push(ChatMessage {
+                                role: "tool".to_string(),
+                                content: retry_hint,
+                                reasoning_content: None,
+                                tool_calls: None,
+                                tool_call_id: Some(tc.id.clone()),
+                                name: Some(tc.name.clone()),
+                            });
+                        }
+                        ToolOutcome::FatalError { message } => {
+                            let err_msg = format!(
+                                "子智能体 '{}' 内部工具 '{}' 执行失败：{}",
+                                self.config.agent_id, tc.name, message
+                            );
+                            self.emit_failed(&app_handle, session_id, &err_msg);
+                            anyhow::bail!("{}", err_msg);
+                        }
+                        ToolOutcome::Ok => {
+                            let truncated = truncate_tool_result(&result);
+                            messages.push(ChatMessage {
+                                role: "tool".to_string(),
+                                content: truncated,
+                                reasoning_content: None,
+                                tool_calls: None,
+                                tool_call_id: Some(tc.id.clone()),
+                                name: Some(tc.name.clone()),
+                            });
+                        }
+                    }
                 }
 
-                let result = self
-                    .tool_registry
-                    .execute(&tc.name, &tc.arguments, &self.tool_context)
-                    .await;
-
-                if is_tool_error_result(&result) {
-                    let err_msg = format!(
-                        "子智能体 '{}' 内部工具 '{}' 执行失败：{}",
-                        self.config.agent_id,
-                        tc.name,
-                        result.trim()
-                    );
-                    self.emit_failed(&app_handle, session_id, &err_msg);
-                    anyhow::bail!("{}", err_msg);
-                }
-
-                let result_preview = if result.chars().count() > 200 {
-                    format!("{}...", result.chars().take(200).collect::<String>())
+                if readonly_end.saturating_sub(tc_index) >= 2 {
+                    tc_index = readonly_end;
                 } else {
-                    result.clone()
-                };
-
-                if let Some(handle) = &app_handle {
-                    let _ = handle.emit(
-                        "sub-agent-event",
-                        SubAgentEventPayload {
-                            session_id: session_id.to_string(),
-                            event: SubAgentEvent::ToolFinished {
-                                agent_id: self.config.agent_id.clone(),
-                                agent_name: self.config.agent_name.clone(),
-                                tool_name: tc.name.clone(),
-                                result_preview: result_preview.clone(),
-                            },
-                        },
-                    );
+                    tc_index += 1;
                 }
-
-                let tool_result_msg = ChatMessage {
-                    role: "tool".to_string(),
-                    content: result,
-                    reasoning_content: None,
-                    tool_calls: None,
-                    tool_call_id: Some(tc.id.clone()),
-                    name: Some(tc.name.clone()),
-                };
-                messages.push(tool_result_msg);
             }
         }
 
@@ -410,20 +436,125 @@ impl SubAgentRuntime {
             "子智能体 '{}' 达到最大迭代次数（{}）",
             self.config.agent_id, self.config.max_iterations
         );
-        if let Some(handle) = &app_handle {
+        self.emit_failed(&app_handle, session_id, &err_msg);
+        anyhow::bail!("{}", err_msg)
+    }
+
+    async fn execute_single_tool(
+        &self,
+        tc: &RequestedToolCall,
+        app_handle: &Option<AppHandle>,
+        session_id: &str,
+        usage: &mut SubAgentUsage,
+    ) -> String {
+        let _ = usage;
+        if let Some(handle) = app_handle {
             let _ = handle.emit(
                 "sub-agent-event",
                 SubAgentEventPayload {
                     session_id: session_id.to_string(),
-                    event: SubAgentEvent::Failed {
+                    event: SubAgentEvent::ToolStarted {
                         agent_id: self.config.agent_id.clone(),
                         agent_name: self.config.agent_name.clone(),
-                        error: err_msg.clone(),
+                        tool_name: tc.name.clone(),
+                        arguments: tc.arguments.clone(),
                     },
                 },
             );
         }
-        anyhow::bail!("{}", err_msg)
+
+        let result = self
+            .tool_registry
+            .execute(&tc.name, &tc.arguments, &self.tool_context)
+            .await;
+
+        let result_preview = if result.chars().count() > 200 {
+            format!("{}...", result.chars().take(200).collect::<String>())
+        } else {
+            result.clone()
+        };
+
+        if let Some(handle) = app_handle {
+            let _ = handle.emit(
+                "sub-agent-event",
+                SubAgentEventPayload {
+                    session_id: session_id.to_string(),
+                    event: SubAgentEvent::ToolFinished {
+                        agent_id: self.config.agent_id.clone(),
+                        agent_name: self.config.agent_name.clone(),
+                        tool_name: tc.name.clone(),
+                        result_preview,
+                    },
+                },
+            );
+        }
+
+        result
+    }
+
+    async fn execute_parallel_readonly_tools<'a>(
+        &'a self,
+        tool_calls: &'a [RequestedToolCall],
+        app_handle: &'a Option<AppHandle>,
+        session_id: &'a str,
+        usage: &mut SubAgentUsage,
+    ) -> Vec<(&'a RequestedToolCall, String)> {
+        let _ = usage;
+        for tc in tool_calls {
+            if let Some(handle) = app_handle {
+                let _ = handle.emit(
+                    "sub-agent-event",
+                    SubAgentEventPayload {
+                        session_id: session_id.to_string(),
+                        event: SubAgentEvent::ToolStarted {
+                            agent_id: self.config.agent_id.clone(),
+                            agent_name: self.config.agent_name.clone(),
+                            tool_name: tc.name.clone(),
+                            arguments: tc.arguments.clone(),
+                        },
+                    },
+                );
+            }
+        }
+
+        let results = join_all(
+            tool_calls
+                .iter()
+                .map(|tc| async move {
+                    (
+                        tc,
+                        self.tool_registry
+                            .execute(&tc.name, &tc.arguments, &self.tool_context)
+                            .await,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await;
+
+        for (tc, result) in &results {
+            let result_preview = if result.chars().count() > 200 {
+                format!("{}...", result.chars().take(200).collect::<String>())
+            } else {
+                result.clone()
+            };
+            if let Some(handle) = app_handle {
+                let _ = handle.emit(
+                    "sub-agent-event",
+                    SubAgentEventPayload {
+                        session_id: session_id.to_string(),
+                        event: SubAgentEvent::ToolFinished {
+                            agent_id: self.config.agent_id.clone(),
+                            agent_name: self.config.agent_name.clone(),
+                            tool_name: tc.name.clone(),
+                            result_preview,
+                        },
+                    },
+                );
+            }
+        }
+
+        results
     }
 
     fn emit_failed(&self, app_handle: &Option<AppHandle>, session_id: &str, error: &str) {
@@ -443,7 +574,25 @@ impl SubAgentRuntime {
     }
 }
 
-fn is_tool_error_result(result: &str) -> bool {
-    let trimmed = result.trim_start();
-    trimmed.starts_with("错误：") || trimmed.starts_with("__SUB_AGENT_FAILURE__:")
+fn readonly_tool_run_end(tool_calls: &[RequestedToolCall], start: usize) -> usize {
+    tool_calls
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(index, tool_call)| {
+            (!is_parallel_readonly_tool_call(tool_call)).then_some(index)
+        })
+        .unwrap_or(tool_calls.len())
+}
+
+fn truncate_tool_result(result: &str) -> String {
+    let char_count = result.chars().count();
+    if char_count <= SUB_AGENT_RESULT_MAX_CHARS {
+        return result.to_string();
+    }
+    let keep = SUB_AGENT_RESULT_MAX_CHARS / 2;
+    let head: String = result.chars().take(keep).collect();
+    let tail: String = result.chars().skip(char_count - keep).collect();
+    let dropped = char_count - SUB_AGENT_RESULT_MAX_CHARS;
+    format!("{head}\n\n[...已截断 {dropped} 字符...]\n\n{tail}")
 }

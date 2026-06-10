@@ -581,9 +581,15 @@ fn build_tool_artifact(tool_name: &str, raw_output: &str) -> ToolArtifactDraft {
 }
 
 pub fn is_parallel_readonly_tool_call(tool_call: &RequestedToolCall) -> bool {
+    // browser_read_text 也是只读操作，子Agent中可并行
     matches!(
         tool_call.name.as_str(),
-        "read_file" | "list_dir" | "glob" | "grep"
+        "read_file"
+            | "list_dir"
+            | "glob"
+            | "grep"
+            | "browser_read_text"
+            | "browser_visual_analyze"
     )
 }
 
@@ -596,4 +602,69 @@ pub fn readonly_tool_run_end(tool_calls: &[RequestedToolCall], start: usize) -> 
             (!is_parallel_readonly_tool_call(tool_call)).then_some(index)
         })
         .unwrap_or(tool_calls.len())
+}
+
+// ─── Tool Outcome Classification ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolOutcome {
+    Ok,
+    RecoverableError { message: String },
+    FatalError { message: String },
+}
+
+impl ToolOutcome {
+    #[allow(dead_code)]
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::RecoverableError { .. })
+    }
+
+    #[allow(dead_code)]
+    pub fn is_fatal(&self) -> bool {
+        matches!(self, Self::FatalError { .. })
+    }
+
+    #[allow(dead_code)]
+    pub fn error_message(&self) -> Option<&str> {
+        match self {
+            Self::RecoverableError { message } | Self::FatalError { message } => Some(message),
+            _ => None,
+        }
+    }
+}
+
+pub fn classify_tool_result(result: &str) -> ToolOutcome {
+    let trimmed = result.trim();
+    if trimmed.is_empty() {
+        return ToolOutcome::Ok;
+    }
+    if let Some(msg) = trimmed.strip_prefix(crate::agent::sub_agent::tool::SUB_AGENT_FAILURE_PREFIX)
+    {
+        return ToolOutcome::FatalError {
+            message: msg.to_string(),
+        };
+    }
+    if !trimmed.starts_with("错误：") {
+        return ToolOutcome::Ok;
+    }
+    if is_recoverable_error(trimmed) {
+        ToolOutcome::RecoverableError {
+            message: trimmed.to_string(),
+        }
+    } else {
+        ToolOutcome::FatalError {
+            message: trimmed.to_string(),
+        }
+    }
+}
+
+fn is_recoverable_error(message: &str) -> bool {
+    message.starts_with("错误：缺少必填参数")
+        || message.starts_with("错误：参数")
+        || message.contains("参数无效")
+        || message.contains("invalid type")
+        || message.contains("未找到工具")
+        || message.contains("不支持子智能体调用")
+        || message.contains("已被禁用")
+        || message.contains("禁止访问")
 }

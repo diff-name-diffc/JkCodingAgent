@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -23,13 +23,20 @@ pub(crate) trait DynamicToolProvider: Send + Sync {
 
 pub struct ToolRegistry {
     tools: Vec<Box<dyn AgentTool>>,
+    name_index: HashMap<String, usize>,
     dynamic_provider: Option<Arc<dyn DynamicToolProvider>>,
 }
 
 impl ToolRegistry {
     pub(crate) fn new(tools: Vec<Box<dyn AgentTool>>) -> Self {
+        let name_index = tools
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.name().to_string(), i))
+            .collect();
         Self {
             tools,
+            name_index,
             dynamic_provider: None,
         }
     }
@@ -43,7 +50,15 @@ impl ToolRegistry {
     }
 
     pub fn add_tool(&mut self, tool: Box<dyn AgentTool>) {
+        self.name_index
+            .insert(tool.name().to_string(), self.tools.len());
         self.tools.push(tool);
+    }
+
+    fn find_by_name(&self, name: &str) -> Option<&Box<dyn AgentTool>> {
+        self.name_index
+            .get(name)
+            .and_then(|&idx| self.tools.get(idx))
     }
 
     pub fn tool_names_and_descriptions(&self) -> Vec<(String, String)> {
@@ -63,7 +78,7 @@ impl ToolRegistry {
         I: IntoIterator<Item = &'a str>,
     {
         let allowed = allowed.map(|names| names.into_iter().collect::<HashSet<_>>());
-        let static_definitions = self
+        let mut definitions: Vec<ToolDefinition> = self
             .tools
             .iter()
             .filter(|tool| {
@@ -80,9 +95,8 @@ impl ToolRegistry {
                     parameters: tool.parameters(),
                 },
             })
-            .collect::<Vec<_>>();
+            .collect();
 
-        let mut definitions = static_definitions;
         if include_dynamic {
             if let Some(provider) = &self.dynamic_provider {
                 definitions.extend(provider.definitions_for_workspace(workspace));
@@ -92,7 +106,7 @@ impl ToolRegistry {
     }
 
     pub async fn execute(&self, name: &str, args: &Value, context: &ToolContext) -> String {
-        match self.tools.iter().find(|tool| tool.name() == name) {
+        match self.find_by_name(name) {
             Some(tool) => tool.execute(args, context).await,
             None => {
                 if let Some(provider) = &self.dynamic_provider {
@@ -106,7 +120,7 @@ impl ToolRegistry {
     }
 
     pub fn effective_args(&self, tool_name: &str, args: &Value) -> Value {
-        let Some(tool) = self.tools.iter().find(|t| t.name() == tool_name) else {
+        let Some(tool) = self.find_by_name(tool_name) else {
             return args.clone();
         };
         let schema = tool.parameters();

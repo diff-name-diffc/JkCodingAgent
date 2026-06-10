@@ -238,24 +238,26 @@ impl SubAgentDb {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().context("begin delete tx")?;
+        tx.execute(
             "DELETE FROM global_sub_agents WHERE sub_agent_id = ?1",
             params![id],
         )
         .context("delete global_sub_agents")?;
-        conn.execute(
+        tx.execute(
             "DELETE FROM session_sub_agents WHERE sub_agent_id = ?1",
             params![id],
         )
         .context("delete session_sub_agents")?;
-        conn.execute(
+        tx.execute(
             "DELETE FROM context_sub_agents WHERE sub_agent_id = ?1",
             params![id],
         )
         .context("delete context_sub_agents")?;
-        conn.execute("DELETE FROM sub_agents WHERE id = ?1", params![id])
+        tx.execute("DELETE FROM sub_agents WHERE id = ?1", params![id])
             .context("delete sub_agent")?;
+        tx.commit().context("commit delete tx")?;
         Ok(())
     }
 
@@ -268,19 +270,21 @@ impl SubAgentDb {
     }
 
     pub fn set_context_enabled(&self, context: &str, sub_agent_ids: &[String]) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().context("begin set_context_enabled tx")?;
+        tx.execute(
             "DELETE FROM context_sub_agents WHERE context = ?1",
             params![context],
         )
         .context("clear context_sub_agents")?;
         for agent_id in sub_agent_ids {
-            conn.execute(
+            tx.execute(
                 "INSERT OR IGNORE INTO context_sub_agents (context, sub_agent_id) VALUES (?1, ?2)",
                 params![context, agent_id],
             )
             .context("insert context_sub_agents")?;
         }
+        tx.commit().context("commit set_context_enabled tx")?;
         Ok(())
     }
 
@@ -308,19 +312,21 @@ impl SubAgentDb {
     }
 
     pub fn set_session_enabled(&self, session_id: &str, sub_agent_ids: &[String]) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().context("begin set_session_enabled tx")?;
+        tx.execute(
             "DELETE FROM session_sub_agents WHERE session_id = ?1",
             params![session_id],
         )
         .context("clear session_sub_agents")?;
         for agent_id in sub_agent_ids {
-            conn.execute(
+            tx.execute(
                 "INSERT OR IGNORE INTO session_sub_agents (session_id, sub_agent_id) VALUES (?1, ?2)",
                 params![session_id, agent_id],
             )
             .context("insert session_sub_agents")?;
         }
+        tx.commit().context("commit set_session_enabled tx")?;
         Ok(())
     }
 
@@ -348,16 +354,18 @@ impl SubAgentDb {
     }
 
     pub fn set_global_enabled(&self, sub_agent_ids: &[String]) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM global_sub_agents", [])
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().context("begin set_global_enabled tx")?;
+        tx.execute("DELETE FROM global_sub_agents", [])
             .context("clear global_sub_agents")?;
         for agent_id in sub_agent_ids {
-            conn.execute(
+            tx.execute(
                 "INSERT OR IGNORE INTO global_sub_agents (sub_agent_id) VALUES (?1)",
                 params![agent_id],
             )
             .context("insert global_sub_agents")?;
         }
+        tx.commit().context("commit set_global_enabled tx")?;
         Ok(())
     }
 

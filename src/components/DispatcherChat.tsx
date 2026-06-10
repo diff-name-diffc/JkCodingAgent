@@ -134,7 +134,6 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     // ── Refs ─────────────────────────────────────────────────────
     const messageListRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
-    const inputComposingRef = useRef(false);
     const currentSessionIdRef = useRef(sessionId);
     currentSessionIdRef.current = sessionId;
     const historyLoadRef = useRef(0);
@@ -258,8 +257,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     // ── Handlers (extracted to useDispatcherHandlers) ────────────
     const handlers = useDispatcherHandlers({
       sessionId, input, attachedImages, isStopping, autoApprove, mode, planInteraction,
-      inputRef, inputComposingRef, shouldStickToBottomRef,
-      composerMode, isLoading, currentPendingDispatch,
+      inputRef, shouldStickToBottomRef,
+      isLoading, currentPendingDispatch,
       actions, updateLiveSessionState, voiceInput,
       resetSessionTokenUsage,
       setMessages, setAttachedImages, setIsStopping,
@@ -444,12 +443,9 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onSend={handlers.handleSend} onStop={handlers.onStop} onResume={handlers.onResume}
               onToggleMode={handlers.handleModeToggle} onToggleThinking={handlers.handleToggleThinking}
               onToggleVoiceInput={voiceInput.toggleRecording} onDismissVoiceError={voiceInput.clearError}
-              onKeyDown={handlers.handleKeyDown}
               onOpenSettings={onOpenSettings}
               onOpenMcpStatus={() => onOpenMcpStatus?.()}
               onToggleAutoApprove={handlers.handleToggleAutoApprove}
-              onCompositionStart={() => { inputComposingRef.current = true; }}
-              onCompositionEnd={() => { setTimeout(() => { inputComposingRef.current = false; }, 200); }}
             />
           )}
           {(!isEmpty || isPlainChat) && (
@@ -465,11 +461,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onDrop={handlers.handleDrop} onDragOver={handlers.handleDragOver}
               onRemoveImage={handlers.handleRemoveImage}
               onSend={handlers.handleSend} onStop={handlers.onStop} onResume={handlers.onResume}
-              onKeyDown={handlers.handleKeyDown}
               onToggleMode={handlers.handleModeToggle} onToggleThinking={handlers.handleToggleThinking}
               onToggleVoiceInput={voiceInput.toggleRecording} onDismissVoiceError={voiceInput.clearError}
-              onCompositionStart={() => { inputComposingRef.current = true; }}
-              onCompositionEnd={() => { setTimeout(() => { inputComposingRef.current = false; }, 200); }}
               onAnswerPlanQuestion={handlers.handleAnswerPlanQuestion}
               onImplementPlan={handlers.handleImplementPlan}
               onImplementPlanWithClearedContext={handlers.handleImplementPlanWithClearedContext}

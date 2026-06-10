@@ -1,7 +1,7 @@
-import { memo } from "react";
-import type { KeyboardEvent } from "react";
+import { memo, useCallback } from "react";
 import { Sparkles, Send, Square, Play, X, Settings2, PlugZap, Wrench, Mic } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { useComposedInput } from "../../hooks/useComposedInput";
 import type {
   DispatcherMode,
   DispatcherSessionTokenUsage,
@@ -55,12 +55,9 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
   onToggleThinking,
   onToggleVoiceInput,
   onDismissVoiceError,
-  onKeyDown,
   onOpenSettings,
   onOpenMcpStatus,
   onToggleAutoApprove,
-  onCompositionStart,
-  onCompositionEnd,
 }: {
   conversationKind: "project" | "chat";
   input: string;
@@ -89,16 +86,28 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
   onToggleThinking: () => void;
   onToggleVoiceInput: () => void;
   onDismissVoiceError: () => void;
-  onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   onOpenSettings: () => void;
   onOpenMcpStatus: () => void;
   onToggleAutoApprove: () => void;
-  onCompositionStart: () => void;
-  onCompositionEnd: () => void;
 }) {
   const isStopMode = composerMode === "stop";
   const isResumeMode = composerMode === "resume";
   const isPlainChat = conversationKind === "chat";
+
+  const onEnter = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key !== "Enter" || e.shiftKey) return;
+      e.preventDefault();
+      if (isStopMode) return;
+      if (isResumeMode && !input.trim()) {
+        onResume();
+        return;
+      }
+      if (composerMode === "send") onSend();
+    },
+    [isStopMode, isResumeMode, composerMode, input, onSend, onResume],
+  );
+  const composed = useComposedInput(onEnter);
 
   return (
     <div style={styles.emptyLauncherWrap(layoutMode)}>
@@ -162,9 +171,9 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
             value={input}
             onChange={(e) => onChangeInput(e.target.value)}
             onPaste={onPaste}
-            onCompositionStart={onCompositionStart}
-            onCompositionEnd={onCompositionEnd}
-            onKeyDown={onKeyDown}
+            onCompositionStart={composed.onCompositionStart}
+            onCompositionEnd={composed.onCompositionEnd}
+            onKeyDown={composed.handleKeyDown}
             rows={layoutMode === "single" ? 6 : 3}
             disabled={isStopMode || isStopping}
           />

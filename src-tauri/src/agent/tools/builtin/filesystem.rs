@@ -199,6 +199,9 @@ impl AgentTool for EditFileTool {
         let Some(new_text) = string_arg(args, "new_text") else {
             return "错误：缺少必填参数 new_text".to_string();
         };
+        if old_text == new_text {
+            return "编辑成功（无变化：old_text 与 new_text 相同）".to_string();
+        }
         let replace_all = boolish_arg(args, "replace_all").unwrap_or(false);
 
         let context = context.clone();
@@ -309,6 +312,8 @@ fn render_single_or_grouped_sections(sections: Vec<(String, String)>) -> String 
 }
 
 fn read_file_lines(path: &str, offset: usize, limit: usize, context: &ToolContext) -> String {
+    use std::io::{BufRead, BufReader};
+
     let file_path = match resolve_path(context, path) {
         Ok(path) => path,
         Err(message) => return message,
@@ -326,20 +331,29 @@ fn read_file_lines(path: &str, offset: usize, limit: usize, context: &ToolContex
         }
         _ => {}
     }
-    match fs::read_to_string(&file_path) {
-        Ok(content) => {
-            let start = offset.saturating_sub(1);
-            content
-                .lines()
-                .skip(start)
-                .take(limit)
-                .enumerate()
-                .map(|(index, line)| format!("{}|{}", start + index + 1, line))
-                .collect::<Vec<_>>()
-                .join("\n")
+
+    let file = match fs::File::open(&file_path) {
+        Ok(f) => f,
+        Err(error) => return format!("读取文件失败：{error}"),
+    };
+
+    let reader = BufReader::new(file);
+    let skip_lines = offset.saturating_sub(1);
+
+    let mut output = Vec::new();
+    for (i, line_result) in reader.lines().enumerate() {
+        if i < skip_lines {
+            continue;
         }
-        Err(error) => format!("读取文件失败：{error}"),
+        if output.len() >= limit {
+            break;
+        }
+        match line_result {
+            Ok(line) => output.push(format!("{}|{}", i + 1, line)),
+            Err(error) => return format!("读取文件失败：{error}"),
+        }
     }
+    output.join("\n")
 }
 
 fn list_dir_entries(

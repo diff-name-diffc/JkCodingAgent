@@ -118,13 +118,10 @@ export function HomeChatPage({
     invoke("browser_reopen", { sessionId: activeSessionId }).catch(console.error);
   }, [activeSessionId]);
 
-  const dockedSessions = useMemo(
-    () => Array.from(dockedBrowsers.values()),
-    [dockedBrowsers],
-  );
+  const dockedSessions = useMemo(() => Array.from(dockedBrowsers.values()), [dockedBrowsers]);
 
   return (
-    <div style={s.chatHomeBody}>
+    <div className="nezha-chat-home" style={s.chatHomeBody}>
       <ChatSessionSidebar
         activeSessionId={activeSessionId}
         onActiveSessionChange={setActiveSessionId}
@@ -148,7 +145,16 @@ export function HomeChatPage({
       </div>
 
       {showBrowserPanel && (
-        <div style={{ position: "relative", display: "flex", flexShrink: 0 }}>
+        <div
+          className="nezha-brand-surface"
+          style={{
+            position: "relative",
+            display: "flex",
+            flexShrink: 0,
+            borderRadius: 18,
+            overflow: "hidden",
+          }}
+        >
           <div
             onMouseDown={browserPanel.handleResizeStart}
             style={{

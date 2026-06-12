@@ -32,13 +32,13 @@ export const ChatSessionCard = memo(function ChatSessionCard({
   return (
     <div
       key={session.id}
+      className={["chat-session-card", isActive ? "is-active" : "", isRunning ? "is-running" : ""]
+        .filter(Boolean)
+        .join(" ")}
       draggable
       onDragStart={onDragStart}
       onClick={onClick}
-      style={{
-        ...s.sessionCard,
-        background: isActive ? "var(--bg-selected)" : "transparent",
-      }}
+      style={s.sessionCard}
     >
       <div style={s.sessionCardBody as React.CSSProperties}>
         <div style={s.sessionCardTitle}>{session.title}</div>
@@ -46,7 +46,11 @@ export const ChatSessionCard = memo(function ChatSessionCard({
       </div>
       <div style={s.sessionCardActions as React.CSSProperties}>
         {isRunning && (
-          <LoaderCircle size={12} className="spin" style={{ color: "var(--accent)", opacity: 0.85 }} />
+          <LoaderCircle
+            size={12}
+            className="spin"
+            style={{ color: "var(--accent)", opacity: 0.85 }}
+          />
         )}
         <button
           style={{

@@ -1,6 +1,9 @@
 import type { AgentType } from "../../types";
 
-export const DISPATCH_AGENT_META: Record<AgentType, { title: string; badge: string; hint: string }> = {
+export const DISPATCH_AGENT_META: Record<
+  AgentType,
+  { title: string; badge: string; hint: string }
+> = {
   claude: {
     title: "Claude 子任务审查",
     badge: "Claude",
@@ -34,17 +37,17 @@ export const dispatcherChatStyles = {
     minWidth: 0,
     minHeight: 0,
     background:
-      "radial-gradient(circle at top right, color-mix(in srgb, var(--accent) 10%, transparent), transparent 26%), linear-gradient(180deg, var(--bg-panel), color-mix(in srgb, var(--bg-panel) 78%, var(--bg-subtle)))",
+      "radial-gradient(circle at 78% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 30%), linear-gradient(180deg, color-mix(in srgb, var(--chat-main-rail) 92%, transparent), transparent)",
   },
   header: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "12px 18px",
-    borderBottom: "1px solid var(--border-dim)",
-    background: "color-mix(in srgb, var(--bg-card) 68%, transparent)",
-    backdropFilter: "blur(16px)",
-    WebkitBackdropFilter: "blur(16px)",
+    padding: "12px 16px",
+    borderBottom: "1px solid var(--chat-glass-border)",
+    background: "color-mix(in srgb, var(--chat-surface) 86%, transparent)",
+    backdropFilter: "blur(22px) saturate(1.12)",
+    WebkitBackdropFilter: "blur(22px) saturate(1.12)",
     WebkitAppRegion: "drag" as const,
     flexShrink: 0,
   },
@@ -53,11 +56,22 @@ export const dispatcherChatStyles = {
     alignItems: "center",
     gap: "8px",
   },
-  headerIcon: { fontSize: "16px" },
+  headerIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 11,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background:
+      "linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, var(--bg-card)), color-mix(in srgb, var(--warning) 14%, var(--bg-card)))",
+    color: "var(--accent)",
+    border: "1px solid color-mix(in srgb, var(--accent) 24%, var(--chat-glass-border))",
+  },
   headerTitle: {
-    fontSize: "13.5px",
-    fontWeight: 700,
-    letterSpacing: "-0.01em",
+    fontSize: "14px",
+    fontWeight: 850,
+    letterSpacing: 0,
     color: "var(--text-primary)",
   },
   headerPlanBadge: {
@@ -102,7 +116,7 @@ export const dispatcherChatStyles = {
     padding: "0 6px 0 9px",
     border: "1px solid color-mix(in srgb, var(--accent) 28%, var(--border-dim))",
     borderRadius: "999px",
-    background: "color-mix(in srgb, var(--bg-card) 94%, transparent)",
+    background: "color-mix(in srgb, var(--chat-surface-strong) 94%, transparent)",
     color: "var(--text-muted)",
     boxShadow: "0 10px 24px rgba(15, 23, 42, 0.08)",
     flexShrink: 1,
@@ -143,13 +157,13 @@ export const dispatcherChatStyles = {
   modeToggleBtn: (active: boolean) => ({
     height: "34px",
     padding: "0 11px",
-    borderRadius: "12px",
+    borderRadius: "999px",
     border: active
       ? "1px solid color-mix(in srgb, var(--accent) 48%, transparent)"
       : "1px solid var(--border-dim)",
     background: active
-      ? "color-mix(in srgb, var(--accent) 14%, var(--bg-card))"
-      : "color-mix(in srgb, var(--bg-card) 88%, transparent)",
+      ? "color-mix(in srgb, var(--accent) 14%, var(--chat-surface-strong))"
+      : "color-mix(in srgb, var(--chat-surface-strong) 88%, transparent)",
     color: active ? "var(--accent)" : "var(--text-secondary)",
     fontSize: 12,
     fontWeight: 700,
@@ -159,13 +173,13 @@ export const dispatcherChatStyles = {
   thinkingToggleBtn: (active: boolean) => ({
     height: "34px",
     padding: "0 11px",
-    borderRadius: "12px",
+    borderRadius: "999px",
     border: active
       ? "1px solid color-mix(in srgb, var(--warning, #d97706) 52%, transparent)"
       : "1px solid var(--border-dim)",
     background: active
-      ? "color-mix(in srgb, var(--warning, #d97706) 14%, var(--bg-card))"
-      : "color-mix(in srgb, var(--bg-card) 88%, transparent)",
+      ? "color-mix(in srgb, var(--warning, #d97706) 14%, var(--chat-surface-strong))"
+      : "color-mix(in srgb, var(--chat-surface-strong) 88%, transparent)",
     color: active ? "var(--warning, #d97706)" : "var(--text-secondary)",
     display: "inline-flex",
     alignItems: "center",
@@ -183,8 +197,8 @@ export const dispatcherChatStyles = {
     display: "inline-flex",
     alignItems: "center",
     gap: "6px",
-    background: "color-mix(in srgb, var(--bg-card) 82%, transparent)",
-    border: "1px solid var(--border-dim)",
+    background: "color-mix(in srgb, var(--chat-surface-strong) 84%, transparent)",
+    border: "1px solid var(--chat-glass-border)",
     borderRadius: "999px",
     color: "var(--text-secondary)",
     cursor: "pointer",
@@ -201,9 +215,9 @@ export const dispatcherChatStyles = {
     alignItems: "center",
     flexWrap: "wrap" as const,
     gap: "5px",
-    padding: "6px 18px",
-    borderBottom: "1px solid var(--border-dim)",
-    background: "color-mix(in srgb, var(--bg-card) 48%, transparent)",
+    padding: "7px 18px",
+    borderBottom: "1px solid var(--chat-glass-border)",
+    background: "color-mix(in srgb, var(--chat-surface) 58%, transparent)",
     WebkitAppRegion: "no-drag" as const,
     flexShrink: 0,
   },
@@ -233,11 +247,13 @@ export const dispatcherChatStyles = {
     flex: 1,
     minHeight: 0,
     overflowY: "auto" as const,
+    overflowX: "hidden" as const,
     overflowAnchor: "none" as const,
-    padding: "22px 20px 18px",
+    padding: "26px 22px 20px",
     display: "flex",
     flexDirection: "column" as const,
-    gap: "18px",
+    gap: "16px",
+    alignItems: "stretch",
   },
   runErrorBanner: {
     border: "1px solid color-mix(in srgb, var(--danger) 36%, var(--border-primary))",
@@ -250,14 +266,14 @@ export const dispatcherChatStyles = {
     whiteSpace: "pre-wrap" as const,
   },
   drawer: {
-    border: "1px solid color-mix(in srgb, var(--accent) 18%, var(--border-dim))",
-    background: "color-mix(in srgb, var(--bg-card) 94%, transparent)",
-    borderRadius: 14,
+    border: "1px solid color-mix(in srgb, var(--accent) 18%, var(--chat-glass-border))",
+    background: "var(--chat-surface)",
+    borderRadius: 16,
     padding: "12px 14px",
     display: "flex",
     flexDirection: "column" as const,
     gap: 10,
-    boxShadow: "0 14px 36px rgba(15, 23, 42, 0.08)",
+    boxShadow: "var(--chat-shadow-soft)",
   },
   drawerHeader: {
     display: "flex",
@@ -513,16 +529,13 @@ export const dispatcherChatStyles = {
     gap: "18px",
     justifyContent: "flex-start",
     padding: layoutMode === "single" ? "20px 24px 22px" : "18px",
-    borderRadius: "30px",
-    border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-dim))",
+    borderRadius: "28px",
+    border: "1px solid color-mix(in srgb, var(--accent) 14%, var(--chat-glass-border))",
     background:
-      "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 94%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
-    boxShadow:
-      layoutMode === "single"
-        ? "0 28px 72px rgba(15, 23, 42, 0.10)"
-        : "0 36px 100px rgba(15, 23, 42, 0.09)",
-    backdropFilter: "blur(22px)",
-    WebkitBackdropFilter: "blur(22px)",
+      "linear-gradient(180deg, color-mix(in srgb, var(--chat-surface-strong) 96%, transparent), color-mix(in srgb, var(--chat-surface) 82%, transparent))",
+    boxShadow: "var(--chat-shadow)",
+    backdropFilter: "blur(24px) saturate(1.16)",
+    WebkitBackdropFilter: "blur(24px) saturate(1.16)",
     boxSizing: "border-box" as const,
   }),
   emptyComposerTopBar: {
@@ -561,9 +574,9 @@ export const dispatcherChatStyles = {
   },
   emptyComposerInputShell: () => ({
     borderRadius: "24px",
-    border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-dim))",
+    border: "1px solid color-mix(in srgb, var(--accent) 12%, var(--chat-glass-border))",
     background:
-      "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 72%, transparent))",
+      "linear-gradient(180deg, color-mix(in srgb, var(--bg-input) 86%, transparent), color-mix(in srgb, var(--bg-subtle) 60%, transparent))",
     boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)",
     display: "flex",
     flexDirection: "column" as const,
@@ -572,7 +585,8 @@ export const dispatcherChatStyles = {
     display: "flex",
     flexWrap: "wrap" as const,
     gap: "10px",
-    padding: "16px 22px 0",
+    width: "100%",
+    padding: "2px 4px 0",
   },
   attachedImageWrapper: {
     position: "relative" as const,
@@ -728,17 +742,20 @@ export const dispatcherChatStyles = {
   },
   messageBubbleWrap: (isUser: boolean) => ({
     width: "100%",
+    maxWidth: "980px",
     minWidth: 0,
     display: "flex",
-    flexDirection: isUser ? ("row-reverse" as const) : ("row" as const),
-    gap: "14px",
+    flexDirection: "row" as const,
+    justifyContent: isUser ? ("flex-end" as const) : ("flex-start" as const),
+    gap: "12px",
     alignItems: "flex-start",
+    alignSelf: "center",
     marginBottom: "2px",
   }),
   messageAvatar: (isUser: boolean) => ({
-    width: "34px",
-    height: "34px",
-    borderRadius: "12px",
+    width: "32px",
+    height: "32px",
+    borderRadius: "11px",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -763,26 +780,29 @@ export const dispatcherChatStyles = {
     width: isUser ? "fit-content" : "100%",
     maxWidth: "100%",
     minWidth: 0,
-    padding: "14px 16px",
-    borderRadius: isUser ? "22px 22px 8px 22px" : "22px 22px 22px 8px",
+    padding: isUser ? "12px 15px" : "15px 17px",
+    borderRadius: isUser ? "20px 20px 7px 20px" : "18px 18px 18px 7px",
     background: isUser
-      ? "linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 82%, white))"
-      : "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
-    color: isUser ? "#fff" : "var(--text-primary)",
-    border: isUser ? "none" : "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-dim))",
+      ? "linear-gradient(135deg, color-mix(in srgb, var(--accent) 88%, #052e22), color-mix(in srgb, var(--accent) 62%, var(--warning)))"
+      : "linear-gradient(180deg, color-mix(in srgb, var(--chat-surface-strong) 96%, transparent), color-mix(in srgb, var(--chat-surface) 82%, transparent))",
+    color: isUser ? "#06130e" : "var(--text-primary)",
+    border: isUser
+      ? "1px solid color-mix(in srgb, var(--accent) 42%, transparent)"
+      : "1px solid color-mix(in srgb, var(--accent) 10%, var(--chat-glass-border))",
     boxShadow: isUser
       ? "0 16px 28px -18px color-mix(in srgb, var(--accent) 50%, transparent)"
-      : "0 16px 32px rgba(15, 23, 42, 0.05)",
+      : "var(--chat-shadow-soft)",
     fontSize: "14px",
     lineHeight: "1.7",
     overflowWrap: "break-word" as const,
     wordBreak: "normal" as const,
     userSelect: "text" as const,
     WebkitUserSelect: "text" as const,
+    overflow: "hidden",
   }),
   messageBubbleColumn: (isUser: boolean) => ({
-    width: "min(760px, calc(100% - 96px))",
-    maxWidth: "min(760px, calc(100% - 96px))",
+    width: isUser ? "auto" : "min(780px, calc(100% - 48px))",
+    maxWidth: isUser ? "min(68%, 620px)" : "min(780px, calc(100% - 48px))",
     minWidth: 0,
     display: "flex",
     flexDirection: "column" as const,
@@ -828,6 +848,8 @@ export const dispatcherChatStyles = {
     fontFamily: "var(--font-ui)",
   },
   markdownBody: {
+    maxWidth: "100%",
+    minWidth: 0,
     fontSize: "14px",
     lineHeight: "1.72",
     userSelect: "text" as const,
@@ -835,8 +857,8 @@ export const dispatcherChatStyles = {
     fontFamily: "var(--font-ui)",
   },
   assistantTurnStack: {
-    width: "min(760px, calc(100% - 96px))",
-    maxWidth: "min(760px, calc(100% - 96px))",
+    width: "min(820px, calc(100% - 48px))",
+    maxWidth: "min(820px, calc(100% - 48px))",
     display: "flex",
     flexDirection: "column" as const,
     gap: "12px",
@@ -848,7 +870,7 @@ export const dispatcherChatStyles = {
   },
   assistantReplyBubble: {
     background:
-      "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent), color-mix(in srgb, var(--bg-subtle) 82%, transparent))",
+      "linear-gradient(180deg, color-mix(in srgb, var(--chat-surface-strong) 96%, transparent), color-mix(in srgb, var(--chat-surface) 82%, transparent))",
   },
   assistantUsageStats: {
     display: "flex",
@@ -860,7 +882,7 @@ export const dispatcherChatStyles = {
     padding: "4px 8px",
     borderRadius: "999px",
     border: "1px solid var(--border-dim)",
-    background: "color-mix(in srgb, var(--bg-card) 82%, transparent)",
+    background: "color-mix(in srgb, var(--chat-surface-strong) 82%, transparent)",
     color: "var(--text-hint)",
     fontFamily: "var(--font-mono)",
     fontSize: "10.5px",
@@ -896,7 +918,7 @@ export const dispatcherChatStyles = {
     borderRadius: "18px 18px 18px 8px",
     border: "1px solid color-mix(in srgb, var(--warning, #d97706) 20%, var(--border-dim))",
     background:
-      "linear-gradient(180deg, color-mix(in srgb, var(--warning, #d97706) 8%, var(--bg-card)), color-mix(in srgb, var(--bg-card) 92%, transparent))",
+      "linear-gradient(180deg, color-mix(in srgb, var(--warning, #d97706) 10%, var(--chat-surface-strong)), color-mix(in srgb, var(--chat-surface) 92%, transparent))",
     overflow: "hidden",
     boxShadow: "0 14px 28px rgba(15, 23, 42, 0.04)",
   },
@@ -970,27 +992,36 @@ export const dispatcherChatStyles = {
   inputArea: {
     display: "flex",
     alignItems: "flex-end",
-    gap: "12px",
-    padding: "14px 18px 18px",
+    gap: "10px",
+    width: "min(920px, calc(100% - 36px))",
+    margin: "0 auto 16px",
+    padding: "12px",
+    borderRadius: 22,
+    border: "1px solid color-mix(in srgb, var(--accent) 12%, var(--chat-glass-border))",
     background:
-      "linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 0%, transparent), color-mix(in srgb, var(--bg-card) 40%, transparent))",
+      "linear-gradient(180deg, color-mix(in srgb, var(--chat-surface-strong) 94%, transparent), color-mix(in srgb, var(--chat-surface) 82%, transparent))",
     flexShrink: 0,
     flexWrap: "wrap" as const,
+    boxShadow: "var(--chat-shadow-soft)",
+    backdropFilter: "blur(24px) saturate(1.16)",
+    WebkitBackdropFilter: "blur(24px) saturate(1.16)",
   },
   inputTextarea: {
     flex: 1,
-    padding: "14px 16px",
+    minWidth: "min(420px, 100%)",
+    minHeight: 48,
+    padding: "12px 14px",
     fontSize: "14px",
     lineHeight: "1.6",
-    background: "color-mix(in srgb, var(--bg-card) 92%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-medium))",
-    borderRadius: "18px",
+    background: "color-mix(in srgb, var(--bg-input) 70%, transparent)",
+    border: "1px solid var(--chat-glass-border)",
+    borderRadius: "16px",
     color: "var(--text-primary)",
     resize: "none" as const,
     outline: "none",
     fontFamily: "var(--font-ui)",
-    boxShadow: "0 12px 30px rgba(15, 23, 42, 0.05)",
-    transition: "border-color 0.2s, box-shadow 0.2s",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.12)",
+    transition: "border-color var(--motion-normal), box-shadow var(--motion-normal)",
   },
   sendBtn: {
     width: "44px",

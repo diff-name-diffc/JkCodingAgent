@@ -2,12 +2,9 @@ import { memo, useCallback } from "react";
 import { Sparkles, Send, Square, Play, X, Settings2, PlugZap, Wrench, Mic } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useComposedInput } from "../../hooks/useComposedInput";
-import type {
-  DispatcherMode,
-  DispatcherSessionTokenUsage,
-  ImageSegment,
-} from "../../types";
+import type { DispatcherMode, DispatcherSessionTokenUsage, ImageSegment } from "../../types";
 import { SessionTokenUsageIndicators } from "../SessionTokenUsageIndicators";
+import { CommandComposer } from "../ui/chatPrimitives";
 import { PlanModeToggleButton, ThinkingToggleButton } from "./ComposerButtons";
 import { VoiceInputStatusCard } from "./VoiceInputStatusCard";
 import {
@@ -139,7 +136,7 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
           </div>
         </div>
 
-        <div
+        <CommandComposer
           style={styles.emptyComposerInputShell()}
           onDrop={onDrop}
           onDragOver={onDragOver}
@@ -148,7 +145,11 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
             <div style={styles.attachedImagesContainer}>
               {attachedImages.map((img, idx) => (
                 <div key={idx} style={styles.attachedImageWrapper}>
-                  <img src={convertFileSrc(img.path)} alt={img.alt || "pasted"} style={styles.attachedImage} />
+                  <img
+                    src={convertFileSrc(img.path)}
+                    alt={img.alt || "pasted"}
+                    style={styles.attachedImage}
+                  />
                   <button
                     style={styles.removeImageBtn}
                     onClick={() => onRemoveImage(idx)}
@@ -177,7 +178,7 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
             rows={layoutMode === "single" ? 6 : 3}
             disabled={isStopMode || isStopping}
           />
-        </div>
+        </CommandComposer>
 
         <VoiceInputStatusCard
           transcript={voiceTranscript}

@@ -33,7 +33,9 @@ interface MessageListProps {
   onScroll: (event: React.UIEvent<HTMLDivElement>) => void;
   onAnswerPlanQuestion: (answer: string) => void;
   onImplementPlan: (interaction: Extract<PlanInteraction, { kind: "ready" }>) => void;
-  onImplementPlanWithClearedContext: (interaction: Extract<PlanInteraction, { kind: "ready" }>) => void;
+  onImplementPlanWithClearedContext: (
+    interaction: Extract<PlanInteraction, { kind: "ready" }>,
+  ) => void;
   onStayInPlanMode: () => void;
   onRunPython?: (target: PythonCodeRunTarget) => void;
   pythonRunRecords?: Record<string, PythonCodeRunRecord>;
@@ -65,17 +67,25 @@ export const MessageList = memo(function MessageList({
   pythonRunRecords,
 }: MessageListProps) {
   const subAgentProgressMessages = useSubAgentProgressMessages(sessionId);
-  const subAgentProgressSegments: AssistantTurnSegment[] = subAgentProgressMessages.map((message) => ({
-    kind: "assistant-text",
-    text: message.text,
-  }));
+  const subAgentProgressSegments: AssistantTurnSegment[] = subAgentProgressMessages.map(
+    (message) => ({
+      kind: "assistant-text",
+      text: message.text,
+    }),
+  );
   const hasLiveSegments = streamingSegments.some((segment) => segment.text.trim());
   const hasAssistantPlaceholder = Boolean(assistantPlaceholder?.trim());
   const hasSubAgentProgress = subAgentProgressSegments.length > 0;
   const shouldAttachProgressToLiveTurn =
     hasSubAgentProgress &&
-    (isStreaming || hasLiveSegments || liveThinking || liveToolCalls.length > 0 || hasAssistantPlaceholder);
-  const lastAssistantItemId = [...displayItems].reverse().find((item) => item.kind === "assistant")?.id;
+    (isStreaming ||
+      hasLiveSegments ||
+      liveThinking ||
+      liveToolCalls.length > 0 ||
+      hasAssistantPlaceholder);
+  const lastAssistantItemId = [...displayItems]
+    .reverse()
+    .find((item) => item.kind === "assistant")?.id;
 
   return (
     <div
@@ -108,21 +118,20 @@ export const MessageList = memo(function MessageList({
           );
         }
         return (
-          <div key={item.id}>
-            <AssistantTurnBubble
-              segments={
-                !shouldAttachProgressToLiveTurn && item.id === lastAssistantItemId
-                  ? [...item.turn.segments, ...subAgentProgressSegments]
-                  : item.turn.segments
-              }
-              tools={item.turn.tools}
-              workspaceId={sessionId}
-              usageStats={item.turn.usageStats}
-              thinking={showThinking ? item.turn.thinking : null}
-              onRunPython={onRunPython}
-              pythonRunRecords={pythonRunRecords}
-            />
-          </div>
+          <AssistantTurnBubble
+            key={item.id}
+            segments={
+              !shouldAttachProgressToLiveTurn && item.id === lastAssistantItemId
+                ? [...item.turn.segments, ...subAgentProgressSegments]
+                : item.turn.segments
+            }
+            tools={item.turn.tools}
+            workspaceId={sessionId}
+            usageStats={item.turn.usageStats}
+            thinking={showThinking ? item.turn.thinking : null}
+            onRunPython={onRunPython}
+            pythonRunRecords={pythonRunRecords}
+          />
         );
       })}
       {(hasLiveSegments ||
@@ -131,21 +140,19 @@ export const MessageList = memo(function MessageList({
         hasAssistantPlaceholder ||
         liveUsageStats ||
         (hasSubAgentProgress && (shouldAttachProgressToLiveTurn || !lastAssistantItemId))) && (
-        <div>
-          <AssistantTurnBubble
-            segments={
-              shouldAttachProgressToLiveTurn || !lastAssistantItemId
-                ? [...streamingSegments, ...subAgentProgressSegments]
-                : streamingSegments
-            }
-            tools={liveToolCalls}
-            workspaceId={sessionId}
-            usageStats={liveUsageStats}
-            thinking={showThinking ? liveThinking : null}
-            placeholderText={assistantPlaceholder}
-            streaming={isStreaming}
-          />
-        </div>
+        <AssistantTurnBubble
+          segments={
+            shouldAttachProgressToLiveTurn || !lastAssistantItemId
+              ? [...streamingSegments, ...subAgentProgressSegments]
+              : streamingSegments
+          }
+          tools={liveToolCalls}
+          workspaceId={sessionId}
+          usageStats={liveUsageStats}
+          thinking={showThinking ? liveThinking : null}
+          placeholderText={assistantPlaceholder}
+          streaming={isStreaming}
+        />
       )}
     </div>
   );

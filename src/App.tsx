@@ -3,6 +3,7 @@ import { open as openDialog, confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Theme } from "@radix-ui/themes";
 import type { Project, Task, TaskStatus, AgentType, PermissionMode, ThemeMode } from "./types";
 import { isActiveTaskStatus } from "./types";
 import { WelcomePage } from "./components/WelcomePage";
@@ -180,6 +181,8 @@ function App() {
   }, [isDark, themeMode]);
 
   useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+
     getCurrentWindow()
       .setTheme(themeMode === "system" ? null : themeMode)
       .catch(console.error);
@@ -187,8 +190,7 @@ function App() {
 
   const handleToggleTheme = useCallback(() => {
     setThemeMode((currentMode) => {
-      const currentlyDark =
-        currentMode === "system" ? systemPrefersDark : currentMode === "dark";
+      const currentlyDark = currentMode === "system" ? systemPrefersDark : currentMode === "dark";
       return currentlyDark ? "light" : "dark";
     });
   }, [systemPrefersDark]);
@@ -444,82 +446,94 @@ function App() {
   );
 
   return (
-    <div style={{ ...s.root, position: "relative" }}>
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          overflow: "hidden",
-        }}
-      >
-        {mountedProjects.map((project) => (
-          <Suspense key={project.id} fallback={<AppPaneFallback />}>
-            <ProjectPage
-              project={project}
-              visible={activeProject?.id === project.id}
-              allProjects={railProjects}
-              tasks={tasks}
-              getTaskRestoreState={tm.getTaskRestoreState}
-              onStartSubProcess={(taskInput) => handleStartDispatcherSubprocess(project, taskInput)}
-              onStopTask={(taskId) =>
-                invoke("stop_task", { taskId })
-                  .catch((e: unknown) => {
-                    showToast(`停止任务失败：${String(e)}`);
-                  })
-                  .then(() => undefined)
-              }
-              onResumeTask={(task) => {
-                const sessionId =
-                  task.agent === "claude" ? task.claudeSessionId : task.codexSessionId;
-                if (!sessionId) {
-                  showToast("当前任务尚未记录可恢复的会话 ID，暂时无法继续。", "warning");
-                  return Promise.resolve();
+    <Theme
+      appearance={isDark ? "dark" : "light"}
+      accentColor="mint"
+      grayColor="slate"
+      panelBackground="translucent"
+      radius="medium"
+      scaling="100%"
+      style={{ height: "100%" }}
+    >
+      <div style={{ ...s.root, position: "relative" }}>
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            overflow: "hidden",
+          }}
+        >
+          {mountedProjects.map((project) => (
+            <Suspense key={project.id} fallback={<AppPaneFallback />}>
+              <ProjectPage
+                project={project}
+                visible={activeProject?.id === project.id}
+                allProjects={railProjects}
+                tasks={tasks}
+                getTaskRestoreState={tm.getTaskRestoreState}
+                onStartSubProcess={(taskInput) =>
+                  handleStartDispatcherSubprocess(project, taskInput)
                 }
-                updateTaskStatus(task.id, "pending");
-                return invokeResumeDispatcherSubprocess(task, project.path).then(() => undefined);
-              }}
-              onInput={tm.handleInput}
-              onResize={tm.handleResize}
-              onRegisterTerminal={tm.handleRegisterTerminal}
-              onTerminalReady={tm.handleTerminalReady}
-              onSnapshot={tm.handleSnapshot}
-              onRetainTaskBuffers={tm.retainTaskBuffers}
-              onReleaseTaskBuffers={tm.releaseTaskBuffers}
-              onRemoveTaskBuffers={tm.removeTaskBuffers}
-              onBack={handleBack}
-              onSwitchProject={handleProjectClick}
+                onStopTask={(taskId) =>
+                  invoke("stop_task", { taskId })
+                    .catch((e: unknown) => {
+                      showToast(`停止任务失败：${String(e)}`);
+                    })
+                    .then(() => undefined)
+                }
+                onResumeTask={(task) => {
+                  const sessionId =
+                    task.agent === "claude" ? task.claudeSessionId : task.codexSessionId;
+                  if (!sessionId) {
+                    showToast("当前任务尚未记录可恢复的会话 ID，暂时无法继续。", "warning");
+                    return Promise.resolve();
+                  }
+                  updateTaskStatus(task.id, "pending");
+                  return invokeResumeDispatcherSubprocess(task, project.path).then(() => undefined);
+                }}
+                onInput={tm.handleInput}
+                onResize={tm.handleResize}
+                onRegisterTerminal={tm.handleRegisterTerminal}
+                onTerminalReady={tm.handleTerminalReady}
+                onSnapshot={tm.handleSnapshot}
+                onRetainTaskBuffers={tm.retainTaskBuffers}
+                onReleaseTaskBuffers={tm.releaseTaskBuffers}
+                onRemoveTaskBuffers={tm.removeTaskBuffers}
+                onBack={handleBack}
+                onSwitchProject={handleProjectClick}
+                onOpen={handleOpen}
+                isDark={isDark}
+                themeMode={themeMode}
+                systemPrefersDark={systemPrefersDark}
+                onThemeModeChange={setThemeMode}
+                onToggleTheme={handleToggleTheme}
+              />
+            </Suspense>
+          ))}
+        </div>
+        {!activeProject && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 5,
+            }}
+          >
+            <WelcomePage
+              projects={sortedProjects}
               onOpen={handleOpen}
+              onProjectClick={handleProjectClick}
+              onDeleteProject={handleDeleteProject}
               isDark={isDark}
               themeMode={themeMode}
               systemPrefersDark={systemPrefersDark}
               onThemeModeChange={setThemeMode}
               onToggleTheme={handleToggleTheme}
             />
-          </Suspense>
-        ))}
+          </div>
+        )}
       </div>
-      {!activeProject && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            zIndex: 5,
-          }}
-        >
-          <WelcomePage
-            projects={sortedProjects}
-            onOpen={handleOpen}
-            onProjectClick={handleProjectClick}
-            onDeleteProject={handleDeleteProject}
-            isDark={isDark}
-            themeMode={themeMode}
-            systemPrefersDark={systemPrefersDark}
-            onThemeModeChange={setThemeMode}
-            onToggleTheme={handleToggleTheme}
-          />
-        </div>
-      )}
-    </div>
+    </Theme>
   );
 }
 

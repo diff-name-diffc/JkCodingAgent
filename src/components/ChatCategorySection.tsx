@@ -1,14 +1,6 @@
 import { ChevronRight, Plus } from "lucide-react";
 import { memo, useState } from "react";
-import {
-  MessageSquare,
-  Heart,
-  Briefcase,
-  Code2,
-  GraduationCap,
-  Folder,
-  Inbox,
-} from "lucide-react";
+import { MessageSquare, Heart, Briefcase, Code2, GraduationCap, Folder, Inbox } from "lucide-react";
 import type { ChatCategory, ChatSession } from "../types";
 import { ChatSessionCard } from "./ChatSessionCard";
 import { ChatCategoryContextMenu } from "./ChatCategoryContextMenu";
@@ -77,9 +69,10 @@ export const ChatCategorySection = memo(function ChatCategorySection({
   const isDragTarget = dragOverId === categoryId;
 
   const sharedHeaderProps = {
+    className: "chat-category-header",
     style: {
       ...s.categoryHeader,
-      background: isHovering ? "var(--bg-hover)" : "transparent",
+      background: isHovering ? "var(--chat-surface)" : "transparent",
       cursor: "pointer",
     } as React.CSSProperties,
     onMouseEnter: () => setIsHovering(true),
@@ -95,10 +88,10 @@ export const ChatCategorySection = memo(function ChatCategorySection({
   const headerClickArea = (
     <>
       <ChevronRight
-        size={12}
+        size={14}
         style={{ ...(s.categoryChevron as React.CSSProperties), transform: chevronTransform }}
       />
-      <Icon size={13} style={{ ...(s.categoryIcon as React.CSSProperties), color: iconColor }} />
+      <Icon size={15} style={{ ...(s.categoryIcon as React.CSSProperties), color: iconColor }} />
       <span style={s.categoryName}>{displayName}</span>
       <span style={s.categoryCount}>{sessions.length}</span>
     </>
@@ -132,9 +125,7 @@ export const ChatCategorySection = memo(function ChatCategorySection({
         }}
         title="在此分类新建聊天"
         onMouseEnter={(ev) => (ev.currentTarget.style.opacity = "1")}
-        onMouseLeave={(ev) =>
-          (ev.currentTarget.style.opacity = isHovering ? "0.7" : "0")
-        }
+        onMouseLeave={(ev) => (ev.currentTarget.style.opacity = isHovering ? "0.7" : "0")}
       >
         <Plus size={12} />
       </button>

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { MessageCircle, MonitorDot, Plus, Search } from "lucide-react";
+import { MessageCircle, MonitorDot, Plus, Search, Sparkles } from "lucide-react";
 import type { ChatCategory, ChatSession, SessionPage, SessionSearchResult } from "../types";
 import {
   cleanupDispatcherSession,
@@ -12,6 +12,7 @@ import {
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
 import { ChatCategorySection } from "./ChatCategorySection";
 import { ChatNewCategoryDialog } from "./ChatNewCategoryDialog";
+import { BrandButton } from "./ui/chatPrimitives";
 import s from "../styles";
 
 const EXPANDED_STORAGE_KEY = "nezha.chat.expandedCategories";
@@ -104,7 +105,9 @@ export function ChatSessionSidebar({
       });
       setSessions((prev) => {
         const existing = new Set(prev.map((s) => s.id));
-        const newItems = withDispatcherSessionsRunning(page.items.filter((s) => !existing.has(s.id)));
+        const newItems = withDispatcherSessionsRunning(
+          page.items.filter((s) => !existing.has(s.id)),
+        );
         return sortSessionsByUpdatedAt([...prev, ...newItems]);
       });
       setHasMore(page.hasMore);
@@ -117,12 +120,16 @@ export function ChatSessionSidebar({
   useEffect(() => {
     const handleNew = async () => {
       try {
-        const session = withDispatcherSessionRunning(await invoke<ChatSession>("chat_create_session", {
-          title: "新聊天",
-          category: DEFAULT_CHAT_CATEGORY,
-        }));
+        const session = withDispatcherSessionRunning(
+          await invoke<ChatSession>("chat_create_session", {
+            title: "新聊天",
+            category: DEFAULT_CHAT_CATEGORY,
+          }),
+        );
         setSessions((prev) =>
-          prev.some((s) => s.id === session.id) ? prev : sortSessionsByUpdatedAt([session, ...prev]),
+          prev.some((s) => s.id === session.id)
+            ? prev
+            : sortSessionsByUpdatedAt([session, ...prev]),
         );
         onActiveSessionChange(session.id);
       } catch (err) {
@@ -132,18 +139,22 @@ export function ChatSessionSidebar({
 
     let cancelled = false;
 
-    loadInitial().then((loaded) => {
-      if (cancelled) return;
-      const current = activeSessionIdRef.current;
-      if (!current && loaded.length === 0) {
-        handleNew();
-      } else if (loaded.length > 0 && (!current || !loaded.some((s) => s.id === current))) {
-        onActiveSessionChange(loaded[0].id);
-      }
-      setExpandedInitialized(true);
-    }).catch((err) => console.error("加载聊天失败:", err));
+    loadInitial()
+      .then((loaded) => {
+        if (cancelled) return;
+        const current = activeSessionIdRef.current;
+        if (!current && loaded.length === 0) {
+          handleNew();
+        } else if (loaded.length > 0 && (!current || !loaded.some((s) => s.id === current))) {
+          onActiveSessionChange(loaded[0].id);
+        }
+        setExpandedInitialized(true);
+      })
+      .catch((err) => console.error("加载聊天失败:", err));
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [onActiveSessionChange, loadInitial]);
 
   useEffect(() => {
@@ -199,7 +210,7 @@ export function ChatSessionSidebar({
       setExpandedRaw(next);
       saveExpanded(next);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expandedInitialized, activeSessionId]);
 
   const sessionIds = useMemo(() => sessions.map((s) => s.id), [sessions]);
@@ -247,14 +258,14 @@ export function ChatSessionSidebar({
     if (creatingSessionRef.current) return;
     creatingSessionRef.current = true;
     try {
-      const session = withDispatcherSessionRunning(await invoke<ChatSession>("chat_create_session", {
-        title: "新聊天",
-        category: categoryId || DEFAULT_CHAT_CATEGORY,
-      }));
+      const session = withDispatcherSessionRunning(
+        await invoke<ChatSession>("chat_create_session", {
+          title: "新聊天",
+          category: categoryId || DEFAULT_CHAT_CATEGORY,
+        }),
+      );
       setSessions((prev) =>
-        prev.some((s) => s.id === session.id)
-          ? prev
-          : sortSessionsByUpdatedAt([session, ...prev]),
+        prev.some((s) => s.id === session.id) ? prev : sortSessionsByUpdatedAt([session, ...prev]),
       );
       onActiveSessionChange(session.id);
       if (categoryId) {
@@ -378,9 +389,7 @@ export function ChatSessionSidebar({
     try {
       await invoke("chat_delete_category", { categoryId: cat.id });
       setCategories((prev) => prev.filter((c) => c.id !== cat.id));
-      setSessions((prev) =>
-        prev.map((s) => (s.category === cat.id ? { ...s, category: "" } : s)),
-      );
+      setSessions((prev) => prev.map((s) => (s.category === cat.id ? { ...s, category: "" } : s)));
     } catch (err) {
       console.error("删除分类失败:", err);
     }
@@ -396,37 +405,57 @@ export function ChatSessionSidebar({
 
   return (
     <div style={s.chatSessionPanel}>
-      <div style={s.panelHeader}>
-        <div style={s.chatPanelIcon}>
-          <MessageCircle size={15} />
+      <div style={s.chatSidebarHero}>
+        <div style={s.chatSidebarHeroTop}>
+          <div style={s.chatPanelIcon}>
+            <MessageCircle size={17} strokeWidth={2.6} />
+          </div>
+          <div style={s.chatSidebarTitleBlock as React.CSSProperties}>
+            <span style={s.chatSidebarTitle}>Nezha Chat</span>
+            <span style={s.chatSidebarSubtitle}>AI 编程会话工作台</span>
+          </div>
+          <Sparkles
+            size={15}
+            strokeWidth={2.2}
+            style={{ marginLeft: "auto", color: "var(--warning)", flexShrink: 0 }}
+          />
         </div>
-        <span style={s.panelProjectName}>聊天</span>
+
+        <div style={s.chatSidebarSearch}>
+          <Search size={14} strokeWidth={2.2} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+          <input
+            style={s.panelSearchInput}
+            placeholder="搜索标题或关键词"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
       </div>
 
-      <div style={s.panelSearchWrap}>
-        <Search size={13} strokeWidth={2} color="var(--text-muted)" style={{ flexShrink: 0 }} />
-        <input
-          style={s.panelSearchInput}
-          placeholder="搜索聊天..."
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-      </div>
-
-      <div style={s.taskActionsRow}>
-        <button style={s.chatNewSessionBtn} onClick={() => handleCreateSession()}>
+      <div style={s.chatSidebarActions}>
+        <BrandButton
+          className="chat-sidebar-action"
+          variant="soft"
+          color="mint"
+          highContrast
+          style={s.chatNewSessionBtn}
+          onClick={() => handleCreateSession()}
+        >
           <Plus size={14} strokeWidth={2.5} />
           新建聊天
-        </button>
+        </BrandButton>
         {showBrowserButton && (
-          <button
+          <BrandButton
+            className="chat-sidebar-action"
+            variant="surface"
+            color="gray"
             style={s.chatNewSessionBtn}
             onClick={onToggleBrowser}
             title="CloakBrowser"
           >
             <MonitorDot size={14} strokeWidth={2.5} />
             浏览器
-          </button>
+          </BrandButton>
         )}
       </div>
 
@@ -442,13 +471,17 @@ export function ChatSessionSidebar({
                 <button
                   key={r.sessionId}
                   type="button"
+                  className={[
+                    "chat-session-card",
+                    r.sessionId === activeSessionId ? "is-active" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   style={{
                     ...s.sessionCard,
-                    ...(r.sessionId === activeSessionId ? { background: "var(--bg-selected)" } : {}),
                     textAlign: "left" as const,
                     cursor: "pointer",
                     width: "calc(100% - 16px)",
-                    border: "none",
                   }}
                   onClick={() => onActiveSessionChange(r.sessionId)}
                 >
@@ -527,22 +560,15 @@ export function ChatSessionSidebar({
               />
             )}
 
-            {hasMore && (
-              <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />
-            )}
+            {hasMore && <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />}
 
-            {filtered.length === 0 && (
-              <div style={s.taskListEmpty}>没有找到聊天</div>
-            )}
+            {filtered.length === 0 && <div style={s.taskListEmpty}>没有找到聊天</div>}
           </>
         )}
       </div>
 
       <div style={s.categoryFooterRow as React.CSSProperties}>
-        <button
-          style={s.categoryNewBtn}
-          onClick={() => setShowNewCategoryDialog(true)}
-        >
+        <button style={s.categoryNewBtn} onClick={() => setShowNewCategoryDialog(true)}>
           <Plus size={12} />
           新建分类
         </button>

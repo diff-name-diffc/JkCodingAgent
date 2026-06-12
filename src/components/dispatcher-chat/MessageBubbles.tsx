@@ -1,16 +1,18 @@
 import { memo, useMemo, useState, useEffect, useCallback } from "react";
 import { Check, Copy, Brain, ChevronDown, ChevronRight } from "lucide-react";
-import type { DispatcherMessage, DispatcherMessageUsageStats, PythonCodeRunRecord } from "../../types";
+import type {
+  DispatcherMessage,
+  DispatcherMessageUsageStats,
+  PythonCodeRunRecord,
+} from "../../types";
 import type { PythonCodeRunTarget } from "../../types";
-import {
-  type AssistantThinkingBlock,
-  type AssistantTurnSegment,
-} from "../dispatcherChatView";
+import { type AssistantThinkingBlock, type AssistantTurnSegment } from "../dispatcherChatView";
 import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
 import { ToolActivityBubble, type ToolActivityItem } from "../ToolActivityBubble";
 import { formatElapsedMmSs, formatTokenCount } from "../../utils";
 import assistantAvatarUrl from "../../assets/dispatcher-assistant-avatar.png";
 import userAvatarUrl from "../../assets/dispatcher-user-avatar.png";
+import { StatusPill } from "../ui/chatPrimitives";
 import { formatTokenGenerationSpeed } from "./dispatcherChatUtils";
 import { dispatcherChatStyles as styles } from "./dispatcherChatStyles";
 
@@ -73,9 +75,6 @@ export const UserMessageBubble = memo(function UserMessageBubble({
 }) {
   return (
     <div style={styles.messageBubbleWrap(true)}>
-      <div style={styles.messageAvatar(true)}>
-        <img src={userAvatarUrl} alt="用户头像" style={styles.messageAvatarImage} />
-      </div>
       <div style={styles.messageBubbleColumn(true)}>
         <div style={styles.messageBubble(true)}>
           <div className="dispatcher-searchable-content" style={styles.markdownBody}>
@@ -89,6 +88,9 @@ export const UserMessageBubble = memo(function UserMessageBubble({
           </div>
         </div>
         <BubbleCopyButton text={message.content} isUser />
+      </div>
+      <div style={styles.messageAvatar(true)}>
+        <img src={userAvatarUrl} alt="用户头像" style={styles.messageAvatarImage} />
       </div>
     </div>
   );
@@ -149,9 +151,7 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
     return { enrichedTools: enriched, displaySegments };
   }, [segments, tools]);
 
-  const visibleTextSegments = displaySegments
-    .map((segment) => segment.text.trim())
-    .filter(Boolean);
+  const visibleTextSegments = displaySegments.map((segment) => segment.text.trim()).filter(Boolean);
   const visibleText = visibleTextSegments.join("\n\n");
   const lastTextSegment = displaySegments[displaySegments.length - 1];
   const visiblePlaceholder = placeholderText?.trim() ?? "";
@@ -202,6 +202,7 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
                   onRunPython={!streaming ? onRunPython : undefined}
                   pythonRunRecords={pythonRunRecords}
                 />
+                {streaming && <span className="dispatcher-streaming-caret" aria-hidden="true" />}
               </div>
             </div>
             <BubbleCopyButton text={visibleText} isUser={false} />
@@ -266,11 +267,11 @@ export const AssistantUsageStats = memo(function AssistantUsageStats({
 
   return (
     <div style={styles.assistantUsageStats} title="来自模型标准 usage 字段">
-      <span>总 {formatTokenCount(stats.totalTokens)}</span>
+      <StatusPill tone="accent">总 {formatTokenCount(stats.totalTokens)}</StatusPill>
       <span>输入 {formatTokenCount(stats.promptTokens)}</span>
       <span>输出 {formatTokenCount(stats.completionTokens)}</span>
-      <span>耗时：{formatElapsedMmSs(stats.elapsedMs)}</span>
-      <span>速度：{tokenSpeed} t/s</span>
+      <span>耗时 {formatElapsedMmSs(stats.elapsedMs)}</span>
+      <span>速度 {tokenSpeed} t/s</span>
     </div>
   );
 });

@@ -4,10 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight, FileSearch, LoaderCircle, Wrench } from "lucide-react";
 import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import { SubAgentExecutionCard } from "./SubAgentExecutionView";
-import {
-  extractAgentIdsFromToolInput,
-  useSubAgentSessions,
-} from "./subAgentEventStore";
+import { extractAgentIdsFromToolInput, useSubAgentSessions } from "./subAgentEventStore";
 import type {
   DispatcherToolArtifact,
   DispatcherToolArtifactRef,
@@ -364,10 +361,11 @@ function shouldDisplaySummaryInConversation(mode: DispatcherToolResultMode | und
 const styles = {
   container: {
     width: "100%",
-    border: "1px solid var(--border-dim)",
-    borderRadius: 16,
-    background: "color-mix(in srgb, var(--bg-card) 84%, var(--bg-subtle))",
-    boxShadow: "var(--shadow-xs)",
+    border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--chat-glass-border))",
+    borderRadius: 18,
+    background:
+      "linear-gradient(180deg, color-mix(in srgb, var(--chat-surface-strong) 90%, transparent), color-mix(in srgb, var(--chat-surface) 86%, transparent))",
+    boxShadow: "var(--chat-shadow-soft)",
     overflow: "hidden",
   },
   header: {
@@ -376,8 +374,9 @@ const styles = {
     justifyContent: "space-between",
     gap: 12,
     padding: "10px 14px",
-    background: "color-mix(in srgb, var(--bg-subtle) 70%, transparent)",
-    borderBottom: "1px solid var(--border-dim)",
+    background:
+      "linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent)",
+    borderBottom: "1px solid var(--chat-glass-border)",
   },
   headerTitleWrap: {
     display: "flex",
@@ -404,8 +403,8 @@ const styles = {
     justifyContent: "center",
     padding: "0 7px",
     borderRadius: 999,
-    background: "var(--bg-card)",
-    border: "1px solid var(--border-dim)",
+    background: "var(--chat-surface-strong)",
+    border: "1px solid var(--chat-glass-border)",
     fontSize: 11,
     fontWeight: 700,
     color: "var(--text-secondary)",
@@ -543,9 +542,9 @@ const styles = {
   blockCode: {
     margin: 0,
     padding: "10px 12px",
-    borderRadius: 12,
-    background: "var(--bg-card)",
-    border: "1px solid var(--border-dim)",
+    borderRadius: 13,
+    background: "color-mix(in srgb, var(--bg-input) 70%, transparent)",
+    border: "1px solid var(--chat-glass-border)",
     color: "var(--text-primary)",
     fontSize: 12,
     lineHeight: 1.55,
@@ -557,9 +556,9 @@ const styles = {
   blockText: {
     margin: 0,
     padding: "10px 12px",
-    borderRadius: 12,
-    background: "var(--bg-card)",
-    border: "1px solid var(--border-dim)",
+    borderRadius: 13,
+    background: "color-mix(in srgb, var(--bg-input) 70%, transparent)",
+    border: "1px solid var(--chat-glass-border)",
     color: "var(--text-primary)",
     fontSize: 12.5,
     lineHeight: 1.6,
@@ -578,9 +577,9 @@ const styles = {
     gap: 4,
     width: "100%",
     padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid var(--border-dim)",
-    background: "var(--bg-card)",
+    borderRadius: 13,
+    border: "1px solid var(--chat-glass-border)",
+    background: "color-mix(in srgb, var(--bg-input) 74%, transparent)",
     cursor: "pointer",
     textAlign: "left" as const,
     color: "var(--text-primary)",

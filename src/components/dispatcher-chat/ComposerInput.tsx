@@ -13,6 +13,7 @@ import { SessionTokenUsageIndicators } from "../SessionTokenUsageIndicators";
 import { PlanModeToggleButton, ThinkingToggleButton } from "./ComposerButtons";
 import { VoiceInputStatusCard } from "./VoiceInputStatusCard";
 import { InteractionDrawer } from "./InteractionDrawer";
+import { CommandComposer } from "../ui/chatPrimitives";
 import {
   getComposerButtonLabel,
   isComposerActionDisabled,
@@ -57,7 +58,9 @@ interface ComposerInputProps {
   onDismissVoiceError: () => void;
   onAnswerPlanQuestion: (answer: string) => void;
   onImplementPlan: (interaction: Extract<PlanInteraction, { kind: "ready" }>) => void;
-  onImplementPlanWithClearedContext: (interaction: Extract<PlanInteraction, { kind: "ready" }>) => void;
+  onImplementPlanWithClearedContext: (
+    interaction: Extract<PlanInteraction, { kind: "ready" }>,
+  ) => void;
   onStayInPlanMode: () => void;
 }
 
@@ -128,16 +131,16 @@ export const ComposerInput = memo(function ComposerInput({
         isRecording={isRecordingVoice}
         onDismissError={onDismissVoiceError}
       />
-      <div
-        style={styles.inputArea}
-        onDrop={onDrop}
-        onDragOver={onDragOver}
-      >
+      <CommandComposer style={styles.inputArea} onDrop={onDrop} onDragOver={onDragOver}>
         {attachedImages.length > 0 && (
           <div style={styles.attachedImagesContainer}>
             {attachedImages.map((img, idx) => (
               <div key={idx} style={styles.attachedImageWrapper}>
-                <img src={convertFileSrc(img.path)} alt={img.alt || "pasted"} style={styles.attachedImage} />
+                <img
+                  src={convertFileSrc(img.path)}
+                  alt={img.alt || "pasted"}
+                  style={styles.attachedImage}
+                />
                 <button
                   style={styles.removeImageBtn}
                   onClick={() => onRemoveImage(idx)}
@@ -216,7 +219,7 @@ export const ComposerInput = memo(function ComposerInput({
             <Send size={16} color="#fff" />
           )}
         </button>
-      </div>
+      </CommandComposer>
     </>
   );
 });

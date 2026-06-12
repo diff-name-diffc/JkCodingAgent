@@ -42,6 +42,10 @@ impl ContextDebugLogger {
         }
     }
 
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub(crate) fn log(
         &self,
         event: &str,

@@ -29,16 +29,17 @@ const BUILT_IN_DISPATCH_GUIDANCE: &str = r#"# 内置调度规则
 "#;
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct PromptSection {
-    pub label: String,
-    pub source: String,
-    pub content: String,
+struct PromptSection {
+    label: String,
+    source: String,
+    content: String,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct PromptBundle {
-    pub content: String,
-    pub sections: Vec<PromptSection>,
+    /// Content of static-only sections (no system time, no runtime state).
+    /// Suitable for caching within a single `run()` / `continue_after_dispatch()` turn.
+    pub static_content: String,
 }
 
 pub(super) fn build_system_prompt(root: &Path) -> Result<PromptBundle> {
@@ -93,6 +94,13 @@ pub(super) fn build_system_prompt(root: &Path) -> Result<PromptBundle> {
         content: format!("---\n\n{}", BUILT_IN_DISPATCH_GUIDANCE),
     });
 
+    // Snapshot static content before adding dynamic "系统时间" section
+    let static_content = sections
+        .iter()
+        .map(|section| section.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n");
+
     sections.push(PromptSection {
         label: "系统时间".to_string(),
         source: "builtin".to_string(),
@@ -102,13 +110,7 @@ pub(super) fn build_system_prompt(root: &Path) -> Result<PromptBundle> {
         ),
     });
 
-    let content = sections
-        .iter()
-        .map(|section| section.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n---\n\n");
-
-    Ok(PromptBundle { content, sections })
+    Ok(PromptBundle { static_content })
 }
 
 fn push_file_if_exists(
@@ -146,13 +148,10 @@ mod tests {
 
         let prompt = build_system_prompt(&root).expect("build prompt");
 
-        assert!(prompt.content.contains("# Soul"));
-        assert!(prompt.content.contains("# User"));
-        assert!(!prompt.content.contains("stale hard-coded tool list"));
-        assert!(!prompt
-            .sections
-            .iter()
-            .any(|section| section.label == "TOOLS"));
+        assert!(prompt.static_content.contains("# Soul"));
+        assert!(prompt.static_content.contains("# User"));
+        assert!(!prompt.static_content.contains("stale hard-coded tool list"));
+        assert!(!prompt.static_content.contains("stale hard-coded tool list"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -166,13 +165,9 @@ mod tests {
         fs::create_dir_all(&root).expect("create prompt root");
 
         let prompt = build_system_prompt(&root).expect("build prompt");
-        assert!(prompt.content.contains("内置调度规则"));
-        assert!(prompt.content.contains("dispatch_claude"));
-        assert!(prompt.content.contains("dispatch_codex"));
-        assert!(prompt
-            .sections
-            .iter()
-            .any(|section| section.label == "内置调度规则"));
+        assert!(prompt.static_content.contains("内置调度规则"));
+        assert!(prompt.static_content.contains("dispatch_claude"));
+        assert!(prompt.static_content.contains("dispatch_codex"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -192,9 +187,9 @@ mod tests {
         .expect("write skill");
 
         let prompt = build_system_prompt(&root).expect("build prompt");
-        assert!(prompt.content.contains("已启用技能"));
-        assert!(prompt.content.contains("My Skill"));
-        assert!(prompt.content.contains("Do something useful"));
+        assert!(prompt.static_content.contains("已启用技能"));
+        assert!(prompt.static_content.contains("My Skill"));
+        assert!(prompt.static_content.contains("Do something useful"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -211,8 +206,8 @@ mod tests {
             .expect("write memory");
 
         let prompt = build_system_prompt(&root).expect("build prompt");
-        assert!(prompt.content.contains("记忆"));
-        assert!(prompt.content.contains("Remember this"));
+        assert!(prompt.static_content.contains("记忆"));
+        assert!(prompt.static_content.contains("Remember this"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -226,10 +221,7 @@ mod tests {
         fs::create_dir_all(&root).expect("create root");
 
         let prompt = build_system_prompt(&root).expect("build prompt");
-        assert!(!prompt
-            .sections
-            .iter()
-            .any(|section| section.label == "记忆"));
+        assert!(!prompt.static_content.contains("记忆"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -245,10 +237,7 @@ mod tests {
         // No SKILL.md inside
 
         let prompt = build_system_prompt(&root).expect("build prompt");
-        assert!(!prompt
-            .sections
-            .iter()
-            .any(|section| section.label == "已启用技能"));
+        assert!(!prompt.static_content.contains("已启用技能"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -264,11 +253,10 @@ mod tests {
         fs::write(root.join("USER.md"), "# User\n").expect("write user");
 
         let prompt = build_system_prompt(&root).expect("build prompt");
-        let labels: Vec<&str> = prompt.sections.iter().map(|s| s.label.as_str()).collect();
-        assert!(labels.contains(&"SOUL"));
-        assert!(labels.contains(&"USER"));
-        assert!(labels.contains(&"内置调度规则"));
-        assert!(labels.contains(&"系统时间"));
+        // static_content includes the file contents and builtin rules text
+        assert!(prompt.static_content.contains("# Soul"));
+        assert!(prompt.static_content.contains("# User"));
+        assert!(prompt.static_content.contains("内置调度规则"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -287,15 +275,9 @@ mod tests {
         fs::write(skill_a.join("SKILL.md"), "# A Skill\n\nFirst skill.").expect("write a");
 
         let prompt = build_system_prompt(&root).expect("build prompt");
-        let skills_section = prompt
-            .sections
-            .iter()
-            .find(|s| s.label == "已启用技能")
-            .expect("skills section exists");
-
-        // Skills should be sorted: a-skill before b-skill
-        let a_pos = skills_section.content.find("A Skill").expect("find a");
-        let b_pos = skills_section.content.find("B Skill").expect("find b");
+        // Skills should be sorted: a-skill appears before b-skill in static_content
+        let a_pos = prompt.static_content.find("A Skill").expect("find a");
+        let b_pos = prompt.static_content.find("B Skill").expect("find b");
         assert!(a_pos < b_pos);
 
         let _ = fs::remove_dir_all(root);
@@ -310,10 +292,11 @@ mod tests {
         fs::create_dir_all(&root).expect("create root");
 
         let prompt = build_system_prompt(&root).expect("build prompt");
-        assert_eq!(prompt.sections.len(), 2);
-        assert_eq!(prompt.sections[0].label, "内置调度规则");
-        assert_eq!(prompt.sections[1].label, "系统时间");
-        assert!(prompt.sections[1].content.contains("当前本地时间"));
+        // Empty dir should only contain the builtin dispatch guidance section
+        assert!(prompt.static_content.contains("内置调度规则"));
+        // No SOUL, USER, skills, or memory sections
+        assert!(!prompt.static_content.contains("SOUL"));
+        assert!(!prompt.static_content.contains("USER"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -340,20 +323,10 @@ mod tests {
         ));
         fs::create_dir_all(&root).expect("create root");
 
+        // Note: 系统时间 is now a dynamic section and NOT included in static_content.
+        // It is appended at runtime by build_dynamic_prompt_sections.
         let prompt = build_system_prompt(&root).expect("build prompt");
-        let time_section = prompt
-            .sections
-            .iter()
-            .find(|s| s.label == "系统时间")
-            .expect("missing 系统时间 section");
-        assert!(time_section
-            .content
-            .starts_with("---\n\n# 系统时间\n\n当前本地时间："));
-        let time_value = time_section
-            .content
-            .strip_prefix("---\n\n# 系统时间\n\n当前本地时间：")
-            .unwrap();
-        assert_eq!(time_value.len(), 16);
+        assert!(!prompt.static_content.contains("系统时间"));
 
         let _ = fs::remove_dir_all(root);
     }

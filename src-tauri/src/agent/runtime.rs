@@ -24,14 +24,15 @@ use super::db::{
     AgentContext, AhaSettingsV2, ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus,
     DispatcherDb, DispatcherMessageRecord, DispatcherMessageUsageStats, DispatcherMode,
     DispatcherSessionRuntimeState, DispatcherSessionTokenUsageSource, DispatcherSettingsRecord,
-    DispatcherToolArtifactRef, PlanInteraction, PlanQuestionOption, TOOL_RETRY_CONTEXT_PREFIX,
+    DispatcherToolArtifactRef, PlanInteraction, PlanQuestionOption,
+    DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS, TOOL_RETRY_CONTEXT_PREFIX,
 };
 use super::debug::{render_json, ContextDebugLogger, DebugSection};
 use super::llm::{
     messages_contain_inline_images, ChatMessage, LlmResponse, LlmUsage, OpenAiCompatProvider,
     RequestedToolCall,
 };
-use super::prompt::{build_system_prompt, PromptBundle, PromptSection};
+use super::prompt::{build_system_prompt, PromptBundle};
 use super::sub_agent::tool::sub_agent_failure_message;
 use super::summary::summarize_dispatch_result;
 use super::tools::{
@@ -880,6 +881,18 @@ impl DispatcherAgent {
             );
         }
         let mut usage_tracker = UsageTracker::new();
+
+        // Build static prompt once for the entire turn (avoids re-reading disk files)
+        let static_prompt = self.build_system_prompt().await?;
+        // Pre-compute initial tool definitions and cache for the loop
+        let initial_runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
+        let initial_tool_defs =
+            self.tool_definitions_for_workspace(workspace_id, &workspace, &initial_runtime_state);
+        let allowed_tool_names: HashSet<String> = initial_tool_defs
+            .iter()
+            .map(|t| t.function.name.clone())
+            .collect();
+
         let reply = self
             .run_llm_loop(
                 db,
@@ -890,6 +903,9 @@ impl DispatcherAgent {
                 enable_thinking,
                 cancel_rx,
                 &mut usage_tracker,
+                &static_prompt,
+                initial_tool_defs,
+                allowed_tool_names,
             )
             .await?;
 
@@ -1052,6 +1068,18 @@ impl DispatcherAgent {
             .await
             .map_err(anyhow::Error::msg)
             .context("刷新项目 MCP 状态失败")?;
+
+        // Build static prompt once for the entire turn (avoids re-reading disk files)
+        let static_prompt = self.build_system_prompt().await?;
+        // Pre-compute initial tool definitions and cache for the loop
+        let initial_runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
+        let initial_tool_defs =
+            self.tool_definitions_for_workspace(workspace_id, &workspace, &initial_runtime_state);
+        let allowed_tool_names: HashSet<String> = initial_tool_defs
+            .iter()
+            .map(|t| t.function.name.clone())
+            .collect();
+
         let reply = self
             .run_llm_loop(
                 db,
@@ -1062,6 +1090,9 @@ impl DispatcherAgent {
                 enable_thinking,
                 cancel_rx,
                 &mut usage_tracker,
+                &static_prompt,
+                initial_tool_defs,
+                allowed_tool_names,
             )
             .await?;
 
@@ -1086,10 +1117,50 @@ impl DispatcherAgent {
         enable_thinking: bool,
         cancel_rx: watch::Receiver<bool>,
         usage_tracker: &mut UsageTracker,
+        static_prompt: &PromptBundle,
+        initial_tool_definitions: Vec<crate::agent::llm::ToolDefinition>,
+        initial_allowed_tools: HashSet<String>,
     ) -> Result<DispatcherMessageRecord> {
         let tool_context = self
             .build_tool_context(db, workspace_id, workspace, provider)
             .await;
+        let debug_logger =
+            ContextDebugLogger::new(self.context_debug_enabled(), PathBuf::from(workspace));
+
+        // ── Loop-invariant setup (executed once) ─────────────────────────────
+
+        // Build initial iteration context (history + state + tools)
+        let initial_runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
+        let tool_definitions = initial_tool_definitions;
+        let allowed_tool_names = initial_allowed_tools;
+
+        // Load history messages once from DB
+        let history_messages = db.load_llm_history_async(workspace_id).await?;
+        let mut incremental_messages: Vec<ChatMessage> = history_messages;
+
+        // Cache for tool definitions across iterations
+        let mut tool_defs_cache = tool_definitions;
+        let mut allowed_names_cache = allowed_tool_names;
+        let mut runtime_state_cache = initial_runtime_state;
+
+        // Pre-check context window budget
+        let estimated_tokens = DispatcherDb::estimate_context_tokens(&incremental_messages);
+        if estimated_tokens > DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS * 8 / 10 {
+            debug_logger.log(
+                "上下文窗口接近上限",
+                vec![
+                    ("工作区".to_string(), workspace_id.to_string()),
+                    ("估算tokens".to_string(), estimated_tokens.to_string()),
+                    (
+                        "容量".to_string(),
+                        DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS.to_string(),
+                    ),
+                ],
+                vec![],
+            );
+        }
+
+        // ── Main iteration loop ─────────────────────────────────────────────
 
         for iteration in 0..self.config.max_tool_iterations {
             if cancellation_requested(&cancel_rx) {
@@ -1098,17 +1169,50 @@ impl DispatcherAgent {
                     .await;
             }
 
-            let ctx = self
-                .prepare_iteration_context(
-                    db,
+            // For iteration > 0: rebuild dynamic context with current state
+            if iteration > 0 {
+                runtime_state_cache = db.get_session_runtime_state_async(workspace_id).await?;
+                let new_tool_defs = self.tool_definitions_for_workspace(
                     workspace_id,
                     workspace,
-                    on_event,
-                    provider,
-                    enable_thinking,
-                    iteration,
-                )
-                .await?;
+                    &runtime_state_cache,
+                );
+                allowed_names_cache = new_tool_defs
+                    .iter()
+                    .map(|t| t.function.name.clone())
+                    .collect();
+                tool_defs_cache = new_tool_defs;
+            }
+
+            // Build system prompt from cached static + fresh dynamic sections (no disk I/O)
+            let prompt_snapshot = self.build_system_prompt_from_static(
+                static_prompt,
+                workspace_id,
+                workspace,
+                &tool_defs_cache,
+                &runtime_state_cache,
+            )?;
+
+            // Prepend system prompt to incremental messages
+            let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
+            messages.extend(incremental_messages.iter().cloned());
+
+            // Provider selection: cache across iterations (images don't appear mid-loop)
+            let request_provider = if iteration == 0 {
+                self.provider_for_messages(provider, &messages, on_event, true)?
+            } else {
+                // Reuse the same provider; images can only come from initial user message
+                self.provider_for_messages(provider, &messages, on_event, false)?
+            };
+
+            let ctx = IterationContext {
+                runtime_state: runtime_state_cache.clone(),
+                tool_definitions: tool_defs_cache.clone(),
+                allowed_tool_names: allowed_names_cache.clone(),
+                messages,
+                request_provider,
+                debug_logger: debug_logger.clone(),
+            };
 
             let response = match self
                 .stream_llm_response(
@@ -1140,11 +1244,41 @@ impl DispatcherAgent {
                 LlmStreamOutcome::Response(r) => r,
             };
 
+            // No tool calls → end of loop (pure text reply)
             if response.tool_calls.is_empty() {
+                // Append final assistant reply to incremental messages for consistency
+                incremental_messages.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: response.content.clone(),
+                    reasoning_content: if response.thinking_content.is_empty() {
+                        None
+                    } else {
+                        Some(response.thinking_content.clone())
+                    },
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                });
                 return self
                     .handle_no_tool_response(db, workspace_id, on_event, &response, usage_tracker)
                     .await;
             }
+
+            // Build the assistant message with tool calls for in-memory tracking.
+            // The DB persistence is handled inside execute_tool_calls — no double-write here.
+            let tool_calls_payload = build_tool_calls_payload(&response.tool_calls, &self.tools);
+            incremental_messages.push(ChatMessage {
+                role: "assistant".to_string(),
+                content: response.content.clone(),
+                reasoning_content: if response.thinking_content.is_empty() {
+                    None
+                } else {
+                    Some(response.thinking_content.clone())
+                },
+                tool_calls: Some(tool_calls_payload),
+                tool_call_id: None,
+                name: None,
+            });
 
             let outcome = self
                 .execute_tool_calls(
@@ -1161,6 +1295,27 @@ impl DispatcherAgent {
                     usage_tracker,
                 )
                 .await?;
+
+            // Append new tool results from DB to incremental messages (only new ones)
+            let updated_history = db.load_llm_history_async(workspace_id).await?;
+            let current_len = incremental_messages.len();
+            if updated_history.len() > current_len {
+                incremental_messages.extend(updated_history.into_iter().skip(current_len));
+            }
+
+            // Token budget check: log warning if approaching context window limit
+            let estimated_tokens = DispatcherDb::estimate_context_tokens(&incremental_messages);
+            if estimated_tokens > DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS * 8 / 10 {
+                debug_logger.log(
+                    "上下文窗口接近上限，考虑折叠早期消息",
+                    vec![
+                        ("工作区".to_string(), workspace_id.to_string()),
+                        ("轮次".to_string(), (iteration + 1).to_string()),
+                        ("估算tokens".to_string(), estimated_tokens.to_string()),
+                    ],
+                    vec![],
+                );
+            }
 
             if let Some(reply) = self
                 .resolve_loop_outcome(db, workspace_id, on_event, outcome, usage_tracker)
@@ -1211,67 +1366,6 @@ impl DispatcherAgent {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn prepare_iteration_context(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        workspace: &Path,
-        on_event: &Channel<AgentEvent>,
-        provider: &OpenAiCompatProvider,
-        enable_thinking: bool,
-        iteration: usize,
-    ) -> Result<IterationContext> {
-        let debug_logger = ContextDebugLogger::new(self.context_debug_enabled(), workspace);
-
-        let runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
-        let tool_definitions =
-            self.tool_definitions_for_workspace(workspace_id, workspace, &runtime_state);
-        let allowed_tool_names = tool_definitions
-            .iter()
-            .map(|tool| tool.function.name.clone())
-            .collect::<HashSet<_>>();
-        let prompt_snapshot = self
-            .build_system_prompt_for_workspace(
-                workspace_id,
-                workspace,
-                &tool_definitions,
-                &runtime_state,
-            )
-            .await?;
-        let history_messages = db.load_llm_history_async(workspace_id).await?;
-        let request_provider =
-            self.provider_for_messages(provider, &history_messages, on_event, iteration == 0)?;
-        let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
-        messages.extend(history_messages.clone());
-        let request_snapshot =
-            request_provider.build_request_snapshot(&messages, &tool_definitions, enable_thinking);
-
-        debug_logger.log(
-            "发送大模型请求",
-            vec![
-                ("工作区".to_string(), workspace_id.to_string()),
-                ("轮次".to_string(), (iteration + 1).to_string()),
-                ("模型".to_string(), request_provider.model().to_string()),
-                ("消息数".to_string(), messages.len().to_string()),
-                ("工具数".to_string(), tool_definitions.len().to_string()),
-            ],
-            vec![DebugSection::new(
-                "实际请求",
-                render_json(&request_snapshot),
-            )],
-        );
-
-        Ok(IterationContext {
-            runtime_state,
-            tool_definitions,
-            allowed_tool_names,
-            messages,
-            request_provider,
-            debug_logger,
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
     async fn stream_llm_response(
         &self,
         db: &DispatcherDb,
@@ -1286,22 +1380,28 @@ impl DispatcherAgent {
         debug_logger: &ContextDebugLogger,
         iteration: usize,
     ) -> Result<LlmStreamOutcome> {
-        let request_snapshot =
-            request_provider.build_request_snapshot(messages, tool_definitions, enable_thinking);
-        debug_logger.log(
-            "发送大模型请求",
-            vec![
-                ("工作区".to_string(), workspace_id.to_string()),
-                ("轮次".to_string(), (iteration + 1).to_string()),
-                ("模型".to_string(), request_provider.model().to_string()),
-                ("消息数".to_string(), messages.len().to_string()),
-                ("工具数".to_string(), tool_definitions.len().to_string()),
-            ],
-            vec![DebugSection::new(
-                "实际请求",
-                render_json(&request_snapshot),
-            )],
-        );
+        // Lazy debug: only serialize full request/response when debug is enabled
+        if debug_logger.enabled() {
+            let request_snapshot = request_provider.build_request_snapshot(
+                messages,
+                tool_definitions,
+                enable_thinking,
+            );
+            debug_logger.log(
+                "发送大模型请求",
+                vec![
+                    ("工作区".to_string(), workspace_id.to_string()),
+                    ("轮次".to_string(), (iteration + 1).to_string()),
+                    ("模型".to_string(), request_provider.model().to_string()),
+                    ("消息数".to_string(), messages.len().to_string()),
+                    ("工具数".to_string(), tool_definitions.len().to_string()),
+                ],
+                vec![DebugSection::new(
+                    "实际请求",
+                    render_json(&request_snapshot),
+                )],
+            );
+        }
 
         let outcome = stream_llm_response(
             db,
@@ -1318,25 +1418,27 @@ impl DispatcherAgent {
         )
         .await?;
 
-        if let LlmStreamOutcome::Response(ref response) = outcome {
-            let response_snapshot = request_provider.build_response_snapshot(response);
-            debug_logger.log(
-                "收到大模型响应",
-                vec![
-                    ("工作区".to_string(), workspace_id.to_string()),
-                    ("轮次".to_string(), (iteration + 1).to_string()),
-                    ("模型".to_string(), request_provider.model().to_string()),
-                    ("状态码".to_string(), response.status_code.to_string()),
-                    (
-                        "工具调用数".to_string(),
-                        response.tool_calls.len().to_string(),
-                    ),
-                ],
-                vec![DebugSection::new(
-                    "实际响应",
-                    render_json(&response_snapshot),
-                )],
-            );
+        if debug_logger.enabled() {
+            if let LlmStreamOutcome::Response(ref response) = outcome {
+                let response_snapshot = request_provider.build_response_snapshot(response);
+                debug_logger.log(
+                    "收到大模型响应",
+                    vec![
+                        ("工作区".to_string(), workspace_id.to_string()),
+                        ("轮次".to_string(), (iteration + 1).to_string()),
+                        ("模型".to_string(), request_provider.model().to_string()),
+                        ("状态码".to_string(), response.status_code.to_string()),
+                        (
+                            "工具调用数".to_string(),
+                            response.tool_calls.len().to_string(),
+                        ),
+                    ],
+                    vec![DebugSection::new(
+                        "实际响应",
+                        render_json(&response_snapshot),
+                    )],
+                );
+            }
         }
 
         Ok(outcome)
@@ -1718,42 +1820,29 @@ impl DispatcherAgent {
             .map_err(|e| anyhow::anyhow!("build_system_prompt panicked: {e}"))?
     }
 
-    async fn build_system_prompt_for_workspace(
+    /// Build dynamic prompt sections without reading from disk.
+    /// These sections change based on runtime state, subprocess state, and MCP state.
+    fn build_dynamic_prompt_sections(
         &self,
         workspace_id: &str,
         workspace: &Path,
         tool_definitions: &[crate::agent::llm::ToolDefinition],
         runtime_state: &DispatcherSessionRuntimeState,
-    ) -> Result<SystemPromptSnapshot> {
-        let mut prompt_bundle = self.build_system_prompt().await?;
-        let mode_block = build_dispatcher_mode_block(runtime_state);
-        prompt_bundle.sections.push(PromptSection {
-            label: "Runtime Planning Mode".to_string(),
-            source: "runtime::planning_mode".to_string(),
-            content: mode_block.clone(),
-        });
-        prompt_bundle.content.push_str("\n\n---\n\n");
-        prompt_bundle.content.push_str(&mode_block);
+    ) -> Vec<String> {
+        let mut sections = Vec::new();
+
+        sections.push(build_dispatcher_mode_block(runtime_state));
+
         let tool_block = render_available_tools_block(tool_definitions);
         if !tool_block.is_empty() {
-            prompt_bundle.sections.push(PromptSection {
-                label: "Runtime Tool State".to_string(),
-                source: "runtime::available_tools".to_string(),
-                content: tool_block.clone(),
-            });
-            prompt_bundle.content.push_str("\n\n---\n\n");
-            prompt_bundle.content.push_str(&tool_block);
+            sections.push(tool_block);
         }
+
         let state_block = self.build_subprocess_state_block(workspace_id);
         if !state_block.is_empty() {
-            prompt_bundle.sections.push(PromptSection {
-                label: "Runtime Subprocess State".to_string(),
-                source: "runtime::subprocess_state".to_string(),
-                content: state_block.clone(),
-            });
-            prompt_bundle.content.push_str("\n\n---\n\n");
-            prompt_bundle.content.push_str(&state_block);
+            sections.push(state_block);
         }
+
         let mcp_block = build_workspace_mcp_prompt_block(
             self.project_mcp_registry
                 .cached_for_workspace(workspace)
@@ -1761,27 +1850,41 @@ impl DispatcherAgent {
             workspace,
         );
         if !mcp_block.is_empty() {
-            prompt_bundle.sections.push(PromptSection {
-                label: "Workspace MCP State".to_string(),
-                source: "runtime::workspace_mcp".to_string(),
-                content: mcp_block.clone(),
-            });
-            prompt_bundle.content.push_str("\n\n---\n\n");
-            prompt_bundle.content.push_str(&mcp_block);
+            sections.push(mcp_block);
         }
+
         let sub_agent_block = self.build_sub_agent_block(workspace_id);
         if !sub_agent_block.is_empty() {
-            prompt_bundle.sections.push(PromptSection {
-                label: "Sub-Agent State".to_string(),
-                source: "runtime::sub_agents".to_string(),
-                content: sub_agent_block.clone(),
-            });
-            prompt_bundle.content.push_str("\n\n---\n\n");
-            prompt_bundle.content.push_str(&sub_agent_block);
+            sections.push(sub_agent_block);
         }
-        Ok(SystemPromptSnapshot {
-            rendered: prompt_bundle.content,
-        })
+
+        sections
+    }
+
+    /// Build a full system prompt by combining cached static content with
+    /// freshly-computed dynamic sections.  Avoids re-reading files from disk.
+    fn build_system_prompt_from_static(
+        &self,
+        static_bundle: &PromptBundle,
+        workspace_id: &str,
+        workspace: &Path,
+        tool_definitions: &[crate::agent::llm::ToolDefinition],
+        runtime_state: &DispatcherSessionRuntimeState,
+    ) -> Result<SystemPromptSnapshot> {
+        let dynamic_sections = self.build_dynamic_prompt_sections(
+            workspace_id,
+            workspace,
+            tool_definitions,
+            runtime_state,
+        );
+
+        let mut rendered = static_bundle.static_content.clone();
+        for section in &dynamic_sections {
+            rendered.push_str("\n\n---\n\n");
+            rendered.push_str(section);
+        }
+
+        Ok(SystemPromptSnapshot { rendered })
     }
 
     fn build_subprocess_state_block(&self, workspace_id: &str) -> String {

@@ -16,7 +16,7 @@ use super::llm::{ChatMessage, LlmUsage, OutboundToolCall};
 
 const MAX_LLM_DIALOGUES: usize = 5;
 const MAX_DIALOGUE_QUERY_LIMIT: usize = 50;
-const DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS: u64 = 1_000_000;
+pub(crate) const DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS: u64 = 1_000_000;
 const DEFAULT_IMAGE_MODEL_URL: &str = "https://dashscope.aliyuncs.com/api/v1";
 const DEFAULT_IMAGE_MODEL: &str = "qwen-image-2.0-pro";
 const DEFAULT_ASR_MODEL: &str = "fun-asr-realtime";
@@ -4842,6 +4842,22 @@ impl DispatcherDb {
             .context("load dispatcher dialogue boundaries")?;
 
         Ok(rowids.into_iter().min().unwrap_or(0))
+    }
+
+    /// Rough token estimate for context budget management.
+    /// Uses a ~4 chars/token heuristic suitable for mixed CJK/Latin content.
+    pub(crate) fn estimate_context_tokens(messages: &[crate::agent::llm::ChatMessage]) -> u64 {
+        let total_chars: usize = messages
+            .iter()
+            .map(|m| {
+                m.content.len()
+                    + m.reasoning_content.as_ref().map_or(0, |s| s.len())
+                    + m.tool_calls
+                        .as_ref()
+                        .map_or(0, |tc| serde_json::to_string(tc).map_or(0, |s| s.len()))
+            })
+            .sum();
+        (total_chars as u64) / 4
     }
 }
 

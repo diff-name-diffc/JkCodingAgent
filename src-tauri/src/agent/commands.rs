@@ -590,7 +590,9 @@ async fn generate_session_keywords(
         if let Some(a) = assistant {
             s.push_str("\n【助手】\n");
             let text = if a.content.len() > 2000 {
-                format!("{}...", &a.content[..2000])
+                // Find the nearest char boundary at or before byte 2000
+                let boundary = a.content.floor_char_boundary(2000);
+                format!("{}...", &a.content[..boundary])
             } else {
                 a.content.clone()
             };

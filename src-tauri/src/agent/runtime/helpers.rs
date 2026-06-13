@@ -1,0 +1,395 @@
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
+use tauri::ipc::Channel;
+
+use super::super::common::UsageTracker;
+use super::super::db::{
+    DispatcherDb, DispatcherSessionTokenUsageSource, TOOL_RETRY_CONTEXT_PREFIX,
+};
+use super::super::llm::{LlmResponse, LlmUsage, RequestedToolCall};
+use super::types::AgentEvent;
+use crate::shared::truncate_for_display;
+
+// ─── Argument Extraction ──────────────────────────────────────────────────────
+
+pub(crate) fn string_arg_required(args: &Value, key: &str) -> std::result::Result<String, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("错误：缺少必填参数 {key}，且不能为空"))
+}
+
+pub(crate) fn extract_message_content(arguments: &Value) -> Option<String> {
+    arguments
+        .get("content")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+// ─── Path Utilities ───────────────────────────────────────────────────────────
+
+pub(crate) fn lexical_normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+pub(crate) fn is_implemented_plan_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains("-已实现.md"))
+}
+
+pub(crate) fn slugify_plan_title(title: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for ch in title.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "plan".to_string()
+    } else {
+        slug.chars().take(48).collect()
+    }
+}
+
+// ─── Tool Error Classification ────────────────────────────────────────────────
+
+pub(crate) fn disallowed_tool_result(tool_name: &str) -> String {
+    format!(
+        "错误：禁止调用工具 '{tool_name}'；它未在当前模式或运行状态的可用工具列表中。请改用系统提示中列出的当前实际可用工具。"
+    )
+}
+
+pub(crate) fn empty_llm_response_error(response: &LlmResponse) -> String {
+    let raw_response = response.raw_response.trim();
+    let response_detail = if raw_response.is_empty() {
+        "<空>".to_string()
+    } else {
+        truncate_for_display(raw_response, 4_000, "\n...[LLM 接口响应内容已截断]")
+    };
+
+    format!("LLM 返回了空响应且没有工具调用，无法继续执行。\nLLM 接口响应内容：\n{response_detail}")
+}
+
+pub(crate) fn build_tool_retry_context(tool_call: &RequestedToolCall, error: &str) -> String {
+    let arguments =
+        serde_json::to_string_pretty(&tool_call.arguments).unwrap_or_else(|_| "{}".to_string());
+    format!(
+        "{TOOL_RETRY_CONTEXT_PREFIX}\n\
+工具：{}\n\
+工具调用 ID：{}\n\
+错误详情：{}\n\n\
+上次参数：\n{}\n\n\
+要求：不要直接把该错误回复给用户。请根据工具 schema 和错误详情修正参数后重试同一个工具；重试成功后，系统会覆盖本次失败工具调用记录。",
+        tool_call.name,
+        tool_call.id,
+        error.trim(),
+        truncate_for_display(&arguments, 4_000, "\n...")
+    )
+}
+
+pub(crate) fn is_retryable_tool_error(tool_name: &str, result: &str) -> bool {
+    let trimmed = result.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if tool_name == "exec" {
+        return false;
+    }
+    if !trimmed.starts_with("错误：") {
+        return false;
+    }
+    trimmed.starts_with("错误：缺少必填参数")
+        || trimmed.starts_with("错误：参数")
+        || trimmed.contains("参数无效")
+        || trimmed.contains("invalid type")
+        || trimmed.contains("未找到工具")
+        || trimmed.contains("禁止")
+}
+
+// ─── Text Formatting ──────────────────────────────────────────────────────────
+
+pub(crate) fn compact_multiline(content: &str, max_chars: usize) -> String {
+    let normalized = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" / ");
+    truncate_for_display(&normalized, max_chars, "...")
+}
+
+pub(crate) fn should_include_latest_user_goal(
+    latest_user_goal: &str,
+    task_description: &str,
+) -> bool {
+    let normalized_task = compact_multiline(task_description.trim(), 320);
+    !normalized_task.is_empty()
+        && latest_user_goal != normalized_task
+        && !normalized_task.contains(latest_user_goal)
+}
+
+pub(crate) fn summarize_dispatch_description(task_description: &str) -> String {
+    let normalized = compact_multiline(task_description.trim(), 180);
+    if normalized.is_empty() {
+        "未命名子任务".to_string()
+    } else {
+        normalized
+    }
+}
+
+pub(crate) fn build_stopped_dispatch_reply(partial: &str) -> String {
+    let trimmed = partial.trim();
+    if trimmed.is_empty() {
+        "⏹️ 本轮调度已停止。当前会话上下文与已完成内容均已保留，可稍后继续。".to_string()
+    } else {
+        format!(
+            "{}\n\n[本轮已手动停止。当前会话上下文与以上输出均已保留，可稍后继续。]",
+            trimmed
+        )
+    }
+}
+
+// ─── Token Usage Recording ────────────────────────────────────────────────────
+
+pub(crate) fn record_session_token_usage(
+    db: &DispatcherDb,
+    workspace_id: &str,
+    model: &str,
+    source_kind: DispatcherSessionTokenUsageSource,
+    usage: &LlmUsage,
+) {
+    let db = db.clone();
+    let wid = workspace_id.to_string();
+    let m = model.to_string();
+    let u = usage.clone();
+    tokio::spawn(async move {
+        if let Err(error) = db
+            .upsert_session_token_usage_async(&wid, &m, source_kind, &u)
+            .await
+        {
+            eprintln!(
+                "failed to persist dispatcher session token usage for workspace {} and model {}: {}",
+                wid, m, error
+            );
+        }
+    });
+}
+
+pub(crate) fn record_run_token_usage(
+    db: &DispatcherDb,
+    workspace_id: &str,
+    model: &str,
+    source_kind: DispatcherSessionTokenUsageSource,
+    usage: &LlmUsage,
+    tracker: &mut UsageTracker,
+    on_event: &Channel<AgentEvent>,
+) {
+    record_session_token_usage(db, workspace_id, model, source_kind, usage);
+    let stats = tracker.record(usage);
+    emit(
+        on_event,
+        AgentEvent::RunUsageUpdated {
+            workspace_id: workspace_id.to_string(),
+            stats,
+        },
+    );
+}
+
+pub(crate) fn normalize_summary_model(model: &str) -> String {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        super::super::config::DEFAULT_SUMMARY_MODEL.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+// ─── Event Helpers ────────────────────────────────────────────────────────────
+
+pub(crate) fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
+    let _ = on_event.send(event);
+}
+
+// ─── Exploration Context Collection ───────────────────────────────────────────
+
+#[cfg(test)]
+pub(crate) fn collect_exploration_entries_from_messages(
+    history: &[super::super::llm::ChatMessage],
+) -> String {
+    const MAX_ENTRIES: usize = 3;
+    const MAX_TOTAL_CHARS: usize = 900;
+
+    let mut entries = Vec::new();
+    let mut total_chars = 0usize;
+
+    for message in history.iter().rev() {
+        let content = message.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+
+        let label = match message.role.as_str() {
+            "tool" => message
+                .name
+                .as_deref()
+                .map(|name| format!("工具 {}", name))
+                .unwrap_or_else(|| "工具".to_string()),
+            "assistant" => "调度结论".to_string(),
+            "user" => continue,
+            _ => continue,
+        };
+        let compact = compact_multiline(content, 220);
+        if compact.is_empty() {
+            continue;
+        }
+
+        let candidate = format!("- {}：{}", label, compact);
+        let candidate_len = candidate.chars().count();
+        if total_chars + candidate_len > MAX_TOTAL_CHARS && !entries.is_empty() {
+            break;
+        }
+
+        entries.push(candidate);
+        total_chars += candidate_len;
+        if entries.len() >= MAX_ENTRIES {
+            break;
+        }
+    }
+
+    if entries.is_empty() {
+        String::new()
+    } else {
+        entries.reverse();
+        entries.join("\n")
+    }
+}
+
+pub(crate) async fn collect_recent_exploration_entries_from_db(
+    db: &DispatcherDb,
+    workspace_id: &str,
+) -> std::result::Result<String, String> {
+    const MAX_ENTRIES: usize = 3;
+    const MAX_TOTAL_CHARS: usize = 900;
+
+    let rows = db
+        .list_recent_exploration_content_async(workspace_id, MAX_ENTRIES)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let mut entries = Vec::new();
+    let mut total_chars = 0usize;
+
+    // rows come in DESC order; collect then reverse for chronological order
+    for (role, tool_name, content) in rows {
+        let content = content.trim();
+        if content.is_empty() {
+            continue;
+        }
+
+        let label = match role.as_str() {
+            "tool" => tool_name
+                .map(|name| format!("工具 {}", name))
+                .unwrap_or_else(|| "工具".to_string()),
+            "assistant" => "调度结论".to_string(),
+            _ => continue,
+        };
+        let compact = compact_multiline(content, 220);
+        if compact.is_empty() {
+            continue;
+        }
+
+        let candidate = format!("- {}：{}", label, compact);
+        let candidate_len = candidate.chars().count();
+        if total_chars + candidate_len > MAX_TOTAL_CHARS && !entries.is_empty() {
+            break;
+        }
+
+        entries.push(candidate);
+        total_chars += candidate_len;
+        if entries.len() >= MAX_ENTRIES {
+            break;
+        }
+    }
+
+    if entries.is_empty() {
+        Ok(String::new())
+    } else {
+        entries.reverse();
+        Ok(entries.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::llm::ChatMessage;
+    use super::*;
+
+    #[test]
+    fn exploration_entries_are_compact_and_skip_user_messages() {
+        let history = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: "用户原始诉求".to_string(),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: "读取文件 A，确认只需调整调度提示词拼装。".to_string(),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: Some("read_file".to_string()),
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: "当前冗长主要来自已探索索引信息和输出要求重复注入。".to_string(),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+        ];
+
+        let result = collect_exploration_entries_from_messages(&history);
+        assert!(result.contains("工具 read_file"));
+        assert!(result.contains("调度结论"));
+        assert!(!result.contains("用户原始诉求"));
+    }
+
+    #[test]
+    fn latest_user_goal_is_skipped_when_task_already_covers_it() {
+        let task_description = "请精简 Claude 子任务提示词，删除冗长动态规划内容，只保留必要约束。";
+        let latest_user_goal = "请精简 Claude 子任务提示词，删除冗长动态规划内容，只保留必要约束。";
+        assert!(!should_include_latest_user_goal(
+            latest_user_goal,
+            task_description
+        ));
+        assert!(should_include_latest_user_goal(
+            "调度子任务不要再带固定工程师开头",
+            task_description
+        ));
+    }
+}

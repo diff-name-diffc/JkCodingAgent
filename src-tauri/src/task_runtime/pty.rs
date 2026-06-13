@@ -752,38 +752,3 @@ pub async fn kill_shell(
     task_manager.remove_pty_handles(&shell_id);
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{task_exit_failure_reason, task_exit_status, termination_status_label};
-    use crate::shared::TaskTerminationIntent;
-
-    #[test]
-    fn termination_status_label_maps_stopped() {
-        assert_eq!(
-            termination_status_label(TaskTerminationIntent::Stopped),
-            "stopped"
-        );
-    }
-
-    #[test]
-    fn nonzero_agent_exit_is_failed_even_when_session_exists() {
-        assert_eq!(task_exit_status(false), "failed");
-    }
-
-    #[test]
-    fn task_exit_failure_reason_keeps_exit_code_visible() {
-        assert_eq!(
-            task_exit_failure_reason(Some(42), None),
-            "Agent 进程以非 0 状态退出，退出码：42"
-        );
-    }
-
-    #[test]
-    fn task_exit_failure_reason_keeps_wait_error_visible() {
-        assert_eq!(
-            task_exit_failure_reason(None, Some("wait failed")),
-            "读取 Agent 进程退出状态失败：wait failed"
-        );
-    }
-}

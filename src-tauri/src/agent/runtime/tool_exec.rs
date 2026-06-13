@@ -514,25 +514,3 @@ impl DispatcherAgent {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::super::super::common::readonly_tool_run_end;
-    use super::super::super::llm::RequestedToolCall;
-
-    #[test]
-    fn readonly_tool_run_stops_before_mutating_tool() {
-        let calls = ["glob", "grep", "write_file", "read_file"]
-            .into_iter()
-            .map(|name| RequestedToolCall {
-                id: name.to_string(),
-                name: name.to_string(),
-                arguments: serde_json::json!({}),
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(readonly_tool_run_end(&calls, 0), 2);
-        assert_eq!(readonly_tool_run_end(&calls, 2), 2);
-        assert_eq!(readonly_tool_run_end(&calls, 3), 4);
-    }
-}

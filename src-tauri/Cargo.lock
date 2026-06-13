@@ -3589,7 +3589,6 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-window-state",
- "tempfile",
  "tokio",
  "tokio-tungstenite",
  "toml 0.8.2",

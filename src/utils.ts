@@ -1,5 +1,3 @@
-import { resolveFilePresentation } from "./file-icons";
-
 export const AVATAR_COLORS: [string, string][] = [
   ["#3B82F6", "#1D4ED8"],
   ["#6366F1", "#4338CA"],
@@ -122,49 +120,6 @@ export function getGitStatusLabel(status: string): string {
       return status;
   }
 }
-
-// ── 文件颜色工具 ──────────────────────────────────────────────────────────────
-
-export function getFileColor(name: string, ext?: string): string {
-  return resolveFilePresentation({ name, extension: ext }).accentColor;
-}
-
-// ── 文件类型扩展名集合 ────────────────────────────────────────────────────────
-
-export const CODE_EXTS = new Set([
-  "ts",
-  "tsx",
-  "mts",
-  "cts",
-  "js",
-  "jsx",
-  "mjs",
-  "cjs",
-  "rs",
-  "py",
-  "go",
-  "java",
-  "kt",
-  "kts",
-  "swift",
-  "rb",
-  "php",
-  "cs",
-  "c",
-  "cpp",
-  "h",
-  "hpp",
-  "css",
-  "html",
-  "vue",
-  "svelte",
-  "astro",
-  "lua",
-  "sql",
-  "graphql",
-  "gql",
-  "proto",
-]);
 
 // ── Git 文件路径工具 ──────────────────────────────────────────────────────────
 

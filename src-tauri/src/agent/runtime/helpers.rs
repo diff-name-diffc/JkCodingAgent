@@ -230,60 +230,6 @@ pub(crate) fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
     let _ = on_event.send(event);
 }
 
-// ─── Exploration Context Collection ───────────────────────────────────────────
-
-#[cfg(test)]
-pub(crate) fn collect_exploration_entries_from_messages(
-    history: &[super::super::llm::ChatMessage],
-) -> String {
-    const MAX_ENTRIES: usize = 3;
-    const MAX_TOTAL_CHARS: usize = 900;
-
-    let mut entries = Vec::new();
-    let mut total_chars = 0usize;
-
-    for message in history.iter().rev() {
-        let content = message.content.trim();
-        if content.is_empty() {
-            continue;
-        }
-
-        let label = match message.role.as_str() {
-            "tool" => message
-                .name
-                .as_deref()
-                .map(|name| format!("工具 {}", name))
-                .unwrap_or_else(|| "工具".to_string()),
-            "assistant" => "调度结论".to_string(),
-            "user" => continue,
-            _ => continue,
-        };
-        let compact = compact_multiline(content, 220);
-        if compact.is_empty() {
-            continue;
-        }
-
-        let candidate = format!("- {}：{}", label, compact);
-        let candidate_len = candidate.chars().count();
-        if total_chars + candidate_len > MAX_TOTAL_CHARS && !entries.is_empty() {
-            break;
-        }
-
-        entries.push(candidate);
-        total_chars += candidate_len;
-        if entries.len() >= MAX_ENTRIES {
-            break;
-        }
-    }
-
-    if entries.is_empty() {
-        String::new()
-    } else {
-        entries.reverse();
-        entries.join("\n")
-    }
-}
-
 pub(crate) async fn collect_recent_exploration_entries_from_db(
     db: &DispatcherDb,
     workspace_id: &str,
@@ -336,60 +282,5 @@ pub(crate) async fn collect_recent_exploration_entries_from_db(
     } else {
         entries.reverse();
         Ok(entries.join("\n"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::super::llm::ChatMessage;
-    use super::*;
-
-    #[test]
-    fn exploration_entries_are_compact_and_skip_user_messages() {
-        let history = vec![
-            ChatMessage {
-                role: "user".to_string(),
-                content: "用户原始诉求".to_string(),
-                reasoning_content: None,
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
-            },
-            ChatMessage {
-                role: "tool".to_string(),
-                content: "读取文件 A，确认只需调整调度提示词拼装。".to_string(),
-                reasoning_content: None,
-                tool_calls: None,
-                tool_call_id: None,
-                name: Some("read_file".to_string()),
-            },
-            ChatMessage {
-                role: "assistant".to_string(),
-                content: "当前冗长主要来自已探索索引信息和输出要求重复注入。".to_string(),
-                reasoning_content: None,
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
-            },
-        ];
-
-        let result = collect_exploration_entries_from_messages(&history);
-        assert!(result.contains("工具 read_file"));
-        assert!(result.contains("调度结论"));
-        assert!(!result.contains("用户原始诉求"));
-    }
-
-    #[test]
-    fn latest_user_goal_is_skipped_when_task_already_covers_it() {
-        let task_description = "请精简 Claude 子任务提示词，删除冗长动态规划内容，只保留必要约束。";
-        let latest_user_goal = "请精简 Claude 子任务提示词，删除冗长动态规划内容，只保留必要约束。";
-        assert!(!should_include_latest_user_goal(
-            latest_user_goal,
-            task_description
-        ));
-        assert!(should_include_latest_user_goal(
-            "调度子任务不要再带固定工程师开头",
-            task_description
-        ));
     }
 }

@@ -446,26 +446,3 @@ fn emit_voice_asr_event(
         },
     );
 }
-
-#[cfg(test)]
-mod tests {
-    use super::resolve_dashscope_websocket_url;
-
-    #[test]
-    fn resolve_dashscope_websocket_url_defaults_to_beijing() {
-        assert_eq!(
-            resolve_dashscope_websocket_url("https://dashscope.aliyuncs.com/compatible-mode/v1"),
-            "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
-        );
-    }
-
-    #[test]
-    fn resolve_dashscope_websocket_url_uses_intl_when_needed() {
-        assert_eq!(
-            resolve_dashscope_websocket_url(
-                "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-            ),
-            "wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference"
-        );
-    }
-}

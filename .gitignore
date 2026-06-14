@@ -40,3 +40,5 @@ knowledge
 .swarm/
 ruvector.db
 *.bak
+__pycache__/
+*.pyc

@@ -559,8 +559,9 @@ impl OpenAiCompatProvider {
     }
 
     fn enable_thinking_parameter(&self, enable_thinking: bool) -> Option<bool> {
-        let _ = enable_thinking;
-        None
+        // 按标准 thinking 开关传递：true 思考、false 不思考。摘要默认 false，
+        // 主对话按用户配置传递，子代理固定 false。
+        Some(enable_thinking)
     }
 }
 

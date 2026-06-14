@@ -811,7 +811,9 @@ fn resolve_summary_provider(
                 summary.url.trim().to_string()
             },
             summary_model.to_string(),
-            96,
+            // 关键字摘要输出 JSON 数组（最多 15 项）需要较大预算；也兼容仍会思考的摘要
+            // 模型（思考 token 计入上限）。非思考模型输出完即停，此处仅作上限保护。
+            2048,
             config.temperature,
         ),
         summary_model.to_string(),

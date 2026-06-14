@@ -263,7 +263,11 @@ def call_summary_model(config: SummaryConfig, prompt: str, timeout: float) -> st
         "messages": [{"role": "system", "content": prompt}],
         "stream": False,
         "temperature": 0.1,
-        "max_tokens": 512,
+        # 关闭思考，与后端摘要路径保持一致：reasoning 模型（如 o-deepseek-v4-flash）
+        # 默认先输出 reasoning_content，正式 content 为空会触发“模型返回空内容”。
+        "enable_thinking": False,
+        # keywords JSON（最多 15 项）需要预算；非思考模型输出完即停，此处仅作上限。
+        "max_tokens": 2048,
     }
     request = urllib.request.Request(
         url,

@@ -1,4 +1,5 @@
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent } from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -10,6 +11,7 @@ import "katex/dist/katex.min.css";
 import type { PythonCodeRunRecord } from "../../types";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { MarkdownImage } from "./MarkdownImage";
+import { useMarkdownLinkHandler } from "./MarkdownLinkContext";
 
 /** Fast, non-crypto hash for stable code block identification. */
 function stableHash(text: string): string {
@@ -84,6 +86,16 @@ function customUrlTransform(url: string) {
     return url;
   }
   return defaultUrlTransform(url);
+}
+
+function isBrowserUrl(url: string | undefined): url is string {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function normalizeSingleLineMathBlocks(content: string) {
@@ -171,6 +183,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   onRunPython?: (target: { messageId: string; codeBlockIndex: number; code: string; codeHash: string }) => void;
   pythonRunRecords?: Record<string, PythonCodeRunRecord>;
 }) {
+  const openMarkdownLink = useMarkdownLinkHandler();
   // When streaming, throttle markdown parse to ~7fps to avoid 50/s full AST re-parses
   const [throttledContent, setThrottledContent] = useState(content);
   const latestContentRef = useRef(content);
@@ -256,6 +269,27 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
     },
     img({ src, alt }) {
       return <MarkdownImage src={src} alt={alt} />;
+    },
+    a({ href, children, ...props }) {
+      const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+        if (!openMarkdownLink || !isBrowserUrl(href)) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        void openMarkdownLink(href);
+      };
+
+      return (
+        <a
+          {...props}
+          href={href}
+          rel="noreferrer"
+          onClick={handleClick}
+        >
+          {children}
+        </a>
+      );
     },
   };
 

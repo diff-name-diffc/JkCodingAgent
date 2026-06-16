@@ -16,6 +16,7 @@ use super::config::DispatcherAgentConfig;
 use super::llm::OpenAiCompatProvider;
 use super::tools::ToolRegistry;
 use crate::project::mcp::ProjectMcpRegistry;
+use crate::ssh_tool::SshSessionManager;
 
 pub(crate) use subprocess::DispatcherSubprocessRegistry;
 pub use types::{AgentEvent, AgentTurn, DispatchFeedbackState};
@@ -73,6 +74,7 @@ impl DispatcherAgent {
     pub fn new(
         config: DispatcherAgentConfig,
         project_mcp_registry: ProjectMcpRegistry,
+        ssh_manager: SshSessionManager,
         subprocesses: Arc<DispatcherSubprocessRegistry>,
         sub_agent_manager: Option<Arc<super::sub_agent::SubAgentManager>>,
     ) -> Self {
@@ -84,7 +86,7 @@ impl DispatcherAgent {
             config.temperature,
         );
 
-        let mut registry = ToolRegistry::default_tools(project_mcp_registry.clone());
+        let mut registry = ToolRegistry::default_tools(project_mcp_registry.clone(), ssh_manager);
         if let Some(manager) = &sub_agent_manager {
             registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(Arc::clone(
                 manager,

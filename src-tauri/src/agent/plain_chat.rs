@@ -23,7 +23,9 @@ use super::llm::{
 use super::runtime::{AgentEvent, AgentTurn};
 use super::sub_agent::{tool::sub_agent_failure_message, SubAgentManager};
 use super::tools::ToolRegistry;
+use crate::project::mcp::{ensure_project_mcp_file, ProjectMcpRegistry};
 use crate::shared::truncate_for_display;
+use crate::ssh_tool::SshSessionManager;
 
 pub struct PlainChatAgent {
     config: DispatcherAgentConfig,
@@ -35,12 +37,15 @@ pub struct PlainChatAgent {
     app_handle: Option<AppHandle>,
     tools: Arc<ToolRegistry>,
     allowed_tools: Mutex<Vec<String>>,
+    project_mcp_registry: ProjectMcpRegistry,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
 }
 
 impl PlainChatAgent {
     pub fn new(
         config: DispatcherAgentConfig,
+        project_mcp_registry: ProjectMcpRegistry,
+        ssh_manager: SshSessionManager,
         sub_agent_manager: Option<Arc<SubAgentManager>>,
     ) -> Self {
         let provider = OpenAiCompatProvider::new(
@@ -51,7 +56,8 @@ impl PlainChatAgent {
             config.temperature,
         );
 
-        let mut registry = ToolRegistry::plain_chat_tools();
+        let mut registry =
+            ToolRegistry::plain_chat_tools(project_mcp_registry.clone(), ssh_manager.clone());
         if let Some(manager) = &sub_agent_manager {
             registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(Arc::clone(
                 manager,
@@ -71,6 +77,7 @@ impl PlainChatAgent {
             app_handle: None,
             tools: Arc::new(registry),
             allowed_tools: Mutex::new(Vec::new()),
+            project_mcp_registry,
             sub_agent_manager,
         }
     }
@@ -246,6 +253,11 @@ impl PlainChatAgent {
 
         let mut usage_tracker = UsageTracker::new();
         let workspace = self.browser_workspace().await?;
+        self.project_mcp_registry
+            .ensure_recent(&workspace)
+            .await
+            .map_err(anyhow::Error::msg)
+            .context("刷新聊天 MCP 状态失败")?;
         let reply = self
             .run_loop(
                 db,
@@ -556,13 +568,17 @@ impl PlainChatAgent {
     async fn browser_workspace(&self) -> Result<PathBuf> {
         let workspace = self.config.root_dir.join("plain-chat-browser");
         let config_dir = workspace.join(".jkcodingagent");
-        let create_dir = config_dir.clone();
-        tokio::task::spawn_blocking(move || fs::create_dir_all(&create_dir))
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!("create plain chat browser workspace panicked: {error}")
-            })?
-            .with_context(|| format!("create {}", config_dir.display()))?;
+        let workspace_for_init = workspace.clone();
+        tokio::task::spawn_blocking(move || {
+            fs::create_dir_all(&config_dir)
+                .with_context(|| format!("create {}", config_dir.display()))?;
+            ensure_project_mcp_file(&workspace_for_init.to_string_lossy())
+                .map_err(anyhow::Error::msg)
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("create plain chat browser workspace panicked: {error}")
+        })??;
         Ok(workspace)
     }
 
@@ -621,37 +637,21 @@ impl PlainChatAgent {
 
     fn build_tool_definitions(&self, workspace: &Path) -> Vec<ToolDefinition> {
         let configured = self.allowed_tools.lock().clone();
-        if configured.is_empty() {
-            self.tools.definitions_for_workspace(
-                workspace,
-                Option::<std::iter::Empty<&str>>::None,
-                false,
-            )
-        } else {
-            let allowed_refs: Vec<&str> = configured.iter().map(|s| s.as_str()).collect();
-            let mut defs = self.tools.definitions_for_workspace(
-                workspace,
-                Some(allowed_refs.iter().copied()),
-                false,
-            );
-            let has_call = defs.iter().any(|d| d.function.name == "call_sub_agent");
-            let has_list = defs.iter().any(|d| d.function.name == "list_sub_agents");
-            if !has_call || !has_list {
-                let all_defs = self.tools.definitions_for_workspace(
-                    workspace,
-                    Option::<std::iter::Empty<&str>>::None,
-                    false,
-                );
-                for def in all_defs {
-                    if (def.function.name == "call_sub_agent" && !has_call)
-                        || (def.function.name == "list_sub_agents" && !has_list)
-                    {
-                        defs.push(def);
-                    }
-                }
-            }
-            defs
+        let mut defs = self.tools.definitions_for_workspace(
+            workspace,
+            Option::<std::iter::Empty<&str>>::None,
+            true,
+        );
+
+        if !configured.is_empty() {
+            let allowed: std::collections::HashSet<String> = configured.into_iter().collect();
+            defs.retain(|def| {
+                allowed.contains(&def.function.name)
+                    || def.function.name == "call_sub_agent"
+                    || def.function.name == "list_sub_agents"
+            });
         }
+        defs
     }
 }
 
@@ -715,7 +715,9 @@ fn build_plain_chat_system_prompt() -> String {
         String::new(),
         "你是桌面客户端中的普通聊天助手。".to_string(),
         format!("当前本地时间：{current_time}"),
-        "当前会话不是项目 Agent 会话，没有项目目录、文件系统、终端、MCP 或子进程能力。".to_string(),
+        "当前会话不是项目 Agent 会话，没有项目目录、项目文件系统或子进程能力。".to_string(),
+        "你可以调用 local_zsh 在受限本地目录 .jkcodingagent/local_env/zsh 中执行 macOS zsh 命令；所有产物应留在该目录，工具会维护 audit.json 审计历史。".to_string(),
+        "如果设置中启用了聊天 MCP 工具，可按工具说明调用这些动态发现的外部工具。".to_string(),
         "你可以按需使用浏览器工具打开网页、点击、输入、等待、读取页面可访问性树快照、请求视觉辅助分析和关闭浏览器，用于网页自动化与公开信息检索。".to_string(),
         "浏览器自动化统一使用 ref：先调用 browser_read_text 获取 Accessibility Tree 快照，再使用快照中的 ref 调用点击、输入或局部读取工具；不要使用 CSS selector。".to_string(),
         "元素 ref 只在最近一次 browser_read_text 快照中有效。页面导航或内容变化后旧 ref 会失效，收到 ref 失效错误时系统会自动附上新快照，基于新快照重新选择元素即可。".to_string(),

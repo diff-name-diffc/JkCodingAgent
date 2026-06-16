@@ -1,9 +1,8 @@
 use crate::agent::DispatcherState;
 use crate::{
-    agent, browser, chat_images, knowledge, platform, project, python_runner, scm,
-    shared::TaskManager, task_runtime, workspace,
+    agent, browser, chat_images, platform, project, python_runner, scm, shared::TaskManager,
+    ssh_tool, task_runtime, workspace,
 };
-use tauri::Manager;
 
 fn build_task_manager() -> TaskManager {
     TaskManager::default()
@@ -12,14 +11,13 @@ fn build_task_manager() -> TaskManager {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let project_mcp_registry = project::mcp::ProjectMcpRegistry::default();
-    let dispatcher_state = DispatcherState::new(project_mcp_registry.clone())
-        .expect("failed to initialize Dispatcher state");
+    let ssh_session_manager = ssh_tool::SshSessionManager::default();
+    let dispatcher_state =
+        DispatcherState::new(project_mcp_registry.clone(), ssh_session_manager.clone())
+            .expect("failed to initialize Dispatcher state");
 
     tauri::Builder::default()
-        .setup(|app| {
-            if let Ok(resource_dir) = app.path().resource_dir() {
-                knowledge::set_resource_dir_hint(resource_dir);
-            }
+        .setup(|_app| {
             // 后台预热 login shell 环境，避免第一次启动任务时阻塞
             std::thread::spawn(|| {
                 platform::get_login_shell_path();
@@ -32,6 +30,7 @@ pub fn run() {
         .manage(agent::voice::VoiceAsrManager::default())
         .manage(python_runner::PythonRunnerState::default())
         .manage(project_mcp_registry)
+        .manage(ssh_session_manager)
         .manage(workspace::RopeManager::new())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -83,25 +82,6 @@ pub fn run() {
             workspace::rope::rope_close,
             workspace::rope::rope_undo,
             workspace::rope::rope_redo,
-            knowledge::collection::knowledge_list_collections,
-            knowledge::collection::knowledge_create_collection,
-            knowledge::collection::knowledge_update_collection,
-            knowledge::collection::knowledge_delete_collection,
-            knowledge::settings::knowledge_get_settings,
-            knowledge::settings::knowledge_save_settings,
-            knowledge::settings::knowledge_test_model,
-            knowledge::ingest::knowledge_import_sources,
-            knowledge::jobs::knowledge_get_ingest_jobs,
-            knowledge::jobs::knowledge_cancel_ingest,
-            knowledge::jobs::knowledge_retry_ingest,
-            knowledge::pages::knowledge_list_pages,
-            knowledge::pages::knowledge_read_page,
-            knowledge::pages::knowledge_write_page,
-            knowledge::pages::knowledge_delete_page,
-            knowledge::search::knowledge_search,
-            knowledge::chunk::knowledge_reindex_collection,
-            knowledge::cache::knowledge_vector_stats,
-            knowledge::graph::knowledge_build_graph,
             scm::git::generate_commit_message,
             scm::git::git_status,
             scm::git::git_list_branches,
@@ -128,6 +108,11 @@ pub fn run() {
             project::config::write_project_config,
             project::mcp::refresh_project_mcp_status,
             project::mcp::set_project_mcp_server_enabled,
+            ssh_tool::ssh_tool_load_config,
+            ssh_tool::ssh_tool_load_audit,
+            ssh_tool::ssh_tool_save_config,
+            ssh_tool::ssh_tool_test_connection,
+            ssh_tool::ssh_tool_test_server_config,
             project::config::read_agent_config_file,
             project::config::write_agent_config_file,
             project::storage::load_projects,
@@ -178,6 +163,8 @@ pub fn run() {
             agent::commands::aha_save_settings_v2,
             agent::commands::aha_get_context_config,
             agent::commands::aha_get_shared_models,
+            agent::commands::aha_list_agent_tools,
+            agent::commands::aha_resolve_ssh_workspace,
             agent::commands::dispatcher_fetch_models,
             agent::commands::dispatcher_test_model,
             agent::commands::dispatcher_continue_after_dispatch,

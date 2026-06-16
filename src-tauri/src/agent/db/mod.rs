@@ -20,11 +20,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
 
 // 对外引用的共享常量需显式重新导出（glob `pub use` 会丢弃 pub(crate) 项）。
-pub(crate) use util::{DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS, TOOL_RETRY_CONTEXT_PREFIX};
-use util::MAX_DIALOGUE_QUERY_LIMIT;
-pub use artifacts::{
-    DispatcherToolArtifactRecord, DispatcherToolArtifactRef, ToolArtifactDraft,
-};
+pub use artifacts::{DispatcherToolArtifactRecord, DispatcherToolArtifactRef, ToolArtifactDraft};
 pub use categories::ChatCategory;
 pub use keywords::{KeywordAction, SessionKeywordRecord, SessionSearchResult};
 pub use messages::{DispatcherMessageRecord, DispatcherMessageUsageStats};
@@ -42,14 +38,14 @@ pub use settings::{
     DispatcherSettingsModelConfigs, DispatcherSettingsRecord,
 };
 pub use token_usage::{DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource};
-
+use util::MAX_DIALOGUE_QUERY_LIMIT;
+pub(crate) use util::{DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS, TOOL_RETRY_CONTEXT_PREFIX};
 
 #[derive(Debug, Clone)]
 pub struct DispatcherDb {
     pub(super) pool: Arc<Pool<SqliteConnectionManager>>,
     pub(super) path: PathBuf,
 }
-
 
 impl DispatcherDb {
     pub fn new(path: PathBuf) -> Result<Self> {
@@ -74,9 +70,6 @@ impl DispatcherDb {
     pub fn pool(&self) -> Arc<Pool<SqliteConnectionManager>> {
         Arc::clone(&self.pool)
     }
-
-
-
 
     pub(super) fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>> {
         self.pool.get().with_context(|| "获取数据库连接")
@@ -122,4 +115,3 @@ impl DispatcherDb {
         (total_chars as u64) / 4
     }
 }
-

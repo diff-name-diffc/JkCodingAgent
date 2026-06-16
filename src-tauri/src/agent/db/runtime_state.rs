@@ -297,7 +297,6 @@ impl DispatcherDb {
             .context("clear_checklist spawn_blocking")?
     }
 
-
     pub async fn get_session_runtime_state_async(
         &self,
         workspace_id: &str,

@@ -177,8 +177,12 @@ impl DispatcherAgent {
         };
 
         let configured = self.allowed_tools.lock().clone();
-        if !configured.is_empty() {
-            let configured_set: HashSet<String> = configured.into_iter().collect();
+        let configured_set = if configured.is_empty() {
+            None
+        } else {
+            Some(configured.into_iter().collect::<HashSet<_>>())
+        };
+        if let Some(configured_set) = &configured_set {
             allowed.retain(|name| configured_set.contains(*name));
             allowed.insert("call_sub_agent");
             allowed.insert("list_sub_agents");
@@ -212,8 +216,19 @@ impl DispatcherAgent {
             }
         }
 
-        self.tools
-            .definitions_for_workspace(workspace, Some(allowed.into_iter()), include_dynamic)
+        let mut definitions = self.tools.definitions_for_workspace(
+            workspace,
+            Some(allowed.into_iter()),
+            include_dynamic,
+        );
+        if let Some(configured_set) = configured_set {
+            definitions.retain(|definition| {
+                configured_set.contains(&definition.function.name)
+                    || definition.function.name == "call_sub_agent"
+                    || definition.function.name == "list_sub_agents"
+            });
+        }
+        definitions
     }
 }
 
@@ -227,8 +242,6 @@ pub(crate) fn default_mode_tool_allowlist() -> HashSet<&'static str> {
         "list_dir",
         "glob",
         "grep",
-        "search_knowledge_base",
-        "read_knowledge_page",
         "exec",
         "message",
         "update_plan",

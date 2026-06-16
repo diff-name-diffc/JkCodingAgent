@@ -478,10 +478,7 @@ async fn run_grep_fallback(
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let status = output.status.code().unwrap_or_default();
     if status != 0 && status != 1 {
-        return format!(
-            "grep 回退搜索失败，退出状态：{}",
-            output.status
-        );
+        return format!("grep 回退搜索失败，退出状态：{}", output.status);
     }
     if stdout.trim().is_empty() {
         return format!("未找到匹配内容：{pattern}");
@@ -500,9 +497,7 @@ fn render_grep_fallback_output(stdout: &str, max_files: usize, files_with_matche
         };
         let path = &line[..colon_pos];
         if is_noise(std::ffi::OsStr::new(
-            std::path::Path::new(path)
-                .file_name()
-                .unwrap_or_default(),
+            std::path::Path::new(path).file_name().unwrap_or_default(),
         )) {
             continue;
         }

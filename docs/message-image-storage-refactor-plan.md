@@ -1,6 +1,6 @@
 # 消息图片存储与多模态检索改造执行计划
 
-> 目标：将当前纯文本消息改造为支持有序文本+图片片段的消息模型，为后续多模态向量检索（LanceDB）奠定数据基础。
+> 目标：将当前纯文本消息改造为支持有序文本+图片片段的消息模型。
 >
 > **原则：不考虑向后兼容，`dispatcher_messages` 移除 `content` 字段，改为 `segments_json` JSON 数组单字段，消除数据冗余。**
 
@@ -52,7 +52,6 @@
 | 3 | `chat_images` 辅助表存储图片元数据（用于向量检索扩展） | P0 |
 | 4 | 渲染/LLM 调用时动态组装 Markdown（`segmentsToMarkdown`） | P0 |
 | 5 | 图片生成工具接口设计（暂不实现） | P1 |
-| 6 | LanceDB 向量表预留扩展（暂不实现） | P2 |
 
 ### 2.2 非目标
 
@@ -222,8 +221,8 @@ CREATE TABLE IF NOT EXISTS chat_images (
     mime_type TEXT,
     source TEXT,
     generation_prompt TEXT,
-    -- 向量检索预留字段（暂不填充）
-    vector_embedding_json TEXT,        -- 图片向量（JSON 数组，后续迁移到 LanceDB）
+    -- 预留字段（暂不填充）
+    vector_embedding_json TEXT,        -- 预留：图片向量（JSON 数组，当前未使用）
     text_description TEXT,             -- AI 生成的图片描述
     created_at TEXT NOT NULL,
     FOREIGN KEY (message_id) REFERENCES dispatcher_messages(id) ON DELETE CASCADE
@@ -648,61 +647,6 @@ pub async fn generate_image(
 
 ---
 
-### 4.3 LanceDB 预留扩展（暂不实现）
-
-#### 预留：向量表结构（`src-tauri/src/vector_store.rs` 或扩展 `db.rs`）
-
-```rust
-// 预留：多模态向量检索表
-// TODO: 暂不实现，但数据结构需与 chat_images 表对齐
-
-/*
-use lancedb::{connect, Database, Table};
-use arrow_array::{FixedSizeListArray, RecordBatch, StringArray, Float32Array};
-use arrow_schema::{DataType, Field, Schema};
-
-pub struct MultimodalVectorStore {
-    db: Database,
-}
-
-impl MultimodalVectorStore {
-    pub async fn init(db_path: &str) -> anyhow::Result<Self> {
-        let db = connect(db_path).execute().await?;
-        Ok(Self { db })
-    }
-
-    pub async fn create_chat_vectors_table(&self) -> anyhow::Result<Table> {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),               // 对应 chat_images.id
-            Field::new("segment_id", DataType::Utf8, false),       // 对应 message_segments.id
-            Field::new("message_id", DataType::Utf8, false),
-            Field::new("workspace_id", DataType::Utf8, false),
-            Field::new("content_type", DataType::Utf8, false),     // "text" | "image"
-            Field::new("text_content", DataType::Utf8, true),        // 文本内容或图片描述
-            Field::new("image_path", DataType::Utf8, true),        // 图片本地路径
-            // 向量字段（假设 768 维）
-            Field::new("vector", DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, false)),
-                768,
-            ), false),
-            Field::new("created_at", DataType::Int64, false),
-        ]));
-
-        let table = self.db
-            .create_table("chat_vectors", schema.into())
-            .execute()
-            .await?;
-
-        Ok(table)
-    }
-
-    // TODO: 实现写入和检索
-}
-*/
-```
-
----
-
 ## 五、执行步骤清单
 
 ### Phase 1：数据模型与表结构（预计 1-2 天）
@@ -749,13 +693,6 @@ impl MultimodalVectorStore {
 | 5.1 | 新建接口文件 | `src-tauri/src/tools/image_generator.rs` | 定义 `ImageGenerationInput` / `ImageGenerationOutput` |
 | 5.2 | 新建工具注册 | `src-tauri/src/tools/mod.rs` | 工具模块入口 |
 | 5.3 | 标记 TODO | `src-tauri/src/tools/image_generator.rs` | `todo!()` 占位 |
-
-### Phase 6：LanceDB 预留扩展（TODO，不实现）
-
-| # | 步骤 | 文件 | 说明 |
-|---|------|------|------|
-| 6.1 | 新建模块 | `src-tauri/src/vector_store.rs` | 注释掉的向量表结构 |
-| 6.2 | 预留字段 | `chat_images` 表 | `vector_embedding_json`, `text_description` |
 
 ---
 
@@ -816,5 +753,4 @@ impl MultimodalVectorStore {
 | `src-tauri/src/agent/commands.rs` | Tauri 命令处理 | 改造发送命令 |
 | `src-tauri/src/chat_images.rs`（新建） | 图片文件系统操作 | 新建 |
 | `src-tauri/src/tools/image_generator.rs`（新建） | 图片生成工具（TODO） | 新建（接口定义） |
-| `src-tauri/src/vector_store.rs`（新建） | 向量检索（TODO） | 新建（预留） |
 | `src-tauri/src/lib.rs` | Tauri 入口 | 注册新命令 |

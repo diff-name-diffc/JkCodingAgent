@@ -17,24 +17,27 @@ import {
   FolderKanban,
   MessageSquare,
   Cpu,
+  Server,
 } from "lucide-react";
 import type {
   AhaContextConfig,
   AhaSettingsV2,
   AhaSharedModels,
   AgentContext,
+  AgentToolInfo,
   DispatcherModelConfig,
 } from "../../../types";
 import s from "../../../styles";
 import { SubAgentManagePanel } from "../sub-agents/SubAgentManagePanel";
 import { ContextSubAgentPicker } from "../sub-agents/ContextSubAgentPicker";
+import { SshToolPanel } from "./SshToolPanel";
 
 const DEFAULT_SUMMARY_MODEL = "deepseek-v4-flash";
 const DEFAULT_IMAGE_MODEL_URL = "https://dashscope.aliyuncs.com/api/v1";
 const DEFAULT_IMAGE_MODEL = "qwen-image-2.0-pro";
 const DEFAULT_ASR_MODEL = "fun-asr-realtime";
 
-type TopTab = "shared" | "project" | "chat" | "sub_agents";
+type TopTab = "shared" | "project" | "chat" | "sub_agents" | "ssh_tools";
 type AgentSubTab = "models" | "tools" | "sub_agents";
 type SharedModelKind = "vision" | "image" | "imageEdit" | "asr" | "tts" | "embedding";
 type ContextModelKind = "chat" | "summary";
@@ -47,6 +50,7 @@ const TOP_TABS: TopTabItem[] = [
   { key: "shared", label: "通用模型", icon: Cpu },
   { key: "project", label: "项目智能体", icon: FolderKanban },
   { key: "chat", label: "聊天智能体", icon: MessageSquare },
+  { key: "ssh_tools", label: "SSH 工具", icon: Server },
   { key: "sub_agents", label: "子智能体", icon: Users },
 ];
 
@@ -85,7 +89,7 @@ function activeProvider(providers: DispatcherModelConfig[]): DispatcherModelConf
   return providers.find((p) => p.active) ?? emptyProvider();
 }
 
-export function AhaAgentPanel() {
+export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
   const [activeTopTab, setActiveTopTab] = useState<TopTab>("shared");
   const [activeSubTab, setActiveSubTab] = useState<AgentSubTab>("models");
 
@@ -404,6 +408,8 @@ export function AhaAgentPanel() {
     const setContext = context === "project" ? setProject : setChat;
     return (
       <ToolsTab
+        context={context}
+        projectPath={projectPath}
         allowedTools={state.allowedTools}
         onChange={(next) => setContext((prev) => ({ ...prev, allowedTools: next }))}
       />
@@ -495,6 +501,8 @@ export function AhaAgentPanel() {
 
         {activeTopTab === "sub_agents" ? (
           <SubAgentManagePanel />
+        ) : activeTopTab === "ssh_tools" ? (
+          <SshToolPanel projectPath={projectPath} />
         ) : showSubTabs && activeSubTab === "sub_agents" ? (
           <ContextSubAgentPicker context={agentContext} />
         ) : (
@@ -531,7 +539,9 @@ export function AhaAgentPanel() {
           </div>
         )}
       </div>
-      {activeTopTab !== "sub_agents" && !(showSubTabs && activeSubTab === "sub_agents") && (
+      {activeTopTab !== "sub_agents" &&
+        activeTopTab !== "ssh_tools" &&
+        !(showSubTabs && activeSubTab === "sub_agents") && (
         <div style={s.settingsFooter}>
           {saveError && (
             <span style={{ ...s.ahaFeedback, color: "var(--danger)", marginRight: "auto" }}>
@@ -567,20 +577,39 @@ export function AhaAgentPanel() {
 }
 
 function ToolsTab({
+  context,
+  projectPath,
   allowedTools,
   onChange,
 }: {
+  context: AgentContext;
+  projectPath?: string;
   allowedTools: string[];
   onChange: (next: string[]) => void;
 }) {
-  const [availableTools, setAvailableTools] = useState<
-    Array<{ name: string; description: string }>
-  >([]);
+  const [availableTools, setAvailableTools] = useState<AgentToolInfo[]>([]);
+  const [loadingTools, setLoadingTools] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const loadTools = useCallback(async () => {
+    setLoadingTools(true);
+    setLoadError(null);
+    try {
+      const tools = await invoke<AgentToolInfo[]>("aha_list_agent_tools", {
+        context,
+        projectPath: context === "project" ? projectPath ?? null : null,
+      });
+      setAvailableTools(tools);
+    } catch (error) {
+      setLoadError(String(error));
+    } finally {
+      setLoadingTools(false);
+    }
+  }, [context, projectPath]);
+
   useEffect(() => {
-    invoke<Array<{ name: string; description: string }>>("sub_agent_list_tools")
-      .then(setAvailableTools)
-      .catch(() => {});
-  }, []);
+    loadTools();
+  }, [loadTools]);
 
   const selectedSet = new Set(allowedTools);
   const selectedList = availableTools.filter((t) => selectedSet.has(t.name));
@@ -597,7 +626,17 @@ function ToolsTab({
     <div style={s.ahaSection}>
       <div style={s.ahaSectionTitle}>工具配置</div>
       <div style={{ ...s.ahaSectionDescription, marginBottom: 12 }}>
-        选择当前智能体可使用的工具。未选择时使用默认工具集。
+        选择当前智能体可使用的工具。未选择时使用默认工具集；MCP 工具会按当前上下文自动发现。
+      </div>
+      <div style={{ ...s.ahaActionRow, justifyContent: "space-between", marginBottom: 10 }}>
+        <span style={s.ahaHint}>
+          {loadingTools ? "正在发现工具..." : `已发现 ${availableTools.length} 个工具`}
+          {loadError ? ` · ${loadError}` : ""}
+        </span>
+        <button type="button" style={s.ahaGhostButton} onClick={loadTools} disabled={loadingTools}>
+          <RefreshCw size={13} />
+          刷新工具
+        </button>
       </div>
       <div style={s.ahaField}>
         <label style={s.ahaLabel}>

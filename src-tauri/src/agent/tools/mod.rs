@@ -16,19 +16,26 @@ pub use planning::{
 pub use registry::{AgentTool, ToolRegistry};
 
 use crate::project::mcp::ProjectMcpRegistry;
+use crate::ssh_tool::SshSessionManager;
 
 impl ToolRegistry {
-    pub fn default_tools(project_mcp_registry: ProjectMcpRegistry) -> Self {
-        let mut tools = builtin::builtin_tools();
+    pub fn default_tools(
+        project_mcp_registry: ProjectMcpRegistry,
+        ssh_manager: SshSessionManager,
+    ) -> Self {
+        let mut tools = builtin::builtin_tools(ssh_manager);
         tools.extend(planning::planning_tools());
         tools.extend(delegation::delegation_tools());
         tools.push(crate::agent::sub_agent::notify_user_progress_tool());
         Self::new(tools).with_dynamic_provider(mcp::mcp_tool_bridge(project_mcp_registry))
     }
 
-    pub fn plain_chat_tools() -> Self {
-        let mut tools = builtin::plain_chat_tools();
+    pub fn plain_chat_tools(
+        project_mcp_registry: ProjectMcpRegistry,
+        ssh_manager: SshSessionManager,
+    ) -> Self {
+        let mut tools = builtin::plain_chat_tools(ssh_manager);
         tools.push(crate::agent::sub_agent::notify_user_progress_tool());
-        Self::new(tools)
+        Self::new(tools).with_dynamic_provider(mcp::mcp_tool_bridge(project_mcp_registry))
     }
 }

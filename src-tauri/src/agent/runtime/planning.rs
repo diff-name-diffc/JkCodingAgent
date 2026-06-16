@@ -6,17 +6,17 @@ use chrono::Utc;
 use tauri::ipc::Channel;
 
 use super::super::db::{
-    ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb,
-    DispatcherMode, DispatcherSessionRuntimeState, PlanInteraction, PlanQuestionOption,
+    ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherDb, DispatcherMode,
+    DispatcherSessionRuntimeState, PlanInteraction, PlanQuestionOption,
 };
 use super::super::tools::{
     parse_ask_plan_question, parse_create_plan_document, parse_edit_plan_document,
     parse_present_plan, parse_replace_plan_document, parse_update_plan, UpdatePlanDraft,
 };
-use super::types::AgentEvent;
 use super::helpers::{
     is_implemented_plan_path, lexical_normalize_path, slugify_plan_title, string_arg_required,
 };
+use super::types::AgentEvent;
 
 // ─── Internal types ───────────────────────────────────────────────────────────
 
@@ -108,8 +108,7 @@ pub(crate) async fn replace_plan_document(
     path: &str,
     content: &str,
 ) -> std::result::Result<PathBuf, String> {
-    let plan_path =
-        resolve_plan_path_async(workspace, path, PlanPathAccess::WriteExisting).await?;
+    let plan_path = resolve_plan_path_async(workspace, path, PlanPathAccess::WriteExisting).await?;
     let content = content.to_string();
     tokio::task::spawn_blocking(move || {
         fs::write(&plan_path, content).map_err(|error| format!("替换计划书失败：{error}"))?;
@@ -126,8 +125,7 @@ pub(crate) async fn edit_plan_document(
     new_text: &str,
     replace_all: bool,
 ) -> std::result::Result<PathBuf, String> {
-    let plan_path =
-        resolve_plan_path_async(workspace, path, PlanPathAccess::WriteExisting).await?;
+    let plan_path = resolve_plan_path_async(workspace, path, PlanPathAccess::WriteExisting).await?;
     let old_text = old_text.to_string();
     let new_text = new_text.to_string();
     tokio::task::spawn_blocking(move || {
@@ -158,8 +156,7 @@ pub(crate) async fn mark_plan_implemented(
     workspace: &Path,
     path: &str,
 ) -> std::result::Result<(PathBuf, PathBuf), String> {
-    let plan_path =
-        resolve_plan_path_async(workspace, path, PlanPathAccess::WriteExisting).await?;
+    let plan_path = resolve_plan_path_async(workspace, path, PlanPathAccess::WriteExisting).await?;
     tokio::task::spawn_blocking(move || {
         if is_implemented_plan_path(&plan_path) {
             return Err("错误：该计划书已经带有 -已实现.md 标记".to_string());
@@ -458,8 +455,7 @@ impl DispatcherAgent {
                     .get_session_runtime_state_async(workspace_id)
                     .await
                     .map_err(|error| error.to_string())?;
-                let checklist =
-                    build_checklist_state(draft, latest_state.checklist.as_ref())?;
+                let checklist = build_checklist_state(draft, latest_state.checklist.as_ref())?;
                 db.update_checklist_async(workspace_id, &checklist)
                     .await
                     .map_err(|error| error.to_string())?;
@@ -547,8 +543,7 @@ impl DispatcherAgent {
                     "replace_plan_document",
                 )?;
                 let (path, content) = parse_replace_plan_document(&tool_call.arguments)?;
-                let plan_path =
-                    replace_plan_document(workspace, &path, &content).await?;
+                let plan_path = replace_plan_document(workspace, &path, &content).await?;
                 let plan_path = plan_path.to_string_lossy().to_string();
                 db.set_active_plan_path_async(workspace_id, Some(&plan_path))
                     .await
@@ -571,10 +566,8 @@ impl DispatcherAgent {
                 )?;
                 let (path, old_text, new_text, replace_all) =
                     parse_edit_plan_document(&tool_call.arguments)?;
-                let plan_path = edit_plan_document(
-                    workspace, &path, &old_text, &new_text, replace_all,
-                )
-                .await?;
+                let plan_path =
+                    edit_plan_document(workspace, &path, &old_text, &new_text, replace_all).await?;
                 let plan_path = plan_path.to_string_lossy().to_string();
                 db.set_active_plan_path_async(workspace_id, Some(&plan_path))
                     .await
@@ -592,8 +585,8 @@ impl DispatcherAgent {
             "present_plan" => {
                 ensure_mode(runtime_state.mode, DispatcherMode::Plan, "present_plan")?;
                 let (path, title, summary) = parse_present_plan(&tool_call.arguments)?;
-                let plan_path = resolve_plan_path_async(workspace, &path, PlanPathAccess::Read)
-                    .await?;
+                let plan_path =
+                    resolve_plan_path_async(workspace, &path, PlanPathAccess::Read).await?;
                 let plan_path = plan_path.to_string_lossy().to_string();
                 let interaction = PlanInteraction::Ready {
                     plan_path: plan_path.clone(),
@@ -624,8 +617,7 @@ impl DispatcherAgent {
                 )?;
                 let path = string_arg_required(&tool_call.arguments, "path")?;
                 let summary = string_arg_required(&tool_call.arguments, "summary")?;
-                let (original, implemented) =
-                    mark_plan_implemented(workspace, &path).await?;
+                let (original, implemented) = mark_plan_implemented(workspace, &path).await?;
                 let original = original.to_string_lossy().to_string();
                 let implemented = implemented.to_string_lossy().to_string();
                 db.set_active_plan_path_async(workspace_id, Some(&implemented))

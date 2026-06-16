@@ -33,6 +33,8 @@ function status(state, message = null) {
       state,
       url: currentUrl,
       message,
+      minimized: state === "minimized",
+      hasHeadedWindow: !headlessMode && isHeadedWindowOpen,
     },
   });
 }
@@ -162,6 +164,7 @@ async function launchContext(params, viewport) {
   status("launching", "正在启动嵌入式 CloakBrowser");
   context = await cloak.launchPersistentContext(options);
   page = context.pages()[0] || (await context.newPage());
+  isHeadedWindowOpen = !headlessMode;
   attachPageListeners(page);
   currentUrl = page.url();
   await startScreencast(page, viewport);
@@ -304,6 +307,31 @@ async function restoreWindow() {
 
 function timeout(params) {
   return Math.max(1, Number(params.timeout || 60000));
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function interactionSettleTimeout(params) {
+  return Math.min(1500, Math.max(250, Number(params.settleTimeout || 700)));
+}
+
+async function waitForPotentialNavigation(params = {}) {
+  const navigated = await page
+    .waitForEvent("framenavigated", { timeout: interactionSettleTimeout(params) })
+    .then(() => true)
+    .catch(() => false);
+  if (!navigated) {
+    await delay(120);
+    currentUrl = page.url();
+    return false;
+  }
+  await page
+    .waitForLoadState("domcontentloaded", { timeout: Math.min(timeout(params), 5000) })
+    .catch(() => undefined);
+  currentUrl = page.url();
+  return true;
 }
 
 function isLikelyDownloadAbort(error) {
@@ -541,9 +569,16 @@ async function runWithDownloadFeedback(actionLabel, action, params = {}) {
       ? { ok: true, ...downloadResult, url: currentUrl }
       : { ok: true, ...actionResult, url: currentUrl };
   } catch (error) {
-    if (!isLikelyDownloadAbort(error)) throw error;
+    if (!isLikelyDownloadAbort(error)) {
+      if (page) {
+        currentUrl = page.url();
+        status("ready", null);
+      }
+      throw error;
+    }
     const downloadResult = await downloadPromise;
     currentUrl = page.url();
+    status("ready", null);
     return { ok: true, ...downloadResult, url: currentUrl };
   }
 }
@@ -608,16 +643,32 @@ async function run(method, params = {}) {
       currentUrl = page.url();
       return { ok: true, url: currentUrl, title: await page.title() };
     }
+    case "reload": {
+      return runWithDownloadFeedback(
+        "正在刷新页面",
+        async () => {
+          await page.reload({ waitUntil: "domcontentloaded", timeout: timeout(params) });
+          return { title: await page.title() };
+        },
+        params,
+      );
+    }
     case "click": {
       return runWithDownloadFeedback(
         "正在点击页面元素",
         async () => {
           if (params.ref) {
-            return clickElementRef(params.ref);
+            const point = await elementCenterByRef(params.ref);
+            const navigation = waitForPotentialNavigation(params);
+            await page.mouse.click(point.x, point.y);
+            const navigated = await navigation;
+            return { ref: normalizeRef(params.ref), x: point.x, y: point.y, navigated };
           }
           if (Number.isFinite(params.x) && Number.isFinite(params.y)) {
+            const navigation = waitForPotentialNavigation(params);
             await page.mouse.click(Number(params.x), Number(params.y));
-            return {};
+            const navigated = await navigation;
+            return { navigated };
           } else {
             throw new Error("browser_click 需要 ref；请先调用 browser_read_text 获取元素 ref");
           }

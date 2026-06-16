@@ -161,7 +161,6 @@ impl DispatcherDb {
         .await
         .context("upsert_session_token_usage spawn_blocking")?
     }
-
 }
 
 impl DispatcherSessionTokenUsageSource {
@@ -179,4 +178,3 @@ impl DispatcherSessionTokenUsageSource {
         }
     }
 }
-

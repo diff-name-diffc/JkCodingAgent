@@ -693,6 +693,4 @@ impl DispatcherDb {
             .await
             .context("get_session_title spawn_blocking")?
     }
-
-
 }

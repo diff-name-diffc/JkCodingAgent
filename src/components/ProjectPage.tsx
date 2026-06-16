@@ -22,6 +22,7 @@ import { RightToolbar } from "./RightToolbar";
 import type { ShellTerminalPanelHandle } from "./ShellTerminalPanel";
 import type { DispatcherChatHandle } from "./DispatcherChat";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
 import { useProjectPanels } from "../hooks/useProjectPanels";
 import { getPathBasename } from "../utils/filePaths";
 import s from "../styles";
@@ -441,9 +442,9 @@ export function ProjectPage({
     };
   }, []);
 
-  const handleMinimizeBrowser = useCallback(() => {
+  const handleMinimizeBrowser = useCallback(async () => {
     if (!activeSessionId) return;
-    invoke("browser_minimize", { sessionId: activeSessionId }).catch(console.error);
+    await invoke("browser_minimize", { sessionId: activeSessionId });
     handleTogglePanel("browser");
   }, [activeSessionId, handleTogglePanel]);
 
@@ -471,10 +472,11 @@ export function ProjectPage({
       .catch(console.error);
   }, []);
 
-  const handleReopenBrowser = useCallback(() => {
+  const handleReopenBrowser = useCallback(async () => {
     if (!activeSessionId) return;
-    invoke("browser_reopen", { sessionId: activeSessionId }).catch(console.error);
-  }, [activeSessionId]);
+    await invoke("browser_reopen", { sessionId: activeSessionId });
+    handleOpenPanel("browser");
+  }, [activeSessionId, handleOpenPanel]);
 
   const dockedSessions = useMemo(
     () => Array.from(dockedBrowsers.values()),
@@ -840,6 +842,23 @@ export function ProjectPage({
     [handleFileSelect, showEditorWorkbench],
   );
 
+  const handleOpenMarkdownLink = useCallback(
+    async (url: string) => {
+      if (!activeSessionId) return;
+      handleOpenPanel("browser");
+      try {
+        await invoke("browser_navigate", {
+          sessionId: activeSessionId,
+          url,
+          projectPath: project.path,
+        });
+      } catch (error) {
+        console.error("CloakBrowser 打开链接失败:", error);
+      }
+    },
+    [activeSessionId, handleOpenPanel, project.path],
+  );
+
   const handleSubTerminalResizeStart = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
@@ -946,25 +965,27 @@ export function ProjectPage({
                 >
                   <Suspense fallback={<LazyPaneFallback label="会话加载中..." />}>
                     {activeSessionId ? (
-                      <DispatcherChat
-                        ref={dispatcherChatRef}
-                        sessionId={activeSessionId}
-                        projectPath={project.path}
-                        mcpStatus={mcpStatus}
-                        mcpChecking={mcpChecking}
-                        layoutMode={showEditorPane ? "split" : "single"}
-                        subProcesses={allSubProcesses}
-                        onDispatchApproved={handleDispatchApproved}
-                        onDispatchRejected={handleDispatchRejected}
-                        onDispatchContinue={handleDispatchContinue}
-                        onDispatchExit={handleDispatchExit}
-                        onStopActiveRun={handleStopSessionSubProcesses}
-                        onResumeStoppedRun={handleResumeSessionSubProcesses}
-                        onOpenMcpStatus={() => setShowMcpStatus(true)}
-                        onOpenSettings={() => setShowDispatcherSettings(true)}
-                        onOpenPlanDocument={handleOpenPlanDocument}
-                        onClosePanel={() => setShowSessionWorkbench(false)}
-                      />
+                      <MarkdownLinkProvider onOpenUrl={handleOpenMarkdownLink}>
+                        <DispatcherChat
+                          ref={dispatcherChatRef}
+                          sessionId={activeSessionId}
+                          projectPath={project.path}
+                          mcpStatus={mcpStatus}
+                          mcpChecking={mcpChecking}
+                          layoutMode={showEditorPane ? "split" : "single"}
+                          subProcesses={allSubProcesses}
+                          onDispatchApproved={handleDispatchApproved}
+                          onDispatchRejected={handleDispatchRejected}
+                          onDispatchContinue={handleDispatchContinue}
+                          onDispatchExit={handleDispatchExit}
+                          onStopActiveRun={handleStopSessionSubProcesses}
+                          onResumeStoppedRun={handleResumeSessionSubProcesses}
+                          onOpenMcpStatus={() => setShowMcpStatus(true)}
+                          onOpenSettings={() => setShowDispatcherSettings(true)}
+                          onOpenPlanDocument={handleOpenPlanDocument}
+                          onClosePanel={() => setShowSessionWorkbench(false)}
+                        />
+                      </MarkdownLinkProvider>
                     ) : (
                       <div
                         style={{
@@ -1254,6 +1275,7 @@ export function ProjectPage({
             systemPrefersDark={systemPrefersDark}
             onThemeModeChange={onThemeModeChange}
             initialTab="aha"
+            projectPath={project.path}
             onClose={() => setShowDispatcherSettings(false)}
           />
         </Suspense>

@@ -27,6 +27,7 @@ use super::plain_chat::PlainChatAgent;
 use super::runtime::{
     AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent, DispatcherSubprocessRegistry,
 };
+use super::sub_agent::db::ToolInfo;
 use super::sub_agent::SubAgentManager;
 use super::summary::{
     fallback_session_title, parse_keyword_actions, summarize_session_keywords,
@@ -35,14 +36,16 @@ use super::summary::{
 use super::tools::ToolRegistry;
 use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::browser::BrowserManager;
-use crate::project::mcp::ProjectMcpRegistry;
+use crate::project::mcp::{ensure_project_mcp_file, ProjectMcpRegistry};
 use crate::shared::TaskManager;
+use crate::ssh_tool::SshSessionManager;
 
 const SESSION_TITLE_RECENT_DIALOGUES: usize = 3;
 
 pub struct DispatcherState {
     config: DispatcherAgentConfig,
     project_mcp_registry: ProjectMcpRegistry,
+    ssh_manager: SshSessionManager,
     subprocesses: Arc<DispatcherSubprocessRegistry>,
     db: DispatcherDb,
     active_runs: Mutex<HashMap<String, ActiveRunEntry>>,
@@ -102,7 +105,10 @@ pub struct DispatcherSaveSettingsPayload {
 }
 
 impl DispatcherState {
-    pub fn new(project_mcp_registry: ProjectMcpRegistry) -> Result<Self> {
+    pub fn new(
+        project_mcp_registry: ProjectMcpRegistry,
+        ssh_manager: SshSessionManager,
+    ) -> Result<Self> {
         let config = DispatcherAgentConfig::load()?;
         let db = DispatcherDb::new(config.db_path.clone())?;
         let subprocesses = Arc::new(DispatcherSubprocessRegistry::default());
@@ -111,12 +117,14 @@ impl DispatcherState {
             eprintln!("failed to load sub_agent configs: {}", e);
         }
 
-        let initial_tool_registry = ToolRegistry::default_tools(project_mcp_registry.clone());
+        let initial_tool_registry =
+            ToolRegistry::default_tools(project_mcp_registry.clone(), ssh_manager.clone());
         let initial_tool_names = initial_tool_registry.tool_names_and_descriptions();
 
         Ok(Self {
             config,
             project_mcp_registry,
+            ssh_manager,
             subprocesses,
             db,
             active_runs: Mutex::new(HashMap::new()),
@@ -146,6 +154,7 @@ impl DispatcherState {
         let mut agent = DispatcherAgent::new(
             self.config.clone(),
             self.project_mcp_registry.clone(),
+            self.ssh_manager.clone(),
             Arc::clone(&self.subprocesses),
             self.sub_agent_manager.clone(),
         );
@@ -168,7 +177,12 @@ impl DispatcherState {
     }
 
     fn build_plain_chat_agent(&self) -> PlainChatAgent {
-        let agent = PlainChatAgent::new(self.config.clone(), self.sub_agent_manager.clone());
+        let agent = PlainChatAgent::new(
+            self.config.clone(),
+            self.project_mcp_registry.clone(),
+            self.ssh_manager.clone(),
+            self.sub_agent_manager.clone(),
+        );
 
         if let Ok(v2) = self.db.get_settings_v2() {
             agent.apply_settings_v2(&v2, AgentContext::Chat);
@@ -177,6 +191,74 @@ impl DispatcherState {
         }
 
         agent
+    }
+
+    async fn list_agent_tools(
+        &self,
+        context: AgentContext,
+        project_path: Option<String>,
+    ) -> Result<Vec<ToolInfo>, String> {
+        let (workspace, registry) = match context {
+            AgentContext::Project => {
+                let Some(project_path) = project_path.filter(|path| !path.trim().is_empty()) else {
+                    let mut registry = ToolRegistry::default_tools(
+                        self.project_mcp_registry.clone(),
+                        self.ssh_manager.clone(),
+                    );
+                    self.add_sub_agent_tools(&mut registry);
+                    return Ok(tool_infos_from_registry(&registry, None, false));
+                };
+                let workspace = std::path::PathBuf::from(project_path);
+                self.project_mcp_registry.ensure_recent(&workspace).await?;
+                let mut registry = ToolRegistry::default_tools(
+                    self.project_mcp_registry.clone(),
+                    self.ssh_manager.clone(),
+                );
+                self.add_sub_agent_tools(&mut registry);
+                (workspace, registry)
+            }
+            AgentContext::Chat => {
+                let workspace = plain_chat_workspace(&self.config)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                self.project_mcp_registry.ensure_recent(&workspace).await?;
+                let mut registry = ToolRegistry::plain_chat_tools(
+                    self.project_mcp_registry.clone(),
+                    self.ssh_manager.clone(),
+                );
+                self.add_sub_agent_tools(&mut registry);
+                (workspace, registry)
+            }
+        };
+
+        Ok(tool_infos_from_registry(&registry, Some(&workspace), true))
+    }
+
+    async fn ssh_workspace_for_context(
+        &self,
+        context: AgentContext,
+        project_path: Option<String>,
+    ) -> Result<std::path::PathBuf, String> {
+        match context {
+            AgentContext::Project => project_path
+                .filter(|path| !path.trim().is_empty())
+                .map(std::path::PathBuf::from)
+                .ok_or_else(|| "项目 SSH 配置需要项目路径".to_string()),
+            AgentContext::Chat => plain_chat_workspace(&self.config)
+                .await
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    fn add_sub_agent_tools(&self, registry: &mut ToolRegistry) {
+        if let Some(manager) = &self.sub_agent_manager {
+            registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(Arc::clone(
+                manager,
+            ))));
+            registry.add_tool(Box::new(super::sub_agent::ListSubAgentsTool::new(
+                Arc::clone(manager),
+            )));
+        }
     }
 
     fn begin_run(&self, workspace_id: &str) -> Result<ActiveRunHandle, String> {
@@ -678,6 +760,50 @@ where
         .await
         .map_err(|error| format!("{operation} task failed: {error}"))?
         .map_err(|error| error.to_string())
+}
+
+async fn plain_chat_workspace(config: &DispatcherAgentConfig) -> Result<std::path::PathBuf> {
+    let workspace = config.root_dir.join("plain-chat-browser");
+    let workspace_for_init = workspace.clone();
+    tokio::task::spawn_blocking(move || {
+        let config_dir = workspace_for_init.join(".jkcodingagent");
+        std::fs::create_dir_all(&config_dir)
+            .with_context(|| format!("create {}", config_dir.display()))?;
+        ensure_project_mcp_file(&workspace_for_init.to_string_lossy()).map_err(anyhow::Error::msg)
+    })
+    .await
+    .map_err(|error| anyhow!("create plain chat workspace task failed: {error}"))??;
+    Ok(workspace)
+}
+
+fn tool_infos_from_registry(
+    registry: &ToolRegistry,
+    workspace: Option<&std::path::Path>,
+    include_dynamic: bool,
+) -> Vec<ToolInfo> {
+    let definitions = match workspace {
+        Some(workspace) => registry.definitions_for_workspace(
+            workspace,
+            Option::<std::iter::Empty<&str>>::None,
+            include_dynamic,
+        ),
+        None => registry.definitions_for_workspace(
+            std::path::Path::new("."),
+            Option::<std::iter::Empty<&str>>::None,
+            false,
+        ),
+    };
+
+    let mut tools = definitions
+        .into_iter()
+        .map(|definition| ToolInfo {
+            name: definition.function.name,
+            description: definition.function.description,
+        })
+        .collect::<Vec<_>>();
+    tools.sort_by(|left, right| left.name.cmp(&right.name));
+    tools.dedup_by(|left, right| left.name == right.name);
+    tools
 }
 
 async fn generate_session_title(
@@ -1562,6 +1688,29 @@ pub async fn aha_get_shared_models(
         .db
         .get_shared_models()
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn aha_list_agent_tools(
+    state: tauri::State<'_, DispatcherState>,
+    context: String,
+    project_path: Option<String>,
+) -> Result<Vec<ToolInfo>, String> {
+    let ctx = AgentContext::from_wire(&context).map_err(|e| e.to_string())?;
+    state.list_agent_tools(ctx, project_path).await
+}
+
+#[tauri::command]
+pub async fn aha_resolve_ssh_workspace(
+    state: tauri::State<'_, DispatcherState>,
+    context: String,
+    project_path: Option<String>,
+) -> Result<String, String> {
+    let ctx = AgentContext::from_wire(&context).map_err(|e| e.to_string())?;
+    state
+        .ssh_workspace_for_context(ctx, project_path)
+        .await
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]

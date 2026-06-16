@@ -584,12 +584,7 @@ pub fn is_parallel_readonly_tool_call(tool_call: &RequestedToolCall) -> bool {
     // browser_read_text 也是只读操作，子Agent中可并行
     matches!(
         tool_call.name.as_str(),
-        "read_file"
-            | "list_dir"
-            | "glob"
-            | "grep"
-            | "browser_read_text"
-            | "browser_visual_analyze"
+        "read_file" | "list_dir" | "glob" | "grep" | "browser_read_text" | "browser_visual_analyze"
     )
 }
 

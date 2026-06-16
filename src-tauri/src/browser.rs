@@ -914,18 +914,28 @@ fn status_from_value(
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
-    let minimized = if state == "minimized" {
-        true
-    } else if state == "closed" {
-        false
-    } else {
-        current_minimized
-    };
-    let has_headed_window = if state == "closed" {
-        false
-    } else {
-        current_has_headed_window
-    };
+    let minimized = status_value
+        .get("minimized")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| {
+            if state == "minimized" {
+                true
+            } else if state == "closed" || state == "page_closed" {
+                false
+            } else {
+                current_minimized
+            }
+        });
+    let has_headed_window = status_value
+        .get("hasHeadedWindow")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| {
+            if state == "closed" || state == "page_closed" {
+                false
+            } else {
+                current_has_headed_window
+            }
+        });
     Some(BrowserStatus {
         session_id,
         state,

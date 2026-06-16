@@ -15,12 +15,14 @@ export function SidebarFooterActions({
   systemPrefersDark,
   onThemeModeChange,
   onToggleTheme,
+  projectPath,
 }: {
   isDark: boolean;
   themeMode: ThemeMode;
   systemPrefersDark: boolean;
   onThemeModeChange: (mode: ThemeMode) => void;
   onToggleTheme: () => void;
+  projectPath?: string;
 }) {
   const [showAppSettings, setShowAppSettings] = useState(false);
 
@@ -56,6 +58,7 @@ export function SidebarFooterActions({
             themeMode={themeMode}
             systemPrefersDark={systemPrefersDark}
             onThemeModeChange={onThemeModeChange}
+            projectPath={projectPath}
             onClose={() => setShowAppSettings(false)}
           />
         </Suspense>

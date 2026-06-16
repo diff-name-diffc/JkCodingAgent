@@ -39,8 +39,8 @@ interface Props {
   expanded?: boolean;
   onToggleExpanded?: () => void;
   onClose?: () => void;
-  onMinimize?: () => void;
-  onReopen?: () => void;
+  onMinimize?: () => void | Promise<void>;
+  onReopen?: () => void | Promise<void>;
 }
 
 export function BrowserPanel({
@@ -59,6 +59,7 @@ export function BrowserPanel({
   const [logs, setLogs] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const submittingUrlRef = useRef(false);
 
   const imageRef = useRef<HTMLImageElement>(new Image());
 
@@ -87,11 +88,28 @@ export function BrowserPanel({
     }
   }, [sessionId]);
 
+  const runBrowserAction = useCallback(
+    async (action: () => Promise<void>, options: { refresh?: boolean } = {}) => {
+      if (busy) return;
+      setBusy(true);
+      setError(null);
+      try {
+        await action();
+        if (options.refresh !== false) {
+          await refreshStatus();
+        }
+      } catch (reason) {
+        setError(String(reason));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, refreshStatus],
+  );
+
   const startBrowser = useCallback(async () => {
     if (!sessionId) return;
-    setBusy(true);
-    setError(null);
-    try {
+    await runBrowserAction(async () => {
       const next = projectPath
         ? await invoke<BrowserStatus>("browser_start", {
             sessionId,
@@ -99,43 +117,25 @@ export function BrowserPanel({
           })
         : await invoke<BrowserStatus>("browser_start_plain_chat", { sessionId });
       setStatus(next);
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setBusy(false);
-    }
-  }, [projectPath, sessionId]);
+    }, { refresh: false });
+  }, [projectPath, runBrowserAction, sessionId]);
 
   const stopBrowser = useCallback(async () => {
     if (!sessionId) return;
-    setBusy(true);
-    setError(null);
-    try {
+    await runBrowserAction(async () => {
       await invoke("browser_stop", { sessionId });
-      await refreshStatus();
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setBusy(false);
-    }
-  }, [refreshStatus, sessionId]);
+    });
+  }, [runBrowserAction, sessionId]);
 
   const goBack = useCallback(async () => {
-    if (!sessionId || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
+    if (!sessionId) return;
+    await runBrowserAction(async () => {
       await invoke("browser_go_back", {
         sessionId,
         projectPath: projectPath || null,
       });
-      await refreshStatus();
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, projectPath, refreshStatus, sessionId]);
+    });
+  }, [projectPath, runBrowserAction, sessionId]);
 
   const importChromeProfile = useCallback(async () => {
     if (!sessionId || busy) return;
@@ -189,9 +189,7 @@ export function BrowserPanel({
     });
     if (!selected || Array.isArray(selected)) return;
 
-    setBusy(true);
-    setError(null);
-    try {
+    await runBrowserAction(async () => {
       const result = await invoke<BrowserProfileImportResult>("browser_import_chrome_profile", {
         sessionId,
         projectPath: projectPath || null,
@@ -208,12 +206,8 @@ export function BrowserPanel({
           })
         : await invoke<BrowserStatus>("browser_start_plain_chat", { sessionId });
       setStatus(next);
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, projectPath, sessionId]);
+    }, { refresh: false });
+  }, [busy, projectPath, runBrowserAction, sessionId]);
 
   const openCurrentUrl = useCallback(async () => {
     const url = status?.url?.trim();
@@ -237,7 +231,7 @@ export function BrowserPanel({
   }, [isEditingUrl, status?.url]);
 
   const navigateToUrl = useCallback(async () => {
-    if (!sessionId || busy) return;
+    if (!sessionId || submittingUrlRef.current) return;
     let url = urlInput.trim();
     if (!url || url === "about:blank") {
       setIsEditingUrl(false);
@@ -249,42 +243,46 @@ export function BrowserPanel({
       setUrlInput(url);
     }
     setIsEditingUrl(false);
-    setBusy(true);
-    setError(null);
-    try {
+    submittingUrlRef.current = true;
+    await runBrowserAction(async () => {
       await invoke("browser_navigate", {
         sessionId,
         url,
         projectPath: projectPath || null,
       });
-      await refreshStatus();
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, projectPath, refreshStatus, sessionId, urlInput]);
+    });
+    window.setTimeout(() => {
+      submittingUrlRef.current = false;
+    }, 0);
+  }, [projectPath, runBrowserAction, sessionId, urlInput]);
 
   const reloadPage = useCallback(async () => {
-    if (!sessionId || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
+    if (!sessionId) return;
+    await runBrowserAction(async () => {
       await invoke("browser_reload", {
         sessionId,
         projectPath: projectPath || null,
       });
-      await refreshStatus();
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, projectPath, refreshStatus, sessionId]);
+    });
+  }, [projectPath, runBrowserAction, sessionId]);
+
+  const minimizeBrowser = useCallback(async () => {
+    if (!sessionId || !onMinimize) return;
+    await runBrowserAction(async () => {
+      await onMinimize();
+    });
+  }, [onMinimize, runBrowserAction, sessionId]);
+
+  const reopenBrowser = useCallback(async () => {
+    if (!sessionId || !onReopen) return;
+    await runBrowserAction(async () => {
+      await onReopen();
+    });
+  }, [onReopen, runBrowserAction, sessionId]);
 
   const handleCanvasClick = useCallback(
     async (event: MouseEvent<HTMLCanvasElement>) => {
-      if (!sessionId || busy) return;
+      if (!sessionId) return;
       const canvas = event.currentTarget;
       const rect = canvas.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0 || canvas.width <= 0 || canvas.height <= 0) {
@@ -294,22 +292,16 @@ export function BrowserPanel({
       const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
       const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
 
-      setBusy(true);
-      setError(null);
-      try {
+      await runBrowserAction(async () => {
         await invoke("browser_click_at", {
           sessionId,
           projectPath: projectPath || null,
           x,
           y,
         });
-      } catch (reason) {
-        setError(String(reason));
-      } finally {
-        setBusy(false);
-      }
+      });
     },
-    [busy, projectPath, sessionId],
+    [projectPath, runBrowserAction, sessionId],
   );
 
   useEffect(() => {
@@ -421,7 +413,7 @@ export function BrowserPanel({
             <button
               type="button"
               title="最小化窗口"
-              onClick={onMinimize}
+              onClick={minimizeBrowser}
               disabled={!sessionId || busy || !connected}
               style={iconButton}
             >
@@ -431,7 +423,7 @@ export function BrowserPanel({
             <button
               type="button"
               title={status?.hasHeadedWindow ? "恢复窗口" : "打开独立窗口"}
-              onClick={onReopen}
+              onClick={reopenBrowser}
               disabled={!sessionId || busy || !connected}
               style={iconButton}
             >
@@ -662,7 +654,7 @@ export function BrowserPanel({
                     <button
                       type="button"
                       title="重新打开窗口"
-                      onClick={onReopen}
+                      onClick={reopenBrowser}
                       disabled={!sessionId || busy}
                       style={{
                         ...iconButton,

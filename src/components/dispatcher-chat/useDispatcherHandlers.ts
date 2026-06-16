@@ -269,7 +269,7 @@ export function useDispatcherHandlers({
         pendingDispatches: state.pendingDispatches.slice(1),
       }));
       invoke<DispatcherSessionRuntimeState>("dispatcher_clear_checklist_dispatch", {
-        sessionId,
+        workspaceId: sessionId,
         dispatchId,
       })
         .then((state) => setChecklist(state.checklist ?? null))
@@ -302,7 +302,7 @@ export function useDispatcherHandlers({
       setMode(nextMode);
       try {
         const state = await invoke<DispatcherSessionRuntimeState>("dispatcher_set_session_mode", {
-          sessionId,
+          workspaceId: sessionId,
           mode: nextMode,
         });
         setMode(state.mode);

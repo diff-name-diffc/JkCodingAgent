@@ -7,7 +7,6 @@ import {
   Plus,
   Trash2,
   BarChart2,
-  BookOpen,
   MessageCircle,
 } from "lucide-react";
 import type { Project, ThemeMode } from "../types";
@@ -22,9 +21,6 @@ const AnalyticsDashboard = lazy(() =>
 );
 const HomeChatPage = lazy(() =>
   import("./HomeChatPage").then((module) => ({ default: module.HomeChatPage })),
-);
-const KnowledgePage = lazy(() =>
-  import("./knowledge/KnowledgePage").then((module) => ({ default: module.KnowledgePage })),
 );
 
 function WelcomePaneFallback() {
@@ -122,7 +118,7 @@ export function WelcomePage({
   const [query, setQuery] = useState("");
   const [hov, setHov] = useState<string | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
-  const [view, setView] = useState<"projects" | "chat" | "analytics" | "knowledge">("chat");
+  const [view, setView] = useState<"projects" | "chat" | "analytics">("chat");
 
   const filtered = useMemo(() => {
     if (!query.trim()) return projects;
@@ -170,12 +166,6 @@ export function WelcomePage({
               active={view === "analytics"}
               onClick={() => setView("analytics")}
             />
-            <SidebarItem
-              icon={<BookOpen size={15} />}
-              label="知识库"
-              active={view === "knowledge"}
-              onClick={() => setView("knowledge")}
-            />
           </nav>
 
           <div style={s.sidebarFooter}>
@@ -201,10 +191,6 @@ export function WelcomePage({
         ) : view === "analytics" ? (
           <Suspense fallback={<WelcomePaneFallback />}>
             <AnalyticsDashboard projects={projects} />
-          </Suspense>
-        ) : view === "knowledge" ? (
-          <Suspense fallback={<WelcomePaneFallback />}>
-            <KnowledgePage />
           </Suspense>
         ) : (
           <div style={s.welcomePane}>

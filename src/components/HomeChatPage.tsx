@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { BrowserStatus, ThemeMode } from "../types";
 import { useDockedBrowserPanel } from "../hooks/useDockedBrowserPanel";
 import { ChatSessionSidebar } from "./ChatSessionSidebar";
+import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
 import s from "../styles";
 
 const DispatcherChat = lazy(() =>
@@ -86,9 +87,9 @@ export function HomeChatPage({
     };
   }, []);
 
-  const handleMinimizeBrowser = useCallback(() => {
+  const handleMinimizeBrowser = useCallback(async () => {
     if (!activeSessionId) return;
-    invoke("browser_minimize", { sessionId: activeSessionId }).catch(console.error);
+    await invoke("browser_minimize", { sessionId: activeSessionId });
     setShowBrowserPanel(false);
   }, [activeSessionId]);
 
@@ -113,10 +114,28 @@ export function HomeChatPage({
       .catch(console.error);
   }, []);
 
-  const handleReopenBrowser = useCallback(() => {
+  const handleReopenBrowser = useCallback(async () => {
     if (!activeSessionId) return;
-    invoke("browser_reopen", { sessionId: activeSessionId }).catch(console.error);
+    await invoke("browser_reopen", { sessionId: activeSessionId });
+    setShowBrowserPanel(true);
   }, [activeSessionId]);
+
+  const handleOpenMarkdownLink = useCallback(
+    async (url: string) => {
+      if (!activeSessionId) return;
+      setShowBrowserPanel(true);
+      try {
+        await invoke("browser_navigate", {
+          sessionId: activeSessionId,
+          url,
+          projectPath: null,
+        });
+      } catch (error) {
+        console.error("CloakBrowser 打开链接失败:", error);
+      }
+    },
+    [activeSessionId],
+  );
 
   const dockedSessions = useMemo(() => Array.from(dockedBrowsers.values()), [dockedBrowsers]);
 
@@ -132,12 +151,14 @@ export function HomeChatPage({
       <div style={s.chatMainPane}>
         <Suspense fallback={<ChatPaneFallback label="聊天加载中..." />}>
           {activeSessionId ? (
-            <DispatcherChat
-              conversationKind="chat"
-              sessionId={activeSessionId}
-              layoutMode="single"
-              onOpenSettings={() => setShowSettings(true)}
-            />
+            <MarkdownLinkProvider onOpenUrl={handleOpenMarkdownLink}>
+              <DispatcherChat
+                conversationKind="chat"
+                sessionId={activeSessionId}
+                layoutMode="single"
+                onOpenSettings={() => setShowSettings(true)}
+              />
+            </MarkdownLinkProvider>
           ) : (
             <div style={s.chatEmptyPane}>正在创建聊天...</div>
           )}

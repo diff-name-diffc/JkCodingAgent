@@ -251,8 +251,6 @@ call_sub_agent(agent_id: "browser-agent", task: "搜索 Rust async runtime 最�
           "glob",
           "grep",
           "exec",
-          "search_knowledge_base",
-          "read_knowledge_page",
           "generate_image",
           "edit_image"
         ]
@@ -765,8 +763,6 @@ AppSettingsDialog 导航:
 │  [ ] glob                - 文件模式搜索              │
 │  [ ] grep                - 内容正则搜索              │
 │  [ ] exec                - 执行 Shell 命令           │
-│  [ ] search_knowledge_base - 搜索知识库              │
-│  [ ] read_knowledge_page - 读取知识页面              │
 │  [ ] generate_image      - 生成图片                  │
 │  [ ] edit_image          - 编辑图片                  │
 │                                                      │

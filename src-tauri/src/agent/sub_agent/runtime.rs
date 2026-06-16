@@ -356,23 +356,20 @@ impl SubAgentRuntime {
             while tc_index < tool_calls.len() {
                 let readonly_end = readonly_tool_run_end(&tool_calls, tc_index);
 
-                let executed: Vec<(&RequestedToolCall, String)> =
-                    if readonly_end.saturating_sub(tc_index) >= 2 {
-                        let run = &tool_calls[tc_index..readonly_end];
-                        self.execute_parallel_readonly_tools(
-                            run,
-                            &app_handle,
-                            session_id,
-                            &mut usage,
-                        )
+                let executed: Vec<(&RequestedToolCall, String)> = if readonly_end
+                    .saturating_sub(tc_index)
+                    >= 2
+                {
+                    let run = &tool_calls[tc_index..readonly_end];
+                    self.execute_parallel_readonly_tools(run, &app_handle, session_id, &mut usage)
                         .await
-                    } else {
-                        let tc = &tool_calls[tc_index];
-                        let result = self
-                            .execute_single_tool(tc, &app_handle, session_id, &mut usage)
-                            .await;
-                        vec![(tc, result)]
-                    };
+                } else {
+                    let tc = &tool_calls[tc_index];
+                    let result = self
+                        .execute_single_tool(tc, &app_handle, session_id, &mut usage)
+                        .await;
+                    vec![(tc, result)]
+                };
 
                 for (tc, result) in executed {
                     let outcome = classify_tool_result(&result);

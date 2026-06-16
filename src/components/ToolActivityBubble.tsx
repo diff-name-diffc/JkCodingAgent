@@ -194,6 +194,23 @@ export function ToolActivityBubble({
                     </div>
                   )}
 
+                  {hasDisplayText && (
+                    <div style={styles.block}>
+                      <div style={styles.blockLabel}>
+                        {tool.name === "local_zsh" ? "执行结果与审计历史" : "结果"}
+                      </div>
+                      {tool.name === "local_zsh" ? (
+                        <div style={styles.summaryContent}>
+                          <MarkdownRenderer content={tool.displayText ?? ""} variant="chat" />
+                        </div>
+                      ) : (
+                        <pre className="session-selectable" style={styles.blockCode}>
+                          {tool.displayText}
+                        </pre>
+                      )}
+                    </div>
+                  )}
+
                   {showSummaryInConversation && (
                     <div style={styles.block}>
                       <div style={styles.blockLabel}>结果摘要</div>

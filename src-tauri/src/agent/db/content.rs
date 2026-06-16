@@ -206,7 +206,10 @@ pub(super) fn insert_chat_images(
     Ok(())
 }
 
-pub(super) fn delete_chat_image_resources(tx: &rusqlite::Transaction<'_>, workspace_id: &str) -> Result<()> {
+pub(super) fn delete_chat_image_resources(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+) -> Result<()> {
     let mut paths = HashSet::new();
     {
         let mut stmt = tx
@@ -256,7 +259,10 @@ pub(super) fn delete_chat_image_resources(tx: &rusqlite::Transaction<'_>, worksp
     Ok(())
 }
 
-pub(super) fn delete_plan_file_resources(tx: &rusqlite::Transaction<'_>, workspace_id: &str) -> Result<()> {
+pub(super) fn delete_plan_file_resources(
+    tx: &rusqlite::Transaction<'_>,
+    workspace_id: &str,
+) -> Result<()> {
     let mut paths = HashSet::new();
 
     let mut stmt = tx

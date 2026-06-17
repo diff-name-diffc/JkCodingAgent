@@ -448,6 +448,15 @@ export function ChatSessionSidebar({
     }
   };
 
+  const toggleCategory = (catId: string) => {
+    if (expandedCategoryId === catId) {
+      setExpandedCategoryId(null);
+      saveExpandedCategory(null);
+      return;
+    }
+    expandCategory(catId);
+  };
+
   const handleCategoryDragStart = (sessionId: string, e: React.DragEvent) => {
     draggedSessionIdRef.current = sessionId;
     e.dataTransfer.setData("text/plain", sessionId);
@@ -719,7 +728,7 @@ export function ChatSessionSidebar({
                     activeSessionId={activeSessionId}
                     runningSessionIds={runningSessionIds}
                     isExpanded={expandedCategoryId === catId}
-                    onToggle={() => expandCategory(catId)}
+                    onToggle={() => toggleCategory(catId)}
                     onSessionClick={onActiveSessionChange}
                     onSessionDelete={handleDeleteSession}
                     onSessionDragStart={handleCategoryDragStart}
@@ -750,7 +759,7 @@ export function ChatSessionSidebar({
                   activeSessionId={activeSessionId}
                   runningSessionIds={runningSessionIds}
                   isExpanded={expandedCategoryId === UNCATEGORIZED_CATEGORY}
-                  onToggle={() => expandCategory(UNCATEGORIZED_CATEGORY)}
+                  onToggle={() => toggleCategory(UNCATEGORIZED_CATEGORY)}
                   onSessionClick={onActiveSessionChange}
                   onSessionDelete={handleDeleteSession}
                   onSessionDragStart={handleCategoryDragStart}

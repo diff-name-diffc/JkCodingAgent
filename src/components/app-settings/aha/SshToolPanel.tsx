@@ -2,8 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import type React from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Check, FolderOpen, Plus, RefreshCw, Trash2 } from "lucide-react";
-import type { AgentContext, SshAuditLog, SshServerConfig, SshToolsConfig } from "../../../types";
+import { Check, ChevronDown, ChevronRight, FolderOpen, Plus, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import type {
+  AgentContext,
+  AhaSettingsV2,
+  SshAuditLog,
+  SshReviewConfig,
+  SshServerConfig,
+  SshToolsConfig,
+} from "../../../types";
 import s from "../../../styles";
 
 const EMPTY_SERVER: SshServerConfig = {
@@ -18,9 +25,19 @@ const EMPTY_SERVER: SshServerConfig = {
   privateKeyPassphrase: "",
   description: "",
   tags: [],
+  reviewEnabled: true,
   defaultTimeoutSecs: 30,
   maxOutputBytes: 65536,
 };
+
+/// SSH 命令安全审查 AI 默认系统提示词（须与后端 DEFAULT_REVIEW_SYSTEM_PROMPT 保持一致）。
+const DEFAULT_REVIEW_PROMPT =
+  "你是 SSH 命令安全审查员。依据用户的任务、当前意图、目标服务器信息和待执行命令，判断该命令是否可安全执行。\n\n" +
+  "判定原则：\n" +
+  "- 拒绝：不可逆或高危操作，如删除/覆盖系统文件或关键数据（rm -rf 指向根目录或家目录、mkfs、dd 覆写块设备、清空数据库/表）、关机重启、提权后执行破坏性操作、fork 炸弹/资源耗尽、关闭防火墙或清空路由、向外部批量外传敏感数据。\n" +
+  "- 允许：常规只读巡检、查询状态、在用户明确指定目录内的受控写操作。\n" +
+  "- 必须结合「任务」与「意图」综合判断：同一命令在不同上下文风险不同（如 rm 清理临时目录可允许，针对根目录则拒绝）。无法确认影响范围或意图不明时，倾向拒绝。\n\n" +
+  "输出格式：仅一行。`ALLOW` 表示允许；`DENY: <简短中文原因>` 表示拒绝。不要输出任何多余内容。";
 
 export function SshToolPanel({ projectPath }: { projectPath?: string }) {
   const [context, setContext] = useState<AgentContext>(projectPath ? "project" : "chat");
@@ -33,6 +50,16 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
   const [error, setError] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, string>>({});
+  const [expandedAudit, setExpandedAudit] = useState<string | null>(null);
+  // 每台服务器默认折叠，仅在用户展开或新增时展开其详细配置。
+  const [expandedServers, setExpandedServers] = useState<Set<number>>(new Set());
+  // 审查 AI 配置（全局，存于 Aha 设置；保存时需整体回写以保留其他字段）。
+  const [ahaSettings, setAhaSettings] = useState<AhaSettingsV2 | null>(null);
+  const [reviewSaving, setReviewSaving] = useState(false);
+  const [reviewSaved, setReviewSaved] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewTesting, setReviewTesting] = useState(false);
+  const [reviewFeedback, setReviewFeedback] = useState<string | null>(null);
 
   const loadConfig = useCallback(async () => {
     if (context === "project" && !projectPath) {
@@ -65,6 +92,55 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
     loadConfig();
   }, [loadConfig]);
 
+  // 审查 AI 配置全局共享，独立于项目/聊天工作区加载一次。
+  useEffect(() => {
+    invoke<AhaSettingsV2>("aha_get_settings_v2")
+      .then((settings) => setAhaSettings(settings))
+      .catch(() => setAhaSettings(null));
+  }, []);
+
+  const review: SshReviewConfig = ahaSettings?.review ?? {
+    modelConfig: { url: "", apiKey: "", model: "", active: true },
+    systemPrompt: DEFAULT_REVIEW_PROMPT,
+  };
+
+  function updateReview(updater: (draft: SshReviewConfig) => SshReviewConfig) {
+    setAhaSettings((prev) => {
+      const base: AhaSettingsV2 = prev ?? {
+        shared: {
+          visionModelConfigs: [],
+          imageModelConfigs: [],
+          imageEditModelConfigs: [],
+          asrModelConfigs: [],
+          ttsModelConfigs: [],
+          embeddingModelConfigs: [],
+        },
+        project: { chatModelConfigs: [], summaryModelConfigs: [], allowedTools: [] },
+        chat: { chatModelConfigs: [], summaryModelConfigs: [], allowedTools: [] },
+        autoApproveDispatch: false,
+        contextDebug: false,
+        review,
+      };
+      return { ...base, review: updater(base.review) };
+    });
+  }
+
+  async function saveReview() {
+    if (!ahaSettings) return;
+    setReviewSaving(true);
+    setReviewError(null);
+    try {
+      const result = await invoke<AhaSettingsV2>("aha_save_settings_v2", { settings: ahaSettings });
+      setAhaSettings(result);
+      setReviewSaved(true);
+      window.setTimeout(() => setReviewSaved(false), 2000);
+    } catch (err) {
+      setReviewError(String(err));
+    } finally {
+      setReviewSaving(false);
+    }
+  }
+
   function switchContext(next: AgentContext) {
     setContext(next);
     setSaved(false);
@@ -77,14 +153,35 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
     }));
   }
 
+  function toggleServer(index: number) {
+    setExpandedServers((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }
+
   function addServer() {
+    const newIndex = config.servers.length;
     setConfig((prev) => ({
       servers: [...prev.servers, { ...EMPTY_SERVER, id: nextServerId(prev.servers) }],
     }));
+    // 新增的服务器自动展开，方便立即填写。
+    setExpandedServers((prev) => new Set(prev).add(newIndex));
   }
 
   function removeServer(index: number) {
     setConfig((prev) => ({ servers: prev.servers.filter((_, i) => i !== index) }));
+    // 删除后保持其余服务器展开状态与列表下标一致。
+    setExpandedServers((prev) => {
+      const next = new Set<number>();
+      for (const i of prev) {
+        if (i < index) next.add(i);
+        else if (i > index) next.add(i - 1);
+      }
+      return next;
+    });
   }
 
   async function saveConfig() {
@@ -126,6 +223,33 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
     <>
       <div style={s.ahaBody}>
         <div style={s.ahaContent}>
+          <ReviewAiSection
+            review={review}
+            testing={reviewTesting}
+            feedback={reviewFeedback}
+            saving={reviewSaving}
+            saved={reviewSaved}
+            error={reviewError}
+            onChange={updateReview}
+            onSave={saveReview}
+            onTest={async () => {
+              if (reviewTesting) return;
+              setReviewTesting(true);
+              setReviewFeedback(null);
+              try {
+                const message = await invoke<string>("dispatcher_test_model", {
+                  kind: "review",
+                  config: review.modelConfig,
+                });
+                setReviewFeedback(message);
+              } catch (err) {
+                setReviewFeedback(String(err));
+              } finally {
+                setReviewTesting(false);
+              }
+            }}
+          />
+
           <div style={s.ahaSection}>
             <div style={s.ahaSectionHeader}>
               <div>
@@ -189,6 +313,8 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
                     key={`${server.id}-${index}`}
                     server={server}
                     index={index}
+                    expanded={expandedServers.has(index)}
+                    onToggleExpand={() => toggleServer(index)}
                     testingId={testingId}
                     testResult={testResult[server.id || "__draft__"]}
                     onUpdate={updateServer}
@@ -214,35 +340,68 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
               <div style={s.ahaHint}>暂无审计记录。</div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {audit.records.map((record, index) => (
-                  <div key={`${record.createdAt}-${index}`} style={s.ahaProvider}>
-                    <div style={s.ahaProviderHeader}>
-                      <div style={s.ahaProviderTitleWrap}>
-                        <span style={s.ahaProviderTitle}>{record.serverId}</span>
-                        <span style={s.ahaProviderSummary}>{record.sessionId}</span>
-                        {record.interactiveBlocked ? (
-                          <span style={interactiveBadgeStyle}>交互阻塞</span>
-                        ) : null}
+                {audit.records.map((record, index) => {
+                  const auditKey = `${record.createdAt}-${index}`;
+                  const expanded = expandedAudit === auditKey;
+                  const blocked = record.review != null && !record.review.allowed;
+                  return (
+                    <div key={auditKey} style={s.ahaProvider}>
+                      <div
+                        style={{ ...s.ahaProviderHeader, cursor: "pointer", userSelect: "none" }}
+                        onClick={() => setExpandedAudit(expanded ? null : auditKey)}
+                      >
+                        <div style={s.ahaProviderTitleWrap}>
+                          {expanded ? (
+                            <ChevronDown size={13} style={{ flexShrink: 0 }} />
+                          ) : (
+                            <ChevronRight size={13} style={{ flexShrink: 0 }} />
+                          )}
+                          <span style={s.ahaProviderTitle}>{record.serverId}</span>
+                          <span style={s.ahaProviderSummary}>{record.sessionId}</span>
+                          {record.review ? (
+                            <span
+                              style={
+                                record.review.allowed ? reviewPassBadgeStyle : reviewBlockBadgeStyle
+                              }
+                            >
+                              {record.review.allowed ? "审查通过" : "审查拦截"}
+                            </span>
+                          ) : null}
+                          {record.interactiveBlocked ? (
+                            <span style={interactiveBadgeStyle}>交互阻塞</span>
+                          ) : null}
+                        </div>
+                        <span style={s.ahaHint}>{record.createdAt}</span>
                       </div>
-                      <span style={s.ahaHint}>{record.createdAt}</span>
+                      <pre style={auditPreStyle}>{record.command}</pre>
+                      <div style={s.ahaHint}>
+                        {blocked
+                          ? "exit=审查拦截(未执行)"
+                          : record.interactiveBlocked
+                            ? "exit=交互阻塞(已中止)"
+                            : `exit=${record.exitCode ?? "error"}`}
+                        {" · duration="}
+                        {record.durationMs ?? "-"}ms
+                        {record.truncated ? " · truncated" : ""}
+                        {record.error ? ` · ${record.error}` : ""}
+                      </div>
+                      {expanded && record.review ? (
+                        <div style={reviewDetailStyle}>
+                          <span style={{ fontWeight: 600 }}>AI 审查结果：</span>
+                          <span style={{ color: record.review.allowed ? "var(--success)" : "var(--danger)" }}>
+                            {record.review.allowed ? "通过" : "拦截"}
+                          </span>
+                          {record.review.reason ? ` — ${record.review.reason}` : ""}
+                        </div>
+                      ) : null}
+                      {record.interactiveBlocked && record.stderr.trim() ? (
+                        <pre style={{ ...auditPreStyle, ...interactiveDetailStyle }}>
+                          {record.stderr}
+                        </pre>
+                      ) : null}
                     </div>
-                    <pre style={auditPreStyle}>{record.command}</pre>
-                    <div style={s.ahaHint}>
-                      {record.interactiveBlocked
-                        ? "exit=交互阻塞(已中止)"
-                        : `exit=${record.exitCode ?? "error"}`}
-                      {" · duration="}
-                      {record.durationMs ?? "-"}ms
-                      {record.truncated ? " · truncated" : ""}
-                      {record.error ? ` · ${record.error}` : ""}
-                    </div>
-                    {record.interactiveBlocked && record.stderr.trim() ? (
-                      <pre style={{ ...auditPreStyle, ...interactiveDetailStyle }}>
-                        {record.stderr}
-                      </pre>
-                    ) : null}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -276,6 +435,8 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
 function ServerEditor({
   server,
   index,
+  expanded,
+  onToggleExpand,
   testingId,
   testResult,
   onUpdate,
@@ -284,6 +445,8 @@ function ServerEditor({
 }: {
   server: SshServerConfig;
   index: number;
+  expanded: boolean;
+  onToggleExpand: () => void;
   testingId: string | null;
   testResult?: string;
   onUpdate: (index: number, updater: (server: SshServerConfig) => SshServerConfig) => void;
@@ -293,17 +456,32 @@ function ServerEditor({
   return (
     <div style={s.ahaProvider}>
       <div style={s.ahaProviderHeader}>
-        <label style={s.ahaToggleRow}>
+        <div style={serverHeaderLeftStyle}>
           <input
             type="checkbox"
             checked={server.enabled}
+            title={server.enabled ? "已启用" : "已停用"}
+            style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
             onChange={(event) =>
               onUpdate(index, (draft) => ({ ...draft, enabled: event.target.checked }))
             }
           />
-          <span style={s.ahaProviderTitle}>{server.id || `server-${index + 1}`}</span>
-        </label>
-        <div style={s.ahaActionRow}>
+          <button type="button" style={s.ahaProviderTitleButton} onClick={onToggleExpand}>
+            <ChevronDown
+              size={14}
+              style={{
+                transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
+                transition: "transform 0.15s",
+                flexShrink: 0,
+              }}
+            />
+            <span style={s.ahaProviderTitleWrap}>
+              <span style={s.ahaProviderTitle}>{server.id || `server-${index + 1}`}</span>
+              <span style={s.ahaProviderSummary}>{serverSummary(server)}</span>
+            </span>
+          </button>
+        </div>
+        <div style={s.ahaProviderActions}>
           <button
             type="button"
             style={s.ahaGhostButton}
@@ -324,118 +502,136 @@ function ServerEditor({
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <Field label="Server ID">
-          <input
-            style={s.ahaInput}
-            value={server.id}
-            placeholder="prod-web-1"
-            onChange={(event) =>
-              onUpdate(index, (draft) => ({ ...draft, id: event.target.value.toLowerCase() }))
-            }
-          />
-        </Field>
-        <Field label="描述">
-          <input
-            style={{ ...s.ahaInput, fontFamily: "inherit" }}
-            value={server.description}
-            placeholder="生产 Web 节点"
-            onChange={(event) =>
-              onUpdate(index, (draft) => ({ ...draft, description: event.target.value }))
-            }
-          />
-        </Field>
-        <Field label="Host">
-          <input
-            style={s.ahaInput}
-            value={server.host}
-            placeholder="10.0.1.12"
-            onChange={(event) =>
-              onUpdate(index, (draft) => ({ ...draft, host: event.target.value }))
-            }
-          />
-        </Field>
-        <Field label="Port">
-          <input
-            style={s.ahaInput}
-            type="number"
-            min={1}
-            max={65535}
-            value={server.port}
-            onChange={(event) =>
-              onUpdate(index, (draft) => ({ ...draft, port: Number(event.target.value) || 22 }))
-            }
-          />
-        </Field>
-        <Field label="Username">
-          <input
-            style={s.ahaInput}
-            value={server.username}
-            onChange={(event) =>
-              onUpdate(index, (draft) => ({ ...draft, username: event.target.value }))
-            }
-          />
-        </Field>
-        <Field label="Timeout 秒">
-          <input
-            style={s.ahaInput}
-            type="number"
-            min={1}
-            max={300}
-            value={server.defaultTimeoutSecs}
-            onChange={(event) =>
-              onUpdate(index, (draft) => ({
-                ...draft,
-                defaultTimeoutSecs: Number(event.target.value) || 30,
-              }))
-            }
-          />
-        </Field>
-        <Field label="最大输出字节">
-          <input
-            style={s.ahaInput}
-            type="number"
-            min={1024}
-            max={1048576}
-            value={server.maxOutputBytes}
-            onChange={(event) =>
-              onUpdate(index, (draft) => ({
-                ...draft,
-                maxOutputBytes: Number(event.target.value) || 65536,
-              }))
-            }
-          />
-        </Field>
-      </div>
+      {expanded && (
+        <>
+          <label
+            style={{ ...s.ahaToggleRow, marginLeft: 22 }}
+            title="开启后，每条命令执行前先经审查 AI 评估安全性"
+          >
+            <input
+              type="checkbox"
+              checked={server.reviewEnabled}
+              onChange={(event) =>
+                onUpdate(index, (draft) => ({ ...draft, reviewEnabled: event.target.checked }))
+              }
+            />
+            <span style={{ ...s.ahaProviderSummary, fontSize: 11 }}>执行前审查</span>
+          </label>
 
-      <AuthMethodEditor server={server} index={index} onUpdate={onUpdate} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Server ID">
+              <input
+                style={s.ahaInput}
+                value={server.id}
+                placeholder="prod-web-1"
+                onChange={(event) =>
+                  onUpdate(index, (draft) => ({ ...draft, id: event.target.value.toLowerCase() }))
+                }
+              />
+            </Field>
+            <Field label="描述">
+              <input
+                style={{ ...s.ahaInput, fontFamily: "inherit" }}
+                value={server.description}
+                placeholder="生产 Web 节点"
+                onChange={(event) =>
+                  onUpdate(index, (draft) => ({ ...draft, description: event.target.value }))
+                }
+              />
+            </Field>
+            <Field label="Host">
+              <input
+                style={s.ahaInput}
+                value={server.host}
+                placeholder="10.0.1.12"
+                onChange={(event) =>
+                  onUpdate(index, (draft) => ({ ...draft, host: event.target.value }))
+                }
+              />
+            </Field>
+            <Field label="Port">
+              <input
+                style={s.ahaInput}
+                type="number"
+                min={1}
+                max={65535}
+                value={server.port}
+                onChange={(event) =>
+                  onUpdate(index, (draft) => ({ ...draft, port: Number(event.target.value) || 22 }))
+                }
+              />
+            </Field>
+            <Field label="Username">
+              <input
+                style={s.ahaInput}
+                value={server.username}
+                onChange={(event) =>
+                  onUpdate(index, (draft) => ({ ...draft, username: event.target.value }))
+                }
+              />
+            </Field>
+            <Field label="Timeout 秒">
+              <input
+                style={s.ahaInput}
+                type="number"
+                min={1}
+                max={300}
+                value={server.defaultTimeoutSecs}
+                onChange={(event) =>
+                  onUpdate(index, (draft) => ({
+                    ...draft,
+                    defaultTimeoutSecs: Number(event.target.value) || 30,
+                  }))
+                }
+              />
+            </Field>
+            <Field label="最大输出字节">
+              <input
+                style={s.ahaInput}
+                type="number"
+                min={1024}
+                max={1048576}
+                value={server.maxOutputBytes}
+                onChange={(event) =>
+                  onUpdate(index, (draft) => ({
+                    ...draft,
+                    maxOutputBytes: Number(event.target.value) || 65536,
+                  }))
+                }
+              />
+            </Field>
+          </div>
 
-      <Field label="标签">
-        <input
-          style={s.ahaInput}
-          value={server.tags.join(", ")}
-          placeholder="prod, web"
-          onChange={(event) =>
-            onUpdate(index, (draft) => ({
-              ...draft,
-              tags: event.target.value
-                .split(",")
-                .map((tag) => tag.trim())
-                .filter(Boolean),
-            }))
-          }
-        />
-      </Field>
+          <AuthMethodEditor server={server} index={index} onUpdate={onUpdate} />
 
-      {testResult && (
-        <div
-          style={{
-            ...s.ahaFeedback,
-            color: testResult.includes("成功") ? "var(--success)" : "var(--danger)",
-          }}
-        >
-          {testResult}
-        </div>
+          <Field label="标签">
+            <input
+              style={s.ahaInput}
+              value={server.tags.join(", ")}
+              placeholder="prod, web"
+              onChange={(event) =>
+                onUpdate(index, (draft) => ({
+                  ...draft,
+                  tags: event.target.value
+                    .split(",")
+                    .map((tag) => tag.trim())
+                    .filter(Boolean),
+                }))
+              }
+            />
+          </Field>
+
+          {testResult && (
+            <div
+              style={{
+                ...s.ahaFeedback,
+                color: testResult.includes("成功") ? "var(--success)" : "var(--danger)",
+              }}
+            >
+              {testResult}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -530,6 +726,152 @@ function AuthMethodEditor({
   );
 }
 
+function ReviewAiSection({
+  review,
+  testing,
+  feedback,
+  saving,
+  saved,
+  error,
+  onChange,
+  onSave,
+  onTest,
+}: {
+  review: SshReviewConfig;
+  testing: boolean;
+  feedback: string | null;
+  saving: boolean;
+  saved: boolean;
+  error: string | null;
+  onChange: (updater: (draft: SshReviewConfig) => SshReviewConfig) => void;
+  onSave: () => void;
+  onTest: () => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  return (
+    <div style={s.ahaSection}>
+      <div style={s.ahaSectionHeader}>
+        <button
+          type="button"
+          style={s.ahaCollapsibleTitle}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          <ChevronDown
+            size={14}
+            style={{
+              transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
+              transition: "transform 0.15s",
+              flexShrink: 0,
+              marginTop: 2,
+            }}
+          />
+          <span>
+            <div style={s.ahaSectionTitle}>命令审查 AI</div>
+            <div style={s.ahaSectionDescription}>
+              配置后，每条 SSH 命令执行前会交由该 OpenAI 兼容模型，结合意图/任务/服务器/命令做安全审查；审查异常或判定不通过将阻断执行。该配置全局共享（项目与聊天通用）。
+            </div>
+          </span>
+        </button>
+        <div style={s.ahaActionRow}>
+          <button
+            type="button"
+            style={s.ahaGhostButton}
+            onClick={onTest}
+            disabled={testing || !review.modelConfig.model.trim()}
+          >
+            <Check size={13} />
+            {testing ? "测试中..." : "测试审查模型"}
+          </button>
+          <button type="button" style={s.ahaGhostButton} onClick={onSave} disabled={saving}>
+            {saving ? "保存中..." : "保存审查配置"}
+          </button>
+        </div>
+      </div>
+
+      {expanded && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="审查模型 URL（OpenAI 兼容）">
+              <input
+                style={s.ahaInput}
+                value={review.modelConfig.url}
+                placeholder="https://api.example.com/v1"
+                onChange={(event) =>
+                  onChange((draft) => ({
+                    ...draft,
+                    modelConfig: { ...draft.modelConfig, url: event.target.value },
+                  }))
+                }
+              />
+            </Field>
+            <Field label="API Key">
+              <input
+                style={s.ahaInput}
+                type="password"
+                value={review.modelConfig.apiKey}
+                onChange={(event) =>
+                  onChange((draft) => ({
+                    ...draft,
+                    modelConfig: { ...draft.modelConfig, apiKey: event.target.value },
+                  }))
+                }
+              />
+            </Field>
+            <Field label="模型名">
+              <input
+                style={s.ahaInput}
+                value={review.modelConfig.model}
+                placeholder="gpt-4o-mini"
+                onChange={(event) =>
+                  onChange((draft) => ({
+                    ...draft,
+                    modelConfig: { ...draft.modelConfig, model: event.target.value },
+                  }))
+                }
+              />
+            </Field>
+          </div>
+
+          <Field label="系统提示词">
+            <textarea
+              style={{ ...s.ahaInput, minHeight: 150, resize: "vertical", fontFamily: "inherit" }}
+              value={review.systemPrompt}
+              onChange={(event) =>
+                onChange((draft) => ({ ...draft, systemPrompt: event.target.value }))
+              }
+            />
+            <button
+              type="button"
+              style={{ ...s.ahaGhostButton, marginTop: 6 }}
+              onClick={() => onChange((draft) => ({ ...draft, systemPrompt: DEFAULT_REVIEW_PROMPT }))}
+            >
+              <RotateCcw size={13} />
+              恢复默认提示词
+            </button>
+          </Field>
+
+          {feedback && (
+            <div
+              style={{
+                ...s.ahaFeedback,
+                color: feedback.includes("ok") || feedback.includes("成功") ? "var(--success)" : "var(--danger)",
+              }}
+            >
+              {feedback}
+            </div>
+          )}
+          {error && (
+            <span style={{ ...s.ahaFeedback, color: "var(--danger)" }}>{error}</span>
+          )}
+          {saved && (
+            <span style={{ ...s.ahaFeedback, color: "var(--success)" }}>审查配置已保存</span>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label style={s.ahaField}>
@@ -549,6 +891,24 @@ function nextServerId(servers: SshServerConfig[]) {
   }
   return id;
 }
+
+/// 折叠时在服务器标题右侧展示的连接摘要，便于在不展开的情况下辨识目标主机。
+function serverSummary(server: SshServerConfig): string {
+  if (server.host.trim()) {
+    const auth = server.username.trim() ? `${server.username}@` : "";
+    const port = server.port && server.port !== 22 ? `:${server.port}` : "";
+    return `${auth}${server.host}${port}`;
+  }
+  return server.description.trim() || "未配置";
+}
+
+const serverHeaderLeftStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  minWidth: 0,
+  flex: 1,
+};
 
 function contextButtonStyle(selected: boolean, disabled: boolean): React.CSSProperties {
   return {
@@ -596,6 +956,39 @@ const interactiveBadgeStyle: React.CSSProperties = {
   borderRadius: 6,
   padding: "0 6px",
   lineHeight: 1.5,
+};
+
+const reviewPassBadgeStyle: React.CSSProperties = {
+  fontSize: 10.5,
+  fontWeight: 600,
+  color: "var(--success)",
+  border: "1px solid var(--success)",
+  borderRadius: 6,
+  padding: "0 6px",
+  lineHeight: 1.5,
+};
+
+const reviewBlockBadgeStyle: React.CSSProperties = {
+  fontSize: 10.5,
+  fontWeight: 600,
+  color: "var(--danger)",
+  border: "1px solid var(--danger)",
+  borderRadius: 6,
+  padding: "0 6px",
+  lineHeight: 1.5,
+};
+
+const reviewDetailStyle: React.CSSProperties = {
+  margin: 0,
+  padding: "8px 10px",
+  borderRadius: 8,
+  border: "1px solid var(--border-dim)",
+  background: "var(--bg-subtle)",
+  color: "var(--text-primary)",
+  fontSize: 11.5,
+  lineHeight: 1.5,
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
 };
 
 const interactiveDetailStyle: React.CSSProperties = {

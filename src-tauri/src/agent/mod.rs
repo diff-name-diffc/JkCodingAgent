@@ -7,6 +7,7 @@ pub(crate) mod llm;
 mod plain_chat;
 mod prompt;
 mod runtime;
+pub(crate) mod ssh_review;
 pub mod sub_agent;
 mod summary;
 pub mod tools;

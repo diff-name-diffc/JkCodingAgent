@@ -633,6 +633,8 @@ pub struct AhaSettingsV2 {
     pub chat: AhaContextConfig,
     pub auto_approve_dispatch: bool,
     pub context_debug: bool,
+    #[serde(default)]
+    pub review: SshReviewConfig,
 }
 
 impl Default for AhaSettingsV2 {
@@ -643,7 +645,41 @@ impl Default for AhaSettingsV2 {
             chat: AhaContextConfig::default(),
             auto_approve_dispatch: false,
             context_debug: false,
+            review: SshReviewConfig::default(),
         }
+    }
+}
+
+/// SSH 命令安全审查 AI 的默认系统提示词（前后端共用同一文案）。
+pub const DEFAULT_REVIEW_SYSTEM_PROMPT: &str = "你是 SSH 命令安全审查员。依据用户的任务、当前意图、目标服务器信息和待执行命令，判断该命令是否可安全执行。\n\n判定原则：\n- 拒绝：不可逆或高危操作，如删除/覆盖系统文件或关键数据（rm -rf 指向根目录或家目录、mkfs、dd 覆写块设备、清空数据库/表）、关机重启、提权后执行破坏性操作、fork 炸弹/资源耗尽、关闭防火墙或清空路由、向外部批量外传敏感数据。\n- 允许：常规只读巡检、查询状态、在用户明确指定目录内的受控写操作。\n- 必须结合「任务」与「意图」综合判断：同一命令在不同上下文风险不同（如 rm 清理临时目录可允许，针对根目录则拒绝）。无法确认影响范围或意图不明时，倾向拒绝。\n\n输出格式：仅一行。`ALLOW` 表示允许；`DENY: <简短中文原因>` 表示拒绝。不要输出任何多余内容。";
+
+fn default_review_system_prompt() -> String {
+    DEFAULT_REVIEW_SYSTEM_PROMPT.to_string()
+}
+
+/// SSH 命令安全审查 AI 配置：单个 OpenAI 兼容模型 + 可编辑系统提示词。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshReviewConfig {
+    #[serde(default)]
+    pub model_config: DispatcherModelConfig,
+    #[serde(default = "default_review_system_prompt")]
+    pub system_prompt: String,
+}
+
+impl Default for SshReviewConfig {
+    fn default() -> Self {
+        Self {
+            model_config: DispatcherModelConfig::default(),
+            system_prompt: default_review_system_prompt(),
+        }
+    }
+}
+
+impl SshReviewConfig {
+    /// 是否已配置可用的审查模型（url/api_key/model 均非空）。
+    pub fn is_configured(&self) -> bool {
+        !self.model_config.is_empty()
     }
 }
 
@@ -949,6 +985,12 @@ impl DispatcherDb {
         serde_json::to_string(configs).unwrap_or_else(|_| "[]".to_string())
     }
 
+    fn parse_review_model_config_json(raw: &str) -> DispatcherModelConfig {
+        serde_json::from_str::<DispatcherModelConfig>(raw)
+            .unwrap_or_default()
+            .trimmed()
+    }
+
     pub fn get_settings_v2(&self) -> Result<AhaSettingsV2> {
         let conn = self.conn()?;
         let sql = "SELECT
@@ -965,7 +1007,9 @@ impl DispatcherDb {
             chat_agent_summary_model_configs_json,
             chat_agent_allowed_tools_json,
             auto_approve_dispatch,
-            context_debug
+            context_debug,
+            review_model_config_json,
+            review_system_prompt
         FROM dispatcher_settings_v2 WHERE id = 'default'";
 
         match conn.query_row(sql, [], |row| {
@@ -1004,6 +1048,20 @@ impl DispatcherDb {
                 },
                 auto_approve_dispatch: row.get::<_, i32>(12)? != 0,
                 context_debug: row.get::<_, i32>(13)? != 0,
+                review: {
+                    let model_raw: String = row.get(14)?;
+                    let prompt_raw: String = row.get(15).unwrap_or_default();
+                    let model_config = Self::parse_review_model_config_json(&model_raw);
+                    let system_prompt = prompt_raw.trim().to_string();
+                    SshReviewConfig {
+                        model_config,
+                        system_prompt: if system_prompt.is_empty() {
+                            default_review_system_prompt()
+                        } else {
+                            system_prompt
+                        },
+                    }
+                },
             })
         }) {
             Ok(settings) => Ok(settings),
@@ -1037,6 +1095,10 @@ impl DispatcherDb {
         let chat_agent_tools =
             serde_json::to_string(&chat.allowed_tools).unwrap_or_else(|_| "[]".to_string());
 
+        let review_model =
+            serde_json::to_string(&settings.review.model_config).unwrap_or_else(|_| "{}".to_string());
+        let review_prompt = settings.review.system_prompt.trim().to_string();
+
         let sql = "INSERT INTO dispatcher_settings_v2 (
             id,
             shared_vision_model_configs_json,
@@ -1052,9 +1114,11 @@ impl DispatcherDb {
             chat_agent_summary_model_configs_json,
             chat_agent_allowed_tools_json,
             auto_approve_dispatch,
-            context_debug
+            context_debug,
+            review_model_config_json,
+            review_system_prompt
         ) VALUES (
-            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
         )
         ON CONFLICT(id) DO UPDATE SET
             shared_vision_model_configs_json = ?1,
@@ -1070,7 +1134,9 @@ impl DispatcherDb {
             chat_agent_summary_model_configs_json = ?11,
             chat_agent_allowed_tools_json = ?12,
             auto_approve_dispatch = ?13,
-            context_debug = ?14";
+            context_debug = ?14,
+            review_model_config_json = ?15,
+            review_system_prompt = ?16";
 
         conn.execute(
             sql,
@@ -1089,6 +1155,8 @@ impl DispatcherDb {
                 &chat_agent_tools,
                 auto_approve_int,
                 context_debug_int,
+                &review_model,
+                &review_prompt,
             ],
         )
         .context("save dispatcher settings v2")?;

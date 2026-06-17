@@ -99,12 +99,18 @@ export interface SshServerConfig {
   privateKeyPassphrase: string;
   description: string;
   tags: string[];
+  reviewEnabled: boolean;
   defaultTimeoutSecs: number;
   maxOutputBytes: number;
 }
 
 export interface SshToolsConfig {
   servers: SshServerConfig[];
+}
+
+export interface SshAuditReview {
+  allowed: boolean;
+  reason: string;
 }
 
 export interface SshAuditRecord {
@@ -122,6 +128,7 @@ export interface SshAuditRecord {
   truncated: boolean;
   interactiveBlocked?: boolean;
   error?: string | null;
+  review?: SshAuditReview | null;
 }
 
 export interface SshAuditLog {
@@ -417,12 +424,18 @@ export interface AhaSharedModels {
   embeddingModelConfigs: DispatcherModelConfig[];
 }
 
+export interface SshReviewConfig {
+  modelConfig: DispatcherModelConfig;
+  systemPrompt: string;
+}
+
 export interface AhaSettingsV2 {
   shared: AhaSharedModels;
   project: AhaContextConfig;
   chat: AhaContextConfig;
   autoApproveDispatch: boolean;
   contextDebug: boolean;
+  review: SshReviewConfig;
 }
 
 export type DispatcherSessionTokenUsageSource = "primary" | "summary";

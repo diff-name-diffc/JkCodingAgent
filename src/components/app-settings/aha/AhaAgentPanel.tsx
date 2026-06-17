@@ -26,6 +26,7 @@ import type {
   AgentContext,
   AgentToolInfo,
   DispatcherModelConfig,
+  SshReviewConfig,
 } from "../../../types";
 import s from "../../../styles";
 import { SubAgentManagePanel } from "../sub-agents/SubAgentManagePanel";
@@ -113,6 +114,11 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
   });
   const [autoApprove, setAutoApprove] = useState(false);
   const [contextDebug, setContextDebug] = useState(false);
+  // SSH 命令审查 AI 配置（编辑入口在 SshToolPanel；此处仅保留以便保存时不覆盖）。
+  const [review, setReview] = useState<SshReviewConfig>({
+    modelConfig: { url: "", apiKey: "", model: "", active: true },
+    systemPrompt: "",
+  });
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -139,6 +145,7 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
         setChat(settings.chat);
         setAutoApprove(settings.autoApproveDispatch);
         setContextDebug(settings.contextDebug);
+        if (settings.review) setReview(settings.review);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -155,6 +162,7 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
         chat,
         autoApproveDispatch: autoApprove,
         contextDebug,
+        review,
       };
       const result = await invoke<AhaSettingsV2>("aha_save_settings_v2", { settings: payload });
       setShared(result.shared);
@@ -162,6 +170,7 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
       setChat(result.chat);
       setAutoApprove(result.autoApproveDispatch);
       setContextDebug(result.contextDebug);
+      if (result.review) setReview(result.review);
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2000);
     } catch (error) {
@@ -590,6 +599,9 @@ function ToolsTab({
   const [availableTools, setAvailableTools] = useState<AgentToolInfo[]>([]);
   const [loadingTools, setLoadingTools] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // 工具列表较长时可各自折叠；已选默认展开，可选默认折叠。
+  const [showSelected, setShowSelected] = useState(true);
+  const [showAvailable, setShowAvailable] = useState(false);
 
   const loadTools = useCallback(async () => {
     setLoadingTools(true);
@@ -639,65 +651,104 @@ function ToolsTab({
         </button>
       </div>
       <div style={s.ahaField}>
-        <label style={s.ahaLabel}>
-          已选工具 ({selectedList.length})
-          {selectedList.length === 0 && (
-            <span style={{ color: "var(--text-hint)", fontWeight: 400, marginLeft: 8 }}>
-              使用默认工具集
-            </span>
-          )}
-        </label>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {selectedList.length === 0 && (
-            <span style={s.ahaHint}>未做任何选择，使用全部默认工具</span>
-          )}
-          {selectedList.map((tool) => (
-            <label
-              key={tool.name}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "6px 8px",
-                borderRadius: 6,
-                background: "var(--bg-subtle)",
-                cursor: "pointer",
-              }}
-            >
-              <input type="checkbox" checked onChange={() => toggleTool(tool.name)} />
-              <span style={{ fontSize: 12, fontFamily: "var(--font-mono)" }}>{tool.name}</span>
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {tool.description.slice(0, 50)}
-                {tool.description.length > 50 ? "..." : ""}
+        <button
+          type="button"
+          style={{ ...s.ahaCollapsibleTitle, alignItems: "center" }}
+          onClick={() => setShowSelected((v) => !v)}
+        >
+          <ChevronDown
+            size={13}
+            style={{
+              transform: showSelected ? "rotate(0deg)" : "rotate(-90deg)",
+              transition: "transform 0.15s",
+              flexShrink: 0,
+            }}
+          />
+          <span style={s.ahaLabel}>
+            已选工具 ({selectedList.length})
+            {selectedList.length === 0 && (
+              <span style={{ color: "var(--text-hint)", fontWeight: 400, marginLeft: 8 }}>
+                使用默认工具集
               </span>
-            </label>
-          ))}
-        </div>
+            )}
+          </span>
+        </button>
+        {showSelected && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {selectedList.length === 0 && (
+              <span style={s.ahaHint}>未做任何选择，使用全部默认工具</span>
+            )}
+            {selectedList.map((tool) => (
+              <label
+                key={tool.name}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "6px 8px",
+                  borderRadius: 6,
+                  background: "var(--bg-subtle)",
+                  cursor: "pointer",
+                }}
+              >
+                <input type="checkbox" checked onChange={() => toggleTool(tool.name)} />
+                <span style={{ fontSize: 12, fontFamily: "var(--font-mono)" }}>{tool.name}</span>
+                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  {tool.description.slice(0, 50)}
+                  {tool.description.length > 50 ? "..." : ""}
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
       </div>
       <div style={s.ahaField}>
-        <label style={s.ahaLabel}>可选工具</label>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {unselectedList.map((tool) => (
-            <label
-              key={tool.name}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "6px 8px",
-                borderRadius: 6,
-                cursor: "pointer",
-              }}
-            >
-              <input type="checkbox" checked={false} onChange={() => toggleTool(tool.name)} />
-              <span style={{ fontSize: 12, fontFamily: "var(--font-mono)" }}>{tool.name}</span>
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {tool.description.slice(0, 50)}
-                {tool.description.length > 50 ? "..." : ""}
+        <button
+          type="button"
+          style={{ ...s.ahaCollapsibleTitle, alignItems: "center" }}
+          onClick={() => setShowAvailable((v) => !v)}
+        >
+          <ChevronDown
+            size={13}
+            style={{
+              transform: showAvailable ? "rotate(0deg)" : "rotate(-90deg)",
+              transition: "transform 0.15s",
+              flexShrink: 0,
+            }}
+          />
+          <span style={s.ahaLabel}>
+            可选工具 ({unselectedList.length})
+            {unselectedList.length === 0 && (
+              <span style={{ color: "var(--text-hint)", fontWeight: 400, marginLeft: 8 }}>
+                无可选项
               </span>
-            </label>
-          ))}
-        </div>
+            )}
+          </span>
+        </button>
+        {showAvailable && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {unselectedList.map((tool) => (
+              <label
+                key={tool.name}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "6px 8px",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                }}
+              >
+                <input type="checkbox" checked={false} onChange={() => toggleTool(tool.name)} />
+                <span style={{ fontSize: 12, fontFamily: "var(--font-mono)" }}>{tool.name}</span>
+                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  {tool.description.slice(0, 50)}
+                  {tool.description.length > 50 ? "..." : ""}
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

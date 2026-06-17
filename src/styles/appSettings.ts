@@ -202,6 +202,20 @@ export const appSettings = {
     padding: 0,
     cursor: "pointer",
   },
+  // 通用可折叠区块标题（标题 + 描述多行，chevron 置顶对齐）
+  ahaCollapsibleTitle: {
+    minWidth: 0,
+    flex: 1,
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 8,
+    border: "none",
+    background: "transparent",
+    color: "inherit",
+    padding: 0,
+    textAlign: "left" as const,
+    cursor: "pointer",
+  },
   ahaProviderTitleWrap: {
     minWidth: 0,
     display: "flex",

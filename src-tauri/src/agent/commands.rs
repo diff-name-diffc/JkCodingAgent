@@ -1501,6 +1501,7 @@ async fn test_dispatcher_model(kind: &str, config: DispatcherModelConfig) -> Res
     match kind {
         "chat" => test_chat_compatible_model("聊天主模型", config, false).await,
         "summary" => test_chat_compatible_model("摘要模型", config, false).await,
+        "review" => test_chat_compatible_model("审查模型", config, false).await,
         "vision" => test_chat_compatible_model("视觉模型", config, true).await,
         "embedding" => test_embedding_model(config).await,
         "asr" => test_required_model_config("ASR 模型", &config)

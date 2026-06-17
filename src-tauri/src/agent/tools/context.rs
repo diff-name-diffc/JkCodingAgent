@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tauri::AppHandle;
 
+use crate::agent::db::settings::SshReviewConfig;
 use crate::agent::llm::OpenAiCompatProvider;
 use crate::agent::tools::registry::ToolRegistry;
 
@@ -11,6 +12,10 @@ pub struct ToolContext {
     pub workspace_id: String,
     pub workspace: PathBuf,
     pub session_title: String,
+    /// 当前用户任务（最新一条用户消息文本），供 SSH 安全审查等场景使用。
+    pub user_task: Option<String>,
+    /// SSH 命令安全审查 AI 配置；None 表示未配置，跳过审查。
+    pub ssh_review: Option<SshReviewConfig>,
     pub exec_timeout_secs: u64,
     pub restrict_to_workspace: bool,
     /// 额外允许访问的目录白名单（不受 restrict_to_workspace 限制）

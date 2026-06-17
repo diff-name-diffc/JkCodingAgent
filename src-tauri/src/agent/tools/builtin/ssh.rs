@@ -117,6 +117,90 @@ impl AgentTool for SshExecTool {
         };
         let stdin = string_arg(args, "stdin");
 
+        // 安全审查门禁：已配置审查 AI 且服务器开启审查时，执行前先评估命令安全性。
+        // fail-closed：审查异常或判定不通过一律拦截（并写入审计），不执行命令。
+        let review_outcome: Option<crate::ssh_tool::SshAuditReview> =
+            if let Some(review_config) = context.ssh_review.as_ref() {
+                match self
+                    .manager
+                    .server_config_async(context.workspace.clone(), server_id.clone())
+                    .await
+                {
+                    Ok(server) if server.review_enabled => {
+                        let intent = string_arg(args, "compress_intent")
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| context.session_title.clone());
+                        let payload = crate::agent::ssh_review::SshReviewPayload {
+                            intent,
+                            task: context.user_task.clone().unwrap_or_default(),
+                            server_info: crate::agent::ssh_review::SshReviewServerInfo {
+                                id: server.id.clone(),
+                                description: server.description.clone(),
+                                host: server.host.clone(),
+                                port: server.port,
+                                username: server.username.clone(),
+                                tags: server.tags.clone(),
+                            },
+                            command: command.clone(),
+                        };
+                        match crate::agent::ssh_review::review_command(review_config, &payload).await {
+                            Ok(verdict) => Some(crate::ssh_tool::SshAuditReview {
+                                allowed: verdict.allowed,
+                                reason: verdict.reason,
+                            }),
+                            Err(error) => {
+                                let blocked = crate::ssh_tool::SshAuditReview {
+                                    allowed: false,
+                                    reason: format!("审查服务异常：{error}"),
+                                };
+                                let _ = self
+                                    .manager
+                                    .record_review_blocked(
+                                        context.workspace.clone(),
+                                        context.workspace_id.clone(),
+                                        context.session_title.clone(),
+                                        server_id.clone(),
+                                        session_id.clone(),
+                                        command.clone(),
+                                        blocked,
+                                    )
+                                    .await;
+                                return format!(
+                                    "命令已被安全审查拦截（审查服务异常：{error}）。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
+                                );
+                            }
+                        }
+                    }
+                    Ok(_) => None,
+                    Err(error) => return format!("错误：{error}"),
+                }
+            } else {
+                None
+            };
+
+        // 判定为不通过：写入「被拦截」审计记录并阻断。
+        if let Some(ref review) = review_outcome {
+            if !review.allowed {
+                let reason = review.reason.clone();
+                let _ = self
+                    .manager
+                    .record_review_blocked(
+                        context.workspace.clone(),
+                        context.workspace_id.clone(),
+                        context.session_title.clone(),
+                        server_id.clone(),
+                        session_id.clone(),
+                        command.clone(),
+                        review.clone(),
+                    )
+                    .await;
+                return format!(
+                    "命令已被安全审查拦截：{reason}。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
+                );
+            }
+        }
+
         match self
             .manager
             .execute(
@@ -128,6 +212,7 @@ impl AgentTool for SshExecTool {
                 command,
                 stdin,
                 u64_arg(args, "timeout_secs"),
+                review_outcome,
             )
             .await
         {

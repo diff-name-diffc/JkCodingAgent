@@ -554,11 +554,22 @@ impl DispatcherAgent {
             .get_session_title_async(workspace_id)
             .await
             .unwrap_or_else(|_| "untitled".to_string());
+        let user_task = db
+            .get_latest_user_message_content_async(workspace_id)
+            .await
+            .ok()
+            .flatten();
+        let ssh_review = db
+            .get_settings_v2()
+            .ok()
+            .and_then(|settings| settings.review.is_configured().then_some(settings.review));
         let ms = self.models.lock().snapshot();
         ToolContext {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
             session_title,
+            user_task,
+            ssh_review,
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: self.config.restrict_to_workspace,
             extra_allowed_dirs: dirs::home_dir()

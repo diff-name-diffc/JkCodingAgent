@@ -77,6 +77,9 @@ pub struct SshServerConfig {
     pub description: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// 执行命令前是否经过安全审查 AI 评估（默认开启）。
+    #[serde(default = "default_review_enabled")]
+    pub review_enabled: bool,
     #[serde(default = "default_timeout_secs")]
     pub default_timeout_secs: u64,
     #[serde(default = "default_max_output_bytes")]
@@ -113,6 +116,16 @@ pub struct SshAuditLog {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SshAuditReview {
+    /// 审查是否通过
+    pub allowed: bool,
+    /// 审查原因（拒绝时为拦截理由，通过时通常为空）
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SshAuditRecord {
     pub created_at: String,
     pub workspace_path: String,
@@ -129,6 +142,9 @@ pub struct SshAuditRecord {
     #[serde(default)]
     pub interactive_blocked: bool,
     pub error: Option<String>,
+    /// 命令执行前的安全审查结论；None 表示未审查（未配置审查 AI 或服务器关闭审查）。
+    #[serde(default)]
+    pub review: Option<SshAuditReview>,
 }
 
 #[derive(Clone, Default)]
@@ -240,6 +256,17 @@ impl SshSessionManager {
         .map_err(|error| error.to_string())?
     }
 
+    /// 读取指定已启用服务器的完整配置（含 review_enabled 等字段），供审查门禁使用。
+    pub async fn server_config_async(
+        &self,
+        project_path: PathBuf,
+        server_id: String,
+    ) -> Result<SshServerConfig, String> {
+        tokio::task::spawn_blocking(move || find_enabled_server(&project_path, &server_id))
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn execute(
         &self,
@@ -251,6 +278,7 @@ impl SshSessionManager {
         command: String,
         stdin: Option<String>,
         timeout_secs: Option<u64>,
+        review: Option<SshAuditReview>,
     ) -> Result<SshExecResult, String> {
         let manager = self.clone();
         tokio::task::spawn_blocking(move || {
@@ -263,7 +291,44 @@ impl SshSessionManager {
                 command,
                 stdin,
                 timeout_secs,
+                review,
             )
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    /// 记录一条「被安全审查拦截、未执行」的审计记录。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_review_blocked(
+        &self,
+        project_path: PathBuf,
+        workspace_id: String,
+        session_title: String,
+        server_id: String,
+        session_id: String,
+        command: String,
+        review: SshAuditReview,
+    ) -> Result<(), String> {
+        tokio::task::spawn_blocking(move || {
+            let record = SshAuditRecord {
+                created_at: Utc::now().to_rfc3339(),
+                workspace_path: normalize_project_key(&project_path),
+                workspace_id,
+                session_title,
+                server_id,
+                session_id,
+                command,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_ms: None,
+                truncated: false,
+                interactive_blocked: false,
+                error: None,
+                review: Some(review),
+            };
+            write_audit_record(&project_path, record)
         })
         .await
         .map_err(|error| error.to_string())?
@@ -280,6 +345,7 @@ impl SshSessionManager {
         command: String,
         stdin: Option<String>,
         timeout_secs: Option<u64>,
+        review: Option<SshAuditReview>,
     ) -> Result<SshExecResult, String> {
         let result = self.execute_command_blocking(
             &project_path,
@@ -299,6 +365,7 @@ impl SshSessionManager {
                 session_id,
                 command,
                 &result,
+                review.as_ref(),
             ),
         );
         if let Err(error) = audit_result {
@@ -440,6 +507,10 @@ fn default_enabled() -> bool {
     true
 }
 
+fn default_review_enabled() -> bool {
+    true
+}
+
 fn default_ssh_port() -> u16 {
     22
 }
@@ -461,7 +532,9 @@ impl SshAuditRecord {
         session_id: String,
         command: String,
         result: &Result<SshExecResult, String>,
+        review: Option<&SshAuditReview>,
     ) -> Self {
+        let review = review.cloned();
         match result {
             Ok(output) => Self {
                 created_at: Utc::now().to_rfc3339(),
@@ -478,6 +551,7 @@ impl SshAuditRecord {
                 truncated: output.truncated,
                 interactive_blocked: output.interactive_blocked,
                 error: None,
+                review,
             },
             Err(error) => Self {
                 created_at: Utc::now().to_rfc3339(),
@@ -494,6 +568,7 @@ impl SshAuditRecord {
                 truncated: false,
                 interactive_blocked: false,
                 error: Some(sanitize_error_text(error)),
+                review,
             },
         }
     }

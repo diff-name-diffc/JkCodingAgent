@@ -21,7 +21,7 @@ impl DispatcherDb {
         let mut conn = self.conn()?;
 
         // Fast path: if schema is already at the expected version, skip all DDL.
-        const SCHEMA_VERSION: i32 = 11;
+        const SCHEMA_VERSION: i32 = 12;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -602,6 +602,25 @@ impl DispatcherDb {
             tx.commit()
                 .context("v11: commit browser-agent timeout refresh")?;
         }
+
+        // v11 → v12: SSH 命令安全审查 AI 配置（单个模型配置 + 可编辑系统提示词）。
+        //             对已有行，ALTER ADD COLUMN ... DEFAULT 安全地补齐默认值。
+        let has_review_model_col = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('dispatcher_settings_v2') WHERE name = 'review_model_config_json'")
+            .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+            .unwrap_or(0);
+        if has_review_model_col == 0 {
+            conn.execute_batch(
+                "
+                ALTER TABLE dispatcher_settings_v2
+                    ADD COLUMN review_model_config_json TEXT NOT NULL DEFAULT '';
+                ALTER TABLE dispatcher_settings_v2
+                    ADD COLUMN review_system_prompt TEXT NOT NULL DEFAULT '';
+                ",
+            )
+            .context("v12 migration: add ssh review config columns")?;
+        }
+
 
         // Mark schema as fully migrated (outside the transaction — PRAGMA is auto-commit).
         conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION))

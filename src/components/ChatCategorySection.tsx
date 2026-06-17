@@ -77,6 +77,7 @@ export const ChatCategorySection = memo(function ChatCategorySection({
       background: isHovering ? "var(--chat-surface)" : "transparent",
       cursor: "pointer",
     } as React.CSSProperties,
+    onClick: onToggle,
     onMouseEnter: () => setIsHovering(true),
     onMouseLeave: () => setIsHovering(false),
     onDragOver: (e: React.DragEvent) => {
@@ -100,19 +101,26 @@ export const ChatCategorySection = memo(function ChatCategorySection({
   );
 
   const outerHeader = isUncategorized ? (
-    // No context menu — render directly; whole row is clickable
-    <div {...sharedHeaderProps} onClick={onToggle}>
-      {headerClickArea}
-    </div>
+    // No context menu — render directly; whole row (incl. padding) is clickable
+    <div {...sharedHeaderProps}>{headerClickArea}</div>
   ) : (
-    // Outer row: trigger covers chevron+icon+name+count; `+` button is a sibling outside trigger
+    // Whole padded row toggles; the context-menu trigger is a flex container for
+    // chevron+icon+name+count. The `+` button calls stopPropagation so it won't toggle.
     <div {...sharedHeaderProps}>
       <ChatCategoryContextMenu
         category={category!}
         onRename={onRenameCategory}
         onDelete={onDeleteCategory}
       >
-        <div onClick={onToggle} style={{ display: "contents" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flex: 1,
+            minWidth: 0,
+          }}
+        >
           {headerClickArea}
         </div>
       </ChatCategoryContextMenu>

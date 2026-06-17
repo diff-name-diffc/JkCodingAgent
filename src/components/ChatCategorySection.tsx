@@ -23,6 +23,7 @@ function resolveIcon(iconName: string): React.ElementType {
 interface ChatCategorySectionProps {
   category: ChatCategory | null;
   sessions: ChatSession[];
+  totalSessions: number;
   activeSessionId: string | null;
   runningSessionIds: Set<string>;
   onToggle: () => void;
@@ -43,6 +44,7 @@ const UNCATEGORIZED_LABEL = "未分类";
 export const ChatCategorySection = memo(function ChatCategorySection({
   category,
   sessions,
+  totalSessions,
   activeSessionId,
   runningSessionIds,
   onToggle,
@@ -93,7 +95,7 @@ export const ChatCategorySection = memo(function ChatCategorySection({
       />
       <Icon size={15} style={{ ...(s.categoryIcon as React.CSSProperties), color: iconColor }} />
       <span style={s.categoryName}>{displayName}</span>
-      <span style={s.categoryCount}>{sessions.length}</span>
+      <span style={s.categoryCount}>{totalSessions}</span>
     </>
   );
 
@@ -171,7 +173,7 @@ export const ChatCategorySection = memo(function ChatCategorySection({
   ) : null;
 
   if (isUncategorized) {
-    if (sessions.length === 0) return null;
+    if (totalSessions === 0) return null;
     return (
       <div style={s.categorySection as React.CSSProperties}>
         {outerHeader}

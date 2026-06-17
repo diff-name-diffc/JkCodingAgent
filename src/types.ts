@@ -630,6 +630,7 @@ export interface ChatCategory {
   icon: string;
   color: string;
   sortOrder: number;
+  sessionCount: number;
   createdAt: string;
   updatedAt: string;
 }

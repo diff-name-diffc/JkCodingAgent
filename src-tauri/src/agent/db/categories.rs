@@ -16,6 +16,7 @@ pub struct ChatCategory {
     pub icon: String,
     pub color: String,
     pub sort_order: i32,
+    pub session_count: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -24,9 +25,11 @@ impl DispatcherDb {
     pub fn list_chat_categories(&self) -> Result<Vec<ChatCategory>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, icon, color, sort_order, created_at, updated_at
-             FROM chat_categories
-             ORDER BY sort_order ASC, created_at ASC",
+            "SELECT c.id, c.name, c.icon, c.color, c.sort_order, COUNT(s.id), c.created_at, c.updated_at
+             FROM chat_categories c
+             LEFT JOIN chat_sessions s ON s.category = c.id
+             GROUP BY c.id, c.name, c.icon, c.color, c.sort_order, c.created_at, c.updated_at
+             ORDER BY c.sort_order ASC, c.created_at ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(ChatCategory {
@@ -35,8 +38,9 @@ impl DispatcherDb {
                 icon: row.get(2)?,
                 color: row.get(3)?,
                 sort_order: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
+                session_count: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -72,6 +76,7 @@ impl DispatcherDb {
             icon: icon.to_string(),
             color: color.to_string(),
             sort_order: next_order,
+            session_count: 0,
             created_at: now.clone(),
             updated_at: now,
         })
@@ -126,8 +131,11 @@ impl DispatcherDb {
     fn get_chat_category(&self, category_id: &str) -> Result<Option<ChatCategory>> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT id, name, icon, color, sort_order, created_at, updated_at
-             FROM chat_categories WHERE id = ?1",
+            "SELECT c.id, c.name, c.icon, c.color, c.sort_order, COUNT(s.id), c.created_at, c.updated_at
+             FROM chat_categories c
+             LEFT JOIN chat_sessions s ON s.category = c.id
+             WHERE c.id = ?1
+             GROUP BY c.id, c.name, c.icon, c.color, c.sort_order, c.created_at, c.updated_at",
             params![category_id],
             |row| {
                 Ok(ChatCategory {
@@ -136,8 +144,9 @@ impl DispatcherDb {
                     icon: row.get(2)?,
                     color: row.get(3)?,
                     sort_order: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    session_count: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                 })
             },
         )

@@ -1095,8 +1095,8 @@ impl DispatcherDb {
         let chat_agent_tools =
             serde_json::to_string(&chat.allowed_tools).unwrap_or_else(|_| "[]".to_string());
 
-        let review_model =
-            serde_json::to_string(&settings.review.model_config).unwrap_or_else(|_| "{}".to_string());
+        let review_model = serde_json::to_string(&settings.review.model_config)
+            .unwrap_or_else(|_| "{}".to_string());
         let review_prompt = settings.review.system_prompt.trim().to_string();
 
         let sql = "INSERT INTO dispatcher_settings_v2 (

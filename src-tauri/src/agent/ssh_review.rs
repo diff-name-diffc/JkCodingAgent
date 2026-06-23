@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use tokio::time::timeout;
 
-use crate::agent::db::settings::{DEFAULT_REVIEW_SYSTEM_PROMPT, SshReviewConfig};
+use crate::agent::db::settings::{SshReviewConfig, DEFAULT_REVIEW_SYSTEM_PROMPT};
 use crate::agent::llm::{ChatMessage, OpenAiCompatProvider};
 
 const REVIEW_TIMEOUT_SECS: u64 = 30;
@@ -143,7 +143,8 @@ fn parse_verdict(content: &str) -> Result<SshReviewVerdict, String> {
         || lower.contains("通过")
     {
         // 避免把 "不允许" / "不通过" 误判为允许
-        if !(lower.contains("不允许") || lower.contains("不通过") || lower.contains("拒绝")) {
+        if !(lower.contains("不允许") || lower.contains("不通过") || lower.contains("拒绝"))
+        {
             return Ok(SshReviewVerdict {
                 allowed: true,
                 reason: String::new(),

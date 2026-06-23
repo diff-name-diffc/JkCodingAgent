@@ -1,0 +1,5 @@
+# 此目录存放 Tauri sidecar 二进制产物，由 rag/scripts/build_sidecar.* 生成。
+# 文件名须为 rag-server-<target-triple>[.exe]，例如：
+#   rag-server-aarch64-apple-darwin
+#   rag-server-x86_64-pc-windows-msvc.exe
+# 二进制本身被 .gitignore 忽略，本占位文件用于保留目录结构。

@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { X, Pencil, Check, RefreshCw, Monitor } from "lucide-react";
+import { X, Pencil, Check, RefreshCw, Monitor, Database } from "lucide-react";
 import { AhaAgentPanel } from "./app-settings/aha/AhaAgentPanel";
+import { RagKbConfigPanel } from "./app-settings/rag/RagKbConfigPanel";
 import type { ThemeMode } from "../types";
 import s from "../styles";
 import claudeLogo from "../assets/claude.svg";
@@ -9,7 +10,7 @@ import chatgptLogo from "../assets/chatgpt.svg";
 import appLogo from "../assets/app-logo.png";
 import { highlightCodeToHtml } from "../utils/shiki";
 
-type NavKey = "general" | "theme" | "aha" | "claude" | "codex";
+type NavKey = "general" | "theme" | "aha" | "rag" | "claude" | "codex";
 
 interface AppSettings {
   claude_path: string;
@@ -33,6 +34,7 @@ const NAV_ITEMS: Array<{
   { key: "general", label: "通用" },
   { key: "theme", label: "主题" },
   { key: "aha", label: "Aha 智能体", logo: appLogo },
+  { key: "rag", label: "RAG 知识库" },
   {
     key: "claude",
     label: "Claude Code",
@@ -1082,6 +1084,8 @@ export function AppSettingsDialog({
                 />
               ) : activeItem.key === "theme" ? (
                 <Monitor size={16} strokeWidth={1.8} color="var(--text-secondary)" />
+              ) : activeItem.key === "rag" ? (
+                <Database size={16} strokeWidth={1.8} color="var(--text-secondary)" />
               ) : (
                 <span style={{ fontSize: 15 }}>⚙</span>
               )}
@@ -1103,6 +1107,8 @@ export function AppSettingsDialog({
             />
           ) : activeNav === "aha" ? (
             <AhaAgentPanel key="aha" projectPath={projectPath} />
+          ) : activeNav === "rag" ? (
+            <RagKbConfigPanel key="rag" projectPath={projectPath} />
           ) : (
             <AgentConfigPanel
               key={activeNav}

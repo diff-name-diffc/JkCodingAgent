@@ -37,3 +37,10 @@ ruvector.db
 *.bak
 __pycache__/
 *.pyc
+
+# RAG sidecar 产物（由 rag/scripts/build_sidecar.* 生成，不入库）
+rag/.venv/
+rag/build/
+rag/dist/
+src-tauri/binaries/rag-server*
+!src-tauri/binaries/.gitkeep

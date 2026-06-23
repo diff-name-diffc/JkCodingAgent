@@ -741,3 +741,53 @@ export interface SubAgentEventPayload {
   event: SubAgentEventType;
   data: SubAgentEvent["data"];
 }
+
+// ── RAG Knowledge Base ───────────────────────────────────────────────────────
+// 字段名严格对齐 src-tauri/src/rag/config.rs 的 #[serde(rename_all = "camelCase")]。
+// 修改任一字段必须同步 Rust struct 与 rag/src/rag_server/config.py。
+
+/** Qdrant 连接配置（外部独立部署的向量库实例）。 */
+export interface RagQdrantConfig {
+  url: string;
+  apiKey: string;
+  collectionPrefix: string;
+  timeout: number;
+}
+
+/** Embedding 模型配置（走 OpenAI 兼容 API）。 */
+export interface RagEmbeddingConfig {
+  provider: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  dimension: number;
+}
+
+/** RAG 知识库完整运行时配置（权威存储于 ~/.jkcodingagent/rag/config.json）。 */
+export interface RagKbConfig {
+  qdrant: RagQdrantConfig;
+  embedding: RagEmbeddingConfig;
+  logLevel: string;
+}
+
+/** rag_save_kb_config 的返回值。 */
+export interface RagKbSaveResult {
+  saved: boolean;
+  /** sidecar 运行中时为 true，表示配置已热推送到 Python 进程内存。 */
+  reloaded: boolean;
+}
+
+/** rag_status 的返回值。 */
+export interface RagRuntimeStatus {
+  running: boolean;
+  port?: number | null;
+}
+
+export type RagLogStream = "stdout" | "stderr" | "system";
+
+export interface RagLogEntry {
+  seq: number;
+  ts: number;
+  stream: RagLogStream;
+  text: string;
+}

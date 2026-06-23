@@ -447,8 +447,8 @@ impl SshSessionManager {
             }
             DrainOutcome::InteractiveBlocked => {
                 let mut text = finalize_output(&stderr_raw, stderr_capped);
-                let hint =
-                    interactive_prompt_hint(&stdout_raw, &stderr_raw).unwrap_or("未匹配到明显提示符");
+                let hint = interactive_prompt_hint(&stdout_raw, &stderr_raw)
+                    .unwrap_or("未匹配到明显提示符");
                 text.push_str(&format!(
                     "\n[工具检测到命令疑似在等待交互输入（连续 {idle_secs}s 无输出且未退出，疑似：{hint}），已主动中止以免长时间挂起。最近输出结尾：{:?}。请改用非交互形式后重试：sudo→免密账号或 NOPASSWD；确认提示→加 -y/--yes；分页器→PAGER=cat、GIT_PAGER=cat；REPL→用 -e/-c 或通过 stdin 参数喂入。]",
                     tail_snippet(&stdout_raw, &stderr_raw)
@@ -700,7 +700,10 @@ fn validate_single_server_ref(server: &SshServerConfig) -> Result<(), String> {
         }
         SshAuthMethod::Key => {
             if server.private_key_path.is_empty() {
-                return Err(format!("SSH server {} 缺少 private_key_path（密钥文件路径）", server.id));
+                return Err(format!(
+                    "SSH server {} 缺少 private_key_path（密钥文件路径）",
+                    server.id
+                ));
             }
             let resolved = expand_key_path(&server.private_key_path);
             if !resolved.is_file() {
@@ -854,7 +857,12 @@ fn drain_channel(
             match channel.read(&mut chunk) {
                 Ok(0) => stdout_eof = true,
                 Ok(n) => {
-                    append_limited(&mut stdout, &chunk[..n], max_output_bytes, &mut stdout_capped);
+                    append_limited(
+                        &mut stdout,
+                        &chunk[..n],
+                        max_output_bytes,
+                        &mut stdout_capped,
+                    );
                     last_data_at = now;
                     got_data = true;
                 }
@@ -876,7 +884,12 @@ fn drain_channel(
             match stream.read(&mut chunk) {
                 Ok(0) => stderr_eof = true,
                 Ok(n) => {
-                    append_limited(&mut stderr, &chunk[..n], max_output_bytes, &mut stderr_capped);
+                    append_limited(
+                        &mut stderr,
+                        &chunk[..n],
+                        max_output_bytes,
+                        &mut stderr_capped,
+                    );
                     last_data_at = now;
                     got_data = true;
                 }
@@ -903,13 +916,7 @@ fn drain_channel(
         std::thread::sleep(poll);
     };
 
-    (
-        outcome,
-        stdout,
-        stderr,
-        stdout_capped,
-        stderr_capped,
-    )
+    (outcome, stdout, stderr, stdout_capped, stderr_capped)
 }
 
 fn append_limited(out: &mut Vec<u8>, data: &[u8], max_bytes: usize, capped: &mut bool) {
@@ -985,7 +992,6 @@ fn tail_snippet(stdout: &[u8], stderr: &[u8]) -> String {
         .unwrap_or(0);
     combined[from..].trim_end().to_string()
 }
-
 
 fn normalize_project_key(project_path: &Path) -> String {
     project_path

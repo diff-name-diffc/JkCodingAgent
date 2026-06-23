@@ -5,6 +5,7 @@ mod chat_images;
 mod platform;
 mod project;
 mod python_runner;
+mod rag;
 mod scm;
 mod shared;
 mod ssh_tool;

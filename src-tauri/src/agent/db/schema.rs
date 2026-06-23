@@ -621,7 +621,6 @@ impl DispatcherDb {
             .context("v12 migration: add ssh review config columns")?;
         }
 
-
         // Mark schema as fully migrated (outside the transaction — PRAGMA is auto-commit).
         conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION))
             .context("set user_version")?;

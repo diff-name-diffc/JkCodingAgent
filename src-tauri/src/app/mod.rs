@@ -1,8 +1,9 @@
 use crate::agent::DispatcherState;
 use crate::{
-    agent, browser, chat_images, platform, project, python_runner, scm, shared::TaskManager,
+    agent, browser, chat_images, platform, project, python_runner, rag, scm, shared::TaskManager,
     ssh_tool, task_runtime, workspace,
 };
+use tauri::Manager;
 
 fn build_task_manager() -> TaskManager {
     TaskManager::default()
@@ -17,11 +18,25 @@ pub fn run() {
             .expect("failed to initialize Dispatcher state");
 
     tauri::Builder::default()
-        .setup(|_app| {
+        .setup(|app| {
             // 后台预热 login shell 环境，避免第一次启动任务时阻塞
             std::thread::spawn(|| {
                 platform::get_login_shell_path();
             });
+
+            // 自动启动 RAG sidecar（异步，不阻塞 setup；失败仅记日志，
+            // 用户可在「RAG 知识库」配置面板查看状态并手动重启）
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let manager = app_handle.state::<rag::RagManager>();
+                let store = app_handle.state::<rag::RagConfigStore>();
+                if let Err(error) = manager.ensure_started(&app_handle, store.inner()).await {
+                    let logs = app_handle.state::<rag::RagLogStore>();
+                    logs.append_system(&app_handle, format!("RAG sidecar 自动启动失败：{error:#}"));
+                    eprintln!("[rag] 自动启动失败：{error:#}");
+                }
+            });
+
             Ok(())
         })
         .manage(build_task_manager())
@@ -32,9 +47,13 @@ pub fn run() {
         .manage(project_mcp_registry)
         .manage(ssh_session_manager)
         .manage(workspace::RopeManager::new())
+        .manage(rag::RagManager::default())
+        .manage(rag::RagConfigStore::default())
+        .manage(rag::RagLogStore::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
+        .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             task_runtime::pty::start_dispatcher_subprocess,
             task_runtime::pty::resume_dispatcher_subprocess,
@@ -53,6 +72,16 @@ pub fn run() {
             python_runner::python_runner_start,
             python_runner::python_runner_stop,
             python_runner::python_runner_clear_result,
+            rag::commands::rag_start,
+            rag::commands::rag_stop,
+            rag::commands::rag_status,
+            rag::commands::rag_get_kb_config,
+            rag::commands::rag_save_kb_config,
+            rag::commands::rag_health,
+            rag::commands::rag_test_qdrant,
+            rag::commands::rag_sidecar_config,
+            rag::commands::rag_logs_snapshot,
+            rag::commands::rag_logs_clear,
             browser::browser_click_at,
             browser::browser_go_back,
             browser::browser_navigate,
@@ -196,6 +225,13 @@ pub fn run() {
             agent::sub_agent::commands::sub_agent_set_global_enabled,
             agent::sub_agent::commands::sub_agent_get_global_enabled,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // 应用退出时优雅停止 RAG sidecar，避免僵尸子进程
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let manager = app_handle.state::<rag::RagManager>();
+                manager.stop();
+            }
+        });
 }

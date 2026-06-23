@@ -1521,7 +1521,7 @@ async fn test_chat_compatible_model(
     test_required_model_config(label, &config)?;
     let model_name = config.model.trim().to_string();
     let provider = OpenAiCompatProvider::new(config.api_key, config.url, config.model, 64, 0.0);
-    let messages = vec![ChatMessage::system("只输出 pong。".to_string())];
+    let messages = build_test_messages(enable_multimodal);
     let response = provider
         .chat_stream(&messages, &[], enable_multimodal, |_| {})
         .await
@@ -1530,7 +1530,41 @@ async fn test_chat_compatible_model(
     if content.is_empty() {
         anyhow::bail!("{label}（{model_name}）返回空内容");
     }
-    Ok(format!("{label} ok（{model_name}）：{content}"))
+    if enable_multimodal {
+        Ok(format!(
+            "{label} ok（{model_name}，含图片多模态调用）：{content}"
+        ))
+    } else {
+        Ok(format!("{label} ok（{model_name}）：{content}"))
+    }
+}
+
+/// Build the test message list. For vision-capable models the user message
+/// embeds a small inline PNG so the multimodal `image_url` path is actually
+/// exercised — a text-only model misconfigured as the vision model will then
+/// fail here (HTTP 400 / `unknown variant image_url`) instead of silently
+/// passing and crashing `browser_visual_analyze` at runtime.
+fn build_test_messages(enable_multimodal: bool) -> Vec<ChatMessage> {
+    if !enable_multimodal {
+        return vec![ChatMessage::system("只输出 pong。".to_string())];
+    }
+    // 8x8 red PNG. Intentionally tiny but a valid PNG that real vision models
+    // accept and text-only models reject with `unknown variant image_url`.
+    const TEST_PNG_DATA_URL: &str =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX/AAD///9BHTQRAAAAC0lEQVR4nGNgQAAAAAYASm8pjnwAAAAASUVORK5CYII=";
+    vec![
+        ChatMessage::system("你是模型连通性测试器，只对图片中的颜色做最简短回答。".to_string()),
+        ChatMessage {
+            role: "user".to_string(),
+            content: format!(
+                "这是一张测试图片，请用一个词描述其中主要的颜色：\n\n![test]({TEST_PNG_DATA_URL})"
+            ),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    ]
 }
 
 async fn test_embedding_model(config: DispatcherModelConfig) -> Result<String> {

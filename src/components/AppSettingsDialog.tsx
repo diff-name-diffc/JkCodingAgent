@@ -1012,6 +1012,7 @@ export function AppSettingsDialog({
   systemPrefersDark,
   onThemeModeChange,
   initialTab,
+  projectId,
   projectPath,
 }: {
   onClose: () => void;
@@ -1020,6 +1021,7 @@ export function AppSettingsDialog({
   systemPrefersDark: boolean;
   onThemeModeChange: (mode: ThemeMode) => void;
   initialTab?: NavKey;
+  projectId?: string;
   projectPath?: string;
 }) {
   const [activeNav, setActiveNav] = useState<NavKey>(initialTab || "general");
@@ -1108,7 +1110,7 @@ export function AppSettingsDialog({
           ) : activeNav === "aha" ? (
             <AhaAgentPanel key="aha" projectPath={projectPath} />
           ) : activeNav === "rag" ? (
-            <RagKbConfigPanel key="rag" projectPath={projectPath} />
+            <RagKbConfigPanel key="rag" projectId={projectId} projectPath={projectPath} />
           ) : (
             <AgentConfigPanel
               key={activeNav}

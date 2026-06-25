@@ -2,8 +2,8 @@
 
 JKCodingAgent 的 RAG 服务子进程，由 Tauri 宿主以 sidecar 方式启动。
 
-> 当前阶段仅提供**可运行的结构骨架**，不包含真实的 embedding / ingestion /
-> retrieval 实现。目的是先把宿主 ↔ sidecar 的启动、握手、配置流转链路打通。
+> 当前实现已包含文档导入、父子分片、OpenAI 兼容稠密向量、FastEmbed 稀疏向量、
+> Qdrant 混合向量入库；retrieval/query 接口仍留给后续迭代。
 
 ## 架构定位
 
@@ -24,6 +24,8 @@ JKCodingAgent 的 RAG 服务子进程，由 Tauri 宿主以 sidecar 方式启动
 │  │   GET  /health                                         │  │
 │  │   GET  /config          （脱敏查看）                   │  │
 │  │   POST /config/reload   （宿主推送新配置）             │  │
+│  │   POST /ingest/jobs     （启动文档导入任务）           │  │
+│  │   GET  /ingest/jobs/:id （查询内存态导入进度）         │  │
 │  └────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────┘
                           │
@@ -103,22 +105,23 @@ rag/
 │   ├── __main__.py            # `python -m rag_server` 入口
 │   ├── main.py                # FastAPI app + uvicorn 启动 + 端口握手
 │   ├── config.py              # RagSettings：env 注入 + reload 内存单例
+│   ├── loaders/               # PDF/Office/Markdown/文本/表格/图片加载器
 │   ├── routers/
 │   │   ├── health.py          # GET /health
-│   │   └── config.py          # GET /config、POST /config/reload
+│   │   ├── config.py          # GET /config、POST /config/reload
+│   │   └── ingest.py          # POST/GET /ingest/jobs
 │   └── core/
-│       ├── qdrant.py          # QdrantClient 占位工厂
-│       └── embedding.py       # OpenAI 兼容 embedding 占位
+│       ├── chunking.py        # 父子分片
+│       ├── ingestion.py       # 内存态导入 job
+│       └── qdrant.py          # Qdrant 混合向量入库
 ├── scripts/
 │   ├── build_sidecar.sh       # macOS/Linux 打包脚本
 │   └── build_sidecar.ps1      # Windows 打包脚本
 └── tests/
 ```
 
-## 后续 TODO（不在本次骨架范围）
+## 后续 TODO
 
-- [ ] 接入真实 embedding（OpenAI 兼容 API，复用宿主 LLM 配置）
-- [ ] 接入真实 Qdrant 客户端，实现 collection 自动建库
-- [ ] 文档切片、索引、检索接口（`/ingest`、`/query`）
-- [ ] 配置 reload 后触发 Qdrant/Embedding 客户端连接池重建
-- [ ] 前端知识库配置 UI
+- [ ] 检索接口（`/query`）
+- [ ] 导入任务取消与历史记录
+- [ ] 更细粒度的 loader 进度事件

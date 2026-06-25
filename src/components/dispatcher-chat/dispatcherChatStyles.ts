@@ -953,6 +953,58 @@ export const dispatcherChatStyles = {
     fontFamily: "var(--font-mono)",
     fontSize: 11,
   },
+  // ── Prior (superseded) assistant reply collapsible ──
+  // Greyed-out, collapsed-by-default block for an earlier assistant reply that
+  // a subsequent tool round overrode. Visually muted relative to the Thinking
+  // card (which is amber) so the live/final reply stays the visual focus.
+  priorTextCard: {
+    width: "100%",
+    borderRadius: "14px 14px 14px 7px",
+    border: "1px solid var(--border-dim)",
+    background: "color-mix(in srgb, var(--bg-subtle) 70%, transparent)",
+    overflow: "hidden",
+  },
+  priorTextHeader: {
+    width: "100%",
+    border: "none",
+    background: "transparent",
+    color: "var(--text-muted)",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "7px 11px",
+    cursor: "pointer",
+    fontSize: 12,
+    fontWeight: 700,
+    textAlign: "left" as const,
+  },
+  priorTextBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "3px 8px",
+    borderRadius: 999,
+    background: "color-mix(in srgb, var(--text-muted) 14%, transparent)",
+    color: "var(--text-muted)",
+    flexShrink: 0,
+  },
+  priorTextMeta: {
+    flex: 1,
+    minWidth: 0,
+    color: "var(--text-hint)",
+    fontFamily: "var(--font-mono)",
+    fontSize: 11,
+  },
+  priorTextBody: {
+    borderTop: "1px solid var(--border-dim)",
+    padding: "10px 12px 12px",
+    color: "var(--text-muted)",
+    opacity: 0.85,
+    fontSize: 13,
+    lineHeight: 1.65,
+    userSelect: "text" as const,
+    WebkitUserSelect: "text" as const,
+  },
   thinkingBody: {
     borderTop: "1px solid color-mix(in srgb, var(--warning, #d97706) 14%, var(--border-dim))",
     padding: "11px 13px 13px",

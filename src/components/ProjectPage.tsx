@@ -1275,6 +1275,7 @@ export function ProjectPage({
             systemPrefersDark={systemPrefersDark}
             onThemeModeChange={onThemeModeChange}
             initialTab="aha"
+            projectId={project.id}
             projectPath={project.path}
             onClose={() => setShowDispatcherSettings(false)}
           />

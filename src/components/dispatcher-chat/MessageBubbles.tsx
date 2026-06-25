@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, useEffect, useCallback } from "react";
-import { Check, Copy, Brain, ChevronDown, ChevronRight } from "lucide-react";
+import { Check, Copy, Brain, ChevronDown, ChevronRight, MessageSquareText } from "lucide-react";
 import type {
   DispatcherMessage,
   DispatcherMessageUsageStats,
@@ -119,7 +119,7 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
   onRunPython?: (target: PythonCodeRunTarget) => void;
   pythonRunRecords?: Record<string, PythonCodeRunRecord>;
 }) {
-  const { enrichedTools, displaySegments } = useMemo(() => {
+  const { enrichedTools, priorTextSegments, displaySegments } = useMemo(() => {
     const summaryMap = new Map<string, string>();
     const displaySegments: AssistantTurnSegment[] = [];
 
@@ -148,16 +148,28 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
       return tool;
     });
 
-    return { enrichedTools: enriched, displaySegments };
+    // Split assistant-text segments: superseded ones collapse into grey blocks,
+    // the trailing active ones render as the final reply bubble.
+    const priorTextSegments = displaySegments.filter(
+      (segment) => segment.kind === "assistant-text" && segment.superseded,
+    );
+
+    return { enrichedTools: enriched, priorTextSegments, displaySegments };
   }, [segments, tools]);
 
-  const visibleTextSegments = displaySegments.map((segment) => segment.text.trim()).filter(Boolean);
-  const visibleText = visibleTextSegments.join("\n\n");
-  const lastTextSegment = displaySegments[displaySegments.length - 1];
+  const visibleTextSegments = displaySegments.filter(
+    (segment) => segment.kind === "assistant-text" && !segment.superseded,
+  );
+  const visibleText = visibleTextSegments
+    .map((segment) => segment.text.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const lastTextSegment = visibleTextSegments[visibleTextSegments.length - 1];
   const visiblePlaceholder = placeholderText?.trim() ?? "";
   const visibleThinking = thinking?.text.trim() ? thinking : null;
   if (
     !visibleText &&
+    priorTextSegments.length === 0 &&
     enrichedTools.length === 0 &&
     !visiblePlaceholder &&
     !usageStats &&
@@ -180,6 +192,13 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
         {visibleThinking && (
           <ThinkingBlock text={visibleThinking.text} elapsedMs={visibleThinking.elapsedMs} />
         )}
+        {priorTextSegments.map((segment, index) => (
+          <PriorAssistantTextCollapsible
+            key={`${segment.messageId ?? "prior"}-${index}`}
+            text={segment.text}
+            messageId={segment.messageId}
+          />
+        ))}
         {visiblePlaceholder && (
           <div style={styles.assistantTurnSection}>
             <div style={{ ...styles.messageBubble(false), ...styles.assistantReplyBubble }}>
@@ -249,6 +268,65 @@ export const ThinkingBlock = memo(function ThinkingBlock({
         {expanded && (
           <div className="dispatcher-searchable-content" style={styles.thinkingBody}>
             <MarkdownRenderer content={trimmedText} variant="chat" />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+// ── PriorAssistantTextCollapsible ─────────────────────────────────────────────
+// A greyed-out collapsed block for a superseded assistant reply: the text the
+// model produced before calling a tool, which the follow-up reply overrides.
+// Collapsed by default with a char/line count; click to expand and read it.
+
+function summarizeText(text: string): { chars: number; lines: number; trimmed: string } {
+  const trimmed = text.trim();
+  return {
+    chars: trimmed.length,
+    lines: trimmed ? trimmed.split(/\r?\n/).length : 0,
+    trimmed,
+  };
+}
+
+export const PriorAssistantTextCollapsible = memo(function PriorAssistantTextCollapsible({
+  text,
+  messageId,
+}: {
+  text: string;
+  messageId?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const { chars, lines, trimmed } = summarizeText(text);
+  if (!trimmed) {
+    return null;
+  }
+
+  return (
+    <div style={styles.assistantTurnSection}>
+      <div style={styles.priorTextCard}>
+        <button
+          type="button"
+          style={styles.priorTextHeader}
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          title={expanded ? "收起上文回答" : "展开上文回答"}
+        >
+          <span style={styles.priorTextBadge}>
+            <MessageSquareText size={13} />
+            上文回答
+          </span>
+          <span style={styles.priorTextMeta}>
+            {chars} 字 · {lines} 行
+          </span>
+          {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+        </button>
+        {expanded && (
+          <div
+            className="dispatcher-searchable-content"
+            style={{ ...styles.markdownBody, ...styles.priorTextBody }}
+          >
+            <MarkdownRenderer content={trimmed} variant="chat" messageId={messageId} />
           </div>
         )}
       </div>

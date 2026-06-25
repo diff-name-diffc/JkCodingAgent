@@ -17,6 +17,7 @@ pub struct RagLogEntry {
     pub seq: u64,
     pub ts: i64,
     pub stream: RagLogStream,
+    pub level: RagLogLevel,
     pub text: String,
 }
 
@@ -25,6 +26,16 @@ pub struct RagLogEntry {
 pub enum RagLogStream {
     Stdout,
     Stderr,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RagLogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
     System,
 }
 
@@ -52,6 +63,7 @@ impl RagLogStore {
                 seq: state.next_seq,
                 ts: chrono::Utc::now().timestamp_millis(),
                 stream,
+                level: infer_log_level(stream, &text),
                 text,
             };
             state.next_seq = state.next_seq.saturating_add(1);
@@ -75,6 +87,27 @@ impl RagLogStore {
 
     pub fn clear(&self) {
         self.inner.lock().entries.clear();
+    }
+}
+
+fn infer_log_level(stream: RagLogStream, text: &str) -> RagLogLevel {
+    let trimmed = text.trim_start();
+    let normalized = trimmed
+        .strip_prefix("INFO:")
+        .map(|_| RagLogLevel::Info)
+        .or_else(|| trimmed.strip_prefix("DEBUG:").map(|_| RagLogLevel::Debug))
+        .or_else(|| trimmed.strip_prefix("WARNING:").map(|_| RagLogLevel::Warn))
+        .or_else(|| trimmed.strip_prefix("WARN:").map(|_| RagLogLevel::Warn))
+        .or_else(|| trimmed.strip_prefix("ERROR:").map(|_| RagLogLevel::Error));
+
+    if let Some(level) = normalized {
+        return level;
+    }
+
+    match stream {
+        RagLogStream::System => RagLogLevel::System,
+        RagLogStream::Stdout => RagLogLevel::Info,
+        RagLogStream::Stderr => RagLogLevel::Error,
     }
 }
 

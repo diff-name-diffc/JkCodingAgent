@@ -122,12 +122,11 @@ async fn spawn_and_handshake(
     let child_slot = Arc::new(Mutex::new(Some(child)));
 
     let (port_tx, port_rx) = oneshot::channel::<u16>();
-    let port_tx = Arc::new(Mutex::new(Some(port_tx)));
 
     // stdout reader：匹配握手行，拿到端口后即通知
     let app_for_log = app.clone();
-    let port_tx_clone = Arc::clone(&port_tx);
     tokio::spawn(async move {
+        let mut port_tx = Some(port_tx);
         while let Some(event) = rx.recv().await {
             match event {
                 tauri_plugin_shell::process::CommandEvent::Stdout(bytes) => {
@@ -141,7 +140,7 @@ async fn spawn_and_handshake(
                                     &app_for_log,
                                     format!("RAG sidecar 已监听端口 {}", handshake.port),
                                 );
-                                if let Some(sender) = port_tx_clone.lock().take() {
+                                if let Some(sender) = port_tx.take() {
                                     let _ = sender.send(handshake.port);
                                 }
                             }
@@ -189,7 +188,7 @@ async fn spawn_and_handshake(
             );
             anyhow!("等待 rag-server 端口握手超时（{HANDSHAKE_TIMEOUT:?}）")
         })?
-        .map_err(|_| anyhow!("握手通道已关闭"))?;
+        .map_err(|_| anyhow!("rag-server sidecar 在端口握手前已退出，请查看 RAG sidecar 日志"))?;
 
     let transport = RagTransport::new(port).context("构造 sidecar HTTP client")?;
 

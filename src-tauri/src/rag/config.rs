@@ -32,6 +32,12 @@ pub struct QdrantConfig {
     /// 请求超时（秒）。
     #[serde(default = "default_timeout")]
     pub timeout: f64,
+    /// Qdrant 命名稠密向量。
+    #[serde(default = "default_dense_vector_name")]
+    pub dense_vector_name: String,
+    /// Qdrant 命名稀疏向量。
+    #[serde(default = "default_sparse_vector_name")]
+    pub sparse_vector_name: String,
 }
 
 impl Default for QdrantConfig {
@@ -41,6 +47,8 @@ impl Default for QdrantConfig {
             api_key: String::new(),
             collection_prefix: default_collection_prefix(),
             timeout: default_timeout(),
+            dense_vector_name: default_dense_vector_name(),
+            sparse_vector_name: default_sparse_vector_name(),
         }
     }
 }
@@ -53,6 +61,12 @@ fn default_collection_prefix() -> String {
 }
 fn default_timeout() -> f64 {
     10.0
+}
+fn default_dense_vector_name() -> String {
+    "dense".to_string()
+}
+fn default_sparse_vector_name() -> String {
+    "sparse".to_string()
 }
 
 /// Embedding 模型配置（走 OpenAI 兼容 API，复用宿主已有 LLM 配置）。
@@ -94,6 +108,111 @@ fn default_dimension() -> u32 {
     1536
 }
 
+/// 稀疏向量模型配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SparseEmbeddingConfig {
+    #[serde(default = "default_sparse_provider")]
+    pub provider: String,
+    #[serde(default = "default_sparse_model")]
+    pub model: String,
+}
+
+impl Default for SparseEmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_sparse_provider(),
+            model: default_sparse_model(),
+        }
+    }
+}
+
+fn default_sparse_provider() -> String {
+    "fastembed".to_string()
+}
+fn default_sparse_model() -> String {
+    "Qdrant/bm25".to_string()
+}
+
+/// 父子分片配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChunkingConfig {
+    #[serde(default = "default_parent_chunk_size")]
+    pub parent_chunk_size: u32,
+    #[serde(default = "default_parent_chunk_overlap")]
+    pub parent_chunk_overlap: u32,
+    #[serde(default = "default_child_chunk_size")]
+    pub child_chunk_size: u32,
+    #[serde(default = "default_child_chunk_overlap")]
+    pub child_chunk_overlap: u32,
+    #[serde(default = "default_chunk_separators")]
+    pub separators: Vec<String>,
+}
+
+impl Default for ChunkingConfig {
+    fn default() -> Self {
+        Self {
+            parent_chunk_size: default_parent_chunk_size(),
+            parent_chunk_overlap: default_parent_chunk_overlap(),
+            child_chunk_size: default_child_chunk_size(),
+            child_chunk_overlap: default_child_chunk_overlap(),
+            separators: default_chunk_separators(),
+        }
+    }
+}
+
+fn default_parent_chunk_size() -> u32 {
+    2000
+}
+fn default_parent_chunk_overlap() -> u32 {
+    200
+}
+fn default_child_chunk_size() -> u32 {
+    400
+}
+fn default_child_chunk_overlap() -> u32 {
+    80
+}
+fn default_chunk_separators() -> Vec<String> {
+    ["\n\n", "\n", "。", "；", ". ", " ", ""]
+        .iter()
+        .map(|value| value.to_string())
+        .collect()
+}
+
+/// OCR 配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrConfig {
+    #[serde(default = "default_ocr_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub use_cuda: bool,
+    #[serde(default = "default_pdf_image_ratio")]
+    pub pdf_image_width_ratio: f64,
+    #[serde(default = "default_pdf_image_ratio")]
+    pub pdf_image_height_ratio: f64,
+}
+
+impl Default for OcrConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_ocr_enabled(),
+            use_cuda: false,
+            pdf_image_width_ratio: default_pdf_image_ratio(),
+            pdf_image_height_ratio: default_pdf_image_ratio(),
+        }
+    }
+}
+
+fn default_ocr_enabled() -> bool {
+    true
+}
+fn default_pdf_image_ratio() -> f64 {
+    0.6
+}
+
 /// RAG 知识库的完整运行时配置。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +221,12 @@ pub struct RagKbConfig {
     pub qdrant: QdrantConfig,
     #[serde(default)]
     pub embedding: EmbeddingConfig,
+    #[serde(default)]
+    pub sparse_embedding: SparseEmbeddingConfig,
+    #[serde(default)]
+    pub chunking: ChunkingConfig,
+    #[serde(default)]
+    pub ocr: OcrConfig,
     #[serde(default = "default_log_level")]
     pub log_level: String,
 }
@@ -163,6 +288,14 @@ impl RagKbConfig {
                 self.qdrant.collection_prefix.clone(),
             ),
             ("RAG_QDRANT_TIMEOUT", self.qdrant.timeout.to_string()),
+            (
+                "RAG_QDRANT_DENSE_VECTOR_NAME",
+                self.qdrant.dense_vector_name.clone(),
+            ),
+            (
+                "RAG_QDRANT_SPARSE_VECTOR_NAME",
+                self.qdrant.sparse_vector_name.clone(),
+            ),
             ("RAG_EMBEDDING_PROVIDER", self.embedding.provider.clone()),
             ("RAG_EMBEDDING_BASE_URL", self.embedding.base_url.clone()),
             ("RAG_EMBEDDING_API_KEY", self.embedding.api_key.clone()),
@@ -170,6 +303,40 @@ impl RagKbConfig {
             (
                 "RAG_EMBEDDING_DIMENSION",
                 self.embedding.dimension.to_string(),
+            ),
+            (
+                "RAG_SPARSE_EMBEDDING_PROVIDER",
+                self.sparse_embedding.provider.clone(),
+            ),
+            (
+                "RAG_SPARSE_EMBEDDING_MODEL",
+                self.sparse_embedding.model.clone(),
+            ),
+            (
+                "RAG_PARENT_CHUNK_SIZE",
+                self.chunking.parent_chunk_size.to_string(),
+            ),
+            (
+                "RAG_PARENT_CHUNK_OVERLAP",
+                self.chunking.parent_chunk_overlap.to_string(),
+            ),
+            (
+                "RAG_CHILD_CHUNK_SIZE",
+                self.chunking.child_chunk_size.to_string(),
+            ),
+            (
+                "RAG_CHILD_CHUNK_OVERLAP",
+                self.chunking.child_chunk_overlap.to_string(),
+            ),
+            ("RAG_OCR_ENABLED", self.ocr.enabled.to_string()),
+            ("RAG_OCR_USE_CUDA", self.ocr.use_cuda.to_string()),
+            (
+                "RAG_OCR_PDF_IMAGE_WIDTH_RATIO",
+                self.ocr.pdf_image_width_ratio.to_string(),
+            ),
+            (
+                "RAG_OCR_PDF_IMAGE_HEIGHT_RATIO",
+                self.ocr.pdf_image_height_ratio.to_string(),
             ),
             ("RAG_LOG_LEVEL", self.log_level.clone()),
         ]

@@ -27,6 +27,11 @@ export interface AssistantTurnSegment {
   kind: "assistant-text" | "tool-summary";
   text: string;
   messageId?: string;
+  // assistant-text 专用：标记为已被后续正文覆盖的前置正文。
+  // 渲染为置灰折叠条而非最终正文气泡。流式中由 demoteActiveTextSegments
+  // 在下一轮 assistantStarted 时设置；历史重载时由带 tool_calls 的消息
+  // 在 buildDispatcherDisplayItems 中设置。
+  superseded?: boolean;
   toolCallId?: string;
   toolName?: string;
   resultMode?: DispatcherToolResultMode;
@@ -95,17 +100,17 @@ export function buildDispatcherDisplayItems(
 
       // When the assistant message contains tool calls, its text content is
       // preliminary reasoning that will be superseded by the follow-up
-      // response after tool execution.  Rendering it as a separate bubble
-      // alongside the final answer produces visually duplicated content, so
-      // we only push the text segment for assistant messages WITHOUT tool
-      // calls (the final/terminal response in the LLM loop).
+      // response after tool execution.  Instead of discarding it, mark it as
+      // superseded so it renders as a collapsed grey block inside the turn,
+      // preserving the intermediate reasoning for the user to expand.
       const hasToolCalls = toolCalls.length > 0;
       const content = message.content.trim();
-      if (content && !hasToolCalls) {
+      if (content) {
         pushAssistantSegment(turn.segments, {
           kind: "assistant-text",
           text: content,
           messageId: message.id,
+          superseded: hasToolCalls || undefined,
         });
       }
       continue;
@@ -256,6 +261,24 @@ export function appendAssistantTextSegment(
   });
 }
 
+/**
+ * Mark every active (non-superseded) assistant-text segment as superseded.
+ *
+ * Used at the start of a new assistant round (assistantStarted / assistantMessage)
+ * to demote the previously-streamed reply into a collapsed grey block, instead
+ * of discarding it. tool-summary segments are left untouched so ongoing tool
+ * summaries keep accumulating.
+ */
+export function demoteActiveTextSegments(
+  segments: AssistantTurnSegment[],
+): AssistantTurnSegment[] {
+  return segments.map((segment) =>
+    segment.kind === "assistant-text" && !segment.superseded
+      ? { ...segment, superseded: true }
+      : segment,
+  );
+}
+
 export function appendToolSummarySegment(
   segments: AssistantTurnSegment[],
   payload: {
@@ -283,6 +306,10 @@ function appendSegmentText(
   const matchesLastSegment =
     lastSegment &&
     lastSegment.kind === incoming.kind &&
+    // A superseded segment must never merge with an active one (or vice versa):
+    // keep them as separate blocks so the prior reply stays collapsible while
+    // the new live reply accumulates on its own segment.
+    Boolean(lastSegment.superseded) === Boolean(incoming.superseded) &&
     (incoming.kind !== "tool-summary" ||
       (lastSegment.toolCallId ?? lastSegment.toolName) ===
         (incoming.toolCallId ?? incoming.toolName));

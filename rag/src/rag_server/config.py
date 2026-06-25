@@ -16,37 +16,79 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class EmbeddingConfig(BaseModel):
-    """Embedding 模型配置（骨架阶段仅声明，不实际调用 API）。"""
+class SidecarModel(BaseModel):
+    """同时接受 Rust/TypeScript 的 camelCase 与 Python 内部 snake_case。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class EmbeddingConfig(SidecarModel):
+    """Embedding 模型配置。"""
 
     provider: str = Field(default="openai_compatible", description="供应商类型")
-    base_url: str = Field(default="", description="OpenAI 兼容的 embedding 接口地址")
-    api_key: str = Field(default="", description="API Key（由宿主注入）")
+    base_url: str = Field(
+        default="",
+        alias="baseUrl",
+        description="OpenAI 兼容的 embedding 接口地址",
+    )
+    api_key: str = Field(default="", alias="apiKey", description="API Key（由宿主注入）")
     model: str = Field(default="text-embedding-3-small", description="模型名")
     dimension: int = Field(default=1536, description="向量维度，需与 Qdrant collection 一致")
 
 
-class QdrantConfig(BaseModel):
+class QdrantConfig(SidecarModel):
     """Qdrant 连接配置（外部独立部署）。"""
 
     url: str = Field(default="http://127.0.0.1:6333", description="Qdrant HTTP 端点")
-    api_key: str = Field(default="", description="Qdrant API Key，可选")
+    api_key: str = Field(default="", alias="apiKey", description="Qdrant API Key，可选")
     collection_prefix: str = Field(
         default="jk_",
+        alias="collectionPrefix",
         description="collection 命名前缀，用于多租户/多项目隔离",
     )
     timeout: float = Field(default=10.0, description="Qdrant 请求超时（秒）")
+    dense_vector_name: str = Field(default="dense", alias="denseVectorName", description="稠密向量名")
+    sparse_vector_name: str = Field(default="sparse", alias="sparseVectorName", description="稀疏向量名")
 
 
-class RagSettings(BaseModel):
+class SparseEmbeddingConfig(SidecarModel):
+    """稀疏向量配置。"""
+
+    provider: str = Field(default="fastembed", description="稀疏向量供应商")
+    model: str = Field(default="Qdrant/bm25", description="FastEmbed sparse 模型名")
+
+
+class ChunkingConfig(SidecarModel):
+    """父子分片配置。"""
+
+    parent_chunk_size: int = Field(default=2000, alias="parentChunkSize")
+    parent_chunk_overlap: int = Field(default=200, alias="parentChunkOverlap")
+    child_chunk_size: int = Field(default=400, alias="childChunkSize")
+    child_chunk_overlap: int = Field(default=80, alias="childChunkOverlap")
+    separators: list[str] = Field(default_factory=lambda: ["\n\n", "\n", "。", "；", ". ", " ", ""])
+
+
+class OcrConfig(SidecarModel):
+    """OCR 配置。"""
+
+    enabled: bool = True
+    use_cuda: bool = Field(default=False, alias="useCuda")
+    pdf_image_width_ratio: float = Field(default=0.6, alias="pdfImageWidthRatio")
+    pdf_image_height_ratio: float = Field(default=0.6, alias="pdfImageHeightRatio")
+
+
+class RagSettings(SidecarModel):
     """RAG sidecar 的完整运行时配置（内存单例）。"""
 
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
-    log_level: str = Field(default="INFO", description="日志级别")
+    sparse_embedding: SparseEmbeddingConfig = Field(default_factory=SparseEmbeddingConfig, alias="sparseEmbedding")
+    chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
+    ocr: OcrConfig = Field(default_factory=OcrConfig)
+    log_level: str = Field(default="INFO", alias="logLevel", description="日志级别")
 
     # ---- 两个入口 ----
 
@@ -83,6 +125,8 @@ class RagSettings(BaseModel):
                 api_key=_get("RAG_QDRANT_API_KEY"),
                 collection_prefix=_get("RAG_QDRANT_COLLECTION_PREFIX", "jk_"),
                 timeout=timeout,
+                dense_vector_name=_get("RAG_QDRANT_DENSE_VECTOR_NAME", "dense"),
+                sparse_vector_name=_get("RAG_QDRANT_SPARSE_VECTOR_NAME", "sparse"),
             ),
             embedding=EmbeddingConfig(
                 provider=_get("RAG_EMBEDDING_PROVIDER", "openai_compatible"),
@@ -90,6 +134,22 @@ class RagSettings(BaseModel):
                 api_key=_get("RAG_EMBEDDING_API_KEY"),
                 model=_get("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
                 dimension=dimension,
+            ),
+            sparseEmbedding=SparseEmbeddingConfig(
+                provider=_get("RAG_SPARSE_EMBEDDING_PROVIDER", "fastembed"),
+                model=_get("RAG_SPARSE_EMBEDDING_MODEL", "Qdrant/bm25"),
+            ),
+            chunking=ChunkingConfig(
+                parentChunkSize=_parse_int(_get("RAG_PARENT_CHUNK_SIZE", "2000"), 2000),
+                parentChunkOverlap=_parse_int(_get("RAG_PARENT_CHUNK_OVERLAP", "200"), 200),
+                childChunkSize=_parse_int(_get("RAG_CHILD_CHUNK_SIZE", "400"), 400),
+                childChunkOverlap=_parse_int(_get("RAG_CHILD_CHUNK_OVERLAP", "80"), 80),
+            ),
+            ocr=OcrConfig(
+                enabled=_parse_bool(_get("RAG_OCR_ENABLED", "true"), True),
+                useCuda=_parse_bool(_get("RAG_OCR_USE_CUDA", "false"), False),
+                pdfImageWidthRatio=_parse_float(_get("RAG_OCR_PDF_IMAGE_WIDTH_RATIO", "0.6"), 0.6),
+                pdfImageHeightRatio=_parse_float(_get("RAG_OCR_PDF_IMAGE_HEIGHT_RATIO", "0.6"), 0.6),
             ),
             log_level=normalize_log_level(_get("RAG_LOG_LEVEL", "INFO")),
         )
@@ -101,6 +161,9 @@ class RagSettings(BaseModel):
         """
         object.__setattr__(self, "qdrant", payload.qdrant)
         object.__setattr__(self, "embedding", payload.embedding)
+        object.__setattr__(self, "sparse_embedding", payload.sparse_embedding)
+        object.__setattr__(self, "chunking", payload.chunking)
+        object.__setattr__(self, "ocr", payload.ocr)
         object.__setattr__(self, "log_level", normalize_log_level(payload.log_level))
         apply_log_level(self.log_level)
 
@@ -130,6 +193,29 @@ def normalize_log_level(value: str) -> str:
     """返回 Python logging 可识别的日志级别名。"""
     normalized = (value or "INFO").strip().upper()
     return normalized if normalized in {"DEBUG", "INFO", "WARNING", "ERROR"} else "INFO"
+
+
+def _parse_int(value: str, default: int) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _parse_float(value: str, default: float) -> float:
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _parse_bool(value: str, default: bool) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def apply_log_level(value: str) -> None:

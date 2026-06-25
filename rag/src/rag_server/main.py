@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -28,7 +29,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .config import init_settings, normalize_log_level
-from .routers import config_router, health_router
+from .routers import config_router, health_router, ingest_router, tests_router
 
 
 def _build_app() -> FastAPI:
@@ -47,6 +48,8 @@ def _build_app() -> FastAPI:
     )
     app.include_router(health_router.router)
     app.include_router(config_router.router)
+    app.include_router(ingest_router.router)
+    app.include_router(tests_router.router)
     return app
 
 
@@ -82,17 +85,23 @@ def _resolve_port() -> int:
     return 0
 
 
+def _reserve_free_port() -> int:
+    """向 OS 申请一个本机空闲端口，用于 sidecar 动态端口启动。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def main() -> None:
     """PyInstaller 产物入口；开发模式下也可直接 `python -m rag_server` 调用。"""
     # 日志统一走 stderr，避免污染 stdout 协议通道
     log_level = normalize_log_level(os.environ.get("RAG_LOG_LEVEL", "info")).lower()
 
     port = _resolve_port()
+    if port == 0:
+        port = _reserve_free_port()
 
-    # 生产路径建议：port=0 让 OS 分配，然后在 uvicorn lifespan 中读取真实端口
-    # 再调用 _emit_handshake。骨架阶段支持固定端口，握手直接发。
-    if port != 0:
-        _emit_handshake(port)
+    _emit_handshake(port)
 
     uvicorn.run(
         app,

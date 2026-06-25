@@ -752,6 +752,8 @@ export interface RagQdrantConfig {
   apiKey: string;
   collectionPrefix: string;
   timeout: number;
+  denseVectorName: string;
+  sparseVectorName: string;
 }
 
 /** Embedding 模型配置（走 OpenAI 兼容 API）。 */
@@ -763,10 +765,36 @@ export interface RagEmbeddingConfig {
   dimension: number;
 }
 
+/** 稀疏向量模型配置。 */
+export interface RagSparseEmbeddingConfig {
+  provider: string;
+  model: string;
+}
+
+/** 父子分片配置。 */
+export interface RagChunkingConfig {
+  parentChunkSize: number;
+  parentChunkOverlap: number;
+  childChunkSize: number;
+  childChunkOverlap: number;
+  separators: string[];
+}
+
+/** OCR 配置。 */
+export interface RagOcrConfig {
+  enabled: boolean;
+  useCuda: boolean;
+  pdfImageWidthRatio: number;
+  pdfImageHeightRatio: number;
+}
+
 /** RAG 知识库完整运行时配置（权威存储于 ~/.jkcodingagent/rag/config.json）。 */
 export interface RagKbConfig {
   qdrant: RagQdrantConfig;
   embedding: RagEmbeddingConfig;
+  sparseEmbedding: RagSparseEmbeddingConfig;
+  chunking: RagChunkingConfig;
+  ocr: RagOcrConfig;
   logLevel: string;
 }
 
@@ -783,11 +811,43 @@ export interface RagRuntimeStatus {
   port?: number | null;
 }
 
+export interface RagIngestJobStartResult {
+  jobId: string;
+}
+
+export type RagIngestFileStatus = "pending" | "running" | "done" | "failed";
+export type RagIngestJobStatusType = "queued" | "running" | "done" | "partial" | "failed";
+
+export interface RagIngestFileResult {
+  path: string;
+  status: RagIngestFileStatus;
+  rawDocuments: number;
+  parentChunks: number;
+  childChunks: number;
+  indexedPoints: number;
+  error?: string | null;
+}
+
+export interface RagIngestJobStatus {
+  jobId: string;
+  projectId: string;
+  status: RagIngestJobStatusType;
+  totalFiles: number;
+  completedFiles: number;
+  failedFiles: number;
+  createdAt: number;
+  updatedAt: number;
+  error?: string | null;
+  files: RagIngestFileResult[];
+}
+
 export type RagLogStream = "stdout" | "stderr" | "system";
+export type RagLogLevel = "debug" | "info" | "warn" | "error" | "system";
 
 export interface RagLogEntry {
   seq: number;
   ts: number;
   stream: RagLogStream;
+  level?: RagLogLevel;
   text: string;
 }

@@ -11,7 +11,23 @@ dependencies = [
     # 配置与数据模型
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
-    # 外部依赖（仅声明，骨架阶段不实际连接）
+    # LangChain RAG 管线
+    "langchain-core>=1.0",
+    "langchain-text-splitters>=1.0",
+    "langchain-qdrant>=1.0",
+    "langchain-openai>=1.0",
+    "fastembed>=0.7",
+    # 文档解析与 OCR
+    "rapidocr>=3.0",
+    "PyMuPDF>=1.24",
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "Pillow>=10.4",
+    "opencv-python-headless>=4.10",
+    "numpy>=2.0",
+    "openpyxl>=3.1",
+    "beautifulsoup4>=4.12",
+    # 外部服务
     "qdrant-client>=1.12",
     "httpx>=0.27",
 ]

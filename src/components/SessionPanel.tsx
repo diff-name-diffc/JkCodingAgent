@@ -396,6 +396,7 @@ export function SessionPanel({
           systemPrefersDark={systemPrefersDark}
           onThemeModeChange={onThemeModeChange}
           onToggleTheme={onToggleTheme}
+          projectId={project.id}
           projectPath={project.path}
         />
       </div>

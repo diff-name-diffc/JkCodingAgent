@@ -14,6 +14,7 @@ import type {
 import {
   appendAssistantTextSegment,
   appendToolSummarySegment,
+  demoteActiveTextSegments,
   planLiveToolActivity,
   startLiveToolActivity,
   finishLiveToolActivity,
@@ -141,9 +142,9 @@ export function useDispatcherActions({
               ...state,
               assistantPlaceholder: "正在分析问题...",
               liveThinking: null,
-              streamingSegments: state.streamingSegments.filter(
-                (segment) => segment.kind === "tool-summary",
-              ),
+              // Demote the previous reply into a collapsed grey block instead
+              // of discarding it, so the user can still expand and read it.
+              streamingSegments: demoteActiveTextSegments(state.streamingSegments),
             }));
             break;
           case "modelSwitched":
@@ -189,9 +190,9 @@ export function useDispatcherActions({
               ...state,
               assistantPlaceholder: null,
               liveThinking: null,
-              streamingSegments: state.streamingSegments.filter(
-                (segment) => segment.kind === "tool-summary",
-              ),
+              // Demote the previous reply into a collapsed grey block instead
+              // of discarding it, so the user can still expand and read it.
+              streamingSegments: demoteActiveTextSegments(state.streamingSegments),
             }));
             notifyDispatcherMessages(targetSessionId, [event.data.message]);
             break;

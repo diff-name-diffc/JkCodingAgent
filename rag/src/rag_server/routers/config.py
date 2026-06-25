@@ -14,7 +14,15 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ..config import EmbeddingConfig, QdrantConfig, RagSettings, get_settings
+from ..config import (
+    ChunkingConfig,
+    EmbeddingConfig,
+    OcrConfig,
+    QdrantConfig,
+    RagSettings,
+    SparseEmbeddingConfig,
+    get_settings,
+)
 
 router = APIRouter(tags=["config"])
 
@@ -24,6 +32,9 @@ class ReloadPayload(BaseModel):
 
     qdrant: QdrantConfig
     embedding: EmbeddingConfig
+    sparseEmbedding: SparseEmbeddingConfig = SparseEmbeddingConfig()
+    chunking: ChunkingConfig = ChunkingConfig()
+    ocr: OcrConfig = OcrConfig()
     logLevel: str = "INFO"
 
 
@@ -36,6 +47,8 @@ def get_config() -> dict:
             "url": settings.qdrant.url,
             "collectionPrefix": settings.qdrant.collection_prefix,
             "timeout": settings.qdrant.timeout,
+            "denseVectorName": settings.qdrant.dense_vector_name,
+            "sparseVectorName": settings.qdrant.sparse_vector_name,
             "hasApiKey": bool(settings.qdrant.api_key),
         },
         "embedding": {
@@ -45,6 +58,12 @@ def get_config() -> dict:
             "dimension": settings.embedding.dimension,
             "hasApiKey": bool(settings.embedding.api_key),
         },
+        "sparseEmbedding": {
+            "provider": settings.sparse_embedding.provider,
+            "model": settings.sparse_embedding.model,
+        },
+        "chunking": settings.chunking.model_dump(by_alias=True),
+        "ocr": settings.ocr.model_dump(by_alias=True),
         "logLevel": settings.log_level,
     }
 
@@ -59,6 +78,9 @@ def reload_config(payload: ReloadPayload) -> dict:
         new_settings = RagSettings(
             qdrant=payload.qdrant,
             embedding=payload.embedding,
+            sparseEmbedding=payload.sparseEmbedding,
+            chunking=payload.chunking,
+            ocr=payload.ocr,
             log_level=payload.logLevel,
         )
         get_settings().reload(new_settings)

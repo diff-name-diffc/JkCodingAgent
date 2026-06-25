@@ -13,19 +13,35 @@ import {
   Trash2,
 } from "lucide-react";
 import s from "../../../styles";
-import type { RagLogEntry, RagLogStream } from "../../../types";
+import type { RagLogEntry, RagLogLevel } from "../../../types";
 
 const MAX_LOG_LINES = 2000;
 
-function streamLabel(stream: RagLogStream): string {
-  if (stream === "stderr") return "ERR";
-  if (stream === "system") return "SYS";
-  return "OUT";
+function logLevel(entry: RagLogEntry): RagLogLevel {
+  if (entry.level) return entry.level;
+
+  const text = entry.text.trimStart();
+  if (text.startsWith("INFO:")) return "info";
+  if (text.startsWith("DEBUG:")) return "debug";
+  if (text.startsWith("WARNING:") || text.startsWith("WARN:")) return "warn";
+  if (text.startsWith("ERROR:")) return "error";
+  if (entry.stream === "system") return "system";
+  if (entry.stream === "stderr") return "error";
+  return "info";
 }
 
-function streamColor(stream: RagLogStream): string {
-  if (stream === "stderr") return "var(--danger)";
-  if (stream === "system") return "var(--accent)";
+function levelLabel(level: RagLogLevel): string {
+  if (level === "system") return "SYS";
+  if (level === "error") return "ERR";
+  if (level === "warn") return "WARN";
+  if (level === "debug") return "DBG";
+  return "INFO";
+}
+
+function levelColor(level: RagLogLevel): string {
+  if (level === "error") return "var(--danger)";
+  if (level === "warn") return "var(--warning)";
+  if (level === "system") return "var(--accent)";
   return "var(--text-muted)";
 }
 
@@ -154,7 +170,7 @@ export function RagSidecarLogPanel() {
 
   const handleCopy = useCallback(async () => {
     const body = logs
-      .map((entry) => `${formatLogTime(entry.ts)} ${streamLabel(entry.stream)} ${entry.text}`)
+      .map((entry) => `${formatLogTime(entry.ts)} ${levelLabel(logLevel(entry))} ${entry.text}`)
       .join("\n");
     try {
       await navigator.clipboard.writeText(body);
@@ -188,8 +204,8 @@ export function RagSidecarLogPanel() {
         </button>
         {!expanded && latestLog && (
           <span style={s.ragLogCollapsedLine}>
-            <span style={{ color: streamColor(latestLog.stream) }}>
-              {streamLabel(latestLog.stream)}
+            <span style={{ color: levelColor(logLevel(latestLog)) }}>
+              {levelLabel(logLevel(latestLog))}
             </span>
             {latestLog.text}
           </span>
@@ -280,6 +296,7 @@ export function RagSidecarLogPanel() {
             ) : (
               logs.map((entry) => {
                 const active = entry.seq === activeLogSeq;
+                const level = logLevel(entry);
                 return (
                   <div
                     key={entry.seq}
@@ -296,8 +313,8 @@ export function RagSidecarLogPanel() {
                     }}
                   >
                     <span style={s.ragLogTime}>{formatLogTime(entry.ts)}</span>
-                    <span style={{ ...s.ragLogStream, color: streamColor(entry.stream) }}>
-                      {streamLabel(entry.stream)}
+                    <span style={{ ...s.ragLogStream, color: levelColor(level) }}>
+                      {levelLabel(level)}
                     </span>
                     <span style={s.ragLogText}>
                       {renderHighlightedText(entry.text, keyword)}

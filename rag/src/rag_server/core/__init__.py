@@ -1,6 +1,5 @@
-"""core 子包：Qdrant / Embedding 等外部依赖的客户端封装。"""
+"""core 子包：分片、导入与 Qdrant 入库。"""
 
-from .embedding import EmbeddingClient
-from .qdrant import QdrantClientHolder
+from .qdrant import collection_name, index_documents
 
-__all__ = ["EmbeddingClient", "QdrantClientHolder"]
+__all__ = ["collection_name", "index_documents"]

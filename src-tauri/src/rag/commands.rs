@@ -4,9 +4,10 @@
 //! 不阻塞 Tauri 主线程；Mutex 临界区内只做内存读写。
 
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, State};
 
-use super::config::{QdrantConfig, RagConfigStore, RagKbConfig};
+use super::config::{RagConfigStore, RagKbConfig};
 use super::logs::{RagLogEntry, RagLogStore};
 use super::manager::RagManager;
 use super::transport::{err_to_string, no_port_error};
@@ -81,39 +82,48 @@ pub async fn rag_health(manager: State<'_, RagManager>) -> Result<Value, String>
     handle.transport.health().await.map_err(err_to_string)
 }
 
-/// 直接测试 Qdrant HTTP 端点，避免把“向量库连接测试”误判为 sidecar 健康检查。
+/// 保存当前草稿配置，并交给 sidecar 测试 Qdrant。
+///
+/// 约束：配置权威存储在桌面端；测试动作在无状态 sidecar 内完成。
 #[tauri::command]
-pub async fn rag_test_qdrant(config: QdrantConfig) -> Result<Value, String> {
-    let url = qdrant_health_url(&config)?;
-    let timeout_secs = if config.timeout.is_finite() && config.timeout > 0.0 {
-        config.timeout
-    } else {
-        return Err("Qdrant 超时必须是大于 0 的数字".to_string());
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs_f64(timeout_secs))
-        .build()
-        .map_err(|error| format!("构造 Qdrant HTTP client 失败：{error}"))?;
-
-    let mut request = client.get(url.clone());
-    if !config.api_key.trim().is_empty() {
-        request = request.header("api-key", config.api_key.trim());
-    }
-
-    let response = request
-        .send()
+pub async fn rag_test_qdrant(
+    app: AppHandle,
+    manager: State<'_, RagManager>,
+    config_store: State<'_, RagConfigStore>,
+    config: RagKbConfig,
+) -> Result<Value, String> {
+    save_rag_config(&config_store, &config)?;
+    let handle = manager
+        .ensure_started(&app, &config_store)
         .await
-        .map_err(|error| format!("GET {url}: {error}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("GET {url} 返回非 2xx 状态：{status}"));
-    }
+        .map_err(err_to_string)?;
+    handle
+        .transport
+        .test_qdrant(&config)
+        .await
+        .map_err(err_to_string)
+}
 
-    Ok(serde_json::json!({
-        "ok": true,
-        "status": status.as_u16(),
-    }))
+/// 保存当前草稿配置，并交给 sidecar 测试 Embedding。
+///
+/// 约束：配置权威存储在桌面端；测试动作在无状态 sidecar 内完成。
+#[tauri::command]
+pub async fn rag_test_embedding(
+    app: AppHandle,
+    manager: State<'_, RagManager>,
+    config_store: State<'_, RagConfigStore>,
+    config: RagKbConfig,
+) -> Result<Value, String> {
+    save_rag_config(&config_store, &config)?;
+    let handle = manager
+        .ensure_started(&app, &config_store)
+        .await
+        .map_err(err_to_string)?;
+    handle
+        .transport
+        .test_embedding(&config)
+        .await
+        .map_err(err_to_string)
 }
 
 /// 代理调用 sidecar 的 GET /config（脱敏视图）。
@@ -138,18 +148,96 @@ pub fn rag_logs_clear(log_store: State<'_, RagLogStore>) -> Result<(), String> {
     Ok(())
 }
 
-fn qdrant_health_url(config: &QdrantConfig) -> Result<reqwest::Url, String> {
-    let base = config.url.trim();
-    if base.is_empty() {
-        return Err("Qdrant HTTP 端点不能为空".to_string());
-    }
+/// 校验文件路径后启动 RAG 导入任务。
+#[tauri::command]
+pub async fn rag_ingest_files(
+    app: AppHandle,
+    manager: State<'_, RagManager>,
+    config_store: State<'_, RagConfigStore>,
+    project_id: String,
+    project_path: String,
+    files: Vec<String>,
+) -> Result<Value, String> {
+    let validated_files = validate_ingest_paths(project_path.clone(), files).await?;
+    let handle = manager
+        .ensure_started(&app, &config_store)
+        .await
+        .map_err(err_to_string)?;
+    handle
+        .transport
+        .start_ingest_job(&project_id, &project_path, &validated_files)
+        .await
+        .map_err(err_to_string)
+}
 
-    let url = reqwest::Url::parse(&format!("{}/healthz", base.trim_end_matches('/')))
-        .map_err(|error| format!("Qdrant HTTP 端点无效：{error}"))?;
-    match url.scheme() {
-        "http" | "https" => Ok(url),
-        scheme => Err(format!(
-            "Qdrant HTTP 端点必须使用 http/https，当前为 {scheme}"
-        )),
+/// 查询 RAG 导入任务状态。
+#[tauri::command]
+pub async fn rag_ingest_job_status(
+    manager: State<'_, RagManager>,
+    job_id: String,
+) -> Result<Value, String> {
+    let handle = manager
+        .current()
+        .ok_or_else(|| err_to_string(no_port_error()))?;
+    handle
+        .transport
+        .ingest_job_status(&job_id)
+        .await
+        .map_err(err_to_string)
+}
+
+fn save_rag_config(
+    config_store: &State<'_, RagConfigStore>,
+    config: &RagKbConfig,
+) -> Result<(), String> {
+    config.save().map_err(err_to_string)?;
+    config_store.replace(config.clone());
+    Ok(())
+}
+
+async fn validate_ingest_paths(
+    project_path: String,
+    files: Vec<String>,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if files.is_empty() {
+            return Err("files 不能为空".to_string());
+        }
+        let root = canonical_dir(&project_path)?;
+        files
+            .into_iter()
+            .map(|file| {
+                let path = PathBuf::from(&file);
+                if !path.is_absolute() {
+                    return Err("文件路径必须是绝对路径".to_string());
+                }
+                let canonical = path
+                    .canonicalize()
+                    .map_err(|error| format!("无法解析文件路径 `{file}`：{error}"))?;
+                if !canonical.is_file() {
+                    return Err(format!("不是可导入文件：{}", canonical.display()));
+                }
+                if !canonical.starts_with(&root) {
+                    return Err(format!("文件不在项目目录内：{}", canonical.display()));
+                }
+                Ok(canonical.to_string_lossy().into_owned())
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| format!("校验导入路径失败：{error}"))?
+}
+
+fn canonical_dir(path: &str) -> Result<PathBuf, String> {
+    let candidate = Path::new(path);
+    if !candidate.is_absolute() {
+        return Err("projectPath 必须是绝对路径".to_string());
     }
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| format!("无法解析项目目录 `{path}`：{error}"))?;
+    if !canonical.is_dir() {
+        return Err(format!("projectPath 不是目录：{}", canonical.display()));
+    }
+    Ok(canonical)
 }

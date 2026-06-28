@@ -74,6 +74,7 @@ pub fn run() {
             python_runner::python_runner_clear_result,
             rag::commands::rag_start,
             rag::commands::rag_stop,
+            rag::commands::rag_restart,
             rag::commands::rag_status,
             rag::commands::rag_get_kb_config,
             rag::commands::rag_save_kb_config,
@@ -231,10 +232,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // 应用退出时优雅停止 RAG sidecar，避免僵尸子进程
+            // 应用退出时优雅停止 RAG sidecar，避免僵尸子进程。
+            // 退出回调是同步上下文，无法 await；这里只 take + kill，
+            // 进程退出由 OS 回收，端口随进程消失而释放。
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let manager = app_handle.state::<rag::RagManager>();
-                manager.stop();
+                manager.stop_for_exit();
             }
         });
 }

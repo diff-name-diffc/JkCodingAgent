@@ -1,10 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight, FileSearch, LoaderCircle, Wrench } from "lucide-react";
 import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import { SubAgentExecutionCard } from "./SubAgentExecutionView";
 import { extractAgentIdsFromToolInput, useSubAgentSessions } from "./subAgentEventStore";
+import type { SubAgentSession } from "./subAgentEventStore";
+import { formatTokenGenerationSpeed } from "./dispatcher-chat/dispatcherChatUtils";
 import type {
   DispatcherToolArtifact,
   DispatcherToolArtifactRef,
@@ -20,6 +22,41 @@ export interface ToolActivityItem {
   resultMode?: DispatcherToolResultMode;
   status: "planned" | "running" | "completed";
   summaryText?: string;
+}
+
+/**
+ * Tracks live elapsed time for a running sub-agent session. Returns the
+ * elapsed_ms from the last UsageUpdated event plus the wall-clock delta
+ * since that event was received, so the token speed ticks live.
+ */
+function useSubAgentLiveElapsed(session: SubAgentSession | null): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!session || session.status !== "running" || session.usageReceivedAt == null) {
+      return;
+    }
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [session]);
+
+  if (!session || session.usageReceivedAt == null) {
+    return session?.elapsed ?? 0;
+  }
+  return session.elapsed + Math.max(0, now - session.usageReceivedAt);
+}
+
+function SubAgentLiveSpeed({ session }: { session: SubAgentSession }) {
+  const liveElapsed = useSubAgentLiveElapsed(session);
+  const completionTokens = session.tokenUsage?.completionTokens ?? 0;
+  const speed = formatTokenGenerationSpeed(completionTokens, liveElapsed);
+
+  if (completionTokens <= 0) return null;
+
+  return (
+    <span style={styles.subAgentSpeed}>
+      {speed} t/s
+    </span>
+  );
 }
 
 interface ToolActivityBubbleProps {
@@ -163,6 +200,9 @@ export function ToolActivityBubble({
                     <span style={styles.itemDisplayText} title={tool.displayText}>
                       {tool.displayText}
                     </span>
+                  )}
+                  {subAgentSession && subAgentSession.status === "running" && subAgentSession.tokenUsage && (
+                    <SubAgentLiveSpeed session={subAgentSession} />
                   )}
                   <span
                     style={{
@@ -516,6 +556,13 @@ const styles = {
     fontSize: 10.5,
     fontWeight: 700,
     lineHeight: 1.2,
+    flexShrink: 0,
+  },
+  subAgentSpeed: {
+    fontSize: 11.5,
+    fontWeight: 700,
+    color: "var(--accent)",
+    fontFamily: "var(--font-mono)",
     flexShrink: 0,
   },
   itemRightWrap: {

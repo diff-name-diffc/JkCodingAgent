@@ -29,11 +29,29 @@ pub async fn rag_start(
     }))
 }
 
-/// 停止 sidecar。
+/// 停止 sidecar：kill 后等待子进程真正退出，确保端口/资源释放。
 #[tauri::command]
-pub fn rag_stop(manager: State<'_, RagManager>) -> Result<(), String> {
-    manager.stop();
+pub async fn rag_stop(manager: State<'_, RagManager>) -> Result<(), String> {
+    manager.stop().await;
     Ok(())
+}
+
+/// 原子重启 sidecar：在同一把 spawn 锁内完成 stop + spawn，
+/// 避免前端两次 invoke 之间插入其他调用产生竞态或孤儿进程。
+#[tauri::command]
+pub async fn rag_restart(
+    app: AppHandle,
+    manager: State<'_, RagManager>,
+    config_store: State<'_, RagConfigStore>,
+) -> Result<Value, String> {
+    let handle = manager
+        .restart(&app, config_store.inner())
+        .await
+        .map_err(err_to_string)?;
+    Ok(serde_json::json!({
+        "running": true,
+        "port": handle.port,
+    }))
 }
 
 /// 查询 sidecar 状态（是否运行、端口）。

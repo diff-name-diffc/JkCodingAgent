@@ -38,12 +38,16 @@ struct LocalZshAuditEntry {
     session_id: String,
     executed_at: String,
     command: String,
+    #[serde(default)]
+    review: Option<crate::ssh_tool::SshAuditReview>,
     exit_code: Option<i32>,
     timed_out: bool,
     duration_ms: u128,
     stdout: String,
     stderr: String,
     output_truncated: bool,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -117,6 +121,51 @@ impl AgentTool for LocalZshTool {
             Ok(Err(error)) | Err(error) => return error,
         };
 
+        let review_outcome = match review_local_command(args, context, &run_dir, &command).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let review = crate::ssh_tool::SshAuditReview {
+                    allowed: false,
+                    reason: format!("审查服务异常：{error}"),
+                };
+                let entry = blocked_audit_entry(&session_id, &command, review);
+                let run_dir_for_audit = run_dir.clone();
+                let session_id_for_history = session_id.clone();
+                let audit_result = tokio::task::spawn_blocking(move || {
+                    append_audit_entry(&run_dir_for_audit, entry.clone(), &session_id_for_history)
+                        .map(|history| (entry, history))
+                })
+                .await
+                .map_err(|error| format!("写入 local_zsh 审计历史失败：{error}"));
+                return match audit_result {
+                    Ok(Ok((entry, history))) => {
+                        render_local_audit_entry(&run_dir, &entry, true, &history)
+                    }
+                    Ok(Err(error)) | Err(error) => {
+                        format!("错误：命令已被安全审查拦截，但审计历史写入失败：{error}")
+                    }
+                };
+            }
+        };
+
+        if let Some(review) = review_outcome.as_ref().filter(|review| !review.allowed) {
+            let entry = blocked_audit_entry(&session_id, &command, review.clone());
+            let run_dir_for_audit = run_dir.clone();
+            let session_id_for_history = session_id.clone();
+            let audit_result = tokio::task::spawn_blocking(move || {
+                append_audit_entry(&run_dir_for_audit, entry.clone(), &session_id_for_history)
+                    .map(|history| (entry, history))
+            })
+            .await
+            .map_err(|error| format!("写入 local_zsh 审计历史失败：{error}"));
+            return match audit_result {
+                Ok(Ok((entry, history))) => render_local_audit_entry(&run_dir, &entry, true, &history),
+                Ok(Err(error)) | Err(error) => {
+                    format!("错误：命令已被安全审查拦截，但审计历史写入失败：{error}")
+                }
+            };
+        }
+
         let started = std::time::Instant::now();
         let mut child = match Command::new("/bin/zsh")
             .arg("-lc")
@@ -150,12 +199,14 @@ impl AgentTool for LocalZshTool {
             session_id: session_id.clone(),
             executed_at: Utc::now().to_rfc3339(),
             command: command.clone(),
+            review: review_outcome.clone(),
             exit_code: captured.output.status.code(),
             timed_out: captured.timed_out,
             duration_ms,
             stdout: stdout.clone(),
             stderr: stderr.clone(),
             output_truncated,
+            error: None,
         };
 
         let run_dir_for_audit = run_dir.clone();
@@ -180,6 +231,7 @@ impl AgentTool for LocalZshTool {
                         captured.timed_out,
                         duration_ms,
                         output_truncated,
+                        review_outcome.as_ref(),
                         false,
                         &[],
                     )
@@ -196,6 +248,7 @@ impl AgentTool for LocalZshTool {
             captured.timed_out,
             duration_ms,
             output_truncated,
+            review_outcome.as_ref(),
             command_contains_ssh(&command),
             &session_history,
         )
@@ -272,6 +325,61 @@ fn blacklist_reason(command: &str) -> Option<&'static str> {
     dangerous_patterns
         .iter()
         .find_map(|(pattern, reason)| normalized.contains(pattern).then_some(*reason))
+}
+
+async fn review_local_command(
+    args: &Value,
+    context: &ToolContext,
+    run_dir: &Path,
+    command: &str,
+) -> Result<Option<crate::ssh_tool::SshAuditReview>, String> {
+    let Some(review_config) = context.ssh_review.as_ref() else {
+        return Ok(None);
+    };
+
+    let intent = string_arg(args, "compress_intent")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| context.session_title.clone());
+    let payload = crate::agent::ssh_review::CommandReviewPayload {
+        intent,
+        task: context.user_task.clone().unwrap_or_default(),
+        target: crate::agent::ssh_review::CommandReviewTarget::LocalZsh {
+            workspace_path: context.workspace.display().to_string(),
+            run_dir: run_dir.display().to_string(),
+        },
+        command: command.to_string(),
+    };
+
+    crate::agent::ssh_review::review_shell_command(review_config, &payload)
+        .await
+        .map(|verdict| {
+            Some(crate::ssh_tool::SshAuditReview {
+                allowed: verdict.allowed,
+                reason: verdict.reason,
+            })
+        })
+}
+
+fn blocked_audit_entry(
+    session_id: &str,
+    command: &str,
+    review: crate::ssh_tool::SshAuditReview,
+) -> LocalZshAuditEntry {
+    LocalZshAuditEntry {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        executed_at: Utc::now().to_rfc3339(),
+        command: command.to_string(),
+        review: Some(review),
+        exit_code: None,
+        timed_out: false,
+        duration_ms: 0,
+        stdout: String::new(),
+        stderr: String::new(),
+        output_truncated: false,
+        error: Some("命令被审查 AI 拦截，未执行。".to_string()),
+    }
 }
 
 fn command_invokes_command(command: &str, target: &str) -> bool {
@@ -384,6 +492,7 @@ fn render_command_result(
     timed_out: bool,
     duration_ms: u128,
     output_truncated: bool,
+    review: Option<&crate::ssh_tool::SshAuditReview>,
     show_session_history: bool,
     session_history: &[LocalZshAuditEntry],
 ) -> String {
@@ -398,6 +507,7 @@ fn render_command_result(
     if output_truncated {
         result.push_str("- 输出: `已截断`\n");
     }
+    push_review_summary(&mut result, review);
     result.push_str("\n### 命令\n\n");
     result.push_str("```zsh\n");
     result.push_str(command);
@@ -415,7 +525,9 @@ fn render_command_result(
         result.push_str(&truncate_chars(stderr, MAX_RESULT_CHARS));
         result.push_str("\n```\n");
     }
-    if stdout.trim().is_empty() && stderr.trim().is_empty() {
+    if review.as_ref().is_some_and(|review| !review.allowed) {
+        result.push_str("\n[命令被审查 AI 拦截，未执行]\n");
+    } else if stdout.trim().is_empty() && stderr.trim().is_empty() {
         result.push_str("\n[命令已完成，无输出]\n");
     }
 
@@ -426,7 +538,7 @@ fn render_command_result(
             result.push_str(&format!(
                 "| {} | {} | `{}` |\n",
                 item.executed_at,
-                exit_code_label(item.exit_code, item.timed_out),
+                history_status_label(item),
                 escape_table_cell(&truncate_chars(&item.command, 160))
             ));
         }
@@ -436,6 +548,50 @@ fn render_command_result(
     result
 }
 
+fn render_local_audit_entry(
+    run_dir: &Path,
+    entry: &LocalZshAuditEntry,
+    show_session_history: bool,
+    session_history: &[LocalZshAuditEntry],
+) -> String {
+    render_command_result(
+        run_dir,
+        &entry.command,
+        &entry.stdout,
+        &entry.stderr,
+        entry.exit_code,
+        entry.timed_out,
+        entry.duration_ms,
+        entry.output_truncated,
+        entry.review.as_ref(),
+        show_session_history,
+        session_history,
+    )
+}
+
+fn push_review_summary(
+    result: &mut String,
+    review: Option<&crate::ssh_tool::SshAuditReview>,
+) {
+    let Some(review) = review else {
+        return;
+    };
+    result.push_str(&format!(
+        "- 审查结论: `{}`\n",
+        if review.allowed { "通过" } else { "拦截" }
+    ));
+    let reason = if review.reason.trim().is_empty() {
+        if review.allowed {
+            "审查通过，允许执行。"
+        } else {
+            "审查拒绝，命令未执行。"
+        }
+    } else {
+        review.reason.trim()
+    };
+    result.push_str(&format!("- 审查原因: {reason}\n"));
+}
+
 fn exit_code_label(exit_code: Option<i32>, timed_out: bool) -> String {
     if timed_out {
         return "timeout".to_string();
@@ -443,6 +599,20 @@ fn exit_code_label(exit_code: Option<i32>, timed_out: bool) -> String {
     exit_code
         .map(|code| code.to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn history_status_label(item: &LocalZshAuditEntry) -> String {
+    if item
+        .review
+        .as_ref()
+        .is_some_and(|review| !review.allowed)
+    {
+        return "review-blocked".to_string();
+    }
+    if item.error.is_some() {
+        return "error".to_string();
+    }
+    exit_code_label(item.exit_code, item.timed_out)
 }
 
 fn command_contains_ssh(command: &str) -> bool {

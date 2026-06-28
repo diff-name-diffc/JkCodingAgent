@@ -155,7 +155,7 @@ impl AgentTool for SshExecTool {
                                 allowed: false,
                                 reason: format!("审查服务异常：{error}"),
                             };
-                            let _ = self
+                            let record_result = self
                                 .manager
                                 .record_review_blocked(
                                     context.workspace.clone(),
@@ -167,6 +167,9 @@ impl AgentTool for SshExecTool {
                                     blocked,
                                 )
                                 .await;
+                            if let Ok(record) = record_result {
+                                return crate::ssh_tool::render_ssh_audit_record_markdown(&record);
+                            }
                             return format!(
                                     "命令已被安全审查拦截（审查服务异常：{error}）。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
                                 );
@@ -184,7 +187,7 @@ impl AgentTool for SshExecTool {
         if let Some(ref review) = review_outcome {
             if !review.allowed {
                 let reason = review.reason.clone();
-                let _ = self
+                let record_result = self
                     .manager
                     .record_review_blocked(
                         context.workspace.clone(),
@@ -196,6 +199,9 @@ impl AgentTool for SshExecTool {
                         review.clone(),
                     )
                     .await;
+                if let Ok(record) = record_result {
+                    return crate::ssh_tool::render_ssh_audit_record_markdown(&record);
+                }
                 return format!(
                     "命令已被安全审查拦截：{reason}。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
                 );

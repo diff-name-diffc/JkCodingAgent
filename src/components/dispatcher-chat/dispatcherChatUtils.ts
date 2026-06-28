@@ -127,6 +127,13 @@ export function withLiveElapsed(
     return null;
   }
 
+  // When the main agent's usage timer is paused (e.g. during a sub-agent
+  // call), do not pad the elapsed time with wall-clock delta — the backend
+  // has explicitly stopped the clock.
+  if (stats.paused) {
+    return stats;
+  }
+
   return {
     ...stats,
     elapsedMs: stats.elapsedMs + Math.max(0, now - receivedAt),

@@ -10,7 +10,8 @@ use tokio::sync::watch;
 use super::common::{
     self, build_args_map, build_tool_calls_payload, cancellation_requested,
     persist_assistant_message, persist_tool_calls_message, persist_tool_result_with_compression,
-    select_provider_for_messages, stream_llm_response, LlmStreamOutcome, UsageTracker,
+    select_provider_for_messages, stream_llm_response, with_usage_paused, LlmStreamOutcome,
+    UsageTracker,
 };
 use super::config::DispatcherAgentConfig;
 use super::db::{
@@ -411,6 +412,8 @@ impl PlainChatAgent {
                     &allowed_tool_names,
                     on_event,
                     &cancel_rx,
+                    usage_tracker,
+                    workspace_id,
                 )
                 .await?;
 
@@ -450,6 +453,8 @@ impl PlainChatAgent {
         allowed_tool_names: &std::collections::HashSet<String>,
         on_event: &Channel<AgentEvent>,
         cancel_rx: &watch::Receiver<bool>,
+        usage_tracker: &mut UsageTracker,
+        workspace_id: &str,
     ) -> Result<Vec<(RequestedToolCall, String)>> {
         let readonly_end = common::readonly_tool_run_end(tool_calls, 0);
 
@@ -512,16 +517,16 @@ impl PlainChatAgent {
                             .unwrap_or_else(|| "{}".to_string()),
                     },
                 );
-                let result = if allowed_tool_names.contains(&tool_call.name) {
-                    self.tools
-                        .execute(&tool_call.name, &tool_call.arguments, tool_context)
-                        .await
-                } else {
-                    format!(
-                        "错误：禁止调用工具 '{}'；请检查可用工具列表。",
-                        tool_call.name
+                let result = self
+                    .execute_single_tool_with_usage(
+                        tool_call,
+                        tool_context,
+                        allowed_tool_names,
+                        on_event,
+                        usage_tracker,
+                        workspace_id,
                     )
-                };
+                    .await;
                 if let Some(message) = sub_agent_failure_message(&result) {
                     anyhow::bail!("{}", message);
                 }
@@ -546,22 +551,60 @@ impl PlainChatAgent {
                             .unwrap_or_else(|| "{}".to_string()),
                     },
                 );
-                let result = if allowed_tool_names.contains(&tool_call.name) {
-                    self.tools
-                        .execute(&tool_call.name, &tool_call.arguments, tool_context)
-                        .await
-                } else {
-                    format!(
-                        "错误：禁止调用工具 '{}'；请检查可用工具列表。",
-                        tool_call.name
+                let result = self
+                    .execute_single_tool_with_usage(
+                        tool_call,
+                        tool_context,
+                        allowed_tool_names,
+                        on_event,
+                        usage_tracker,
+                        workspace_id,
                     )
-                };
+                    .await;
                 if let Some(message) = sub_agent_failure_message(&result) {
                     anyhow::bail!("{}", message);
                 }
                 results.push((tool_call.clone(), result));
             }
             Ok(results)
+        }
+    }
+
+    /// 执行单个工具。`call_sub_agent` 期间暂停主 Agent 的用量计时，
+    /// 避免子 Agent 耗时稀释主 Agent 的 token 生成速度。
+    async fn execute_single_tool_with_usage(
+        &self,
+        tool_call: &RequestedToolCall,
+        tool_context: &super::tools::ToolContext,
+        allowed_tool_names: &std::collections::HashSet<String>,
+        on_event: &Channel<AgentEvent>,
+        usage_tracker: &mut UsageTracker,
+        workspace_id: &str,
+    ) -> String {
+        let allowed = allowed_tool_names.contains(&tool_call.name);
+        let is_sub_agent_call = tool_call.name == "call_sub_agent";
+        let name = tool_call.name.clone();
+        let arguments = tool_call.arguments.clone();
+
+        if is_sub_agent_call {
+            with_usage_paused(usage_tracker, workspace_id, on_event, || async {
+                if allowed {
+                    self.tools.execute(&name, &arguments, tool_context).await
+                } else {
+                    format!(
+                        "错误：禁止调用工具 '{}'；请检查可用工具列表。",
+                        name
+                    )
+                }
+            })
+            .await
+        } else if allowed {
+            self.tools.execute(&name, &arguments, tool_context).await
+        } else {
+            format!(
+                "错误：禁止调用工具 '{}'；请检查可用工具列表。",
+                name
+            )
         }
     }
 

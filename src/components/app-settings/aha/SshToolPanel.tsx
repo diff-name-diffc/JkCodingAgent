@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type React from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Check, ChevronDown, ChevronRight, FolderOpen, Plus, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { Check, ChevronDown, FolderOpen, Plus, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 import type {
   AgentContext,
   AhaSettingsV2,
@@ -12,6 +12,7 @@ import type {
   SshToolsConfig,
 } from "../../../types";
 import s from "../../../styles";
+import { SshAuditRecordList } from "./SshAuditRecordList";
 
 const EMPTY_SERVER: SshServerConfig = {
   id: "",
@@ -30,13 +31,13 @@ const EMPTY_SERVER: SshServerConfig = {
   maxOutputBytes: 65536,
 };
 
-/// SSH 命令安全审查 AI 默认系统提示词（须与后端 DEFAULT_REVIEW_SYSTEM_PROMPT 保持一致）。
+/// 命令安全审查 AI 默认系统提示词（须与后端 DEFAULT_REVIEW_SYSTEM_PROMPT 保持一致）。
 const DEFAULT_REVIEW_PROMPT =
-  "你是 SSH 命令安全审查员。依据用户的任务、当前意图、目标服务器信息和待执行命令，判断该命令是否可安全执行。\n\n" +
+  "你是命令安全审查员。依据用户的任务、当前意图、目标环境信息和待执行命令，判断该命令是否可安全执行。\n\n" +
   "判定原则：\n" +
   "- 拒绝：不可逆或高危操作，如删除/覆盖系统文件或关键数据（rm -rf 指向根目录或家目录、mkfs、dd 覆写块设备、清空数据库/表）、关机重启、提权后执行破坏性操作、fork 炸弹/资源耗尽、关闭防火墙或清空路由、向外部批量外传敏感数据。\n" +
   "- 允许：常规只读巡检、查询状态、在用户明确指定目录内的受控写操作。\n" +
-  "- 必须结合「任务」与「意图」综合判断：同一命令在不同上下文风险不同（如 rm 清理临时目录可允许，针对根目录则拒绝）。无法确认影响范围或意图不明时，倾向拒绝。\n\n" +
+  "- 必须结合「任务」「意图」和「目标环境」综合判断：同一命令在不同上下文风险不同（如 rm 清理临时目录可允许，针对根目录或用户家目录则拒绝）。无法确认影响范围或意图不明时，倾向拒绝。\n\n" +
   "输出格式：仅一行。`ALLOW` 表示允许；`DENY: <简短中文原因>` 表示拒绝。不要输出任何多余内容。";
 
 export function SshToolPanel({ projectPath }: { projectPath?: string }) {
@@ -331,79 +332,16 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
               <div>
                 <div style={s.ahaSectionTitle}>SSH 审计记录</div>
                 <div style={s.ahaSectionDescription}>
-                  保留最先的 50 条命令记录，包含会话、命令、退出码和执行结果。
+                  保留最近的 100 条命令记录，包含审查结论、会话、命令和执行结果。
                 </div>
               </div>
-              <span style={s.ahaHint}>{audit.records.length}/50</span>
+              <span style={s.ahaHint}>{audit.records.length}/100</span>
             </div>
-            {audit.records.length === 0 ? (
-              <div style={s.ahaHint}>暂无审计记录。</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {audit.records.map((record, index) => {
-                  const auditKey = `${record.createdAt}-${index}`;
-                  const expanded = expandedAudit === auditKey;
-                  const blocked = record.review != null && !record.review.allowed;
-                  return (
-                    <div key={auditKey} style={s.ahaProvider}>
-                      <div
-                        style={{ ...s.ahaProviderHeader, cursor: "pointer", userSelect: "none" }}
-                        onClick={() => setExpandedAudit(expanded ? null : auditKey)}
-                      >
-                        <div style={s.ahaProviderTitleWrap}>
-                          {expanded ? (
-                            <ChevronDown size={13} style={{ flexShrink: 0 }} />
-                          ) : (
-                            <ChevronRight size={13} style={{ flexShrink: 0 }} />
-                          )}
-                          <span style={s.ahaProviderTitle}>{record.serverId}</span>
-                          <span style={s.ahaProviderSummary}>{record.sessionId}</span>
-                          {record.review ? (
-                            <span
-                              style={
-                                record.review.allowed ? reviewPassBadgeStyle : reviewBlockBadgeStyle
-                              }
-                            >
-                              {record.review.allowed ? "审查通过" : "审查拦截"}
-                            </span>
-                          ) : null}
-                          {record.interactiveBlocked ? (
-                            <span style={interactiveBadgeStyle}>交互阻塞</span>
-                          ) : null}
-                        </div>
-                        <span style={s.ahaHint}>{record.createdAt}</span>
-                      </div>
-                      <pre style={auditPreStyle}>{record.command}</pre>
-                      <div style={s.ahaHint}>
-                        {blocked
-                          ? "exit=审查拦截(未执行)"
-                          : record.interactiveBlocked
-                            ? "exit=交互阻塞(已中止)"
-                            : `exit=${record.exitCode ?? "error"}`}
-                        {" · duration="}
-                        {record.durationMs ?? "-"}ms
-                        {record.truncated ? " · truncated" : ""}
-                        {record.error ? ` · ${record.error}` : ""}
-                      </div>
-                      {expanded && record.review ? (
-                        <div style={reviewDetailStyle}>
-                          <span style={{ fontWeight: 600 }}>AI 审查结果：</span>
-                          <span style={{ color: record.review.allowed ? "var(--success)" : "var(--danger)" }}>
-                            {record.review.allowed ? "通过" : "拦截"}
-                          </span>
-                          {record.review.reason ? ` — ${record.review.reason}` : ""}
-                        </div>
-                      ) : null}
-                      {record.interactiveBlocked && record.stderr.trim() ? (
-                        <pre style={{ ...auditPreStyle, ...interactiveDetailStyle }}>
-                          {record.stderr}
-                        </pre>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <SshAuditRecordList
+              records={audit.records}
+              expandedAudit={expandedAudit}
+              onExpandedAuditChange={setExpandedAudit}
+            />
           </div>
         </div>
       </div>
@@ -751,11 +689,7 @@ function ReviewAiSection({
   return (
     <div style={s.ahaSection}>
       <div style={s.ahaSectionHeader}>
-        <button
-          type="button"
-          style={s.ahaCollapsibleTitle}
-          onClick={() => setExpanded((v) => !v)}
-        >
+        <button type="button" style={s.ahaCollapsibleTitle} onClick={() => setExpanded((v) => !v)}>
           <ChevronDown
             size={14}
             style={{
@@ -768,7 +702,8 @@ function ReviewAiSection({
           <span>
             <div style={s.ahaSectionTitle}>命令审查 AI</div>
             <div style={s.ahaSectionDescription}>
-              配置后，每条 SSH 命令执行前会交由该 OpenAI 兼容模型，结合意图/任务/服务器/命令做安全审查；审查异常或判定不通过将阻断执行。该配置全局共享（项目与聊天通用）。
+              配置后，SSH 与本地 local_zsh 命令执行前会交由该 OpenAI
+              兼容模型，结合意图/任务/目标环境/命令做安全审查；审查异常或判定不通过将阻断执行。该配置全局共享（项目与聊天通用）。
             </div>
           </span>
         </button>
@@ -843,7 +778,9 @@ function ReviewAiSection({
             <button
               type="button"
               style={{ ...s.ahaGhostButton, marginTop: 6 }}
-              onClick={() => onChange((draft) => ({ ...draft, systemPrompt: DEFAULT_REVIEW_PROMPT }))}
+              onClick={() =>
+                onChange((draft) => ({ ...draft, systemPrompt: DEFAULT_REVIEW_PROMPT }))
+              }
             >
               <RotateCcw size={13} />
               恢复默认提示词
@@ -854,15 +791,16 @@ function ReviewAiSection({
             <div
               style={{
                 ...s.ahaFeedback,
-                color: feedback.includes("ok") || feedback.includes("成功") ? "var(--success)" : "var(--danger)",
+                color:
+                  feedback.includes("ok") || feedback.includes("成功")
+                    ? "var(--success)"
+                    : "var(--danger)",
               }}
             >
               {feedback}
             </div>
           )}
-          {error && (
-            <span style={{ ...s.ahaFeedback, color: "var(--danger)" }}>{error}</span>
-          )}
+          {error && <span style={{ ...s.ahaFeedback, color: "var(--danger)" }}>{error}</span>}
           {saved && (
             <span style={{ ...s.ahaFeedback, color: "var(--success)" }}>审查配置已保存</span>
           )}
@@ -932,69 +870,4 @@ const keyFileRowStyle: React.CSSProperties = {
   display: "flex",
   gap: 8,
   alignItems: "stretch",
-};
-
-const auditPreStyle: React.CSSProperties = {
-  margin: 0,
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid var(--border-dim)",
-  background: "var(--bg-subtle)",
-  color: "var(--text-primary)",
-  fontFamily: "var(--font-mono)",
-  fontSize: 11.5,
-  lineHeight: 1.45,
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-};
-
-const interactiveBadgeStyle: React.CSSProperties = {
-  fontSize: 10.5,
-  fontWeight: 600,
-  color: "var(--warning)",
-  border: "1px solid var(--warning)",
-  borderRadius: 6,
-  padding: "0 6px",
-  lineHeight: 1.5,
-};
-
-const reviewPassBadgeStyle: React.CSSProperties = {
-  fontSize: 10.5,
-  fontWeight: 600,
-  color: "var(--success)",
-  border: "1px solid var(--success)",
-  borderRadius: 6,
-  padding: "0 6px",
-  lineHeight: 1.5,
-};
-
-const reviewBlockBadgeStyle: React.CSSProperties = {
-  fontSize: 10.5,
-  fontWeight: 600,
-  color: "var(--danger)",
-  border: "1px solid var(--danger)",
-  borderRadius: 6,
-  padding: "0 6px",
-  lineHeight: 1.5,
-};
-
-const reviewDetailStyle: React.CSSProperties = {
-  margin: 0,
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid var(--border-dim)",
-  background: "var(--bg-subtle)",
-  color: "var(--text-primary)",
-  fontSize: 11.5,
-  lineHeight: 1.5,
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-};
-
-const interactiveDetailStyle: React.CSSProperties = {
-  maxHeight: 160,
-  overflow: "auto",
-  color: "var(--text-secondary)",
-  fontSize: 11,
-  borderColor: "var(--warning)",
 };

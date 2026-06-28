@@ -302,26 +302,19 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
     }
   }, [config, persistConfig]);
 
-  // sidecar 重启（随主应用自动启停，面板不暴露启动/停止）
+  // sidecar 重启：单次 invoke 在后端锁内完成 stop + spawn，原子无竞态。
+  // 旧实现是 rag_stop + rag_start 两次 invoke，中间可插入其他调用产生孤儿进程。
   const handleRestart = useCallback(async () => {
     setActionInProgress("restart");
     try {
-      await invoke("rag_stop");
-      await invoke("rag_start");
-      // 重启后立即查状态很可能是"启动中"，轮询几次直到就绪
-      const poll = (retries: number) => {
-        invoke<RagRuntimeStatus>("rag_status")
-          .then((status) => {
-            setRuntimeStatus(status);
-            if (!status.running && retries > 0) {
-              window.setTimeout(() => poll(retries - 1), 1500);
-            }
-          })
-          .catch(() => {});
-      };
-      poll(5);
+      const result = await invoke<RagRuntimeStatus>("rag_restart");
+      setRuntimeStatus({ running: true, port: result.port });
     } catch (error) {
       showToast(`重启 RAG 服务失败：${String(error)}`);
+      // 失败后查一次真实状态
+      invoke<RagRuntimeStatus>("rag_status")
+        .then(setRuntimeStatus)
+        .catch(() => {});
     } finally {
       setActionInProgress(null);
     }

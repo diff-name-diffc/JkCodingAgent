@@ -1,4 +1,4 @@
-//! SSH 命令安全审查：在 ssh_exec 执行命令前，把意图、用户任务、目标服务器信息和
+//! 命令安全审查：在 ssh_exec / local_zsh 执行命令前，把意图、用户任务、目标环境信息和
 //! 待执行命令交给 OpenAI 兼容审查模型，判断是否可安全执行。
 //!
 //! 失败即阻断（fail-closed）：模型调用失败、超时或返回内容无法解析时一律返回 `Err`，
@@ -34,6 +34,25 @@ pub struct SshReviewPayload {
     pub command: String,
 }
 
+/// 待审查命令的执行目标环境（剔除密码 / 私钥 / 口令等敏感字段）。
+#[derive(Debug, Clone)]
+pub enum CommandReviewTarget {
+    Ssh(SshReviewServerInfo),
+    LocalZsh {
+        workspace_path: String,
+        run_dir: String,
+    },
+}
+
+/// 交给审查模型的通用命令载荷。
+#[derive(Debug, Clone)]
+pub struct CommandReviewPayload {
+    pub intent: String,
+    pub task: String,
+    pub target: CommandReviewTarget,
+    pub command: String,
+}
+
 /// 审查结论。
 #[derive(Debug, Clone)]
 pub struct SshReviewVerdict {
@@ -48,6 +67,22 @@ pub struct SshReviewVerdict {
 pub async fn review_command(
     config: &SshReviewConfig,
     payload: &SshReviewPayload,
+) -> Result<SshReviewVerdict, String> {
+    review_shell_command(
+        config,
+        &CommandReviewPayload {
+            intent: payload.intent.clone(),
+            task: payload.task.clone(),
+            target: CommandReviewTarget::Ssh(payload.server_info.clone()),
+            command: payload.command.clone(),
+        },
+    )
+    .await
+}
+
+pub async fn review_shell_command(
+    config: &SshReviewConfig,
+    payload: &CommandReviewPayload,
 ) -> Result<SshReviewVerdict, String> {
     let model_name = config.model_config.model.trim();
     if model_name.is_empty() {
@@ -70,7 +105,7 @@ pub async fn review_command(
             trimmed.to_string()
         }
     };
-    let user_prompt = build_user_prompt(payload);
+    let user_prompt = build_command_user_prompt(payload);
     let messages = vec![
         ChatMessage::system(system_prompt),
         ChatMessage {
@@ -100,16 +135,31 @@ pub async fn review_command(
     parse_verdict(content)
 }
 
-fn build_user_prompt(payload: &SshReviewPayload) -> String {
-    let tags = if payload.server_info.tags.is_empty() {
-        String::from("（无）")
-    } else {
-        payload.server_info.tags.join(", ")
+fn build_command_user_prompt(payload: &CommandReviewPayload) -> String {
+    let target_info = match &payload.target {
+        CommandReviewTarget::Ssh(server) => {
+            let tags = if server.tags.is_empty() {
+                String::from("（无）")
+            } else {
+                server.tags.join(", ")
+            };
+            format!(
+                "【目标环境】\n- 类型：SSH 远程服务器\n- id：{}\n- 描述：{}\n- host:port：{}:{}\n- 登录用户：{}\n- 标签：{}",
+                server.id, server.description, server.host, server.port, server.username, tags
+            )
+        }
+        CommandReviewTarget::LocalZsh {
+            workspace_path,
+            run_dir,
+        } => format!(
+            "【目标环境】\n- 类型：本地 macOS zsh\n- 工作区：{}\n- 执行目录：{}\n- 约束：命令固定通过 /bin/zsh -lc 执行，产物应留在执行目录内",
+            workspace_path, run_dir
+        ),
     };
     format!(
         "【当前意图】\n{}\n\n\
          【用户任务】\n{}\n\n\
-         【目标服务器】\n- id：{}\n- 描述：{}\n- host:port：{}:{}\n- 登录用户：{}\n- 标签：{}\n\n\
+         {}\n\n\
          【待执行命令】\n{}",
         if payload.intent.trim().is_empty() {
             "（未提供）"
@@ -121,12 +171,7 @@ fn build_user_prompt(payload: &SshReviewPayload) -> String {
         } else {
             payload.task.trim()
         },
-        payload.server_info.id,
-        payload.server_info.description,
-        payload.server_info.host,
-        payload.server_info.port,
-        payload.server_info.username,
-        tags,
+        target_info,
         payload.command,
     )
 }

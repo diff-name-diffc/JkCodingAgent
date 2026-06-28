@@ -95,6 +95,17 @@ pub enum SubAgentEvent {
         agent_name: String,
         delta: String,
     },
+    #[serde(rename = "UsageUpdated")]
+    UsageUpdated {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        #[serde(rename = "agentName")]
+        agent_name: String,
+        #[serde(rename = "tokenUsage")]
+        token_usage: SubAgentUsage,
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
+    },
     Finished {
         #[serde(rename = "agentId")]
         agent_id: String,
@@ -300,6 +311,20 @@ impl SubAgentRuntime {
 
             if let Some(usage_info) = response.usage.as_ref() {
                 usage.record(usage_info);
+                if let Some(handle) = &app_handle {
+                    let _ = handle.emit(
+                        "sub-agent-event",
+                        SubAgentEventPayload {
+                            session_id: session_id.to_string(),
+                            event: SubAgentEvent::UsageUpdated {
+                                agent_id: self.config.agent_id.clone(),
+                                agent_name: self.config.agent_name.clone(),
+                                token_usage: usage.clone(),
+                                elapsed_ms: start.elapsed().as_millis() as u64,
+                            },
+                        },
+                    );
+                }
             }
 
             if response.tool_calls.is_empty() {
@@ -465,11 +490,7 @@ impl SubAgentRuntime {
             .execute(&tc.name, &tc.arguments, &self.tool_context)
             .await;
 
-        let result_preview = if result.chars().count() > 200 {
-            format!("{}...", result.chars().take(200).collect::<String>())
-        } else {
-            result.clone()
-        };
+        let result_preview = tool_result_preview(&tc.name, &result);
 
         if let Some(handle) = app_handle {
             let _ = handle.emit(
@@ -530,11 +551,7 @@ impl SubAgentRuntime {
         .await;
 
         for (tc, result) in &results {
-            let result_preview = if result.chars().count() > 200 {
-                format!("{}...", result.chars().take(200).collect::<String>())
-            } else {
-                result.clone()
-            };
+            let result_preview = tool_result_preview(&tc.name, result);
             if let Some(handle) = app_handle {
                 let _ = handle.emit(
                     "sub-agent-event",
@@ -592,4 +609,27 @@ fn truncate_tool_result(result: &str) -> String {
     let tail: String = result.chars().skip(char_count - keep).collect();
     let dropped = char_count - SUB_AGENT_RESULT_MAX_CHARS;
     format!("{head}\n\n[...已截断 {dropped} 字符...]\n\n{tail}")
+}
+
+fn tool_result_preview(tool_name: &str, result: &str) -> String {
+    let preview_limit = if is_command_review_result(tool_name, result) {
+        4_000
+    } else {
+        200
+    };
+    if result.chars().count() > preview_limit {
+        format!(
+            "{}...",
+            result.chars().take(preview_limit).collect::<String>()
+        )
+    } else {
+        result.to_string()
+    }
+}
+
+fn is_command_review_result(tool_name: &str, result: &str) -> bool {
+    matches!(tool_name, "ssh_exec" | "local_zsh")
+        && (result.starts_with("## SSH 命令审查记录")
+            || (result.starts_with("## local_zsh 执行结果")
+                && result.contains("审查结论: `拦截`")))
 }

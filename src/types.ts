@@ -293,6 +293,7 @@ export interface DispatcherMessageUsageStats {
   completionTokens: number;
   totalTokens: number;
   elapsedMs: number;
+  paused?: boolean;
 }
 
 export type DispatcherToolResultMode =
@@ -714,6 +715,7 @@ export type SubAgentEventType =
   | "ToolFinished"
   | "Progress"
   | "llmDelta"
+  | "UsageUpdated"
   | "Finished"
   | "Failed";
 

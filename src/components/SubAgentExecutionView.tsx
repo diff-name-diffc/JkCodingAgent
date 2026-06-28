@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type React from "react";
 import {
   Bot,
   ChevronDown,
@@ -16,6 +17,8 @@ import {
   RotateCcw,
 } from "lucide-react";
 import type { SubAgentSession, SubAgentPhase, SubAgentToolCall } from "./subAgentEventStore";
+import { formatTokenGenerationSpeed } from "./dispatcher-chat/dispatcherChatUtils";
+import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import s from "../styles";
 
 // ── Phase Metadata ──────────────────────────────────────────────────────────
@@ -117,17 +120,30 @@ function PhaseIndicator({ phase }: { phase: SubAgentPhase }) {
 // ── StatsBar ──────────────────────────────────────────────────────────────────
 
 function StatsBar({ session }: { session: SubAgentSession }) {
-  if (session.status !== "completed" && session.status !== "failed") return null;
+  const liveElapsed = useLiveElapsed(session);
+  const isRunning = session.status === "running";
+
+  if (!isRunning && session.status !== "completed" && session.status !== "failed") return null;
+
+  const completionTokens = session.tokenUsage?.completionTokens ?? 0;
+  const speed = formatTokenGenerationSpeed(completionTokens, liveElapsed);
+  const showSpeed = isRunning && completionTokens > 0;
 
   return (
     <div style={s.statsBar}>
-      {session.iterations != null && (
+      {showSpeed && (
+        <span style={s.statsChip}>
+          <Zap size={10} />
+          {speed} t/s
+        </span>
+      )}
+      {session.iterations != null && !isRunning && (
         <span style={s.statsChip}>
           <RotateCcw size={10} />
           {session.iterations} 轮
         </span>
       )}
-      {session.tokenUsage?.totalTokens != null && (
+      {session.tokenUsage?.totalTokens != null && !isRunning && (
         <span style={s.statsChip}>
           <Coins size={10} />
           {session.tokenUsage.totalTokens.toLocaleString()} tokens
@@ -135,7 +151,7 @@ function StatsBar({ session }: { session: SubAgentSession }) {
       )}
       <span style={s.statsChip}>
         <Clock size={10} />
-        {formatElapsed(session.elapsed)}
+        {formatElapsed(liveElapsed)}
       </span>
     </div>
   );
@@ -191,10 +207,16 @@ function ToolCallTimeline({ toolCalls }: { toolCalls: SubAgentToolCall[] }) {
                 )}
               </div>
               {tc.resultPreview && !isRunning && (
-                <div style={s.timelineResultPreview}>
-                  {tc.resultPreview.slice(0, 120)}
-                  {(tc.resultPreview.length > 120) ? "..." : ""}
-                </div>
+                isCommandAuditPreview(tc) ? (
+                  <div style={commandAuditPreviewStyle}>
+                    <MarkdownRenderer content={tc.resultPreview} variant="chat" />
+                  </div>
+                ) : (
+                  <div style={s.timelineResultPreview}>
+                    {tc.resultPreview.slice(0, 120)}
+                    {(tc.resultPreview.length > 120) ? "..." : ""}
+                  </div>
+                )
               )}
             </div>
           </div>
@@ -203,6 +225,29 @@ function ToolCallTimeline({ toolCalls }: { toolCalls: SubAgentToolCall[] }) {
     </div>
   );
 }
+
+function isCommandAuditPreview(toolCall: SubAgentToolCall): boolean {
+  const preview = toolCall.resultPreview ?? "";
+  return (
+    (toolCall.toolName === "ssh_exec" && preview.startsWith("## SSH 命令审查记录")) ||
+    (toolCall.toolName === "local_zsh" &&
+      preview.startsWith("## local_zsh 执行结果") &&
+      preview.includes("审查结论: `拦截`"))
+  );
+}
+
+const commandAuditPreviewStyle: React.CSSProperties = {
+  marginTop: 6,
+  padding: "8px 10px",
+  borderRadius: 8,
+  border: "1px solid color-mix(in srgb, var(--danger, #ef4444) 26%, var(--border-dim))",
+  background: "color-mix(in srgb, var(--danger, #ef4444) 8%, var(--bg-card))",
+  color: "var(--text-primary)",
+  fontSize: 11,
+  lineHeight: 1.5,
+  maxHeight: 220,
+  overflow: "auto",
+};
 
 // ── ResultBlock ───────────────────────────────────────────────────────────────
 

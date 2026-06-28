@@ -29,6 +29,8 @@ pub struct DispatcherMessageUsageStats {
     pub completion_tokens: u64,
     pub total_tokens: u64,
     pub elapsed_ms: u64,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

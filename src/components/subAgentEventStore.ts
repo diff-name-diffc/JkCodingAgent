@@ -42,6 +42,7 @@ export interface SubAgentSession {
   finishedResult?: string;
   finishedError?: string;
   tokenUsage?: SubAgentUsage;
+  usageReceivedAt?: number;
   iterations?: number;
 }
 
@@ -131,6 +132,7 @@ function registerGlobalListener(): void {
     let finishedResult: string | undefined;
     let finishedError: string | undefined;
     let tokenUsage: SubAgentUsage | undefined;
+    let usageReceivedAt: number | undefined;
     let iterations: number | undefined;
 
     if (eventType === "Started") {
@@ -140,6 +142,7 @@ function registerGlobalListener(): void {
       elapsed = 0;
       phase = "initializing";
       toolCalls = [];
+      usageReceivedAt = undefined;
       starts[storeKey] = now;
     } else if (eventType === "Finished") {
       name = existing?.name ?? agentId;
@@ -207,6 +210,14 @@ function registerGlobalListener(): void {
       iterations = existing?.iterations;
     }
 
+    // UsageUpdated is a lightweight telemetry event: update token/elapsed
+    // without adding an event line or changing phase.
+    if (eventType === "UsageUpdated") {
+      tokenUsage = data.tokenUsage ?? existing?.tokenUsage;
+      elapsed = data.elapsedMs ?? elapsed;
+      usageReceivedAt = now;
+    }
+
     const text = buildEventText(eventType, data);
     const eventId = `${agentId}-${now}-${Math.random().toString(36).slice(2, 6)}`;
     const newEvent: EventLine = { id: eventId, type: eventType, text, timestamp: now };
@@ -247,6 +258,7 @@ function registerGlobalListener(): void {
       finishedResult,
       finishedError,
       tokenUsage,
+      usageReceivedAt,
       iterations,
     };
     notify();

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use parking_lot::Mutex;
@@ -27,6 +27,8 @@ pub struct UsageTracker {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    paused_at: Option<Instant>,
+    paused_accum_ms: u64,
 }
 
 impl UsageTracker {
@@ -36,6 +38,8 @@ impl UsageTracker {
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,
+            paused_at: None,
+            paused_accum_ms: 0,
         }
     }
 
@@ -47,13 +51,68 @@ impl UsageTracker {
     }
 
     pub fn snapshot(&self) -> DispatcherMessageUsageStats {
+        let mut elapsed = self.started_at.elapsed();
+        if let Some(paused_at) = self.paused_at {
+            elapsed = elapsed.saturating_sub(paused_at.elapsed());
+        }
+        elapsed = elapsed.saturating_sub(Duration::from_millis(self.paused_accum_ms));
         DispatcherMessageUsageStats {
             prompt_tokens: self.prompt_tokens,
             completion_tokens: self.completion_tokens,
             total_tokens: self.total_tokens,
-            elapsed_ms: self.started_at.elapsed().as_millis() as u64,
+            elapsed_ms: elapsed.as_millis() as u64,
+            paused: self.paused_at.is_some(),
         }
     }
+
+    /// Pause the usage timer. Sub-agent execution time should not inflate
+    /// the main agent's token generation speed denominator.
+    pub fn pause(&mut self) {
+        if self.paused_at.is_none() {
+            self.paused_at = Some(Instant::now());
+        }
+    }
+
+    /// Resume the usage timer after a sub-agent call completes.
+    pub fn resume(&mut self) {
+        if let Some(paused_at) = self.paused_at.take() {
+            self.paused_accum_ms += paused_at.elapsed().as_millis() as u64;
+        }
+    }
+}
+
+/// Runs `execute` with the main agent's usage timer paused, then emits a
+/// `RunUsageUpdated` event so the frontend can stop padding live elapsed.
+/// Used to wrap `call_sub_agent` execution: the sub-agent's wall-clock time
+/// must not dilute the main agent's token-generation-speed denominator.
+pub async fn with_usage_paused<F, Fut, T>(
+    usage_tracker: &mut UsageTracker,
+    workspace_id: &str,
+    on_event: &Channel<AgentEvent>,
+    execute: F,
+) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    usage_tracker.pause();
+    emit(
+        on_event,
+        AgentEvent::RunUsageUpdated {
+            workspace_id: workspace_id.to_string(),
+            stats: usage_tracker.snapshot(),
+        },
+    );
+    let result = execute().await;
+    usage_tracker.resume();
+    emit(
+        on_event,
+        AgentEvent::RunUsageUpdated {
+            workspace_id: workspace_id.to_string(),
+            stats: usage_tracker.snapshot(),
+        },
+    );
+    result
 }
 
 // ─── LLM Streaming ──────────────────────────────────────────────────────────────

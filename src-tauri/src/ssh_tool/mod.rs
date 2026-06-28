@@ -16,7 +16,7 @@ use crate::project::storage::atomic_write;
 
 const CONFIG_FILE_NAME: &str = "ssh-tools.json";
 const AUDIT_FILE_NAME: &str = "audit.json";
-const AUDIT_RECORD_LIMIT: usize = 50;
+const AUDIT_RECORD_LIMIT: usize = 100;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_TIMEOUT_SECS: u64 = 300;
@@ -309,7 +309,7 @@ impl SshSessionManager {
         session_id: String,
         command: String,
         review: SshAuditReview,
-    ) -> Result<(), String> {
+    ) -> Result<SshAuditRecord, String> {
         tokio::task::spawn_blocking(move || {
             let record = SshAuditRecord {
                 created_at: Utc::now().to_rfc3339(),
@@ -328,7 +328,8 @@ impl SshSessionManager {
                 error: None,
                 review: Some(review),
             };
-            write_audit_record(&project_path, record)
+            write_audit_record(&project_path, record.clone())?;
+            Ok(record)
         })
         .await
         .map_err(|error| error.to_string())?
@@ -640,12 +641,84 @@ fn write_audit_record(project_path: &Path, record: SshAuditRecord) -> Result<(),
     fs::create_dir_all(dir).map_err(|error| error.to_string())?;
 
     let mut audit = read_audit(project_path)?;
-    if audit.records.len() >= AUDIT_RECORD_LIMIT {
-        return Ok(());
-    }
     audit.records.push(record);
+    if audit.records.len() > AUDIT_RECORD_LIMIT {
+        let overflow = audit.records.len() - AUDIT_RECORD_LIMIT;
+        audit.records.drain(0..overflow);
+    }
     let raw = serde_json::to_string_pretty(&audit).map_err(|error| error.to_string())?;
     atomic_write(&path, &raw)
+}
+
+pub fn render_ssh_audit_record_markdown(record: &SshAuditRecord) -> String {
+    let mut output = String::new();
+    output.push_str("## SSH 命令审查记录\n\n");
+    output.push_str(&format!("- 时间: `{}`\n", record.created_at));
+    output.push_str(&format!("- 服务器: `{}`\n", record.server_id));
+    output.push_str(&format!("- 会话: `{}`\n", record.session_id));
+    if let Some(review) = record.review.as_ref() {
+        output.push_str(&format!(
+            "- 审查结论: `{}`\n",
+            if review.allowed { "通过" } else { "拦截" }
+        ));
+        output.push_str(&format!(
+            "- 审查原因: {}\n",
+            if review.reason.trim().is_empty() {
+                if review.allowed {
+                    "审查通过，允许执行。"
+                } else {
+                    "审查拒绝，命令未执行。"
+                }
+            } else {
+                review.reason.trim()
+            }
+        ));
+    } else {
+        output.push_str("- 审查结论: `未审查`\n");
+    }
+    output.push_str(&format!(
+        "- 执行状态: `{}`\n",
+        audit_execution_status(record)
+    ));
+    output.push_str("\n### 命令\n\n```sh\n");
+    output.push_str(&record.command);
+    output.push_str("\n```\n");
+    if !record.stdout.trim().is_empty() {
+        output.push_str("\n### stdout\n\n```text\n");
+        output.push_str(&record.stdout);
+        output.push_str("\n```\n");
+    }
+    if !record.stderr.trim().is_empty() {
+        output.push_str("\n### stderr\n\n```text\n");
+        output.push_str(&record.stderr);
+        output.push_str("\n```\n");
+    }
+    if let Some(error) = record.error.as_deref().filter(|value| !value.trim().is_empty()) {
+        output.push_str("\n### 错误\n\n");
+        output.push_str(error);
+        output.push('\n');
+    }
+    output
+}
+
+fn audit_execution_status(record: &SshAuditRecord) -> String {
+    if record
+        .review
+        .as_ref()
+        .is_some_and(|review| !review.allowed)
+    {
+        return "审查拦截，未执行".to_string();
+    }
+    if record.interactive_blocked {
+        return "交互阻塞，已中止".to_string();
+    }
+    if record.error.is_some() {
+        return "执行失败".to_string();
+    }
+    match record.exit_code {
+        Some(code) => format!("exit={code}, duration={}ms", record.duration_ms.unwrap_or(0)),
+        None => "未执行".to_string(),
+    }
 }
 
 fn validate_config(mut config: SshToolsConfig) -> Result<SshToolsConfig, String> {

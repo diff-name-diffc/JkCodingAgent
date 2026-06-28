@@ -8,7 +8,7 @@ use tokio::sync::watch;
 
 use super::super::common::{
     self, build_args_map, build_tool_calls_payload, cancellation_requested,
-    persist_tool_calls_message, persist_tool_result_raw,
+    persist_tool_calls_message, persist_tool_result_raw, with_usage_paused,
 };
 use super::super::db::{
     DispatcherDb, DispatcherSessionRuntimeState, DispatcherSessionTokenUsageSource,
@@ -134,7 +134,19 @@ impl DispatcherAgent {
                         arguments: tool_args_json,
                     },
                 );
-                let result = if allowed_tool_names.contains(&tool_call.name) {
+                let is_sub_agent_call = tool_call.name == "call_sub_agent";
+                let result = if is_sub_agent_call {
+                    with_usage_paused(usage_tracker, workspace_id, on_event, || async {
+                        if allowed_tool_names.contains(&tool_call.name) {
+                            self.tools
+                                .execute(&tool_call.name, &tool_call.arguments, tool_context)
+                                .await
+                        } else {
+                            disallowed_tool_result(&tool_call.name)
+                        }
+                    })
+                    .await
+                } else if allowed_tool_names.contains(&tool_call.name) {
                     self.tools
                         .execute(&tool_call.name, &tool_call.arguments, tool_context)
                         .await

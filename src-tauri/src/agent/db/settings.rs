@@ -21,6 +21,8 @@ pub struct DispatcherModelConfig {
     pub model: String,
     #[serde(default = "default_model_config_active")]
     pub active: bool,
+    #[serde(default)]
+    pub system_prompt: String,
 }
 
 fn default_model_config_active() -> bool {
@@ -34,6 +36,7 @@ impl DispatcherModelConfig {
             api_key: api_key.trim().to_string(),
             model: model.trim().to_string(),
             active: true,
+            system_prompt: String::new(),
         }
     }
 
@@ -43,6 +46,7 @@ impl DispatcherModelConfig {
             api_key: self.api_key.trim().to_string(),
             model: self.model.trim().to_string(),
             active: self.active,
+            system_prompt: self.system_prompt.trim().to_string(),
         }
     }
 
@@ -981,6 +985,21 @@ impl DispatcherDb {
             .collect()
     }
 
+    fn with_default_plain_chat_prompt(
+        configs: Vec<DispatcherModelConfig>,
+    ) -> Vec<DispatcherModelConfig> {
+        configs
+            .into_iter()
+            .map(|mut config| {
+                if config.system_prompt.trim().is_empty() {
+                    config.system_prompt =
+                        crate::agent::config::DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT.to_string();
+                }
+                config
+            })
+            .collect()
+    }
+
     fn serialize_json(configs: &[DispatcherModelConfig]) -> String {
         serde_json::to_string(configs).unwrap_or_else(|_| "[]".to_string())
     }
@@ -1037,7 +1056,9 @@ impl DispatcherDb {
                     },
                 },
                 chat: AhaContextConfig {
-                    chat_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(9)?),
+                    chat_model_configs: Self::with_default_plain_chat_prompt(
+                        Self::parse_model_configs_json(&row.get::<_, String>(9)?),
+                    ),
                     summary_model_configs: Self::parse_model_configs_json(
                         &row.get::<_, String>(10)?,
                     ),

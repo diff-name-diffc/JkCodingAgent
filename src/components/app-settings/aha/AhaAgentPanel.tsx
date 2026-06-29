@@ -67,6 +67,7 @@ function cloneModel(model?: Partial<DispatcherModelConfig> | null): DispatcherMo
     apiKey: model?.apiKey?.trim() ?? "",
     model: model?.model?.trim() ?? "",
     active: model?.active ?? true,
+    systemPrompt: model?.systemPrompt?.trim() ?? "",
   };
 }
 
@@ -83,7 +84,7 @@ function normalizeProviders(
 }
 
 function emptyProvider(): DispatcherModelConfig {
-  return { url: "", apiKey: "", model: "", active: false };
+  return { url: "", apiKey: "", model: "", active: false, systemPrompt: "" };
 }
 
 function activeProvider(providers: DispatcherModelConfig[]): DispatcherModelConfig {
@@ -217,7 +218,13 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
     setExpanded((prev) => ({ ...prev, [key]: nextIndex }));
     return [
       ...providers,
-      { url: "", apiKey: "", model: "", active: !providers.some((p) => p.active) },
+      {
+        url: "",
+        apiKey: "",
+        model: "",
+        active: !providers.some((p) => p.active),
+        systemPrompt: "",
+      },
     ] as DispatcherModelConfig[];
   }
 
@@ -400,7 +407,9 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
     const label = context === "project" ? "项目" : "聊天";
     return (
       <>
-        {contextSection(context, "chat", `${label}主模型`, `${label}对话和工具调用的主模型。`)}
+        {contextSection(context, "chat", `${label}主模型`, `${label}对话和工具调用的主模型。`, {
+          showSystemPrompt: context === "chat",
+        })}
         {contextSection(
           context,
           "summary",
@@ -805,6 +814,7 @@ type SectionOptions = {
   urlPlaceholder?: string;
   modelPlaceholder?: string;
   hideModelFetch?: boolean;
+  showSystemPrompt?: boolean;
 };
 
 function ModelProviderSection({
@@ -828,6 +838,7 @@ function ModelProviderSection({
   urlPlaceholder = "https://api.example.com/v1",
   modelPlaceholder = "model-name",
   hideModelFetch = false,
+  showSystemPrompt = false,
 }: {
   title: string;
   description: string;
@@ -885,6 +896,7 @@ function ModelProviderSection({
             urlPlaceholder={urlPlaceholder}
             modelPlaceholder={modelPlaceholder}
             hideModelFetch={hideModelFetch}
+            showSystemPrompt={showSystemPrompt}
           />
         ))
       )}
@@ -911,6 +923,7 @@ function ProviderEditor({
   urlPlaceholder,
   modelPlaceholder,
   hideModelFetch,
+  showSystemPrompt,
 }: {
   index: number;
   provider: DispatcherModelConfig;
@@ -930,6 +943,7 @@ function ProviderEditor({
   urlPlaceholder: string;
   modelPlaceholder: string;
   hideModelFetch: boolean;
+  showSystemPrompt: boolean;
 }) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -1105,6 +1119,27 @@ function ProviderEditor({
               )}
             </div>
           </div>
+          {showSystemPrompt && (
+            <label style={s.ahaField}>
+              <span style={s.ahaLabel}>系统提示词</span>
+              <textarea
+                style={{
+                  ...s.ahaInput,
+                  height: 260,
+                  padding: "10px 12px",
+                  lineHeight: 1.55,
+                  resize: "vertical",
+                }}
+                value={provider.systemPrompt ?? ""}
+                onChange={(e) => onChange({ systemPrompt: e.target.value })}
+                placeholder="配置聊天智能体的系统提示词"
+                spellCheck={false}
+              />
+              <span style={s.ahaHint}>
+                留空时使用内置默认提示词；运行时会自动追加当前时间和已启用子智能体列表。
+              </span>
+            </label>
+          )}
           <div style={s.ahaActionRow}>
             <button type="button" style={s.ahaGhostButton} onClick={onTest} disabled={testing}>
               <Zap size={14} />

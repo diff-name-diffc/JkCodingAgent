@@ -66,25 +66,16 @@ export const BubbleCopyButton = memo(function BubbleCopyButton({
 
 export const UserMessageBubble = memo(function UserMessageBubble({
   message,
-  onRunPython,
-  pythonRunRecords,
 }: {
   message: DispatcherMessage;
-  onRunPython?: (target: PythonCodeRunTarget) => void;
-  pythonRunRecords?: Record<string, PythonCodeRunRecord>;
 }) {
+  // 用户输入按原始文本渲染，不做 Markdown 解析，保留换行与空格即可。
   return (
     <div style={styles.messageBubbleWrap(true)}>
       <div style={styles.messageBubbleColumn(true)}>
         <div style={styles.messageBubble(true)}>
-          <div className="dispatcher-searchable-content" style={styles.markdownBody}>
-            <MarkdownRenderer
-              content={message.content}
-              variant="chat"
-              messageId={message.id}
-              onRunPython={onRunPython}
-              pythonRunRecords={pythonRunRecords}
-            />
+          <div className="dispatcher-searchable-content" style={styles.userMessageText}>
+            {message.content}
           </div>
         </div>
         <BubbleCopyButton text={message.content} isUser />

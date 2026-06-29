@@ -1,6 +1,5 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
-import reactPlugin from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
 import prettier from "eslint-config-prettier";
 
@@ -19,20 +18,12 @@ export default tseslint.config(
   // React 规则
   {
     plugins: {
-      react: reactPlugin,
       "react-hooks": reactHooks,
-    },
-    settings: {
-      react: { version: "detect" },
     },
     rules: {
       // React Hooks 规则：违反会导致运行时 bug，必须开启
       "react-hooks/rules-of-hooks": "error",
       "react-hooks/exhaustive-deps": "warn",
-
-      // React 17+ JSX transform，无需手动 import React
-      "react/react-in-jsx-scope": "off",
-      "react/prop-types": "off",
 
       // TypeScript 调整：已有代码存在少量 any，初期用 warn 而非 error
       "@typescript-eslint/no-explicit-any": "warn",

@@ -401,6 +401,7 @@ export interface DispatcherModelConfig {
   apiKey: string;
   model: string;
   active: boolean;
+  systemPrompt?: string;
 }
 
 export type AgentContext = "project" | "chat";

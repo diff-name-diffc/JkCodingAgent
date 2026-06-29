@@ -31,6 +31,7 @@ use crate::ssh_tool::SshSessionManager;
 pub struct PlainChatAgent {
     config: DispatcherAgentConfig,
     provider: Mutex<OpenAiCompatProvider>,
+    system_prompt: Mutex<String>,
     vision_model: Mutex<String>,
     summary_model: Mutex<String>,
     summary_api_key: Mutex<String>,
@@ -71,6 +72,7 @@ impl PlainChatAgent {
         Self {
             config,
             provider: Mutex::new(provider),
+            system_prompt: Mutex::new(super::config::DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT.to_string()),
             vision_model: Mutex::new(String::new()),
             summary_model: Mutex::new(super::config::DEFAULT_SUMMARY_MODEL.to_string()),
             summary_api_key: Mutex::new(String::new()),
@@ -153,6 +155,9 @@ impl PlainChatAgent {
             .or_else(|| shared.vision_model_configs.first());
 
         if let Some(chat) = active_chat {
+            if !chat.system_prompt.trim().is_empty() {
+                *self.system_prompt.lock() = chat.system_prompt.trim().to_string();
+            }
             let mut provider = self.provider.lock();
             *provider = OpenAiCompatProvider::new(
                 if chat.api_key.is_empty() {
@@ -591,20 +596,14 @@ impl PlainChatAgent {
                 if allowed {
                     self.tools.execute(&name, &arguments, tool_context).await
                 } else {
-                    format!(
-                        "错误：禁止调用工具 '{}'；请检查可用工具列表。",
-                        name
-                    )
+                    format!("错误：禁止调用工具 '{}'；请检查可用工具列表。", name)
                 }
             })
             .await
         } else if allowed {
             self.tools.execute(&name, &arguments, tool_context).await
         } else {
-            format!(
-                "错误：禁止调用工具 '{}'；请检查可用工具列表。",
-                name
-            )
+            format!("错误：禁止调用工具 '{}'；请检查可用工具列表。", name)
         }
     }
 
@@ -670,7 +669,18 @@ impl PlainChatAgent {
     }
 
     fn build_effective_system_prompt(&self, workspace_id: &str) -> String {
-        let mut prompt = build_plain_chat_system_prompt();
+        let mut prompt = {
+            let configured = self.system_prompt.lock().trim().to_string();
+            if configured.is_empty() {
+                super::config::DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT.to_string()
+            } else {
+                configured
+            }
+        };
+        prompt.push_str(&format!(
+            "\n\n## 系统时间\n\n当前本地时间：{}",
+            super::prompt::current_local_time()
+        ));
         if let Some(manager) = &self.sub_agent_manager {
             if let Ok(agents) = manager.get_enabled_for_session(workspace_id) {
                 if !agents.is_empty() {
@@ -760,36 +770,4 @@ fn build_stopped_plain_chat_reply(partial: &str) -> String {
             trimmed
         )
     }
-}
-
-fn build_plain_chat_system_prompt() -> String {
-    let current_time = super::prompt::current_local_time();
-    [
-        "# 普通聊天".to_string(),
-        String::new(),
-        "你是桌面客户端中的普通聊天助手。".to_string(),
-        format!("当前本地时间：{current_time}"),
-        "当前会话不是项目 Agent 会话，没有项目目录、项目文件系统或子进程能力。".to_string(),
-        "你可以调用 local_zsh 在受限本地目录 .jkcodingagent/local_env/zsh 中执行 macOS zsh 命令；所有产物应留在该目录，工具会维护 audit.json 审计历史。".to_string(),
-        "如果设置中启用了聊天 MCP 工具，可按工具说明调用这些动态发现的外部工具。".to_string(),
-        "你可以按需使用浏览器工具打开网页、点击、输入、等待、读取页面可访问性树快照、请求视觉辅助分析和关闭浏览器，用于网页自动化与公开信息检索。".to_string(),
-        "浏览器自动化统一使用 ref：先调用 browser_read_text 获取 Accessibility Tree 快照，再使用快照中的 ref 调用点击、输入或局部读取工具；不要使用 CSS selector。".to_string(),
-        "元素 ref 只在最近一次 browser_read_text 快照中有效。页面导航或内容变化后旧 ref 会失效，收到 ref 失效错误时系统会自动附上新快照，基于新快照重新选择元素即可。".to_string(),
-        "检索问题信息时，优先打开明确网址；没有网址时可打开搜索引擎结果页并读取页面文本，不要伪造检索结果。".to_string(),
-        "可以基于用户直接提供的文本、代码片段、错误信息或图片进行解释、分析、改写和建议。".to_string(),
-        "默认使用简体中文，表达直接、清晰、面向有经验的开发者。".to_string(),
-        String::new(),
-        "## 子智能体".to_string(),
-        String::new(),
-        "- 你可以调用 list_sub_agents 查看当前可用的子智能体列表。".to_string(),
-        "- 使用 call_sub_agent(agent_id, task) 调用子智能体处理特定领域的复杂任务。子智能体拥有独立的执行上下文，内部工具调用对你透明，你只会收到最终结果。".to_string(),
-        String::new(),
-        "## 图片生成与引用".to_string(),
-        String::new(),
-        "- 你可以调用 generate_image 工具根据文本描述生成图片。建议提供 image_name 参数为图片命名。".to_string(),
-        "- 你可以调用 edit_image 工具对现有图片进行编辑。需要提供图片的本地绝对路径。".to_string(),
-        "- 工具返回结果中会包含该图片的本地绝对路径。".to_string(),
-        "- 如果你想在回答中展示生成的图片，直接使用 Markdown 图片引用语法引用工具返回的原始本地绝对路径即可。".to_string(),
-    ]
-    .join("\n")
 }

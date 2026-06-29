@@ -370,7 +370,7 @@ async fn maybe_send_finish(
         }
     });
     writer
-        .send(Message::Text(finish_task.to_string()))
+        .send(Message::Text(finish_task.to_string().into()))
         .await
         .map_err(|error| format!("发送实时识别结束命令失败：{error}"))?;
     state.finish_sent = true;
@@ -406,7 +406,7 @@ async fn send_run_task(
         }
     });
     writer
-        .send(Message::Text(run_task.to_string()))
+        .send(Message::Text(run_task.to_string().into()))
         .await
         .map_err(|error| format!("发送实时识别启动命令失败：{error}"))
 }
@@ -424,7 +424,7 @@ async fn send_audio_chunk(
         .decode(audio_base64)
         .map_err(|error| format!("解码语音数据失败：{error}"))?;
     writer
-        .send(Message::Binary(audio))
+        .send(Message::Binary(audio.into()))
         .await
         .map_err(|error| format!("发送语音数据失败：{error}"))
 }

@@ -1,2 +1,5 @@
 allowBuilds:
   esbuild: true
+minimumReleaseAgeExclude:
+  - cloakbrowser@0.4.4
+  - prettier@3.9.1

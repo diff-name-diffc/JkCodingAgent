@@ -76,6 +76,14 @@ pub(super) fn map_dispatcher_message_record(
 ) -> rusqlite::Result<DispatcherMessageRecord> {
     let segments_json: String = row.get(3)?;
     let content = segments_to_markdown(&parse_segments_json(&segments_json));
+    let thinking_elapsed_ms = row
+        .get::<_, Option<i64>>(5)?
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(5, Type::Integer, Box::new(error))
+        })?;
+
     Ok(DispatcherMessageRecord {
         id: row.get(0)?,
         workspace_id: row.get(1)?,
@@ -83,7 +91,7 @@ pub(super) fn map_dispatcher_message_record(
         content,
         segments_json,
         thinking_content: row.get(4)?,
-        thinking_elapsed_ms: row.get(5)?,
+        thinking_elapsed_ms,
         context_payload: row.get(6)?,
         tool_call_id: row.get(7)?,
         tool_name: row.get(8)?,

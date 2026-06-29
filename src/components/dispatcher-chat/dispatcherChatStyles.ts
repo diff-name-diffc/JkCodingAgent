@@ -802,7 +802,7 @@ export const dispatcherChatStyles = {
   }),
   messageBubbleColumn: (isUser: boolean) => ({
     width: isUser ? "auto" : "min(780px, calc(100% - 48px))",
-    maxWidth: isUser ? "min(68%, 620px)" : "min(780px, calc(100% - 48px))",
+    maxWidth: isUser ? "min(86%, 780px)" : "min(780px, calc(100% - 48px))",
     minWidth: 0,
     display: "flex",
     flexDirection: "column" as const,
@@ -843,6 +843,18 @@ export const dispatcherChatStyles = {
   }),
   messageText: {
     whiteSpace: "pre-wrap" as const,
+    userSelect: "text" as const,
+    WebkitUserSelect: "text" as const,
+    fontFamily: "var(--font-ui)",
+  },
+  userMessageText: {
+    maxWidth: "100%",
+    minWidth: 0,
+    whiteSpace: "pre-wrap" as const,
+    wordBreak: "break-word" as const,
+    overflowWrap: "break-word" as const,
+    fontSize: "14px",
+    lineHeight: "1.72",
     userSelect: "text" as const,
     WebkitUserSelect: "text" as const,
     fontFamily: "var(--font-ui)",

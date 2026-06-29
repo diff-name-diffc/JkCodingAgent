@@ -30,6 +30,12 @@ const READ_CHUNK: usize = 8192;
 const MAX_STDIN_BYTES: usize = 512 * 1024;
 const TIMEOUT_EXIT_CODE: i32 = 124;
 const INTERACTIVE_EXIT_CODE: i32 = -1;
+const LIBSSH2_ERROR_SOCKET_SEND: i32 = -7;
+const LIBSSH2_ERROR_SOCKET_DISCONNECT: i32 = -13;
+const LIBSSH2_ERROR_CHANNEL_CLOSED: i32 = -26;
+const LIBSSH2_ERROR_SOCKET_TIMEOUT: i32 = -30;
+const LIBSSH2_ERROR_SOCKET_RECV: i32 = -43;
+const LIBSSH2_ERROR_BAD_SOCKET: i32 = -45;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -162,6 +168,11 @@ struct SshSessionKey {
 struct SshConnection {
     session: Session,
     last_used_at: Instant,
+}
+
+enum SshCommandStartError {
+    Channel(ssh2::Error),
+    Exec(ssh2::Error),
 }
 
 #[tauri::command]
@@ -401,74 +412,37 @@ impl SshSessionManager {
             server_id: server.id.clone(),
             session_id: session_id.clone(),
         };
-        let connection = self.connection_for(key, &server)?;
         let started = Instant::now();
 
-        let mut guard = connection.lock();
-        let mut channel = guard
-            .session
-            .channel_session()
-            .map_err(|error| sanitize_ssh_error("创建 SSH channel 失败", error))?;
-        channel
-            .exec(&command)
-            .map_err(|error| sanitize_ssh_error("执行远程命令失败", error))?;
-
-        // 在阻塞模式下写入 stdin（若有）并关闭输入端
-        if let Some(input) = stdin.as_deref() {
-            if !input.is_empty() {
-                let _ = channel.write_all(input.as_bytes());
-                let _ = channel.flush();
+        let connection = self.connection_for(key.clone(), &server)?;
+        match run_command_on_connection(
+            &connection,
+            &server_id,
+            &session_id,
+            &command,
+            stdin.as_deref(),
+            timeout_secs,
+            max_output_bytes,
+            started,
+        ) {
+            Ok(result) => Ok(result),
+            Err(error) if error.is_stale_connection() => {
+                self.drop_session(&key);
+                let connection = self.connection_for(key, &server)?;
+                run_command_on_connection(
+                    &connection,
+                    &server_id,
+                    &session_id,
+                    &command,
+                    stdin.as_deref(),
+                    timeout_secs,
+                    max_output_bytes,
+                    started,
+                )
+                .map_err(|error| error.render())
             }
+            Err(error) => Err(error.render()),
         }
-        let _ = channel.send_eof();
-
-        // 切换非阻塞读取：libssh2 的 socket 超时会污染整个会话（缓存的连接需丢弃），
-        // 改用非阻塞 + 空转计时来检测交互阻塞，会话保持可复用。
-        // 当前命令独占连接互斥锁，中途切换阻塞模式是安全的。
-        guard.session.set_blocking(false);
-        let idle_secs = IDLE_DETECT_SECS.min(timeout_secs / 2).max(MIN_IDLE_SECS);
-        let deadline = started + Duration::from_secs(timeout_secs);
-        let (outcome, stdout_raw, stderr_raw, stdout_capped, stderr_capped) =
-            drain_channel(&mut channel, max_output_bytes, idle_secs, deadline);
-        guard.session.set_blocking(true);
-
-        let stdout = finalize_output(&stdout_raw, stdout_capped);
-        let (exit_code, stderr) = match outcome {
-            DrainOutcome::Completed => {
-                let _ = channel.wait_close();
-                let code = channel.exit_status().unwrap_or(INTERACTIVE_EXIT_CODE);
-                (code, finalize_output(&stderr_raw, stderr_capped))
-            }
-            DrainOutcome::TimedOut => {
-                let mut text = finalize_output(&stderr_raw, stderr_capped);
-                text.push_str(&format!(
-                    "\n[命令超过 {timeout_secs}s 仍未结束，已中止。若是长任务请提高 timeout_secs；若是交互阻塞请改用非交互形式。]"
-                ));
-                (TIMEOUT_EXIT_CODE, text)
-            }
-            DrainOutcome::InteractiveBlocked => {
-                let mut text = finalize_output(&stderr_raw, stderr_capped);
-                let hint = interactive_prompt_hint(&stdout_raw, &stderr_raw)
-                    .unwrap_or("未匹配到明显提示符");
-                text.push_str(&format!(
-                    "\n[工具检测到命令疑似在等待交互输入（连续 {idle_secs}s 无输出且未退出，疑似：{hint}），已主动中止以免长时间挂起。最近输出结尾：{:?}。请改用非交互形式后重试：sudo→免密账号或 NOPASSWD；确认提示→加 -y/--yes；分页器→PAGER=cat、GIT_PAGER=cat；REPL→用 -e/-c 或通过 stdin 参数喂入。]",
-                    tail_snippet(&stdout_raw, &stderr_raw)
-                ));
-                (INTERACTIVE_EXIT_CODE, text)
-            }
-        };
-        guard.last_used_at = Instant::now();
-
-        Ok(SshExecResult {
-            server_id,
-            session_id,
-            exit_code,
-            stdout,
-            stderr,
-            duration_ms: started.elapsed().as_millis(),
-            truncated: stdout_capped || stderr_capped,
-            interactive_blocked: matches!(outcome, DrainOutcome::InteractiveBlocked),
-        })
     }
 
     fn connection_for(
@@ -501,6 +475,10 @@ impl SshSessionManager {
         self.sessions
             .lock()
             .retain(|key, _| key.project_path != project_key);
+    }
+
+    fn drop_session(&self, key: &SshSessionKey) {
+        self.sessions.lock().remove(key);
     }
 }
 
@@ -573,6 +551,117 @@ impl SshAuditRecord {
             },
         }
     }
+}
+
+impl SshCommandStartError {
+    fn is_stale_connection(&self) -> bool {
+        match self {
+            Self::Channel(error) | Self::Exec(error) => is_stale_ssh_error(error),
+        }
+    }
+
+    fn render(self) -> String {
+        match self {
+            Self::Channel(error) => sanitize_ssh_error("创建 SSH channel 失败", error),
+            Self::Exec(error) => sanitize_ssh_error("执行远程命令失败", error),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_command_on_connection(
+    connection: &Arc<Mutex<SshConnection>>,
+    server_id: &str,
+    session_id: &str,
+    command: &str,
+    stdin: Option<&str>,
+    timeout_secs: u64,
+    max_output_bytes: usize,
+    started: Instant,
+) -> Result<SshExecResult, SshCommandStartError> {
+    let (mut guard, mut channel) = open_exec_channel(connection, command)?;
+
+    // 在阻塞模式下写入 stdin（若有）并关闭输入端
+    if let Some(input) = stdin {
+        if !input.is_empty() {
+            let _ = channel.write_all(input.as_bytes());
+            let _ = channel.flush();
+        }
+    }
+    let _ = channel.send_eof();
+
+    // 切换非阻塞读取：libssh2 的 socket 超时会污染整个会话（缓存的连接需丢弃），
+    // 改用非阻塞 + 空转计时来检测交互阻塞，会话保持可复用。
+    // 当前命令独占连接互斥锁，中途切换阻塞模式是安全的。
+    guard.session.set_blocking(false);
+    let idle_secs = IDLE_DETECT_SECS.min(timeout_secs / 2).max(MIN_IDLE_SECS);
+    let deadline = started + Duration::from_secs(timeout_secs);
+    let (outcome, stdout_raw, stderr_raw, stdout_capped, stderr_capped) =
+        drain_channel(&mut channel, max_output_bytes, idle_secs, deadline);
+    guard.session.set_blocking(true);
+
+    let stdout = finalize_output(&stdout_raw, stdout_capped);
+    let (exit_code, stderr) = match outcome {
+        DrainOutcome::Completed => {
+            let _ = channel.wait_close();
+            let code = channel.exit_status().unwrap_or(INTERACTIVE_EXIT_CODE);
+            (code, finalize_output(&stderr_raw, stderr_capped))
+        }
+        DrainOutcome::TimedOut => {
+            let mut text = finalize_output(&stderr_raw, stderr_capped);
+            text.push_str(&format!(
+                "\n[命令超过 {timeout_secs}s 仍未结束，已中止。若是长任务请提高 timeout_secs；若是交互阻塞请改用非交互形式。]"
+            ));
+            (TIMEOUT_EXIT_CODE, text)
+        }
+        DrainOutcome::InteractiveBlocked => {
+            let mut text = finalize_output(&stderr_raw, stderr_capped);
+            let hint =
+                interactive_prompt_hint(&stdout_raw, &stderr_raw).unwrap_or("未匹配到明显提示符");
+            text.push_str(&format!(
+                "\n[工具检测到命令疑似在等待交互输入（连续 {idle_secs}s 无输出且未退出，疑似：{hint}），已主动中止以免长时间挂起。最近输出结尾：{:?}。请改用非交互形式后重试：sudo→免密账号或 NOPASSWD；确认提示→加 -y/--yes；分页器→PAGER=cat、GIT_PAGER=cat；REPL→用 -e/-c 或通过 stdin 参数喂入。]",
+                tail_snippet(&stdout_raw, &stderr_raw)
+            ));
+            (INTERACTIVE_EXIT_CODE, text)
+        }
+    };
+    guard.last_used_at = Instant::now();
+
+    Ok(SshExecResult {
+        server_id: server_id.to_string(),
+        session_id: session_id.to_string(),
+        exit_code,
+        stdout,
+        stderr,
+        duration_ms: started.elapsed().as_millis(),
+        truncated: stdout_capped || stderr_capped,
+        interactive_blocked: matches!(outcome, DrainOutcome::InteractiveBlocked),
+    })
+}
+
+fn open_exec_channel<'a>(
+    connection: &'a Arc<Mutex<SshConnection>>,
+    command: &str,
+) -> Result<(parking_lot::MutexGuard<'a, SshConnection>, Channel), SshCommandStartError> {
+    let guard = connection.lock();
+    let mut channel = guard
+        .session
+        .channel_session()
+        .map_err(SshCommandStartError::Channel)?;
+    channel.exec(command).map_err(SshCommandStartError::Exec)?;
+    Ok((guard, channel))
+}
+
+fn is_stale_ssh_error(error: &ssh2::Error) -> bool {
+    matches!(
+        error.code(),
+        ssh2::ErrorCode::Session(LIBSSH2_ERROR_SOCKET_SEND)
+            | ssh2::ErrorCode::Session(LIBSSH2_ERROR_SOCKET_DISCONNECT)
+            | ssh2::ErrorCode::Session(LIBSSH2_ERROR_CHANNEL_CLOSED)
+            | ssh2::ErrorCode::Session(LIBSSH2_ERROR_SOCKET_TIMEOUT)
+            | ssh2::ErrorCode::Session(LIBSSH2_ERROR_SOCKET_RECV)
+            | ssh2::ErrorCode::Session(LIBSSH2_ERROR_BAD_SOCKET)
+    )
 }
 
 fn ssh_dir(project_path: &Path) -> PathBuf {
@@ -693,7 +782,11 @@ pub fn render_ssh_audit_record_markdown(record: &SshAuditRecord) -> String {
         output.push_str(&record.stderr);
         output.push_str("\n```\n");
     }
-    if let Some(error) = record.error.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(error) = record
+        .error
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         output.push_str("\n### 错误\n\n");
         output.push_str(error);
         output.push('\n');
@@ -702,11 +795,7 @@ pub fn render_ssh_audit_record_markdown(record: &SshAuditRecord) -> String {
 }
 
 fn audit_execution_status(record: &SshAuditRecord) -> String {
-    if record
-        .review
-        .as_ref()
-        .is_some_and(|review| !review.allowed)
-    {
+    if record.review.as_ref().is_some_and(|review| !review.allowed) {
         return "审查拦截，未执行".to_string();
     }
     if record.interactive_blocked {
@@ -716,7 +805,10 @@ fn audit_execution_status(record: &SshAuditRecord) -> String {
         return "执行失败".to_string();
     }
     match record.exit_code {
-        Some(code) => format!("exit={code}, duration={}ms", record.duration_ms.unwrap_or(0)),
+        Some(code) => format!(
+            "exit={code}, duration={}ms",
+            record.duration_ms.unwrap_or(0)
+        ),
         None => "未执行".to_string(),
     }
 }

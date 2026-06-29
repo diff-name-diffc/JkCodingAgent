@@ -112,8 +112,6 @@ export const MessageList = memo(function MessageList({
             <UserMessageBubble
               key={item.id}
               message={item.message}
-              onRunPython={onRunPython}
-              pythonRunRecords={pythonRunRecords}
             />
           );
         }

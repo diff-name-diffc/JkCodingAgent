@@ -687,6 +687,12 @@ impl DispatcherDb {
             params![&record.created_at, &record.workspace_id],
         )?;
 
+        let thinking_elapsed_ms = record
+            .thinking_elapsed_ms
+            .map(i64::try_from)
+            .transpose()
+            .context("convert thinking elapsed milliseconds for sqlite")?;
+
         tx.execute(
             "INSERT INTO dispatcher_messages (
                 id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, visible, created_at
@@ -698,7 +704,7 @@ impl DispatcherDb {
                 &record.role,
                 &record.segments_json,
                 &record.thinking_content,
-                &record.thinking_elapsed_ms,
+                &thinking_elapsed_ms,
                 &record.context_payload,
                 &record.tool_call_id,
                 &record.tool_name,

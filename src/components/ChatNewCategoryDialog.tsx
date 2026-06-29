@@ -1,13 +1,21 @@
-import { useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { ChevronDown, RefreshCw, X } from "lucide-react";
+import type { AgentToolInfo } from "../types";
+
+export interface ChatCategoryCreateConfig {
+  systemPrompt?: string;
+  allowedTools?: string[];
+}
 
 interface ChatNewCategoryDialogProps {
   open: boolean;
   initialName: string;
-  onSubmit: (name: string) => void;
+  onSubmit: (name: string, config?: ChatCategoryCreateConfig) => void;
   onClose: () => void;
   title: string;
   confirmLabel: string;
+  showAgentConfig?: boolean;
 }
 
 export function ChatNewCategoryDialog({
@@ -17,16 +25,51 @@ export function ChatNewCategoryDialog({
   onClose,
   title,
   confirmLabel,
+  showAgentConfig = false,
 }: ChatNewCategoryDialogProps) {
   const [name, setName] = useState(initialName);
+  const [systemPrompt, setSystemPrompt] = useState("");
+  const [customTools, setCustomTools] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [availableTools, setAvailableTools] = useState<AgentToolInfo[]>([]);
+  const [selectedTools, setSelectedTools] = useState<string[]>([]);
+  const [loadingTools, setLoadingTools] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
       setName(initialName);
+      setSystemPrompt("");
+      setCustomTools(false);
+      setShowAdvanced(false);
+      setSelectedTools([]);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [open, initialName]);
+
+  const loadTools = useCallback(async () => {
+    if (!showAgentConfig) return;
+    setLoadingTools(true);
+    setLoadError(null);
+    try {
+      const tools = await invoke<AgentToolInfo[]>("aha_list_agent_tools", {
+        context: "chat",
+        projectPath: null,
+      });
+      setAvailableTools(tools);
+    } catch (error) {
+      setLoadError(String(error));
+    } finally {
+      setLoadingTools(false);
+    }
+  }, [showAgentConfig]);
+
+  useEffect(() => {
+    if (open && showAgentConfig) {
+      loadTools();
+    }
+  }, [loadTools, open, showAgentConfig]);
 
   useEffect(() => {
     if (!open) return;
@@ -42,8 +85,19 @@ export function ChatNewCategoryDialog({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = name.trim();
-    if (trimmed) onSubmit(trimmed);
+    if (!trimmed) return;
+    const config: ChatCategoryCreateConfig = {};
+    const prompt = systemPrompt.trim();
+    if (prompt) config.systemPrompt = prompt;
+    if (customTools) config.allowedTools = selectedTools;
+    onSubmit(trimmed, Object.keys(config).length > 0 ? config : undefined);
   };
+
+  function toggleTool(name: string) {
+    setSelectedTools((prev) =>
+      prev.includes(name) ? prev.filter((tool) => tool !== name) : [...prev, name],
+    );
+  }
 
   return (
     <div
@@ -63,7 +117,9 @@ export function ChatNewCategoryDialog({
         onSubmit={handleSubmit}
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: 340,
+          width: showAgentConfig ? 560 : 340,
+          maxHeight: "86vh",
+          overflowY: "auto",
           padding: "20px 22px 18px",
           background: "var(--bg-card)",
           border: "1px solid var(--border-medium)",
@@ -109,6 +165,171 @@ export function ChatNewCategoryDialog({
             marginBottom: 16,
           }}
         />
+        {showAgentConfig && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((value) => !value)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+                width: "100%",
+                border: "1px solid var(--border-dim)",
+                background: "var(--bg-subtle)",
+                color: "var(--text-primary)",
+                borderRadius: 8,
+                padding: "8px 10px",
+                cursor: "pointer",
+                fontSize: 12.5,
+              }}
+            >
+              <span>提示词与工具集合</span>
+              <ChevronDown
+                size={14}
+                style={{
+                  transform: showAdvanced ? "rotate(180deg)" : "none",
+                  transition: "transform 0.15s",
+                }}
+              />
+            </button>
+            {showAdvanced && (
+              <>
+                <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                    系统提示词
+                  </span>
+                  <textarea
+                    value={systemPrompt}
+                    onChange={(event) => setSystemPrompt(event.target.value)}
+                    placeholder="留空时按分类场景自动初始化提示词"
+                    spellCheck={false}
+                    style={{
+                      width: "100%",
+                      minHeight: 150,
+                      resize: "vertical",
+                      padding: "9px 12px",
+                      border: "1px solid var(--border-medium)",
+                      borderRadius: 8,
+                      background: "var(--bg-input)",
+                      color: "var(--text-primary)",
+                      fontSize: 12.5,
+                      lineHeight: 1.5,
+                      outline: "none",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </label>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 12.5,
+                      color: "var(--text-primary)",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={customTools}
+                      onChange={(event) => setCustomTools(event.target.checked)}
+                    />
+                    自定义工具集合
+                  </label>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 8,
+                    }}
+                  >
+                    <span style={{ fontSize: 11.5, color: "var(--text-hint)" }}>
+                      {customTools
+                        ? `已选 ${selectedTools.length} / ${availableTools.length}`
+                        : "未启用自定义时，后端按分类场景初始化工具集合"}
+                      {loadError ? ` · ${loadError}` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={loadTools}
+                      disabled={loadingTools}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 5,
+                        padding: "5px 8px",
+                        border: "1px solid var(--border-dim)",
+                        borderRadius: 6,
+                        background: "var(--bg-subtle)",
+                        color: "var(--text-secondary)",
+                        cursor: loadingTools ? "not-allowed" : "pointer",
+                        fontSize: 11.5,
+                        opacity: loadingTools ? 0.65 : 1,
+                      }}
+                    >
+                      <RefreshCw size={12} className={loadingTools ? "spin" : undefined} />
+                      刷新工具
+                    </button>
+                  </div>
+                  {customTools && (
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 6,
+                        maxHeight: 220,
+                        overflowY: "auto",
+                        border: "1px solid var(--border-dim)",
+                        borderRadius: 8,
+                        padding: 8,
+                      }}
+                    >
+                      {availableTools.map((tool) => (
+                        <label
+                          key={tool.name}
+                          title={tool.description}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            minWidth: 0,
+                            padding: "5px 6px",
+                            borderRadius: 6,
+                            background: selectedTools.includes(tool.name)
+                              ? "var(--accent-subtle)"
+                              : "transparent",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedTools.includes(tool.name)}
+                            onChange={() => toggleTool(tool.name)}
+                          />
+                          <span
+                            style={{
+                              fontSize: 11.5,
+                              color: "var(--text-primary)",
+                              fontFamily: "var(--font-mono)",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {tool.name}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button
             type="button"

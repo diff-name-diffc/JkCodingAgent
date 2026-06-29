@@ -985,16 +985,14 @@ impl DispatcherDb {
             .collect()
     }
 
-    fn with_default_plain_chat_prompt(
-        configs: Vec<DispatcherModelConfig>,
+    fn without_model_system_prompts(
+        configs: &[DispatcherModelConfig],
     ) -> Vec<DispatcherModelConfig> {
         configs
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|mut config| {
-                if config.system_prompt.trim().is_empty() {
-                    config.system_prompt =
-                        crate::agent::config::DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT.to_string();
-                }
+                config.system_prompt.clear();
                 config
             })
             .collect()
@@ -1056,9 +1054,7 @@ impl DispatcherDb {
                     },
                 },
                 chat: AhaContextConfig {
-                    chat_model_configs: Self::with_default_plain_chat_prompt(
-                        Self::parse_model_configs_json(&row.get::<_, String>(9)?),
-                    ),
+                    chat_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(9)?),
                     summary_model_configs: Self::parse_model_configs_json(
                         &row.get::<_, String>(10)?,
                     ),
@@ -1111,7 +1107,9 @@ impl DispatcherDb {
         let project_tools =
             serde_json::to_string(&project.allowed_tools).unwrap_or_else(|_| "[]".to_string());
 
-        let chat_agent_chat = Self::serialize_json(&chat.chat_model_configs);
+        let chat_agent_chat = Self::serialize_json(&Self::without_model_system_prompts(
+            &chat.chat_model_configs,
+        ));
         let chat_agent_summary = Self::serialize_json(&chat.summary_model_configs);
         let chat_agent_tools =
             serde_json::to_string(&chat.allowed_tools).unwrap_or_else(|_| "[]".to_string());

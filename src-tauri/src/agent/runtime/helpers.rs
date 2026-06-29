@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use tauri::ipc::Channel;
 
-use super::super::common::UsageTracker;
+use super::super::common::{is_tool_error_message, UsageTracker};
 use super::super::db::{
     DispatcherDb, DispatcherSessionTokenUsageSource, TOOL_RETRY_CONTEXT_PREFIX,
 };
@@ -115,15 +115,7 @@ pub(crate) fn is_retryable_tool_error(tool_name: &str, result: &str) -> bool {
     if tool_name == "exec" {
         return false;
     }
-    if !trimmed.starts_with("错误：") {
-        return false;
-    }
-    trimmed.starts_with("错误：缺少必填参数")
-        || trimmed.starts_with("错误：参数")
-        || trimmed.contains("参数无效")
-        || trimmed.contains("invalid type")
-        || trimmed.contains("未找到工具")
-        || trimmed.contains("禁止")
+    is_tool_error_message(trimmed)
 }
 
 // ─── Text Formatting ──────────────────────────────────────────────────────────

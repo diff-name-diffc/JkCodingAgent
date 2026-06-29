@@ -194,6 +194,8 @@ pub fn run() {
             agent::commands::dispatcher_set_auto_approve_dispatch,
             agent::commands::aha_get_settings_v2,
             agent::commands::aha_save_settings_v2,
+            agent::commands::aha_get_chat_category_agent_configs,
+            agent::commands::aha_save_chat_category_agent_configs,
             agent::commands::aha_get_context_config,
             agent::commands::aha_get_shared_models,
             agent::commands::aha_list_agent_tools,

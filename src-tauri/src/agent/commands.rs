@@ -14,8 +14,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::config::DispatcherAgentConfig;
 use super::db::{
     AgentContext, AhaContextConfig, AhaSettingsV2, AhaSharedModels, ChatCategory,
-    ChatSessionRecord, DispatcherDb, DispatcherMessageRecord, DispatcherMode,
-    DispatcherModelConfig, DispatcherSessionKind, DispatcherSessionRecord,
+    ChatCategoryAgentConfig, ChatSessionRecord, DispatcherDb, DispatcherMessageRecord,
+    DispatcherMode, DispatcherModelConfig, DispatcherSessionKind, DispatcherSessionRecord,
     DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord,
     DispatcherSessionTokenUsageSource, DispatcherSettingsModelConfigs, DispatcherSettingsRecord,
     DispatcherToolArtifactRecord, KeywordAction, ProjectSessionRecord, SessionKeywordRecord,
@@ -176,7 +176,7 @@ impl DispatcherState {
         agent
     }
 
-    fn build_plain_chat_agent(&self) -> PlainChatAgent {
+    fn build_plain_chat_agent(&self, workspace_id: &str) -> Result<PlainChatAgent, String> {
         let agent = PlainChatAgent::new(
             self.config.clone(),
             self.project_mcp_registry.clone(),
@@ -190,7 +190,15 @@ impl DispatcherState {
             agent.apply_settings(&settings);
         }
 
-        agent
+        if let Some(category_config) = self
+            .db
+            .get_chat_session_category_agent_config(workspace_id)
+            .map_err(|error| error.to_string())?
+        {
+            agent.apply_category_config(&category_config);
+        }
+
+        Ok(agent)
     }
 
     async fn list_agent_tools(
@@ -1021,7 +1029,9 @@ pub async fn dispatcher_send_plain_chat_message(
     let title_generation = state.begin_title_generation(&workspace_id);
     let keywords_generation = state.begin_keywords_generation(&workspace_id);
     let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
-    let agent = state.build_plain_chat_agent().with_app_handle(app.clone());
+    let agent = state
+        .build_plain_chat_agent(&workspace_id)?
+        .with_app_handle(app.clone());
     let result = agent
         .run(
             &state.db,
@@ -1362,6 +1372,8 @@ pub async fn chat_create_category(
     name: String,
     icon: Option<String>,
     color: Option<String>,
+    allowed_tools: Option<Vec<String>>,
+    system_prompt: Option<String>,
 ) -> Result<ChatCategory, String> {
     let db = state.db.clone();
     run_dispatcher_db("chat_create_category", move || {
@@ -1369,6 +1381,8 @@ pub async fn chat_create_category(
             &name,
             icon.as_deref().unwrap_or(""),
             color.as_deref().unwrap_or(""),
+            allowed_tools,
+            system_prompt.as_deref(),
         )
     })
     .await
@@ -1427,6 +1441,29 @@ pub async fn chat_reorder_categories(
     let db = state.db.clone();
     run_dispatcher_db("chat_reorder_categories", move || {
         db.reorder_chat_categories(&ordered_ids)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn aha_get_chat_category_agent_configs(
+    state: tauri::State<'_, DispatcherState>,
+) -> Result<Vec<ChatCategoryAgentConfig>, String> {
+    let db = state.db.clone();
+    run_dispatcher_db("aha_get_chat_category_agent_configs", move || {
+        db.list_chat_category_agent_configs()
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn aha_save_chat_category_agent_configs(
+    state: tauri::State<'_, DispatcherState>,
+    configs: Vec<ChatCategoryAgentConfig>,
+) -> Result<Vec<ChatCategoryAgentConfig>, String> {
+    let db = state.db.clone();
+    run_dispatcher_db("aha_save_chat_category_agent_configs", move || {
+        db.save_chat_category_agent_configs(&configs)
     })
     .await
 }

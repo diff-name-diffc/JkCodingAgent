@@ -14,12 +14,12 @@ use super::config::SubAgentConfig;
 use crate::agent::common::{classify_tool_result, is_parallel_readonly_tool_call, ToolOutcome};
 use crate::agent::llm::{
     ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider, OutboundToolCall, RequestedToolCall,
+    ToolDefinition,
 };
 use crate::agent::tools::{ToolContext, ToolRegistry};
 
 const SUB_AGENT_RESULT_MAX_CHARS: usize = 32_000;
 const SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS: u64 = 120;
-const SUB_AGENT_DEFAULT_MAX_TOOL_RETRIES: u32 = 3;
 const NESTED_SUB_AGENT_TOOLS: &[&str] = &["call_sub_agent", "list_sub_agents"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,7 +220,9 @@ impl SubAgentRuntime {
         let overall_timeout = Duration::from_secs(self.config.timeout_secs);
         let llm_request_timeout = Duration::from_secs(SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS);
         let mut usage = SubAgentUsage::default();
-        let mut total_retries: u32 = 0;
+        let mut tool_error_seen = false;
+        let mut force_final_response = false;
+        let no_tools: Vec<ToolDefinition> = Vec::new();
         #[allow(unused_assignments)]
         let mut last_iteration: u32 = 0;
 
@@ -280,9 +282,15 @@ impl SubAgentRuntime {
                 }
             };
 
+            let active_tool_definitions = if force_final_response {
+                &no_tools
+            } else {
+                &self.tool_definitions
+            };
+
             let llm_future = self.provider.chat_stream_with_thinking(
                 &messages,
-                &self.tool_definitions,
+                active_tool_definitions,
                 false,
                 false,
                 on_delta,
@@ -377,6 +385,7 @@ impl SubAgentRuntime {
 
             let tool_calls = response.tool_calls;
             let mut tc_index = 0usize;
+            let mut should_retry_after_tool_error = false;
 
             while tc_index < tool_calls.len() {
                 let readonly_end = readonly_tool_run_end(&tool_calls, tc_index);
@@ -400,21 +409,17 @@ impl SubAgentRuntime {
                     let outcome = classify_tool_result(&result);
                     match outcome {
                         ToolOutcome::RecoverableError { message } => {
-                            total_retries += 1;
-                            if total_retries > SUB_AGENT_DEFAULT_MAX_TOOL_RETRIES {
-                                let err_msg = format!(
-                                    "子智能体 '{}' 工具 '{}' 连续参数错误已达上限（{}次），终止执行：{}",
-                                    self.config.agent_id,
-                                    tc.name,
-                                    SUB_AGENT_DEFAULT_MAX_TOOL_RETRIES,
-                                    message
-                                );
-                                self.emit_failed(&app_handle, session_id, &err_msg);
-                                anyhow::bail!("{}", err_msg);
-                            }
-                            let retry_hint = format!(
-                                "工具调用因参数错误失败，请检查参数后重新调用。\n错误信息：{message}"
-                            );
+                            let retry_hint = if tool_error_seen {
+                                force_final_response = true;
+                                format!(
+                                    "工具重试后仍然失败。\n错误信息：{message}\n\n要求：不要继续调用工具。请基于当前状态判断该错误是否无法修复；如果无法修复，请明确说明已尝试的动作、失败原因和退出结论。"
+                                )
+                            } else {
+                                tool_error_seen = true;
+                                format!(
+                                    "工具调用失败。\n错误信息：{message}\n\n要求：请根据工具 schema、上次参数和错误信息修正后重试；如果你判断无法修复，请不要猜测，直接说明无法修复并退出。"
+                                )
+                            };
                             messages.push(ChatMessage {
                                 role: "tool".to_string(),
                                 content: retry_hint,
@@ -423,6 +428,7 @@ impl SubAgentRuntime {
                                 tool_call_id: Some(tc.id.clone()),
                                 name: Some(tc.name.clone()),
                             });
+                            should_retry_after_tool_error = true;
                         }
                         ToolOutcome::FatalError { message } => {
                             let err_msg = format!(
@@ -444,6 +450,37 @@ impl SubAgentRuntime {
                             });
                         }
                     }
+                }
+
+                let next_index = if readonly_end.saturating_sub(tc_index) >= 2 {
+                    readonly_end
+                } else {
+                    tc_index + 1
+                };
+
+                if should_retry_after_tool_error {
+                    for skipped in &tool_calls[next_index..] {
+                        let content = if force_final_response {
+                            format!(
+                                "未执行：前一个工具调用重试后仍失败，本轮剩余工具已暂停，等待模型确认无法修复或给出最终结论。工具：{}",
+                                skipped.name
+                            )
+                        } else {
+                            format!(
+                                "未执行：前一个工具调用失败，已暂停本轮剩余工具调用。请先根据错误信息修正后重试。工具：{}",
+                                skipped.name
+                            )
+                        };
+                        messages.push(ChatMessage {
+                            role: "tool".to_string(),
+                            content,
+                            reasoning_content: None,
+                            tool_calls: None,
+                            tool_call_id: Some(skipped.id.clone()),
+                            name: Some(skipped.name.clone()),
+                        });
+                    }
+                    break;
                 }
 
                 if readonly_end.saturating_sub(tc_index) >= 2 {

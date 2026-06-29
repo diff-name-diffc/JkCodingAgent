@@ -21,7 +21,7 @@ use rusqlite::{params, Connection};
 
 // 对外引用的共享常量需显式重新导出（glob `pub use` 会丢弃 pub(crate) 项）。
 pub use artifacts::{DispatcherToolArtifactRecord, DispatcherToolArtifactRef, ToolArtifactDraft};
-pub use categories::ChatCategory;
+pub use categories::{ChatCategory, ChatCategoryAgentConfig};
 pub use keywords::{KeywordAction, SessionKeywordRecord, SessionSearchResult};
 pub use messages::{DispatcherMessageRecord, DispatcherMessageUsageStats};
 pub use python_runs::PythonCodeRunRecord;

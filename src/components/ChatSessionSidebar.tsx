@@ -11,7 +11,7 @@ import {
 } from "./dispatcherSessionStore";
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
 import { ChatCategorySection } from "./ChatCategorySection";
-import { ChatNewCategoryDialog } from "./ChatNewCategoryDialog";
+import { ChatNewCategoryDialog, type ChatCategoryCreateConfig } from "./ChatNewCategoryDialog";
 import { BrandButton } from "./ui/chatPrimitives";
 import s from "../styles";
 
@@ -528,9 +528,13 @@ export function ChatSessionSidebar({
     }
   };
 
-  const handleCreateCategory = async (name: string) => {
+  const handleCreateCategory = async (name: string, config?: ChatCategoryCreateConfig) => {
     try {
-      const cat = await invoke<ChatCategory>("chat_create_category", { name });
+      const cat = await invoke<ChatCategory>("chat_create_category", {
+        name,
+        systemPrompt: config?.systemPrompt ?? null,
+        allowedTools: config?.allowedTools ?? null,
+      });
       setCategories((prev) => [...prev, cat]);
       setShowNewCategoryDialog(false);
     } catch (err) {
@@ -799,6 +803,7 @@ export function ChatSessionSidebar({
         onClose={() => setShowNewCategoryDialog(false)}
         title="新建分类"
         confirmLabel="创建"
+        showAgentConfig
       />
 
       <ChatNewCategoryDialog

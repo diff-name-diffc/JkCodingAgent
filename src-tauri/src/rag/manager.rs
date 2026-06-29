@@ -26,7 +26,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{oneshot, watch, Mutex as AsyncMutex};
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 use super::config::RagConfigStore;
 use super::logs::{RagLogStore, RagLogStream};
@@ -40,7 +40,13 @@ pub const SIDECAR_NAME: &str = "rag-server";
 const HANDSHAKE_PREFIX: &str = "RAG_LISTENING";
 
 /// 等待握手的最长时间。
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
+///
+/// PyInstaller onefile + RAG 依赖冷启动可能明显超过 20s，过早 kill 会把“慢启动”
+/// 误判成“启动失败”。这里等待进程真正给出端口，再由健康检查确认 HTTP 可用。
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// 收到端口握手后，等待 HTTP 服务真正可用的最长时间。
+const HEALTH_READY_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// kill 子进程后等待其真正退出的最长时间。
 /// 超过则不再阻塞调用方——进程退出时 OS 仍会回收，但端口可能尚未释放。
@@ -171,10 +177,7 @@ impl RagManager {
 
     /// 当前是否在运行（句柄存在且子进程存活）。
     pub fn is_running(&self) -> bool {
-        self.handle
-            .lock()
-            .as_ref()
-            .is_some_and(|h| h.is_alive())
+        self.handle.lock().as_ref().is_some_and(|h| h.is_alive())
     }
 
     /// 取当前存活句柄（若已启动且未崩溃）。死句柄返回 None，促使调用方重启。
@@ -301,6 +304,13 @@ async fn spawn_and_handshake(
         })?;
 
     let transport = RagTransport::new(port).context("构造 sidecar HTTP client")?;
+    if let Err(error) = wait_for_health(app, &transport).await {
+        if let Some(child) = child_slot.lock().take() {
+            let _ = child.kill();
+        }
+        mark_dead(&alive_for_timeout, &exited_tx_for_timeout);
+        return Err(error);
+    }
 
     // 握手成功，从共享槽位取出子进程句柄转入 RagHandle
     let child = child_slot
@@ -315,6 +325,32 @@ async fn spawn_and_handshake(
         alive,
         exited: exited_rx,
     }))
+}
+
+async fn wait_for_health(app: &AppHandle, transport: &RagTransport) -> Result<()> {
+    let start = std::time::Instant::now();
+    let mut last_error: Option<anyhow::Error> = None;
+
+    while start.elapsed() < HEALTH_READY_TIMEOUT {
+        match transport.health().await {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+
+    app.state::<RagLogStore>().append_system(
+        app,
+        format!("RAG sidecar 端口已握手，但健康检查超时（{HEALTH_READY_TIMEOUT:?}）"),
+    );
+    Err(anyhow!(
+        "rag-server 端口已握手但 HTTP 服务未就绪（{HEALTH_READY_TIMEOUT:?}）：{}",
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "未收到健康检查响应".to_string())
+    ))
 }
 
 /// 标记句柄死亡：翻转 alive 并通知所有 wait_exit 等待者。

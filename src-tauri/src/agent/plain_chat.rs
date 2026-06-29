@@ -15,7 +15,7 @@ use super::common::{
 };
 use super::config::DispatcherAgentConfig;
 use super::db::{
-    AgentContext, AhaSettingsV2, DispatcherDb, DispatcherMessageRecord,
+    AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb, DispatcherMessageRecord,
     DispatcherSessionTokenUsageSource, DispatcherSettingsRecord,
 };
 use super::llm::{
@@ -39,6 +39,7 @@ pub struct PlainChatAgent {
     app_handle: Option<AppHandle>,
     tools: Arc<ToolRegistry>,
     allowed_tools: Mutex<Vec<String>>,
+    category_context: Mutex<Option<(String, String)>>,
     project_mcp_registry: ProjectMcpRegistry,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
 }
@@ -80,6 +81,7 @@ impl PlainChatAgent {
             app_handle: None,
             tools: Arc::new(registry),
             allowed_tools: Mutex::new(Vec::new()),
+            category_context: Mutex::new(None),
             project_mcp_registry,
             sub_agent_manager,
         }
@@ -196,6 +198,13 @@ impl PlainChatAgent {
             }
         }
         *self.allowed_tools.lock() = ctx_config.allowed_tools.clone();
+    }
+
+    pub fn apply_category_config(&self, config: &ChatCategoryAgentConfig) {
+        *self.allowed_tools.lock() = config.allowed_tools.clone();
+        *self.system_prompt.lock() = config.system_prompt.clone();
+        *self.category_context.lock() =
+            Some((config.category_id.clone(), config.category_name.clone()));
     }
 
     fn summary_model(&self) -> String {
@@ -677,6 +686,12 @@ impl PlainChatAgent {
                 configured
             }
         };
+        if let Some((category_id, category_name)) = self.category_context.lock().clone() {
+            prompt.push_str(&format!(
+                "\n\n## 当前会话分类\n\n- 分类：{}\n- 分类 ID：{}",
+                category_name, category_id
+            ));
+        }
         prompt.push_str(&format!(
             "\n\n## 系统时间\n\n当前本地时间：{}",
             super::prompt::current_local_time()

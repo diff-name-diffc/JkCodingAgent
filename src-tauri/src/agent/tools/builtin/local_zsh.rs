@@ -159,7 +159,9 @@ impl AgentTool for LocalZshTool {
             .await
             .map_err(|error| format!("写入 local_zsh 审计历史失败：{error}"));
             return match audit_result {
-                Ok(Ok((entry, history))) => render_local_audit_entry(&run_dir, &entry, true, &history),
+                Ok(Ok((entry, history))) => {
+                    render_local_audit_entry(&run_dir, &entry, true, &history)
+                }
                 Ok(Err(error)) | Err(error) => {
                     format!("错误：命令已被安全审查拦截，但审计历史写入失败：{error}")
                 }
@@ -569,10 +571,7 @@ fn render_local_audit_entry(
     )
 }
 
-fn push_review_summary(
-    result: &mut String,
-    review: Option<&crate::ssh_tool::SshAuditReview>,
-) {
+fn push_review_summary(result: &mut String, review: Option<&crate::ssh_tool::SshAuditReview>) {
     let Some(review) = review else {
         return;
     };
@@ -602,11 +601,7 @@ fn exit_code_label(exit_code: Option<i32>, timed_out: bool) -> String {
 }
 
 fn history_status_label(item: &LocalZshAuditEntry) -> String {
-    if item
-        .review
-        .as_ref()
-        .is_some_and(|review| !review.allowed)
-    {
+    if item.review.as_ref().is_some_and(|review| !review.allowed) {
         return "review-blocked".to_string();
     }
     if item.error.is_some() {

@@ -417,6 +417,15 @@ export interface AhaContextConfig {
   allowedTools: string[];
 }
 
+export interface ChatCategoryAgentConfig {
+  categoryId: string;
+  categoryName: string;
+  allowedTools: string[];
+  systemPrompt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AhaSharedModels {
   visionModelConfigs: DispatcherModelConfig[];
   imageModelConfigs: DispatcherModelConfig[];

@@ -698,27 +698,40 @@ pub fn classify_tool_result(result: &str) -> ToolOutcome {
             message: msg.to_string(),
         };
     }
-    if !trimmed.starts_with("错误：") {
-        return ToolOutcome::Ok;
-    }
-    if is_recoverable_error(trimmed) {
-        ToolOutcome::RecoverableError {
+    if is_tool_error_message(trimmed) {
+        return ToolOutcome::RecoverableError {
             message: trimmed.to_string(),
-        }
-    } else {
-        ToolOutcome::FatalError {
-            message: trimmed.to_string(),
-        }
+        };
     }
+    ToolOutcome::Ok
 }
 
-fn is_recoverable_error(message: &str) -> bool {
-    message.starts_with("错误：缺少必填参数")
-        || message.starts_with("错误：参数")
-        || message.contains("参数无效")
-        || message.contains("invalid type")
-        || message.contains("未找到工具")
-        || message.contains("不支持子智能体调用")
-        || message.contains("已被禁用")
-        || message.contains("禁止访问")
+pub(crate) fn is_tool_error_message(message: &str) -> bool {
+    let message = message.trim();
+    message.starts_with("错误：")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_tool_result, ToolOutcome};
+
+    #[test]
+    fn classifies_tool_error_as_recoverable_without_matching_specific_text() {
+        assert_eq!(
+            classify_tool_result("错误：任意工具错误都应先交回模型修正"),
+            ToolOutcome::RecoverableError {
+                message: "错误：任意工具错误都应先交回模型修正".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn keeps_sub_agent_failure_fatal() {
+        assert_eq!(
+            classify_tool_result("__SUB_AGENT_FAILURE__:子智能体初始化失败"),
+            ToolOutcome::FatalError {
+                message: "子智能体初始化失败".to_string()
+            }
+        );
+    }
 }

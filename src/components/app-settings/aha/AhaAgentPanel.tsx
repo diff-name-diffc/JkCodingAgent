@@ -25,6 +25,7 @@ import type {
   AhaSharedModels,
   AgentContext,
   AgentToolInfo,
+  ChatCategoryAgentConfig,
   DispatcherModelConfig,
   SshReviewConfig,
 } from "../../../types";
@@ -91,6 +92,17 @@ function activeProvider(providers: DispatcherModelConfig[]): DispatcherModelConf
   return providers.find((p) => p.active) ?? emptyProvider();
 }
 
+function withoutModelSystemPrompts(providers: DispatcherModelConfig[]): DispatcherModelConfig[] {
+  return providers.map((provider) => ({ ...provider, systemPrompt: "" }));
+}
+
+function withoutChatModelSystemPrompts(config: AhaContextConfig): AhaContextConfig {
+  return {
+    ...config,
+    chatModelConfigs: withoutModelSystemPrompts(config.chatModelConfigs),
+  };
+}
+
 export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
   const [activeTopTab, setActiveTopTab] = useState<TopTab>("shared");
   const [activeSubTab, setActiveSubTab] = useState<AgentSubTab>("models");
@@ -113,6 +125,8 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
     summaryModelConfigs: [],
     allowedTools: [],
   });
+  const [chatCategoryConfigs, setChatCategoryConfigs] = useState<ChatCategoryAgentConfig[]>([]);
+  const [activeChatCategoryId, setActiveChatCategoryId] = useState<string | null>(null);
   const [autoApprove, setAutoApprove] = useState(false);
   const [contextDebug, setContextDebug] = useState(false);
   // SSH 命令审查 AI 配置（编辑入口在 SshToolPanel；此处仅保留以便保存时不覆盖）。
@@ -139,11 +153,16 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
   );
 
   useEffect(() => {
-    invoke<AhaSettingsV2>("aha_get_settings_v2")
-      .then((settings) => {
+    Promise.all([
+      invoke<AhaSettingsV2>("aha_get_settings_v2"),
+      invoke<ChatCategoryAgentConfig[]>("aha_get_chat_category_agent_configs"),
+    ])
+      .then(([settings, categoryConfigs]) => {
         setShared(settings.shared);
         setProject(settings.project);
-        setChat(settings.chat);
+        setChat(withoutChatModelSystemPrompts(settings.chat));
+        setChatCategoryConfigs(categoryConfigs);
+        setActiveChatCategoryId((current) => current ?? categoryConfigs[0]?.categoryId ?? null);
         setAutoApprove(settings.autoApproveDispatch);
         setContextDebug(settings.contextDebug);
         if (settings.review) setReview(settings.review);
@@ -160,15 +179,26 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
       const payload: AhaSettingsV2 = {
         shared,
         project,
-        chat,
+        chat: withoutChatModelSystemPrompts(chat),
         autoApproveDispatch: autoApprove,
         contextDebug,
         review,
       };
       const result = await invoke<AhaSettingsV2>("aha_save_settings_v2", { settings: payload });
+      const savedCategoryConfigs = await invoke<ChatCategoryAgentConfig[]>(
+        "aha_save_chat_category_agent_configs",
+        { configs: chatCategoryConfigs },
+      );
       setShared(result.shared);
       setProject(result.project);
-      setChat(result.chat);
+      setChat(withoutChatModelSystemPrompts(result.chat));
+      setChatCategoryConfigs(savedCategoryConfigs);
+      setActiveChatCategoryId((current) => {
+        if (current && savedCategoryConfigs.some((config) => config.categoryId === current)) {
+          return current;
+        }
+        return savedCategoryConfigs[0]?.categoryId ?? null;
+      });
       setAutoApprove(result.autoApproveDispatch);
       setContextDebug(result.contextDebug);
       if (result.review) setReview(result.review);
@@ -179,6 +209,15 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function reloadChatCategoryConfigs() {
+    const configs = await invoke<ChatCategoryAgentConfig[]>("aha_get_chat_category_agent_configs");
+    setChatCategoryConfigs(configs);
+    setActiveChatCategoryId((current) => {
+      if (current && configs.some((config) => config.categoryId === current)) return current;
+      return configs[0]?.categoryId ?? null;
+    });
   }
 
   function updateSharedProviders(
@@ -407,9 +446,7 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
     const label = context === "project" ? "项目" : "聊天";
     return (
       <>
-        {contextSection(context, "chat", `${label}主模型`, `${label}对话和工具调用的主模型。`, {
-          showSystemPrompt: context === "chat",
-        })}
+        {contextSection(context, "chat", `${label}主模型`, `${label}对话和工具调用的主模型。`)}
         {contextSection(
           context,
           "summary",
@@ -424,6 +461,25 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
   function renderToolsTab(context: AgentContext) {
     const state = context === "project" ? project : chat;
     const setContext = context === "project" ? setProject : setChat;
+    if (context === "chat") {
+      return (
+        <ChatCategoryToolsTab
+          configs={chatCategoryConfigs}
+          activeCategoryId={activeChatCategoryId}
+          onActiveCategoryChange={setActiveChatCategoryId}
+          onReload={() => {
+            reloadChatCategoryConfigs().catch((error) => setSaveError(String(error)));
+          }}
+          onChange={(categoryId, patch) =>
+            setChatCategoryConfigs((prev) =>
+              prev.map((config) =>
+                config.categoryId === categoryId ? { ...config, ...patch } : config,
+              ),
+            )
+          }
+        />
+      );
+    }
     return (
       <ToolsTab
         context={context}
@@ -683,30 +739,17 @@ function ToolsTab({
           </span>
         </button>
         {showSelected && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <div style={s.ahaToolList}>
             {selectedList.length === 0 && (
               <span style={s.ahaHint}>未做任何选择，使用全部默认工具</span>
             )}
             {selectedList.map((tool) => (
-              <label
+              <ToolOptionRow
                 key={tool.name}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "6px 8px",
-                  borderRadius: 6,
-                  background: "var(--bg-subtle)",
-                  cursor: "pointer",
-                }}
-              >
-                <input type="checkbox" checked onChange={() => toggleTool(tool.name)} />
-                <span style={{ fontSize: 12, fontFamily: "var(--font-mono)" }}>{tool.name}</span>
-                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  {tool.description.slice(0, 50)}
-                  {tool.description.length > 50 ? "..." : ""}
-                </span>
-              </label>
+                tool={tool}
+                checked
+                onToggle={() => toggleTool(tool.name)}
+              />
             ))}
           </div>
         )}
@@ -735,31 +778,44 @@ function ToolsTab({
           </span>
         </button>
         {showAvailable && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <div style={s.ahaToolList}>
             {unselectedList.map((tool) => (
-              <label
+              <ToolOptionRow
                 key={tool.name}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "6px 8px",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                }}
-              >
-                <input type="checkbox" checked={false} onChange={() => toggleTool(tool.name)} />
-                <span style={{ fontSize: 12, fontFamily: "var(--font-mono)" }}>{tool.name}</span>
-                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  {tool.description.slice(0, 50)}
-                  {tool.description.length > 50 ? "..." : ""}
-                </span>
-              </label>
+                tool={tool}
+                checked={false}
+                onToggle={() => toggleTool(tool.name)}
+              />
             ))}
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+function ToolOptionRow({
+  tool,
+  checked,
+  onToggle,
+}: {
+  tool: AgentToolInfo;
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <label style={{ ...s.ahaToolOption, ...(checked ? s.ahaToolOptionSelected : {}) }}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onToggle}
+        style={s.ahaToolCheckbox}
+      />
+      <span style={s.ahaToolText}>
+        <span style={s.ahaToolName}>{tool.name}</span>
+        <span style={s.ahaToolDescription}>{tool.description || "暂无描述"}</span>
+      </span>
+    </label>
   );
 }
 
@@ -810,11 +866,113 @@ function BehaviorSection({
   );
 }
 
+function ChatCategoryToolsTab({
+  configs,
+  activeCategoryId,
+  onActiveCategoryChange,
+  onReload,
+  onChange,
+}: {
+  configs: ChatCategoryAgentConfig[];
+  activeCategoryId: string | null;
+  onActiveCategoryChange: (categoryId: string) => void;
+  onReload: () => void;
+  onChange: (categoryId: string, patch: Partial<ChatCategoryAgentConfig>) => void;
+}) {
+  const activeConfig =
+    configs.find((config) => config.categoryId === activeCategoryId) ?? configs[0] ?? null;
+
+  if (!activeConfig) {
+    return (
+      <section style={s.ahaSection}>
+        <div style={s.ahaSectionHeader}>
+          <div>
+            <div style={s.ahaSectionTitle}>分类工具配置</div>
+            <div style={s.ahaSectionDescription}>暂无聊天分类。创建分类后会自动生成配置。</div>
+          </div>
+          <button type="button" style={s.ahaGhostButton} onClick={onReload}>
+            <RefreshCw size={13} />
+            刷新分类
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <>
+      <section style={s.ahaSection}>
+        <div style={s.ahaSectionHeader}>
+          <div>
+            <div style={s.ahaSectionTitle}>分类</div>
+            <div style={s.ahaSectionDescription}>
+              每个聊天分类都有独立的工具集和系统提示词；新分类默认复制聊天智能体默认配置。
+            </div>
+          </div>
+          <button type="button" style={s.ahaGhostButton} onClick={onReload}>
+            <RefreshCw size={13} />
+            刷新分类
+          </button>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {configs.map((config) => {
+            const selected = config.categoryId === activeConfig.categoryId;
+            return (
+              <button
+                key={config.categoryId}
+                type="button"
+                style={{
+                  ...s.ahaGhostButton,
+                  background: selected ? "var(--accent-subtle)" : "var(--bg-subtle)",
+                  borderColor: selected ? "var(--accent)" : "var(--border-dim)",
+                  color: selected ? "var(--accent)" : "var(--text-primary)",
+                }}
+                onClick={() => onActiveCategoryChange(config.categoryId)}
+              >
+                {config.categoryName}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+      <section style={s.ahaSection}>
+        <div>
+          <div style={s.ahaSectionTitle}>{activeConfig.categoryName} · 系统提示词</div>
+          <div style={s.ahaSectionDescription}>
+            该提示词只影响当前分类下的普通聊天会话；运行时会追加分类名称、分类 ID 和系统时间。
+          </div>
+        </div>
+        <label style={s.ahaField}>
+          <span style={s.ahaLabel}>系统提示词</span>
+          <textarea
+            style={{
+              ...s.ahaInput,
+              height: 260,
+              padding: "10px 12px",
+              lineHeight: 1.55,
+              resize: "vertical",
+            }}
+            value={activeConfig.systemPrompt}
+            onChange={(event) =>
+              onChange(activeConfig.categoryId, { systemPrompt: event.target.value })
+            }
+            spellCheck={false}
+          />
+        </label>
+      </section>
+      <ToolsTab
+        context="chat"
+        allowedTools={activeConfig.allowedTools}
+        onChange={(next) => onChange(activeConfig.categoryId, { allowedTools: next })}
+      />
+    </>
+  );
+}
+
 type SectionOptions = {
   urlPlaceholder?: string;
   modelPlaceholder?: string;
   hideModelFetch?: boolean;
-  showSystemPrompt?: boolean;
 };
 
 function ModelProviderSection({
@@ -838,7 +996,6 @@ function ModelProviderSection({
   urlPlaceholder = "https://api.example.com/v1",
   modelPlaceholder = "model-name",
   hideModelFetch = false,
-  showSystemPrompt = false,
 }: {
   title: string;
   description: string;
@@ -896,7 +1053,6 @@ function ModelProviderSection({
             urlPlaceholder={urlPlaceholder}
             modelPlaceholder={modelPlaceholder}
             hideModelFetch={hideModelFetch}
-            showSystemPrompt={showSystemPrompt}
           />
         ))
       )}
@@ -923,7 +1079,6 @@ function ProviderEditor({
   urlPlaceholder,
   modelPlaceholder,
   hideModelFetch,
-  showSystemPrompt,
 }: {
   index: number;
   provider: DispatcherModelConfig;
@@ -943,7 +1098,6 @@ function ProviderEditor({
   urlPlaceholder: string;
   modelPlaceholder: string;
   hideModelFetch: boolean;
-  showSystemPrompt: boolean;
 }) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -1119,27 +1273,6 @@ function ProviderEditor({
               )}
             </div>
           </div>
-          {showSystemPrompt && (
-            <label style={s.ahaField}>
-              <span style={s.ahaLabel}>系统提示词</span>
-              <textarea
-                style={{
-                  ...s.ahaInput,
-                  height: 260,
-                  padding: "10px 12px",
-                  lineHeight: 1.55,
-                  resize: "vertical",
-                }}
-                value={provider.systemPrompt ?? ""}
-                onChange={(e) => onChange({ systemPrompt: e.target.value })}
-                placeholder="配置聊天智能体的系统提示词"
-                spellCheck={false}
-              />
-              <span style={s.ahaHint}>
-                留空时使用内置默认提示词；运行时会自动追加当前时间和已启用子智能体列表。
-              </span>
-            </label>
-          )}
           <div style={s.ahaActionRow}>
             <button type="button" style={s.ahaGhostButton} onClick={onTest} disabled={testing}>
               <Zap size={14} />

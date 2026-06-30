@@ -40,23 +40,8 @@ pub fn ensure_sub_agent_tables_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> 
             updated_at  INTEGER NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS session_sub_agents (
-            session_id   TEXT NOT NULL,
-            sub_agent_id TEXT NOT NULL,
-            PRIMARY KEY (session_id, sub_agent_id),
-            FOREIGN KEY (session_id) REFERENCES dispatcher_sessions(id) ON DELETE CASCADE,
-            FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
-        );
-
         CREATE TABLE IF NOT EXISTS global_sub_agents (
             sub_agent_id TEXT PRIMARY KEY,
-            FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS context_sub_agents (
-            context      TEXT NOT NULL,
-            sub_agent_id TEXT NOT NULL,
-            PRIMARY KEY (context, sub_agent_id),
             FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
         );
         ",
@@ -245,16 +230,6 @@ impl SubAgentDb {
             params![id],
         )
         .context("delete global_sub_agents")?;
-        tx.execute(
-            "DELETE FROM session_sub_agents WHERE sub_agent_id = ?1",
-            params![id],
-        )
-        .context("delete session_sub_agents")?;
-        tx.execute(
-            "DELETE FROM context_sub_agents WHERE sub_agent_id = ?1",
-            params![id],
-        )
-        .context("delete context_sub_agents")?;
         tx.execute("DELETE FROM sub_agents WHERE id = ?1", params![id])
             .context("delete sub_agent")?;
         tx.commit().context("commit delete tx")?;
@@ -267,90 +242,6 @@ impl SubAgentDb {
         seed_browser_agent_force_tx(&tx)?;
         tx.commit().context("commit seed tx")?;
         Ok(())
-    }
-
-    pub fn set_context_enabled(&self, context: &str, sub_agent_ids: &[String]) -> Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction().context("begin set_context_enabled tx")?;
-        tx.execute(
-            "DELETE FROM context_sub_agents WHERE context = ?1",
-            params![context],
-        )
-        .context("clear context_sub_agents")?;
-        for agent_id in sub_agent_ids {
-            tx.execute(
-                "INSERT OR IGNORE INTO context_sub_agents (context, sub_agent_id) VALUES (?1, ?2)",
-                params![context, agent_id],
-            )
-            .context("insert context_sub_agents")?;
-        }
-        tx.commit().context("commit set_context_enabled tx")?;
-        Ok(())
-    }
-
-    pub fn get_context_enabled(&self, context: &str) -> Result<Vec<SubAgentRecord>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT sa.id, sa.name, sa.description, sa.config_json, sa.enabled, sa.created_at, sa.updated_at
-                 FROM sub_agents sa
-                 INNER JOIN context_sub_agents csa ON sa.id = csa.sub_agent_id
-                 WHERE csa.context = ?1
-                 ORDER BY sa.created_at",
-            )
-            .context("prepare get context sub_agents")?;
-
-        let rows = stmt
-            .query_map(params![context], row_to_record)
-            .context("query context sub_agents")?;
-
-        let mut records = Vec::new();
-        for row in rows {
-            records.push(row?);
-        }
-        Ok(records)
-    }
-
-    pub fn set_session_enabled(&self, session_id: &str, sub_agent_ids: &[String]) -> Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction().context("begin set_session_enabled tx")?;
-        tx.execute(
-            "DELETE FROM session_sub_agents WHERE session_id = ?1",
-            params![session_id],
-        )
-        .context("clear session_sub_agents")?;
-        for agent_id in sub_agent_ids {
-            tx.execute(
-                "INSERT OR IGNORE INTO session_sub_agents (session_id, sub_agent_id) VALUES (?1, ?2)",
-                params![session_id, agent_id],
-            )
-            .context("insert session_sub_agents")?;
-        }
-        tx.commit().context("commit set_session_enabled tx")?;
-        Ok(())
-    }
-
-    pub fn get_session_enabled(&self, session_id: &str) -> Result<Vec<SubAgentRecord>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT sa.id, sa.name, sa.description, sa.config_json, sa.enabled, sa.created_at, sa.updated_at
-                 FROM sub_agents sa
-                 INNER JOIN session_sub_agents ssa ON sa.id = ssa.sub_agent_id
-                 WHERE ssa.session_id = ?1 AND sa.enabled = 1
-                 ORDER BY sa.created_at",
-            )
-            .context("prepare get session sub_agents")?;
-
-        let rows = stmt
-            .query_map(params![session_id], row_to_record)
-            .context("query session sub_agents")?;
-
-        let mut records = Vec::new();
-        for row in rows {
-            records.push(row?);
-        }
-        Ok(records)
     }
 
     pub fn set_global_enabled(&self, sub_agent_ids: &[String]) -> Result<()> {
@@ -394,16 +285,23 @@ impl SubAgentDb {
 
     pub fn get_enabled_agent_ids(&self, session_id: &str) -> Result<Vec<String>> {
         let conn = self.conn()?;
+        // 启用来源（并集）：
+        //   1. global_sub_agents —— 全局级，对所有会话（项目 + 聊天）生效
+        //   2. chat 分类级 —— 通过 chat_sessions.category → chat_category_agent_configs
+        //                      .sub_agent_ids_json 解析，让不同聊天分类加载不同子智能体。
         let mut stmt = conn
             .prepare(
                 "SELECT DISTINCT sa.id FROM sub_agents sa
                  WHERE sa.enabled = 1
                  AND (
-                     sa.id IN (SELECT sub_agent_id FROM session_sub_agents WHERE session_id = ?1)
-                     OR sa.id IN (SELECT sub_agent_id FROM global_sub_agents)
-                     OR sa.id IN (SELECT sub_agent_id FROM context_sub_agents csa
-                                  INNER JOIN dispatcher_sessions ds ON ds.kind = csa.context
-                                  WHERE ds.id = ?1)
+                     sa.id IN (SELECT sub_agent_id FROM global_sub_agents)
+                     OR EXISTS (
+                         SELECT 1
+                         FROM chat_sessions s
+                         INNER JOIN chat_category_agent_configs cfg ON cfg.category_id = s.category
+                         CROSS JOIN json_each(cfg.sub_agent_ids_json) AS je
+                         WHERE s.id = ?1 AND je.value = sa.id
+                     )
                  )
                  ORDER BY sa.created_at",
             )
@@ -418,5 +316,120 @@ impl SubAgentDb {
             ids.push(row?);
         }
         Ok(ids)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::db::DispatcherDb;
+    use crate::agent::sub_agent::config::SubAgentModelConfig;
+
+    fn setup() -> (DispatcherDb, SubAgentDb) {
+        let path = std::env::temp_dir().join(format!(
+            "jkcodingagent-subagent-category-{}.sqlite3",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        let dispatcher = DispatcherDb::new(path).expect("create dispatcher db");
+        let sub_agent = SubAgentDb::new(dispatcher.pool());
+        (dispatcher, sub_agent)
+    }
+
+    fn seed_sub_agent(sub_agent: &SubAgentDb, id: &str) {
+        let config = SubAgentConfig {
+            agent_id: id.to_string(),
+            agent_name: id.to_string(),
+            description: "test".to_string(),
+            system_prompt: "test".to_string(),
+            user_prompt_template: "{{task}}".to_string(),
+            allowed_tools: vec!["notify_user_progress".to_string()],
+            model_config: SubAgentModelConfig::default(),
+            max_iterations: 1,
+            max_output_tokens: 256,
+            temperature: 0.7,
+            timeout_secs: 10,
+            enabled: true,
+            created_at: 0,
+            updated_at: 0,
+        };
+        sub_agent.create(&config).expect("seed sub_agent");
+    }
+
+    fn set_category_sub_agents(dispatcher: &DispatcherDb, category: &str, ids: &[&str]) {
+        let conn = dispatcher.conn().expect("dispatcher conn");
+        let json = serde_json::to_string(ids).unwrap();
+        conn.execute(
+            "UPDATE chat_category_agent_configs SET sub_agent_ids_json = ?1 WHERE category_id = ?2",
+            params![json, category],
+        )
+        .expect("update category sub_agent_ids");
+    }
+
+    #[test]
+    fn loads_sub_agents_per_chat_category() {
+        let (dispatcher, sub_agent) = setup();
+        // schema 初始化会自动 seed browser-agent 到 global，这里清空 global 以隔离分类级配置。
+        sub_agent.set_global_enabled(&[]).expect("clear global");
+        seed_sub_agent(&sub_agent, "tech-agent");
+        seed_sub_agent(&sub_agent, "life-agent");
+
+        set_category_sub_agents(&dispatcher, "tech", &["tech-agent"]);
+        set_category_sub_agents(&dispatcher, "life", &["life-agent"]);
+
+        let tech_session = dispatcher
+            .create_chat_session("技术", Some("tech"))
+            .expect("create tech session");
+        let life_session = dispatcher
+            .create_chat_session("生活", Some("life"))
+            .expect("create life session");
+
+        let tech_ids = sub_agent
+            .get_enabled_agent_ids(&tech_session.id)
+            .expect("enabled for tech");
+        assert_eq!(tech_ids, vec!["tech-agent".to_string()]);
+
+        let life_ids = sub_agent
+            .get_enabled_agent_ids(&life_session.id)
+            .expect("enabled for life");
+        assert_eq!(life_ids, vec!["life-agent".to_string()]);
+    }
+
+    #[test]
+    fn empty_category_sub_agents_yields_only_global() {
+        let (dispatcher, sub_agent) = setup();
+        sub_agent.set_global_enabled(&[]).expect("clear global");
+        seed_sub_agent(&sub_agent, "tech-agent");
+
+        set_category_sub_agents(&dispatcher, "tech", &[]);
+
+        let session = dispatcher
+            .create_chat_session("技术", Some("tech"))
+            .expect("create session");
+
+        let ids = sub_agent
+            .get_enabled_agent_ids(&session.id)
+            .expect("enabled ids");
+        assert!(ids.is_empty(), "no sub-agents for empty category config");
+    }
+
+    #[test]
+    fn global_sub_agents_apply_to_all_sessions() {
+        let (dispatcher, sub_agent) = setup();
+        seed_sub_agent(&sub_agent, "global-agent");
+        // 显式设置 global（覆盖 schema 自动 seed 的 browser-agent），以隔离断言。
+        sub_agent
+            .set_global_enabled(&["global-agent".to_string()])
+            .expect("set global");
+
+        set_category_sub_agents(&dispatcher, "tech", &[]);
+
+        let session = dispatcher
+            .create_chat_session("技术", Some("tech"))
+            .expect("create session");
+
+        let ids = sub_agent
+            .get_enabled_agent_ids(&session.id)
+            .expect("enabled ids");
+        assert_eq!(ids, vec!["global-agent".to_string()]);
     }
 }

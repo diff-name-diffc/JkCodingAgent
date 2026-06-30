@@ -639,21 +639,26 @@ fn build_tool_artifact(tool_name: &str, raw_output: &str) -> ToolArtifactDraft {
     }
 }
 
-pub fn is_parallel_readonly_tool_call(tool_call: &RequestedToolCall) -> bool {
-    // browser_read_text 也是只读操作，子Agent中可并行
-    matches!(
-        tool_call.name.as_str(),
-        "read_file" | "list_dir" | "glob" | "grep" | "browser_read_text" | "browser_visual_analyze"
-    )
+pub fn is_parallel_readonly_tool_call(
+    registry: &ToolRegistry,
+    workspace: &std::path::Path,
+    tool_call: &RequestedToolCall,
+) -> bool {
+    registry.is_parallel_readonly(workspace, &tool_call.name, true)
 }
 
-pub fn readonly_tool_run_end(tool_calls: &[RequestedToolCall], start: usize) -> usize {
+pub fn readonly_tool_run_end(
+    registry: &ToolRegistry,
+    workspace: &std::path::Path,
+    tool_calls: &[RequestedToolCall],
+    start: usize,
+) -> usize {
     tool_calls
         .iter()
         .enumerate()
         .skip(start)
         .find_map(|(index, tool_call)| {
-            (!is_parallel_readonly_tool_call(tool_call)).then_some(index)
+            (!is_parallel_readonly_tool_call(registry, workspace, tool_call)).then_some(index)
         })
         .unwrap_or(tool_calls.len())
 }
@@ -661,32 +666,14 @@ pub fn readonly_tool_run_end(tool_calls: &[RequestedToolCall], start: usize) -> 
 // ─── Tool Outcome Classification ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub enum ToolOutcome {
     Ok,
     RecoverableError { message: String },
     FatalError { message: String },
 }
 
-impl ToolOutcome {
-    #[allow(dead_code)]
-    pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::RecoverableError { .. })
-    }
-
-    #[allow(dead_code)]
-    pub fn is_fatal(&self) -> bool {
-        matches!(self, Self::FatalError { .. })
-    }
-
-    #[allow(dead_code)]
-    pub fn error_message(&self) -> Option<&str> {
-        match self {
-            Self::RecoverableError { message } | Self::FatalError { message } => Some(message),
-            _ => None,
-        }
-    }
-}
-
+#[cfg(test)]
 pub fn classify_tool_result(result: &str) -> ToolOutcome {
     let trimmed = result.trim();
     if trimmed.is_empty() {

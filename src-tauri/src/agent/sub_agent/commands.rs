@@ -76,52 +76,6 @@ pub async fn sub_agent_list_tools(
 }
 
 #[tauri::command]
-pub async fn sub_agent_set_context_enabled(
-    state: State<'_, DispatcherState>,
-    context: String,
-    sub_agent_ids: Vec<String>,
-) -> Result<(), String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    manager
-        .set_context_enabled(&context, &sub_agent_ids)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sub_agent_get_context_enabled(
-    state: State<'_, DispatcherState>,
-    context: String,
-) -> Result<Vec<SubAgentRecord>, String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    manager
-        .get_context_enabled(&context)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sub_agent_set_session_enabled(
-    state: State<'_, DispatcherState>,
-    session_id: String,
-    sub_agent_ids: Vec<String>,
-) -> Result<(), String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    manager
-        .set_session_enabled(&session_id, &sub_agent_ids)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sub_agent_get_session_enabled(
-    state: State<'_, DispatcherState>,
-    session_id: String,
-) -> Result<Vec<SubAgentRecord>, String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    manager
-        .get_session_enabled(&session_id)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub async fn sub_agent_set_global_enabled(
     state: State<'_, DispatcherState>,
     sub_agent_ids: Vec<String>,

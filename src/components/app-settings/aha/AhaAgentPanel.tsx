@@ -28,10 +28,10 @@ import type {
   ChatCategoryAgentConfig,
   DispatcherModelConfig,
   SshReviewConfig,
+  SubAgentRecord,
 } from "../../../types";
 import s from "../../../styles";
 import { SubAgentManagePanel } from "../sub-agents/SubAgentManagePanel";
-import { ContextSubAgentPicker } from "../sub-agents/ContextSubAgentPicker";
 import { SshToolPanel } from "./SshToolPanel";
 
 const DEFAULT_SUMMARY_MODEL = "deepseek-v4-flash";
@@ -492,7 +492,40 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
 
   function renderAgentTab(context: AgentContext) {
     if (activeSubTab === "sub_agents") {
-      return <ContextSubAgentPicker context={context} />;
+      // 子智能体不再按项目/聊天上下文分别关联：
+      //   - 聊天会话：在「工具配置」分类页的「关联子智能体」区块按分类勾选
+      //   - 项目会话与所有会话：使用全局启用的子智能体（在顶部「子智能体」标签页管理）
+      return (
+        <div style={s.ahaBody}>
+          <section style={s.ahaSection}>
+            <div style={s.ahaSectionTitle}>子智能体</div>
+            <div style={{ ...s.ahaSectionDescription, marginBottom: 12 }}>
+              {context === "chat"
+                ? "聊天会话的子智能体按分类配置。前往「工具配置」选择分类后，在其「关联子智能体」区块勾选。全局启用的子智能体对所有会话自动生效。"
+                : "项目会话使用全局启用的子智能体。前往顶部「子智能体」标签页管理可用子智能体及其全局启用状态。"}
+            </div>
+            <button
+              type="button"
+              style={s.ahaGhostButton}
+              onClick={() =>
+                context === "chat"
+                  ? setActiveSubTab("tools")
+                  : setActiveTopTab("sub_agents")
+              }
+            >
+              {context === "chat" ? (
+                <>
+                  <Wrench size={14} /> 前往工具配置
+                </>
+              ) : (
+                <>
+                  <Users size={14} /> 前往子智能体管理
+                </>
+              )}
+            </button>
+          </section>
+        </div>
+      );
     }
     if (activeSubTab === "tools") {
       return renderToolsTab(context);
@@ -501,7 +534,6 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
   }
 
   const showSubTabs = activeTopTab === "project" || activeTopTab === "chat";
-  const agentContext: AgentContext = activeTopTab === "project" ? "project" : "chat";
 
   return (
     <>
@@ -577,8 +609,6 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
           <SubAgentManagePanel />
         ) : activeTopTab === "ssh_tools" ? (
           <SshToolPanel projectPath={projectPath} />
-        ) : showSubTabs && activeSubTab === "sub_agents" ? (
-          <ContextSubAgentPicker context={agentContext} />
         ) : (
           <div style={s.ahaBody}>
             {loading ? (
@@ -965,7 +995,153 @@ function ChatCategoryToolsTab({
         allowedTools={activeConfig.allowedTools}
         onChange={(next) => onChange(activeConfig.categoryId, { allowedTools: next })}
       />
+      <CategorySubAgentPicker
+        enabledIds={activeConfig.subAgentIds}
+        onChange={(next) => onChange(activeConfig.categoryId, { subAgentIds: next })}
+      />
     </>
+  );
+}
+
+function CategorySubAgentPicker({
+  enabledIds,
+  onChange,
+}: {
+  enabledIds: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [agents, setAgents] = useState<SubAgentRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAvailable, setShowAvailable] = useState(false);
+
+  useEffect(() => {
+    invoke<SubAgentRecord[]>("sub_agent_list")
+      .then(setAgents)
+      .catch((error) => console.error("load sub_agents failed:", error))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const enabledSet = new Set(enabledIds);
+  const selectedList = agents.filter((agent) => enabledSet.has(agent.id));
+  const availableList = agents.filter((agent) => !enabledSet.has(agent.id));
+
+  function toggle(id: string) {
+    onChange(
+      enabledSet.has(id)
+        ? enabledIds.filter((value) => value !== id)
+        : [...enabledIds, id],
+    );
+  }
+
+  return (
+    <section style={s.ahaSection}>
+      <div style={s.ahaSectionTitle}>关联子智能体</div>
+      <div style={{ ...s.ahaSectionDescription, marginBottom: 12 }}>
+        选择该分类下的会话可调用的子智能体；未选择时该分类不启用任何子智能体。
+        全局启用的子智能体（见「子智能体」标签页）对所有会话仍自动生效。
+      </div>
+      <div style={{ ...s.ahaHint, marginBottom: 10 }}>
+        {loading ? "加载子智能体..." : `共 ${agents.length} 个子智能体`}
+      </div>
+      <div style={s.ahaField}>
+        <button
+          type="button"
+          style={{ ...s.ahaCollapsibleTitle, alignItems: "center" }}
+          onClick={() => setShowAvailable((value) => !value)}
+        >
+          <ChevronDown
+            size={13}
+            style={{
+              transform: showAvailable ? "rotate(0deg)" : "rotate(-90deg)",
+              transition: "transform 0.15s",
+              flexShrink: 0,
+            }}
+          />
+          <span style={s.ahaLabel}>
+            可选子智能体 ({availableList.length})
+            {availableList.length === 0 && (
+              <span style={{ color: "var(--text-hint)", fontWeight: 400, marginLeft: 8 }}>
+                无可选项
+              </span>
+            )}
+          </span>
+        </button>
+        {showAvailable && (
+          <div style={s.ahaToolList}>
+            {loading && <span style={s.ahaHint}>加载中...</span>}
+            {availableList.map((agent) => (
+              <SubAgentOptionRow
+                key={agent.id}
+                agent={agent}
+                checked={false}
+                onToggle={() => toggle(agent.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+      <div style={s.ahaField}>
+        <div style={{ ...s.ahaCollapsibleTitle, alignItems: "center" }}>
+          <ChevronDown
+            size={13}
+            style={{ transform: "rotate(0deg)", flexShrink: 0 }}
+          />
+          <span style={s.ahaLabel}>
+            已选子智能体 ({selectedList.length})
+            {selectedList.length === 0 && (
+              <span style={{ color: "var(--text-hint)", fontWeight: 400, marginLeft: 8 }}>
+                该分类暂未启用子智能体
+              </span>
+            )}
+          </span>
+        </div>
+        <div style={s.ahaToolList}>
+          {selectedList.length === 0 && (
+            <span style={s.ahaHint}>展开上方「可选子智能体」进行勾选</span>
+          )}
+          {selectedList.map((agent) => (
+            <SubAgentOptionRow
+              key={agent.id}
+              agent={agent}
+              checked
+              onToggle={() => toggle(agent.id)}
+            />
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SubAgentOptionRow({
+  agent,
+  checked,
+  onToggle,
+}: {
+  agent: SubAgentRecord;
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  const isDisabled = !agent.enabled;
+  return (
+    <label style={{ ...s.ahaToolOption, ...(checked ? s.ahaToolOptionSelected : {}) }}>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={isDisabled}
+        onChange={onToggle}
+        style={s.ahaToolCheckbox}
+      />
+      <span style={s.ahaToolText}>
+        <span style={s.ahaToolName}>
+          {agent.name}
+          {!agent.enabled && (
+            <span style={{ color: "var(--warning, #f59e0b)", marginLeft: 6 }}>(已禁用)</span>
+          )}
+        </span>
+        <span style={s.ahaToolDescription}>{agent.description || "暂无描述"}</span>
+      </span>
+    </label>
   );
 }
 

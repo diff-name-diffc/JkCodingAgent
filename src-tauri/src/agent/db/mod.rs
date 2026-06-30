@@ -9,6 +9,7 @@ pub(crate) mod schema;
 pub(crate) mod sessions;
 pub(crate) mod settings;
 pub(crate) mod token_usage;
+pub(crate) mod tool_runs;
 pub(crate) mod util;
 
 use std::path::PathBuf;
@@ -38,6 +39,7 @@ pub use settings::{
     DispatcherSettingsModelConfigs, DispatcherSettingsRecord,
 };
 pub use token_usage::{DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource};
+pub use tool_runs::{DispatcherToolRunRecord, FinishToolRun, NewToolRun};
 use util::MAX_DIALOGUE_QUERY_LIMIT;
 pub(crate) use util::{DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS, TOOL_RETRY_CONTEXT_PREFIX};
 

@@ -23,7 +23,7 @@ use super::llm::{
 };
 use super::runtime::{AgentEvent, AgentTurn};
 use super::sub_agent::{tool::sub_agent_failure_message, SubAgentManager};
-use super::tools::ToolRegistry;
+use super::tools::{ToolAction, ToolRegistry, ToolResult, ToolRunFinishUpdate, ToolRuntime};
 use crate::project::mcp::{ensure_project_mcp_file, ProjectMcpRegistry};
 use crate::shared::truncate_for_display;
 use crate::ssh_tool::SshSessionManager;
@@ -42,6 +42,12 @@ pub struct PlainChatAgent {
     category_context: Mutex<Option<(String, String)>>,
     project_mcp_registry: ProjectMcpRegistry,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
+}
+
+struct ExecutedPlainTool {
+    tool_call: RequestedToolCall,
+    result: ToolResult,
+    run_id: String,
 }
 
 impl PlainChatAgent {
@@ -420,6 +426,7 @@ impl PlainChatAgent {
             // Execute tool calls sequentially (with parallel for readonly)
             let executed = self
                 .execute_all_tools(
+                    db,
                     &response.tool_calls,
                     &args_map,
                     &tool_context,
@@ -433,21 +440,40 @@ impl PlainChatAgent {
 
             let summary_provider = self.summary_provider(&request_provider);
             let summary_model = self.summary_model();
-            for (tool_call, result) in &executed {
+            for executed_tool in &executed {
                 if cancellation_requested(&cancel_rx) {
                     break;
                 }
-                persist_tool_result_with_compression(
+                let result_text = executed_tool.result.output_for_llm();
+                let result_metadata_json = executed_tool.result.run_metadata_json();
+                let tool_message = persist_tool_result_with_compression(
                     db,
                     workspace_id,
                     on_event,
-                    tool_call,
-                    result,
+                    &executed_tool.tool_call,
+                    &result_text,
                     &summary_provider,
                     &summary_model,
                     |usage| {
                         usage_tracker.record(usage);
                     },
+                )
+                .await?;
+                self.finish_tool_run(
+                    db,
+                    on_event,
+                    &executed_tool.run_id,
+                    executed_tool.result.status.as_run_status(),
+                    tool_message.tool_result_mode.as_deref(),
+                    Some(&tool_message.id),
+                    executed_tool.result.status.error_kind(),
+                    executed_tool
+                        .result
+                        .status
+                        .error_kind()
+                        .map(|_| result_text.as_str()),
+                    executed_tool.result.action.as_ref().map(ToolAction::kind),
+                    result_metadata_json.as_deref(),
                 )
                 .await?;
             }
@@ -461,6 +487,7 @@ impl PlainChatAgent {
 
     async fn execute_all_tools(
         &self,
+        db: &DispatcherDb,
         tool_calls: &[RequestedToolCall],
         args_map: &std::collections::HashMap<String, String>,
         tool_context: &super::tools::ToolContext,
@@ -469,8 +496,9 @@ impl PlainChatAgent {
         cancel_rx: &watch::Receiver<bool>,
         usage_tracker: &mut UsageTracker,
         workspace_id: &str,
-    ) -> Result<Vec<(RequestedToolCall, String)>> {
-        let readonly_end = common::readonly_tool_run_end(tool_calls, 0);
+    ) -> Result<Vec<ExecutedPlainTool>> {
+        let readonly_end =
+            common::readonly_tool_run_end(&self.tools, &tool_context.workspace, tool_calls, 0);
 
         if readonly_end >= 2 {
             let readonly_run = &tool_calls[..readonly_end];
@@ -490,29 +518,58 @@ impl PlainChatAgent {
 
             let mut results = Vec::with_capacity(tool_calls.len());
 
-            let readonly_results: Vec<String> =
+            let mut run_ids = Vec::with_capacity(readonly_run.len());
+            for tool_call in readonly_run {
+                let run_id = self
+                    .create_and_start_tool_run(db, workspace_id, tool_context, on_event, tool_call)
+                    .await?;
+                run_ids.push(run_id);
+            }
+
+            let readonly_results: Vec<ToolResult> =
                 futures::future::join_all(readonly_run.iter().map(|tool_call| async move {
                     if allowed_tool_names.contains(&tool_call.name) {
                         self.tools
                             .execute(&tool_call.name, &tool_call.arguments, tool_context)
                             .await
                     } else {
-                        format!(
+                        ToolResult::recoverable_error(format!(
                             "错误：禁止调用工具 '{}'；请检查可用工具列表。",
                             tool_call.name
-                        )
+                        ))
                     }
                 }))
                 .await;
 
-            for (tool_call, result) in readonly_run.iter().zip(readonly_results) {
+            for ((tool_call, result), run_id) in
+                readonly_run.iter().zip(readonly_results).zip(run_ids)
+            {
                 if cancellation_requested(cancel_rx) {
                     return Ok(results);
                 }
-                if let Some(message) = sub_agent_failure_message(&result) {
+                let result_text = result.output_for_llm();
+                let result_metadata_json = result.run_metadata_json();
+                if let Some(message) = sub_agent_failure_message(&result_text) {
+                    self.finish_tool_run(
+                        db,
+                        on_event,
+                        &run_id,
+                        "fatal_error",
+                        None,
+                        None,
+                        Some("sub_agent_failure"),
+                        Some(message),
+                        None,
+                        result_metadata_json.as_deref(),
+                    )
+                    .await?;
                     anyhow::bail!("{}", message);
                 }
-                results.push((tool_call.clone(), result));
+                results.push(ExecutedPlainTool {
+                    tool_call: tool_call.clone(),
+                    result,
+                    run_id,
+                });
             }
 
             let remaining = &tool_calls[readonly_end..];
@@ -531,6 +588,9 @@ impl PlainChatAgent {
                             .unwrap_or_else(|| "{}".to_string()),
                     },
                 );
+                let run_id = self
+                    .create_and_start_tool_run(db, workspace_id, tool_context, on_event, tool_call)
+                    .await?;
                 let result = self
                     .execute_single_tool_with_usage(
                         tool_call,
@@ -541,10 +601,29 @@ impl PlainChatAgent {
                         workspace_id,
                     )
                     .await;
-                if let Some(message) = sub_agent_failure_message(&result) {
+                let result_text = result.output_for_llm();
+                let result_metadata_json = result.run_metadata_json();
+                if let Some(message) = sub_agent_failure_message(&result_text) {
+                    self.finish_tool_run(
+                        db,
+                        on_event,
+                        &run_id,
+                        "fatal_error",
+                        None,
+                        None,
+                        Some("sub_agent_failure"),
+                        Some(message),
+                        None,
+                        result_metadata_json.as_deref(),
+                    )
+                    .await?;
                     anyhow::bail!("{}", message);
                 }
-                results.push((tool_call.clone(), result));
+                results.push(ExecutedPlainTool {
+                    tool_call: tool_call.clone(),
+                    result,
+                    run_id,
+                });
             }
 
             Ok(results)
@@ -565,6 +644,9 @@ impl PlainChatAgent {
                             .unwrap_or_else(|| "{}".to_string()),
                     },
                 );
+                let run_id = self
+                    .create_and_start_tool_run(db, workspace_id, tool_context, on_event, tool_call)
+                    .await?;
                 let result = self
                     .execute_single_tool_with_usage(
                         tool_call,
@@ -575,13 +657,82 @@ impl PlainChatAgent {
                         workspace_id,
                     )
                     .await;
-                if let Some(message) = sub_agent_failure_message(&result) {
+                let result_text = result.output_for_llm();
+                let result_metadata_json = result.run_metadata_json();
+                if let Some(message) = sub_agent_failure_message(&result_text) {
+                    self.finish_tool_run(
+                        db,
+                        on_event,
+                        &run_id,
+                        "fatal_error",
+                        None,
+                        None,
+                        Some("sub_agent_failure"),
+                        Some(message),
+                        None,
+                        result_metadata_json.as_deref(),
+                    )
+                    .await?;
                     anyhow::bail!("{}", message);
                 }
-                results.push((tool_call.clone(), result));
+                results.push(ExecutedPlainTool {
+                    tool_call: tool_call.clone(),
+                    result,
+                    run_id,
+                });
             }
             Ok(results)
         }
+    }
+
+    async fn create_and_start_tool_run(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        tool_context: &super::tools::ToolContext,
+        on_event: &Channel<AgentEvent>,
+        tool_call: &RequestedToolCall,
+    ) -> Result<String> {
+        ToolRuntime::create_and_start_tool_run(
+            db,
+            &self.tools,
+            workspace_id,
+            &tool_context.workspace,
+            on_event,
+            tool_call,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_tool_run(
+        &self,
+        db: &DispatcherDb,
+        on_event: &Channel<AgentEvent>,
+        run_id: &str,
+        status: &str,
+        result_mode: Option<&str>,
+        message_id: Option<&str>,
+        error_kind: Option<&str>,
+        error_message: Option<&str>,
+        action_kind: Option<&str>,
+        metadata_json: Option<&str>,
+    ) -> Result<()> {
+        ToolRuntime::finish_tool_run(
+            db,
+            on_event,
+            run_id,
+            ToolRunFinishUpdate {
+                status,
+                result_mode,
+                message_id,
+                error_kind,
+                error_message,
+                action_kind,
+                metadata_json,
+            },
+        )
+        .await
     }
 
     /// 执行单个工具。`call_sub_agent` 期间暂停主 Agent 的用量计时，
@@ -594,7 +745,7 @@ impl PlainChatAgent {
         on_event: &Channel<AgentEvent>,
         usage_tracker: &mut UsageTracker,
         workspace_id: &str,
-    ) -> String {
+    ) -> ToolResult {
         let allowed = allowed_tool_names.contains(&tool_call.name);
         let is_sub_agent_call = tool_call.name == "call_sub_agent";
         let name = tool_call.name.clone();
@@ -605,14 +756,20 @@ impl PlainChatAgent {
                 if allowed {
                     self.tools.execute(&name, &arguments, tool_context).await
                 } else {
-                    format!("错误：禁止调用工具 '{}'；请检查可用工具列表。", name)
+                    ToolResult::recoverable_error(format!(
+                        "错误：禁止调用工具 '{}'；请检查可用工具列表。",
+                        name
+                    ))
                 }
             })
             .await
         } else if allowed {
             self.tools.execute(&name, &arguments, tool_context).await
         } else {
-            format!("错误：禁止调用工具 '{}'；请检查可用工具列表。", name)
+            ToolResult::recoverable_error(format!(
+                "错误：禁止调用工具 '{}'；请检查可用工具列表。",
+                name
+            ))
         }
     }
 

@@ -11,12 +11,11 @@ use tauri::Emitter;
 use tokio::time::timeout;
 
 use super::config::SubAgentConfig;
-use crate::agent::common::{classify_tool_result, is_parallel_readonly_tool_call, ToolOutcome};
 use crate::agent::llm::{
     ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider, OutboundToolCall, RequestedToolCall,
     ToolDefinition,
 };
-use crate::agent::tools::{ToolContext, ToolRegistry};
+use crate::agent::tools::{ToolContext, ToolRegistry, ToolResult, ToolStatus};
 
 const SUB_AGENT_RESULT_MAX_CHARS: usize = 32_000;
 const SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS: u64 = 120;
@@ -388,9 +387,14 @@ impl SubAgentRuntime {
             let mut should_retry_after_tool_error = false;
 
             while tc_index < tool_calls.len() {
-                let readonly_end = readonly_tool_run_end(&tool_calls, tc_index);
+                let readonly_end = readonly_tool_run_end(
+                    &self.tool_registry,
+                    &self.tool_context.workspace,
+                    &tool_calls,
+                    tc_index,
+                );
 
-                let executed: Vec<(&RequestedToolCall, String)> = if readonly_end
+                let executed: Vec<(&RequestedToolCall, ToolResult)> = if readonly_end
                     .saturating_sub(tc_index)
                     >= 2
                 {
@@ -406,18 +410,18 @@ impl SubAgentRuntime {
                 };
 
                 for (tc, result) in executed {
-                    let outcome = classify_tool_result(&result);
-                    match outcome {
-                        ToolOutcome::RecoverableError { message } => {
+                    let result_text = result.output_for_llm();
+                    match result.status {
+                        ToolStatus::RecoverableError => {
                             let retry_hint = if tool_error_seen {
                                 force_final_response = true;
                                 format!(
-                                    "工具重试后仍然失败。\n错误信息：{message}\n\n要求：不要继续调用工具。请基于当前状态判断该错误是否无法修复；如果无法修复，请明确说明已尝试的动作、失败原因和退出结论。"
+                                    "工具重试后仍然失败。\n错误信息：{result_text}\n\n要求：不要继续调用工具。请基于当前状态判断该错误是否无法修复；如果无法修复，请明确说明已尝试的动作、失败原因和退出结论。"
                                 )
                             } else {
                                 tool_error_seen = true;
                                 format!(
-                                    "工具调用失败。\n错误信息：{message}\n\n要求：请根据工具 schema、上次参数和错误信息修正后重试；如果你判断无法修复，请不要猜测，直接说明无法修复并退出。"
+                                    "工具调用失败。\n错误信息：{result_text}\n\n要求：请根据工具 schema、上次参数和错误信息修正后重试；如果你判断无法修复，请不要猜测，直接说明无法修复并退出。"
                                 )
                             };
                             messages.push(ChatMessage {
@@ -430,16 +434,16 @@ impl SubAgentRuntime {
                             });
                             should_retry_after_tool_error = true;
                         }
-                        ToolOutcome::FatalError { message } => {
+                        ToolStatus::FatalError | ToolStatus::Cancelled => {
                             let err_msg = format!(
                                 "子智能体 '{}' 内部工具 '{}' 执行失败：{}",
-                                self.config.agent_id, tc.name, message
+                                self.config.agent_id, tc.name, result_text
                             );
                             self.emit_failed(&app_handle, session_id, &err_msg);
                             anyhow::bail!("{}", err_msg);
                         }
-                        ToolOutcome::Ok => {
-                            let truncated = truncate_tool_result(&result);
+                        ToolStatus::Success => {
+                            let truncated = truncate_tool_result(&result_text);
                             messages.push(ChatMessage {
                                 role: "tool".to_string(),
                                 content: truncated,
@@ -505,7 +509,7 @@ impl SubAgentRuntime {
         app_handle: &Option<AppHandle>,
         session_id: &str,
         usage: &mut SubAgentUsage,
-    ) -> String {
+    ) -> ToolResult {
         let _ = usage;
         if let Some(handle) = app_handle {
             let _ = handle.emit(
@@ -527,7 +531,8 @@ impl SubAgentRuntime {
             .execute(&tc.name, &tc.arguments, &self.tool_context)
             .await;
 
-        let result_preview = tool_result_preview(&tc.name, &result);
+        let result_text = result.output_for_llm();
+        let result_preview = tool_result_preview(&tc.name, &result_text);
 
         if let Some(handle) = app_handle {
             let _ = handle.emit(
@@ -553,7 +558,7 @@ impl SubAgentRuntime {
         app_handle: &'a Option<AppHandle>,
         session_id: &'a str,
         usage: &mut SubAgentUsage,
-    ) -> Vec<(&'a RequestedToolCall, String)> {
+    ) -> Vec<(&'a RequestedToolCall, ToolResult)> {
         let _ = usage;
         for tc in tool_calls {
             if let Some(handle) = app_handle {
@@ -588,7 +593,8 @@ impl SubAgentRuntime {
         .await;
 
         for (tc, result) in &results {
-            let result_preview = tool_result_preview(&tc.name, result);
+            let result_text = result.output_for_llm();
+            let result_preview = tool_result_preview(&tc.name, &result_text);
             if let Some(handle) = app_handle {
                 let _ = handle.emit(
                     "sub-agent-event",
@@ -625,13 +631,18 @@ impl SubAgentRuntime {
     }
 }
 
-fn readonly_tool_run_end(tool_calls: &[RequestedToolCall], start: usize) -> usize {
+fn readonly_tool_run_end(
+    registry: &ToolRegistry,
+    workspace: &std::path::Path,
+    tool_calls: &[RequestedToolCall],
+    start: usize,
+) -> usize {
     tool_calls
         .iter()
         .enumerate()
         .skip(start)
         .find_map(|(index, tool_call)| {
-            (!is_parallel_readonly_tool_call(tool_call)).then_some(index)
+            (!registry.is_parallel_readonly(workspace, &tool_call.name, true)).then_some(index)
         })
         .unwrap_or(tool_calls.len())
 }
@@ -667,6 +678,5 @@ fn tool_result_preview(tool_name: &str, result: &str) -> String {
 fn is_command_review_result(tool_name: &str, result: &str) -> bool {
     matches!(tool_name, "ssh_exec" | "local_zsh")
         && (result.starts_with("## SSH 命令审查记录")
-            || (result.starts_with("## local_zsh 执行结果")
-                && result.contains("审查结论: `拦截`")))
+            || (result.starts_with("## local_zsh 执行结果") && result.contains("审查结论: `拦截`")))
 }

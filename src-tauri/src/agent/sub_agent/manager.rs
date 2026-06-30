@@ -83,14 +83,6 @@ impl SubAgentManager {
         self.db.get(id)
     }
 
-    pub fn set_context_enabled(&self, context: &str, sub_agent_ids: &[String]) -> Result<()> {
-        self.db.set_context_enabled(context, sub_agent_ids)
-    }
-
-    pub fn get_context_enabled(&self, context: &str) -> Result<Vec<SubAgentRecord>> {
-        self.db.get_context_enabled(context)
-    }
-
     pub fn get_enabled_for_session(&self, session_id: &str) -> Result<Vec<SubAgentConfig>> {
         let ids = self.db.get_enabled_agent_ids(session_id)?;
         let cache = self.cache.read();
@@ -101,20 +93,7 @@ impl SubAgentManager {
         self.db.get_global_enabled()
     }
 
-    pub fn set_session_enabled(&self, session_id: &str, sub_agent_ids: &[String]) -> Result<()> {
-        self.db.set_session_enabled(session_id, sub_agent_ids)
-    }
-
-    pub fn get_session_enabled(&self, session_id: &str) -> Result<Vec<SubAgentRecord>> {
-        self.db.get_session_enabled(session_id)
-    }
-
     pub fn set_global_enabled(&self, sub_agent_ids: &[String]) -> Result<()> {
         self.db.set_global_enabled(sub_agent_ids)
-    }
-
-    #[allow(dead_code)]
-    pub fn enabled_agent_ids(&self, session_id: &str) -> Result<Vec<String>> {
-        self.db.get_enabled_agent_ids(session_id)
     }
 }

@@ -11,11 +11,14 @@ use super::super::common::{
     persist_tool_calls_message, persist_tool_result_raw, with_usage_paused,
 };
 use super::super::db::{
-    DispatcherDb, DispatcherSessionRuntimeState, DispatcherSessionTokenUsageSource,
+    DispatcherDb, DispatcherMessageRecord, DispatcherSessionRuntimeState,
+    DispatcherSessionTokenUsageSource,
 };
 use super::super::llm::{LlmResponse, RequestedToolCall};
 use super::super::sub_agent::tool::sub_agent_failure_message;
-use super::super::tools::ToolContext;
+use super::super::tools::{
+    ToolAction, ToolContext, ToolResult, ToolRunFinishUpdate, ToolRuntime, ToolStatus,
+};
 
 use super::helpers::{
     build_tool_retry_context, disallowed_tool_result, emit, extract_message_content,
@@ -41,6 +44,12 @@ pub(super) enum SingleToolDisposition {
     WaitForUser(String),
     ProtocolAction(ProtocolToolAction),
     NeedsSummary,
+}
+
+pub(super) struct ExecutedToolCall {
+    pub tool_call: RequestedToolCall,
+    pub result: ToolResult,
+    pub run_id: Option<String>,
 }
 
 // ─── Tool execution impl ──────────────────────────────────────────────────────
@@ -101,22 +110,30 @@ impl DispatcherAgent {
                 break;
             }
 
-            let readonly_end = common::readonly_tool_run_end(&tool_calls, tool_call_index);
+            let readonly_end =
+                common::readonly_tool_run_end(&self.tools, workspace, &tool_calls, tool_call_index);
             let ready_tool_results = if readonly_end.saturating_sub(tool_call_index) >= 2 {
                 let run = &tool_calls[tool_call_index..readonly_end];
                 let results = self
                     .execute_parallel_readonly_tools(
+                        db,
+                        workspace_id,
                         run,
                         tool_context,
                         on_event,
                         allowed_tool_names,
                     )
-                    .await;
+                    .await?;
                 let items = run
                     .iter()
                     .cloned()
                     .zip(results)
-                    .collect::<Vec<(RequestedToolCall, String)>>();
+                    .map(|(tool_call, (result, run_id))| ExecutedToolCall {
+                        tool_call,
+                        result,
+                        run_id,
+                    })
+                    .collect::<Vec<_>>();
                 tool_call_index = readonly_end;
                 items
             } else {
@@ -134,6 +151,9 @@ impl DispatcherAgent {
                         arguments: tool_args_json,
                     },
                 );
+                let run_id = self
+                    .create_and_start_tool_run(db, workspace_id, workspace, on_event, &tool_call)
+                    .await?;
                 let is_sub_agent_call = tool_call.name == "call_sub_agent";
                 let result = if is_sub_agent_call {
                     with_usage_paused(usage_tracker, workspace_id, on_event, || async {
@@ -142,7 +162,7 @@ impl DispatcherAgent {
                                 .execute(&tool_call.name, &tool_call.arguments, tool_context)
                                 .await
                         } else {
-                            disallowed_tool_result(&tool_call.name)
+                            ToolResult::recoverable_error(disallowed_tool_result(&tool_call.name))
                         }
                     })
                     .await
@@ -151,16 +171,41 @@ impl DispatcherAgent {
                         .execute(&tool_call.name, &tool_call.arguments, tool_context)
                         .await
                 } else {
-                    disallowed_tool_result(&tool_call.name)
+                    ToolResult::recoverable_error(disallowed_tool_result(&tool_call.name))
                 };
-                vec![(tool_call, result)]
+                vec![ExecutedToolCall {
+                    tool_call,
+                    result,
+                    run_id: Some(run_id),
+                }]
             };
 
-            for (tool_call, result) in ready_tool_results {
+            for executed in ready_tool_results {
                 if cancellation_requested(cancel_rx) {
                     break 'outer;
                 }
-                if let Some(message) = sub_agent_failure_message(&result) {
+                let tool_call = executed.tool_call;
+                let result = executed.result;
+                let run_id = executed.run_id;
+                let result_text = result.output_for_llm();
+                let result_metadata_json = result.run_metadata_json();
+
+                if let Some(message) = sub_agent_failure_message(&result_text) {
+                    if let Some(run_id) = &run_id {
+                        self.finish_tool_run(
+                            db,
+                            on_event,
+                            run_id,
+                            "fatal_error",
+                            None,
+                            None,
+                            Some("sub_agent_failure"),
+                            Some(message),
+                            None,
+                            result_metadata_json.as_deref(),
+                        )
+                        .await?;
+                    }
                     anyhow::bail!("{}", message);
                 }
 
@@ -176,38 +221,117 @@ impl DispatcherAgent {
                     )
                     .await?
                 {
-                    SingleToolDisposition::Handled => {}
+                    SingleToolDisposition::Handled => {
+                        if let Some(run_id) = &run_id {
+                            self.finish_tool_run(
+                                db,
+                                on_event,
+                                run_id,
+                                "succeeded",
+                                Some("raw"),
+                                None,
+                                None,
+                                None,
+                                None,
+                                result_metadata_json.as_deref(),
+                            )
+                            .await?;
+                        }
+                    }
                     SingleToolDisposition::HandledWithRetry => {
+                        if let Some(run_id) = &run_id {
+                            self.finish_tool_run(
+                                db,
+                                on_event,
+                                run_id,
+                                "recoverable_error",
+                                Some("raw"),
+                                None,
+                                Some("retryable_tool_error"),
+                                Some(&result_text),
+                                None,
+                                result_metadata_json.as_deref(),
+                            )
+                            .await?;
+                        }
                         saw_retryable_tool_error = true;
                     }
                     SingleToolDisposition::WaitForUser(msg) => {
+                        if let Some(run_id) = &run_id {
+                            self.finish_tool_run(
+                                db,
+                                on_event,
+                                run_id,
+                                "succeeded",
+                                Some("raw"),
+                                None,
+                                None,
+                                None,
+                                Some("ask_user"),
+                                result_metadata_json.as_deref(),
+                            )
+                            .await?;
+                        }
                         planning_waiting_message = Some(msg);
                     }
                     SingleToolDisposition::ProtocolAction(action) => {
+                        if let Some(run_id) = &run_id {
+                            self.finish_tool_run(
+                                db,
+                                on_event,
+                                run_id,
+                                "succeeded",
+                                Some("raw"),
+                                None,
+                                None,
+                                None,
+                                Some(protocol_action_kind(&action)),
+                                result_metadata_json.as_deref(),
+                            )
+                            .await?;
+                        }
                         protocol_actions.push(action);
                     }
                     SingleToolDisposition::NeedsSummary => {
-                        if is_retryable_tool_error(&tool_call.name, &result) {
-                            self.emit_tool_retry_feedback(
-                                db,
-                                workspace_id,
-                                on_event,
-                                &tool_call,
-                                &result,
-                            )
-                            .await?;
+                        if matches!(result.status, ToolStatus::RecoverableError)
+                            || is_retryable_tool_error(&tool_call.name, &result_text)
+                        {
+                            let retry_message = self
+                                .emit_tool_retry_feedback(
+                                    db,
+                                    workspace_id,
+                                    on_event,
+                                    &tool_call,
+                                    &result_text,
+                                )
+                                .await?;
+                            if let Some(run_id) = &run_id {
+                                self.finish_tool_run(
+                                    db,
+                                    on_event,
+                                    run_id,
+                                    "recoverable_error",
+                                    retry_message.tool_result_mode.as_deref(),
+                                    Some(&retry_message.id),
+                                    Some("retryable_tool_error"),
+                                    Some(&result_text),
+                                    None,
+                                    result_metadata_json.as_deref(),
+                                )
+                                .await?;
+                            }
                             saw_retryable_tool_error = true;
                             continue;
                         }
 
                         let summary_model = self.summary_model();
                         let summary_provider = self.summary_provider(request_provider);
-                        common::persist_tool_result_with_compression(
+                        let tool_message = common::persist_tool_result_with_compression(
                             db,
                             workspace_id,
                             on_event,
                             &tool_call,
-                            &result,
+                            &result_text,
                             &summary_provider,
                             &summary_model,
                             |usage| {
@@ -223,6 +347,21 @@ impl DispatcherAgent {
                             },
                         )
                         .await?;
+                        if let Some(run_id) = &run_id {
+                            self.finish_tool_run(
+                                db,
+                                on_event,
+                                run_id,
+                                result.status.as_run_status(),
+                                tool_message.tool_result_mode.as_deref(),
+                                Some(&tool_message.id),
+                                result.status.error_kind(),
+                                result.status.error_kind().map(|_| result_text.as_str()),
+                                result.action.as_ref().map(ToolAction::kind),
+                                result_metadata_json.as_deref(),
+                            )
+                            .await?;
+                        }
 
                         if let Err(error) = db
                             .compact_successful_tool_retry_async(
@@ -238,10 +377,10 @@ impl DispatcherAgent {
                             );
                         }
 
-                        if tool_call.name == "message" {
-                            if let Some(content) = extract_message_content(&tool_call.arguments) {
-                                final_message = Some(content);
-                            }
+                        if let Some(ToolAction::FinalMessage { content }) = &result.action {
+                            final_message = Some(content.clone());
+                        } else if tool_call.name == "message" {
+                            final_message = extract_message_content(&tool_call.arguments);
                         }
                     }
                 }
@@ -428,11 +567,14 @@ impl DispatcherAgent {
 
     pub(super) async fn execute_parallel_readonly_tools(
         &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
         tool_calls: &[RequestedToolCall],
         tool_context: &ToolContext,
         on_event: &Channel<AgentEvent>,
         allowed_tool_names: &HashSet<String>,
-    ) -> Vec<String> {
+    ) -> Result<Vec<(ToolResult, Option<String>)>> {
+        let mut run_ids = Vec::with_capacity(tool_calls.len());
         for tool_call in tool_calls {
             let enriched = self
                 .tools
@@ -446,6 +588,16 @@ impl DispatcherAgent {
                         .unwrap_or_else(|_| "{}".to_string()),
                 },
             );
+            let run_id = self
+                .create_and_start_tool_run(
+                    db,
+                    workspace_id,
+                    &tool_context.workspace,
+                    on_event,
+                    tool_call,
+                )
+                .await?;
+            run_ids.push(Some(run_id));
         }
 
         let results = join_all(tool_calls.iter().map(|tool_call| async move {
@@ -454,12 +606,62 @@ impl DispatcherAgent {
                     .execute(&tool_call.name, &tool_call.arguments, tool_context)
                     .await
             } else {
-                disallowed_tool_result(&tool_call.name)
+                ToolResult::recoverable_error(disallowed_tool_result(&tool_call.name))
             }
         }))
         .await;
 
-        results
+        Ok(results.into_iter().zip(run_ids).collect())
+    }
+
+    async fn create_and_start_tool_run(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        workspace: &Path,
+        on_event: &Channel<AgentEvent>,
+        tool_call: &RequestedToolCall,
+    ) -> Result<String> {
+        ToolRuntime::create_and_start_tool_run(
+            db,
+            &self.tools,
+            workspace_id,
+            workspace,
+            on_event,
+            tool_call,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_tool_run(
+        &self,
+        db: &DispatcherDb,
+        on_event: &Channel<AgentEvent>,
+        run_id: &str,
+        status: &str,
+        result_mode: Option<&str>,
+        message_id: Option<&str>,
+        error_kind: Option<&str>,
+        error_message: Option<&str>,
+        action_kind: Option<&str>,
+        metadata_json: Option<&str>,
+    ) -> Result<()> {
+        ToolRuntime::finish_tool_run(
+            db,
+            on_event,
+            run_id,
+            ToolRunFinishUpdate {
+                status,
+                result_mode,
+                message_id,
+                error_kind,
+                error_message,
+                action_kind,
+                metadata_json,
+            },
+        )
+        .await
     }
 
     pub(super) async fn emit_tool_retry_feedback(
@@ -469,7 +671,7 @@ impl DispatcherAgent {
         on_event: &Channel<AgentEvent>,
         tool_call: &RequestedToolCall,
         error: &str,
-    ) -> Result<()> {
+    ) -> Result<DispatcherMessageRecord> {
         let context_payload = build_tool_retry_context(tool_call, error);
         let display_text = "工具调用参数需要修正，已交回模型重试。";
         emit(
@@ -482,17 +684,18 @@ impl DispatcherAgent {
                 detail_refs: Vec::new(),
             },
         );
-        db.add_visible_tool_result_async(
-            workspace_id,
-            display_text,
-            &context_payload,
-            Some(&tool_call.id),
-            Some(&tool_call.name),
-            Some("raw"),
-            &[],
-        )
-        .await?;
-        Ok(())
+        let message = db
+            .add_visible_tool_result_async(
+                workspace_id,
+                display_text,
+                &context_payload,
+                Some(&tool_call.id),
+                Some(&tool_call.name),
+                Some("raw"),
+                &[],
+            )
+            .await?;
+        Ok(message)
     }
 
     pub(super) async fn emit_tool_error(
@@ -524,5 +727,13 @@ impl DispatcherAgent {
         )
         .await?;
         Ok(())
+    }
+}
+
+fn protocol_action_kind(action: &ProtocolToolAction) -> &'static str {
+    match action {
+        ProtocolToolAction::Dispatch { .. } => "dispatch_sub_agent",
+        ProtocolToolAction::Continue { .. } => "continue_sub_agent",
+        ProtocolToolAction::Exit { .. } => "exit_sub_agent",
     }
 }

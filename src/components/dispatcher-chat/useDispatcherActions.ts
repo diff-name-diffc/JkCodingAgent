@@ -245,6 +245,9 @@ export function useDispatcherActions({
               liveToolCalls: finishLiveToolActivity(state.liveToolCalls, event.data),
             }));
             break;
+          case "toolRunUpdated":
+            if (!isActiveRun || event.data.run.workspaceId !== targetSessionId) return;
+            break;
           case "checklistPlanUpdated":
             if (!isActiveRun || !isCurrentSession) return;
             setChecklist(event.data.state);

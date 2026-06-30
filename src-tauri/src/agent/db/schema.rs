@@ -21,7 +21,7 @@ impl DispatcherDb {
         let mut conn = self.conn()?;
 
         // Fast path: if schema is already at the expected version, skip all DDL.
-        const SCHEMA_VERSION: i32 = 14;
+        const SCHEMA_VERSION: i32 = 17;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -124,6 +124,35 @@ impl DispatcherDb {
 
             CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_artifacts_message
             ON dispatcher_tool_artifacts(message_id);
+
+            CREATE TABLE IF NOT EXISTS dispatcher_tool_runs (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                category TEXT NOT NULL,
+                status TEXT NOT NULL,
+                arguments_json TEXT NOT NULL DEFAULT '{}',
+                effective_arguments_json TEXT NOT NULL DEFAULT '{}',
+                result_mode TEXT,
+                message_id TEXT,
+                error_kind TEXT,
+                error_message TEXT,
+                action_kind TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_runs_workspace_created
+            ON dispatcher_tool_runs(workspace_id, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_runs_call
+            ON dispatcher_tool_runs(workspace_id, tool_call_id);
 
             CREATE TABLE IF NOT EXISTS dispatcher_settings (
                 id TEXT PRIMARY KEY DEFAULT 'default',
@@ -229,6 +258,7 @@ impl DispatcherDb {
                 category_id TEXT PRIMARY KEY,
                 allowed_tools_json TEXT NOT NULL DEFAULT '[]',
                 system_prompt TEXT NOT NULL DEFAULT '',
+                sub_agent_ids_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (category_id) REFERENCES chat_categories(id) ON DELETE CASCADE
@@ -244,23 +274,8 @@ impl DispatcherDb {
                 updated_at  INTEGER NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS session_sub_agents (
-                session_id   TEXT NOT NULL,
-                sub_agent_id TEXT NOT NULL,
-                PRIMARY KEY (session_id, sub_agent_id),
-                FOREIGN KEY (session_id) REFERENCES dispatcher_sessions(id) ON DELETE CASCADE,
-                FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
-            );
-
             CREATE TABLE IF NOT EXISTS global_sub_agents (
                 sub_agent_id TEXT PRIMARY KEY,
-                FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS context_sub_agents (
-                context      TEXT NOT NULL,
-                sub_agent_id TEXT NOT NULL,
-                PRIMARY KEY (context, sub_agent_id),
                 FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
             );
             ",
@@ -374,6 +389,13 @@ impl DispatcherDb {
 
             ensure_column_exists_tx(
                 &tx,
+                "chat_category_agent_configs",
+                "sub_agent_ids_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )?;
+
+            ensure_column_exists_tx(
+                &tx,
                 "dispatcher_sessions",
                 "category",
                 "TEXT NOT NULL DEFAULT ''",
@@ -395,6 +417,47 @@ impl DispatcherDb {
                 "allowed_tools_json",
                 "TEXT NOT NULL DEFAULT '[]'",
             )?;
+
+            // v16: 废弃 context_sub_agents 与 session_sub_agents 关联表。
+            //      子智能体改为「全局启用 + 聊天分类级配置」两来源，不再有上下文/单会话关联。
+            //      旧库升级时移除这两张残留表；新建库不会有它们（IF EXISTS 保证幂等）。
+            tx.execute_batch(
+                "DROP TABLE IF EXISTS context_sub_agents;
+                 DROP TABLE IF EXISTS session_sub_agents;",
+            )
+            .context("drop obsolete sub_agent association tables")?;
+
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS dispatcher_tool_runs (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    tool_call_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    arguments_json TEXT NOT NULL DEFAULT '{}',
+                    effective_arguments_json TEXT NOT NULL DEFAULT '{}',
+                    result_mode TEXT,
+                    message_id TEXT,
+                    error_kind TEXT,
+                    error_message TEXT,
+                    action_kind TEXT,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    duration_ms INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_runs_workspace_created
+                ON dispatcher_tool_runs(workspace_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_runs_call
+                ON dispatcher_tool_runs(workspace_id, tool_call_id);",
+            )
+            .context("create dispatcher tool runs table")?;
 
             tx.commit().context("commit migration transaction")?;
         }
@@ -576,30 +639,18 @@ impl DispatcherDb {
             .context("v9 migration: create dispatcher_settings_v2 and add sub_agents.context")?;
         }
 
-        // v9 → v10: remove context column from sub_agents; sub-agents are now global
-        //           entities. Context associations move to context_sub_agents table.
+        // v9 → v10: remove the obsolete `context` column from sub_agents.
+        //           (Historically sub-agent scoping moved through a context_sub_agents
+        //            table; that table has since been removed in favor of per-chat-category
+        //            config plus global enablement. Here we only drop the legacy column.)
         let has_context_col = conn
             .prepare("SELECT COUNT(*) FROM pragma_table_info('sub_agents') WHERE name = 'context'")
             .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
             .unwrap_or(0);
 
         if has_context_col > 0 {
-            conn.execute_batch(
-                "
-                CREATE TABLE IF NOT EXISTS context_sub_agents (
-                    context      TEXT NOT NULL,
-                    sub_agent_id TEXT NOT NULL,
-                    PRIMARY KEY (context, sub_agent_id),
-                    FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
-                );
-
-                INSERT OR IGNORE INTO context_sub_agents (context, sub_agent_id)
-                    SELECT context, id FROM sub_agents WHERE context IS NOT NULL;
-
-                ALTER TABLE sub_agents DROP COLUMN context;
-                ",
-            )
-            .context("v10 migration: contextualize sub_agents → context_sub_agents")?;
+            conn.execute_batch("ALTER TABLE sub_agents DROP COLUMN context;")
+                .context("v10 migration: drop obsolete sub_agents.context column")?;
         }
 
         // v10 → v11: refresh browser-agent default timeout from 180s → 600s (10 min).
@@ -850,6 +901,7 @@ pub(super) fn ensure_chat_category_agent_configs_table_tx(
             category_id TEXT PRIMARY KEY,
             allowed_tools_json TEXT NOT NULL DEFAULT '[]',
             system_prompt TEXT NOT NULL DEFAULT '',
+            sub_agent_ids_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (category_id) REFERENCES chat_categories(id) ON DELETE CASCADE
@@ -881,12 +933,13 @@ pub(super) fn backfill_chat_category_agent_configs_tx(
                 category_id,
                 allowed_tools_json,
                 system_prompt,
+                sub_agent_ids_json,
                 created_at,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?4)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?5)
             ",
-            params![category_id, allowed_tools_json, system_prompt, ts],
+            params![category_id, allowed_tools_json, system_prompt, "[]", ts],
         )
         .with_context(|| format!("backfill chat category agent config {category_id}"))?;
     }

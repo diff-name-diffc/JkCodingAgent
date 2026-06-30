@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use super::super::db::{
     ChecklistPlanState, DispatcherMessageRecord, DispatcherMessageUsageStats,
-    DispatcherToolArtifactRef, PlanInteraction,
+    DispatcherToolArtifactRef, DispatcherToolRunRecord, PlanInteraction,
 };
 
 /// Feedback state reported by a subprocess when it yields control back to the
@@ -124,6 +124,9 @@ pub enum AgentEvent {
         display_text: String,
         result_mode: String,
         detail_refs: Vec<DispatcherToolArtifactRef>,
+    },
+    ToolRunUpdated {
+        run: DispatcherToolRunRecord,
     },
     ChecklistPlanUpdated {
         state: ChecklistPlanState,

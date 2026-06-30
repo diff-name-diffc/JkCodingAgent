@@ -3,7 +3,11 @@ mod context;
 mod delegation;
 mod mcp;
 mod planning;
+pub mod provider;
 mod registry;
+mod result;
+mod runtime;
+mod spec;
 
 pub use context::ToolContext;
 pub use delegation::{
@@ -14,6 +18,9 @@ pub use planning::{
     parse_present_plan, parse_replace_plan_document, parse_update_plan, UpdatePlanDraft,
 };
 pub use registry::{AgentTool, ToolRegistry};
+pub use result::{ToolAction, ToolInput, ToolResult, ToolStatus};
+pub use runtime::{ToolRunFinishUpdate, ToolRuntime};
+pub use spec::ToolSpec;
 
 use crate::project::mcp::ProjectMcpRegistry;
 use crate::ssh_tool::SshSessionManager;

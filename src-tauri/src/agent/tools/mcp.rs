@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::context::ToolContext;
 use super::registry::DynamicToolProvider;
+use super::spec::ToolSpec;
 use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
 use crate::project::mcp::{tool_definitions_from_snapshot, ProjectMcpRegistry};
 
@@ -23,16 +24,29 @@ struct McpToolBridge {
 
 #[async_trait]
 impl DynamicToolProvider for McpToolBridge {
-    fn definitions_for_workspace(&self, workspace: &Path) -> Vec<ToolDefinition> {
+    fn specs_for_workspace(&self, workspace: &Path) -> Vec<ToolSpec> {
         let snapshot = self.project_mcp_registry.cached_for_workspace(workspace);
         tool_definitions_from_snapshot(snapshot.as_ref())
             .into_iter()
-            .map(|tool| ToolDefinition {
+            .map(|tool| {
+                ToolSpec::mcp(
+                    tool.canonical_name,
+                    format!("[MCP/{}] {}", tool.server_name, tool.description),
+                    tool.parameters,
+                )
+            })
+            .collect()
+    }
+
+    fn definitions_for_workspace(&self, workspace: &Path) -> Vec<ToolDefinition> {
+        self.specs_for_workspace(workspace)
+            .into_iter()
+            .map(|spec| ToolDefinition {
                 kind: "function".to_string(),
                 function: ToolFunctionDefinition {
-                    name: tool.canonical_name,
-                    description: format!("[MCP/{}] {}", tool.server_name, tool.description),
-                    parameters: tool.parameters,
+                    name: spec.name,
+                    description: spec.description,
+                    parameters: spec.parameters,
                 },
             })
             .collect()

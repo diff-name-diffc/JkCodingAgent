@@ -284,6 +284,10 @@ impl DispatcherDb {
             params![session_id],
         )?;
         tx.execute(
+            "DELETE FROM dispatcher_tool_runs WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
         )?;
@@ -437,6 +441,10 @@ impl DispatcherDb {
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM dispatcher_tool_runs WHERE workspace_id = ?1",
             params![session_id],
         )?;
         tx.execute(
@@ -631,6 +639,10 @@ impl DispatcherDb {
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM dispatcher_tool_runs WHERE workspace_id = ?1",
             params![session_id],
         )?;
         tx.execute(

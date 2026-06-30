@@ -363,6 +363,29 @@ export interface DispatcherToolArtifact {
   createdAt: string;
 }
 
+export interface DispatcherToolRunRecord {
+  id: string;
+  workspaceId: string;
+  toolCallId: string;
+  toolName: string;
+  provider: string;
+  category: string;
+  status: string;
+  argumentsJson: string;
+  effectiveArgumentsJson: string;
+  resultMode?: DispatcherToolResultMode | null;
+  messageId?: string | null;
+  errorKind?: string | null;
+  errorMessage?: string | null;
+  actionKind?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  durationMs: number;
+  metadataJson: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface DispatcherSettings {
   apiBase: string;
   apiKey: string;
@@ -422,6 +445,7 @@ export interface ChatCategoryAgentConfig {
   categoryName: string;
   allowedTools: string[];
   systemPrompt: string;
+  subAgentIds: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -574,6 +598,7 @@ export type DispatcherAgentEvent =
         detailRefs: DispatcherToolArtifactRef[];
       };
     }
+  | { event: "toolRunUpdated"; data: { run: DispatcherToolRunRecord } }
   | { event: "checklistPlanUpdated"; data: { state: ChecklistPlanState } }
   | { event: "planQuestionRequested"; data: { interaction: PlanInteraction } }
   | { event: "planDocumentOpened"; data: { planPath: string } }

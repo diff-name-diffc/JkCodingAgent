@@ -586,6 +586,11 @@ impl DispatcherDb {
         )
         .context("clear dispatcher tool artifacts")?;
         tx.execute(
+            "DELETE FROM dispatcher_tool_runs WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("clear dispatcher tool runs")?;
+        tx.execute(
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![workspace_id],
         )

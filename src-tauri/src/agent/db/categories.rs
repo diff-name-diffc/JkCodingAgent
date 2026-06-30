@@ -31,6 +31,8 @@ pub struct ChatCategoryAgentConfig {
     pub category_name: String,
     pub allowed_tools: Vec<String>,
     pub system_prompt: String,
+    #[serde(default)]
+    pub sub_agent_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -103,9 +105,9 @@ impl DispatcherDb {
             .unwrap_or(default_system_prompt);
         tx.execute(
             "INSERT INTO chat_category_agent_configs
-             (category_id, allowed_tools_json, system_prompt, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, allowed_tools_json, system_prompt, now, now],
+             (category_id, allowed_tools_json, system_prompt, sub_agent_ids_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, allowed_tools_json, system_prompt, "[]", now, now],
         )
         .context("insert chat category agent config")?;
         tx.commit().context("commit create chat category")?;
@@ -227,7 +229,7 @@ impl DispatcherDb {
         let configs = {
             let mut stmt = tx
                 .prepare(
-                    "SELECT c.id, c.name, cfg.allowed_tools_json, cfg.system_prompt, cfg.created_at, cfg.updated_at
+                    "SELECT c.id, c.name, cfg.allowed_tools_json, cfg.sub_agent_ids_json, cfg.system_prompt, cfg.created_at, cfg.updated_at
                      FROM chat_categories c
                      INNER JOIN chat_category_agent_configs cfg ON cfg.category_id = c.id
                      ORDER BY c.sort_order ASC, c.created_at ASC",
@@ -255,13 +257,21 @@ impl DispatcherDb {
         for config in configs {
             let allowed_tools_json = serde_json::to_string(&config.allowed_tools)
                 .with_context(|| format!("serialize tools for category {}", config.category_id))?;
+            let sub_agent_ids_json =
+                serde_json::to_string(&config.sub_agent_ids).with_context(|| {
+                    format!(
+                        "serialize sub_agent_ids for category {}",
+                        config.category_id
+                    )
+                })?;
             let changed = tx
                 .execute(
                     "UPDATE chat_category_agent_configs
-                     SET allowed_tools_json = ?1, system_prompt = ?2, updated_at = ?3
-                     WHERE category_id = ?4",
+                     SET allowed_tools_json = ?1, sub_agent_ids_json = ?2, system_prompt = ?3, updated_at = ?4
+                     WHERE category_id = ?5",
                     params![
                         allowed_tools_json,
+                        sub_agent_ids_json,
                         config.system_prompt,
                         ts,
                         config.category_id
@@ -288,7 +298,7 @@ impl DispatcherDb {
         backfill_chat_category_agent_configs_tx(&tx)?;
         let config = tx
             .query_row(
-                "SELECT c.id, c.name, cfg.allowed_tools_json, cfg.system_prompt, cfg.created_at, cfg.updated_at
+                "SELECT c.id, c.name, cfg.allowed_tools_json, cfg.sub_agent_ids_json, cfg.system_prompt, cfg.created_at, cfg.updated_at
                  FROM chat_sessions s
                  INNER JOIN chat_categories c ON c.id = s.category
                  INNER JOIN chat_category_agent_configs cfg ON cfg.category_id = c.id
@@ -348,13 +358,23 @@ fn map_chat_category_agent_config(
                 Box::new(error),
             )
         })?;
+    let sub_agent_ids_json: String = row.get(3)?;
+    let sub_agent_ids =
+        serde_json::from_str::<Vec<String>>(&sub_agent_ids_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                3,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
     Ok(ChatCategoryAgentConfig {
         category_id,
         category_name: row.get(1)?,
         allowed_tools,
-        system_prompt: row.get(3)?,
-        created_at: row.get(4)?,
-        updated_at: row.get(5)?,
+        sub_agent_ids,
+        system_prompt: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
     })
 }
 
@@ -465,6 +485,7 @@ mod tests {
                 category_name: "技术".to_string(),
                 allowed_tools: vec!["browser_read_text".to_string()],
                 system_prompt: "tech prompt".to_string(),
+                sub_agent_ids: vec!["browser-agent".to_string()],
                 created_at: String::new(),
                 updated_at: String::new(),
             }])
@@ -482,5 +503,84 @@ mod tests {
         assert_eq!(config.category_id, "tech");
         assert_eq!(config.system_prompt, "tech prompt");
         assert_eq!(config.allowed_tools, vec!["browser_read_text".to_string()]);
+        assert_eq!(config.sub_agent_ids, vec!["browser-agent".to_string()]);
+    }
+
+    /// 回归测试：模拟旧库升级到新版本。
+    /// 1) v14 旧库缺 `sub_agent_ids_json` 列 → 升级补列后 backfill/list/save 不报错；
+    /// 2) v15 旧库残留 `context_sub_agents`/`session_sub_agents` → 升级后被 DROP。
+    #[test]
+    fn upgrade_legacy_db_drops_obsolete_tables_and_adds_column() {
+        let path =
+            std::env::temp_dir().join(format!("jkcodingagent-upgrade-{}.sqlite3", Uuid::new_v4()));
+        let db = DispatcherDb::new(path.clone()).expect("create db");
+
+        // 模拟升级前的旧库：回退版本，恢复无 sub_agent_ids_json 列的表结构，
+        // 并补上两张已被废弃的关联表（模拟 v15 库的残留）。
+        {
+            let conn = db.conn().expect("legacy conn");
+            conn.execute_batch("PRAGMA user_version = 14;")
+                .expect("set legacy user_version");
+            conn.execute(
+                "CREATE TABLE chat_category_agent_configs_legacy AS
+                 SELECT category_id, allowed_tools_json, system_prompt, created_at, updated_at
+                 FROM chat_category_agent_configs",
+                [],
+            )
+            .expect("snapshot legacy table");
+            conn.execute("DROP TABLE chat_category_agent_configs", [])
+                .expect("drop new table");
+            conn.execute(
+                "ALTER TABLE chat_category_agent_configs_legacy
+                 RENAME TO chat_category_agent_configs",
+                [],
+            )
+            .expect("restore legacy table without sub_agent_ids_json");
+            // 模拟 v15 残留的废弃关联表
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS context_sub_agents (
+                     context TEXT NOT NULL, sub_agent_id TEXT NOT NULL,
+                     PRIMARY KEY (context, sub_agent_id))",
+                [],
+            )
+            .expect("create legacy context_sub_agents");
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS session_sub_agents (
+                     session_id TEXT NOT NULL, sub_agent_id TEXT NOT NULL,
+                     PRIMARY KEY (session_id, sub_agent_id))",
+                [],
+            )
+            .expect("create legacy session_sub_agents");
+        }
+
+        // 触发升级流程（模拟应用重启走 init）。
+        db.init().expect("upgrade legacy db");
+
+        // 升级后：sub_agent_ids 列存在，list/save 不再报错。
+        let configs = db
+            .list_chat_category_agent_configs()
+            .expect("list after upgrade");
+        assert!(
+            configs
+                .iter()
+                .all(|config| serde_json::to_string(&config.sub_agent_ids).is_ok()),
+            "sub_agent_ids 字段在升级后可读"
+        );
+        let saved = db
+            .save_chat_category_agent_configs(&configs)
+            .expect("save after upgrade");
+        assert!(!saved.is_empty());
+
+        // 升级后：废弃关联表必须已被删除。
+        let conn = db.conn().expect("post-upgrade conn");
+        let leftover: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name IN ('context_sub_agents', 'session_sub_agents')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count leftover tables");
+        assert_eq!(leftover, 0, "废弃的关联表在升级后应被删除");
     }
 }

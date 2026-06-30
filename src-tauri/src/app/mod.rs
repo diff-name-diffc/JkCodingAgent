@@ -224,10 +224,6 @@ pub fn run() {
             agent::sub_agent::commands::sub_agent_delete,
             agent::sub_agent::commands::sub_agent_seed_browser,
             agent::sub_agent::commands::sub_agent_list_tools,
-            agent::sub_agent::commands::sub_agent_set_context_enabled,
-            agent::sub_agent::commands::sub_agent_get_context_enabled,
-            agent::sub_agent::commands::sub_agent_set_session_enabled,
-            agent::sub_agent::commands::sub_agent_get_session_enabled,
             agent::sub_agent::commands::sub_agent_set_global_enabled,
             agent::sub_agent::commands::sub_agent_get_global_enabled,
         ])

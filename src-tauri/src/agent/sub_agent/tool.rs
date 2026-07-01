@@ -10,10 +10,15 @@ use crate::agent::tools::{AgentTool, ToolContext};
 
 pub const SUB_AGENT_FAILURE_PREFIX: &str = "__SUB_AGENT_FAILURE__:";
 
+/// 用失败前缀包装消息。父循环（tool_exec.rs）会检测此前缀，
+/// 一旦命中就把子智能体失败升级为整个父循环的致命错误——
+/// 因为让主 Agent 基于一个不完整的委派结果继续推理是不可接受的。
 pub fn sub_agent_failure(message: impl AsRef<str>) -> String {
     format!("{}{}", SUB_AGENT_FAILURE_PREFIX, message.as_ref())
 }
 
+/// 检测结果是否带失败前缀，命中则返回其后的错误说明。
+/// 由父循环在 tool_exec.rs 中调用，决定是否升级为致命错误。
 pub fn sub_agent_failure_message(result: &str) -> Option<&str> {
     result.strip_prefix(SUB_AGENT_FAILURE_PREFIX)
 }
@@ -24,6 +29,9 @@ pub fn notify_user_progress_tool() -> Box<dyn AgentTool> {
     Box::new(NotifyUserProgressTool)
 }
 
+/// LLM 工具 `call_sub_agent`：由主 Agent 调用以委派子任务。
+/// 执行成功返回子智能体结果文本；失败则用 sub_agent_failure 前缀包装，
+/// 父循环检测到前缀即升级为致命错误。
 pub struct SubAgentTool {
     manager: Arc<SubAgentManager>,
 }

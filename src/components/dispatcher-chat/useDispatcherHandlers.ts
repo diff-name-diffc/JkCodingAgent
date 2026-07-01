@@ -64,7 +64,6 @@ export interface UseDispatcherHandlersOptions {
   setPlanInteraction: React.Dispatch<React.SetStateAction<PlanInteraction | null>>;
   setActivePlanPath: React.Dispatch<React.SetStateAction<string | null>>;
   setImplementingPlan: React.Dispatch<React.SetStateAction<boolean>>;
-  setThinkingEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   // Props callbacks
   onDispatchApproved?: (dispatchId: string, agent: AgentType, description: string, taskPrompt: string, permissionMode: string, sessionId: string) => void;
   onDispatchRejected?: (dispatchId: string) => void;
@@ -85,7 +84,6 @@ export interface UseDispatcherHandlersResult {
   handleToggleAutoApprove: () => Promise<void>;
   handleModeChange: (nextMode: DispatcherMode) => Promise<void>;
   handleModeToggle: (nextMode: DispatcherMode) => void;
-  handleToggleThinking: () => void;
   handleAnswerPlanQuestion: (answer: string) => Promise<void>;
   handleImplementPlan: (interaction: Extract<PlanInteraction, { kind: "ready" }>) => Promise<void>;
   handleImplementPlanWithClearedContext: (interaction: Extract<PlanInteraction, { kind: "ready" }>) => Promise<void>;
@@ -119,7 +117,6 @@ export function useDispatcherHandlers({
   setPlanInteraction,
   setActivePlanPath,
   setImplementingPlan,
-  setThinkingEnabled,
   onDispatchApproved,
   onDispatchRejected,
   onStopActiveRun,
@@ -327,10 +324,6 @@ export function useDispatcherHandlers({
     [handleModeChange, mode],
   );
 
-  const handleToggleThinking = useCallback(() => {
-    setThinkingEnabled((v) => !v);
-  }, [setThinkingEnabled]);
-
   // ── Plan interaction handlers ────────────────────────────────
   const handleAnswerPlanQuestion = useCallback(
     async (answer: string) => {
@@ -421,7 +414,6 @@ export function useDispatcherHandlers({
     handleToggleAutoApprove,
     handleModeChange,
     handleModeToggle,
-    handleToggleThinking,
     handleAnswerPlanQuestion,
     handleImplementPlan,
     handleImplementPlanWithClearedContext,

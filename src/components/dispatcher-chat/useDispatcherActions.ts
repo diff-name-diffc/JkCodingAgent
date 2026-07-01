@@ -316,6 +316,14 @@ export function useDispatcherActions({
             clearDispatcherActiveRunId(targetSessionId);
             updateLiveSessionState(targetSessionId, () => createIdleLiveSessionState());
             break;
+          case "failed":
+            if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
+            clearDispatcherActiveRunId(targetSessionId);
+            updateLiveSessionState(targetSessionId, () => ({
+              ...createIdleLiveSessionState(),
+              runError: event.data.message,
+            }));
+            break;
         }
       };
       return onEvent;

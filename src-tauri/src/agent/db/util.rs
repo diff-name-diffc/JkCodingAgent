@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::{params, types::Type, Connection};
+use rusqlite::types::Type;
 use serde::Deserialize;
 
 use crate::agent::config::DEFAULT_SUMMARY_MODEL;
@@ -42,17 +42,6 @@ pub(super) fn normalize_summary_model(summary_model: &str) -> String {
     } else {
         trimmed.to_string()
     }
-}
-
-pub(super) fn latest_user_message_rowid(conn: &Connection, workspace_id: &str) -> Result<i64> {
-    conn.query_row(
-        "SELECT COALESCE(MAX(rowid), 0)
-         FROM dispatcher_messages
-         WHERE workspace_id = ?1 AND role = 'user'",
-        params![workspace_id],
-        |row| row.get(0),
-    )
-    .context("load latest dispatcher user message rowid")
 }
 
 pub(super) fn parse_optional_json<T>(raw: Option<String>, column: &str) -> Result<Option<T>>

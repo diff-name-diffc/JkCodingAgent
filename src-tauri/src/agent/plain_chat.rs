@@ -21,7 +21,7 @@ use super::db::{
 use super::llm::{
     ChatMessage, LlmResponse, OpenAiCompatProvider, RequestedToolCall, ToolDefinition,
 };
-use super::runtime::{AgentEvent, AgentTurn};
+use super::runtime::{agent_loop::AgentLoop, AgentEvent, AgentTurn};
 use super::sub_agent::{tool::sub_agent_failure_message, SubAgentManager};
 use super::tools::{ToolAction, ToolRegistry, ToolResult, ToolRunFinishUpdate, ToolRuntime};
 use crate::project::mcp::{ensure_project_mcp_file, ProjectMcpRegistry};
@@ -259,6 +259,7 @@ impl PlainChatAgent {
                 workspace_id: workspace_id.to_string(),
             },
         );
+        let result: Result<AgentTurn> = async {
 
         let user = db
             .add_visible_message_async(workspace_id, "user", user_message, user_segments_json)
@@ -300,6 +301,20 @@ impl PlainChatAgent {
             },
         );
         Ok(AgentTurn { reply, messages })
+        }
+        .await;
+
+        if let Err(error) = &result {
+            common::emit(
+                &on_event,
+                AgentEvent::Failed {
+                    workspace_id: workspace_id.to_string(),
+                    message: error.to_string(),
+                },
+            );
+        }
+
+        result
     }
 
     /// Core agent loop: stream → execute tools → loop until no tools or cancelled.
@@ -323,25 +338,27 @@ impl PlainChatAgent {
             .iter()
             .map(|t| t.function.name.clone())
             .collect::<std::collections::HashSet<_>>();
+        let mut agent_loop = AgentLoop::new(
+            db,
+            workspace_id,
+            self.build_effective_system_prompt(workspace_id),
+        )
+        .await?;
+        let vision_model = self.vision_model.lock().clone();
 
         for iteration in 0..self.config.max_tool_iterations {
             if cancellation_requested(&cancel_rx) {
                 return emit_stop_and_finish(db, workspace_id, on_event, "", usage_tracker).await;
             }
 
-            let history_messages = db.load_llm_history_async(workspace_id).await?;
-            let vision_model = self.vision_model.lock().clone();
+            let messages = agent_loop.request_messages();
             let request_provider = select_provider_for_messages(
                 provider,
-                &history_messages,
+                &messages,
                 &vision_model,
                 on_event,
                 iteration == 0,
             )?;
-
-            let system_prompt = self.build_effective_system_prompt(workspace_id);
-            let mut messages = vec![ChatMessage::system(system_prompt)];
-            messages.extend(history_messages);
 
             // Stream LLM response
             let response = match stream_llm_response(
@@ -401,6 +418,18 @@ impl PlainChatAgent {
             // Persist tool_call message, emit ToolPlanned events
             let tool_calls_payload = build_tool_calls_payload(&response.tool_calls, &self.tools);
             let args_map = build_args_map(&response.tool_calls, &self.tools);
+            agent_loop.append(ChatMessage {
+                role: "assistant".to_string(),
+                content: response.content.clone(),
+                reasoning_content: if response.thinking_content.is_empty() {
+                    None
+                } else {
+                    Some(response.thinking_content.clone())
+                },
+                tool_calls: Some(tool_calls_payload.clone()),
+                tool_call_id: None,
+                name: None,
+            });
 
             for tc in &tool_calls_payload {
                 common::emit(
@@ -459,6 +488,9 @@ impl PlainChatAgent {
                     },
                 )
                 .await?;
+                if let Some(message) = tool_message.to_llm_message() {
+                    agent_loop.append(message);
+                }
                 self.finish_tool_run(
                     db,
                     on_event,
@@ -528,16 +560,14 @@ impl PlainChatAgent {
 
             let readonly_results: Vec<ToolResult> =
                 futures::future::join_all(readonly_run.iter().map(|tool_call| async move {
-                    if allowed_tool_names.contains(&tool_call.name) {
-                        self.tools
-                            .execute(&tool_call.name, &tool_call.arguments, tool_context)
-                            .await
-                    } else {
-                        ToolResult::recoverable_error(format!(
-                            "错误：禁止调用工具 '{}'；请检查可用工具列表。",
-                            tool_call.name
-                        ))
-                    }
+                    ToolRuntime::execute_tool(
+                        &self.tools,
+                        &tool_context.workspace,
+                        allowed_tool_names,
+                        tool_call,
+                        tool_context,
+                    )
+                    .await
                 }))
                 .await;
 
@@ -746,30 +776,29 @@ impl PlainChatAgent {
         usage_tracker: &mut UsageTracker,
         workspace_id: &str,
     ) -> ToolResult {
-        let allowed = allowed_tool_names.contains(&tool_call.name);
         let is_sub_agent_call = tool_call.name == "call_sub_agent";
-        let name = tool_call.name.clone();
-        let arguments = tool_call.arguments.clone();
 
         if is_sub_agent_call {
             with_usage_paused(usage_tracker, workspace_id, on_event, || async {
-                if allowed {
-                    self.tools.execute(&name, &arguments, tool_context).await
-                } else {
-                    ToolResult::recoverable_error(format!(
-                        "错误：禁止调用工具 '{}'；请检查可用工具列表。",
-                        name
-                    ))
-                }
+                ToolRuntime::execute_tool(
+                    &self.tools,
+                    &tool_context.workspace,
+                    allowed_tool_names,
+                    tool_call,
+                    tool_context,
+                )
+                .await
             })
             .await
-        } else if allowed {
-            self.tools.execute(&name, &arguments, tool_context).await
         } else {
-            ToolResult::recoverable_error(format!(
-                "错误：禁止调用工具 '{}'；请检查可用工具列表。",
-                name
-            ))
+            ToolRuntime::execute_tool(
+                &self.tools,
+                &tool_context.workspace,
+                allowed_tool_names,
+                tool_call,
+                tool_context,
+            )
+            .await
         }
     }
 
@@ -853,22 +882,31 @@ impl PlainChatAgent {
             "\n\n## 系统时间\n\n当前本地时间：{}",
             super::prompt::current_local_time()
         ));
-        if let Some(manager) = &self.sub_agent_manager {
-            if let Ok(agents) = manager.get_enabled_for_session(workspace_id) {
-                if !agents.is_empty() {
-                    prompt.push_str("\n\n## 当前可用子智能体\n\n");
-                    prompt.push_str("以下是当前会话已启用的子智能体，你可以直接调用：\n\n");
-                    for agent in &agents {
-                        prompt.push_str(&format!(
-                            "- **{}** (`{}`): {}\n",
-                            agent.agent_name, agent.agent_id, agent.description
-                        ));
+        if self.is_tool_allowed_by_config("call_sub_agent")
+            || self.is_tool_allowed_by_config("list_sub_agents")
+        {
+            if let Some(manager) = &self.sub_agent_manager {
+                if let Ok(agents) = manager.get_enabled_for_session(workspace_id) {
+                    if !agents.is_empty() {
+                        prompt.push_str("\n\n## 当前可用子智能体\n\n");
+                        prompt.push_str("以下是当前会话已启用的子智能体，你可以直接调用：\n\n");
+                        for agent in &agents {
+                            prompt.push_str(&format!(
+                                "- **{}** (`{}`): {}\n",
+                                agent.agent_name, agent.agent_id, agent.description
+                            ));
+                        }
+                        prompt.push_str("\n使用方式：调用 call_sub_agent(agent_id, task) 来让子智能体处理特定任务。\n");
                     }
-                    prompt.push_str("\n使用方式：调用 call_sub_agent(agent_id, task) 来让子智能体处理特定任务。\n");
                 }
             }
         }
         prompt
+    }
+
+    fn is_tool_allowed_by_config(&self, tool_name: &str) -> bool {
+        let configured = self.allowed_tools.lock();
+        configured.is_empty() || configured.iter().any(|name| name == tool_name)
     }
 
     fn build_tool_definitions(&self, workspace: &Path) -> Vec<ToolDefinition> {
@@ -881,11 +919,7 @@ impl PlainChatAgent {
 
         if !configured.is_empty() {
             let allowed: std::collections::HashSet<String> = configured.into_iter().collect();
-            defs.retain(|def| {
-                allowed.contains(&def.function.name)
-                    || def.function.name == "call_sub_agent"
-                    || def.function.name == "list_sub_agents"
-            });
+            defs.retain(|def| allowed.contains(&def.function.name));
         }
         defs
     }

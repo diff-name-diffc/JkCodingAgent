@@ -14,15 +14,15 @@ use super::super::db::{
     DispatcherDb, DispatcherMessageRecord, DispatcherSessionRuntimeState,
     DispatcherSessionTokenUsageSource,
 };
-use super::super::llm::{LlmResponse, RequestedToolCall};
+use super::super::llm::{ChatMessage, LlmResponse, RequestedToolCall};
 use super::super::sub_agent::tool::sub_agent_failure_message;
 use super::super::tools::{
     ToolAction, ToolContext, ToolResult, ToolRunFinishUpdate, ToolRuntime, ToolStatus,
 };
 
 use super::helpers::{
-    build_tool_retry_context, disallowed_tool_result, emit, extract_message_content,
-    is_retryable_tool_error, record_run_token_usage,
+    build_tool_retry_context, emit, extract_message_content, is_retryable_tool_error,
+    record_run_token_usage,
 };
 use super::planning::PlanningToolOutcome;
 use super::subprocess::{ProtocolBatchState, ProtocolToolAction};
@@ -31,13 +31,16 @@ use super::DispatcherAgent;
 
 // ─── Internal types ───────────────────────────────────────────────────────────
 
+/// 一批工具调用执行完毕后的聚合结果，供 run_llm_loop 决定是否收口本轮循环。
 pub(super) struct ToolCallsOutcome {
     pub saw_retryable_tool_error: bool,
     pub planning_waiting_message: Option<String>,
     pub final_message: Option<String>,
     pub protocol_actions: Vec<ProtocolToolAction>,
+    pub llm_messages: Vec<ChatMessage>,
 }
 
+/// 单个工具调用经三级优先瀑布处理后的处置分类（见 process_single_tool_call）。
 pub(super) enum SingleToolDisposition {
     Handled,
     HandledWithRetry,
@@ -56,6 +59,9 @@ pub(super) struct ExecutedToolCall {
 
 #[allow(clippy::too_many_arguments)]
 impl DispatcherAgent {
+    /// 执行一批 tool_calls：先持久化 assistant 工具调用消息（协议正确性要求），
+    /// 再按模型顺序逐个执行——相邻只读工具合并为并行组，突变工具保持严格串行。
+    /// 每个结果经 process_single_tool_call 三级瀑布分类处理。
     pub(super) async fn execute_tool_calls(
         &self,
         db: &DispatcherDb,
@@ -70,7 +76,9 @@ impl DispatcherAgent {
         request_provider: &super::super::llm::OpenAiCompatProvider,
         usage_tracker: &mut super::super::common::UsageTracker,
     ) -> Result<ToolCallsOutcome> {
-        // Persist tool calls and emit ToolPlanned events
+        // Persist the assistant tool-call message before executing tools. The LLM protocol expects
+        // later tool results to answer a concrete assistant tool_call_id, so this write is part of
+        // protocol correctness rather than UI bookkeeping.
         let tool_calls = response.tool_calls.clone();
         let tool_calls_payload = build_tool_calls_payload(&tool_calls, &self.tools);
         let args_map = build_args_map(&tool_calls, &self.tools);
@@ -86,7 +94,7 @@ impl DispatcherAgent {
             );
         }
 
-        persist_tool_calls_message(
+        let assistant_message = persist_tool_calls_message(
             db,
             workspace_id,
             &response.content,
@@ -95,7 +103,14 @@ impl DispatcherAgent {
             Some(response.thinking_elapsed_ms),
         )
         .await?;
+        let mut llm_messages = Vec::new();
+        if let Some(message) = assistant_message.to_llm_message() {
+            llm_messages.push(message);
+        }
 
+        // ProtocolBatchState enforces batch-level rules such as one dispatch/continue/exit path per
+        // active agent. Without it, a single model response could propose conflicting subprocess
+        // state transitions.
         let mut protocol_state =
             ProtocolBatchState::new(self.active_subprocesses_for_workspace(workspace_id));
         let mut protocol_actions = Vec::new();
@@ -103,7 +118,8 @@ impl DispatcherAgent {
         let mut final_message: Option<String> = None;
         let mut saw_retryable_tool_error = false;
 
-        // Execute tool calls in order, parallelizing adjacent readonly ones
+        // 按模型给出的顺序执行工具，但把相邻的只读工具合并为一个并行组。
+        // 突变工具（写文件、执行命令等）保持严格串行，确保文件/进程状态可预测。
         let mut tool_call_index = 0usize;
         'outer: while tool_call_index < tool_calls.len() {
             if cancellation_requested(cancel_rx) {
@@ -155,23 +171,29 @@ impl DispatcherAgent {
                     .create_and_start_tool_run(db, workspace_id, workspace, on_event, &tool_call)
                     .await?;
                 let is_sub_agent_call = tool_call.name == "call_sub_agent";
+                // 子智能体调用有独立的 token 计量。暂停父级用量统计，
+                // 避免嵌套用量被重复计入主 run 的总量。
                 let result = if is_sub_agent_call {
                     with_usage_paused(usage_tracker, workspace_id, on_event, || async {
-                        if allowed_tool_names.contains(&tool_call.name) {
-                            self.tools
-                                .execute(&tool_call.name, &tool_call.arguments, tool_context)
-                                .await
-                        } else {
-                            ToolResult::recoverable_error(disallowed_tool_result(&tool_call.name))
-                        }
+                        ToolRuntime::execute_tool(
+                            &self.tools,
+                            workspace,
+                            allowed_tool_names,
+                            &tool_call,
+                            tool_context,
+                        )
+                        .await
                     })
                     .await
-                } else if allowed_tool_names.contains(&tool_call.name) {
-                    self.tools
-                        .execute(&tool_call.name, &tool_call.arguments, tool_context)
-                        .await
                 } else {
-                    ToolResult::recoverable_error(disallowed_tool_result(&tool_call.name))
+                    ToolRuntime::execute_tool(
+                        &self.tools,
+                        workspace,
+                        allowed_tool_names,
+                        &tool_call,
+                        tool_context,
+                    )
+                    .await
                 };
                 vec![ExecutedToolCall {
                     tool_call,
@@ -190,6 +212,8 @@ impl DispatcherAgent {
                 let result_text = result.output_for_llm();
                 let result_metadata_json = result.run_metadata_json();
 
+                // 子智能体失败会升级为父循环的致命错误。若继续执行，主 Agent 会基于
+                // 一个不完整的委派任务结果进行推理，这是不可接受的。
                 if let Some(message) = sub_agent_failure_message(&result_text) {
                     if let Some(run_id) = &run_id {
                         self.finish_tool_run(
@@ -218,6 +242,7 @@ impl DispatcherAgent {
                         &tool_call,
                         runtime_state,
                         &mut protocol_state,
+                        &mut llm_messages,
                     )
                     .await?
                 {
@@ -293,6 +318,8 @@ impl DispatcherAgent {
                         protocol_actions.push(action);
                     }
                     SingleToolDisposition::NeedsSummary => {
+                        // 普通工具可能返回超大或带产物的 payload。喂回模型前先压缩，
+                        // 但原始结果仍可通过 DB/UI 查到。
                         if matches!(result.status, ToolStatus::RecoverableError)
                             || is_retryable_tool_error(&tool_call.name, &result_text)
                         {
@@ -321,6 +348,9 @@ impl DispatcherAgent {
                                 .await?;
                             }
                             saw_retryable_tool_error = true;
+                            if let Some(message) = retry_message.to_llm_message() {
+                                llm_messages.push(message);
+                            }
                             continue;
                         }
 
@@ -363,18 +393,8 @@ impl DispatcherAgent {
                             .await?;
                         }
 
-                        if let Err(error) = db
-                            .compact_successful_tool_retry_async(
-                                workspace_id,
-                                &tool_call.name,
-                                &tool_call.id,
-                            )
-                            .await
-                        {
-                            eprintln!(
-                                "failed to compact dispatcher tool retry messages for workspace {} and tool {}: {}",
-                                workspace_id, tool_call.name, error
-                            );
+                        if let Some(message) = tool_message.to_llm_message() {
+                            llm_messages.push(message);
                         }
 
                         if let Some(ToolAction::FinalMessage { content }) = &result.action {
@@ -392,10 +412,16 @@ impl DispatcherAgent {
             planning_waiting_message,
             final_message,
             protocol_actions,
+            llm_messages,
         })
     }
 
-    /// Classify a single tool call through the planning/protocol priority waterfall.
+    /// 三级优先瀑布分类单个工具调用：
+    ///   优先级 1 — 计划工具（update_plan / 计划文档 / present_plan 等），
+    ///               它们会改变调度可见状态，可能主动停下循环等待用户。
+    ///   优先级 2 — 协议动作（dispatch / continue / exit 子进程），不在本地执行，
+    ///               只发出 UI/子进程命令并通常以等待消息结束本轮。
+    ///   优先级 3 — 普通工具，由调用方负责持久化/压缩并决定是否需要下一轮迭代。
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn process_single_tool_call(
         &self,
@@ -406,8 +432,10 @@ impl DispatcherAgent {
         tool_call: &RequestedToolCall,
         runtime_state: &DispatcherSessionRuntimeState,
         protocol_state: &mut ProtocolBatchState,
+        llm_messages: &mut Vec<ChatMessage>,
     ) -> Result<SingleToolDisposition> {
-        // Priority 1: planning tools (update_plan, present_plan, etc.)
+        // Priority 1: planning tools mutate dispatcher-visible plan state and may intentionally
+        // stop the loop to wait for the user, so they must be handled before generic tools.
         match self
             .execute_planning_tool(
                 db,
@@ -420,18 +448,30 @@ impl DispatcherAgent {
             .await
         {
             Ok(Some(PlanningToolOutcome::ToolResult(res))) => {
-                persist_tool_result_raw(db, workspace_id, on_event, tool_call, &res).await?;
+                let message =
+                    persist_tool_result_raw(db, workspace_id, on_event, tool_call, &res).await?;
+                if let Some(message) = message.to_llm_message() {
+                    llm_messages.push(message);
+                }
                 return Ok(SingleToolDisposition::Handled);
             }
             Ok(Some(PlanningToolOutcome::WaitForUser(res))) => {
-                persist_tool_result_raw(db, workspace_id, on_event, tool_call, &res).await?;
+                let message =
+                    persist_tool_result_raw(db, workspace_id, on_event, tool_call, &res).await?;
+                if let Some(message) = message.to_llm_message() {
+                    llm_messages.push(message);
+                }
                 return Ok(SingleToolDisposition::WaitForUser(res));
             }
-            Ok(None) => {} // not a planning tool — fall through to protocol check
+            Ok(None) => {} // not a planning tool; fall through to subprocess protocol
             Err(error) => {
                 let is_retryable = is_retryable_tool_error(&tool_call.name, &error);
-                self.handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)
+                let message = self
+                    .handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)
                     .await?;
+                if let Some(message) = message.to_llm_message() {
+                    llm_messages.push(message);
+                }
                 return Ok(if is_retryable {
                     SingleToolDisposition::HandledWithRetry
                 } else {
@@ -440,7 +480,8 @@ impl DispatcherAgent {
             }
         }
 
-        // Priority 2: protocol actions (dispatch, continue, exit subprocess)
+        // Priority 2: protocol actions do not execute locally. They emit UI/subprocess commands and
+        // then usually end this turn with a waiting message.
         match self
             .plan_protocol_action(db, workspace_id, tool_call, protocol_state)
             .await
@@ -449,15 +490,23 @@ impl DispatcherAgent {
                 if let ProtocolToolAction::Exit { agent, .. } = &action {
                     self.mark_agent_exit_requested(workspace_id, agent.slug());
                 }
-                self.emit_protocol_action(db, workspace_id, on_event, tool_call, &action)
+                let message = self
+                    .emit_protocol_action(db, workspace_id, on_event, tool_call, &action)
                     .await?;
+                if let Some(message) = message.to_llm_message() {
+                    llm_messages.push(message);
+                }
                 return Ok(SingleToolDisposition::ProtocolAction(action));
             }
-            Ok(None) => {} // not a protocol action — fall through
+            Ok(None) => {} // not a protocol action; treat it as a normal executable tool
             Err(error) => {
                 let is_retryable = is_retryable_tool_error(&tool_call.name, &error);
-                self.handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)
+                let message = self
+                    .handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)
                     .await?;
+                if let Some(message) = message.to_llm_message() {
+                    llm_messages.push(message);
+                }
                 return Ok(if is_retryable {
                     SingleToolDisposition::HandledWithRetry
                 } else {
@@ -466,7 +515,8 @@ impl DispatcherAgent {
             }
         }
 
-        // Priority 3: neither planning nor protocol — needs standard summary processing
+        // Priority 3: neither planning nor protocol. The caller will persist/compress the actual
+        // ToolResult and decide whether another LLM iteration is needed.
         Ok(SingleToolDisposition::NeedsSummary)
     }
 
@@ -477,17 +527,22 @@ impl DispatcherAgent {
         on_event: &Channel<AgentEvent>,
         tool_call: &RequestedToolCall,
         error: &str,
-    ) -> Result<()> {
+    ) -> Result<DispatcherMessageRecord> {
         if is_retryable_tool_error(&tool_call.name, error) {
             self.emit_tool_retry_feedback(db, workspace_id, on_event, tool_call, error)
-                .await?;
+                .await
         } else {
             self.emit_tool_error(db, workspace_id, on_event, tool_call, error)
-                .await?;
+                .await
         }
-        Ok(())
     }
 
+    /// 根据 execute_tool_calls 的结果决定本轮循环是否结束：
+    ///   - 出现可重试工具错误 ⇒ 不收口，让模型再修正一轮。
+    ///   - 计划等待用户 ⇒ 输出等待消息并收口（需用户交互）。
+    ///   - 有协议动作 ⇒ 输出"等待子任务"消息并收口（需子进程回流）。
+    ///   - 有 final_message ⇒ 输出最终答复并收口。
+    ///   - 以上都不是 ⇒ 返回 None，循环继续。
     pub(super) async fn resolve_loop_outcome(
         &self,
         db: &DispatcherDb,
@@ -576,6 +631,8 @@ impl DispatcherAgent {
     ) -> Result<Vec<(ToolResult, Option<String>)>> {
         let mut run_ids = Vec::with_capacity(tool_calls.len());
         for tool_call in tool_calls {
+            // Even readonly tools get run records before parallel execution so the UI can display
+            // deterministic start events instead of a burst of unordered completions.
             let enriched = self
                 .tools
                 .effective_args(&tool_call.name, &tool_call.arguments);
@@ -601,13 +658,14 @@ impl DispatcherAgent {
         }
 
         let results = join_all(tool_calls.iter().map(|tool_call| async move {
-            if allowed_tool_names.contains(&tool_call.name) {
-                self.tools
-                    .execute(&tool_call.name, &tool_call.arguments, tool_context)
-                    .await
-            } else {
-                ToolResult::recoverable_error(disallowed_tool_result(&tool_call.name))
-            }
+            ToolRuntime::execute_tool(
+                &self.tools,
+                &tool_context.workspace,
+                allowed_tool_names,
+                tool_call,
+                tool_context,
+            )
+            .await
         }))
         .await;
 
@@ -705,7 +763,7 @@ impl DispatcherAgent {
         on_event: &Channel<AgentEvent>,
         tool_call: &RequestedToolCall,
         error: &str,
-    ) -> Result<()> {
+    ) -> Result<DispatcherMessageRecord> {
         emit(
             on_event,
             AgentEvent::ToolFinished {
@@ -716,17 +774,18 @@ impl DispatcherAgent {
                 detail_refs: Vec::new(),
             },
         );
-        db.add_visible_message_with_tools_async(
-            workspace_id,
-            "tool",
-            error,
-            Some(&tool_call.id),
-            Some(&tool_call.name),
-            Some("raw"),
-            None,
-        )
-        .await?;
-        Ok(())
+        let message = db
+            .add_visible_message_with_tools_async(
+                workspace_id,
+                "tool",
+                error,
+                Some(&tool_call.id),
+                Some(&tool_call.name),
+                Some("raw"),
+                None,
+            )
+            .await?;
+        Ok(message)
     }
 }
 

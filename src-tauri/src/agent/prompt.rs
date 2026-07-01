@@ -94,13 +94,6 @@ pub(super) fn build_system_prompt(root: &Path) -> Result<PromptBundle> {
         content: format!("---\n\n{}", BUILT_IN_DISPATCH_GUIDANCE),
     });
 
-    // Snapshot static content before adding dynamic "系统时间" section
-    let static_content = sections
-        .iter()
-        .map(|section| section.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n---\n\n");
-
     sections.push(PromptSection {
         label: "系统时间".to_string(),
         source: "builtin".to_string(),
@@ -109,6 +102,12 @@ pub(super) fn build_system_prompt(root: &Path) -> Result<PromptBundle> {
             current_local_time()
         ),
     });
+
+    let static_content = sections
+        .iter()
+        .map(|section| section.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n");
 
     Ok(PromptBundle { static_content })
 }

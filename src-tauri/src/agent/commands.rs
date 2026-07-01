@@ -1,12 +1,7 @@
 use anyhow::{anyhow, Context, Result};
-use parking_lot::Mutex;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -23,51 +18,18 @@ use super::db::{
 };
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
-use super::plain_chat::PlainChatAgent;
-use super::runtime::{
-    AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherAgent, DispatcherSubprocessRegistry,
-};
+use super::runtime::{AgentEvent, AgentTurn, DispatchFeedbackState};
+use super::state::DispatcherState;
 use super::sub_agent::db::ToolInfo;
-use super::sub_agent::SubAgentManager;
 use super::summary::{
     fallback_session_title, parse_keyword_actions, summarize_session_keywords,
     summarize_session_title, SessionTitleMessage,
 };
-use super::tools::ToolRegistry;
 use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::browser::BrowserManager;
-use crate::project::mcp::{ensure_project_mcp_file, ProjectMcpRegistry};
 use crate::shared::TaskManager;
-use crate::ssh_tool::SshSessionManager;
 
 const SESSION_TITLE_RECENT_DIALOGUES: usize = 3;
-
-pub struct DispatcherState {
-    config: DispatcherAgentConfig,
-    project_mcp_registry: ProjectMcpRegistry,
-    ssh_manager: SshSessionManager,
-    subprocesses: Arc<DispatcherSubprocessRegistry>,
-    db: DispatcherDb,
-    active_runs: Mutex<HashMap<String, ActiveRunEntry>>,
-    next_run_generation: AtomicU64,
-    title_generations: Mutex<HashMap<String, u64>>,
-    next_title_generation: AtomicU64,
-    keywords_generations: Mutex<HashMap<String, u64>>,
-    next_keywords_generation: AtomicU64,
-    sub_agent_manager: Option<Arc<SubAgentManager>>,
-    registered_tools: Mutex<Option<Vec<(String, String)>>>,
-}
-
-#[derive(Clone)]
-struct ActiveRunEntry {
-    generation: u64,
-    stop_tx: watch::Sender<bool>,
-}
-
-struct ActiveRunHandle {
-    generation: u64,
-    cancel_rx: watch::Receiver<bool>,
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,303 +66,12 @@ pub struct DispatcherSaveSettingsPayload {
     allowed_tools: Option<Vec<String>>,
 }
 
-impl DispatcherState {
-    pub fn new(
-        project_mcp_registry: ProjectMcpRegistry,
-        ssh_manager: SshSessionManager,
-    ) -> Result<Self> {
-        let config = DispatcherAgentConfig::load()?;
-        let db = DispatcherDb::new(config.db_path.clone())?;
-        let subprocesses = Arc::new(DispatcherSubprocessRegistry::default());
-        let sub_agent_manager = Arc::new(SubAgentManager::new(db.pool()));
-        if let Err(e) = sub_agent_manager.load_all() {
-            eprintln!("failed to load sub_agent configs: {}", e);
-        }
-
-        let initial_tool_registry =
-            ToolRegistry::default_tools(project_mcp_registry.clone(), ssh_manager.clone());
-        let initial_tool_names = initial_tool_registry.tool_names_and_descriptions();
-
-        Ok(Self {
-            config,
-            project_mcp_registry,
-            ssh_manager,
-            subprocesses,
-            db,
-            active_runs: Mutex::new(HashMap::new()),
-            next_run_generation: AtomicU64::new(1),
-            title_generations: Mutex::new(HashMap::new()),
-            next_title_generation: AtomicU64::new(1),
-            keywords_generations: Mutex::new(HashMap::new()),
-            next_keywords_generation: AtomicU64::new(1),
-            sub_agent_manager: Some(sub_agent_manager),
-            registered_tools: Mutex::new(Some(initial_tool_names)),
-        })
-    }
-
-    pub fn sub_agent_manager(&self) -> Option<Arc<SubAgentManager>> {
-        self.sub_agent_manager.clone()
-    }
-
-    pub fn registered_tool_names(&self) -> Option<Vec<(String, String)>> {
-        self.registered_tools.lock().clone()
-    }
-
-    pub fn set_registered_tools(&self, tools: Vec<(String, String)>) {
-        *self.registered_tools.lock() = Some(tools);
-    }
-
-    fn build_run_agent(&self) -> DispatcherAgent {
-        let mut agent = DispatcherAgent::new(
-            self.config.clone(),
-            self.project_mcp_registry.clone(),
-            self.ssh_manager.clone(),
-            Arc::clone(&self.subprocesses),
-            self.sub_agent_manager.clone(),
-        );
-
-        if let Ok(v2) = self.db.get_settings_v2() {
-            agent.apply_settings_v2(&v2, AgentContext::Project);
-            agent.set_auto_approve_dispatch(v2.auto_approve_dispatch);
-            agent.set_context_debug(v2.context_debug);
-        } else if let Ok(Some(settings)) = self.db.get_settings() {
-            agent.apply_settings(&settings);
-            agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
-            agent.set_context_debug(settings.context_debug);
-        }
-
-        if self.registered_tool_names().is_none() {
-            self.set_registered_tools(agent.tools_arc().tool_names_and_descriptions());
-        }
-
-        agent
-    }
-
-    fn build_plain_chat_agent(&self, workspace_id: &str) -> Result<PlainChatAgent, String> {
-        let agent = PlainChatAgent::new(
-            self.config.clone(),
-            self.project_mcp_registry.clone(),
-            self.ssh_manager.clone(),
-            self.sub_agent_manager.clone(),
-        );
-
-        if let Ok(v2) = self.db.get_settings_v2() {
-            agent.apply_settings_v2(&v2, AgentContext::Chat);
-        } else if let Ok(Some(settings)) = self.db.get_settings() {
-            agent.apply_settings(&settings);
-        }
-
-        if let Some(category_config) = self
-            .db
-            .get_chat_session_category_agent_config(workspace_id)
-            .map_err(|error| error.to_string())?
-        {
-            agent.apply_category_config(&category_config);
-        }
-
-        Ok(agent)
-    }
-
-    async fn list_agent_tools(
-        &self,
-        context: AgentContext,
-        project_path: Option<String>,
-    ) -> Result<Vec<ToolInfo>, String> {
-        let (workspace, registry) = match context {
-            AgentContext::Project => {
-                let Some(project_path) = project_path.filter(|path| !path.trim().is_empty()) else {
-                    let mut registry = ToolRegistry::default_tools(
-                        self.project_mcp_registry.clone(),
-                        self.ssh_manager.clone(),
-                    );
-                    self.add_sub_agent_tools(&mut registry);
-                    return Ok(tool_infos_from_registry(&registry, None, false));
-                };
-                let workspace = std::path::PathBuf::from(project_path);
-                self.project_mcp_registry.ensure_recent(&workspace).await?;
-                let mut registry = ToolRegistry::default_tools(
-                    self.project_mcp_registry.clone(),
-                    self.ssh_manager.clone(),
-                );
-                self.add_sub_agent_tools(&mut registry);
-                (workspace, registry)
-            }
-            AgentContext::Chat => {
-                let workspace = plain_chat_workspace(&self.config)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                self.project_mcp_registry.ensure_recent(&workspace).await?;
-                let mut registry = ToolRegistry::plain_chat_tools(
-                    self.project_mcp_registry.clone(),
-                    self.ssh_manager.clone(),
-                );
-                self.add_sub_agent_tools(&mut registry);
-                (workspace, registry)
-            }
-        };
-
-        Ok(tool_infos_from_registry(&registry, Some(&workspace), true))
-    }
-
-    async fn ssh_workspace_for_context(
-        &self,
-        context: AgentContext,
-        project_path: Option<String>,
-    ) -> Result<std::path::PathBuf, String> {
-        match context {
-            AgentContext::Project => project_path
-                .filter(|path| !path.trim().is_empty())
-                .map(std::path::PathBuf::from)
-                .ok_or_else(|| "项目 SSH 配置需要项目路径".to_string()),
-            AgentContext::Chat => plain_chat_workspace(&self.config)
-                .await
-                .map_err(|error| error.to_string()),
-        }
-    }
-
-    fn add_sub_agent_tools(&self, registry: &mut ToolRegistry) {
-        if let Some(manager) = &self.sub_agent_manager {
-            registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(Arc::clone(
-                manager,
-            ))));
-            registry.add_tool(Box::new(super::sub_agent::ListSubAgentsTool::new(
-                Arc::clone(manager),
-            )));
-        }
-    }
-
-    fn begin_run(&self, workspace_id: &str) -> Result<ActiveRunHandle, String> {
-        let mut active_runs = self.active_runs.lock();
-        if active_runs.contains_key(workspace_id) {
-            return Err(format!(
-                "会话 {} 已在运行中，请等待当前任务完成",
-                workspace_id
-            ));
-        }
-        let generation = self.next_run_generation.fetch_add(1, Ordering::Relaxed);
-        let (stop_tx, cancel_rx) = watch::channel(false);
-        active_runs.insert(
-            workspace_id.to_string(),
-            ActiveRunEntry {
-                generation,
-                stop_tx,
-            },
-        );
-        Ok(ActiveRunHandle {
-            generation,
-            cancel_rx,
-        })
-    }
-
-    pub(crate) fn register_subprocess(
-        &self,
-        workspace_id: &str,
-        task_id: &str,
-        dispatch_id: &str,
-        agent: &str,
-        description: &str,
-    ) -> Arc<std::sync::atomic::AtomicBool> {
-        self.subprocesses
-            .register(workspace_id, task_id, dispatch_id, agent, description)
-    }
-
-    pub(crate) fn mark_subprocess_round_completed(&self, task_id: &str) {
-        self.subprocesses.mark_round_completed(task_id);
-    }
-
-    pub(crate) fn mark_subprocess_running(&self, task_id: &str) {
-        self.subprocesses.mark_running(task_id);
-    }
-
-    pub(crate) fn mark_subprocess_stopped(&self, task_id: &str) {
-        self.subprocesses.mark_stopped(task_id);
-    }
-
-    pub(crate) fn mark_subprocess_finished(&self, task_id: &str) {
-        self.subprocesses.mark_finished(task_id);
-    }
-
-    pub(crate) fn mark_subprocess_exit_requested(&self, task_id: &str) {
-        self.subprocesses.mark_exit_requested(task_id);
-    }
-
-    pub(crate) fn force_subprocess_idle(&self, task_id: &str) {
-        self.subprocesses.force_idle(task_id);
-    }
-
-    pub(crate) fn is_subprocess_exit_requested(&self, task_id: &str) -> bool {
-        self.subprocesses.is_exit_requested(task_id)
-    }
-
-    fn finish_run(&self, workspace_id: &str, generation: u64) {
-        let mut active_runs = self.active_runs.lock();
-        let should_remove = active_runs
-            .get(workspace_id)
-            .is_some_and(|entry| entry.generation == generation);
-        if should_remove {
-            active_runs.remove(workspace_id);
-        }
-    }
-
-    fn stop_run(&self, workspace_id: &str) -> bool {
-        let tx = self
-            .active_runs
-            .lock()
-            .get(workspace_id)
-            .map(|entry| entry.stop_tx.clone());
-
-        tx.is_some_and(|sender| sender.send(true).is_ok())
-    }
-
-    fn begin_title_generation(&self, workspace_id: &str) -> u64 {
-        let generation = self.next_title_generation.fetch_add(1, Ordering::Relaxed);
-        self.title_generations
-            .lock()
-            .insert(workspace_id.to_string(), generation);
-        generation
-    }
-
-    fn finish_latest_title_generation(&self, workspace_id: &str, generation: u64) -> bool {
-        let mut title_generations = self.title_generations.lock();
-        if title_generations
-            .get(workspace_id)
-            .is_some_and(|current| *current == generation)
-        {
-            title_generations.remove(workspace_id);
-            return true;
-        }
-        false
-    }
-
-    fn begin_keywords_generation(&self, workspace_id: &str) -> u64 {
-        let generation = self
-            .next_keywords_generation
-            .fetch_add(1, Ordering::Relaxed);
-        self.keywords_generations
-            .lock()
-            .insert(workspace_id.to_string(), generation);
-        generation
-    }
-
-    fn finish_latest_keywords_generation(&self, workspace_id: &str, generation: u64) -> bool {
-        let mut keywords_generations = self.keywords_generations.lock();
-        if keywords_generations
-            .get(workspace_id)
-            .is_some_and(|current| *current == generation)
-        {
-            keywords_generations.remove(workspace_id);
-            return true;
-        }
-        false
-    }
-}
-
 fn has_live_subprocess(task_manager: &TaskManager, task_id: &str) -> bool {
     task_manager.child_handles.lock().contains_key(task_id)
 }
 
 fn resolve_voice_asr_config(state: &DispatcherState) -> Result<VoiceAsrConfig, String> {
-    let saved = state.db.get_settings().ok().flatten();
+    let saved = state.db().get_settings().ok().flatten();
     let loaded = DispatcherAgentConfig::load().ok();
 
     let api_key = saved
@@ -517,7 +188,7 @@ fn spawn_session_title_update(
     generation: u64,
 ) {
     let app = app.clone();
-    let db = state.db.clone();
+    let db = state.db().clone();
     let workspace_id = workspace_id.to_string();
     let fallback_content = fallback_content.to_string();
 
@@ -566,7 +237,7 @@ fn spawn_session_keywords_update(
     generation: u64,
 ) {
     let app = app.clone();
-    let db = state.db.clone();
+    let db = state.db().clone();
     let workspace_id = workspace_id.to_string();
 
     tokio::spawn(async move {
@@ -770,50 +441,6 @@ where
         .map_err(|error| error.to_string())
 }
 
-async fn plain_chat_workspace(config: &DispatcherAgentConfig) -> Result<std::path::PathBuf> {
-    let workspace = config.root_dir.join("plain-chat-browser");
-    let workspace_for_init = workspace.clone();
-    tokio::task::spawn_blocking(move || {
-        let config_dir = workspace_for_init.join(".jkcodingagent");
-        std::fs::create_dir_all(&config_dir)
-            .with_context(|| format!("create {}", config_dir.display()))?;
-        ensure_project_mcp_file(&workspace_for_init.to_string_lossy()).map_err(anyhow::Error::msg)
-    })
-    .await
-    .map_err(|error| anyhow!("create plain chat workspace task failed: {error}"))??;
-    Ok(workspace)
-}
-
-fn tool_infos_from_registry(
-    registry: &ToolRegistry,
-    workspace: Option<&std::path::Path>,
-    include_dynamic: bool,
-) -> Vec<ToolInfo> {
-    let definitions = match workspace {
-        Some(workspace) => registry.definitions_for_workspace(
-            workspace,
-            Option::<std::iter::Empty<&str>>::None,
-            include_dynamic,
-        ),
-        None => registry.definitions_for_workspace(
-            std::path::Path::new("."),
-            Option::<std::iter::Empty<&str>>::None,
-            false,
-        ),
-    };
-
-    let mut tools = definitions
-        .into_iter()
-        .map(|definition| ToolInfo {
-            name: definition.function.name,
-            description: definition.function.description,
-        })
-        .collect::<Vec<_>>();
-    tools.sort_by(|left, right| left.name.cmp(&right.name));
-    tools.dedup_by(|left, right| left.name == right.name);
-    tools
-}
-
 async fn generate_session_title(
     db: DispatcherDb,
     workspace_id: String,
@@ -972,12 +599,12 @@ pub async fn dispatcher_send_message(
     let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
         .map_err(|error| error.to_string())?;
     state
-        .db
+        .db()
         .set_session_mode(&workspace_id, mode)
         .map_err(|error| error.to_string())?;
     if mode == DispatcherMode::Default {
         state
-            .db
+            .db()
             .set_plan_interaction(&workspace_id, None)
             .map_err(|error| error.to_string())?;
     }
@@ -986,7 +613,7 @@ pub async fn dispatcher_send_message(
     let agent = state.build_run_agent().with_app_handle(app.clone());
     let result = agent
         .run(
-            &state.db,
+            state.db(),
             &workspace_id,
             &project_path,
             &content,
@@ -1034,7 +661,7 @@ pub async fn dispatcher_send_plain_chat_message(
         .with_app_handle(app.clone());
     let result = agent
         .run(
-            &state.db,
+            state.db(),
             &workspace_id,
             &content,
             segments_json,
@@ -1068,7 +695,7 @@ pub async fn dispatcher_list_messages(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
 ) -> Result<Vec<DispatcherMessageRecord>, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("dispatcher_list_messages", move || {
         db.list_visible_messages(&workspace_id)
     })
@@ -1081,7 +708,7 @@ pub fn dispatcher_get_session_token_usage(
     workspace_id: String,
 ) -> Result<Vec<DispatcherSessionTokenUsageRecord>, String> {
     state
-        .db
+        .db()
         .list_session_token_usage(&workspace_id)
         .map_err(|error| error.to_string())
 }
@@ -1091,7 +718,7 @@ pub async fn dispatcher_clear_messages(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
 ) -> Result<(), String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("dispatcher_clear_messages", move || {
         db.clear_messages(&workspace_id)
     })
@@ -1104,7 +731,7 @@ pub fn dispatcher_clear_message_context(
     workspace_id: String,
 ) -> Result<(), String> {
     state
-        .db
+        .db()
         .clear_context_messages(&workspace_id)
         .map_err(|error| error.to_string())
 }
@@ -1115,7 +742,7 @@ pub async fn dispatcher_get_tool_artifact(
     workspace_id: String,
     artifact_id: String,
 ) -> Result<DispatcherToolArtifactRecord, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("dispatcher_get_tool_artifact", move || {
         db.get_tool_artifact(&workspace_id, &artifact_id)
     })
@@ -1126,7 +753,7 @@ pub async fn dispatcher_get_tool_artifact(
 pub fn dispatcher_get_settings(
     state: tauri::State<'_, DispatcherState>,
 ) -> Result<Option<DispatcherSettingsRecord>, String> {
-    state.db.get_settings().map_err(|error| error.to_string())
+    state.db().get_settings().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1138,7 +765,7 @@ pub fn dispatcher_list_sessions(
     let kind = DispatcherSessionKind::from_wire(kind.as_deref().unwrap_or("project"))
         .map_err(|error| error.to_string())?;
     state
-        .db
+        .db()
         .list_sessions(&project_id, kind)
         .map_err(|error| error.to_string())
 }
@@ -1159,7 +786,7 @@ pub fn dispatcher_create_session(
     let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
         .map_err(|error| error.to_string())?;
     let session = state
-        .db
+        .db()
         .create_session(
             &project_id,
             &title,
@@ -1179,7 +806,7 @@ pub fn dispatcher_get_session_runtime_state(
     workspace_id: String,
 ) -> Result<DispatcherSessionRuntimeState, String> {
     state
-        .db
+        .db()
         .get_session_runtime_state(&workspace_id)
         .map_err(|error| error.to_string())
 }
@@ -1192,7 +819,7 @@ pub fn dispatcher_set_session_mode(
 ) -> Result<DispatcherSessionRuntimeState, String> {
     let mode = DispatcherMode::from_wire(&mode).map_err(|error| error.to_string())?;
     state
-        .db
+        .db()
         .set_session_mode(&workspace_id, mode)
         .map_err(|error| error.to_string())
 }
@@ -1202,7 +829,7 @@ pub async fn dispatcher_delete_session(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
 ) -> Result<(), String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("dispatcher_delete_session", move || {
         db.delete_session(&workspace_id)
     })
@@ -1214,7 +841,7 @@ pub async fn session_get_keywords(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
 ) -> Result<Vec<SessionKeywordRecord>, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("session_get_keywords", move || {
         db.list_session_keywords(&workspace_id)
     })
@@ -1229,7 +856,7 @@ pub async fn session_search_keywords(
     kind: Option<String>,
     project_id: Option<String>,
 ) -> Result<Vec<SessionSearchResult>, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     let lim = limit.unwrap_or(20);
     run_dispatcher_db("session_search_keywords", move || {
         db.search_sessions_by_keywords(&query, lim, kind.as_deref(), project_id.as_deref())
@@ -1246,7 +873,7 @@ pub async fn chat_list_sessions(
     cursor: Option<String>,
     page_size: Option<i64>,
 ) -> Result<SessionPage<ChatSessionRecord>, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     let size = page_size.unwrap_or(30);
     run_dispatcher_db("chat_list_sessions", move || {
         db.list_chat_sessions_paginated(category.as_deref(), cursor.as_deref(), size)
@@ -1261,7 +888,7 @@ pub async fn chat_create_session(
     title: String,
     category: Option<String>,
 ) -> Result<ChatSessionRecord, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     let session = run_dispatcher_db("chat_create_session", move || {
         db.create_chat_session(&title, category.as_deref())
     })
@@ -1275,7 +902,7 @@ pub async fn chat_delete_session(
     state: tauri::State<'_, DispatcherState>,
     session_id: String,
 ) -> Result<(), String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("chat_delete_session", move || {
         db.delete_chat_session(&session_id)
     })
@@ -1288,7 +915,7 @@ pub async fn chat_update_session_title(
     session_id: String,
     title: String,
 ) -> Result<Option<ChatSessionRecord>, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("chat_update_session_title", move || {
         db.update_chat_session_title(&session_id, &title)
     })
@@ -1301,7 +928,7 @@ pub async fn chat_set_session_category_v6(
     session_id: String,
     category_id: String,
 ) -> Result<(), String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("chat_set_session_category_v6", move || {
         db.set_chat_session_category(&session_id, &category_id)
     })
@@ -1317,7 +944,7 @@ pub async fn project_list_sessions(
     offset: Option<i64>,
     page_size: Option<i64>,
 ) -> Result<SessionPage<ProjectSessionRecord>, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     let off = offset.unwrap_or(0);
     let size = page_size.unwrap_or(30);
     run_dispatcher_db("project_list_sessions", move || {
@@ -1335,7 +962,7 @@ pub async fn project_create_session(
     mode: Option<String>,
     active_plan_path: Option<String>,
 ) -> Result<ProjectSessionRecord, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
         .map_err(|e| e.to_string())?;
     let session = run_dispatcher_db("project_create_session", move || {
@@ -1351,7 +978,7 @@ pub async fn project_delete_session(
     state: tauri::State<'_, DispatcherState>,
     session_id: String,
 ) -> Result<(), String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("project_delete_session", move || {
         db.delete_project_session(&session_id)
     })
@@ -1362,7 +989,7 @@ pub async fn project_delete_session(
 pub async fn chat_list_categories(
     state: tauri::State<'_, DispatcherState>,
 ) -> Result<Vec<ChatCategory>, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("chat_list_categories", move || db.list_chat_categories()).await
 }
 
@@ -1375,7 +1002,7 @@ pub async fn chat_create_category(
     allowed_tools: Option<Vec<String>>,
     system_prompt: Option<String>,
 ) -> Result<ChatCategory, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("chat_create_category", move || {
         db.create_chat_category(
             &name,
@@ -1396,7 +1023,7 @@ pub async fn chat_update_category(
     icon: Option<String>,
     color: Option<String>,
 ) -> Result<Option<ChatCategory>, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("chat_update_category", move || {
         db.update_chat_category(
             &category_id,
@@ -1413,7 +1040,7 @@ pub async fn chat_delete_category(
     state: tauri::State<'_, DispatcherState>,
     category_id: String,
 ) -> Result<(), String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("chat_delete_category", move || {
         db.delete_chat_category(&category_id)
     })
@@ -1426,7 +1053,7 @@ pub async fn chat_set_session_category(
     workspace_id: String,
     category_id: String,
 ) -> Result<(), String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("chat_set_session_category", move || {
         db.set_session_category(&workspace_id, &category_id)
     })
@@ -1438,7 +1065,7 @@ pub async fn chat_reorder_categories(
     state: tauri::State<'_, DispatcherState>,
     ordered_ids: Vec<String>,
 ) -> Result<(), String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("chat_reorder_categories", move || {
         db.reorder_chat_categories(&ordered_ids)
     })
@@ -1449,7 +1076,7 @@ pub async fn chat_reorder_categories(
 pub async fn aha_get_chat_category_agent_configs(
     state: tauri::State<'_, DispatcherState>,
 ) -> Result<Vec<ChatCategoryAgentConfig>, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("aha_get_chat_category_agent_configs", move || {
         db.list_chat_category_agent_configs()
     })
@@ -1461,7 +1088,7 @@ pub async fn aha_save_chat_category_agent_configs(
     state: tauri::State<'_, DispatcherState>,
     configs: Vec<ChatCategoryAgentConfig>,
 ) -> Result<Vec<ChatCategoryAgentConfig>, String> {
-    let db = state.db.clone();
+    let db = state.db().clone();
     run_dispatcher_db("aha_save_chat_category_agent_configs", move || {
         db.save_chat_category_agent_configs(&configs)
     })
@@ -1474,7 +1101,7 @@ pub async fn dispatcher_save_settings(
     settings: DispatcherSaveSettingsPayload,
 ) -> Result<DispatcherSettingsRecord, String> {
     let record = state
-        .db
+        .db()
         .save_settings_with_model_configs(
             &settings.api_base,
             &settings.api_key,
@@ -1713,7 +1340,7 @@ pub async fn dispatcher_set_auto_approve_dispatch(
     auto_approve_dispatch: bool,
 ) -> Result<DispatcherSettingsRecord, String> {
     let record = state
-        .db
+        .db()
         .set_auto_approve_dispatch(auto_approve_dispatch)
         .map_err(|error| error.to_string())?;
     Ok(record)
@@ -1724,7 +1351,7 @@ pub async fn aha_get_settings_v2(
     state: tauri::State<'_, DispatcherState>,
 ) -> Result<AhaSettingsV2, String> {
     state
-        .db
+        .db()
         .get_settings_v2()
         .map_err(|error| error.to_string())
 }
@@ -1735,9 +1362,34 @@ pub async fn aha_save_settings_v2(
     settings: AhaSettingsV2,
 ) -> Result<AhaSettingsV2, String> {
     state
-        .db
+        .db()
         .save_settings_v2(&settings)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn aha_set_active_chat_model(
+    state: tauri::State<'_, DispatcherState>,
+    model_index: usize,
+) -> Result<Vec<DispatcherModelConfig>, String> {
+    let mut settings = state
+        .db()
+        .get_settings_v2()
+        .map_err(|error| error.to_string())?;
+
+    if model_index >= settings.chat.chat_model_configs.len() {
+        return Err(format!("聊天主模型索引越界：{model_index}"));
+    }
+
+    for (index, config) in settings.chat.chat_model_configs.iter_mut().enumerate() {
+        config.active = index == model_index;
+    }
+
+    let saved = state
+        .db()
+        .save_settings_v2(&settings)
+        .map_err(|error| error.to_string())?;
+    Ok(saved.chat.chat_model_configs)
 }
 
 #[tauri::command]
@@ -1747,7 +1399,7 @@ pub async fn aha_get_context_config(
 ) -> Result<AhaContextConfig, String> {
     let ctx = AgentContext::from_wire(&context).map_err(|e| e.to_string())?;
     state
-        .db
+        .db()
         .get_settings_for_context(ctx)
         .map_err(|error| error.to_string())
 }
@@ -1757,7 +1409,7 @@ pub async fn aha_get_shared_models(
     state: tauri::State<'_, DispatcherState>,
 ) -> Result<AhaSharedModels, String> {
     state
-        .db
+        .db()
         .get_shared_models()
         .map_err(|error| error.to_string())
 }
@@ -1802,7 +1454,7 @@ pub async fn dispatcher_continue_after_dispatch(
     let agent = state.build_run_agent().with_app_handle(app);
     let result = agent
         .continue_after_dispatch(
-            &state.db,
+            state.db(),
             &workspace_id,
             &project_path,
             &dispatch_result,
@@ -1826,7 +1478,7 @@ pub fn dispatcher_attach_checklist_subprocess(
     task_id: String,
 ) -> Result<DispatcherSessionRuntimeState, String> {
     state
-        .db
+        .db()
         .attach_checklist_subprocess(&workspace_id, &dispatch_id, &task_id)
         .map_err(|error| error.to_string())
 }
@@ -1838,7 +1490,7 @@ pub fn dispatcher_clear_checklist_dispatch(
     dispatch_id: String,
 ) -> Result<DispatcherSessionRuntimeState, String> {
     state
-        .db
+        .db()
         .clear_checklist_dispatch(&workspace_id, &dispatch_id)
         .map_err(|error| error.to_string())
 }

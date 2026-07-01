@@ -165,4 +165,8 @@ pub enum AgentEvent {
     Finished {
         messages: Vec<DispatcherMessageRecord>,
     },
+    Failed {
+        workspace_id: String,
+        message: String,
+    },
 }

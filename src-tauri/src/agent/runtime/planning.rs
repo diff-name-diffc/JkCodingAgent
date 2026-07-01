@@ -28,6 +28,8 @@ pub(super) enum PlanningToolOutcome {
 
 // ─── Mode guard ───────────────────────────────────────────────────────────────
 
+/// 模式守卫：确保计划类工具只在正确的 DispatcherMode（Default/Plan）下使用。
+/// 例如 update_plan 仅 Default 模式可用，present_plan 仅 Plan 模式可用。
 pub(super) fn ensure_mode(
     actual: DispatcherMode,
     expected: DispatcherMode,
@@ -306,6 +308,10 @@ pub(super) fn empty_checklist_state() -> ChecklistPlanState {
 }
 
 // ─── Checklist dispatch lifecycle ─────────────────────────────────────────────
+// Checklist 与子进程派生的状态机联动：
+//   reserve（预留，dispatch 提案时）→ start（子进程真正开始，回流时）→
+//   complete（子进程完成，回流时）
+// 这套生命周期保证 checklist 步骤状态与实际子进程执行同步。
 
 pub(super) async fn reserve_checklist_dispatch(
     db: &DispatcherDb,
@@ -436,7 +442,10 @@ pub(super) async fn complete_checklist_dispatch(
 
 use super::DispatcherAgent;
 
-impl DispatcherAgent {
+    impl DispatcherAgent {
+    /// 计划类工具统一分派入口（process_single_tool_call 的优先级 1）。
+    /// 处理 update_plan / ask_plan_question / 计划文档 CRUD /
+    /// present_plan / mark_plan_implemented，返回 ToolResult 或 WaitForUser。
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn execute_planning_tool(
         &self,

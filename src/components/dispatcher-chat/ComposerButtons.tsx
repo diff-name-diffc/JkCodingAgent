@@ -1,5 +1,4 @@
 import { memo } from "react";
-import { Brain } from "lucide-react";
 import type { DispatcherMode } from "../../types";
 import { dispatcherChatStyles as styles } from "./dispatcherChatStyles";
 
@@ -21,31 +20,6 @@ export const PlanModeToggleButton = memo(function PlanModeToggleButton({
       aria-pressed={active}
     >
       Plan
-    </button>
-  );
-});
-
-export const ThinkingToggleButton = memo(function ThinkingToggleButton({
-  active,
-  disabled,
-  onToggle,
-}: {
-  active: boolean;
-  disabled?: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      style={styles.thinkingToggleBtn(active)}
-      onClick={onToggle}
-      disabled={disabled}
-      title={active ? "隐藏思考内容" : "显示思考内容"}
-      aria-label={active ? "隐藏思考内容" : "显示思考内容"}
-      aria-pressed={active}
-    >
-      <Brain size={15} />
-      <span>思考</span>
     </button>
   );
 });

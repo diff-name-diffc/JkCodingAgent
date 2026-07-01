@@ -15,7 +15,7 @@ use crate::agent::llm::{
     ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider, OutboundToolCall, RequestedToolCall,
     ToolDefinition,
 };
-use crate::agent::tools::{ToolContext, ToolRegistry, ToolResult, ToolStatus};
+use crate::agent::tools::{ToolContext, ToolRegistry, ToolResult, ToolRuntime, ToolStatus};
 
 const SUB_AGENT_RESULT_MAX_CHARS: usize = 32_000;
 const SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS: u64 = 120;
@@ -134,15 +134,24 @@ pub struct SubAgentEventPayload {
     pub event: SubAgentEvent,
 }
 
+/// 子智能体独立执行运行时。
+///
+/// 与主 DispatcherAgent 的区别：无子进程调度、无计划/checklist、无协议动作，
+/// 是一个纯粹的"LLM ↔ 工具"循环。支持工具错误重试（一次重试后强制收口）和
+/// 超时控制。结果会截断到 SUB_AGENT_RESULT_MAX_CHARS 后返回给父循环。
 pub struct SubAgentRuntime {
     config: SubAgentConfig,
     provider: OpenAiCompatProvider,
     tool_registry: Arc<ToolRegistry>,
     tool_context: ToolContext,
     tool_definitions: Vec<crate::agent::llm::ToolDefinition>,
+    allowed_tool_names: HashSet<String>,
 }
 
 impl SubAgentRuntime {
+    /// 构建子智能体运行时。provider 可继承父级配置或使用子智能体独立配置；
+    /// 关键约束：排除嵌套的 call_sub_agent / list_sub_agents 工具，防止子智能体
+    /// 递归派生导致无限调用栈。
     pub fn build(
         config: &SubAgentConfig,
         parent_provider: &OpenAiCompatProvider,
@@ -186,17 +195,18 @@ impl SubAgentRuntime {
         tool_context.current_sub_agent_id = Some(config.agent_id.clone());
         tool_context.current_sub_agent_name = Some(config.agent_name.clone());
 
+        // 排除嵌套子智能体工具（call_sub_agent / list_sub_agents），避免递归派生。
         let excluded: HashSet<&str> = NESTED_SUB_AGENT_TOOLS.iter().copied().collect();
-        let allowed_set: HashSet<&str> = config
+        let allowed_tool_names: HashSet<String> = config
             .allowed_tools
             .iter()
             .filter(|s| !excluded.contains(s.as_str()))
-            .map(|s| s.as_str())
+            .cloned()
             .collect();
 
         let tool_definitions = tool_registry.definitions_for_workspace(
             &tool_context.workspace,
-            Some(allowed_set.iter().copied()),
+            Some(allowed_tool_names.iter().map(String::as_str)),
             false,
         );
 
@@ -206,9 +216,13 @@ impl SubAgentRuntime {
             tool_registry,
             tool_context,
             tool_definitions,
+            allowed_tool_names,
         })
     }
 
+    /// 子智能体主执行循环：重复"请求 LLM → 执行工具 → 判断收口"。
+    /// 收口条件：模型返回无工具调用的最终答复，或超时，或达到最大迭代次数。
+    /// 工具错误处理：首次失败允许重试，再次失败则强制要求模型给出最终结论（force_final_response）。
     pub async fn execute(
         &self,
         task: &str,
@@ -281,6 +295,7 @@ impl SubAgentRuntime {
                 }
             };
 
+            // 若已触发强制收口（工具重试后仍失败），则传入空工具集，逼模型给出最终结论。
             let active_tool_definitions = if force_final_response {
                 &no_tools
             } else {
@@ -334,6 +349,7 @@ impl SubAgentRuntime {
                 }
             }
 
+            // 无工具调用 ⇒ 模型给出最终答复，子智能体正常收口。
             if response.tool_calls.is_empty() {
                 let result = response.content.clone();
                 if let Some(handle) = &app_handle {
@@ -413,6 +429,9 @@ impl SubAgentRuntime {
                     let result_text = result.output_for_llm();
                     match result.status {
                         ToolStatus::RecoverableError => {
+                            // 工具错误重试策略：首次失败给重试提示；若已重试过仍失败，
+                            // 则置 force_final_response=true 并要求模型基于现状判断是否
+                            // 可修复——不可修复则明确退出，防止陷入无限重试循环。
                             let retry_hint = if tool_error_seen {
                                 force_final_response = true;
                                 format!(
@@ -526,10 +545,14 @@ impl SubAgentRuntime {
             );
         }
 
-        let result = self
-            .tool_registry
-            .execute(&tc.name, &tc.arguments, &self.tool_context)
-            .await;
+        let result = ToolRuntime::execute_tool(
+            &self.tool_registry,
+            &self.tool_context.workspace,
+            &self.allowed_tool_names,
+            tc,
+            &self.tool_context,
+        )
+        .await;
 
         let result_text = result.output_for_llm();
         let result_preview = tool_result_preview(&tc.name, &result_text);
@@ -583,9 +606,14 @@ impl SubAgentRuntime {
                 .map(|tc| async move {
                     (
                         tc,
-                        self.tool_registry
-                            .execute(&tc.name, &tc.arguments, &self.tool_context)
-                            .await,
+                        ToolRuntime::execute_tool(
+                            &self.tool_registry,
+                            &self.tool_context.workspace,
+                            &self.allowed_tool_names,
+                            tc,
+                            &self.tool_context,
+                        )
+                        .await,
                     )
                 })
                 .collect::<Vec<_>>(),

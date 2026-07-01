@@ -1,15 +1,26 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import type { DispatcherSessionTokenUsage } from "../types";
+import type { DispatcherModelConfig, DispatcherSessionTokenUsage } from "../types";
 import { formatTokenCount } from "../utils";
 
 interface SessionTokenUsageIndicatorsProps {
   entries: DispatcherSessionTokenUsage[];
+  chatModelConfigs?: DispatcherModelConfig[];
+  activeChatModelIndex?: number;
+  modelSwitchDisabled?: boolean;
+  onSelectChatModel?: (value: string) => void;
 }
 
-export function SessionTokenUsageIndicators({ entries }: SessionTokenUsageIndicatorsProps) {
+export function SessionTokenUsageIndicators({
+  entries,
+  chatModelConfigs = [],
+  activeChatModelIndex = 0,
+  modelSwitchDisabled = false,
+  onSelectChatModel,
+}: SessionTokenUsageIndicatorsProps) {
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const closeTimerRef = useRef<number | null>(null);
+  const canSwitchModel = chatModelConfigs.length > 1 && Boolean(onSelectChatModel);
 
   useEffect(() => {
     return () => {
@@ -39,6 +50,17 @@ export function SessionTokenUsageIndicators({ entries }: SessionTokenUsageIndica
     }, delay);
   }
 
+  function toggleIndicator(itemKey: string) {
+    clearCloseTimer();
+    setHoveredKey((current) => (current === itemKey ? null : itemKey));
+  }
+
+  function selectModel(index: number) {
+    if (modelSwitchDisabled) return;
+    onSelectChatModel?.(String(index));
+    setHoveredKey(null);
+  }
+
   if (entries.length === 0) {
     return null;
   }
@@ -52,14 +74,19 @@ export function SessionTokenUsageIndicators({ entries }: SessionTokenUsageIndica
             ? Math.min(100, (entry.contextWindowTokens / entry.contextWindowCapacity) * 100)
             : 0;
         const sourceLabel = entry.sourceKind === "summary" ? "摘要" : "主模型";
+        const showModelSwitcher = canSwitchModel && entry.sourceKind === "primary";
 
         return (
           <Popover.Root key={itemKey} open={hoveredKey === itemKey}>
             <Popover.Trigger asChild>
               <button
                 type="button"
-                style={styles.item}
-                aria-label={`${sourceLabel} ${entry.model} 上下文占用 ${percent.toFixed(1)}%`}
+                style={{
+                  ...styles.item,
+                  ...(showModelSwitcher ? styles.itemInteractive : {}),
+                }}
+                aria-label={`${sourceLabel} ${entry.model} 上下文占用 ${percent.toFixed(1)}%${showModelSwitcher ? "，点击切换模型" : ""}`}
+                onClick={() => toggleIndicator(itemKey)}
                 onFocus={() => openIndicator(itemKey)}
                 onBlur={() => scheduleClose(itemKey, 80)}
                 onPointerEnter={() => openIndicator(itemKey)}
@@ -96,6 +123,31 @@ export function SessionTokenUsageIndicators({ entries }: SessionTokenUsageIndica
                   <Detail label="缓存" value={formatTokenCount(entry.cachedTokens)} />
                   <Detail label="总计" value={formatTokenCount(entry.totalTokens)} />
                 </div>
+                {showModelSwitcher && (
+                  <div style={styles.modelSwitchSection}>
+                    <div style={styles.modelSwitchTitle}>切换模型</div>
+                    <div style={styles.modelSwitchList}>
+                      {chatModelConfigs.map((config, index) => {
+                        const active = index === activeChatModelIndex;
+                        return (
+                          <button
+                            key={`${config.url}:${config.model}:${index}`}
+                            type="button"
+                            style={{
+                              ...styles.modelSwitchItem,
+                              ...(active ? styles.modelSwitchItemActive : {}),
+                            }}
+                            disabled={modelSwitchDisabled}
+                            onClick={() => selectModel(index)}
+                            title={modelName(config, index)}
+                          >
+                            {modelName(config, index)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </Popover.Content>
             </Popover.Portal>
           </Popover.Root>
@@ -103,6 +155,10 @@ export function SessionTokenUsageIndicators({ entries }: SessionTokenUsageIndica
       })}
     </div>
   );
+}
+
+function modelName(config: DispatcherModelConfig, index: number) {
+  return config.model.trim() || `模型 ${index + 1}`;
 }
 
 function TokenUsageRing({ percent }: { percent: number }) {
@@ -162,6 +218,9 @@ const styles = {
     outline: "none",
     cursor: "default",
     flexShrink: 0,
+  },
+  itemInteractive: {
+    cursor: "pointer",
   },
   ringSvg: {
     display: "block",
@@ -237,5 +296,42 @@ const styles = {
     color: "var(--text-muted)",
     fontSize: 11,
     fontFamily: "var(--font-mono)",
+  },
+  modelSwitchSection: {
+    marginTop: 10,
+    paddingTop: 9,
+    borderTop: "1px solid var(--border-dim)",
+  },
+  modelSwitchTitle: {
+    marginBottom: 6,
+    color: "var(--text-muted)",
+    fontSize: 10,
+    fontWeight: 700,
+  },
+  modelSwitchList: {
+    display: "grid",
+    gap: 5,
+  },
+  modelSwitchItem: {
+    minWidth: 0,
+    width: "100%",
+    minHeight: 28,
+    padding: "6px 8px",
+    borderRadius: 7,
+    border: "1px solid transparent",
+    background: "transparent",
+    color: "var(--text-secondary)",
+    fontSize: 11,
+    fontWeight: 700,
+    textAlign: "left",
+    cursor: "pointer",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  modelSwitchItemActive: {
+    borderColor: "color-mix(in srgb, var(--accent) 42%, transparent)",
+    background: "var(--accent-subtle)",
+    color: "var(--accent)",
   },
 } satisfies Record<string, CSSProperties>;

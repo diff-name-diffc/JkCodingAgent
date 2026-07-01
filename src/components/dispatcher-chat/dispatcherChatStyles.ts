@@ -83,15 +83,6 @@ export const dispatcherChatStyles = {
     fontSize: 10,
     fontWeight: 800,
   },
-  headerThinkingBadge: {
-    border: "1px solid color-mix(in srgb, var(--warning, #d97706) 28%, var(--border-dim))",
-    borderRadius: 999,
-    padding: "3px 7px",
-    color: "var(--warning, #d97706)",
-    background: "color-mix(in srgb, var(--warning, #d97706) 10%, transparent)",
-    fontSize: 10,
-    fontWeight: 800,
-  },
   thinkingDot: {
     width: "8px",
     height: "8px",
@@ -169,27 +160,6 @@ export const dispatcherChatStyles = {
     fontWeight: 700,
     cursor: "pointer",
     boxShadow: active ? "0 12px 24px -18px var(--accent)" : "var(--shadow-xs)",
-  }),
-  thinkingToggleBtn: (active: boolean) => ({
-    height: "34px",
-    padding: "0 11px",
-    borderRadius: "999px",
-    border: active
-      ? "1px solid color-mix(in srgb, var(--warning, #d97706) 52%, transparent)"
-      : "1px solid var(--border-dim)",
-    background: active
-      ? "color-mix(in srgb, var(--warning, #d97706) 14%, var(--chat-surface-strong))"
-      : "color-mix(in srgb, var(--chat-surface-strong) 88%, transparent)",
-    color: active ? "var(--warning, #d97706)" : "var(--text-secondary)",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    fontSize: 12,
-    fontWeight: 700,
-    cursor: "pointer",
-    flexShrink: 0,
-    boxShadow: active ? "0 12px 24px -18px var(--warning, #d97706)" : "var(--shadow-xs)",
   }),
   headerBtn: {
     padding: "6px 10px",

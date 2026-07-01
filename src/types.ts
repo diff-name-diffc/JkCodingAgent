@@ -619,7 +619,8 @@ export type DispatcherAgentEvent =
     }
   | { event: "dispatchContinue"; data: { dispatchId: string; agent: AgentType; text: string } }
   | { event: "dispatchExit"; data: { dispatchId: string; agent: AgentType; reason: string } }
-  | { event: "finished"; data: { messages: DispatcherMessage[] } };
+  | { event: "finished"; data: { messages: DispatcherMessage[] } }
+  | { event: "failed"; data: { workspaceId: string; message: string } };
 
 export interface DispatcherSession {
   id: string;

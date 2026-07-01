@@ -5,7 +5,6 @@ import type { SessionKeyword } from "../../types";
 
 interface ChatHeaderProps {
   isPlainChat: boolean;
-  thinkingEnabled: boolean;
   isLoading: boolean;
   activePlanPath: string | null;
   autoApprove: boolean;
@@ -32,7 +31,6 @@ interface ChatHeaderProps {
 
 export const ChatHeader = memo(function ChatHeader({
   isPlainChat,
-  thinkingEnabled,
   isLoading,
   activePlanPath,
   autoApprove,
@@ -67,7 +65,6 @@ export const ChatHeader = memo(function ChatHeader({
           </span>
           <span style={styles.headerTitle}>{isPlainChat ? "聊天" : "调度智能体"}</span>
           {!isPlainChat && activePlanPath && <span style={styles.headerPlanBadge}>Plan</span>}
-          {thinkingEnabled && <span style={styles.headerThinkingBadge}>Think</span>}
           {isLoading && <span style={styles.thinkingDot} />}
         </div>
         <div style={styles.headerRight}>

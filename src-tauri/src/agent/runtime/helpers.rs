@@ -73,12 +73,6 @@ pub(crate) fn slugify_plan_title(title: &str) -> String {
 
 // ─── Tool Error Classification ────────────────────────────────────────────────
 
-pub(crate) fn disallowed_tool_result(tool_name: &str) -> String {
-    format!(
-        "错误：禁止调用工具 '{tool_name}'；它未在当前模式或运行状态的可用工具列表中。请改用系统提示中列出的当前实际可用工具。"
-    )
-}
-
 pub(crate) fn empty_llm_response_error(response: &LlmResponse) -> String {
     let raw_response = response.raw_response.trim();
     let response_detail = if raw_response.is_empty() {

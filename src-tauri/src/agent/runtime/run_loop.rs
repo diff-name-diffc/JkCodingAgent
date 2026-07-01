@@ -6,8 +6,8 @@ use tauri::ipc::Channel;
 use tokio::sync::watch;
 
 use super::super::common::{
-    build_tool_calls_payload, cancellation_requested, stream_llm_response, wait_for_cancellation,
-    LlmStreamOutcome, UsageTracker,
+    cancellation_requested, stream_llm_response, wait_for_cancellation, LlmStreamOutcome,
+    UsageTracker,
 };
 use super::super::db::{
     DispatcherDb, DispatcherMessageRecord, DispatcherSessionRuntimeState,
@@ -19,6 +19,7 @@ use super::super::prompt::PromptBundle;
 use super::super::summary::summarize_dispatch_result;
 use super::super::tools::ToolContext;
 
+use super::agent_loop::AgentLoop;
 use super::helpers::{
     build_stopped_dispatch_reply, emit, empty_llm_response_error, record_run_token_usage,
 };
@@ -29,8 +30,12 @@ use super::planning::{
 use super::types::{AgentEvent, AgentTurn, DispatchFeedbackState};
 use super::DispatcherAgent;
 
-// ─── Internal types ───────────────────────────────────────────────────────────
+// ─── 内部类型 ───────────────────────────────────────────────────────────
 
+/// 单次 LLM 请求的不可变快照。
+///
+/// 从请求发出到流式响应完成，必须使用同一份消息、provider 和工具 schema 快照。
+/// 流式传输期间的状态变更（如子进程状态）会在下一轮迭代处理，不在当前请求中途生效。
 pub(super) struct IterationContext {
     pub runtime_state: DispatcherSessionRuntimeState,
     pub tool_definitions: Vec<crate::agent::llm::ToolDefinition>,
@@ -40,10 +45,12 @@ pub(super) struct IterationContext {
     pub debug_logger: ContextDebugLogger,
 }
 
-// ─── Main entry points ────────────────────────────────────────────────────────
+// ─── 主入口 ────────────────────────────────────────────────────────────────
 
 impl DispatcherAgent {
-    #[allow(clippy::too_many_arguments)]
+    /// 项目模式主入口：接收用户消息并启动一轮调度。
+    /// 流程概览：发 Started → 清旧 checklist → 刷新 MCP → 存用户消息 →
+    /// 快照 provider/prompt → 进入 run_llm_loop（核心迭代循环）→ 发 Finished。
     pub async fn run(
         &self,
         db: &DispatcherDb,
@@ -55,12 +62,17 @@ impl DispatcherAgent {
         on_event: Channel<AgentEvent>,
         cancel_rx: watch::Receiver<bool>,
     ) -> Result<AgentTurn> {
+        // Started 在 fallible 代码块之外发出，保证 UI 总能离开 idle 状态；
+        // 之后的任何失败都在此边界统一归一化为 AgentEvent::Failed。
         emit(
             &on_event,
             AgentEvent::Started {
                 workspace_id: workspace_id.to_string(),
             },
         );
+        let result: Result<AgentTurn> = async {
+        // 新一轮用户对话需要一份全新的 checklist。若沿用旧 checklist，会让子进程
+        // dispatch 状态看起来仍然有效，但模型实际上在解决一个全新目标。
         db.clear_checklist_async(workspace_id)
             .await
             .context("clear stale checklist before new dispatcher turn")?;
@@ -76,6 +88,8 @@ impl DispatcherAgent {
             std::fs::create_dir_all(&workspace)
                 .with_context(|| format!("create workspace {}", workspace.display()))?;
         }
+        // 工具可用性是提示词契约的一部分。在用户消息进入循环前刷新 MCP 元数据，
+        // 确保第一次模型请求就能看到当前的工具 schema。
         self.project_mcp_registry
             .ensure_recent(&workspace)
             .await
@@ -94,9 +108,11 @@ impl DispatcherAgent {
         }
         let mut usage_tracker = UsageTracker::new();
 
-        // Build static prompt once for the entire turn (avoids re-reading disk files)
+        // provider 和静态提示词是本轮快照：设置变更只作用于下一轮 run，
+        // 而本轮内部保持一致。
         let static_prompt = self.build_system_prompt().await?;
-        // Pre-compute initial tool definitions and cache for the loop
+        // 初始化一次动态工具视图；run_llm_loop 会在工具调用可能改变运行态
+        // （如激活的计划、子进程可用性）后刷新它。
         let initial_runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
         let initial_tool_defs =
             self.tool_definitions_for_workspace(workspace_id, &workspace, &initial_runtime_state);
@@ -129,9 +145,26 @@ impl DispatcherAgent {
             },
         );
         Ok(AgentTurn { reply, messages })
+        }
+        .await;
+
+        if let Err(error) = &result {
+            emit(
+                &on_event,
+                AgentEvent::Failed {
+                    workspace_id: workspace_id.to_string(),
+                    message: error.to_string(),
+                },
+            );
+        }
+
+        result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// 子任务回流入口：子进程执行完毕后，将其结果摘要作为隐藏用户消息注入，
+    /// 然后重新进入主循环，让主 Agent 据此继续推理或收口本轮调度。
+    ///
+    /// 这是"调度闭环"的后半段（前半段是 protocol.rs 触发 DispatchProposed）。
     pub async fn continue_after_dispatch(
         &self,
         db: &DispatcherDb,
@@ -144,6 +177,7 @@ impl DispatcherAgent {
         on_event: Channel<AgentEvent>,
         mut cancel_rx: watch::Receiver<bool>,
     ) -> Result<AgentTurn> {
+        let result: Result<AgentTurn> = async {
         let debug_logger =
             ContextDebugLogger::new(self.context_debug_enabled(), PathBuf::from(workspace_path));
         if let Some(dispatch_id) = dispatch_id {
@@ -263,6 +297,8 @@ impl DispatcherAgent {
             summarized_dispatch_result
         );
 
+        // 子进程输出在上方以简短可见状态展示，但作为隐藏的 user 上下文重新进入主 LLM。
+        // 这样既保持聊天界面可读，又保留下一步推理所需的因果关系。
         db.add_hidden_message_async(
             workspace_id,
             "user",
@@ -281,9 +317,8 @@ impl DispatcherAgent {
             .map_err(anyhow::Error::msg)
             .context("刷新项目 MCP 状态失败")?;
 
-        // Build static prompt once for the entire turn (avoids re-reading disk files)
+        // 与 run() 相同的本轮快照策略：静态提示词只加载一次，动态运行态在循环内刷新。
         let static_prompt = self.build_system_prompt().await?;
-        // Pre-compute initial tool definitions and cache for the loop
         let initial_runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
         let initial_tool_defs =
             self.tool_definitions_for_workspace(workspace_id, &workspace, &initial_runtime_state);
@@ -316,10 +351,29 @@ impl DispatcherAgent {
             },
         );
         Ok(AgentTurn { reply, messages })
+        }
+        .await;
+
+        if let Err(error) = &result {
+            emit(
+                &on_event,
+                AgentEvent::Failed {
+                    workspace_id: workspace_id.to_string(),
+                    message: error.to_string(),
+                },
+            );
+        }
+
+        result
     }
 
-    // ─── LLM loop ─────────────────────────────────────────────────────────────
+    // ─── LLM 循环 ─────────────────────────────────────────────────────────
 
+    /// 核心迭代循环：重复"请求 LLM → 执行工具 → 判断是否收口"，直到：
+    /// - 模型返回不含工具调用的最终答复（handle_no_tool_response），或
+    /// - 协议动作/计划等待用户（resolve_loop_outcome 返回 Some），或
+    /// - 被取消，或
+    /// - 达到 max_tool_iterations 上限（视为模型陷入循环）。
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_llm_loop(
         &self,
@@ -341,23 +395,25 @@ impl DispatcherAgent {
         let debug_logger =
             ContextDebugLogger::new(self.context_debug_enabled(), PathBuf::from(workspace));
 
-        // ── Loop-invariant setup (executed once) ─────────────────────────────
+        // ── 循环不变量初始化（仅执行一次） ────────────────────────────
 
         let initial_runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
         let tool_definitions = initial_tool_definitions;
         let allowed_tool_names = initial_allowed_tools;
 
-        // Load history messages once from DB
-        let history_messages = db.load_llm_history_async(workspace_id).await?;
-        let mut incremental_messages: Vec<ChatMessage> = history_messages;
+        // AgentLoop 拥有本轮内存中的 LLM 历史。它从持久化的 DB 历史起步，
+        // 之后只追加本循环产生的消息，而非每次工具调用后都重新加载整段对话。
+        let mut agent_loop =
+            AgentLoop::new(db, workspace_id, static_prompt.static_content.clone()).await?;
 
-        // Cache for tool definitions across iterations
+        // 这些缓存只在运行态可能影响工具可见性时才替换。保持其局部性，
+        // 防止半更新的设置泄漏进正在进行的 LLM 请求。
         let mut tool_defs_cache = tool_definitions;
         let mut allowed_names_cache = allowed_tool_names;
         let mut runtime_state_cache = initial_runtime_state;
 
-        // Pre-check context window budget
-        let estimated_tokens = DispatcherDb::estimate_context_tokens(&incremental_messages);
+        // 仅用于诊断：当前循环只记录压力告警，不会压缩历史。
+        let estimated_tokens = agent_loop.estimated_tokens();
         if estimated_tokens > DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS * 8 / 10 {
             debug_logger.log(
                 "上下文窗口接近上限",
@@ -373,7 +429,7 @@ impl DispatcherAgent {
             );
         }
 
-        // ── Main iteration loop ─────────────────────────────────────────────
+        // ── 主迭代循环 ─────────────────────────────────────────
 
         for iteration in 0..self.config.max_tool_iterations {
             if cancellation_requested(&cancel_rx) {
@@ -382,7 +438,8 @@ impl DispatcherAgent {
                     .await;
             }
 
-            // For iteration > 0: rebuild dynamic context with current state
+            // 工具调用可能改变运行态（例如预留计划、派生子进程），进而影响工具可见性。
+            // 首轮之后每轮重新计算工具白名单，保证模型只看到当前合法的工具集。
             if iteration > 0 {
                 runtime_state_cache = db.get_session_runtime_state_async(workspace_id).await?;
                 let new_tool_defs = self.tool_definitions_for_workspace(
@@ -397,7 +454,8 @@ impl DispatcherAgent {
                 tool_defs_cache = new_tool_defs;
             }
 
-            // Build system prompt from cached static + fresh dynamic sections (no disk I/O)
+            // 每轮从静态文本 + 最新运行态分片重新渲染系统提示；既避免磁盘读取，
+            // 又保证动态指令始终是当前的。
             let prompt_snapshot = self.build_system_prompt_from_static(
                 static_prompt,
                 workspace_id,
@@ -406,11 +464,12 @@ impl DispatcherAgent {
                 &runtime_state_cache,
             )?;
 
-            // Prepend system prompt to incremental messages
+            // 每轮用最新动态系统提示替换首条 system 消息。跳过 AgentLoop 内的旧 system，
+            // 避免过期的动态分片（如已失效的子进程状态）混入本轮请求。
             let mut messages = vec![ChatMessage::system(prompt_snapshot.rendered.clone())];
-            messages.extend(incremental_messages.iter().cloned());
+            messages.extend(agent_loop.request_messages().into_iter().skip(1));
 
-            // Provider selection: cache across iterations (images don't appear mid-loop)
+            // 每轮仍需按消息内容选择 provider：若本轮消息含图片，则切换到视觉模型。
             let request_provider = if iteration == 0 {
                 self.provider_for_messages(provider, &messages, on_event, true)?
             } else {
@@ -426,6 +485,8 @@ impl DispatcherAgent {
                 debug_logger: debug_logger.clone(),
             };
 
+            // 从此处直到流式响应完成，请求必须使用消息、provider 和工具 schema 的稳定快照。
+            // 流式传输期间的状态变更留到下一轮迭代处理，不在 token 流式输出过程中介入。
             let response = match self
                 .stream_llm_response_inner(
                     db,
@@ -456,39 +517,13 @@ impl DispatcherAgent {
                 LlmStreamOutcome::Response(r) => r,
             };
 
-            // No tool calls → end of loop (pure text reply)
+            // 无工具调用 ⇒ 模型已给出面向用户的最终答复，本轮循环可以收口，
+            // 不再进入下一轮推理。
             if response.tool_calls.is_empty() {
-                incremental_messages.push(ChatMessage {
-                    role: "assistant".to_string(),
-                    content: response.content.clone(),
-                    reasoning_content: if response.thinking_content.is_empty() {
-                        None
-                    } else {
-                        Some(response.thinking_content.clone())
-                    },
-                    tool_calls: None,
-                    tool_call_id: None,
-                    name: None,
-                });
                 return self
                     .handle_no_tool_response(db, workspace_id, on_event, &response, usage_tracker)
                     .await;
             }
-
-            // Build the assistant message with tool calls for in-memory tracking.
-            let tool_calls_payload = build_tool_calls_payload(&response.tool_calls, &self.tools);
-            incremental_messages.push(ChatMessage {
-                role: "assistant".to_string(),
-                content: response.content.clone(),
-                reasoning_content: if response.thinking_content.is_empty() {
-                    None
-                } else {
-                    Some(response.thinking_content.clone())
-                },
-                tool_calls: Some(tool_calls_payload),
-                tool_call_id: None,
-                name: None,
-            });
 
             let outcome = self
                 .execute_tool_calls(
@@ -506,15 +541,15 @@ impl DispatcherAgent {
                 )
                 .await?;
 
-            // Append new tool results from DB to incremental messages (only new ones)
-            let updated_history = db.load_llm_history_async(workspace_id).await?;
-            let current_len = incremental_messages.len();
-            if updated_history.len() > current_len {
-                incremental_messages.extend(updated_history.into_iter().skip(current_len));
+            // 只把本轮新产生的消息追加进 AgentLoop 的内存历史，
+            // 而非全量 reload——这是 AgentLoop 抽象的性能关键点。
+            for message in &outcome.llm_messages {
+                agent_loop.append(message.clone());
             }
 
-            // Token budget check: log warning if approaching context window limit
-            let estimated_tokens = DispatcherDb::estimate_context_tokens(&incremental_messages);
+            // token 预算检查仍只是告警而非拦截。若此处频繁触发，
+            // 历史压缩应在此处实现，而非下放到各个工具。
+            let estimated_tokens = agent_loop.estimated_tokens();
             if estimated_tokens > DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS * 8 / 10 {
                 debug_logger.log(
                     "上下文窗口接近上限，考虑折叠早期消息",
@@ -541,7 +576,7 @@ impl DispatcherAgent {
         )
     }
 
-    // ─── Supporting methods ───────────────────────────────────────────────────
+    // ─── 辅助方法 ───────────────────────────────────────────────────────────
 
     pub(super) async fn build_tool_context(
         &self,

@@ -8,9 +8,10 @@ mod plain_chat;
 mod prompt;
 mod runtime;
 pub(crate) mod ssh_review;
+mod state;
 pub mod sub_agent;
 mod summary;
 pub mod tools;
 pub mod voice;
 
-pub use commands::DispatcherState;
+pub use state::DispatcherState;

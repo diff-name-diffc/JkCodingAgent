@@ -2,8 +2,6 @@
 //! `spawn_blocking` 异步包装。私有核心插入逻辑（add_message / insert_tool_artifacts）
 //! 亦在此处。
 
-use std::collections::HashSet;
-
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -14,12 +12,9 @@ use crate::agent::llm::{ChatMessage, OutboundToolCall};
 use super::artifacts::{DispatcherToolArtifactRef, ToolArtifactDraft};
 use super::content::{
     content_to_segments_json, delete_chat_image_resources, delete_plan_file_resources,
-    insert_chat_images, parse_segments_json, segments_to_markdown,
+    insert_chat_images, parse_segments_json, remove_chat_image_files, segments_to_markdown,
 };
-use super::util::{
-    latest_user_message_rowid, map_dispatcher_message_record, now, MAX_LLM_DIALOGUES,
-    TOOL_RETRY_CONTEXT_PREFIX,
-};
+use super::util::{map_dispatcher_message_record, now, MAX_LLM_DIALOGUES};
 use super::DispatcherDb;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +47,36 @@ pub struct DispatcherMessageRecord {
     pub tool_calls_json: Option<String>,
     pub usage_stats: Option<DispatcherMessageUsageStats>,
     pub created_at: String,
+}
+
+impl DispatcherMessageRecord {
+    pub fn to_llm_message(&self) -> Option<ChatMessage> {
+        let content = if let Some(payload) = self.context_payload.clone() {
+            payload
+        } else {
+            let segments = parse_segments_json(&self.segments_json);
+            segments_to_markdown(&segments)
+        };
+        let tool_calls = self
+            .tool_calls_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<Vec<OutboundToolCall>>(json).ok());
+        let message = ChatMessage {
+            reasoning_content: if self.role == "assistant" {
+                self.thinking_content
+                    .clone()
+                    .filter(|content| !content.trim().is_empty())
+            } else {
+                None
+            },
+            role: self.role.clone(),
+            content,
+            tool_call_id: self.tool_call_id.clone(),
+            name: self.tool_name.clone(),
+            tool_calls,
+        };
+        should_keep_llm_message(&message).then_some(message)
+    }
 }
 
 struct NewDispatcherMessage<'a> {
@@ -223,130 +248,6 @@ impl DispatcherDb {
             usage_stats: None,
             visible: true,
         })
-    }
-
-    pub fn compact_successful_tool_retry(
-        &self,
-        workspace_id: &str,
-        tool_name: &str,
-        current_tool_call_id: &str,
-    ) -> Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
-        let cutoff_rowid = latest_user_message_rowid(&tx, workspace_id)?;
-        let retry_context_pattern = format!("{TOOL_RETRY_CONTEXT_PREFIX}%");
-        let retry_messages = {
-            let mut stmt = tx.prepare(
-                "SELECT id, tool_call_id
-                 FROM dispatcher_messages
-                 WHERE workspace_id = ?1
-                   AND role = 'tool'
-                   AND tool_name = ?2
-                   AND rowid >= ?3
-                   AND tool_call_id IS NOT NULL
-                   AND tool_call_id <> ?4
-                   AND context_payload LIKE ?5",
-            )?;
-            let rows = stmt.query_map(
-                params![
-                    workspace_id,
-                    tool_name,
-                    cutoff_rowid,
-                    current_tool_call_id,
-                    retry_context_pattern
-                ],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-
-        if retry_messages.is_empty() {
-            tx.commit()
-                .context("commit empty dispatcher retry compaction")?;
-            return Ok(());
-        }
-
-        let failed_tool_call_ids = retry_messages
-            .iter()
-            .map(|(_, tool_call_id)| tool_call_id.clone())
-            .collect::<HashSet<_>>();
-
-        for (message_id, _) in &retry_messages {
-            tx.execute(
-                "DELETE FROM dispatcher_tool_artifacts WHERE message_id = ?1",
-                params![message_id],
-            )
-            .context("delete compacted retry tool artifacts")?;
-            tx.execute(
-                "DELETE FROM dispatcher_messages WHERE id = ?1",
-                params![message_id],
-            )
-            .context("delete compacted retry tool message")?;
-        }
-
-        let assistant_messages = {
-            let mut stmt = tx.prepare(
-                "SELECT id, segments_json, tool_calls_json
-                 FROM dispatcher_messages
-                 WHERE workspace_id = ?1
-                   AND role = 'assistant'
-                   AND rowid >= ?2
-                   AND tool_calls_json IS NOT NULL
-                 ORDER BY rowid ASC",
-            )?;
-            let rows = stmt.query_map(params![workspace_id, cutoff_rowid], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-
-        for (message_id, segments_json, tool_calls_json) in assistant_messages {
-            let Ok(mut tool_calls) =
-                serde_json::from_str::<Vec<OutboundToolCall>>(&tool_calls_json)
-            else {
-                continue;
-            };
-            let original_len = tool_calls.len();
-            tool_calls.retain(|call| !failed_tool_call_ids.contains(&call.id));
-            if tool_calls.len() == original_len {
-                continue;
-            }
-
-            let content = segments_to_markdown(&parse_segments_json(&segments_json));
-            if tool_calls.is_empty() && content.trim().is_empty() {
-                tx.execute(
-                    "DELETE FROM dispatcher_tool_artifacts WHERE message_id = ?1",
-                    params![&message_id],
-                )
-                .context("delete compacted retry assistant artifacts")?;
-                tx.execute(
-                    "DELETE FROM dispatcher_messages WHERE id = ?1",
-                    params![&message_id],
-                )
-                .context("delete compacted retry assistant message")?;
-            } else {
-                let next_tool_calls_json = if tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(
-                        serde_json::to_string(&tool_calls)
-                            .context("serialize compacted assistant tool calls")?,
-                    )
-                };
-                tx.execute(
-                    "UPDATE dispatcher_messages SET tool_calls_json = ?1 WHERE id = ?2",
-                    params![next_tool_calls_json, &message_id],
-                )
-                .context("update compacted assistant tool calls")?;
-            }
-        }
-
-        tx.commit()
-            .context("commit dispatcher successful retry compaction")
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -595,7 +496,7 @@ impl DispatcherDb {
             params![workspace_id],
         )
         .context("clear dispatcher session token usage")?;
-        delete_chat_image_resources(&tx, workspace_id)?;
+        let image_paths = delete_chat_image_resources(&tx, workspace_id)?;
         delete_plan_file_resources(&tx, workspace_id)?;
         tx.execute(
             "DELETE FROM session_keywords WHERE workspace_id = ?1",
@@ -633,6 +534,7 @@ impl DispatcherDb {
         )
         .context("update chat session updated_at after clear")?;
         tx.commit().context("commit dispatcher message cleanup")?;
+        remove_chat_image_files(&image_paths)?;
         Ok(())
     }
     fn add_message(&self, params: NewDispatcherMessage<'_>) -> Result<DispatcherMessageRecord> {
@@ -944,7 +846,6 @@ impl DispatcherDb {
             .context("list_visible_messages spawn_blocking")?
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn add_hidden_message_async(
         &self,
         workspace_id: &str,
@@ -1030,23 +931,6 @@ impl DispatcherDb {
         .await
         .context("add_visible_message_with_tools spawn_blocking")?
     }
-    pub async fn compact_successful_tool_retry_async(
-        &self,
-        workspace_id: &str,
-        tool_name: &str,
-        current_tool_call_id: &str,
-    ) -> Result<()> {
-        let db = self.clone();
-        let wid = workspace_id.to_string();
-        let tool_name = tool_name.to_string();
-        let tool_call_id = current_tool_call_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            db.compact_successful_tool_retry(&wid, &tool_name, &tool_call_id)
-        })
-        .await
-        .context("compact_successful_tool_retry spawn_blocking")?
-    }
-
     pub async fn get_latest_user_message_content_async(
         &self,
         workspace_id: &str,

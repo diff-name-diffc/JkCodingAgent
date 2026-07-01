@@ -114,11 +114,6 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
       setActiveTab("runtime");
       return;
     }
-    if (draft.timeoutSecs < 10 || draft.timeoutSecs > 1200) {
-      setError("超时时间必须在 10-1200 秒之间");
-      setActiveTab("runtime");
-      return;
-    }
     setError("");
     onSave(draft);
   }
@@ -424,12 +419,10 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                     />
                   </div>
                   <div style={s.ahaField}>
-                    <label style={s.ahaLabel}>超时时间 (秒，10-600)</label>
+                    <label style={s.ahaLabel}>超时时间 (秒)</label>
                     <input
                       style={s.ahaInput}
                       type="number"
-                      min={10}
-                      max={600}
                       value={draft.timeoutSecs}
                       onChange={(e) =>
                         setDraft((d) => ({ ...d, timeoutSecs: Number(e.target.value) }))

@@ -6,7 +6,9 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::content::{delete_chat_image_resources, delete_plan_file_resources};
+use super::content::{
+    delete_chat_image_resources, delete_plan_file_resources, remove_chat_image_files,
+};
 use super::util::now;
 use super::DispatcherDb;
 
@@ -291,7 +293,7 @@ impl DispatcherDb {
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
         )?;
-        delete_chat_image_resources(&tx, session_id)?;
+        let image_paths = delete_chat_image_resources(&tx, session_id)?;
         delete_plan_file_resources(&tx, session_id)?;
         tx.execute(
             "DELETE FROM session_keywords WHERE workspace_id = ?1",
@@ -314,6 +316,7 @@ impl DispatcherDb {
             params![session_id],
         )?;
         tx.commit()?;
+        remove_chat_image_files(&image_paths)?;
         Ok(())
     }
 
@@ -451,7 +454,7 @@ impl DispatcherDb {
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
         )?;
-        delete_chat_image_resources(&tx, session_id)?;
+        let image_paths = delete_chat_image_resources(&tx, session_id)?;
         delete_plan_file_resources(&tx, session_id)?;
         tx.execute(
             "DELETE FROM session_keywords WHERE workspace_id = ?1",
@@ -470,6 +473,7 @@ impl DispatcherDb {
             params![session_id],
         )?;
         tx.commit()?;
+        remove_chat_image_files(&image_paths)?;
         Ok(())
     }
 
@@ -649,7 +653,7 @@ impl DispatcherDb {
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
         )?;
-        delete_chat_image_resources(&tx, session_id)?;
+        let image_paths = delete_chat_image_resources(&tx, session_id)?;
         delete_plan_file_resources(&tx, session_id)?;
         tx.execute(
             "DELETE FROM session_keywords WHERE workspace_id = ?1",
@@ -668,6 +672,7 @@ impl DispatcherDb {
             params![session_id],
         )?;
         tx.commit()?;
+        remove_chat_image_files(&image_paths)?;
         Ok(())
     }
 

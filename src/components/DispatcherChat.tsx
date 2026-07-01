@@ -11,8 +11,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AgentType,
+  AhaSettingsV2,
   ChecklistPlanState,
   DispatcherMessage,
+  DispatcherModelConfig,
   DispatcherMode,
   DispatcherSessionRuntimeState,
   DispatcherSettings,
@@ -125,11 +127,11 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [planInteraction, setPlanInteraction] = useState<PlanInteraction | null>(null);
     const [activePlanPath, setActivePlanPath] = useState<string | null>(null);
     const [implementingPlan, setImplementingPlan] = useState(false);
-    const [thinkingEnabled, setThinkingEnabled] = useState(true);
     const [pythonDrawerOpen, setPythonDrawerOpen] = useState(false);
     const [pythonRunTarget, setPythonRunTarget] = useState<PythonCodeRunTarget | null>(null);
     const [pythonRunRecords, setPythonRunRecords] = useState<Record<string, PythonCodeRunRecord>>({});
     const [sessionKeywords, setSessionKeywords] = useState<SessionKeyword[]>([]);
+    const [chatModelConfigs, setChatModelConfigs] = useState<DispatcherModelConfig[]>([]);
 
     // ── Refs ─────────────────────────────────────────────────────
     const messageListRef = useRef<HTMLDivElement>(null);
@@ -200,6 +202,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       ? pythonRunRecords[pythonRunKey(pythonRunTarget.messageId, pythonRunTarget.codeHash)] ?? null
       : null;
     const selectedPythonRunning = selectedPythonRun?.status === "running";
+    const activeChatModelIndex = useMemo(() => {
+      const activeIndex = chatModelConfigs.findIndex((config) => config.active);
+      return activeIndex >= 0 ? activeIndex : 0;
+    }, [chatModelConfigs]);
     const isEmpty =
       messages.length === 0 && !hasLiveSegments && !liveThinking &&
       liveToolCalls.length === 0 && !assistantPlaceholder?.trim();
@@ -263,7 +269,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       resetSessionTokenUsage,
       setMessages, setAttachedImages, setIsStopping,
       setAutoApprove, setMode, setChecklist, setPlanInteraction,
-      setActivePlanPath, setImplementingPlan, setThinkingEnabled,
+      setActivePlanPath, setImplementingPlan,
       onDispatchApproved, onDispatchRejected, onStopActiveRun, onResumeStoppedRun,
     });
 
@@ -330,6 +336,45 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }, [sessionId]);
 
     useEffect(() => {
+      if (!isPlainChat) {
+        setChatModelConfigs([]);
+        return;
+      }
+      let cancelled = false;
+      invoke<AhaSettingsV2>("aha_get_settings_v2")
+        .then((settings) => {
+          if (!cancelled) setChatModelConfigs(settings.chat.chatModelConfigs);
+        })
+        .catch(() => {
+          if (!cancelled) setChatModelConfigs([]);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, [isPlainChat]);
+
+    const handleSelectChatModel = useCallback(async (value: string) => {
+      const modelIndex = Number(value);
+      if (!Number.isInteger(modelIndex) || modelIndex === activeChatModelIndex) return;
+
+      setChatModelConfigs((configs) =>
+        configs.map((config, index) => ({ ...config, active: index === modelIndex })),
+      );
+
+      try {
+        const configs = await invoke<DispatcherModelConfig[]>("aha_set_active_chat_model", {
+          modelIndex,
+        });
+        setChatModelConfigs(configs);
+      } catch (error) {
+        invoke<AhaSettingsV2>("aha_get_settings_v2")
+          .then((settings) => setChatModelConfigs(settings.chat.chatModelConfigs))
+          .catch(() => {});
+        console.error("切换聊天主模型失败", error);
+      }
+    }, [activeChatModelIndex]);
+
+    useEffect(() => {
       const unlisten = listen<PythonRunEvent>("python-run-event", (event) => {
         const payload = event.payload;
         if (payload.workspaceId !== currentSessionIdRef.current) return;
@@ -393,7 +438,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       <div style={styles.pythonRunnerShell}>
         <div style={styles.container}>
           <ChatHeader
-            isPlainChat={isPlainChat} thinkingEnabled={thinkingEnabled} isLoading={isLoading}
+            isPlainChat={isPlainChat} isLoading={isLoading}
             activePlanPath={activePlanPath} autoApprove={autoApprove} mcpIndicator={mcpIndicator}
             hasMessages={messages.length > 0}
             keywords={sessionKeywords}
@@ -413,7 +458,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           />
           <MessageList
             displayItems={displayItems} streamingSegments={streamingSegments}
-            liveThinking={liveThinking} showThinking={thinkingEnabled}
+            liveThinking={liveThinking} showThinking={false}
             liveToolCalls={liveToolCalls}
             assistantPlaceholder={assistantPlaceholder} liveUsageStats={liveUsageStats}
             isStreaming={isLoading || hasPendingRun} isEmpty={isEmpty} isPlainChat={isPlainChat}
@@ -433,7 +478,6 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               composerMode={composerMode} mode={mode}
               isBusy={isLoading || isStopping} isStopping={isStopping}
               isRecordingVoice={voiceInput.isRecording} autoApprove={autoApprove}
-              thinkingEnabled={thinkingEnabled}
               sessionTokenUsages={sessionTokenUsageEntries}
               voiceTranscript={voiceInput.transcript} voiceError={voiceInput.error}
               inputRef={inputRef} layoutMode={layoutMode ?? "split"}
@@ -441,7 +485,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onDrop={handlers.handleDrop} onDragOver={handlers.handleDragOver}
               onRemoveImage={handlers.handleRemoveImage}
               onSend={handlers.handleSend} onStop={handlers.onStop} onResume={handlers.onResume}
-              onToggleMode={handlers.handleModeToggle} onToggleThinking={handlers.handleToggleThinking}
+              onToggleMode={handlers.handleModeToggle}
               onToggleVoiceInput={voiceInput.toggleRecording} onDismissVoiceError={voiceInput.clearError}
               onOpenSettings={onOpenSettings}
               onOpenMcpStatus={() => onOpenMcpStatus?.()}
@@ -451,17 +495,20 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           {(!isEmpty || isPlainChat) && (
             <ComposerInput
               isPlainChat={isPlainChat} input={input} attachedImages={attachedImages}
-              composerMode={composerMode} mode={mode} thinkingEnabled={thinkingEnabled}
+              composerMode={composerMode} mode={mode}
               isComposerBusy={isLoading || isStopping} isStopping={isStopping}
               isRecordingVoice={voiceInput.isRecording} voiceTranscript={voiceInput.transcript}
               voiceError={voiceInput.error} inputRef={inputRef}
               checklist={checklist} planInteraction={planInteraction}
               implementingPlan={implementingPlan} sessionTokenUsageEntries={sessionTokenUsageEntries}
+              chatModelConfigs={chatModelConfigs}
+              activeChatModelIndex={activeChatModelIndex}
               onChangeInput={setInput} onPaste={handlers.handlePaste}
               onDrop={handlers.handleDrop} onDragOver={handlers.handleDragOver}
               onRemoveImage={handlers.handleRemoveImage}
               onSend={handlers.handleSend} onStop={handlers.onStop} onResume={handlers.onResume}
-              onToggleMode={handlers.handleModeToggle} onToggleThinking={handlers.handleToggleThinking}
+              onToggleMode={handlers.handleModeToggle}
+              onSelectChatModel={handleSelectChatModel}
               onToggleVoiceInput={voiceInput.toggleRecording} onDismissVoiceError={voiceInput.clearError}
               onAnswerPlanQuestion={handlers.handleAnswerPlanQuestion}
               onImplementPlan={handlers.handleImplementPlan}

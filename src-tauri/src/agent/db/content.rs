@@ -117,7 +117,17 @@ pub(super) fn safe_absolute_image_path(path: &str) -> Result<PathBuf> {
         anyhow::bail!("chat image path must not contain parent traversal: {trimmed}");
     }
 
-    Ok(path.to_path_buf())
+    let normalized = lexical_normalize_path(path);
+    let base = crate::chat_images::chat_images_dir().map_err(anyhow::Error::msg)?;
+    let normalized_base = lexical_normalize_path(&base);
+    if !normalized.starts_with(&normalized_base) {
+        anyhow::bail!(
+            "chat image path must be inside app-managed chat images directory: {}",
+            normalized.display()
+        );
+    }
+
+    Ok(normalized)
 }
 
 pub(super) fn safe_absolute_plan_path(path: &str) -> Result<PathBuf> {
@@ -209,7 +219,7 @@ pub(super) fn insert_chat_images(
 pub(super) fn delete_chat_image_resources(
     tx: &rusqlite::Transaction<'_>,
     workspace_id: &str,
-) -> Result<()> {
+) -> Result<Vec<PathBuf>> {
     let mut paths = HashSet::new();
     {
         let mut stmt = tx
@@ -238,9 +248,23 @@ pub(super) fn delete_chat_image_resources(
         }
     }
 
-    for path in paths {
-        let safe_path = safe_absolute_image_path(&path)?;
-        match std::fs::remove_file(&safe_path) {
+    let safe_paths = paths
+        .into_iter()
+        .map(|path| safe_absolute_image_path(&path))
+        .collect::<Result<Vec<_>>>()?;
+
+    tx.execute(
+        "DELETE FROM chat_images WHERE workspace_id = ?1",
+        params![workspace_id],
+    )
+    .context("delete chat image records")?;
+
+    Ok(safe_paths)
+}
+
+pub(super) fn remove_chat_image_files(paths: &[PathBuf]) -> Result<()> {
+    for safe_path in paths {
+        match std::fs::remove_file(safe_path) {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => {
@@ -250,13 +274,21 @@ pub(super) fn delete_chat_image_resources(
         }
     }
 
-    tx.execute(
-        "DELETE FROM chat_images WHERE workspace_id = ?1",
-        params![workspace_id],
-    )
-    .context("delete chat image records")?;
-
     Ok(())
+}
+
+fn lexical_normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 pub(super) fn delete_plan_file_resources(

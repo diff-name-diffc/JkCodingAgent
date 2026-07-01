@@ -4,13 +4,14 @@ import { X, Mic, Play, Send, Square } from "lucide-react";
 import { useComposedInput } from "../../hooks/useComposedInput";
 import type {
   ChecklistPlanState,
+  DispatcherModelConfig,
   DispatcherMode,
   DispatcherSessionTokenUsage,
   ImageSegment,
   PlanInteraction,
 } from "../../types";
 import { SessionTokenUsageIndicators } from "../SessionTokenUsageIndicators";
-import { PlanModeToggleButton, ThinkingToggleButton } from "./ComposerButtons";
+import { PlanModeToggleButton } from "./ComposerButtons";
 import { VoiceInputStatusCard } from "./VoiceInputStatusCard";
 import { InteractionDrawer } from "./InteractionDrawer";
 import { CommandComposer } from "../ui/chatPrimitives";
@@ -33,7 +34,6 @@ interface ComposerInputProps {
   attachedImages: ImageSegment[];
   composerMode: "send" | "stop" | "resume";
   mode: DispatcherMode;
-  thinkingEnabled: boolean;
   isComposerBusy: boolean;
   isStopping: boolean;
   isRecordingVoice: boolean;
@@ -44,6 +44,8 @@ interface ComposerInputProps {
   planInteraction: PlanInteraction | null;
   implementingPlan: boolean;
   sessionTokenUsageEntries: DispatcherSessionTokenUsage[];
+  chatModelConfigs: DispatcherModelConfig[];
+  activeChatModelIndex: number;
   onChangeInput: (value: string) => void;
   onPaste: (e: React.ClipboardEvent) => void;
   onDrop: (e: React.DragEvent) => void;
@@ -53,7 +55,6 @@ interface ComposerInputProps {
   onStop: () => void;
   onResume: () => void;
   onToggleMode: (mode: DispatcherMode) => void;
-  onToggleThinking: () => void;
   onToggleVoiceInput: () => void;
   onDismissVoiceError: () => void;
   onAnswerPlanQuestion: (answer: string) => void;
@@ -62,6 +63,7 @@ interface ComposerInputProps {
     interaction: Extract<PlanInteraction, { kind: "ready" }>,
   ) => void;
   onStayInPlanMode: () => void;
+  onSelectChatModel: (value: string) => void;
 }
 
 export const ComposerInput = memo(function ComposerInput({
@@ -70,7 +72,6 @@ export const ComposerInput = memo(function ComposerInput({
   attachedImages,
   composerMode,
   mode,
-  thinkingEnabled,
   isComposerBusy,
   isStopping,
   isRecordingVoice,
@@ -81,6 +82,8 @@ export const ComposerInput = memo(function ComposerInput({
   planInteraction,
   implementingPlan,
   sessionTokenUsageEntries,
+  chatModelConfigs,
+  activeChatModelIndex,
   onChangeInput,
   onPaste,
   onDrop,
@@ -90,13 +93,13 @@ export const ComposerInput = memo(function ComposerInput({
   onStop,
   onResume,
   onToggleMode,
-  onToggleThinking,
   onToggleVoiceInput,
   onDismissVoiceError,
   onAnswerPlanQuestion,
   onImplementPlan,
   onImplementPlanWithClearedContext,
   onStayInPlanMode,
+  onSelectChatModel,
 }: ComposerInputProps) {
   const onEnter = useCallback(
     (e: React.KeyboardEvent) => {
@@ -112,6 +115,7 @@ export const ComposerInput = memo(function ComposerInput({
     [composerMode, input, onSend, onResume],
   );
   const composed = useComposedInput(onEnter);
+
   return (
     <>
       {!isPlainChat && (
@@ -152,7 +156,13 @@ export const ComposerInput = memo(function ComposerInput({
             ))}
           </div>
         )}
-        <SessionTokenUsageIndicators entries={sessionTokenUsageEntries} />
+        <SessionTokenUsageIndicators
+          entries={sessionTokenUsageEntries}
+          chatModelConfigs={isPlainChat ? chatModelConfigs : []}
+          activeChatModelIndex={activeChatModelIndex}
+          modelSwitchDisabled={composerMode === "stop" || isStopping}
+          onSelectChatModel={onSelectChatModel}
+        />
         <textarea
           ref={inputRef}
           style={styles.inputTextarea}
@@ -167,11 +177,6 @@ export const ComposerInput = memo(function ComposerInput({
           placeholder={isPlainChat ? "发送普通聊天消息..." : "给调度智能体发送消息..."}
         />
         {!isPlainChat && <PlanModeToggleButton mode={mode} onToggleMode={onToggleMode} />}
-        <ThinkingToggleButton
-          active={thinkingEnabled}
-          onToggle={onToggleThinking}
-          disabled={composerMode === "stop" || isStopping}
-        />
         <button
           style={styles.voiceBtn(isRecordingVoice)}
           onClick={onToggleVoiceInput}

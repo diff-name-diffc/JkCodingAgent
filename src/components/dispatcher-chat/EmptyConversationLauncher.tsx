@@ -5,7 +5,7 @@ import { useComposedInput } from "../../hooks/useComposedInput";
 import type { DispatcherMode, DispatcherSessionTokenUsage, ImageSegment } from "../../types";
 import { SessionTokenUsageIndicators } from "../SessionTokenUsageIndicators";
 import { CommandComposer } from "../ui/chatPrimitives";
-import { PlanModeToggleButton, ThinkingToggleButton } from "./ComposerButtons";
+import { PlanModeToggleButton } from "./ComposerButtons";
 import { VoiceInputStatusCard } from "./VoiceInputStatusCard";
 import {
   getComposerButtonLabel,
@@ -33,7 +33,6 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
   isStopping,
   isRecordingVoice,
   autoApprove,
-  thinkingEnabled,
   sessionTokenUsages,
   voiceTranscript,
   voiceError,
@@ -49,7 +48,6 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
   onStop,
   onResume,
   onToggleMode,
-  onToggleThinking,
   onToggleVoiceInput,
   onDismissVoiceError,
   onOpenSettings,
@@ -64,7 +62,6 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
   isStopping: boolean;
   isRecordingVoice: boolean;
   autoApprove: boolean;
-  thinkingEnabled: boolean;
   sessionTokenUsages: DispatcherSessionTokenUsage[];
   voiceTranscript: string;
   voiceError: string | null;
@@ -80,7 +77,6 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
   onStop: () => void;
   onResume: () => void;
   onToggleMode: (mode: DispatcherMode) => void;
-  onToggleThinking: () => void;
   onToggleVoiceInput: () => void;
   onDismissVoiceError: () => void;
   onOpenSettings: () => void;
@@ -198,11 +194,6 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
             <div style={styles.emptyComposerPrimaryRow}>
               <SessionTokenUsageIndicators entries={sessionTokenUsages} />
               {!isPlainChat && <PlanModeToggleButton mode={mode} onToggleMode={onToggleMode} />}
-              <ThinkingToggleButton
-                active={thinkingEnabled}
-                onToggle={onToggleThinking}
-                disabled={composerMode === "stop" || isStopping}
-              />
               <button
                 type="button"
                 style={styles.voiceBtn(isRecordingVoice)}

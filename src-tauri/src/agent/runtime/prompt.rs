@@ -138,6 +138,11 @@ impl DispatcherAgent {
     }
 
     pub(super) fn build_sub_agent_block(&self, workspace_id: &str) -> String {
+        if !self.is_tool_allowed_by_config("call_sub_agent")
+            && !self.is_tool_allowed_by_config("list_sub_agents")
+        {
+            return String::new();
+        }
         let Some(manager) = &self.sub_agent_manager else {
             return String::new();
         };
@@ -159,6 +164,11 @@ impl DispatcherAgent {
             ));
         }
         lines.join("\n")
+    }
+
+    pub(super) fn is_tool_allowed_by_config(&self, tool_name: &str) -> bool {
+        let configured = self.allowed_tools.lock();
+        configured.is_empty() || configured.iter().any(|name| name == tool_name)
     }
 }
 
@@ -184,8 +194,6 @@ impl DispatcherAgent {
         };
         if let Some(configured_set) = &configured_set {
             allowed.retain(|name| configured_set.contains(*name));
-            allowed.insert("call_sub_agent");
-            allowed.insert("list_sub_agents");
         }
 
         let include_dynamic = runtime_state.mode == DispatcherMode::Default;
@@ -222,11 +230,7 @@ impl DispatcherAgent {
             include_dynamic,
         );
         if let Some(configured_set) = configured_set {
-            definitions.retain(|definition| {
-                configured_set.contains(&definition.function.name)
-                    || definition.function.name == "call_sub_agent"
-                    || definition.function.name == "list_sub_agents"
-            });
+            definitions.retain(|definition| configured_set.contains(&definition.function.name));
         }
         definitions
     }

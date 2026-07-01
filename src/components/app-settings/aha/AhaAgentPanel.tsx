@@ -58,7 +58,7 @@ const TOP_TABS: TopTabItem[] = [
 
 const AGENT_SUB_TABS: AgentSubTabItem[] = [
   { key: "models", label: "主模型", icon: MessageCircle },
-  { key: "tools", label: "工具配置", icon: Wrench },
+  { key: "tools", label: "配置", icon: Wrench },
   { key: "sub_agents", label: "子智能体", icon: Users },
 ];
 
@@ -127,6 +127,8 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
   });
   const [chatCategoryConfigs, setChatCategoryConfigs] = useState<ChatCategoryAgentConfig[]>([]);
   const [activeChatCategoryId, setActiveChatCategoryId] = useState<string | null>(null);
+  // 全局启用的子智能体 ID 列表。对项目和聊天会话都生效；项目会话因无分类，仅由此处驱动。
+  const [globalEnabledIds, setGlobalEnabledIds] = useState<string[]>([]);
   const [autoApprove, setAutoApprove] = useState(false);
   const [contextDebug, setContextDebug] = useState(false);
   // SSH 命令审查 AI 配置（编辑入口在 SshToolPanel；此处仅保留以便保存时不覆盖）。
@@ -156,13 +158,17 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
     Promise.all([
       invoke<AhaSettingsV2>("aha_get_settings_v2"),
       invoke<ChatCategoryAgentConfig[]>("aha_get_chat_category_agent_configs"),
+      invoke<SubAgentRecord[]>("sub_agent_get_global_enabled").then((agents) =>
+        agents.map((agent) => agent.id),
+      ),
     ])
-      .then(([settings, categoryConfigs]) => {
+      .then(([settings, categoryConfigs, enabledIds]) => {
         setShared(settings.shared);
         setProject(settings.project);
         setChat(withoutChatModelSystemPrompts(settings.chat));
         setChatCategoryConfigs(categoryConfigs);
         setActiveChatCategoryId((current) => current ?? categoryConfigs[0]?.categoryId ?? null);
+        setGlobalEnabledIds(enabledIds);
         setAutoApprove(settings.autoApproveDispatch);
         setContextDebug(settings.contextDebug);
         if (settings.review) setReview(settings.review);
@@ -189,6 +195,7 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
         "aha_save_chat_category_agent_configs",
         { configs: chatCategoryConfigs },
       );
+      await invoke("sub_agent_set_global_enabled", { subAgentIds: globalEnabledIds });
       setShared(result.shared);
       setProject(result.project);
       setChat(withoutChatModelSystemPrompts(result.chat));
@@ -492,38 +499,16 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
 
   function renderAgentTab(context: AgentContext) {
     if (activeSubTab === "sub_agents") {
-      // 子智能体不再按项目/聊天上下文分别关联：
-      //   - 聊天会话：在「工具配置」分类页的「关联子智能体」区块按分类勾选
-      //   - 项目会话与所有会话：使用全局启用的子智能体（在顶部「子智能体」标签页管理）
+      // 仅项目上下文保留此子标签：项目会话无分类，子智能体启用完全由全局配置驱动。
+      // 聊天上下文已隐藏该子标签（其子智能体在「配置」分类页按分类勾选）。
       return (
         <div style={s.ahaBody}>
-          <section style={s.ahaSection}>
-            <div style={s.ahaSectionTitle}>子智能体</div>
-            <div style={{ ...s.ahaSectionDescription, marginBottom: 12 }}>
-              {context === "chat"
-                ? "聊天会话的子智能体按分类配置。前往「工具配置」选择分类后，在其「关联子智能体」区块勾选。全局启用的子智能体对所有会话自动生效。"
-                : "项目会话使用全局启用的子智能体。前往顶部「子智能体」标签页管理可用子智能体及其全局启用状态。"}
-            </div>
-            <button
-              type="button"
-              style={s.ahaGhostButton}
-              onClick={() =>
-                context === "chat"
-                  ? setActiveSubTab("tools")
-                  : setActiveTopTab("sub_agents")
-              }
-            >
-              {context === "chat" ? (
-                <>
-                  <Wrench size={14} /> 前往工具配置
-                </>
-              ) : (
-                <>
-                  <Users size={14} /> 前往子智能体管理
-                </>
-              )}
-            </button>
-          </section>
+          <SubAgentPicker
+            enabledIds={globalEnabledIds}
+            title="全局启用子智能体"
+            description="勾选的子智能体对所有会话（项目与聊天）自动生效。可在顶部「子智能体」标签页新建或编辑子智能体。"
+            onChange={setGlobalEnabledIds}
+          />
         </div>
       );
     }
@@ -578,7 +563,9 @@ export function AhaAgentPanel({ projectPath }: { projectPath?: string }) {
             role="tablist"
             aria-label="智能体子类"
           >
-            {AGENT_SUB_TABS.map((tab) => {
+            {AGENT_SUB_TABS.filter((tab) =>
+              activeTopTab === "chat" ? tab.key !== "sub_agents" : true,
+            ).map((tab) => {
               const Icon = tab.icon;
               const selected = activeSubTab === tab.key;
               return (
@@ -995,7 +982,7 @@ function ChatCategoryToolsTab({
         allowedTools={activeConfig.allowedTools}
         onChange={(next) => onChange(activeConfig.categoryId, { allowedTools: next })}
       />
-      <CategorySubAgentPicker
+      <SubAgentPicker
         enabledIds={activeConfig.subAgentIds}
         onChange={(next) => onChange(activeConfig.categoryId, { subAgentIds: next })}
       />
@@ -1003,12 +990,16 @@ function ChatCategoryToolsTab({
   );
 }
 
-function CategorySubAgentPicker({
+function SubAgentPicker({
   enabledIds,
   onChange,
+  title = "关联子智能体",
+  description = "选择该分类下的会话可调用的子智能体；未选择时该分类不启用任何子智能体。\n全局启用的子智能体（见「子智能体」标签页）对所有会话仍自动生效。",
 }: {
   enabledIds: string[];
   onChange: (next: string[]) => void;
+  title?: string;
+  description?: string;
 }) {
   const [agents, setAgents] = useState<SubAgentRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1035,10 +1026,9 @@ function CategorySubAgentPicker({
 
   return (
     <section style={s.ahaSection}>
-      <div style={s.ahaSectionTitle}>关联子智能体</div>
-      <div style={{ ...s.ahaSectionDescription, marginBottom: 12 }}>
-        选择该分类下的会话可调用的子智能体；未选择时该分类不启用任何子智能体。
-        全局启用的子智能体（见「子智能体」标签页）对所有会话仍自动生效。
+      <div style={s.ahaSectionTitle}>{title}</div>
+      <div style={{ ...s.ahaSectionDescription, whiteSpace: "pre-line", marginBottom: 12 }}>
+        {description}
       </div>
       <div style={{ ...s.ahaHint, marginBottom: 10 }}>
         {loading ? "加载子智能体..." : `共 ${agents.length} 个子智能体`}

@@ -1,3 +1,4 @@
+pub(crate) mod agent_loop;
 pub(crate) mod helpers;
 pub(crate) mod planning;
 pub(crate) mod prompt;

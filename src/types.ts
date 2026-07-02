@@ -351,39 +351,6 @@ export interface DispatcherToolRunRecord {
   updatedAt: string;
 }
 
-export interface DispatcherSettings {
-  apiBase: string;
-  apiKey: string;
-  model: string;
-  summaryModel: string;
-  visionModel: string;
-  asrApiKey: string;
-  asrWebsocketUrl: string;
-  autoApproveDispatch: boolean;
-  contextDebug: boolean;
-  imageModelUrl: string;
-  imageModelApiKey: string;
-  imageModel: string;
-  imageEditModel: string;
-  chatModelConfig: DispatcherModelConfig;
-  summaryModelConfig: DispatcherModelConfig;
-  visionModelConfig: DispatcherModelConfig;
-  imageModelConfig: DispatcherModelConfig;
-  imageEditModelConfig: DispatcherModelConfig;
-  asrModelConfig: DispatcherModelConfig;
-  ttsModelConfig: DispatcherModelConfig;
-  embeddingModelConfig: DispatcherModelConfig;
-  chatModelConfigs: DispatcherModelConfig[];
-  summaryModelConfigs: DispatcherModelConfig[];
-  visionModelConfigs: DispatcherModelConfig[];
-  imageModelConfigs: DispatcherModelConfig[];
-  imageEditModelConfigs: DispatcherModelConfig[];
-  asrModelConfigs: DispatcherModelConfig[];
-  ttsModelConfigs: DispatcherModelConfig[];
-  embeddingModelConfigs: DispatcherModelConfig[];
-  allowedTools: string[];
-}
-
 export interface DispatcherModelConfig {
   url: string;
   apiKey: string;

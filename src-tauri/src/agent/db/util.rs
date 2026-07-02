@@ -5,7 +5,6 @@
 use chrono::Utc;
 use rusqlite::types::Type;
 
-use crate::agent::config::DEFAULT_SUMMARY_MODEL;
 use crate::agent::llm::LlmUsage;
 
 use super::artifacts::DispatcherToolArtifactRef;
@@ -30,15 +29,6 @@ pub(super) fn usage_total_tokens(usage: &LlmUsage) -> u64 {
         usage.total_tokens
     } else {
         usage.prompt_tokens + usage.completion_tokens
-    }
-}
-
-pub(super) fn normalize_summary_model(summary_model: &str) -> String {
-    let trimmed = summary_model.trim();
-    if trimmed.is_empty() {
-        DEFAULT_SUMMARY_MODEL.to_string()
-    } else {
-        trimmed.to_string()
     }
 }
 

@@ -29,10 +29,7 @@ pub use sessions::{
     AgentContext, ChatSessionRecord, DispatcherSessionKind, DispatcherSessionRecord,
     ProjectSessionRecord, SessionPage,
 };
-pub use settings::{
-    AhaContextConfig, AhaSettingsV2, AhaSharedModels, DispatcherModelConfig,
-    DispatcherSettingsModelConfigs, DispatcherSettingsRecord,
-};
+pub use settings::{AhaContextConfig, AhaSettingsV2, AhaSharedModels, DispatcherModelConfig};
 pub use token_usage::{DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource};
 pub use tool_runs::{DispatcherToolRunRecord, FinishToolRun, NewToolRun};
 use util::MAX_DIALOGUE_QUERY_LIMIT;

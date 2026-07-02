@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::content::safe_absolute_image_path;
+use super::settings::DispatcherModelConfig;
 use super::util::now;
 use super::DispatcherDb;
 
@@ -21,7 +22,7 @@ impl DispatcherDb {
         let mut conn = self.conn()?;
 
         // Fast path: if schema is already at the expected version, skip all DDL.
-        const SCHEMA_VERSION: i32 = 18;
+        const SCHEMA_VERSION: i32 = 19;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -150,54 +151,24 @@ impl DispatcherDb {
             CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_runs_call
             ON dispatcher_tool_runs(workspace_id, tool_call_id);
 
-            CREATE TABLE IF NOT EXISTS dispatcher_settings (
+            CREATE TABLE IF NOT EXISTS dispatcher_settings_v2 (
                 id TEXT PRIMARY KEY DEFAULT 'default',
-                api_base TEXT NOT NULL DEFAULT '',
-                api_key TEXT NOT NULL DEFAULT '',
-                model TEXT NOT NULL DEFAULT '',
-                summary_model TEXT NOT NULL DEFAULT 'deepseek-v4-flash',
-                vision_model TEXT NOT NULL DEFAULT '',
-                asr_api_key TEXT NOT NULL DEFAULT '',
-                asr_websocket_url TEXT NOT NULL DEFAULT '',
+                shared_vision_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                shared_image_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                shared_image_edit_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                shared_asr_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                shared_tts_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                shared_embedding_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                project_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                project_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                project_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+                chat_agent_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                chat_agent_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                chat_agent_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
                 auto_approve_dispatch INTEGER NOT NULL DEFAULT 0,
                 context_debug INTEGER NOT NULL DEFAULT 0,
-                image_model_url TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1',
-                image_model_api_key TEXT NOT NULL DEFAULT '',
-                image_model TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro',
-                image_edit_model TEXT NOT NULL DEFAULT '',
-                chat_model_url TEXT NOT NULL DEFAULT '',
-                chat_model_api_key TEXT NOT NULL DEFAULT '',
-                chat_model_name TEXT NOT NULL DEFAULT '',
-                summary_model_url TEXT NOT NULL DEFAULT '',
-                summary_model_api_key TEXT NOT NULL DEFAULT '',
-                summary_model_name TEXT NOT NULL DEFAULT '',
-                vision_model_url TEXT NOT NULL DEFAULT '',
-                vision_model_api_key TEXT NOT NULL DEFAULT '',
-                vision_model_name TEXT NOT NULL DEFAULT '',
-                image_model_config_url TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1',
-                image_model_config_api_key TEXT NOT NULL DEFAULT '',
-                image_model_config_name TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro',
-                image_edit_model_url TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1',
-                image_edit_model_api_key TEXT NOT NULL DEFAULT '',
-                image_edit_model_name TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro',
-                asr_model_url TEXT NOT NULL DEFAULT '',
-                asr_model_api_key TEXT NOT NULL DEFAULT '',
-                asr_model_name TEXT NOT NULL DEFAULT 'fun-asr-realtime',
-                tts_model_url TEXT NOT NULL DEFAULT '',
-                tts_model_api_key TEXT NOT NULL DEFAULT '',
-                tts_model_name TEXT NOT NULL DEFAULT '',
-                embedding_model_url TEXT NOT NULL DEFAULT '',
-                embedding_model_api_key TEXT NOT NULL DEFAULT '',
-                embedding_model_name TEXT NOT NULL DEFAULT '',
-                chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
-                summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
-                vision_model_configs_json TEXT NOT NULL DEFAULT '[]',
-                image_model_configs_json TEXT NOT NULL DEFAULT '[]',
-                image_edit_model_configs_json TEXT NOT NULL DEFAULT '[]',
-                asr_model_configs_json TEXT NOT NULL DEFAULT '[]',
-                tts_model_configs_json TEXT NOT NULL DEFAULT '[]',
-                embedding_model_configs_json TEXT NOT NULL DEFAULT '[]',
-                allowed_tools_json TEXT NOT NULL DEFAULT '[]'
+                review_model_config_json TEXT NOT NULL DEFAULT '',
+                review_system_prompt TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS dispatcher_session_token_usage (
@@ -284,62 +255,7 @@ impl DispatcherDb {
             let tx = conn.transaction().context("begin migration transaction")?;
 
             migrate_session_token_usage_primary_key_on_tx(&tx)?;
-            ensure_column_exists_tx(
-                &tx,
-                "dispatcher_settings",
-                "summary_model",
-                "TEXT NOT NULL DEFAULT 'deepseek-v4-flash'",
-            )?;
-            ensure_column_exists_tx(
-                &tx,
-                "dispatcher_settings",
-                "vision_model",
-                "TEXT NOT NULL DEFAULT ''",
-            )?;
-            ensure_column_exists_tx(
-                &tx,
-                "dispatcher_settings",
-                "asr_api_key",
-                "TEXT NOT NULL DEFAULT ''",
-            )?;
-            ensure_column_exists_tx(
-                &tx,
-                "dispatcher_settings",
-                "asr_websocket_url",
-                "TEXT NOT NULL DEFAULT ''",
-            )?;
-            ensure_column_exists_tx(
-                &tx,
-                "dispatcher_settings",
-                "context_debug",
-                "INTEGER NOT NULL DEFAULT 0",
-            )?;
-            ensure_column_exists_tx(
-                &tx,
-                "dispatcher_settings",
-                "image_model_url",
-                "TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1'",
-            )?;
-            ensure_column_exists_tx(
-                &tx,
-                "dispatcher_settings",
-                "image_model_api_key",
-                "TEXT NOT NULL DEFAULT ''",
-            )?;
-            ensure_column_exists_tx(
-                &tx,
-                "dispatcher_settings",
-                "image_model",
-                "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'",
-            )?;
-            ensure_column_exists_tx(
-                &tx,
-                "dispatcher_settings",
-                "image_edit_model",
-                "TEXT NOT NULL DEFAULT ''",
-            )?;
-            ensure_dispatcher_model_config_columns_tx(&tx)?;
-            migrate_dispatcher_model_configs_tx(&tx)?;
+            migrate_legacy_dispatcher_settings_tx(&tx)?;
             ensure_column_exists_tx(&tx, "dispatcher_messages", "context_payload", "TEXT")?;
             ensure_column_exists_tx(
                 &tx,
@@ -397,13 +313,6 @@ impl DispatcherDb {
 
             crate::agent::sub_agent::db::ensure_sub_agent_tables_tx(&tx)?;
             crate::agent::sub_agent::db::seed_browser_agent_if_missing_tx(&tx)?;
-
-            ensure_column_exists_tx(
-                &tx,
-                "dispatcher_settings",
-                "allowed_tools_json",
-                "TEXT NOT NULL DEFAULT '[]'",
-            )?;
 
             // v16: 废弃 context_sub_agents 与 session_sub_agents 关联表。
             //      子智能体改为「全局启用 + 聊天分类级配置」两来源，不再有上下文/单会话关联。
@@ -752,6 +661,455 @@ fn migrate_session_token_usage_primary_key_inner(conn: &Connection) -> Result<()
         ",
     )
     .context("migrate dispatcher session token usage primary key")
+}
+
+fn migrate_legacy_dispatcher_settings_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    if !table_exists(tx, "dispatcher_settings")? {
+        return Ok(());
+    }
+
+    ensure_legacy_dispatcher_settings_columns_tx(tx)?;
+    normalize_legacy_dispatcher_settings_tx(tx)?;
+
+    let Some(row) = tx
+        .query_row(
+            "SELECT
+                api_base, api_key, model,
+                summary_model, vision_model,
+                asr_api_key, asr_websocket_url,
+                auto_approve_dispatch, context_debug,
+                image_model_url, image_model_api_key, image_model, image_edit_model,
+                chat_model_url, chat_model_api_key, chat_model_name, chat_model_configs_json,
+                summary_model_url, summary_model_api_key, summary_model_name, summary_model_configs_json,
+                vision_model_url, vision_model_api_key, vision_model_name, vision_model_configs_json,
+                image_model_config_url, image_model_config_api_key, image_model_config_name, image_model_configs_json,
+                image_edit_model_url, image_edit_model_api_key, image_edit_model_name, image_edit_model_configs_json,
+                asr_model_url, asr_model_api_key, asr_model_name, asr_model_configs_json,
+                tts_model_url, tts_model_api_key, tts_model_name, tts_model_configs_json,
+                embedding_model_url, embedding_model_api_key, embedding_model_name, embedding_model_configs_json,
+                allowed_tools_json
+             FROM dispatcher_settings WHERE id = 'default'",
+            [],
+            LegacyDispatcherSettings::from_row,
+        )
+        .optional()
+        .context("load legacy dispatcher settings")?
+    else {
+        tx.execute_batch("DROP TABLE dispatcher_settings;")
+            .context("drop empty legacy dispatcher settings table")?;
+        return Ok(());
+    };
+
+    let chat_configs = legacy_configs(
+        &row.chat_model_configs_json,
+        &row.chat_model_url,
+        &row.chat_model_api_key,
+        &row.chat_model_name,
+        (&row.api_base, &row.api_key, &row.model),
+    );
+    let summary_configs = legacy_configs(
+        &row.summary_model_configs_json,
+        &row.summary_model_url,
+        &row.summary_model_api_key,
+        &row.summary_model_name,
+        (&row.api_base, &row.api_key, &row.summary_model),
+    );
+    let vision_configs = legacy_configs(
+        &row.vision_model_configs_json,
+        &row.vision_model_url,
+        &row.vision_model_api_key,
+        &row.vision_model_name,
+        (&row.api_base, &row.api_key, &row.vision_model),
+    );
+    let image_configs = legacy_configs(
+        &row.image_model_configs_json,
+        &row.image_model_config_url,
+        &row.image_model_config_api_key,
+        &row.image_model_config_name,
+        (
+            &row.image_model_url,
+            &row.image_model_api_key,
+            &row.image_model,
+        ),
+    );
+    let image_edit_configs = legacy_configs(
+        &row.image_edit_model_configs_json,
+        &row.image_edit_model_url,
+        &row.image_edit_model_api_key,
+        &row.image_edit_model_name,
+        (
+            &row.image_model_url,
+            &row.image_model_api_key,
+            fallback_image_edit_model(&row.image_model, &row.image_edit_model),
+        ),
+    );
+    let asr_configs = legacy_configs(
+        &row.asr_model_configs_json,
+        &row.asr_model_url,
+        &row.asr_model_api_key,
+        &row.asr_model_name,
+        (&row.asr_websocket_url, &row.asr_api_key, "fun-asr-realtime"),
+    );
+    let tts_configs = legacy_configs(
+        &row.tts_model_configs_json,
+        &row.tts_model_url,
+        &row.tts_model_api_key,
+        &row.tts_model_name,
+        ("", "", ""),
+    );
+    let embedding_configs = legacy_configs(
+        &row.embedding_model_configs_json,
+        &row.embedding_model_url,
+        &row.embedding_model_api_key,
+        &row.embedding_model_name,
+        ("", "", ""),
+    );
+
+    tx.execute(
+        "INSERT INTO dispatcher_settings_v2 (
+            id,
+            shared_vision_model_configs_json,
+            shared_image_model_configs_json,
+            shared_image_edit_model_configs_json,
+            shared_asr_model_configs_json,
+            shared_tts_model_configs_json,
+            shared_embedding_model_configs_json,
+            project_chat_model_configs_json,
+            project_summary_model_configs_json,
+            project_allowed_tools_json,
+            chat_agent_chat_model_configs_json,
+            chat_agent_summary_model_configs_json,
+            chat_agent_allowed_tools_json,
+            auto_approve_dispatch,
+            context_debug
+        ) VALUES (
+            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?7, ?8, ?9, ?10, ?11
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            shared_vision_model_configs_json = ?1,
+            shared_image_model_configs_json = ?2,
+            shared_image_edit_model_configs_json = ?3,
+            shared_asr_model_configs_json = ?4,
+            shared_tts_model_configs_json = ?5,
+            shared_embedding_model_configs_json = ?6,
+            project_chat_model_configs_json = ?7,
+            project_summary_model_configs_json = ?8,
+            project_allowed_tools_json = ?9,
+            chat_agent_chat_model_configs_json = ?7,
+            chat_agent_summary_model_configs_json = ?8,
+            chat_agent_allowed_tools_json = ?9,
+            auto_approve_dispatch = ?10,
+            context_debug = ?11",
+        params![
+            serde_json::to_string(&vision_configs)?,
+            serde_json::to_string(&image_configs)?,
+            serde_json::to_string(&image_edit_configs)?,
+            serde_json::to_string(&asr_configs)?,
+            serde_json::to_string(&tts_configs)?,
+            serde_json::to_string(&embedding_configs)?,
+            serde_json::to_string(&chat_configs)?,
+            serde_json::to_string(&summary_configs)?,
+            normalize_json_array(&row.allowed_tools_json),
+            row.auto_approve_dispatch,
+            row.context_debug,
+        ],
+    )
+    .context("migrate legacy dispatcher settings to v2")?;
+
+    tx.execute_batch("DROP TABLE dispatcher_settings;")
+        .context("drop legacy dispatcher settings table")?;
+    Ok(())
+}
+
+#[derive(Default)]
+struct LegacyDispatcherSettings {
+    api_base: String,
+    api_key: String,
+    model: String,
+    summary_model: String,
+    vision_model: String,
+    asr_api_key: String,
+    asr_websocket_url: String,
+    auto_approve_dispatch: i32,
+    context_debug: i32,
+    image_model_url: String,
+    image_model_api_key: String,
+    image_model: String,
+    image_edit_model: String,
+    chat_model_url: String,
+    chat_model_api_key: String,
+    chat_model_name: String,
+    chat_model_configs_json: String,
+    summary_model_url: String,
+    summary_model_api_key: String,
+    summary_model_name: String,
+    summary_model_configs_json: String,
+    vision_model_url: String,
+    vision_model_api_key: String,
+    vision_model_name: String,
+    vision_model_configs_json: String,
+    image_model_config_url: String,
+    image_model_config_api_key: String,
+    image_model_config_name: String,
+    image_model_configs_json: String,
+    image_edit_model_url: String,
+    image_edit_model_api_key: String,
+    image_edit_model_name: String,
+    image_edit_model_configs_json: String,
+    asr_model_url: String,
+    asr_model_api_key: String,
+    asr_model_name: String,
+    asr_model_configs_json: String,
+    tts_model_url: String,
+    tts_model_api_key: String,
+    tts_model_name: String,
+    tts_model_configs_json: String,
+    embedding_model_url: String,
+    embedding_model_api_key: String,
+    embedding_model_name: String,
+    embedding_model_configs_json: String,
+    allowed_tools_json: String,
+}
+
+impl LegacyDispatcherSettings {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            api_base: row.get(0)?,
+            api_key: row.get(1)?,
+            model: row.get(2)?,
+            summary_model: row.get(3)?,
+            vision_model: row.get(4)?,
+            asr_api_key: row.get(5)?,
+            asr_websocket_url: row.get(6)?,
+            auto_approve_dispatch: row.get(7)?,
+            context_debug: row.get(8)?,
+            image_model_url: row.get(9)?,
+            image_model_api_key: row.get(10)?,
+            image_model: row.get(11)?,
+            image_edit_model: row.get(12)?,
+            chat_model_url: row.get(13)?,
+            chat_model_api_key: row.get(14)?,
+            chat_model_name: row.get(15)?,
+            chat_model_configs_json: row.get(16)?,
+            summary_model_url: row.get(17)?,
+            summary_model_api_key: row.get(18)?,
+            summary_model_name: row.get(19)?,
+            summary_model_configs_json: row.get(20)?,
+            vision_model_url: row.get(21)?,
+            vision_model_api_key: row.get(22)?,
+            vision_model_name: row.get(23)?,
+            vision_model_configs_json: row.get(24)?,
+            image_model_config_url: row.get(25)?,
+            image_model_config_api_key: row.get(26)?,
+            image_model_config_name: row.get(27)?,
+            image_model_configs_json: row.get(28)?,
+            image_edit_model_url: row.get(29)?,
+            image_edit_model_api_key: row.get(30)?,
+            image_edit_model_name: row.get(31)?,
+            image_edit_model_configs_json: row.get(32)?,
+            asr_model_url: row.get(33)?,
+            asr_model_api_key: row.get(34)?,
+            asr_model_name: row.get(35)?,
+            asr_model_configs_json: row.get(36)?,
+            tts_model_url: row.get(37)?,
+            tts_model_api_key: row.get(38)?,
+            tts_model_name: row.get(39)?,
+            tts_model_configs_json: row.get(40)?,
+            embedding_model_url: row.get(41)?,
+            embedding_model_api_key: row.get(42)?,
+            embedding_model_name: row.get(43)?,
+            embedding_model_configs_json: row.get(44)?,
+            allowed_tools_json: row.get(45)?,
+        })
+    }
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count > 0)
+    .with_context(|| format!("check table exists: {table}"))
+}
+
+fn ensure_legacy_dispatcher_settings_columns_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    for (column, definition) in [
+        ("summary_model", "TEXT NOT NULL DEFAULT 'deepseek-v4-flash'"),
+        ("vision_model", "TEXT NOT NULL DEFAULT ''"),
+        ("asr_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("asr_websocket_url", "TEXT NOT NULL DEFAULT ''"),
+        ("context_debug", "INTEGER NOT NULL DEFAULT 0"),
+        (
+            "image_model_url",
+            "TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1'",
+        ),
+        ("image_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("image_model", "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'"),
+        ("image_edit_model", "TEXT NOT NULL DEFAULT ''"),
+        ("chat_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("chat_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("chat_model_name", "TEXT NOT NULL DEFAULT ''"),
+        ("summary_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("summary_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("summary_model_name", "TEXT NOT NULL DEFAULT ''"),
+        ("vision_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("vision_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("vision_model_name", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "image_model_config_url",
+            "TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1'",
+        ),
+        ("image_model_config_api_key", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "image_model_config_name",
+            "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'",
+        ),
+        (
+            "image_edit_model_url",
+            "TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1'",
+        ),
+        ("image_edit_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "image_edit_model_name",
+            "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'",
+        ),
+        ("asr_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("asr_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("asr_model_name", "TEXT NOT NULL DEFAULT 'fun-asr-realtime'"),
+        ("tts_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("tts_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("tts_model_name", "TEXT NOT NULL DEFAULT ''"),
+        ("embedding_model_url", "TEXT NOT NULL DEFAULT ''"),
+        ("embedding_model_api_key", "TEXT NOT NULL DEFAULT ''"),
+        ("embedding_model_name", "TEXT NOT NULL DEFAULT ''"),
+        ("chat_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("summary_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("vision_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("image_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        (
+            "image_edit_model_configs_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        ),
+        ("asr_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tts_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("embedding_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("allowed_tools_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ] {
+        ensure_column_exists_tx(tx, "dispatcher_settings", column, definition)?;
+    }
+    Ok(())
+}
+
+fn normalize_legacy_dispatcher_settings_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "
+        UPDATE dispatcher_settings SET
+            chat_model_url = CASE WHEN trim(chat_model_url) = '' THEN api_base ELSE chat_model_url END,
+            chat_model_api_key = CASE WHEN trim(chat_model_api_key) = '' THEN api_key ELSE chat_model_api_key END,
+            chat_model_name = CASE WHEN trim(chat_model_name) = '' THEN model ELSE chat_model_name END,
+            summary_model_url = CASE WHEN trim(summary_model_url) = '' THEN api_base ELSE summary_model_url END,
+            summary_model_api_key = CASE WHEN trim(summary_model_api_key) = '' THEN api_key ELSE summary_model_api_key END,
+            summary_model_name = CASE WHEN trim(summary_model_name) = '' THEN summary_model ELSE summary_model_name END,
+            vision_model_url = CASE WHEN trim(vision_model_url) = '' THEN api_base ELSE vision_model_url END,
+            vision_model_api_key = CASE WHEN trim(vision_model_api_key) = '' THEN api_key ELSE vision_model_api_key END,
+            vision_model_name = CASE WHEN trim(vision_model_name) = '' THEN vision_model ELSE vision_model_name END,
+            image_model_config_url = CASE WHEN trim(image_model_config_url) = '' THEN image_model_url ELSE image_model_config_url END,
+            image_model_config_api_key = CASE WHEN trim(image_model_config_api_key) = '' THEN image_model_api_key ELSE image_model_config_api_key END,
+            image_model_config_name = CASE WHEN trim(image_model_config_name) = '' THEN image_model ELSE image_model_config_name END,
+            image_edit_model_url = CASE WHEN trim(image_edit_model_url) = '' THEN image_model_url ELSE image_edit_model_url END,
+            image_edit_model_api_key = CASE WHEN trim(image_edit_model_api_key) = '' THEN image_model_api_key ELSE image_edit_model_api_key END,
+            image_edit_model_name = CASE WHEN trim(image_edit_model_name) = '' THEN COALESCE(NULLIF(trim(image_edit_model), ''), image_model) ELSE image_edit_model_name END,
+            asr_model_url = CASE WHEN trim(asr_model_url) = '' THEN asr_websocket_url ELSE asr_model_url END,
+            asr_model_api_key = CASE WHEN trim(asr_model_api_key) = '' THEN asr_api_key ELSE asr_model_api_key END,
+            asr_model_name = CASE WHEN trim(asr_model_name) = '' THEN 'fun-asr-realtime' ELSE asr_model_name END,
+            chat_model_configs_json = CASE WHEN trim(chat_model_configs_json) = '' THEN '[]' ELSE chat_model_configs_json END,
+            summary_model_configs_json = CASE WHEN trim(summary_model_configs_json) = '' THEN '[]' ELSE summary_model_configs_json END,
+            vision_model_configs_json = CASE WHEN trim(vision_model_configs_json) = '' THEN '[]' ELSE vision_model_configs_json END,
+            image_model_configs_json = CASE WHEN trim(image_model_configs_json) = '' THEN '[]' ELSE image_model_configs_json END,
+            image_edit_model_configs_json = CASE WHEN trim(image_edit_model_configs_json) = '' THEN '[]' ELSE image_edit_model_configs_json END,
+            asr_model_configs_json = CASE WHEN trim(asr_model_configs_json) = '' THEN '[]' ELSE asr_model_configs_json END,
+            tts_model_configs_json = CASE WHEN trim(tts_model_configs_json) = '' THEN '[]' ELSE tts_model_configs_json END,
+            embedding_model_configs_json = CASE WHEN trim(embedding_model_configs_json) = '' THEN '[]' ELSE embedding_model_configs_json END;
+        ",
+    )
+    .context("normalize legacy dispatcher settings")
+}
+
+fn legacy_configs(
+    raw_json: &str,
+    url: &str,
+    api_key: &str,
+    model: &str,
+    fallback: (&str, &str, &str),
+) -> Vec<DispatcherModelConfig> {
+    let parsed = serde_json::from_str::<Vec<DispatcherModelConfig>>(raw_json)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|config| !legacy_model_config_is_empty(config))
+        .collect::<Vec<_>>();
+    if !parsed.is_empty() {
+        return normalize_legacy_model_configs(parsed);
+    }
+
+    let config = DispatcherModelConfig {
+        url: non_empty_or(url, fallback.0).to_string(),
+        api_key: non_empty_or(api_key, fallback.1).to_string(),
+        model: non_empty_or(model, fallback.2).to_string(),
+        active: true,
+        system_prompt: String::new(),
+    };
+    if legacy_model_config_is_empty(&config) {
+        Vec::new()
+    } else {
+        vec![config]
+    }
+}
+
+fn normalize_legacy_model_configs(
+    configs: Vec<DispatcherModelConfig>,
+) -> Vec<DispatcherModelConfig> {
+    let mut normalized = configs
+        .into_iter()
+        .filter(|config| !legacy_model_config_is_empty(config))
+        .collect::<Vec<_>>();
+    if let Some(active_index) = normalized.iter().position(|config| config.active) {
+        for (index, config) in normalized.iter_mut().enumerate() {
+            config.active = index == active_index;
+        }
+    } else if let Some(first) = normalized.first_mut() {
+        first.active = true;
+    }
+    normalized
+}
+
+fn legacy_model_config_is_empty(config: &DispatcherModelConfig) -> bool {
+    config.url.trim().is_empty()
+        && config.api_key.trim().is_empty()
+        && config.model.trim().is_empty()
+}
+
+fn non_empty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    if value.trim().is_empty() {
+        fallback.trim()
+    } else {
+        value.trim()
+    }
+}
+
+fn fallback_image_edit_model<'a>(image_model: &'a str, image_edit_model: &'a str) -> &'a str {
+    if image_edit_model.trim().is_empty() {
+        image_model.trim()
+    } else {
+        image_edit_model.trim()
+    }
+}
+
+fn normalize_json_array(raw: &str) -> String {
+    serde_json::from_str::<Vec<String>>(raw)
+        .map(|value| serde_json::to_string(&value).unwrap_or_else(|_| "[]".to_string()))
+        .unwrap_or_else(|_| "[]".to_string())
 }
 
 fn table_primary_key_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
@@ -1140,112 +1498,4 @@ fn scenario_chat_category_agent_config(
         }),
         _ => None,
     }
-}
-
-fn ensure_dispatcher_model_config_columns(conn: &Connection) -> Result<()> {
-    for (column, definition) in [
-        ("chat_model_url", "TEXT NOT NULL DEFAULT ''"),
-        ("chat_model_api_key", "TEXT NOT NULL DEFAULT ''"),
-        ("chat_model_name", "TEXT NOT NULL DEFAULT ''"),
-        ("summary_model_url", "TEXT NOT NULL DEFAULT ''"),
-        ("summary_model_api_key", "TEXT NOT NULL DEFAULT ''"),
-        ("summary_model_name", "TEXT NOT NULL DEFAULT ''"),
-        ("vision_model_url", "TEXT NOT NULL DEFAULT ''"),
-        ("vision_model_api_key", "TEXT NOT NULL DEFAULT ''"),
-        ("vision_model_name", "TEXT NOT NULL DEFAULT ''"),
-        (
-            "image_model_config_url",
-            "TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1'",
-        ),
-        ("image_model_config_api_key", "TEXT NOT NULL DEFAULT ''"),
-        (
-            "image_model_config_name",
-            "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'",
-        ),
-        (
-            "image_edit_model_url",
-            "TEXT NOT NULL DEFAULT 'https://dashscope.aliyuncs.com/api/v1'",
-        ),
-        ("image_edit_model_api_key", "TEXT NOT NULL DEFAULT ''"),
-        (
-            "image_edit_model_name",
-            "TEXT NOT NULL DEFAULT 'qwen-image-2.0-pro'",
-        ),
-        ("asr_model_url", "TEXT NOT NULL DEFAULT ''"),
-        ("asr_model_api_key", "TEXT NOT NULL DEFAULT ''"),
-        ("asr_model_name", "TEXT NOT NULL DEFAULT 'fun-asr-realtime'"),
-        ("tts_model_url", "TEXT NOT NULL DEFAULT ''"),
-        ("tts_model_api_key", "TEXT NOT NULL DEFAULT ''"),
-        ("tts_model_name", "TEXT NOT NULL DEFAULT ''"),
-        ("embedding_model_url", "TEXT NOT NULL DEFAULT ''"),
-        ("embedding_model_api_key", "TEXT NOT NULL DEFAULT ''"),
-        ("embedding_model_name", "TEXT NOT NULL DEFAULT ''"),
-        ("chat_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
-        ("summary_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
-        ("vision_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
-        ("image_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
-        (
-            "image_edit_model_configs_json",
-            "TEXT NOT NULL DEFAULT '[]'",
-        ),
-        ("asr_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
-        ("tts_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
-        ("embedding_model_configs_json", "TEXT NOT NULL DEFAULT '[]'"),
-    ] {
-        ensure_column_exists(conn, "dispatcher_settings", column, definition)?;
-    }
-
-    Ok(())
-}
-
-/// Transaction-scoped variant used from within `init()`'s outer migration transaction.
-fn ensure_dispatcher_model_config_columns_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
-    ensure_dispatcher_model_config_columns(tx)
-}
-
-fn migrate_dispatcher_model_configs(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "UPDATE dispatcher_settings SET
-            chat_model_url = CASE WHEN trim(chat_model_url) = '' THEN api_base ELSE chat_model_url END,
-            chat_model_api_key = CASE WHEN trim(chat_model_api_key) = '' THEN api_key ELSE chat_model_api_key END,
-            chat_model_name = CASE WHEN trim(chat_model_name) = '' THEN model ELSE chat_model_name END,
-            summary_model_url = CASE WHEN trim(summary_model_url) = '' THEN api_base ELSE summary_model_url END,
-            summary_model_api_key = CASE WHEN trim(summary_model_api_key) = '' THEN api_key ELSE summary_model_api_key END,
-            summary_model_name = CASE WHEN trim(summary_model_name) = '' THEN summary_model ELSE summary_model_name END,
-            vision_model_url = CASE WHEN trim(vision_model_url) = '' THEN api_base ELSE vision_model_url END,
-            vision_model_api_key = CASE WHEN trim(vision_model_api_key) = '' THEN api_key ELSE vision_model_api_key END,
-            vision_model_name = CASE WHEN trim(vision_model_name) = '' THEN vision_model ELSE vision_model_name END,
-            image_model_config_url = CASE WHEN trim(image_model_config_url) = '' THEN image_model_url ELSE image_model_config_url END,
-            image_model_config_api_key = CASE WHEN trim(image_model_config_api_key) = '' THEN image_model_api_key ELSE image_model_config_api_key END,
-            image_model_config_name = CASE WHEN trim(image_model_config_name) = '' THEN image_model ELSE image_model_config_name END,
-            image_edit_model_url = CASE WHEN trim(image_edit_model_url) = '' THEN image_model_url ELSE image_edit_model_url END,
-            image_edit_model_api_key = CASE WHEN trim(image_edit_model_api_key) = '' THEN image_model_api_key ELSE image_edit_model_api_key END,
-            image_edit_model_name = CASE WHEN trim(image_edit_model_name) = '' THEN COALESCE(NULLIF(trim(image_edit_model), ''), image_model) ELSE image_edit_model_name END,
-            asr_model_url = CASE WHEN trim(asr_model_url) = '' THEN asr_websocket_url ELSE asr_model_url END,
-            asr_model_api_key = CASE WHEN trim(asr_model_api_key) = '' THEN asr_api_key ELSE asr_model_api_key END,
-            asr_model_name = CASE WHEN trim(asr_model_name) = '' THEN 'fun-asr-realtime' ELSE asr_model_name END",
-        [],
-    )
-    .context("migrate dispatcher model configs")?;
-
-    conn.execute(
-        "UPDATE dispatcher_settings SET
-            chat_model_configs_json = CASE WHEN trim(chat_model_configs_json) = '' THEN '[]' ELSE chat_model_configs_json END,
-            summary_model_configs_json = CASE WHEN trim(summary_model_configs_json) = '' THEN '[]' ELSE summary_model_configs_json END,
-            vision_model_configs_json = CASE WHEN trim(vision_model_configs_json) = '' THEN '[]' ELSE vision_model_configs_json END,
-            image_model_configs_json = CASE WHEN trim(image_model_configs_json) = '' THEN '[]' ELSE image_model_configs_json END,
-            image_edit_model_configs_json = CASE WHEN trim(image_edit_model_configs_json) = '' THEN '[]' ELSE image_edit_model_configs_json END,
-            asr_model_configs_json = CASE WHEN trim(asr_model_configs_json) = '' THEN '[]' ELSE asr_model_configs_json END,
-            tts_model_configs_json = CASE WHEN trim(tts_model_configs_json) = '' THEN '[]' ELSE tts_model_configs_json END,
-            embedding_model_configs_json = CASE WHEN trim(embedding_model_configs_json) = '' THEN '[]' ELSE embedding_model_configs_json END",
-        [],
-    )
-    .context("migrate dispatcher model config lists")?;
-
-    Ok(())
-}
-
-/// Transaction-scoped variant used from within `init()`'s outer migration transaction.
-fn migrate_dispatcher_model_configs_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
-    migrate_dispatcher_model_configs(tx)
 }

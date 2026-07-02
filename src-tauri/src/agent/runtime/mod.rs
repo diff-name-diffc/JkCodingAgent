@@ -128,58 +128,6 @@ impl DispatcherAgent {
         self
     }
 
-    pub fn apply_settings(&self, settings: &super::db::DispatcherSettingsRecord) {
-        {
-            let mut provider = self.provider.lock();
-            *provider = OpenAiCompatProvider::new(
-                if settings.api_key.is_empty() {
-                    self.config.api_key.clone()
-                } else {
-                    settings.api_key.clone()
-                },
-                if settings.api_base.is_empty() {
-                    self.config.api_base.clone()
-                } else {
-                    settings.api_base.clone()
-                },
-                if settings.model.is_empty() {
-                    self.config.model.clone()
-                } else {
-                    settings.model.clone()
-                },
-                self.config.max_tokens,
-                self.config.temperature,
-            );
-        }
-        let mut models = self.models.lock();
-        if !settings.summary_model.trim().is_empty() {
-            models.summary_model = helpers::normalize_summary_model(&settings.summary_model);
-        }
-        let smc = &settings.summary_model_config;
-        if !smc.api_key.trim().is_empty() {
-            models.summary_api_key = smc.api_key.trim().to_string();
-        }
-        if !smc.url.trim().is_empty() {
-            models.summary_api_base = smc.url.trim().to_string();
-        }
-        if !settings.vision_model.trim().is_empty() {
-            models.vision_model = settings.vision_model.trim().to_string();
-        }
-        if !settings.image_model_url.trim().is_empty() {
-            models.image_model_url = settings.image_model_url.trim().to_string();
-        }
-        if !settings.image_model_api_key.trim().is_empty() {
-            models.image_model_api_key = settings.image_model_api_key.trim().to_string();
-        }
-        if !settings.image_model.trim().is_empty() {
-            models.image_model = settings.image_model.trim().to_string();
-        }
-        if !settings.image_edit_model.trim().is_empty() {
-            models.image_edit_model = settings.image_edit_model.trim().to_string();
-        }
-        *self.allowed_tools.lock() = settings.allowed_tools.clone();
-    }
-
     pub fn apply_settings_v2(
         &self,
         settings: &super::db::AhaSettingsV2,

@@ -16,7 +16,7 @@ use super::common::{
 use super::config::DispatcherAgentConfig;
 use super::db::{
     AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb, DispatcherMessageRecord,
-    DispatcherSessionTokenUsageSource, DispatcherSettingsRecord,
+    DispatcherSessionTokenUsageSource,
 };
 use super::llm::{
     ChatMessage, LlmResponse, OpenAiCompatProvider, RequestedToolCall, ToolDefinition,
@@ -96,47 +96,6 @@ impl PlainChatAgent {
     pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
         self.app_handle = Some(app_handle);
         self
-    }
-
-    pub fn apply_settings(&self, settings: &DispatcherSettingsRecord) {
-        {
-            let mut provider = self.provider.lock();
-            *provider = OpenAiCompatProvider::new(
-                if settings.api_key.is_empty() {
-                    self.config.api_key.clone()
-                } else {
-                    settings.api_key.clone()
-                },
-                if settings.api_base.is_empty() {
-                    self.config.api_base.clone()
-                } else {
-                    settings.api_base.clone()
-                },
-                if settings.model.is_empty() {
-                    self.config.model.clone()
-                } else {
-                    settings.model.clone()
-                },
-                self.config.max_tokens,
-                self.config.temperature,
-            );
-        }
-        if !settings.vision_model.trim().is_empty() {
-            *self.vision_model.lock() = settings.vision_model.trim().to_string();
-        }
-        if !settings.summary_model.trim().is_empty() {
-            *self.summary_model.lock() = settings.summary_model.trim().to_string();
-        }
-        {
-            let cfg = &settings.summary_model_config;
-            if !cfg.api_key.trim().is_empty() {
-                *self.summary_api_key.lock() = cfg.api_key.trim().to_string();
-            }
-            if !cfg.url.trim().is_empty() {
-                *self.summary_api_base.lock() = cfg.url.trim().to_string();
-            }
-        }
-        *self.allowed_tools.lock() = settings.allowed_tools.clone();
     }
 
     pub fn apply_settings_v2(&self, settings: &AhaSettingsV2, context: AgentContext) {

@@ -14,7 +14,6 @@ import type {
   AhaSettingsV2,
   DispatcherMessage,
   DispatcherModelConfig,
-  DispatcherSettings,
   ImageSegment,
   ProjectMcpStatus,
   PythonCodeRunRecord,
@@ -256,8 +255,8 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
     // ── Effects ──────────────────────────────────────────────────
     useEffect(() => {
-      invoke<DispatcherSettings | null>("dispatcher_get_settings")
-        .then((s) => { if (s) setAutoApprove(s.autoApproveDispatch); })
+      invoke<AhaSettingsV2>("aha_get_settings_v2")
+        .then((settings) => setAutoApprove(settings.autoApproveDispatch))
         .catch(console.error);
     }, []);
 

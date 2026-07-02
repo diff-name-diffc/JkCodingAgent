@@ -1,8 +1,10 @@
 import type {
+  AnyContentSegment,
   AgentType,
   DispatcherMessage,
   DispatcherMessageUsageStats,
   ProjectMcpStatus,
+  TextSegment,
 } from "../../types";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -207,10 +209,53 @@ export function mergeDispatcherMessages(
   incoming: DispatcherMessage[],
 ): DispatcherMessage[] {
   if (incoming.length === 0) return current;
-  const merged = new Map(current.map((m) => [m.id, m] as const));
-  for (const m of incoming) merged.set(m.id, m);
+  const merged = new Map(current.map((m) => [m.id, normalizeDispatcherMessage(m)] as const));
+  for (const m of incoming) merged.set(m.id, normalizeDispatcherMessage(m));
   return [...merged.values()].sort((a, b) => {
     const cmp = a.createdAt.localeCompare(b.createdAt);
     return cmp !== 0 ? cmp : a.id.localeCompare(b.id);
   });
+}
+
+type DispatcherMessageWire = Omit<DispatcherMessage, "segments" | "content"> & {
+  segments?: AnyContentSegment[];
+  content?: string;
+  segmentsJson?: string;
+};
+
+export function normalizeDispatcherMessage(message: DispatcherMessageWire): DispatcherMessage {
+  const segments = Array.isArray(message.segments)
+    ? message.segments
+    : parseSegmentsJson(message.segmentsJson);
+  const content = typeof message.content === "string" ? message.content : textFromSegments(segments);
+
+  return {
+    ...message,
+    segments,
+    content,
+  };
+}
+
+function parseSegmentsJson(raw: string | undefined): AnyContentSegment[] {
+  if (!raw || !raw.trim()) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(isContentSegment) : [];
+  } catch (error) {
+    console.error("解析 dispatcher 消息 segmentsJson 失败:", error);
+    return [];
+  }
+}
+
+function isContentSegment(segment: unknown): segment is AnyContentSegment {
+  if (!segment || typeof segment !== "object") return false;
+  const type = (segment as { type?: unknown }).type;
+  return type === "text" || type === "image" || type === "file";
+}
+
+function textFromSegments(segments: AnyContentSegment[]): string {
+  return segments
+    .filter((segment): segment is TextSegment => segment.type === "text")
+    .map((segment) => segment.text)
+    .join("\n");
 }

@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentType,
-  DispatcherSettings,
+  AhaSettingsV2,
   ImageSegment,
 } from "../../types";
 import type { DispatcherChatHandle } from "./useDispatcherActions";
@@ -243,13 +243,14 @@ export function useDispatcherHandlers({
     const next = !autoApprove;
     setAutoApprove(next);
     try {
-      const saved = await invoke<DispatcherSettings>("dispatcher_set_auto_approve_dispatch", {
-        autoApproveDispatch: next,
+      const settings = await invoke<AhaSettingsV2>("aha_get_settings_v2");
+      const saved = await invoke<AhaSettingsV2>("aha_save_settings_v2", {
+        settings: { ...settings, autoApproveDispatch: next },
       });
       setAutoApprove(saved.autoApproveDispatch);
     } catch (err) {
       setAutoApprove(!next);
-      console.error("dispatcher_set_auto_approve_dispatch 失败:", err);
+      console.error("更新 Aha 自动批准设置失败:", err);
     }
   }, [autoApprove, setAutoApprove]);
 

@@ -103,8 +103,9 @@ export const UserMessageBubble = memo(function UserMessageBubble({
   message: DispatcherMessage;
 }) {
   const { images, text } = useMemo(() => {
-    const imageSegments = message.segments.filter(isImageSegment);
-    const textSegments = message.segments.filter(isTextSegment);
+    const segments = Array.isArray(message.segments) ? message.segments : [];
+    const imageSegments = segments.filter(isImageSegment);
+    const textSegments = segments.filter(isTextSegment);
     const textFromSegments = textSegments
       .map((segment) => segment.text)
       .filter((value) => value.trim())
@@ -112,7 +113,7 @@ export const UserMessageBubble = memo(function UserMessageBubble({
 
     return {
       images: imageSegments,
-      text: textFromSegments || (message.segments.length === 0 ? message.content : ""),
+      text: textFromSegments || (segments.length === 0 ? message.content : ""),
     };
   }, [message.content, message.segments]);
 

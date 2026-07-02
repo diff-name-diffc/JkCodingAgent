@@ -108,15 +108,14 @@ impl DispatcherState {
             self.services.sub_agent_manager.clone(),
         );
 
-        if let Ok(v2) = self.services.db.get_settings_v2() {
-            agent.apply_settings_v2(&v2, AgentContext::Project);
-            agent.set_auto_approve_dispatch(v2.auto_approve_dispatch);
-            agent.set_context_debug(v2.context_debug);
-        } else if let Ok(Some(settings)) = self.services.db.get_settings() {
-            agent.apply_settings(&settings);
-            agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
-            agent.set_context_debug(settings.context_debug);
-        }
+        let settings = self
+            .services
+            .db
+            .get_settings_v2()
+            .expect("load dispatcher settings v2");
+        agent.apply_settings_v2(&settings, AgentContext::Project);
+        agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
+        agent.set_context_debug(settings.context_debug);
 
         if self.registered_tool_names().is_none() {
             self.set_registered_tools(agent.tools_arc().tool_names_and_descriptions());
@@ -138,11 +137,12 @@ impl DispatcherState {
             self.services.sub_agent_manager.clone(),
         );
 
-        if let Ok(v2) = self.services.db.get_settings_v2() {
-            agent.apply_settings_v2(&v2, AgentContext::Chat);
-        } else if let Ok(Some(settings)) = self.services.db.get_settings() {
-            agent.apply_settings(&settings);
-        }
+        let settings = self
+            .services
+            .db
+            .get_settings_v2()
+            .map_err(|error| error.to_string())?;
+        agent.apply_settings_v2(&settings, AgentContext::Chat);
 
         if let Some(category_config) = self
             .services

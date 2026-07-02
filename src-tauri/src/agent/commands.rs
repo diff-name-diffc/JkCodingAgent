@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
-use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{sleep, Duration};
 
@@ -11,8 +10,8 @@ use super::db::{
     ChatCategoryAgentConfig, ChatSessionRecord, DispatcherDb, DispatcherMessageRecord,
     DispatcherModelConfig, DispatcherSessionKind, DispatcherSessionRecord,
     DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
-    DispatcherSettingsModelConfigs, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
-    KeywordAction, ProjectSessionRecord, SessionKeywordRecord, SessionPage, SessionSearchResult,
+    DispatcherToolArtifactRecord, KeywordAction, ProjectSessionRecord, SessionKeywordRecord,
+    SessionPage, SessionSearchResult,
 };
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
@@ -35,52 +34,25 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const SESSION_TITLE_RECENT_DIALOGUES: usize = 3;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DispatcherSaveSettingsPayload {
-    api_base: String,
-    api_key: String,
-    model: String,
-    summary_model: String,
-    vision_model: String,
-    asr_api_key: String,
-    asr_websocket_url: String,
-    auto_approve_dispatch: bool,
-    context_debug: bool,
-    image_model_url: String,
-    image_model_api_key: String,
-    image_model: String,
-    image_edit_model: String,
-    chat_model_config: Option<DispatcherModelConfig>,
-    summary_model_config: Option<DispatcherModelConfig>,
-    vision_model_config: Option<DispatcherModelConfig>,
-    image_model_config: Option<DispatcherModelConfig>,
-    image_edit_model_config: Option<DispatcherModelConfig>,
-    asr_model_config: Option<DispatcherModelConfig>,
-    tts_model_config: Option<DispatcherModelConfig>,
-    embedding_model_config: Option<DispatcherModelConfig>,
-    chat_model_configs: Option<Vec<DispatcherModelConfig>>,
-    summary_model_configs: Option<Vec<DispatcherModelConfig>>,
-    vision_model_configs: Option<Vec<DispatcherModelConfig>>,
-    image_model_configs: Option<Vec<DispatcherModelConfig>>,
-    image_edit_model_configs: Option<Vec<DispatcherModelConfig>>,
-    asr_model_configs: Option<Vec<DispatcherModelConfig>>,
-    tts_model_configs: Option<Vec<DispatcherModelConfig>>,
-    embedding_model_configs: Option<Vec<DispatcherModelConfig>>,
-    allowed_tools: Option<Vec<String>>,
-}
-
 fn has_live_subprocess(task_manager: &TaskManager, task_id: &str) -> bool {
     task_manager.child_handles.lock().contains_key(task_id)
 }
 
 fn resolve_voice_asr_config(state: &DispatcherState) -> Result<VoiceAsrConfig, String> {
-    let saved = state.db().get_settings().ok().flatten();
+    let saved = state
+        .db()
+        .get_settings_v2()
+        .map_err(|error| error.to_string())?;
     let loaded = DispatcherAgentConfig::load().ok();
+    let asr_config = saved
+        .shared
+        .asr_model_configs
+        .iter()
+        .find(|config| config.active)
+        .or_else(|| saved.shared.asr_model_configs.first());
 
-    let api_key = saved
-        .as_ref()
-        .map(|settings| settings.asr_api_key.trim())
+    let api_key = asr_config
+        .map(|config| config.api_key.trim())
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .or_else(|| {
@@ -94,10 +66,9 @@ fn resolve_voice_asr_config(state: &DispatcherState) -> Result<VoiceAsrConfig, S
             })
         })
         .or_else(|| {
-            saved
-                .as_ref()
-                .filter(|settings| settings.api_base.contains("dashscope"))
-                .map(|settings| settings.api_key.trim())
+            asr_config
+                .filter(|config| config.url.contains("dashscope"))
+                .map(|config| config.api_key.trim())
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned)
         })
@@ -115,30 +86,28 @@ fn resolve_voice_asr_config(state: &DispatcherState) -> Result<VoiceAsrConfig, S
                 .to_string()
         })?;
 
-    let saved_websocket_url = saved
-        .as_ref()
-        .map(|settings| settings.asr_websocket_url.trim())
+    let saved_websocket_url = asr_config
+        .map(|config| config.url.trim())
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
 
-    let api_base = saved
-        .as_ref()
-        .map(|settings| settings.api_base.trim())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .or_else(|| {
-            loaded
-                .as_ref()
-                .map(|config| config.api_base.trim())
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-        })
-        .unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string());
+    let api_base = saved_websocket_url.clone().or_else(|| {
+        loaded
+            .as_ref()
+            .map(|config| config.api_base.trim())
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    });
 
     Ok(VoiceAsrConfig {
         api_key,
-        websocket_url: saved_websocket_url
-            .unwrap_or_else(|| resolve_dashscope_websocket_url(&api_base)),
+        websocket_url: saved_websocket_url.unwrap_or_else(|| {
+            resolve_dashscope_websocket_url(
+                api_base
+                    .as_deref()
+                    .unwrap_or("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            )
+        }),
     })
 }
 
@@ -758,13 +727,6 @@ pub async fn dispatcher_get_tool_artifact(
 }
 
 #[tauri::command]
-pub fn dispatcher_get_settings(
-    state: tauri::State<'_, DispatcherState>,
-) -> Result<Option<DispatcherSettingsRecord>, String> {
-    state.db().get_settings().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 pub fn dispatcher_list_sessions(
     state: tauri::State<'_, DispatcherState>,
     project_id: String,
@@ -1065,52 +1027,6 @@ pub async fn aha_save_chat_category_agent_configs(
 }
 
 #[tauri::command]
-pub async fn dispatcher_save_settings(
-    state: tauri::State<'_, DispatcherState>,
-    settings: DispatcherSaveSettingsPayload,
-) -> Result<DispatcherSettingsRecord, String> {
-    let record = state
-        .db()
-        .save_settings_with_model_configs(
-            &settings.api_base,
-            &settings.api_key,
-            &settings.model,
-            &settings.summary_model,
-            &settings.vision_model,
-            &settings.asr_api_key,
-            &settings.asr_websocket_url,
-            settings.auto_approve_dispatch,
-            settings.context_debug,
-            &settings.image_model_url,
-            &settings.image_model_api_key,
-            &settings.image_model,
-            &settings.image_edit_model,
-            DispatcherSettingsModelConfigs {
-                chat_model_config: settings.chat_model_config,
-                summary_model_config: settings.summary_model_config,
-                vision_model_config: settings.vision_model_config,
-                image_model_config: settings.image_model_config,
-                image_edit_model_config: settings.image_edit_model_config,
-                asr_model_config: settings.asr_model_config,
-                tts_model_config: settings.tts_model_config,
-                embedding_model_config: settings.embedding_model_config,
-                chat_model_configs: settings.chat_model_configs,
-                summary_model_configs: settings.summary_model_configs,
-                vision_model_configs: settings.vision_model_configs,
-                image_model_configs: settings.image_model_configs,
-                image_edit_model_configs: settings.image_edit_model_configs,
-                asr_model_configs: settings.asr_model_configs,
-                tts_model_configs: settings.tts_model_configs,
-                embedding_model_configs: settings.embedding_model_configs,
-            },
-            settings.allowed_tools.unwrap_or_default(),
-        )
-        .map_err(|error| error.to_string())?;
-
-    Ok(record)
-}
-
-#[tauri::command]
 pub async fn dispatcher_fetch_models(
     api_base: String,
     api_key: String,
@@ -1309,18 +1225,6 @@ fn embedding_endpoint(url: &str) -> String {
     } else {
         format!("{trimmed}/v1/embeddings")
     }
-}
-
-#[tauri::command]
-pub async fn dispatcher_set_auto_approve_dispatch(
-    state: tauri::State<'_, DispatcherState>,
-    auto_approve_dispatch: bool,
-) -> Result<DispatcherSettingsRecord, String> {
-    let record = state
-        .db()
-        .set_auto_approve_dispatch(auto_approve_dispatch)
-        .map_err(|error| error.to_string())?;
-    Ok(record)
 }
 
 #[tauri::command]

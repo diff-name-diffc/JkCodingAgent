@@ -458,10 +458,15 @@ async fn execute_python_tool(
 
 fn resolve_summary_provider(config: &DispatcherAgentConfig) -> Result<OpenAiCompatProvider> {
     let db = DispatcherDb::new(config.db_path.clone())?;
-    let settings = db
-        .get_settings()?
-        .ok_or_else(|| anyhow!("摘要模型未配置。请先在 Aha 设置中配置摘要模型。"))?;
-    let model_config = settings.summary_model_config;
+    let settings = db.get_settings_v2()?;
+    let model_config = settings
+        .project
+        .summary_model_configs
+        .iter()
+        .find(|config| config.active)
+        .or_else(|| settings.project.summary_model_configs.first())
+        .cloned()
+        .ok_or_else(|| anyhow!("摘要模型未配置。请先在 Aha 设置中配置项目摘要模型。"))?;
     if model_config.url.trim().is_empty()
         || model_config.api_key.trim().is_empty()
         || model_config.model.trim().is_empty()

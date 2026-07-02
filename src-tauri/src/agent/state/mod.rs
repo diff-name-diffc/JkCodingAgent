@@ -28,7 +28,7 @@ use tool_catalog::{tool_infos_from_registry, ToolCatalog};
 /// 职责：
 /// - 初始化并持有所有共享服务（DB / MCP / SSH / 子进程注册表 / 子智能体管理器）。
 /// - `build_run_agent` / `build_plain_chat_agent`：每轮按需构建短命 Agent 并实时应用 DB 设置。
-/// - 运行并发控制（同一 workspace 禁止重入）与异步生成的"最新代胜出"机制。
+/// - 运行状态管理（同一 workspace 禁止重入）与异步生成的"最新代胜出"机制。
 pub struct DispatcherState {
     services: AgentServices,
     active_runs: ActiveRunStore,
@@ -234,8 +234,8 @@ impl DispatcherState {
         self.active_runs.begin(workspace_id)
     }
 
-    pub(crate) fn finish_run(&self, workspace_id: &str, generation: u64) {
-        self.active_runs.finish(workspace_id, generation);
+    pub(crate) fn finish_run(&self, workspace_id: &str) {
+        self.active_runs.finish(workspace_id);
     }
 
     pub(crate) fn stop_run(&self, workspace_id: &str) -> bool {

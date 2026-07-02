@@ -579,7 +579,7 @@ fn resolve_summary_provider(
 }
 
 #[tauri::command]
-pub async fn dispatcher_send_message(
+pub async fn dispatcher_send_project_agent_message(
     state: tauri::State<'_, DispatcherState>,
     app: AppHandle,
     workspace_id: String,
@@ -588,11 +588,10 @@ pub async fn dispatcher_send_message(
     on_event: Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let title_segments_json = segments_json.clone();
+    let agent = state.build_run_agent().with_app_handle(app.clone());
+    let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
     let title_generation_index = state.begin_title_generation(&workspace_id);
     let keywords_generation_index = state.begin_keywords_generation(&workspace_id);
-
-    let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
-    let agent = state.build_run_agent().with_app_handle(app.clone());
     let result = agent
         .run(DispatcherRunRequest {
             db: state.db(),
@@ -604,7 +603,7 @@ pub async fn dispatcher_send_message(
         })
         .await
         .map_err(|error| error.to_string());
-    state.finish_run(&workspace_id, run_handle.generation);
+    state.finish_run(&workspace_id);
     spawn_session_title_update(
         &state,
         &app,
@@ -624,7 +623,7 @@ pub async fn dispatcher_send_message(
 }
 
 #[tauri::command]
-pub async fn dispatcher_send_plain_chat_message(
+pub async fn dispatcher_send_chat_agent_message(
     state: tauri::State<'_, DispatcherState>,
     app: AppHandle,
     workspace_id: String,
@@ -632,12 +631,12 @@ pub async fn dispatcher_send_plain_chat_message(
     on_event: Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let title_segments_json = segments_json.clone();
-    let title_generation_index = state.begin_title_generation(&workspace_id);
-    let keywords_generation_index = state.begin_keywords_generation(&workspace_id);
-    let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
     let agent = state
         .build_plain_chat_agent(&workspace_id)?
         .with_app_handle(app.clone());
+    let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
+    let title_generation_index = state.begin_title_generation(&workspace_id);
+    let keywords_generation_index = state.begin_keywords_generation(&workspace_id);
     let result = agent
         .run(
             state.db(),
@@ -648,7 +647,7 @@ pub async fn dispatcher_send_plain_chat_message(
         )
         .await
         .map_err(|error| error.to_string());
-    state.finish_run(&workspace_id, run_handle.generation);
+    state.finish_run(&workspace_id);
     spawn_session_title_update(
         &state,
         &app,
@@ -1345,7 +1344,7 @@ pub async fn dispatcher_continue_after_dispatch(
         })
         .await
         .map_err(|error| error.to_string());
-    state.finish_run(&workspace_id, run_handle.generation);
+    state.finish_run(&workspace_id);
     result
 }
 

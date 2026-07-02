@@ -44,6 +44,12 @@ impl ToolRuntime {
             return ToolResult::recoverable_error(format!("错误：未找到工具 '{}'", tool_call.name));
         };
 
+        if !spec.execution.unified_timeout {
+            return registry
+                .execute(&tool_call.name, &tool_call.arguments, context)
+                .await;
+        }
+
         let timeout_secs = spec.execution.timeout_secs.max(1);
         match tokio::time::timeout(
             Duration::from_secs(timeout_secs),

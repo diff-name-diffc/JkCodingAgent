@@ -408,7 +408,7 @@ Dispatcher 是一个内置的 LLM Agent（运行在 `agent/runtime.rs` 中），
 
 ```typescript
 // src/components/DispatcherChat.tsx — 核心 dispatch 逻辑
-// 用户发送消息 → invoke("dispatcher_send_message", {
+// 用户发送消息 → invoke("dispatcher_send_project_agent_message", {
 //   workspaceId, projectPath, content,
 //   onEvent: new Channel<AgentEvent>()  // 用于接收流式事件
 // })
@@ -447,12 +447,12 @@ impl DispatcherState {
 .manage(dispatcher_state)
 ```
 
-#### dispatcher_send_message 命令
+#### dispatcher_send_project_agent_message 命令
 
 ```rust
 // src-tauri/src/agent/commands.rs:360-394
 #[tauri::command]
-pub async fn dispatcher_send_message(
+pub async fn dispatcher_send_project_agent_message(
     state: State<'_, DispatcherState>,
     app: AppHandle,
     workspace_id: String,
@@ -779,7 +779,7 @@ DispatcherAgentConfig {
 | `src-tauri/src/shared/mod.rs` | 5 | shared 模块入口 |
 | `src-tauri/src/shared/state.rs` | 124 | **TaskManager**：PTY 句柄管理、子进程 I/O、终止意图 |
 | `src-tauri/src/agent/mod.rs` | 13 | agent 模块入口 |
-| `src-tauri/src/agent/commands.rs` | 711 | **Dispatcher 命令**：`dispatcher_send_message`、`dispatcher_continue_after_dispatch`、`dispatcher_stop_run`、子进程注册/状态同步、会话标题生成与持久化 |
+| `src-tauri/src/agent/commands.rs` | 711 | **Dispatcher 命令**：`dispatcher_send_project_agent_message`、`dispatcher_continue_after_dispatch`、`dispatcher_stop_run`、子进程注册/状态同步、会话标题生成与持久化 |
 | `src-tauri/src/agent/runtime.rs` | 2141 | **DispatcherAgent**：LLM 对话循环、工具调用协议、子进程生命周期状态机、`run()`/`continue_after_dispatch()` |
 | `src-tauri/src/agent/llm.rs` | 726 | OpenAI 兼容 LLM 客户端：`OpenAiCompatProvider`、SSE 流式解析、多模态图片处理、模型列表获取 |
 | `src-tauri/src/agent/config.rs` | 213 | `DispatcherAgentConfig`：从环境变量加载配置，Prompt 模板（SOUL/USER/TOOLS）初始化与同步 |

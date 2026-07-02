@@ -376,13 +376,13 @@ export function useDispatcherActions({
       try {
         await enqueueDispatcherRun(targetSessionId, async (onEvent) => {
           if (isPlainChat) {
-            await invoke<DispatcherAgentTurn>("dispatcher_send_plain_chat_message", {
+            await invoke<DispatcherAgentTurn>("dispatcher_send_chat_agent_message", {
               workspaceId: targetSessionId,
               segmentsJson,
               onEvent,
             });
           } else {
-            await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
+            await invoke<DispatcherAgentTurn>("dispatcher_send_project_agent_message", {
               workspaceId: targetSessionId,
               projectPath,
               segmentsJson,

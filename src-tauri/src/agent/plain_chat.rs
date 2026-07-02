@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,6 +28,8 @@ use super::tools::{ToolAction, ToolRegistry, ToolResult, ToolRunFinishUpdate, To
 use crate::project::mcp::{ensure_project_mcp_file, ProjectMcpRegistry};
 use crate::shared::truncate_for_display;
 use crate::ssh_tool::SshSessionManager;
+
+const SUB_AGENT_TOOL_NAMES: [&str; 2] = ["list_sub_agents", "call_sub_agent"];
 
 pub struct PlainChatAgent {
     config: DispatcherAgentConfig,
@@ -288,7 +291,7 @@ impl PlainChatAgent {
         let tool_context = self
             .build_tool_context(db, workspace_id, workspace, provider)
             .await;
-        let tool_definitions = self.build_tool_definitions(workspace);
+        let tool_definitions = self.build_tool_definitions(workspace_id, workspace);
         let allowed_tool_names = tool_definitions
             .iter()
             .map(|t| t.function.name.clone())
@@ -836,9 +839,7 @@ impl PlainChatAgent {
             "\n\n## 系统时间\n\n当前本地时间：{}",
             super::prompt::current_local_time()
         ));
-        if self.is_tool_allowed_by_config("call_sub_agent")
-            || self.is_tool_allowed_by_config("list_sub_agents")
-        {
+        if self.should_expose_sub_agent_tools(workspace_id) {
             if let Some(manager) = &self.sub_agent_manager {
                 if let Ok(agents) = manager.get_enabled_for_session(workspace_id) {
                     if !agents.is_empty() {
@@ -858,12 +859,29 @@ impl PlainChatAgent {
         prompt
     }
 
-    fn is_tool_allowed_by_config(&self, tool_name: &str) -> bool {
-        let configured = self.allowed_tools.lock();
-        configured.is_empty() || configured.iter().any(|name| name == tool_name)
+    fn should_expose_sub_agent_tools(&self, workspace_id: &str) -> bool {
+        if self.is_tool_allowed_by_config("call_sub_agent")
+            || self.is_tool_allowed_by_config("list_sub_agents")
+        {
+            return true;
+        }
+
+        self.session_has_enabled_sub_agents(workspace_id)
     }
 
-    fn build_tool_definitions(&self, workspace: &Path) -> Vec<ToolDefinition> {
+    fn is_tool_allowed_by_config(&self, tool_name: &str) -> bool {
+        let configured = self.allowed_tools.lock();
+        is_tool_allowed_by_config(&configured, tool_name)
+    }
+
+    fn session_has_enabled_sub_agents(&self, workspace_id: &str) -> bool {
+        self.sub_agent_manager
+            .as_ref()
+            .and_then(|manager| manager.get_enabled_for_session(workspace_id).ok())
+            .is_some_and(|agents| !agents.is_empty())
+    }
+
+    fn build_tool_definitions(&self, workspace_id: &str, workspace: &Path) -> Vec<ToolDefinition> {
         let configured = self.allowed_tools.lock().clone();
         let mut defs = self.tools.definitions_for_workspace(
             workspace,
@@ -872,10 +890,53 @@ impl PlainChatAgent {
         );
 
         if !configured.is_empty() {
-            let allowed: std::collections::HashSet<String> = configured.into_iter().collect();
+            let allowed = effective_allowed_tools_for_chat_category(
+                configured,
+                self.session_has_enabled_sub_agents(workspace_id),
+            );
             defs.retain(|def| allowed.contains(&def.function.name));
         }
         defs
+    }
+}
+
+fn is_tool_allowed_by_config(configured: &[String], tool_name: &str) -> bool {
+    configured.is_empty() || configured.iter().any(|name| name == tool_name)
+}
+
+fn effective_allowed_tools_for_chat_category(
+    configured: Vec<String>,
+    has_enabled_sub_agents: bool,
+) -> HashSet<String> {
+    let mut allowed = configured.into_iter().collect::<HashSet<_>>();
+    if has_enabled_sub_agents {
+        allowed.extend(SUB_AGENT_TOOL_NAMES.iter().map(|name| name.to_string()));
+    }
+    allowed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn category_sub_agents_expose_sub_agent_tools_even_when_tool_allowlist_omits_them() {
+        let allowed =
+            effective_allowed_tools_for_chat_category(vec!["browser_read_text".to_string()], true);
+
+        assert!(allowed.contains("browser_read_text"));
+        assert!(allowed.contains("list_sub_agents"));
+        assert!(allowed.contains("call_sub_agent"));
+    }
+
+    #[test]
+    fn category_without_sub_agents_keeps_tool_allowlist_exact() {
+        let allowed =
+            effective_allowed_tools_for_chat_category(vec!["browser_read_text".to_string()], false);
+
+        assert!(allowed.contains("browser_read_text"));
+        assert!(!allowed.contains("list_sub_agents"));
+        assert!(!allowed.contains("call_sub_agent"));
     }
 }
 

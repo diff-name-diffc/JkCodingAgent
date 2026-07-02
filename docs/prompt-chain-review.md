@@ -433,7 +433,7 @@ codex -- "<final_prompt>"
     ▼
 [Frontend] DispatcherChat.sendUserMessage()
     │  图片以 Markdown ![image](base64dataurl) 拼接在文本前
-    │  invoke("dispatcher_send_message", { workspaceId, projectPath, content, onEvent })
+    │  invoke("dispatcher_send_project_agent_message", { workspaceId, projectPath, content, onEvent })
     │
     ▼
 [Backend] agent/commands.rs → Agent::run()

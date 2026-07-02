@@ -93,6 +93,8 @@ pub struct ToolExecutionPolicy {
     pub parallelizable: bool,
     pub timeout_secs: u64,
     pub cancellable: bool,
+    #[serde(default = "default_unified_timeout")]
+    pub unified_timeout: bool,
 }
 
 impl ToolExecutionPolicy {
@@ -101,6 +103,7 @@ impl ToolExecutionPolicy {
             parallelizable: false,
             timeout_secs,
             cancellable: true,
+            unified_timeout: true,
         }
     }
 
@@ -109,8 +112,22 @@ impl ToolExecutionPolicy {
             parallelizable: true,
             timeout_secs,
             cancellable: true,
+            unified_timeout: true,
         }
     }
+
+    pub fn tool_managed_timeout(timeout_secs: u64) -> Self {
+        Self {
+            parallelizable: false,
+            timeout_secs,
+            cancellable: true,
+            unified_timeout: false,
+        }
+    }
+}
+
+fn default_unified_timeout() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
@@ -209,7 +226,9 @@ impl ToolProfile {
     fn from_name(name: &str) -> Self {
         let category = category_for_name(name);
         let access = access_for_name(name, category);
-        let execution = if access.readonly && is_known_parallel_readonly(name) {
+        let execution = if is_tool_managed_timeout(name) {
+            ToolExecutionPolicy::tool_managed_timeout(default_timeout_for_name(name))
+        } else if access.readonly && is_known_parallel_readonly(name) {
             ToolExecutionPolicy::parallel_readonly(default_timeout_for_name(name))
         } else {
             ToolExecutionPolicy::sequential(default_timeout_for_name(name))
@@ -295,6 +314,7 @@ fn default_timeout_for_name(name: &str) -> u64 {
         "read_file" | "write_file" | "edit_file" | "list_dir" => 30,
         "grep" | "glob" => 60,
         "exec" | "local_zsh" => 60,
+        "call_sub_agent" => 600,
         name if name.starts_with("browser_") => 30,
         name if name.starts_with("ssh_") => 60,
         _ => 60,
@@ -310,6 +330,10 @@ fn is_known_parallel_readonly(name: &str) -> bool {
         name,
         "read_file" | "list_dir" | "glob" | "grep" | "browser_read_text" | "browser_visual_analyze"
     )
+}
+
+fn is_tool_managed_timeout(name: &str) -> bool {
+    matches!(name, "call_sub_agent")
 }
 
 #[cfg(test)]
@@ -360,5 +384,19 @@ mod tests {
         assert!(!spec.access.readonly);
         assert!(!spec.execution.parallelizable);
         assert!(!spec.supports_parallel_readonly());
+    }
+
+    #[test]
+    fn call_sub_agent_uses_its_own_timeout_policy() {
+        let spec = ToolSpec::new(
+            "call_sub_agent",
+            "调用子智能体",
+            json!({ "type": "object", "properties": {} }),
+        );
+
+        assert_eq!(spec.category, ToolCategory::SubAgent);
+        assert_eq!(spec.execution.timeout_secs, 600);
+        assert!(!spec.execution.unified_timeout);
+        assert!(!spec.execution.parallelizable);
     }
 }

@@ -403,7 +403,7 @@ const sendUserMessage = async (
   targetSessionId: string
 ) => {
   // 1. 调用后端命令（直接传递 segments）
-  await invoke("dispatcher_send_message", {
+  await invoke("dispatcher_send_project_agent_message", {
     workspaceId: targetSessionId,
     segments,              // JSON 数组，后端序列化为 segments_json
     // content 已移除
@@ -683,7 +683,7 @@ pub async fn generate_image(
 |---|------|------|------|
 | 4.1 | **改造保存** | `src-tauri/src/agent/db.rs` | `save_message` 接收 `segments`，序列化为 `segments_json` |
 | 4.2 | **改造读取** | `src-tauri/src/agent/db.rs` | `load_message` 反序列化 `segments_json` |
-| 4.3 | 改造发送命令 | `src-tauri/src/agent/commands.rs` | `dispatcher_send_message` 接收 `segments` |
+| 4.3 | 改造发送命令 | `src-tauri/src/agent/commands.rs` | `dispatcher_send_project_agent_message` 接收 `segments` |
 | 4.4 | 组装 Markdown | `src-tauri/src/agent/commands.rs` | 调用 LLM 前用 `segments_to_markdown` 组装 |
 
 ### Phase 5：图片生成工具预留（TODO，不实现）

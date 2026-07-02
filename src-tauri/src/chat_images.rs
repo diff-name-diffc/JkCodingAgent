@@ -5,6 +5,45 @@ use serde::Serialize;
 use std::io::Cursor;
 use std::path::PathBuf;
 
+use crate::shared::error::{CommandResult, IntoCommandResult};
+use anyhow::Context;
+
+type ChatImageResult<T> = std::result::Result<T, ChatImageError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ChatImageError {
+    #[error("无法解析用户主目录")]
+    HomeDirMissing,
+    #[error("image_id 不能为空")]
+    EmptyImageId,
+    #[error("chat-images 目录不存在：{0}")]
+    ImagesDirMissing(PathBuf),
+    #[error("未找到 image_id={0} 对应的图片文件")]
+    ImageNotFound(String),
+    #[error("解码图片 base64 失败：{0}")]
+    Base64(#[from] base64::DecodeError),
+    #[error("{action} 失败（{path}）：{source}")]
+    Io {
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("后台图片任务失败：{0}")]
+    Join(#[from] tokio::task::JoinError),
+}
+
+fn io_error(
+    action: &'static str,
+    path: impl Into<PathBuf>,
+) -> impl FnOnce(std::io::Error) -> ChatImageError {
+    move |source| ChatImageError::Io {
+        action,
+        path: path.into(),
+        source,
+    }
+}
+
 /// URI protocol prefix for internally-referenced chat images. The UI and tool
 /// internals use `chat-image://<image_id>` instead of raw filesystem paths so
 /// that image references survive across machines / usernames.
@@ -21,10 +60,10 @@ pub struct SaveChatImageResult {
 }
 
 /// Returns the canonical app data directory for chat images: `~/.jkcodingagent/chat-images`.
-pub(crate) fn chat_images_dir() -> Result<PathBuf, String> {
+pub(crate) fn chat_images_dir() -> ChatImageResult<PathBuf> {
     dirs::home_dir()
-        .ok_or_else(|| "无法解析用户主目录".to_string())
-        .map(|h| h.join(".jkcodingagent").join("chat-images"))
+        .ok_or(ChatImageError::HomeDirMissing)
+        .map(|home| home.join(".jkcodingagent").join("chat-images"))
 }
 
 /// Resolve a `chat-image://<image_id>` URI or a raw image_id string to its
@@ -36,19 +75,19 @@ pub(crate) fn chat_images_dir() -> Result<PathBuf, String> {
 ///
 /// This is shared across Tauri commands and agent tool internals so that
 /// `image_edit` can accept both absolute paths and `chat-image://` URIs.
-pub(crate) fn resolve_chat_image_id(image_id: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_chat_image_id(image_id: &str) -> ChatImageResult<PathBuf> {
     let id = image_id
         .strip_prefix(CHAT_IMAGE_PROTOCOL)
         .unwrap_or(image_id)
         .trim();
 
     if id.is_empty() {
-        return Err("image_id 不能为空".to_string());
+        return Err(ChatImageError::EmptyImageId);
     }
 
     let base = chat_images_dir()?;
     if !base.exists() {
-        return Err(format!("chat-images 目录不存在: {}", base.display()));
+        return Err(ChatImageError::ImagesDirMissing(base));
     }
 
     let scan_dir = base.clone();
@@ -58,12 +97,11 @@ pub(crate) fn resolve_chat_image_id(image_id: &str) -> Result<PathBuf, String> {
     scan_chat_images_dir(&scan_dir, &id_owned)
 }
 
-fn scan_chat_images_dir(base: &std::path::Path, image_id: &str) -> Result<PathBuf, String> {
-    let entries =
-        std::fs::read_dir(base).map_err(|e| format!("无法读取 chat-images 目录: {}", e))?;
+fn scan_chat_images_dir(base: &std::path::Path, image_id: &str) -> ChatImageResult<PathBuf> {
+    let entries = std::fs::read_dir(base).map_err(io_error("读取 chat-images 目录", base))?;
 
     for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
+        let entry = entry.map_err(io_error("读取 chat-images 目录项", base))?;
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -86,14 +124,12 @@ fn scan_chat_images_dir(base: &std::path::Path, image_id: &str) -> Result<PathBu
         }
     }
 
-    Err(format!("未找到 image_id={} 对应的图片文件", image_id))
+    Err(ChatImageError::ImageNotFound(image_id.to_string()))
 }
 
 /// Async-friendly wrapper around `resolve_chat_image_id` for tool internals.
-pub(crate) async fn resolve_chat_image_id_async(image_id: String) -> Result<PathBuf, String> {
-    tokio::task::spawn_blocking(move || resolve_chat_image_id(&image_id))
-        .await
-        .map_err(|e| format!("任务调度失败: {}", e))?
+pub(crate) async fn resolve_chat_image_id_async(image_id: String) -> ChatImageResult<PathBuf> {
+    tokio::task::spawn_blocking(move || resolve_chat_image_id(&image_id)).await?
 }
 
 /// Check whether a path is under the app-managed `~/.jkcodingagent/chat-images/` directory.
@@ -123,10 +159,10 @@ pub(crate) fn is_chat_image_path(path: &std::path::Path) -> bool {
 }
 
 /// Return the canonical app data directory: `~/.jkcodingagent`.
-pub(crate) fn app_data_dir() -> Result<PathBuf, String> {
+pub(crate) fn app_data_dir() -> ChatImageResult<PathBuf> {
     dirs::home_dir()
-        .ok_or_else(|| "无法解析用户主目录".to_string())
-        .map(|h| h.join(".jkcodingagent"))
+        .ok_or(ChatImageError::HomeDirMissing)
+        .map(|home| home.join(".jkcodingagent"))
 }
 
 pub(crate) const COMPRESS_THRESHOLD: usize = 1_500_000;
@@ -198,11 +234,22 @@ pub async fn save_chat_image(
     session_title: String,
     image_data_base64: String,
     mime_type: String,
-) -> Result<SaveChatImageResult, String> {
+) -> CommandResult<SaveChatImageResult> {
+    save_chat_image_impl(session_title, image_data_base64, mime_type)
+        .await
+        .context("保存聊天图片失败")
+        .into_command_result()
+}
+
+async fn save_chat_image_impl(
+    session_title: String,
+    image_data_base64: String,
+    mime_type: String,
+) -> ChatImageResult<SaveChatImageResult> {
     let image_id = uuid::Uuid::new_v4().to_string();
     let raw_bytes = base64::engine::general_purpose::STANDARD
         .decode(&image_data_base64)
-        .map_err(|e| e.to_string())?;
+        .map_err(ChatImageError::Base64)?;
 
     let (ext, image_bytes) = if raw_bytes.len() >= COMPRESS_THRESHOLD {
         let compressed = compress_image_bytes(&raw_bytes, MAX_COMPRESS_DIM);
@@ -241,20 +288,20 @@ pub async fn save_chat_image(
     let slug = slugify(&session_title);
     let (id_clone, bytes) = (image_id.clone(), image_bytes);
     let mime_for_result = saved_mime_type.clone();
-    tokio::task::spawn_blocking(move || -> Result<SaveChatImageResult, String> {
+    tokio::task::spawn_blocking(move || -> ChatImageResult<SaveChatImageResult> {
         let app_dir = app_data_dir()?;
         let images_dir = app_dir.join("chat-images").join(&slug);
-        std::fs::create_dir_all(&images_dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&images_dir)
+            .map_err(io_error("创建聊天图片目录", images_dir.clone()))?;
         let file_path = images_dir.join(format!("{}.{}", id_clone, ext));
-        std::fs::write(&file_path, &bytes).map_err(|e| e.to_string())?;
+        std::fs::write(&file_path, &bytes).map_err(io_error("写入聊天图片", file_path.clone()))?;
         Ok(SaveChatImageResult {
             image_id: id_clone,
             path: file_path.to_string_lossy().to_string(),
             mime_type: mime_for_result,
         })
     })
-    .await
-    .map_err(|e| format!("任务调度失败: {}", e))?
+    .await?
 }
 
 /// Result of resolving a chat image by its identifier.
@@ -271,7 +318,14 @@ pub struct ResolveChatImageResult {
 /// referenced in markdown content without exposing raw filesystem paths to
 /// the user.
 #[tauri::command]
-pub async fn resolve_chat_image(image_id: String) -> Result<ResolveChatImageResult, String> {
+pub async fn resolve_chat_image(image_id: String) -> CommandResult<ResolveChatImageResult> {
+    resolve_chat_image_impl(image_id)
+        .await
+        .context("解析聊天图片失败")
+        .into_command_result()
+}
+
+async fn resolve_chat_image_impl(image_id: String) -> ChatImageResult<ResolveChatImageResult> {
     let id = image_id
         .strip_prefix(CHAT_IMAGE_PROTOCOL)
         .unwrap_or(&image_id)
@@ -279,9 +333,7 @@ pub async fn resolve_chat_image(image_id: String) -> Result<ResolveChatImageResu
         .to_string();
 
     let id_clone = id.clone();
-    let file_path = tokio::task::spawn_blocking(move || resolve_chat_image_id(&id_clone))
-        .await
-        .map_err(|e| format!("任务调度失败: {}", e))??;
+    let file_path = tokio::task::spawn_blocking(move || resolve_chat_image_id(&id_clone)).await??;
 
     let mime_type = file_path
         .extension()

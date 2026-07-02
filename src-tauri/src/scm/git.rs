@@ -1,54 +1,99 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Output;
 use std::time::Duration;
 
+use anyhow::Context;
+
 use crate::project::read_project_config;
+use crate::shared::error::{CommandResult, IntoCommandResult};
 use crate::shared::truncate_for_display;
+
+type GitResult<T> = std::result::Result<T, GitError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum GitError {
+    #[error("分支名不能为空")]
+    RefNameEmpty,
+    #[error("分支名过长（{len} 字符），上限 256")]
+    RefNameTooLong { len: usize },
+    #[error("分支名 `{name}` 包含非法字符，仅允许字母、数字、/、-、_、.、@")]
+    RefNameIllegalChars { name: String },
+    #[error("分支名 `{name}` 包含非法路径遍历模式")]
+    RefNameTraversal { name: String },
+    #[error("执行命令失败（cwd={cwd}, args={args:?}）：{source}")]
+    CommandIo {
+        cwd: PathBuf,
+        args: Vec<String>,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Git 命令线程错误：{0}")]
+    Join(#[from] tokio::task::JoinError),
+    #[error("Git 命令执行超时（{secs}秒）")]
+    Timeout { secs: u64 },
+    #[error("Git 命令失败：{0}")]
+    CommandFailed(String),
+    #[error("没有可用于生成提交信息的已暂存变更。")]
+    NoStagedChanges,
+    #[error("生成提交信息超时（15秒）")]
+    CommitMessageTimeout,
+    #[error("智能体执行失败：{0}")]
+    AgentFailed(String),
+    #[error("智能体返回了空结果。")]
+    EmptyAgentResult,
+    #[error("读取项目配置失败：{0}")]
+    ProjectConfig(String),
+}
 
 // ── 辅助函数 ─────────────────────────────────────────────────────────────────
 
 /// Validate a Git ref name (branch, tag, etc.) against a whitelist of safe characters.
-fn validate_git_ref_name(name: &str) -> Result<(), String> {
+fn validate_git_ref_name(name: &str) -> GitResult<()> {
     if name.is_empty() {
-        return Err("分支名不能为空".to_string());
+        return Err(GitError::RefNameEmpty);
     }
     if name.len() > 256 {
-        return Err(format!("分支名过长（{} 字符），上限 256", name.len()));
+        return Err(GitError::RefNameTooLong { len: name.len() });
     }
     let is_safe = name
         .chars()
         .all(|c| c.is_alphanumeric() || c == '/' || c == '-' || c == '_' || c == '.' || c == '@');
     if !is_safe {
-        return Err(format!(
-            "分支名 '{}' 包含非法字符，仅允许字母、数字、/、-、_、.、@",
-            name
-        ));
+        return Err(GitError::RefNameIllegalChars {
+            name: name.to_string(),
+        });
     }
     // Block path traversal patterns
     if name.contains("..") {
-        return Err(format!("分支名 '{}' 包含非法路径遍历模式", name));
+        return Err(GitError::RefNameTraversal {
+            name: name.to_string(),
+        });
     }
     Ok(())
 }
 
 /// 执行 git 命令并返回原始 Output（spawn_blocking 版本，不阻塞 Tokio 运行时）。
-async fn run_git<S: AsRef<std::ffi::OsStr>>(
-    project_path: &str,
-    args: &[S],
-) -> Result<std::process::Output, String> {
+async fn run_git<S: AsRef<std::ffi::OsStr>>(project_path: &str, args: &[S]) -> GitResult<Output> {
     let pp = project_path.to_string();
     let args: Vec<String> = args
         .iter()
         .map(|s| s.as_ref().to_string_lossy().into_owned())
         .collect();
+    let cwd = PathBuf::from(&pp);
+    let args_for_error = args.clone();
     tokio::task::spawn_blocking(move || {
         std::process::Command::new("git")
             .args(&args)
             .current_dir(&pp)
             .output()
-            .map_err(|e| e.to_string())
+            .map_err(|source| GitError::CommandIo {
+                cwd,
+                args: args_for_error,
+                source,
+            })
     })
-    .await
-    .map_err(|e| format!("Git 命令线程错误：{}", e))?
+    .await?
 }
 
 /// 带超时的 git 命令执行。
@@ -56,7 +101,9 @@ async fn run_git_with_timeout(
     project_path: String,
     args: Vec<String>,
     timeout: Duration,
-) -> Result<std::process::Output, String> {
+) -> GitResult<Output> {
+    let cwd = PathBuf::from(&project_path);
+    let args_for_error = args.clone();
     tokio::time::timeout(
         timeout,
         tokio::task::spawn_blocking(move || {
@@ -64,22 +111,26 @@ async fn run_git_with_timeout(
                 .args(&args)
                 .current_dir(&project_path)
                 .output()
-                .map_err(|e| e.to_string())
+                .map_err(|source| GitError::CommandIo {
+                    cwd,
+                    args: args_for_error,
+                    source,
+                })
         }),
     )
     .await
-    .map_err(|_| format!("Git 命令执行超时（{}秒）", timeout.as_secs()))?
-    .map_err(|e| format!("Git 命令线程错误：{}", e))?
+    .map_err(|_| GitError::Timeout {
+        secs: timeout.as_secs(),
+    })??
 }
 
 /// 执行 git 命令，若退出码非零则将 stderr 作为错误返回（spawn_blocking 版本）。
-async fn run_git_check<S: AsRef<std::ffi::OsStr>>(
-    project_path: &str,
-    args: &[S],
-) -> Result<(), String> {
+async fn run_git_check<S: AsRef<std::ffi::OsStr>>(project_path: &str, args: &[S]) -> GitResult<()> {
     let output = run_git(project_path, args).await?;
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        return Err(GitError::CommandFailed(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
     }
     Ok(())
 }
@@ -87,21 +138,28 @@ async fn run_git_check<S: AsRef<std::ffi::OsStr>>(
 // ── Tauri 命令 ───────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn generate_commit_message(project_path: String) -> Result<String, String> {
+pub async fn generate_commit_message(project_path: String) -> CommandResult<String> {
+    generate_commit_message_impl(project_path.clone())
+        .await
+        .with_context(|| format!("生成提交信息失败（{}）", project_path))
+        .into_command_result()
+}
+
+async fn generate_commit_message_impl(project_path: String) -> GitResult<String> {
     use std::process::Command;
 
     // 1. Get staged diff
     let diff_output = run_git(&project_path, &["diff", "--staged"]).await?;
     let diff = String::from_utf8_lossy(&diff_output.stdout).into_owned();
     if diff.trim().is_empty() {
-        return Err("没有可用于生成提交信息的已暂存变更。".to_string());
+        return Err(GitError::NoStagedChanges);
     }
 
     // Truncate diff if too large to avoid CLI arg limits
     let diff = truncate_for_display(&diff, 50_000, "...（diff 已截断）");
 
     // 2. Read project config for prompt and default agent
-    let config = read_project_config(project_path.clone())?;
+    let config = read_project_config(project_path.clone()).map_err(GitError::ProjectConfig)?;
     let commit_prompt = config.git.commit_prompt;
     let agent = config.agent.default;
 
@@ -145,7 +203,11 @@ pub async fn generate_commit_message(project_path: String) -> Result<String, Str
                     .env("HOME", &home)
                     .current_dir(&project_path)
                     .output()
-                    .map_err(|e| format!("运行 codex 失败：{}", e))
+                    .map_err(|source| GitError::CommandIo {
+                        cwd: PathBuf::from(&project_path),
+                        args: vec!["codex".into(), "exec".into()],
+                        source,
+                    })
             } else {
                 // claude -p runs in non-interactive print mode; prompt is a positional arg
                 Command::new("claude")
@@ -154,23 +216,26 @@ pub async fn generate_commit_message(project_path: String) -> Result<String, Str
                     .env("HOME", &home)
                     .current_dir(&project_path)
                     .output()
-                    .map_err(|e| format!("运行 claude 失败：{}", e))
+                    .map_err(|source| GitError::CommandIo {
+                        cwd: PathBuf::from(&project_path),
+                        args: vec!["claude".into(), "-p".into()],
+                        source,
+                    })
             }
         }),
     )
     .await
-    .map_err(|_| "生成提交信息超时（15秒）".to_string())?
-    .map_err(|e| format!("生成提交信息线程错误：{}", e))??;
+    .map_err(|_| GitError::CommitMessageTimeout)???;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(format!("智能体执行失败：{}{}", stderr, stdout));
+        return Err(GitError::AgentFailed(format!("{}{}", stderr, stdout)));
     }
 
     let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if result.is_empty() {
-        return Err("智能体返回了空结果。".to_string());
+        return Err(GitError::EmptyAgentResult);
     }
     Ok(result)
 }
@@ -183,7 +248,14 @@ pub(crate) struct GitFileChange {
 }
 
 #[tauri::command]
-pub async fn git_status(project_path: String) -> Result<Vec<GitFileChange>, String> {
+pub async fn git_status(project_path: String) -> CommandResult<Vec<GitFileChange>> {
+    git_status_impl(project_path.clone())
+        .await
+        .with_context(|| format!("读取 Git 状态失败（{}）", project_path))
+        .into_command_result()
+}
+
+async fn git_status_impl(project_path: String) -> GitResult<Vec<GitFileChange>> {
     let args = vec![
         "-c".to_string(),
         "core.quotePath=false".to_string(),
@@ -256,7 +328,14 @@ pub(crate) struct GitBranchInfo {
 }
 
 #[tauri::command]
-pub async fn git_list_branches(project_path: String) -> Result<Vec<GitBranchInfo>, String> {
+pub async fn git_list_branches(project_path: String) -> CommandResult<Vec<GitBranchInfo>> {
+    git_list_branches_impl(project_path.clone())
+        .await
+        .with_context(|| format!("读取 Git 分支失败（{}）", project_path))
+        .into_command_result()
+}
+
+async fn git_list_branches_impl(project_path: String) -> GitResult<Vec<GitBranchInfo>> {
     let output = run_git(&project_path, &["branch", "-a"]).await?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut branches = Vec::new();
@@ -295,7 +374,18 @@ pub async fn git_checkout_branch(
     project_path: String,
     branch_name: String,
     is_remote: bool,
-) -> Result<(), String> {
+) -> CommandResult<()> {
+    git_checkout_branch_impl(project_path.clone(), branch_name.clone(), is_remote)
+        .await
+        .with_context(|| format!("切换 Git 分支失败（{} -> {}）", project_path, branch_name))
+        .into_command_result()
+}
+
+async fn git_checkout_branch_impl(
+    project_path: String,
+    branch_name: String,
+    is_remote: bool,
+) -> GitResult<()> {
     validate_git_ref_name(&branch_name)?;
     let args: Vec<String> = if is_remote {
         // "origin/main" -> local name "main", track remote
@@ -321,7 +411,27 @@ pub async fn git_create_branch(
     project_path: String,
     branch_name: String,
     from_branch: String,
-) -> Result<(), String> {
+) -> CommandResult<()> {
+    git_create_branch_impl(
+        project_path.clone(),
+        branch_name.clone(),
+        from_branch.clone(),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "创建 Git 分支失败（{}: {} from {}）",
+            project_path, branch_name, from_branch
+        )
+    })
+    .into_command_result()
+}
+
+async fn git_create_branch_impl(
+    project_path: String,
+    branch_name: String,
+    from_branch: String,
+) -> GitResult<()> {
     validate_git_ref_name(&branch_name)?;
     validate_git_ref_name(&from_branch)?;
     run_git_check(
@@ -337,7 +447,19 @@ pub async fn git_log(
     limit: u32,
     search: Option<String>,
     branch: Option<String>,
-) -> Result<Vec<GitCommit>, String> {
+) -> CommandResult<Vec<GitCommit>> {
+    git_log_impl(project_path.clone(), limit, search.clone(), branch.clone())
+        .await
+        .with_context(|| format!("读取 Git 日志失败（{}）", project_path))
+        .into_command_result()
+}
+
+async fn git_log_impl(
+    project_path: String,
+    limit: u32,
+    search: Option<String>,
+    branch: Option<String>,
+) -> GitResult<Vec<GitCommit>> {
     let limit_str = limit.to_string();
     let format = "COMMIT:%H%nSHORT:%h%nAUTHOR:%an%nDATE:%ar%nSUBJECT:%s%nREFS:%D%nEND_RECORD";
     let mut args: Vec<String> = vec![
@@ -431,7 +553,17 @@ pub(crate) struct GitCommitDetail {
 pub async fn git_commit_detail(
     project_path: String,
     commit_hash: String,
-) -> Result<GitCommitDetail, String> {
+) -> CommandResult<GitCommitDetail> {
+    git_commit_detail_impl(project_path.clone(), commit_hash.clone())
+        .await
+        .with_context(|| format!("读取 Git 提交详情失败（{}: {}）", project_path, commit_hash))
+        .into_command_result()
+}
+
+async fn git_commit_detail_impl(
+    project_path: String,
+    commit_hash: String,
+) -> GitResult<GitCommitDetail> {
     // Run all 3 git commands in parallel instead of sequentially
     let info_args: Vec<&str> = vec![
         "show",
@@ -548,11 +680,25 @@ pub async fn git_commit_detail(
 }
 
 #[tauri::command]
-pub async fn git_show_diff(project_path: String, commit_hash: String) -> Result<String, String> {
+pub async fn git_show_diff(project_path: String, commit_hash: String) -> CommandResult<String> {
+    git_show_diff_impl(project_path.clone(), commit_hash.clone())
+        .await
+        .with_context(|| {
+            format!(
+                "读取 Git 提交 diff 失败（{}: {}）",
+                project_path, commit_hash
+            )
+        })
+        .into_command_result()
+}
+
+async fn git_show_diff_impl(project_path: String, commit_hash: String) -> GitResult<String> {
     let args = vec!["show".to_string(), "--format=".to_string(), commit_hash];
     let output = run_git_with_timeout(project_path, args, Duration::from_secs(10)).await?;
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        return Err(GitError::CommandFailed(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
     }
     let raw = output.stdout;
     let limit = 500 * 1024;
@@ -569,7 +715,18 @@ pub async fn git_file_diff(
     project_path: String,
     file_path: String,
     staged: bool,
-) -> Result<String, String> {
+) -> CommandResult<String> {
+    git_file_diff_impl(project_path.clone(), file_path.clone(), staged)
+        .await
+        .with_context(|| format!("读取 Git 文件 diff 失败（{}: {}）", project_path, file_path))
+        .into_command_result()
+}
+
+async fn git_file_diff_impl(
+    project_path: String,
+    file_path: String,
+    staged: bool,
+) -> GitResult<String> {
     let mut args = vec!["diff".to_string()];
     if staged {
         args.push("--cached".to_string());
@@ -612,27 +769,62 @@ pub async fn git_file_diff(
 }
 
 #[tauri::command]
-pub async fn git_stage(project_path: String, file_path: String) -> Result<(), String> {
+pub async fn git_stage(project_path: String, file_path: String) -> CommandResult<()> {
+    git_stage_impl(project_path.clone(), file_path.clone())
+        .await
+        .with_context(|| format!("暂存 Git 文件失败（{}: {}）", project_path, file_path))
+        .into_command_result()
+}
+
+async fn git_stage_impl(project_path: String, file_path: String) -> GitResult<()> {
     run_git_check(&project_path, &["add", "--", &file_path]).await
 }
 
 #[tauri::command]
-pub async fn git_unstage(project_path: String, file_path: String) -> Result<(), String> {
+pub async fn git_unstage(project_path: String, file_path: String) -> CommandResult<()> {
+    git_unstage_impl(project_path.clone(), file_path.clone())
+        .await
+        .with_context(|| format!("取消暂存 Git 文件失败（{}: {}）", project_path, file_path))
+        .into_command_result()
+}
+
+async fn git_unstage_impl(project_path: String, file_path: String) -> GitResult<()> {
     run_git_check(&project_path, &["restore", "--staged", "--", &file_path]).await
 }
 
 #[tauri::command]
-pub async fn git_stage_all(project_path: String) -> Result<(), String> {
+pub async fn git_stage_all(project_path: String) -> CommandResult<()> {
+    git_stage_all_impl(project_path.clone())
+        .await
+        .with_context(|| format!("暂存全部 Git 变更失败（{}）", project_path))
+        .into_command_result()
+}
+
+async fn git_stage_all_impl(project_path: String) -> GitResult<()> {
     run_git_check(&project_path, &["add", "-A"]).await
 }
 
 #[tauri::command]
-pub async fn git_unstage_all(project_path: String) -> Result<(), String> {
+pub async fn git_unstage_all(project_path: String) -> CommandResult<()> {
+    git_unstage_all_impl(project_path.clone())
+        .await
+        .with_context(|| format!("取消暂存全部 Git 变更失败（{}）", project_path))
+        .into_command_result()
+}
+
+async fn git_unstage_all_impl(project_path: String) -> GitResult<()> {
     run_git_check(&project_path, &["restore", "--staged", "."]).await
 }
 
 #[tauri::command]
-pub async fn git_commit(project_path: String, message: String) -> Result<(), String> {
+pub async fn git_commit(project_path: String, message: String) -> CommandResult<()> {
+    git_commit_impl(project_path.clone(), message)
+        .await
+        .with_context(|| format!("创建 Git 提交失败（{}）", project_path))
+        .into_command_result()
+}
+
+async fn git_commit_impl(project_path: String, message: String) -> GitResult<()> {
     run_git_check(&project_path, &["commit", "-m", &message]).await
 }
 
@@ -641,14 +833,32 @@ pub async fn git_show_file_diff(
     project_path: String,
     commit_hash: String,
     file_path: String,
-) -> Result<String, String> {
+) -> CommandResult<String> {
+    git_show_file_diff_impl(project_path.clone(), commit_hash.clone(), file_path.clone())
+        .await
+        .with_context(|| {
+            format!(
+                "读取 Git 提交文件 diff 失败（{}: {} {}）",
+                project_path, commit_hash, file_path
+            )
+        })
+        .into_command_result()
+}
+
+async fn git_show_file_diff_impl(
+    project_path: String,
+    commit_hash: String,
+    file_path: String,
+) -> GitResult<String> {
     let output = run_git(
         &project_path,
         &["show", "--format=", &commit_hash, "--", &file_path],
     )
     .await?;
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        return Err(GitError::CommandFailed(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
     }
     let raw = output.stdout;
     let limit = 500 * 1024;
@@ -661,7 +871,14 @@ pub async fn git_show_file_diff(
 }
 
 #[tauri::command]
-pub async fn git_push(project_path: String, branch: Option<String>) -> Result<String, String> {
+pub async fn git_push(project_path: String, branch: Option<String>) -> CommandResult<String> {
+    git_push_impl(project_path.clone(), branch.clone())
+        .await
+        .with_context(|| format!("推送 Git 分支失败（{}）", project_path))
+        .into_command_result()
+}
+
+async fn git_push_impl(project_path: String, branch: Option<String>) -> GitResult<String> {
     if let Some(ref b) = &branch {
         validate_git_ref_name(b)?;
     }
@@ -677,13 +894,20 @@ pub async fn git_push(project_path: String, branch: Option<String>) -> Result<St
         String::from_utf8_lossy(&output.stderr)
     );
     if !output.status.success() {
-        return Err(combined);
+        return Err(GitError::CommandFailed(combined));
     }
     Ok(combined.trim().to_string())
 }
 
 #[tauri::command]
-pub async fn git_pull(project_path: String) -> Result<String, String> {
+pub async fn git_pull(project_path: String) -> CommandResult<String> {
+    git_pull_impl(project_path.clone())
+        .await
+        .with_context(|| format!("拉取 Git 变更失败（{}）", project_path))
+        .into_command_result()
+}
+
+async fn git_pull_impl(project_path: String) -> GitResult<String> {
     let output = run_git(&project_path, &["pull"]).await?;
     let combined = format!(
         "{}{}",
@@ -691,7 +915,7 @@ pub async fn git_pull(project_path: String) -> Result<String, String> {
         String::from_utf8_lossy(&output.stderr)
     );
     if !output.status.success() {
-        return Err(combined);
+        return Err(GitError::CommandFailed(combined));
     }
     Ok(combined.trim().to_string())
 }
@@ -707,7 +931,17 @@ pub(crate) struct GitRemoteCounts {
 pub async fn git_remote_counts(
     project_path: String,
     branch: Option<String>,
-) -> Result<GitRemoteCounts, String> {
+) -> CommandResult<GitRemoteCounts> {
+    git_remote_counts_impl(project_path.clone(), branch.clone())
+        .await
+        .with_context(|| format!("读取 Git 远端计数失败（{}）", project_path))
+        .into_command_result()
+}
+
+async fn git_remote_counts_impl(
+    project_path: String,
+    branch: Option<String>,
+) -> GitResult<GitRemoteCounts> {
     let branch = if let Some(b) = branch.filter(|s| !s.is_empty()) {
         b
     } else {

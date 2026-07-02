@@ -1,38 +1,55 @@
+use anyhow::{anyhow, Context};
 use tauri::State;
 
 use super::config::SubAgentConfig;
 use super::db::{SubAgentRecord, ToolInfo};
 use crate::agent::DispatcherState;
+use crate::shared::error::{CommandResult, IntoCommandResult};
 
 #[tauri::command]
 pub async fn sub_agent_list(
     state: State<'_, DispatcherState>,
-) -> Result<Vec<SubAgentRecord>, String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    manager.list_all().map_err(|e| e.to_string())
+) -> CommandResult<Vec<SubAgentRecord>> {
+    let result = (|| {
+        let manager = state
+            .sub_agent_manager()
+            .ok_or_else(|| anyhow!("子智能体管理器未初始化"))?;
+        manager.list_all().context("查询子智能体列表失败")
+    })();
+    result.into_command_result()
 }
 
 #[tauri::command]
 pub async fn sub_agent_get(
     state: State<'_, DispatcherState>,
     id: String,
-) -> Result<SubAgentRecord, String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    manager
-        .get_record(&id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("子智能体 '{}' 不存在", id))
+) -> CommandResult<SubAgentRecord> {
+    let result = (|| {
+        let manager = state
+            .sub_agent_manager()
+            .ok_or_else(|| anyhow!("子智能体管理器未初始化"))?;
+        manager
+            .get_record(&id)
+            .with_context(|| format!("查询子智能体失败（id={id}）"))?
+            .ok_or_else(|| anyhow!("子智能体 '{}' 不存在", id))
+    })();
+    result.into_command_result()
 }
 
 #[tauri::command]
 pub async fn sub_agent_create(
     state: State<'_, DispatcherState>,
     config_json: String,
-) -> Result<SubAgentRecord, String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    let config: SubAgentConfig =
-        serde_json::from_str(&config_json).map_err(|e| format!("配置解析失败：{}", e))?;
-    manager.create(config).map_err(|e| e.to_string())
+) -> CommandResult<SubAgentRecord> {
+    let result = (|| {
+        let manager = state
+            .sub_agent_manager()
+            .ok_or_else(|| anyhow!("子智能体管理器未初始化"))?;
+        let config: SubAgentConfig =
+            serde_json::from_str(&config_json).context("解析子智能体配置失败")?;
+        manager.create(config).context("创建子智能体失败")
+    })();
+    result.into_command_result()
 }
 
 #[tauri::command]
@@ -40,31 +57,52 @@ pub async fn sub_agent_update(
     state: State<'_, DispatcherState>,
     id: String,
     config_json: String,
-) -> Result<SubAgentRecord, String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    let mut config: SubAgentConfig =
-        serde_json::from_str(&config_json).map_err(|e| format!("配置解析失败：{}", e))?;
-    config.agent_id = id.clone();
-    manager.update(&id, config).map_err(|e| e.to_string())
+) -> CommandResult<SubAgentRecord> {
+    let result = (|| {
+        let manager = state
+            .sub_agent_manager()
+            .ok_or_else(|| anyhow!("子智能体管理器未初始化"))?;
+        let mut config: SubAgentConfig =
+            serde_json::from_str(&config_json).context("解析子智能体配置失败")?;
+        config.agent_id = id.clone();
+        manager
+            .update(&id, config)
+            .with_context(|| format!("更新子智能体失败（id={id}）"))
+    })();
+    result.into_command_result()
 }
 
 #[tauri::command]
-pub async fn sub_agent_delete(state: State<'_, DispatcherState>, id: String) -> Result<(), String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    manager.delete(&id).map_err(|e| e.to_string())
+pub async fn sub_agent_delete(state: State<'_, DispatcherState>, id: String) -> CommandResult<()> {
+    let result = (|| {
+        let manager = state
+            .sub_agent_manager()
+            .ok_or_else(|| anyhow!("子智能体管理器未初始化"))?;
+        manager
+            .delete(&id)
+            .with_context(|| format!("删除子智能体失败（id={id}）"))
+    })();
+    result.into_command_result()
 }
 
 #[tauri::command]
-pub async fn sub_agent_seed_browser(state: State<'_, DispatcherState>) -> Result<(), String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    manager.seed_browser_force().map_err(|e| e.to_string())
+pub async fn sub_agent_seed_browser(state: State<'_, DispatcherState>) -> CommandResult<()> {
+    let result = (|| {
+        let manager = state
+            .sub_agent_manager()
+            .ok_or_else(|| anyhow!("子智能体管理器未初始化"))?;
+        manager
+            .seed_browser_force()
+            .context("重建内置浏览器子智能体失败")
+    })();
+    result.into_command_result()
 }
 
 #[tauri::command]
 pub async fn sub_agent_list_tools(
     state: State<'_, DispatcherState>,
-) -> Result<Vec<ToolInfo>, String> {
-    state
+) -> CommandResult<Vec<ToolInfo>> {
+    let result = state
         .registered_tool_names()
         .map(|names| {
             names
@@ -72,24 +110,37 @@ pub async fn sub_agent_list_tools(
                 .map(|(name, description)| ToolInfo { name, description })
                 .collect()
         })
-        .ok_or_else(|| "工具信息未初始化".to_string())
+        .ok_or_else(|| anyhow!("工具信息未初始化"));
+    result.into_command_result()
 }
 
 #[tauri::command]
 pub async fn sub_agent_set_global_enabled(
     state: State<'_, DispatcherState>,
     sub_agent_ids: Vec<String>,
-) -> Result<(), String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    manager
-        .set_global_enabled(&sub_agent_ids)
-        .map_err(|e| e.to_string())
+) -> CommandResult<()> {
+    let result = (|| {
+        let manager = state
+            .sub_agent_manager()
+            .ok_or_else(|| anyhow!("子智能体管理器未初始化"))?;
+        manager
+            .set_global_enabled(&sub_agent_ids)
+            .context("保存全局启用子智能体失败")
+    })();
+    result.into_command_result()
 }
 
 #[tauri::command]
 pub async fn sub_agent_get_global_enabled(
     state: State<'_, DispatcherState>,
-) -> Result<Vec<SubAgentRecord>, String> {
-    let manager = state.sub_agent_manager().ok_or("子智能体管理器未初始化")?;
-    manager.get_global_enabled().map_err(|e| e.to_string())
+) -> CommandResult<Vec<SubAgentRecord>> {
+    let result = (|| {
+        let manager = state
+            .sub_agent_manager()
+            .ok_or_else(|| anyhow!("子智能体管理器未初始化"))?;
+        manager
+            .get_global_enabled()
+            .context("查询全局启用子智能体失败")
+    })();
+    result.into_command_result()
 }

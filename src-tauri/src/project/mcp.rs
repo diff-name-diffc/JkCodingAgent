@@ -246,7 +246,7 @@ pub fn ensure_project_mcp_file(project_path: &str) -> Result<(), String> {
     if config_path.exists() {
         return Ok(());
     }
-    atomic_write(&config_path, DEFAULT_PROJECT_MCP_CONFIG)
+    atomic_write(&config_path, DEFAULT_PROJECT_MCP_CONFIG).map_err(|error| error.to_string())
 }
 
 impl ProjectMcpRegistry {
@@ -949,7 +949,7 @@ fn write_project_mcp_config_sync(
     ensure_project_mcp_file(project_path.to_string_lossy().as_ref())?;
     let config_path = project_path.join(".jkcodingagent").join("mcp.json");
     let raw = serde_json::to_string_pretty(config).map_err(|error| error.to_string())?;
-    atomic_write(&config_path, &raw)
+    atomic_write(&config_path, &raw).map_err(|error| error.to_string())
 }
 
 fn set_project_mcp_server_enabled_sync(

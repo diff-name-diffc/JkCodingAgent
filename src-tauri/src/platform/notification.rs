@@ -3,11 +3,62 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use anyhow::Context;
 use chrono::Utc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::project::atomic_write;
+use crate::project::storage::StorageError;
+use crate::shared::error::{CommandResult, IntoCommandResult};
+
+type NotificationResultType<T> = std::result::Result<T, NotificationError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum NotificationError {
+    #[error("找不到用户主目录")]
+    HomeDirMissing,
+    #[error("{action} 失败（{path}）：{source}")]
+    Io {
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{action} 失败（{path}）：{source}")]
+    Json {
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error("后台通知任务失败：{0}")]
+    Join(#[from] tokio::task::JoinError),
+}
+
+fn io_error(
+    action: &'static str,
+    path: impl Into<PathBuf>,
+) -> impl FnOnce(std::io::Error) -> NotificationError {
+    move |source| NotificationError::Io {
+        action,
+        path: path.into(),
+        source,
+    }
+}
+
+fn json_error(
+    action: &'static str,
+    path: impl Into<PathBuf>,
+) -> impl FnOnce(serde_json::Error) -> NotificationError {
+    move |source| NotificationError::Json {
+        action,
+        path: path.into(),
+        source,
+    }
+}
 
 // ── Security: hardcoded allowed notification source ──────────────────────────
 
@@ -74,14 +125,14 @@ pub struct NotificationResult {
 
 // ── Path helpers ─────────────────────────────────────────────────────────────
 
-fn app_data_dir() -> Result<PathBuf, String> {
+fn app_data_dir() -> NotificationResultType<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .ok_or_else(|| "找不到用户主目录".to_string())?;
+        .ok_or(NotificationError::HomeDirMissing)?;
     Ok(home.join(".jkcodingagent"))
 }
 
-fn store_path() -> Result<PathBuf, String> {
+fn store_path() -> NotificationResultType<PathBuf> {
     Ok(app_data_dir()?.join("notifications.json"))
 }
 
@@ -97,22 +148,23 @@ fn load_store() -> NotificationStore {
     }
 }
 
-fn save_store(store: &NotificationStore) -> Result<(), String> {
+fn save_store(store: &NotificationStore) -> NotificationResultType<()> {
     let path = store_path()?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent).map_err(io_error("创建通知存储目录", parent))?;
     }
-    let json = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    atomic_write(&path, &json)
+    let json =
+        serde_json::to_string_pretty(store).map_err(json_error("序列化通知存储", path.clone()))?;
+    Ok(atomic_write(&path, &json)?)
 }
 
 fn notification_store_mutex() -> &'static Mutex<()> {
     NOTIFICATION_STORE_MUTEX.get_or_init(|| Mutex::new(()))
 }
 
-fn update_store<T, F>(mutate: F) -> Result<T, String>
+fn update_store<T, F>(mutate: F) -> NotificationResultType<T>
 where
-    F: FnOnce(&mut NotificationStore) -> Result<T, String>,
+    F: FnOnce(&mut NotificationStore) -> NotificationResultType<T>,
 {
     let _guard = notification_store_mutex().lock();
     let mut store = load_store();
@@ -215,7 +267,7 @@ fn is_valid(notif: &RemoteNotification, app_version: &str) -> bool {
 
 // ── HTTP fetch (async, with strict guards) ───────────────────────────────────
 
-async fn fetch_remote() -> Result<Vec<RemoteNotification>, String> {
+async fn fetch_remote() -> NotificationResultType<Vec<RemoteNotification>> {
     // Remote notifications disabled for internal deployment
     Ok(Vec::new())
 }
@@ -223,10 +275,15 @@ async fn fetch_remote() -> Result<Vec<RemoteNotification>, String> {
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn get_notifications() -> Result<NotificationResult, String> {
-    let mut store = tokio::task::spawn_blocking(load_store)
+pub async fn get_notifications() -> CommandResult<NotificationResult> {
+    get_notifications_impl()
         .await
-        .map_err(|e| e.to_string())?;
+        .context("读取通知失败")
+        .into_command_result()
+}
+
+async fn get_notifications_impl() -> NotificationResultType<NotificationResult> {
+    let mut store = tokio::task::spawn_blocking(load_store).await?;
 
     let notifications = if should_fetch(&store) {
         match fetch_remote().await {
@@ -238,8 +295,7 @@ pub async fn get_notifications() -> Result<NotificationResult, String> {
                         Ok(store.clone())
                     })
                 })
-                .await
-                .map_err(|e| e.to_string())??;
+                .await??;
 
                 remote
             }
@@ -284,7 +340,14 @@ pub async fn get_notifications() -> Result<NotificationResult, String> {
 }
 
 #[tauri::command]
-pub async fn mark_notification_read(id: String) -> Result<(), String> {
+pub async fn mark_notification_read(id: String) -> CommandResult<()> {
+    mark_notification_read_impl(id.clone())
+        .await
+        .with_context(|| format!("标记通知已读失败（id={id}）"))
+        .into_command_result()
+}
+
+async fn mark_notification_read_impl(id: String) -> NotificationResultType<()> {
     let sanitized_id = sanitize_text(&id, 100);
     tokio::task::spawn_blocking(move || {
         update_store(|store| {
@@ -294,12 +357,18 @@ pub async fn mark_notification_read(id: String) -> Result<(), String> {
             Ok(())
         })
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }
 
 #[tauri::command]
-pub async fn mark_all_notifications_read() -> Result<(), String> {
+pub async fn mark_all_notifications_read() -> CommandResult<()> {
+    mark_all_notifications_read_impl()
+        .await
+        .context("标记所有通知已读失败")
+        .into_command_result()
+}
+
+async fn mark_all_notifications_read_impl() -> NotificationResultType<()> {
     tokio::task::spawn_blocking(move || {
         update_store(|store| {
             if let Some(cached) = store.cached_notifications.clone() {
@@ -312,6 +381,5 @@ pub async fn mark_all_notifications_read() -> Result<(), String> {
             Ok(())
         })
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }

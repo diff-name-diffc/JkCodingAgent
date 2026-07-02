@@ -5,6 +5,39 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use anyhow::Context;
+
+use super::storage::{load_project_tasks, load_projects};
+use crate::shared::error::{CommandResult, IntoCommandResult};
+
+type AnalyticsResult<T> = std::result::Result<T, AnalyticsError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum AnalyticsError {
+    #[error("Session file not found: {0}")]
+    SessionFileNotFound(String),
+    #[error("{action} 失败（{path}）：{source}")]
+    Io {
+        action: &'static str,
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("项目持久化命令失败：{0}")]
+    StorageCommand(String),
+}
+
+fn io_error(
+    action: &'static str,
+    path: impl Into<std::path::PathBuf>,
+) -> impl FnOnce(std::io::Error) -> AnalyticsError {
+    move |source| AnalyticsError::Io {
+        action,
+        path: path.into(),
+        source,
+    }
+}
+
 #[derive(serde::Serialize, Clone, Default)]
 pub(crate) struct SessionMetrics {
     pub(crate) input_tokens: u64,
@@ -18,17 +51,11 @@ static METRICS_CACHE: Lazy<Mutex<HashMap<String, (SystemTime, SessionMetrics)>>>
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn parse_session_metrics_from_path(path: &std::path::Path) -> SessionMetrics {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => {
-            return SessionMetrics {
-                input_tokens: 0,
-                output_tokens: 0,
-                tool_calls: 0,
-                duration_secs: 0.0,
-            }
-        }
-    };
+    try_parse_session_metrics_from_path(path).unwrap_or_default()
+}
+
+fn try_parse_session_metrics_from_path(path: &std::path::Path) -> AnalyticsResult<SessionMetrics> {
+    let content = std::fs::read_to_string(path).map_err(io_error("读取 session 指标文件", path))?;
 
     let mut input_tokens: u64 = 0;
     let mut output_tokens: u64 = 0;
@@ -82,12 +109,12 @@ pub(crate) fn parse_session_metrics_from_path(path: &std::path::Path) -> Session
         _ => 0.0,
     };
 
-    SessionMetrics {
+    Ok(SessionMetrics {
         input_tokens,
         output_tokens,
         tool_calls,
         duration_secs,
-    }
+    })
 }
 
 /// 带缓存的 session 指标解析
@@ -124,12 +151,20 @@ pub(crate) fn parse_session_metrics_cached(path: &std::path::Path) -> SessionMet
 }
 
 #[tauri::command]
-pub async fn read_session_metrics(session_path: String) -> Result<SessionMetrics, String> {
+pub async fn read_session_metrics(session_path: String) -> CommandResult<SessionMetrics> {
+    read_session_metrics_impl(&session_path)
+        .with_context(|| format!("读取 session 指标失败（{}）", session_path))
+        .into_command_result()
+}
+
+fn read_session_metrics_impl(session_path: &str) -> AnalyticsResult<SessionMetrics> {
     let path = std::path::Path::new(&session_path);
     if !path.exists() {
-        return Err(format!("Session file not found: {}", session_path));
+        return Err(AnalyticsError::SessionFileNotFound(
+            session_path.to_string(),
+        ));
     }
-    Ok(parse_session_metrics_from_path(path))
+    try_parse_session_metrics_from_path(path)
 }
 
 // ── Weekly analytics ──────────────────────────────────────────────────────────
@@ -168,7 +203,13 @@ pub struct WeeklyAnalytics {
 }
 
 #[tauri::command]
-pub async fn get_weekly_analytics() -> Result<WeeklyAnalytics, String> {
+pub async fn get_weekly_analytics() -> CommandResult<WeeklyAnalytics> {
+    get_weekly_analytics_impl()
+        .context("读取每周统计失败")
+        .into_command_result()
+}
+
+fn get_weekly_analytics_impl() -> AnalyticsResult<WeeklyAnalytics> {
     use chrono::{Duration, Local};
 
     let today = Local::now().date_naive();
@@ -181,7 +222,7 @@ pub async fn get_weekly_analytics() -> Result<WeeklyAnalytics, String> {
     let cutoff_ms = (Local::now() - Duration::days(7)).timestamp_millis();
 
     // Load all projects
-    let projects = load_projects()?;
+    let projects = load_projects().map_err(AnalyticsError::StorageCommand)?;
 
     let mut daily_map: HashMap<String, DayStats> = dates
         .iter()
@@ -210,7 +251,8 @@ pub async fn get_weekly_analytics() -> Result<WeeklyAnalytics, String> {
     let mut codex_tasks: u32 = 0;
 
     for project in &projects {
-        let tasks = load_project_tasks(project.id.clone())?;
+        let tasks =
+            load_project_tasks(project.id.clone()).map_err(AnalyticsError::StorageCommand)?;
 
         for task in &tasks {
             if task.created_at < cutoff_ms {
@@ -315,4 +357,3 @@ pub async fn get_weekly_analytics() -> Result<WeeklyAnalytics, String> {
         projects: project_list,
     })
 }
-use super::storage::{load_project_tasks, load_projects};

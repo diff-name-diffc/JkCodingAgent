@@ -1,3 +1,4 @@
+pub(crate) mod error;
 mod state;
 mod text;
 

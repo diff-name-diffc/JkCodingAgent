@@ -3,10 +3,60 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
+use anyhow::Context;
+
 use crate::project::atomic_write;
+use crate::project::storage::StorageError;
+use crate::shared::error::{CommandResult, IntoCommandResult};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+
+type AppSettingsResult<T> = std::result::Result<T, AppSettingsError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum AppSettingsError {
+    #[error("找不到用户主目录")]
+    HomeDirMissing,
+    #[error("{action} 失败（{path}）：{source}")]
+    Io {
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{action} 失败（{path}）：{source}")]
+    Json {
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+}
+
+fn io_error(
+    action: &'static str,
+    path: impl Into<PathBuf>,
+) -> impl FnOnce(std::io::Error) -> AppSettingsError {
+    move |source| AppSettingsError::Io {
+        action,
+        path: path.into(),
+        source,
+    }
+}
+
+fn json_error(
+    action: &'static str,
+    path: impl Into<PathBuf>,
+) -> impl FnOnce(serde_json::Error) -> AppSettingsError {
+    move |source| AppSettingsError::Json {
+        action,
+        path: path.into(),
+        source,
+    }
+}
 
 // ── Version 缓存 ─────────────────────────────────────────────────────────────
 
@@ -195,14 +245,14 @@ fn clear_cached_versions() {
     *CACHED_CODEX_VERSION.get_or_init(|| Mutex::new(None)).lock() = None;
 }
 
-fn app_data_dir() -> Result<PathBuf, String> {
+fn app_data_dir() -> AppSettingsResult<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .ok_or_else(|| "找不到用户主目录".to_string())?;
+        .ok_or(AppSettingsError::HomeDirMissing)?;
     Ok(home.join(".jkcodingagent"))
 }
 
-fn settings_path() -> Result<PathBuf, String> {
+fn settings_path() -> AppSettingsResult<PathBuf> {
     Ok(app_data_dir()?.join("settings.json"))
 }
 
@@ -262,19 +312,23 @@ pub fn get_agent_bin(agent: &str) -> String {
     get_agent_bin_from_settings(&load_settings_internal(), agent)
 }
 
-fn load_settings_for_agent_execution() -> Result<AppSettings, String> {
+fn load_settings_for_agent_execution() -> AppSettingsResult<AppSettings> {
     let path = settings_path()?;
     if !path.exists() {
         return Ok(load_settings_internal());
     }
 
-    let raw = fs::read_to_string(&path)
-        .map_err(|error| format!("读取智能体设置失败（{}）：{error}", path.display()))?;
-    serde_json::from_str(&raw)
-        .map_err(|error| format!("解析智能体设置失败（{}）：{error}", path.display()))
+    let raw = fs::read_to_string(&path).map_err(io_error("读取智能体设置", path.clone()))?;
+    serde_json::from_str(&raw).map_err(json_error("解析智能体设置", path))
 }
 
-pub fn get_agent_bin_checked(agent: &str) -> Result<String, String> {
+pub fn get_agent_bin_checked(agent: &str) -> CommandResult<String> {
+    get_agent_bin_checked_impl(agent)
+        .with_context(|| format!("读取智能体可执行文件路径失败（agent={agent}）"))
+        .into_command_result()
+}
+
+fn get_agent_bin_checked_impl(agent: &str) -> AppSettingsResult<String> {
     Ok(get_agent_bin_from_settings(
         &load_settings_for_agent_execution()?,
         agent,
@@ -284,23 +338,30 @@ pub fn get_agent_bin_checked(agent: &str) -> Result<String, String> {
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn load_app_settings() -> Result<AppSettings, String> {
+pub fn load_app_settings() -> CommandResult<AppSettings> {
     Ok(load_settings_internal())
 }
 
 #[tauri::command]
-pub fn save_app_settings(settings: AppSettings) -> Result<(), String> {
+pub fn save_app_settings(settings: AppSettings) -> CommandResult<()> {
+    save_app_settings_impl(settings)
+        .context("保存应用设置失败")
+        .into_command_result()
+}
+
+fn save_app_settings_impl(settings: AppSettings) -> AppSettingsResult<()> {
     let dir = app_data_dir()?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(io_error("创建应用数据目录", dir))?;
     let path = settings_path()?;
-    let raw = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    let raw = serde_json::to_string_pretty(&settings)
+        .map_err(json_error("序列化应用设置", path.clone()))?;
     atomic_write(&path, &raw)?;
     clear_cached_versions();
     Ok(())
 }
 
 #[tauri::command]
-pub fn detect_agent_paths() -> Result<AppSettings, String> {
+pub fn detect_agent_paths() -> CommandResult<AppSettings> {
     Ok(AppSettings {
         claude_path: detect_path("claude"),
         codex_path: detect_path("codex"),
@@ -395,7 +456,7 @@ pub fn claude_version_gte(saved_version: &str, min_version: &str) -> bool {
 
 /// Tauri 命令：检测 Claude 和 Codex 的版本并返回。
 #[tauri::command]
-pub fn detect_agent_versions() -> Result<AgentVersions, String> {
+pub fn detect_agent_versions() -> CommandResult<AgentVersions> {
     Ok(AgentVersions {
         claude_version: detect_claude_version().unwrap_or_default(),
         codex_version: detect_codex_version().unwrap_or_default(),
@@ -403,7 +464,7 @@ pub fn detect_agent_versions() -> Result<AgentVersions, String> {
 }
 
 #[tauri::command]
-pub fn detect_agent_versions_for_settings(settings: AppSettings) -> Result<AgentVersions, String> {
+pub fn detect_agent_versions_for_settings(settings: AppSettings) -> CommandResult<AgentVersions> {
     Ok(detect_versions_for_settings(&settings))
 }
 

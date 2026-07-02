@@ -719,7 +719,7 @@ fn write_config(project_path: &Path, config: &SshToolsConfig) -> Result<(), Stri
         .ok_or_else(|| format!("无法解析 SSH 工具配置目录：{}", path.display()))?;
     fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     let raw = serde_json::to_string_pretty(config).map_err(|error| error.to_string())?;
-    atomic_write(&path, &raw)
+    atomic_write(&path, &raw).map_err(|error| error.to_string())
 }
 
 fn write_audit_record(project_path: &Path, record: SshAuditRecord) -> Result<(), String> {
@@ -736,7 +736,7 @@ fn write_audit_record(project_path: &Path, record: SshAuditRecord) -> Result<(),
         audit.records.drain(0..overflow);
     }
     let raw = serde_json::to_string_pretty(&audit).map_err(|error| error.to_string())?;
-    atomic_write(&path, &raw)
+    atomic_write(&path, &raw).map_err(|error| error.to_string())
 }
 
 pub fn render_ssh_audit_record_markdown(record: &SshAuditRecord) -> String {

@@ -1,9 +1,50 @@
+use anyhow::Context;
 use parking_lot::Mutex;
 use ropey::Rope;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::shared::error::{CommandResult, IntoCommandResult};
+
 const MAX_UNDO_STACK: usize = 10;
+
+type RopeResult<T> = std::result::Result<T, RopeError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum RopeError {
+    #[error("路径必须是绝对路径")]
+    PathNotAbsolute,
+    #[error("路径不在允许目录内")]
+    OutsideAllowedDirectory,
+    #[error("Rope session 不存在：{0}")]
+    SessionNotFound(String),
+    #[error("行号越界：{line}，文件总行数：{total_lines}")]
+    LineOutOfRange { line: u64, total_lines: usize },
+    #[error("没有可撤销的编辑")]
+    NothingToUndo,
+    #[error("没有可重做的编辑")]
+    NothingToRedo,
+    #[error("{action} 失败（{path}）：{source}")]
+    Io {
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("后台 Rope 任务失败：{0}")]
+    TauriJoin(#[from] tauri::Error),
+}
+
+fn io_error(
+    action: &'static str,
+    path: impl Into<PathBuf>,
+) -> impl FnOnce(std::io::Error) -> RopeError {
+    move |source| RopeError::Io {
+        action,
+        path: path.into(),
+        source,
+    }
+}
 
 /// Strip trailing `\r\n` or `\n` in-place — avoids the double allocation of
 /// `.trim_end_matches('\n').trim_end_matches('\r').to_string()`.
@@ -91,35 +132,35 @@ impl RopeManager {
     }
 }
 
-fn validate_path_within(target: &str, allowed_root: &str) -> Result<PathBuf, String> {
+fn validate_path_within(target: &str, allowed_root: &str) -> RopeResult<PathBuf> {
     let target = Path::new(target);
     let root = Path::new(allowed_root);
 
     if !target.is_absolute() {
-        return Err("Path must be absolute".to_string());
+        return Err(RopeError::PathNotAbsolute);
     }
 
     let canonical_target = target
         .canonicalize()
-        .map_err(|e| format!("Cannot resolve path: {}", e))?;
+        .map_err(io_error("解析目标路径", target))?;
     let canonical_root = root
         .canonicalize()
-        .map_err(|e| format!("Cannot resolve root directory: {}", e))?;
+        .map_err(io_error("解析项目根目录", root))?;
 
     if !canonical_target.starts_with(&canonical_root) {
-        return Err("Path is outside the allowed directory".to_string());
+        return Err(RopeError::OutsideAllowedDirectory);
     }
 
     Ok(canonical_target)
 }
 
-fn ensure_session_in_project(session_path: &Path, project_path: &str) -> Result<(), String> {
+fn ensure_session_in_project(session_path: &Path, project_path: &str) -> RopeResult<()> {
     let canonical_root = Path::new(project_path)
         .canonicalize()
-        .map_err(|e| format!("Cannot resolve root directory: {}", e))?;
+        .map_err(io_error("解析项目根目录", project_path))?;
 
     if !session_path.starts_with(&canonical_root) {
-        return Err("Path is outside the allowed directory".to_string());
+        return Err(RopeError::OutsideAllowedDirectory);
     }
 
     Ok(())
@@ -131,7 +172,19 @@ pub async fn rope_open(
     session_id: String,
     path: String,
     project_path: String,
-) -> Result<RopeMeta, String> {
+) -> CommandResult<RopeMeta> {
+    rope_open_impl(state, session_id, path, project_path)
+        .await
+        .context("打开 Rope 会话失败")
+        .into_command_result()
+}
+
+async fn rope_open_impl(
+    state: tauri::State<'_, RopeManager>,
+    session_id: String,
+    path: String,
+    project_path: String,
+) -> RopeResult<RopeMeta> {
     let validated_path = validate_path_within(&path, &project_path)?;
 
     {
@@ -145,13 +198,13 @@ pub async fn rope_open(
     }
 
     let path_for_read = validated_path.clone();
-    let rope = tauri::async_runtime::spawn_blocking(move || {
-        let file = std::fs::File::open(&path_for_read).map_err(|e| e.to_string())?;
+    let rope = tauri::async_runtime::spawn_blocking(move || -> RopeResult<Rope> {
+        let file = std::fs::File::open(&path_for_read)
+            .map_err(io_error("打开 Rope 文件", &path_for_read))?;
         let reader = std::io::BufReader::with_capacity(256 * 1024, file);
-        Rope::from_reader(reader).map_err(|e| e.to_string())
+        Rope::from_reader(reader).map_err(io_error("读取 Rope 文件", &path_for_read))
     })
-    .await
-    .map_err(|e| e.to_string())??;
+    .await??;
 
     let session = RopeSession {
         path: validated_path,
@@ -175,11 +228,22 @@ pub fn rope_read_lines(
     session_id: String,
     start_line: u64,
     max_lines: u64,
-) -> Result<Vec<String>, String> {
+) -> CommandResult<Vec<String>> {
+    rope_read_lines_impl(state, session_id, start_line, max_lines)
+        .context("读取 Rope 行失败")
+        .into_command_result()
+}
+
+fn rope_read_lines_impl(
+    state: tauri::State<'_, RopeManager>,
+    session_id: String,
+    start_line: u64,
+    max_lines: u64,
+) -> RopeResult<Vec<String>> {
     let sessions = state.sessions.lock();
     let session = sessions
         .get(&session_id)
-        .ok_or_else(|| format!("Rope session not found: {}", session_id))?;
+        .ok_or_else(|| RopeError::SessionNotFound(session_id.clone()))?;
 
     let total = session.rope.len_lines();
     let start = (start_line as usize).min(total);
@@ -204,11 +268,24 @@ pub fn rope_edit(
     col: u64,
     delete_count: u64,
     insert_text: String,
-) -> Result<RopeEditResult, String> {
+) -> CommandResult<RopeEditResult> {
+    rope_edit_impl(state, session_id, line, col, delete_count, insert_text)
+        .context("编辑 Rope 内容失败")
+        .into_command_result()
+}
+
+fn rope_edit_impl(
+    state: tauri::State<'_, RopeManager>,
+    session_id: String,
+    line: u64,
+    col: u64,
+    delete_count: u64,
+    insert_text: String,
+) -> RopeResult<RopeEditResult> {
     let mut sessions = state.sessions.lock();
     let session = sessions
         .get_mut(&session_id)
-        .ok_or_else(|| format!("Rope session not found: {}", session_id))?;
+        .ok_or_else(|| RopeError::SessionNotFound(session_id.clone()))?;
 
     let total_lines = session.rope.len_lines();
     let line_idx = (line as usize).min(total_lines.saturating_sub(1));
@@ -258,19 +335,27 @@ pub fn rope_replace_line(
     session_id: String,
     line: u64,
     new_content: String,
-) -> Result<RopeEditResult, String> {
+) -> CommandResult<RopeEditResult> {
+    rope_replace_line_impl(state, session_id, line, new_content)
+        .context("替换 Rope 行失败")
+        .into_command_result()
+}
+
+fn rope_replace_line_impl(
+    state: tauri::State<'_, RopeManager>,
+    session_id: String,
+    line: u64,
+    new_content: String,
+) -> RopeResult<RopeEditResult> {
     let mut sessions = state.sessions.lock();
     let session = sessions
         .get_mut(&session_id)
-        .ok_or_else(|| format!("Rope session not found: {}", session_id))?;
+        .ok_or_else(|| RopeError::SessionNotFound(session_id.clone()))?;
 
     let total_lines = session.rope.len_lines();
     let line_idx = line as usize;
     if line_idx >= total_lines {
-        return Err(format!(
-            "Line {} is out of range (file has {} lines)",
-            line, total_lines
-        ));
+        return Err(RopeError::LineOutOfRange { line, total_lines });
     }
 
     let line_start = session.rope.line_to_char(line_idx);
@@ -329,23 +414,35 @@ pub async fn rope_save(
     state: tauri::State<'_, RopeManager>,
     session_id: String,
     project_path: String,
-) -> Result<(), String> {
+) -> CommandResult<()> {
+    rope_save_impl(state, session_id, project_path)
+        .await
+        .context("保存 Rope 会话失败")
+        .into_command_result()
+}
+
+async fn rope_save_impl(
+    state: tauri::State<'_, RopeManager>,
+    session_id: String,
+    project_path: String,
+) -> RopeResult<()> {
     let (path, rope_clone) = {
         let sessions = state.sessions.lock();
         let session = sessions
             .get(&session_id)
-            .ok_or_else(|| format!("Rope session not found: {}", session_id))?;
+            .ok_or_else(|| RopeError::SessionNotFound(session_id.clone()))?;
         ensure_session_in_project(&session.path, &project_path)?;
         (session.path.clone(), session.rope.clone())
     };
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || -> RopeResult<()> {
+        let file = std::fs::File::create(&path).map_err(io_error("创建 Rope 文件", &path))?;
         let writer = std::io::BufWriter::with_capacity(256 * 1024, file);
-        rope_clone.write_to(writer).map_err(|e| e.to_string())
+        rope_clone
+            .write_to(writer)
+            .map_err(io_error("写入 Rope 文件", &path))
     })
-    .await
-    .map_err(|e| e.to_string())??;
+    .await??;
 
     if let Some(session) = state.sessions.lock().get_mut(&session_id) {
         session.saved_revision = session.revision;
@@ -374,16 +471,22 @@ pub fn rope_close(state: tauri::State<'_, RopeManager>, session_id: String) {
 pub fn rope_undo(
     state: tauri::State<'_, RopeManager>,
     session_id: String,
-) -> Result<RopeMeta, String> {
+) -> CommandResult<RopeMeta> {
+    rope_undo_impl(state, session_id)
+        .context("撤销 Rope 编辑失败")
+        .into_command_result()
+}
+
+fn rope_undo_impl(
+    state: tauri::State<'_, RopeManager>,
+    session_id: String,
+) -> RopeResult<RopeMeta> {
     let mut sessions = state.sessions.lock();
     let session = sessions
         .get_mut(&session_id)
-        .ok_or_else(|| format!("Rope session not found: {}", session_id))?;
+        .ok_or_else(|| RopeError::SessionNotFound(session_id.clone()))?;
 
-    let snapshot = session
-        .undo_stack
-        .pop()
-        .ok_or_else(|| "Nothing to undo".to_string())?;
+    let snapshot = session.undo_stack.pop().ok_or(RopeError::NothingToUndo)?;
 
     session.redo_stack.push(RopeSnapshot {
         rope: session.rope.clone(),
@@ -400,16 +503,22 @@ pub fn rope_undo(
 pub fn rope_redo(
     state: tauri::State<'_, RopeManager>,
     session_id: String,
-) -> Result<RopeMeta, String> {
+) -> CommandResult<RopeMeta> {
+    rope_redo_impl(state, session_id)
+        .context("重做 Rope 编辑失败")
+        .into_command_result()
+}
+
+fn rope_redo_impl(
+    state: tauri::State<'_, RopeManager>,
+    session_id: String,
+) -> RopeResult<RopeMeta> {
     let mut sessions = state.sessions.lock();
     let session = sessions
         .get_mut(&session_id)
-        .ok_or_else(|| format!("Rope session not found: {}", session_id))?;
+        .ok_or_else(|| RopeError::SessionNotFound(session_id.clone()))?;
 
-    let snapshot = session
-        .redo_stack
-        .pop()
-        .ok_or_else(|| "Nothing to redo".to_string())?;
+    let snapshot = session.redo_stack.pop().ok_or(RopeError::NothingToRedo)?;
 
     if session.undo_stack.len() >= MAX_UNDO_STACK {
         session.undo_stack.remove(0);

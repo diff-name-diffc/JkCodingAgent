@@ -234,11 +234,6 @@ impl ReloadPayload {
     }
 }
 
-/// 把 anyhow 错误转为前端友好的字符串（commands 层统一用 String 错误）。
-pub fn err_to_string(error: anyhow::Error) -> String {
-    format!("{error:#}")
-}
-
 /// 把 "未知端口" 的语义错误统一封装。
 pub fn no_port_error() -> anyhow::Error {
     anyhow!("sidecar 尚未完成端口握手，无法发起 HTTP 调用")

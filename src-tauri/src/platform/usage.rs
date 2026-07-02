@@ -3,18 +3,76 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
 use chrono::DateTime;
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::app_settings::{detect_claude_version, get_agent_bin, get_login_shell_path};
+use crate::shared::error::{CommandResult, IntoCommandResult};
 
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_BETA_HEADER: &str = "oauth-2025-04-20";
 const CLAUDE_TIMEOUT_SECS: u64 = 12;
 // 每次 Codex 尝试的超时上限；最多重试两次，所以总计最长 20 秒。
 const CODEX_ATTEMPT_TIMEOUT_SECS: u64 = 10;
+
+type UsageResult<T> = std::result::Result<T, UsageError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum UsageError {
+    #[error("{action} 失败：{source}")]
+    Io {
+        action: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{action} 不是有效 UTF-8：{source}")]
+    Utf8 {
+        action: &'static str,
+        #[source]
+        source: std::string::FromUtf8Error,
+    },
+    #[error("{action} 不是有效 JSON：{source}")]
+    Json {
+        action: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("Claude credentials are unavailable.")]
+    ClaudeCredentialsUnavailable,
+    #[error("Claude credentials are unavailable: {0}")]
+    ClaudeCredentialsCommand(String),
+    #[error("Claude access token was missing from Keychain data.")]
+    ClaudeTokenMissing,
+    #[error("Claude 用量请求失败：{0}")]
+    ClaudeRequest(#[from] reqwest::Error),
+    #[error("Claude 用量请求返回 HTTP {0}")]
+    ClaudeHttp(reqwest::StatusCode),
+    #[error("Claude 用量响应中未包含可识别的窗口数据。")]
+    ClaudeUsageWindowMissing,
+    #[error("Codex app-server {0} was unavailable.")]
+    CodexPipeUnavailable(&'static str),
+    #[error("Codex app-server returned error: {0}")]
+    CodexAppServer(String),
+    #[error("Timed out waiting for Codex response {expected_id}.")]
+    CodexTimeout { expected_id: i64 },
+    #[error("Codex app-server closed before response {expected_id}.")]
+    CodexChannelClosed { expected_id: i64 },
+    #[error("Codex response {expected_id} did not include result or error.")]
+    CodexInvalidResponse { expected_id: i64 },
+    #[error("后台用量任务失败：{0}")]
+    Join(#[from] tokio::task::JoinError),
+}
+
+fn io_error(action: &'static str) -> impl FnOnce(std::io::Error) -> UsageError {
+    move |source| UsageError::Io { action, source }
+}
+
+fn json_error(action: &'static str) -> impl FnOnce(serde_json::Error) -> UsageError {
+    move |source| UsageError::Json { action, source }
+}
 
 static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
@@ -66,7 +124,14 @@ pub struct CodexUsageData {
 }
 
 #[tauri::command]
-pub async fn read_usage_snapshot() -> Result<UsageSnapshot, String> {
+pub async fn read_usage_snapshot() -> CommandResult<UsageSnapshot> {
+    read_usage_snapshot_impl()
+        .await
+        .context("读取用量快照失败")
+        .into_command_result()
+}
+
+async fn read_usage_snapshot_impl() -> anyhow::Result<UsageSnapshot> {
     let (claude, codex) = tokio::join!(read_claude_usage(), read_codex_usage());
 
     Ok(UsageSnapshot {
@@ -81,49 +146,50 @@ async fn read_claude_usage() -> UsageSource<ClaudeUsageData> {
         return unavailable("Claude 用量读取当前依赖 macOS 钥匙串。");
     }
 
-    let token_result =
-        tokio::task::spawn_blocking(|| -> Result<(String, Option<String>), String> {
-            let shell_path = get_login_shell_path();
-            let output = Command::new("security")
-                .args([
-                    "find-generic-password",
-                    "-s",
-                    "Claude Code-credentials",
-                    "-w",
-                ])
-                .env("PATH", shell_path)
-                .stdin(Stdio::null())
-                .stderr(Stdio::piped())
-                .output()
-                .map_err(|e| format!("Failed to read Claude credentials: {e}"))?;
+    let token_result = tokio::task::spawn_blocking(|| -> UsageResult<(String, Option<String>)> {
+        let shell_path = get_login_shell_path();
+        let output = Command::new("security")
+            .args([
+                "find-generic-password",
+                "-s",
+                "Claude Code-credentials",
+                "-w",
+            ])
+            .env("PATH", shell_path)
+            .stdin(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(io_error("读取 Claude credentials"))?;
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                return Err(if stderr.is_empty() {
-                    "Claude credentials are unavailable.".to_string()
-                } else {
-                    stderr
-                });
-            }
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if stderr.is_empty() {
+                UsageError::ClaudeCredentialsUnavailable
+            } else {
+                UsageError::ClaudeCredentialsCommand(stderr)
+            });
+        }
 
-            let raw = String::from_utf8(output.stdout)
-                .map_err(|e| format!("Claude credential output was not valid UTF-8: {e}"))?;
-            let parsed: Value = serde_json::from_str(raw.trim())
-                .map_err(|e| format!("Claude credentials JSON was invalid: {e}"))?;
+        let raw = String::from_utf8(output.stdout).map_err(|source| UsageError::Utf8 {
+            action: "Claude credential output",
+            source,
+        })?;
+        let parsed: Value =
+            serde_json::from_str(raw.trim()).map_err(json_error("Claude credentials JSON"))?;
 
-            let token = parsed
-                .pointer("/claudeAiOauth/accessToken")
-                .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| "Claude access token was missing from Keychain data.".to_string())?;
+        let token = parsed
+            .pointer("/claudeAiOauth/accessToken")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(UsageError::ClaudeTokenMissing)?;
 
-            Ok((token.to_string(), detect_claude_version()))
-        })
-        .await;
+        Ok((token.to_string(), detect_claude_version()))
+    })
+    .await;
 
     let (token, version) = match token_result {
         Ok(Ok(value)) => value,
-        Ok(Err(reason)) => return unavailable(reason),
+        Ok(Err(reason)) => return unavailable(reason.to_string()),
         Err(err) => return unavailable(format!("加载 Claude 凭据失败：{err}")),
     };
 
@@ -142,16 +208,16 @@ async fn read_claude_usage() -> UsageSource<ClaudeUsageData> {
         .await
     {
         Ok(response) => response,
-        Err(err) => return unavailable(format!("Claude 用量请求失败：{err}")),
+        Err(err) => return unavailable(UsageError::ClaudeRequest(err).to_string()),
     };
 
     if !response.status().is_success() {
-        return unavailable(format!("Claude 用量请求返回 HTTP {}", response.status()));
+        return unavailable(UsageError::ClaudeHttp(response.status()).to_string());
     }
 
     let payload = match response.json::<Value>().await {
         Ok(value) => value,
-        Err(err) => return unavailable(format!("Claude 用量响应不是有效 JSON：{err}")),
+        Err(err) => return unavailable(UsageError::ClaudeRequest(err).to_string()),
     };
 
     let data = ClaudeUsageData {
@@ -160,7 +226,7 @@ async fn read_claude_usage() -> UsageSource<ClaudeUsageData> {
     };
 
     if data.five_hour.is_none() && data.seven_day.is_none() {
-        unavailable("Claude 用量响应中未包含可识别的窗口数据。")
+        unavailable(UsageError::ClaudeUsageWindowMissing.to_string())
     } else {
         UsageSource::Available { data }
     }
@@ -169,28 +235,28 @@ async fn read_claude_usage() -> UsageSource<ClaudeUsageData> {
 async fn read_codex_usage() -> UsageSource<CodexUsageData> {
     match tokio::task::spawn_blocking(read_codex_usage_blocking).await {
         Ok(Ok(data)) => UsageSource::Available { data },
-        Ok(Err(reason)) => unavailable(reason),
+        Ok(Err(reason)) => unavailable(reason.to_string()),
         Err(err) => unavailable(format!("读取 Codex 用量失败：{err}")),
     }
 }
 
-fn read_codex_usage_blocking() -> Result<CodexUsageData, String> {
+fn read_codex_usage_blocking() -> UsageResult<CodexUsageData> {
     let mut reasons = Vec::new();
     for params in [Value::Null, json!({})] {
         let deadline = Instant::now() + Duration::from_secs(CODEX_ATTEMPT_TIMEOUT_SECS);
         match read_codex_usage_blocking_once(params, deadline) {
             Ok(data) => return Ok(data),
-            Err(reason) => reasons.push(reason),
+            Err(reason) => reasons.push(reason.to_string()),
         }
     }
 
-    Err(reasons.join(" | "))
+    Err(UsageError::CodexAppServer(reasons.join(" | ")))
 }
 
 fn read_codex_usage_blocking_once(
     rate_limit_params: Value,
     deadline: Instant,
-) -> Result<CodexUsageData, String> {
+) -> UsageResult<CodexUsageData> {
     let shell_path = get_login_shell_path();
     let binary = get_agent_bin("codex");
     let mut child = Command::new(&binary)
@@ -200,31 +266,32 @@ fn read_codex_usage_blocking_once(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to start Codex app-server: {e}"))?;
+        .map_err(io_error("启动 Codex app-server"))?;
 
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "Codex app-server stdout was unavailable.".to_string())?;
+        .ok_or(UsageError::CodexPipeUnavailable("stdout"))?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "Codex app-server stderr was unavailable.".to_string())?;
+        .ok_or(UsageError::CodexPipeUnavailable("stderr"))?;
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "Codex app-server stdin was unavailable.".to_string())?;
+        .ok_or(UsageError::CodexPipeUnavailable("stdin"))?;
 
-    let (message_tx, message_rx) = mpsc::channel::<Result<Value, String>>();
+    let (message_tx, message_rx) = mpsc::channel::<UsageResult<Value>>();
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             let line = match line {
                 Ok(line) => line,
                 Err(err) => {
-                    let _ = message_tx.send(Err(format!(
-                        "Failed reading Codex app-server output: {err}"
-                    )));
+                    let _ = message_tx.send(Err(UsageError::Io {
+                        action: "读取 Codex app-server output",
+                        source: err,
+                    }));
                     break;
                 }
             };
@@ -234,8 +301,8 @@ fn read_codex_usage_blocking_once(
                 continue;
             }
 
-            let parsed = serde_json::from_str::<Value>(trimmed)
-                .map_err(|err| format!("Invalid Codex app-server JSON: {err}"));
+            let parsed =
+                serde_json::from_str::<Value>(trimmed).map_err(json_error("Codex app-server JSON"));
             if message_tx.send(parsed).is_err() {
                 break;
             }
@@ -249,7 +316,7 @@ fn read_codex_usage_blocking_once(
         let _ = reader.read_to_string(&mut buf);
     });
 
-    let result = (|| -> Result<CodexUsageData, String> {
+    let result = (|| -> UsageResult<CodexUsageData> {
         write_json_line(
             &mut stdin,
             &json!({
@@ -303,38 +370,33 @@ fn read_codex_usage_blocking_once(
     result
 }
 
-fn write_json_line(stdin: &mut dyn Write, value: &Value) -> Result<(), String> {
-    let payload = serde_json::to_string(value)
-        .map_err(|e| format!("Failed to serialize Codex request: {e}"))?;
+fn write_json_line(stdin: &mut dyn Write, value: &Value) -> UsageResult<()> {
+    let payload = serde_json::to_string(value).map_err(json_error("序列化 Codex request"))?;
     stdin
         .write_all(payload.as_bytes())
-        .map_err(|e| format!("Failed writing Codex request: {e}"))?;
+        .map_err(io_error("写入 Codex request"))?;
     stdin
         .write_all(b"\n")
-        .map_err(|e| format!("Failed writing Codex request terminator: {e}"))?;
-    stdin
-        .flush()
-        .map_err(|e| format!("Failed flushing Codex request: {e}"))?;
+        .map_err(io_error("写入 Codex request terminator"))?;
+    stdin.flush().map_err(io_error("刷新 Codex request"))?;
     Ok(())
 }
 
 fn wait_for_result(
-    rx: &mpsc::Receiver<Result<Value, String>>,
+    rx: &mpsc::Receiver<UsageResult<Value>>,
     expected_id: i64,
     deadline: Instant,
-) -> Result<Value, String> {
+) -> UsageResult<Value> {
     loop {
         let now = Instant::now();
         if now >= deadline {
-            return Err(format!(
-                "Timed out waiting for Codex response {expected_id}."
-            ));
+            return Err(UsageError::CodexTimeout { expected_id });
         }
 
         let remaining = deadline.saturating_duration_since(now);
         let message = rx
             .recv_timeout(remaining)
-            .map_err(|_| format!("Codex app-server closed before response {expected_id}."))??;
+            .map_err(|_| UsageError::CodexChannelClosed { expected_id })??;
 
         let matches_id = message.get("id").and_then(Value::as_i64) == Some(expected_id);
         if !matches_id {
@@ -350,12 +412,10 @@ fn wait_for_result(
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("Unknown Codex app-server error");
-            return Err(msg.to_string());
+            return Err(UsageError::CodexAppServer(msg.to_string()));
         }
 
-        return Err(format!(
-            "Codex response {expected_id} did not include result or error."
-        ));
+        return Err(UsageError::CodexInvalidResponse { expected_id });
     }
 }
 

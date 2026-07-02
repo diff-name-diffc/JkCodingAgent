@@ -1,5 +1,52 @@
+use anyhow::Context;
 use base64::Engine;
 use std::path::Path;
+
+use crate::shared::error::{CommandResult, IntoCommandResult};
+
+type FsResult<T> = std::result::Result<T, FsError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum FsError {
+    #[error("路径必须是绝对路径")]
+    PathNotAbsolute,
+    #[error("路径必须有父目录")]
+    MissingParent,
+    #[error("路径不在允许目录内")]
+    OutsideAllowedDirectory,
+    #[error("不能修改项目根目录")]
+    ProjectRootModification,
+    #[error("不支持的图片格式")]
+    UnsupportedImageFormat,
+    #[error("文件过大（{mb:.1} MB）")]
+    FileTooLarge { mb: f64 },
+    #[error("图片过大（{mb:.1} MB）")]
+    ImageTooLarge { mb: f64 },
+    #[error("目标位置已存在同名文件或目录")]
+    DestinationExists,
+    #[error("{action} 失败（{path}）：{source}")]
+    Io {
+        action: &'static str,
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("后台文件任务失败：{0}")]
+    Join(#[from] tokio::task::JoinError),
+    #[error("后台文件任务失败：{0}")]
+    TauriJoin(#[from] tauri::Error),
+}
+
+fn io_error(
+    action: &'static str,
+    path: impl Into<std::path::PathBuf>,
+) -> impl FnOnce(std::io::Error) -> FsError {
+    move |source| FsError::Io {
+        action,
+        path: path.into(),
+        source,
+    }
+}
 
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct FsEntry {
@@ -42,66 +89,61 @@ const IGNORED_FILES: &[&str] = &[".DS_Store"];
 const MAX_IMAGE_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Validate that `target` is an absolute path within `allowed_root` (prevents directory traversal).
-fn validate_path_within(target: &str, allowed_root: &str) -> Result<std::path::PathBuf, String> {
+fn validate_path_within(target: &str, allowed_root: &str) -> FsResult<std::path::PathBuf> {
     let target = Path::new(target);
     let root = Path::new(allowed_root);
 
     if !target.is_absolute() {
-        return Err("Path must be absolute".to_string());
+        return Err(FsError::PathNotAbsolute);
     }
 
     let canonical_target = target
         .canonicalize()
-        .map_err(|e| format!("Cannot resolve path: {}", e))?;
+        .map_err(io_error("解析目标路径", target))?;
     let canonical_root = root
         .canonicalize()
-        .map_err(|e| format!("Cannot resolve root directory: {}", e))?;
+        .map_err(io_error("解析项目根目录", root))?;
 
     if !canonical_target.starts_with(&canonical_root) {
-        return Err("Path is outside the allowed directory".to_string());
+        return Err(FsError::OutsideAllowedDirectory);
     }
 
     Ok(canonical_target)
 }
 
-fn validate_new_path_within(
-    target: &str,
-    allowed_root: &str,
-) -> Result<std::path::PathBuf, String> {
+fn validate_new_path_within(target: &str, allowed_root: &str) -> FsResult<std::path::PathBuf> {
     let target = Path::new(target);
     let root = Path::new(allowed_root);
 
     if !target.is_absolute() {
-        return Err("Path must be absolute".to_string());
+        return Err(FsError::PathNotAbsolute);
     }
 
-    let parent = target
-        .parent()
-        .ok_or_else(|| "Path must have a parent directory".to_string())?;
+    let parent = target.parent().ok_or(FsError::MissingParent)?;
     let canonical_parent = parent
         .canonicalize()
-        .map_err(|e| format!("Cannot resolve target parent directory: {}", e))?;
+        .map_err(io_error("解析目标父目录", parent))?;
     let canonical_root = root
         .canonicalize()
-        .map_err(|e| format!("Cannot resolve root directory: {}", e))?;
+        .map_err(io_error("解析项目根目录", root))?;
 
     if !canonical_parent.starts_with(&canonical_root) {
-        return Err("Path is outside the allowed directory".to_string());
+        return Err(FsError::OutsideAllowedDirectory);
     }
 
     Ok(target.to_path_buf())
 }
 
-fn ensure_not_project_root(target: &Path, allowed_root: &str) -> Result<(), String> {
+fn ensure_not_project_root(target: &Path, allowed_root: &str) -> FsResult<()> {
     let canonical_target = target
         .canonicalize()
-        .map_err(|e| format!("Cannot resolve path: {}", e))?;
+        .map_err(io_error("解析目标路径", target))?;
     let canonical_root = Path::new(allowed_root)
         .canonicalize()
-        .map_err(|e| format!("Cannot resolve root directory: {}", e))?;
+        .map_err(io_error("解析项目根目录", allowed_root))?;
 
     if canonical_target == canonical_root {
-        return Err("Cannot modify the project root".to_string());
+        return Err(FsError::ProjectRootModification);
     }
 
     Ok(())
@@ -136,9 +178,16 @@ fn should_ignore_project_file(relative_path: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn read_dir_entries(path: String, project_path: String) -> Result<Vec<FsEntry>, String> {
+pub async fn read_dir_entries(path: String, project_path: String) -> CommandResult<Vec<FsEntry>> {
+    read_dir_entries_impl(&path, &project_path)
+        .await
+        .with_context(|| format!("读取目录失败（{}）", path))
+        .into_command_result()
+}
+
+async fn read_dir_entries_impl(path: &str, project_path: &str) -> FsResult<Vec<FsEntry>> {
     validate_path_within(&path, &project_path)?;
-    let entries = std::fs::read_dir(&path).map_err(|e| e.to_string())?;
+    let entries = std::fs::read_dir(path).map_err(io_error("读取目录", path))?;
     let mut result: Vec<FsEntry> = entries
         .flatten()
         .filter(|entry| {
@@ -172,55 +221,72 @@ pub async fn read_dir_entries(path: String, project_path: String) -> Result<Vec<
 }
 
 #[tauri::command]
-pub async fn read_file_content(path: String, project_path: String) -> Result<String, String> {
+pub async fn read_file_content(path: String, project_path: String) -> CommandResult<String> {
+    read_file_content_impl(&path, &project_path)
+        .await
+        .with_context(|| format!("读取文件失败（{}）", path))
+        .into_command_result()
+}
+
+async fn read_file_content_impl(path: &str, project_path: &str) -> FsResult<String> {
     let validated_path = validate_path_within(&path, &project_path)?;
 
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> FsResult<String> {
         use std::io::Read;
-        let file = std::fs::File::open(&validated_path).map_err(|e| e.to_string())?;
-        let meta = file.metadata().map_err(|e| e.to_string())?;
+        let file =
+            std::fs::File::open(&validated_path).map_err(io_error("打开文件", &validated_path))?;
+        let meta = file
+            .metadata()
+            .map_err(io_error("读取文件元信息", &validated_path))?;
         if meta.len() > 2 * 1024 * 1024 {
-            return Err(format!(
-                "File too large ({:.1} MB)",
-                meta.len() as f64 / 1024.0 / 1024.0
-            ));
+            return Err(FsError::FileTooLarge {
+                mb: meta.len() as f64 / 1024.0 / 1024.0,
+            });
         }
         let mut buf = String::with_capacity(meta.len() as usize);
         std::io::BufReader::new(file)
             .read_to_string(&mut buf)
-            .map_err(|e| e.to_string())?;
+            .map_err(io_error("读取文件内容", &validated_path))?;
         Ok(buf)
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }
 
 #[tauri::command]
 pub async fn read_image_preview(
     path: String,
     project_path: String,
-) -> Result<ImagePreviewData, String> {
+) -> CommandResult<ImagePreviewData> {
+    read_image_preview_impl(&path, &project_path)
+        .await
+        .with_context(|| format!("读取图片预览失败（{}）", path))
+        .into_command_result()
+}
+
+async fn read_image_preview_impl(path: &str, project_path: &str) -> FsResult<ImagePreviewData> {
     let validated_path = validate_path_within(&path, &project_path)?;
 
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> FsResult<ImagePreviewData> {
         use std::io::Read;
 
-        let mime_type = previewable_image_mime_type(&validated_path)
-            .ok_or_else(|| "Unsupported image format".to_string())?;
+        let mime_type =
+            previewable_image_mime_type(&validated_path).ok_or(FsError::UnsupportedImageFormat)?;
 
-        let file = std::fs::File::open(&validated_path).map_err(|e| e.to_string())?;
-        let meta = file.metadata().map_err(|e| e.to_string())?;
+        let file =
+            std::fs::File::open(&validated_path).map_err(io_error("打开图片", &validated_path))?;
+        let meta = file
+            .metadata()
+            .map_err(io_error("读取图片元信息", &validated_path))?;
         if meta.len() > MAX_IMAGE_PREVIEW_BYTES {
-            return Err(format!(
-                "Image too large ({:.1} MB)",
-                meta.len() as f64 / 1024.0 / 1024.0
-            ));
+            return Err(FsError::ImageTooLarge {
+                mb: meta.len() as f64 / 1024.0 / 1024.0,
+            });
         }
 
         let mut bytes = Vec::with_capacity(meta.len() as usize);
         std::io::BufReader::new(file)
             .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
+            .map_err(io_error("读取图片内容", &validated_path))?;
 
         Ok(ImagePreviewData {
             data_url: format!(
@@ -232,8 +298,7 @@ pub async fn read_image_preview(
             byte_length: meta.len(),
         })
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }
 
 #[tauri::command]
@@ -241,14 +306,20 @@ pub async fn write_file_content(
     path: String,
     content: String,
     project_path: String,
-) -> Result<(), String> {
+) -> CommandResult<()> {
+    write_file_content_impl(&path, content, &project_path)
+        .await
+        .with_context(|| format!("写入文件失败（{}）", path))
+        .into_command_result()
+}
+
+async fn write_file_content_impl(path: &str, content: String, project_path: &str) -> FsResult<()> {
     let validated_path = validate_path_within(&path, &project_path)?;
 
-    tauri::async_runtime::spawn_blocking(move || {
-        std::fs::write(&validated_path, content).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || -> FsResult<()> {
+        std::fs::write(&validated_path, content).map_err(io_error("写入文件", &validated_path))
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }
 
 #[tauri::command]
@@ -256,12 +327,28 @@ pub async fn move_fs_entry(
     source_path: String,
     destination_path: String,
     project_path: String,
-) -> Result<(), String> {
+) -> CommandResult<()> {
+    move_fs_entry_impl(&source_path, &destination_path, &project_path)
+        .await
+        .with_context(|| {
+            format!(
+                "移动文件系统条目失败（{} -> {}）",
+                source_path, destination_path
+            )
+        })
+        .into_command_result()
+}
+
+async fn move_fs_entry_impl(
+    source_path: &str,
+    destination_path: &str,
+    project_path: &str,
+) -> FsResult<()> {
     let validated_source = validate_path_within(&source_path, &project_path)?;
     ensure_not_project_root(&validated_source, &project_path)?;
     let validated_destination = validate_new_path_within(&destination_path, &project_path)?;
 
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> FsResult<()> {
         if validated_source == validated_destination {
             return Ok(());
         }
@@ -274,37 +361,51 @@ pub async fn move_fs_entry(
                 .is_some_and(|(destination, source)| destination == source);
 
             if !source_is_same_entry {
-                return Err("A file or folder with the same name already exists".to_string());
+                return Err(FsError::DestinationExists);
             }
         }
 
-        std::fs::rename(&validated_source, &validated_destination).map_err(|e| e.to_string())
+        std::fs::rename(&validated_source, &validated_destination)
+            .map_err(io_error("移动文件系统条目", &validated_source))
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }
 
 #[tauri::command]
-pub async fn delete_fs_entry(path: String, project_path: String) -> Result<(), String> {
+pub async fn delete_fs_entry(path: String, project_path: String) -> CommandResult<()> {
+    delete_fs_entry_impl(&path, &project_path)
+        .await
+        .with_context(|| format!("删除文件系统条目失败（{}）", path))
+        .into_command_result()
+}
+
+async fn delete_fs_entry_impl(path: &str, project_path: &str) -> FsResult<()> {
     let validated_path = validate_path_within(&path, &project_path)?;
     ensure_not_project_root(&validated_path, &project_path)?;
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let metadata = std::fs::symlink_metadata(&validated_path).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || -> FsResult<()> {
+        let metadata = std::fs::symlink_metadata(&validated_path)
+            .map_err(io_error("读取文件系统条目元信息", &validated_path))?;
         if metadata.is_dir() {
-            std::fs::remove_dir_all(&validated_path).map_err(|e| e.to_string())
+            std::fs::remove_dir_all(&validated_path).map_err(io_error("删除目录", &validated_path))
         } else {
-            std::fs::remove_file(&validated_path).map_err(|e| e.to_string())
+            std::fs::remove_file(&validated_path).map_err(io_error("删除文件", &validated_path))
         }
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }
 
 #[tauri::command]
-pub async fn list_project_files(project_path: String) -> Result<Vec<String>, String> {
-    let pp = project_path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+pub async fn list_project_files(project_path: String) -> CommandResult<Vec<String>> {
+    list_project_files_impl(&project_path)
+        .await
+        .with_context(|| format!("列出项目文件失败（{}）", project_path))
+        .into_command_result()
+}
+
+async fn list_project_files_impl(project_path: &str) -> FsResult<Vec<String>> {
+    let pp = project_path.to_string();
+    tauri::async_runtime::spawn_blocking(move || -> FsResult<Vec<String>> {
         // Merge tracked + untracked into a single git command (P7 perf fix)
         let output = std::process::Command::new("git")
             .args([
@@ -317,7 +418,7 @@ pub async fn list_project_files(project_path: String) -> Result<Vec<String>, Str
             ])
             .current_dir(&pp)
             .output()
-            .map_err(|e| e.to_string())?;
+            .map_err(io_error("执行 git ls-files", &pp))?;
 
         let mut files: Vec<String> = String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -329,8 +430,7 @@ pub async fn list_project_files(project_path: String) -> Result<Vec<String>, Str
         files.dedup();
         Ok(files)
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }
 
 // ─── Large-file support commands ────────────────────────────────────────────
@@ -346,14 +446,24 @@ pub(crate) struct FileMeta {
 /// Returns file size, line count, and whether the file is valid text.
 /// Frontend uses this to decide which rendering path to take.
 #[tauri::command]
-pub async fn get_file_meta(path: String, project_path: String) -> Result<FileMeta, String> {
+pub async fn get_file_meta(path: String, project_path: String) -> CommandResult<FileMeta> {
+    get_file_meta_impl(&path, &project_path)
+        .await
+        .with_context(|| format!("读取文件元信息失败（{}）", path))
+        .into_command_result()
+}
+
+async fn get_file_meta_impl(path: &str, project_path: &str) -> FsResult<FileMeta> {
     let validated_path = validate_path_within(&path, &project_path)?;
 
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> FsResult<FileMeta> {
         use std::io::Read;
 
-        let file = std::fs::File::open(&validated_path).map_err(|e| e.to_string())?;
-        let meta = file.metadata().map_err(|e| e.to_string())?;
+        let file =
+            std::fs::File::open(&validated_path).map_err(io_error("打开文件", &validated_path))?;
+        let meta = file
+            .metadata()
+            .map_err(io_error("读取文件元信息", &validated_path))?;
         let size_bytes = meta.len();
 
         // Fast byte-level newline count — reads entire file but only scans for \n.
@@ -365,7 +475,9 @@ pub async fn get_file_meta(path: String, project_path: String) -> Result<FileMet
         let mut buf = [0u8; 256 * 1024];
 
         loop {
-            let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
+            let n = reader
+                .read(&mut buf)
+                .map_err(io_error("扫描文件内容", &validated_path))?;
             if n == 0 {
                 break;
             }
@@ -402,8 +514,7 @@ pub async fn get_file_meta(path: String, project_path: String) -> Result<FileMet
             is_text,
         })
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }
 
 /// Read a range of lines from a file (0-indexed start, exclusive end).
@@ -414,25 +525,38 @@ pub async fn read_file_chunk(
     project_path: String,
     start_line: u64,
     max_lines: u64,
-) -> Result<Vec<String>, String> {
+) -> CommandResult<Vec<String>> {
+    read_file_chunk_impl(&path, &project_path, start_line, max_lines)
+        .await
+        .with_context(|| format!("读取文件分块失败（{}）", path))
+        .into_command_result()
+}
+
+async fn read_file_chunk_impl(
+    path: &str,
+    project_path: &str,
+    start_line: u64,
+    max_lines: u64,
+) -> FsResult<Vec<String>> {
     let validated_path = validate_path_within(&path, &project_path)?;
 
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> FsResult<Vec<String>> {
         use std::io::{BufRead, BufReader};
 
-        let file = std::fs::File::open(&validated_path).map_err(|e| e.to_string())?;
+        let file =
+            std::fs::File::open(&validated_path).map_err(io_error("打开文件", &validated_path))?;
         let reader = BufReader::with_capacity(64 * 1024, file);
         let end_line = start_line + max_lines;
 
-        let lines: Vec<String> = reader
+        let lines: std::io::Result<Vec<String>> = reader
             .lines()
             .skip(start_line as usize)
             .take((end_line - start_line) as usize)
-            .map(|l| l.unwrap_or_else(|_| String::new()))
             .collect();
+
+        let lines = lines.map_err(io_error("读取文件行", &validated_path))?;
 
         Ok(lines)
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }

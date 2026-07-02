@@ -450,13 +450,10 @@ async fn generate_session_title(
     segments_json: String,
     context: AgentContext,
 ) -> String {
-    let current_user_segments = match try_parse_segments_json(&segments_json) {
-        Ok(segments) => segments,
-        Err(error) => {
-            eprintln!("failed to parse current user segments for title generation: {error}");
-            Vec::new()
-        }
-    };
+    let current_user_segments = try_parse_segments_json(&segments_json).unwrap_or_else(|error| {
+        eprintln!("failed to parse current user segments for title generation: {error}");
+        Vec::new()
+    });
     let current_user_content = segments_to_plain_text(&current_user_segments);
     let current_user_parts = title_content_parts_from_segments(&current_user_segments);
 
@@ -613,7 +610,6 @@ fn resolve_summary_provider(
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn dispatcher_send_message(
     state: tauri::State<'_, DispatcherState>,
     app: AppHandle,
@@ -664,11 +660,11 @@ pub async fn dispatcher_send_plain_chat_message(
     app: AppHandle,
     workspace_id: String,
     segments_json: String,
-    on_event: tauri::ipc::Channel<AgentEvent>,
+    on_event: Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let title_segments_json = segments_json.clone();
-    let title_generation = state.begin_title_generation(&workspace_id);
-    let keywords_generation = state.begin_keywords_generation(&workspace_id);
+    let title_generation_index = state.begin_title_generation(&workspace_id);
+    let keywords_generation_index = state.begin_keywords_generation(&workspace_id);
     let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
     let agent = state
         .build_plain_chat_agent(&workspace_id)?
@@ -690,14 +686,14 @@ pub async fn dispatcher_send_plain_chat_message(
         &workspace_id,
         &title_segments_json,
         AgentContext::Chat,
-        title_generation,
+        title_generation_index,
     );
     spawn_session_keywords_update(
         &state,
         &app,
         &workspace_id,
         AgentContext::Chat,
-        keywords_generation,
+        keywords_generation_index,
     );
     result
 }

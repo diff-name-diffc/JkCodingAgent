@@ -2,8 +2,54 @@ use std::fs;
 use std::path::Path;
 
 use super::mcp::ensure_project_mcp_file;
-use super::storage::atomic_write;
+use super::storage::{atomic_write, StorageError};
 use crate::platform::{detect_claude_version, detect_codex_version};
+use crate::shared::error::{CommandResult, IntoCommandResult};
+use anyhow::Context;
+
+type ConfigResult<T> = std::result::Result<T, ConfigError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("找不到用户主目录")]
+    HomeDirMissing,
+    #[error("未知智能体：{0}")]
+    UnknownAgent(String),
+    #[error("{action} 失败（{path}）：{source}")]
+    Io {
+        action: &'static str,
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("解析项目配置失败（{path}）：{source}")]
+    ParseProjectConfig {
+        path: std::path::PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
+    #[error("序列化项目配置失败（{path}）：{source}")]
+    SerializeProjectConfig {
+        path: std::path::PathBuf,
+        #[source]
+        source: toml::ser::Error,
+    },
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error("初始化 MCP 配置失败：{0}")]
+    Mcp(String),
+}
+
+fn io_error(
+    action: &'static str,
+    path: impl Into<std::path::PathBuf>,
+) -> impl FnOnce(std::io::Error) -> ConfigError {
+    move |source| ConfigError::Io {
+        action,
+        path: path.into(),
+        source,
+    }
+}
 
 const DEFAULT_AGENT_PROMPT_PREFIX: &str = "- 先围绕当前任务目标确认相关代码、约束和必要上下文。\n- 只做与目标直接相关的最小充分改动，避免无关重构。\n- 完成后简洁说明改动、验证结果和剩余风险。";
 
@@ -136,20 +182,31 @@ fn should_refresh_prompt_prefix(prompt_prefix: &str) -> bool {
 /// Also ensures `.jkcodingagent/mcp.json` exists.
 /// Returns the parsed config.
 #[tauri::command]
-pub fn init_project_config(project_path: String) -> Result<ProjectConfig, String> {
+pub fn init_project_config(project_path: String) -> CommandResult<ProjectConfig> {
+    init_project_config_impl(&project_path)
+        .with_context(|| format!("初始化项目配置失败（{}）", project_path))
+        .into_command_result()
+}
+
+fn init_project_config_impl(project_path: &str) -> ConfigResult<ProjectConfig> {
     let config_dir = Path::new(&project_path).join(".jkcodingagent");
     let config_path = config_dir.join("config.toml");
 
-    fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
-    ensure_project_mcp_file(&project_path)?;
+    fs::create_dir_all(&config_dir).map_err(io_error("创建项目配置目录", config_dir.clone()))?;
+    ensure_project_mcp_file(&project_path).map_err(ConfigError::Mcp)?;
 
     if !config_path.exists() {
-        fs::write(&config_path, DEFAULT_CONFIG).map_err(|e| e.to_string())?;
+        fs::write(&config_path, DEFAULT_CONFIG)
+            .map_err(io_error("写入默认项目配置", config_path.clone()))?;
     }
 
-    let raw = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-    let mut config: ProjectConfig = toml::from_str(&raw)
-        .map_err(|e| format!("解析项目配置失败（{}）：{e}", config_path.display()))?;
+    let raw =
+        fs::read_to_string(&config_path).map_err(io_error("读取项目配置", config_path.clone()))?;
+    let mut config: ProjectConfig =
+        toml::from_str(&raw).map_err(|source| ConfigError::ParseProjectConfig {
+            path: config_path.clone(),
+            source,
+        })?;
 
     // 首次打开或版本字段为空时，自动检测并回写
     let mut updated = false;
@@ -170,9 +227,13 @@ pub fn init_project_config(project_path: String) -> Result<ProjectConfig, String
         }
     }
     if updated {
-        if let Ok(raw) = toml::to_string_pretty(&config) {
-            let _ = atomic_write(&config_path, &raw);
-        }
+        let raw = toml::to_string_pretty(&config).map_err(|source| {
+            ConfigError::SerializeProjectConfig {
+                path: config_path.clone(),
+                source,
+            }
+        })?;
+        atomic_write(&config_path, &raw)?;
     }
 
     Ok(config)
@@ -181,63 +242,95 @@ pub fn init_project_config(project_path: String) -> Result<ProjectConfig, String
 /// Reads `.jkcodingagent/config.toml` from the project directory.
 /// Returns the default config if the file doesn't exist yet.
 #[tauri::command]
-pub fn read_project_config(project_path: String) -> Result<ProjectConfig, String> {
+pub fn read_project_config(project_path: String) -> CommandResult<ProjectConfig> {
+    read_project_config_impl(&project_path)
+        .with_context(|| format!("读取项目配置失败（{}）", project_path))
+        .into_command_result()
+}
+
+fn read_project_config_impl(project_path: &str) -> ConfigResult<ProjectConfig> {
     let config_path = Path::new(&project_path)
         .join(".jkcodingagent")
         .join("config.toml");
     if !config_path.exists() {
         return Ok(ProjectConfig::default());
     }
-    let raw = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-    let config: ProjectConfig = toml::from_str(&raw)
-        .map_err(|e| format!("解析项目配置失败（{}）：{e}", config_path.display()))?;
+    let raw =
+        fs::read_to_string(&config_path).map_err(io_error("读取项目配置", config_path.clone()))?;
+    let config: ProjectConfig =
+        toml::from_str(&raw).map_err(|source| ConfigError::ParseProjectConfig {
+            path: config_path.clone(),
+            source,
+        })?;
     Ok(config)
 }
 
 /// Writes updated config to `.jkcodingagent/config.toml`, creating the directory if needed.
 #[tauri::command]
-pub fn write_project_config(project_path: String, config: ProjectConfig) -> Result<(), String> {
-    let config_dir = Path::new(&project_path).join(".jkcodingagent");
-    fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
-    let config_path = config_dir.join("config.toml");
-    let raw = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    atomic_write(&config_path, &raw)
+pub fn write_project_config(project_path: String, config: ProjectConfig) -> CommandResult<()> {
+    write_project_config_impl(&project_path, config)
+        .with_context(|| format!("写入项目配置失败（{}）", project_path))
+        .into_command_result()
 }
 
-fn home_dir() -> Result<std::path::PathBuf, String> {
+fn write_project_config_impl(project_path: &str, config: ProjectConfig) -> ConfigResult<()> {
+    let config_dir = Path::new(&project_path).join(".jkcodingagent");
+    fs::create_dir_all(&config_dir).map_err(io_error("创建项目配置目录", config_dir.clone()))?;
+    let config_path = config_dir.join("config.toml");
+    let raw =
+        toml::to_string_pretty(&config).map_err(|source| ConfigError::SerializeProjectConfig {
+            path: config_path.clone(),
+            source,
+        })?;
+    Ok(atomic_write(&config_path, &raw)?)
+}
+
+fn home_dir() -> ConfigResult<std::path::PathBuf> {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
-        .ok_or_else(|| "找不到用户主目录".to_string())
+        .ok_or(ConfigError::HomeDirMissing)
 }
 
-fn agent_config_path(agent: &str) -> Result<std::path::PathBuf, String> {
+fn agent_config_path(agent: &str) -> ConfigResult<std::path::PathBuf> {
     let home = home_dir()?;
     match agent {
         "claude" => Ok(home.join(".claude").join("settings.json")),
         "codex" => Ok(home.join(".codex").join("config.toml")),
-        _ => Err(format!("Unknown agent: {}", agent)),
+        _ => Err(ConfigError::UnknownAgent(agent.to_string())),
     }
 }
 
 /// Reads the local settings file for the given agent ("claude" or "codex").
 /// Returns None if the file doesn't exist.
 #[tauri::command]
-pub fn read_agent_config_file(agent: String) -> Result<Option<String>, String> {
-    let path = agent_config_path(&agent)?;
+pub fn read_agent_config_file(agent: String) -> CommandResult<Option<String>> {
+    read_agent_config_file_impl(&agent)
+        .with_context(|| format!("读取智能体配置失败（agent={agent}）"))
+        .into_command_result()
+}
+
+fn read_agent_config_file_impl(agent: &str) -> ConfigResult<Option<String>> {
+    let path = agent_config_path(agent)?;
     if !path.exists() {
         return Ok(None);
     }
     fs::read_to_string(&path)
         .map(Some)
-        .map_err(|e| e.to_string())
+        .map_err(io_error("读取智能体配置文件", path))
 }
 
 /// Writes raw content back to the agent's local settings file.
 #[tauri::command]
-pub fn write_agent_config_file(agent: String, content: String) -> Result<(), String> {
-    let path = agent_config_path(&agent)?;
+pub fn write_agent_config_file(agent: String, content: String) -> CommandResult<()> {
+    write_agent_config_file_impl(&agent, &content)
+        .with_context(|| format!("写入智能体配置失败（agent={agent}）"))
+        .into_command_result()
+}
+
+fn write_agent_config_file_impl(agent: &str, content: &str) -> ConfigResult<()> {
+    let path = agent_config_path(agent)?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent).map_err(io_error("创建智能体配置目录", parent))?;
     }
-    atomic_write(&path, &content)
+    Ok(atomic_write(&path, content)?)
 }

@@ -247,9 +247,7 @@ impl PlainChatAgent {
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
-        user_message: &str,
-        user_segments_json: Option<String>,
-        enable_thinking: bool,
+        user_segments_json: String,
         on_event: Channel<AgentEvent>,
         cancel_rx: watch::Receiver<bool>,
     ) -> Result<AgentTurn> {
@@ -262,7 +260,7 @@ impl PlainChatAgent {
         let result: Result<AgentTurn> = async {
 
         let user = db
-            .add_visible_message_async(workspace_id, "user", user_message, user_segments_json)
+            .add_visible_message_from_segments_async(workspace_id, "user", user_segments_json)
             .await?;
         common::emit(&on_event, AgentEvent::UserMessage { message: user });
 
@@ -287,7 +285,6 @@ impl PlainChatAgent {
                 &workspace,
                 &on_event,
                 &provider,
-                enable_thinking,
                 cancel_rx,
                 &mut usage_tracker,
             )
@@ -326,7 +323,6 @@ impl PlainChatAgent {
         workspace: &Path,
         on_event: &Channel<AgentEvent>,
         provider: &OpenAiCompatProvider,
-        enable_thinking: bool,
         cancel_rx: watch::Receiver<bool>,
         usage_tracker: &mut UsageTracker,
     ) -> Result<DispatcherMessageRecord> {
@@ -371,7 +367,6 @@ impl PlainChatAgent {
                 &request_provider,
                 &messages,
                 &tool_definitions,
-                enable_thinking,
                 cancel_rx.clone(),
             )
             .await?
@@ -399,7 +394,6 @@ impl PlainChatAgent {
                             &response,
                             &request_provider,
                             tool_definitions.len(),
-                            enable_thinking,
                         )
                     );
                 }
@@ -421,6 +415,7 @@ impl PlainChatAgent {
             agent_loop.append(ChatMessage {
                 role: "assistant".to_string(),
                 content: response.content.clone(),
+                content_parts: Vec::new(),
                 reasoning_content: if response.thinking_content.is_empty() {
                     None
                 } else {
@@ -929,7 +924,6 @@ fn empty_plain_chat_response_error(
     response: &LlmResponse,
     provider: &OpenAiCompatProvider,
     tool_count: usize,
-    enable_thinking: bool,
 ) -> String {
     let raw_response = response.raw_response.trim();
     let response_detail = if raw_response.is_empty() {
@@ -939,10 +933,9 @@ fn empty_plain_chat_response_error(
     };
 
     format!(
-        "LLM 返回了空响应且没有工具调用，无法继续执行。\n请求摘要：model={}, tools={}, enable_thinking={}\nLLM 接口响应内容：\n{}",
+        "LLM 返回了空响应且没有工具调用，无法继续执行。\n请求摘要：model={}, tools={}\nLLM 接口响应内容：\n{}",
         provider.model(),
         tool_count,
-        enable_thinking,
         response_detail
     )
 }

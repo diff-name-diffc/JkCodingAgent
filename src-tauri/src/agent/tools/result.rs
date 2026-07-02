@@ -40,11 +40,6 @@ impl ToolStatus {
 )]
 pub enum ToolAction {
     FinalMessage { content: String },
-    UpdatePlan,
-    AskPlanQuestion,
-    PlanReady,
-    OpenPlanDocument { plan_path: String },
-    MarkPlanImplemented { plan_path: String },
     DispatchSubAgent { agent: String },
     ContinueSubAgent { agent: String },
     ExitSubAgent { agent: String },
@@ -54,11 +49,6 @@ impl ToolAction {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::FinalMessage { .. } => "final_message",
-            Self::UpdatePlan => "update_plan",
-            Self::AskPlanQuestion => "ask_plan_question",
-            Self::PlanReady => "plan_ready",
-            Self::OpenPlanDocument { .. } => "open_plan_document",
-            Self::MarkPlanImplemented { .. } => "mark_plan_implemented",
             Self::DispatchSubAgent { .. } => "dispatch_sub_agent",
             Self::ContinueSubAgent { .. } => "continue_sub_agent",
             Self::ExitSubAgent { .. } => "exit_sub_agent",

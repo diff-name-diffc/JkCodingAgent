@@ -260,6 +260,7 @@ async fn run_python_agent_inner(
         ChatMessage {
             role: "user".to_string(),
             content: build_initial_agent_user_prompt(record, &message_context),
+            content_parts: Vec::new(),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
@@ -311,6 +312,7 @@ async fn run_python_agent_inner(
         messages.push(ChatMessage {
             role: "assistant".to_string(),
             content: response.content,
+            content_parts: Vec::new(),
             reasoning_content: (!response.thinking_content.trim().is_empty())
                 .then_some(response.thinking_content),
             tool_calls: Some(outbound_calls),
@@ -360,6 +362,7 @@ async fn run_python_agent_inner(
             messages.push(ChatMessage {
                 role: "tool".to_string(),
                 content: result_text,
+                content_parts: Vec::new(),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: Some(tool_call.id),

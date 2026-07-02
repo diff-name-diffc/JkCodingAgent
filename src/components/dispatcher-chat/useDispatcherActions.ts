@@ -2,14 +2,10 @@ import { useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   AgentType,
-  ChecklistPlanState,
   DispatchFeedbackState,
   DispatcherAgentEvent,
   DispatcherAgentTurn,
-  DispatcherMode,
-  DispatcherSessionRuntimeState,
   ImageSegment,
-  PlanInteraction,
 } from "../../types";
 import {
   appendAssistantTextSegment,
@@ -39,19 +35,16 @@ export interface DispatcherChatHandle {
     targetSessionId?: string,
     dispatchId?: string,
   ) => void;
-  applyRuntimeState: (state: DispatcherSessionRuntimeState) => void;
 }
 
 export interface UseDispatcherActionsOptions {
   sessionId: string;
   projectPath: string;
   isPlainChat: boolean;
-  mode: DispatcherMode;
   updateLiveSessionState: LiveSessionUpdater;
   scrollMessageListToBottom: () => void;
   currentSessionIdRef: React.RefObject<string>;
   refreshSessionTokenUsage: (targetSessionId?: string) => Promise<void>;
-  onOpenPlanDocument?: (path: string) => void;
   autoApproveRef: React.RefObject<boolean>;
   onDispatchApprovedRef: React.RefObject<
     | ((
@@ -72,11 +65,6 @@ export interface UseDispatcherActionsOptions {
     | ((agent: AgentType, reason: string, sessionId: string) => void)
     | undefined
   >;
-  // State setters for plan/checklist/mode managed outside this hook
-  setMode: (mode: DispatcherMode) => void;
-  setChecklist: (checklist: ChecklistPlanState | null) => void;
-  setPlanInteraction: (interaction: PlanInteraction | null) => void;
-  setActivePlanPath: (path: string | null) => void;
   shouldStickToBottomRef: React.RefObject<boolean>;
   setInput: (value: string) => void;
   setAttachedImages: React.Dispatch<React.SetStateAction<ImageSegment[]>>;
@@ -91,7 +79,6 @@ export interface UseDispatcherActionsResult {
     rawText: string,
     images?: ImageSegment[],
     targetSessionId?: string,
-    targetMode?: DispatcherMode,
   ) => Promise<void>;
   continueWithResult: (
     result: string,
@@ -99,27 +86,20 @@ export interface UseDispatcherActionsResult {
     targetSessionId?: string,
     dispatchId?: string,
   ) => Promise<void>;
-  applyRuntimeState: (state: DispatcherSessionRuntimeState) => void;
 }
 
 export function useDispatcherActions({
   sessionId,
   projectPath,
   isPlainChat,
-  mode,
   updateLiveSessionState,
   scrollMessageListToBottom,
   currentSessionIdRef,
   refreshSessionTokenUsage,
-  onOpenPlanDocument,
   autoApproveRef,
   onDispatchApprovedRef,
   onDispatchContinueRef,
   onDispatchExitRef,
-  setMode,
-  setChecklist,
-  setPlanInteraction,
-  setActivePlanPath,
   shouldStickToBottomRef,
   setInput,
   setAttachedImages,
@@ -131,8 +111,6 @@ export function useDispatcherActions({
       const onEvent = new Channel<DispatcherAgentEvent>();
       onEvent.onmessage = (event) => {
         const isActiveRun = getDispatcherActiveRunId(targetSessionId) === runId;
-        const isCurrentSession = currentSessionIdRef.current === targetSessionId;
-
         switch (event.event) {
           case "started":
             break;
@@ -248,33 +226,6 @@ export function useDispatcherActions({
           case "toolRunUpdated":
             if (!isActiveRun || event.data.run.workspaceId !== targetSessionId) return;
             break;
-          case "checklistPlanUpdated":
-            if (!isActiveRun || !isCurrentSession) return;
-            setChecklist(event.data.state);
-            break;
-          case "planQuestionRequested":
-            if (!isActiveRun || !isCurrentSession) return;
-            setPlanInteraction(event.data.interaction);
-            break;
-          case "planDocumentOpened":
-            if (!isActiveRun || !isCurrentSession) return;
-            setActivePlanPath(event.data.planPath);
-            onOpenPlanDocument?.(event.data.planPath);
-            break;
-          case "planReady":
-            if (!isActiveRun || !isCurrentSession) return;
-            setPlanInteraction(event.data.interaction);
-            if (event.data.interaction.kind === "ready") {
-              setActivePlanPath(event.data.interaction.planPath);
-              onOpenPlanDocument?.(event.data.interaction.planPath);
-            }
-            break;
-          case "planImplemented":
-            if (!isActiveRun || !isCurrentSession) return;
-            setActivePlanPath(event.data.implementedPath);
-            setPlanInteraction(null);
-            onOpenPlanDocument?.(event.data.implementedPath);
-            break;
           case "dispatchProposed": {
             const { dispatchId, agent, description, taskPrompt, permissionMode } = event.data;
             if (isPlainChat) return;
@@ -335,11 +286,7 @@ export function useDispatcherActions({
       onDispatchApprovedRef,
       onDispatchContinueRef,
       onDispatchExitRef,
-      onOpenPlanDocument,
       refreshSessionTokenUsage,
-      setChecklist,
-      setPlanInteraction,
-      setActivePlanPath,
       updateLiveSessionState,
     ],
   );
@@ -398,7 +345,6 @@ export function useDispatcherActions({
       rawText: string,
       images: ImageSegment[] = [],
       targetSessionId = sessionId,
-      targetMode: DispatcherMode = mode,
     ) => {
       const text = rawText.trim();
       if (!text && images.length === 0) return;
@@ -432,7 +378,6 @@ export function useDispatcherActions({
           if (isPlainChat) {
             await invoke<DispatcherAgentTurn>("dispatcher_send_plain_chat_message", {
               workspaceId: targetSessionId,
-              content: text,
               segmentsJson,
               onEvent,
             });
@@ -440,9 +385,7 @@ export function useDispatcherActions({
             await invoke<DispatcherAgentTurn>("dispatcher_send_message", {
               workspaceId: targetSessionId,
               projectPath,
-              content: text,
               segmentsJson,
-              mode: targetMode,
               onEvent,
             });
           }
@@ -459,7 +402,6 @@ export function useDispatcherActions({
       currentSessionIdRef,
       enqueueDispatcherRun,
       isPlainChat,
-      mode,
       projectPath,
       scrollMessageListToBottom,
       sessionId,
@@ -505,20 +447,9 @@ export function useDispatcherActions({
     [enqueueDispatcherRun, isPlainChat, projectPath, sessionId, updateLiveSessionState],
   );
 
-  const applyRuntimeState = useCallback(
-    (state: DispatcherSessionRuntimeState) => {
-      setMode(state.mode);
-      setChecklist(state.checklist ?? null);
-      setPlanInteraction(state.planInteraction ?? null);
-      setActivePlanPath(state.activePlanPath ?? null);
-    },
-    [setActivePlanPath, setChecklist, setMode, setPlanInteraction],
-  );
-
   return {
     enqueueDispatcherRun,
     sendUserMessage,
     continueWithResult,
-    applyRuntimeState,
   };
 }

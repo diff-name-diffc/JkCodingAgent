@@ -4,21 +4,23 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{sleep, Duration};
 
-use tauri::{AppHandle, Emitter, Manager};
-
 use super::config::DispatcherAgentConfig;
+use super::db::content::{segments_to_plain_text, try_parse_segments_json, ContentSegment};
 use super::db::{
     AgentContext, AhaContextConfig, AhaSettingsV2, AhaSharedModels, ChatCategory,
     ChatCategoryAgentConfig, ChatSessionRecord, DispatcherDb, DispatcherMessageRecord,
-    DispatcherMode, DispatcherModelConfig, DispatcherSessionKind, DispatcherSessionRecord,
-    DispatcherSessionRuntimeState, DispatcherSessionTokenUsageRecord,
-    DispatcherSessionTokenUsageSource, DispatcherSettingsModelConfigs, DispatcherSettingsRecord,
-    DispatcherToolArtifactRecord, KeywordAction, ProjectSessionRecord, SessionKeywordRecord,
-    SessionPage, SessionSearchResult,
+    DispatcherModelConfig, DispatcherSessionKind, DispatcherSessionRecord,
+    DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
+    DispatcherSettingsModelConfigs, DispatcherSettingsRecord, DispatcherToolArtifactRecord,
+    KeywordAction, ProjectSessionRecord, SessionKeywordRecord, SessionPage, SessionSearchResult,
 };
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
-use super::runtime::{AgentEvent, AgentTurn, DispatchFeedbackState};
+use super::llm::{ChatMessageContentPart, ChatMessageImageSource};
+use super::runtime::{
+    AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherContinueAfterDispatchRequest,
+    DispatcherRunRequest,
+};
 use super::state::DispatcherState;
 use super::sub_agent::db::ToolInfo;
 use super::summary::{
@@ -28,6 +30,8 @@ use super::summary::{
 use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::browser::BrowserManager;
 use crate::shared::TaskManager;
+use tauri::ipc::Channel;
+use tauri::{AppHandle, Emitter, Manager};
 
 const SESSION_TITLE_RECENT_DIALOGUES: usize = 3;
 
@@ -183,19 +187,18 @@ fn spawn_session_title_update(
     state: &DispatcherState,
     app: &AppHandle,
     workspace_id: &str,
-    fallback_content: &str,
+    segments_json: &str,
     context: AgentContext,
     generation: u64,
 ) {
     let app = app.clone();
     let db = state.db().clone();
     let workspace_id = workspace_id.to_string();
-    let fallback_content = fallback_content.to_string();
+    let segments_json = segments_json.to_string();
 
     tokio::spawn(async move {
         let title =
-            generate_session_title(db.clone(), workspace_id.clone(), fallback_content, context)
-                .await;
+            generate_session_title(db.clone(), workspace_id.clone(), segments_json, context).await;
         let state = app.state::<DispatcherState>();
         if !state.finish_latest_title_generation(&workspace_id, generation) {
             return;
@@ -444,9 +447,19 @@ where
 async fn generate_session_title(
     db: DispatcherDb,
     workspace_id: String,
-    fallback_content: String,
+    segments_json: String,
     context: AgentContext,
 ) -> String {
+    let current_user_segments = match try_parse_segments_json(&segments_json) {
+        Ok(segments) => segments,
+        Err(error) => {
+            eprintln!("failed to parse current user segments for title generation: {error}");
+            Vec::new()
+        }
+    };
+    let current_user_content = segments_to_plain_text(&current_user_segments);
+    let current_user_parts = title_content_parts_from_segments(&current_user_segments);
+
     let title_messages_db = db.clone();
     let title_messages_workspace_id = workspace_id.clone();
     let title_messages = tokio::task::spawn_blocking(move || {
@@ -473,7 +486,7 @@ async fn generate_session_title(
         .rev()
         .find(|message| message.role == "user" && !message.content.trim().is_empty())
         .map(|message| message.content.clone())
-        .unwrap_or_else(|| fallback_content.clone());
+        .unwrap_or_else(|| current_user_content.clone());
     let fallback = fallback_session_title(&fallback_source);
     let title_messages = title_messages
         .into_iter()
@@ -510,6 +523,7 @@ async fn generate_session_title(
         &summary_model,
         &title_messages,
         &fallback_source,
+        &current_user_parts,
         move |usage| {
             if let Err(error) = usage_db.upsert_session_token_usage(
                 &usage_workspace_id,
@@ -536,6 +550,23 @@ async fn generate_session_title(
             fallback
         }
     }
+}
+
+fn title_content_parts_from_segments(segments: &[ContentSegment]) -> Vec<ChatMessageContentPart> {
+    segments
+        .iter()
+        .filter_map(|segment| match segment {
+            ContentSegment::Text { text, .. } if !text.trim().is_empty() => {
+                Some(ChatMessageContentPart::Text { text: text.clone() })
+            }
+            ContentSegment::Image { image_id, .. } => Some(ChatMessageContentPart::Image {
+                source: ChatMessageImageSource::ChatImage {
+                    image_id: image_id.clone(),
+                },
+            }),
+            ContentSegment::Text { .. } | ContentSegment::File { .. } => None,
+        })
+        .collect()
 }
 
 fn resolve_summary_provider(
@@ -588,40 +619,24 @@ pub async fn dispatcher_send_message(
     app: AppHandle,
     workspace_id: String,
     project_path: String,
-    content: String,
-    segments_json: Option<String>,
-    mode: Option<String>,
-    enable_thinking: Option<bool>,
-    on_event: tauri::ipc::Channel<AgentEvent>,
+    segments_json: String,
+    on_event: Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
-    let title_generation = state.begin_title_generation(&workspace_id);
-    let keywords_generation = state.begin_keywords_generation(&workspace_id);
-    let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
-        .map_err(|error| error.to_string())?;
-    state
-        .db()
-        .set_session_mode(&workspace_id, mode)
-        .map_err(|error| error.to_string())?;
-    if mode == DispatcherMode::Default {
-        state
-            .db()
-            .set_plan_interaction(&workspace_id, None)
-            .map_err(|error| error.to_string())?;
-    }
+    let title_segments_json = segments_json.clone();
+    let title_generation_index = state.begin_title_generation(&workspace_id);
+    let keywords_generation_index = state.begin_keywords_generation(&workspace_id);
 
     let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
     let agent = state.build_run_agent().with_app_handle(app.clone());
     let result = agent
-        .run(
-            state.db(),
-            &workspace_id,
-            &project_path,
-            &content,
-            segments_json,
-            enable_thinking.unwrap_or(false),
+        .run(DispatcherRunRequest {
+            db: state.db(),
+            workspace_id: &workspace_id,
+            workspace_path: &project_path,
+            user_segments_json: segments_json,
             on_event,
-            run_handle.cancel_rx,
-        )
+            cancel_rx: run_handle.cancel_rx,
+        })
         .await
         .map_err(|error| error.to_string());
     state.finish_run(&workspace_id, run_handle.generation);
@@ -629,16 +644,16 @@ pub async fn dispatcher_send_message(
         &state,
         &app,
         &workspace_id,
-        &content,
+        &title_segments_json,
         AgentContext::Project,
-        title_generation,
+        title_generation_index,
     );
     spawn_session_keywords_update(
         &state,
         &app,
         &workspace_id,
         AgentContext::Project,
-        keywords_generation,
+        keywords_generation_index,
     );
     result
 }
@@ -648,11 +663,10 @@ pub async fn dispatcher_send_plain_chat_message(
     state: tauri::State<'_, DispatcherState>,
     app: AppHandle,
     workspace_id: String,
-    content: String,
-    segments_json: Option<String>,
-    enable_thinking: Option<bool>,
+    segments_json: String,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
+    let title_segments_json = segments_json.clone();
     let title_generation = state.begin_title_generation(&workspace_id);
     let keywords_generation = state.begin_keywords_generation(&workspace_id);
     let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
@@ -663,9 +677,7 @@ pub async fn dispatcher_send_plain_chat_message(
         .run(
             state.db(),
             &workspace_id,
-            &content,
             segments_json,
-            enable_thinking.unwrap_or(false),
             on_event,
             run_handle.cancel_rx,
         )
@@ -676,7 +688,7 @@ pub async fn dispatcher_send_plain_chat_message(
         &state,
         &app,
         &workspace_id,
-        &content,
+        &title_segments_json,
         AgentContext::Chat,
         title_generation,
     );
@@ -777,51 +789,16 @@ pub fn dispatcher_create_session(
     project_id: String,
     title: String,
     kind: Option<String>,
-    mode: Option<String>,
-    active_plan_path: Option<String>,
     category: Option<String>,
 ) -> Result<DispatcherSessionRecord, String> {
     let kind = DispatcherSessionKind::from_wire(kind.as_deref().unwrap_or("project"))
         .map_err(|error| error.to_string())?;
-    let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
-        .map_err(|error| error.to_string())?;
     let session = state
         .db()
-        .create_session(
-            &project_id,
-            &title,
-            kind,
-            mode,
-            active_plan_path.as_deref(),
-            category.as_deref(),
-        )
+        .create_session(&project_id, &title, kind, category.as_deref())
         .map_err(|error| error.to_string())?;
     let _ = app.emit("dispatcher-session-updated", session.clone());
     Ok(session)
-}
-
-#[tauri::command]
-pub fn dispatcher_get_session_runtime_state(
-    state: tauri::State<'_, DispatcherState>,
-    workspace_id: String,
-) -> Result<DispatcherSessionRuntimeState, String> {
-    state
-        .db()
-        .get_session_runtime_state(&workspace_id)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn dispatcher_set_session_mode(
-    state: tauri::State<'_, DispatcherState>,
-    workspace_id: String,
-    mode: String,
-) -> Result<DispatcherSessionRuntimeState, String> {
-    let mode = DispatcherMode::from_wire(&mode).map_err(|error| error.to_string())?;
-    state
-        .db()
-        .set_session_mode(&workspace_id, mode)
-        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -959,14 +936,10 @@ pub async fn project_create_session(
     app: AppHandle,
     project_id: String,
     title: String,
-    mode: Option<String>,
-    active_plan_path: Option<String>,
 ) -> Result<ProjectSessionRecord, String> {
     let db = state.db().clone();
-    let mode = DispatcherMode::from_wire(mode.as_deref().unwrap_or("default"))
-        .map_err(|e| e.to_string())?;
     let session = run_dispatcher_db("project_create_session", move || {
-        db.create_project_session(&project_id, &title, mode, active_plan_path.as_deref())
+        db.create_project_session(&project_id, &title)
     })
     .await?;
     let _ = app.emit("dispatcher-session-updated", session.clone());
@@ -1220,9 +1193,17 @@ fn build_test_messages(enable_multimodal: bool) -> Vec<ChatMessage> {
         ChatMessage::system("你是模型连通性测试器，只对图片中的颜色做最简短回答。".to_string()),
         ChatMessage {
             role: "user".to_string(),
-            content: format!(
-                "这是一张测试图片，请用一个词描述其中主要的颜色：\n\n![test]({TEST_PNG_DATA_URL})"
-            ),
+            content: "这是一张测试图片，请用一个词描述其中主要的颜色。".to_string(),
+            content_parts: vec![
+                ChatMessageContentPart::Text {
+                    text: "这是一张测试图片，请用一个词描述其中主要的颜色。".to_string(),
+                },
+                ChatMessageContentPart::Image {
+                    source: ChatMessageImageSource::DataUrl {
+                        data_url: TEST_PNG_DATA_URL.to_string(),
+                    },
+                },
+            ],
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
@@ -1447,52 +1428,25 @@ pub async fn dispatcher_continue_after_dispatch(
     dispatch_result: String,
     dispatch_state: String,
     dispatch_id: Option<String>,
-    enable_thinking: Option<bool>,
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
     let run_handle = state.begin_run(&workspace_id)?;
     let agent = state.build_run_agent().with_app_handle(app);
     let result = agent
-        .continue_after_dispatch(
-            state.db(),
-            &workspace_id,
-            &project_path,
-            &dispatch_result,
-            DispatchFeedbackState::from_wire(&dispatch_state),
-            dispatch_id.as_deref(),
-            enable_thinking.unwrap_or(false),
+        .continue_after_dispatch(DispatcherContinueAfterDispatchRequest {
+            db: state.db(),
+            workspace_id: &workspace_id,
+            workspace_path: &project_path,
+            dispatch_result: &dispatch_result,
+            dispatch_state: DispatchFeedbackState::from_wire(&dispatch_state),
+            dispatch_id: dispatch_id.as_deref(),
             on_event,
-            run_handle.cancel_rx,
-        )
+            cancel_rx: run_handle.cancel_rx,
+        })
         .await
         .map_err(|error| error.to_string());
     state.finish_run(&workspace_id, run_handle.generation);
     result
-}
-
-#[tauri::command]
-pub fn dispatcher_attach_checklist_subprocess(
-    state: tauri::State<'_, DispatcherState>,
-    workspace_id: String,
-    dispatch_id: String,
-    task_id: String,
-) -> Result<DispatcherSessionRuntimeState, String> {
-    state
-        .db()
-        .attach_checklist_subprocess(&workspace_id, &dispatch_id, &task_id)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn dispatcher_clear_checklist_dispatch(
-    state: tauri::State<'_, DispatcherState>,
-    workspace_id: String,
-    dispatch_id: String,
-) -> Result<DispatcherSessionRuntimeState, String> {
-    state
-        .db()
-        .clear_checklist_dispatch(&workspace_id, &dispatch_id)
-        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

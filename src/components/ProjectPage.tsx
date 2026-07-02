@@ -11,7 +11,6 @@ import type {
   SubProcess,
   DispatchFeedbackState,
   TaskStatus,
-  DispatcherSessionRuntimeState,
   BrowserStatus,
 } from "../types";
 import { cleanTerminalOutput } from "../utils/ansiStrip";
@@ -24,7 +23,6 @@ import type { DispatcherChatHandle } from "./DispatcherChat";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
 import { useProjectPanels } from "../hooks/useProjectPanels";
-import { getPathBasename } from "../utils/filePaths";
 import s from "../styles";
 
 const FileExplorer = lazy(() =>
@@ -510,17 +508,6 @@ export function ProjectPage({
       setActiveSubTabIdBySession((prev) => ({ ...prev, [sessionId]: taskId }));
       interactiveSubProcessRef.current.set(getSubProcessRouteKey(sessionId, agent), taskId);
       pendingDispatchRef.current.set(taskId, { taskId, dispatchId, sessionId });
-      invoke<DispatcherSessionRuntimeState>("dispatcher_attach_checklist_subprocess", {
-        workspaceId: sessionId,
-        dispatchId,
-        taskId,
-      })
-        .then((state) => {
-          if (activeSessionIdRef.current === sessionId) {
-            dispatcherChatRef.current?.applyRuntimeState(state);
-          }
-        })
-        .catch(console.error);
       idleInjectedTaskIdsRef.current.delete(taskId);
       closedSubprocessTaskIdsRef.current.delete(taskId);
       onRetainTaskBuffers([taskId]);
@@ -834,14 +821,6 @@ export function ProjectPage({
     [onResumeTask, onRetainTaskBuffers, project.id, tasks],
   );
 
-  const handleOpenPlanDocument = useCallback(
-    (path: string) => {
-      handleFileSelect(path, getPathBasename(path));
-      showEditorWorkbench();
-    },
-    [handleFileSelect, showEditorWorkbench],
-  );
-
   const handleOpenMarkdownLink = useCallback(
     async (url: string) => {
       if (!activeSessionId) return;
@@ -982,7 +961,6 @@ export function ProjectPage({
                           onResumeStoppedRun={handleResumeSessionSubProcesses}
                           onOpenMcpStatus={() => setShowMcpStatus(true)}
                           onOpenSettings={() => setShowDispatcherSettings(true)}
-                          onOpenPlanDocument={handleOpenPlanDocument}
                           onClosePanel={() => setShowSessionWorkbench(false)}
                         />
                       </MarkdownLinkProvider>

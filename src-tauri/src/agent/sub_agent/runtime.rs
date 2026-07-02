@@ -260,6 +260,7 @@ impl SubAgentRuntime {
             ChatMessage {
                 role: "user".to_string(),
                 content: user_prompt,
+                content_parts: Vec::new(),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
@@ -305,7 +306,6 @@ impl SubAgentRuntime {
             let llm_future = self.provider.chat_stream_with_thinking(
                 &messages,
                 active_tool_definitions,
-                false,
                 false,
                 on_delta,
                 |_delta: &str, _elapsed: u64| {},
@@ -374,6 +374,7 @@ impl SubAgentRuntime {
             let assistant_msg = ChatMessage {
                 role: "assistant".to_string(),
                 content: response.content.clone(),
+                content_parts: Vec::new(),
                 reasoning_content: if response.thinking_content.is_empty() {
                     None
                 } else {
@@ -446,6 +447,7 @@ impl SubAgentRuntime {
                             messages.push(ChatMessage {
                                 role: "tool".to_string(),
                                 content: retry_hint,
+                                content_parts: Vec::new(),
                                 reasoning_content: None,
                                 tool_calls: None,
                                 tool_call_id: Some(tc.id.clone()),
@@ -466,6 +468,7 @@ impl SubAgentRuntime {
                             messages.push(ChatMessage {
                                 role: "tool".to_string(),
                                 content: truncated,
+                                content_parts: Vec::new(),
                                 reasoning_content: None,
                                 tool_calls: None,
                                 tool_call_id: Some(tc.id.clone()),
@@ -497,6 +500,7 @@ impl SubAgentRuntime {
                         messages.push(ChatMessage {
                             role: "tool".to_string(),
                             content,
+                            content_parts: Vec::new(),
                             reasoning_content: None,
                             tool_calls: None,
                             tool_call_id: Some(skipped.id.clone()),

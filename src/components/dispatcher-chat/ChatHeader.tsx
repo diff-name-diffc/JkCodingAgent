@@ -6,7 +6,6 @@ import type { SessionKeyword } from "../../types";
 interface ChatHeaderProps {
   isPlainChat: boolean;
   isLoading: boolean;
-  activePlanPath: string | null;
   autoApprove: boolean;
   mcpIndicator: { color: string; label: string };
   hasMessages: boolean;
@@ -32,7 +31,6 @@ interface ChatHeaderProps {
 export const ChatHeader = memo(function ChatHeader({
   isPlainChat,
   isLoading,
-  activePlanPath,
   autoApprove,
   mcpIndicator,
   hasMessages,
@@ -64,7 +62,6 @@ export const ChatHeader = memo(function ChatHeader({
             {isPlainChat ? <MessageCircle size={16} /> : <Bot size={16} />}
           </span>
           <span style={styles.headerTitle}>{isPlainChat ? "聊天" : "调度智能体"}</span>
-          {!isPlainChat && activePlanPath && <span style={styles.headerPlanBadge}>Plan</span>}
           {isLoading && <span style={styles.thinkingDot} />}
         </div>
         <div style={styles.headerRight}>

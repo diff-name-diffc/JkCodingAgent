@@ -13,7 +13,7 @@ use super::db::{
     DispatcherSessionTokenUsageSource, ToolArtifactDraft,
 };
 use super::llm::{
-    messages_contain_inline_images, ChatMessage, FunctionCall, LlmResponse, LlmUsage,
+    messages_contain_images, ChatMessage, FunctionCall, LlmResponse, LlmUsage,
     OpenAiCompatProvider, OutboundToolCall, RequestedToolCall, ToolDefinition,
 };
 use super::runtime::AgentEvent;
@@ -133,7 +133,6 @@ pub async fn stream_llm_response(
     provider: &OpenAiCompatProvider,
     messages: &[ChatMessage],
     tool_definitions: &[ToolDefinition],
-    enable_thinking: bool,
     cancel_rx: watch::Receiver<bool>,
 ) -> Result<LlmStreamOutcome> {
     let stream_msg_id = uuid::Uuid::new_v4().to_string();
@@ -173,8 +172,7 @@ pub async fn stream_llm_response(
         response = provider.chat_stream_with_thinking(
             messages,
             tool_definitions,
-            messages_contain_inline_images(messages),
-            enable_thinking,
+            messages_contain_images(messages),
             on_delta,
             on_thinking_delta,
         ) => response
@@ -309,39 +307,6 @@ pub fn prepare_tool_result(
 }
 
 // ─── Tool Result Persistence ─────────────────────────────────────────────────────
-
-pub async fn persist_tool_result_raw(
-    db: &DispatcherDb,
-    workspace_id: &str,
-    on_event: &Channel<AgentEvent>,
-    tool_call: &RequestedToolCall,
-    result: &str,
-) -> Result<DispatcherMessageRecord> {
-    let tool_message = db
-        .add_visible_tool_result_async(
-            workspace_id,
-            result,
-            result,
-            Some(&tool_call.id),
-            Some(&tool_call.name),
-            Some("raw"),
-            &[],
-        )
-        .await?;
-
-    emit(
-        on_event,
-        AgentEvent::ToolFinished {
-            tool_call_id: Some(tool_call.id.clone()),
-            name: tool_call.name.clone(),
-            display_text: tool_message.content.clone(),
-            result_mode: "raw".to_string(),
-            detail_refs: Vec::new(),
-        },
-    );
-
-    Ok(tool_message)
-}
 
 /// Shared summary-aware tool result persistence used by both dispatcher and plain chat.
 /// Calls the summary model if the result exceeds `FORCED_COMPRESS_THRESHOLD` or the model
@@ -566,7 +531,7 @@ pub fn select_provider_for_messages(
     on_event: &Channel<AgentEvent>,
     notify_user: bool,
 ) -> Result<OpenAiCompatProvider> {
-    if !messages_contain_inline_images(messages) {
+    if !messages_contain_images(messages) {
         return Ok(provider.clone());
     }
 

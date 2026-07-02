@@ -2,7 +2,6 @@ import type {
   AgentType,
   DispatcherMessage,
   DispatcherMessageUsageStats,
-  PlanInteraction,
   ProjectMcpStatus,
 } from "../../types";
 
@@ -214,31 +213,4 @@ export function mergeDispatcherMessages(
     const cmp = a.createdAt.localeCompare(b.createdAt);
     return cmp !== 0 ? cmp : a.id.localeCompare(b.id);
   });
-}
-
-// ── Plan Prompt Builders (public API) ──────────────────────────────────────────
-
-export function buildPlanQuestionAnswer(
-  interaction: Extract<PlanInteraction, { kind: "question" }>,
-  answer: string,
-) {
-  return [
-    "[规划问题答复]",
-    `问题：${interaction.question}`,
-    answer,
-    "",
-    "请基于以上答复继续完善计划书；如果仍缺关键信息，可以继续提问。",
-  ].join("\n");
-}
-
-export function buildPlanImplementationPrompt(planPath: string) {
-  return [
-    "请实施已确认的 Plan 计划书。",
-    "",
-    `计划书路径：${planPath}`,
-    "",
-    "请考虑计划书中的实际任务内容，按照 Claude 和 Codex 各自擅长点派遣子任务：Claude 优先处理新功能、探索和快速实现，Codex 优先处理重构、结构治理和高风险一致性修改。",
-    "不要重新规划步骤，也不要调用 update_plan。提示子 Agent 按照上述计划书路径中的规划 MD 进行编码任务即可；子 Agent 需要自行读取该计划书。",
-    "派遣后等待执行结束，汇总验证结果。实施完成并验证后，调用 mark_plan_implemented 标记计划已实现。",
-  ].join("\n");
 }

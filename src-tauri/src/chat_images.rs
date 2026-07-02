@@ -5,9 +5,9 @@ use serde::Serialize;
 use std::io::Cursor;
 use std::path::PathBuf;
 
-/// URI protocol prefix for internally-referenced chat images. The LLM, UI and
-/// tool internals all use `chat-image://<image_id>` instead of raw filesystem
-/// paths so that image references survive across machines / usernames.
+/// URI protocol prefix for internally-referenced chat images. The UI and tool
+/// internals use `chat-image://<image_id>` instead of raw filesystem paths so
+/// that image references survive across machines / usernames.
 pub const CHAT_IMAGE_PROTOCOL: &str = "chat-image://";
 
 /// Result of saving a chat image
@@ -38,7 +38,7 @@ pub(crate) fn chat_images_dir() -> Result<PathBuf, String> {
 /// `image_edit` can accept both absolute paths and `chat-image://` URIs.
 pub(crate) fn resolve_chat_image_id(image_id: &str) -> Result<PathBuf, String> {
     let id = image_id
-        .strip_prefix("chat-image://")
+        .strip_prefix(CHAT_IMAGE_PROTOCOL)
         .unwrap_or(image_id)
         .trim();
 
@@ -273,7 +273,7 @@ pub struct ResolveChatImageResult {
 #[tauri::command]
 pub async fn resolve_chat_image(image_id: String) -> Result<ResolveChatImageResult, String> {
     let id = image_id
-        .strip_prefix("chat-image://")
+        .strip_prefix(CHAT_IMAGE_PROTOCOL)
         .unwrap_or(&image_id)
         .trim()
         .to_string();

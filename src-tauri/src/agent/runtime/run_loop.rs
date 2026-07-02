@@ -10,11 +10,11 @@ use super::super::common::{
     UsageTracker,
 };
 use super::super::db::{
-    DispatcherDb, DispatcherMessageRecord, DispatcherSessionRuntimeState,
-    DispatcherSessionTokenUsageSource, DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS,
+    DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource,
+    DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS,
 };
 use super::super::debug::{render_json, ContextDebugLogger, DebugSection};
-use super::super::llm::{ChatMessage, OpenAiCompatProvider};
+use super::super::llm::{ChatMessage, LlmResponse, OpenAiCompatProvider, ToolDefinition};
 use super::super::prompt::PromptBundle;
 use super::super::summary::summarize_dispatch_result;
 use super::super::tools::ToolContext;
@@ -23,45 +23,79 @@ use super::agent_loop::AgentLoop;
 use super::helpers::{
     build_stopped_dispatch_reply, emit, empty_llm_response_error, record_run_token_usage,
 };
-use super::planning::{
-    complete_checklist_dispatch, empty_checklist_state, start_checklist_dispatch,
-};
-
 use super::types::{AgentEvent, AgentTurn, DispatchFeedbackState};
 use super::DispatcherAgent;
 
 // ─── 内部类型 ───────────────────────────────────────────────────────────
 
+/// 用户发起一轮项目调度所需的输入。
+///
+/// `DispatcherAgent::run` 是业务入口，不应该让调用方记忆一串位置参数。
+/// 把输入收束成请求对象后，新增字段也会有明确归属。
+pub(crate) struct DispatcherRunRequest<'a> {
+    pub db: &'a DispatcherDb,
+    pub workspace_id: &'a str,
+    pub workspace_path: &'a str,
+    pub user_segments_json: String,
+    pub on_event: Channel<AgentEvent>,
+    pub cancel_rx: watch::Receiver<bool>,
+}
+
+/// 子任务完成/让出控制权后，继续主调度循环的输入。
+pub(crate) struct DispatcherContinueAfterDispatchRequest<'a> {
+    pub db: &'a DispatcherDb,
+    pub workspace_id: &'a str,
+    pub workspace_path: &'a str,
+    pub dispatch_result: &'a str,
+    pub dispatch_state: DispatchFeedbackState,
+    pub dispatch_id: Option<&'a str>,
+    pub on_event: Channel<AgentEvent>,
+    pub cancel_rx: watch::Receiver<bool>,
+}
+
+/// 一轮 LLM loop 的运行上下文。
+///
+/// 这里放的是整轮循环共享的稳定资源；每次请求会另外生成 `IterationContext`
+/// 快照，避免流式输出期间被动态状态半路改写。
+struct LlmLoopContext<'a> {
+    db: &'a DispatcherDb,
+    workspace_id: &'a str,
+    workspace: &'a Path,
+    on_event: &'a Channel<AgentEvent>,
+    provider: OpenAiCompatProvider,
+    cancel_rx: watch::Receiver<bool>,
+    usage_tracker: UsageTracker,
+    static_prompt: PromptBundle,
+}
+
 /// 单次 LLM 请求的不可变快照。
 ///
 /// 从请求发出到流式响应完成，必须使用同一份消息、provider 和工具 schema 快照。
 /// 流式传输期间的状态变更（如子进程状态）会在下一轮迭代处理，不在当前请求中途生效。
-pub(super) struct IterationContext {
-    pub runtime_state: DispatcherSessionRuntimeState,
-    pub tool_definitions: Vec<crate::agent::llm::ToolDefinition>,
-    pub allowed_tool_names: HashSet<String>,
-    pub messages: Vec<ChatMessage>,
-    pub request_provider: OpenAiCompatProvider,
-    pub debug_logger: ContextDebugLogger,
+struct IterationContext {
+    tool_definitions: Vec<ToolDefinition>,
+    allowed_tool_names: HashSet<String>,
+    messages: Vec<ChatMessage>,
+    request_provider: OpenAiCompatProvider,
+    debug_logger: ContextDebugLogger,
 }
 
 // ─── 主入口 ────────────────────────────────────────────────────────────────
 
 impl DispatcherAgent {
     /// 项目模式主入口：接收用户消息并启动一轮调度。
-    /// 流程概览：发 Started → 清旧 checklist → 刷新 MCP → 存用户消息 →
+    /// 流程概览：发 Started → 刷新 MCP → 存用户消息 →
     /// 快照 provider/prompt → 进入 run_llm_loop（核心迭代循环）→ 发 Finished。
-    pub async fn run(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        workspace_path: &str,
-        user_message: &str,
-        user_segments_json: Option<String>,
-        enable_thinking: bool,
-        on_event: Channel<AgentEvent>,
-        cancel_rx: watch::Receiver<bool>,
-    ) -> Result<AgentTurn> {
+    pub async fn run(&self, request: DispatcherRunRequest<'_>) -> Result<AgentTurn> {
+        let DispatcherRunRequest {
+            db,
+            workspace_id,
+            workspace_path,
+            user_segments_json,
+            on_event,
+            cancel_rx,
+        } = request;
+
         // Started 在 fallible 代码块之外发出，保证 UI 总能离开 idle 状态；
         // 之后的任何失败都在此边界统一归一化为 AgentEvent::Failed。
         emit(
@@ -71,80 +105,55 @@ impl DispatcherAgent {
             },
         );
         let result: Result<AgentTurn> = async {
-        // 新一轮用户对话需要一份全新的 checklist。若沿用旧 checklist，会让子进程
-        // dispatch 状态看起来仍然有效，但模型实际上在解决一个全新目标。
-        db.clear_checklist_async(workspace_id)
-            .await
-            .context("clear stale checklist before new dispatcher turn")?;
-        emit(
-            &on_event,
-            AgentEvent::ChecklistPlanUpdated {
-                state: empty_checklist_state(),
-            },
-        );
+            // 创建工作区目录（如果不存在）
+            let workspace = PathBuf::from(workspace_path);
+            if !workspace.exists() {
+                std::fs::create_dir_all(&workspace)
+                    .with_context(|| format!("create workspace {}", workspace.display()))?;
+            }
+            // 工具可用性是提示词契约的一部分。在用户消息进入循环前刷新 MCP 元数据，
+            // 确保第一次模型请求就能看到当前的工具 schema。
+            self.project_mcp_registry
+                .ensure_recent(&workspace)
+                .await
+                .map_err(anyhow::Error::msg)
+                .context("刷新项目 MCP 状态失败")?;
+            let user = db
+                .add_visible_message_from_segments_async(workspace_id, "user", user_segments_json)
+                .await?;
+            emit(&on_event, AgentEvent::UserMessage { message: user });
 
-        let workspace = PathBuf::from(workspace_path);
-        if !workspace.exists() {
-            std::fs::create_dir_all(&workspace)
-                .with_context(|| format!("create workspace {}", workspace.display()))?;
-        }
-        // 工具可用性是提示词契约的一部分。在用户消息进入循环前刷新 MCP 元数据，
-        // 确保第一次模型请求就能看到当前的工具 schema。
-        self.project_mcp_registry
-            .ensure_recent(&workspace)
-            .await
-            .map_err(anyhow::Error::msg)
-            .context("刷新项目 MCP 状态失败")?;
-        let user = db
-            .add_visible_message_async(workspace_id, "user", user_message, user_segments_json)
-            .await?;
-        emit(&on_event, AgentEvent::UserMessage { message: user });
+            let provider = self.provider.lock().clone();
+            if !provider.is_configured() {
+                anyhow::bail!(
+                    "主 Agent LLM API Key 未配置。请在 Dispatcher 设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
+                );
+            }
 
-        let provider = self.provider.lock().clone();
-        if !provider.is_configured() {
-            anyhow::bail!(
-                "主 Agent LLM API Key 未配置。请在 Dispatcher 设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
-            );
-        }
-        let mut usage_tracker = UsageTracker::new();
+            // provider 和静态提示词是本轮快照：设置变更只作用于下一轮 run，
+            // 而本轮内部保持一致。
+            let static_prompt = self.build_system_prompt().await?;
+            let reply = self
+                .run_llm_loop(LlmLoopContext {
+                    db,
+                    workspace_id,
+                    workspace: &workspace,
+                    on_event: &on_event,
+                    provider,
+                    cancel_rx,
+                    usage_tracker: UsageTracker::new(),
+                    static_prompt,
+                })
+                .await?;
 
-        // provider 和静态提示词是本轮快照：设置变更只作用于下一轮 run，
-        // 而本轮内部保持一致。
-        let static_prompt = self.build_system_prompt().await?;
-        // 初始化一次动态工具视图；run_llm_loop 会在工具调用可能改变运行态
-        // （如激活的计划、子进程可用性）后刷新它。
-        let initial_runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
-        let initial_tool_defs =
-            self.tool_definitions_for_workspace(workspace_id, &workspace, &initial_runtime_state);
-        let allowed_tool_names: HashSet<String> = initial_tool_defs
-            .iter()
-            .map(|t| t.function.name.clone())
-            .collect();
-
-        let reply = self
-            .run_llm_loop(
-                db,
-                workspace_id,
-                &workspace,
+            let messages = db.list_visible_messages_async(workspace_id).await?;
+            emit(
                 &on_event,
-                &provider,
-                enable_thinking,
-                cancel_rx,
-                &mut usage_tracker,
-                &static_prompt,
-                initial_tool_defs,
-                allowed_tool_names,
-            )
-            .await?;
-
-        let messages = db.list_visible_messages_async(workspace_id).await?;
-        emit(
-            &on_event,
-            AgentEvent::Finished {
-                messages: messages.clone(),
-            },
-        );
-        Ok(AgentTurn { reply, messages })
+                AgentEvent::Finished {
+                    messages: messages.clone(),
+                },
+            );
+            Ok(AgentTurn { reply, messages })
         }
         .await;
 
@@ -167,85 +176,42 @@ impl DispatcherAgent {
     /// 这是"调度闭环"的后半段（前半段是 protocol.rs 触发 DispatchProposed）。
     pub async fn continue_after_dispatch(
         &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        workspace_path: &str,
-        dispatch_result: &str,
-        dispatch_state: DispatchFeedbackState,
-        dispatch_id: Option<&str>,
-        enable_thinking: bool,
-        on_event: Channel<AgentEvent>,
-        mut cancel_rx: watch::Receiver<bool>,
+        request: DispatcherContinueAfterDispatchRequest<'_>,
     ) -> Result<AgentTurn> {
-        let result: Result<AgentTurn> = async {
-        let debug_logger =
-            ContextDebugLogger::new(self.context_debug_enabled(), PathBuf::from(workspace_path));
-        if let Some(dispatch_id) = dispatch_id {
-            let checklist = match dispatch_state {
-                DispatchFeedbackState::RoundCompleted => {
-                    start_checklist_dispatch(db, workspace_id, dispatch_id).await
-                }
-                DispatchFeedbackState::ProcessDone
-                | DispatchFeedbackState::ProcessFailed
-                | DispatchFeedbackState::ProcessCancelled => {
-                    complete_checklist_dispatch(db, workspace_id, dispatch_id).await
-                }
-            }
-            .map_err(anyhow::Error::msg)?;
-            if let Some(checklist) = checklist {
-                emit(
-                    &on_event,
-                    AgentEvent::ChecklistPlanUpdated { state: checklist },
-                );
-            }
-        }
-        let result_msg = db
-            .add_visible_message_async(
-                workspace_id,
-                "assistant",
-                dispatch_state.visible_message(),
-                None,
-            )
-            .await?;
-        emit(
-            &on_event,
-            AgentEvent::AssistantMessage {
-                message: result_msg.clone(),
-            },
-        );
+        let DispatcherContinueAfterDispatchRequest {
+            db,
+            workspace_id,
+            workspace_path,
+            dispatch_result,
+            dispatch_state,
+            dispatch_id,
+            on_event,
+            cancel_rx,
+        } = request;
 
-        if cancellation_requested(&cancel_rx) {
-            let reply = self
-                .emit_stop_and_finish(db, workspace_id, &on_event, "", None)
+        let result: Result<AgentTurn> = async {
+            let debug_logger =
+                ContextDebugLogger::new(self.context_debug_enabled(), PathBuf::from(workspace_path));
+            let _ = dispatch_id;
+            let result_msg = db
+                .add_visible_message_async(
+                    workspace_id,
+                    "assistant",
+                    dispatch_state.visible_message(),
+                    None,
+                )
                 .await?;
-            let messages = db.list_visible_messages_async(workspace_id).await?;
             emit(
                 &on_event,
-                AgentEvent::Finished {
-                    messages: messages.clone(),
+                AgentEvent::AssistantMessage {
+                    message: result_msg.clone(),
                 },
             );
-            return Ok(AgentTurn { reply, messages });
-        }
 
-        let provider = self.provider.lock().clone();
-        if !provider.is_configured() {
-            anyhow::bail!(
-                "主 Agent LLM API Key 未配置，无法继续处理子任务结果。请在 Dispatcher 设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
-            );
-        }
-        let summary_model = self.summary_model();
-        let summary_provider = self.summary_provider(&provider);
-        let mut usage_tracker = UsageTracker::new();
-        let summarized_dispatch_result = match tokio::select! {
-            _ = wait_for_cancellation(&mut cancel_rx) => {
-                let reply = self.emit_stop_and_finish(
-                    db,
-                    workspace_id,
-                    &on_event,
-                    "",
-                    None,
-                ).await?;
+            if cancellation_requested(&cancel_rx) {
+                let reply = self
+                    .emit_stop_and_finish(db, workspace_id, &on_event, "", None)
+                    .await?;
                 let messages = db.list_visible_messages_async(workspace_id).await?;
                 emit(
                     &on_event,
@@ -255,102 +221,120 @@ impl DispatcherAgent {
                 );
                 return Ok(AgentTurn { reply, messages });
             }
-            result = summarize_dispatch_result(&summary_provider, &summary_model, dispatch_result, |usage| {
-                record_run_token_usage(
-                    db,
-                    workspace_id,
-                    &summary_model,
-                    DispatcherSessionTokenUsageSource::Summary,
-                    usage,
-                    &mut usage_tracker,
-                    &on_event,
-                );
-            }) => result
-        } {
-            Ok(summary) => summary,
-            Err(error) => {
-                debug_logger.log(
-                    "子任务结果摘要失败",
-                    vec![
-                        ("工作区".to_string(), workspace_id.to_string()),
-                        (
-                            "子任务状态".to_string(),
-                            format!("{dispatch_state:?}").to_lowercase(),
-                        ),
-                    ],
-                    vec![
-                        DebugSection::new("摘要调用", error.debug_context().to_string()),
-                        DebugSection::new("失败原因", error.message().to_string()),
-                    ],
-                );
+
+            let provider = self.provider.lock().clone();
+            if !provider.is_configured() {
                 anyhow::bail!(
-                    "子任务结果摘要失败，summary_model={}：{}",
-                    summary_model,
-                    error.message()
+                    "主 Agent LLM API Key 未配置，无法继续处理子任务结果。请在 Dispatcher 设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
                 );
             }
-        };
+            let summary_model = self.summary_model();
+            let summary_provider = self.summary_provider(&provider);
+            let mut usage_tracker = UsageTracker::new();
+            let mut summary_cancel_rx = cancel_rx.clone();
+            let summarized_dispatch_result = match tokio::select! {
+                _ = wait_for_cancellation(&mut summary_cancel_rx) => {
+                    let reply = self.emit_stop_and_finish(
+                        db,
+                        workspace_id,
+                        &on_event,
+                        "",
+                        None,
+                    ).await?;
+                    let messages = db.list_visible_messages_async(workspace_id).await?;
+                    emit(
+                        &on_event,
+                        AgentEvent::Finished {
+                            messages: messages.clone(),
+                        },
+                    );
+                    return Ok(AgentTurn { reply, messages });
+                }
+                result = summarize_dispatch_result(&summary_provider, &summary_model, dispatch_result, |usage| {
+                    record_run_token_usage(
+                        db,
+                        workspace_id,
+                        &summary_model,
+                        DispatcherSessionTokenUsageSource::Summary,
+                        usage,
+                        &mut usage_tracker,
+                        &on_event,
+                    );
+                }) => result
+            } {
+                Ok(summary) => summary,
+                Err(error) => {
+                    debug_logger.log(
+                        "子任务结果摘要失败",
+                        vec![
+                            ("工作区".to_string(), workspace_id.to_string()),
+                            (
+                                "子任务状态".to_string(),
+                                format!("{dispatch_state:?}").to_lowercase(),
+                            ),
+                        ],
+                        vec![
+                            DebugSection::new("摘要调用", error.debug_context().to_string()),
+                            DebugSection::new("失败原因", error.message().to_string()),
+                        ],
+                    );
+                    anyhow::bail!(
+                        "子任务结果摘要失败，summary_model={}：{}",
+                        summary_model,
+                        error.message()
+                    );
+                }
+            };
 
-        let hidden_message = format!(
-            "{}\n\n{}",
-            dispatch_state.hidden_prefix(),
-            summarized_dispatch_result
-        );
+            let hidden_message = format!(
+                "{}\n\n{}",
+                dispatch_state.hidden_prefix(),
+                summarized_dispatch_result
+            );
 
-        // 子进程输出在上方以简短可见状态展示，但作为隐藏的 user 上下文重新进入主 LLM。
-        // 这样既保持聊天界面可读，又保留下一步推理所需的因果关系。
-        db.add_hidden_message_async(
-            workspace_id,
-            "user",
-            &hidden_message,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await?;
-
-        let workspace = PathBuf::from(workspace_path);
-        self.project_mcp_registry
-            .ensure_recent(&workspace)
-            .await
-            .map_err(anyhow::Error::msg)
-            .context("刷新项目 MCP 状态失败")?;
-
-        // 与 run() 相同的本轮快照策略：静态提示词只加载一次，动态运行态在循环内刷新。
-        let static_prompt = self.build_system_prompt().await?;
-        let initial_runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
-        let initial_tool_defs =
-            self.tool_definitions_for_workspace(workspace_id, &workspace, &initial_runtime_state);
-        let allowed_tool_names: HashSet<String> = initial_tool_defs
-            .iter()
-            .map(|t| t.function.name.clone())
-            .collect();
-
-        let reply = self
-            .run_llm_loop(
-                db,
+            // 子进程输出在上方以简短可见状态展示，但作为隐藏的 user 上下文重新进入主 LLM。
+            // 这样既保持聊天界面可读，又保留下一步推理所需的因果关系。
+            db.add_hidden_message_async(
                 workspace_id,
-                &workspace,
-                &on_event,
-                &provider,
-                enable_thinking,
-                cancel_rx,
-                &mut usage_tracker,
-                &static_prompt,
-                initial_tool_defs,
-                allowed_tool_names,
+                "user",
+                &hidden_message,
+                None,
+                None,
+                None,
+                None,
             )
             .await?;
 
-        let messages = db.list_visible_messages_async(workspace_id).await?;
-        emit(
-            &on_event,
-            AgentEvent::Finished {
-                messages: messages.clone(),
-            },
-        );
-        Ok(AgentTurn { reply, messages })
+            let workspace = PathBuf::from(workspace_path);
+            self.project_mcp_registry
+                .ensure_recent(&workspace)
+                .await
+                .map_err(anyhow::Error::msg)
+                .context("刷新项目 MCP 状态失败")?;
+
+            // 与 run() 相同的本轮快照策略：静态提示词只加载一次，动态运行态在循环内刷新。
+            let static_prompt = self.build_system_prompt().await?;
+            let reply = self
+                .run_llm_loop(LlmLoopContext {
+                    db,
+                    workspace_id,
+                    workspace: &workspace,
+                    on_event: &on_event,
+                    provider,
+                    cancel_rx,
+                    usage_tracker,
+                    static_prompt,
+                })
+                .await?;
+
+            let messages = db.list_visible_messages_async(workspace_id).await?;
+            emit(
+                &on_event,
+                AgentEvent::Finished {
+                    messages: messages.clone(),
+                },
+            );
+            Ok(AgentTurn { reply, messages })
         }
         .await;
 
@@ -374,43 +358,30 @@ impl DispatcherAgent {
     /// - 协议动作/计划等待用户（resolve_loop_outcome 返回 Some），或
     /// - 被取消，或
     /// - 达到 max_tool_iterations 上限（视为模型陷入循环）。
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn run_llm_loop(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        workspace: &Path,
-        on_event: &Channel<AgentEvent>,
-        provider: &OpenAiCompatProvider,
-        enable_thinking: bool,
-        cancel_rx: watch::Receiver<bool>,
-        usage_tracker: &mut UsageTracker,
-        static_prompt: &PromptBundle,
-        initial_tool_definitions: Vec<crate::agent::llm::ToolDefinition>,
-        initial_allowed_tools: HashSet<String>,
-    ) -> Result<DispatcherMessageRecord> {
+    async fn run_llm_loop(&self, mut ctx: LlmLoopContext<'_>) -> Result<DispatcherMessageRecord> {
         let tool_context = self
-            .build_tool_context(db, workspace_id, workspace, provider)
+            .build_tool_context(ctx.db, ctx.workspace_id, ctx.workspace, &ctx.provider)
             .await;
         let debug_logger =
-            ContextDebugLogger::new(self.context_debug_enabled(), PathBuf::from(workspace));
+            ContextDebugLogger::new(self.context_debug_enabled(), PathBuf::from(ctx.workspace));
 
         // ── 循环不变量初始化（仅执行一次） ────────────────────────────
 
-        let initial_runtime_state = db.get_session_runtime_state_async(workspace_id).await?;
-        let tool_definitions = initial_tool_definitions;
-        let allowed_tool_names = initial_allowed_tools;
+        let mut tool_defs_cache =
+            self.tool_definitions_for_workspace(ctx.workspace_id, ctx.workspace);
+        let mut allowed_names_cache: HashSet<String> = tool_defs_cache
+            .iter()
+            .map(|t| t.function.name.clone())
+            .collect();
 
         // AgentLoop 拥有本轮内存中的 LLM 历史。它从持久化的 DB 历史起步，
         // 之后只追加本循环产生的消息，而非每次工具调用后都重新加载整段对话。
-        let mut agent_loop =
-            AgentLoop::new(db, workspace_id, static_prompt.static_content.clone()).await?;
-
-        // 这些缓存只在运行态可能影响工具可见性时才替换。保持其局部性，
-        // 防止半更新的设置泄漏进正在进行的 LLM 请求。
-        let mut tool_defs_cache = tool_definitions;
-        let mut allowed_names_cache = allowed_tool_names;
-        let mut runtime_state_cache = initial_runtime_state;
+        let mut agent_loop = AgentLoop::new(
+            ctx.db,
+            ctx.workspace_id,
+            ctx.static_prompt.static_content.clone(),
+        )
+        .await?;
 
         // 仅用于诊断：当前循环只记录压力告警，不会压缩历史。
         let estimated_tokens = agent_loop.estimated_tokens();
@@ -418,7 +389,7 @@ impl DispatcherAgent {
             debug_logger.log(
                 "上下文窗口接近上限",
                 vec![
-                    ("工作区".to_string(), workspace_id.to_string()),
+                    ("工作区".to_string(), ctx.workspace_id.to_string()),
                     ("估算tokens".to_string(), estimated_tokens.to_string()),
                     (
                         "容量".to_string(),
@@ -432,21 +403,23 @@ impl DispatcherAgent {
         // ── 主迭代循环 ─────────────────────────────────────────
 
         for iteration in 0..self.config.max_tool_iterations {
-            if cancellation_requested(&cancel_rx) {
+            if cancellation_requested(&ctx.cancel_rx) {
                 return self
-                    .emit_stop_and_finish(db, workspace_id, on_event, "", Some(usage_tracker))
+                    .emit_stop_and_finish(
+                        ctx.db,
+                        ctx.workspace_id,
+                        ctx.on_event,
+                        "",
+                        Some(&ctx.usage_tracker),
+                    )
                     .await;
             }
 
-            // 工具调用可能改变运行态（例如预留计划、派生子进程），进而影响工具可见性。
+            // 工具调用可能改变子进程运行态，进而影响工具可见性。
             // 首轮之后每轮重新计算工具白名单，保证模型只看到当前合法的工具集。
             if iteration > 0 {
-                runtime_state_cache = db.get_session_runtime_state_async(workspace_id).await?;
-                let new_tool_defs = self.tool_definitions_for_workspace(
-                    workspace_id,
-                    workspace,
-                    &runtime_state_cache,
-                );
+                let new_tool_defs =
+                    self.tool_definitions_for_workspace(ctx.workspace_id, ctx.workspace);
                 allowed_names_cache = new_tool_defs
                     .iter()
                     .map(|t| t.function.name.clone())
@@ -457,11 +430,10 @@ impl DispatcherAgent {
             // 每轮从静态文本 + 最新运行态分片重新渲染系统提示；既避免磁盘读取，
             // 又保证动态指令始终是当前的。
             let prompt_snapshot = self.build_system_prompt_from_static(
-                static_prompt,
-                workspace_id,
-                workspace,
+                &ctx.static_prompt,
+                ctx.workspace_id,
+                ctx.workspace,
                 &tool_defs_cache,
-                &runtime_state_cache,
             )?;
 
             // 每轮用最新动态系统提示替换首条 system 消息。跳过 AgentLoop 内的旧 system，
@@ -471,13 +443,12 @@ impl DispatcherAgent {
 
             // 每轮仍需按消息内容选择 provider：若本轮消息含图片，则切换到视觉模型。
             let request_provider = if iteration == 0 {
-                self.provider_for_messages(provider, &messages, on_event, true)?
+                self.provider_for_messages(&ctx.provider, &messages, ctx.on_event, true)?
             } else {
-                self.provider_for_messages(provider, &messages, on_event, false)?
+                self.provider_for_messages(&ctx.provider, &messages, ctx.on_event, false)?
             };
 
-            let ctx = IterationContext {
-                runtime_state: runtime_state_cache.clone(),
+            let iteration_ctx = IterationContext {
                 tool_definitions: tool_defs_cache.clone(),
                 allowed_tool_names: allowed_names_cache.clone(),
                 messages,
@@ -488,29 +459,17 @@ impl DispatcherAgent {
             // 从此处直到流式响应完成，请求必须使用消息、provider 和工具 schema 的稳定快照。
             // 流式传输期间的状态变更留到下一轮迭代处理，不在 token 流式输出过程中介入。
             let response = match self
-                .stream_llm_response_inner(
-                    db,
-                    workspace_id,
-                    on_event,
-                    &ctx.request_provider,
-                    &ctx.messages,
-                    &ctx.tool_definitions,
-                    enable_thinking,
-                    cancel_rx.clone(),
-                    usage_tracker,
-                    &ctx.debug_logger,
-                    iteration,
-                )
+                .stream_llm_response_inner(&mut ctx, &iteration_ctx, iteration)
                 .await?
             {
                 LlmStreamOutcome::Cancelled(partial) => {
                     return self
                         .emit_stop_and_finish(
-                            db,
-                            workspace_id,
-                            on_event,
+                            ctx.db,
+                            ctx.workspace_id,
+                            ctx.on_event,
                             &partial,
-                            Some(usage_tracker),
+                            Some(&ctx.usage_tracker),
                         )
                         .await;
                 }
@@ -521,23 +480,28 @@ impl DispatcherAgent {
             // 不再进入下一轮推理。
             if response.tool_calls.is_empty() {
                 return self
-                    .handle_no_tool_response(db, workspace_id, on_event, &response, usage_tracker)
+                    .handle_no_tool_response(
+                        ctx.db,
+                        ctx.workspace_id,
+                        ctx.on_event,
+                        &response,
+                        &ctx.usage_tracker,
+                    )
                     .await;
             }
 
             let outcome = self
                 .execute_tool_calls(
-                    db,
-                    workspace_id,
-                    workspace,
-                    on_event,
+                    ctx.db,
+                    ctx.workspace_id,
+                    ctx.workspace,
+                    ctx.on_event,
                     response,
-                    &ctx.runtime_state,
-                    &ctx.allowed_tool_names,
+                    &iteration_ctx.allowed_tool_names,
                     &tool_context,
-                    &cancel_rx,
-                    &ctx.request_provider,
-                    usage_tracker,
+                    &ctx.cancel_rx,
+                    &iteration_ctx.request_provider,
+                    &mut ctx.usage_tracker,
                 )
                 .await?;
 
@@ -554,7 +518,7 @@ impl DispatcherAgent {
                 debug_logger.log(
                     "上下文窗口接近上限，考虑折叠早期消息",
                     vec![
-                        ("工作区".to_string(), workspace_id.to_string()),
+                        ("工作区".to_string(), ctx.workspace_id.to_string()),
                         ("轮次".to_string(), (iteration + 1).to_string()),
                         ("估算tokens".to_string(), estimated_tokens.to_string()),
                     ],
@@ -563,7 +527,13 @@ impl DispatcherAgent {
             }
 
             if let Some(reply) = self
-                .resolve_loop_outcome(db, workspace_id, on_event, outcome, usage_tracker)
+                .resolve_loop_outcome(
+                    ctx.db,
+                    ctx.workspace_id,
+                    ctx.on_event,
+                    outcome,
+                    &mut ctx.usage_tracker,
+                )
                 .await?
             {
                 return Ok(reply);
@@ -623,35 +593,33 @@ impl DispatcherAgent {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn stream_llm_response_inner(
         &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        on_event: &Channel<AgentEvent>,
-        request_provider: &OpenAiCompatProvider,
-        messages: &[ChatMessage],
-        tool_definitions: &[crate::agent::llm::ToolDefinition],
-        enable_thinking: bool,
-        cancel_rx: watch::Receiver<bool>,
-        usage_tracker: &mut UsageTracker,
-        debug_logger: &ContextDebugLogger,
+        ctx: &mut LlmLoopContext<'_>,
+        iteration_ctx: &IterationContext,
         iteration: usize,
     ) -> Result<LlmStreamOutcome> {
-        if debug_logger.enabled() {
-            let request_snapshot = request_provider.build_request_snapshot(
-                messages,
-                tool_definitions,
-                enable_thinking,
-            );
-            debug_logger.log(
+        if iteration_ctx.debug_logger.enabled() {
+            let request_snapshot = iteration_ctx
+                .request_provider
+                .build_request_snapshot(&iteration_ctx.messages, &iteration_ctx.tool_definitions);
+            iteration_ctx.debug_logger.log(
                 "发送大模型请求",
                 vec![
-                    ("工作区".to_string(), workspace_id.to_string()),
+                    ("工作区".to_string(), ctx.workspace_id.to_string()),
                     ("轮次".to_string(), (iteration + 1).to_string()),
-                    ("模型".to_string(), request_provider.model().to_string()),
-                    ("消息数".to_string(), messages.len().to_string()),
-                    ("工具数".to_string(), tool_definitions.len().to_string()),
+                    (
+                        "模型".to_string(),
+                        iteration_ctx.request_provider.model().to_string(),
+                    ),
+                    (
+                        "消息数".to_string(),
+                        iteration_ctx.messages.len().to_string(),
+                    ),
+                    (
+                        "工具数".to_string(),
+                        iteration_ctx.tool_definitions.len().to_string(),
+                    ),
                 ],
                 vec![DebugSection::new(
                     "实际请求",
@@ -661,29 +629,33 @@ impl DispatcherAgent {
         }
 
         let outcome = stream_llm_response(
-            db,
-            workspace_id,
-            request_provider.model(),
+            ctx.db,
+            ctx.workspace_id,
+            iteration_ctx.request_provider.model(),
             DispatcherSessionTokenUsageSource::Primary,
-            usage_tracker,
-            on_event,
-            request_provider,
-            messages,
-            tool_definitions,
-            enable_thinking,
-            cancel_rx,
+            &mut ctx.usage_tracker,
+            ctx.on_event,
+            &iteration_ctx.request_provider,
+            &iteration_ctx.messages,
+            &iteration_ctx.tool_definitions,
+            ctx.cancel_rx.clone(),
         )
         .await?;
 
-        if debug_logger.enabled() {
+        if iteration_ctx.debug_logger.enabled() {
             if let LlmStreamOutcome::Response(ref response) = outcome {
-                let response_snapshot = request_provider.build_response_snapshot(response);
-                debug_logger.log(
+                let response_snapshot = iteration_ctx
+                    .request_provider
+                    .build_response_snapshot(response);
+                iteration_ctx.debug_logger.log(
                     "收到大模型响应",
                     vec![
-                        ("工作区".to_string(), workspace_id.to_string()),
+                        ("工作区".to_string(), ctx.workspace_id.to_string()),
                         ("轮次".to_string(), (iteration + 1).to_string()),
-                        ("模型".to_string(), request_provider.model().to_string()),
+                        (
+                            "模型".to_string(),
+                            iteration_ctx.request_provider.model().to_string(),
+                        ),
                         ("状态码".to_string(), response.status_code.to_string()),
                         (
                             "工具调用数".to_string(),
@@ -706,7 +678,7 @@ impl DispatcherAgent {
         db: &DispatcherDb,
         workspace_id: &str,
         on_event: &Channel<AgentEvent>,
-        response: &super::super::llm::LlmResponse,
+        response: &LlmResponse,
         usage_tracker: &UsageTracker,
     ) -> Result<DispatcherMessageRecord> {
         let content = response.content.trim().to_string();

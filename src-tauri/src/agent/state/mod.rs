@@ -230,10 +230,7 @@ impl DispatcherState {
         }
     }
 
-    pub(crate) fn begin_run(
-        &self,
-        workspace_id: &str,
-    ) -> std::result::Result<ActiveRunHandle, String> {
+    pub(crate) fn begin_run(&self, workspace_id: &str) -> Result<ActiveRunHandle, String> {
         self.active_runs.begin(workspace_id)
     }
 

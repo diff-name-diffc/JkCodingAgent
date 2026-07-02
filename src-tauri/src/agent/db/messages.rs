@@ -7,12 +7,14 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::agent::llm::{ChatMessage, OutboundToolCall};
+use crate::agent::llm::{
+    ChatMessage, ChatMessageContentPart, ChatMessageImageSource, OutboundToolCall,
+};
 
 use super::artifacts::{DispatcherToolArtifactRef, ToolArtifactDraft};
 use super::content::{
-    content_to_segments_json, delete_chat_image_resources, delete_plan_file_resources,
-    insert_chat_images, parse_segments_json, remove_chat_image_files, segments_to_markdown,
+    content_to_segments_json, delete_chat_image_resources, insert_chat_images, parse_segments_json,
+    remove_chat_image_files, segments_to_plain_text, try_parse_segments_json, ContentSegment,
 };
 use super::util::{map_dispatcher_message_record, now, MAX_LLM_DIALOGUES};
 use super::DispatcherDb;
@@ -51,11 +53,14 @@ pub struct DispatcherMessageRecord {
 
 impl DispatcherMessageRecord {
     pub fn to_llm_message(&self) -> Option<ChatMessage> {
-        let content = if let Some(payload) = self.context_payload.clone() {
-            payload
+        let (content, content_parts) = if let Some(payload) = self.context_payload.clone() {
+            (payload, Vec::new())
         } else {
             let segments = parse_segments_json(&self.segments_json);
-            segments_to_markdown(&segments)
+            (
+                segments_to_plain_text(&segments),
+                segments_to_llm_content_parts(&self.role, &segments),
+            )
         };
         let tool_calls = self
             .tool_calls_json
@@ -71,12 +76,37 @@ impl DispatcherMessageRecord {
             },
             role: self.role.clone(),
             content,
+            content_parts,
             tool_call_id: self.tool_call_id.clone(),
             name: self.tool_name.clone(),
             tool_calls,
         };
         should_keep_llm_message(&message).then_some(message)
     }
+}
+
+fn segments_to_llm_content_parts(
+    role: &str,
+    segments: &[ContentSegment],
+) -> Vec<ChatMessageContentPart> {
+    if role != "user" {
+        return Vec::new();
+    }
+
+    segments
+        .iter()
+        .filter_map(|segment| match segment {
+            ContentSegment::Text { text, .. } if !text.trim().is_empty() => {
+                Some(ChatMessageContentPart::Text { text: text.clone() })
+            }
+            ContentSegment::Image { image_id, .. } => Some(ChatMessageContentPart::Image {
+                source: ChatMessageImageSource::ChatImage {
+                    image_id: image_id.clone(),
+                },
+            }),
+            ContentSegment::Text { .. } | ContentSegment::File { .. } => None,
+        })
+        .collect()
 }
 
 struct NewDispatcherMessage<'a> {
@@ -109,6 +139,30 @@ impl DispatcherDb {
             role,
             content,
             segments_json,
+            thinking_content: None,
+            thinking_elapsed_ms: 0,
+            context_payload: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_result_mode: None,
+            tool_calls: None,
+            tool_artifacts: &[],
+            usage_stats: None,
+            visible: true,
+        })
+    }
+
+    pub fn add_visible_message_from_segments(
+        &self,
+        workspace_id: &str,
+        role: &str,
+        segments_json: String,
+    ) -> Result<DispatcherMessageRecord> {
+        self.add_message(NewDispatcherMessage {
+            workspace_id,
+            role,
+            content: "",
+            segments_json: Some(segments_json),
             thinking_content: None,
             thinking_elapsed_ms: 0,
             context_payload: None,
@@ -352,11 +406,14 @@ impl DispatcherDb {
             let tool_calls_json: Option<String> = row.get(5)?;
             let thinking_content: Option<String> = row.get(6)?;
 
-            let content = if let Some(payload) = context_payload {
-                payload
+            let (content, content_parts) = if let Some(payload) = context_payload {
+                (payload, Vec::new())
             } else {
                 let segments = parse_segments_json(&segments_json);
-                segments_to_markdown(&segments)
+                (
+                    segments_to_plain_text(&segments),
+                    segments_to_llm_content_parts(&role, &segments),
+                )
             };
 
             let tool_calls = tool_calls_json
@@ -371,6 +428,7 @@ impl DispatcherDb {
                 },
                 role,
                 content,
+                content_parts,
                 tool_call_id,
                 name: tool_name,
                 tool_calls,
@@ -404,7 +462,7 @@ impl DispatcherDb {
             params![workspace_id],
             |row| {
                 let segments_json: String = row.get(0)?;
-                Ok(segments_to_markdown(&parse_segments_json(&segments_json)))
+                Ok(segments_to_plain_text(&parse_segments_json(&segments_json)))
             },
         )
         .optional()
@@ -425,7 +483,7 @@ impl DispatcherDb {
             params![workspace_id, message_id],
             |row| {
                 let segments_json: String = row.get(0)?;
-                Ok(segments_to_markdown(&parse_segments_json(&segments_json)))
+                Ok(segments_to_plain_text(&parse_segments_json(&segments_json)))
             },
         )
         .optional()
@@ -458,7 +516,7 @@ impl DispatcherDb {
                 let role: String = row.get(0)?;
                 let tool_name: Option<String> = row.get(1)?;
                 let segments_json: String = row.get(2)?;
-                let content = segments_to_markdown(&parse_segments_json(&segments_json));
+                let content = segments_to_plain_text(&parse_segments_json(&segments_json));
                 Ok((role, tool_name, content))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -497,7 +555,6 @@ impl DispatcherDb {
         )
         .context("clear dispatcher session token usage")?;
         let image_paths = delete_chat_image_resources(&tx, workspace_id)?;
-        delete_plan_file_resources(&tx, workspace_id)?;
         tx.execute(
             "DELETE FROM session_keywords WHERE workspace_id = ?1",
             params![workspace_id],
@@ -509,25 +566,10 @@ impl DispatcherDb {
         )
         .context("clear dispatcher messages")?;
         tx.execute(
-            "UPDATE dispatcher_sessions
-             SET checklist_json = NULL,
-                 plan_interaction_json = NULL,
-                 active_plan_path = NULL,
-                 updated_at = ?1
-             WHERE id = ?2",
+            "UPDATE dispatcher_sessions SET updated_at = ?1 WHERE id = ?2",
             params![now(), workspace_id],
         )
-        .context("clear dispatcher planning state")?;
-        tx.execute(
-            "UPDATE project_sessions
-             SET active_plan_path = NULL,
-                 checklist_json = NULL,
-                 plan_interaction_json = NULL,
-                 updated_at = ?1
-             WHERE id = ?2",
-            params![now(), workspace_id],
-        )
-        .context("clear project session planning state")?;
+        .context("update dispatcher session after clear")?;
         tx.execute(
             "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
             params![now(), workspace_id],
@@ -552,8 +594,8 @@ impl DispatcherDb {
         let segments_json = params
             .segments_json
             .unwrap_or_else(|| content_to_segments_json(params.content));
-        let segments = parse_segments_json(&segments_json);
-        let content = segments_to_markdown(&segments);
+        let segments = try_parse_segments_json(&segments_json)?;
+        let content = segments_to_plain_text(&segments);
 
         let mut record = DispatcherMessageRecord {
             id: Uuid::new_v4().to_string(),
@@ -724,6 +766,22 @@ impl DispatcherDb {
         })
         .await
         .context("add_visible_message spawn_blocking")?
+    }
+
+    pub async fn add_visible_message_from_segments_async(
+        &self,
+        workspace_id: &str,
+        role: &str,
+        segments_json: String,
+    ) -> Result<DispatcherMessageRecord> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        let role = role.to_string();
+        tokio::task::spawn_blocking(move || {
+            db.add_visible_message_from_segments(&wid, &role, segments_json)
+        })
+        .await
+        .context("add_visible_message_from_segments spawn_blocking")?
     }
 
     pub async fn add_visible_message_with_usage_and_thinking_async(

@@ -1,14 +1,12 @@
-//! 会话记录与会话 CRUD：dispatcher_sessions（统一）、chat_sessions、project_sessions，
-//! 以及会话模式（DispatcherMode）、上下文（AgentContext）、会话类型（DispatcherSessionKind）。
+//! 会话记录与会话 CRUD：dispatcher_sessions（统一）、chat_sessions、project_sessions），
+//! 以及上下文（AgentContext）、会话类型（DispatcherSessionKind）。
 
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::content::{
-    delete_chat_image_resources, delete_plan_file_resources, remove_chat_image_files,
-};
+use super::content::{delete_chat_image_resources, remove_chat_image_files};
 use super::util::now;
 use super::DispatcherDb;
 
@@ -19,8 +17,6 @@ pub struct DispatcherSessionRecord {
     pub project_id: String,
     pub kind: DispatcherSessionKind,
     pub title: String,
-    pub mode: DispatcherMode,
-    pub active_plan_path: Option<String>,
     pub category: String,
     pub created_at: String,
     pub updated_at: String,
@@ -42,8 +38,6 @@ pub struct ProjectSessionRecord {
     pub id: String,
     pub project_id: String,
     pub title: String,
-    pub mode: DispatcherMode,
-    pub active_plan_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -55,37 +49,6 @@ pub struct SessionPage<T> {
     pub total: i64,
     pub has_more: bool,
     pub next_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum DispatcherMode {
-    Default,
-    Plan,
-}
-
-impl DispatcherMode {
-    pub fn from_wire(value: &str) -> Result<Self> {
-        match value.trim() {
-            "" | "default" => Ok(Self::Default),
-            "plan" => Ok(Self::Plan),
-            other => anyhow::bail!("invalid dispatcher mode: {other}"),
-        }
-    }
-
-    pub fn as_sql_value(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Plan => "plan",
-        }
-    }
-
-    pub(super) fn from_sql_value(value: String) -> Self {
-        match value.as_str() {
-            "plan" => Self::Plan,
-            _ => Self::Default,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
@@ -154,7 +117,7 @@ impl DispatcherDb {
     ) -> Result<Vec<DispatcherSessionRecord>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, kind, title, mode, active_plan_path, category, created_at, updated_at
+            "SELECT id, project_id, kind, title, category, created_at, updated_at
              FROM dispatcher_sessions
              WHERE project_id = ?1 AND kind = ?2
              ORDER BY updated_at DESC",
@@ -165,11 +128,9 @@ impl DispatcherDb {
                 project_id: row.get(1)?,
                 kind: DispatcherSessionKind::from_sql_value(row.get(2)?),
                 title: row.get(3)?,
-                mode: DispatcherMode::from_sql_value(row.get(4)?),
-                active_plan_path: row.get(5)?,
-                category: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                category: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
             })
         })?;
 
@@ -182,8 +143,6 @@ impl DispatcherDb {
         project_id: &str,
         title: &str,
         kind: DispatcherSessionKind,
-        mode: DispatcherMode,
-        active_plan_path: Option<&str>,
         category: Option<&str>,
     ) -> Result<DispatcherSessionRecord> {
         let category = category.unwrap_or("").to_string();
@@ -192,8 +151,6 @@ impl DispatcherDb {
             project_id: project_id.to_string(),
             kind,
             title: title.to_string(),
-            mode,
-            active_plan_path: active_plan_path.map(str::to_string),
             category,
             created_at: now(),
             updated_at: now(),
@@ -201,15 +158,13 @@ impl DispatcherDb {
 
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, mode, active_plan_path, category, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 record.id,
                 record.project_id,
                 record.kind.as_sql_value(),
                 record.title,
-                record.mode.as_sql_value(),
-                record.active_plan_path,
                 record.category,
                 record.created_at,
                 record.updated_at
@@ -254,26 +209,24 @@ impl DispatcherDb {
 
         let record = tx
             .query_row(
-            "SELECT id, project_id, kind, title, mode, active_plan_path, category, created_at, updated_at
+                "SELECT id, project_id, kind, title, category, created_at, updated_at
              FROM dispatcher_sessions
              WHERE id = ?1",
-            params![session_id],
-            |row| {
-                Ok(DispatcherSessionRecord {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    kind: DispatcherSessionKind::from_sql_value(row.get(2)?),
-                    title: row.get(3)?,
-                    mode: DispatcherMode::from_sql_value(row.get(4)?),
-                    active_plan_path: row.get(5)?,
-                    category: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            },
-        )
-        .optional()
-        .context("load dispatcher session after title update")?;
+                params![session_id],
+                |row| {
+                    Ok(DispatcherSessionRecord {
+                        id: row.get(0)?,
+                        project_id: row.get(1)?,
+                        kind: DispatcherSessionKind::from_sql_value(row.get(2)?),
+                        title: row.get(3)?,
+                        category: row.get(4)?,
+                        created_at: row.get(5)?,
+                        updated_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .context("load dispatcher session after title update")?;
         tx.commit().context("commit update session title")?;
         Ok(record)
     }
@@ -294,7 +247,6 @@ impl DispatcherDb {
             params![session_id],
         )?;
         let image_paths = delete_chat_image_resources(&tx, session_id)?;
-        delete_plan_file_resources(&tx, session_id)?;
         tx.execute(
             "DELETE FROM session_keywords WHERE workspace_id = ?1",
             params![session_id],
@@ -425,8 +377,8 @@ impl DispatcherDb {
         )
         .context("insert chat session")?;
         conn.execute(
-            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, mode, category, created_at, updated_at)
-             VALUES (?1, '__global_chat__', 'chat', ?2, 'default', ?3, ?4, ?5)",
+            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
+             VALUES (?1, '__global_chat__', 'chat', ?2, ?3, ?4, ?5)",
             params![
                 record.id,
                 record.title,
@@ -455,7 +407,6 @@ impl DispatcherDb {
             params![session_id],
         )?;
         let image_paths = delete_chat_image_resources(&tx, session_id)?;
-        delete_plan_file_resources(&tx, session_id)?;
         tx.execute(
             "DELETE FROM session_keywords WHERE workspace_id = ?1",
             params![session_id],
@@ -558,7 +509,7 @@ impl DispatcherDb {
         )?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, title, mode, active_plan_path, created_at, updated_at
+            "SELECT id, project_id, title, created_at, updated_at
              FROM project_sessions
              WHERE project_id = ?1
              ORDER BY updated_at DESC
@@ -569,10 +520,8 @@ impl DispatcherDb {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
                 title: row.get(2)?,
-                mode: DispatcherMode::from_sql_value(row.get(3)?),
-                active_plan_path: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
             })
         })?;
         let items: Vec<ProjectSessionRecord> = rows
@@ -594,42 +543,34 @@ impl DispatcherDb {
         &self,
         project_id: &str,
         title: &str,
-        mode: DispatcherMode,
-        active_plan_path: Option<&str>,
     ) -> Result<ProjectSessionRecord> {
         let record = ProjectSessionRecord {
             id: Uuid::new_v4().to_string(),
             project_id: project_id.to_string(),
             title: title.to_string(),
-            mode,
-            active_plan_path: active_plan_path.map(str::to_string),
             created_at: now(),
             updated_at: now(),
         };
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO project_sessions (id, project_id, title, mode, active_plan_path, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO project_sessions (id, project_id, title, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 record.id,
                 record.project_id,
                 record.title,
-                record.mode.as_sql_value(),
-                record.active_plan_path,
                 record.created_at,
                 record.updated_at
             ],
         )
         .context("insert project session")?;
         conn.execute(
-            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, mode, active_plan_path, category, created_at, updated_at)
-             VALUES (?1, ?2, 'project', ?3, ?4, ?5, '', ?6, ?7)",
+            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
+             VALUES (?1, ?2, 'project', ?3, '', ?4, ?5)",
             params![
                 record.id,
                 record.project_id,
                 record.title,
-                record.mode.as_sql_value(),
-                record.active_plan_path,
                 record.created_at,
                 record.updated_at
             ],
@@ -654,7 +595,6 @@ impl DispatcherDb {
             params![session_id],
         )?;
         let image_paths = delete_chat_image_resources(&tx, session_id)?;
-        delete_plan_file_resources(&tx, session_id)?;
         tx.execute(
             "DELETE FROM session_keywords WHERE workspace_id = ?1",
             params![session_id],

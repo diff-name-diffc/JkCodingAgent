@@ -1,6 +1,8 @@
 use tokio::time::{timeout, Duration};
 
-use super::llm::{ChatMessage, LlmUsage, OpenAiCompatProvider};
+use super::llm::{
+    messages_contain_images, ChatMessage, ChatMessageContentPart, LlmUsage, OpenAiCompatProvider,
+};
 
 const SUMMARY_MODE_THRESHOLD_CHARS: usize = 240;
 const SUMMARY_MODE_THRESHOLD_LINES: usize = 24;
@@ -76,7 +78,7 @@ where
     summarize_with_model(
         provider,
         summary_model,
-        build_dispatch_summary_prompt(trimmed),
+        build_text_summary_messages(build_dispatch_summary_prompt(trimmed)),
         |_| {},
         on_usage,
     )
@@ -106,7 +108,14 @@ where
         user_question,
         compress_intent,
     );
-    let summary = summarize_with_model(provider, summary_model, prompt, |_| {}, on_usage).await?;
+    let summary = summarize_with_model(
+        provider,
+        summary_model,
+        build_text_summary_messages(prompt),
+        |_| {},
+        on_usage,
+    )
+    .await?;
     let (context_payload, display_content) = parse_dual_tool_summary(summary);
 
     if context_payload.is_empty() && display_content.is_empty() {
@@ -443,19 +452,16 @@ pub async fn summarize_session_title<FUsage>(
     summary_model: &str,
     messages: &[SessionTitleMessage],
     fallback_source: &str,
+    current_user_parts: &[ChatMessageContentPart],
     on_usage: FUsage,
 ) -> Result<String, SummaryError>
 where
     FUsage: FnMut(&LlmUsage) + Send,
 {
-    let raw_title = summarize_with_model(
-        provider,
-        summary_model,
-        build_session_title_prompt(messages, fallback_source),
-        |_| {},
-        on_usage,
-    )
-    .await?;
+    let prompt = build_session_title_prompt(messages, fallback_source);
+    let title_messages = build_session_title_messages(prompt, current_user_parts);
+    let raw_title =
+        summarize_with_model(provider, summary_model, title_messages, |_| {}, on_usage).await?;
 
     Ok(normalize_session_title(&raw_title, fallback_source))
 }
@@ -479,7 +485,7 @@ where
     summarize_with_model(
         provider,
         summary_model,
-        build_keywords_prompt(qa_text, existing_keywords_json),
+        build_text_summary_messages(build_keywords_prompt(qa_text, existing_keywords_json)),
         |_| {},
         on_usage,
     )
@@ -505,15 +511,20 @@ pub fn parse_keyword_actions(raw: &str) -> Vec<super::db::KeywordAction> {
 async fn summarize_with_model(
     provider: &OpenAiCompatProvider,
     summary_model: &str,
-    prompt: String,
+    messages: Vec<ChatMessage>,
     on_delta: impl FnMut(&str),
     mut on_usage: impl FnMut(&LlmUsage) + Send,
 ) -> Result<String, SummaryError> {
     let summary_provider = provider.with_model(summary_model);
+    let prompt = messages
+        .first()
+        .map(|message| message.content.as_str())
+        .unwrap_or_default();
     let debug_context = build_summary_debug_context(&summary_provider, &prompt);
+    let enable_multimodal = messages_contain_images(&messages);
     let response = timeout(
         Duration::from_secs(SUMMARY_TIMEOUT_SECS),
-        summary_provider.chat_stream(&[ChatMessage::system(prompt)], &[], false, on_delta),
+        summary_provider.chat_stream(&messages, &[], enable_multimodal, on_delta),
     )
     .await
     .map_err(|_| {
@@ -542,6 +553,40 @@ async fn summarize_with_model(
     }
 
     Ok(content)
+}
+
+fn build_text_summary_messages(prompt: String) -> Vec<ChatMessage> {
+    vec![ChatMessage::system(prompt)]
+}
+
+fn build_session_title_messages(
+    prompt: String,
+    current_user_parts: &[ChatMessageContentPart],
+) -> Vec<ChatMessage> {
+    let has_image = current_user_parts
+        .iter()
+        .any(|part| matches!(part, ChatMessageContentPart::Image { .. }));
+    if !has_image {
+        return build_text_summary_messages(prompt);
+    }
+
+    let mut parts = vec![ChatMessageContentPart::Text {
+        text: "当前用户消息包含以下文本和图片，请结合图片内容生成标题。".to_string(),
+    }];
+    parts.extend(current_user_parts.iter().cloned());
+
+    vec![
+        ChatMessage::system(prompt),
+        ChatMessage {
+            role: "user".to_string(),
+            content: "当前用户消息包含文本和图片，请结合图片内容生成标题。".to_string(),
+            content_parts: parts,
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    ]
 }
 
 fn build_summary_debug_context(provider: &OpenAiCompatProvider, prompt: &str) -> String {

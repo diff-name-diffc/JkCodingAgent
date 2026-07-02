@@ -987,6 +987,13 @@ button:not(:disabled):active,
   transform: scale(1.02);
   border-color: var(--accent);
 }
+.dispatcher-user-image-gallery .markdown-image-thumbnail-wrap {
+  width: 156px;
+  height: 112px;
+  max-width: 156px;
+  max-height: 112px;
+  margin: 0;
+}
 .markdown-image-thumbnail {
   display: block;
   width: 100%;

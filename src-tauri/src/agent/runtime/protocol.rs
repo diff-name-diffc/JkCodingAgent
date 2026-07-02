@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::Result;
 use tauri::ipc::Channel;
 
@@ -112,21 +110,6 @@ impl DispatcherAgent {
                 task_prompt,
                 permission_mode,
             } => {
-                if let Some(checklist) = super::planning::reserve_checklist_dispatch(
-                    db,
-                    workspace_id,
-                    dispatch_id,
-                    agent.slug(),
-                    description,
-                )
-                .await
-                .map_err(anyhow::Error::msg)?
-                {
-                    emit(
-                        on_event,
-                        AgentEvent::ChecklistPlanUpdated { state: checklist },
-                    );
-                }
                 emit(
                     on_event,
                     AgentEvent::DispatchProposed {
@@ -211,7 +194,7 @@ impl DispatcherAgent {
         Ok(message)
     }
 
-    /// 为子进程拼装紧凑的任务提示：任务目标 + 计划书 + 用户诉求 + 探索上下文。
+    /// 为子进程拼装紧凑的任务提示：任务目标 + 用户诉求 + 探索上下文。
     /// 刻意精简——子进程拿到的是聚焦的任务包，而非完整聊天记录。
     pub(super) async fn build_subprocess_task_prompt(
         &self,
@@ -220,8 +203,8 @@ impl DispatcherAgent {
         _agent: DispatchAgent,
         task_description: &str,
     ) -> std::result::Result<String, String> {
-        // Subprocess prompts are intentionally compact: the child agent gets the task, the active
-        // plan, and a small slice of confirmed exploration context rather than the full chat log.
+        // Subprocess prompts are intentionally compact: the child agent gets the task and a small
+        // slice of confirmed exploration context rather than the full chat log.
         let latest_user_goal = db
             .get_latest_user_message_content_async(workspace_id)
             .await
@@ -232,20 +215,7 @@ impl DispatcherAgent {
         let explored_index_info = collect_recent_exploration_entries_from_db(db, workspace_id)
             .await
             .map_err(|error| format!("读取探索上下文失败：{error}"))?;
-        let active_plan_path = db
-            .get_session_runtime_state_async(workspace_id)
-            .await
-            .map_err(|error| format!("读取调度运行态失败：{error}"))?
-            .active_plan_path
-            .filter(|path| !super::helpers::is_implemented_plan_path(Path::new(path)));
-
         let mut sections = vec![format!("【任务目标】\n{}", task_description.trim())];
-
-        if let Some(plan_path) = active_plan_path {
-            sections.push(format!(
-                "【计划书】\n请先读取并严格按照该计划书执行编码任务：{plan_path}"
-            ));
-        }
 
         if let Some(goal) =
             latest_user_goal.filter(|goal| should_include_latest_user_goal(goal, task_description))

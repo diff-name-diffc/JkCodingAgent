@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use tauri::Manager;
 
 use super::common::{string_arg, u64_arg, with_compression_parameters};
-use crate::agent::llm::ChatMessage;
+use crate::agent::llm::{ChatMessage, ChatMessageContentPart, ChatMessageImageSource};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 use crate::browser::BrowserManager;
@@ -411,7 +411,7 @@ impl AgentTool for VisualAnalyzeTool {
         };
 
         let vision_provider = provider.with_model(context.vision_model.trim());
-        let prompt = build_visual_analysis_prompt(&instruction, data_url);
+        let prompt = build_visual_analysis_prompt(&instruction);
         match vision_provider
             .chat_stream(
                 &[
@@ -421,7 +421,15 @@ impl AgentTool for VisualAnalyzeTool {
                     ),
                     ChatMessage {
                         role: "user".to_string(),
-                        content: prompt,
+                        content: prompt.clone(),
+                        content_parts: vec![
+                            ChatMessageContentPart::Text { text: prompt },
+                            ChatMessageContentPart::Image {
+                                source: ChatMessageImageSource::DataUrl {
+                                    data_url: data_url.to_string(),
+                                },
+                            },
+                        ],
                         reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: None,
@@ -527,11 +535,10 @@ fn timeout_arg(args: &Value) -> u64 {
         .max(1)
 }
 
-fn build_visual_analysis_prompt(instruction: &str, data_url: &str) -> String {
+fn build_visual_analysis_prompt(instruction: &str) -> String {
     format!(
-        "请分析当前浏览器可视区域截图。\n\n关注内容：\n{}\n\n输出要求：\n- 只描述截图中能确认的事实。\n- 优先指出与任务相关的控件、文字、状态、错误、布局位置和下一步可操作线索。\n- 如果截图不足以判断，请直接说明缺失信息。\n\n![browser screenshot]({})",
-        instruction.trim(),
-        data_url
+        "请分析当前浏览器可视区域截图。\n\n关注内容：\n{}\n\n输出要求：\n- 只描述截图中能确认的事实。\n- 优先指出与任务相关的控件、文字、状态、错误、布局位置和下一步可操作线索。\n- 如果截图不足以判断，请直接说明缺失信息。",
+        instruction.trim()
     )
 }
 

@@ -12,14 +12,10 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AgentType,
   AhaSettingsV2,
-  ChecklistPlanState,
   DispatcherMessage,
   DispatcherModelConfig,
-  DispatcherMode,
-  DispatcherSessionRuntimeState,
   DispatcherSettings,
   ImageSegment,
-  PlanInteraction,
   ProjectMcpStatus,
   PythonCodeRunRecord,
   PythonCodeRunTarget,
@@ -56,12 +52,6 @@ import {
   withLiveElapsed,
 } from "./dispatcher-chat/dispatcherChatUtils";
 
-// Re-exports for backward compatibility
-export { InteractionDrawer } from "./dispatcher-chat/InteractionDrawer";
-export {
-  buildPlanQuestionAnswer,
-  buildPlanImplementationPrompt,
-} from "./dispatcher-chat/dispatcherChatUtils";
 export { cleanupDispatcherSession, gcDispatcherSessions } from "./dispatcherSessionStore";
 export type { DispatcherChatHandle } from "./dispatcher-chat/useDispatcherActions";
 
@@ -87,7 +77,6 @@ interface DispatcherChatProps {
   onResumeStoppedRun?: (sessionId: string) => Promise<void>;
   onOpenMcpStatus?: () => void;
   onOpenSettings: () => void;
-  onOpenPlanDocument?: (path: string) => void;
   onClosePanel?: () => void;
 }
 
@@ -109,7 +98,6 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
       onResumeStoppedRun,
       onOpenMcpStatus,
       onOpenSettings,
-      onOpenPlanDocument,
       onClosePanel,
     },
     ref,
@@ -122,11 +110,6 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     const [attachedImages, setAttachedImages] = useState<ImageSegment[]>([]);
     const [isStopping, setIsStopping] = useState(false);
     const [autoApprove, setAutoApprove] = useState(false);
-    const [mode, setMode] = useState<DispatcherMode>("default");
-    const [checklist, setChecklist] = useState<ChecklistPlanState | null>(null);
-    const [planInteraction, setPlanInteraction] = useState<PlanInteraction | null>(null);
-    const [activePlanPath, setActivePlanPath] = useState<string | null>(null);
-    const [implementingPlan, setImplementingPlan] = useState(false);
     const [pythonDrawerOpen, setPythonDrawerOpen] = useState(false);
     const [pythonRunTarget, setPythonRunTarget] = useState<PythonCodeRunTarget | null>(null);
     const [pythonRunRecords, setPythonRunRecords] = useState<Record<string, PythonCodeRunRecord>>({});
@@ -168,11 +151,10 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     }, []);
 
     const actions = useDispatcherActions({
-      sessionId, projectPath, isPlainChat, mode,
+      sessionId, projectPath, isPlainChat,
       updateLiveSessionState, scrollMessageListToBottom, currentSessionIdRef,
-      refreshSessionTokenUsage, onOpenPlanDocument, autoApproveRef,
+      refreshSessionTokenUsage, autoApproveRef,
       onDispatchApprovedRef, onDispatchContinueRef, onDispatchExitRef,
-      setMode, setChecklist, setPlanInteraction, setActivePlanPath,
       shouldStickToBottomRef, setInput, setAttachedImages,
     });
 
@@ -262,14 +244,13 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
     // ── Handlers (extracted to useDispatcherHandlers) ────────────
     const handlers = useDispatcherHandlers({
-      sessionId, input, attachedImages, isStopping, autoApprove, mode, planInteraction,
-      inputRef, shouldStickToBottomRef,
+      sessionId, input, attachedImages, isStopping, autoApprove,
+      shouldStickToBottomRef,
       isLoading, currentPendingDispatch,
       actions, updateLiveSessionState, voiceInput,
       resetSessionTokenUsage,
       setMessages, setAttachedImages, setIsStopping,
-      setAutoApprove, setMode, setChecklist, setPlanInteraction,
-      setActivePlanPath, setImplementingPlan,
+      setAutoApprove,
       onDispatchApproved, onDispatchRejected, onStopActiveRun, onResumeStoppedRun,
     });
 
@@ -283,8 +264,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
     useEffect(() => {
       const loadId = ++historyLoadRef.current;
       shouldStickToBottomRef.current = true;
-      setMessages([]); setIsStopping(false); setChecklist(null);
-      setPlanInteraction(null); setActivePlanPath(null); setImplementingPlan(false);
+      setMessages([]); setIsStopping(false);
       setPythonRunTarget(null); setPythonRunRecords({});
       invoke<DispatcherMessage[]>("dispatcher_list_messages", { workspaceId: sessionId })
         .then((loaded) => {
@@ -295,13 +275,6 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               prev.filter((m) => m.workspaceId === sessionId),
             ),
           );
-        }).catch(console.error);
-      invoke<DispatcherSessionRuntimeState>("dispatcher_get_session_runtime_state", { workspaceId: sessionId })
-        .then((state) => {
-          if (currentSessionIdRef.current !== sessionId || historyLoadRef.current !== loadId) return;
-          setMode(state.mode); setChecklist(state.checklist ?? null);
-          setPlanInteraction(state.planInteraction ?? null);
-          setActivePlanPath(state.activePlanPath ?? null);
         }).catch(console.error);
     }, [sessionId]);
 
@@ -430,8 +403,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
 
     useImperativeHandle(ref, () => ({
       continueWithResult: actions.continueWithResult,
-      applyRuntimeState: actions.applyRuntimeState,
-    }), [actions.continueWithResult, actions.applyRuntimeState]);
+    }), [actions.continueWithResult]);
 
     // ── Render ───────────────────────────────────────────────────
     return (
@@ -439,7 +411,7 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
         <div style={styles.container}>
           <ChatHeader
             isPlainChat={isPlainChat} isLoading={isLoading}
-            activePlanPath={activePlanPath} autoApprove={autoApprove} mcpIndicator={mcpIndicator}
+            autoApprove={autoApprove} mcpIndicator={mcpIndicator}
             hasMessages={messages.length > 0}
             keywords={sessionKeywords}
             onClickKeyword={(kw) => {
@@ -461,21 +433,16 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
             liveThinking={liveThinking} showThinking={false}
             liveToolCalls={liveToolCalls}
             assistantPlaceholder={assistantPlaceholder} liveUsageStats={liveUsageStats}
-            isStreaming={isLoading || hasPendingRun} isEmpty={isEmpty} isPlainChat={isPlainChat}
-            runError={runError} sessionId={sessionId} checklist={checklist}
-            planInteraction={planInteraction} implementingPlan={implementingPlan}
+            isStreaming={isLoading || hasPendingRun}
+            runError={runError} sessionId={sessionId}
             messageListRef={messageListRef} onScroll={handlers.handleMessageListScroll}
-            onAnswerPlanQuestion={handlers.handleAnswerPlanQuestion}
-            onImplementPlan={handlers.handleImplementPlan}
-            onImplementPlanWithClearedContext={handlers.handleImplementPlanWithClearedContext}
-            onStayInPlanMode={handlers.handleStayInPlanMode}
             onRunPython={handleRunPython}
             pythonRunRecords={pythonRunRecords}
           />
           {isEmpty && !isPlainChat && (
             <EmptyConversationLauncher
               conversationKind={conversationKind} input={input} attachedImages={attachedImages}
-              composerMode={composerMode} mode={mode}
+              composerMode={composerMode}
               isBusy={isLoading || isStopping} isStopping={isStopping}
               isRecordingVoice={voiceInput.isRecording} autoApprove={autoApprove}
               sessionTokenUsages={sessionTokenUsageEntries}
@@ -485,7 +452,6 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
               onDrop={handlers.handleDrop} onDragOver={handlers.handleDragOver}
               onRemoveImage={handlers.handleRemoveImage}
               onSend={handlers.handleSend} onStop={handlers.onStop} onResume={handlers.onResume}
-              onToggleMode={handlers.handleModeToggle}
               onToggleVoiceInput={voiceInput.toggleRecording} onDismissVoiceError={voiceInput.clearError}
               onOpenSettings={onOpenSettings}
               onOpenMcpStatus={() => onOpenMcpStatus?.()}
@@ -495,25 +461,19 @@ export const DispatcherChat = forwardRef<DispatcherChatHandle, DispatcherChatPro
           {(!isEmpty || isPlainChat) && (
             <ComposerInput
               isPlainChat={isPlainChat} input={input} attachedImages={attachedImages}
-              composerMode={composerMode} mode={mode}
+              composerMode={composerMode}
               isComposerBusy={isLoading || isStopping} isStopping={isStopping}
               isRecordingVoice={voiceInput.isRecording} voiceTranscript={voiceInput.transcript}
               voiceError={voiceInput.error} inputRef={inputRef}
-              checklist={checklist} planInteraction={planInteraction}
-              implementingPlan={implementingPlan} sessionTokenUsageEntries={sessionTokenUsageEntries}
+              sessionTokenUsageEntries={sessionTokenUsageEntries}
               chatModelConfigs={chatModelConfigs}
               activeChatModelIndex={activeChatModelIndex}
               onChangeInput={setInput} onPaste={handlers.handlePaste}
               onDrop={handlers.handleDrop} onDragOver={handlers.handleDragOver}
               onRemoveImage={handlers.handleRemoveImage}
               onSend={handlers.handleSend} onStop={handlers.onStop} onResume={handlers.onResume}
-              onToggleMode={handlers.handleModeToggle}
               onSelectChatModel={handleSelectChatModel}
               onToggleVoiceInput={voiceInput.toggleRecording} onDismissVoiceError={voiceInput.clearError}
-              onAnswerPlanQuestion={handlers.handleAnswerPlanQuestion}
-              onImplementPlan={handlers.handleImplementPlan}
-              onImplementPlanWithClearedContext={handlers.handleImplementPlanWithClearedContext}
-              onStayInPlanMode={handlers.handleStayInPlanMode}
             />
           )}
           {!isPlainChat && currentPendingDispatch && (

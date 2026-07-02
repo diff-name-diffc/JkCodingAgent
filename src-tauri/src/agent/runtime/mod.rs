@@ -1,6 +1,5 @@
 pub(crate) mod agent_loop;
 pub(crate) mod helpers;
-pub(crate) mod planning;
 pub(crate) mod prompt;
 pub(crate) mod protocol;
 pub(crate) mod run_loop;
@@ -19,6 +18,7 @@ use super::tools::ToolRegistry;
 use crate::project::mcp::ProjectMcpRegistry;
 use crate::ssh_tool::SshSessionManager;
 
+pub(crate) use run_loop::{DispatcherContinueAfterDispatchRequest, DispatcherRunRequest};
 pub(crate) use subprocess::DispatcherSubprocessRegistry;
 pub use types::{AgentEvent, AgentTurn, DispatchFeedbackState};
 
@@ -334,7 +334,7 @@ impl DispatcherAgent {
         on_event: &tauri::ipc::Channel<AgentEvent>,
         notify_user: bool,
     ) -> anyhow::Result<OpenAiCompatProvider> {
-        if !super::llm::messages_contain_inline_images(messages) {
+        if !super::llm::messages_contain_images(messages) {
             return Ok(provider.clone());
         }
 

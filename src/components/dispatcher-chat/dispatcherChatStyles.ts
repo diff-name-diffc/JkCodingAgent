@@ -326,109 +326,6 @@ export const dispatcherChatStyles = {
     fontSize: 12.5,
     lineHeight: 1.5,
   },
-  drawerActionRow: {
-    display: "flex",
-    alignItems: "center",
-    flexWrap: "wrap" as const,
-    gap: 8,
-  },
-  drawerPrimaryBtn: {
-    border: "none",
-    borderRadius: 9,
-    padding: "8px 11px",
-    background: "var(--accent)",
-    color: "#fff",
-    fontSize: 12,
-    fontWeight: 800,
-    cursor: "pointer",
-  },
-  drawerSecondaryBtn: {
-    border: "1px solid var(--border-dim)",
-    borderRadius: 9,
-    padding: "8px 11px",
-    background: "color-mix(in srgb, var(--bg-card) 88%, transparent)",
-    color: "var(--text-primary)",
-    fontSize: 12,
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-  drawerGhostBtn: {
-    border: "none",
-    borderRadius: 9,
-    padding: "8px 11px",
-    background: "transparent",
-    color: "var(--text-secondary)",
-    fontSize: 12,
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-  checklistRows: {
-    display: "flex",
-    flexDirection: "column" as const,
-    gap: 7,
-  },
-  checklistRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    minWidth: 0,
-  },
-  checklistStatus: (_status: "pending" | "in_progress" | "completed") => ({
-    width: 18,
-    height: 18,
-    borderRadius: 999,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-    position: "relative" as const,
-  }),
-  checklistStatusDot: (status: "pending" | "in_progress" | "completed") => ({
-    width: status === "in_progress" ? 16 : 9,
-    height: status === "in_progress" ? 16 : 9,
-    borderRadius: 999,
-    display: "inline-block",
-    background:
-      status === "completed"
-        ? "var(--success)"
-        : status === "pending"
-          ? "color-mix(in srgb, var(--text-muted) 55%, transparent)"
-          : "transparent",
-    border:
-      status === "in_progress"
-        ? "2px solid color-mix(in srgb, var(--accent) 24%, transparent)"
-        : "none",
-    borderTopColor: status === "in_progress" ? "var(--accent)" : undefined,
-    boxShadow:
-      status === "completed"
-        ? "0 0 0 4px color-mix(in srgb, var(--success) 13%, transparent)"
-        : status === "pending"
-          ? "0 0 0 4px color-mix(in srgb, var(--text-muted) 9%, transparent)"
-          : "none",
-    animation: status === "in_progress" ? "spin 0.85s linear infinite" : undefined,
-  }),
-  checklistContent: {
-    minWidth: 0,
-    display: "flex",
-    flexDirection: "column" as const,
-    gap: 2,
-  },
-  checklistText: (status: "pending" | "in_progress" | "completed") => ({
-    minWidth: 0,
-    color: status === "completed" ? "var(--text-muted)" : "var(--text-primary)",
-    textDecoration: status === "completed" ? "line-through" : "none",
-    fontSize: 12.5,
-    lineHeight: 1.45,
-  }),
-  checklistMeta: {
-    minWidth: 0,
-    color: "var(--text-muted)",
-    fontSize: 11,
-    lineHeight: 1.35,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap" as const,
-  },
   emptyLauncherWrap: (layoutMode: "single" | "split") => ({
     display: "flex",
     flexDirection: "column" as const,
@@ -828,6 +725,13 @@ export const dispatcherChatStyles = {
     userSelect: "text" as const,
     WebkitUserSelect: "text" as const,
     fontFamily: "var(--font-ui)",
+  },
+  userImageGallery: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    justifyContent: "flex-end",
+    gap: "8px",
+    maxWidth: "min(100%, 520px)",
   },
   markdownBody: {
     maxWidth: "100%",

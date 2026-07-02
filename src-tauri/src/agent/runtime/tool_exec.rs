@@ -8,12 +8,9 @@ use tokio::sync::watch;
 
 use super::super::common::{
     self, build_args_map, build_tool_calls_payload, cancellation_requested,
-    persist_tool_calls_message, persist_tool_result_raw, with_usage_paused,
+    persist_tool_calls_message, with_usage_paused,
 };
-use super::super::db::{
-    DispatcherDb, DispatcherMessageRecord, DispatcherSessionRuntimeState,
-    DispatcherSessionTokenUsageSource,
-};
+use super::super::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
 use super::super::llm::{ChatMessage, LlmResponse, RequestedToolCall};
 use super::super::sub_agent::tool::sub_agent_failure_message;
 use super::super::tools::{
@@ -24,7 +21,6 @@ use super::helpers::{
     build_tool_retry_context, emit, extract_message_content, is_retryable_tool_error,
     record_run_token_usage,
 };
-use super::planning::PlanningToolOutcome;
 use super::subprocess::{ProtocolBatchState, ProtocolToolAction};
 use super::types::AgentEvent;
 use super::DispatcherAgent;
@@ -34,7 +30,6 @@ use super::DispatcherAgent;
 /// 一批工具调用执行完毕后的聚合结果，供 run_llm_loop 决定是否收口本轮循环。
 pub(super) struct ToolCallsOutcome {
     pub saw_retryable_tool_error: bool,
-    pub planning_waiting_message: Option<String>,
     pub final_message: Option<String>,
     pub protocol_actions: Vec<ProtocolToolAction>,
     pub llm_messages: Vec<ChatMessage>,
@@ -44,7 +39,6 @@ pub(super) struct ToolCallsOutcome {
 pub(super) enum SingleToolDisposition {
     Handled,
     HandledWithRetry,
-    WaitForUser(String),
     ProtocolAction(ProtocolToolAction),
     NeedsSummary,
 }
@@ -69,7 +63,6 @@ impl DispatcherAgent {
         workspace: &Path,
         on_event: &Channel<AgentEvent>,
         response: LlmResponse,
-        runtime_state: &DispatcherSessionRuntimeState,
         allowed_tool_names: &HashSet<String>,
         tool_context: &ToolContext,
         cancel_rx: &watch::Receiver<bool>,
@@ -114,7 +107,6 @@ impl DispatcherAgent {
         let mut protocol_state =
             ProtocolBatchState::new(self.active_subprocesses_for_workspace(workspace_id));
         let mut protocol_actions = Vec::new();
-        let mut planning_waiting_message: Option<String> = None;
         let mut final_message: Option<String> = None;
         let mut saw_retryable_tool_error = false;
 
@@ -237,10 +229,8 @@ impl DispatcherAgent {
                     .process_single_tool_call(
                         db,
                         workspace_id,
-                        workspace,
                         on_event,
                         &tool_call,
-                        runtime_state,
                         &mut protocol_state,
                         &mut llm_messages,
                     )
@@ -280,24 +270,6 @@ impl DispatcherAgent {
                             .await?;
                         }
                         saw_retryable_tool_error = true;
-                    }
-                    SingleToolDisposition::WaitForUser(msg) => {
-                        if let Some(run_id) = &run_id {
-                            self.finish_tool_run(
-                                db,
-                                on_event,
-                                run_id,
-                                "succeeded",
-                                Some("raw"),
-                                None,
-                                None,
-                                None,
-                                Some("ask_user"),
-                                result_metadata_json.as_deref(),
-                            )
-                            .await?;
-                        }
-                        planning_waiting_message = Some(msg);
                     }
                     SingleToolDisposition::ProtocolAction(action) => {
                         if let Some(run_id) = &run_id {
@@ -409,78 +381,27 @@ impl DispatcherAgent {
 
         Ok(ToolCallsOutcome {
             saw_retryable_tool_error,
-            planning_waiting_message,
             final_message,
             protocol_actions,
             llm_messages,
         })
     }
 
-    /// 三级优先瀑布分类单个工具调用：
-    ///   优先级 1 — 计划工具（update_plan / 计划文档 / present_plan 等），
-    ///               它们会改变调度可见状态，可能主动停下循环等待用户。
-    ///   优先级 2 — 协议动作（dispatch / continue / exit 子进程），不在本地执行，
+    /// 两级优先瀑布分类单个工具调用：
+    ///   优先级 1 — 协议动作（dispatch / continue / exit 子进程），不在本地执行，
     ///               只发出 UI/子进程命令并通常以等待消息结束本轮。
-    ///   优先级 3 — 普通工具，由调用方负责持久化/压缩并决定是否需要下一轮迭代。
+    ///   优先级 2 — 普通工具，由调用方负责持久化/压缩并决定是否需要下一轮迭代。
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn process_single_tool_call(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
-        workspace: &Path,
         on_event: &Channel<AgentEvent>,
         tool_call: &RequestedToolCall,
-        runtime_state: &DispatcherSessionRuntimeState,
         protocol_state: &mut ProtocolBatchState,
         llm_messages: &mut Vec<ChatMessage>,
     ) -> Result<SingleToolDisposition> {
-        // Priority 1: planning tools mutate dispatcher-visible plan state and may intentionally
-        // stop the loop to wait for the user, so they must be handled before generic tools.
-        match self
-            .execute_planning_tool(
-                db,
-                workspace_id,
-                workspace,
-                on_event,
-                tool_call,
-                runtime_state,
-            )
-            .await
-        {
-            Ok(Some(PlanningToolOutcome::ToolResult(res))) => {
-                let message =
-                    persist_tool_result_raw(db, workspace_id, on_event, tool_call, &res).await?;
-                if let Some(message) = message.to_llm_message() {
-                    llm_messages.push(message);
-                }
-                return Ok(SingleToolDisposition::Handled);
-            }
-            Ok(Some(PlanningToolOutcome::WaitForUser(res))) => {
-                let message =
-                    persist_tool_result_raw(db, workspace_id, on_event, tool_call, &res).await?;
-                if let Some(message) = message.to_llm_message() {
-                    llm_messages.push(message);
-                }
-                return Ok(SingleToolDisposition::WaitForUser(res));
-            }
-            Ok(None) => {} // not a planning tool; fall through to subprocess protocol
-            Err(error) => {
-                let is_retryable = is_retryable_tool_error(&tool_call.name, &error);
-                let message = self
-                    .handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)
-                    .await?;
-                if let Some(message) = message.to_llm_message() {
-                    llm_messages.push(message);
-                }
-                return Ok(if is_retryable {
-                    SingleToolDisposition::HandledWithRetry
-                } else {
-                    SingleToolDisposition::Handled
-                });
-            }
-        }
-
-        // Priority 2: protocol actions do not execute locally. They emit UI/subprocess commands and
+        // Priority 1: protocol actions do not execute locally. They emit UI/subprocess commands and
         // then usually end this turn with a waiting message.
         match self
             .plan_protocol_action(db, workspace_id, tool_call, protocol_state)
@@ -515,7 +436,7 @@ impl DispatcherAgent {
             }
         }
 
-        // Priority 3: neither planning nor protocol. The caller will persist/compress the actual
+        // Priority 2: not protocol. The caller will persist/compress the actual
         // ToolResult and decide whether another LLM iteration is needed.
         Ok(SingleToolDisposition::NeedsSummary)
     }
@@ -539,7 +460,6 @@ impl DispatcherAgent {
 
     /// 根据 execute_tool_calls 的结果决定本轮循环是否结束：
     ///   - 出现可重试工具错误 ⇒ 不收口，让模型再修正一轮。
-    ///   - 计划等待用户 ⇒ 输出等待消息并收口（需用户交互）。
     ///   - 有协议动作 ⇒ 输出"等待子任务"消息并收口（需子进程回流）。
     ///   - 有 final_message ⇒ 输出最终答复并收口。
     ///   - 以上都不是 ⇒ 返回 None，循环继续。
@@ -553,25 +473,6 @@ impl DispatcherAgent {
     ) -> Result<Option<super::super::db::DispatcherMessageRecord>> {
         if outcome.saw_retryable_tool_error {
             return Ok(None);
-        }
-
-        if let Some(waiting_content) = outcome.planning_waiting_message {
-            let usage_stats = usage_tracker.snapshot();
-            let waiting_msg = db
-                .add_visible_message_with_usage_async(
-                    workspace_id,
-                    "assistant",
-                    &waiting_content,
-                    &usage_stats,
-                )
-                .await?;
-            emit(
-                on_event,
-                AgentEvent::AssistantMessage {
-                    message: waiting_msg.clone(),
-                },
-            );
-            return Ok(Some(waiting_msg));
         }
 
         if !outcome.protocol_actions.is_empty() {

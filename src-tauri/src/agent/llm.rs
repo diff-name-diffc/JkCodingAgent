@@ -27,7 +27,10 @@ pub struct OutboundToolCall {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
+    /// Plain text view used by summaries, logs, and text-only providers.
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_parts: Vec<ChatMessageContentPart>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,12 +46,28 @@ impl ChatMessage {
         Self {
             role: "system".to_string(),
             content,
+            content_parts: Vec::new(),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
             name: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatMessageContentPart {
+    Text { text: String },
+    Image { source: ChatMessageImageSource },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChatMessageImageSource {
+    ChatImage { image_id: String },
+    DataUrl { data_url: String },
+    LocalPath { path: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,8 +157,7 @@ pub struct LlmRequestBodySnapshot {
     pub max_tokens: u32,
     pub temperature: f32,
     pub stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enable_thinking: Option<bool>,
+    pub enable_thinking: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -197,10 +215,14 @@ impl LlmUsage {
     }
 }
 
-pub fn messages_contain_inline_images(messages: &[ChatMessage]) -> bool {
-    messages
-        .iter()
-        .any(|message| message.role == "user" && content_contains_inline_image(&message.content))
+pub fn messages_contain_images(messages: &[ChatMessage]) -> bool {
+    messages.iter().any(|message| {
+        message.role == "user"
+            && message
+                .content_parts
+                .iter()
+                .any(|part| matches!(part, ChatMessageContentPart::Image { .. }))
+    })
 }
 
 fn append_valid_utf8(buffer: &mut String, leftover_bytes: &mut Vec<u8>, bytes: &[u8]) {
@@ -300,7 +322,6 @@ impl OpenAiCompatProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        enable_thinking: bool,
     ) -> LlmRequestSnapshot {
         LlmRequestSnapshot {
             method: "POST".to_string(),
@@ -315,7 +336,7 @@ impl OpenAiCompatProvider {
                 max_tokens: self.max_tokens,
                 temperature: self.temperature,
                 stream: true,
-                enable_thinking: self.enable_thinking_parameter(enable_thinking),
+                enable_thinking: true,
                 stream_options: Some(StreamOptions {
                     include_usage: true,
                 }),
@@ -351,15 +372,8 @@ impl OpenAiCompatProvider {
         enable_multimodal: bool,
         on_delta: impl FnMut(&str),
     ) -> Result<LlmResponse> {
-        self.chat_stream_with_thinking(
-            messages,
-            tools,
-            enable_multimodal,
-            false,
-            on_delta,
-            |_, _| {},
-        )
-        .await
+        self.chat_stream_with_thinking(messages, tools, enable_multimodal, on_delta, |_, _| {})
+            .await
     }
 
     /// Streaming chat completion. Thinking output follows the model/provider default behavior.
@@ -368,7 +382,6 @@ impl OpenAiCompatProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
         enable_multimodal: bool,
-        enable_thinking: bool,
         mut on_delta: impl FnMut(&str),
         mut on_thinking_delta: impl FnMut(&str, u64),
     ) -> Result<LlmResponse> {
@@ -385,7 +398,7 @@ impl OpenAiCompatProvider {
             temperature: self.temperature,
             tools: if tools.is_empty() { None } else { Some(tools) },
             stream: true,
-            enable_thinking: self.enable_thinking_parameter(enable_thinking),
+            enable_thinking: true,
             stream_options: Some(StreamOptions {
                 include_usage: true,
             }),
@@ -557,12 +570,6 @@ impl OpenAiCompatProvider {
             usage,
         })
     }
-
-    fn enable_thinking_parameter(&self, enable_thinking: bool) -> Option<bool> {
-        // 按标准 thinking 开关传递：true 思考、false 不思考。摘要默认 false，
-        // 主对话按用户配置传递，子代理固定 false。
-        Some(enable_thinking)
-    }
 }
 
 fn format_llm_http_error(status: StatusCode, body: &str) -> String {
@@ -667,8 +674,8 @@ async fn build_api_messages(
     for message in messages {
         api_messages.push(ApiChatMessage {
             role: message.role.clone(),
-            content: if enable_multimodal && message.role == "user" {
-                build_api_message_content(&message.content).await?
+            content: if enable_multimodal && message.role == "user" && message_has_image(message) {
+                build_api_message_content(message).await?
             } else {
                 ApiMessageContent::Text(message.content.clone())
             },
@@ -686,68 +693,37 @@ async fn build_api_messages(
     Ok(api_messages)
 }
 
-async fn build_api_message_content(content: &str) -> Result<ApiMessageContent> {
-    let parts = match extract_multimodal_parts(content).await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!(
-                "build_api_message_content: extract_multimodal_parts failed for {} byte content: {e:#}",
-                content.len()
-            );
-            return Ok(ApiMessageContent::Text(content.to_string()));
+async fn build_api_message_content(message: &ChatMessage) -> Result<ApiMessageContent> {
+    let mut parts = Vec::new();
+
+    for part in &message.content_parts {
+        match part {
+            ChatMessageContentPart::Text { text } => push_text_part(&mut parts, text),
+            ChatMessageContentPart::Image { source } => {
+                parts.push(ApiMessageContentPart::ImageUrl {
+                    image_url: ApiImageUrl {
+                        url: image_source_for_api(source).await?,
+                    },
+                });
+            }
         }
-    };
+    }
+
     if parts
         .iter()
         .any(|part| matches!(part, ApiMessageContentPart::ImageUrl { .. }))
     {
-        eprintln!(
-            "build_api_message_content: multimodal — {} parts ({} image_url, {} text)",
-            parts.len(),
-            parts
-                .iter()
-                .filter(|p| matches!(p, ApiMessageContentPart::ImageUrl { .. }))
-                .count(),
-            parts
-                .iter()
-                .filter(|p| matches!(p, ApiMessageContentPart::Text { .. }))
-                .count(),
-        );
         Ok(ApiMessageContent::Parts(parts))
     } else {
-        eprintln!(
-            "build_api_message_content: no image_url parts found in {} byte content, falling back to text",
-            content.len()
-        );
-        Ok(ApiMessageContent::Text(content.to_string()))
+        Ok(ApiMessageContent::Text(message.content.clone()))
     }
 }
 
-fn content_contains_inline_image(content: &str) -> bool {
-    extract_inline_image_urls(content).next().is_some()
-}
-
-async fn extract_multimodal_parts(content: &str) -> Result<Vec<ApiMessageContentPart>> {
-    let mut parts = Vec::new();
-    let mut cursor = 0usize;
-
-    for image in extract_inline_image_urls(content) {
-        if image.start > cursor {
-            push_text_part(&mut parts, &content[cursor..image.start]);
-        }
-        parts.push(ApiMessageContentPart::ImageUrl {
-            image_url: ApiImageUrl {
-                url: image_url_for_api(&image.url).await?,
-            },
-        });
-        cursor = image.end;
-    }
-
-    if cursor < content.len() {
-        push_text_part(&mut parts, &content[cursor..]);
-    }
-
-    Ok(parts)
+fn message_has_image(message: &ChatMessage) -> bool {
+    message
+        .content_parts
+        .iter()
+        .any(|part| matches!(part, ChatMessageContentPart::Image { .. }))
 }
 
 fn push_text_part(parts: &mut Vec<ApiMessageContentPart>, text: &str) {
@@ -759,87 +735,29 @@ fn push_text_part(parts: &mut Vec<ApiMessageContentPart>, text: &str) {
     }
 }
 
-struct InlineImageUrl {
-    start: usize,
-    end: usize,
-    url: String,
-}
-
-fn extract_inline_image_urls(content: &str) -> impl Iterator<Item = InlineImageUrl> + '_ {
-    InlineImageUrlIter {
-        content,
-        search_from: 0,
-    }
-}
-
-struct InlineImageUrlIter<'a> {
-    content: &'a str,
-    search_from: usize,
-}
-
-impl Iterator for InlineImageUrlIter<'_> {
-    type Item = InlineImageUrl;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.search_from < self.content.len() {
-            let rel_start = self.content[self.search_from..].find("![")?;
-            let start = self.search_from + rel_start;
-            let after_bang = start + 2;
-            let Some(alt_end_rel) = self.content[after_bang..].find("](") else {
-                self.search_from = after_bang;
-                continue;
-            };
-            let url_start = after_bang + alt_end_rel + 2;
-            let Some(url_end_rel) = self.content[url_start..].find(')') else {
-                self.search_from = url_start;
-                continue;
-            };
-            let url_end = url_start + url_end_rel;
-            let end = url_end + 1;
-            let url = &self.content[url_start..url_end];
-            self.search_from = end;
-
-            if is_supported_image_reference(url) {
-                return Some(InlineImageUrl {
-                    start,
-                    end,
-                    url: url.to_string(),
-                });
+async fn image_source_for_api(source: &ChatMessageImageSource) -> Result<String> {
+    match source {
+        ChatMessageImageSource::DataUrl { data_url } => {
+            if !data_url.starts_with("data:image/") {
+                anyhow::bail!("图片 data URL 必须以 data:image/ 开头");
             }
+            Ok(data_url.clone())
         }
-
-        None
+        ChatMessageImageSource::ChatImage { image_id } => {
+            let resolved = crate::chat_images::resolve_chat_image_id_async(image_id.clone())
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            tokio::task::spawn_blocking(move || local_image_to_data_url(&resolved))
+                .await
+                .context("读取聊天图片任务失败")?
+        }
+        ChatMessageImageSource::LocalPath { path } => {
+            let path = local_image_path(path)?;
+            tokio::task::spawn_blocking(move || local_image_to_data_url(&path))
+                .await
+                .context("读取本地图片任务失败")?
+        }
     }
-}
-
-fn is_supported_image_reference(url: &str) -> bool {
-    url.starts_with("data:image/")
-        || url.starts_with(crate::chat_images::CHAT_IMAGE_PROTOCOL)
-        || local_image_path(url).is_ok()
-}
-
-async fn image_url_for_api(url: &str) -> Result<String> {
-    if url.starts_with("data:image/") {
-        return Ok(url.to_string());
-    }
-
-    // `chat-image://<image_id>` URIs must be resolved to their filesystem path
-    // first (the path is stored in `~/.jkcodingagent/chat-images/...` and is
-    // looked up by scanning that directory). Only then can it be read and
-    // encoded as a data URL for the LLM vision API.
-    if url.starts_with(crate::chat_images::CHAT_IMAGE_PROTOCOL) {
-        let resolved = crate::chat_images::resolve_chat_image_id_async(url.to_string())
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-        return tokio::task::spawn_blocking(move || local_image_to_data_url(&resolved))
-            .await
-            .context("读取 chat-image 图片任务失败")?;
-    }
-
-    let path = local_image_path(url)?;
-    tokio::task::spawn_blocking(move || local_image_to_data_url(&path))
-        .await
-        .context("读取本地图片任务失败")?
 }
 
 fn local_image_path(url: &str) -> Result<PathBuf> {
@@ -1001,8 +919,7 @@ struct StreamChatRequest<'a> {
     max_tokens: u32,
     temperature: f32,
     stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    enable_thinking: Option<bool>,
+    enable_thinking: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]

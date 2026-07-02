@@ -1,15 +1,12 @@
 import { memo, type RefObject } from "react";
 import type {
-  ChecklistPlanState,
   DispatcherMessageUsageStats,
-  PlanInteraction,
   PythonCodeRunRecord,
   PythonCodeRunTarget,
 } from "../../types";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcherChatView";
 import type { ToolActivityItem } from "../ToolActivityBubble";
 import { UserMessageBubble, AssistantTurnBubble } from "./MessageBubbles";
-import { InteractionDrawer } from "./InteractionDrawer";
 import { useSubAgentProgressMessages } from "../subAgentEventStore";
 import { dispatcherChatStyles as styles } from "./dispatcherChatStyles";
 
@@ -22,21 +19,10 @@ interface MessageListProps {
   assistantPlaceholder: string | null;
   liveUsageStats: DispatcherMessageUsageStats | null;
   isStreaming: boolean;
-  isEmpty: boolean;
-  isPlainChat: boolean;
   runError: string | null;
   sessionId: string;
-  checklist: ChecklistPlanState | null;
-  planInteraction: PlanInteraction | null;
-  implementingPlan: boolean;
   messageListRef: RefObject<HTMLDivElement | null>;
   onScroll: (event: React.UIEvent<HTMLDivElement>) => void;
-  onAnswerPlanQuestion: (answer: string) => void;
-  onImplementPlan: (interaction: Extract<PlanInteraction, { kind: "ready" }>) => void;
-  onImplementPlanWithClearedContext: (
-    interaction: Extract<PlanInteraction, { kind: "ready" }>,
-  ) => void;
-  onStayInPlanMode: () => void;
   onRunPython?: (target: PythonCodeRunTarget) => void;
   pythonRunRecords?: Record<string, PythonCodeRunRecord>;
 }
@@ -50,19 +36,10 @@ export const MessageList = memo(function MessageList({
   assistantPlaceholder,
   liveUsageStats,
   isStreaming,
-  isEmpty,
-  isPlainChat,
   runError,
   sessionId,
-  checklist,
-  planInteraction,
-  implementingPlan,
   messageListRef,
   onScroll,
-  onAnswerPlanQuestion,
-  onImplementPlan,
-  onImplementPlanWithClearedContext,
-  onStayInPlanMode,
   onRunPython,
   pythonRunRecords,
 }: MessageListProps) {
@@ -95,17 +72,6 @@ export const MessageList = memo(function MessageList({
       onScroll={onScroll}
     >
       {runError && <div style={styles.runErrorBanner}>{runError}</div>}
-      {isEmpty && !isPlainChat && (
-        <InteractionDrawer
-          checklist={checklist}
-          planInteraction={planInteraction}
-          implementingPlan={implementingPlan}
-          onAnswerPlanQuestion={onAnswerPlanQuestion}
-          onImplementPlan={onImplementPlan}
-          onImplementPlanWithClearedContext={onImplementPlanWithClearedContext}
-          onStayInPlanMode={onStayInPlanMode}
-        />
-      )}
       {displayItems.map((item) => {
         if (item.kind === "user") {
           return (

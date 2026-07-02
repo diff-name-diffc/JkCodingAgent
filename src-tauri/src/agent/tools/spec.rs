@@ -14,7 +14,6 @@ pub enum ToolCategory {
     Browser,
     Image,
     Ssh,
-    Planning,
     Delegation,
     Mcp,
     SubAgent,
@@ -30,7 +29,6 @@ impl ToolCategory {
             Self::Browser => "browser",
             Self::Image => "image",
             Self::Ssh => "ssh",
-            Self::Planning => "planning",
             Self::Delegation => "delegation",
             Self::Mcp => "mcp",
             Self::SubAgent => "sub_agent",
@@ -236,14 +234,6 @@ fn category_for_name(name: &str) -> ToolCategory {
         name if name.starts_with("browser_") => ToolCategory::Browser,
         "generate_image" | "edit_image" => ToolCategory::Image,
         name if name.starts_with("ssh_") => ToolCategory::Ssh,
-        "update_plan"
-        | "ask_plan_question"
-        | "create_plan_document"
-        | "read_plan_document"
-        | "replace_plan_document"
-        | "edit_plan_document"
-        | "present_plan"
-        | "mark_plan_implemented" => ToolCategory::Planning,
         "dispatch_claude"
         | "dispatch_codex"
         | "continue_claude_session"
@@ -257,15 +247,8 @@ fn category_for_name(name: &str) -> ToolCategory {
 
 fn access_for_name(name: &str, category: ToolCategory) -> ToolAccess {
     match name {
-        "read_file" | "list_dir" | "glob" | "grep" | "read_plan_document" => {
-            ToolAccess::readonly_workspace()
-        }
-        "write_file"
-        | "edit_file"
-        | "create_plan_document"
-        | "replace_plan_document"
-        | "edit_plan_document"
-        | "mark_plan_implemented" => ToolAccess::mutates_workspace(),
+        "read_file" | "list_dir" | "glob" | "grep" => ToolAccess::readonly_workspace(),
+        "write_file" | "edit_file" => ToolAccess::mutates_workspace(),
         "browser_read_text" | "browser_visual_analyze" | "list_sub_agents" => ToolAccess {
             readonly: true,
             workspace_bound: false,
@@ -273,7 +256,7 @@ fn access_for_name(name: &str, category: ToolCategory) -> ToolAccess {
             mutates_filesystem: false,
             mutates_external_state: false,
         },
-        "message" | "update_plan" | "ask_plan_question" | "present_plan" => ToolAccess {
+        "message" => ToolAccess {
             readonly: false,
             workspace_bound: false,
             requires_network: false,

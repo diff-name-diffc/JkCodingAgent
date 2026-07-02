@@ -2,10 +2,9 @@ import { memo, useCallback } from "react";
 import { Sparkles, Send, Square, Play, X, Settings2, PlugZap, Wrench, Mic } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useComposedInput } from "../../hooks/useComposedInput";
-import type { DispatcherMode, DispatcherSessionTokenUsage, ImageSegment } from "../../types";
+import type { DispatcherSessionTokenUsage, ImageSegment } from "../../types";
 import { SessionTokenUsageIndicators } from "../SessionTokenUsageIndicators";
 import { CommandComposer } from "../ui/chatPrimitives";
-import { PlanModeToggleButton } from "./ComposerButtons";
 import { VoiceInputStatusCard } from "./VoiceInputStatusCard";
 import {
   getComposerButtonLabel,
@@ -28,7 +27,6 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
   conversationKind,
   input,
   composerMode,
-  mode,
   isBusy,
   isStopping,
   isRecordingVoice,
@@ -47,7 +45,6 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
   onSend,
   onStop,
   onResume,
-  onToggleMode,
   onToggleVoiceInput,
   onDismissVoiceError,
   onOpenSettings,
@@ -57,7 +54,6 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
   conversationKind: "project" | "chat";
   input: string;
   composerMode: "send" | "stop" | "resume";
-  mode: DispatcherMode;
   isBusy: boolean;
   isStopping: boolean;
   isRecordingVoice: boolean;
@@ -76,7 +72,6 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
   onSend: () => void;
   onStop: () => void;
   onResume: () => void;
-  onToggleMode: (mode: DispatcherMode) => void;
   onToggleVoiceInput: () => void;
   onDismissVoiceError: () => void;
   onOpenSettings: () => void;
@@ -193,7 +188,6 @@ export const EmptyConversationLauncher = memo(function EmptyConversationLauncher
 
             <div style={styles.emptyComposerPrimaryRow}>
               <SessionTokenUsageIndicators entries={sessionTokenUsages} />
-              {!isPlainChat && <PlanModeToggleButton mode={mode} onToggleMode={onToggleMode} />}
               <button
                 type="button"
                 style={styles.voiceBtn(isRecordingVoice)}

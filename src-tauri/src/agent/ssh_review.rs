@@ -111,6 +111,7 @@ pub async fn review_shell_command(
         ChatMessage {
             role: "user".to_string(),
             content: user_prompt,
+            content_parts: Vec::new(),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,

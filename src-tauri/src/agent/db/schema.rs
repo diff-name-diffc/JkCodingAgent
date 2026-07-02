@@ -21,7 +21,7 @@ impl DispatcherDb {
         let mut conn = self.conn()?;
 
         // Fast path: if schema is already at the expected version, skip all DDL.
-        const SCHEMA_VERSION: i32 = 17;
+        const SCHEMA_VERSION: i32 = 18;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -42,10 +42,6 @@ impl DispatcherDb {
                 project_id TEXT NOT NULL,
                 kind TEXT NOT NULL DEFAULT 'project',
                 title TEXT NOT NULL,
-                mode TEXT NOT NULL DEFAULT 'default',
-                active_plan_path TEXT,
-                checklist_json TEXT,
-                plan_interaction_json TEXT,
                 category TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -374,15 +370,6 @@ impl DispatcherDb {
                 [],
             )
             .context("create dispatcher session project kind index")?;
-            ensure_column_exists_tx(
-                &tx,
-                "dispatcher_sessions",
-                "mode",
-                "TEXT NOT NULL DEFAULT 'default'",
-            )?;
-            ensure_column_exists_tx(&tx, "dispatcher_sessions", "active_plan_path", "TEXT")?;
-            ensure_column_exists_tx(&tx, "dispatcher_sessions", "checklist_json", "TEXT")?;
-            ensure_column_exists_tx(&tx, "dispatcher_sessions", "plan_interaction_json", "TEXT")?;
             ensure_python_code_runs_table_tx(&tx)?;
 
             ensure_chat_categories_table_tx(&tx)?;
@@ -506,10 +493,6 @@ impl DispatcherDb {
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
                     title TEXT NOT NULL,
-                    mode TEXT NOT NULL DEFAULT 'default',
-                    active_plan_path TEXT,
-                    checklist_json TEXT,
-                    plan_interaction_json TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -703,6 +686,8 @@ impl DispatcherDb {
                 .context("v14: commit scenario chat category config migration")?;
         }
 
+        drop_obsolete_planning_columns(&conn)?;
+
         // Mark schema as fully migrated (outside the transaction — PRAGMA is auto-commit).
         conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION))
             .context("set user_version")?;
@@ -822,6 +807,35 @@ fn ensure_column_exists_tx(
 ) -> Result<()> {
     // Transaction deref's to Connection, so delegate directly.
     ensure_column_exists(tx, table, column, definition)
+}
+
+fn drop_column_if_exists(conn: &Connection, table: &str, column: &str) -> Result<()> {
+    let exists = conn
+        .prepare(&format!(
+            "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"
+        ))
+        .and_then(|mut stmt| stmt.query_row(params![column], |row| row.get::<_, i64>(0)))
+        .unwrap_or(0)
+        > 0;
+    if !exists {
+        return Ok(());
+    }
+    conn.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column};"))
+        .with_context(|| format!("drop obsolete column {table}.{column}"))
+}
+
+fn drop_obsolete_planning_columns(conn: &Connection) -> Result<()> {
+    for table in ["dispatcher_sessions", "project_sessions"] {
+        for column in [
+            "mode",
+            "active_plan_path",
+            "checklist_json",
+            "plan_interaction_json",
+        ] {
+            drop_column_if_exists(conn, table, column)?;
+        }
+    }
+    Ok(())
 }
 
 fn ensure_python_code_runs_table_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {

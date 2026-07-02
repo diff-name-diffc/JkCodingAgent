@@ -1,4 +1,4 @@
-//! 消息内容段落（ContentSegment）及其渲染、路径安全校验，以及图片/计划文件的
+//! 消息内容段落（ContentSegment）及其渲染、路径安全校验，以及图片文件的
 //! 资源清理。资源清理函数被会话删除/清空逻辑调用（见 sessions / messages 模块）。
 
 use std::collections::HashSet;
@@ -42,33 +42,14 @@ pub enum ContentSegment {
     },
 }
 
-impl ContentSegment {
-    pub fn to_markdown(&self) -> String {
-        match self {
-            ContentSegment::Text { text, .. } => text.clone(),
-            ContentSegment::Image {
-                alt,
-                // `path` is intentionally not included in the rendered markdown
-                // output so that raw filesystem paths never appear in the
-                // content visible to the user or sent to the LLM.
-                image_id,
-                ..
-            } => {
-                format!(
-                    "![{}]({})",
-                    alt.as_deref().unwrap_or("image"),
-                    format!("chat-image://{}", image_id)
-                )
-            }
-            ContentSegment::File { .. } => String::new(),
-        }
-    }
-}
-
-pub fn segments_to_markdown(segments: &[ContentSegment]) -> String {
+pub fn segments_to_plain_text(segments: &[ContentSegment]) -> String {
     segments
         .iter()
-        .map(|s| s.to_markdown())
+        .filter_map(|segment| match segment {
+            ContentSegment::Text { text, .. } => Some(text.as_str()),
+            ContentSegment::Image { .. } | ContentSegment::File { .. } => None,
+        })
+        .filter(|text| !text.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -100,6 +81,10 @@ pub(super) fn parse_segments_json(segments_json: &str) -> Vec<ContentSegment> {
     }
 }
 
+pub(crate) fn try_parse_segments_json(segments_json: &str) -> Result<Vec<ContentSegment>> {
+    serde_json::from_str(segments_json).context("parse dispatcher message segments")
+}
+
 pub(super) fn safe_absolute_image_path(path: &str) -> Result<PathBuf> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -128,29 +113,6 @@ pub(super) fn safe_absolute_image_path(path: &str) -> Result<PathBuf> {
     }
 
     Ok(normalized)
-}
-
-pub(super) fn safe_absolute_plan_path(path: &str) -> Result<PathBuf> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("plan path is empty");
-    }
-
-    let path = Path::new(trimmed);
-    if !path.is_absolute() {
-        anyhow::bail!("plan path must be absolute: {trimmed}");
-    }
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        anyhow::bail!("plan path must not contain parent traversal: {trimmed}");
-    }
-    if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
-        anyhow::bail!("plan path must be a Markdown file: {trimmed}");
-    }
-
-    Ok(path.to_path_buf())
 }
 
 pub(super) fn insert_chat_images(
@@ -220,7 +182,7 @@ pub(super) fn delete_chat_image_resources(
     tx: &rusqlite::Transaction<'_>,
     workspace_id: &str,
 ) -> Result<Vec<PathBuf>> {
-    let mut paths = HashSet::new();
+    let mut paths: HashSet<String> = HashSet::new();
     {
         let mut stmt = tx
             .prepare("SELECT path FROM chat_images WHERE workspace_id = ?1")
@@ -289,48 +251,4 @@ fn lexical_normalize_path(path: &Path) -> PathBuf {
         }
     }
     normalized
-}
-
-pub(super) fn delete_plan_file_resources(
-    tx: &rusqlite::Transaction<'_>,
-    workspace_id: &str,
-) -> Result<()> {
-    let mut paths = HashSet::new();
-
-    let mut stmt = tx
-        .prepare("SELECT active_plan_path FROM dispatcher_sessions WHERE id = ?1 AND active_plan_path IS NOT NULL")
-        .context("load dispatcher session plan path")?;
-    let dispatcher_paths = stmt
-        .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .context("collect dispatcher plan paths")?;
-    paths.extend(dispatcher_paths);
-
-    let mut stmt = tx
-        .prepare("SELECT active_plan_path FROM project_sessions WHERE id = ?1 AND active_plan_path IS NOT NULL")
-        .context("load project session plan path")?;
-    let project_paths = stmt
-        .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .context("collect project plan paths")?;
-    paths.extend(project_paths);
-
-    for path in paths {
-        let safe_path = match safe_absolute_plan_path(&path) {
-            Ok(p) => p,
-            Err(error) => {
-                eprintln!("skip invalid plan path: {error}");
-                continue;
-            }
-        };
-        match std::fs::remove_file(&safe_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => {
-                eprintln!("remove plan file {} failed: {error}", safe_path.display());
-            }
-        }
-    }
-
-    Ok(())
 }

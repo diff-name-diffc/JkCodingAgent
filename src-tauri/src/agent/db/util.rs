@@ -2,16 +2,14 @@
 //!
 //! 这些工具被多个业务子模块共用，放在此处避免相互耦合。
 
-use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::types::Type;
-use serde::Deserialize;
 
 use crate::agent::config::DEFAULT_SUMMARY_MODEL;
 use crate::agent::llm::LlmUsage;
 
 use super::artifacts::DispatcherToolArtifactRef;
-use super::content::{parse_segments_json, segments_to_markdown};
+use super::content::{parse_segments_json, segments_to_plain_text};
 use super::messages::{DispatcherMessageRecord, DispatcherMessageUsageStats};
 
 pub(super) const MAX_LLM_DIALOGUES: usize = 5;
@@ -44,19 +42,6 @@ pub(super) fn normalize_summary_model(summary_model: &str) -> String {
     }
 }
 
-pub(super) fn parse_optional_json<T>(raw: Option<String>, column: &str) -> Result<Option<T>>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    raw.as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| {
-            serde_json::from_str::<T>(value)
-                .with_context(|| format!("parse dispatcher session {column}"))
-        })
-        .transpose()
-}
-
 // ── 行映射器 ──────────────────────────────────────────────────
 // 这些映射器被 messages 等多个子模块共用，放在领域无关的此处。
 
@@ -64,7 +49,7 @@ pub(super) fn map_dispatcher_message_record(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<DispatcherMessageRecord> {
     let segments_json: String = row.get(3)?;
-    let content = segments_to_markdown(&parse_segments_json(&segments_json));
+    let content = segments_to_plain_text(&parse_segments_json(&segments_json));
     let thinking_elapsed_ms = row
         .get::<_, Option<i64>>(5)?
         .map(u64::try_from)

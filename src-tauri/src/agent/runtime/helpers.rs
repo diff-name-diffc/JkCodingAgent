@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 use serde_json::Value;
 use tauri::ipc::Channel;
 
@@ -11,64 +9,11 @@ use super::super::llm::{LlmResponse, LlmUsage, RequestedToolCall};
 use super::types::AgentEvent;
 use crate::shared::truncate_for_display;
 
-// ─── Argument Extraction ──────────────────────────────────────────────────────
-
-pub(crate) fn string_arg_required(args: &Value, key: &str) -> std::result::Result<String, String> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| format!("错误：缺少必填参数 {key}，且不能为空"))
-}
-
 pub(crate) fn extract_message_content(arguments: &Value) -> Option<String> {
     arguments
         .get("content")
         .and_then(Value::as_str)
         .map(str::to_string)
-}
-
-// ─── Path Utilities ───────────────────────────────────────────────────────────
-
-pub(crate) fn lexical_normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                normalized.pop();
-            }
-            _ => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
-}
-
-pub(crate) fn is_implemented_plan_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.contains("-已实现.md"))
-}
-
-pub(crate) fn slugify_plan_title(title: &str) -> String {
-    let mut slug = String::new();
-    let mut last_dash = false;
-    for ch in title.chars().flat_map(char::to_lowercase) {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch);
-            last_dash = false;
-        } else if !last_dash {
-            slug.push('-');
-            last_dash = true;
-        }
-    }
-    let slug = slug.trim_matches('-');
-    if slug.is_empty() {
-        "plan".to_string()
-    } else {
-        slug.chars().take(48).collect()
-    }
 }
 
 // ─── Tool Error Classification ────────────────────────────────────────────────

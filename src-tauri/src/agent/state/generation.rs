@@ -3,9 +3,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// "最新一代胜出"模式，用于标题/关键字等异步生成的竞态保护。
-///
-/// 场景：用户连续发多条消息，每条都会异步触发一次标题生成。
-/// 用代际号保证只有最后一次（最新代）生成的结果才会被提交，
+/// 用代际号自增数保证只有最后一次（最新代）生成的结果才会被提交，
 /// 先前的过期任务在 finish_latest 时被识别并丢弃，避免旧标题覆盖新标题。
 pub(super) struct GenerationGate {
     active: Mutex<HashMap<String, u64>>,

@@ -4,7 +4,6 @@ pub(crate) mod content;
 pub(crate) mod keywords;
 pub(crate) mod messages;
 pub(crate) mod python_runs;
-pub(crate) mod runtime_state;
 pub(crate) mod schema;
 pub(crate) mod sessions;
 pub(crate) mod settings;
@@ -26,13 +25,9 @@ pub use categories::{ChatCategory, ChatCategoryAgentConfig};
 pub use keywords::{KeywordAction, SessionKeywordRecord, SessionSearchResult};
 pub use messages::{DispatcherMessageRecord, DispatcherMessageUsageStats};
 pub use python_runs::PythonCodeRunRecord;
-pub use runtime_state::{
-    ChecklistPlanItem, ChecklistPlanState, ChecklistStepStatus, DispatcherSessionRuntimeState,
-    PlanInteraction, PlanQuestionOption,
-};
 pub use sessions::{
-    AgentContext, ChatSessionRecord, DispatcherMode, DispatcherSessionKind,
-    DispatcherSessionRecord, ProjectSessionRecord, SessionPage,
+    AgentContext, ChatSessionRecord, DispatcherSessionKind, DispatcherSessionRecord,
+    ProjectSessionRecord, SessionPage,
 };
 pub use settings::{
     AhaContextConfig, AhaSettingsV2, AhaSharedModels, DispatcherModelConfig,

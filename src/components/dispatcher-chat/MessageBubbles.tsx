@@ -3,10 +3,13 @@ import { Check, Copy, Brain, ChevronDown, ChevronRight, MessageSquareText } from
 import type {
   DispatcherMessage,
   DispatcherMessageUsageStats,
+  ImageSegment,
   PythonCodeRunRecord,
+  TextSegment,
 } from "../../types";
 import type { PythonCodeRunTarget } from "../../types";
 import { type AssistantThinkingBlock, type AssistantTurnSegment } from "../dispatcherChatView";
+import { MarkdownImage } from "../markdown/MarkdownImage";
 import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
 import { ToolActivityBubble, type ToolActivityItem } from "../ToolActivityBubble";
 import { formatElapsedMmSs, formatTokenCount } from "../../utils";
@@ -64,21 +67,67 @@ export const BubbleCopyButton = memo(function BubbleCopyButton({
 
 // ── UserMessageBubble ──────────────────────────────────────────────────────────
 
+function isTextSegment(segment: DispatcherMessage["segments"][number]): segment is TextSegment {
+  return segment.type === "text";
+}
+
+function isImageSegment(segment: DispatcherMessage["segments"][number]): segment is ImageSegment {
+  return segment.type === "image";
+}
+
+const UserImageGallery = memo(function UserImageGallery({ images }: { images: ImageSegment[] }) {
+  if (images.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      className="dispatcher-user-image-gallery"
+      style={styles.userImageGallery}
+      aria-label="用户发送的图片"
+    >
+      {images.map((image) => (
+        <MarkdownImage
+          key={image.id}
+          src={`chat-image://${image.imageId}`}
+          alt={image.alt || "用户发送的图片"}
+        />
+      ))}
+    </div>
+  );
+});
+
 export const UserMessageBubble = memo(function UserMessageBubble({
   message,
 }: {
   message: DispatcherMessage;
 }) {
-  // 用户输入按原始文本渲染，不做 Markdown 解析，保留换行与空格即可。
+  const { images, text } = useMemo(() => {
+    const imageSegments = message.segments.filter(isImageSegment);
+    const textSegments = message.segments.filter(isTextSegment);
+    const textFromSegments = textSegments
+      .map((segment) => segment.text)
+      .filter((value) => value.trim())
+      .join("\n");
+
+    return {
+      images: imageSegments,
+      text: textFromSegments || (message.segments.length === 0 ? message.content : ""),
+    };
+  }, [message.content, message.segments]);
+
   return (
     <div style={styles.messageBubbleWrap(true)}>
       <div style={styles.messageBubbleColumn(true)}>
-        <div style={styles.messageBubble(true)}>
-          <div className="dispatcher-searchable-content" style={styles.userMessageText}>
-            {message.content}
+        <UserImageGallery images={images} />
+        {text && (
+          <div style={styles.messageBubble(true)}>
+            <div className="dispatcher-searchable-content" style={styles.userMessageText}>
+              {text}
+            </div>
           </div>
-        </div>
-        <BubbleCopyButton text={message.content} isUser />
+        )}
+        {text && <BubbleCopyButton text={text} isUser />}
       </div>
       <div style={styles.messageAvatar(true)}>
         <img src={userAvatarUrl} alt="用户头像" style={styles.messageAvatarImage} />

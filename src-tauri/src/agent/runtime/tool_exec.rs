@@ -21,19 +21,12 @@ use super::helpers::{
     build_tool_retry_context, emit, extract_message_content, is_retryable_tool_error,
     record_run_token_usage,
 };
+use super::run_loop_core::RunLoopToolOutcome;
 use super::subprocess::{ProtocolBatchState, ProtocolToolAction};
 use super::types::AgentEvent;
 use super::DispatcherAgent;
 
 // ─── Internal types ───────────────────────────────────────────────────────────
-
-/// 一批工具调用执行完毕后的聚合结果，供 run_llm_loop 决定是否收口本轮循环。
-pub(super) struct ToolCallsOutcome {
-    pub saw_retryable_tool_error: bool,
-    pub final_message: Option<String>,
-    pub protocol_actions: Vec<ProtocolToolAction>,
-    pub llm_messages: Vec<ChatMessage>,
-}
 
 /// 单个工具调用经三级优先瀑布处理后的处置分类（见 process_single_tool_call）。
 pub(super) enum SingleToolDisposition {
@@ -68,7 +61,7 @@ impl DispatcherAgent {
         cancel_rx: &watch::Receiver<bool>,
         request_provider: &super::super::llm::OpenAiCompatProvider,
         usage_tracker: &mut super::super::common::UsageTracker,
-    ) -> Result<ToolCallsOutcome> {
+    ) -> Result<RunLoopToolOutcome> {
         // Persist the assistant tool-call message before executing tools. The LLM protocol expects
         // later tool results to answer a concrete assistant tool_call_id, so this write is part of
         // protocol correctness rather than UI bookkeeping.
@@ -379,7 +372,7 @@ impl DispatcherAgent {
             }
         }
 
-        Ok(ToolCallsOutcome {
+        Ok(RunLoopToolOutcome {
             saw_retryable_tool_error,
             final_message,
             protocol_actions,
@@ -468,7 +461,7 @@ impl DispatcherAgent {
         db: &DispatcherDb,
         workspace_id: &str,
         on_event: &Channel<AgentEvent>,
-        outcome: ToolCallsOutcome,
+        outcome: RunLoopToolOutcome,
         usage_tracker: &super::super::common::UsageTracker,
     ) -> Result<Option<super::super::db::DispatcherMessageRecord>> {
         if outcome.saw_retryable_tool_error {

@@ -3,6 +3,7 @@ pub(crate) mod helpers;
 pub(crate) mod prompt;
 pub(crate) mod protocol;
 pub(crate) mod run_loop;
+pub(crate) mod run_loop_core;
 pub(crate) mod subprocess;
 pub(crate) mod tool_exec;
 pub(crate) mod types;
@@ -18,7 +19,8 @@ use super::tools::ToolRegistry;
 use crate::project::mcp::ProjectMcpRegistry;
 use crate::ssh_tool::SshSessionManager;
 
-pub(crate) use run_loop::{DispatcherContinueAfterDispatchRequest, DispatcherRunRequest};
+pub(crate) use run_loop::DispatcherContinueAfterDispatchRequest;
+pub(crate) use run_loop_core::{run_agent_turn, AgentRunRequest, RuntimeAgentKind};
 pub(crate) use subprocess::DispatcherSubprocessRegistry;
 pub use types::{AgentEvent, AgentTurn, DispatchFeedbackState};
 

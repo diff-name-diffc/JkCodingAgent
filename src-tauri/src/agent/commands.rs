@@ -17,8 +17,8 @@ use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
 use super::llm::{ChatMessageContentPart, ChatMessageImageSource};
 use super::runtime::{
-    AgentEvent, AgentTurn, DispatchFeedbackState, DispatcherContinueAfterDispatchRequest,
-    DispatcherRunRequest,
+    run_agent_turn, AgentEvent, AgentRunRequest, AgentTurn, DispatchFeedbackState,
+    DispatcherContinueAfterDispatchRequest, RuntimeAgentKind,
 };
 use super::state::DispatcherState;
 use super::sub_agent::db::ToolInfo;
@@ -592,17 +592,20 @@ pub async fn dispatcher_send_project_agent_message(
     let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
     let title_generation_index = state.begin_title_generation(&workspace_id);
     let keywords_generation_index = state.begin_keywords_generation(&workspace_id);
-    let result = agent
-        .run(DispatcherRunRequest {
+    let result = run_agent_turn(
+        &agent,
+        AgentRunRequest {
+            kind: RuntimeAgentKind::Project,
             db: state.db(),
             workspace_id: &workspace_id,
-            workspace_path: &project_path,
+            workspace_path: Some(&project_path),
             user_segments_json: segments_json,
             on_event,
             cancel_rx: run_handle.cancel_rx,
-        })
-        .await
-        .map_err(|error| error.to_string());
+        },
+    )
+    .await
+    .map_err(|error| error.to_string());
     state.finish_run(&workspace_id);
     spawn_session_title_update(
         &state,
@@ -637,16 +640,20 @@ pub async fn dispatcher_send_chat_agent_message(
     let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
     let title_generation_index = state.begin_title_generation(&workspace_id);
     let keywords_generation_index = state.begin_keywords_generation(&workspace_id);
-    let result = agent
-        .run(
-            state.db(),
-            &workspace_id,
-            segments_json,
+    let result = run_agent_turn(
+        &agent,
+        AgentRunRequest {
+            kind: RuntimeAgentKind::PlainChat,
+            db: state.db(),
+            workspace_id: &workspace_id,
+            workspace_path: None,
+            user_segments_json: segments_json,
             on_event,
-            run_handle.cancel_rx,
-        )
-        .await
-        .map_err(|error| error.to_string());
+            cancel_rx: run_handle.cancel_rx,
+        },
+    )
+    .await
+    .map_err(|error| error.to_string());
     state.finish_run(&workspace_id);
     spawn_session_title_update(
         &state,

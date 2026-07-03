@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use parking_lot::Mutex;
 use tauri::{ipc::Channel, AppHandle};
 use tokio::sync::watch;
@@ -22,7 +23,11 @@ use super::db::{
 use super::llm::{
     ChatMessage, LlmResponse, OpenAiCompatProvider, RequestedToolCall, ToolDefinition,
 };
-use super::runtime::{agent_loop::AgentLoop, AgentEvent, AgentTurn};
+use super::runtime::run_loop_core::{
+    AgentRunAdapter, AgentRunRequest, RunLoopAgent, RunLoopContext, RunLoopIteration,
+    RunLoopToolOutcome, RunPromptState, RuntimeAgentKind,
+};
+use super::runtime::{agent_loop::AgentLoop, AgentEvent};
 use super::sub_agent::{tool::sub_agent_failure_message, SubAgentManager};
 use super::tools::{ToolAction, ToolRegistry, ToolResult, ToolRunFinishUpdate, ToolRuntime};
 use crate::project::mcp::{ensure_project_mcp_file, ProjectMcpRegistry};
@@ -202,283 +207,6 @@ impl PlainChatAgent {
             self.summary_model.lock().clone(),
             self.config.max_tokens,
             self.config.temperature,
-        )
-    }
-
-    pub async fn run(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        user_segments_json: String,
-        on_event: Channel<AgentEvent>,
-        cancel_rx: watch::Receiver<bool>,
-    ) -> Result<AgentTurn> {
-        common::emit(
-            &on_event,
-            AgentEvent::Started {
-                workspace_id: workspace_id.to_string(),
-            },
-        );
-        let result: Result<AgentTurn> = async {
-
-        let user = db
-            .add_visible_message_from_segments_async(workspace_id, "user", user_segments_json)
-            .await?;
-        common::emit(&on_event, AgentEvent::UserMessage { message: user });
-
-        let provider = self.provider.lock().clone();
-        if !provider.is_configured() {
-            anyhow::bail!(
-                "聊天 LLM API Key 未配置。请在设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
-            );
-        }
-
-        let mut usage_tracker = UsageTracker::new();
-        let workspace = self.browser_workspace().await?;
-        self.project_mcp_registry
-            .ensure_recent(&workspace)
-            .await
-            .map_err(anyhow::Error::msg)
-            .context("刷新聊天 MCP 状态失败")?;
-        let reply = self
-            .run_loop(
-                db,
-                workspace_id,
-                &workspace,
-                &on_event,
-                &provider,
-                cancel_rx,
-                &mut usage_tracker,
-            )
-            .await?;
-
-        let messages = db.list_visible_messages_async(workspace_id).await?;
-        common::emit(
-            &on_event,
-            AgentEvent::Finished {
-                messages: messages.clone(),
-            },
-        );
-        Ok(AgentTurn { reply, messages })
-        }
-        .await;
-
-        if let Err(error) = &result {
-            common::emit(
-                &on_event,
-                AgentEvent::Failed {
-                    workspace_id: workspace_id.to_string(),
-                    message: error.to_string(),
-                },
-            );
-        }
-
-        result
-    }
-
-    /// Core agent loop: stream → execute tools → loop until no tools or cancelled.
-    #[allow(clippy::too_many_arguments)]
-    async fn run_loop(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        workspace: &Path,
-        on_event: &Channel<AgentEvent>,
-        provider: &OpenAiCompatProvider,
-        cancel_rx: watch::Receiver<bool>,
-        usage_tracker: &mut UsageTracker,
-    ) -> Result<DispatcherMessageRecord> {
-        let tool_context = self
-            .build_tool_context(db, workspace_id, workspace, provider)
-            .await;
-        let mut tool_definitions = self.build_tool_definitions(workspace_id, workspace);
-        let mut allowed_tool_names = tool_definitions
-            .iter()
-            .map(|t| t.function.name.clone())
-            .collect::<std::collections::HashSet<_>>();
-        let mut agent_loop = AgentLoop::new(
-            db,
-            workspace_id,
-            self.build_effective_system_prompt(workspace_id),
-        )
-        .await?;
-        let vision_model = self.vision_model.lock().clone();
-
-        for iteration in 0..self.config.max_tool_iterations {
-            if cancellation_requested(&cancel_rx) {
-                return emit_stop_and_finish(db, workspace_id, on_event, "", usage_tracker).await;
-            }
-
-            if iteration > 0 {
-                tool_definitions = self.build_tool_definitions(workspace_id, workspace);
-                allowed_tool_names = tool_definitions
-                    .iter()
-                    .map(|t| t.function.name.clone())
-                    .collect::<std::collections::HashSet<_>>();
-            }
-
-            let messages = agent_loop.request_messages();
-            let request_provider = select_provider_for_messages(
-                provider,
-                &messages,
-                &vision_model,
-                on_event,
-                iteration == 0,
-            )?;
-
-            // Stream LLM response
-            let response = match stream_llm_response(
-                db,
-                workspace_id,
-                request_provider.model(),
-                DispatcherSessionTokenUsageSource::Primary,
-                usage_tracker,
-                on_event,
-                &request_provider,
-                &messages,
-                &tool_definitions,
-                cancel_rx.clone(),
-            )
-            .await?
-            {
-                LlmStreamOutcome::Cancelled(partial) => {
-                    return emit_stop_and_finish(
-                        db,
-                        workspace_id,
-                        on_event,
-                        &partial,
-                        usage_tracker,
-                    )
-                    .await;
-                }
-                LlmStreamOutcome::Response(response) => response,
-            };
-
-            // If no tool calls, persist final message and return
-            if response.tool_calls.is_empty() {
-                let content = response.content.trim().to_string();
-                if content.is_empty() {
-                    anyhow::bail!(
-                        "{}",
-                        empty_plain_chat_response_error(
-                            &response,
-                            &request_provider,
-                            tool_definitions.len(),
-                        )
-                    );
-                }
-                let usage_stats = usage_tracker.snapshot();
-                let reply =
-                    persist_assistant_message(db, workspace_id, &content, &usage_stats).await?;
-                common::emit(
-                    on_event,
-                    AgentEvent::AssistantMessage {
-                        message: reply.clone(),
-                    },
-                );
-                return Ok(reply);
-            }
-
-            // Persist tool_call message, emit ToolPlanned events
-            let tool_calls_payload = build_tool_calls_payload(&response.tool_calls, &self.tools);
-            let args_map = build_args_map(&response.tool_calls, &self.tools);
-            agent_loop.append(ChatMessage {
-                role: "assistant".to_string(),
-                content: response.content.clone(),
-                content_parts: Vec::new(),
-                reasoning_content: if response.thinking_content.is_empty() {
-                    None
-                } else {
-                    Some(response.thinking_content.clone())
-                },
-                tool_calls: Some(tool_calls_payload.clone()),
-                tool_call_id: None,
-                name: None,
-            });
-
-            for tc in &tool_calls_payload {
-                common::emit(
-                    on_event,
-                    AgentEvent::ToolPlanned {
-                        tool_call_id: Some(tc.id.clone()),
-                        name: tc.function.name.clone(),
-                        arguments: tc.function.arguments.clone(),
-                    },
-                );
-            }
-
-            persist_tool_calls_message(
-                db,
-                workspace_id,
-                &response.content,
-                &tool_calls_payload,
-                &response.thinking_content,
-                Some(response.thinking_elapsed_ms),
-            )
-            .await?;
-
-            // Execute tool calls sequentially (with parallel for readonly)
-            let executed = self
-                .execute_all_tools(
-                    db,
-                    &response.tool_calls,
-                    &args_map,
-                    &tool_context,
-                    &allowed_tool_names,
-                    on_event,
-                    &cancel_rx,
-                    usage_tracker,
-                    workspace_id,
-                )
-                .await?;
-
-            let summary_provider = self.summary_provider(&request_provider);
-            let summary_model = self.summary_model();
-            for executed_tool in &executed {
-                if cancellation_requested(&cancel_rx) {
-                    break;
-                }
-                let result_text = executed_tool.result.output_for_llm();
-                let result_metadata_json = executed_tool.result.run_metadata_json();
-                let tool_message = persist_tool_result_with_compression(
-                    db,
-                    workspace_id,
-                    on_event,
-                    &executed_tool.tool_call,
-                    &result_text,
-                    &summary_provider,
-                    &summary_model,
-                    |usage| {
-                        usage_tracker.record(usage);
-                    },
-                )
-                .await?;
-                if let Some(message) = tool_message.to_llm_message() {
-                    agent_loop.append(message);
-                }
-                self.finish_tool_run(
-                    db,
-                    on_event,
-                    &executed_tool.run_id,
-                    executed_tool.result.status.as_run_status(),
-                    tool_message.tool_result_mode.as_deref(),
-                    Some(&tool_message.id),
-                    executed_tool.result.status.error_kind(),
-                    executed_tool
-                        .result
-                        .status
-                        .error_kind()
-                        .map(|_| result_text.as_str()),
-                    executed_tool.result.action.as_ref().map(ToolAction::kind),
-                    result_metadata_json.as_deref(),
-                )
-                .await?;
-            }
-        }
-
-        anyhow::bail!(
-            "已达到最大工具迭代次数（{}），本轮聊天被终止。请检查模型是否陷入工具调用循环。",
-            self.config.max_tool_iterations
         )
     }
 
@@ -908,6 +636,237 @@ impl PlainChatAgent {
     }
 }
 
+#[async_trait]
+impl RunLoopAgent for PlainChatAgent {
+    async fn build_loop_tool_context(&self, ctx: &RunLoopContext<'_>) -> super::tools::ToolContext {
+        self.build_tool_context(ctx.db, ctx.workspace_id, ctx.workspace, &ctx.provider)
+            .await
+    }
+
+    fn max_tool_iterations(&self) -> usize {
+        self.config.max_tool_iterations
+    }
+
+    fn tool_definitions_for_loop(
+        &self,
+        workspace_id: &str,
+        workspace: &Path,
+    ) -> Vec<ToolDefinition> {
+        self.build_tool_definitions(workspace_id, workspace)
+    }
+
+    fn build_iteration_messages(
+        &self,
+        _ctx: &RunLoopContext<'_>,
+        agent_loop: &AgentLoop,
+        _tool_definitions: &[ToolDefinition],
+    ) -> Result<Vec<ChatMessage>> {
+        Ok(agent_loop.request_messages())
+    }
+
+    fn provider_for_iteration(
+        &self,
+        ctx: &RunLoopContext<'_>,
+        messages: &[ChatMessage],
+        iteration: usize,
+    ) -> Result<OpenAiCompatProvider> {
+        let vision_model = self.vision_model.lock().clone();
+        select_provider_for_messages(
+            &ctx.provider,
+            messages,
+            &vision_model,
+            ctx.on_event,
+            iteration == 0,
+        )
+    }
+
+    async fn stream_iteration_response(
+        &self,
+        ctx: &mut RunLoopContext<'_>,
+        iteration: &RunLoopIteration,
+        _iteration_index: usize,
+    ) -> Result<LlmStreamOutcome> {
+        stream_llm_response(
+            ctx.db,
+            ctx.workspace_id,
+            iteration.request_provider.model(),
+            DispatcherSessionTokenUsageSource::Primary,
+            &mut ctx.usage_tracker,
+            ctx.on_event,
+            &iteration.request_provider,
+            &iteration.messages,
+            &iteration.tool_definitions,
+            ctx.cancel_rx.clone(),
+        )
+        .await
+    }
+
+    async fn handle_cancelled_loop(
+        &self,
+        ctx: &RunLoopContext<'_>,
+        partial: &str,
+    ) -> Result<DispatcherMessageRecord> {
+        emit_stop_and_finish(
+            ctx.db,
+            ctx.workspace_id,
+            ctx.on_event,
+            partial,
+            &ctx.usage_tracker,
+        )
+        .await
+    }
+
+    async fn handle_no_tool_response(
+        &self,
+        ctx: &RunLoopContext<'_>,
+        response: &LlmResponse,
+    ) -> Result<DispatcherMessageRecord> {
+        let content = response.content.trim().to_string();
+        if content.is_empty() {
+            anyhow::bail!(
+                "{}",
+                empty_plain_chat_response_error(
+                    response,
+                    &ctx.provider,
+                    self.build_tool_definitions(ctx.workspace_id, ctx.workspace)
+                        .len(),
+                )
+            );
+        }
+        let usage_stats = ctx.usage_tracker.snapshot();
+        let reply =
+            persist_assistant_message(ctx.db, ctx.workspace_id, &content, &usage_stats).await?;
+        common::emit(
+            ctx.on_event,
+            AgentEvent::AssistantMessage {
+                message: reply.clone(),
+            },
+        );
+        Ok(reply)
+    }
+
+    async fn execute_loop_tool_calls(
+        &self,
+        ctx: &mut RunLoopContext<'_>,
+        iteration: &RunLoopIteration,
+        tool_context: &super::tools::ToolContext,
+        response: LlmResponse,
+    ) -> Result<RunLoopToolOutcome> {
+        let tool_calls_payload = build_tool_calls_payload(&response.tool_calls, &self.tools);
+        let args_map = build_args_map(&response.tool_calls, &self.tools);
+        let mut llm_messages = Vec::new();
+
+        for tc in &tool_calls_payload {
+            common::emit(
+                ctx.on_event,
+                AgentEvent::ToolPlanned {
+                    tool_call_id: Some(tc.id.clone()),
+                    name: tc.function.name.clone(),
+                    arguments: tc.function.arguments.clone(),
+                },
+            );
+        }
+
+        let assistant_message = persist_tool_calls_message(
+            ctx.db,
+            ctx.workspace_id,
+            &response.content,
+            &tool_calls_payload,
+            &response.thinking_content,
+            Some(response.thinking_elapsed_ms),
+        )
+        .await?;
+        if let Some(message) = assistant_message.to_llm_message() {
+            llm_messages.push(message);
+        }
+
+        let executed = self
+            .execute_all_tools(
+                ctx.db,
+                &response.tool_calls,
+                &args_map,
+                tool_context,
+                &iteration.allowed_tool_names,
+                ctx.on_event,
+                &ctx.cancel_rx,
+                &mut ctx.usage_tracker,
+                ctx.workspace_id,
+            )
+            .await?;
+
+        let summary_provider = self.summary_provider(&iteration.request_provider);
+        let summary_model = self.summary_model();
+        for executed_tool in &executed {
+            if cancellation_requested(&ctx.cancel_rx) {
+                break;
+            }
+            let result_text = executed_tool.result.output_for_llm();
+            let result_metadata_json = executed_tool.result.run_metadata_json();
+            let tool_message = persist_tool_result_with_compression(
+                ctx.db,
+                ctx.workspace_id,
+                ctx.on_event,
+                &executed_tool.tool_call,
+                &result_text,
+                &summary_provider,
+                &summary_model,
+                |usage| {
+                    ctx.usage_tracker.record(usage);
+                },
+            )
+            .await?;
+            if let Some(message) = tool_message.to_llm_message() {
+                llm_messages.push(message);
+            }
+            self.finish_tool_run(
+                ctx.db,
+                ctx.on_event,
+                &executed_tool.run_id,
+                executed_tool.result.status.as_run_status(),
+                tool_message.tool_result_mode.as_deref(),
+                Some(&tool_message.id),
+                executed_tool.result.status.error_kind(),
+                executed_tool
+                    .result
+                    .status
+                    .error_kind()
+                    .map(|_| result_text.as_str()),
+                executed_tool.result.action.as_ref().map(ToolAction::kind),
+                result_metadata_json.as_deref(),
+            )
+            .await?;
+        }
+
+        Ok(RunLoopToolOutcome {
+            saw_retryable_tool_error: false,
+            final_message: None,
+            protocol_actions: Vec::new(),
+            llm_messages,
+        })
+    }
+
+    async fn resolve_loop_outcome(
+        &self,
+        _ctx: &RunLoopContext<'_>,
+        _outcome: RunLoopToolOutcome,
+    ) -> Result<Option<DispatcherMessageRecord>> {
+        Ok(None)
+    }
+
+    fn max_iterations_error(&self, kind: RuntimeAgentKind) -> String {
+        match kind {
+            RuntimeAgentKind::PlainChat => format!(
+                "已达到最大工具迭代次数（{}），本轮聊天被终止。请检查模型是否陷入工具调用循环。",
+                self.config.max_tool_iterations
+            ),
+            RuntimeAgentKind::Project => format!(
+                "已达到最大工具迭代次数（{}），本轮执行被终止。",
+                self.config.max_tool_iterations
+            ),
+        }
+    }
+}
+
 fn is_tool_allowed_by_config(configured: &[String], tool_name: &str) -> bool {
     configured.is_empty() || configured.iter().any(|name| name == tool_name)
 }
@@ -921,6 +880,34 @@ fn effective_allowed_tools_for_chat_category(
         allowed.extend(SUB_AGENT_TOOL_NAMES.iter().map(|name| name.to_string()));
     }
     allowed
+}
+
+#[async_trait]
+impl AgentRunAdapter for PlainChatAgent {
+    async fn prepare_run_workspace(&self, _request: &AgentRunRequest<'_>) -> Result<PathBuf> {
+        let workspace = self.browser_workspace().await?;
+        self.project_mcp_registry
+            .ensure_recent(&workspace)
+            .await
+            .map_err(anyhow::Error::msg)
+            .context("刷新聊天 MCP 状态失败")?;
+        Ok(workspace)
+    }
+
+    fn provider_snapshot(&self) -> OpenAiCompatProvider {
+        self.provider.lock().clone()
+    }
+
+    fn provider_missing_message(&self) -> &'static str {
+        "聊天 LLM API Key 未配置。请在设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
+    }
+
+    async fn build_run_prompt(&self, workspace_id: &str) -> Result<RunPromptState> {
+        Ok(RunPromptState {
+            initial_system_prompt: self.build_effective_system_prompt(workspace_id),
+            project_prompt: None,
+        })
+    }
 }
 
 #[cfg(test)]

@@ -291,8 +291,8 @@ impl PlainChatAgent {
         let tool_context = self
             .build_tool_context(db, workspace_id, workspace, provider)
             .await;
-        let tool_definitions = self.build_tool_definitions(workspace_id, workspace);
-        let allowed_tool_names = tool_definitions
+        let mut tool_definitions = self.build_tool_definitions(workspace_id, workspace);
+        let mut allowed_tool_names = tool_definitions
             .iter()
             .map(|t| t.function.name.clone())
             .collect::<std::collections::HashSet<_>>();
@@ -307,6 +307,14 @@ impl PlainChatAgent {
         for iteration in 0..self.config.max_tool_iterations {
             if cancellation_requested(&cancel_rx) {
                 return emit_stop_and_finish(db, workspace_id, on_event, "", usage_tracker).await;
+            }
+
+            if iteration > 0 {
+                tool_definitions = self.build_tool_definitions(workspace_id, workspace);
+                allowed_tool_names = tool_definitions
+                    .iter()
+                    .map(|t| t.function.name.clone())
+                    .collect::<std::collections::HashSet<_>>();
             }
 
             let messages = agent_loop.request_messages();

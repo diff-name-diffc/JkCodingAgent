@@ -333,7 +333,7 @@ fn is_known_parallel_readonly(name: &str) -> bool {
 }
 
 fn is_tool_managed_timeout(name: &str) -> bool {
-    matches!(name, "call_sub_agent")
+    matches!(name, "call_sub_agent" | "exec" | "local_zsh")
 }
 
 #[cfg(test)]
@@ -398,5 +398,20 @@ mod tests {
         assert_eq!(spec.execution.timeout_secs, 600);
         assert!(!spec.execution.unified_timeout);
         assert!(!spec.execution.parallelizable);
+    }
+
+    #[test]
+    fn shell_tools_use_runtime_context_timeout_policy() {
+        for name in ["exec", "local_zsh"] {
+            let spec = ToolSpec::new(
+                name,
+                "执行命令",
+                json!({ "type": "object", "properties": {} }),
+            );
+
+            assert_eq!(spec.category, ToolCategory::Shell);
+            assert!(!spec.execution.unified_timeout);
+            assert!(!spec.execution.parallelizable);
+        }
     }
 }

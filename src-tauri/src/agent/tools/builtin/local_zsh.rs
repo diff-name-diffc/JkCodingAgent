@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
-use super::common::{string_arg, u64_arg, with_compression_parameters};
+use super::common::{string_arg, with_compression_parameters};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 
@@ -75,11 +75,6 @@ impl AgentTool for LocalZshTool {
                     "command": {
                         "type": "string",
                         "description": "要在 /bin/zsh -lc 中执行的命令。不要使用 cd；当前目录固定为 .jkcodingagent/local_env/zsh。"
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "超时时间，单位秒，默认使用会话工具超时。",
-                        "minimum": 1
                     }
                 },
                 "required": ["command"]
@@ -101,9 +96,7 @@ impl AgentTool for LocalZshTool {
             return format!("错误：local_zsh 已拦截命令：{reason}\n命令：{command}");
         }
 
-        let timeout_secs = u64_arg(args, "timeout")
-            .unwrap_or(context.exec_timeout_secs)
-            .max(1);
+        let timeout_secs = context.exec_timeout_secs.max(1);
         let workspace = context.workspace.clone();
         let session_id = context.workspace_id.clone();
 
@@ -628,4 +621,17 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 
 fn escape_table_cell(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', " ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentTool, LocalZshTool};
+
+    #[test]
+    fn local_zsh_schema_does_not_expose_runtime_timeout() {
+        let parameters = LocalZshTool.parameters();
+
+        assert!(parameters["properties"].get("command").is_some());
+        assert!(parameters["properties"].get("timeout").is_none());
+    }
 }

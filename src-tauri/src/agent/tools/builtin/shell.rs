@@ -6,7 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
-use super::common::{is_dangerous, string_arg, u64_arg, with_compression_parameters};
+use super::common::{is_dangerous, string_arg, with_compression_parameters};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 
@@ -44,8 +44,7 @@ impl AgentTool for ExecTool {
             json!({
                 "type": "object",
                 "properties": {
-                    "command": { "type": "string", "description": "要执行的 shell 命令" },
-                    "timeout": { "type": "integer", "description": "超时时间，单位秒，默认 60", "minimum": 1 }
+                    "command": { "type": "string", "description": "要执行的 shell 命令" }
                 },
                 "required": ["command"]
             }),
@@ -61,9 +60,7 @@ impl AgentTool for ExecTool {
         if is_dangerous(&command) {
             return format!("错误：基于安全策略已拦截命令：{command}");
         }
-        let timeout_secs = u64_arg(args, "timeout")
-            .unwrap_or(context.exec_timeout_secs)
-            .max(1);
+        let timeout_secs = context.exec_timeout_secs.max(1);
 
         let mut child = match Command::new("sh")
             .arg("-lc")
@@ -207,5 +204,18 @@ impl AgentTool for MessageTool {
             Some(content) => format!("消息已发送（{} 字符）", content.len()),
             None => "错误：缺少必填参数 content".to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentTool, ExecTool};
+
+    #[test]
+    fn exec_schema_does_not_expose_runtime_timeout() {
+        let parameters = ExecTool.parameters();
+
+        assert!(parameters["properties"].get("command").is_some());
+        assert!(parameters["properties"].get("timeout").is_none());
     }
 }

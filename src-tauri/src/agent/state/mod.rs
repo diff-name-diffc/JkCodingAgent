@@ -2,10 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use super::agents::{DispatcherAgent, DispatcherSubprocessRegistry, PlainChatAgent};
 use super::config::DispatcherAgentConfig;
 use super::db::{AgentContext, DispatcherDb};
-use super::plain_chat::PlainChatAgent;
-use super::runtime::{DispatcherAgent, DispatcherSubprocessRegistry};
 use super::sub_agent::db::ToolInfo;
 use super::sub_agent::SubAgentManager;
 use super::tools::ToolRegistry;

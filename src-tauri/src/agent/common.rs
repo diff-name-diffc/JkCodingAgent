@@ -16,7 +16,7 @@ use super::llm::{
     messages_contain_images, ChatMessage, FunctionCall, LlmResponse, LlmUsage,
     OpenAiCompatProvider, OutboundToolCall, RequestedToolCall, ToolDefinition,
 };
-use super::runtime::AgentEvent;
+use super::run_loop::AgentEvent;
 use super::tools::ToolRegistry;
 
 // ─── Usage Tracking ────────────────────────────────────────────────────────────

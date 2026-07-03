@@ -1,28 +1,24 @@
-pub(crate) mod agent_loop;
 pub(crate) mod helpers;
 pub(crate) mod prompt;
 pub(crate) mod protocol;
-pub(crate) mod run_loop;
-pub(crate) mod run_loop_core;
 pub(crate) mod subprocess;
 pub(crate) mod tool_exec;
-pub(crate) mod types;
+pub(crate) mod turn;
 
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tauri::AppHandle;
 
-use super::config::DispatcherAgentConfig;
-use super::llm::OpenAiCompatProvider;
-use super::tools::ToolRegistry;
+use crate::agent::config::DispatcherAgentConfig;
+use crate::agent::llm::OpenAiCompatProvider;
+use crate::agent::run_loop::AgentEvent;
+use crate::agent::tools::ToolRegistry;
 use crate::project::mcp::ProjectMcpRegistry;
 use crate::ssh_tool::SshSessionManager;
 
-pub(crate) use run_loop::DispatcherContinueAfterDispatchRequest;
-pub(crate) use run_loop_core::{run_agent_turn, AgentRunRequest, RuntimeAgentKind};
 pub(crate) use subprocess::DispatcherSubprocessRegistry;
-pub use types::{AgentEvent, AgentTurn, DispatchFeedbackState};
+pub(crate) use turn::DispatcherContinueAfterDispatchRequest;
 
 // ─── Internal types ───────────────────────────────────────────────────────────
 
@@ -68,7 +64,7 @@ pub struct DispatcherAgent {
     pub(super) project_mcp_registry: ProjectMcpRegistry,
     pub(super) subprocesses: Arc<DispatcherSubprocessRegistry>,
     pub(super) allowed_tools: Mutex<Vec<String>>,
-    pub(super) sub_agent_manager: Option<Arc<super::sub_agent::SubAgentManager>>,
+    pub(super) sub_agent_manager: Option<Arc<crate::agent::sub_agent::SubAgentManager>>,
 }
 
 // ─── Construction & configuration ─────────────────────────────────────────────
@@ -79,7 +75,7 @@ impl DispatcherAgent {
         project_mcp_registry: ProjectMcpRegistry,
         ssh_manager: SshSessionManager,
         subprocesses: Arc<DispatcherSubprocessRegistry>,
-        sub_agent_manager: Option<Arc<super::sub_agent::SubAgentManager>>,
+        sub_agent_manager: Option<Arc<crate::agent::sub_agent::SubAgentManager>>,
     ) -> Self {
         let provider = OpenAiCompatProvider::new(
             config.api_key.clone(),
@@ -91,10 +87,10 @@ impl DispatcherAgent {
 
         let mut registry = ToolRegistry::default_tools(project_mcp_registry.clone(), ssh_manager);
         if let Some(manager) = &sub_agent_manager {
-            registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(Arc::clone(
-                manager,
-            ))));
-            registry.add_tool(Box::new(super::sub_agent::ListSubAgentsTool::new(
+            registry.add_tool(Box::new(crate::agent::sub_agent::SubAgentTool::new(
+                Arc::clone(manager),
+            )));
+            registry.add_tool(Box::new(crate::agent::sub_agent::ListSubAgentsTool::new(
                 Arc::clone(manager),
             )));
         }
@@ -132,12 +128,12 @@ impl DispatcherAgent {
 
     pub fn apply_settings_v2(
         &self,
-        settings: &super::db::AhaSettingsV2,
-        context: super::db::AgentContext,
+        settings: &crate::agent::db::AhaSettingsV2,
+        context: crate::agent::db::AgentContext,
     ) {
         let ctx_config = match context {
-            super::db::AgentContext::Project => &settings.project,
-            super::db::AgentContext::Chat => &settings.chat,
+            crate::agent::db::AgentContext::Project => &settings.project,
+            crate::agent::db::AgentContext::Chat => &settings.chat,
         };
         let shared = &settings.shared;
 
@@ -280,11 +276,11 @@ impl DispatcherAgent {
     pub(super) fn provider_for_messages(
         &self,
         provider: &OpenAiCompatProvider,
-        messages: &[super::llm::ChatMessage],
+        messages: &[crate::agent::llm::ChatMessage],
         on_event: &tauri::ipc::Channel<AgentEvent>,
         notify_user: bool,
     ) -> anyhow::Result<OpenAiCompatProvider> {
-        if !super::llm::messages_contain_images(messages) {
+        if !crate::agent::llm::messages_contain_images(messages) {
             return Ok(provider.clone());
         }
 

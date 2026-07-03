@@ -8,7 +8,7 @@ use super::ToolRegistry;
 use crate::agent::common;
 use crate::agent::db::{DispatcherDb, FinishToolRun, NewToolRun};
 use crate::agent::llm::RequestedToolCall;
-use crate::agent::runtime::AgentEvent;
+use crate::agent::run_loop::AgentEvent;
 use crate::agent::tools::{ToolContext, ToolResult};
 
 #[derive(Debug, Clone, Copy, Default)]

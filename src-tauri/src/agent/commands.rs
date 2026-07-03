@@ -3,6 +3,7 @@ use reqwest::Client;
 use serde_json::Value;
 use tokio::time::{sleep, Duration};
 
+use super::agents::DispatcherContinueAfterDispatchRequest;
 use super::config::DispatcherAgentConfig;
 use super::db::content::{segments_to_plain_text, try_parse_segments_json, ContentSegment};
 use super::db::{
@@ -16,9 +17,8 @@ use super::db::{
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
 use super::llm::{ChatMessageContentPart, ChatMessageImageSource};
-use super::runtime::{
-    run_agent_turn, AgentEvent, AgentRunRequest, AgentTurn, DispatchFeedbackState,
-    DispatcherContinueAfterDispatchRequest, RuntimeAgentKind,
+use super::run_loop::{
+    run_agent_turn, AgentEvent, AgentRunRequest, AgentTurn, DispatchFeedbackState, RuntimeAgentKind,
 };
 use super::state::DispatcherState;
 use super::sub_agent::db::ToolInfo;

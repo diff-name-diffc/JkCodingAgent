@@ -5,28 +5,28 @@ use async_trait::async_trait;
 use tauri::ipc::Channel;
 use tokio::sync::watch;
 
-use super::super::common::{
+use crate::agent::common::{
     cancellation_requested, stream_llm_response, wait_for_cancellation, LlmStreamOutcome,
     UsageTracker,
 };
-use super::super::db::{
+use crate::agent::db::{
     DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource,
     DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS,
 };
-use super::super::debug::{render_json, ContextDebugLogger, DebugSection};
-use super::super::llm::{ChatMessage, LlmResponse, OpenAiCompatProvider, ToolDefinition};
-use super::super::summary::summarize_dispatch_result;
-use super::super::tools::ToolContext;
+use crate::agent::debug::{render_json, ContextDebugLogger, DebugSection};
+use crate::agent::llm::{ChatMessage, LlmResponse, OpenAiCompatProvider, ToolDefinition};
+use crate::agent::run_loop::agent_loop::AgentLoop;
+use crate::agent::run_loop::core::{
+    run_loop, AgentRunAdapter, AgentRunRequest, RunLoopAgent, RunLoopContext, RunLoopIteration,
+    RunLoopToolOutcome, RunPromptState, RuntimeAgentKind,
+};
+use crate::agent::run_loop::{AgentEvent, AgentTurn, DispatchFeedbackState};
+use crate::agent::summary::summarize_dispatch_result;
+use crate::agent::tools::ToolContext;
 
-use super::agent_loop::AgentLoop;
 use super::helpers::{
     build_stopped_dispatch_reply, emit, empty_llm_response_error, record_run_token_usage,
 };
-use super::run_loop_core::{
-    self, AgentRunAdapter, AgentRunRequest, RunLoopAgent, RunLoopContext, RunLoopIteration,
-    RunLoopToolOutcome, RunPromptState, RuntimeAgentKind,
-};
-use super::types::{AgentEvent, AgentTurn, DispatchFeedbackState};
 use super::DispatcherAgent;
 
 // ─── 内部类型 ───────────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ impl DispatcherAgent {
             // 与 run() 相同的本轮快照策略：静态提示词只加载一次，动态运行态在循环内刷新。
             let static_prompt = self.build_system_prompt().await?;
             let initial_system_prompt = static_prompt.static_content.clone();
-            let reply = run_loop_core::run_loop(
+            let reply = run_loop(
                 self,
                 RunLoopContext {
                     kind: RuntimeAgentKind::Project,

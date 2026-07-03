@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::super::tools::DispatchAgent;
+use crate::agent::tools::DispatchAgent;
 
 // ─── Subprocess Registry ──────────────────────────────────────────────────────
 

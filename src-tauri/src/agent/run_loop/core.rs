@@ -12,8 +12,8 @@ use super::super::llm::{ChatMessage, LlmResponse, OpenAiCompatProvider, ToolDefi
 use super::super::prompt::PromptBundle;
 use super::super::tools::ToolContext;
 use super::agent_loop::AgentLoop;
-use super::subprocess::ProtocolToolAction;
 use super::types::{AgentEvent, AgentTurn};
+use crate::agent::agents::project::subprocess::ProtocolToolAction;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeAgentKind {

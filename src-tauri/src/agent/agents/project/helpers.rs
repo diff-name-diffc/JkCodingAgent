@@ -1,12 +1,12 @@
 use serde_json::Value;
 use tauri::ipc::Channel;
 
-use super::super::common::{is_tool_error_message, UsageTracker};
-use super::super::db::{
+use crate::agent::common::{is_tool_error_message, UsageTracker};
+use crate::agent::db::{
     DispatcherDb, DispatcherSessionTokenUsageSource, TOOL_RETRY_CONTEXT_PREFIX,
 };
-use super::super::llm::{LlmResponse, LlmUsage, RequestedToolCall};
-use super::types::AgentEvent;
+use crate::agent::llm::{LlmResponse, LlmUsage, RequestedToolCall};
+use crate::agent::run_loop::AgentEvent;
 use crate::shared::truncate_for_display;
 
 pub(crate) fn extract_message_content(arguments: &Value) -> Option<String> {
@@ -149,7 +149,7 @@ pub(crate) fn record_run_token_usage(
 pub(crate) fn normalize_summary_model(model: &str) -> String {
     let trimmed = model.trim();
     if trimmed.is_empty() {
-        super::super::config::DEFAULT_SUMMARY_MODEL.to_string()
+        crate::agent::config::DEFAULT_SUMMARY_MODEL.to_string()
     } else {
         trimmed.to_string()
     }

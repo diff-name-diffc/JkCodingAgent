@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use super::super::prompt::{build_system_prompt, PromptBundle};
+use crate::agent::prompt::{build_system_prompt, PromptBundle};
 use crate::project::mcp::build_workspace_mcp_prompt_block;
 use crate::shared::truncate_for_display;
 

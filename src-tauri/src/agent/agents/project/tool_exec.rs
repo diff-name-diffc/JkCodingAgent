@@ -6,14 +6,15 @@ use futures::future::join_all;
 use tauri::ipc::Channel;
 use tokio::sync::watch;
 
-use super::super::common::{
+use crate::agent::common::{
     self, build_args_map, build_tool_calls_payload, cancellation_requested,
     persist_tool_calls_message, with_usage_paused,
 };
-use super::super::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
-use super::super::llm::{ChatMessage, LlmResponse, RequestedToolCall};
-use super::super::sub_agent::tool::sub_agent_failure_message;
-use super::super::tools::{
+use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
+use crate::agent::llm::{ChatMessage, LlmResponse, OpenAiCompatProvider, RequestedToolCall};
+use crate::agent::run_loop::{core::RunLoopToolOutcome, AgentEvent};
+use crate::agent::sub_agent::tool::sub_agent_failure_message;
+use crate::agent::tools::{
     ToolAction, ToolContext, ToolResult, ToolRunFinishUpdate, ToolRuntime, ToolStatus,
 };
 
@@ -21,9 +22,7 @@ use super::helpers::{
     build_tool_retry_context, emit, extract_message_content, is_retryable_tool_error,
     record_run_token_usage,
 };
-use super::run_loop_core::RunLoopToolOutcome;
 use super::subprocess::{ProtocolBatchState, ProtocolToolAction};
-use super::types::AgentEvent;
 use super::DispatcherAgent;
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -59,8 +58,8 @@ impl DispatcherAgent {
         allowed_tool_names: &HashSet<String>,
         tool_context: &ToolContext,
         cancel_rx: &watch::Receiver<bool>,
-        request_provider: &super::super::llm::OpenAiCompatProvider,
-        usage_tracker: &mut super::super::common::UsageTracker,
+        request_provider: &OpenAiCompatProvider,
+        usage_tracker: &mut crate::agent::common::UsageTracker,
     ) -> Result<RunLoopToolOutcome> {
         // Persist the assistant tool-call message before executing tools. The LLM protocol expects
         // later tool results to answer a concrete assistant tool_call_id, so this write is part of
@@ -462,8 +461,8 @@ impl DispatcherAgent {
         workspace_id: &str,
         on_event: &Channel<AgentEvent>,
         outcome: RunLoopToolOutcome,
-        usage_tracker: &super::super::common::UsageTracker,
-    ) -> Result<Option<super::super::db::DispatcherMessageRecord>> {
+        usage_tracker: &crate::agent::common::UsageTracker,
+    ) -> Result<Option<DispatcherMessageRecord>> {
         if outcome.saw_retryable_tool_error {
             return Ok(None);
         }

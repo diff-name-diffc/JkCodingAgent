@@ -9,27 +9,30 @@ use parking_lot::Mutex;
 use tauri::{ipc::Channel, AppHandle};
 use tokio::sync::watch;
 
-use super::common::{
+use crate::agent::common::{
     self, build_args_map, build_tool_calls_payload, cancellation_requested,
     persist_assistant_message, persist_tool_calls_message, persist_tool_result_with_compression,
     select_provider_for_messages, stream_llm_response, with_usage_paused, LlmStreamOutcome,
     UsageTracker,
 };
-use super::config::DispatcherAgentConfig;
-use super::db::{
+use crate::agent::config::DispatcherAgentConfig;
+use crate::agent::db::{
     AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb, DispatcherMessageRecord,
     DispatcherSessionTokenUsageSource,
 };
-use super::llm::{
+use crate::agent::llm::{
     ChatMessage, LlmResponse, OpenAiCompatProvider, RequestedToolCall, ToolDefinition,
 };
-use super::runtime::run_loop_core::{
+use crate::agent::run_loop::agent_loop::AgentLoop;
+use crate::agent::run_loop::core::{
     AgentRunAdapter, AgentRunRequest, RunLoopAgent, RunLoopContext, RunLoopIteration,
     RunLoopToolOutcome, RunPromptState, RuntimeAgentKind,
 };
-use super::runtime::{agent_loop::AgentLoop, AgentEvent};
-use super::sub_agent::{tool::sub_agent_failure_message, SubAgentManager};
-use super::tools::{ToolAction, ToolRegistry, ToolResult, ToolRunFinishUpdate, ToolRuntime};
+use crate::agent::run_loop::AgentEvent;
+use crate::agent::sub_agent::{tool::sub_agent_failure_message, SubAgentManager};
+use crate::agent::tools::{
+    ToolAction, ToolContext, ToolRegistry, ToolResult, ToolRunFinishUpdate, ToolRuntime,
+};
 use crate::project::mcp::{ensure_project_mcp_file, ProjectMcpRegistry};
 use crate::shared::truncate_for_display;
 use crate::ssh_tool::SshSessionManager;
@@ -76,10 +79,10 @@ impl PlainChatAgent {
         let mut registry =
             ToolRegistry::plain_chat_tools(project_mcp_registry.clone(), ssh_manager.clone());
         if let Some(manager) = &sub_agent_manager {
-            registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(Arc::clone(
-                manager,
-            ))));
-            registry.add_tool(Box::new(super::sub_agent::ListSubAgentsTool::new(
+            registry.add_tool(Box::new(crate::agent::sub_agent::SubAgentTool::new(
+                Arc::clone(manager),
+            )));
+            registry.add_tool(Box::new(crate::agent::sub_agent::ListSubAgentsTool::new(
                 Arc::clone(manager),
             )));
         }
@@ -87,9 +90,11 @@ impl PlainChatAgent {
         Self {
             config,
             provider: Mutex::new(provider),
-            system_prompt: Mutex::new(super::config::DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT.to_string()),
+            system_prompt: Mutex::new(
+                crate::agent::config::DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT.to_string(),
+            ),
             vision_model: Mutex::new(String::new()),
-            summary_model: Mutex::new(super::config::DEFAULT_SUMMARY_MODEL.to_string()),
+            summary_model: Mutex::new(crate::agent::config::DEFAULT_SUMMARY_MODEL.to_string()),
             summary_api_key: Mutex::new(String::new()),
             summary_api_base: Mutex::new(String::new()),
             app_handle: None,
@@ -215,7 +220,7 @@ impl PlainChatAgent {
         db: &DispatcherDb,
         tool_calls: &[RequestedToolCall],
         args_map: &std::collections::HashMap<String, String>,
-        tool_context: &super::tools::ToolContext,
+        tool_context: &ToolContext,
         allowed_tool_names: &std::collections::HashSet<String>,
         on_event: &Channel<AgentEvent>,
         cancel_rx: &watch::Receiver<bool>,
@@ -412,7 +417,7 @@ impl PlainChatAgent {
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
-        tool_context: &super::tools::ToolContext,
+        tool_context: &ToolContext,
         on_event: &Channel<AgentEvent>,
         tool_call: &RequestedToolCall,
     ) -> Result<String> {
@@ -463,7 +468,7 @@ impl PlainChatAgent {
     async fn execute_single_tool_with_usage(
         &self,
         tool_call: &RequestedToolCall,
-        tool_context: &super::tools::ToolContext,
+        tool_context: &ToolContext,
         allowed_tool_names: &std::collections::HashSet<String>,
         on_event: &Channel<AgentEvent>,
         usage_tracker: &mut UsageTracker,
@@ -518,7 +523,7 @@ impl PlainChatAgent {
         workspace_id: &str,
         workspace: &Path,
         provider: &OpenAiCompatProvider,
-    ) -> super::tools::ToolContext {
+    ) -> ToolContext {
         let session_title = db
             .get_session_title_async(workspace_id)
             .await
@@ -532,7 +537,7 @@ impl PlainChatAgent {
             .get_settings_v2()
             .ok()
             .and_then(|settings| settings.review.is_configured().then_some(settings.review));
-        super::tools::ToolContext {
+        ToolContext {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
             session_title,
@@ -560,7 +565,7 @@ impl PlainChatAgent {
         let mut prompt = {
             let configured = self.system_prompt.lock().trim().to_string();
             if configured.is_empty() {
-                super::config::DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT.to_string()
+                crate::agent::config::DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT.to_string()
             } else {
                 configured
             }
@@ -573,7 +578,7 @@ impl PlainChatAgent {
         }
         prompt.push_str(&format!(
             "\n\n## 系统时间\n\n当前本地时间：{}",
-            super::prompt::current_local_time()
+            crate::agent::prompt::current_local_time()
         ));
         if self.should_expose_sub_agent_tools(workspace_id) {
             if let Some(manager) = &self.sub_agent_manager {
@@ -638,7 +643,7 @@ impl PlainChatAgent {
 
 #[async_trait]
 impl RunLoopAgent for PlainChatAgent {
-    async fn build_loop_tool_context(&self, ctx: &RunLoopContext<'_>) -> super::tools::ToolContext {
+    async fn build_loop_tool_context(&self, ctx: &RunLoopContext<'_>) -> ToolContext {
         self.build_tool_context(ctx.db, ctx.workspace_id, ctx.workspace, &ctx.provider)
             .await
     }
@@ -749,7 +754,7 @@ impl RunLoopAgent for PlainChatAgent {
         &self,
         ctx: &mut RunLoopContext<'_>,
         iteration: &RunLoopIteration,
-        tool_context: &super::tools::ToolContext,
+        tool_context: &ToolContext,
         response: LlmResponse,
     ) -> Result<RunLoopToolOutcome> {
         let tool_calls_payload = build_tool_calls_payload(&response.tool_calls, &self.tools);

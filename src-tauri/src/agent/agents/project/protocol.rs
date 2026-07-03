@@ -1,8 +1,8 @@
 use anyhow::Result;
 use tauri::ipc::Channel;
 
-use super::super::db::{DispatcherDb, DispatcherMessageRecord};
-use super::super::tools::{
+use crate::agent::db::{DispatcherDb, DispatcherMessageRecord};
+use crate::agent::tools::{
     parse_continue_instruction, parse_dispatch_instruction, parse_exit_instruction, DispatchAgent,
 };
 use crate::shared::truncate_for_display;
@@ -12,8 +12,9 @@ use super::helpers::{
     should_include_latest_user_goal, summarize_dispatch_description,
 };
 use super::subprocess::{ProtocolBatchState, ProtocolToolAction};
-use super::types::AgentEvent;
 use super::DispatcherAgent;
+use crate::agent::llm::RequestedToolCall;
+use crate::agent::run_loop::AgentEvent;
 
 // ─── Protocol action planning ─────────────────────────────────────────────────
 // 子进程协议（dispatch / continue / exit）的规划与发射。
@@ -28,7 +29,7 @@ impl DispatcherAgent {
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
-        tool_call: &super::super::llm::RequestedToolCall,
+        tool_call: &RequestedToolCall,
         protocol_state: &mut ProtocolBatchState,
     ) -> std::result::Result<Option<ProtocolToolAction>, String> {
         if let Some(agent) = DispatchAgent::from_dispatch_tool_name(&tool_call.name) {
@@ -96,7 +97,7 @@ impl DispatcherAgent {
         db: &DispatcherDb,
         workspace_id: &str,
         on_event: &Channel<AgentEvent>,
-        tool_call: &super::super::llm::RequestedToolCall,
+        tool_call: &RequestedToolCall,
         action: &ProtocolToolAction,
     ) -> Result<DispatcherMessageRecord> {
         // Protocol actions are persisted as tool messages even though their real work happens

@@ -3,7 +3,6 @@ import { Bell, X, ExternalLink, Check, CheckCheck, Info, AlertTriangle, AlertCir
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { NotificationItem, NotificationResult } from "../types";
-import s from "../styles";
 
 function LevelIcon({ level }: { level: string }) {
   switch (level) {
@@ -23,8 +22,6 @@ function NotificationEntry({
   item: NotificationItem;
   onMarkRead: (id: string) => void;
 }) {
-  const [hov, setHov] = useState(false);
-
   const handleClick = async () => {
     if (!item.isRead) onMarkRead(item.id);
     if (item.url) {
@@ -35,42 +32,19 @@ function NotificationEntry({
   return (
     <div
       onClick={handleClick}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      style={{
-        padding: "10px 12px",
-        borderBottom: "1px solid var(--border-dim)",
-        cursor: item.url ? "pointer" : "default",
-        background: hov ? "var(--bg-hover)" : item.isRead ? "transparent" : "var(--accent-subtle)",
-        transition: "background 0.12s",
-        display: "grid",
-        gridTemplateColumns: "auto minmax(0, 1fr) auto",
-        gap: 10,
-        alignItems: "flex-start",
-      }}
+      className={[
+        "ai-notification-entry",
+        item.url ? "is-clickable" : "",
+        item.isRead ? "is-read" : "is-unread",
+      ].filter(Boolean).join(" ")}
     >
-      <div style={{ flexShrink: 0, marginTop: 2 }}>
+      <div className="ai-notification-entry-icon">
         <LevelIcon level={item.level} />
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            marginBottom: 3,
-          }}
-        >
+      <div className="ai-notification-entry-main">
+        <div className="ai-notification-entry-head">
           <span
-            style={{
-              fontSize: 12.5,
-              fontWeight: item.isRead ? 500 : 600,
-              color: "var(--text-primary)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              flex: 1,
-            }}
+            className={item.isRead ? "ai-notification-entry-title" : "ai-notification-entry-title is-unread"}
           >
             {item.title}
           </span>
@@ -79,30 +53,14 @@ function NotificationEntry({
               size={11}
               strokeWidth={2}
               color="var(--text-hint)"
-              style={{ flexShrink: 0 }}
+              className="ai-notification-entry-link"
             />
           )}
         </div>
-        <div
-          style={{
-            fontSize: 11.5,
-            color: "var(--text-muted)",
-            lineHeight: 1.5,
-            overflow: "hidden",
-            display: "-webkit-box",
-            WebkitLineClamp: 3,
-            WebkitBoxOrient: "vertical",
-          }}
-        >
+        <div className="ai-notification-entry-body">
           {item.body}
         </div>
-        <div
-          style={{
-            fontSize: 10.5,
-            color: "var(--text-hint)",
-            marginTop: 4,
-          }}
-        >
+        <div className="ai-notification-entry-time">
           {item.createdAt}
         </div>
       </div>
@@ -113,18 +71,7 @@ function NotificationEntry({
             e.stopPropagation();
             onMarkRead(item.id);
           }}
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            padding: 2,
-            borderRadius: 4,
-            display: "flex",
-            alignItems: "center",
-            color: "var(--text-hint)",
-            flexShrink: 0,
-            marginTop: 1,
-          }}
+          className="ai-notification-mark-read"
         >
           <Check size={12} strokeWidth={2.5} />
         </button>
@@ -213,34 +160,13 @@ export function NotificationBell() {
   return (
     <>
       <button
-        style={{
-          ...s.sidebarIconBtn,
-          opacity: isActive ? 1 : 0.5,
-        }}
+        className={isActive ? "ai-sidebar-tool-button is-active" : "ai-sidebar-tool-button"}
         title="通知"
         onClick={() => setOpen((v) => !v)}
       >
         <Bell size={14} strokeWidth={1.6} color={bellColor} />
         {unreadCount > 0 && (
-          <span
-            style={{
-              position: "absolute",
-              top: -1,
-              right: -1,
-              minWidth: 12,
-              height: 12,
-              borderRadius: 6,
-              background: "var(--danger, #ef4444)",
-              color: "#fff",
-              fontSize: 8,
-              fontWeight: 700,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "0 2px",
-              lineHeight: 1,
-            }}
-          >
+          <span className="ai-notification-count">
             {unreadCount > 99 ? "99+" : unreadCount}
           </span>
         )}
@@ -248,50 +174,15 @@ export function NotificationBell() {
 
       {open && (
         <div
-          style={s.modalOverlay}
+          className="ai-notification-overlay"
           onClick={handleOverlayClick}
         >
-          <div
-            style={{
-              width: 420,
-              maxWidth: "calc(100vw - 32px)",
-              maxHeight: "72vh",
-              background: "var(--bg-card)",
-              border: "1px solid var(--border-medium)",
-              borderRadius: 14,
-              boxShadow: "0 8px 32px rgba(0,0,0,0.22)",
-              display: "flex",
-              flexDirection: "column",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                padding: "14px 16px",
-                borderBottom: "1px solid var(--border-dim)",
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: 14,
-                  fontWeight: 700,
-                  color: "var(--text-primary)",
-                  flex: 1,
-                }}
-              >
+          <div className="ai-notification-dialog ai-migrated-notification-dialog">
+            <div className="ai-notification-header">
+              <span className="ai-notification-title">
                 通知
                 {unreadCount > 0 && (
-                  <span
-                    style={{
-                      marginLeft: 6,
-                      fontSize: 11,
-                      fontWeight: 500,
-                      color: "var(--text-muted)",
-                    }}
-                  >
+                  <span className="ai-notification-title-meta">
                     （{unreadCount} 条未读）
                   </span>
                 )}
@@ -300,16 +191,7 @@ export function NotificationBell() {
                 <button
                   title="全部标为已读"
                   onClick={handleMarkAllRead}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    padding: 3,
-                    borderRadius: 4,
-                    display: "flex",
-                    alignItems: "center",
-                    color: "var(--text-muted)",
-                  }}
+                  className="ai-notification-header-button"
                 >
                   <CheckCheck size={14} strokeWidth={2} />
                 </button>
@@ -317,50 +199,23 @@ export function NotificationBell() {
               <button
                 title="关闭"
                 onClick={() => setOpen(false)}
-                style={s.modalCloseBtn}
+                className="ai-notification-header-button"
               >
                 <X size={16} strokeWidth={2} />
               </button>
             </div>
 
-            <div
-              style={{
-                flex: 1,
-                overflowY: "auto",
-              }}
-            >
+            <div className="ai-notification-list chat-scroll">
               {loading && !result ? (
-                <div
-                  style={{
-                    padding: 24,
-                    textAlign: "center",
-                    fontSize: 12,
-                    color: "var(--text-hint)",
-                  }}
-                >
+                <div className="ai-notification-empty">
                   加载中...
                 </div>
               ) : error && !result ? (
-                <div
-                  style={{
-                    padding: 24,
-                    textAlign: "center",
-                    fontSize: 12,
-                    color: "var(--danger, #ef4444)",
-                    lineHeight: 1.5,
-                  }}
-                >
+                <div className="ai-notification-empty is-error">
                   {error}
                 </div>
               ) : !result || result.notifications.length === 0 ? (
-                <div
-                  style={{
-                    padding: 24,
-                    textAlign: "center",
-                    fontSize: 12,
-                    color: "var(--text-hint)",
-                  }}
-                >
+                <div className="ai-notification-empty">
                   暂无通知
                 </div>
               ) : (

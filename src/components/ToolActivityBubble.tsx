@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import type { CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight, FileSearch, LoaderCircle, Wrench } from "lucide-react";
 import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
@@ -52,11 +51,7 @@ function SubAgentLiveSpeed({ session }: { session: SubAgentSession }) {
 
   if (completionTokens <= 0) return null;
 
-  return (
-    <span style={styles.subAgentSpeed}>
-      {speed} t/s
-    </span>
-  );
+  return <span className="ai-tool-activity-sub-agent-speed">{speed} t/s</span>;
 }
 
 interface ToolActivityBubbleProps {
@@ -130,19 +125,23 @@ export function ToolActivityBubble({
   };
 
   return (
-    <div style={styles.container}>
-      <div style={styles.header}>
-        <div style={styles.headerTitleWrap}>
+    <div className="ai-tool-activity ai-migrated-tool-activity">
+      <div className="ai-tool-activity-header">
+        <div className="ai-tool-activity-header-title">
           <Wrench size={13} color="var(--text-secondary)" />
-          <span style={styles.headerTitle}>{title}</span>
+          <span>{title}</span>
         </div>
-        <div style={styles.headerMeta}>
-          <span style={styles.headerCount}>{tools.length}</span>
-          {plannedCount > 0 && <span style={styles.plannedBadge}>待执行 {plannedCount}</span>}
-          {runningCount > 0 && <span style={styles.runningBadge}>运行中 {runningCount}</span>}
+        <div className="ai-tool-activity-header-meta">
+          <span className="ai-tool-activity-count">{tools.length}</span>
+          {plannedCount > 0 && (
+            <span className="ai-tool-activity-badge is-planned">待执行 {plannedCount}</span>
+          )}
+          {runningCount > 0 && (
+            <span className="ai-tool-activity-badge is-running">运行中 {runningCount}</span>
+          )}
         </div>
       </div>
-      <div style={styles.list}>
+      <div className="ai-tool-activity-list">
         {tools.map((tool, index) => {
           const expanded = expandedTools[tool.key] ?? false;
           const activeArtifactId = activeArtifactByTool[tool.key] ?? null;
@@ -161,60 +160,45 @@ export function ToolActivityBubble({
           return (
             <div
               key={tool.key}
-              style={{
-                ...styles.item,
-                borderTop: index === 0 ? "none" : "1px solid var(--border-dim)",
-              }}
+              className={`ai-tool-activity-item${index === 0 ? " is-first" : ""}`}
             >
-              <button type="button" style={styles.itemToggle} onClick={() => toggleTool(tool.key)}>
-                <div style={styles.itemTitleWrap}>
+              <button
+                type="button"
+                className="ai-tool-activity-toggle"
+                onClick={() => toggleTool(tool.key)}
+              >
+                <div className="ai-tool-activity-title-row">
                   {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                  <span
-                    style={{
-                      ...styles.statusDot,
-                      background:
-                        tool.status === "running"
-                          ? "var(--success)"
-                          : tool.status === "planned"
-                            ? "var(--warning, #d97706)"
-                            : "var(--text-hint)",
-                    }}
-                  />
-                  <span style={styles.itemTitle}>{tool.name}</span>
+                  <span className={`ai-tool-activity-status-dot ${toolStatusClass(tool.status)}`} />
+                  <span className="ai-tool-activity-name">{tool.name}</span>
                   {tool.resultMode && (
-                    <span style={toolModeBadgeStyle(tool.resultMode)}>
+                    <span className={`ai-tool-activity-mode ${toolModeClass(tool.resultMode)}`}>
                       {toolResultModeLabel(tool.resultMode)}
                     </span>
                   )}
                   {detailRefs.length > 0 && (
-                    <span style={styles.refBadge}>详细引用 {detailRefs.length}</span>
+                    <span className="ai-tool-activity-ref-badge">详细引用 {detailRefs.length}</span>
                   )}
                   {subAgentSession && (
-                    <span style={subAgentStatusStyle(subAgentSession.status)}>
+                    <span
+                      className={`ai-tool-activity-sub-agent-badge ${subAgentStatusClass(
+                        subAgentSession.status,
+                      )}`}
+                    >
                       子智能体{formatSubAgentStatus(subAgentSession)}
                     </span>
                   )}
                 </div>
-                <div style={styles.itemRightWrap}>
+                <div className="ai-tool-activity-right">
                   {hasDisplayText && (
-                    <span style={styles.itemDisplayText} title={tool.displayText}>
+                    <span className="ai-tool-activity-preview" title={tool.displayText}>
                       {tool.displayText}
                     </span>
                   )}
                   {subAgentSession && subAgentSession.status === "running" && subAgentSession.tokenUsage && (
                     <SubAgentLiveSpeed session={subAgentSession} />
                   )}
-                  <span
-                    style={{
-                      ...styles.itemStatus,
-                      color:
-                        tool.status === "running"
-                          ? "var(--success)"
-                          : tool.status === "planned"
-                            ? "var(--warning, #d97706)"
-                            : "var(--text-secondary)",
-                    }}
-                  >
+                  <span className={`ai-tool-activity-status ${toolStatusClass(tool.status)}`}>
                     {tool.status === "running"
                       ? "执行中"
                       : tool.status === "planned"
@@ -224,27 +208,27 @@ export function ToolActivityBubble({
                 </div>
               </button>
               {expanded && (
-                <div style={styles.itemBody}>
+                <div className="ai-tool-activity-body">
                   {tool.input?.trim() && (
-                    <div style={styles.block}>
-                      <div style={styles.blockLabel}>调用参数</div>
-                      <pre className="session-selectable" style={styles.blockCode}>
+                    <div className="ai-tool-activity-block">
+                      <div className="ai-tool-activity-block-label">调用参数</div>
+                      <pre className="ai-tool-activity-code session-selectable">
                         {tool.input}
                       </pre>
                     </div>
                   )}
 
                   {hasDisplayText && (
-                    <div style={styles.block}>
-                      <div style={styles.blockLabel}>
+                    <div className="ai-tool-activity-block">
+                      <div className="ai-tool-activity-block-label">
                         {tool.name === "local_zsh" ? "执行结果与审计历史" : "结果"}
                       </div>
                       {tool.name === "local_zsh" ? (
-                        <div style={styles.summaryContent}>
+                        <div className="ai-tool-activity-summary">
                           <MarkdownRenderer content={tool.displayText ?? ""} variant="chat" />
                         </div>
                       ) : (
-                        <pre className="session-selectable" style={styles.blockCode}>
+                        <pre className="ai-tool-activity-code session-selectable">
                           {tool.displayText}
                         </pre>
                       )}
@@ -252,49 +236,48 @@ export function ToolActivityBubble({
                   )}
 
                   {showSummaryInConversation && (
-                    <div style={styles.block}>
-                      <div style={styles.blockLabel}>结果摘要</div>
+                    <div className="ai-tool-activity-block">
+                      <div className="ai-tool-activity-block-label">结果摘要</div>
                       {tool.summaryText ? (
-                        <div style={styles.summaryContent}>
+                        <div className="ai-tool-activity-summary">
                           <MarkdownRenderer content={tool.summaryText} variant="chat" />
                         </div>
                       ) : (
-                        <div style={styles.infoState}>摘要内容将在处理完成后展示。</div>
+                        <div className="ai-tool-activity-info">摘要内容将在处理完成后展示。</div>
                       )}
                     </div>
                   )}
 
                   {subAgentSession && (
-                    <div style={styles.block}>
-                      <div style={styles.blockLabel}>子智能体运行状态</div>
+                    <div className="ai-tool-activity-block">
+                      <div className="ai-tool-activity-block-label">子智能体运行状态</div>
                       <SubAgentExecutionCard session={subAgentSession} autoExpand={false} />
                     </div>
                   )}
 
                   {detailRefs.length > 0 && (
-                    <div style={styles.block}>
-                      <div style={styles.blockLabel}>详细结果引用</div>
-                      <div style={styles.refList}>
+                    <div className="ai-tool-activity-block">
+                      <div className="ai-tool-activity-block-label">详细结果引用</div>
+                      <div className="ai-tool-activity-ref-list">
                         {detailRefs.map((artifact) => {
                           const selected = activeArtifactId === artifact.id;
                           return (
                             <button
                               key={artifact.id}
                               type="button"
-                              style={{
-                                ...styles.refButton,
-                                ...(selected ? styles.refButtonActive : {}),
-                              }}
+                              className={`ai-tool-activity-ref-button${
+                                selected ? " is-active" : ""
+                              }`}
                               onClick={() => handleOpenArtifact(tool.key, artifact)}
                             >
-                              <div style={styles.refButtonHeader}>
+                              <div className="ai-tool-activity-ref-title">
                                 <FileSearch size={13} />
-                                <span style={styles.refButtonTitle}>{artifact.title}</span>
+                                <span>{artifact.title}</span>
                               </div>
-                              <div style={styles.refButtonMeta}>
+                              <div className="ai-tool-activity-ref-meta">
                                 {artifact.lineCount} 行 · {artifact.charCount} 字符
                               </div>
-                              <div style={styles.refButtonPreview}>{artifact.preview}</div>
+                              <div className="ai-tool-activity-ref-preview">{artifact.preview}</div>
                             </button>
                           );
                         })}
@@ -303,7 +286,7 @@ export function ToolActivityBubble({
                   )}
 
                   {!hasDisplayText && detailRefs.length === 0 && !showSummaryInConversation && (
-                    <div style={styles.pendingText}>
+                    <div className="ai-tool-activity-pending">
                       {tool.status === "planned"
                         ? "等待开始执行..."
                         : tool.status === "running"
@@ -313,21 +296,21 @@ export function ToolActivityBubble({
                   )}
 
                   {activeArtifactId && (
-                    <div style={styles.block}>
-                      <div style={styles.blockLabel}>详细结果内容</div>
+                    <div className="ai-tool-activity-block">
+                      <div className="ai-tool-activity-block-label">详细结果内容</div>
                       {activeArtifactLoading ? (
-                        <div style={styles.loadingState}>
-                          <LoaderCircle size={14} style={styles.loadingIcon} />
+                        <div className="ai-tool-activity-loading">
+                          <LoaderCircle size={14} className="ai-tool-activity-spin" />
                           正在加载详细结果...
                         </div>
                       ) : activeArtifactError ? (
-                        <div style={styles.errorState}>{activeArtifactError}</div>
+                        <div className="ai-tool-activity-error">{activeArtifactError}</div>
                       ) : activeArtifact ? (
-                        <pre className="session-selectable" style={styles.blockCode}>
+                        <pre className="ai-tool-activity-code session-selectable">
                           {activeArtifact.content}
                         </pre>
                       ) : (
-                        <div style={styles.pendingText}>详细结果尚未加载</div>
+                        <div className="ai-tool-activity-pending">详细结果尚未加载</div>
                       )}
                     </div>
                   )}
@@ -347,19 +330,10 @@ function formatSubAgentStatus(session: { status: "running" | "completed" | "fail
   return "完成";
 }
 
-function subAgentStatusStyle(status: "running" | "completed" | "failed"): CSSProperties {
-  const color =
-    status === "running"
-      ? "var(--accent)"
-      : status === "failed"
-        ? "var(--danger, #dc2626)"
-        : "var(--success)";
-  return {
-    ...styles.subAgentBadge,
-    color,
-    borderColor: `color-mix(in srgb, ${color} 28%, transparent)`,
-    background: `color-mix(in srgb, ${color} 10%, transparent)`,
-  };
+function subAgentStatusClass(status: "running" | "completed" | "failed"): string {
+  if (status === "running") return "is-running";
+  if (status === "failed") return "is-failed";
+  return "is-completed";
 }
 
 function toolResultModeLabel(mode: DispatcherToolResultMode): string {
@@ -380,30 +354,17 @@ function toolResultModeLabel(mode: DispatcherToolResultMode): string {
   }
 }
 
-function toolModeBadgeStyle(mode: DispatcherToolResultMode): CSSProperties {
-  const accent =
-    mode === "summary" || mode === "intent_compressed"
-      ? "var(--accent)"
-      : mode === "conservative_summary" || mode === "structured_fallback"
-        ? "var(--warning, #d97706)"
-        : mode === "truncated"
-          ? "var(--danger, #dc2626)"
-          : "var(--text-hint)";
-  const background =
-    mode === "summary" || mode === "intent_compressed"
-      ? "color-mix(in srgb, var(--accent) 12%, transparent)"
-      : mode === "conservative_summary" || mode === "structured_fallback"
-        ? "rgba(217,119,6,0.12)"
-        : mode === "truncated"
-          ? "rgba(220,38,38,0.12)"
-          : "var(--bg-hover)";
+function toolModeClass(mode: DispatcherToolResultMode): string {
+  if (mode === "summary" || mode === "intent_compressed") return "is-accent";
+  if (mode === "conservative_summary" || mode === "structured_fallback") return "is-warning";
+  if (mode === "truncated") return "is-danger";
+  return "is-raw";
+}
 
-  return {
-    ...styles.modeBadge,
-    color: accent,
-    background,
-    borderColor: `color-mix(in srgb, ${accent} 24%, transparent)`,
-  };
+function toolStatusClass(status: ToolActivityItem["status"]): string {
+  if (status === "running") return "is-running";
+  if (status === "planned") return "is-planned";
+  return "is-completed";
 }
 
 function shouldDisplaySummaryInConversation(mode: DispatcherToolResultMode | undefined): boolean {
@@ -414,314 +375,3 @@ function shouldDisplaySummaryInConversation(mode: DispatcherToolResultMode | und
     mode === "structured_fallback"
   );
 }
-
-const styles = {
-  container: {
-    width: "100%",
-    border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--chat-glass-border))",
-    borderRadius: 18,
-    background:
-      "linear-gradient(180deg, color-mix(in srgb, var(--chat-surface-strong) 90%, transparent), color-mix(in srgb, var(--chat-surface) 86%, transparent))",
-    boxShadow: "var(--chat-shadow-soft)",
-    overflow: "hidden",
-  },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    padding: "10px 14px",
-    background:
-      "linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent)",
-    borderBottom: "1px solid var(--chat-glass-border)",
-  },
-  headerTitleWrap: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-  },
-  headerTitle: {
-    fontSize: 12,
-    fontWeight: 700,
-    color: "var(--text-secondary)",
-    letterSpacing: 0.2,
-    textTransform: "uppercase" as const,
-  },
-  headerMeta: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-  },
-  headerCount: {
-    minWidth: 22,
-    height: 22,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: "0 7px",
-    borderRadius: 999,
-    background: "var(--chat-surface-strong)",
-    border: "1px solid var(--chat-glass-border)",
-    fontSize: 11,
-    fontWeight: 700,
-    color: "var(--text-secondary)",
-    fontFamily: "var(--font-mono)",
-  },
-  runningBadge: {
-    padding: "3px 8px",
-    borderRadius: 999,
-    background: "color-mix(in srgb, var(--success) 14%, transparent)",
-    color: "var(--success)",
-    fontSize: 11,
-    fontWeight: 700,
-  },
-  plannedBadge: {
-    padding: "3px 8px",
-    borderRadius: 999,
-    background: "rgba(217,119,6,0.12)",
-    color: "var(--warning, #d97706)",
-    fontSize: 11,
-    fontWeight: 700,
-  },
-  list: {
-    display: "flex",
-    flexDirection: "column" as const,
-  },
-  item: {
-    display: "flex",
-    flexDirection: "column" as const,
-  },
-  itemToggle: {
-    width: "100%",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    padding: "12px 14px",
-    background: "transparent",
-    border: "none",
-    color: "var(--text-primary)",
-    cursor: "pointer",
-    textAlign: "left" as const,
-  },
-  itemTitleWrap: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    minWidth: 0,
-    flexWrap: "wrap" as const,
-  },
-  statusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: "50%",
-    flexShrink: 0,
-  },
-  itemTitle: {
-    fontSize: 12.5,
-    fontWeight: 600,
-    color: "var(--text-primary)",
-    fontFamily: "var(--font-mono)",
-    wordBreak: "break-word" as const,
-  },
-  modeBadge: {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px 7px",
-    borderRadius: 999,
-    border: "1px solid var(--border-dim)",
-    fontSize: 10.5,
-    fontWeight: 700,
-    lineHeight: 1.2,
-    flexShrink: 0,
-  },
-  refBadge: {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px 7px",
-    borderRadius: 999,
-    background: "color-mix(in srgb, var(--accent) 10%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--accent) 18%, transparent)",
-    color: "var(--accent)",
-    fontSize: 10.5,
-    fontWeight: 700,
-    lineHeight: 1.2,
-  },
-  subAgentBadge: {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px 7px",
-    borderRadius: 999,
-    border: "1px solid var(--border-dim)",
-    fontSize: 10.5,
-    fontWeight: 700,
-    lineHeight: 1.2,
-    flexShrink: 0,
-  },
-  subAgentSpeed: {
-    fontSize: 11.5,
-    fontWeight: 700,
-    color: "var(--accent)",
-    fontFamily: "var(--font-mono)",
-    flexShrink: 0,
-  },
-  itemRightWrap: {
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-    minWidth: 0,
-    flex: 1,
-    justifyContent: "flex-end",
-  },
-  itemDisplayText: {
-    fontSize: 11.5,
-    color: "var(--text-secondary)",
-    whiteSpace: "nowrap",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    textAlign: "right" as const,
-  },
-  itemStatus: {
-    fontSize: 11.5,
-    fontWeight: 600,
-    flexShrink: 0,
-  },
-  itemBody: {
-    display: "flex",
-    flexDirection: "column" as const,
-    gap: 12,
-    padding: "0 14px 14px",
-  },
-  block: {
-    display: "flex",
-    flexDirection: "column" as const,
-    gap: 6,
-  },
-  blockLabel: {
-    fontSize: 11,
-    fontWeight: 700,
-    color: "var(--text-secondary)",
-    letterSpacing: 0.2,
-  },
-  blockCode: {
-    margin: 0,
-    padding: "10px 12px",
-    borderRadius: 13,
-    background: "color-mix(in srgb, var(--bg-input) 70%, transparent)",
-    border: "1px solid var(--chat-glass-border)",
-    color: "var(--text-primary)",
-    fontSize: 12,
-    lineHeight: 1.55,
-    fontFamily: "var(--font-mono)",
-    whiteSpace: "pre-wrap" as const,
-    wordBreak: "break-word" as const,
-    overflowX: "auto" as const,
-  },
-  blockText: {
-    margin: 0,
-    padding: "10px 12px",
-    borderRadius: 13,
-    background: "color-mix(in srgb, var(--bg-input) 70%, transparent)",
-    border: "1px solid var(--chat-glass-border)",
-    color: "var(--text-primary)",
-    fontSize: 12.5,
-    lineHeight: 1.6,
-    whiteSpace: "pre-wrap" as const,
-    wordBreak: "break-word" as const,
-  },
-  refList: {
-    display: "flex",
-    flexDirection: "column" as const,
-    gap: 8,
-  },
-  refButton: {
-    display: "flex",
-    flexDirection: "column" as const,
-    alignItems: "flex-start",
-    gap: 4,
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 13,
-    border: "1px solid var(--chat-glass-border)",
-    background: "color-mix(in srgb, var(--bg-input) 74%, transparent)",
-    cursor: "pointer",
-    textAlign: "left" as const,
-    color: "var(--text-primary)",
-  },
-  refButtonActive: {
-    borderColor: "color-mix(in srgb, var(--accent) 36%, transparent)",
-    background: "color-mix(in srgb, var(--accent) 8%, var(--bg-card))",
-  },
-  refButtonHeader: {
-    display: "flex",
-    alignItems: "center",
-    gap: 6,
-  },
-  refButtonTitle: {
-    fontSize: 12,
-    fontWeight: 700,
-  },
-  refButtonMeta: {
-    fontSize: 11,
-    color: "var(--text-secondary)",
-    fontFamily: "var(--font-mono)",
-  },
-  refButtonPreview: {
-    fontSize: 11.5,
-    color: "var(--text-secondary)",
-    lineHeight: 1.5,
-    whiteSpace: "pre-wrap" as const,
-    wordBreak: "break-word" as const,
-  },
-  loadingState: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "10px 12px",
-    borderRadius: 12,
-    background: "var(--bg-card)",
-    border: "1px solid var(--border-dim)",
-    color: "var(--text-secondary)",
-    fontSize: 12,
-  },
-  loadingIcon: {
-    animation: "spin 1s linear infinite",
-  },
-  errorState: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    background: "color-mix(in srgb, var(--danger) 8%, var(--bg-card))",
-    border: "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
-    color: "var(--danger)",
-    fontSize: 12,
-    lineHeight: 1.5,
-    whiteSpace: "pre-wrap" as const,
-    wordBreak: "break-word" as const,
-  },
-  infoState: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    background: "rgba(217,119,6,0.08)",
-    border: "1px solid rgba(217,119,6,0.18)",
-    color: "var(--text-secondary)",
-    fontSize: 12,
-    lineHeight: 1.5,
-  },
-  summaryContent: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    background: "var(--bg-card)",
-    border: "1px solid var(--border-dim)",
-    color: "var(--text-primary)",
-    fontSize: 12.5,
-    lineHeight: 1.6,
-  },
-  pendingText: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    background: "var(--bg-card)",
-    border: "1px dashed var(--border-dim)",
-    color: "var(--text-secondary)",
-    fontSize: 12,
-  },
-} satisfies Record<string, CSSProperties>;

@@ -3,13 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { BrowserStatus, ThemeMode } from "../types";
 import { useDockedBrowserPanel } from "../hooks/useDockedBrowserPanel";
-import { ChatSessionSidebar } from "./ChatSessionSidebar";
 import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
-import s from "../styles";
+import { ChatPageV2 } from "./chat-page-v2";
 
-const DispatcherChat = lazy(() =>
-  import("./DispatcherChat").then((module) => ({ default: module.DispatcherChat })),
-);
 const AppSettingsDialog = lazy(() =>
   import("./AppSettingsDialog").then((module) => ({ default: module.AppSettingsDialog })),
 );
@@ -140,30 +136,28 @@ export function HomeChatPage({
   const dockedSessions = useMemo(() => Array.from(dockedBrowsers.values()), [dockedBrowsers]);
 
   return (
-    <div className="nezha-chat-home" style={s.chatHomeBody}>
-      <ChatSessionSidebar
-        activeSessionId={activeSessionId}
-        onActiveSessionChange={setActiveSessionId}
-        showBrowserButton
-        onToggleBrowser={() => setShowBrowserPanel((v) => !v)}
-      />
-
-      <div style={s.chatMainPane}>
-        <Suspense fallback={<ChatPaneFallback label="聊天加载中..." />}>
-          {activeSessionId ? (
-            <MarkdownLinkProvider onOpenUrl={handleOpenMarkdownLink}>
-              <DispatcherChat
-                conversationKind="chat"
-                sessionId={activeSessionId}
-                layoutMode="single"
-                onOpenSettings={() => setShowSettings(true)}
-              />
-            </MarkdownLinkProvider>
-          ) : (
-            <div style={s.chatEmptyPane}>正在创建聊天...</div>
-          )}
-        </Suspense>
-      </div>
+    <div
+      className="nezha-chat-home"
+      style={{
+        display: "flex",
+        flex: 1,
+        width: "100%",
+        minWidth: 0,
+        height: "100%",
+        minHeight: 0,
+        overflow: "hidden",
+      }}
+    >
+      <MarkdownLinkProvider onOpenUrl={handleOpenMarkdownLink}>
+        <ChatPageV2
+          sessionId={activeSessionId}
+          onSessionChange={setActiveSessionId}
+          theme={themeMode}
+          isDark={isDark}
+          onThemeChange={onThemeModeChange}
+          onOpenSettings={() => setShowSettings(true)}
+        />
+      </MarkdownLinkProvider>
 
       {showBrowserPanel && (
         <div

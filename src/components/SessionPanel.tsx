@@ -235,15 +235,15 @@ export function SessionPanel({
   }, [sessions, query]);
 
   return (
-    <div style={s.taskPanel}>
+    <div className="ai-project-session-panel" style={s.taskPanel}>
       {/* Project header */}
-      <div style={s.panelHeader}>
-        <button style={s.backBtn} onClick={onBack} title="返回项目页">
+      <div className="ai-project-session-header" style={s.panelHeader}>
+        <button className="ai-project-session-icon-btn" style={s.backBtn} onClick={onBack} title="返回项目页">
           <ChevronLeft size={15} strokeWidth={2} />
         </button>
         <ProjectAvatar name={project.name} size={22} />
-        <span style={s.panelProjectName}>{project.name}</span>
-        <button style={s.backBtn} onClick={onCollapse} title="折叠会话列表">
+        <span className="ai-project-session-title" style={s.panelProjectName}>{project.name}</span>
+        <button className="ai-project-session-icon-btn" style={s.backBtn} onClick={onCollapse} title="折叠会话列表">
           <PanelLeftClose size={15} strokeWidth={2} />
         </button>
       </div>
@@ -252,7 +252,7 @@ export function SessionPanel({
       <BranchBar projectPath={project.path} />
 
       {/* Search */}
-      <div style={s.panelSearchWrap}>
+      <div className="ai-field ai-project-session-search" style={s.panelSearchWrap}>
         <Search size={13} strokeWidth={2} color="var(--text-muted)" style={{ flexShrink: 0 }} />
         <input
           style={s.panelSearchInput}
@@ -263,8 +263,9 @@ export function SessionPanel({
       </div>
 
       {/* New Session row */}
-      <div style={s.taskActionsRow}>
+      <div className="ai-project-session-actions" style={s.taskActionsRow}>
         <button
+          className="ai-project-new-session-btn"
           style={{
             display: "flex",
             alignItems: "center",
@@ -285,51 +286,53 @@ export function SessionPanel({
         </button>
       </div>
 
-      <div style={s.taskDivider} />
+      <div className="ai-project-session-divider" style={s.taskDivider} />
 
       {/* Session list */}
-      <div style={s.taskListScroll}>
+      <div className="ai-project-session-list chat-scroll" style={s.taskListScroll}>
         {searchResults !== null ? (
           searchResults.length === 0 ? (
-            <div style={s.taskListEmpty}>没有找到匹配的会话</div>
+	            <div className="ai-project-session-empty" style={s.taskListEmpty}>没有找到匹配的会话</div>
           ) : (
             searchResults.map((r) => {
               const isRunning =
                 dispatcherRunningSessionIds.has(r.sessionId) ||
                 subprocessRunningSessionIds.has(r.sessionId);
               return (
-                <div
-                  key={r.sessionId}
-                  onClick={() => onSelectSession(r.sessionId)}
+	                <div
+	                  key={r.sessionId}
+                    className={activeSessionId === r.sessionId ? "ai-project-session-row is-active" : "ai-project-session-row"}
+	                  onClick={() => onSelectSession(r.sessionId)}
                   style={{
                     ...s.taskCard,
                     background: activeSessionId === r.sessionId ? "var(--bg-selected)" : "transparent",
                   }}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={s.taskCardTitle}>{r.sessionTitle}</div>
+	                    <div className="ai-project-session-row-title" style={s.taskCardTitle}>{r.sessionTitle}</div>
                     {r.matchedKeywords.length > 0 && (
                       <div style={s.matchedKeywordsRow}>
                         {r.matchedKeywords.slice(0, 4).map((kw) => (
-                          <span key={kw} style={s.matchedKeywordTag}>
+	                          <span key={kw} className="ai-project-keyword-tag" style={s.matchedKeywordTag}>
                             {kw}
                           </span>
                         ))}
                         {r.matchedKeywords.length > 4 && (
-                          <span style={{ ...s.matchedKeywordTag, opacity: 0.6 }}>
+	                          <span className="ai-project-keyword-tag" style={{ ...s.matchedKeywordTag, opacity: 0.6 }}>
                             +{r.matchedKeywords.length - 4}
                           </span>
                         )}
                       </div>
                     )}
-                    <div style={s.taskCardSub}>{formatTime(r.updatedAt)}</div>
+	                    <div className="ai-project-session-row-sub" style={s.taskCardSub}>{formatTime(r.updatedAt)}</div>
                   </div>
                   <div style={s.taskCardActions}>
                     {isRunning && (
                       <LoaderCircle size={13} className="spin" style={s.sessionRunningIcon} />
                     )}
-                    <button
-                      style={s.taskDeleteBtn}
+	                    <button
+                        className="ai-project-session-delete"
+	                      style={s.taskDeleteBtn}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDeleteSession(r.sessionId);
@@ -345,31 +348,33 @@ export function SessionPanel({
           )
         ) : (
           <>
-            {filtered.length === 0 && <div style={s.taskListEmpty}>没有找到会话</div>}
+	            {filtered.length === 0 && <div className="ai-project-session-empty" style={s.taskListEmpty}>没有找到会话</div>}
             {filtered.map((session) => {
               const isRunning =
                 Boolean(session.isRunning) ||
                 dispatcherRunningSessionIds.has(session.id) ||
                 subprocessRunningSessionIds.has(session.id);
               return (
-                <div
-                  key={session.id}
-                  onClick={() => onSelectSession(session.id)}
+	                <div
+	                  key={session.id}
+                    className={activeSessionId === session.id ? "ai-project-session-row is-active" : "ai-project-session-row"}
+	                  onClick={() => onSelectSession(session.id)}
                   style={{
                     ...s.taskCard,
                     background: activeSessionId === session.id ? "var(--bg-selected)" : "transparent",
                   }}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={s.taskCardTitle}>{session.title}</div>
-                    <div style={s.taskCardSub}>{formatTime(session.updatedAt)}</div>
+	                    <div className="ai-project-session-row-title" style={s.taskCardTitle}>{session.title}</div>
+	                    <div className="ai-project-session-row-sub" style={s.taskCardSub}>{formatTime(session.updatedAt)}</div>
                   </div>
                   <div style={s.taskCardActions}>
                     {isRunning && (
                       <LoaderCircle size={13} className="spin" style={s.sessionRunningIcon} />
                     )}
-                    <button
-                      style={s.taskDeleteBtn}
+	                    <button
+                        className="ai-project-session-delete"
+	                      style={s.taskDeleteBtn}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDeleteSession(session.id);
@@ -389,7 +394,7 @@ export function SessionPanel({
         )}
       </div>
 
-      <div style={s.taskPanelFooter}>
+      <div className="ai-project-session-footer" style={s.taskPanelFooter}>
         <SidebarFooterActions
           isDark={isDark}
           themeMode={themeMode}

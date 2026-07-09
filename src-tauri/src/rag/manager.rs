@@ -1,20 +1,32 @@
 //! RAG sidecar 进程管理器。
 //!
-//! 使用 Tauri 2.0 官方 sidecar 机制（`bundle.externalBin` + `app.shell().sidecar()`）：
-//! - 宿主在 `tauri.conf.json` 声明 `binaries/rag-server`
-//! - Tauri 运行时自动按 target-triple 解析实际二进制路径
-//! - 通过 `tauri-plugin-shell` 启动，无需手动拼路径
+//! **不使用 tauri-plugin-shell 的 sidecar**——其 `Command` API 不暴露
+//! `process_group`，无法整组 kill。这里直接用 `tokio::process::Command`：
+//! - spawn 时 `.process_group(0)` 让 rag-server 成为新进程组组长（pgid == pid）
+//! - kill 时整组终止：Unix `kill(-pgid, SIGKILL)`、Windows `taskkill /F /T /PID`
+//!
+//! 这对 PyInstaller onefile 至关重要：onefile 是「bootloader → Python 子进程」
+//! 两层结构，只 kill bootloader（直接子进程）会让 Python 子进程逃逸成孤儿
+//! （PPID=1），这正是历史上泄漏十几个 rag-server 的根因。整组 kill 才能连带
+//! 终止 Python 服务进程。
 //!
 //! 启动握手：spawn 后逐行读取 stdout，匹配 `RAG_LISTENING {...}` 取端口；
-//! 匹配到后停止解析 stdout（避免持有 reader 任务阻塞），后续日志仅透传 stderr。
+//! 后续 stdout/stderr 仅透传到滚动日志。
 //!
 //! 生命周期约束（杜绝孤儿 / 僵尸子进程）：
 //! - 所有 spawn / stop / restart 串行经过 `spawn_lock`（tokio 异步互斥），
 //!   确保「检查存活 → spawn → 写入句柄」整体不可分割，消除 TOCTOU 竞态。
-//! - `RagHandle` 自带 `alive` 标志与退出 watch：reader 收到 `Terminated` 即标记死亡，
+//! - `RagHandle` 自带 `alive` 标志与退出 watch：stdout reader、stderr reader、
+//!   wait reaper 三个后台任务任一发现进程退出即标记死亡，
 //!   `is_running` / `current` 据此过滤，崩溃后下次 `ensure_started` 自动重建。
-//! - `stop` 在 kill 后等待子进程真正退出（带超时），避免端口/资源未释放就重启。
+//! - wait reaper 任务独占子进程句柄并调用 `wait()` 回收 bootloader 避免 zombie；
+//!   Python 子进程随进程组被 kill，被 init/launchd 回收。
+//! - `stop` 在 kill 后等待退出信号（带超时），避免端口/资源未释放就重启。
 
+use std::path::PathBuf;
+#[cfg(windows)]
+use std::process::Command as StdCommand;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,8 +35,8 @@ use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_shell::process::CommandChild;
-use tauri_plugin_shell::ShellExt;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
 use tokio::sync::{oneshot, watch, Mutex as AsyncMutex};
 use tokio::time::{sleep, timeout};
 
@@ -56,20 +68,20 @@ const EXIT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct RagHandle {
     pub port: u16,
     pub transport: RagTransport,
-    child: Mutex<Option<CommandChild>>,
-    /// 子进程是否仍存活。reader 收到 `Terminated` 后置 false，
+    /// 进程组 ID。Unix 上 `.process_group(0)` 使子进程成为组长，pgid == pid；
+    /// kill 时对负数 pgid 发信号即可整组终止。Windows 上存 pid 供 `taskkill /T`。
+    pgid: i32,
+    /// 子进程是否仍存活。任一 reader/reaper 发现退出后置 false，
     /// `is_running` / `current` / `ensure_started` 据此判断是否需重建。
     alive: Arc<AtomicBool>,
-    /// 退出信号：reader 在 `Terminated` 时 send(true)，`wait_exit` 据此等待。
+    /// 退出信号：reaper/reader 在进程退出时 send(true)，`wait_exit` 据此等待。
     exited: watch::Receiver<bool>,
 }
 
 impl RagHandle {
-    /// 终止 sidecar 子进程（仅发 kill 信号，不等退出）。
+    /// 终止 sidecar 整个进程组（仅发信号，不等退出——退出等待由 `wait_exit` 负责）。
     pub fn kill(&self) {
-        if let Some(child) = self.child.lock().take() {
-            let _ = child.kill();
-        }
+        kill_process_group(self.pgid);
     }
 
     /// 子进程是否仍存活。
@@ -77,7 +89,7 @@ impl RagHandle {
         self.alive.load(Ordering::Acquire)
     }
 
-    /// kill 后等待 reader 报告 `Terminated`，确保进程退出、端口释放。
+    /// kill 后等待 reaper/reader 报告退出，确保进程退出、端口释放。
     /// 若已死亡则立即返回；超过 `EXIT_WAIT_TIMEOUT` 也不再阻塞。
     pub async fn wait_exit(&self) {
         if !self.is_alive() {
@@ -88,6 +100,31 @@ impl RagHandle {
             let _ = rx.wait_for(|v| *v).await;
         })
         .await;
+    }
+}
+
+/// 整组终止 sidecar 进程。
+///
+/// - Unix：`kill(-pgid, SIGKILL)` 对整个进程组发信号，连带 PyInstaller 派生
+///   的 Python 子进程，杜绝 onefile 孤儿。
+/// - Windows：`taskkill /F /T /PID` 递归杀进程树（`/T`）达成同样效果。
+fn kill_process_group(pgid: i32) {
+    #[cfg(unix)]
+    {
+        // 负数 pid = 信号发送给「pid 绝对值所标识进程组」的全部成员。
+        // ESRCH（组已不存在）忽略即可。
+        let _ = unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    }
+    #[cfg(windows)]
+    {
+        // /F 强制、/T 连同子进程树一起终止。
+        let _ = StdCommand::new("taskkill")
+            .args(["/F", "/T", "/PID"])
+            .arg(pgid.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -157,7 +194,7 @@ impl RagManager {
         self.stop_locked().await;
     }
 
-    /// 应用退出路径的同步停止：只 take + kill，不等退出。
+    /// 应用退出路径的同步停止：只 kill，不等退出。
     /// 主进程即将退出，OS 会回收子进程；同步上下文也无法 await。
     pub fn stop_for_exit(&self) {
         if let Some(handle) = self.handle.lock().take() {
@@ -198,98 +235,142 @@ async fn spawn_and_handshake(
     app.state::<RagLogStore>()
         .append_system(app, "正在启动 RAG sidecar");
 
-    // 构造 sidecar 命令；通过 env 注入初始配置
-    let mut command = app.shell().sidecar(SIDECAR_NAME).with_context(|| {
+    let binary_path = resolve_sidecar_path().with_context(|| {
         format!(
             "解析 sidecar `{SIDECAR_NAME}` 失败：请先运行 rag/scripts/build_sidecar.* 生成 {}",
             triple_hint()
         )
     })?;
 
-    for (key, value) in config.to_env_pairs() {
-        command = command.env(key, value);
-    }
+    let mut command = Command::new(&binary_path);
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    // 创建新进程组：子进程成为组长（pgid == pid），kill 时用负数 pgid
+    // 即可整组终止，连带 PyInstaller 派生的 Python 子进程。
+    command.process_group(0);
+
     // 固定端口便于骨架阶段握手；生产可改 0 让 OS 分配，sidecar 回传真实端口
-    command = command.env("RAG_PORT", "0");
+    command.env("RAG_PORT", "0");
+    for (key, value) in config.to_env_pairs() {
+        command.env(key, value);
+    }
 
-    let (mut rx, child) = command.spawn().context("启动 rag-server sidecar 失败")?;
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("启动 rag-server sidecar 失败：{binary_path:?}"))?;
+    let pgid = child
+        .id()
+        .ok_or_else(|| anyhow!("无法获取 rag-server 子进程 PID"))? as i32;
 
-    // 子进程句柄用 Arc<Mutex<Option<_>>> 共享：超时闭包可 kill，
-    // 握手成功后句柄转入 RagHandle 持有。
-    let child_slot = Arc::new(Mutex::new(Some(child)));
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("rag-server stdout 未捕获"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("rag-server stderr 未捕获"))?;
 
-    let (port_tx, port_rx) = oneshot::channel::<u16>();
-
-    // 存活标志 + 退出 watch：reader 收到 Terminated 时翻转 alive 并通知 wait_exit。
+    // 存活标志 + 退出 watch：reaper/reader 发现进程退出时翻转 alive 并通知 wait_exit。
     let alive = Arc::new(AtomicBool::new(true));
     let alive_for_timeout = Arc::clone(&alive);
     let (exited_tx, exited_rx) = watch::channel(false);
     let exited_tx_for_timeout = exited_tx.clone();
 
-    // stdout reader：匹配握手行，拿到端口后即通知
+    let (port_tx, port_rx) = oneshot::channel::<u16>();
+
+    // stdout reader：匹配握手行取端口，其余透传日志；EOF 兜底标记死亡。
     let app_for_log = app.clone();
-    let alive_for_reader = Arc::clone(&alive);
+    let alive_for_stdout = Arc::clone(&alive);
+    let exited_tx_for_stdout = exited_tx.clone();
     tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout);
         let mut port_tx = Some(port_tx);
-        while let Some(event) = rx.recv().await {
-            match event {
-                tauri_plugin_shell::process::CommandEvent::Stdout(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    for line in text.lines() {
-                        if let Some(rest) = line.trim_start().strip_prefix(HANDSHAKE_PREFIX) {
-                            if let Ok(handshake) =
-                                serde_json::from_str::<HandshakePayload>(rest.trim())
-                            {
-                                app_for_log.state::<RagLogStore>().append_system(
-                                    &app_for_log,
-                                    format!("RAG sidecar 已监听端口 {}", handshake.port),
-                                );
-                                if let Some(sender) = port_tx.take() {
-                                    let _ = sender.send(handshake.port);
-                                }
-                            }
-                        } else {
-                            app_for_log.state::<RagLogStore>().append(
+        let mut buf = String::new();
+        loop {
+            buf.clear();
+            match reader.read_line(&mut buf).await {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    let line = buf.trim_end_matches(['\r', '\n']);
+                    if let Some(rest) = line.trim_start().strip_prefix(HANDSHAKE_PREFIX) {
+                        if let Ok(handshake) = serde_json::from_str::<HandshakePayload>(rest.trim())
+                        {
+                            app_for_log.state::<RagLogStore>().append_system(
                                 &app_for_log,
-                                RagLogStream::Stdout,
-                                line,
+                                format!("RAG sidecar 已监听端口 {}", handshake.port),
                             );
+                            if let Some(sender) = port_tx.take() {
+                                let _ = sender.send(handshake.port);
+                            }
                         }
-                    }
-                }
-                tauri_plugin_shell::process::CommandEvent::Stderr(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    for line in text.lines() {
+                    } else {
                         app_for_log.state::<RagLogStore>().append(
                             &app_for_log,
-                            RagLogStream::Stderr,
+                            RagLogStream::Stdout,
                             line,
                         );
                     }
                 }
-                tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
-                    mark_dead(&alive_for_reader, &exited_tx);
-                    app_for_log
-                        .state::<RagLogStore>()
-                        .append_system(&app_for_log, format!("RAG sidecar 已退出：{payload:?}"));
-                    break;
-                }
-                _ => {}
+                Err(_) => break,
             }
         }
-        // reader 结束兜底：管道关闭但未收到 Terminated 时，同样标记死亡，
-        // 避免 wait_exit 永久挂起、is_running 误报存活。
-        mark_dead(&alive_for_reader, &exited_tx);
+        // 管道关闭兜底：未收到显式退出也标记死亡，避免 wait_exit 挂起、is_running 误报。
+        mark_dead(&alive_for_stdout, &exited_tx_for_stdout);
     });
 
-    let child_slot_for_timeout = Arc::clone(&child_slot);
+    // stderr reader：仅透传日志；EOF 同样兜底标记死亡。
+    let app_for_err = app.clone();
+    let alive_for_stderr = Arc::clone(&alive);
+    let exited_tx_for_stderr = exited_tx.clone();
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr);
+        let mut buf = String::new();
+        loop {
+            buf.clear();
+            match reader.read_line(&mut buf).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    let line = buf.trim_end_matches(['\r', '\n']);
+                    app_for_err.state::<RagLogStore>().append(
+                        &app_for_err,
+                        RagLogStream::Stderr,
+                        line,
+                    );
+                }
+                Err(_) => break,
+            }
+        }
+        mark_dead(&alive_for_stderr, &exited_tx_for_stderr);
+    });
+
+    // wait reaper：独占子进程句柄，wait() 回收 bootloader 避免 zombie；
+    // 进程退出后（含整组 kill 触发的退出）标记死亡并通知 wait_exit。
+    let alive_for_wait = Arc::clone(&alive);
+    let app_for_wait = app.clone();
+    tokio::spawn(async move {
+        match child.wait().await {
+            Ok(status) => {
+                mark_dead(&alive_for_wait, &exited_tx);
+                app_for_wait
+                    .state::<RagLogStore>()
+                    .append_system(&app_for_wait, format!("RAG sidecar 已退出：{status}"));
+            }
+            Err(error) => {
+                mark_dead(&alive_for_wait, &exited_tx);
+                app_for_wait
+                    .state::<RagLogStore>()
+                    .append_system(&app_for_wait, format!("RAG sidecar 等待退出失败：{error}"));
+            }
+        }
+    });
+
     let port = timeout(HANDSHAKE_TIMEOUT, port_rx)
         .await
         .map_err(|_| {
-            // 超时则回收子进程
-            if let Some(child) = child_slot_for_timeout.lock().take() {
-                let _ = child.kill();
-            }
+            // 超时则整组 kill 回收子进程（reaper 的 wait 会随后返回）
+            kill_process_group(pgid);
             mark_dead(&alive_for_timeout, &exited_tx_for_timeout);
             app.state::<RagLogStore>().append_system(
                 app,
@@ -298,30 +379,22 @@ async fn spawn_and_handshake(
             anyhow!("等待 rag-server 端口握手超时（{HANDSHAKE_TIMEOUT:?}）")
         })?
         .map_err(|_| {
-            // 握手通道在收到端口前关闭——子进程已退出（reader 已标记死亡）。
+            // 握手通道在收到端口前关闭——子进程已退出（reader/reaper 已标记死亡）。
             mark_dead(&alive_for_timeout, &exited_tx_for_timeout);
             anyhow!("rag-server sidecar 在端口握手前已退出，请查看 RAG sidecar 日志")
         })?;
 
     let transport = RagTransport::new(port).context("构造 sidecar HTTP client")?;
     if let Err(error) = wait_for_health(app, &transport).await {
-        if let Some(child) = child_slot.lock().take() {
-            let _ = child.kill();
-        }
+        kill_process_group(pgid);
         mark_dead(&alive_for_timeout, &exited_tx_for_timeout);
         return Err(error);
     }
 
-    // 握手成功，从共享槽位取出子进程句柄转入 RagHandle
-    let child = child_slot
-        .lock()
-        .take()
-        .ok_or_else(|| anyhow!("sidecar 子进程句柄已丢失"))?;
-
     Ok(Arc::new(RagHandle {
         port,
         transport,
-        child: Mutex::new(Some(child)),
+        pgid,
         alive,
         exited: exited_rx,
     }))
@@ -357,6 +430,31 @@ async fn wait_for_health(app: &AppHandle, transport: &RagTransport) -> Result<()
 fn mark_dead(alive: &AtomicBool, exited_tx: &watch::Sender<bool>) {
     alive.store(false, Ordering::Release);
     let _ = exited_tx.send(true);
+}
+
+/// 解析 sidecar 二进制路径：与 tauri-plugin-shell 的相对路径解析一致——
+/// 取当前可执行文件所在目录拼接 sidecar 名（Windows 补 `.exe`）。
+/// Tauri 构建时已把 `binaries/rag-server-<triple>` 复制为 `rag-server`
+/// 放在主程序同级目录，故运行时无需追加 target-triple 后缀。
+fn resolve_sidecar_path() -> Result<PathBuf> {
+    let exe_path = std::env::current_exe().context("获取当前可执行文件路径失败")?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| anyhow!("当前可执行文件无父目录"))?;
+    // 测试场景下 exe 在 deps 子目录，需上一级。
+    let base_dir = if exe_dir.ends_with("deps") {
+        exe_dir.parent().unwrap_or(exe_dir)
+    } else {
+        exe_dir
+    };
+    let path = base_dir.join(SIDECAR_NAME);
+    #[cfg(windows)]
+    let path = {
+        let mut p = path;
+        p.set_extension("exe");
+        p
+    };
+    Ok(path)
 }
 
 /// 仅供错误提示用的当前平台 triple 文件名提示。

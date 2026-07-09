@@ -218,58 +218,27 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
       }
     }, [isDark]);
 
-    return (
-      <div
-        style={{
-          flexShrink: 0,
-          height,
-          borderTop: "1px solid var(--border-dim)",
-          display: "flex",
-          flexDirection: "column",
-          background: isDark ? DARK_THEME.background : LIGHT_THEME.background,
-        }}
-      >
-        {/* Drag handle */}
-        {onResizeStart && (
-          <div
-            onMouseDown={onResizeStart}
-            style={{
-              height: 4,
-              flexShrink: 0,
-              cursor: "row-resize",
-              background: "transparent",
-            }}
-          />
-        )}
-        {/* Header */}
+      return (
         <div
-          style={{
-            height: 32,
-            flexShrink: 0,
-            display: "flex",
-            alignItems: "center",
-            padding: "0 10px 0 14px",
-            borderBottom: "1px solid var(--border-dim)",
-            background: "var(--bg-sidebar)",
-            gap: 8,
-          }}
+          className="ai-shell-terminal-panel ai-migrated-shell-terminal"
+          style={{ height, background: isDark ? DARK_THEME.background : LIGHT_THEME.background }}
         >
-          <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", flex: 1 }}>
+          {/* Drag handle */}
+          {onResizeStart && (
+            <div
+              onMouseDown={onResizeStart}
+              className="ai-shell-terminal-resize"
+            />
+          )}
+          {/* Header */}
+          <div className="ai-shell-terminal-header">
+          <span className="ai-shell-terminal-title">
             终端
           </span>
           <button
             onClick={onClose}
             title="关闭终端"
-            style={{
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              padding: 3,
-              borderRadius: 4,
-              display: "flex",
-              alignItems: "center",
-              color: "var(--text-hint)",
-            }}
+            className="ai-shell-terminal-close"
           >
             <X size={14} />
           </button>
@@ -277,7 +246,7 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
         {/* Terminal */}
         <div
           ref={containerRef}
-          style={{ flex: 1, overflow: "hidden", padding: "4px 6px", cursor: "text" }}
+          className="ai-shell-terminal-canvas"
         />
       </div>
     );

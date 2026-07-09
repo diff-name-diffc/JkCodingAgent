@@ -12,7 +12,6 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
-import s from "../../../styles";
 import type { RagLogEntry, RagLogLevel } from "../../../types";
 
 const MAX_LOG_LINES = 2000;
@@ -69,7 +68,7 @@ function renderHighlightedText(text: string, keyword: string) {
     }
     const end = matchIndex + needle.length;
     parts.push(
-      <mark key={`${matchIndex}-${end}`} style={s.ragLogHighlight}>
+      <mark key={`${matchIndex}-${end}`} className="ai-rag-log-highlight">
         {text.slice(matchIndex, end)}
       </mark>,
     );
@@ -191,20 +190,20 @@ export function RagSidecarLogPanel() {
         : `${logs.length}/${MAX_LOG_LINES}`;
 
   return (
-    <section style={s.ragLogPanel}>
-      <div style={s.ragLogHeader}>
+    <section className="ai-rag-log-panel">
+      <div className="ai-rag-log-header">
         <button
           type="button"
-          style={s.ragLogTitleButton}
+          className="ai-rag-log-title-button"
           onClick={() => setExpanded((value) => !value)}
         >
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          <span style={s.ragLogTitle}>Sidecar 日志</span>
-          <span style={s.ragLogMeta}>{logs.length}/{MAX_LOG_LINES} 行</span>
+          <span className="ai-rag-log-title">Sidecar 日志</span>
+          <span className="ai-rag-log-meta">{logs.length}/{MAX_LOG_LINES} 行</span>
         </button>
         {!expanded && latestLog && (
-          <span style={s.ragLogCollapsedLine}>
-            <span style={{ color: levelColor(logLevel(latestLog)) }}>
+          <span className="ai-rag-log-collapsed-line">
+            <span className="ai-rag-log-level" style={{ color: levelColor(logLevel(latestLog)) }}>
               {levelLabel(logLevel(latestLog))}
             </span>
             {latestLog.text}
@@ -213,12 +212,12 @@ export function RagSidecarLogPanel() {
       </div>
 
       {expanded && (
-        <div style={s.ragLogBody}>
-          <div style={s.ragLogToolbar}>
-            <div style={s.ragLogSearchBox}>
+        <div className="ai-rag-log-body">
+          <div className="ai-rag-log-toolbar">
+            <div className="ai-rag-log-search-box">
               <Search size={13} />
               <input
-                style={s.ragLogSearchInput}
+                className="ai-rag-log-search-input"
                 value={keyword}
                 onChange={(event) => setKeyword(event.target.value)}
                 onKeyDown={(event) => {
@@ -229,14 +228,10 @@ export function RagSidecarLogPanel() {
                 placeholder="搜索日志"
                 spellCheck={false}
               />
-              <span style={s.ragLogSearchCount}>{matchCountText}</span>
+              <span className="ai-rag-log-search-count">{matchCountText}</span>
               <button
                 type="button"
-                style={{
-                  ...s.ragLogIconButton,
-                  opacity: matchRowIndices.length === 0 ? 0.45 : 1,
-                  cursor: matchRowIndices.length === 0 ? "default" : "pointer",
-                }}
+                className="ai-rag-log-icon-button"
                 disabled={matchRowIndices.length === 0}
                 onClick={() => moveMatch(-1)}
                 title="上一个匹配"
@@ -245,11 +240,7 @@ export function RagSidecarLogPanel() {
               </button>
               <button
                 type="button"
-                style={{
-                  ...s.ragLogIconButton,
-                  opacity: matchRowIndices.length === 0 ? 0.45 : 1,
-                  cursor: matchRowIndices.length === 0 ? "default" : "pointer",
-                }}
+                className="ai-rag-log-icon-button"
                 disabled={matchRowIndices.length === 0}
                 onClick={() => moveMatch(1)}
                 title="下一个匹配"
@@ -260,7 +251,7 @@ export function RagSidecarLogPanel() {
 
             <button
               type="button"
-              style={s.ragLogSmallButton}
+              className="ai-rag-log-small-button"
               onClick={() => {
                 setFollowTail(true);
                 bottomRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
@@ -272,7 +263,7 @@ export function RagSidecarLogPanel() {
             </button>
             <button
               type="button"
-              style={s.ragLogSmallButton}
+              className="ai-rag-log-small-button"
               onClick={handleCopy}
               title="复制当前日志"
             >
@@ -281,7 +272,7 @@ export function RagSidecarLogPanel() {
             </button>
             <button
               type="button"
-              style={s.ragLogSmallButton}
+              className="ai-rag-log-small-button"
               onClick={handleClear}
               title="清空当前内存日志"
             >
@@ -290,9 +281,9 @@ export function RagSidecarLogPanel() {
             </button>
           </div>
 
-          <div ref={scrollRef} style={s.ragLogViewport} onScroll={handleScroll}>
+          <div ref={scrollRef} className="ai-rag-log-viewport" onScroll={handleScroll}>
             {logs.length === 0 ? (
-              <div style={s.ragLogEmpty}>暂无日志</div>
+              <div className="ai-rag-log-empty">暂无日志</div>
             ) : (
               logs.map((entry) => {
                 const active = entry.seq === activeLogSeq;
@@ -307,16 +298,13 @@ export function RagSidecarLogPanel() {
                         rowRefs.current.delete(entry.seq);
                       }
                     }}
-                    style={{
-                      ...s.ragLogRow,
-                      background: active ? "var(--accent-subtle)" : "transparent",
-                    }}
+                    className={active ? "ai-rag-log-row is-active" : "ai-rag-log-row"}
                   >
-                    <span style={s.ragLogTime}>{formatLogTime(entry.ts)}</span>
-                    <span style={{ ...s.ragLogStream, color: levelColor(level) }}>
+                    <span className="ai-rag-log-time">{formatLogTime(entry.ts)}</span>
+                    <span className="ai-rag-log-level" style={{ color: levelColor(level) }}>
                       {levelLabel(level)}
                     </span>
-                    <span style={s.ragLogText}>
+                    <span className="ai-rag-log-text">
                       {renderHighlightedText(entry.text, keyword)}
                     </span>
                   </div>

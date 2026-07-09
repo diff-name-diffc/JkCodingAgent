@@ -6,7 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -45,91 +44,25 @@ function FileStatusPill({
   children: ReactNode;
   tone?: "default" | "success" | "error";
 }) {
-  const toneStyles: Record<NonNullable<typeof tone>, CSSProperties> = {
-    default: {
-      color: "var(--text-secondary)",
-      background: "color-mix(in srgb, var(--bg-card) 84%, transparent)",
-      border: "1px solid var(--border-dim)",
-    },
-    success: {
-      color: "var(--success)",
-      background: "color-mix(in srgb, var(--success) 10%, var(--bg-card))",
-      border: "1px solid color-mix(in srgb, var(--success) 18%, var(--border-dim))",
-    },
-    error: {
-      color: "var(--danger)",
-      background: "color-mix(in srgb, var(--danger) 10%, var(--bg-card))",
-      border: "1px solid color-mix(in srgb, var(--danger) 20%, var(--border-dim))",
-    },
-  };
-
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "5px 10px",
-        borderRadius: 999,
-        fontSize: 11,
-        fontWeight: 600,
-        whiteSpace: "nowrap",
-        ...toneStyles[tone],
-      }}
-    >
-      {children}
-    </span>
-  );
+  return <span className={`ai-file-status-pill is-${tone}`}>{children}</span>;
 }
 
 function PaneShell({
   children,
-  padding = 18,
-  gap = 16,
+  compact = false,
 }: {
   children: ReactNode;
-  padding?: number;
-  gap?: number;
+  compact?: boolean;
 }) {
   return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        minWidth: 0,
-        minHeight: 0,
-        padding,
-        gap,
-        background:
-          "radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 8%, transparent), transparent 28%), var(--bg-panel)",
-      }}
-    >
+    <div className={compact ? "ai-file-pane-shell is-compact" : "ai-file-pane-shell"}>
       {children}
     </div>
   );
 }
 
 function PaneCard({ children }: { children: ReactNode }) {
-  return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        minWidth: 0,
-        minHeight: 0,
-        overflow: "hidden",
-        borderRadius: 30,
-        border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-dim))",
-        background: "color-mix(in srgb, var(--bg-card) 94%, transparent)",
-        boxShadow: "0 24px 70px rgba(15, 23, 42, 0.08)",
-      }}
-    >
-      {children}
-    </div>
-  );
+  return <div className="ai-file-pane-card">{children}</div>;
 }
 
 function ImageFilePane({
@@ -172,57 +105,20 @@ function ImageFilePane({
 
   return (
     <PaneShell>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-          gap: 16,
-          padding: "18px 18px 0",
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              marginBottom: 10,
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              color: "var(--text-hint)",
-            }}
-          >
+      <div className="ai-image-pane-header">
+        <div className="ai-image-pane-title-block">
+          <div className="ai-image-pane-eyebrow">
             <ImageIcon size={13} />
             图片预览
           </div>
-          <div
-            style={{
-              fontSize: 24,
-              fontWeight: 700,
-              lineHeight: 1.05,
-              letterSpacing: "-0.04em",
-              color: "var(--text-primary)",
-              wordBreak: "break-word",
-            }}
-          >
+          <div className="ai-image-pane-title">
             {fileName}
           </div>
-          <div
-            style={{
-              marginTop: 8,
-              fontSize: 12,
-              color: "var(--text-muted)",
-              fontFamily: "var(--font-mono)",
-              wordBreak: "break-all",
-            }}
-          >
+          <div className="ai-image-pane-path">
             {filePath}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+        <div className="ai-image-pane-meta">
           {imagePreview && (
             <FileStatusPill>{`${imagePreview.mimeType} · ${(imagePreview.byteLength / 1024).toFixed(1)} KB`}</FileStatusPill>
           )}
@@ -231,34 +127,14 @@ function ImageFilePane({
 
       <PaneCard>
         {loading && (
-          <div
-            style={{
-              height: "100%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "var(--text-muted)",
-              fontSize: 13,
-            }}
-          >
+          <div className="ai-file-pane-state">
             加载中...
           </div>
         )}
         {error && !loading && (
-          <div
-            style={{
-              height: "100%",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 12,
-              padding: 24,
-              color: "var(--text-muted)",
-            }}
-          >
+          <div className="ai-file-pane-state is-error">
             <AlertCircle size={28} strokeWidth={1.7} />
-            <div style={{ fontSize: 13.5, maxWidth: 520, textAlign: "center" }}>{error}</div>
+            <div>{error}</div>
           </div>
         )}
         {!loading && !error && imagePreview && (
@@ -307,80 +183,30 @@ function TextFileHeader({
   const displayFileName = lastSlashIndex >= 0 ? normalizedPath.slice(lastSlashIndex + 1) : fileName;
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexWrap: "wrap",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: 0,
-        minHeight: 28,
-      }}
-    >
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "baseline",
-            minWidth: 0,
-            overflow: "hidden",
-            fontSize: 12.5,
-            lineHeight: 1.35,
-            color: "var(--text-muted)",
-            fontFamily: "var(--font-mono)",
-          }}
-        >
-          <span style={{ display: "inline-flex", alignItems: "center", marginRight: 8, flexShrink: 0 }}>
+    <div className="ai-file-pane-header">
+      <div className="ai-file-path-stack">
+        <div className="ai-file-path-line">
+          <span className="ai-file-path-icon">
             <FileGlyph presentation={presentation} size={22} />
           </span>
           {directoryPath ? (
-            <span
-              style={{
-                minWidth: 0,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
+            <span className="ai-file-path-dir">
               {directoryPath}
             </span>
           ) : null}
-          <strong
-            style={{
-              color: "var(--text-primary)",
-              fontWeight: 700,
-              whiteSpace: "nowrap",
-              flexShrink: 0,
-            }}
-          >
+          <strong className="ai-file-path-name">
             {displayFileName}
           </strong>
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+      <div className="ai-file-pane-actions">
         {isMarkdown && onTogglePreview && (
           <button
             type="button"
             onClick={onTogglePreview}
             title={previewMode ? "切换到编辑" : "切换到预览"}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "6px 10px",
-              borderRadius: 999,
-              border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border-dim))",
-              background: previewMode
-                ? "color-mix(in srgb, var(--accent) 10%, var(--bg-card))"
-                : "color-mix(in srgb, var(--bg-card) 90%, transparent)",
-              color: previewMode ? "var(--accent)" : "var(--text-secondary)",
-              cursor: "pointer",
-              fontSize: 11.5,
-              fontWeight: 600,
-              flexShrink: 0,
-            }}
+            className={previewMode ? "ai-file-preview-toggle is-active" : "ai-file-preview-toggle"}
           >
             {previewMode ? <PencilLine size={14} /> : <Eye size={14} />}
             {previewMode ? "编辑" : "预览"}
@@ -600,12 +426,12 @@ export const FileTabPane = forwardRef<FileTabPaneHandle, {
   }
 
   return (
-    <PaneShell padding={14} gap={10}>
-              <TextFileHeader
-                presentation={presentation}
-                fileName={tab.name}
-                filePath={tab.path}
-                language={language}
+    <PaneShell compact>
+      <TextFileHeader
+        presentation={presentation}
+        fileName={tab.name}
+        filePath={tab.path}
+        language={language}
         saveStatus={fileMeta && fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD ? (largeDirty ? "saving" : "idle") : saveStatus}
         isMarkdown={isMarkdown}
         previewMode={previewMode}
@@ -614,35 +440,15 @@ export const FileTabPane = forwardRef<FileTabPaneHandle, {
 
       <PaneCard>
         {loading && (
-          <div
-            style={{
-              height: "100%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "var(--text-muted)",
-              fontSize: 13,
-            }}
-          >
+          <div className="ai-file-pane-state">
             加载中...
           </div>
         )}
 
         {error && !loading && (
-          <div
-            style={{
-              height: "100%",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 12,
-              padding: 24,
-              color: "var(--text-muted)",
-            }}
-          >
+          <div className="ai-file-pane-state is-error">
             <AlertCircle size={28} strokeWidth={1.7} />
-            <div style={{ fontSize: 13.5, maxWidth: 520, textAlign: "center" }}>{error}</div>
+            <div>{error}</div>
           </div>
         )}
 
@@ -659,7 +465,7 @@ export const FileTabPane = forwardRef<FileTabPaneHandle, {
 
         {!loading && !error && content !== null && fileMeta && fileMeta.sizeBytes < LARGE_FILE_THRESHOLD && (
           isMarkdown && previewMode ? (
-            <div className="md-preview-shell" style={{ height: "100%", overflow: "auto" }}>
+            <div className="md-preview-shell">
               <div className="md-preview-card">
                 <div className="md-preview-header">
                   <div>

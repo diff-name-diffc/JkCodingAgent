@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
-import s from "../../../styles";
 
 interface PasswordInputProps {
   value: string;
@@ -11,7 +10,6 @@ interface PasswordInputProps {
 
 /**
  * 带 Eye/EyeOff 显隐切换的 API Key 密码框。
- * 复用于 Qdrant apiKey 与 Embedding apiKey 字段，样式沿用 aha* token。
  */
 export function PasswordInput({
   value,
@@ -21,9 +19,9 @@ export function PasswordInput({
 }: PasswordInputProps) {
   const [show, setShow] = useState(false);
   return (
-    <div style={s.ragPasswordWrap}>
+    <div className="ai-rag-password">
       <input
-        style={s.ragPasswordInput}
+        className="ai-rag-password-input"
         type={show ? "text" : "password"}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -34,7 +32,7 @@ export function PasswordInput({
       />
       <button
         type="button"
-        style={s.ragPasswordToggle}
+        className="ai-rag-password-toggle"
         onClick={() => setShow((prev) => !prev)}
         title={show ? "隐藏" : "显示"}
         tabIndex={-1}

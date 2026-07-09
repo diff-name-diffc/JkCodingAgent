@@ -1,7 +1,7 @@
 import { forwardRef, type HTMLAttributes } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { FileGlyph } from "../../file-icons";
-import s from "../../styles";
+import { cn } from "../../lib/cn";
 import { isSystemGroupNode, type TreeNode } from "./tree";
 
 const ROW_HEIGHT = 30;
@@ -48,30 +48,25 @@ export const FileExplorerTreeItem = forwardRef<
 ) {
   const isSelected = selectedPath === node.path;
   const isSystemGroup = isSystemGroupNode(node);
+  const { className, ...itemProps } = rest;
 
   return (
     <div
-      {...rest}
+      {...itemProps}
       ref={ref}
       onClick={() => (node.is_dir ? onNodeToggle(node.path) : onNodeSelect(node))}
+      className={cn(
+        "ai-file-explorer-row",
+        isSelected && "is-selected",
+        isSystemGroup && "is-system-group",
+        className,
+      )}
       style={{
-        ...s.fileExplorerRow,
         paddingLeft: 8 + depth * 14,
-        background: isSelected ? "var(--bg-selected)" : "transparent",
-      }}
-      onMouseEnter={(event) => {
-        if (!isSelected) {
-          event.currentTarget.style.background = "var(--bg-hover)";
-        }
-      }}
-      onMouseLeave={(event) => {
-        if (!isSelected) {
-          event.currentTarget.style.background = "transparent";
-        }
       }}
       title={isSystemGroup ? node.name : node.path}
     >
-      <span style={s.fileExplorerRowChevron}>
+      <span className="ai-file-explorer-chevron">
         {node.is_dir && (node.expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />)}
       </span>
       <FileIcon
@@ -81,7 +76,7 @@ export const FileExplorerTreeItem = forwardRef<
         isDir={node.is_dir}
         iconName={node.iconName}
       />
-      <span style={s.fileExplorerRowLabel}>{node.name}</span>
+      <span className="ai-file-explorer-row-label">{node.name}</span>
     </div>
   );
 });

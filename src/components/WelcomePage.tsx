@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState, useMemo } from "react";
+import type React from "react";
 import {
   Search,
   FolderOpen,
@@ -10,9 +11,14 @@ import {
   MessageCircle,
 } from "lucide-react";
 import type { Project, ThemeMode } from "../types";
-import { getAvatarGradient, shortenPath } from "../utils";
+import { shortenPath } from "../utils";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
+import {
+  AiEmptyState,
+  AiSectionHeader,
+  AiStatusPill,
+} from "./ui/sci-fi-shell";
 import appLogo from "../assets/app-logo.png";
 import s from "../styles";
 
@@ -25,15 +31,7 @@ const HomeChatPage = lazy(() =>
 
 function WelcomePaneFallback() {
   return (
-    <div
-      style={{
-        ...s.welcomePane,
-        alignItems: "center",
-        justifyContent: "center",
-        color: "var(--text-muted)",
-        fontSize: 13,
-      }}
-    >
+    <div className="ai-home-pane ai-empty-state">
       加载中...
     </div>
   );
@@ -54,15 +52,11 @@ function SidebarItem({
 }) {
   return (
     <div
-      style={{
-        ...s.sidebarItem,
-        background: active ? "var(--bg-selected)" : "transparent",
-        color: active ? "var(--text-primary)" : "var(--text-muted)",
-      }}
+      className={`ai-home-nav-item${active ? " is-active" : ""}`}
       onClick={onClick}
     >
       <span style={{ display: "flex", alignItems: "center" }}>{icon}</span>
-      <span style={{ marginLeft: 10, fontSize: 13, fontWeight: active ? 600 : 500 }}>{label}</span>
+      <span className="ai-home-nav-label">{label}</span>
       {meta && <span style={s.sidebarItemMeta}>{meta}</span>}
     </div>
   );
@@ -70,27 +64,19 @@ function SidebarItem({
 
 function WelcomeEmpty({ hasProjects, onOpen }: { hasProjects: boolean; onOpen: () => void }) {
   return (
-    <div style={s.emptyState}>
-      <div style={{ marginBottom: 14, opacity: 0.4 }}>
-        <FolderOpen size={40} strokeWidth={1.2} color="var(--text-hint)" />
-      </div>
-      <div
-        style={{ fontSize: 14, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}
-      >
-        {hasProjects ? "没有匹配的项目" : "还没有项目"}
-      </div>
-      {!hasProjects && (
-        <>
-          <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginBottom: 20 }}>
-            打开一个本地 Git 仓库以开始使用
-          </div>
-          <button style={s.emptyOpenBtn} onClick={onOpen}>
+    <AiEmptyState
+      icon={<FolderOpen size={40} strokeWidth={1.2} />}
+      title={hasProjects ? "没有匹配的项目" : "还没有项目"}
+      description={!hasProjects ? "打开一个本地 Git 仓库以开始使用" : undefined}
+      action={
+        !hasProjects ? (
+          <button className="ai-home-primary-btn" onClick={onOpen}>
             <FolderOpen size={14} strokeWidth={2} />
             打开项目文件夹...
           </button>
-        </>
-      )}
-    </div>
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -129,11 +115,11 @@ export function WelcomePage({
   }, [projects, query]);
 
   return (
-    <div style={s.welcomeBody}>
-      <div style={s.welcomeMain}>
-        <div style={s.sidebar}>
+    <div className="ai-home-shell ai-migrated-home" style={s.welcomeBody}>
+      <div className="ai-home-layout">
+        <div className="ai-home-nav" style={s.sidebar}>
           <div style={s.sidebarBrand}>
-            <div style={s.sidebarBrandIcon}>
+            <div className="ai-home-brand-icon" style={s.sidebarBrandIcon}>
               <img
                 src={appLogo}
                 alt="JKCodingAgent"
@@ -193,15 +179,9 @@ export function WelcomePage({
             <AnalyticsDashboard projects={projects} />
           </Suspense>
         ) : (
-          <div style={s.welcomePane}>
-            <div style={s.searchRow}>
-              <div
-                style={{
-                  ...s.searchBox,
-                  borderColor: searchFocused ? "var(--border-focus)" : "var(--border-medium)",
-                  boxShadow: searchFocused ? "0 0 0 3px var(--accent-subtle)" : "none",
-                }}
-              >
+          <div className="ai-home-pane ai-home-projects">
+            <div className="ai-home-search-row">
+              <div className={`ai-field ai-home-search${searchFocused ? " is-focused" : ""}`}>
                 <Search
                   size={15}
                   strokeWidth={1.9}
@@ -209,7 +189,6 @@ export function WelcomePage({
                   style={{ flexShrink: 0 }}
                 />
                 <input
-                  style={s.searchInput}
                   placeholder="搜索项目"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
@@ -220,38 +199,31 @@ export function WelcomePage({
               </div>
 
               <div style={s.actionRow}>
-                <button style={s.primaryActionBtn} onClick={onOpen}>
+                <button className="ai-home-primary-btn" onClick={onOpen}>
                   <Plus size={14} strokeWidth={2.3} />
                   <span>打开项目</span>
                 </button>
               </div>
             </div>
 
-            <div style={s.projectSectionHeader}>
-              <div>
-                <div style={s.projectSectionTitle}>项目</div>
-                <div style={s.projectSectionCaption}>
-                  {query.trim() ? `找到 ${filtered.length} 个结果` : `共 ${projects.length} 个项目`}
-                </div>
-              </div>
-            </div>
+            <AiSectionHeader
+              title="项目"
+              caption={
+                query.trim() ? `找到 ${filtered.length} 个结果` : `共 ${projects.length} 个项目`
+              }
+            />
 
-            <div style={s.projectList}>
+            <div className="ai-project-grid">
               {filtered.length === 0 ? (
                 <WelcomeEmpty hasProjects={projects.length > 0} onOpen={onOpen} />
               ) : (
                 filtered.map((p) => {
-                  const [from] = getAvatarGradient(p.name);
                   return (
                     <div
                       key={p.id}
                       role="button"
                       tabIndex={0}
-                      style={{
-                        ...s.projectItem,
-                        background: hov === p.id ? "var(--bg-hover)" : "transparent",
-                        borderColor: hov === p.id ? "var(--border-medium)" : "transparent",
-                      }}
+                      className={`ai-list-row ai-project-card${hov === p.id ? " is-active" : ""}`}
                       onMouseEnter={() => setHov(p.id)}
                       onMouseLeave={() => setHov(null)}
                       onClick={() => onProjectClick(p)}
@@ -262,47 +234,24 @@ export function WelcomePage({
                         }
                       }}
                     >
-                      <ProjectAvatar
-                        name={p.name}
-                        size={34}
-                        style={{ boxShadow: hov === p.id ? `0 10px 18px ${from}26` : "none" }}
-                      />
+                      <ProjectAvatar name={p.name} size={34} />
 
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={s.projectName}>{p.name}</div>
-                        <div style={s.projectMeta}>{shortenPath(p.path)}</div>
+                        <div className="ai-project-name">{p.name}</div>
+                        <div className="ai-project-meta">{shortenPath(p.path)}</div>
                       </div>
 
                       {p.branch ? (
-                        <span style={s.branchBadge}>
+                        <AiStatusPill tone="accent">
                           <GitBranch size={10} strokeWidth={2} />
                           {p.branch}
-                        </span>
+                        </AiStatusPill>
                       ) : (
-                        <span style={s.projectTag}>本地</span>
+                        <AiStatusPill>本地</AiStatusPill>
                       )}
 
                       <button
-                        style={{
-                          marginLeft: 8,
-                          padding: "4px 6px",
-                          background: "transparent",
-                          border: "none",
-                          borderRadius: 6,
-                          cursor: "pointer",
-                          color: "var(--text-muted)",
-                          display: "flex",
-                          alignItems: "center",
-                          opacity: hov === p.id ? 1 : 0,
-                          transition: "opacity 0.15s, color 0.15s",
-                        }}
-                        onMouseEnter={(e) => {
-                          (e.currentTarget as HTMLButtonElement).style.color =
-                            "var(--danger, #f87171)";
-                        }}
-                        onMouseLeave={(e) => {
-                          (e.currentTarget as HTMLButtonElement).style.color = "var(--text-muted)";
-                        }}
+                        className="ai-project-delete-btn"
                         onClick={(e) => {
                           e.stopPropagation();
                           onDeleteProject(p.id);

@@ -111,40 +111,25 @@ const VirtualLine = memo(function VirtualLine({
 
   return (
     <div
+      className="ai-large-file-line"
       style={{
         position: "absolute",
         top: idx * LINE_HEIGHT,
-        left: 0,
-        right: 0,
-        height: LINE_HEIGHT,
-        display: "flex",
-        alignItems: "stretch",
       }}
     >
       {overlayStyle && (
         <div
+          className="ai-large-file-selection"
           style={{
-            position: "absolute",
-            top: 2,
-            bottom: 2,
-            borderRadius: 4,
-            background: "color-mix(in srgb, var(--accent) 22%, transparent)",
-            pointerEvents: "none",
             ...overlayStyle,
           }}
         />
       )}
       {/* Line number gutter */}
       <span
+        className={isEditing ? "ai-large-file-gutter is-editing" : "ai-large-file-gutter"}
         style={{
           width: gutterWidth,
-          flexShrink: 0,
-          textAlign: "right",
-          paddingRight: 12,
-          color: isEditing ? "var(--accent)" : "var(--text-hint)",
-          userSelect: "none",
-          fontSize: 12,
-          lineHeight: `${LINE_HEIGHT}px`,
         }}
       >
         {idx + 1}
@@ -172,25 +157,13 @@ const VirtualLine = memo(function VirtualLine({
         onInput={(e) => onInput(idx, e.currentTarget)}
         onKeyDown={(e) => onKeyDown(e, idx)}
         onPaste={(e) => onPaste(e, idx)}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          paddingLeft: 8,
-          outline: "none",
-          whiteSpace: "pre",
-          overflow: "hidden",
-          height: LINE_HEIGHT,
-          lineHeight: `${LINE_HEIGHT}px`,
-          display: "block",
-          userSelect: "none",
-          caretColor: selectionRange ? "transparent" : "var(--accent)",
-          borderLeft: isEditing
-            ? "2px solid var(--accent)"
-            : "2px solid transparent",
-          background: isEditing && !selectionRange
-            ? "color-mix(in srgb, var(--accent) 4%, transparent)"
-            : "transparent",
-        }}
+        className={[
+          "ai-large-file-content",
+          isEditing ? "is-editing" : "",
+          selectionRange ? "has-selection" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
       />
     </div>
   );
@@ -1105,54 +1078,16 @@ export function LargeFileViewer({
 
 
   return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        minWidth: 0,
-        minHeight: 0,
-      }}
-    >
+    <div className="ai-large-file-viewer">
       {/* Info bar */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "6px 12px",
-          borderBottom: "1px solid var(--border-dim)",
-          background: "color-mix(in srgb, var(--bg-card) 90%, transparent)",
-          fontSize: 11,
-          color: "var(--text-secondary)",
-          fontWeight: 500,
-          flexShrink: 0,
-        }}
-      >
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "3px 8px",
-            borderRadius: 999,
-            background: dirty
-              ? "color-mix(in srgb, var(--accent) 12%, var(--bg-card))"
-              : "color-mix(in srgb, var(--success, #22c55e) 12%, var(--bg-card))",
-            border: dirty
-              ? "1px solid color-mix(in srgb, var(--accent) 20%, var(--border-dim))"
-              : "1px solid color-mix(in srgb, var(--success, #22c55e) 20%, var(--border-dim))",
-            color: dirty ? "var(--accent)" : "var(--success, #22c55e)",
-            fontWeight: 600,
-          }}
-        >
+      <div className="ai-large-file-statusbar">
+        <span className={dirty ? "ai-large-file-status is-dirty" : "ai-large-file-status is-saved"}>
           {dirty ? "已修改" : "已保存"}
         </span>
         <span>{sizeLabel}</span>
         <span>·</span>
         <span>{totalLines.toLocaleString()} 行</span>
-        {dirty && <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-hint)" }}>⌘S 保存</span>}
+        {dirty && <span className="ai-large-file-save-hint">⌘S 保存</span>}
       </div>
 
       {/* Virtual scroll container */}
@@ -1160,18 +1095,12 @@ export function LargeFileViewer({
         ref={containerRef}
         onScroll={handleScroll}
         tabIndex={-1}
+        className="ai-large-file-scroll chat-scroll"
         style={{
-          flex: 1,
-          overflow: "auto",
-          position: "relative",
-          fontFamily: "JetBrains Mono, monospace",
-          fontSize: 13,
           lineHeight: `${LINE_HEIGHT}px`,
-          color: "var(--text-primary)",
-          background: "var(--bg-card)",
         }}
       >
-        <div ref={contentAreaRef} style={{ height: totalHeight, position: "relative" }}>
+        <div ref={contentAreaRef} className="ai-large-file-content-area" style={{ height: totalHeight }}>
           {renderedLines.map(({ idx, text }) => (
             <VirtualLine
               key={idx}

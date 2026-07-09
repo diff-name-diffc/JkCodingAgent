@@ -3,7 +3,6 @@ import * as Select from "@radix-ui/react-select";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { RotateCw, Check, RefreshCw, FileText, Upload, X, ChevronDown } from "lucide-react";
-import s from "../../../styles";
 import { useToast } from "../../Toast";
 import type {
   RagIngestJobStartResult,
@@ -123,17 +122,7 @@ function EnumSelect({
 }) {
   return (
     <Select.Root value={value} onValueChange={onValueChange}>
-      <Select.Trigger
-        style={{
-          ...s.ahaInput,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
-          textAlign: "left",
-          cursor: "pointer",
-        }}
-      >
+      <Select.Trigger className="ai-rag-select-trigger">
         <Select.Value placeholder={placeholder} />
         <Select.Icon asChild>
           <ChevronDown size={14} color="var(--text-hint)" />
@@ -143,45 +132,17 @@ function EnumSelect({
         <Select.Content
           position="popper"
           sideOffset={4}
-          style={{
-            zIndex: 10000,
-            minWidth: "var(--radix-select-trigger-width)",
-            maxWidth: 420,
-            background: "var(--bg-card)",
-            border: "1px solid var(--border-medium)",
-            borderRadius: 8,
-            boxShadow: "var(--shadow-md)",
-            padding: 4,
-          }}
+          className="ai-rag-select-content"
         >
           <Select.Viewport>
             {options.map((option) => (
               <Select.Item
                 key={option.value}
                 value={option.value}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  minHeight: 30,
-                  padding: "0 28px 0 10px",
-                  borderRadius: 6,
-                  color: "var(--text-primary)",
-                  fontSize: 12,
-                  cursor: "pointer",
-                  position: "relative",
-                  outline: "none",
-                }}
+                className="ai-rag-select-item"
               >
                 <Select.ItemText>{option.label}</Select.ItemText>
-                <Select.ItemIndicator
-                  style={{
-                    position: "absolute",
-                    right: 8,
-                    display: "inline-flex",
-                    alignItems: "center",
-                  }}
-                >
+                <Select.ItemIndicator className="ai-rag-select-indicator">
                   <Check size={12} />
                 </Select.ItemIndicator>
               </Select.Item>
@@ -397,8 +358,8 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
 
   if (loading || !config) {
     return (
-      <div style={{ ...s.ahaPanel, alignItems: "center", justifyContent: "center" }}>
-        <span style={{ color: "var(--text-muted)", fontSize: 13 }}>加载中...</span>
+      <div className="ai-rag-panel ai-migrated-rag-panel">
+        <div className="ai-settings-empty">加载中...</div>
       </div>
     );
   }
@@ -411,31 +372,23 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
 
   return (
     <>
-      <div style={s.ahaPanel}>
-        <div style={s.ahaBody}>
-          <div style={s.ahaContent}>
+      <div className="ai-rag-panel ai-migrated-rag-panel">
+        <div className="ai-rag-body chat-scroll">
+          <div className="ai-rag-content">
             {/* ── 运行状态区 ── */}
-            <div style={s.ragRuntimeBar}>
-              <div style={s.ragRuntimeInfo}>
-                <span
-                  style={{
-                    ...s.ragStatusDot,
-                    background: running ? "var(--success)" : "var(--text-hint)",
-                    boxShadow: running
-                      ? "0 0 6px var(--success)"
-                      : "none",
-                  }}
-                />
-                <span style={s.ragStatusText}>
+            <div className="ai-rag-runtime-bar">
+              <div className="ai-rag-runtime-info">
+                <span className={running ? "ai-rag-status-dot is-running" : "ai-rag-status-dot"} />
+                <span className="ai-rag-status-text">
                   {running
                     ? `已运行 · 端口 ${runtimeStatus.port ?? "-"}`
                     : "启动中…"}
                 </span>
               </div>
-              <div style={s.ahaActionRow}>
+              <div className="ai-aha-action-row">
                 <button
                   type="button"
-                  style={s.ahaGhostButton}
+                  className="ai-aha-ghost-button"
                   onClick={handleRestart}
                   disabled={actionInProgress !== null}
                   title="重启 RAG 服务"
@@ -447,25 +400,25 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
             </div>
 
             {/* ── 服务日志区 ── */}
-            <div style={s.ahaSection}>
-              <div style={s.ahaSectionHeader}>
+            <div className="ai-aha-section">
+              <div className="ai-aha-section-header">
                 <div>
-                  <div style={s.ahaSectionTitle}>服务日志</div>
-                  <div style={s.ahaSectionDescription}>
+                  <div className="ai-aha-section-title">服务日志</div>
+                  <div className="ai-aha-section-description">
                     日志只保留内存中的最近 2000 行。等级保存后会热更新到运行中的 sidecar。
                   </div>
                 </div>
               </div>
-              <div style={s.ahaField}>
-                <span style={s.ahaLabel}>日志等级</span>
-                <div style={s.ahaActionRow}>
+              <div className="ai-settings-field-stack">
+                <span className="ai-settings-field-label">日志等级</span>
+                <div className="ai-aha-action-row">
                   {LOG_LEVELS.map((level) => {
                     const active = normalizeLogLevel(config.logLevel) === level.value;
                     return (
                       <button
                         key={level.value}
                         type="button"
-                        style={active ? s.ahaActiveBadge : s.ahaInactiveBadge}
+                        className={active ? "ai-rag-level-button is-active" : "ai-rag-level-button"}
                         onClick={() =>
                           setConfig((prev) =>
                             prev ? { ...prev, logLevel: level.value } : prev,
@@ -477,7 +430,7 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                     );
                   })}
                 </div>
-                <span style={s.ahaHint}>
+                <span className="ai-settings-hint">
                   Debug 适合排查启动和连接问题；日常建议保持 Info 或 Warning。
                 </span>
               </div>
@@ -485,18 +438,18 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
             </div>
 
             {/* ── 文档导入区 ── */}
-            <div style={s.ahaSection}>
-              <div style={s.ahaSectionHeader}>
+            <div className="ai-aha-section">
+              <div className="ai-aha-section-header">
                 <div>
-                  <div style={s.ahaSectionTitle}>导入文档</div>
-                  <div style={s.ahaSectionDescription}>
+                  <div className="ai-aha-section-title">导入文档</div>
+                  <div className="ai-aha-section-description">
                     支持 PDF、Office、Markdown、文本、表格、HTML 与图片；文件必须位于当前项目目录内。
                   </div>
                 </div>
-                <div style={s.ahaActionRow}>
+                <div className="ai-aha-action-row">
                   <button
                     type="button"
-                    style={s.ahaGhostButton}
+                    className="ai-aha-ghost-button"
                     onClick={pickIngestFiles}
                     disabled={!importReady || ingesting}
                     title="选择文件"
@@ -506,10 +459,7 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                   </button>
                   <button
                     type="button"
-                    style={{
-                      ...s.ahaGhostButton,
-                      opacity: selectedFiles.length === 0 || !importReady || ingesting ? 0.5 : 1,
-                    }}
+                    className="ai-aha-ghost-button"
                     onClick={startIngest}
                     disabled={selectedFiles.length === 0 || !importReady || ingesting}
                     title="导入知识库"
@@ -520,29 +470,22 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                 </div>
               </div>
               {!importReady && (
-                <span style={s.ahaHint}>请从具体项目打开设置后再导入文档。</span>
+                <span className="ai-settings-hint">请从具体项目打开设置后再导入文档。</span>
               )}
               {selectedFiles.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div className="ai-rag-selected-files">
                   {selectedFiles.map((file) => (
                     <div
                       key={file}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        minHeight: 28,
-                        color: "var(--text-secondary)",
-                        fontSize: 12,
-                      }}
+                      className="ai-rag-selected-file"
                     >
                       <FileText size={13} />
-                      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+                      <span className="ai-rag-selected-file-name">
                         {fileName(file)}
                       </span>
                       <button
                         type="button"
-                        style={s.ragLogIconButton}
+                        className="ai-rag-icon-button"
                         onClick={() => removeSelectedFile(file)}
                         disabled={ingesting}
                         title="移除"
@@ -554,21 +497,18 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                 </div>
               )}
               {ingestError && (
-                <span style={{ ...s.ahaFeedback, color: "var(--danger)" }}>{ingestError}</span>
+                <span className="ai-rag-feedback is-error">{ingestError}</span>
               )}
               {ingestJob && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <span style={s.ahaHint}>
+                <div className="ai-rag-ingest-status">
+                  <span className="ai-settings-hint">
                     状态：{ingestJob.status} · {ingestJob.completedFiles}/{ingestJob.totalFiles} 完成
                     {ingestJob.failedFiles > 0 ? ` · ${ingestJob.failedFiles} 失败` : ""}
                   </span>
                   {ingestJob.files.map((file) => (
                     <span
                       key={file.path}
-                      style={{
-                        color: file.status === "failed" ? "var(--danger)" : "var(--text-secondary)",
-                        fontSize: 12,
-                      }}
+                      className={file.status === "failed" ? "ai-rag-ingest-file is-failed" : "ai-rag-ingest-file"}
                     >
                       {fileName(file.path)} · {file.status}
                       {file.status === "done"
@@ -582,17 +522,17 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
             </div>
 
             {/* ── Qdrant 配置区 ── */}
-            <div style={s.ahaSection}>
-              <div style={s.ahaSectionHeader}>
+            <div className="ai-aha-section">
+              <div className="ai-aha-section-header">
                 <div>
-                  <div style={s.ahaSectionTitle}>Qdrant 向量库</div>
-                  <div style={s.ahaSectionDescription}>
+                  <div className="ai-aha-section-title">Qdrant 向量库</div>
+                  <div className="ai-aha-section-description">
                     外部独立部署的 Qdrant 实例连接信息。配置存于本地，启动时注入子进程。
                   </div>
                 </div>
                 <button
                   type="button"
-                  style={s.ahaGhostButton}
+                  className="ai-aha-ghost-button"
                   onClick={() => runTest("qdrant")}
                   disabled={actionInProgress !== null || saving}
                   title="测试连接"
@@ -603,43 +543,37 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
               </div>
               {qdrantTest && (
                 <span
-                  style={{
-                    ...s.ahaFeedback,
-                    color:
-                      qdrantTest.status === "success"
-                        ? "var(--success)"
-                        : "var(--danger)",
-                  }}
+                  className={qdrantTest.status === "success" ? "ai-rag-feedback is-success" : "ai-rag-feedback is-error"}
                 >
                   {qdrantTest.status === "success" ? <Check size={12} /> : null}{" "}
                   {qdrantTest.message}
                 </span>
               )}
-              <div style={s.ahaGrid}>
-                <label style={s.ahaField}>
-                  <span style={s.ahaLabel}>HTTP 端点</span>
+              <div className="ai-rag-grid">
+                <label className="ai-settings-field-stack">
+                  <span className="ai-settings-field-label">HTTP 端点</span>
                   <input
-                    style={s.ahaInput}
+                    className="ai-settings-input"
                     value={config.qdrant.url}
                     onChange={(e) => patchQdrant({ url: e.target.value })}
                     placeholder="http://127.0.0.1:6333"
                     spellCheck={false}
                   />
-                  <span style={s.ahaHint}>Qdrant 的 HTTP REST 端点地址。</span>
+                  <span className="ai-settings-hint">Qdrant 的 HTTP REST 端点地址。</span>
                 </label>
-                <label style={s.ahaField}>
-                  <span style={s.ahaLabel}>API Key</span>
+                <label className="ai-settings-field-stack">
+                  <span className="ai-settings-field-label">API Key</span>
                   <PasswordInput
                     value={config.qdrant.apiKey}
                     onChange={(v) => patchQdrant({ apiKey: v })}
                     placeholder="可选，留空则不鉴权"
                   />
                 </label>
-                <div style={s.ragFieldRow}>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>命名前缀</span>
+                <div className="ai-rag-field-row">
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">命名前缀</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       value={config.qdrant.collectionPrefix}
                       onChange={(e) =>
                         patchQdrant({ collectionPrefix: e.target.value })
@@ -648,10 +582,10 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                       spellCheck={false}
                     />
                   </label>
-                  <label style={{ ...s.ahaField, width: 120, flexShrink: 0 }}>
-                    <span style={s.ahaLabel}>超时（秒）</span>
+                  <label className="ai-settings-field-stack ai-rag-field-compact">
+                    <span className="ai-settings-field-label">超时（秒）</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       min={1}
                       step={1}
@@ -662,11 +596,11 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                     />
                   </label>
                 </div>
-                <div style={s.ragFieldRow}>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>稠密向量名</span>
+                <div className="ai-rag-field-row">
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">稠密向量名</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       value={config.qdrant.denseVectorName}
                       onChange={(e) =>
                         patchQdrant({ denseVectorName: e.target.value })
@@ -675,10 +609,10 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                       spellCheck={false}
                     />
                   </label>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>稀疏向量名</span>
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">稀疏向量名</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       value={config.qdrant.sparseVectorName}
                       onChange={(e) =>
                         patchQdrant({ sparseVectorName: e.target.value })
@@ -692,17 +626,17 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
             </div>
 
             {/* ── Embedding 配置区 ── */}
-            <div style={s.ahaSection}>
-              <div style={s.ahaSectionHeader}>
+            <div className="ai-aha-section">
+              <div className="ai-aha-section-header">
                 <div>
-                  <div style={s.ahaSectionTitle}>Embedding 模型</div>
-                  <div style={s.ahaSectionDescription}>
+                  <div className="ai-aha-section-title">Embedding 模型</div>
+                  <div className="ai-aha-section-description">
                     走 OpenAI 兼容 API，复用既有 LLM 配置。子进程仅做推理计算，不保存密钥到磁盘以外。
                   </div>
                 </div>
                 <button
                   type="button"
-                  style={s.ahaGhostButton}
+                  className="ai-aha-ghost-button"
                   onClick={() => runTest("embedding")}
                   disabled={actionInProgress !== null || saving}
                   title="测试连接"
@@ -713,13 +647,7 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
               </div>
               {embeddingTest && (
                 <span
-                  style={{
-                    ...s.ahaFeedback,
-                    color:
-                      embeddingTest.status === "success"
-                        ? "var(--success)"
-                        : "var(--danger)",
-                  }}
+                  className={embeddingTest.status === "success" ? "ai-rag-feedback is-success" : "ai-rag-feedback is-error"}
                 >
                   {embeddingTest.status === "success" ? (
                     <Check size={12} />
@@ -727,40 +655,40 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                   {embeddingTest.message}
                 </span>
               )}
-              <div style={s.ahaGrid}>
-                <label style={s.ahaField}>
-                  <span style={s.ahaLabel}>接口地址</span>
+              <div className="ai-rag-grid">
+                <label className="ai-settings-field-stack">
+                  <span className="ai-settings-field-label">接口地址</span>
                   <input
-                    style={s.ahaInput}
+                    className="ai-settings-input"
                     value={config.embedding.baseUrl}
                     onChange={(e) => patchEmbedding({ baseUrl: e.target.value })}
                     placeholder="https://api.openai.com/v1"
                     spellCheck={false}
                   />
                 </label>
-                <label style={s.ahaField}>
-                  <span style={s.ahaLabel}>API Key</span>
+                <label className="ai-settings-field-stack">
+                  <span className="ai-settings-field-label">API Key</span>
                   <PasswordInput
                     value={config.embedding.apiKey}
                     onChange={(v) => patchEmbedding({ apiKey: v })}
                     placeholder="sk-..."
                   />
                 </label>
-                <div style={s.ragFieldRow}>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>模型名</span>
+                <div className="ai-rag-field-row">
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">模型名</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       value={config.embedding.model}
                       onChange={(e) => patchEmbedding({ model: e.target.value })}
                       placeholder="text-embedding-3-small"
                       spellCheck={false}
                     />
                   </label>
-                  <label style={{ ...s.ahaField, width: 120, flexShrink: 0 }}>
-                    <span style={s.ahaLabel}>向量维度</span>
+                  <label className="ai-settings-field-stack ai-rag-field-compact">
+                    <span className="ai-settings-field-label">向量维度</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       min={1}
                       step={1}
@@ -775,19 +703,19 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
             </div>
 
             {/* ── Sparse / Chunking / OCR ── */}
-            <div style={s.ahaSection}>
-              <div style={s.ahaSectionHeader}>
+            <div className="ai-aha-section">
+              <div className="ai-aha-section-header">
                 <div>
-                  <div style={s.ahaSectionTitle}>分片与稀疏向量</div>
-                  <div style={s.ahaSectionDescription}>
+                  <div className="ai-aha-section-title">分片与稀疏向量</div>
+                  <div className="ai-aha-section-description">
                     父子分片用于召回小块、回填父块上下文；稀疏向量用于关键词匹配。
                   </div>
                 </div>
               </div>
-              <div style={s.ahaGrid}>
-                <div style={s.ragFieldRow}>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>稀疏供应商</span>
+              <div className="ai-rag-grid">
+                <div className="ai-rag-field-row">
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">稀疏供应商</span>
                     <EnumSelect
                       value={config.sparseEmbedding.provider}
                       options={SPARSE_PROVIDER_OPTIONS}
@@ -800,8 +728,8 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                       placeholder="fastembed"
                     />
                   </label>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>稀疏模型</span>
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">稀疏模型</span>
                     <EnumSelect
                       value={config.sparseEmbedding.model}
                       options={sparseModelOptions}
@@ -810,11 +738,11 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                     />
                   </label>
                 </div>
-                <div style={s.ragFieldRow}>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>父块大小</span>
+                <div className="ai-rag-field-row">
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">父块大小</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       min={1}
                       value={config.chunking.parentChunkSize}
@@ -823,10 +751,10 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                       }
                     />
                   </label>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>父块重叠</span>
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">父块重叠</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       min={0}
                       value={config.chunking.parentChunkOverlap}
@@ -836,11 +764,11 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                     />
                   </label>
                 </div>
-                <div style={s.ragFieldRow}>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>子块大小</span>
+                <div className="ai-rag-field-row">
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">子块大小</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       min={1}
                       value={config.chunking.childChunkSize}
@@ -849,10 +777,10 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                       }
                     />
                   </label>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>子块重叠</span>
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">子块重叠</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       min={0}
                       value={config.chunking.childChunkOverlap}
@@ -862,10 +790,10 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                     />
                   </label>
                 </div>
-                <label style={s.ahaField}>
-                  <span style={s.ahaLabel}>分隔符（每行一个）</span>
+                <label className="ai-settings-field-stack">
+                  <span className="ai-settings-field-label">分隔符（每行一个）</span>
                   <textarea
-                    style={{ ...s.ahaInput, minHeight: 76, resize: "vertical" }}
+                    className="ai-settings-textarea ai-rag-separators"
                     value={config.chunking.separators.join("\n")}
                     onChange={(e) =>
                       patchChunking({ separators: e.target.value.split("\n") })
@@ -876,28 +804,28 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
               </div>
             </div>
 
-            <div style={s.ahaSection}>
-              <div style={s.ahaSectionHeader}>
+            <div className="ai-aha-section">
+              <div className="ai-aha-section-header">
                 <div>
-                  <div style={s.ahaSectionTitle}>OCR</div>
-                  <div style={s.ahaSectionDescription}>
+                  <div className="ai-aha-section-title">OCR</div>
+                  <div className="ai-aha-section-description">
                     默认处理扫描 PDF、图片文件，以及 Office 文档中的嵌入图片。
                   </div>
                 </div>
                 <button
                   type="button"
-                  style={config.ocr.enabled ? s.ahaActiveBadge : s.ahaInactiveBadge}
+                  className={config.ocr.enabled ? "ai-rag-level-button is-active" : "ai-rag-level-button"}
                   onClick={() => patchOcr({ enabled: !config.ocr.enabled })}
                 >
                   {config.ocr.enabled ? "已启用" : "已关闭"}
                 </button>
               </div>
-              <div style={s.ahaGrid}>
-                <div style={s.ragFieldRow}>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>PDF 图片宽度阈值</span>
+              <div className="ai-rag-grid">
+                <div className="ai-rag-field-row">
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">PDF 图片宽度阈值</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       min={0}
                       max={1}
@@ -908,10 +836,10 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                       }
                     />
                   </label>
-                  <label style={{ ...s.ahaField, flex: 1, minWidth: 0 }}>
-                    <span style={s.ahaLabel}>PDF 图片高度阈值</span>
+                  <label className="ai-settings-field-stack">
+                    <span className="ai-settings-field-label">PDF 图片高度阈值</span>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       min={0}
                       max={1}
@@ -923,13 +851,13 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
                     />
                   </label>
                 </div>
-                <label style={{ ...s.ahaField, flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <label className="ai-rag-checkbox-field">
                   <input
                     type="checkbox"
                     checked={config.ocr.useCuda}
                     onChange={(e) => patchOcr({ useCuda: e.target.checked })}
                   />
-                  <span style={s.ahaLabel}>使用 CUDA OCR（需要本机环境支持）</span>
+                  <span className="ai-settings-field-label">使用 CUDA OCR（需要本机环境支持）</span>
                 </label>
               </div>
             </div>
@@ -938,32 +866,20 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
       </div>
 
       {/* ── Footer ── */}
-      <div style={s.settingsFooter}>
+      <div className="ai-settings-footer ai-rag-footer">
         {saveError && (
-          <span style={{ ...s.ahaFeedback, color: "var(--danger)", marginRight: "auto" }}>
+          <span className="ai-rag-feedback is-error">
             {saveError}
           </span>
         )}
         {saved && (
-          <span
-            style={{
-              ...s.ahaFeedback,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-              color: "var(--success)",
-              marginRight: saveError ? 12 : "auto",
-            }}
-          >
+          <span className="ai-rag-feedback is-success">
             <Check size={12} /> 已保存
           </span>
         )}
         <button
           type="button"
-          style={{
-            ...s.modalSaveBtn,
-            opacity: saving || !dirty ? 0.5 : 1,
-          }}
+          className="ai-primary-button"
           onClick={handleSave}
           disabled={saving || !dirty}
         >

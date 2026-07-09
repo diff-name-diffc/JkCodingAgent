@@ -101,50 +101,22 @@ export function ChatNewCategoryDialog({
 
   return (
     <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0,0,0,0.45)",
-        zIndex: 100,
-        animation: "fadeIn 0.12s ease-out",
-      }}
+      className="ai-dialog-overlay"
       onClick={onClose}
     >
       <form
         onSubmit={handleSubmit}
         onClick={(e) => e.stopPropagation()}
-        style={{
-          width: showAgentConfig ? 560 : 340,
-          maxHeight: "86vh",
-          overflowY: "auto",
-          padding: "20px 22px 18px",
-          background: "var(--bg-card)",
-          border: "1px solid var(--border-medium)",
-          borderRadius: 12,
-          boxShadow: "0 12px 40px rgba(0,0,0,0.3)",
-          position: "relative",
-        }}
+        className={showAgentConfig ? "ai-dialog ai-category-dialog ai-category-dialog-wide" : "ai-dialog ai-category-dialog"}
       >
         <button
           type="button"
           onClick={onClose}
-          style={{
-            position: "absolute",
-            top: 10,
-            right: 10,
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            padding: 2,
-            color: "var(--text-muted)",
-          }}
+          className="ai-dialog-close"
         >
           <X size={14} />
         </button>
-        <div style={{ fontSize: 14, fontWeight: 650, marginBottom: 14, color: "var(--text-primary)" }}>
+        <div className="ai-dialog-title">
           {title}
         </div>
         <input
@@ -152,85 +124,35 @@ export function ChatNewCategoryDialog({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="输入分类名称"
-          style={{
-            width: "100%",
-            padding: "9px 12px",
-            border: "1px solid var(--border-medium)",
-            borderRadius: 8,
-            background: "var(--bg-input)",
-            color: "var(--text-primary)",
-            fontSize: 13,
-            outline: "none",
-            boxSizing: "border-box",
-            marginBottom: 16,
-          }}
+          className="ai-field ai-dialog-input"
         />
         {showAgentConfig && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
+          <div className="ai-category-advanced">
             <button
               type="button"
               onClick={() => setShowAdvanced((value) => !value)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                width: "100%",
-                border: "1px solid var(--border-dim)",
-                background: "var(--bg-subtle)",
-                color: "var(--text-primary)",
-                borderRadius: 8,
-                padding: "8px 10px",
-                cursor: "pointer",
-                fontSize: 12.5,
-              }}
+              className="ai-category-advanced-toggle"
             >
               <span>提示词与工具集合</span>
               <ChevronDown
                 size={14}
-                style={{
-                  transform: showAdvanced ? "rotate(180deg)" : "none",
-                  transition: "transform 0.15s",
-                }}
+                className={showAdvanced ? "ai-rotate-180" : undefined}
               />
             </button>
             {showAdvanced && (
               <>
-                <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                    系统提示词
-                  </span>
+                <label className="ai-field-stack">
+                  <span className="ai-field-label">系统提示词</span>
                   <textarea
                     value={systemPrompt}
                     onChange={(event) => setSystemPrompt(event.target.value)}
                     placeholder="留空时按分类场景自动初始化提示词"
                     spellCheck={false}
-                    style={{
-                      width: "100%",
-                      minHeight: 150,
-                      resize: "vertical",
-                      padding: "9px 12px",
-                      border: "1px solid var(--border-medium)",
-                      borderRadius: 8,
-                      background: "var(--bg-input)",
-                      color: "var(--text-primary)",
-                      fontSize: 12.5,
-                      lineHeight: 1.5,
-                      outline: "none",
-                      boxSizing: "border-box",
-                    }}
+                    className="ai-field ai-dialog-textarea"
                   />
                 </label>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <label
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      fontSize: 12.5,
-                      color: "var(--text-primary)",
-                    }}
-                  >
+                <div className="ai-category-tools">
+                  <label className="ai-check-row">
                     <input
                       type="checkbox"
                       checked={customTools}
@@ -238,15 +160,8 @@ export function ChatNewCategoryDialog({
                     />
                     自定义工具集合
                   </label>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 8,
-                    }}
-                  >
-                    <span style={{ fontSize: 11.5, color: "var(--text-hint)" }}>
+                  <div className="ai-category-tools-meta">
+                    <span>
                       {customTools
                         ? `已选 ${selectedTools.length} / ${availableTools.length}`
                         : "未启用自定义时，后端按分类场景初始化工具集合"}
@@ -256,69 +171,30 @@ export function ChatNewCategoryDialog({
                       type="button"
                       onClick={loadTools}
                       disabled={loadingTools}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 5,
-                        padding: "5px 8px",
-                        border: "1px solid var(--border-dim)",
-                        borderRadius: 6,
-                        background: "var(--bg-subtle)",
-                        color: "var(--text-secondary)",
-                        cursor: loadingTools ? "not-allowed" : "pointer",
-                        fontSize: 11.5,
-                        opacity: loadingTools ? 0.65 : 1,
-                      }}
+                      className="ai-secondary-button"
                     >
                       <RefreshCw size={12} className={loadingTools ? "spin" : undefined} />
                       刷新工具
                     </button>
                   </div>
                   {customTools && (
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "1fr 1fr",
-                        gap: 6,
-                        maxHeight: 220,
-                        overflowY: "auto",
-                        border: "1px solid var(--border-dim)",
-                        borderRadius: 8,
-                        padding: 8,
-                      }}
-                    >
+                    <div className="ai-tool-grid chat-scroll">
                       {availableTools.map((tool) => (
                         <label
                           key={tool.name}
                           title={tool.description}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                            minWidth: 0,
-                            padding: "5px 6px",
-                            borderRadius: 6,
-                            background: selectedTools.includes(tool.name)
-                              ? "var(--accent-subtle)"
-                              : "transparent",
-                            cursor: "pointer",
-                          }}
+                          className={
+                            selectedTools.includes(tool.name)
+                              ? "ai-tool-option is-selected"
+                              : "ai-tool-option"
+                          }
                         >
                           <input
                             type="checkbox"
                             checked={selectedTools.includes(tool.name)}
                             onChange={() => toggleTool(tool.name)}
                           />
-                          <span
-                            style={{
-                              fontSize: 11.5,
-                              color: "var(--text-primary)",
-                              fontFamily: "var(--font-mono)",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
+                          <span>
                             {tool.name}
                           </span>
                         </label>
@@ -330,36 +206,18 @@ export function ChatNewCategoryDialog({
             )}
           </div>
         )}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <div className="ai-dialog-actions">
           <button
             type="button"
             onClick={onClose}
-            style={{
-              padding: "7px 14px",
-              background: "var(--bg-subtle)",
-              border: "1px solid var(--border-medium)",
-              borderRadius: 7,
-              fontSize: 12.5,
-              color: "var(--text-secondary)",
-              cursor: "pointer",
-            }}
+            className="ai-secondary-button"
           >
             取消
           </button>
           <button
             type="submit"
             disabled={!name.trim()}
-            style={{
-              padding: "7px 16px",
-              background: "var(--accent)",
-              border: "none",
-              borderRadius: 7,
-              fontSize: 12.5,
-              color: "white",
-              fontWeight: 600,
-              cursor: name.trim() ? "pointer" : "not-allowed",
-              opacity: name.trim() ? 1 : 0.5,
-            }}
+            className="ai-primary-button"
           >
             {confirmLabel}
           </button>

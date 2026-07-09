@@ -2,7 +2,6 @@ import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { Search, Plus, ChevronDown, X, Tag, Check, GitFork, GitBranch } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import * as Popover from "@radix-ui/react-popover";
-import s from "../../styles";
 import { isImeComposing } from "../../utils";
 
 interface GitBranchInfo {
@@ -81,29 +80,29 @@ function BranchDialog({
 
   return (
     <div
-      style={s.modalOverlay}
+      className="ai-dialog-overlay ai-branch-dialog-overlay"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div style={s.branchDialogBox} onKeyDown={handleKeyDown}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <GitBranch size={16} strokeWidth={2} color="var(--accent)" />
-            <span style={s.branchDialogTitle}>新建分支</span>
+      <div className="ai-dialog ai-branch-dialog" onKeyDown={handleKeyDown}>
+        <div className="ai-dialog-header">
+          <div className="ai-dialog-title-block">
+            <GitBranch size={16} strokeWidth={2} />
+            <span className="ai-dialog-title">新建分支</span>
           </div>
-          <button style={s.modalCloseBtn} onClick={onClose}>
+          <button className="ai-dialog-close" onClick={onClose} type="button">
             <X size={15} />
           </button>
         </div>
 
-        <div>
-          <label style={{ ...s.modalLabel, display: "flex", alignItems: "center", gap: 5 }}>
-            <Tag size={12} strokeWidth={2} color="var(--text-hint)" />
+        <div className="ai-field-stack">
+          <label className="ai-field-label">
+            <Tag size={12} strokeWidth={2} />
             分支名
           </label>
           <input
-            style={s.branchInput}
+            className="ai-field ai-branch-input"
             placeholder="feature/my-branch"
             value={branchName}
             onChange={(e) => setBranchName(e.target.value)}
@@ -117,48 +116,28 @@ function BranchDialog({
           />
         </div>
 
-        <div>
-          <label style={{ ...s.modalLabel, display: "flex", alignItems: "center", gap: 5 }}>
-            <GitFork size={12} strokeWidth={2} color="var(--text-hint)" />
+        <div className="ai-field-stack">
+          <label className="ai-field-label">
+            <GitFork size={12} strokeWidth={2} />
             基于
           </label>
           <Popover.Root open={popoverOpen} onOpenChange={setPopoverOpen}>
             <Popover.Trigger asChild>
-              <button className="radix-select-trigger" style={{ width: "100%" }}>
-                <span
-                  style={{
-                    flex: 1,
-                    textAlign: "left",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {fromBranch || "选择分支…"}
-                </span>
-                <ChevronDown
-                  size={13}
-                  strokeWidth={2}
-                  color="var(--text-hint)"
-                  style={{ flexShrink: 0 }}
-                />
+              <button className="ai-branch-select-trigger" type="button">
+                <span>{fromBranch || "选择分支…"}</span>
+                <ChevronDown size={13} strokeWidth={2} />
               </button>
             </Popover.Trigger>
             <Popover.Portal>
               <Popover.Content
-                className="branch-popover-content"
+                className="branch-popover-content ai-branch-popover"
                 sideOffset={4}
                 align="start"
                 onOpenAutoFocus={(e) => e.preventDefault()}
               >
                 {/* Search input */}
                 <div className="branch-popover-search">
-                  <Search
-                    size={13}
-                    strokeWidth={2}
-                    color="var(--text-hint)"
-                    style={{ flexShrink: 0 }}
-                  />
+                  <Search size={13} strokeWidth={2} />
                   <input
                     className="branch-popover-search-input"
                     placeholder="搜索分支…"
@@ -168,7 +147,11 @@ function BranchDialog({
                     autoFocus
                   />
                   {branchSearch && (
-                    <button className="branch-popover-clear" onClick={() => setBranchSearch("")}>
+                    <button
+                      className="branch-popover-clear"
+                      onClick={() => setBranchSearch("")}
+                      type="button"
+                    >
                       <X size={11} />
                     </button>
                   )}
@@ -182,24 +165,15 @@ function BranchDialog({
                           key={b.name}
                           className="branch-popover-item"
                           onClick={() => handleSelect(b.name)}
+                          type="button"
                         >
-                          <GitBranch
-                            size={12}
-                            strokeWidth={2}
-                            color="var(--text-hint)"
-                            style={{ flexShrink: 0 }}
-                          />
+                          <GitBranch size={12} strokeWidth={2} />
                           <span className="branch-popover-item-name">
                             {b.name}
                             {b.current ? "（当前）" : ""}
                           </span>
                           {fromBranch === b.name && (
-                            <Check
-                              size={12}
-                              strokeWidth={2.5}
-                              color="var(--accent)"
-                              style={{ flexShrink: 0, marginLeft: "auto" }}
-                            />
+                            <Check size={12} strokeWidth={2.5} className="ai-branch-check" />
                           )}
                         </button>
                       ))}
@@ -214,37 +188,19 @@ function BranchDialog({
                           key={b.name}
                           className="branch-popover-item"
                           onClick={() => handleSelect(b.name)}
+                          type="button"
                         >
-                          <GitBranch
-                            size={12}
-                            strokeWidth={2}
-                            color="var(--text-hint)"
-                            style={{ flexShrink: 0 }}
-                          />
+                          <GitBranch size={12} strokeWidth={2} />
                           <span className="branch-popover-item-name">{b.name}</span>
                           {fromBranch === b.name && (
-                            <Check
-                              size={12}
-                              strokeWidth={2.5}
-                              color="var(--accent)"
-                              style={{ flexShrink: 0, marginLeft: "auto" }}
-                            />
+                            <Check size={12} strokeWidth={2.5} className="ai-branch-check" />
                           )}
                         </button>
                       ))}
                     </div>
                   ))}
                   {localBranches.length === 0 && Object.keys(remoteGroups).length === 0 && (
-                    <div
-                      style={{
-                        padding: "12px 10px",
-                        fontSize: 12,
-                        color: "var(--text-hint)",
-                        textAlign: "center",
-                      }}
-                    >
-                      没有找到分支
-                    </div>
+                    <div className="ai-branch-empty">没有找到分支</div>
                   )}
                 </div>
               </Popover.Content>
@@ -252,20 +208,17 @@ function BranchDialog({
           </Popover.Root>
         </div>
 
-        {error && <div style={s.branchDialogError}>{error}</div>}
+        {error && <div className="ai-dialog-error">{error}</div>}
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-          <button style={s.modalCancelBtn} onClick={onClose}>
+        <div className="ai-dialog-footer">
+          <button className="ai-secondary-button" onClick={onClose} type="button">
             取消
           </button>
           <button
-            style={{
-              ...s.modalSaveBtn,
-              opacity: !branchName.trim() || loading ? 0.5 : 1,
-              cursor: !branchName.trim() || loading ? "default" : "pointer",
-            }}
+            className="ai-primary-button"
             disabled={!branchName.trim() || loading}
             onClick={handleCreate}
+            type="button"
           >
             {loading ? "创建中…" : "创建"}
           </button>
@@ -359,44 +312,26 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
         }}
       >
         <Popover.Trigger asChild>
-          <div
-            style={{
-              ...s.branchBar,
-              background: pickerOpen ? "var(--bg-hover)" : "var(--bg-card)",
-              cursor: "pointer",
-            }}
+          <button
+            className={pickerOpen ? "ai-branch-bar ai-migrated-branch-bar is-open" : "ai-branch-bar ai-migrated-branch-bar"}
             title="切换分支"
+            type="button"
           >
-            <GitBranch
-              size={12}
-              strokeWidth={2}
-              color="var(--text-muted)"
-              style={{ flexShrink: 0 }}
-            />
-            <span style={s.branchBarName}>{currentBranch?.name ?? "游离 HEAD"}</span>
-            <ChevronDown
-              size={11}
-              strokeWidth={2}
-              color="var(--text-hint)"
-              style={{ flexShrink: 0 }}
-            />
-          </div>
+            <GitBranch size={12} strokeWidth={2} />
+            <span className="ai-branch-bar-name">{currentBranch?.name ?? "游离 HEAD"}</span>
+            <ChevronDown size={11} strokeWidth={2} className="ai-branch-bar-chevron" />
+          </button>
         </Popover.Trigger>
         <Popover.Portal>
           <Popover.Content
-            className="branch-popover-content"
+            className="branch-popover-content ai-branch-popover"
             sideOffset={4}
             align="start"
             onOpenAutoFocus={(e) => e.preventDefault()}
           >
             {/* Search */}
             <div className="branch-popover-search">
-              <Search
-                size={13}
-                strokeWidth={2}
-                color="var(--text-hint)"
-                style={{ flexShrink: 0 }}
-              />
+              <Search size={13} strokeWidth={2} />
               <input
                 className="branch-popover-search-input"
                 placeholder="切换到分支…"
@@ -406,7 +341,7 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
                 autoFocus
               />
               {search && (
-                <button className="branch-popover-clear" onClick={() => setSearch("")}>
+                <button className="branch-popover-clear" onClick={() => setSearch("")} type="button">
                   <X size={11} />
                 </button>
               )}
@@ -420,33 +355,21 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
                   {localBranches.map((b) => (
                     <button
                       key={b.name}
-                      className="branch-popover-item"
+                      className={[
+                        "branch-popover-item",
+                        b.current ? "is-current" : "",
+                        switching && switching !== b.name ? "is-muted" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
                       onClick={() => handleSwitch(b)}
                       disabled={!!switching}
-                      style={{ opacity: switching && switching !== b.name ? 0.5 : 1 }}
+                      type="button"
                     >
-                      <GitBranch
-                        size={12}
-                        strokeWidth={2}
-                        color="var(--text-hint)"
-                        style={{ flexShrink: 0 }}
-                      />
+                      <GitBranch size={12} strokeWidth={2} />
                       <span className="branch-popover-item-name">{b.name}</span>
-                      {b.current && (
-                        <Check
-                          size={12}
-                          strokeWidth={2.5}
-                          color="var(--accent)"
-                          style={{ flexShrink: 0, marginLeft: "auto" }}
-                        />
-                      )}
-                      {switching === b.name && (
-                        <span
-                          style={{ fontSize: 10, color: "var(--text-hint)", marginLeft: "auto" }}
-                        >
-                          …
-                        </span>
-                      )}
+                      {b.current && <Check size={12} strokeWidth={2.5} className="ai-branch-check" />}
+                      {switching === b.name && <span className="ai-branch-switching">…</span>}
                     </button>
                   ))}
                 </>
@@ -458,69 +381,43 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
                   {bs.map((b) => (
                     <button
                       key={b.name}
-                      className="branch-popover-item"
+                      className={[
+                        "branch-popover-item",
+                        switching && switching !== b.name ? "is-muted" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
                       onClick={() => handleSwitch(b)}
                       disabled={!!switching}
-                      style={{ opacity: switching && switching !== b.name ? 0.5 : 1 }}
+                      type="button"
                     >
-                      <GitBranch
-                        size={12}
-                        strokeWidth={2}
-                        color="var(--text-hint)"
-                        style={{ flexShrink: 0 }}
-                      />
+                      <GitBranch size={12} strokeWidth={2} />
                       <span className="branch-popover-item-name">{b.name}</span>
-                      {switching === b.name && (
-                        <span
-                          style={{ fontSize: 10, color: "var(--text-hint)", marginLeft: "auto" }}
-                        >
-                          …
-                        </span>
-                      )}
+                      {switching === b.name && <span className="ai-branch-switching">…</span>}
                     </button>
                   ))}
                 </div>
               ))}
               {localBranches.length === 0 && Object.keys(remoteGroups).length === 0 && (
-                <div
-                  style={{
-                    padding: "12px 10px",
-                    fontSize: 12,
-                    color: "var(--text-hint)",
-                    textAlign: "center",
-                  }}
-                >
-                  没有找到分支
-                </div>
+                <div className="ai-branch-empty">没有找到分支</div>
               )}
             </div>
 
-            {switchError && (
-              <div
-                style={{
-                  padding: "6px 10px",
-                  fontSize: 11,
-                  color: "var(--danger, #e05c5c)",
-                  borderTop: "1px solid var(--border)",
-                }}
-              >
-                {switchError}
-              </div>
-            )}
+            {switchError && <div className="ai-branch-popover-error">{switchError}</div>}
 
             {/* Footer: new branch */}
             <div className="branch-popover-separator" />
             <button
-              className="branch-popover-item"
-              style={{ gap: 6 }}
+              className="branch-popover-item ai-branch-create-option"
               onClick={() => {
                 setPickerOpen(false);
                 setSearch("");
                 setShowDialog(true);
               }}
+              type="button"
             >
-              <Plus size={12} strokeWidth={2.5} color="var(--accent)" style={{ flexShrink: 0 }} />
-              <span style={{ fontSize: 12, color: "var(--accent)" }}>新建分支…</span>
+              <Plus size={12} strokeWidth={2.5} />
+              <span>新建分支…</span>
             </button>
           </Popover.Content>
         </Popover.Portal>

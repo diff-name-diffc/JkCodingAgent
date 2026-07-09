@@ -188,12 +188,7 @@ export function TerminalView({
   return (
     <div
       ref={containerRef}
-      style={{
-        width: "100%",
-        height: "100%",
-        overflow: "hidden",
-        cursor: "text",
-      }}
+      className="ai-terminal-view ai-migrated-terminal-view"
     />
   );
 }

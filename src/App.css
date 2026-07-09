@@ -104,36 +104,36 @@ html.dark {
   --bg-panel: #121612;
   --bg-card: #1b211c;
   --bg-hover: #263027;
-  --bg-selected: #123727;
+  --bg-selected: #0f3532;
   --bg-subtle: #171d18;
   --bg-input: #101410;
 
   --border-dim: rgba(232, 241, 229, 0.08);
   --border-medium: rgba(232, 241, 229, 0.14);
   --border-strong: rgba(232, 241, 229, 0.22);
-  --border-focus: #34d399;
+  --border-focus: #21f4df;
 
   --text-primary: #eef7ee;
   --text-secondary: #c7d8ca;
   --text-muted: #8fa092;
   --text-hint: #647166;
 
-  --accent: #34d399;
-  --accent-strong: #10b981;
-  --accent-soft: rgba(52, 211, 153, 0.28);
-  --accent-hover: #6ee7b7;
-  --accent-subtle: rgba(52, 211, 153, 0.14);
+  --accent: #21f4df;
+  --accent-strong: #14b8a6;
+  --accent-soft: rgba(33, 244, 223, 0.28);
+  --accent-hover: #5ef2e6;
+  --accent-subtle: rgba(33, 244, 223, 0.14);
 
   --chat-shell-bg:
-    radial-gradient(circle at 12% 0%, rgba(52, 211, 153, 0.16), transparent 28%),
-    radial-gradient(circle at 100% 12%, rgba(249, 115, 22, 0.12), transparent 26%),
+    radial-gradient(circle at 12% 0%, rgba(33, 244, 223, 0.16), transparent 28%),
+    radial-gradient(circle at 100% 12%, rgba(255, 189, 90, 0.12), transparent 26%),
     linear-gradient(135deg, #0f130f 0%, #171c18 50%, #111611 100%);
   --chat-sidebar-bg: rgba(17, 22, 17, 0.78);
   --chat-main-rail: rgba(18, 22, 18, 0.74);
   --chat-surface: rgba(27, 33, 28, 0.84);
   --chat-surface-strong: rgba(33, 40, 35, 0.94);
   --chat-glass-border: rgba(232, 241, 229, 0.1);
-  --chat-focus-ring: 0 0 0 3px rgba(52, 211, 153, 0.22);
+  --chat-focus-ring: 0 0 0 3px rgba(33, 244, 223, 0.22);
   --chat-shadow: 0 18px 54px rgba(0, 0, 0, 0.34);
   --chat-shadow-soft: 0 10px 26px rgba(0, 0, 0, 0.26);
 
@@ -1290,7 +1290,9 @@ button:not(:disabled):active,
 
 /* ── Markdown file preview ──────────────────────────────────────── */
 .md-preview-shell {
+  height: 100%;
   min-height: 100%;
+  overflow: auto;
   padding: 32px 40px 48px;
   background:
     radial-gradient(

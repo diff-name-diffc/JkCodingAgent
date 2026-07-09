@@ -11,7 +11,6 @@ import type {
   SshServerConfig,
   SshToolsConfig,
 } from "../../../types";
-import s from "../../../styles";
 import { SshAuditRecordList } from "./SshAuditRecordList";
 
 const EMPTY_SERVER: SshServerConfig = {
@@ -222,8 +221,8 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
 
   return (
     <>
-      <div style={s.ahaBody}>
-        <div style={s.ahaContent}>
+      <div className="ai-aha-body ai-ssh-panel ai-migrated-ssh-panel chat-scroll">
+        <div className="ai-aha-content">
           <ReviewAiSection
             review={review}
             testing={reviewTesting}
@@ -251,23 +250,23 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
             }}
           />
 
-          <div style={s.ahaSection}>
-            <div style={s.ahaSectionHeader}>
+          <div className="ai-aha-section ai-ssh-config-section">
+            <div className="ai-aha-section-header">
               <div>
-                <div style={s.ahaSectionTitle}>SSH 工具配置</div>
-                <div style={s.ahaSectionDescription}>
+                <div className="ai-aha-section-title">SSH 工具配置</div>
+                <div className="ai-aha-section-description">
                   项目和聊天分别使用自己的本地 SSH 环境。配置与审计文件位于
-                  <span style={{ fontFamily: "var(--font-mono)" }}>
-                    {" "}
-                    .jkcodingagent/local_env/ssh
-                  </span>
-                  。
+                  <span className="ai-ssh-mono"> .jkcodingagent/local_env/ssh</span>。
                 </div>
               </div>
-              <div style={s.ahaActionRow}>
+              <div className="ai-aha-action-row">
                 <button
                   type="button"
-                  style={contextButtonStyle(context === "project", !projectPath)}
+                  className={
+                    context === "project"
+                      ? "ai-aha-category-chip is-active"
+                      : "ai-aha-category-chip"
+                  }
                   disabled={!projectPath}
                   onClick={() => switchContext("project")}
                 >
@@ -275,21 +274,25 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
                 </button>
                 <button
                   type="button"
-                  style={contextButtonStyle(context === "chat", false)}
+                  className={
+                    context === "chat"
+                      ? "ai-aha-category-chip is-active"
+                      : "ai-aha-category-chip"
+                  }
                   onClick={() => switchContext("chat")}
                 >
                   聊天
                 </button>
                 <button
                   type="button"
-                  style={s.ahaGhostButton}
+                  className="ai-aha-ghost-button"
                   onClick={loadConfig}
                   disabled={loading}
                 >
                   <RefreshCw size={13} />
                   刷新
                 </button>
-                <button type="button" style={s.ahaGhostButton} onClick={addServer}>
+                <button type="button" className="ai-aha-ghost-button" onClick={addServer}>
                   <Plus size={13} />
                   添加服务器
                 </button>
@@ -297,18 +300,17 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
             </div>
 
             {workspacePath && (
-              <div style={s.ahaHint}>
-                当前工作区：
-                <span style={{ fontFamily: "var(--font-mono)" }}>{workspacePath}</span>
+              <div className="ai-ssh-workspace">
+                当前工作区：<span className="ai-ssh-mono">{workspacePath}</span>
               </div>
             )}
 
             {loading ? (
-              <div style={s.ahaHint}>加载中...</div>
+              <div className="ai-settings-empty">加载中...</div>
             ) : config.servers.length === 0 ? (
-              <div style={s.ahaHint}>还没有配置 SSH server。</div>
+              <div className="ai-settings-empty">还没有配置 SSH server。</div>
             ) : (
-              <div style={s.ahaGrid}>
+              <div className="ai-ssh-server-list">
                 {config.servers.map((server, index) => (
                   <ServerEditor
                     key={`${server.id}-${index}`}
@@ -327,15 +329,15 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
             )}
           </div>
 
-          <div style={s.ahaSection}>
-            <div style={s.ahaSectionHeader}>
+          <div className="ai-aha-section ai-ssh-audit-section">
+            <div className="ai-aha-section-header">
               <div>
-                <div style={s.ahaSectionTitle}>SSH 审计记录</div>
-                <div style={s.ahaSectionDescription}>
+                <div className="ai-aha-section-title">SSH 审计记录</div>
+                <div className="ai-aha-section-description">
                   保留最近的 100 条命令记录，包含审查结论、会话、命令和执行结果。
                 </div>
               </div>
-              <span style={s.ahaHint}>{audit.records.length}/100</span>
+              <span className="ai-ssh-count-pill">{audit.records.length}/100</span>
             </div>
             <SshAuditRecordList
               records={audit.records}
@@ -346,20 +348,12 @@ export function SshToolPanel({ projectPath }: { projectPath?: string }) {
         </div>
       </div>
 
-      <div style={s.settingsFooter}>
-        {error && (
-          <span style={{ ...s.ahaFeedback, color: "var(--danger)", marginRight: "auto" }}>
-            {error}
-          </span>
-        )}
-        {saved && (
-          <span style={{ ...s.ahaFeedback, color: "var(--success)", marginRight: "auto" }}>
-            已保存
-          </span>
-        )}
+      <div className="ai-settings-footer ai-ssh-footer">
+        {error && <span className="ai-aha-feedback is-error">{error}</span>}
+        {saved && <span className="ai-settings-saved">已保存</span>}
         <button
           type="button"
-          style={{ ...s.modalSaveBtn, opacity: saving || !workspacePath ? 0.5 : 1 }}
+          className="ai-primary-button"
           onClick={saveConfig}
           disabled={saving || !workspacePath}
         >
@@ -391,38 +385,38 @@ function ServerEditor({
   onRemove: (index: number) => void;
   onTest: (server: SshServerConfig) => void;
 }) {
+  const testOk = Boolean(testResult && (testResult.includes("成功") || testResult.includes("ok")));
   return (
-    <div style={s.ahaProvider}>
-      <div style={s.ahaProviderHeader}>
-        <div style={serverHeaderLeftStyle}>
+    <div className="ai-aha-provider">
+      <div className="ai-aha-provider-header">
+        <div className="ai-ssh-server-head-left">
           <input
             type="checkbox"
             checked={server.enabled}
             title={server.enabled ? "已启用" : "已停用"}
-            style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
+            className="ai-ssh-server-checkbox"
             onChange={(event) =>
               onUpdate(index, (draft) => ({ ...draft, enabled: event.target.checked }))
             }
           />
-          <button type="button" style={s.ahaProviderTitleButton} onClick={onToggleExpand}>
+          <button type="button" className="ai-aha-provider-title-button" onClick={onToggleExpand}>
             <ChevronDown
               size={14}
-              style={{
-                transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
-                transition: "transform 0.15s",
-                flexShrink: 0,
-              }}
+              className="ai-aha-collapsible-chevron"
+              style={{ transform: expanded ? "rotate(0deg)" : "rotate(-90deg)" }}
             />
-            <span style={s.ahaProviderTitleWrap}>
-              <span style={s.ahaProviderTitle}>{server.id || `server-${index + 1}`}</span>
-              <span style={s.ahaProviderSummary}>{serverSummary(server)}</span>
+            <span className="ai-aha-provider-title-wrap">
+              <span className="ai-aha-provider-title">
+                {server.id || `server-${index + 1}`}
+              </span>
+              <span className="ai-aha-provider-summary">{serverSummary(server)}</span>
             </span>
           </button>
         </div>
-        <div style={s.ahaProviderActions}>
+        <div className="ai-aha-provider-actions">
           <button
             type="button"
-            style={s.ahaGhostButton}
+            className="ai-aha-ghost-button"
             onClick={() => onTest(server)}
             disabled={testingId === server.id || !server.id.trim()}
           >
@@ -431,7 +425,7 @@ function ServerEditor({
           </button>
           <button
             type="button"
-            style={{ ...s.ahaGhostButton, color: "var(--danger)" }}
+            className="ai-aha-ghost-button is-danger"
             onClick={() => onRemove(index)}
           >
             <Trash2 size={13} />
@@ -443,23 +437,24 @@ function ServerEditor({
       {expanded && (
         <>
           <label
-            style={{ ...s.ahaToggleRow, marginLeft: 22 }}
+            className="ai-aha-toggle-row is-indent"
             title="开启后，每条命令执行前先经审查 AI 评估安全性"
           >
             <input
               type="checkbox"
               checked={server.reviewEnabled}
+              className="ai-aha-toggle-checkbox"
               onChange={(event) =>
                 onUpdate(index, (draft) => ({ ...draft, reviewEnabled: event.target.checked }))
               }
             />
-            <span style={{ ...s.ahaProviderSummary, fontSize: 11 }}>执行前审查</span>
+            <span className="ai-ssh-review-summary">执行前审查</span>
           </label>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="ai-ssh-form-grid">
             <Field label="Server ID">
               <input
-                style={s.ahaInput}
+                className="ai-settings-input"
                 value={server.id}
                 placeholder="prod-web-1"
                 onChange={(event) =>
@@ -469,7 +464,7 @@ function ServerEditor({
             </Field>
             <Field label="描述">
               <input
-                style={{ ...s.ahaInput, fontFamily: "inherit" }}
+                className="ai-settings-input"
                 value={server.description}
                 placeholder="生产 Web 节点"
                 onChange={(event) =>
@@ -479,7 +474,7 @@ function ServerEditor({
             </Field>
             <Field label="Host">
               <input
-                style={s.ahaInput}
+                className="ai-settings-input"
                 value={server.host}
                 placeholder="10.0.1.12"
                 onChange={(event) =>
@@ -489,7 +484,7 @@ function ServerEditor({
             </Field>
             <Field label="Port">
               <input
-                style={s.ahaInput}
+                className="ai-settings-input"
                 type="number"
                 min={1}
                 max={65535}
@@ -501,7 +496,7 @@ function ServerEditor({
             </Field>
             <Field label="Username">
               <input
-                style={s.ahaInput}
+                className="ai-settings-input"
                 value={server.username}
                 onChange={(event) =>
                   onUpdate(index, (draft) => ({ ...draft, username: event.target.value }))
@@ -510,7 +505,7 @@ function ServerEditor({
             </Field>
             <Field label="Timeout 秒">
               <input
-                style={s.ahaInput}
+                className="ai-settings-input"
                 type="number"
                 min={1}
                 max={300}
@@ -525,7 +520,7 @@ function ServerEditor({
             </Field>
             <Field label="最大输出字节">
               <input
-                style={s.ahaInput}
+                className="ai-settings-input"
                 type="number"
                 min={1024}
                 max={1048576}
@@ -544,7 +539,7 @@ function ServerEditor({
 
           <Field label="标签">
             <input
-              style={s.ahaInput}
+              className="ai-settings-input"
               value={server.tags.join(", ")}
               placeholder="prod, web"
               onChange={(event) =>
@@ -561,10 +556,7 @@ function ServerEditor({
 
           {testResult && (
             <div
-              style={{
-                ...s.ahaFeedback,
-                color: testResult.includes("成功") ? "var(--success)" : "var(--danger)",
-              }}
+              className={testOk ? "ai-aha-feedback is-success" : "ai-aha-feedback is-error"}
             >
               {testResult}
             </div>
@@ -598,17 +590,25 @@ function AuthMethodEditor({
   return (
     <>
       <Field label="认证方式">
-        <div style={{ display: "flex", gap: 8 }}>
+        <div className="ai-ssh-auth-row">
           <button
             type="button"
-            style={authButtonStyle(server.authMethod === "password")}
+            className={
+              server.authMethod === "password"
+                ? "ai-aha-category-chip is-active"
+                : "ai-aha-category-chip"
+            }
             onClick={() => onUpdate(index, (draft) => ({ ...draft, authMethod: "password" }))}
           >
             密码
           </button>
           <button
             type="button"
-            style={authButtonStyle(server.authMethod === "key")}
+            className={
+              server.authMethod === "key"
+                ? "ai-aha-category-chip is-active"
+                : "ai-aha-category-chip"
+            }
             onClick={() => onUpdate(index, (draft) => ({ ...draft, authMethod: "key" }))}
           >
             私钥文件
@@ -619,7 +619,7 @@ function AuthMethodEditor({
       {server.authMethod === "password" ? (
         <Field label="Password">
           <input
-            style={s.ahaInput}
+            className="ai-settings-input"
             type="password"
             value={server.password}
             onChange={(event) =>
@@ -630,16 +630,16 @@ function AuthMethodEditor({
       ) : (
         <>
           <Field label="私钥文件路径">
-            <div style={keyFileRowStyle}>
+            <div className="ai-ssh-keyfile-row">
               <input
-                style={{ ...s.ahaInput, flex: 1 }}
+                className="ai-settings-input"
                 value={server.privateKeyPath}
                 placeholder="~/.ssh/id_rsa"
                 onChange={(event) =>
                   onUpdate(index, (draft) => ({ ...draft, privateKeyPath: event.target.value }))
                 }
               />
-              <button type="button" style={s.ahaGhostButton} onClick={pickKeyFile}>
+              <button type="button" className="ai-aha-ghost-button" onClick={pickKeyFile}>
                 <FolderOpen size={13} />
                 选择
               </button>
@@ -647,7 +647,7 @@ function AuthMethodEditor({
           </Field>
           <Field label="私钥口令（可选，加密私钥时填写）">
             <input
-              style={s.ahaInput}
+              className="ai-settings-input"
               type="password"
               value={server.privateKeyPassphrase}
               onChange={(event) =>
@@ -686,38 +686,46 @@ function ReviewAiSection({
   onTest: () => void;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const feedbackOk = Boolean(
+    feedback && (feedback.includes("ok") || feedback.includes("成功")),
+  );
   return (
-    <div style={s.ahaSection}>
-      <div style={s.ahaSectionHeader}>
-        <button type="button" style={s.ahaCollapsibleTitle} onClick={() => setExpanded((v) => !v)}>
+    <div className="ai-aha-section">
+      <div className="ai-aha-section-header">
+        <button
+          type="button"
+          className="ai-aha-collapsible"
+          onClick={() => setExpanded((v) => !v)}
+        >
           <ChevronDown
             size={14}
-            style={{
-              transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
-              transition: "transform 0.15s",
-              flexShrink: 0,
-              marginTop: 2,
-            }}
+            className="ai-aha-collapsible-chevron"
+            style={{ transform: expanded ? "rotate(0deg)" : "rotate(-90deg)", marginTop: 2 }}
           />
           <span>
-            <div style={s.ahaSectionTitle}>命令审查 AI</div>
-            <div style={s.ahaSectionDescription}>
+            <div className="ai-aha-section-title">命令审查 AI</div>
+            <div className="ai-aha-section-description">
               配置后，SSH 与本地 local_zsh 命令执行前会交由该 OpenAI
               兼容模型，结合意图/任务/目标环境/命令做安全审查；审查异常或判定不通过将阻断执行。该配置全局共享（项目与聊天通用）。
             </div>
           </span>
         </button>
-        <div style={s.ahaActionRow}>
+        <div className="ai-aha-action-row">
           <button
             type="button"
-            style={s.ahaGhostButton}
+            className="ai-aha-ghost-button"
             onClick={onTest}
             disabled={testing || !review.modelConfig.model.trim()}
           >
             <Check size={13} />
             {testing ? "测试中..." : "测试审查模型"}
           </button>
-          <button type="button" style={s.ahaGhostButton} onClick={onSave} disabled={saving}>
+          <button
+            type="button"
+            className="ai-aha-ghost-button"
+            onClick={onSave}
+            disabled={saving}
+          >
             {saving ? "保存中..." : "保存审查配置"}
           </button>
         </div>
@@ -725,10 +733,10 @@ function ReviewAiSection({
 
       {expanded && (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="ai-ssh-form-grid">
             <Field label="审查模型 URL（OpenAI 兼容）">
               <input
-                style={s.ahaInput}
+                className="ai-settings-input"
                 value={review.modelConfig.url}
                 placeholder="https://api.example.com/v1"
                 onChange={(event) =>
@@ -741,7 +749,7 @@ function ReviewAiSection({
             </Field>
             <Field label="API Key">
               <input
-                style={s.ahaInput}
+                className="ai-settings-input"
                 type="password"
                 value={review.modelConfig.apiKey}
                 onChange={(event) =>
@@ -754,7 +762,7 @@ function ReviewAiSection({
             </Field>
             <Field label="模型名">
               <input
-                style={s.ahaInput}
+                className="ai-settings-input"
                 value={review.modelConfig.model}
                 placeholder="gpt-4o-mini"
                 onChange={(event) =>
@@ -769,7 +777,7 @@ function ReviewAiSection({
 
           <Field label="系统提示词">
             <textarea
-              style={{ ...s.ahaInput, minHeight: 150, resize: "vertical", fontFamily: "inherit" }}
+              className="ai-settings-textarea ai-ssh-prompt-textarea"
               value={review.systemPrompt}
               onChange={(event) =>
                 onChange((draft) => ({ ...draft, systemPrompt: event.target.value }))
@@ -777,7 +785,8 @@ function ReviewAiSection({
             />
             <button
               type="button"
-              style={{ ...s.ahaGhostButton, marginTop: 6 }}
+              className="ai-aha-ghost-button"
+              style={{ marginTop: 6 }}
               onClick={() =>
                 onChange((draft) => ({ ...draft, systemPrompt: DEFAULT_REVIEW_PROMPT }))
               }
@@ -789,21 +798,13 @@ function ReviewAiSection({
 
           {feedback && (
             <div
-              style={{
-                ...s.ahaFeedback,
-                color:
-                  feedback.includes("ok") || feedback.includes("成功")
-                    ? "var(--success)"
-                    : "var(--danger)",
-              }}
+              className={feedbackOk ? "ai-aha-feedback is-success" : "ai-aha-feedback is-error"}
             >
               {feedback}
             </div>
           )}
-          {error && <span style={{ ...s.ahaFeedback, color: "var(--danger)" }}>{error}</span>}
-          {saved && (
-            <span style={{ ...s.ahaFeedback, color: "var(--success)" }}>审查配置已保存</span>
-          )}
+          {error && <span className="ai-aha-feedback is-error">{error}</span>}
+          {saved && <span className="ai-aha-feedback is-success">审查配置已保存</span>}
         </>
       )}
     </div>
@@ -812,8 +813,8 @@ function ReviewAiSection({
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label style={s.ahaField}>
-      <span style={s.ahaLabel}>{label}</span>
+    <label className="ai-aha-field">
+      <span className="ai-aha-field-label">{label}</span>
       {children}
     </label>
   );
@@ -839,35 +840,3 @@ function serverSummary(server: SshServerConfig): string {
   }
   return server.description.trim() || "未配置";
 }
-
-const serverHeaderLeftStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 10,
-  minWidth: 0,
-  flex: 1,
-};
-
-function contextButtonStyle(selected: boolean, disabled: boolean): React.CSSProperties {
-  return {
-    ...s.ahaGhostButton,
-    background: selected ? "var(--bg-hover)" : "var(--bg-card)",
-    color: selected ? "var(--text-primary)" : "var(--text-secondary)",
-    opacity: disabled ? 0.5 : 1,
-  };
-}
-
-function authButtonStyle(selected: boolean): React.CSSProperties {
-  return {
-    ...s.ahaGhostButton,
-    background: selected ? "var(--bg-hover)" : "var(--bg-card)",
-    color: selected ? "var(--text-primary)" : "var(--text-secondary)",
-    borderColor: selected ? "var(--accent)" : "var(--border-dim)",
-  };
-}
-
-const keyFileRowStyle: React.CSSProperties = {
-  display: "flex",
-  gap: 8,
-  alignItems: "stretch",
-};

@@ -18,7 +18,6 @@ import {
   getRelativePathDisplay,
   isSameOrChildPath,
 } from "../utils/filePaths";
-import s from "../styles";
 
 function resolveErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -184,45 +183,37 @@ export function FileExplorer({
   );
 
   return (
-    <div style={{ ...s.fileExplorerPanel, width }}>
-      <div style={s.fileExplorerHeader}>
-        <span style={s.fileExplorerHeaderTitle}>Files</span>
+    <div className="ai-file-explorer ai-migrated-file-explorer" style={{ width }}>
+      <div className="ai-file-explorer-header">
+        <span className="ai-file-explorer-title">Files</span>
         <button
           type="button"
           onClick={() => void refresh()}
           title="刷新文件树"
-          style={s.fileExplorerRefreshButton}
-          onMouseEnter={(event) => {
-            event.currentTarget.style.color = "var(--text-primary)";
-            event.currentTarget.style.background = "var(--bg-hover)";
-          }}
-          onMouseLeave={(event) => {
-            event.currentTarget.style.color = "var(--text-hint)";
-            event.currentTarget.style.background = "none";
-          }}
+          className="ai-file-explorer-refresh"
         >
           <RotateCcw size={13} />
         </button>
       </div>
 
-      <div style={s.fileExplorerProjectLabel}>
+      <div className="ai-file-explorer-project">
         <FileGlyph name={projectName} path={projectPath} isDir size={20} />
-        {projectName}
+        <span>{projectName}</span>
       </div>
 
       <div
         ref={scrollRef}
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-        style={s.fileExplorerTreeViewport}
+        className="ai-file-explorer-tree chat-scroll"
       >
         {loading ? (
-          <div style={s.fileExplorerEmptyState}>加载中...</div>
+          <div className="ai-file-explorer-empty">加载中...</div>
         ) : flatNodes.length === 0 ? (
-          <div style={s.fileExplorerEmptyState}>空目录</div>
+          <div className="ai-file-explorer-empty">空目录</div>
         ) : (
           <div
+            className="ai-file-explorer-virtual"
             style={{
-              ...s.fileExplorerVirtualInner,
               height: flatNodes.length * ROW_HEIGHT + 12,
             }}
           >
@@ -240,10 +231,9 @@ export function FileExplorer({
               return (
                 <div
                   key={node.path}
+                  className="ai-file-explorer-virtual-row"
                   style={{
-                    position: "absolute",
                     top: (startIndex + index) * ROW_HEIGHT + 2,
-                    width: "100%",
                   }}
                 >
                   {isSystemGroupNode(node) ? (

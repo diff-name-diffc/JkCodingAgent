@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
-import s from "../../styles";
 import { buildSiblingPath, getRelativePathDisplay } from "../../utils/filePaths";
 
 type RenameTarget = {
@@ -94,7 +93,7 @@ export function FileExplorerRenameDialog({
 
   return (
     <div
-      style={s.modalOverlay}
+      className="ai-dialog-overlay ai-file-rename-overlay"
       onClick={() => {
         if (!saving) {
           onClose();
@@ -102,7 +101,7 @@ export function FileExplorerRenameDialog({
       }}
     >
       <div
-        style={s.compactDialogBox}
+        className="ai-dialog ai-file-rename-dialog"
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => {
           if (event.key === "Escape" && !saving) {
@@ -116,10 +115,10 @@ export function FileExplorerRenameDialog({
           }
         }}
       >
-        <div style={s.compactDialogHeader}>
-          <div style={s.compactDialogTitleBlock}>
-            <div style={s.compactDialogTitle}>重命名{target.isDir ? "目录" : "文件"}</div>
-            <div style={s.compactDialogSubtitle}>
+        <div className="ai-dialog-header">
+          <div className="ai-dialog-title-block">
+            <div className="ai-dialog-title">重命名{target.isDir ? "目录" : "文件"}</div>
+            <div className="ai-dialog-subtitle">
               {getRelativePathDisplay(projectPath, target.path)}
             </div>
           </div>
@@ -127,16 +126,16 @@ export function FileExplorerRenameDialog({
             type="button"
             onClick={onClose}
             disabled={saving}
-            style={s.modalCloseBtn}
+            className="ai-dialog-close"
             aria-label="关闭重命名弹窗"
           >
             <X size={16} />
           </button>
         </div>
 
-        <div style={s.compactDialogBody}>
-          <div style={s.modalField}>
-            <label style={s.modalLabel} htmlFor="file-explorer-rename-input">
+        <div className="ai-dialog-body">
+          <div className="ai-field">
+            <label className="ai-field-label" htmlFor="file-explorer-rename-input">
               新名称
             </label>
             <input
@@ -150,25 +149,25 @@ export function FileExplorerRenameDialog({
                 }
               }}
               disabled={saving}
-              style={s.modalInput}
+              className="ai-field-input"
             />
           </div>
 
-          <div style={s.compactDialogPreview}>
-            <div style={s.compactDialogPreviewLabel}>重命名后路径</div>
-            <div style={s.compactDialogPreviewPath}>
+          <div className="ai-file-rename-preview">
+            <div className="ai-file-rename-preview-label">重命名后路径</div>
+            <div className="ai-file-rename-preview-path">
               {getRelativePathDisplay(projectPath, nextPathPreview)}
             </div>
           </div>
 
-          {error && <div style={s.compactDialogError}>{error}</div>}
+          {error && <div className="ai-dialog-error">{error}</div>}
         </div>
 
-        <div style={s.compactDialogFooter}>
-          <button type="button" onClick={onClose} disabled={saving} style={s.modalCancelBtn}>
+        <div className="ai-dialog-footer">
+          <button type="button" onClick={onClose} disabled={saving} className="ai-button ai-button-ghost">
             取消
           </button>
-          <button type="button" onClick={handleSubmit} disabled={saving} style={s.modalSaveBtn}>
+          <button type="button" onClick={handleSubmit} disabled={saving} className="ai-button ai-button-primary">
             {saving ? "重命名中..." : "确认重命名"}
           </button>
         </div>

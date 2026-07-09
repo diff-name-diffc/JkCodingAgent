@@ -281,7 +281,6 @@ export function useDispatcherActions({
     },
     [
       autoApproveRef,
-      currentSessionIdRef,
       isPlainChat,
       onDispatchApprovedRef,
       onDispatchContinueRef,

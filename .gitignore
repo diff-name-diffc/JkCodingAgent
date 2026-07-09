@@ -44,3 +44,4 @@ rag/build/
 rag/dist/
 src-tauri/binaries/rag-server*
 !src-tauri/binaries/.gitkeep
+/.playwright-mcp/

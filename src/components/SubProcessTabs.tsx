@@ -63,6 +63,7 @@ export function SubProcessTabs({
 
   return (
     <div
+      className={isExpanded ? "ai-subprocess-dock is-expanded" : "ai-subprocess-dock"}
       style={{
         ...styles.container,
         display: isPanelVisible ? "flex" : "none",
@@ -70,12 +71,12 @@ export function SubProcessTabs({
       }}
     >
       {/* Resize handle */}
-      {isExpanded && <div style={styles.resizeHandle} onMouseDown={onResizeStart} />}
+      {isExpanded && <div className="ai-subprocess-resize" style={styles.resizeHandle} onMouseDown={onResizeStart} />}
 
       {/* Tab bar */}
-      <div style={styles.tabBar}>
-        <div style={styles.tabBarLabel}>子进程终端</div>
-        <div style={styles.tabList}>
+      <div className="ai-subprocess-tabbar" style={styles.tabBar}>
+        <div className="ai-subprocess-tabbar-label" style={styles.tabBarLabel}>子进程终端</div>
+        <div className="ai-subprocess-tablist" style={styles.tabList}>
           {visibleSubProcesses.map((sp) => (
             <SubProcessTab
               key={sp.id}
@@ -90,13 +91,13 @@ export function SubProcessTabs({
 
       {/* Terminal content area */}
       {(activeSubProcess || mountedTerminals.length > 0) && (
-        <div style={{ ...styles.content, display: activeSubProcess ? "flex" : "none" }}>
+        <div className="ai-subprocess-content" style={{ ...styles.content, display: activeSubProcess ? "flex" : "none" }}>
           {activeSubProcess?.status === "pending_approval" ? (
-            <div style={styles.terminalPlaceholder}>
+            <div className="ai-subprocess-placeholder" style={styles.terminalPlaceholder}>
               <span>⏳ 等待审批...</span>
             </div>
           ) : (
-            <div style={styles.terminalStage}>
+            <div className="ai-subprocess-terminal-stage" style={styles.terminalStage}>
               {mountedTerminals.map((subProcess) => {
                 const taskId = subProcess.id;
                 const isVisible = subProcess.id === activeTabId;
@@ -109,7 +110,7 @@ export function SubProcessTabs({
                       display: isVisible ? "block" : "none",
                     }}
                   >
-                    <div style={styles.terminalWrap}>
+                    <div className="ai-subprocess-terminal-wrap" style={styles.terminalWrap}>
                       <TerminalView
                         onInput={(data) => {
                           if (isInteractive) {
@@ -125,7 +126,7 @@ export function SubProcessTabs({
                         {...getRestoreState(taskId)}
                       />
                       {!isInteractive && isVisible && (
-                        <div style={styles.terminalStatusOverlay}>
+                        <div className="ai-subprocess-status-overlay" style={styles.terminalStatusOverlay}>
                           {subProcess.status === "done" && (
                             <span>终端已退出，可继续查看本次输入与输出</span>
                           )}
@@ -177,19 +178,21 @@ const SubProcessTab = memo(function SubProcessTab({
 
   return (
     <div
+      className={isActive ? "ai-subprocess-tab is-active" : "ai-subprocess-tab"}
       style={{
         ...styles.tab,
         ...(isActive ? styles.tabActive : {}),
       }}
       onClick={onSelect}
     >
-      <span style={styles.tabIcon}>{icon}</span>
-      {isRunning && <span style={styles.tabPulse} />}
-      {isPending && <span style={styles.tabPendingDot} />}
-      <span style={styles.agentBadge}>{agentLabel}</span>
-      <span style={styles.tabLabel}>{label}</span>
+      <span className="ai-subprocess-tab-icon" style={styles.tabIcon}>{icon}</span>
+      {isRunning && <span className="ai-subprocess-pulse" style={styles.tabPulse} />}
+      {isPending && <span className="ai-subprocess-pending-dot" style={styles.tabPendingDot} />}
+      <span className="ai-subprocess-agent-badge" style={styles.agentBadge}>{agentLabel}</span>
+      <span className="ai-subprocess-tab-label" style={styles.tabLabel}>{label}</span>
       <StatusBadge status={subProcess.status} />
       <button
+        className="ai-subprocess-tab-close"
         style={styles.tabCloseBtn}
         onClick={(e) => {
           e.stopPropagation();
@@ -206,6 +209,7 @@ function StatusBadge({ status }: { status: SubProcess["status"] }) {
   const config = statusConfig[status];
   return (
     <span
+      className={`ai-subprocess-status ai-subprocess-status-${status}`}
       style={{
         ...styles.statusBadge,
         color: config.color,

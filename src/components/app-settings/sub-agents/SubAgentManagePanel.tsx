@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Pencil, Plus, Trash2, Check, X } from "lucide-react";
 import type { SubAgentConfig, SubAgentRecord } from "../../../types";
-import s from "../../../styles";
 import { SubAgentEditorDialog } from "./SubAgentEditorDialog";
 
 export function toBackendConfig(config: SubAgentConfig): string {
@@ -148,46 +147,28 @@ export function SubAgentManagePanel() {
   const hasBrowserAgent = agents.some((a) => a.id === "browser-agent");
 
   return (
-    <div
-      style={{
-        flex: 1,
-        minHeight: 0,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "14px 20px 10px",
-          borderBottom: "1px solid var(--border-dim)",
-        }}
-      >
-        <span style={{ fontSize: 13, fontWeight: 750 }}>
-          子智能体管理
-        </span>
-        <button type="button" style={s.ahaGhostButton} onClick={handleNew}>
+    <div className="ai-subagent-panel ai-migrated-subagent-panel">
+      <div className="ai-subagent-header">
+        <span className="ai-subagent-title">子智能体管理</span>
+        <button type="button" className="ai-aha-ghost-button" onClick={handleNew}>
           <Plus size={14} /> 新建
         </button>
       </div>
 
-      <div style={{ ...s.ahaBody, flex: 1, overflowY: "auto" }}>
+      <div className="ai-subagent-body chat-scroll">
         {loading ? (
-          <span style={s.ahaHint}>加载中...</span>
+          <span className="ai-settings-hint">加载中...</span>
         ) : agents.length === 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <span style={s.ahaHint}>暂无子智能体</span>
-            <button type="button" style={s.ahaGhostButton} onClick={handleSeedBrowserAgent}>
+          <div className="ai-subagent-empty">
+            <span className="ai-settings-hint">暂无子智能体</span>
+            <button type="button" className="ai-aha-ghost-button" onClick={handleSeedBrowserAgent}>
               恢复内置「浏览器助手」
             </button>
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div className="ai-subagent-list">
             {!hasBrowserAgent && (
-              <button type="button" style={s.ahaGhostButton} onClick={handleSeedBrowserAgent}>
+              <button type="button" className="ai-aha-ghost-button" onClick={handleSeedBrowserAgent}>
                 恢复内置「浏览器助手」
               </button>
             )}
@@ -197,72 +178,36 @@ export function SubAgentManagePanel() {
               return (
                 <div
                   key={record.id}
-                  style={{
-                    padding: "12px 16px",
-                    borderRadius: 10,
-                    border: "1px solid var(--border-dim)",
-                    background: "var(--bg-card)",
-                  }}
+                  className="ai-subagent-card"
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                    <span
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: "50%",
-                        background: record.enabled ? "#22c55e" : "#9ca3af",
-                        flexShrink: 0,
-                      }}
-                    />
-                    <span style={{ fontSize: 13, fontWeight: 700 }}>{record.name}</span>
-                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>({record.id})</span>
+                  <div className="ai-subagent-card-head">
+                    <span className={record.enabled ? "ai-subagent-dot is-enabled" : "ai-subagent-dot"} />
+                    <span className="ai-subagent-name">{record.name}</span>
+                    <span className="ai-subagent-id">({record.id})</span>
                   </div>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "var(--text-secondary)",
-                      lineHeight: 1.5,
-                      marginBottom: 8,
-                    }}
-                  >
+                  <div className="ai-subagent-description">
                     {record.description}
                   </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      marginTop: 4,
-                    }}
-                  >
-                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  <div className="ai-subagent-card-footer">
+                    <span className="ai-subagent-meta">
                       工具: {config?.allowedTools.length ?? 0} 个
                     </span>
-                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <div className="ai-subagent-actions">
                       <button
                         type="button"
-                        style={s.ahaInlineButton}
+                        className="ai-subagent-inline-button"
                         onClick={() => handleEdit(record)}
                       >
                         <Pencil size={12} /> 编辑
                       </button>
                       {isConfirming ? (
                         <>
-                          <span
-                            style={{
-                              fontSize: 11,
-                              color: "var(--danger, #ef4444)",
-                              fontWeight: 600,
-                            }}
-                          >
+                          <span className="ai-subagent-confirm-text">
                             确定删除？
                           </span>
                           <button
                             type="button"
-                            style={{
-                              ...s.ahaInlineButton,
-                              color: "var(--danger, #ef4444)",
-                            }}
+                            className="ai-subagent-inline-button is-danger"
                             onClick={(e) => {
                               e.stopPropagation();
                               doDelete(record.id);
@@ -273,7 +218,7 @@ export function SubAgentManagePanel() {
                           </button>
                           <button
                             type="button"
-                            style={s.ahaInlineButton}
+                            className="ai-subagent-inline-button"
                             onClick={(e) => {
                               e.stopPropagation();
                               setConfirmDeleteId(null);
@@ -285,7 +230,7 @@ export function SubAgentManagePanel() {
                       ) : (
                         <button
                           type="button"
-                          style={{ ...s.ahaInlineButton, color: "var(--danger, #ef4444)" }}
+                          className="ai-subagent-inline-button is-danger"
                           onClick={(e) => {
                             e.stopPropagation();
                             setConfirmDeleteId(record.id);
@@ -303,7 +248,7 @@ export function SubAgentManagePanel() {
         )}
 
         {feedback && (
-          <div style={{ padding: "10px 0", fontSize: 12, color: "var(--danger, #ef4444)" }}>
+          <div className="ai-subagent-feedback">
             {feedback}
           </div>
         )}

@@ -195,65 +195,28 @@ export function GitDiffViewer({
   const parsedFiles = useMemo(() => parseDiff(diff), [diff]);
 
   return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        background: "var(--bg-panel)",
-      }}
-    >
+    <div className="ai-git-diff-shell ai-migrated-git-diff">
       {/* Header */}
-      <div
-        style={{
-          height: 40,
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "0 12px",
-          borderBottom: "1px solid var(--border-dim)",
-          flexShrink: 0,
-          background: "var(--bg-panel)",
-        }}
-        >
-          {filePath ? <FileGlyph path={filePath} size={20} /> : <FileCode size={14} color="var(--text-muted)" />}
-          <span
-            style={{
-              flex: 1,
-            fontSize: 12.5,
-            fontWeight: 500,
-            color: "var(--text-primary)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
+      <div className="ai-git-diff-header">
+        {filePath ? <FileGlyph path={filePath} size={20} /> : <FileCode size={14} color="var(--text-muted)" />}
+        <span className="ai-git-diff-title">
           {title}
         </span>
         <button
           onClick={onClose}
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            padding: 4,
-            borderRadius: 4,
-            color: "var(--text-hint)",
-            display: "flex",
-            alignItems: "center",
-          }}
+          className="ai-git-icon-button"
+          aria-label="关闭差异视图"
         >
           <X size={14} />
         </button>
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
+      <div className="ai-git-diff-scroll chat-scroll">
         {loading ? (
           <div className="git-diff-empty">正在加载差异…</div>
         ) : error ? (
-          <div style={{ padding: 24, color: "var(--danger)", fontSize: 13 }}>{error}</div>
+          <div className="ai-git-diff-error">{error}</div>
         ) : diff.trim() === "" ? (
           <div className="git-diff-empty">没有变更</div>
         ) : (

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CSSProperties, KeyboardEvent, MouseEvent } from "react";
+import type { KeyboardEvent, MouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm, open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -351,52 +351,27 @@ export function BrowserPanel({
 
   return (
     <aside
-      style={{
-        width,
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        background: "var(--bg-sidebar)",
-        borderLeft: "1px solid var(--border-dim)",
-        overflow: "hidden",
-      }}
+      className="ai-browser-panel ai-migrated-browser-panel"
+      style={{ width }}
     >
-      <div
-        style={{
-          height: 42,
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
-          padding: "0 10px",
-          borderBottom: "1px solid var(--border-dim)",
-        }}
-      >
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text-primary)" }}>
+      <div className="ai-browser-header">
+        <div className="ai-browser-title-block">
+          <div className="ai-browser-title">
             CloakBrowser
           </div>
           <div
-            style={{
-              fontSize: 11,
-              color: connected ? "var(--accent)" : "var(--text-hint)",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              maxWidth: Math.max(120, width - 220),
-            }}
+            className={connected ? "ai-browser-status is-connected" : "ai-browser-status"}
           >
             {statusText}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+        <div className="ai-browser-actions">
           <button
             type="button"
             title="返回上一页"
             onClick={goBack}
             disabled={!sessionId || !connected || busy}
-            style={iconButton}
+            className="ai-browser-icon-button"
           >
             <ArrowLeft size={14} />
           </button>
@@ -405,7 +380,7 @@ export function BrowserPanel({
             title="启动浏览器"
             onClick={startBrowser}
             disabled={!sessionId || busy}
-            style={iconButton}
+            className="ai-browser-icon-button"
           >
             <Power size={14} />
           </button>
@@ -415,7 +390,7 @@ export function BrowserPanel({
               title="最小化窗口"
               onClick={minimizeBrowser}
               disabled={!sessionId || busy || !connected}
-              style={iconButton}
+              className="ai-browser-icon-button"
             >
               <MonitorDown size={14} />
             </button>
@@ -425,7 +400,7 @@ export function BrowserPanel({
               title={status?.hasHeadedWindow ? "恢复窗口" : "打开独立窗口"}
               onClick={reopenBrowser}
               disabled={!sessionId || busy || !connected}
-              style={iconButton}
+              className="ai-browser-icon-button"
             >
               <Monitor size={14} />
             </button>
@@ -435,7 +410,7 @@ export function BrowserPanel({
             title="关闭浏览器"
             onClick={stopBrowser}
             disabled={!sessionId || busy}
-            style={iconButton}
+            className="ai-browser-icon-button"
           >
             <Square size={14} />
           </button>
@@ -444,7 +419,7 @@ export function BrowserPanel({
             title="导入 Chrome 登录态"
             onClick={importChromeProfile}
             disabled={!sessionId || busy}
-            style={iconButton}
+            className="ai-browser-icon-button"
           >
             <KeyRound size={14} />
           </button>
@@ -453,7 +428,7 @@ export function BrowserPanel({
             title="外部浏览器打开"
             onClick={openCurrentUrl}
             disabled={!canOpenCurrentUrl}
-            style={iconButton}
+            className="ai-browser-icon-button"
           >
             <ExternalLink size={14} />
           </button>
@@ -462,64 +437,35 @@ export function BrowserPanel({
               type="button"
               title={expanded ? "还原宽度" : "展开面板"}
               onClick={onToggleExpanded}
-              style={iconButton}
+              className="ai-browser-icon-button"
             >
               {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
           )}
           {onClose && (
-            <button type="button" title="关闭面板" onClick={onClose} style={iconButton}>
+            <button type="button" title="关闭面板" onClick={onClose} className="ai-browser-icon-button">
               <X size={14} />
             </button>
           )}
         </div>
       </div>
 
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 4,
-          padding: "4px 8px",
-          borderBottom: "1px solid var(--border-dim)",
-          background: "var(--bg-card)",
-        }}
-      >
+      <div className="ai-browser-urlbar">
         <button
           type="button"
           title="刷新页面"
           onClick={reloadPage}
           disabled={!sessionId || !connected || busy}
-          style={iconButton}
+          className="ai-browser-icon-button"
         >
           <RefreshCw size={13} />
         </button>
         <div
-          style={{
-            flex: 1,
-            display: "flex",
-            alignItems: "center",
-            height: 26,
-            borderRadius: 6,
-            border: isEditingUrl
-              ? "1px solid var(--accent)"
-              : "1px solid var(--border-dim)",
-            background: "var(--bg-sidebar)",
-            padding: "0 8px",
-            gap: 5,
-            minWidth: 0,
-          }}
+          className={isEditingUrl ? "ai-browser-address is-editing" : "ai-browser-address"}
         >
           {connected && status?.url && status.url !== "about:blank" && status.url.startsWith("https://") && (
-            <span
-              style={{
-                fontSize: 10,
-                color: "var(--accent)",
-                flexShrink: 0,
-                fontWeight: 600,
-              }}
-            >
-              🔒
+            <span className="ai-browser-lock">
+              {"https"}
             </span>
           )}
           {isEditingUrl ? (
@@ -546,17 +492,7 @@ export function BrowserPanel({
                 }
               }}
               autoFocus
-              style={{
-                flex: 1,
-                border: "none",
-                outline: "none",
-                background: "transparent",
-                color: "var(--text-primary)",
-                fontSize: 11.5,
-                fontFamily: "var(--font-mono)",
-                minWidth: 0,
-                padding: 0,
-              }}
+              className="ai-browser-address-input"
             />
           ) : (
             <span
@@ -565,20 +501,7 @@ export function BrowserPanel({
                 setUrlInput(status?.url || "");
                 setTimeout(() => urlInputRef.current?.select(), 0);
               }}
-              style={{
-                flex: 1,
-                fontSize: 11.5,
-                fontFamily: "var(--font-mono)",
-                color: status?.url && status.url !== "about:blank"
-                  ? "var(--text-secondary)"
-                  : "var(--text-hint)",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                cursor: "text",
-                lineHeight: "26px",
-                minWidth: 0,
-              }}
+              className={status?.url && status.url !== "about:blank" ? "ai-browser-address-text" : "ai-browser-address-text is-empty"}
               title={status?.url ?? ""}
             >
               {status?.url || "about:blank"}
@@ -587,68 +510,27 @@ export function BrowserPanel({
         </div>
       </div>
 
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          display: "flex",
-          flexDirection: "column",
-          background: "var(--bg-panel)",
-          overflow: "hidden",
-          position: "relative",
-        }}
-      >
+      <div className="ai-browser-stage">
         {sessionId && connected ? (
           <>
             <canvas
               ref={canvasRef}
               onClick={handleCanvasClick}
-              style={{
-                width: "100%",
-                height: "100%",
-                display: "block",
-                background: "var(--bg-card)",
-                cursor: busy ? "progress" : "pointer",
-                objectFit: "contain",
-              }}
+              className={busy ? "ai-browser-canvas is-busy" : "ai-browser-canvas"}
             />
             {status?.minimized && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: 8,
-                  left: "50%",
-                  transform: "translateX(-50%)",
-                  background: "rgba(0,0,0,0.7)",
-                  color: "#fff",
-                  fontSize: 11,
-                  padding: "4px 10px",
-                  borderRadius: 12,
-                  pointerEvents: "none",
-                  whiteSpace: "nowrap",
-                }}
-              >
+              <div className="ai-browser-minimized">
                 窗口已最小化 · 可在面板中点击操作
               </div>
             )}
           </>
         ) : (
-          <div
-            style={{
-              flex: 1,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 16,
-              padding: 24,
-            }}
-          >
+          <div className="ai-browser-empty">
             {sessionId ? (
               <>
                 {pageClosed && (
-                  <div style={{ textAlign: "center" }}>
-                    <div style={{ color: "var(--text-muted)", fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                  <div className="ai-browser-empty-block">
+                    <div className="ai-browser-empty-title">
                       浏览器窗口已关闭
                     </div>
                     <button
@@ -656,15 +538,7 @@ export function BrowserPanel({
                       title="重新打开窗口"
                       onClick={reopenBrowser}
                       disabled={!sessionId || busy}
-                      style={{
-                        ...iconButton,
-                        width: "auto",
-                        padding: "6px 14px",
-                        gap: 6,
-                        display: "inline-flex",
-                        fontSize: 12,
-                        color: "var(--text-secondary)",
-                      }}
+                      className="ai-browser-reopen-button"
                     >
                       <MonitorUp size={14} />
                       重新打开
@@ -672,32 +546,21 @@ export function BrowserPanel({
                   </div>
                 )}
                 {!connected && !pageClosed && (
-                  <div style={{ color: "var(--text-hint)", fontSize: 12 }}>
+                  <div className="ai-browser-empty-copy">
                     点击上方 ⚡ 按钮启动浏览器
                   </div>
                 )}
               </>
             ) : (
-              <div style={{ color: "var(--text-hint)", fontSize: 12 }}>选择一个会话后可启动浏览器</div>
+              <div className="ai-browser-empty-copy">选择一个会话后可启动浏览器</div>
             )}
           </div>
         )}
       </div>
 
       {(error || logs.length > 0) && (
-        <div
-          style={{
-            maxHeight: 140,
-            overflow: "auto",
-            borderTop: "1px solid var(--border-dim)",
-            padding: 8,
-            fontSize: 11,
-            lineHeight: 1.45,
-            color: "var(--text-secondary)",
-            fontFamily: "var(--font-mono)",
-          }}
-        >
-          {error && <div style={{ color: "var(--danger)" }}>{error}</div>}
+        <div className="ai-browser-log chat-scroll">
+          {error && <div className="ai-browser-log-error">{error}</div>}
           {logs.map((item, index) => (
             <div key={`${index}-${item}`}>{item}</div>
           ))}
@@ -706,16 +569,3 @@ export function BrowserPanel({
     </aside>
   );
 }
-
-const iconButton: CSSProperties = {
-  width: 26,
-  height: 26,
-  border: "1px solid var(--border-dim)",
-  borderRadius: 6,
-  background: "var(--bg-card)",
-  color: "var(--text-secondary)",
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  cursor: "pointer",
-};

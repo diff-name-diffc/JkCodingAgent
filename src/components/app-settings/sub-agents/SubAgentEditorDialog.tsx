@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { X } from "lucide-react";
 import type { SubAgentConfig, SubAgentToolInfo } from "../../../types";
-import s from "../../../styles";
 
 type EditorTab = "basic" | "tools" | "runtime";
 
@@ -122,49 +121,38 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
   const unselectedToolList = availableTools.filter((t) => !selectedTools.has(t.name));
 
   return (
-    <div style={s.modalOverlay}>
-      <div
-        style={{
-          ...s.compactDialogBox,
-          width: 620,
-          maxWidth: "92vw",
-          maxHeight: "88vh",
-        }}
-      >
-        <div style={s.compactDialogHeader}>
-          <div style={s.compactDialogTitleBlock}>
-            <span style={s.compactDialogTitle}>{isNew ? "新建子智能体" : "编辑子智能体"}</span>
+    <div className="ai-subagent-dialog-overlay">
+      <div className="ai-subagent-dialog">
+        <div className="ai-subagent-dialog-header">
+          <div className="ai-settings-title-stack">
+            <span className="ai-subagent-dialog-title">{isNew ? "新建子智能体" : "编辑子智能体"}</span>
           </div>
-          <button type="button" style={s.modalCloseBtn} onClick={onClose} aria-label="关闭">
+          <button type="button" className="ai-settings-close" onClick={onClose} aria-label="关闭">
             <X size={16} />
           </button>
         </div>
 
-        <div style={{ display: "flex", gap: 4, padding: "8px 20px 0" }}>
+        <div className="ai-subagent-dialog-tabs">
           {TABS.map((tab) => (
             <button
               key={tab.key}
               type="button"
               onClick={() => setActiveTab(tab.key)}
-              style={{
-                ...s.ahaTab,
-                background: activeTab === tab.key ? "var(--bg-hover)" : "transparent",
-                color: activeTab === tab.key ? "var(--text-primary)" : "var(--text-muted)",
-              }}
+              className={activeTab === tab.key ? "ai-aha-tab is-active" : "ai-aha-tab"}
             >
               {tab.label}
             </button>
           ))}
         </div>
 
-        <div style={{ ...s.compactDialogBody, flex: 1, overflowY: "auto" }}>
-          <div style={s.ahaContent}>
+        <div className="ai-subagent-dialog-body chat-scroll">
+          <div className="ai-rag-content">
             {activeTab === "basic" && (
               <>
-                <div style={s.ahaField}>
-                  <label style={s.ahaLabel}>Agent ID</label>
+                <div className="ai-settings-field-stack">
+                  <label className="ai-settings-field-label">Agent ID</label>
                   <input
-                    style={{ ...s.ahaInput, opacity: isNew ? 1 : 0.6 }}
+                    className="ai-settings-input"
                     value={draft.agentId}
                     disabled={!isNew}
                     placeholder="如 browser-agent，仅支持小写字母、数字、短横线和下划线"
@@ -173,88 +161,72 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                     }
                   />
                 </div>
-                <div style={s.ahaField}>
-                  <label style={s.ahaLabel}>显示名称</label>
+                <div className="ai-settings-field-stack">
+                  <label className="ai-settings-field-label">显示名称</label>
                   <input
-                    style={s.ahaInput}
+                    className="ai-settings-input"
                     value={draft.agentName}
                     placeholder="如 浏览器助手"
                     onChange={(e) => setDraft((d) => ({ ...d, agentName: e.target.value }))}
                   />
                 </div>
-                <div style={s.ahaField}>
-                  <label style={s.ahaLabel}>功能描述</label>
+                <div className="ai-settings-field-stack">
+                  <label className="ai-settings-field-label">功能描述</label>
                   <textarea
-                    style={{ ...s.ahaInput, height: 60, padding: "8px 10px", resize: "vertical" }}
+                    className="ai-settings-textarea ai-subagent-textarea-sm"
                     value={draft.description}
                     placeholder="描述该子智能体的功能和适用场景，会注入主 Agent 的 System Prompt"
                     onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
                   />
                 </div>
-                <div style={s.ahaField}>
-                  <label style={s.ahaLabel}>系统指令 (System Prompt)</label>
+                <div className="ai-settings-field-stack">
+                  <label className="ai-settings-field-label">系统指令 (System Prompt)</label>
                   <textarea
-                    style={{
-                      ...s.ahaInput,
-                      height: 180,
-                      padding: "8px 10px",
-                      resize: "vertical",
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 11.5,
-                      lineHeight: 1.55,
-                    }}
+                    className="ai-settings-textarea ai-subagent-prompt-textarea"
                     value={draft.systemPrompt}
                     placeholder="定义子智能体的角色、行为边界和输出格式"
                     onChange={(e) => setDraft((d) => ({ ...d, systemPrompt: e.target.value }))}
                   />
                 </div>
-                <div style={s.ahaField}>
-                  <label style={s.ahaLabel}>用户输入模板</label>
+                <div className="ai-settings-field-stack">
+                  <label className="ai-settings-field-label">用户输入模板</label>
                   <input
-                    style={s.ahaInput}
+                    className="ai-settings-input"
                     value={draft.userPromptTemplate}
                     placeholder="支持 {{task}} 占位符"
                     onChange={(e) =>
                       setDraft((d) => ({ ...d, userPromptTemplate: e.target.value }))
                     }
                   />
-                  <span style={s.ahaHint}>使用 {`{{task}}`} 作为任务描述占位符</span>
+                  <span className="ai-settings-hint">使用 {`{{task}}`} 作为任务描述占位符</span>
                 </div>
               </>
             )}
 
             {activeTab === "tools" && (
               <>
-                <div style={s.ahaField}>
-                  <label style={s.ahaLabel}>
+                <div className="ai-settings-field-stack">
+                  <label className="ai-settings-field-label">
                     已选工具 ({selectedToolList.length})
                   </label>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <div className="ai-subagent-tool-list">
                     {selectedToolList.length === 0 && (
-                      <span style={s.ahaHint}>尚未选择任何工具</span>
+                      <span className="ai-settings-hint">尚未选择任何工具</span>
                     )}
                     {selectedToolList.map((tool) => (
                       <label
                         key={tool.name}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          padding: "6px 8px",
-                          borderRadius: 6,
-                          background: "var(--bg-subtle)",
-                          cursor: "pointer",
-                        }}
+                        className="ai-subagent-tool-row is-selected"
                       >
                         <input
                           type="checkbox"
                           checked
                           onChange={() => toggleTool(tool.name)}
                         />
-                        <span style={{ fontSize: 12, fontFamily: "var(--font-mono)" }}>
+                        <span className="ai-subagent-tool-name">
                           {tool.name}
                         </span>
-                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                        <span className="ai-subagent-tool-description">
                           {tool.description.slice(0, 40)}
                           {tool.description.length > 40 ? "..." : ""}
                         </span>
@@ -263,30 +235,23 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                   </div>
                 </div>
 
-                <div style={s.ahaField}>
-                  <label style={s.ahaLabel}>可选工具</label>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div className="ai-settings-field-stack">
+                  <label className="ai-settings-field-label">可选工具</label>
+                  <div className="ai-subagent-tool-list">
                     {unselectedToolList.map((tool) => (
                       <label
                         key={tool.name}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          padding: "6px 8px",
-                          borderRadius: 6,
-                          cursor: "pointer",
-                        }}
+                        className="ai-subagent-tool-row"
                       >
                         <input
                           type="checkbox"
                           checked={false}
                           onChange={() => toggleTool(tool.name)}
                         />
-                        <span style={{ fontSize: 12, fontFamily: "var(--font-mono)" }}>
+                        <span className="ai-subagent-tool-name">
                           {tool.name}
                         </span>
-                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                        <span className="ai-subagent-tool-description">
                           {tool.description.slice(0, 40)}
                           {tool.description.length > 40 ? "..." : ""}
                         </span>
@@ -299,9 +264,9 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
 
             {activeTab === "runtime" && (
               <>
-                <div style={s.ahaSection}>
-                  <div style={s.ahaSectionTitle}>模型配置</div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <div className="ai-aha-section">
+                  <div className="ai-aha-section-title">模型配置</div>
+                  <label className="ai-subagent-choice-row">
                     <input
                       type="radio"
                       name="modelMode"
@@ -313,9 +278,9 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                         }))
                       }
                     />
-                    <span style={{ fontSize: 12 }}>继承主 Agent 配置</span>
+                    <span>继承主 Agent 配置</span>
                   </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <label className="ai-subagent-choice-row">
                     <input
                       type="radio"
                       name="modelMode"
@@ -327,14 +292,14 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                         }))
                       }
                     />
-                    <span style={{ fontSize: 12 }}>自定义配置</span>
+                    <span>自定义配置</span>
                   </label>
                   {!draft.modelConfig.inheritFromParent && (
                     <>
-                      <div style={s.ahaField}>
-                        <label style={s.ahaLabel}>API Base</label>
+                      <div className="ai-settings-field-stack">
+                        <label className="ai-settings-field-label">API Base</label>
                         <input
-                          style={s.ahaInput}
+                          className="ai-settings-input"
                           value={draft.modelConfig.apiBase ?? ""}
                           placeholder="https://api.openai.com/v1"
                           onChange={(e) =>
@@ -345,10 +310,10 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                           }
                         />
                       </div>
-                      <div style={s.ahaField}>
-                        <label style={s.ahaLabel}>API Key</label>
+                      <div className="ai-settings-field-stack">
+                        <label className="ai-settings-field-label">API Key</label>
                         <input
-                          style={s.ahaInput}
+                          className="ai-settings-input"
                           type="password"
                           value={draft.modelConfig.apiKey ?? ""}
                           onChange={(e) =>
@@ -359,10 +324,10 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                           }
                         />
                       </div>
-                      <div style={s.ahaField}>
-                        <label style={s.ahaLabel}>模型名称</label>
+                      <div className="ai-settings-field-stack">
+                        <label className="ai-settings-field-label">模型名称</label>
                         <input
-                          style={s.ahaInput}
+                          className="ai-settings-input"
                           value={draft.modelConfig.modelName ?? ""}
                           placeholder="为空时使用主 Agent 同类型模型"
                           onChange={(e) =>
@@ -377,11 +342,11 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                   )}
                 </div>
 
-                <div style={s.ahaGrid}>
-                  <div style={s.ahaField}>
-                    <label style={s.ahaLabel}>最大迭代轮次 (1-100)</label>
+                <div className="ai-subagent-runtime-grid">
+                  <div className="ai-settings-field-stack">
+                    <label className="ai-settings-field-label">最大迭代轮次 (1-100)</label>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       min={1}
                       max={100}
@@ -391,10 +356,10 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                       }
                     />
                   </div>
-                  <div style={s.ahaField}>
-                    <label style={s.ahaLabel}>最大输出 Token (256-65536)</label>
+                  <div className="ai-settings-field-stack">
+                    <label className="ai-settings-field-label">最大输出 Token (256-65536)</label>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       min={256}
                       max={65536}
@@ -404,10 +369,10 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                       }
                     />
                   </div>
-                  <div style={s.ahaField}>
-                    <label style={s.ahaLabel}>Temperature (0-2)</label>
+                  <div className="ai-settings-field-stack">
+                    <label className="ai-settings-field-label">Temperature (0-2)</label>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       min={0}
                       max={2}
@@ -418,10 +383,10 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                       }
                     />
                   </div>
-                  <div style={s.ahaField}>
-                    <label style={s.ahaLabel}>超时时间 (秒)</label>
+                  <div className="ai-settings-field-stack">
+                    <label className="ai-settings-field-label">超时时间 (秒)</label>
                     <input
-                      style={s.ahaInput}
+                      className="ai-settings-input"
                       type="number"
                       value={draft.timeoutSecs}
                       onChange={(e) =>
@@ -436,16 +401,16 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
         </div>
 
         {error && (
-          <div style={{ padding: "0 20px", fontSize: 12, color: "var(--danger, #ef4444)" }}>
+          <div className="ai-subagent-dialog-error">
             {error}
           </div>
         )}
 
-        <div style={s.compactDialogFooter}>
-          <button type="button" style={s.modalCancelBtn} onClick={onClose}>
+        <div className="ai-subagent-dialog-footer">
+          <button type="button" className="ai-secondary-button" onClick={onClose}>
             取消
           </button>
-          <button type="button" style={s.modalSaveBtn} onClick={handleSave}>
+          <button type="button" className="ai-primary-button" onClick={handleSave}>
             {isNew ? "创建" : "保存"}
           </button>
         </div>

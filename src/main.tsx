@@ -7,9 +7,11 @@ import "@fontsource/inter/700.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "@fontsource/jetbrains-mono/600.css";
-import "@radix-ui/themes/styles.css";
+import "./styles/tailwind.css";
 import App from "./App";
 import { ToastProvider } from "./components/Toast";
+import { QueryProvider } from "./components/providers/query-provider";
+import { TooltipProvider } from "./components/ui/tooltip";
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -67,9 +69,13 @@ class ErrorBoundary extends React.Component<
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <ToastProvider>
-        <App />
-      </ToastProvider>
+      <QueryProvider>
+        <ToastProvider>
+          <TooltipProvider>
+            <App />
+          </TooltipProvider>
+        </ToastProvider>
+      </QueryProvider>
     </ErrorBoundary>
   </React.StrictMode>,
 );

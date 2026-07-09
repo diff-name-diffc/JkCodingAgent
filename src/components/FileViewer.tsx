@@ -63,44 +63,9 @@ export const FileViewer = forwardRef<FileViewerHandle, {
   const canCloseTabsToRight = activeTabIndex !== -1 && activeTabIndex < tabs.length - 1;
 
   return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        minWidth: 0,
-        minHeight: 0,
-        background:
-          "linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 64%, transparent), var(--bg-panel))",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          minWidth: 0,
-          padding: "10px 12px",
-          borderBottom: "1px solid var(--border-dim)",
-          background: "color-mix(in srgb, var(--bg-card) 74%, transparent)",
-          backdropFilter: "blur(14px)",
-          WebkitBackdropFilter: "blur(14px)",
-        }}
-      >
-        <div
-          className="file-viewer-tab-strip"
-          style={{
-            flex: 1,
-            minWidth: 0,
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            overflowX: "auto",
-            overflowY: "hidden",
-            paddingBottom: 2,
-          }}
-        >
+    <div className="ai-file-viewer ai-migrated-file-viewer">
+      <div className="ai-file-viewer-header">
+        <div className="ai-file-viewer-tab-strip file-viewer-tab-strip chat-scroll">
           {tabs.map((tab) => {
             const isActive = tab.id === activeTab.id;
             const presentation = resolveFilePresentation({ name: tab.name, path: tab.path });
@@ -111,36 +76,10 @@ export const FileViewer = forwardRef<FileViewerHandle, {
                 type="button"
                 onClick={() => onSelectTab(tab.id)}
                 title={tab.path}
-                style={{
-                  minWidth: 0,
-                  maxWidth: 260,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "10px 12px",
-                  borderRadius: 16,
-                  border: isActive
-                    ? "1px solid color-mix(in srgb, var(--accent) 24%, var(--border-dim))"
-                    : "1px solid transparent",
-                  background: isActive
-                    ? "linear-gradient(135deg, color-mix(in srgb, var(--accent) 9%, var(--bg-card)), color-mix(in srgb, var(--bg-card) 88%, transparent))"
-                    : "transparent",
-                  color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
-                  cursor: "pointer",
-                  flexShrink: 0,
-                  boxShadow: isActive ? "0 10px 24px rgba(15, 23, 42, 0.05)" : "none",
-                }}
+                className={isActive ? "ai-file-viewer-tab is-active" : "ai-file-viewer-tab"}
               >
                 <FileGlyph presentation={presentation} size={20} />
-                <span
-                  style={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    fontSize: 12.5,
-                    fontWeight: isActive ? 600 : 500,
-                  }}
-                >
+                <span className="ai-file-viewer-tab-label">
                   {tab.name}
                 </span>
                 <span
@@ -148,16 +87,7 @@ export const FileViewer = forwardRef<FileViewerHandle, {
                     event.stopPropagation();
                     onCloseTab(tab.id);
                   }}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    width: 20,
-                    height: 20,
-                    borderRadius: 999,
-                    color: "var(--text-hint)",
-                    flexShrink: 0,
-                  }}
+                  className="ai-file-viewer-tab-close"
                   role="button"
                   aria-label={`关闭 ${tab.name}`}
                 >
@@ -174,19 +104,7 @@ export const FileViewer = forwardRef<FileViewerHandle, {
               type="button"
               title="标签操作"
               aria-label="标签操作"
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 12,
-                border: "1px solid var(--border-dim)",
-                background: "color-mix(in srgb, var(--bg-card) 88%, transparent)",
-                color: "var(--text-secondary)",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-              }}
+              className="ai-file-viewer-tool-button"
             >
               <MoreHorizontal size={15} />
             </button>
@@ -240,44 +158,22 @@ export const FileViewer = forwardRef<FileViewerHandle, {
           title="隐藏文件编辑器"
           aria-label="隐藏文件编辑器"
           onClick={onHide}
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 12,
-            border: "1px solid var(--border-dim)",
-            background: "color-mix(in srgb, var(--bg-card) 88%, transparent)",
-            color: "var(--text-secondary)",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-          }}
+          className="ai-file-viewer-tool-button"
         >
           <X size={15} />
         </button>
       </div>
 
-      <div
-        style={{
-          flex: 1,
-          position: "relative",
-          minWidth: 0,
-          minHeight: 0,
-        }}
-      >
+      <div className="ai-file-viewer-stage">
         {tabs.map((tab) => {
           const isActive = tab.id === activeTab.id;
 
           return (
             <div
               key={tab.id}
+              className="ai-file-viewer-pane-slot"
               style={{
-                position: "absolute",
-                inset: 0,
                 display: isActive ? "flex" : "none",
-                minWidth: 0,
-                minHeight: 0,
               }}
             >
               <FileTabPane

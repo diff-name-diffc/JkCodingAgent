@@ -2087,6 +2087,7 @@ dependencies = [
  "futures",
  "glob",
  "image",
+ "libc",
  "notify",
  "once_cell",
  "parking_lot",

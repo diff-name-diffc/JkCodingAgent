@@ -1,7 +1,6 @@
 import type React from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { SshAuditRecord } from "../../../types";
-import s from "../../../styles";
 
 export function SshAuditRecordList({
   records,
@@ -13,11 +12,11 @@ export function SshAuditRecordList({
   onExpandedAuditChange: (key: string | null) => void;
 }) {
   if (records.length === 0) {
-    return <div style={s.ahaHint}>暂无审计记录。</div>;
+    return <div className="ai-settings-empty">暂无审计记录。</div>;
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <div className="ai-ssh-audit-list">
       {records.map((record, index) => {
         const auditKey = `${record.createdAt}-${index}`;
         const expanded = expandedAudit === auditKey;
@@ -44,27 +43,27 @@ function SshAuditRecordItem({
   onToggle: () => void;
 }) {
   return (
-    <div style={s.ahaProvider}>
-      <button type="button" style={auditHeaderButtonStyle} onClick={onToggle}>
-        <div style={s.ahaProviderTitleWrap}>
+    <div className="ai-ssh-audit-record">
+      <button type="button" className="ai-ssh-audit-header" onClick={onToggle}>
+        <div className="ai-ssh-audit-title-wrap">
           {expanded ? (
-            <ChevronDown size={13} style={{ flexShrink: 0 }} />
+            <ChevronDown size={13} />
           ) : (
-            <ChevronRight size={13} style={{ flexShrink: 0 }} />
+            <ChevronRight size={13} />
           )}
-          <span style={s.ahaProviderTitle}>{record.serverId}</span>
-          <span style={s.ahaProviderSummary}>{record.sessionId}</span>
+          <span className="ai-ssh-audit-server">{record.serverId}</span>
+          <span className="ai-ssh-audit-session">{record.sessionId}</span>
           <ReviewBadge record={record} />
           <ExecutionBadge record={record} />
         </div>
-        <span style={s.ahaHint}>{record.createdAt}</span>
+        <span className="ai-ssh-audit-date">{record.createdAt}</span>
       </button>
 
-      <pre style={auditPreStyle}>{record.command}</pre>
-      <div style={s.ahaHint}>{executionSummary(record)}</div>
+      <pre className="ai-ssh-audit-pre">{record.command}</pre>
+      <div className="ai-ssh-audit-summary">{executionSummary(record)}</div>
 
       {expanded && (
-        <div style={auditDetailsStyle}>
+        <div className="ai-ssh-audit-details">
           <AuditInfoBlock title="命令审查 AI" tone={reviewTone(record)}>
             {reviewText(record)}
           </AuditInfoBlock>
@@ -86,10 +85,10 @@ function SshAuditRecordItem({
 
 function ReviewBadge({ record }: { record: SshAuditRecord }) {
   if (!record.review) {
-    return <span style={mutedBadgeStyle}>未审查</span>;
+    return <span className="ai-ssh-badge is-muted">未审查</span>;
   }
   return (
-    <span style={record.review.allowed ? reviewPassBadgeStyle : reviewBlockBadgeStyle}>
+    <span className={record.review.allowed ? "ai-ssh-badge is-success" : "ai-ssh-badge is-danger"}>
       {record.review.allowed ? "审查通过" : "审查拦截"}
     </span>
   );
@@ -97,18 +96,18 @@ function ReviewBadge({ record }: { record: SshAuditRecord }) {
 
 function ExecutionBadge({ record }: { record: SshAuditRecord }) {
   if (record.review && !record.review.allowed) {
-    return <span style={mutedBadgeStyle}>未执行</span>;
+    return <span className="ai-ssh-badge is-muted">未执行</span>;
   }
   if (record.interactiveBlocked) {
-    return <span style={warningBadgeStyle}>交互阻塞</span>;
+    return <span className="ai-ssh-badge is-warning">交互阻塞</span>;
   }
   if (record.error) {
-    return <span style={reviewBlockBadgeStyle}>执行失败</span>;
+    return <span className="ai-ssh-badge is-danger">执行失败</span>;
   }
   if (record.exitCode != null && record.exitCode !== 0) {
-    return <span style={warningBadgeStyle}>退出异常</span>;
+    return <span className="ai-ssh-badge is-warning">退出异常</span>;
   }
-  return <span style={reviewPassBadgeStyle}>已执行</span>;
+  return <span className="ai-ssh-badge is-success">已执行</span>;
 }
 
 function AuditInfoBlock({
@@ -121,9 +120,9 @@ function AuditInfoBlock({
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ ...infoBlockStyle, borderColor: toneColor(tone) }}>
-      <div style={{ ...infoTitleStyle, color: toneColor(tone) }}>{title}</div>
-      <div style={infoBodyStyle}>{children}</div>
+    <div className={`ai-ssh-info-block is-${tone}`}>
+      <div className="ai-ssh-info-title">{title}</div>
+      <div className="ai-ssh-info-body">{children}</div>
     </div>
   );
 }
@@ -140,8 +139,8 @@ function OutputBlock({
   const trimmed = value.trim();
   return (
     <div>
-      <div style={outputTitleStyle}>{title}</div>
-      <pre style={{ ...auditPreStyle, ...outputPreStyle }}>
+      <div className="ai-ssh-output-title">{title}</div>
+      <pre className="ai-ssh-audit-pre ai-ssh-output-pre">
         {trimmed.length > 0 ? value : emptyText}
       </pre>
     </div>
@@ -213,116 +212,3 @@ function executionTone(record: SshAuditRecord): "success" | "danger" | "warning"
   }
   return "success";
 }
-
-function toneColor(tone: "success" | "danger" | "warning" | "muted"): string {
-  if (tone === "success") {
-    return "var(--success)";
-  }
-  if (tone === "danger") {
-    return "var(--danger)";
-  }
-  if (tone === "warning") {
-    return "var(--warning)";
-  }
-  return "var(--border-dim)";
-}
-
-const auditHeaderButtonStyle: React.CSSProperties = {
-  ...s.ahaProviderHeader,
-  width: "100%",
-  border: 0,
-  padding: 0,
-  background: "transparent",
-  color: "inherit",
-  cursor: "pointer",
-  userSelect: "none",
-  textAlign: "left",
-};
-
-const auditDetailsStyle: React.CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 8,
-};
-
-const auditPreStyle: React.CSSProperties = {
-  margin: 0,
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid var(--border-dim)",
-  background: "var(--bg-subtle)",
-  color: "var(--text-primary)",
-  fontFamily: "var(--font-mono)",
-  fontSize: 11.5,
-  lineHeight: 1.45,
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-};
-
-const badgeBaseStyle: React.CSSProperties = {
-  fontSize: 10.5,
-  fontWeight: 600,
-  borderRadius: 6,
-  padding: "0 6px",
-  lineHeight: 1.5,
-};
-
-const reviewPassBadgeStyle: React.CSSProperties = {
-  ...badgeBaseStyle,
-  color: "var(--success)",
-  border: "1px solid var(--success)",
-};
-
-const reviewBlockBadgeStyle: React.CSSProperties = {
-  ...badgeBaseStyle,
-  color: "var(--danger)",
-  border: "1px solid var(--danger)",
-};
-
-const warningBadgeStyle: React.CSSProperties = {
-  ...badgeBaseStyle,
-  color: "var(--warning)",
-  border: "1px solid var(--warning)",
-};
-
-const mutedBadgeStyle: React.CSSProperties = {
-  ...badgeBaseStyle,
-  color: "var(--text-secondary)",
-  border: "1px solid var(--border-dim)",
-};
-
-const infoBlockStyle: React.CSSProperties = {
-  margin: 0,
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid var(--border-dim)",
-  background: "var(--bg-subtle)",
-  color: "var(--text-primary)",
-  fontSize: 11.5,
-  lineHeight: 1.5,
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-};
-
-const infoTitleStyle: React.CSSProperties = {
-  fontWeight: 700,
-  marginBottom: 4,
-};
-
-const infoBodyStyle: React.CSSProperties = {
-  color: "var(--text-primary)",
-};
-
-const outputTitleStyle: React.CSSProperties = {
-  marginBottom: 4,
-  color: "var(--text-secondary)",
-  fontSize: 11,
-  fontWeight: 700,
-};
-
-const outputPreStyle: React.CSSProperties = {
-  maxHeight: 220,
-  overflow: "auto",
-  color: "var(--text-secondary)",
-  fontSize: 11,
-};

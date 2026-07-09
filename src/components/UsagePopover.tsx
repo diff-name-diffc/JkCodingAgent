@@ -4,7 +4,6 @@ import { Activity } from "lucide-react";
 import type { ClaudeUsageData, CodexUsageData, UsageSource, UsageWindow } from "../types";
 import { useUsageSnapshot } from "../hooks/useUsageSnapshot";
 import { getUsageColor } from "../utils";
-import s from "../styles";
 
 function formatResetTime(resetAt?: number | null): string | null {
   if (!resetAt) return null;
@@ -23,10 +22,10 @@ function UsageMetricRow({ label, window }: { label: string; window: UsageWindow 
   const resetLabel = formatResetTime(window.resetAt);
 
   return (
-    <div style={s.usageMetricRow}>
-      <span style={s.usageMetricLabel}>{label}</span>
-      <span style={{ ...s.usageMetricValue, color }}>剩余 {window.remainingPercent}%</span>
-      {resetLabel && <span style={s.usageMetricMeta}>{resetLabel}</span>}
+    <div className="ai-usage-metric-row">
+      <span className="ai-usage-metric-label">{label}</span>
+      <span className="ai-usage-metric-value" style={{ color }}>剩余 {window.remainingPercent}%</span>
+      {resetLabel && <span className="ai-usage-metric-meta">{resetLabel}</span>}
     </div>
   );
 }
@@ -43,16 +42,16 @@ function SourceCard<T>({
   metrics: Array<{ label: string; window?: UsageWindow | null }>;
 }) {
   return (
-    <section style={s.usageSourceSection}>
-      <div style={s.usageSourceHead}>
-        <div style={s.usageSourceTitle}>{title}</div>
-        {subtitle ? <div style={s.usageSourceSubtitle}>{subtitle}</div> : null}
+    <section className="ai-usage-source-section">
+      <div className="ai-usage-source-head">
+        <div className="ai-usage-source-title">{title}</div>
+        {subtitle ? <div className="ai-usage-source-subtitle">{subtitle}</div> : null}
       </div>
 
       {source.status === "unavailable" ? (
-        <div style={s.usageUnavailableText}>{source.reason}</div>
+        <div className="ai-usage-status-text">{source.reason}</div>
       ) : (
-        <div style={s.usageMetricList}>
+        <div className="ai-usage-metric-list">
           {metrics.some((metric) => metric.window) ? (
             metrics.map((metric) =>
               metric.window ? (
@@ -60,7 +59,7 @@ function SourceCard<T>({
               ) : null,
             )
           ) : (
-            <div style={s.usageUnavailableText}>暂未返回用量窗口数据。</div>
+            <div className="ai-usage-status-text">暂未返回用量窗口数据。</div>
           )}
         </div>
       )}
@@ -107,24 +106,24 @@ export function UsagePopover() {
   );
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>
-        <button style={s.sidebarIconBtn} title="用量">
+      <Popover.Root open={open} onOpenChange={setOpen}>
+        <Popover.Trigger asChild>
+        <button className="ai-sidebar-tool-button" title="用量">
           <Activity size={14} strokeWidth={1.8} color="var(--text-hint)" />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
-        <Popover.Content side="top" align="start" sideOffset={8} style={s.usagePopoverContent}>
-          <div style={s.usagePopoverHeader}>
-            <div style={s.usagePopoverTitle}>用量</div>
+        <Popover.Content side="top" align="start" sideOffset={8} className="ai-usage-popover ai-migrated-usage-popover">
+          <div className="ai-usage-popover-header">
+            <div className="ai-usage-popover-title">用量</div>
           </div>
 
           {loading ? (
-            <div style={s.usageStatusText}>正在加载用量…</div>
+            <div className="ai-usage-status-text">正在加载用量…</div>
           ) : error ? (
-            <div style={s.usageStatusText}>加载用量失败：{error}</div>
+            <div className="ai-usage-status-text is-error">加载用量失败：{error}</div>
           ) : snapshot ? (
-            <div style={s.usageSourceList}>
+            <div className="ai-usage-source-list">
               <SourceCard<ClaudeUsageData>
                 title="Claude Code"
                 source={snapshot.claude}
@@ -138,7 +137,7 @@ export function UsagePopover() {
               />
             </div>
           ) : (
-            <div style={s.usageStatusText}>暂时没有用量数据。</div>
+            <div className="ai-usage-status-text">暂时没有用量数据。</div>
           )}
         </Popover.Content>
       </Popover.Portal>

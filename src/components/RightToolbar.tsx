@@ -29,6 +29,7 @@ export function RightToolbar({
 
   return (
     <div
+      className="ai-project-right-toolbar"
       style={{
         width: 44,
         flexShrink: 0,

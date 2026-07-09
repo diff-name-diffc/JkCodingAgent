@@ -535,138 +535,66 @@ function GeneralPanel() {
   const isDirty =
     settings.claude_path !== original.claude_path || settings.codex_path !== original.codex_path;
 
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    padding: "7px 10px",
-    background: "var(--bg-input)",
-    border: "1px solid var(--border-medium)",
-    borderRadius: 7,
-    color: "var(--text-primary)",
-    fontSize: 12.5,
-    fontFamily: "var(--font-mono)",
-    outline: "none",
-    boxSizing: "border-box",
-  };
-
-  const labelStyle: React.CSSProperties = {
-    fontSize: 12,
-    fontWeight: 600,
-    color: "var(--text-secondary)",
-    marginBottom: 5,
-    display: "block",
-  };
-
-  const fieldStyle: React.CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: 5,
-    marginBottom: 18,
-  };
-
-  const hintStyle: React.CSSProperties = {
-    fontSize: 11,
-    color: "var(--text-hint)",
-    marginTop: 3,
-  };
-
   return (
     <>
-      <div
-        style={{
-          ...s.settingsBody,
-          display: "flex",
-          flexDirection: "column",
-          gap: 0,
-          padding: "20px 20px 14px",
-        }}
-      >
-        {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>
-        )}
+      <div className="ai-settings-body ai-settings-general">
+        {error && <div className="ai-settings-error">{error}</div>}
 
         {loading ? (
-          <div style={{ color: "var(--text-hint)", fontSize: 13 }}>加载中...</div>
+          <div className="ai-settings-empty">加载中...</div>
         ) : (
           <>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 18,
-              }}
-            >
-              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                智能体安装路径
-              </span>
+            <div className="ai-settings-section-head">
+              <span className="ai-settings-section-title">智能体安装路径</span>
               <button
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 5,
-                  padding: "5px 10px",
-                  background: "none",
-                  border: "1px solid var(--border-medium)",
-                  borderRadius: 6,
-                  fontSize: 12,
-                  color: "var(--text-secondary)",
-                  cursor: detectingPaths ? "default" : "pointer",
-                  opacity: detectingPaths ? 0.6 : 1,
-                }}
+                className="ai-settings-tool-button"
                 onClick={handleDetect}
                 disabled={detectingPaths}
+                type="button"
               >
                 <RefreshCw size={12} className={detectingPaths ? "spin" : undefined} />
                 {detectingPaths ? "检测中..." : "自动检测"}
               </button>
             </div>
 
-            <div style={fieldStyle}>
-              <label style={labelStyle}>Claude Code 路径</label>
+            <div className="ai-settings-field-stack">
+              <label className="ai-settings-field-label">Claude Code 路径</label>
               <input
-                style={inputStyle}
+                className="ai-settings-input"
                 value={settings.claude_path}
                 onChange={(e) => setSettings((prev) => ({ ...prev, claude_path: e.target.value }))}
                 placeholder="/usr/local/bin/claude"
                 spellCheck={false}
               />
-              <span style={hintStyle}>留空则使用系统 PATH 中的 `claude`。</span>
+              <span className="ai-settings-hint">留空则使用系统 PATH 中的 `claude`。</span>
             </div>
 
-            <div style={fieldStyle}>
-              <label style={labelStyle}>Codex 路径</label>
+            <div className="ai-settings-field-stack">
+              <label className="ai-settings-field-label">Codex 路径</label>
               <input
-                style={inputStyle}
+                className="ai-settings-input"
                 value={settings.codex_path}
                 onChange={(e) => setSettings((prev) => ({ ...prev, codex_path: e.target.value }))}
                 placeholder="/usr/local/bin/codex"
                 spellCheck={false}
               />
-              <span style={hintStyle}>留空则使用系统 PATH 中的 `codex`。</span>
+              <span className="ai-settings-hint">留空则使用系统 PATH 中的 `codex`。</span>
             </div>
           </>
         )}
       </div>
 
-      <div style={s.settingsFooter}>
+      <div className="ai-settings-footer">
         {saved && (
-          <span
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              fontSize: 12,
-              color: "var(--success, #34c759)",
-              marginRight: "auto",
-            }}
-          >
+          <span className="ai-settings-saved">
             <Check size={12} /> 已保存
           </span>
         )}
         <button
-          style={{ ...s.modalSaveBtn, opacity: saving || !isDirty ? 0.5 : 1 }}
+          className="ai-primary-button"
           onClick={handleSave}
           disabled={saving || !isDirty}
+          type="button"
         >
           {saving ? "保存中..." : "保存"}
         </button>
@@ -804,62 +732,22 @@ function AgentConfigPanel({
 
   return (
     <>
-      <div
-        style={{
-          ...s.settingsBody,
-          display: "flex",
-          flexDirection: "column",
-          gap: 0,
-          padding: "14px 20px",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-            padding: 14,
-            marginBottom: 14,
-            borderRadius: 10,
-            border: "1px solid var(--border-dim)",
-            background: "var(--bg-subtle)",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-            }}
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>
-                已安装版本
-              </span>
-              <span style={{ fontSize: 11.5, color: "var(--text-hint)", lineHeight: 1.45 }}>
+      <div className="ai-settings-body ai-settings-agent-config">
+        <div className="ai-settings-version-card">
+          <div className="ai-settings-section-head">
+            <div className="ai-settings-title-stack">
+              <span className="ai-settings-section-title">已安装版本</span>
+              <span className="ai-settings-hint">
                 {versionSourcePath
                   ? `当前可执行文件：${versionSourcePath}`
                   : "当前使用系统 PATH 中的可执行文件。"}
               </span>
             </div>
             <button
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 5,
-                padding: "5px 10px",
-                background: "none",
-                border: "1px solid var(--border-medium)",
-                borderRadius: 6,
-                fontSize: 12,
-                color: "var(--text-secondary)",
-                cursor: detectingVersion ? "default" : "pointer",
-                opacity: detectingVersion ? 0.6 : 1,
-                flexShrink: 0,
-              }}
+              className="ai-settings-tool-button"
               onClick={() => void refreshAgentVersion(false)}
               disabled={detectingVersion}
+              type="button"
             >
               <RefreshCw size={12} className={detectingVersion ? "spin" : undefined} />
               {detectingVersion ? "检测中..." : "检测"}
@@ -867,101 +755,45 @@ function AgentConfigPanel({
           </div>
 
           <input
-            style={{
-              width: "100%",
-              padding: "7px 10px",
-              background: "var(--bg-input)",
-              border: "1px solid var(--border-medium)",
-              borderRadius: 7,
-              color: "var(--text-primary)",
-              fontSize: 12.5,
-              fontFamily: "var(--font-mono)",
-              outline: "none",
-              boxSizing: "border-box",
-            }}
+            className="ai-settings-input"
             value={detectedVersion}
             readOnly
             placeholder={versionLoading ? "检测中..." : "未检测到"}
             spellCheck={false}
           />
 
-          {versionError && (
-            <div style={{ fontSize: 11.5, color: "var(--danger)" }}>{versionError}</div>
-          )}
+          {versionError && <div className="ai-settings-error">{versionError}</div>}
         </div>
 
         {/* File path + edit button row */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-          <div
-            style={{
-              fontSize: 11.5,
-              color: "var(--text-hint)",
-              fontFamily: "var(--font-mono)",
-              background: "var(--bg-subtle)",
-              border: "1px solid var(--border-dim)",
-              borderRadius: 6,
-              padding: "4px 9px",
-            }}
-          >
-            {filePath}
-          </div>
+        <div className="ai-settings-file-row">
+          <div className="ai-settings-path-pill">{filePath}</div>
           {fileState.status === "loaded" && !editing && (
-            <button
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 5,
-                padding: "4px 10px",
-                background: "none",
-                border: "1px solid var(--border-medium)",
-                borderRadius: 6,
-                fontSize: 12,
-                color: "var(--text-secondary)",
-                cursor: "pointer",
-              }}
-              onClick={() => setEditing(true)}
-            >
+            <button className="ai-settings-tool-button" onClick={() => setEditing(true)} type="button">
               <Pencil size={12} />
               编辑
             </button>
           )}
           {saved && (
-            <span
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                fontSize: 12,
-                color: "var(--success, #34c759)",
-              }}
-            >
+            <span className="ai-settings-saved">
               <Check size={12} /> 已保存
             </span>
           )}
         </div>
 
-        {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>
-        )}
+        {error && <div className="ai-settings-error">{error}</div>}
 
         {fileState.status === "loading" && !error && (
-          <div style={{ color: "var(--text-hint)", fontSize: 13 }}>加载中...</div>
+          <div className="ai-settings-empty">加载中...</div>
         )}
 
         {fileState.status === "missing" && (
-          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>未找到配置文件</div>
+          <div className="ai-settings-empty">未找到配置文件</div>
         )}
 
         {fileState.status === "loaded" && !editing && (
           <div
-            className="file-viewer-code"
-            style={{
-              flex: 1,
-              overflowY: "auto",
-              borderRadius: 8,
-              border: "1px solid var(--border-dim)",
-              fontSize: 12.5,
-            }}
+            className="file-viewer-code ai-settings-code-view chat-scroll"
             dangerouslySetInnerHTML={{ __html: highlighted ?? "" }}
           />
         )}
@@ -969,15 +801,8 @@ function AgentConfigPanel({
         {fileState.status === "loaded" && editing && (
           <textarea
             autoFocus
-            style={{
-              ...s.modalTextarea,
-              flex: 1,
-              width: "100%",
-              minHeight: 300,
-              resize: "none",
-              boxSizing: "border-box",
-              caretColor: isDark ? "#F1F4FB" : "#171B24",
-            }}
+            className="ai-settings-textarea"
+            style={{ caretColor: isDark ? "#F1F4FB" : "#171B24" }}
             value={fileState.content}
             onChange={(e) => setFileState({ status: "loaded", content: e.target.value })}
             spellCheck={false}
@@ -986,14 +811,15 @@ function AgentConfigPanel({
       </div>
 
       {editing && (
-        <div style={s.settingsFooter}>
-          <button style={s.modalCancelBtn} onClick={handleCancel}>
+        <div className="ai-settings-footer">
+          <button className="ai-secondary-button" onClick={handleCancel} type="button">
             取消
           </button>
           <button
-            style={{ ...s.modalSaveBtn, opacity: saving || !isDirty ? 0.5 : 1 }}
+            className="ai-primary-button"
             onClick={handleSave}
             disabled={saving || !isDirty}
+            type="button"
           >
             {saving ? "保存中..." : "保存"}
           </button>
@@ -1004,6 +830,29 @@ function AgentConfigPanel({
 }
 
 // ── Main Dialog ───────────────────────────────────────────────────────────────
+
+function SettingsNavIcon({ item, size }: { item: (typeof NAV_ITEMS)[number]; size: number }) {
+  if (item.logo) {
+    return (
+      <img
+        src={item.logo}
+        alt=""
+        className={item.key === "codex" ? "ai-settings-logo is-muted" : "ai-settings-logo"}
+        style={{ width: size, height: size }}
+      />
+    );
+  }
+
+  if (item.key === "theme") {
+    return <Monitor size={size} strokeWidth={1.8} />;
+  }
+
+  if (item.key === "rag") {
+    return <Database size={size} strokeWidth={1.8} />;
+  }
+
+  return <span className="ai-settings-glyph">⚙</span>;
+}
 
 export function AppSettingsDialog({
   onClose,
@@ -1033,94 +882,67 @@ export function AppSettingsDialog({
   const activeItem = NAV_ITEMS.find((n) => n.key === activeNav)!;
 
   return (
-    <div style={s.modalOverlay} onClick={handleOverlayClick}>
-      <div style={s.modalBox}>
+    <div className="ai-dialog-overlay ai-settings-overlay" onClick={handleOverlayClick}>
+      <div className="ai-settings-shell ai-migrated-settings">
         {/* Left nav */}
-        <div style={s.settingsNav}>
-          <div style={s.settingsNavTitle}>应用设置</div>
+        <nav className="ai-settings-nav" aria-label="应用设置">
+          <div className="ai-settings-nav-title">
+            <span>应用设置</span>
+          </div>
           {NAV_ITEMS.map((item) => (
             <button
               key={item.key}
-              style={{
-                ...s.settingsNavItem,
-                background: activeNav === item.key ? "var(--bg-hover)" : "none",
-                color: activeNav === item.key ? "var(--text-primary)" : "var(--text-secondary)",
-                fontWeight: activeNav === item.key ? 600 : 500,
-              }}
+              type="button"
+              className={
+                activeNav === item.key
+                  ? "ai-settings-nav-item is-active"
+                  : "ai-settings-nav-item"
+              }
               onClick={() => setActiveNav(item.key)}
             >
-              {item.logo ? (
-                <img
-                  src={item.logo}
-                  style={{ width: 14, height: 14, opacity: item.key === "codex" ? 0.7 : 1 }}
-                />
-              ) : item.key === "theme" ? (
-                <Monitor size={14} strokeWidth={1.8} />
-              ) : (
-                <span
-                  style={{
-                    width: 14,
-                    height: 14,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: 13,
-                  }}
-                >
-                  ⚙
-                </span>
-              )}
-              {item.label}
+              <SettingsNavIcon item={item} size={14} />
+              <span className="ai-settings-nav-label">{item.label}</span>
             </button>
           ))}
-        </div>
+        </nav>
 
         {/* Right content */}
-        <div style={s.settingsContent}>
-          <div style={s.settingsContentHeader}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {activeItem.logo ? (
-                <img
-                  src={activeItem.logo}
-                  style={{ width: 16, height: 16, opacity: activeItem.key === "codex" ? 0.7 : 1 }}
-                />
-              ) : activeItem.key === "theme" ? (
-                <Monitor size={16} strokeWidth={1.8} color="var(--text-secondary)" />
-              ) : activeItem.key === "rag" ? (
-                <Database size={16} strokeWidth={1.8} color="var(--text-secondary)" />
-              ) : (
-                <span style={{ fontSize: 15 }}>⚙</span>
-              )}
-              <span style={s.settingsContentTitle}>{activeItem.label}</span>
+        <section className="ai-settings-content">
+          <div className="ai-settings-header">
+            <div className="ai-settings-title-wrap">
+              <SettingsNavIcon item={activeItem} size={16} />
+              <span className="ai-settings-content-title">{activeItem.label}</span>
             </div>
-            <button style={s.modalCloseBtn} onClick={onClose} title="关闭">
+            <button className="ai-settings-close" onClick={onClose} title="关闭" type="button">
               <X size={16} strokeWidth={2} />
             </button>
           </div>
 
-          {activeNav === "general" ? (
-            <GeneralPanel key="general" />
-          ) : activeNav === "theme" ? (
-            <ThemePanel
-              key="theme"
-              themeMode={themeMode}
-              systemPrefersDark={systemPrefersDark}
-              onThemeModeChange={onThemeModeChange}
-            />
-          ) : activeNav === "aha" ? (
-            <AhaAgentPanel key="aha" projectPath={projectPath} />
-          ) : activeNav === "rag" ? (
-            <RagKbConfigPanel key="rag" projectId={projectId} projectPath={projectPath} />
-          ) : (
-            <AgentConfigPanel
-              key={activeNav}
-              agentKey={activeNav as AgentKey}
-              filePath={activeItem.filePath!}
-              lang={activeItem.lang!}
-              isDark={isDark}
-            />
-          )}
-        </div>
+          <div className="ai-settings-panel-host">
+            {activeNav === "general" ? (
+              <GeneralPanel key="general" />
+            ) : activeNav === "theme" ? (
+              <ThemePanel
+                key="theme"
+                themeMode={themeMode}
+                systemPrefersDark={systemPrefersDark}
+                onThemeModeChange={onThemeModeChange}
+              />
+            ) : activeNav === "aha" ? (
+              <AhaAgentPanel key="aha" projectPath={projectPath} />
+            ) : activeNav === "rag" ? (
+              <RagKbConfigPanel key="rag" projectId={projectId} projectPath={projectPath} />
+            ) : (
+              <AgentConfigPanel
+                key={activeNav}
+                agentKey={activeNav as AgentKey}
+                filePath={activeItem.filePath!}
+                lang={activeItem.lang!}
+                isDark={isDark}
+              />
+            )}
+          </div>
+        </section>
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project } from "../types";
-import s from "../styles";
+import { AiEmptyState, AiPanel, AiSectionHeader } from "./ui/sci-fi-shell";
 
 interface DayStats {
   date: string;
@@ -68,10 +68,10 @@ function isToday(dateStr: string): boolean {
 
 function StatCard({ value, label }: { value: string; label: string }) {
   return (
-    <div style={s.statCard}>
-      <div style={s.statValue}>{value}</div>
-      <div style={s.statLabel}>{label}</div>
-    </div>
+    <AiPanel className="ai-stat-card">
+      <div className="ai-stat-value">{value}</div>
+      <div className="ai-stat-label">{label}</div>
+    </AiPanel>
   );
 }
 
@@ -94,16 +94,16 @@ export function AnalyticsDashboard({ projects: _projects }: { projects: Project[
 
   if (loading) {
     return (
-      <div style={{ ...s.analyticsPane, alignItems: "center", justifyContent: "center" }}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>加载中...</div>
+      <div className="ai-home-pane ai-analytics-pane">
+        <AiEmptyState title="加载中..." />
       </div>
     );
   }
 
   if (error || !data) {
     return (
-      <div style={{ ...s.analyticsPane, alignItems: "center", justifyContent: "center" }}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{error ?? "暂无数据"}</div>
+      <div className="ai-home-pane ai-analytics-pane">
+        <AiEmptyState title={error ?? "暂无数据"} />
       </div>
     );
   }
@@ -116,183 +116,149 @@ export function AnalyticsDashboard({ projects: _projects }: { projects: Project[
   const codexPct = totalAgents > 0 ? 100 - claudePct : 0;
 
   return (
-    <div style={s.analyticsPane}>
-      <div style={s.analyticsHeader}>最近 7 天</div>
-      <div style={s.analyticsSubtitle}>编码活动概览</div>
+    <div className="ai-home-pane ai-analytics-pane">
+      <AiSectionHeader title="最近 7 天" caption="编码活动概览" />
 
-      {/* Heatmap */}
-      <div style={s.heatmapRow}>
-        {data.daily.map((day) => (
-          <div
-            key={day.date}
-            style={{ display: "flex", flexDirection: "column", alignItems: "center" }}
-          >
-            <div
-              style={{
-                ...s.heatmapCell,
-                background: heatmapColor(day.task_count),
-                boxShadow: isToday(day.date) ? "0 0 0 2px var(--accent)" : undefined,
-                transform: day.task_count > 0 ? "scale(1.04)" : undefined,
-              }}
-              title={`${day.date}：${day.task_count} 个任务`}
-            />
-            <div
-              style={{
-                ...s.heatmapLabel,
-                fontWeight: isToday(day.date) ? 700 : 400,
-                color: isToday(day.date) ? "var(--text-secondary)" : "var(--text-hint)",
-              }}
-            >
-              {getDayLabel(day.date)}
+      <div className="ai-analytics-hero">
+        <AiPanel className="ai-analytics-card">
+          <div className="ai-analytics-title">任务热力</div>
+          <div className="ai-heatmap-row">
+            {data.daily.map((day) => {
+              const today = isToday(day.date);
+              const active = day.task_count > 0;
+              return (
+                <div key={day.date} className="ai-heatmap-day">
+                  <div
+                    className={`ai-heatmap-cell${today ? " is-today" : ""}`}
+                    style={{ background: heatmapColor(day.task_count) }}
+                    title={`${day.date}：${day.task_count} 个任务`}
+                  />
+                  <div className={`ai-heatmap-label${today ? " is-active" : ""}`}>
+                    {getDayLabel(day.date)}
+                  </div>
+                  <div className={`ai-heatmap-label${active ? " is-active" : ""}`}>
+                    {active ? day.task_count : "·"}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="ai-heatmap-legend">
+            <span>少</span>
+            {[0, 1, 3, 5, 8].map((n) => (
+              <span
+                key={n}
+                className="ai-heatmap-legend-swatch"
+                style={{ background: heatmapColor(n) }}
+              />
+            ))}
+            <span>多</span>
+          </div>
+        </AiPanel>
+
+        <AiPanel className="ai-analytics-card">
+          <div className="ai-analytics-title">运行态势</div>
+          <div className="ai-agent-bars">
+            <div className="ai-agent-meta">
+              <span>失败任务</span>
+              <span>{data.failed_tasks}</span>
             </div>
-            <div
-              style={{
-                ...s.heatmapLabel,
-                color: day.task_count > 0 ? "var(--text-secondary)" : "var(--text-hint)",
-                fontWeight: day.task_count > 0 ? 600 : 400,
-              }}
-            >
-              {day.task_count > 0 ? day.task_count : "·"}
+            <div className="ai-agent-track">
+              <div
+                className="ai-agent-fill"
+                style={{
+                  width: `${data.total_tasks > 0 ? Math.round((data.failed_tasks / data.total_tasks) * 100) : 0}%`,
+                  background: "var(--danger)",
+                  color: "var(--danger)",
+                }}
+              />
+            </div>
+            <div className="ai-agent-meta">
+              <span>总耗时</span>
+              <span>{formatDuration(data.total_duration_secs)}</span>
             </div>
           </div>
-        ))}
+        </AiPanel>
       </div>
 
-      {/* Legend */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
-        <span style={{ fontSize: 11, color: "var(--text-hint)" }}>少</span>
-        {[0, 1, 3, 5, 8].map((n) => (
-          <div
-            key={n}
-            style={{
-              width: 14,
-              height: 14,
-              borderRadius: 3,
-              background: heatmapColor(n),
-              border: "1px solid var(--border-dim)",
-            }}
-          />
-        ))}
-        <span style={{ fontSize: 11, color: "var(--text-hint)" }}>多</span>
-      </div>
-
-      <div style={s.analyticsDivider} />
-
-      {/* Stat cards */}
-      <div style={s.statGrid}>
+      <div className="ai-stat-grid">
         <StatCard value={String(data.total_tasks)} label="任务总数" />
         <StatCard value={`${successRate}%`} label="成功率" />
         <StatCard value={formatTokens(totalTokens)} label="总 Token" />
         <StatCard value={String(data.total_tool_calls)} label="工具调用" />
       </div>
 
-      {/* Agent + project row */}
-      <div style={s.analyticsRow}>
-        {/* Agent distribution */}
-        <div style={s.analyticsCard}>
-          <div style={s.analyticsCardTitle}>智能体分布</div>
+      <div className="ai-analytics-row">
+        <AiPanel className="ai-analytics-card">
+          <div className="ai-analytics-title">智能体分布</div>
           {totalAgents === 0 ? (
-            <div style={{ fontSize: 12, color: "var(--text-hint)" }}>暂无数据</div>
+            <AiEmptyState title="暂无数据" />
           ) : (
-            <div style={s.agentBarWrap}>
-              <div style={s.agentBarRow}>
-                <div style={s.agentBarMeta}>
+            <div className="ai-agent-bars">
+              <div>
+                <div className="ai-agent-meta">
                   <span>Claude Code</span>
                   <span>
                     {data.claude_tasks} 个任务（{claudePct}%）
                   </span>
                 </div>
-                <div style={s.agentBarTrack}>
+                <div className="ai-agent-track">
                   <div
+                    className="ai-agent-fill"
                     style={{
-                      ...s.agentBarFill,
                       width: `${claudePct}%`,
                       background: "var(--accent)",
+                      color: "var(--accent)",
                     }}
                   />
                 </div>
               </div>
-              <div style={s.agentBarRow}>
-                <div style={s.agentBarMeta}>
+              <div>
+                <div className="ai-agent-meta">
                   <span>Codex</span>
                   <span>
                     {data.codex_tasks} 个任务（{codexPct}%）
                   </span>
                 </div>
-                <div style={s.agentBarTrack}>
+                <div className="ai-agent-track">
                   <div
-                    style={{ ...s.agentBarFill, width: `${codexPct}%`, background: "#a78bfa" }}
+                    className="ai-agent-fill"
+                    style={{ width: `${codexPct}%`, background: "var(--warning)", color: "var(--warning)" }}
                   />
                 </div>
               </div>
               {data.total_duration_secs > 0 && (
-                <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
+                <div className="ai-agent-meta">
                   总耗时：
-                  <span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>
-                    {formatDuration(data.total_duration_secs)}
-                  </span>
+                  <span>{formatDuration(data.total_duration_secs)}</span>
                 </div>
               )}
             </div>
           )}
-        </div>
+        </AiPanel>
 
-        {/* Project ranking */}
-        <div style={s.analyticsCard}>
-          <div style={s.analyticsCardTitle}>项目排行</div>
+        <AiPanel className="ai-analytics-card">
+          <div className="ai-analytics-title">项目排行</div>
           {data.projects.length === 0 ? (
-            <div style={{ fontSize: 12, color: "var(--text-hint)" }}>暂无数据</div>
+            <AiEmptyState title="暂无数据" />
           ) : (
-            <div style={s.projectRankList}>
+            <div className="ai-project-rank-list">
               {data.projects.slice(0, 5).map((p, i) => {
                 const ratio = Math.round(
                   (p.task_count / (data.projects[0]?.task_count || 1)) * 100,
                 );
                 return (
-                  <div
-                    key={p.project_id}
-                    style={{
-                      position: "relative",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      padding: "5px 8px",
-                      borderRadius: 6,
-                      overflow: "hidden",
-                    }}
-                  >
-                    <div
-                      style={{
-                        position: "absolute",
-                        left: 0,
-                        top: 0,
-                        bottom: 0,
-                        width: `${ratio}%`,
-                        background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-                        borderRadius: 6,
-                        pointerEvents: "none",
-                      }}
-                    />
-                    <span
-                      style={{
-                        fontSize: 11,
-                        color: "var(--text-hint)",
-                        width: 14,
-                        flexShrink: 0,
-                        fontWeight: 600,
-                        zIndex: 1,
-                      }}
-                    >
-                      {i + 1}
-                    </span>
-                    <span style={{ ...s.projectRankName, zIndex: 1 }}>{p.project_name}</span>
-                    <span style={{ ...s.projectRankCount, zIndex: 1 }}>{p.task_count}</span>
+                  <div key={p.project_id} className="ai-project-rank-row">
+                    <div className="ai-project-rank-fill" style={{ width: `${ratio}%` }} />
+                    <span className="ai-project-rank-index">{i + 1}</span>
+                    <span className="ai-project-rank-name">{p.project_name}</span>
+                    <span className="ai-project-rank-count">{p.task_count}</span>
                   </div>
                 );
               })}
             </div>
           )}
-        </div>
+        </AiPanel>
       </div>
     </div>
   );

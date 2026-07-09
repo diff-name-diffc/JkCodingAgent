@@ -57,52 +57,16 @@ function ToastContainer({
 }) {
   if (toasts.length === 0) return null;
   return (
-    <div
-      style={{
-        position: "fixed",
-        bottom: 20,
-        right: 20,
-        zIndex: 9999,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        maxWidth: 380,
-        pointerEvents: "none",
-      }}
-    >
+    <div className="ai-toast-stack ai-migrated-toast-stack">
       {toasts.map((t) => (
         <div
           key={t.id}
-          className="toast-item"
-          style={{
-            pointerEvents: "auto",
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 10,
-            padding: "10px 12px 10px 14px",
-            borderRadius: 10,
-            background: t.type === "error" ? "var(--danger)" : "var(--warning)",
-            color: "#fff",
-            fontSize: 12.5,
-            fontWeight: 500,
-            boxShadow: "0 4px 16px rgba(0,0,0,0.24), 0 1px 4px rgba(0,0,0,0.14)",
-            lineHeight: 1.5,
-          }}
+          className={t.type === "error" ? "ai-toast-item is-error" : "ai-toast-item is-warning"}
         >
-          <span style={{ flex: 1 }}>{t.message}</span>
+          <span className="ai-toast-message">{t.message}</span>
           <button
             onClick={() => onDismiss(t.id)}
-            style={{
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              color: "rgba(255,255,255,0.75)",
-              padding: "0 0 0 4px",
-              fontSize: 18,
-              lineHeight: 1,
-              flexShrink: 0,
-              fontFamily: "inherit",
-            }}
+            className="ai-toast-close"
           >
             ×
           </button>

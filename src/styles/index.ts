@@ -1,6 +1,5 @@
 import type React from "react";
 
-import { appSettings } from "./appSettings";
 import { common } from "./common";
 import { dialogs } from "./dialogs";
 import { layout } from "./layout";
@@ -10,7 +9,6 @@ import { task } from "./task";
 import { terminal } from "./terminal";
 
 const s = {
-  ...appSettings,
   ...layout,
   ...panels,
   ...subAgent,

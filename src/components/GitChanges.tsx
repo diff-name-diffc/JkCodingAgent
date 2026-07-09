@@ -32,7 +32,6 @@ export function GitChanges({
   const [generatingMsg, setGeneratingMsg] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [commitMsgError, setCommitMsgError] = useState(false);
-  const [textareaFocused, setTextareaFocused] = useState(false);
   const [trackedCollapsed, setTrackedCollapsed] = useState(false);
   const [untrackedCollapsed, setUntrackedCollapsed] = useState(false);
 
@@ -140,102 +139,36 @@ export function GitChanges({
   const allCount = allChanges.length;
 
   return (
-    <div
-      style={{
-        width,
-        flexShrink: 0,
-        background: "var(--bg-sidebar)",
-        borderLeft: "1px solid var(--border-dim)",
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
-    >
+    <div className="ai-git-changes ai-migrated-git-changes" style={{ width }}>
       {/* Header */}
-      <div
-        style={{
-          height: 48,
-          display: "flex",
-          alignItems: "center",
-          padding: "0 12px",
-          borderBottom: "1px solid var(--border-dim)",
-          flexShrink: 0,
-          gap: 6,
-        }}
-      >
-        <span style={{ flex: 1, fontSize: 13, fontWeight: 650, color: "var(--text-primary)" }}>
-          变更
-        </span>
+      <div className="ai-git-header">
+        <span className="ai-git-title">变更</span>
         <button
           onClick={refresh}
           title="刷新"
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            padding: 4,
-            borderRadius: 4,
-            color: "var(--text-hint)",
-            display: "flex",
-            alignItems: "center",
-          }}
+          className="ai-git-icon-button"
         >
           <RefreshCw size={13} className={loading ? "spin" : ""} />
         </button>
         <button
           title="筛选"
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            padding: 4,
-            borderRadius: 4,
-            color: "var(--text-hint)",
-            display: "flex",
-            alignItems: "center",
-          }}
+          className="ai-git-icon-button"
         >
           <Filter size={13} />
         </button>
       </div>
 
       {/* Tabs */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "8px 12px 4px",
-          flexShrink: 0,
-        }}
-      >
+      <div className="ai-git-tabs">
         <button
           onClick={() => setTab("task")}
-          style={{
-            padding: "3px 10px",
-            borderRadius: 5,
-            fontSize: 12,
-            fontWeight: 500,
-            border: "none",
-            cursor: "pointer",
-            background: "none",
-            color: tab === "task" ? "var(--text-primary)" : "var(--text-muted)",
-          }}
+          className={tab === "task" ? "ai-git-tab is-active" : "ai-git-tab"}
         >
           当前任务 {taskCount}
         </button>
         <button
           onClick={() => setTab("all")}
-          style={{
-            padding: "3px 10px",
-            borderRadius: 5,
-            fontSize: 12,
-            fontWeight: 600,
-            border: "none",
-            cursor: "pointer",
-            background: tab === "all" ? "var(--accent)" : "none",
-            color: tab === "all" ? "#fff" : "var(--text-muted)",
-          }}
+          className={tab === "all" ? "ai-git-tab is-active" : "ai-git-tab"}
         >
           全部 {allCount}
         </button>
@@ -243,32 +176,15 @@ export function GitChanges({
 
       {/* Error */}
       {error && (
-        <div
-          style={{
-            margin: "0 12px 4px",
-            padding: "6px 10px",
-            background: "rgba(248,81,73,0.1)",
-            border: "1px solid rgba(248,81,73,0.3)",
-            borderRadius: 6,
-            fontSize: 11.5,
-            color: "#f85149",
-          }}
-        >
+        <div className="ai-git-error">
           {error}
         </div>
       )}
 
       {/* File list */}
-      <div style={{ flex: 1, overflowY: "auto" }}>
+      <div className="ai-git-change-list chat-scroll">
         {displayed.length === 0 && !loading && (
-          <div
-            style={{
-              padding: "24px 16px",
-              fontSize: 12,
-              color: "var(--text-hint)",
-              textAlign: "center",
-            }}
-          >
+          <div className="ai-git-empty">
             暂无变更
           </div>
         )}
@@ -354,33 +270,17 @@ export function GitChanges({
       </div>
 
       {/* Commit area */}
-      <div style={{ padding: "8px 10px", borderTop: "1px solid var(--border-dim)", flexShrink: 0 }}>
-        <div style={{ position: "relative" }}>
+      <div className="ai-git-commit-panel">
+        <div className="ai-git-commit-input-wrap">
           <textarea
             value={commitMsg}
             onChange={(e) => {
               setCommitMsg(e.target.value);
               if (commitMsgError) setCommitMsgError(false);
             }}
-            onFocus={() => setTextareaFocused(true)}
-            onBlur={() => setTextareaFocused(false)}
             placeholder="提交信息…"
             rows={3}
-            style={{
-              width: "100%",
-              padding: "8px 10px",
-              paddingRight: 36,
-              background: "var(--bg-card)",
-              border: `1px solid ${commitMsgError ? "#f85149" : textareaFocused ? "var(--accent)" : "var(--border-medium)"}`,
-              borderRadius: 6,
-              color: "var(--text-primary)",
-              fontSize: 12.5,
-              resize: "none",
-              outline: "none",
-              fontFamily: "var(--font-ui)",
-              boxSizing: "border-box",
-              transition: "border-color 0.15s",
-            }}
+            className={commitMsgError ? "ai-git-commit-textarea is-error" : "ai-git-commit-textarea"}
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleCommit();
             }}
@@ -389,47 +289,21 @@ export function GitChanges({
             onClick={handleGenerateMsg}
             disabled={generatingMsg}
             title="用 AI 生成提交信息"
-            style={{
-              position: "absolute",
-              top: 6,
-              right: 6,
-              background: "none",
-              border: "none",
-              cursor: generatingMsg ? "default" : "pointer",
-              padding: 3,
-              borderRadius: 4,
-              color: generatingMsg ? "var(--accent)" : "var(--text-hint)",
-              display: "flex",
-              alignItems: "center",
-              transition: "color 0.15s",
-            }}
+            className={generatingMsg ? "ai-git-commit-generate is-active" : "ai-git-commit-generate"}
           >
             <Sparkles size={14} className={generatingMsg ? "spin" : ""} />
           </button>
         </div>
         {commitMsgError && (
-          <div style={{ fontSize: 11.5, color: "#f85149", marginTop: 3, paddingLeft: 2 }}>
+          <div className="ai-git-commit-error">
             请输入提交信息
           </div>
         )}
-        <div style={{ marginTop: 3, display: "flex" }}>
+        <div className="ai-git-commit-actions">
           <button
             onClick={handleCommit}
             disabled={committing || generatingMsg}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 5,
-              padding: "5px 12px",
-              background: "var(--accent)",
-              color: "#fff",
-              border: "none",
-              borderRadius: 6,
-              fontSize: 12.5,
-              fontWeight: 600,
-              cursor: committing || generatingMsg ? "default" : "pointer",
-              opacity: committing || generatingMsg ? 0.7 : 1,
-            }}
+            className="ai-git-commit-button"
           >
             <GitCommit size={13} />
             {committing ? "提交中…" : "提交"}
@@ -451,51 +325,18 @@ function TopSectionHeader({
   collapsed: boolean;
   onToggleCollapse: () => void;
 }) {
-  const [hovered, setHovered] = useState(false);
-
   return (
     <div
       onClick={onToggleCollapse}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        padding: "8px 10px 6px 8px",
-        cursor: "pointer",
-        background: hovered ? "var(--bg-hover)" : "transparent",
-        transition: "background 0.1s",
-        userSelect: "none",
-      }}
+      className="ai-git-top-section"
     >
-      <span
-        style={{ color: "var(--text-hint)", display: "flex", alignItems: "center", marginRight: 4 }}
-      >
+      <span className="ai-git-section-chevron">
         {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
       </span>
-      <span
-        style={{
-          flex: 1,
-          fontSize: 12,
-          fontWeight: 650,
-          color: "var(--text-primary)",
-        }}
-      >
+      <span className="ai-git-top-section-label">
         {label}
       </span>
-      <span
-        style={{
-          fontSize: 11,
-          fontWeight: 600,
-          color: "var(--text-hint)",
-          background: "var(--bg-card)",
-          border: "1px solid var(--border-dim)",
-          borderRadius: 10,
-          padding: "0 6px",
-          minWidth: 18,
-          textAlign: "center",
-        }}
-      >
+      <span className="ai-git-count-pill">
         {count}
       </span>
     </div>
@@ -515,32 +356,10 @@ function SectionHeader({
   actionTitle?: string;
   onAction?: () => void;
 }) {
-  const [hovered, setHovered] = useState(false);
-
   return (
-    <div
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        padding: "6px 8px 2px 12px",
-        fontSize: 11,
-        fontWeight: 700,
-        color: "var(--text-hint)",
-        letterSpacing: 0.4,
-        textTransform: "uppercase",
-      }}
-    >
-      <span style={{ flex: 1 }}>{label}</span>
-      <span
-        style={{
-          fontSize: 11,
-          fontWeight: 600,
-          color: "var(--text-hint)",
-          marginRight: onAction ? 4 : 0,
-        }}
-      >
+    <div className="ai-git-section-header">
+      <span className="ai-git-section-label">{label}</span>
+      <span className="ai-git-section-count">
         {count}
       </span>
       {onAction && (
@@ -550,18 +369,7 @@ function SectionHeader({
             onAction();
           }}
           title={actionTitle}
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            padding: "2px 5px",
-            borderRadius: 4,
-            fontSize: 14,
-            lineHeight: 1,
-            color: hovered ? "var(--text-primary)" : "transparent",
-            transition: "color 0.1s",
-            fontWeight: 600,
-          }}
+          className="ai-git-section-action"
         >
           {actionIcon}
         </button>
@@ -579,7 +387,6 @@ function FileRow({
   onFileClick: () => void;
   onToggle: (e: React.MouseEvent) => void;
 }) {
-  const [hovered, setHovered] = useState(false);
   const name = fileName(change.path);
   const dir = fileDir(change.path);
   const color = getGitStatusColor(change.status);
@@ -588,32 +395,19 @@ function FileRow({
   return (
     <div
       onClick={onFileClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "4px 10px 4px 14px",
-        cursor: "pointer",
-        background: hovered ? "var(--bg-hover)" : "transparent",
-        transition: "background 0.1s",
-      }}
+      className="ai-git-file-row"
     >
       {/* Status dot */}
       <span
-        style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 }}
+        className="ai-git-status-dot"
+        style={{ background: color }}
       />
 
       {/* Status letter */}
       <span
+        className="ai-git-status-label"
         style={{
-          fontSize: 11,
-          fontWeight: 700,
           color,
-          flexShrink: 0,
-          width: 12,
-          textAlign: "center",
         }}
       >
         {label}
@@ -621,34 +415,23 @@ function FileRow({
       <FileGlyph path={change.path} size={20} />
 
       {/* Filename + dir */}
-      <span style={{ flex: 1, overflow: "hidden", minWidth: 0 }}>
-        <span style={{ fontSize: 12.5, color: "var(--text-primary)", fontWeight: 500 }}>
+      <span className="ai-git-file-name-wrap">
+        <span className="ai-git-file-name">
           {name}
         </span>
         {dir && (
-          <span style={{ fontSize: 11, color: "var(--text-hint)", marginLeft: 5 }}>{dir}</span>
+          <span className="ai-git-file-dir">{dir}</span>
         )}
       </span>
 
       {/* Stage/unstage toggle on hover */}
-      {hovered && (
-        <button
-          onClick={onToggle}
-          title={change.staged ? "取消暂存" : "暂存"}
-          style={{
-            flexShrink: 0,
-            background: "var(--bg-card)",
-            border: "1px solid var(--border-dim)",
-            borderRadius: 4,
-            fontSize: 10,
-            padding: "2px 6px",
-            color: "var(--text-muted)",
-            cursor: "pointer",
-          }}
-        >
-          {change.staged ? "−" : "+"}
-        </button>
-      )}
+      <button
+        onClick={onToggle}
+        title={change.staged ? "取消暂存" : "暂存"}
+        className="ai-git-file-stage-button"
+      >
+        {change.staged ? "−" : "+"}
+      </button>
     </div>
   );
 }

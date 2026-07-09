@@ -19,10 +19,17 @@ import type { FileViewerHandle } from "./FileViewer";
 import { ProjectRail } from "./ProjectRail";
 import { RightToolbar } from "./RightToolbar";
 import type { ShellTerminalPanelHandle } from "./ShellTerminalPanel";
-import type { DispatcherChatHandle } from "./DispatcherChat";
+import type { DispatcherChatHandle } from "./dispatcher-chat/useDispatcherActions";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
+import { ChatPageV2 } from "./chat-page-v2";
 import { useProjectPanels } from "../hooks/useProjectPanels";
+import {
+  ProjectMainArea,
+  ProjectRightPanelHost,
+  ProjectWorkbench,
+  ProjectWorkspaceLayout,
+} from "./project/ProjectWorkspaceLayout";
 import s from "../styles";
 
 const FileExplorer = lazy(() =>
@@ -45,9 +52,6 @@ const ShellTerminalPanel = lazy(() =>
 );
 const BrowserPanel = lazy(() =>
   import("./BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
-);
-const DispatcherChat = lazy(() =>
-  import("./DispatcherChat").then((module) => ({ default: module.DispatcherChat })),
 );
 const McpStatusDialog = lazy(() =>
   import("./McpStatusDialog").then((module) => ({ default: module.McpStatusDialog })),
@@ -858,393 +862,343 @@ export function ProjectPage({
     [subTerminalHeight],
   );
 
-  return (
-    <div
-      style={{
-        ...s.projectBody,
-        position: "absolute",
-        inset: 0,
-        visibility: visible ? "visible" : "hidden",
-        pointerEvents: visible ? "auto" : "none",
-        zIndex: visible ? 1 : 0,
-      }}
-    >
-      <ProjectRail
-        projects={allProjects}
-        allTasks={tasks}
-        activeProjectId={project.id}
-        sessionSidebarCollapsed={sessionSidebarCollapsed}
-        onExpandSessionSidebar={() => setSessionSidebarCollapsed(false)}
-        onSwitch={onSwitchProject}
-        onOpen={onOpen}
-      />
-      {!sessionSidebarCollapsed && (
-        <SessionPanel
-          project={project}
-          activeSessionId={activeSessionId}
-          subprocessRunningSessionIds={subprocessRunningSessionIds}
-          onSelectSession={handleSelectSession}
-          onBack={onBack}
-          onCollapse={() => setSessionSidebarCollapsed(true)}
-          isDark={isDark}
-          themeMode={themeMode}
-          systemPrefersDark={systemPrefersDark}
-          onThemeModeChange={onThemeModeChange}
-          onToggleTheme={onToggleTheme}
-        />
-      )}
-      <div style={{ ...s.mainContent, flexDirection: "column" }}>
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-            minHeight: 0,
-            position: "relative",
-          }}
-        >
-          <div
-            ref={workspaceSplitRef}
-            style={{
-              flex: 1,
-              minHeight: 0,
-              display: "grid",
-              gridTemplateColumns:
-                workbenchColumnCount === 2
-                  ? `minmax(0, calc(${(1 - editorPaneRatio) * 100}% - 4px)) 8px minmax(0, calc(${editorPaneRatio * 100}% - 4px))`
-                  : "minmax(0, 1fr)",
-              overflow: "hidden",
-              background: "var(--bg-panel)",
-            }}
-          >
-            {showSessionPane && (
-              <div
-                style={{
-                  minWidth: 0,
-                  minHeight: 0,
-                  display: "flex",
-                  overflow: "hidden",
-                }}
-              >
-                <ErrorBoundary
-                  label="会话区"
-                  fallback={(error, reset) => (
-                    <div style={s.errorBoundaryWrap}>
-                      <div style={s.errorBoundaryIcon}>⚠</div>
-                      <div style={s.errorBoundaryTitle}>会话区渲染出错</div>
-                      <div style={s.errorBoundaryMessage}>{error.message || "未知错误"}</div>
-                      <div style={s.errorBoundaryActions}>
-                        <button onClick={reset} style={s.errorBoundaryBtn}>
-                          重试
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                >
-                  <Suspense fallback={<LazyPaneFallback label="会话加载中..." />}>
-                    {activeSessionId ? (
-                      <MarkdownLinkProvider onOpenUrl={handleOpenMarkdownLink}>
-                        <DispatcherChat
-                          ref={dispatcherChatRef}
-                          sessionId={activeSessionId}
-                          projectPath={project.path}
-                          mcpStatus={mcpStatus}
-                          mcpChecking={mcpChecking}
-                          layoutMode={showEditorPane ? "split" : "single"}
-                          subProcesses={allSubProcesses}
-                          onDispatchApproved={handleDispatchApproved}
-                          onDispatchRejected={handleDispatchRejected}
-                          onDispatchContinue={handleDispatchContinue}
-                          onDispatchExit={handleDispatchExit}
-                          onStopActiveRun={handleStopSessionSubProcesses}
-                          onResumeStoppedRun={handleResumeSessionSubProcesses}
-                          onOpenMcpStatus={() => setShowMcpStatus(true)}
-                          onOpenSettings={() => setShowDispatcherSettings(true)}
-                          onClosePanel={() => setShowSessionWorkbench(false)}
-                        />
-                      </MarkdownLinkProvider>
-                    ) : (
-                      <div
-                        style={{
-                          flex: 1,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          color: "var(--text-muted)",
-                        }}
-                      >
-                        正在创建会话...
-                      </div>
-                    )}
-                  </Suspense>
-                </ErrorBoundary>
-              </div>
-            )}
+  const railNode = (
+    <ProjectRail
+      projects={allProjects}
+      allTasks={tasks}
+      activeProjectId={project.id}
+      sessionSidebarCollapsed={sessionSidebarCollapsed}
+      onExpandSessionSidebar={() => setSessionSidebarCollapsed(false)}
+      onSwitch={onSwitchProject}
+      onOpen={onOpen}
+    />
+  );
 
-            {workbenchColumnCount === 2 && (
-              <div
-                onMouseDown={handleEditorPaneResizeStart}
-                style={{
-                  width: 8,
-                  cursor: "col-resize",
-                  background:
-                    "linear-gradient(180deg, transparent, color-mix(in srgb, var(--accent) 14%, var(--border-dim)), transparent)",
-                }}
-              />
-            )}
+  const sessionPanelNode = !sessionSidebarCollapsed ? (
+    <SessionPanel
+      project={project}
+      activeSessionId={activeSessionId}
+      subprocessRunningSessionIds={subprocessRunningSessionIds}
+      onSelectSession={handleSelectSession}
+      onBack={onBack}
+      onCollapse={() => setSessionSidebarCollapsed(true)}
+      isDark={isDark}
+      themeMode={themeMode}
+      systemPrefersDark={systemPrefersDark}
+      onThemeModeChange={onThemeModeChange}
+      onToggleTheme={onToggleTheme}
+    />
+  ) : undefined;
 
-            {showEditorPane && (
-              <div
-                style={{
-                  minWidth: 0,
-                  minHeight: 0,
-                  display: "flex",
-                  overflow: "hidden",
-                  borderLeft: workbenchColumnCount === 2 ? "1px solid var(--border-dim)" : "none",
-                  background: "var(--bg-panel)",
-                }}
-              >
-                <ErrorBoundary
-                  label="编辑区"
-                  fallback={(error, reset) => (
-                    <div style={s.errorBoundaryWrap}>
-                      <div style={s.errorBoundaryIcon}>⚠</div>
-                      <div style={s.errorBoundaryTitle}>编辑区渲染出错</div>
-                      <div style={s.errorBoundaryMessage}>{error.message || "未知错误"}</div>
-                      <div style={s.errorBoundaryActions}>
-                        <button onClick={reset} style={s.errorBoundaryBtn}>
-                          重试
-                        </button>
-                        <button
-                          onClick={() => {
-                            clearFileAndDiff();
-                            reset();
-                          }}
-                          style={s.errorBoundaryBtn}
-                        >
-                          关闭编辑区
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                >
-                  <Suspense fallback={<LazyPaneFallback label="编辑器加载中..." />}>
-                    {openDiff ? (
-                      openDiff.kind === "file" ? (
-                        <GitDiffViewer
-                          projectPath={project.path}
-                          mode="file"
-                          filePath={openDiff.filePath}
-                          staged={openDiff.staged}
-                          title={openDiff.label}
-                          onClose={() => setOpenDiff(null)}
-                        />
-                      ) : openDiff.kind === "commit-file" ? (
-                        <GitDiffViewer
-                          projectPath={project.path}
-                          mode="commit-file"
-                          commitHash={openDiff.hash}
-                          filePath={openDiff.filePath}
-                          title={openDiff.label}
-                          onClose={() => setOpenDiff(null)}
-                        />
-                      ) : (
-                        <GitDiffViewer
-                          projectPath={project.path}
-                          mode="commit"
-                          commitHash={openDiff.hash}
-                          title={openDiff.message}
-                          onClose={() => setOpenDiff(null)}
-                        />
-                      )
-                    ) : (
-                      <FileViewer
-                        ref={fileViewerRef}
-                        tabs={openFiles}
-                        activeTabId={activeFileTabId}
-                        projectPath={project.path}
-                        onSelectTab={handleFileTabSelect}
-                        onCloseTab={handleFileTabClose}
-                        onCloseOtherTabs={handleCloseOtherFileTabs}
-                        onCloseTabsToRight={handleCloseTabsToRight}
-                        onCloseAllTabs={handleCloseAllFileTabs}
-                        onHide={hideEditorWorkbench}
-                        isDark={isDark}
-                      />
-                    )}
-                  </Suspense>
-                </ErrorBoundary>
-              </div>
-            )}
-
-            {workbenchColumnCount === 0 && (
-              <div
-                style={{
-                  minWidth: 0,
-                  minHeight: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "var(--text-muted)",
-                  background:
-                    "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 72%, transparent), var(--bg-panel))",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    gap: 10,
-                    textAlign: "center",
-                  }}
-                >
-                  <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>
-                    当前没有打开的会话面板或文件预览
-                  </div>
-                  <button
-                    type="button"
-                    style={s.errorBoundaryBtn}
-                    onClick={() => setShowSessionWorkbench(true)}
-                  >
-                    打开会话面板
-                  </button>
-                  {hasEditorWorkbenchContent && !showEditorPane && (
-                    <button type="button" style={s.errorBoundaryBtn} onClick={showEditorWorkbench}>
-                      恢复文件编辑器
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
+  const sessionPaneNode = (
+    <ErrorBoundary
+      label="会话区"
+      fallback={(error, reset) => (
+        <div style={s.errorBoundaryWrap}>
+          <div style={s.errorBoundaryIcon}>⚠</div>
+          <div style={s.errorBoundaryTitle}>会话区渲染出错</div>
+          <div style={s.errorBoundaryMessage}>{error.message || "未知错误"}</div>
+          <div style={s.errorBoundaryActions}>
+            <button onClick={reset} style={s.errorBoundaryBtn}>
+              重试
+            </button>
           </div>
         </div>
-        {/* Sub-process terminal tabs */}
-        {subProcesses.length > 0 && (
-          <Suspense fallback={null}>
-            <SubProcessTabs
-              subProcesses={subProcesses}
-              activeSessionId={activeSessionId}
-              activeTabId={activeVisibleSubTabId}
-              onSelectTab={(id) => {
-                if (!activeSessionId) return;
-                setActiveSubTabIdBySession((prev) => ({
-                  ...prev,
-                  [activeSessionId]: prev[activeSessionId] === id ? null : id,
-                }));
-              }}
-              onCloseTab={handleCloseSubTab}
-              height={subTerminalHeight}
-              onResizeStart={handleSubTerminalResizeStart}
-              isDark={isDark}
-              onInput={onInput}
-              onResize={onResize}
-              onRegisterTerminal={onRegisterTerminal}
-              onTerminalReady={onTerminalReady}
-              onSnapshot={onSnapshot}
-              getRestoreState={getTaskRestoreState}
-            />
-          </Suspense>
-        )}
-        {showShellTerminal && (
-          <Suspense fallback={null}>
-            <ShellTerminalPanel
-              ref={shellRef}
+      )}
+    >
+      <Suspense fallback={<LazyPaneFallback label="会话加载中..." />}>
+        {activeSessionId ? (
+          <MarkdownLinkProvider onOpenUrl={handleOpenMarkdownLink}>
+            <ChatPageV2
+              ref={dispatcherChatRef}
+              sessionId={activeSessionId}
+              onSessionChange={handleSelectSession}
+              conversationKind="project"
               projectPath={project.path}
-              projectId={project.id}
-              isActive={visible}
-              onClose={() => setShowShellTerminal(false)}
+              mcpStatus={mcpStatus}
+              mcpChecking={mcpChecking}
+              subProcesses={allSubProcesses}
+              theme={themeMode}
               isDark={isDark}
-              height={terminalHeight}
-              onResizeStart={handleTerminalResizeStart}
+              onThemeChange={onThemeModeChange}
+              onDispatchApproved={handleDispatchApproved}
+              onDispatchRejected={handleDispatchRejected}
+              onDispatchContinue={handleDispatchContinue}
+              onDispatchExit={handleDispatchExit}
+              onStopActiveRun={handleStopSessionSubProcesses}
+              onResumeStoppedRun={handleResumeSessionSubProcesses}
+              onOpenMcpStatus={() => setShowMcpStatus(true)}
+              onOpenSettings={() => setShowDispatcherSettings(true)}
+              onClosePanel={() => setShowSessionWorkbench(false)}
+              embedded
             />
-          </Suspense>
-        )}
-      </div>
-
-      {rightPanel && (
-        <div style={{ position: "relative", display: "flex", flexShrink: 0 }}>
+          </MarkdownLinkProvider>
+        ) : (
           <div
-            onMouseDown={handleRightResizeStart}
             style={{
-              position: "absolute",
-              left: 0,
-              top: 0,
-              bottom: 0,
-              width: 5,
-              cursor: "col-resize",
-              zIndex: 10,
+              flex: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--text-muted)",
             }}
-          />
-          {rightPanel === "files" && (
-            <ErrorBoundary label="文件浏览器">
-              <Suspense fallback={<LazyPaneFallback label="文件列表加载中..." />}>
-                <FileExplorer
-                  projectPath={project.path}
-                  projectName={project.name}
-                  onFileSelect={handleFileSelect}
-                  onFileRename={handleFileTreeRename}
-                  onFileDelete={handleFileTreeDelete}
-                  openFilePaths={openFiles.map((tab) => tab.path)}
-                  isDark={isDark}
-                  active={visible}
-                  width={rightPanelWidth}
-                />
-              </Suspense>
-            </ErrorBoundary>
-          )}
-          {rightPanel === "git-changes" && (
-            <ErrorBoundary label="Git 变更">
-              <Suspense fallback={<LazyPaneFallback label="Git 变更加载中..." />}>
-                <GitChanges
-                  projectPath={project.path}
-                  currentTaskCreatedAt={null}
-                  onFileSelect={handleDiffFileSelect}
-                  width={rightPanelWidth}
-                />
-              </Suspense>
-            </ErrorBoundary>
-          )}
-          {rightPanel === "git-history" && (
-            <ErrorBoundary label="Git 历史">
-              <Suspense fallback={<LazyPaneFallback label="Git 历史加载中..." />}>
-                <GitHistory
-                  projectPath={project.path}
-                  onCommitSelect={handleCommitSelect}
-                  onFileClick={handleCommitFileClick}
-                  width={rightPanelWidth}
-                />
-              </Suspense>
-            </ErrorBoundary>
-          )}
-          {rightPanel === "browser" && (
-            <ErrorBoundary label="CloakBrowser">
-              <Suspense fallback={<LazyPaneFallback label="浏览器加载中..." />}>
-                <BrowserPanel
-                  sessionId={activeSessionId}
-                  projectPath={project.path}
-                  width={rightPanelWidth}
-                  active={visible}
-                  expanded={browserPanelExpanded}
-                  onToggleExpanded={handleToggleBrowserPanelExpanded}
-                  onClose={() => handleTogglePanel("browser")}
-                  onMinimize={handleMinimizeBrowser}
-                  onReopen={handleReopenBrowser}
-                />
-              </Suspense>
-            </ErrorBoundary>
-          )}
+          >
+            正在创建会话...
+          </div>
+        )}
+      </Suspense>
+    </ErrorBoundary>
+  );
+
+  const editorPaneNode = (
+    <ErrorBoundary
+      label="编辑区"
+      fallback={(error, reset) => (
+        <div style={s.errorBoundaryWrap}>
+          <div style={s.errorBoundaryIcon}>⚠</div>
+          <div style={s.errorBoundaryTitle}>编辑区渲染出错</div>
+          <div style={s.errorBoundaryMessage}>{error.message || "未知错误"}</div>
+          <div style={s.errorBoundaryActions}>
+            <button onClick={reset} style={s.errorBoundaryBtn}>
+              重试
+            </button>
+            <button
+              onClick={() => {
+                clearFileAndDiff();
+                reset();
+              }}
+              style={s.errorBoundaryBtn}
+            >
+              关闭编辑区
+            </button>
+          </div>
         </div>
       )}
+    >
+      <Suspense fallback={<LazyPaneFallback label="编辑器加载中..." />}>
+        {openDiff ? (
+          openDiff.kind === "file" ? (
+            <GitDiffViewer
+              projectPath={project.path}
+              mode="file"
+              filePath={openDiff.filePath}
+              staged={openDiff.staged}
+              title={openDiff.label}
+              onClose={() => setOpenDiff(null)}
+            />
+          ) : openDiff.kind === "commit-file" ? (
+            <GitDiffViewer
+              projectPath={project.path}
+              mode="commit-file"
+              commitHash={openDiff.hash}
+              filePath={openDiff.filePath}
+              title={openDiff.label}
+              onClose={() => setOpenDiff(null)}
+            />
+          ) : (
+            <GitDiffViewer
+              projectPath={project.path}
+              mode="commit"
+              commitHash={openDiff.hash}
+              title={openDiff.message}
+              onClose={() => setOpenDiff(null)}
+            />
+          )
+        ) : (
+          <FileViewer
+            ref={fileViewerRef}
+            tabs={openFiles}
+            activeTabId={activeFileTabId}
+            projectPath={project.path}
+            onSelectTab={handleFileTabSelect}
+            onCloseTab={handleFileTabClose}
+            onCloseOtherTabs={handleCloseOtherFileTabs}
+            onCloseTabsToRight={handleCloseTabsToRight}
+            onCloseAllTabs={handleCloseAllFileTabs}
+            onHide={hideEditorWorkbench}
+            isDark={isDark}
+          />
+        )}
+      </Suspense>
+    </ErrorBoundary>
+  );
 
-      <RightToolbar
-        activePanel={rightPanel}
-        onToggle={handleTogglePanel}
-        terminalActive={showShellTerminal}
-        onToggleTerminal={() => setShowShellTerminal((v) => !v)}
+  const emptyWorkbenchNode = (
+    <div
+      style={{
+        minWidth: 0,
+        minHeight: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "var(--text-muted)",
+        background:
+          "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 72%, transparent), var(--bg-panel))",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 10,
+          textAlign: "center",
+        }}
+      >
+        <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>
+          当前没有打开的会话面板或文件预览
+        </div>
+        <button type="button" style={s.errorBoundaryBtn} onClick={() => setShowSessionWorkbench(true)}>
+          打开会话面板
+        </button>
+        {hasEditorWorkbenchContent && !showEditorPane && (
+          <button type="button" style={s.errorBoundaryBtn} onClick={showEditorWorkbench}>
+            恢复文件编辑器
+          </button>
+        )}
+      </div>
+    </div>
+  );
+
+  const workbenchNode = (
+    <ProjectWorkbench
+      workspaceSplitRef={workspaceSplitRef}
+      columnCount={workbenchColumnCount}
+      editorPaneRatio={editorPaneRatio}
+      showSessionPane={showSessionPane}
+      sessionPane={sessionPaneNode}
+      showEditorPane={showEditorPane}
+      editorPane={editorPaneNode}
+      emptyPane={emptyWorkbenchNode}
+      onEditorPaneResizeStart={handleEditorPaneResizeStart}
+    />
+  );
+
+  const subProcessTabsNode = subProcesses.length > 0 ? (
+    <Suspense fallback={null}>
+      <SubProcessTabs
+        subProcesses={subProcesses}
+        activeSessionId={activeSessionId}
+        activeTabId={activeVisibleSubTabId}
+        onSelectTab={(id) => {
+          if (!activeSessionId) return;
+          setActiveSubTabIdBySession((prev) => ({
+            ...prev,
+            [activeSessionId]: prev[activeSessionId] === id ? null : id,
+          }));
+        }}
+        onCloseTab={handleCloseSubTab}
+        height={subTerminalHeight}
+        onResizeStart={handleSubTerminalResizeStart}
+        isDark={isDark}
+        onInput={onInput}
+        onResize={onResize}
+        onRegisterTerminal={onRegisterTerminal}
+        onTerminalReady={onTerminalReady}
+        onSnapshot={onSnapshot}
+        getRestoreState={getTaskRestoreState}
       />
+    </Suspense>
+  ) : undefined;
 
+  const shellTerminalNode = showShellTerminal ? (
+    <Suspense fallback={null}>
+      <ShellTerminalPanel
+        ref={shellRef}
+        projectPath={project.path}
+        projectId={project.id}
+        isActive={visible}
+        onClose={() => setShowShellTerminal(false)}
+        isDark={isDark}
+        height={terminalHeight}
+        onResizeStart={handleTerminalResizeStart}
+      />
+    </Suspense>
+  ) : undefined;
+
+  const mainNode = (
+    <ProjectMainArea
+      workbench={workbenchNode}
+      subProcessTabs={subProcessTabsNode}
+      shellTerminal={shellTerminalNode}
+      mainStyle={s.mainContent}
+    />
+  );
+
+  const rightPanelNode = rightPanel ? (
+    <ProjectRightPanelHost onResizeStart={handleRightResizeStart}>
+      {rightPanel === "files" && (
+        <ErrorBoundary label="文件浏览器">
+          <Suspense fallback={<LazyPaneFallback label="文件列表加载中..." />}>
+            <FileExplorer
+              projectPath={project.path}
+              projectName={project.name}
+              onFileSelect={handleFileSelect}
+              onFileRename={handleFileTreeRename}
+              onFileDelete={handleFileTreeDelete}
+              openFilePaths={openFiles.map((tab) => tab.path)}
+              isDark={isDark}
+              active={visible}
+              width={rightPanelWidth}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+      {rightPanel === "git-changes" && (
+        <ErrorBoundary label="Git 变更">
+          <Suspense fallback={<LazyPaneFallback label="Git 变更加载中..." />}>
+            <GitChanges
+              projectPath={project.path}
+              currentTaskCreatedAt={null}
+              onFileSelect={handleDiffFileSelect}
+              width={rightPanelWidth}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+      {rightPanel === "git-history" && (
+        <ErrorBoundary label="Git 历史">
+          <Suspense fallback={<LazyPaneFallback label="Git 历史加载中..." />}>
+            <GitHistory
+              projectPath={project.path}
+              onCommitSelect={handleCommitSelect}
+              onFileClick={handleCommitFileClick}
+              width={rightPanelWidth}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+      {rightPanel === "browser" && (
+        <ErrorBoundary label="CloakBrowser">
+          <Suspense fallback={<LazyPaneFallback label="浏览器加载中..." />}>
+            <BrowserPanel
+              sessionId={activeSessionId}
+              projectPath={project.path}
+              width={rightPanelWidth}
+              active={visible}
+              expanded={browserPanelExpanded}
+              onToggleExpanded={handleToggleBrowserPanelExpanded}
+              onClose={() => handleTogglePanel("browser")}
+              onMinimize={handleMinimizeBrowser}
+              onReopen={handleReopenBrowser}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+    </ProjectRightPanelHost>
+  ) : undefined;
+
+  const toolbarNode = (
+    <RightToolbar
+      activePanel={rightPanel}
+      onToggle={handleTogglePanel}
+      terminalActive={showShellTerminal}
+      onToggleTerminal={() => setShowShellTerminal((value) => !value)}
+    />
+  );
+
+  const overlayNode = (
+    <>
       {showDispatcherSettings && (
         <Suspense fallback={null}>
           <AppSettingsDialog
@@ -1287,6 +1241,19 @@ export function ProjectPage({
           />
         </Suspense>
       )}
-    </div>
+    </>
+  );
+
+  return (
+    <ProjectWorkspaceLayout
+      visible={visible}
+      rootStyle={s.projectBody}
+      rail={railNode}
+      sessionPanel={sessionPanelNode}
+      main={mainNode}
+      rightPanel={rightPanelNode}
+      toolbar={toolbarNode}
+      overlays={overlayNode}
+    />
   );
 }

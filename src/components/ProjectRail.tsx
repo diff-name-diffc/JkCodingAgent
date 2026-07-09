@@ -17,6 +17,7 @@ function StatusBadge({ status }: { status: ProjectStatus }) {
   const isAttention = status === "attention";
   return (
     <span
+      className={`ai-project-status-dot ai-project-status-${status}`}
       style={{
         position: "absolute",
         bottom: -1,
@@ -51,7 +52,7 @@ function RailItem({
       onClick={() => onSwitch(project)}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
-      className={isActive ? "rail-active" : undefined}
+      className={isActive ? "ai-project-rail-item is-active" : "ai-project-rail-item"}
       style={{
         position: "relative",
         width: 36,
@@ -107,6 +108,7 @@ function ProjectDrawer({
   return (
     <div
       ref={drawerRef}
+      className="ai-project-drawer"
       style={{
         position: "absolute",
         left: 52,
@@ -122,6 +124,7 @@ function ProjectDrawer({
       }}
     >
       <div
+        className="ai-project-drawer-title"
         style={{
           padding: "14px 14px 8px",
           fontSize: 11,
@@ -142,6 +145,7 @@ function ProjectDrawer({
           return (
             <button
               key={project.id}
+              className={isActive ? "ai-project-drawer-row is-active" : "ai-project-drawer-row"}
               onClick={() => {
                 onSwitch(project);
                 onClose();
@@ -231,6 +235,7 @@ export function ProjectRail({
 
   return (
     <div
+      className="ai-project-rail"
       style={{
         position: "relative",
         width: 52,
@@ -249,6 +254,7 @@ export function ProjectRail({
     >
       {sessionSidebarCollapsed && (
         <button
+          className="ai-project-rail-control is-attention"
           title="展开会话列表"
           onClick={onExpandSessionSidebar}
           style={{
@@ -286,6 +292,7 @@ export function ProjectRail({
       <div style={{ flex: 1 }} />
 
       <button
+        className={drawerOpen ? "ai-project-rail-control is-active" : "ai-project-rail-control"}
         title="显示全部项目"
         onClick={() => setDrawerOpen((v) => !v)}
         onMouseEnter={() => setExpandHov(true)}
@@ -319,6 +326,7 @@ export function ProjectRail({
       </button>
 
       <button
+        className="ai-project-rail-control ai-project-rail-add"
         title="打开项目"
         onClick={onOpen}
         onMouseEnter={() => setAddHov(true)}

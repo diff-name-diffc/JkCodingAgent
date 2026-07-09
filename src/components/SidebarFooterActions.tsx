@@ -30,9 +30,10 @@ export function SidebarFooterActions({
 
   return (
     <>
-      <div style={s.sidebarFooterActions}>
+      <div className="ai-sidebar-footer-actions" style={s.sidebarFooterActions}>
         <NotificationBell />
         <button
+          className="ai-sidebar-footer-button"
           style={s.sidebarIconBtn}
           title="应用设置"
           onClick={() => setShowAppSettings(true)}
@@ -40,6 +41,7 @@ export function SidebarFooterActions({
           <Settings size={14} strokeWidth={1.6} color="var(--text-hint)" />
         </button>
         <button
+          className="ai-sidebar-footer-button"
           style={s.sidebarIconBtn}
           title={isDark ? "切换到浅色模式" : "切换到深色模式"}
           onClick={onToggleTheme}

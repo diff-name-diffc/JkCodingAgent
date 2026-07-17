@@ -1,77 +1,92 @@
-@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400..800;1,400..800&display=swap");
-
 /* ── Design Tokens ─────────────────────────────────────────────── */
 :root {
   --brand-graphite: #202522;
   --brand-graphite-2: #2e3531;
   --brand-mist: #f4f6f1;
   --brand-paper: #fffef8;
-  --brand-acid: #10b981;
-  --brand-acid-strong: #059669;
   --brand-ember: #f97316;
   --brand-cobalt: #2563eb;
   --brand-violet: #7c3aed;
+  --brand-teal: #0d9488;
+  --brand-teal-soft: #ccfbf1;
 
-  --bg-root: #dfe5dc;
-  --bg-shell: #eef2ea;
-  --bg-titlebar: #e9eee5;
-  --bg-sidebar: #e4ebe2;
-  --bg-sidebar-elevated: #d8e2d5;
-  --bg-panel: #f7f8f2;
-  --bg-card: #ffffff;
-  --bg-hover: #e8f1e7;
-  --bg-selected: #d7f4e8;
-  --bg-subtle: #eef3eb;
-  --bg-input: #ffffff;
+  --bg-root: #d6d9d3;
+  --bg-shell: #ebece7;
+  --bg-titlebar: #e4e6e0;
+  --bg-sidebar: #eceee9;
+  --bg-sidebar-elevated: #e0e3dd;
+  --bg-panel: #f4f4ef;
+  --bg-card: #faf9f5;
+  --bg-hover: #e2e6e1;
+  --bg-selected: #d9e8e3;
+  --bg-subtle: #e9ece6;
+  --bg-input: #fbfaf6;
+  --bg-elevated: #fffef9;
+  --bg-gradient-surface: linear-gradient(180deg, #fffef9 0%, #f6f5f0 100%);
+  --bg-gradient-sidebar: linear-gradient(180deg, #eff1ec 0%, #e7e9e4 100%);
 
-  --border-dim: rgba(15, 23, 42, 0.08);
-  --border-medium: rgba(15, 23, 42, 0.14);
-  --border-strong: rgba(99, 122, 163, 0.24);
-  --border-focus: var(--brand-acid);
+  --border-dim: rgba(30, 39, 36, 0.1);
+  --border-medium: rgba(30, 39, 36, 0.17);
+  --border-strong: rgba(30, 39, 36, 0.28);
+  --border-focus: #297c70;
+  --border-accent: rgba(41, 124, 112, 0.4);
 
-  --text-primary: #171b24;
-  --text-secondary: #414857;
-  --text-muted: #69758a;
-  --text-hint: #9aa3b2;
+  --text-primary: #17201d;
+  --text-secondary: #3f4a46;
+  --text-muted: #68736f;
+  --text-hint: #89928e;
+  --text-on-accent: #ffffff;
+  --text-link: #1f665d;
+  --text-error: var(--danger);
 
-  --accent: var(--brand-acid);
-  --accent-strong: var(--brand-acid-strong);
-  --accent-soft: rgba(16, 185, 129, 0.28);
-  --accent-hover: #047857;
-  --accent-subtle: rgba(16, 185, 129, 0.12);
+  --accent: #297c70;
+  --accent-strong: #1f665d;
+  --accent-soft: rgba(41, 124, 112, 0.2);
+  --accent-hover: #18554e;
+  --accent-subtle: rgba(41, 124, 112, 0.09);
+  --accent-pressed: #134843;
+  --accent-gradient: linear-gradient(135deg, #2f8a7d 0%, #1f665d 100%);
 
-  --chat-shell-bg:
-    radial-gradient(circle at 12% 0%, rgba(16, 185, 129, 0.18), transparent 28%),
-    radial-gradient(circle at 100% 12%, rgba(249, 115, 22, 0.13), transparent 26%),
-    linear-gradient(135deg, #eef2ea 0%, #faf9f1 54%, #e8eee4 100%);
-  --chat-sidebar-bg: rgba(231, 238, 226, 0.82);
-  --chat-main-rail: rgba(255, 254, 248, 0.72);
-  --chat-surface: rgba(255, 254, 248, 0.86);
-  --chat-surface-strong: rgba(255, 255, 255, 0.94);
-  --chat-glass-border: rgba(32, 37, 34, 0.1);
-  --chat-focus-ring: 0 0 0 3px rgba(16, 185, 129, 0.2);
-  --chat-shadow: 0 18px 54px rgba(32, 37, 34, 0.12);
-  --chat-shadow-soft: 0 10px 26px rgba(32, 37, 34, 0.08);
+  /* RGB 伴随令牌：用于 alpha 合成，格式 `rgb(var(--accent-rgb) / 0.5)` */
+  --accent-rgb: 41 124 112;
+  --accent-strong-rgb: 31 102 93;
+  --danger-rgb: 220 38 38;
+  --warning-rgb: 249 115 22;
+  --success-rgb: 22 163 74;
+  --info-rgb: 37 99 235;
+
+  --chat-shell-bg: #ebece7;
+  --chat-sidebar-bg: #eceee9;
+  --chat-main-rail: #f5f4ef;
+  --chat-surface: #f8f7f3;
+  --chat-surface-strong: #fcfbf8;
+  --chat-glass-border: rgba(30, 39, 36, 0.12);
+  --chat-focus-ring: 0 0 0 3px rgba(41, 124, 112, 0.16);
+  --chat-shadow: 0 18px 44px rgba(31, 42, 38, 0.1);
+  --chat-shadow-soft: 0 6px 18px rgba(31, 42, 38, 0.07);
+  --chat-user-bubble-bg: #dcebe7;
+  --chat-user-bubble-text: var(--text-primary);
+  --chat-composer-shadow: 0 8px 30px rgb(23 32 29 / 0.08);
   --motion-fast: 120ms;
   --motion-normal: 180ms;
   --motion-slow: 280ms;
   --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 
-  --markdown-inline-bg: #eef4ff;
-  --markdown-inline-border: rgba(68, 103, 245, 0.24);
-  --markdown-inline-text: #1d3f8f;
-  --markdown-code-shell-bg: #f4f7fc;
-  --markdown-code-toolbar-bg: #e8eef8;
-  --markdown-code-bg: #fbfdff;
-  --markdown-code-border: rgba(37, 99, 235, 0.26);
-  --markdown-code-border-strong: rgba(37, 99, 235, 0.62);
-  --markdown-code-text: #172033;
-  --markdown-code-muted: #53627a;
-  --markdown-code-shadow: 0 14px 28px rgba(37, 99, 235, 0.1);
-  --markdown-math-bg: #f6f9ff;
-  --markdown-math-border: rgba(68, 103, 245, 0.28);
-  --markdown-math-text: #10213f;
-  --markdown-math-shadow: 0 12px 28px rgba(37, 99, 235, 0.12);
+  --markdown-inline-bg: #e6f7f5;
+  --markdown-inline-border: rgba(13, 148, 136, 0.24);
+  --markdown-inline-text: #134e4a;
+  --markdown-code-shell-bg: #f2f8f7;
+  --markdown-code-toolbar-bg: #e6f0ef;
+  --markdown-code-bg: #f9fdfc;
+  --markdown-code-border: rgba(13, 148, 136, 0.24);
+  --markdown-code-border-strong: rgba(13, 148, 136, 0.56);
+  --markdown-code-text: #0f1e1c;
+  --markdown-code-muted: #4a605c;
+  --markdown-code-shadow: 0 14px 28px rgba(13, 148, 136, 0.1);
+  --markdown-math-bg: #f0f9f7;
+  --markdown-math-border: rgba(13, 148, 136, 0.28);
+  --markdown-math-text: #0c2a27;
+  --markdown-math-shadow: 0 12px 28px rgba(13, 148, 136, 0.12);
 
   --success: #16a34a;
   --warning: var(--brand-ember);
@@ -79,90 +94,46 @@
   --usage-good: #22c55e;
   --usage-warn: #f59e0b;
   --usage-danger: #ef4444;
+  --info: var(--brand-cobalt);
+  --info-soft: rgba(37, 99, 235, 0.1);
 
   --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.05);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.1), 0 4px 12px rgba(15, 23, 42, 0.06);
+  --shadow-focus: 0 0 0 3px rgba(41, 124, 112, 0.18);
+  --shadow-accent-glow: 0 4px 14px rgba(41, 124, 112, 0.22);
 
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
 
   --font-ui:
-    "Inter", "Aptos", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+    "Avenir Next", "Source Han Sans SC", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC",
+    sans-serif;
   --font-mono:
     "JetBrains Mono", "Cascadia Code", "IBM Plex Mono", "Sarasa Mono SC", "SFMono-Regular",
     "Consolas", ui-monospace, monospace;
-}
 
-html.dark {
-  --bg-root: #111411;
-  --bg-shell: #161a17;
-  --bg-titlebar: #101310;
-  --bg-sidebar: #171c18;
-  --bg-sidebar-elevated: #202721;
-  --bg-panel: #121612;
-  --bg-card: #1b211c;
-  --bg-hover: #263027;
-  --bg-selected: #0f3532;
-  --bg-subtle: #171d18;
-  --bg-input: #101410;
-
-  --border-dim: rgba(232, 241, 229, 0.08);
-  --border-medium: rgba(232, 241, 229, 0.14);
-  --border-strong: rgba(232, 241, 229, 0.22);
-  --border-focus: #21f4df;
-
-  --text-primary: #eef7ee;
-  --text-secondary: #c7d8ca;
-  --text-muted: #8fa092;
-  --text-hint: #647166;
-
-  --accent: #21f4df;
-  --accent-strong: #14b8a6;
-  --accent-soft: rgba(33, 244, 223, 0.28);
-  --accent-hover: #5ef2e6;
-  --accent-subtle: rgba(33, 244, 223, 0.14);
-
-  --chat-shell-bg:
-    radial-gradient(circle at 12% 0%, rgba(33, 244, 223, 0.16), transparent 28%),
-    radial-gradient(circle at 100% 12%, rgba(255, 189, 90, 0.12), transparent 26%),
-    linear-gradient(135deg, #0f130f 0%, #171c18 50%, #111611 100%);
-  --chat-sidebar-bg: rgba(17, 22, 17, 0.78);
-  --chat-main-rail: rgba(18, 22, 18, 0.74);
-  --chat-surface: rgba(27, 33, 28, 0.84);
-  --chat-surface-strong: rgba(33, 40, 35, 0.94);
-  --chat-glass-border: rgba(232, 241, 229, 0.1);
-  --chat-focus-ring: 0 0 0 3px rgba(33, 244, 223, 0.22);
-  --chat-shadow: 0 18px 54px rgba(0, 0, 0, 0.34);
-  --chat-shadow-soft: 0 10px 26px rgba(0, 0, 0, 0.26);
-
-  --markdown-inline-bg: rgba(93, 173, 226, 0.14);
-  --markdown-inline-border: rgba(93, 173, 226, 0.34);
-  --markdown-inline-text: #b8dcff;
-  --markdown-code-shell-bg: #15191f;
-  --markdown-code-toolbar-bg: #1d242d;
-  --markdown-code-bg: #0f141b;
-  --markdown-code-border: rgba(93, 173, 226, 0.28);
-  --markdown-code-border-strong: rgba(93, 173, 226, 0.68);
-  --markdown-code-text: #dbe7f5;
-  --markdown-code-muted: #8fa4bb;
-  --markdown-code-shadow: 0 18px 34px rgba(0, 0, 0, 0.32);
-  --markdown-math-bg: #111923;
-  --markdown-math-border: rgba(93, 173, 226, 0.36);
-  --markdown-math-text: #e6f3ff;
-  --markdown-math-shadow: 0 16px 34px rgba(0, 0, 0, 0.34);
-
-  --success: #3dd68c;
-  --warning: #fb923c;
-  --danger: #ff5555;
-  --usage-good: #4ade80;
-  --usage-warn: #fbbf24;
-  --usage-danger: #f87171;
-
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.22);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.2);
+  /* ── Surface semantic tokens (light: clean & airy) ── */
+  --sf-shell-bg: #ebece7;
+  --sf-surface: #f5f4ef;
+  --sf-surface-elevated: #fcfbf7;
+  --sf-surface-sunken: #eceee9;
+  --sf-surface-grad: linear-gradient(180deg, #f9f8f4, #f1f0eb);
+  --sf-overlay: rgba(15, 26, 30, 0.28);
+  --sf-accent-border: rgba(13, 148, 136, 0.22);
+  --sf-accent-border-strong: rgba(13, 148, 136, 0.4);
+  --sf-accent-glow: rgba(13, 148, 136, 0.08);
+  --sf-accent-hover-bg: rgba(13, 148, 136, 0.06);
+  --sf-grid-line: transparent;
+  --sf-grid-mask-opacity: 0;
+  --sf-inset-highlight: rgba(255, 255, 255, 0.6);
+  --sf-shadow-panel: 0 2px 8px rgba(15, 26, 30, 0.05), 0 1px 3px rgba(15, 26, 30, 0.04);
+  --sf-shadow-elevated: 0 8px 30px rgba(15, 26, 30, 0.08), 0 2px 8px rgba(15, 26, 30, 0.05);
+  --sf-glow-cyan: 0 0 20px rgba(13, 148, 136, 0.08);
 }
 
 /* ── Reset ─────────────────────────────────────────────────────── */
@@ -1765,29 +1736,29 @@ button:not(:disabled):active,
   font-family: var(--font-ui);
 }
 
-/* ── Light theme overrides ── */
-:root[data-theme="light"] .git-diff-line--add {
+/* ── Git diff accents (light) ── */
+.git-diff-line--add {
   background: rgba(46, 160, 67, 0.1);
 }
-:root[data-theme="light"] .git-diff-line--del {
+.git-diff-line--del {
   background: rgba(248, 81, 73, 0.08);
 }
-:root[data-theme="light"] .git-diff-line--add .git-diff-content {
+.git-diff-line--add .git-diff-content {
   color: #1a7f37;
 }
-:root[data-theme="light"] .git-diff-line--del .git-diff-content {
+.git-diff-line--del .git-diff-content {
   color: #cf222e;
 }
-:root[data-theme="light"] .git-diff-line--ctx .git-diff-content {
+.git-diff-line--ctx .git-diff-content {
   color: var(--text-secondary);
 }
-:root[data-theme="light"] .git-diff-hunk-header {
+.git-diff-hunk-header {
   background: rgba(54, 135, 235, 0.06);
   color: rgba(36, 100, 186, 0.75);
 }
-:root[data-theme="light"] .git-diff-sign--add {
+.git-diff-sign--add {
   color: #1a7f37;
 }
-:root[data-theme="light"] .git-diff-sign--del {
+.git-diff-sign--del {
   color: #cf222e;
 }

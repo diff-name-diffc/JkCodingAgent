@@ -1,12 +1,11 @@
 import { motion } from "framer-motion";
 import type { DispatcherMessage } from "../../types";
 import { cn } from "../../lib/cn";
-import { Avatar, AvatarFallback } from "../ui/avatar";
 
 /**
  * User message bubble for the refactored chat surface.
  *
- * Right-aligned, accent-tinted, with a small "You" avatar. Renders the user's
+ * Right-aligned, soft accent-tinted bubble, no avatar. Renders the user's
  * text content. Image segments are rendered as thumbnails below the text
  * (the heavy lifting — chat-image:// protocol, paste handling — stays in the
  * existing pipeline; here we only display already-persisted segments).
@@ -29,28 +28,23 @@ export function UserMessage({ message, className }: UserMessageProps) {
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-      className={cn("ai-user-message flex items-start justify-end gap-3", className)}
+      className={cn("ai-user-message flex items-start justify-end", className)}
     >
-      <div className="flex max-w-[80%] flex-col items-end gap-2">
-        <div className="ai-user-bubble rounded-2xl rounded-tr-sm bg-primary/12 px-4 py-2.5 text-[15px] leading-7 text-foreground">
-          {text && <p className="whitespace-pre-wrap break-words">{text}</p>}
-          {images.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {images.map((img) => (
-                <img
-                  key={img.id}
-                  src={`chat-image://${img.imageId}`}
-                  alt={img.alt || "attached image"}
-                  className="max-h-48 rounded-md border border-border object-cover"
-                />
-              ))}
-            </div>
-          )}
-        </div>
+      <div className="ai-user-bubble max-w-[75%] rounded-[18px] rounded-tr-md px-4 py-2.5 text-[15px] leading-7">
+        {text && <p className="whitespace-pre-wrap break-words">{text}</p>}
+        {images.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {images.map((img) => (
+              <img
+                key={img.id}
+                src={`chat-image://${img.imageId}`}
+                alt={img.alt || "attached image"}
+                className="max-h-48 rounded-md border border-border object-cover"
+              />
+            ))}
+          </div>
+        )}
       </div>
-      <Avatar className="ai-user-avatar mt-0.5 h-7 w-7 border border-border bg-secondary">
-        <AvatarFallback className="text-[10px]">你</AvatarFallback>
-      </Avatar>
     </motion.div>
   );
 }

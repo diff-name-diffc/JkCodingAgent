@@ -2,13 +2,11 @@ import { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } fro
 import { open as openDialog, confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { Project, Task, TaskStatus, AgentType, PermissionMode, ThemeMode } from "./types";
+import type { Project, Task, TaskStatus, AgentType, PermissionMode } from "./types";
 import { isActiveTaskStatus } from "./types";
 import { WelcomePage } from "./components/WelcomePage";
 import { useToast } from "./components/Toast";
 import { useTerminalManager } from "./hooks/useTerminalManager";
-import s from "./styles";
 import "./App.css";
 
 const ProjectPage = lazy(() =>
@@ -39,21 +37,9 @@ function persistProjects(projects: Project[], onError: (msg: string) => void) {
   });
 }
 
-function getSystemPrefersDark() {
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
-function getInitialThemeMode(): ThemeMode {
-  const stored = localStorage.getItem("jkcodingagent:theme");
-  return stored === "dark" || stored === "light" || stored === "system" ? stored : "system";
-}
-
 function App() {
   const { showToast } = useToast();
 
-  const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode);
-  const [systemPrefersDark, setSystemPrefersDark] = useState(getSystemPrefersDark);
-  const isDark = themeMode === "system" ? systemPrefersDark : themeMode === "dark";
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
@@ -163,36 +149,6 @@ function App() {
   const mountProject = useCallback((projectId: string) => {
     setMountedProjectIds((prev) => (prev.includes(projectId) ? prev : [...prev, projectId]));
   }, []);
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    const handleChange = (event: MediaQueryListEvent) => setSystemPrefersDark(event.matches);
-
-    setSystemPrefersDark(mediaQuery.matches);
-    mediaQuery.addEventListener("change", handleChange);
-
-    return () => mediaQuery.removeEventListener("change", handleChange);
-  }, []);
-
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", isDark);
-    localStorage.setItem("jkcodingagent:theme", themeMode);
-  }, [isDark, themeMode]);
-
-  useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
-
-    getCurrentWindow()
-      .setTheme(themeMode === "system" ? null : themeMode)
-      .catch(console.error);
-  }, [themeMode]);
-
-  const handleToggleTheme = useCallback(() => {
-    setThemeMode((currentMode) => {
-      const currentlyDark = currentMode === "system" ? systemPrefersDark : currentMode === "dark";
-      return currentlyDark ? "light" : "dark";
-    });
-  }, [systemPrefersDark]);
 
   useEffect(() => {
     async function init() {
@@ -445,7 +401,16 @@ function App() {
   );
 
   return (
-    <div style={{ ...s.root, position: "relative", height: "100%" }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        background: "var(--bg-root)",
+        overflow: "hidden",
+        position: "relative",
+      }}
+    >
       <div
         style={{
           position: "absolute",
@@ -492,11 +457,6 @@ function App() {
               onBack={handleBack}
               onSwitchProject={handleProjectClick}
               onOpen={handleOpen}
-              isDark={isDark}
-              themeMode={themeMode}
-              systemPrefersDark={systemPrefersDark}
-              onThemeModeChange={setThemeMode}
-              onToggleTheme={handleToggleTheme}
             />
           </Suspense>
         ))}
@@ -514,11 +474,6 @@ function App() {
             onOpen={handleOpen}
             onProjectClick={handleProjectClick}
             onDeleteProject={handleDeleteProject}
-            isDark={isDark}
-            themeMode={themeMode}
-            systemPrefersDark={systemPrefersDark}
-            onThemeModeChange={setThemeMode}
-            onToggleTheme={handleToggleTheme}
           />
         </div>
       )}

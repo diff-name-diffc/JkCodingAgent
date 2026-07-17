@@ -76,12 +76,12 @@ export function AppLayout({
             </div>
           )}
           <div className="ai-chat-stage relative flex min-h-0 flex-1 justify-center">
-            <div className="ai-chat-column flex min-h-0 w-full max-w-[920px] flex-1 flex-col">
+            <div className="ai-chat-column flex min-h-0 w-full max-w-[768px] flex-1 flex-col">
               {children}
             </div>
           </div>
           {chatFooter && (
-            <div className="ai-chat-footer sticky bottom-0 z-10 border-t border-border/60 bg-background/80 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+            <div className="ai-chat-footer sticky bottom-0 z-10 px-4 pb-3 pt-2">
               {chatFooter}
             </div>
           )}

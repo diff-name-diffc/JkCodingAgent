@@ -10,7 +10,7 @@ import {
   BarChart2,
   MessageCircle,
 } from "lucide-react";
-import type { Project, ThemeMode } from "../types";
+import type { Project } from "../types";
 import { shortenPath } from "../utils";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
@@ -20,7 +20,6 @@ import {
   AiStatusPill,
 } from "./ui/sci-fi-shell";
 import appLogo from "../assets/app-logo.png";
-import s from "../styles";
 
 const AnalyticsDashboard = lazy(() =>
   import("./AnalyticsDashboard").then((module) => ({ default: module.AnalyticsDashboard })),
@@ -55,9 +54,9 @@ function SidebarItem({
       className={`ai-home-nav-item${active ? " is-active" : ""}`}
       onClick={onClick}
     >
-      <span style={{ display: "flex", alignItems: "center" }}>{icon}</span>
+      <span className="ai-home-nav-icon">{icon}</span>
       <span className="ai-home-nav-label">{label}</span>
-      {meta && <span style={s.sidebarItemMeta}>{meta}</span>}
+      {meta && <span className="ai-home-nav-meta">{meta}</span>}
     </div>
   );
 }
@@ -85,21 +84,11 @@ export function WelcomePage({
   onOpen,
   onProjectClick,
   onDeleteProject,
-  isDark,
-  themeMode,
-  systemPrefersDark,
-  onThemeModeChange,
-  onToggleTheme,
 }: {
   projects: Project[];
   onOpen: () => void;
   onProjectClick: (p: Project) => void;
   onDeleteProject: (projectId: string) => void;
-  isDark: boolean;
-  themeMode: ThemeMode;
-  systemPrefersDark: boolean;
-  onThemeModeChange: (mode: ThemeMode) => void;
-  onToggleTheme: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [hov, setHov] = useState<string | null>(null);
@@ -115,11 +104,11 @@ export function WelcomePage({
   }, [projects, query]);
 
   return (
-    <div className="ai-home-shell ai-migrated-home" style={s.welcomeBody}>
+    <div className="ai-home-shell ai-migrated-home">
       <div className="ai-home-layout">
-        <div className="ai-home-nav" style={s.sidebar}>
-          <div style={s.sidebarBrand}>
-            <div className="ai-home-brand-icon" style={s.sidebarBrandIcon}>
+        <div className="ai-home-nav">
+          <div className="ai-home-brand">
+            <div className="ai-home-brand-icon" style={{ width: 44, height: 44, borderRadius: 12 }}>
               <img
                 src={appLogo}
                 alt="JKCodingAgent"
@@ -127,13 +116,13 @@ export function WelcomePage({
               />
             </div>
             <div>
-              <div style={s.sidebarBrandTitle}>JKCodingAgent</div>
-              <div style={s.sidebarBrandMeta}>智能体工作区</div>
+              <div className="ai-home-brand-title">JKCodingAgent</div>
+              <div className="ai-home-brand-subtitle">智能体工作区</div>
             </div>
           </div>
 
-          <nav style={s.sidebarNav}>
-            <div style={s.sidebarSectionTitle}>工作区</div>
+          <nav className="ai-home-nav-list">
+            <div className="ai-home-nav-section-label">工作区</div>
             <SidebarItem
               icon={<MessageCircle size={15} />}
               label="聊天"
@@ -154,25 +143,14 @@ export function WelcomePage({
             />
           </nav>
 
-          <div style={s.sidebarFooter}>
-            <SidebarFooterActions
-              isDark={isDark}
-              themeMode={themeMode}
-              systemPrefersDark={systemPrefersDark}
-              onThemeModeChange={onThemeModeChange}
-              onToggleTheme={onToggleTheme}
-            />
+          <div className="ai-home-nav-footer">
+            <SidebarFooterActions />
           </div>
         </div>
 
         {view === "chat" ? (
           <Suspense fallback={<WelcomePaneFallback />}>
-            <HomeChatPage
-              isDark={isDark}
-              themeMode={themeMode}
-              systemPrefersDark={systemPrefersDark}
-              onThemeModeChange={onThemeModeChange}
-            />
+            <HomeChatPage />
           </Suspense>
         ) : view === "analytics" ? (
           <Suspense fallback={<WelcomePaneFallback />}>
@@ -198,7 +176,7 @@ export function WelcomePage({
                 />
               </div>
 
-              <div style={s.actionRow}>
+              <div className="ai-home-search-actions">
                 <button className="ai-home-primary-btn" onClick={onOpen}>
                   <Plus size={14} strokeWidth={2.3} />
                   <span>打开项目</span>
@@ -236,7 +214,7 @@ export function WelcomePage({
                     >
                       <ProjectAvatar name={p.name} size={34} />
 
-                      <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="ai-project-card-main">
                         <div className="ai-project-name">{p.name}</div>
                         <div className="ai-project-meta">{shortenPath(p.path)}</div>
                       </div>

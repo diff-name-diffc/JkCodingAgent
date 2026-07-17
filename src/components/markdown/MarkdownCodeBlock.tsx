@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, Copy, Play } from "lucide-react";
 import type { PythonCodeRunRecord } from "../../types";
-import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
 import { highlightCodeToHtml } from "../../utils/shiki";
 
 function escapeHtml(value: string) {
@@ -85,7 +84,6 @@ export function MarkdownCodeBlock({
   compact?: boolean;
   streaming?: boolean;
 }) {
-  const isDark = useIsDarkTheme();
   const fallbackHtml = useMemo(() => renderPlainCodeHtml(code), [code]);
   const [highlighted, setHighlighted] = useState<{ code: string; html: string } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -109,7 +107,7 @@ export function MarkdownCodeBlock({
     let cancelled = false;
     setHighlighted({ code, html: fallbackHtml });
 
-    highlightCodeToHtml(code, resolvedLanguage, isDark)
+    highlightCodeToHtml(code, resolvedLanguage)
       .then((html) => {
         if (!cancelled) {
           setHighlighted({ code, html: html || fallbackHtml });
@@ -124,7 +122,7 @@ export function MarkdownCodeBlock({
     return () => {
       cancelled = true;
     };
-  }, [code, fallbackHtml, isDark, resolvedLanguage, streaming]);
+  }, [code, fallbackHtml, resolvedLanguage, streaming]);
 
   useEffect(() => {
     if (!copied) {

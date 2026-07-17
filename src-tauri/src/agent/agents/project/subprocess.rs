@@ -93,12 +93,6 @@ impl DispatcherSubprocessRegistry {
         }
     }
 
-    pub(crate) fn is_exit_requested(&self, task_id: &str) -> bool {
-        self.subprocesses.lock().iter().any(|item| {
-            item.task_id == task_id && item.phase == RegisteredSubprocessPhase::ExitRequested
-        })
-    }
-
     pub(crate) fn list_for_workspace(&self, workspace_id: &str) -> Vec<RegisteredSubprocess> {
         self.subprocesses
             .lock()

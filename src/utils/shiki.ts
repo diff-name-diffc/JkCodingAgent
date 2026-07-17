@@ -43,18 +43,53 @@ const LANGUAGE_LOADERS: Record<string, () => Promise<unknown>> = {
 let highlighterPromise: Promise<ShikiHighlighter> | null = null;
 const attemptedLanguages = new Set<string>(["plaintext"]);
 
+/**
+ * 自定义青绿调亮色主题，配色与应用 `--accent` (#297c70) 体系一致，
+ * 避免 github-light 的蓝紫高亮与整体令牌冲突。
+ */
+const TEAL_LIGHT_THEME = {
+  name: "teal-light",
+  type: "light",
+  fg: "#17201D",
+  bg: "#f9fdfc",
+  colors: {
+    "editor.foreground": "#17201D",
+    "editor.background": "#f9fdfc",
+  },
+  tokenColors: [
+    { scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#89928E" } },
+    { scope: ["string", "punctuation.definition.string"], settings: { foreground: "#1B7A4B" } },
+    { scope: ["constant", "entity.name.constant"], settings: { foreground: "#0F766E" } },
+    { scope: ["keyword", "storage.type", "storage.modifier"], settings: { foreground: "#B45309" } },
+    { scope: ["keyword.control"], settings: { foreground: "#9A3412" } },
+    { scope: ["entity", "entity.name.function", "support.function"], settings: { foreground: "#1F665D" } },
+    { scope: ["entity.name.type", "entity.name.class", "support.type", "support.class"], settings: { foreground: "#155E54" } },
+    { scope: ["entity.name.tag"], settings: { foreground: "#0F766E" } },
+    { scope: ["entity.other.attribute-name"], settings: { foreground: "#B45309" } },
+    { scope: ["variable", "variable.parameter"], settings: { foreground: "#17201D" } },
+    { scope: ["variable.language"], settings: { foreground: "#9A3412" } },
+    { scope: ["support"], settings: { foreground: "#0F766E" } },
+    { scope: ["meta.property-name", "meta.property-value"], settings: { foreground: "#0F766E" } },
+    { scope: ["punctuation"], settings: { foreground: "#4A605C" } },
+    { scope: ["markup.heading"], settings: { foreground: "#1F665D", fontStyle: "bold" } },
+    { scope: ["markup.bold"], settings: { fontStyle: "bold" } },
+    { scope: ["markup.italic"], settings: { fontStyle: "italic" } },
+    { scope: ["markup.inserted"], settings: { foreground: "#1B7A4B" } },
+    { scope: ["markup.deleted"], settings: { foreground: "#DC2626" } },
+    { scope: ["markup.changed"], settings: { foreground: "#B45309" } },
+  ],
+};
+
 async function getHighlighter() {
   if (!highlighterPromise) {
     highlighterPromise = Promise.all([
       import("shiki/core"),
       import("shiki/dist/engine-javascript.mjs"),
-      import("shiki/dist/themes/github-dark.mjs"),
-      import("shiki/dist/themes/github-light.mjs"),
     ]).then(
-      async ([{ createHighlighterCore }, { createJavaScriptRegexEngine }, darkTheme, lightTheme]) => {
+      async ([{ createHighlighterCore }, { createJavaScriptRegexEngine }]) => {
         const highlighter = (await createHighlighterCore({
           engine: createJavaScriptRegexEngine(),
-          themes: [darkTheme.default, lightTheme.default],
+          themes: [TEAL_LIGHT_THEME] as never,
         })) as unknown as ShikiHighlighter;
         return highlighter;
       },
@@ -96,12 +131,12 @@ async function ensureLanguage(language?: string | null) {
   return highlighter.getLoadedLanguages().includes(normalized) ? normalized : "plaintext";
 }
 
-export async function highlightCodeToHtml(code: string, language?: string | null, isDark = false) {
+export async function highlightCodeToHtml(code: string, language?: string | null) {
   const highlighter = await getHighlighter();
   const resolvedLanguage = await ensureLanguage(language);
 
   return highlighter.codeToHtml(code, {
     lang: resolvedLanguage,
-    theme: isDark ? "github-dark" : "github-light",
+    theme: "teal-light",
   });
 }

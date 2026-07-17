@@ -1,15 +1,7 @@
 import * as React from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import {
-  AlertTriangle,
-  Bot,
-  Check,
-  ChevronRight,
-  FileSearch,
-  Loader2,
-  Wrench,
-} from "lucide-react";
-import type { ToolActivityItem } from "../ToolActivityBubble";
+import { AlertTriangle, Bot, Check, ChevronRight, FileSearch, Loader2, Wrench } from "lucide-react";
+import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import type { DispatcherToolArtifactRef } from "../../types";
 import { cn } from "../../lib/cn";
 import { Badge } from "../ui/badge";
@@ -24,16 +16,9 @@ import { Button } from "../ui/button";
  * are derived for display only — no data-model change.
  */
 
-export type ToolCallDisplayStatus =
-  | "pending"
-  | "running"
-  | "success"
-  | "error"
-  | "cancelled";
+export type ToolCallDisplayStatus = "pending" | "running" | "success" | "error" | "cancelled";
 
-function deriveStatus(
-  item: ToolActivityItem,
-): ToolCallDisplayStatus {
+function deriveStatus(item: ToolActivityItem): ToolCallDisplayStatus {
   switch (item.status) {
     case "planned":
       return "pending";
@@ -105,7 +90,7 @@ export function ToolCallCard({
   return (
     <div
       className={cn(
-        "rounded-lg border border-border bg-card/70 transition-colors",
+        "ai-tool-call-card rounded-lg border border-border bg-card/70 transition-colors",
         status === "running" && "border-primary/30",
         className,
       )}
@@ -113,7 +98,7 @@ export function ToolCallCard({
       <button
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+        className="ai-tool-call-trigger flex w-full items-center gap-2 px-3 py-2 text-left"
       >
         <motion.span
           animate={{ rotate: expanded ? 90 : 0 }}

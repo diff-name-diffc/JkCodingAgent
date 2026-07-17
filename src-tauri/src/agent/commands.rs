@@ -7,12 +7,11 @@ use super::agents::DispatcherContinueAfterDispatchRequest;
 use super::config::DispatcherAgentConfig;
 use super::db::content::{segments_to_plain_text, try_parse_segments_json, ContentSegment};
 use super::db::{
-    AgentContext, AhaContextConfig, AhaSettingsV2, AhaSharedModels, ChatCategory,
-    ChatCategoryAgentConfig, ChatSessionRecord, DispatcherDb, DispatcherMessageRecord,
-    DispatcherModelConfig, DispatcherSessionKind, DispatcherSessionRecord,
-    DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
-    DispatcherToolArtifactRecord, KeywordAction, ProjectSessionRecord, SessionKeywordRecord,
-    SessionPage, SessionSearchResult,
+    AgentContext, AhaContextConfig, AhaSettingsV2, ChatCategory, ChatCategoryAgentConfig,
+    ChatSessionRecord, DispatcherDb, DispatcherMessageRecord, DispatcherModelConfig,
+    DispatcherSessionKind, DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
+    DispatcherToolArtifactRecord, KeywordAction, ProjectSessionRecord, SessionPage,
+    SessionSearchResult,
 };
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
@@ -709,17 +708,6 @@ pub async fn dispatcher_clear_messages(
 }
 
 #[tauri::command]
-pub fn dispatcher_clear_message_context(
-    state: tauri::State<'_, DispatcherState>,
-    workspace_id: String,
-) -> Result<(), String> {
-    state
-        .db()
-        .clear_context_messages(&workspace_id)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 pub async fn dispatcher_get_tool_artifact(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
@@ -730,39 +718,6 @@ pub async fn dispatcher_get_tool_artifact(
         db.get_tool_artifact(&workspace_id, &artifact_id)
     })
     .await
-}
-
-#[tauri::command]
-pub fn dispatcher_list_sessions(
-    state: tauri::State<'_, DispatcherState>,
-    project_id: String,
-    kind: Option<String>,
-) -> Result<Vec<DispatcherSessionRecord>, String> {
-    let kind = DispatcherSessionKind::from_wire(kind.as_deref().unwrap_or("project"))
-        .map_err(|error| error.to_string())?;
-    state
-        .db()
-        .list_sessions(&project_id, kind)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn dispatcher_create_session(
-    state: tauri::State<'_, DispatcherState>,
-    app: AppHandle,
-    project_id: String,
-    title: String,
-    kind: Option<String>,
-    category: Option<String>,
-) -> Result<DispatcherSessionRecord, String> {
-    let kind = DispatcherSessionKind::from_wire(kind.as_deref().unwrap_or("project"))
-        .map_err(|error| error.to_string())?;
-    let session = state
-        .db()
-        .create_session(&project_id, &title, kind, category.as_deref())
-        .map_err(|error| error.to_string())?;
-    let _ = app.emit("dispatcher-session-updated", session.clone());
-    Ok(session)
 }
 
 #[tauri::command]
@@ -777,34 +732,6 @@ pub async fn dispatcher_delete_session(
     .await
 }
 
-#[tauri::command]
-pub async fn session_get_keywords(
-    state: tauri::State<'_, DispatcherState>,
-    workspace_id: String,
-) -> Result<Vec<SessionKeywordRecord>, String> {
-    let db = state.db().clone();
-    run_dispatcher_db("session_get_keywords", move || {
-        db.list_session_keywords(&workspace_id)
-    })
-    .await
-}
-
-#[tauri::command]
-pub async fn session_search_keywords(
-    state: tauri::State<'_, DispatcherState>,
-    query: String,
-    limit: Option<i64>,
-    kind: Option<String>,
-    project_id: Option<String>,
-) -> Result<Vec<SessionSearchResult>, String> {
-    let db = state.db().clone();
-    let lim = limit.unwrap_or(20);
-    run_dispatcher_db("session_search_keywords", move || {
-        db.search_sessions_by_keywords(&query, lim, kind.as_deref(), project_id.as_deref())
-    })
-    .await
-}
-
 // ── v6: Chat Sessions (paginated) ─────────────────────────────
 
 #[tauri::command]
@@ -815,7 +742,7 @@ pub async fn chat_list_sessions(
     page_size: Option<i64>,
 ) -> Result<SessionPage<ChatSessionRecord>, String> {
     let db = state.db().clone();
-    let size = page_size.unwrap_or(30);
+    let size = page_size.unwrap_or(30).clamp(1, 100);
     run_dispatcher_db("chat_list_sessions", move || {
         db.list_chat_sessions_paginated(category.as_deref(), cursor.as_deref(), size)
     })
@@ -886,8 +813,8 @@ pub async fn project_list_sessions(
     page_size: Option<i64>,
 ) -> Result<SessionPage<ProjectSessionRecord>, String> {
     let db = state.db().clone();
-    let off = offset.unwrap_or(0);
-    let size = page_size.unwrap_or(30);
+    let off = offset.unwrap_or(0).max(0);
+    let size = page_size.unwrap_or(30).clamp(1, 100);
     run_dispatcher_db("project_list_sessions", move || {
         db.list_project_sessions_paginated(&project_id, off, size)
     })
@@ -918,6 +845,21 @@ pub async fn project_delete_session(
     let db = state.db().clone();
     run_dispatcher_db("project_delete_session", move || {
         db.delete_project_session(&session_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn session_search_keywords(
+    state: tauri::State<'_, DispatcherState>,
+    query: String,
+    kind: DispatcherSessionKind,
+    project_id: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<SessionSearchResult>, String> {
+    let db = state.db().clone();
+    run_dispatcher_db("session_search_keywords", move || {
+        db.search_sessions(&query, kind, project_id.as_deref(), limit.unwrap_or(20))
     })
     .await
 }
@@ -1292,16 +1234,6 @@ pub async fn aha_get_context_config(
 }
 
 #[tauri::command]
-pub async fn aha_get_shared_models(
-    state: tauri::State<'_, DispatcherState>,
-) -> Result<AhaSharedModels, String> {
-    state
-        .db()
-        .get_shared_models()
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 pub async fn aha_list_agent_tools(
     state: tauri::State<'_, DispatcherState>,
     context: String,
@@ -1469,12 +1401,4 @@ pub async fn dispatcher_exit_subprocess(
     state.mark_subprocess_exit_requested(&task_id);
 
     Ok(())
-}
-
-#[tauri::command]
-pub fn dispatcher_is_subprocess_exited(
-    state: tauri::State<'_, DispatcherState>,
-    task_id: String,
-) -> bool {
-    state.is_subprocess_exit_requested(&task_id)
 }

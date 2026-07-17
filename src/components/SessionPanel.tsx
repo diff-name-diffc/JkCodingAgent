@@ -8,12 +8,17 @@ import {
   withDispatcherSessionRunning,
   withDispatcherSessionsRunning,
 } from "./dispatcherSessionStore";
-import type { Project, ThemeMode, ProjectSession, SessionPage, SessionSearchResult } from "../types";
+import type {
+  Project,
+  ProjectSession,
+  SessionKeyword,
+  SessionPage,
+  SessionSearchResult,
+} from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
 import { BranchBar } from "./task-panel/BranchBar";
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
-import s from "../styles";
 
 const PROJECT_PAGE_SIZE = 30;
 
@@ -40,11 +45,6 @@ export function SessionPanel({
   onSelectSession,
   onBack,
   onCollapse,
-  isDark,
-  themeMode,
-  systemPrefersDark,
-  onThemeModeChange,
-  onToggleTheme,
   subprocessRunningSessionIds = new Set<string>(),
 }: {
   project: Project;
@@ -53,14 +53,12 @@ export function SessionPanel({
   subprocessRunningSessionIds?: Set<string>;
   onBack: () => void;
   onCollapse: () => void;
-  isDark: boolean;
-  themeMode: ThemeMode;
-  systemPrefersDark: boolean;
-  onThemeModeChange: (mode: ThemeMode) => void;
-  onToggleTheme: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SessionSearchResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [keywordsRevision, setKeywordsRevision] = useState(0);
   const [sessions, setSessions] = useState<ProjectSession[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [, setTotal] = useState(0);
@@ -68,25 +66,45 @@ export function SessionPanel({
   const creatingSessionRef = useRef(false);
   const activeSessionIdRef = useRef(activeSessionId);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRequestRef = useRef(0);
   activeSessionIdRef.current = activeSessionId;
 
   useEffect(() => {
-    const unlisten = listen<ProjectSession>("dispatcher-session-updated", (event) => {
+    const unlistenSession = listen<ProjectSession>("dispatcher-session-updated", (event) => {
       const updatedSession = withDispatcherSessionRunning(event.payload);
       if (!updatedSession.projectId || updatedSession.projectId !== project.id) return;
 
       setSessions((prev) => {
-        const exists = prev.some((session) => session.id === updatedSession.id);
-        const next = exists
-          ? prev.map((session) => (session.id === updatedSession.id ? updatedSession : session))
-          : [updatedSession, ...prev];
+        const existingSession = prev.find((session) => session.id === updatedSession.id);
+        const normalizedSession = {
+          ...updatedSession,
+          keywords: updatedSession.keywords ?? existingSession?.keywords ?? [],
+        };
+        const next = existingSession
+          ? prev.map((session) =>
+              session.id === normalizedSession.id ? normalizedSession : session,
+            )
+          : [normalizedSession, ...prev];
         return sortSessionsByUpdatedAt(next);
       });
     });
+    const unlistenKeywords = listen<{
+      workspaceId: string;
+      keywords: SessionKeyword[];
+    }>("session-keywords-updated", (event) => {
+      const { workspaceId, keywords } = event.payload;
+      const values = keywords.map((keyword) => keyword.keyword);
+      setSessions((prev) =>
+        prev.map((session) =>
+          session.id === workspaceId ? { ...session, keywords: values } : session,
+        ),
+      );
+      setKeywordsRevision((revision) => revision + 1);
+    });
 
     return () => {
-      unlisten.then((fn) => fn()).catch(() => {});
+      unlistenSession.then((fn) => fn()).catch(() => {});
+      unlistenKeywords.then((fn) => fn()).catch(() => {});
     };
   }, [project.id]);
 
@@ -183,26 +201,39 @@ export function SessionPanel({
   const dispatcherRunningSessionIds = useDispatcherSessionRunningSet(sessionIds);
 
   useEffect(() => {
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     const trimmed = query.trim();
+    const requestId = ++searchRequestRef.current;
     if (!trimmed) {
       setSearchResults(null);
+      setSearching(false);
+      setSearchError(null);
       return;
     }
-    searchTimerRef.current = setTimeout(() => {
+    setSearchResults(null);
+    setSearching(true);
+    setSearchError(null);
+    const timer = window.setTimeout(() => {
       invoke<SessionSearchResult[]>("session_search_keywords", {
         query: trimmed,
         limit: 20,
         kind: "project",
         projectId: project.id,
       })
-        .then(setSearchResults)
-        .catch(() => setSearchResults([]));
+        .then((results) => {
+          if (searchRequestRef.current !== requestId) return;
+          setSearchResults(results);
+        })
+        .catch((error: unknown) => {
+          if (searchRequestRef.current !== requestId) return;
+          console.error("搜索会话失败:", error);
+          setSearchError(String(error));
+        })
+        .finally(() => {
+          if (searchRequestRef.current === requestId) setSearching(false);
+        });
     }, 260);
-    return () => {
-      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    };
-  }, [query, project.id]);
+    return () => window.clearTimeout(timer);
+  }, [keywordsRevision, project.id, query]);
 
   async function handleDeleteSession(id: string) {
     const ok = await confirm("确定永久删除这个会话吗？", {
@@ -216,6 +247,9 @@ export function SessionPanel({
       cleanupDispatcherSession(id);
       const remaining = sessions.filter((session) => session.id !== id);
       setSessions(remaining);
+      setSearchResults((results) =>
+        results?.filter((result) => result.sessionId !== id) ?? null,
+      );
       setTotal((prev) => Math.max(0, prev - 1));
       if (activeSessionId === id) {
         onSelectSession(remaining[0]?.id ?? null);
@@ -228,22 +262,18 @@ export function SessionPanel({
     }
   }
 
-  const filtered = useMemo(() => {
-    if (!query.trim()) return sessions;
-    const q = query.toLowerCase();
-    return sessions.filter((session) => session.title.toLowerCase().includes(q));
-  }, [sessions, query]);
+  const hasSearchQuery = query.trim().length > 0;
 
   return (
-    <div className="ai-project-session-panel" style={s.taskPanel}>
+    <div className="ai-project-session-panel ai-migrated-project">
       {/* Project header */}
-      <div className="ai-project-session-header" style={s.panelHeader}>
-        <button className="ai-project-session-icon-btn" style={s.backBtn} onClick={onBack} title="返回项目页">
+      <div className="ai-project-session-header">
+        <button className="ai-project-session-icon-btn" onClick={onBack} title="返回项目页">
           <ChevronLeft size={15} strokeWidth={2} />
         </button>
         <ProjectAvatar name={project.name} size={22} />
-        <span className="ai-project-session-title" style={s.panelProjectName}>{project.name}</span>
-        <button className="ai-project-session-icon-btn" style={s.backBtn} onClick={onCollapse} title="折叠会话列表">
+        <span className="ai-project-session-title">{project.name}</span>
+        <button className="ai-project-session-icon-btn" onClick={onCollapse} title="折叠会话列表">
           <PanelLeftClose size={15} strokeWidth={2} />
         </button>
       </div>
@@ -252,10 +282,13 @@ export function SessionPanel({
       <BranchBar projectPath={project.path} />
 
       {/* Search */}
-      <div className="ai-field ai-project-session-search" style={s.panelSearchWrap}>
-        <Search size={13} strokeWidth={2} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+      <div className="ai-field ai-project-session-search">
+        {searching ? (
+          <LoaderCircle size={13} className="spin" color="var(--text-muted)" />
+        ) : (
+          <Search size={13} strokeWidth={2} color="var(--text-muted)" />
+        )}
         <input
-          style={s.panelSearchInput}
           placeholder="搜索会话..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -263,76 +296,47 @@ export function SessionPanel({
       </div>
 
       {/* New Session row */}
-      <div className="ai-project-session-actions" style={s.taskActionsRow}>
-        <button
-          className="ai-project-new-session-btn"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            background: "none",
-            border: "none",
-            color: "var(--accent)",
-            fontSize: 13,
-            fontWeight: 500,
-            cursor: "pointer",
-            padding: "4px 8px",
-            borderRadius: 6,
-          }}
-          onClick={handleNewSession}
-        >
+      <div className="ai-project-session-actions">
+        <button className="ai-project-new-session-btn" onClick={handleNewSession}>
           <Plus size={14} strokeWidth={2.5} />
           新建会话
         </button>
       </div>
 
-      <div className="ai-project-session-divider" style={s.taskDivider} />
+      <div className="ai-project-session-divider" />
 
       {/* Session list */}
-      <div className="ai-project-session-list chat-scroll" style={s.taskListScroll}>
-        {searchResults !== null ? (
-          searchResults.length === 0 ? (
-	            <div className="ai-project-session-empty" style={s.taskListEmpty}>没有找到匹配的会话</div>
+      <div className="ai-project-session-list chat-scroll">
+        {hasSearchQuery ? (
+          searching ? (
+            <div className="ai-project-session-empty">正在搜索…</div>
+          ) : searchError ? (
+            <div className="ai-project-session-empty is-error" title={searchError}>
+              搜索失败，请重试
+            </div>
+          ) : searchResults?.length === 0 ? (
+            <div className="ai-project-session-empty">没有找到匹配的会话</div>
           ) : (
-            searchResults.map((r) => {
+            searchResults?.map((r) => {
               const isRunning =
                 dispatcherRunningSessionIds.has(r.sessionId) ||
                 subprocessRunningSessionIds.has(r.sessionId);
               return (
-	                <div
-	                  key={r.sessionId}
-                    className={activeSessionId === r.sessionId ? "ai-project-session-row is-active" : "ai-project-session-row"}
-	                  onClick={() => onSelectSession(r.sessionId)}
-                  style={{
-                    ...s.taskCard,
-                    background: activeSessionId === r.sessionId ? "var(--bg-selected)" : "transparent",
-                  }}
+                <div
+                  key={r.sessionId}
+                  className={activeSessionId === r.sessionId ? "ai-project-session-row is-active" : "ai-project-session-row"}
+                  onClick={() => onSelectSession(r.sessionId)}
                 >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-	                    <div className="ai-project-session-row-title" style={s.taskCardTitle}>{r.sessionTitle}</div>
-                    {r.matchedKeywords.length > 0 && (
-                      <div style={s.matchedKeywordsRow}>
-                        {r.matchedKeywords.slice(0, 4).map((kw) => (
-	                          <span key={kw} className="ai-project-keyword-tag" style={s.matchedKeywordTag}>
-                            {kw}
-                          </span>
-                        ))}
-                        {r.matchedKeywords.length > 4 && (
-	                          <span className="ai-project-keyword-tag" style={{ ...s.matchedKeywordTag, opacity: 0.6 }}>
-                            +{r.matchedKeywords.length - 4}
-                          </span>
-                        )}
-                      </div>
-                    )}
-	                    <div className="ai-project-session-row-sub" style={s.taskCardSub}>{formatTime(r.updatedAt)}</div>
+                  <div className="ai-project-session-row-main">
+                    <div className="ai-project-session-row-title">{r.sessionTitle}</div>
+                    <div className="ai-project-session-row-sub">{formatTime(r.updatedAt)}</div>
                   </div>
-                  <div style={s.taskCardActions}>
+                  <div className="ai-project-session-actions-inline">
                     {isRunning && (
-                      <LoaderCircle size={13} className="spin" style={s.sessionRunningIcon} />
+                      <LoaderCircle size={13} className="spin ai-project-session-running" />
                     )}
-	                    <button
-                        className="ai-project-session-delete"
-	                      style={s.taskDeleteBtn}
+                    <button
+                      className="ai-project-session-delete"
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDeleteSession(r.sessionId);
@@ -348,33 +352,28 @@ export function SessionPanel({
           )
         ) : (
           <>
-	            {filtered.length === 0 && <div className="ai-project-session-empty" style={s.taskListEmpty}>没有找到会话</div>}
-            {filtered.map((session) => {
+            {sessions.length === 0 && <div className="ai-project-session-empty">没有找到会话</div>}
+            {sessions.map((session) => {
               const isRunning =
                 Boolean(session.isRunning) ||
                 dispatcherRunningSessionIds.has(session.id) ||
                 subprocessRunningSessionIds.has(session.id);
               return (
-	                <div
-	                  key={session.id}
-                    className={activeSessionId === session.id ? "ai-project-session-row is-active" : "ai-project-session-row"}
-	                  onClick={() => onSelectSession(session.id)}
-                  style={{
-                    ...s.taskCard,
-                    background: activeSessionId === session.id ? "var(--bg-selected)" : "transparent",
-                  }}
+                <div
+                  key={session.id}
+                  className={activeSessionId === session.id ? "ai-project-session-row is-active" : "ai-project-session-row"}
+                  onClick={() => onSelectSession(session.id)}
                 >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-	                    <div className="ai-project-session-row-title" style={s.taskCardTitle}>{session.title}</div>
-	                    <div className="ai-project-session-row-sub" style={s.taskCardSub}>{formatTime(session.updatedAt)}</div>
+                  <div className="ai-project-session-row-main">
+                    <div className="ai-project-session-row-title">{session.title}</div>
+                    <div className="ai-project-session-row-sub">{formatTime(session.updatedAt)}</div>
                   </div>
-                  <div style={s.taskCardActions}>
+                  <div className="ai-project-session-actions-inline">
                     {isRunning && (
-                      <LoaderCircle size={13} className="spin" style={s.sessionRunningIcon} />
+                      <LoaderCircle size={13} className="spin ai-project-session-running" />
                     )}
-	                    <button
-                        className="ai-project-session-delete"
-	                      style={s.taskDeleteBtn}
+                    <button
+                      className="ai-project-session-delete"
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDeleteSession(session.id);
@@ -394,13 +393,8 @@ export function SessionPanel({
         )}
       </div>
 
-      <div className="ai-project-session-footer" style={s.taskPanelFooter}>
+      <div className="ai-project-session-footer">
         <SidebarFooterActions
-          isDark={isDark}
-          themeMode={themeMode}
-          systemPrefersDark={systemPrefersDark}
-          onThemeModeChange={onThemeModeChange}
-          onToggleTheme={onToggleTheme}
           projectId={project.id}
           projectPath={project.path}
         />

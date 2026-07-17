@@ -16,6 +16,33 @@ export type LiveSessionUpdater = (
   updater: (state: DispatcherLiveSessionState) => DispatcherLiveSessionState,
 ) => void;
 
+/**
+ * Read-only bridge: subscribes to the dispatcherSessionStore singleton and
+ * exposes the live state for a session id (or null when no session/state).
+ * Used by the chat shell; the read/write variant below is used by the adapter.
+ */
+export function useLiveSessionStateReadonly(
+  sessionId: string | null,
+): DispatcherLiveSessionState | null {
+  const [state, setState] = useState<DispatcherLiveSessionState | null>(null);
+
+  useEffect(() => {
+    if (!sessionId) {
+      setState(null);
+      return;
+    }
+    const unsubscribe = subscribeDispatcherLiveSession(sessionId, (next) => {
+      setState(next);
+    });
+    return () => {
+      unsubscribe();
+      setState(null);
+    };
+  }, [sessionId]);
+
+  return state;
+}
+
 export interface UseLiveSessionStateResult {
   liveState: DispatcherLiveSessionState;
   updateLiveSessionState: LiveSessionUpdater;

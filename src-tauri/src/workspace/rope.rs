@@ -453,16 +453,6 @@ async fn rope_save_impl(
 }
 
 #[tauri::command]
-pub fn rope_is_dirty(state: tauri::State<'_, RopeManager>, session_id: String) -> bool {
-    state
-        .sessions
-        .lock()
-        .get(&session_id)
-        .map(|session| session.dirty)
-        .unwrap_or(false)
-}
-
-#[tauri::command]
 pub fn rope_close(state: tauri::State<'_, RopeManager>, session_id: String) {
     state.sessions.lock().remove(&session_id);
 }

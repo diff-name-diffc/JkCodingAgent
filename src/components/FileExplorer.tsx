@@ -30,7 +30,6 @@ export function FileExplorer({
   onFileRename,
   onFileDelete,
   openFilePaths = [],
-  isDark: _isDark,
   active = true,
   width = 240,
 }: {
@@ -40,7 +39,6 @@ export function FileExplorer({
   onFileRename?: (currentPath: string, nextPath: string) => void;
   onFileDelete?: (deletedPath: string) => void;
   openFilePaths?: string[];
-  isDark: boolean;
   active?: boolean;
   width?: number;
 }) {

@@ -80,12 +80,17 @@ fn read_session_lines_since(
     offset: &mut u64,
     partial: &mut String,
 ) -> Result<Vec<String>, std::io::Error> {
+    const MAX_CHUNK_BYTES: usize = 1024 * 1024; // 1 MiB per poll — bounds memory for large appends.
     let mut file = File::open(session_path)?;
     file.seek(SeekFrom::Start(*offset))?;
 
-    let mut chunk = String::new();
-    file.read_to_string(&mut chunk)?;
-    *offset += chunk.len() as u64;
+    // Bounded read: take at most MAX_CHUNK_BYTES so a single poll never loads
+    // the entire remainder of a multi-hundred-MB session file into memory.
+    let mut chunk = vec![0u8; MAX_CHUNK_BYTES];
+    let n = file.read(&mut chunk)?;
+    chunk.truncate(n);
+    let chunk = String::from_utf8(chunk).unwrap_or_default();
+    *offset += n as u64;
 
     if chunk.is_empty() {
         return Ok(Vec::new());
@@ -697,32 +702,37 @@ pub(crate) enum SessionContent {
 
 #[tauri::command]
 pub async fn read_session_messages(session_path: String) -> Result<Vec<SessionMessage>, String> {
-    use tokio::io::AsyncBufReadExt;
+    // Stream-read the JSONL line-by-line inside spawn_blocking so that neither
+    // file I/O nor JSON parsing blocks the Tokio async runtime. Lines are capped
+    // at MAX_LINES to bound memory for very large session files (hundreds of MB).
+    tokio::task::spawn_blocking(move || -> Result<Vec<SessionMessage>, String> {
+        use std::io::BufRead;
 
-    let file = tokio::fs::File::open(&session_path)
-        .await
-        .map_err(|e| e.to_string())?;
-    let reader = tokio::io::BufReader::new(file);
-    let mut lines_reader = reader.lines();
-    let mut owned_lines: Vec<String> = Vec::new();
-    const MAX_LINES: usize = 50000;
+        const MAX_LINES: usize = 50000;
+        let file = File::open(&session_path).map_err(|e| e.to_string())?;
+        let reader = BufReader::with_capacity(256 * 1024, file);
+        let mut owned_lines: Vec<String> = Vec::new();
 
-    while let Some(line) = lines_reader.next_line().await.map_err(|e| e.to_string())? {
-        if line.trim().is_empty() {
-            continue;
+        for line in reader.lines() {
+            let line = line.map_err(|e| e.to_string())?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if owned_lines.len() >= MAX_LINES {
+                break;
+            }
+            owned_lines.push(line);
         }
-        if owned_lines.len() >= MAX_LINES {
-            break;
-        }
-        owned_lines.push(line);
-    }
 
-    let line_refs: Vec<&str> = owned_lines.iter().map(|s| s.as_str()).collect();
-    if is_codex_format(&line_refs) {
-        Ok(parse_codex_session(&line_refs))
-    } else {
-        Ok(parse_claude_session(&line_refs))
-    }
+        let line_refs: Vec<&str> = owned_lines.iter().map(|s| s.as_str()).collect();
+        if is_codex_format(&line_refs) {
+            Ok(parse_codex_session(&line_refs))
+        } else {
+            Ok(parse_claude_session(&line_refs))
+        }
+    })
+    .await
+    .map_err(|e| format!("读取会话消息失败：{e}"))?
 }
 
 fn is_codex_format(lines: &[&str]) -> bool {

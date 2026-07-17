@@ -16,8 +16,10 @@ import {
   Plus,
   Search,
   Settings,
+  Trash2,
 } from "lucide-react";
 import type { ChatCategory, ChatSession } from "../../types";
+import { useChatCategorySessionsQuery } from "../../hooks/use-chat-queries";
 import { useUIStore } from "../../stores/ui-store";
 import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
@@ -48,7 +50,9 @@ export interface SidebarProps {
   categories?: ChatCategory[];
   activeSessionId: string | null;
   onActiveSessionChange: (id: string) => void;
-  onNewConversation: () => void;
+  /** 在指定分类下新建会话。categoryId 为该分类的 id。 */
+  onNewSessionInCategory?: (categoryId: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
   searchValue: string;
   onSearchChange: (value: string) => void;
   onOpenSettings: () => void;
@@ -56,9 +60,10 @@ export interface SidebarProps {
   onRenameCategory?: (categoryId: string, name: string) => void;
   onDeleteCategory?: (categoryId: string) => void;
   onMoveSessionToCategory?: (sessionId: string, categoryId: string) => void;
-  /** Footer slot (theme toggle, usage, user). */
+  /** Footer slot (usage, settings). */
   footer?: React.ReactNode;
   loading?: boolean;
+  error?: string;
   searchActive?: boolean;
 }
 
@@ -117,8 +122,8 @@ function saveExpandedCategories(ids: Set<string>) {
 /**
  * Collapsible conversation sidebar for the refactored Chat surface.
  *
- * Pure presentational. Data is supplied by the parent (which wires the
- * existing Tauri invokes via TanStack Query — see use-chat-queries.ts).
+ * Category pages are loaded lazily on expansion and advanced independently
+ * when that category's bottom sentinel enters the viewport.
  * Collapses to a 60px icon rail; the wide state shows search + a scrollable
  * conversation list with a clear selected-state.
  */
@@ -127,7 +132,8 @@ export function Sidebar({
   categories = [],
   activeSessionId,
   onActiveSessionChange,
-  onNewConversation,
+  onNewSessionInCategory,
+  onDeleteSession,
   searchValue,
   onSearchChange,
   onOpenSettings,
@@ -137,6 +143,7 @@ export function Sidebar({
   onMoveSessionToCategory,
   footer,
   loading,
+  error,
   searchActive = false,
 }: SidebarProps) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
@@ -183,7 +190,14 @@ export function Sidebar({
       });
     }
 
-    return groups.filter((group) => group.total > 0 || group.sessions.length > 0);
+    // 已知分类始终展示（即使无会话，也需显示 + 按钮以便新建）；
+    // 未分类分组仅在有会话时展示（它没有对应实体分类，无法在其下新建）。
+    return groups.filter(
+      (group) =>
+        group.id !== UNCATEGORIZED_CATEGORY
+          ? knownCategoryIds.has(group.id)
+          : group.sessions.length > 0,
+    );
   }, [categories, sessions]);
 
   React.useEffect(() => {
@@ -231,12 +245,12 @@ export function Sidebar({
   );
 
   if (collapsed) {
-    return <CollapsedRail onNewConversation={onNewConversation} onExpand={toggleSidebar} onOpenSettings={onOpenSettings} />;
+    return <CollapsedRail onExpand={toggleSidebar} onOpenSettings={onOpenSettings} />;
   }
 
   return (
     <div className="ai-sidebar-panel flex h-full w-full flex-col">
-      {/* Header: collapse + new chat */}
+      {/* Header: collapse + new category（新建会话改到分类行内，可指定分类） */}
       <div className="ai-sidebar-command-row flex items-center gap-2 px-3 py-3">
         <Button
           variant="ghost"
@@ -246,21 +260,14 @@ export function Sidebar({
         >
           <PanelLeftClose className="h-4 w-4" />
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="ai-new-chat-button flex-1 justify-start gap-2"
-          onClick={onNewConversation}
-        >
-          <MessageSquarePlus className="h-4 w-4" />
-          新建对话
-        </Button>
+        <div className="flex-1" />
         {onCreateCategory && (
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon-sm"
+                className="ai-sidebar-new-category"
                 aria-label="新建分类"
                 onClick={() => setCategoryDialog({ mode: "create", category: null })}
               >
@@ -301,7 +308,12 @@ export function Sidebar({
               ))}
             </ul>
           )}
-          {!loading && sessions.length === 0 && (
+          {!loading && error && (
+            <p className="ai-session-search-error px-2 py-8 text-center text-xs" title={error}>
+              搜索失败，请重试
+            </p>
+          )}
+          {!loading && !error && sessions.length === 0 && (
             <p className="px-2 py-8 text-center text-xs text-muted-foreground">
               {searchValue ? "没有匹配的会话" : "暂无会话"}
             </p>
@@ -320,6 +332,7 @@ export function Sidebar({
                   onSelect={() => onActiveSessionChange(session.id)}
                   categories={categories}
                   onMoveSessionToCategory={onMoveSessionToCategory}
+                  onDeleteSession={onDeleteSession}
                 />
               ))}
             </ul>
@@ -336,11 +349,15 @@ export function Sidebar({
                     icon={group.icon}
                     total={group.total}
                     expanded={expanded}
-                    sessions={group.sessions}
                     activeSessionId={activeSessionId}
                     onToggle={() => toggleCategory(group.id)}
                     onSelectSession={onActiveSessionChange}
                     categories={categories}
+                    onNewSession={
+                      group.id !== UNCATEGORIZED_CATEGORY && onNewSessionInCategory
+                        ? () => onNewSessionInCategory(group.id)
+                        : undefined
+                    }
                     onRenameCategory={
                       onRenameCategory
                         ? (category) => setCategoryDialog({ mode: "rename", category })
@@ -348,6 +365,7 @@ export function Sidebar({
                     }
                     onDeleteCategory={onDeleteCategory}
                     onMoveSessionToCategory={onMoveSessionToCategory}
+                    onDeleteSession={onDeleteSession}
                   />
                 );
               })}
@@ -382,6 +400,7 @@ function ConversationItem({
   categoryLabel,
   categories,
   onMoveSessionToCategory,
+  onDeleteSession,
   onSelect,
 }: {
   session: ChatSession;
@@ -389,6 +408,7 @@ function ConversationItem({
   categoryLabel?: string;
   categories?: ChatCategory[];
   onMoveSessionToCategory?: (sessionId: string, categoryId: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
   onSelect: () => void;
 }) {
   const trimmedTitle = session.title.trim() || "新对话";
@@ -423,30 +443,48 @@ function ConversationItem({
           </span>
         )}
       </button>
-      {categories && onMoveSessionToCategory && categories.length > 0 && (
+      {((categories && onMoveSessionToCategory && categories.length > 0) || onDeleteSession) && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              aria-label="移动会话分类"
+              aria-label={`打开「${trimmedTitle}」会话操作`}
               className="ai-session-menu-trigger"
             >
               <MoreHorizontal className="h-3.5 w-3.5" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent className="ai-context-menu" align="end">
-            <DropdownMenuLabel>移动到分类</DropdownMenuLabel>
-            <DropdownMenuSeparator className="ai-context-menu-separator" />
-            {categories.map((category) => (
-              <DropdownMenuItem
-                key={category.id}
-                className="ai-context-menu-item"
-                disabled={session.category === category.id}
-                onSelect={() => onMoveSessionToCategory(session.id, category.id)}
-              >
-                {category.name}
-              </DropdownMenuItem>
-            ))}
+            {categories && onMoveSessionToCategory && categories.length > 0 && (
+              <>
+                <DropdownMenuLabel>移动到分类</DropdownMenuLabel>
+                <DropdownMenuSeparator className="ai-context-menu-separator" />
+                {categories.map((category) => (
+                  <DropdownMenuItem
+                    key={category.id}
+                    className="ai-context-menu-item"
+                    disabled={session.category === category.id}
+                    onSelect={() => onMoveSessionToCategory(session.id, category.id)}
+                  >
+                    {category.name}
+                  </DropdownMenuItem>
+                ))}
+              </>
+            )}
+            {onDeleteSession && (
+              <>
+                {categories && onMoveSessionToCategory && categories.length > 0 && (
+                  <DropdownMenuSeparator className="ai-context-menu-separator" />
+                )}
+                <DropdownMenuItem
+                  className="ai-context-menu-item ai-context-menu-item-danger"
+                  onSelect={() => onDeleteSession(session.id)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  删除会话
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       )}
@@ -461,14 +499,15 @@ function CategoryGroup({
   icon,
   total,
   expanded,
-  sessions,
   activeSessionId,
   onToggle,
   onSelectSession,
   categories,
+  onNewSession,
   onRenameCategory,
   onDeleteCategory,
   onMoveSessionToCategory,
+  onDeleteSession,
 }: {
   category: ChatCategory | null;
   label: string;
@@ -476,20 +515,71 @@ function CategoryGroup({
   icon: string;
   total: number;
   expanded: boolean;
-  sessions: ChatSession[];
   activeSessionId: string | null;
   onToggle: () => void;
   onSelectSession: (id: string) => void;
   categories: ChatCategory[];
+  onNewSession?: () => void;
   onRenameCategory?: (category: ChatCategory) => void;
   onDeleteCategory?: (categoryId: string) => void;
   onMoveSessionToCategory?: (sessionId: string, categoryId: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
 }) {
+  const categorySessionsQuery = useChatCategorySessionsQuery(
+    category?.id ?? "",
+    expanded,
+  );
+  const sessions = React.useMemo(() => {
+    const uniqueSessions = new Map<string, ChatSession>();
+    for (const page of categorySessionsQuery.data?.pages ?? []) {
+      for (const session of page.items) {
+        uniqueSessions.set(session.id, session);
+      }
+    }
+    return [...uniqueSessions.values()];
+  }, [categorySessionsQuery.data?.pages]);
+  const displayedTotal = categorySessionsQuery.data?.pages[0]?.total ?? total;
+  const loadMoreRef = React.useRef<HTMLLIElement | null>(null);
+  const {
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isFetchNextPageError,
+  } = categorySessionsQuery;
+
+  React.useEffect(() => {
+    const target = loadMoreRef.current;
+    if (
+      !expanded ||
+      !target ||
+      !hasNextPage ||
+      isFetchingNextPage ||
+      isFetchNextPageError
+    ) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) {
+          void fetchNextPage();
+        }
+      },
+      { rootMargin: "0px 0px 80px 0px" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [expanded, fetchNextPage, hasNextPage, isFetchNextPageError, isFetchingNextPage]);
+
   const Icon = resolveCategoryIcon(icon);
   const header = (
+    <div
+      className="ai-category-header group flex w-full items-center gap-1 rounded-md px-1.5 py-1"
+      data-expanded={expanded || undefined}
+      style={{ "--category-color": color } as React.CSSProperties}
+    >
       <button
         type="button"
-        className="ai-category-header flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left"
+        className="ai-category-toggle flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left"
         onClick={onToggle}
         aria-expanded={expanded}
       >
@@ -498,8 +588,27 @@ function CategoryGroup({
         />
         <Icon className="h-3.5 w-3.5 shrink-0" style={{ color }} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        <span className="ai-category-count">{total}</span>
+        <span className="ai-category-count">{displayedTotal}</span>
       </button>
+      {onNewSession && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={`在「${label}」中新建会话`}
+              className="ai-category-new-session flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors"
+              onClick={(e) => {
+                e.stopPropagation();
+                onNewSession();
+              }}
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">新建会话</TooltipContent>
+        </Tooltip>
+      )}
+    </div>
   );
 
   return (
@@ -518,7 +627,15 @@ function CategoryGroup({
 
       {expanded && (
         <ul className="ai-category-sessions mt-1 space-y-0.5">
-          {sessions.length === 0 ? (
+          {categorySessionsQuery.isLoading ? (
+            <li className="px-7 py-2 text-xs text-muted-foreground">正在加载会话…</li>
+          ) : categorySessionsQuery.isError && sessions.length === 0 ? (
+            <li className="px-7 py-2 text-xs text-destructive">
+              <button type="button" onClick={() => void categorySessionsQuery.refetch()}>
+                加载失败，点击重试
+              </button>
+            </li>
+          ) : sessions.length === 0 ? (
             <li className="px-7 py-2 text-xs text-muted-foreground">暂无会话</li>
           ) : (
             sessions.map((session) => (
@@ -529,8 +646,22 @@ function CategoryGroup({
                 onSelect={() => onSelectSession(session.id)}
                 categories={categories}
                 onMoveSessionToCategory={onMoveSessionToCategory}
+                onDeleteSession={onDeleteSession}
               />
             ))
+          )}
+          {hasNextPage && (
+            <li ref={loadMoreRef} className="px-7 py-2 text-xs text-muted-foreground">
+              {isFetchNextPageError ? (
+                <button type="button" onClick={() => void fetchNextPage()}>
+                  加载下一页失败，点击重试
+                </button>
+              ) : isFetchingNextPage ? (
+                "正在加载更多…"
+              ) : (
+                "继续滚动加载更多"
+              )}
+            </li>
           )}
         </ul>
       )}
@@ -539,11 +670,9 @@ function CategoryGroup({
 }
 
 function CollapsedRail({
-  onNewConversation,
   onExpand,
   onOpenSettings,
 }: {
-  onNewConversation: () => void;
   onExpand: () => void;
   onOpenSettings: () => void;
 }) {
@@ -556,14 +685,6 @@ function CollapsedRail({
           </Button>
         </TooltipTrigger>
         <TooltipContent side="right">展开侧边栏</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon" aria-label="新建对话" onClick={onNewConversation}>
-            <MessageSquarePlus className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="right">新建对话 ⌘N</TooltipContent>
       </Tooltip>
       <div className="flex-1" />
       <Tooltip>

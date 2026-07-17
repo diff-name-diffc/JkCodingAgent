@@ -4,24 +4,22 @@ import type {
   DispatcherModelConfig,
   DispatcherToolArtifactRef,
   PythonCodeRunRecord,
-  ThemeMode,
   ChatSession,
   ChatCategory,
 } from "../../types";
 import { useUIStore } from "../../stores/ui-store";
 import { useChatModelsQuery, useSetActiveChatModel } from "../../hooks/use-chat-queries";
-import { useLiveSessionState } from "../../hooks/use-live-session-state";
+import { useLiveSessionStateReadonly } from "../dispatcher-chat/useLiveSessionState";
 import { useChatShortcuts } from "../../hooks/use-chat-shortcuts";
 import { AppLayout } from "../layout/app-layout";
 import { Sidebar } from "../layout/sidebar";
 import { MessageList } from "./message-list";
 import { PromptInput, type ComposerMode } from "./prompt-input";
-import { ThemeToggle } from "./theme-toggle";
 import { ArtifactPanel } from "../artifact/artifact-panel";
 import { DispatchApprovalPanel } from "./dispatch-approval-panel";
 import type { PendingDispatchApproval } from "../dispatcherSessionStore";
 import { CommandPalette } from "./command-palette";
-import type { ToolActivityItem } from "../ToolActivityBubble";
+import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import {
   extractAgentIdsFromToolInput,
   useSubAgentSessions,
@@ -55,9 +53,13 @@ export interface ChatShellProps {
   sessions: ChatSession[];
   categories?: ChatCategory[];
   sessionsLoading?: boolean;
+  sessionsError?: string;
   searchActive?: boolean;
   onActiveSessionChange: (id: string) => void;
   onNewConversation: () => void;
+  /** 在指定分类下新建会话（侧边栏分类行内的 + 按钮）。 */
+  onNewSessionInCategory?: (categoryId: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
   searchValue: string;
   onSearchChange: (value: string) => void;
   onOpenSettings: () => void;
@@ -77,11 +79,6 @@ export interface ChatShellProps {
   onApproveDispatch?: (dispatchId: string, taskPrompt: string) => void;
   onRejectDispatch?: (dispatchId: string) => void;
 
-  /** Theme. The actual html.dark application stays in App.tsx. */
-  theme: ThemeMode;
-  isDark: boolean;
-  onThemeChange: (mode: ThemeMode) => void;
-
   pythonRunRecords?: Record<string, PythonCodeRunRecord>;
   onRunPython?: (target: {
     messageId: string;
@@ -99,9 +96,12 @@ export function ChatShell({
   sessions,
   categories = [],
   sessionsLoading,
+  sessionsError,
   searchActive = false,
   onActiveSessionChange,
   onNewConversation,
+  onNewSessionInCategory,
+  onDeleteSession,
   searchValue,
   onSearchChange,
   onOpenSettings,
@@ -118,9 +118,6 @@ export function ChatShell({
   onRegenerate,
   onApproveDispatch,
   onRejectDispatch,
-  theme,
-  isDark,
-  onThemeChange,
   pythonRunRecords,
   onRunPython,
   embedded = false,
@@ -150,11 +147,17 @@ export function ChatShell({
 
   const modelsQuery = useChatModelsQuery();
   const selectModel = useSetActiveChatModel();
-  const liveState = useLiveSessionState(sessionId);
+  const liveState = useLiveSessionStateReadonly(sessionId);
   const subAgentSessions = useSubAgentSessions(sessionId ?? "");
   const selectedSubAgent = selectedSubAgentId ? subAgentSessions[selectedSubAgentId] ?? null : null;
   const currentPendingDispatch: PendingDispatchApproval | null =
     liveState?.pendingDispatches[0] ?? null;
+
+  // 会话关键词展示在聊天界面顶部（替代旧版会话列表内的关键词行）。
+  const activeSessionKeywords = React.useMemo(() => {
+    if (!sessionId) return [] as string[];
+    return sessions.find((session) => session.id === sessionId)?.keywords ?? [];
+  }, [sessions, sessionId]);
   const focusPrompt = React.useCallback(() => {
     const textarea = document.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="消息输入框"]',
@@ -209,7 +212,8 @@ export function ChatShell({
           categories={categories}
           activeSessionId={sessionId}
           onActiveSessionChange={onActiveSessionChange}
-          onNewConversation={onNewConversation}
+          onNewSessionInCategory={onNewSessionInCategory}
+          onDeleteSession={onDeleteSession}
           searchValue={searchValue}
           onSearchChange={onSearchChange}
           onOpenSettings={onOpenSettings}
@@ -218,14 +222,8 @@ export function ChatShell({
           onDeleteCategory={onDeleteCategory}
           onMoveSessionToCategory={onMoveSessionToCategory}
           loading={sessionsLoading}
+          error={sessionsError}
           searchActive={searchActive}
-          footer={
-            <ThemeToggle
-              theme={theme}
-              isDark={isDark}
-              onChange={onThemeChange}
-            />
-          }
         />
         )
       }
@@ -250,6 +248,15 @@ export function ChatShell({
         />
       }
     >
+      {activeSessionKeywords.length > 0 && (
+        <div className="ai-chat-keywords" aria-label="会话关键词">
+          {activeSessionKeywords.map((keyword) => (
+            <span key={keyword} className="ai-chat-keyword-pill">
+              {keyword}
+            </span>
+          ))}
+        </div>
+      )}
       <MessageList
         messages={messages}
         liveState={liveState}

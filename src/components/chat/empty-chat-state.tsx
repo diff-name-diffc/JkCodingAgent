@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
-import { MessageSquare, Sparkles } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
 import { cn } from "../../lib/cn";
-import { Button } from "../ui/button";
+import appLogo from "../../assets/app-logo.png";
 
 /**
  * Empty state for a chat surface with no messages yet.
@@ -29,21 +29,24 @@ export function EmptyChatState({
   className,
 }: EmptyChatStateProps) {
   return (
-    <div className={cn("ai-empty-state flex h-full flex-col items-center justify-center px-6 py-12", className)}>
+    <div
+      className={cn(
+        "ai-empty-state flex h-full flex-col items-center justify-center px-6 py-12",
+        className,
+      )}
+    >
       <motion.div
         initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.25, ease: [0.2, 0.8, 0.2, 1] }}
         className="ai-empty-core flex flex-col items-center text-center"
       >
-        <div className="ai-orb mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/12 text-primary">
-          <Sparkles className="h-7 w-7" />
-        </div>
+        <img src={appLogo} alt="Aha" className="ai-empty-logo mb-5 h-14 w-14 rounded-2xl" />
         <h2 className="ai-empty-title text-xl font-semibold tracking-tight text-foreground">
-          启动智能协作舱
+          有什么可以帮你的？
         </h2>
-        <p className="ai-empty-copy mt-1.5 max-w-sm text-sm text-muted-foreground">
-          输入任务、粘贴代码、拆解方案；让模型在同一个控制台里推理、执行与回放。
+        <p className="ai-empty-copy mt-2 max-w-sm text-sm text-muted-foreground">
+          输入任务、粘贴代码、拆解方案 —— 模型会在同一个工作台里推理、执行与回放。
         </p>
       </motion.div>
 
@@ -54,7 +57,7 @@ export function EmptyChatState({
           hidden: {},
           show: { transition: { staggerChildren: 0.04, delayChildren: 0.1 } },
         }}
-        className="ai-prompt-grid mt-8 grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2"
+        className="ai-prompt-grid mt-9 grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2"
       >
         {prompts.map((prompt) => (
           <motion.button
@@ -64,19 +67,17 @@ export function EmptyChatState({
               show: { opacity: 1, y: 0 },
             }}
             onClick={() => onPickPrompt(prompt)}
-            className="ai-prompt-card group flex items-start gap-3 rounded-lg border border-border bg-card p-3 text-left text-sm text-foreground transition-colors hover:border-primary/40 hover:bg-secondary/60"
+            className="ai-prompt-card group flex items-start gap-2.5 text-left text-sm"
           >
-            <MessageSquare className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground group-hover:text-primary" />
             <span className="min-w-0 flex-1">{prompt}</span>
+            <ArrowUpRight className="ai-prompt-card-arrow mt-0.5 h-4 w-4 shrink-0" />
           </motion.button>
         ))}
       </motion.div>
 
-      <div className="ai-empty-hint mt-8 flex items-center gap-2 text-xs text-muted-foreground">
-        <Button variant="ghost" size="sm" className="pointer-events-none text-xs">
-          Enter 发送 · Shift+Enter 换行
-        </Button>
-      </div>
+      <p className="ai-empty-hint mt-9 text-xs text-muted-foreground">
+        Enter 发送 · Shift+Enter 换行
+      </p>
     </div>
   );
 }

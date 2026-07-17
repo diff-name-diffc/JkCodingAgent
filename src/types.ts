@@ -7,7 +7,6 @@ export interface Project {
 }
 
 export type AgentType = "claude" | "codex";
-export type ThemeMode = "system" | "dark" | "light";
 export type PermissionMode = "ask" | "auto_edit" | "full_access";
 export type TaskStatus =
   | "todo"
@@ -554,6 +553,7 @@ export interface DispatcherSession {
   category: string;
   createdAt: string;
   updatedAt: string;
+  keywords?: string[];
 }
 
 export interface ChatSession {
@@ -562,6 +562,7 @@ export interface ChatSession {
   category: string;
   createdAt: string;
   updatedAt: string;
+  keywords: string[];
   isRunning?: boolean;
 }
 
@@ -571,6 +572,7 @@ export interface ProjectSession {
   title: string;
   createdAt: string;
   updatedAt: string;
+  keywords: string[];
   isRunning?: boolean;
 }
 
@@ -604,6 +606,7 @@ export interface SessionSearchResult {
   sessionTitle: string;
   sessionKind: "chat" | "project";
   category: string;
+  keywords: string[];
   matchedKeywords: string[];
   relevanceScore: number;
   updatedAt: string;

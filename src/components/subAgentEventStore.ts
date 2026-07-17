@@ -284,13 +284,6 @@ export function useSubAgentSessions(sessionId: string): SessionMap {
   return snapshot;
 }
 
-export function useSubAgentProgressMessages(sessionId: string): SubAgentProgressMessage[] {
-  const sessions = useSubAgentSessions(sessionId);
-  return Object.values(sessions)
-    .flatMap((session) => session.progressMessages)
-    .sort((left, right) => left.timestamp - right.timestamp);
-}
-
 export function extractAgentIdsFromToolInput(input: string | undefined): string | null {
   if (!input) return null;
   try {

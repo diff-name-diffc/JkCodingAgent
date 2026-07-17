@@ -1,6 +1,5 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  darkMode: ["class", "html.dark"],
   content: [
     "./src/**/*.{ts,tsx}",
     "./index.html",
@@ -11,8 +10,7 @@ export default {
   corePlugins: { preflight: false },
   theme: {
     // Map shadcn-style tokens onto the app's existing CSS variables in
-    // App.css so new Tailwind components inherit the established palette
-    // and automatically follow light/dark mode.
+    // App.css so new Tailwind components inherit the established palette.
     extend: {
       colors: {
         background: "var(--bg-card)",
@@ -30,7 +28,7 @@ export default {
           foreground: "var(--text-primary)",
         },
         border: "var(--border-medium)",
-        input: "var(--border-medium)",
+        input: "var(--bg-input)",
         ring: "var(--accent)",
         primary: {
           DEFAULT: "var(--accent)",
@@ -60,12 +58,14 @@ export default {
         success: "var(--success)",
         warning: "var(--warning)",
         danger: "var(--danger)",
+        info: "var(--info)",
       },
       borderRadius: {
         sm: "var(--radius-sm)",
         md: "var(--radius-md)",
         lg: "var(--radius-lg)",
-        xl: "calc(var(--radius-lg) + 4px)",
+        xl: "var(--radius-xl)",
+        full: "var(--radius-full)",
       },
       fontFamily: {
         sans: "var(--font-ui)",
@@ -74,8 +74,11 @@ export default {
       boxShadow: {
         soft: "var(--shadow-sm)",
         medium: "var(--shadow-md)",
+        large: "var(--shadow-lg)",
         chat: "var(--chat-shadow)",
         "chat-soft": "var(--chat-shadow-soft)",
+        focus: "var(--shadow-focus)",
+        "accent-glow": "var(--shadow-accent-glow)",
       },
       keyframes: {
         "fade-in": {

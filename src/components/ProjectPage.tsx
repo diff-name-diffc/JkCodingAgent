@@ -7,7 +7,6 @@ import type {
   AgentType,
   PermissionMode,
   ProjectMcpStatus,
-  ThemeMode,
   SubProcess,
   DispatchFeedbackState,
   TaskStatus,
@@ -30,7 +29,6 @@ import {
   ProjectWorkbench,
   ProjectWorkspaceLayout,
 } from "./project/ProjectWorkspaceLayout";
-import s from "../styles";
 
 const FileExplorer = lazy(() =>
   import("./FileExplorer").then((module) => ({ default: module.FileExplorer })),
@@ -158,11 +156,6 @@ export function ProjectPage({
   onBack,
   onSwitchProject,
   onOpen,
-  isDark,
-  themeMode,
-  systemPrefersDark,
-  onThemeModeChange,
-  onToggleTheme,
 }: {
   project: Project;
   visible?: boolean;
@@ -193,11 +186,6 @@ export function ProjectPage({
   onBack: () => void;
   onSwitchProject: (project: Project) => void;
   onOpen: () => void;
-  isDark: boolean;
-  themeMode: ThemeMode;
-  systemPrefersDark: boolean;
-  onThemeModeChange: (mode: ThemeMode) => void;
-  onToggleTheme: () => void;
 }) {
   const {
     rightPanel,
@@ -882,11 +870,6 @@ export function ProjectPage({
       onSelectSession={handleSelectSession}
       onBack={onBack}
       onCollapse={() => setSessionSidebarCollapsed(true)}
-      isDark={isDark}
-      themeMode={themeMode}
-      systemPrefersDark={systemPrefersDark}
-      onThemeModeChange={onThemeModeChange}
-      onToggleTheme={onToggleTheme}
     />
   ) : undefined;
 
@@ -894,12 +877,12 @@ export function ProjectPage({
     <ErrorBoundary
       label="会话区"
       fallback={(error, reset) => (
-        <div style={s.errorBoundaryWrap}>
-          <div style={s.errorBoundaryIcon}>⚠</div>
-          <div style={s.errorBoundaryTitle}>会话区渲染出错</div>
-          <div style={s.errorBoundaryMessage}>{error.message || "未知错误"}</div>
-          <div style={s.errorBoundaryActions}>
-            <button onClick={reset} style={s.errorBoundaryBtn}>
+        <div className="ai-error-boundary">
+          <div className="ai-error-boundary-icon">⚠</div>
+          <div className="ai-error-boundary-title">会话区渲染出错</div>
+          <div className="ai-error-boundary-message">{error.message || "未知错误"}</div>
+          <div className="ai-error-boundary-actions">
+            <button onClick={reset} className="ai-error-boundary-btn">
               重试
             </button>
           </div>
@@ -918,9 +901,6 @@ export function ProjectPage({
               mcpStatus={mcpStatus}
               mcpChecking={mcpChecking}
               subProcesses={allSubProcesses}
-              theme={themeMode}
-              isDark={isDark}
-              onThemeChange={onThemeModeChange}
               onDispatchApproved={handleDispatchApproved}
               onDispatchRejected={handleDispatchRejected}
               onDispatchContinue={handleDispatchContinue}
@@ -954,12 +934,12 @@ export function ProjectPage({
     <ErrorBoundary
       label="编辑区"
       fallback={(error, reset) => (
-        <div style={s.errorBoundaryWrap}>
-          <div style={s.errorBoundaryIcon}>⚠</div>
-          <div style={s.errorBoundaryTitle}>编辑区渲染出错</div>
-          <div style={s.errorBoundaryMessage}>{error.message || "未知错误"}</div>
-          <div style={s.errorBoundaryActions}>
-            <button onClick={reset} style={s.errorBoundaryBtn}>
+        <div className="ai-error-boundary">
+          <div className="ai-error-boundary-icon">⚠</div>
+          <div className="ai-error-boundary-title">编辑区渲染出错</div>
+          <div className="ai-error-boundary-message">{error.message || "未知错误"}</div>
+          <div className="ai-error-boundary-actions">
+            <button onClick={reset} className="ai-error-boundary-btn">
               重试
             </button>
             <button
@@ -967,7 +947,7 @@ export function ProjectPage({
                 clearFileAndDiff();
                 reset();
               }}
-              style={s.errorBoundaryBtn}
+              className="ai-error-boundary-btn"
             >
               关闭编辑区
             </button>
@@ -1016,7 +996,6 @@ export function ProjectPage({
             onCloseTabsToRight={handleCloseTabsToRight}
             onCloseAllTabs={handleCloseAllFileTabs}
             onHide={hideEditorWorkbench}
-            isDark={isDark}
           />
         )}
       </Suspense>
@@ -1048,11 +1027,11 @@ export function ProjectPage({
         <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>
           当前没有打开的会话面板或文件预览
         </div>
-        <button type="button" style={s.errorBoundaryBtn} onClick={() => setShowSessionWorkbench(true)}>
+        <button type="button" className="ai-error-boundary-btn" onClick={() => setShowSessionWorkbench(true)}>
           打开会话面板
         </button>
         {hasEditorWorkbenchContent && !showEditorPane && (
-          <button type="button" style={s.errorBoundaryBtn} onClick={showEditorWorkbench}>
+          <button type="button" className="ai-error-boundary-btn" onClick={showEditorWorkbench}>
             恢复文件编辑器
           </button>
         )}
@@ -1090,7 +1069,6 @@ export function ProjectPage({
         onCloseTab={handleCloseSubTab}
         height={subTerminalHeight}
         onResizeStart={handleSubTerminalResizeStart}
-        isDark={isDark}
         onInput={onInput}
         onResize={onResize}
         onRegisterTerminal={onRegisterTerminal}
@@ -1109,7 +1087,6 @@ export function ProjectPage({
         projectId={project.id}
         isActive={visible}
         onClose={() => setShowShellTerminal(false)}
-        isDark={isDark}
         height={terminalHeight}
         onResizeStart={handleTerminalResizeStart}
       />
@@ -1121,7 +1098,13 @@ export function ProjectPage({
       workbench={workbenchNode}
       subProcessTabs={subProcessTabsNode}
       shellTerminal={shellTerminalNode}
-      mainStyle={s.mainContent}
+      mainStyle={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        background: "var(--bg-panel)",
+      }}
     />
   );
 
@@ -1137,7 +1120,6 @@ export function ProjectPage({
               onFileRename={handleFileTreeRename}
               onFileDelete={handleFileTreeDelete}
               openFilePaths={openFiles.map((tab) => tab.path)}
-              isDark={isDark}
               active={visible}
               width={rightPanelWidth}
             />
@@ -1202,10 +1184,6 @@ export function ProjectPage({
       {showDispatcherSettings && (
         <Suspense fallback={null}>
           <AppSettingsDialog
-            isDark={isDark}
-            themeMode={themeMode}
-            systemPrefersDark={systemPrefersDark}
-            onThemeModeChange={onThemeModeChange}
             initialTab="aha"
             projectId={project.id}
             projectPath={project.path}
@@ -1247,7 +1225,7 @@ export function ProjectPage({
   return (
     <ProjectWorkspaceLayout
       visible={visible}
-      rootStyle={s.projectBody}
+      rootStyle={{ flex: 1, display: "flex", overflow: "hidden" }}
       rail={railNode}
       sessionPanel={sessionPanelNode}
       main={mainNode}

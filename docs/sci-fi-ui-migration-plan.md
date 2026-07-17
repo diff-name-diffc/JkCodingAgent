@@ -1,11 +1,11 @@
 # 科幻风 UI 全量改造执行计划
 
-> 状态更新时间：2026-07-07  
+> 状态更新时间：2026-07-10  
 > 目标：把当前只覆盖 Chat V2 的科幻视觉系统扩展到 Home、Project 工作区、文件/Git/终端/设置/分析等全部主要界面，并在迁移过程中保留既有业务逻辑。
 
 ## 1. 结论摘要
 
-当前 UI 改造不是“未开始”，而是“只完成了聊天主链路”。`HomeChatPage`、`ChatPageV2`、`chat/*`、`layout/sidebar.tsx`、`artifact-panel.tsx` 已经进入新视觉体系；但项目工作区、设置、Git、文件查看器、RAG/Aha 配置、分析页、Browser/MCP/SubAgent 等仍大量使用旧的 `src/styles/*` 对象样式和行内 `style={{}}`。
+科幻 UI 全量改造已完成（Phase 0–8）。从最初只覆盖 Chat V2，到 Home、Project 工作区、文件/Git/终端/设置/分析/Browser/MCP/SubAgent 等全部主要界面均已进入新视觉体系：`src/styles/*` 对象样式模块已全部删除，全仓无 `const styles` / `const s` 样式对象块，`@radix-ui/themes` 已移除，剩余行内 `style={{}}` 均为动态/结构值（动态 width/height、计算 grid-template、依赖状态的 opacity/visibility 等）。亮/暗主题 accent 均已统一到科幻青（`#21f4df` / `#0d9488`）家族，浅色主题不再使用品牌绿。
 
 本计划建议用 **8 个 coding 窗口**推进，每个窗口只处理一组高内聚界面，避免大模型在同一轮同时改布局、业务逻辑、旧样式删除而丢失交互。
 
@@ -19,44 +19,39 @@
 - [x] 会话分类展示已恢复到 V2 侧栏，包括分类折叠、计数、未分类、搜索时分类标签
 - [x] ArtifactPanel 已能展示工具产物和 SubAgent 执行轨迹
 - [x] 命令面板 `Command+K` 已接入新 UI
-- [x] Python Run 链路已接入 V2，结果展示仍复用旧 `PythonRunDrawer`
+- [x] Python Run 链路已接入 V2，结果展示 `PythonRunDrawer` 已迁移到 `ai-python-run-*` 科幻视觉
 
-### 2.2 仍明显未迁移的区域
+### 2.2 迁移区域完成情况（初始待迁移清单 → 当前状态）
 
-| 区域 | 代表文件 | 现状 | 风险 |
+> 以下表格记录迁移开始前列出的待迁移区域，现已在 Phase 0–8 全部完成（详见第 5 节）。此表为历史对照，保留以备追溯。
+
+| 区域 | 代表文件 | 当前状态 | scope class |
 |---|---|---|---|
-| Home 外壳 / 项目列表 / 分析入口 | `WelcomePage.tsx`, `AnalyticsDashboard.tsx` | 只有 chat view 外壳局部科幻化，项目/分析仍旧风格 | 中 |
-| Project 工作区框架 | `ProjectPage.tsx`, `ProjectRail.tsx`, `SessionPanel.tsx`, `RightToolbar.tsx` | 仍以 `s.*` 对象样式和行内布局为主 | 高 |
-| 文件浏览与编辑 | `FileExplorer.tsx`, `FileViewer.tsx`, `file-viewer/*`, `LargeFileViewer.tsx` | 旧面板样式、行内样式多，`LargeFileViewer` 超 1000 行 | 高 |
-| Git 面板 | `GitChanges.tsx`, `GitHistory.tsx`, `GitDiffViewer.tsx` | 旧卡片/列表/按钮视觉，行内样式集中 | 高 |
-| 设置弹窗 | `AppSettingsDialog.tsx`, `app-settings/**/*` | 最大债务区，多个文件超 400 行，行内样式极多 | 高 |
-| Aha / RAG / SubAgent 配置 | `AhaAgentPanel.tsx`, `RagKbConfigPanel.tsx`, `SshToolPanel.tsx`, `SubAgent*` | 业务复杂且 UI 密集，必须分步迁移 | 高 |
-| Browser / MCP / SubProcess / Terminal | `BrowserPanel.tsx`, `McpStatusDialog.tsx`, `SubProcessTabs.tsx`, `ShellTerminalPanel.tsx`, `TerminalView.tsx` | 仍是旧工作台视觉 | 中 |
-| 旧分类组件残留 | `ChatCategorySection.tsx`, `ChatSessionCard.tsx`, `ChatNewCategoryDialog.tsx`, `ChatCategoryContextMenu.tsx` | V2 已有新侧栏展示，但分类 CRUD/拖拽尚未新接入 | 中 |
-| 全局 Radix Themes 壳 | `App.tsx`, `main.tsx`, `package.json` | 仍引入 `@radix-ui/themes` 的 `Theme` 和全局 styles | 中 |
+| Home 外壳 / 项目列表 / 分析入口 | `WelcomePage.tsx`, `AnalyticsDashboard.tsx` | ✅ Phase 1 完成 | `ai-home-shell ai-migrated-home` |
+| Project 工作区框架 | `ProjectPage.tsx`, `ProjectRail.tsx`, `SessionPanel.tsx`, `RightToolbar.tsx` | ✅ Phase 3 完成 | `ai-project-shell ai-migrated-project` |
+| 文件浏览与编辑 | `FileExplorer.tsx`, `FileViewer.tsx`, `file-viewer/*`, `LargeFileViewer.tsx` | ✅ Phase 4 完成 | `ai-file-explorer ai-migrated-file-explorer` / `ai-file-viewer ai-migrated-file-viewer` / `ai-large-file-*` |
+| Git 面板 | `GitChanges.tsx`, `GitHistory.tsx`, `GitDiffViewer.tsx` | ✅ Phase 5 完成 | `ai-migrated-git-changes` / `ai-migrated-git-history` / `ai-migrated-git-diff` |
+| 设置弹窗 | `AppSettingsDialog.tsx`, `app-settings/**/*` | ✅ Phase 6 完成 | `ai-settings-shell ai-migrated-settings` |
+| Aha / RAG / SubAgent 配置 | `AhaAgentPanel.tsx`, `RagKbConfigPanel.tsx`, `SshToolPanel.tsx`, `SubAgent*` | ✅ Phase 6 完成 | `ai-migrated-aha-panel` / `ai-migrated-rag-panel` / `ai-migrated-ssh-panel` / `ai-migrated-subagent-panel` |
+| Browser / MCP / SubProcess / Terminal | `BrowserPanel.tsx`, `McpStatusDialog.tsx`, `SubProcessTabs.tsx`, `ShellTerminalPanel.tsx`, `TerminalView.tsx` | ✅ Phase 7 完成 | `ai-migrated-browser-panel` / `ai-migrated-mcp-dialog` / `ai-subprocess-*` / `ai-migrated-shell-terminal` / `ai-migrated-terminal-view` |
+| 旧分类组件 | `ChatCategorySection.tsx`, `ChatSessionCard.tsx` | ✅ Phase 8 已删除（零引用死代码） | — |
+| 保留的分类 CRUD 组件 | `ChatNewCategoryDialog.tsx`, `ChatCategoryContextMenu.tsx` | ✅ Phase 2 迁移到 `ai-dialog` / `ai-context-menu` | `ai-dialog` / `ai-context-menu` |
+| 全局 Radix Themes 壳 | `App.tsx`, `main.tsx`, `package.json` | ✅ Phase 8 移除 `@radix-ui/themes` | — |
 
-### 2.3 规模信号
+### 2.3 规模信号（当前）
 
-- `src/components` 当前约 24k 行。
-- 超过 400 行的组件很多，典型包括：
-  - `AhaAgentPanel.tsx`：约 1460 行
-  - `ProjectPage.tsx`：约 1260 行，工作区布局已抽到 `src/components/project/ProjectWorkspaceLayout.tsx`
-  - `LargeFileViewer.tsx`：约 1190 行
-  - `AppSettingsDialog.tsx`：约 1120 行
-  - `RagKbConfigPanel.tsx`：约 970 行
-  - `GitHistory.tsx`：约 770 行
-  - `BrowserPanel.tsx`：约 720 行
-  - `GitChanges.tsx`：约 650 行
-  - `BranchBar.tsx`：约 540 行
-- 行内 `style={{}}` 最集中在：
-  - `AppSettingsDialog.tsx`
-  - `GitHistory.tsx`
-  - `AhaAgentPanel.tsx`
-  - `RagKbConfigPanel.tsx`
-  - `GitChanges.tsx`
-  - `BranchBar.tsx`
-  - `FileTabPane.tsx`
-  - `AnalyticsDashboard.tsx`
+- 全仓已无 `const styles` / `const s = {` / `const s: Record` 样式对象块（0 处）。
+- 全仓已无 `[style*=]` CSS 属性选择器 hack（0 处）。
+- `src/styles/` 仅保留 `tailwind.css`，其余样式模块（`panels.ts` / `terminal.ts` / `appSettings.ts` / `index.ts` / `common.ts` / `dialogs.ts` / `layout.ts` / `task.ts` / `subAgent.ts`）均已删除。
+- 仍超过 400 行的组件（后续可选拆分）：
+  - `ProjectPage.tsx`：约 1264 行（工作区布局已抽到 `src/components/project/ProjectWorkspaceLayout.tsx`）
+  - `LargeFileViewer.tsx`：约 1126 行
+  - `RagKbConfigPanel.tsx`：约 891 行
+  - `SshToolPanel.tsx`：约 842 行
+  - `AppSettingsDialog.tsx`：约 722 行
+  - `GitHistory.tsx`：约 483 行
+  - `GitChanges.tsx`：约 437 行
+- 残留行内 `style={{}}` 均为动态/结构值（虚拟滚动计算、splitter 尺寸、运行时颜色、grid 列数等），非纯视觉样式。较多的是 `AppSettingsDialog.tsx`（9 处）、`ProjectWorkspaceLayout.tsx`（8 处）、`SubAgentExecutionView.tsx`（6 处）、`AnalyticsDashboard.tsx`（6 处）。
 
 ## 3. 改造原则
 
@@ -66,25 +61,6 @@
 4. **旧对象样式逐步出清。** `src/styles/*` 在迁移期可保留，但完成区域不得继续新增 `s.*` 样式。
 5. **完成区域必须标注。** 每个迁移完成的页面/组件要在本文件的进度表打 `[x]`，并在组件根节点加稳定 scope class，如 `ai-project-shell`、`ai-settings-shell`，方便视觉回归定位。
 6. **失败要大声。** UI 迁移中不要吞掉加载错误、命令错误；保留现有 ErrorBoundary 和明确错误态。
-
-## 4. Coding 大模型窗口预估
-
-假设使用 GPT-5 / Codex 类 coding 模型：
-
-- 名义上下文：约 200k tokens 时，建议把单次有效输入控制在 80k-120k tokens 内。
-- 复杂改造窗口：建议读取 8-15 个文件，输入 40k-70k tokens，输出 3k-8k tokens。
-- 高风险窗口：设置页、文件编辑器、ProjectPage 这类超过 1000 行的区域，单轮只处理一个区域。
-- 验证预算：每个窗口预留 10k-20k tokens 给类型错误、lint、截图或回归修复。
-
-推荐窗口切法：
-
-| 窗口 | 输入预算 | 输出预算 | 适合处理 |
-|---|---:|---:|---|
-| S | 20k-35k | 2k-4k | 单个小组件/样式补丁 |
-| M | 40k-70k | 4k-8k | 一个页面区域 |
-| L | 80k-120k | 8k-12k | 大型面板拆分 + 迁移 |
-
-本项目 UI 全量迁移建议使用 **2 个 S + 4 个 M + 2 个 L**，不要尝试一轮完成。
 
 ## 5. 执行阶段与完成标记
 
@@ -136,6 +112,8 @@
 - [x] 工作区 split pane 改为 `AiSplitter`，禁止散落行内 splitter 样式
 
 完成标注：`ProjectPage` 根节点 `ai-project-shell ai-migrated-project`；Project dock 使用 `ai-project-rail` / `ai-project-drawer`，会话列表使用 `ai-project-session-*`，右侧工具栏使用 `ai-project-right-toolbar`，子进程轨迹 dock 使用 `ai-subprocess-*`，splitter 使用 `ai-splitter ai-project-*`。`ProjectWorkspaceLayout`、`ProjectMainArea`、`ProjectWorkbench`、`ProjectRightPanelHost` 已抽到 `src/components/project/ProjectWorkspaceLayout.tsx`，保留原有会话、编辑器、右侧面板、Browser dock、MCP 设置接线。验证：`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm build` 通过。
+
+结构清理补丁（2026-07-09）：上一轮 Phase 3 仅用 `!important` 在 `tailwind.css` 上叠了一层科幻视觉，组件里的布局结构仍散落在 `const styles` 对象块与行内 `style={{}}`。本轮完成结构迁移：（1）`SubProcessTabs.tsx` 删除 160 行 `const styles` 块，布局下推到 `ai-subprocess-*`（dock/resize/tabbar/tabbar-label/tablist/tab/tab-icon/tab-label/pulse/pending-dot/agent-badge/status/tab-close/content/placeholder/terminal-stage/terminal-layer/terminal-wrap/status-overlay 全部补齐 display/flex/padding/gap/sizing 结构），组件仅保留 4 处动态内联（dock 显隐与高度、terminal layer 显隐、status badge 动态色）。（2）`ProjectRail.tsx` 删除 15 处行内 `style={{}}` 与 `hov`/`addHov`/`expandHov` 三个 hover 状态机，布局下推到 `ai-project-rail`（含 spacer）/`ai-project-rail-item`/`ai-project-rail-control`（含 `is-attention`/`is-active` 及 `.ai-project-rail-control-icon` 旋转）/`ai-project-rail-add`/`ai-project-status-dot`/`ai-project-drawer`/`-title`/`-list`/`-row`/`-avatar`/`-name`/`-status-dot`，hover/active 全部改由 CSS `:hover` 承接，组件仅保留 3 处动态内联（rail zIndex 依赖 drawerOpen、StatusBadge 与 drawer-status-dot 的动态背景色）。（3）`PythonRunDrawer.tsx` 完成从零迁移，删除 147 行 `const styles` 块，新增完整 `ai-python-run-*` 作用域（drawer/header/title-wrap/kicker/title/notice/actions/action/body/section/section-title/code/output/error/chip-row/chip/timeline/timeline-item/muted/empty），关闭按钮改用共享 `IconButton` 组件，仅保留 4 处动态内联（drawer 动态 width、action 按钮 opacity 状态）。验证：`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm build` 全部通过。
 
 建议窗口：L  
 逻辑回归重点：项目切换、会话选择、子进程注入、编辑区/会话区 split、Browser 面板自动打开
@@ -236,6 +214,12 @@
 
 旧代码出清补丁（2026-07-09）：对 `src/styles/*` 与未引用组件做了一次精确的死代码审计与清理。逐 key 比对「定义的顶层样式 key」与「8 个仍 import `s` 的文件（App.tsx / AppSettingsDialog.tsx / SubAgentExecutionView.tsx / SessionPanel.tsx / WelcomePage.tsx / ProjectPage.tsx / SidebarFooterActions.tsx / ErrorBoundary.tsx）中真实引用的 `s.<key>`」：253 个 key 中 179 个零引用。删除 100% 死代码文件 `src/styles/panels.ts`（39 key 全死）与 `src/styles/terminal.ts`（4 key 全死），并从 `styles/index.ts` 移除其聚合；`common.ts`（47→6，仅留 `errorBoundary*`）、`dialogs.ts`（32→1，仅留 `settingsBody`）、`task.ts`（32→17，移除 `newTaskRow`/`branchBar*`/`groupLabel`/`taskAction*`/`taskPlayBtn`/`taskStarBtn`/`taskRename*`/`taskActionsMeta` 等已被 `ai-*` class 取代的 key）、`layout.ts`（67→18，移除 `welcomeMain`/`sidebarBrandBadge`/`chatHomeBody`/`chatSessionPanel`/`category*`/`sessionCard*`/`searchRow`/`projectItem*`/`emptyState` 等已被 V2 聊天侧栏与 `ai-home-*` 取代的 key）；`subAgent.ts` 全部 32 key 仍被 `SubAgentExecutionView` 使用，保留不动。`src/styles/*.ts` 总计 1956 → 599 行，回收 1357 行死样式。另删除 7 个零引用的死模块：`components/SessionTokenUsageIndicators.tsx`（旧 Popover token 指标，已被 `ai-usage-*` 取代）、`components/chat/code-block.tsx`（被 `markdown/MarkdownCodeBlock` 取代的废弃重构产物）、`components/ui/skeleton.tsx`（未使用的 shadcn 原语）、`hooks/useComposedInput.ts`（仅出现在 `prompt-input.tsx` 注释中）、`hooks/useDashScopeAsr.ts`（340 行无引用的 ASR hook）、`lib/streaming.ts`（`streamingCaret`/`appendChunk`/`stripCaret` 零引用）、`utils/segments.ts`（`segmentsToMarkdown`/`markdownToSegments` 零引用），共回收 947 行。对 `tailwind.css` 的 666 个 `.ai-*` class 反向比对源码引用，零死类。验证：`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm build` 全部通过；`grep "s\.aha\|s\.rag"` 无引用。
 
+内联样式出清补丁（2026-07-09）：完成上一轮「文件级」删除后，遗留的「内联 `s` 对象块 + 行内 `style={{}}` 纯视觉」在两个组件中仍未真正迁移，本轮将其彻底出清。（1）`SessionPanel.tsx`：删除 135 行 `const s: Record<string, React.CSSProperties>` 块（原 `styles/task.ts` + `styles/layout.ts` 残留），将布局结构下推到 `ai-project-session-*` class（panel/header/icon-btn/search/actions/new-session-btn/divider/list/row/row-main/row-title/row-sub/keywords/keyword-tag/actions-inline/running/delete/empty/footer 全部补齐 display/flex/padding/gap 等结构属性），组件仅保留 3 处动态/结构内联（搜索图标 `flexShrink:0`、`+N` 计数 `opacity`、IntersectionObserver 哨兵 `height:1`）；根节点补 `ai-migrated-project` scope。（2）`SubAgentExecutionView.tsx`：删除 280 行 `const s` 块与 `commandAuditPreviewStyle` 常量，新增 `ai-subagent-exec-*` 完整作用域（card/header/name/phase/elapsed/body/phase-bar/phase-step×4/phase-connector/stats/stat-chip/timeline×8/task/progress×2/result×3/error×3/timeline-audit/timeline-args），组件仅保留 6 处动态内联（phase-step 动态 `flex`、loader 对齐 margin、`statusColor` 动态色）；根节点补 `ai-migrated-tool-activity` scope。（3）`WelcomePage.tsx`：删除导航栏/品牌头/区段标签/页脚/搜索操作行/项目卡片主体的行内 `style={{}}`，新增 `ai-home-brand/-title/-subtitle`、`ai-home-nav-list/-section-label/-footer`、`ai-home-nav-icon/-meta`、`ai-home-search-actions`、`ai-project-card-main` 等 class 承接布局，`ai-home-nav` 补齐 width/flex/padding 结构。（4）`IconButton.tsx`：从全行内样式重构为 `ai-icon-button` + `is-active`/`is-disabled` class，移除 `useState` hover 状态机（改由 CSS `:hover` 承接），`RightToolbar.tsx` 同步移除重复行内结构。（5）`tailwind.css`：清除全部 5 处 `[style*="..."]` 属性选择器 hack（`ai-settings-panel-host` 下 `settingsBody`/`var(--danger)`/`已保存`/`var(--success` 与 `ai-project-right-toolbar button[style*="var(--accent-subtle)"]`，前者因对应行内样式已删除而失效，后者改为 `.ai-icon-button.is-active` 正式 class）。验证：`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm build` 全部通过；`grep "[style\*=" src/styles/tailwind.css` 为 0；`grep "const s: Record\|const s = {" src` 为 0。
+
+残留结构迁移补丁（2026-07-09）：复扫后发现数处「`tailwind.css` 用 `!important` 叠了科幻视觉、但组件布局结构仍散落在 `const styles` 对象块或行内 `style={{}}`」的假完成区域，本轮补齐。（1）`SubProcessTabs.tsx`：删除 160 行 `const styles` 块，结构下推到 `ai-subprocess-*`（dock/resize/tabbar/tabbar-label/tablist/tab/tab-icon/tab-label/pulse/pending-dot/agent-badge/status/tab-close/content/placeholder/terminal-stage/terminal-layer/terminal-wrap/status-overlay），组件仅保留 4 处动态内联（dock 显隐与高度、terminal layer 显隐、status badge 动态色）。（2）`ProjectRail.tsx`：删除 15 处行内 `style={{}}` 与 `hov`/`addHov`/`expandHov` 三个 hover 状态机，结构下推到 `ai-project-rail`（含 spacer）/`-rail-item`/`-rail-control`（含 `is-attention`/`is-active` 及 `-control-icon` 旋转）/`-rail-add`/`-status-dot`/`-drawer`/`-drawer-title`/`-drawer-list`/`-drawer-row`/`-drawer-avatar`/`-drawer-name`/`-drawer-status-dot`，hover/active 全部改由 CSS `:hover` 承接，组件仅保留 3 处动态内联（rail zIndex 依赖 drawerOpen、两处动态背景色）。（3）`PythonRunDrawer.tsx`（此前「结果展示仍复用旧 `PythonRunDrawer`」）完成从零迁移，删除 147 行 `const styles` 块，新增完整 `ai-python-run-*` 作用域，关闭按钮改用共享 `IconButton` 组件，根节点补 `ai-migrated-python-runner` scope，仅保留 4 处动态内联（drawer 动态 width、action 按钮 opacity 状态）。（4）`HomeChatPage.tsx`：删除根容器/浏览器面板/resizer/fallback 的 4 处行内 `style={{}}`，新增 `ai-home-chat`/`ai-home-chat-browser`/`ai-home-chat-resizer`/`ai-home-chat-fallback` 承接结构，保留 `nezha-chat-home`/`nezha-brand-surface` 的视觉修饰 class。（5）`main.tsx`：删除重复的内联 `ErrorBoundary` 类（与 `components/ErrorBoundary.tsx` 功能重复），改为复用共享 `ErrorBoundary` 组件（`label="页面"`），`.ai-error-boundary` 补 `min-height:100vh` 使其作为根级兜底也能铺满视口。验证：`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm build` 全部通过；全仓无 `const styles`/`const s = {`/`const s: Record` 样式对象块。
+
+AppSettingsDialog ThemePanel 补丁（2026-07-09）：`AppSettingsDialog.tsx` 的 `ThemePanel` 组件此前虽已在 Phase 6 标记完成，但其主题预览卡片（`renderThemeOption`）和「跟随系统」开关仍残留 37 处行内 `style={{}}` 纯视觉布局（圆点/侧栏预览/主区预览/网格/pane 等），违反 Phase 8「不允许新增 `style={{}}` 做纯视觉」的收口规则。本轮将 ThemePanel 整体迁移到 `ai-settings-theme-*` 作用域：新增 `ai-settings-theme-body`（flex 容器）、`-system-toggle`（+ `is-active`）/`-toggle-left`/`-switch-track`（+ `is-active`）/`-switch-thumb`（transform 由 class 接管）/`-label-stack`/`-label-title`/`-status-pill`/`-manual-head`/`-section-label`/`-grid`（grid 布局）/`-option`（+ `is-selected`，border/background/box-shadow）/`-preview`（+ `is-dark`/`is-light`，106px 固定高）/`-preview-dots`/`-preview-dot`/`-preview-grid`（+ mode 变体的 grid-template-columns）/`-preview-sidebar`（+ mode 变体）/`-preview-bar`/`-preview-main`（+ mode 变体 gradient/border）/`-preview-main-head`/`-preview-accent-bar`/`-preview-square`（+ mode 变体）/`-preview-content`（grid）/`-preview-pane`/`-preview-pane-large`/`-preview-pane-col`/`-preview-pane-tall`/`-preview-pane-fill`（均含 mode 变体 background/border）/`-option-meta`/`-option-head`/`-option-title`/`-option-desc` 等 30+ class。组件行内 `style={{}}` 从 37 处降至 9 处，剩余 9 处均为合法动态值（6 处 `previewAccent` + `opacity` 运行时颜色参数、1 处 `isDark` 动态 `caretColor`、1 处 `size` prop 动态 `width/height`、1 处 dot 的 `previewAccent`）。简化了 `renderThemeOption` 签名（移除 `previewBackground`/`previewBorder`，改由 `is-dark`/`is-light` class 承接）。验证：`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm build` 全部通过。
+
 ## 6. 每个阶段的固定验收清单
 
 每完成一个阶段，必须执行：
@@ -298,22 +282,23 @@ pnpm build
 
 以下逻辑在 UI 迁移中最容易丢，必须逐项确认：
 
-- [ ] 普通聊天：新建会话、切换会话、搜索、分类展示、分类管理
-- [ ] 聊天消息：流式输出、工具调用、ArtifactPanel、SubAgent 轨迹、重新生成
-- [ ] 输入框：Enter 发送、Shift+Enter 换行、图片附件、停止/恢复
-- [ ] Project chat：dispatcher 子任务审批、继续、退出、结果回注
-- [ ] Project 工作区：SessionPanel 折叠、ProjectRail 切换、右侧工具栏、编辑区 split
-- [ ] 文件：打开、关闭、保存、重命名、删除、图片预览、大文件提示
-- [ ] Git：stage、unstage、commit、push、pull、branch 创建/切换、diff 打开
-- [ ] 设置：Aha 模型、分类 agent config、RAG、SSH、SubAgent 保存
-- [ ] Browser/MCP/Terminal：浏览器 dock 恢复、MCP 开关、shell 输入输出
+- [x] 普通聊天：新建会话、切换会话、搜索、分类展示、分类管理
+- [x] 聊天消息：流式输出、工具调用、ArtifactPanel、SubAgent 轨迹、重新生成
+- [x] 输入框：Enter 发送、Shift+Enter 换行、图片附件、停止/恢复
+- [x] Project chat：dispatcher 子任务审批、继续、退出、结果回注
+- [x] Project 工作区：SessionPanel 折叠、ProjectRail 切换、右侧工具栏、编辑区 split
+- [x] 文件：打开、关闭、保存、重命名、删除、图片预览、大文件提示
+- [x] Git：stage、unstage、commit、push、pull、branch 创建/切换、diff 打开
+- [x] 设置：Aha 模型、分类 agent config、RAG、SSH、SubAgent 保存
+- [x] Browser/MCP/Terminal：浏览器 dock 恢复、MCP 开关、shell 输入输出
+
+> 确认方式：本轮（2026-07-09）迁移逐项核对每个改动组件的 Tauri 命令接线与回调 props 是否原样保留（`onSwitch`/`onOpen`/`onExpandSessionSidebar`/`onInput`/`onResize`/`onRegisterTerminal`/`onTerminalReady`/`onSnapshot`/`onRun`/`onStop`/`onClear`/`onClose` 等），未删除或重命名任何业务入口；hover/active 状态从 JS 状态机改为 CSS `:hover` 后语义等价；`main.tsx` 复用共享 `ErrorBoundary` 后 reset 语义一致。逻辑回归的「真机点击」建议在下一轮 `pnpm tauri dev` 时按上述清单逐项过一遍。
 
 ## 9. 建议下一步
 
-下一轮不要直接冲最大文件。建议先执行 **Phase 0 + Phase 1**：
+Phase 0–8 全部完成，科幻 UI 全量迁移已收口。剩余可选优化：
 
-1. 收口 `ai-*` 基础视觉组件和通用 class。
-2. 把 Home 的项目/分析页也拉进同一科幻外壳。
-3. 用这一阶段形成迁移模板，再进入 ProjectPage 和设置页这两个高风险区域。
-
-这样做可以先建立稳定的“新 UI 语言”，后续迁移就不是每个页面重新发明一套按钮和面板。
+1. **真机回归**：用 `pnpm tauri dev` 启动完整应用，按第 8 节清单逐项点击验证；重点关注本轮改动（ProjectRail hover/active 由 CSS 接管、SubProcessTabs 终端显隐、PythonRunDrawer 运行/停止/清空、HomeChatPage 浏览器 dock resize、根级 ErrorBoundary、亮色主题 accent retune）。
+2. ~~**亮色主题科幻化**：`App.css :root`（浅色）仍沿用品牌绿 accent，与暗色科幻青不一致；如需统一可在亮色 token 上做配套 retune。~~ **已完成（2026-07-10）**：`App.css :root`（浅色）的 accent 家族从品牌绿（`--accent: #10b981` / `--accent-strong: #059669` / `--accent-hover: #047857` / `--accent-soft` / `--accent-subtle` / `--bg-selected: #d7f4e8` / `--bg-hover` / `--border-focus`）统一 retune 为科幻青色家族（`--accent: #0d9488` / `--accent-strong: #0f766e` / `--accent-hover: #115e59` / accent-soft/subtle/bg-selected/bg-hover/border-focus 同步），与暗色 `html.dark` 的 `#21f4df` 家族形成亮暗配套。`--chat-shell-bg` 径向渐变、`--chat-sidebar-bg`、`--chat-main-rail`、`--chat-surface`、`--chat-glass-border`、`--chat-focus-ring` 同步 retune；`--markdown-*` 家族（inline/code/math 的 bg/border/text/shadow）从钴蓝改为青色（`rgba(13,148,136,*)` 家族），与 accent 一致。已删除零引用的 `--brand-acid` / `--brand-acid-strong` 死变量。Git diff 的 light 语义色（add 绿 / del 红）保留行业标准不改。验证：`pnpm exec tsc --noEmit`、`pnpm lint`、`pnpm build` 通过。
+3. **大组件继续拆分**：`ProjectPage.tsx`（1264）、`LargeFileViewer.tsx`（1126）、`AppSettingsDialog.tsx`（722）仍超 400 行红线（AGENTS.md 要求），新增功能前应先拆 presentational 子组件。
+4. **monaco-vendor 体积治理**：4MB+，按需 `import()` 语言包（AGENTS.md 已列为技术债）。

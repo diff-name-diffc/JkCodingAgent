@@ -4,8 +4,6 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { attachSmartCopy } from "./terminalCopyHelper";
 import {
-  DARK_THEME,
-  LIGHT_THEME,
   initTerminal,
   loadWebglAddon,
   safeFit,
@@ -20,7 +18,6 @@ interface TerminalViewProps {
   onResize: (cols: number, rows: number) => void;
   onRegisterTerminal: (writeFn: ((data: string, callback?: () => void) => void) | null) => number;
   onReady?: (generation: number) => void;
-  isDark: boolean;
   isActive?: boolean;
   initialData?: string;
   initialSnapshot?: string;
@@ -32,7 +29,6 @@ export function TerminalView({
   onResize,
   onRegisterTerminal,
   onReady,
-  isDark,
   isActive = true,
   initialData,
   initialSnapshot,
@@ -58,7 +54,7 @@ export function TerminalView({
     if (!containerRef.current) return;
     const container = containerRef.current;
 
-    const { term, fitAddon } = initTerminal(isDark);
+    const { term, fitAddon } = initTerminal();
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
 
@@ -178,12 +174,6 @@ export function TerminalView({
       terminalRef.current.focus();
     });
   }, [isActive]);
-
-  useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.options.theme = isDark ? DARK_THEME : LIGHT_THEME;
-    }
-  }, [isDark]);
 
   return (
     <div

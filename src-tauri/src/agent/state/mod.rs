@@ -303,10 +303,6 @@ impl DispatcherState {
     pub(crate) fn force_subprocess_idle(&self, task_id: &str) {
         self.services.subprocesses.force_idle(task_id);
     }
-
-    pub(crate) fn is_subprocess_exit_requested(&self, task_id: &str) -> bool {
-        self.services.subprocesses.is_exit_requested(task_id)
-    }
 }
 
 async fn plain_chat_workspace(config: &DispatcherAgentConfig) -> Result<PathBuf> {

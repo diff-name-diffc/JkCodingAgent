@@ -209,24 +209,6 @@ pub async fn ssh_tool_save_config(
 }
 
 #[tauri::command]
-pub async fn ssh_tool_test_connection(
-    project_path: String,
-    server_id: String,
-) -> Result<String, String> {
-    let project_path_buf = PathBuf::from(project_path);
-    tokio::task::spawn_blocking(move || {
-        let config = find_enabled_server(&project_path_buf, &server_id)?;
-        let session = connect(&config)?;
-        session
-            .disconnect(None, "connection test completed", None)
-            .ok();
-        Ok(format!("连接成功：{}", config.id))
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
-#[tauri::command]
 pub async fn ssh_tool_test_server_config(server: SshServerConfig) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         let config = validate_single_server(server)?;

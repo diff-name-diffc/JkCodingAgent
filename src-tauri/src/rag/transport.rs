@@ -36,11 +36,6 @@ impl RagTransport {
         self.get_json("/health").await
     }
 
-    /// `GET /config`（sidecar 返回脱敏配置）。
-    pub async fn get_config(&self) -> Result<Value> {
-        self.get_json("/config").await
-    }
-
     /// `POST /config/reload`——把新配置推送到 sidecar 内存。
     ///
     /// body 结构与 `rag/src/rag_server/routers/config.py::ReloadPayload` 对齐。

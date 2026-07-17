@@ -1,19 +1,12 @@
 import * as React from "react";
 import { motion } from "framer-motion";
-import { Copy, RefreshCw, Sparkles } from "lucide-react";
-import type {
-  DispatcherMessageUsageStats,
-  DispatcherToolArtifactRef,
-} from "../../types";
-import type {
-  AssistantThinkingBlock,
-  AssistantTurnSegment,
-} from "../dispatcherChatView";
-import type { ToolActivityItem } from "../ToolActivityBubble";
+import { Bot, Copy, RefreshCw, Sparkles } from "lucide-react";
+import type { DispatcherMessageUsageStats, DispatcherToolArtifactRef } from "../../types";
+import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcherChatView";
+import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { cn } from "../../lib/cn";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
-import { Badge } from "../ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { ToolCallList } from "./tool-call-card";
@@ -82,11 +75,11 @@ export function AssistantMessage({
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-      className={cn("ai-assistant-message flex items-start gap-3", className)}
+      className={cn("ai-assistant-message group flex items-start gap-3", className)}
     >
-      <Avatar className="ai-assistant-avatar mt-0.5 h-7 w-7 border border-border bg-primary/10">
+      <Avatar className="ai-assistant-avatar mt-0.5 h-8 w-8 border border-border bg-primary/10">
         <AvatarFallback>
-          <Sparkles className="h-3.5 w-3.5 text-primary" />
+          <Bot className="h-4 w-4 text-primary" />
         </AvatarFallback>
       </Avatar>
 
@@ -141,47 +134,50 @@ export function AssistantMessage({
           )}
         </div>
 
-        {/* Footer: usage + actions */}
+        {/* Footer: usage + actions (actions reveal on hover) */}
         {(usageStats || onCopy || onRegenerate) && (
           <div className="mt-1.5 flex items-center gap-1 text-muted-foreground">
             {usageStats && (
               <span className="text-[11px]">
                 {usageStats.totalTokens} tokens
-                {usageStats.elapsedMs > 0 &&
-                  ` · ${(usageStats.elapsedMs / 1000).toFixed(1)}s`}
+                {usageStats.elapsedMs > 0 && ` · ${(usageStats.elapsedMs / 1000).toFixed(1)}s`}
               </span>
             )}
             <div className="flex-1" />
-            {onCopy && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="复制回复"
-                    onClick={handleCopy}
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>复制</TooltipContent>
-              </Tooltip>
-            )}
-            {onRegenerate && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="重新生成"
-                    onClick={onRegenerate}
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>重新生成</TooltipContent>
-              </Tooltip>
-            )}
+            <div className="flex items-center gap-1 opacity-0 transition-opacity duration-fast group-hover:opacity-100">
+              {onCopy && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="ai-message-action"
+                      aria-label="复制回复"
+                      onClick={handleCopy}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>复制</TooltipContent>
+                </Tooltip>
+              )}
+              {onRegenerate && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="ai-message-action"
+                      aria-label="重新生成"
+                      onClick={onRegenerate}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>重新生成</TooltipContent>
+                </Tooltip>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -204,24 +200,6 @@ function SupersededBlock({ text }: { text: string }) {
           {text}
         </pre>
       )}
-    </div>
-  );
-}
-
-/** Small helper for callers that just want to render tool detail refs inline. */
-export function ArtifactRefBadges({
-  refs,
-}: {
-  refs: DispatcherToolArtifactRef[];
-}) {
-  if (!refs.length) return null;
-  return (
-    <div className="flex flex-wrap gap-1.5">
-      {refs.map((ref) => (
-        <Badge key={ref.id} variant="outline" className="font-mono text-[10px]">
-          {ref.kind}: {ref.title}
-        </Badge>
-      ))}
     </div>
   );
 }

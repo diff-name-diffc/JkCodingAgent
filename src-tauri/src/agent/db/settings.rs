@@ -354,9 +354,4 @@ impl DispatcherDb {
             AgentContext::Chat => settings.chat,
         })
     }
-
-    pub fn get_shared_models(&self) -> Result<AhaSharedModels> {
-        let settings = self.get_settings_v2()?;
-        Ok(settings.shared)
-    }
 }

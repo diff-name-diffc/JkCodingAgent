@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { BrowserStatus, ThemeMode } from "../types";
+import type { BrowserStatus } from "../types";
 import { useDockedBrowserPanel } from "../hooks/useDockedBrowserPanel";
 import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
 import { ChatPageV2 } from "./chat-page-v2";
@@ -17,33 +17,10 @@ const BrowserDock = lazy(() =>
 );
 
 function ChatPaneFallback({ label = "加载中..." }: { label?: string }) {
-  return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: "var(--text-muted)",
-        fontSize: 13,
-      }}
-    >
-      {label}
-    </div>
-  );
+  return <div className="ai-home-chat-fallback">{label}</div>;
 }
 
-export function HomeChatPage({
-  isDark,
-  themeMode,
-  systemPrefersDark,
-  onThemeModeChange,
-}: {
-  isDark: boolean;
-  themeMode: ThemeMode;
-  systemPrefersDark: boolean;
-  onThemeModeChange: (mode: ThemeMode) => void;
-}) {
+export function HomeChatPage() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showBrowserPanel, setShowBrowserPanel] = useState(false);
@@ -136,52 +113,18 @@ export function HomeChatPage({
   const dockedSessions = useMemo(() => Array.from(dockedBrowsers.values()), [dockedBrowsers]);
 
   return (
-    <div
-      className="nezha-chat-home"
-      style={{
-        display: "flex",
-        flex: 1,
-        width: "100%",
-        minWidth: 0,
-        height: "100%",
-        minHeight: 0,
-        overflow: "hidden",
-      }}
-    >
+    <div className="ai-home-chat nezha-chat-home">
       <MarkdownLinkProvider onOpenUrl={handleOpenMarkdownLink}>
         <ChatPageV2
           sessionId={activeSessionId}
           onSessionChange={setActiveSessionId}
-          theme={themeMode}
-          isDark={isDark}
-          onThemeChange={onThemeModeChange}
           onOpenSettings={() => setShowSettings(true)}
         />
       </MarkdownLinkProvider>
 
       {showBrowserPanel && (
-        <div
-          className="nezha-brand-surface"
-          style={{
-            position: "relative",
-            display: "flex",
-            flexShrink: 0,
-            borderRadius: 18,
-            overflow: "hidden",
-          }}
-        >
-          <div
-            onMouseDown={browserPanel.handleResizeStart}
-            style={{
-              position: "absolute",
-              left: 0,
-              top: 0,
-              bottom: 0,
-              width: 5,
-              cursor: "col-resize",
-              zIndex: 10,
-            }}
-          />
+        <div className="ai-home-chat-browser nezha-brand-surface">
+          <div className="ai-home-chat-resizer" onMouseDown={browserPanel.handleResizeStart} />
           <Suspense fallback={<ChatPaneFallback label="浏览器加载中..." />}>
             <BrowserPanel
               sessionId={activeSessionId}
@@ -200,10 +143,6 @@ export function HomeChatPage({
       {showSettings && (
         <Suspense fallback={null}>
           <AppSettingsDialog
-            isDark={isDark}
-            themeMode={themeMode}
-            systemPrefersDark={systemPrefersDark}
-            onThemeModeChange={onThemeModeChange}
             initialTab="aha"
             onClose={() => setShowSettings(false)}
           />

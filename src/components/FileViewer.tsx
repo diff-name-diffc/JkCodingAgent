@@ -19,7 +19,6 @@ export const FileViewer = forwardRef<FileViewerHandle, {
   onCloseTabsToRight: (tabId: string) => void;
   onCloseAllTabs: () => void;
   onHide: () => void;
-  isDark: boolean;
 }>(function FileViewer({
   tabs,
   activeTabId,
@@ -30,7 +29,6 @@ export const FileViewer = forwardRef<FileViewerHandle, {
   onCloseTabsToRight,
   onCloseAllTabs,
   onHide,
-  isDark,
 }, ref) {
   const [menuOpen, setMenuOpen] = useState(false);
   const tabRefs = useRef<Map<string, FileTabPaneHandle | null>>(new Map());
@@ -183,7 +181,6 @@ export const FileViewer = forwardRef<FileViewerHandle, {
                 active={isActive}
                 tab={tab}
                 projectPath={projectPath}
-                isDark={isDark}
               />
             </div>
           );

@@ -5,29 +5,6 @@ import { WebglAddon } from "@xterm/addon-webgl";
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 
-export const DARK_THEME = {
-  background: "#1e2230",
-  foreground: "#cdd6f4",
-  cursor: "#cdd6f4",
-  selectionBackground: "#45475a",
-  black: "#484f58",
-  red: "#ff7b72",
-  green: "#3fb950",
-  yellow: "#d29922",
-  blue: "#58a6ff",
-  magenta: "#d2a8ff",
-  cyan: "#39c5cf",
-  white: "#b1bac4",
-  brightBlack: "#6e7681",
-  brightRed: "#ffa198",
-  brightGreen: "#56d364",
-  brightYellow: "#e3b341",
-  brightBlue: "#79c0ff",
-  brightMagenta: "#f0a1ff",
-  brightCyan: "#56d4dd",
-  brightWhite: "#f0f6fc",
-};
-
 export const LIGHT_THEME = {
   background: "#ffffff",
   foreground: "#24292f",
@@ -259,14 +236,14 @@ interface InitTerminalResult {
  * 创建 xterm Terminal 实例并加载通用 addon（FitAddon, Unicode11, WebGL）。
  * 调用方负责 term.open(container)。
  */
-export function initTerminal(isDark: boolean, scrollback = 1000): InitTerminalResult {
+export function initTerminal(scrollback = 1000): InitTerminalResult {
   const term = new Terminal({
     convertEol: false,
     scrollback,
     cursorBlink: true,
     fontFamily: "monospace",
     fontSize: 12,
-    theme: isDark ? DARK_THEME : LIGHT_THEME,
+    theme: LIGHT_THEME,
     allowProposedApi: true,
   });
 

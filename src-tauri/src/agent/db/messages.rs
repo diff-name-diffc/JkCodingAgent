@@ -524,18 +524,6 @@ impl DispatcherDb {
         Ok(rows)
     }
 
-    pub fn clear_context_messages(&self, workspace_id: &str) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE dispatcher_messages
-             SET context_cleared = 1
-             WHERE workspace_id = ?1 AND context_cleared = 0",
-            params![workspace_id],
-        )
-        .context("logically clear dispatcher messages")?;
-        Ok(())
-    }
-
     pub fn clear_messages(&self, workspace_id: &str) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;

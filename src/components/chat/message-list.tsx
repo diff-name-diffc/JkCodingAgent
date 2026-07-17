@@ -11,7 +11,7 @@ import { EmptyChatState } from "./empty-chat-state";
 import { MessageItem, buildItems, type MessageDisplayItem } from "./message-item";
 import { StreamingMessage } from "./streaming-message";
 import { ChatScrollAnchor } from "./chat-scroll-anchor";
-import type { ToolActivityItem } from "../ToolActivityBubble";
+import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 
 /**
  * Scrollable message list with streaming-aware auto-scroll.

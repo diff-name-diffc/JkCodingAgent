@@ -9,6 +9,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import type {
   AgentType,
   AhaSettingsV2,
@@ -20,13 +21,15 @@ import type {
   PythonRunEvent,
   ProjectMcpStatus,
   SubProcess,
-  ThemeMode,
 } from "../types";
 import {
   useChatCategoriesQuery,
   useCreateChatCategory,
+  useCreateChatSession,
   useDeleteChatCategory,
+  useDeleteChatSession,
   useSetChatSessionCategory,
+  useChatSessionUpdates,
   useChatSessionsQuery,
   useSessionSearchQuery,
   useUpdateChatCategory,
@@ -40,7 +43,7 @@ import {
   mergeDispatcherMessages,
   getMcpIndicatorState,
 } from "./dispatcher-chat/dispatcherChatUtils";
-import { subscribeDispatcherMessages } from "./dispatcherSessionStore";
+import { cleanupDispatcherSession, subscribeDispatcherMessages } from "./dispatcherSessionStore";
 import { ChatShell } from "./chat/chat-shell";
 import type { ComposerMode } from "./chat/prompt-input";
 import type { DispatcherChatHandle } from "./dispatcher-chat/useDispatcherActions";
@@ -74,9 +77,6 @@ export interface ChatPageV2Props {
   mcpStatus?: ProjectMcpStatus | null;
   mcpChecking?: boolean;
   subProcesses?: SubProcess[];
-  theme: ThemeMode;
-  isDark: boolean;
-  onThemeChange: (mode: ThemeMode) => void;
   onOpenSettings: () => void;
   onDispatchApproved?: (
     dispatchId: string,
@@ -106,9 +106,6 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
       mcpStatus = null,
       mcpChecking = false,
       subProcesses = [],
-      theme,
-      isDark,
-      onThemeChange,
       onOpenSettings,
       onDispatchApproved,
       onDispatchRejected,
@@ -147,11 +144,14 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
   );
 
   const isPlainChat = conversationKind === "chat";
+  useChatSessionUpdates(isPlainChat && !embedded);
   const sessionsQuery = useChatSessionsQuery(undefined, isPlainChat && !embedded);
   const categoriesQuery = useChatCategoriesQuery(isPlainChat && !embedded);
   const createCategory = useCreateChatCategory();
+  const { mutateAsync: createChatSession } = useCreateChatSession();
   const updateCategory = useUpdateChatCategory();
   const deleteCategory = useDeleteChatCategory();
+  const { mutateAsync: deleteChatSession } = useDeleteChatSession();
   const setSessionCategory = useSetChatSessionCategory();
   const sessionSearchQuery = useSessionSearchQuery({
     query: debouncedSearch,
@@ -329,12 +329,46 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
   );
   const composerMode: ComposerMode = isRunning ? "stop" : hasStoppedSubProcess ? "resume" : "send";
 
+  // 聊天模式下，若还没有活跃会话，发送时懒创建一个。
+  // 重构后 Sidebar/ChatPageV2 不再像旧 ChatSessionSidebar 那样在初始化时
+  // 自动建会话，因此首次进入或点「新建对话」后 activeSessionId 为 null，
+  // 这里补回懒创建，避免发送按钮被静默拦截（按钮看起来可点却无反应）。
+  // pendingSessionIdRef 防止连点发送时重复创建会话。
+  const pendingSessionIdRef = useRef<Promise<string | null> | null>(null);
+  const ensurePlainChatSession = useCallback(async (): Promise<string | null> => {
+    if (activeSessionId) return activeSessionId;
+    if (!isPlainChat) return null;
+    if (pendingSessionIdRef.current) return pendingSessionIdRef.current;
+    const pending = (async () => {
+      try {
+        const session = await createChatSession({
+          title: "新对话",
+          category: "tech",
+        });
+        setActiveSessionId(session.id);
+        return session.id;
+      } catch (err) {
+        console.error("创建聊天会话失败:", err);
+        return null;
+      } finally {
+        pendingSessionIdRef.current = null;
+      }
+    })();
+    pendingSessionIdRef.current = pending;
+    return pending;
+  }, [activeSessionId, createChatSession, isPlainChat, setActiveSessionId]);
+
   const handleSend = useCallback(() => {
-    if (!activeSessionId) return;
     const text = input.trim();
     if (!text && attachedImages.length === 0) return;
-    void actions.sendUserMessage(text, attachedImages, activeSessionId);
-  }, [actions, activeSessionId, attachedImages, input]);
+    void (async () => {
+      // 项目模式总会话 id 非空（ProjectPage 仅在 activeSessionId 存在时渲染本组件）；
+      // 聊天模式可能为 null，懒创建后再发送。
+      const targetSessionId = activeSessionId ?? (await ensurePlainChatSession());
+      if (!targetSessionId) return;
+      void actions.sendUserMessage(text, attachedImages, targetSessionId);
+    })();
+  }, [actions, activeSessionId, attachedImages, ensurePlainChatSession, input]);
 
   const handleStop = useCallback(async () => {
     if (!activeSessionId || isStopping) return;
@@ -382,6 +416,63 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
     setAttachedImages([]);
     setMessages([]);
   }, [embedded, setActiveSessionId]);
+
+  // 在指定分类下新建会话：真正落库一个空会话并激活它。
+  // 侧边栏每个分类行内的 + 按钮走这里，可指定分类；
+  // 顶部「新建对话」按钮已移除，因为它无法指定分类。
+  const handleNewSessionInCategory = useCallback(
+    async (categoryId: string) => {
+      if (!isPlainChat || embedded) return;
+      try {
+        const session = await createChatSession({
+          title: "新对话",
+          category: categoryId,
+        });
+        setActiveSessionId(session.id);
+        setInput("");
+        setAttachedImages([]);
+        setMessages([]);
+      } catch (err) {
+        console.error("在分类下创建会话失败:", err);
+      }
+    },
+    [createChatSession, embedded, isPlainChat, setActiveSessionId],
+  );
+
+  const handleDeleteSession = useCallback(
+    async (sessionIdToDelete: string) => {
+      if (!isPlainChat || embedded) return;
+      const confirmed = await confirm("确定永久删除这个会话吗？相关消息和文件也会一并删除。", {
+        title: "删除会话",
+        kind: "warning",
+      });
+      if (!confirmed) return;
+
+      try {
+        await deleteChatSession(sessionIdToDelete);
+        cleanupDispatcherSession(sessionIdToDelete);
+        if (sessionIdToDelete === activeSessionId) {
+          const nextSession = (sessionsQuery.data ?? []).find(
+            (session) => session.id !== sessionIdToDelete,
+          );
+          setActiveSessionId(nextSession?.id ?? null);
+          setInput("");
+          setAttachedImages([]);
+          setMessages([]);
+        }
+      } catch (err) {
+        console.error("删除聊天会话失败:", err);
+      }
+    },
+    [
+      activeSessionId,
+      deleteChatSession,
+      embedded,
+      isPlainChat,
+      sessionsQuery.data,
+      setActiveSessionId,
+    ],
+  );
 
   const handleActiveSessionChange = useCallback((id: string | null) => {
     setActiveSessionId(id);
@@ -568,12 +659,17 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
           category: result.category,
           createdAt: result.updatedAt,
           updatedAt: result.updatedAt,
+          keywords: result.keywords,
         }))
       : (sessionsQuery.data ?? []);
   const sessionsLoading =
     trimmedSearch.length > 0
       ? sessionSearchQuery.isLoading
       : sessionsQuery.isLoading || categoriesQuery.isLoading;
+  const sessionsError =
+    trimmedSearch.length > 0 && sessionSearchQuery.error
+      ? String(sessionSearchQuery.error)
+      : undefined;
 
   return (
     <div className="flex h-full w-full min-w-0 overflow-hidden">
@@ -584,9 +680,14 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
           sessions={displayedSessions}
           categories={categoriesQuery.data ?? []}
           sessionsLoading={sessionsLoading}
+          sessionsError={sessionsError}
           searchActive={trimmedSearch.length > 0}
           onActiveSessionChange={handleActiveSessionChange}
           onNewConversation={handleNewConversation}
+          onNewSessionInCategory={
+            isPlainChat && !embedded ? handleNewSessionInCategory : undefined
+          }
+          onDeleteSession={isPlainChat && !embedded ? handleDeleteSession : undefined}
           searchValue={search}
           onSearchChange={setSearch}
           onOpenSettings={onOpenSettings}
@@ -605,9 +706,6 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
           onRegenerate={isPlainChat ? handleRegenerate : undefined}
           onApproveDispatch={handleApproveDispatch}
           onRejectDispatch={handleRejectDispatch}
-          theme={theme}
-          isDark={isDark}
-          onThemeChange={onThemeChange}
           pythonRunRecords={pythonRunRecords}
           onRunPython={handleRunPython}
           embedded={embedded}

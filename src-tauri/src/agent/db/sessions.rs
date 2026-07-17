@@ -30,6 +30,7 @@ pub struct ChatSessionRecord {
     pub category: String,
     pub created_at: String,
     pub updated_at: String,
+    pub keywords: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +41,7 @@ pub struct ProjectSessionRecord {
     pub title: String,
     pub created_at: String,
     pub updated_at: String,
+    pub keywords: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +51,12 @@ pub struct SessionPage<T> {
     pub total: i64,
     pub has_more: bool,
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ChatSessionCursor {
+    updated_at: String,
+    id: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
@@ -84,96 +92,23 @@ pub enum DispatcherSessionKind {
 }
 
 impl DispatcherSessionKind {
-    pub fn from_wire(value: &str) -> Result<Self> {
-        match value.trim() {
-            "" | "project" => Ok(Self::Project),
-            "chat" => Ok(Self::Chat),
-            other => anyhow::bail!("invalid dispatcher session kind: {other}"),
-        }
-    }
-
-    pub fn as_sql_value(self) -> &'static str {
-        match self {
-            Self::Project => "project",
-            Self::Chat => "chat",
-        }
-    }
-
     pub(super) fn from_sql_value(value: String) -> Self {
         match value.as_str() {
             "chat" => Self::Chat,
             _ => Self::Project,
         }
     }
+
+    pub(super) fn as_sql_value(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Chat => "chat",
+        }
+    }
 }
 
 impl DispatcherDb {
     // ── Sessions ──────────────────────────────────────────────
-
-    pub fn list_sessions(
-        &self,
-        project_id: &str,
-        kind: DispatcherSessionKind,
-    ) -> Result<Vec<DispatcherSessionRecord>> {
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, project_id, kind, title, category, created_at, updated_at
-             FROM dispatcher_sessions
-             WHERE project_id = ?1 AND kind = ?2
-             ORDER BY updated_at DESC",
-        )?;
-        let rows = stmt.query_map(params![project_id, kind.as_sql_value()], |row| {
-            Ok(DispatcherSessionRecord {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                kind: DispatcherSessionKind::from_sql_value(row.get(2)?),
-                title: row.get(3)?,
-                category: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        })?;
-
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("list dispatcher sessions")
-    }
-
-    pub fn create_session(
-        &self,
-        project_id: &str,
-        title: &str,
-        kind: DispatcherSessionKind,
-        category: Option<&str>,
-    ) -> Result<DispatcherSessionRecord> {
-        let category = category.unwrap_or("").to_string();
-        let record = DispatcherSessionRecord {
-            id: Uuid::new_v4().to_string(),
-            project_id: project_id.to_string(),
-            kind,
-            title: title.to_string(),
-            category,
-            created_at: now(),
-            updated_at: now(),
-        };
-
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                record.id,
-                record.project_id,
-                record.kind.as_sql_value(),
-                record.title,
-                record.category,
-                record.created_at,
-                record.updated_at
-            ],
-        )
-        .context("insert dispatcher session")?;
-
-        Ok(record)
-    }
 
     pub fn update_session_title(
         &self,
@@ -281,6 +216,12 @@ impl DispatcherDb {
         page_size: i64,
     ) -> Result<SessionPage<ChatSessionRecord>> {
         let conn = self.conn()?;
+        let cursor = cursor
+            .map(|value| {
+                serde_json::from_str::<ChatSessionCursor>(value)
+                    .context("decode chat session cursor")
+            })
+            .transpose()?;
         let total: i64 = if let Some(cat) = category {
             conn.query_row(
                 "SELECT COUNT(*) FROM chat_sessions WHERE category = ?1",
@@ -292,18 +233,24 @@ impl DispatcherDb {
         };
 
         let (where_clause, bind): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-            match (category, cursor) {
+            match (category, cursor.as_ref()) {
                 (Some(cat), Some(cur)) => (
-                    "WHERE category = ?1 AND updated_at < ?2".into(),
-                    vec![Box::new(cat.to_string()), Box::new(cur.to_string())],
+                    "WHERE category = ?1
+                     AND (updated_at < ?2 OR (updated_at = ?2 AND id < ?3))"
+                        .into(),
+                    vec![
+                        Box::new(cat.to_string()),
+                        Box::new(cur.updated_at.clone()),
+                        Box::new(cur.id.clone()),
+                    ],
                 ),
                 (Some(cat), None) => (
                     "WHERE category = ?1".into(),
                     vec![Box::new(cat.to_string())],
                 ),
                 (None, Some(cur)) => (
-                    "WHERE updated_at < ?1".into(),
-                    vec![Box::new(cur.to_string())],
+                    "WHERE updated_at < ?1 OR (updated_at = ?1 AND id < ?2)".into(),
+                    vec![Box::new(cur.updated_at.clone()), Box::new(cur.id.clone())],
                 ),
                 (None, None) => (String::new(), vec![]),
             };
@@ -312,7 +259,7 @@ impl DispatcherDb {
             "SELECT id, title, category, created_at, updated_at
              FROM chat_sessions
              {}
-             ORDER BY updated_at DESC
+             ORDER BY updated_at DESC, id DESC
              LIMIT ?{}",
             where_clause,
             bind.len() + 1
@@ -331,6 +278,7 @@ impl DispatcherDb {
                 category: row.get(2)?,
                 created_at: row.get(3)?,
                 updated_at: row.get(4)?,
+                keywords: Vec::new(),
             })
         })?;
         let mut items: Vec<ChatSessionRecord> = rows
@@ -341,7 +289,27 @@ impl DispatcherDb {
         if has_more {
             items.pop();
         }
-        let next_cursor = items.last().map(|s| s.updated_at.clone());
+        let workspace_ids = items
+            .iter()
+            .map(|session| session.id.clone())
+            .collect::<Vec<_>>();
+        let mut keywords_by_workspace =
+            super::keywords::load_keywords_by_workspace_ids(&conn, &workspace_ids)?;
+        for session in &mut items {
+            session.keywords = keywords_by_workspace
+                .remove(&session.id)
+                .unwrap_or_default();
+        }
+        let next_cursor = items
+            .last()
+            .map(|session| {
+                serde_json::to_string(&ChatSessionCursor {
+                    updated_at: session.updated_at.clone(),
+                    id: session.id.clone(),
+                })
+            })
+            .transpose()
+            .context("encode chat session cursor")?;
 
         Ok(SessionPage {
             items,
@@ -362,6 +330,7 @@ impl DispatcherDb {
             category: category.unwrap_or("tech").to_string(),
             created_at: now(),
             updated_at: now(),
+            keywords: Vec::new(),
         };
         let conn = self.conn()?;
         conn.execute(
@@ -460,22 +429,35 @@ impl DispatcherDb {
             params![title.trim(), &updated_at, session_id],
         )
         .context("reflect chat title in dispatcher_sessions")?;
-        conn.query_row(
-            "SELECT id, title, category, created_at, updated_at
+        let record = conn
+            .query_row(
+                "SELECT id, title, category, created_at, updated_at
              FROM chat_sessions WHERE id = ?1",
-            params![session_id],
-            |row| {
-                Ok(ChatSessionRecord {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    category: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                })
-            },
-        )
-        .optional()
-        .context("load chat session after title update")
+                params![session_id],
+                |row| {
+                    Ok(ChatSessionRecord {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        category: row.get(2)?,
+                        created_at: row.get(3)?,
+                        updated_at: row.get(4)?,
+                        keywords: Vec::new(),
+                    })
+                },
+            )
+            .optional()
+            .context("load chat session after title update")?;
+        let mut record = record;
+        if let Some(session) = &mut record {
+            let mut keywords_by_workspace = super::keywords::load_keywords_by_workspace_ids(
+                &conn,
+                std::slice::from_ref(&session.id),
+            )?;
+            session.keywords = keywords_by_workspace
+                .remove(&session.id)
+                .unwrap_or_default();
+        }
+        Ok(record)
     }
 
     pub fn set_chat_session_category(&self, session_id: &str, category_id: &str) -> Result<()> {
@@ -522,11 +504,24 @@ impl DispatcherDb {
                 title: row.get(2)?,
                 created_at: row.get(3)?,
                 updated_at: row.get(4)?,
+                keywords: Vec::new(),
             })
         })?;
         let items: Vec<ProjectSessionRecord> = rows
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("list project sessions paginated")?;
+        let mut items = items;
+        let workspace_ids = items
+            .iter()
+            .map(|session| session.id.clone())
+            .collect::<Vec<_>>();
+        let mut keywords_by_workspace =
+            super::keywords::load_keywords_by_workspace_ids(&conn, &workspace_ids)?;
+        for session in &mut items {
+            session.keywords = keywords_by_workspace
+                .remove(&session.id)
+                .unwrap_or_default();
+        }
 
         let has_more = (offset + items.len() as i64) < total;
         let next_cursor = items.last().map(|s| s.updated_at.clone());
@@ -550,6 +545,7 @@ impl DispatcherDb {
             title: title.to_string(),
             created_at: now(),
             updated_at: now(),
+            keywords: Vec::new(),
         };
         let conn = self.conn()?;
         conn.execute(
@@ -649,5 +645,52 @@ impl DispatcherDb {
         tokio::task::spawn_blocking(move || db.get_session_title(&wid))
             .await
             .context("get_session_title spawn_blocking")?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    fn test_db() -> DispatcherDb {
+        let path = std::env::temp_dir().join(format!(
+            "jkcodingagent-session-pagination-{}.sqlite3",
+            Uuid::new_v4()
+        ));
+        DispatcherDb::new(path).expect("create test dispatcher db")
+    }
+
+    #[test]
+    fn category_cursor_does_not_skip_sessions_with_equal_timestamps() {
+        let db = test_db();
+        for index in 0..41 {
+            db.create_chat_session(&format!("session-{index}"), Some("tech"))
+                .expect("create chat session");
+        }
+        db.conn()
+            .expect("db conn")
+            .execute(
+                "UPDATE chat_sessions SET updated_at = '2026-01-01T00:00:00Z' WHERE category = 'tech'",
+                [],
+            )
+            .expect("normalize timestamps");
+
+        let mut cursor = None;
+        let mut session_ids = Vec::new();
+        loop {
+            let page = db
+                .list_chat_sessions_paginated(Some("tech"), cursor.as_deref(), 20)
+                .expect("list category page");
+            session_ids.extend(page.items.into_iter().map(|session| session.id));
+            if !page.has_more {
+                break;
+            }
+            cursor = page.next_cursor;
+        }
+
+        assert_eq!(session_ids.len(), 41);
+        assert_eq!(session_ids.iter().collect::<HashSet<_>>().len(), 41);
     }
 }

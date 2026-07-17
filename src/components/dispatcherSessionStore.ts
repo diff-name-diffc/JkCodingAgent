@@ -6,7 +6,7 @@ import type {
   AssistantThinkingBlock,
   AssistantTurnSegment,
 } from "./dispatcherChatView";
-import type { ToolActivityItem } from "./ToolActivityBubble";
+import type { ToolActivityItem } from "./dispatcher-chat/tool-activity";
 
 export interface PendingDispatchApproval {
   dispatchId: string;

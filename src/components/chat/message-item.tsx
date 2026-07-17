@@ -9,8 +9,7 @@ import type {
   AssistantTurnSegment,
 } from "../dispatcherChatView";
 import { buildDispatcherDisplayItems } from "../dispatcherChatView";
-import type { ToolActivityItem } from "../ToolActivityBubble";
-import { cn } from "../../lib/cn";
+import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { AssistantMessage } from "./assistant-message";
 import { UserMessage } from "./user-message";
 
@@ -97,5 +96,3 @@ export function buildItems(messages: DispatcherMessage[]): MessageDisplayItem[] 
         },
   );
 }
-
-export const messageItemClass = cn("px-4 py-3");

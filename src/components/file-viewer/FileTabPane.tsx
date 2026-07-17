@@ -226,12 +226,10 @@ export const FileTabPane = forwardRef<FileTabPaneHandle, {
   active: boolean;
   tab: OpenFileTab;
   projectPath: string;
-  isDark: boolean;
 }>(function FileTabPane({
   active,
   tab,
   projectPath,
-  isDark,
 }, ref) {
   const [previewMode, setPreviewMode] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -486,7 +484,6 @@ export const FileTabPane = forwardRef<FileTabPaneHandle, {
               initialValue={content}
               filePath={tab.path}
               language={language}
-              isDark={isDark}
               onChange={handleChange}
             />
           )

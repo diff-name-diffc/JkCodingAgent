@@ -15,7 +15,6 @@ import {
 } from "react";
 
 const MONACO_THEME_LIGHT = "nezha-light";
-const MONACO_THEME_DARK = "nezha-dark";
 
 let monacoConfigured = false;
 let themesRegistered = false;
@@ -61,34 +60,16 @@ function ensureMonacoThemes(monacoInstance: Monaco) {
     inherit: true,
     rules: [],
     colors: {
-      "editor.background": "#FCFCFD",
-      "editor.foreground": "#171B24",
-      "editor.lineHighlightBackground": "#F4F7FD",
-      "editorLineNumber.foreground": "#A4ADBC",
-      "editorLineNumber.activeForeground": "#5D7CFF",
-      "editor.selectionBackground": "#D7E2FF",
-      "editor.inactiveSelectionBackground": "#E7EDF9",
-      "editorCursor.foreground": "#4467F5",
-      "editorIndentGuide.background1": "#E6EAF3",
-      "editorIndentGuide.activeBackground1": "#C8D3EC",
-    },
-  });
-
-  monacoInstance.editor.defineTheme(MONACO_THEME_DARK, {
-    base: "vs-dark",
-    inherit: true,
-    rules: [],
-    colors: {
-      "editor.background": "#232936",
-      "editor.foreground": "#F1F4FB",
-      "editor.lineHighlightBackground": "#2D3442",
-      "editorLineNumber.foreground": "#69758A",
-      "editorLineNumber.activeForeground": "#7F9AFF",
-      "editor.selectionBackground": "#33446D",
-      "editor.inactiveSelectionBackground": "#2C364F",
-      "editorCursor.foreground": "#AFC0FF",
-      "editorIndentGuide.background1": "#343B4A",
-      "editorIndentGuide.activeBackground1": "#4A5878",
+      "editor.background": "#FCFCFA",
+      "editor.foreground": "#17201D",
+      "editor.lineHighlightBackground": "#EEF6F4",
+      "editorLineNumber.foreground": "#A9B5B0",
+      "editorLineNumber.activeForeground": "#1F665D",
+      "editor.selectionBackground": "#CFE9E4",
+      "editor.inactiveSelectionBackground": "#E2EFEC",
+      "editorCursor.foreground": "#297C70",
+      "editorIndentGuide.background1": "#E7ECE8",
+      "editorIndentGuide.activeBackground1": "#C5D8D2",
     },
   });
 
@@ -115,11 +96,10 @@ export const MonacoEditorPane = forwardRef<
     initialValue: string;
     filePath: string;
     language: string;
-    isDark: boolean;
     onChange: (value: string) => void;
   }
 >(function MonacoEditorPane(
-  { active = true, initialValue, filePath, language, isDark, onChange },
+  { active = true, initialValue, filePath, language, onChange },
   ref,
 ) {
   const editorRef = useRef<MonacoTypes.editor.IStandaloneCodeEditor | null>(
@@ -233,7 +213,7 @@ export const MonacoEditorPane = forwardRef<
         path={filePath}
         defaultValue={initialValue}
         language={language}
-        theme={isDark ? MONACO_THEME_DARK : MONACO_THEME_LIGHT}
+        theme={MONACO_THEME_LIGHT}
         beforeMount={(monacoInstance) => {
           ensureMonacoThemes(monacoInstance);
         }}

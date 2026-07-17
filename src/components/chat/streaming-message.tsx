@@ -4,7 +4,7 @@ import type {
   AssistantThinkingBlock,
   AssistantTurnSegment,
 } from "../dispatcherChatView";
-import type { ToolActivityItem } from "../ToolActivityBubble";
+import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import type { DispatcherToolArtifactRef } from "../../types";
 import { cn } from "../../lib/cn";
 import { Avatar, AvatarFallback } from "../ui/avatar";
@@ -49,7 +49,7 @@ export function StreamingMessage({
       transition={{ duration: 0.15 }}
       className={cn("flex items-start gap-3", className)}
     >
-      <Avatar className="mt-0.5 h-7 w-7 border border-border bg-primary/10">
+      <Avatar className="ai-assistant-avatar mt-0.5 h-8 w-8 border border-border bg-primary/10">
         <AvatarFallback>
           <Sparkles className={cn("h-3.5 w-3.5 text-primary", isStreaming && "animate-pulse")} />
         </AvatarFallback>

@@ -6,7 +6,6 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { attachSmartCopy } from "./terminalCopyHelper";
 import {
-  DARK_THEME,
   LIGHT_THEME,
   initTerminal,
   loadWebglAddon,
@@ -32,7 +31,6 @@ interface Props {
   projectId: string;
   isActive?: boolean;
   onClose: () => void;
-  isDark: boolean;
   onReady?: () => void;
   height?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
@@ -47,7 +45,6 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
       projectId,
       isActive = true,
       onClose,
-      isDark,
       onReady,
       height = 240,
       onResizeStart,
@@ -59,9 +56,7 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const inputBatcherRef = useRef<ReturnType<typeof createInputBatcher> | null>(null);
-    const isDarkRef = useRef(isDark);
     const onReadyRef = useRef(onReady);
-    isDarkRef.current = isDark;
     onReadyRef.current = onReady;
 
     useImperativeHandle(ref, () => ({
@@ -80,7 +75,7 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
       if (!containerRef.current) return;
       const container = containerRef.current;
 
-      const { term, fitAddon } = initTerminal(isDarkRef.current, 5000);
+      const { term, fitAddon } = initTerminal(5000);
       terminalRef.current = term;
       fitAddonRef.current = fitAddon;
       term.open(container);
@@ -212,16 +207,10 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
       });
     }, [isActive, shellId]);
 
-    useEffect(() => {
-      if (terminalRef.current) {
-        terminalRef.current.options.theme = isDark ? DARK_THEME : LIGHT_THEME;
-      }
-    }, [isDark]);
-
       return (
         <div
           className="ai-shell-terminal-panel ai-migrated-shell-terminal"
-          style={{ height, background: isDark ? DARK_THEME.background : LIGHT_THEME.background }}
+          style={{ height, background: LIGHT_THEME.background }}
         >
           {/* Drag handle */}
           {onResizeStart && (

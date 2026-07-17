@@ -1,4 +1,3 @@
-use base64::Engine;
 use image::imageops::FilterType;
 use image::{GenericImageView, ImageFormat, ImageReader};
 use serde::Serialize;
@@ -20,8 +19,6 @@ pub enum ChatImageError {
     ImagesDirMissing(PathBuf),
     #[error("未找到 image_id={0} 对应的图片文件")]
     ImageNotFound(String),
-    #[error("解码图片 base64 失败：{0}")]
-    Base64(#[from] base64::DecodeError),
     #[error("{action} 失败（{path}）：{source}")]
     Io {
         action: &'static str,
@@ -48,16 +45,6 @@ fn io_error(
 /// internals use `chat-image://<image_id>` instead of raw filesystem paths so
 /// that image references survive across machines / usernames.
 pub const CHAT_IMAGE_PROTOCOL: &str = "chat-image://";
-
-/// Result of saving a chat image
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveChatImageResult {
-    pub image_id: String,
-    pub path: String,
-    /// Actual mime type of the saved file (may differ from original when compression occurred)
-    pub mime_type: String,
-}
 
 /// Returns the canonical app data directory for chat images: `~/.jkcodingagent/chat-images`.
 pub(crate) fn chat_images_dir() -> ChatImageResult<PathBuf> {
@@ -224,86 +211,6 @@ pub(crate) fn compress_image_bytes(raw: &[u8], max_dim: u32) -> Vec<u8> {
     }
 }
 
-/// Save a chat image to the file system.
-/// Images exceeding COMPRESS_THRESHOLD are low-loss compressed (JPEG quality 92,
-/// resized to fit MAX_COMPRESS_DIM on the longest side) before being stored.
-/// Images are stored under `~/.jkcodingagent/chat-images/{session-title-slug}/`.
-#[tauri::command]
-pub async fn save_chat_image(
-    _session_id: String,
-    session_title: String,
-    image_data_base64: String,
-    mime_type: String,
-) -> CommandResult<SaveChatImageResult> {
-    save_chat_image_impl(session_title, image_data_base64, mime_type)
-        .await
-        .context("保存聊天图片失败")
-        .into_command_result()
-}
-
-async fn save_chat_image_impl(
-    session_title: String,
-    image_data_base64: String,
-    mime_type: String,
-) -> ChatImageResult<SaveChatImageResult> {
-    let image_id = uuid::Uuid::new_v4().to_string();
-    let raw_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&image_data_base64)
-        .map_err(ChatImageError::Base64)?;
-
-    let (ext, image_bytes) = if raw_bytes.len() >= COMPRESS_THRESHOLD {
-        let compressed = compress_image_bytes(&raw_bytes, MAX_COMPRESS_DIM);
-        if compressed.len() < raw_bytes.len() {
-            ("jpg", compressed)
-        } else {
-            let ext = match mime_type.as_str() {
-                "image/png" => "png",
-                "image/jpeg" => "jpg",
-                "image/webp" => "webp",
-                "image/gif" => "gif",
-                _ => "png",
-            };
-            (ext, raw_bytes)
-        }
-    } else {
-        let ext = match mime_type.as_str() {
-            "image/png" => "png",
-            "image/jpeg" => "jpg",
-            "image/webp" => "webp",
-            "image/gif" => "gif",
-            _ => "png",
-        };
-        (ext, raw_bytes)
-    };
-
-    let saved_mime_type = match ext {
-        "jpg" => "image/jpeg",
-        "png" => "image/png",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        _ => "image/png",
-    }
-    .to_string();
-
-    let slug = slugify(&session_title);
-    let (id_clone, bytes) = (image_id.clone(), image_bytes);
-    let mime_for_result = saved_mime_type.clone();
-    tokio::task::spawn_blocking(move || -> ChatImageResult<SaveChatImageResult> {
-        let app_dir = app_data_dir()?;
-        let images_dir = app_dir.join("chat-images").join(&slug);
-        std::fs::create_dir_all(&images_dir)
-            .map_err(io_error("创建聊天图片目录", images_dir.clone()))?;
-        let file_path = images_dir.join(format!("{}.{}", id_clone, ext));
-        std::fs::write(&file_path, &bytes).map_err(io_error("写入聊天图片", file_path.clone()))?;
-        Ok(SaveChatImageResult {
-            image_id: id_clone,
-            path: file_path.to_string_lossy().to_string(),
-            mime_type: mime_for_result,
-        })
-    })
-    .await?
-}
-
 /// Result of resolving a chat image by its identifier.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -353,30 +260,4 @@ async fn resolve_chat_image_impl(image_id: String) -> ChatImageResult<ResolveCha
         path: file_path.to_string_lossy().to_string(),
         mime_type,
     })
-}
-
-fn slugify(s: &str) -> String {
-    let s = s.trim();
-    if s.is_empty() {
-        return "untitled".to_string();
-    }
-    let slug: String = s
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == ' ' {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "untitled".to_string()
-    } else {
-        slug
-    }
 }

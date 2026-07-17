@@ -69,8 +69,7 @@ export function PromptInput({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Respect IME composition — don't hijack the Enter that confirms a CJK
-    // candidate. isComposing covers most browsers; the app also tracks a
-    // composition flag via useComposedInput for older WebKit.
+    // candidate.
     if (e.nativeEvent.isComposing || composingRef.current) return;
 
     if (e.key !== "Enter" || e.shiftKey) return;
@@ -91,7 +90,7 @@ export function PromptInput({
   return (
     <div
       className={cn(
-        "ai-prompt-terminal mx-auto w-full max-w-[920px] rounded-2xl border border-border bg-card p-2 shadow-soft",
+        "ai-prompt-terminal mx-auto w-full max-w-[768px] rounded-2xl border border-border bg-card p-2",
         className,
       )}
     >
@@ -111,9 +110,7 @@ export function PromptInput({
 
       <div className="ai-prompt-toolbar flex items-center gap-1 px-1 pt-1">
         {leadingSlot}
-        {models && onSelectModel && (
-          <ModelSelector models={models} onSelect={onSelectModel} />
-        )}
+        {models && onSelectModel && <ModelSelector models={models} onSelect={onSelectModel} />}
         <div className="flex-1" />
         {trailingSlot}
 
@@ -123,6 +120,7 @@ export function PromptInput({
               <Button
                 variant="destructive"
                 size="icon"
+                className="ai-composer-action is-stop"
                 aria-label="停止生成"
                 onClick={onStop}
               >
@@ -136,6 +134,7 @@ export function PromptInput({
             <TooltipTrigger asChild>
               <Button
                 size="icon"
+                className="ai-composer-action is-send"
                 aria-label="发送消息"
                 disabled={!canSend}
                 onClick={onSend}

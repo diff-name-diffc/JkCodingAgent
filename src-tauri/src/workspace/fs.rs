@@ -170,13 +170,6 @@ fn should_ignore_entry_name(name: &str, is_dir: bool) -> bool {
     IGNORED_FILES.contains(&name)
 }
 
-fn should_ignore_project_file(relative_path: &str) -> bool {
-    Path::new(relative_path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| should_ignore_entry_name(name, false))
-}
-
 #[tauri::command]
 pub async fn read_dir_entries(path: String, project_path: String) -> CommandResult<Vec<FsEntry>> {
     read_dir_entries_impl(&path, &project_path)
@@ -187,37 +180,43 @@ pub async fn read_dir_entries(path: String, project_path: String) -> CommandResu
 
 async fn read_dir_entries_impl(path: &str, project_path: &str) -> FsResult<Vec<FsEntry>> {
     validate_path_within(&path, &project_path)?;
-    let entries = std::fs::read_dir(path).map_err(io_error("读取目录", path))?;
-    let mut result: Vec<FsEntry> = entries
-        .flatten()
-        .filter(|entry| {
-            let p = entry.path();
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            !should_ignore_entry_name(name_str.as_ref(), p.is_dir())
+    let path = path.to_string();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> FsResult<Vec<FsEntry>> {
+            let entries = std::fs::read_dir(&path).map_err(io_error("读取目录", &path))?;
+            let mut result: Vec<FsEntry> = entries
+                .flatten()
+                .filter(|entry| {
+                    let p = entry.path();
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    !should_ignore_entry_name(name_str.as_ref(), p.is_dir())
+                })
+                .map(|entry| {
+                    let p = entry.path();
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let is_dir = p.is_dir();
+                    let extension = p
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_lowercase());
+                    FsEntry {
+                        name,
+                        path: p.to_string_lossy().into_owned(),
+                        is_dir,
+                        extension,
+                    }
+                })
+                .collect();
+            result.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            });
+            Ok(result)
         })
-        .map(|entry| {
-            let p = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let is_dir = p.is_dir();
-            let extension = p
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|s| s.to_lowercase());
-            FsEntry {
-                name,
-                path: p.to_string_lossy().into_owned(),
-                is_dir,
-                extension,
-            }
-        })
-        .collect();
-    result.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-    });
-    Ok(result)
+        .await?;
+    Ok(result?)
 }
 
 #[tauri::command]
@@ -395,44 +394,6 @@ async fn delete_fs_entry_impl(path: &str, project_path: &str) -> FsResult<()> {
     .await?
 }
 
-#[tauri::command]
-pub async fn list_project_files(project_path: String) -> CommandResult<Vec<String>> {
-    list_project_files_impl(&project_path)
-        .await
-        .with_context(|| format!("列出项目文件失败（{}）", project_path))
-        .into_command_result()
-}
-
-async fn list_project_files_impl(project_path: &str) -> FsResult<Vec<String>> {
-    let pp = project_path.to_string();
-    tauri::async_runtime::spawn_blocking(move || -> FsResult<Vec<String>> {
-        // Merge tracked + untracked into a single git command (P7 perf fix)
-        let output = std::process::Command::new("git")
-            .args([
-                "-c",
-                "core.quotePath=false",
-                "ls-files",
-                "-c",
-                "-o",
-                "--exclude-standard",
-            ])
-            .current_dir(&pp)
-            .output()
-            .map_err(io_error("执行 git ls-files", &pp))?;
-
-        let mut files: Vec<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter(|line| !line.is_empty() && !should_ignore_project_file(line))
-            .map(|l| l.to_string())
-            .collect();
-
-        files.sort();
-        files.dedup();
-        Ok(files)
-    })
-    .await?
-}
-
 // ─── Large-file support commands ────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
@@ -513,50 +474,6 @@ async fn get_file_meta_impl(path: &str, project_path: &str) -> FsResult<FileMeta
             line_count,
             is_text,
         })
-    })
-    .await?
-}
-
-/// Read a range of lines from a file (0-indexed start, exclusive end).
-/// Used for incremental rendering of large files.
-#[tauri::command]
-pub async fn read_file_chunk(
-    path: String,
-    project_path: String,
-    start_line: u64,
-    max_lines: u64,
-) -> CommandResult<Vec<String>> {
-    read_file_chunk_impl(&path, &project_path, start_line, max_lines)
-        .await
-        .with_context(|| format!("读取文件分块失败（{}）", path))
-        .into_command_result()
-}
-
-async fn read_file_chunk_impl(
-    path: &str,
-    project_path: &str,
-    start_line: u64,
-    max_lines: u64,
-) -> FsResult<Vec<String>> {
-    let validated_path = validate_path_within(&path, &project_path)?;
-
-    tauri::async_runtime::spawn_blocking(move || -> FsResult<Vec<String>> {
-        use std::io::{BufRead, BufReader};
-
-        let file =
-            std::fs::File::open(&validated_path).map_err(io_error("打开文件", &validated_path))?;
-        let reader = BufReader::with_capacity(64 * 1024, file);
-        let end_line = start_line + max_lines;
-
-        let lines: std::io::Result<Vec<String>> = reader
-            .lines()
-            .skip(start_line as usize)
-            .take((end_line - start_line) as usize)
-            .collect();
-
-        let lines = lines.map_err(io_error("读取文件行", &validated_path))?;
-
-        Ok(lines)
     })
     .await?
 }

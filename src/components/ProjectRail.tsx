@@ -12,23 +12,17 @@ function getProjectStatus(tasks: Task[], projectId: string): ProjectStatus {
   return null;
 }
 
+const STATUS_COLOR: Record<Exclude<ProjectStatus, null>, string> = {
+  attention: "var(--color-warning, #f59e0b)",
+  running: "var(--color-success, #22c55e)",
+};
+
 function StatusBadge({ status }: { status: ProjectStatus }) {
   if (!status) return null;
-  const isAttention = status === "attention";
   return (
     <span
       className={`ai-project-status-dot ai-project-status-${status}`}
-      style={{
-        position: "absolute",
-        bottom: -1,
-        right: -1,
-        width: 9,
-        height: 9,
-        borderRadius: "50%",
-        background: isAttention ? "var(--color-warning, #f59e0b)" : "var(--color-success, #22c55e)",
-        border: "2px solid var(--bg-sidebar)",
-        boxSizing: "border-box" as const,
-      }}
+      style={{ background: STATUS_COLOR[status] }}
     />
   );
 }
@@ -44,35 +38,11 @@ function RailItem({
   status: ProjectStatus;
   onSwitch: (p: Project) => void;
 }) {
-  const [hov, setHov] = useState(false);
-
   return (
     <button
       title={project.name}
       onClick={() => onSwitch(project)}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
       className={isActive ? "ai-project-rail-item is-active" : "ai-project-rail-item"}
-      style={{
-        position: "relative",
-        width: 36,
-        height: 36,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "none",
-        border: "none",
-        borderRadius: 10,
-        cursor: isActive ? "default" : "pointer",
-        padding: 0,
-        outline: isActive
-          ? "2px solid var(--accent)"
-          : hov
-            ? "2px solid var(--border-medium)"
-            : "2px solid transparent",
-        outlineOffset: 1,
-        transition: isActive ? "none" : "outline-color 0.12s",
-      }}
     >
       <ProjectAvatar name={project.name} size={28} />
       <StatusBadge status={status} />
@@ -106,39 +76,9 @@ function ProjectDrawer({
   }, [onClose]);
 
   return (
-    <div
-      ref={drawerRef}
-      className="ai-project-drawer"
-      style={{
-        position: "absolute",
-        left: 52,
-        top: 0,
-        bottom: 0,
-        width: 220,
-        background: "var(--bg-panel)",
-        borderRight: "1px solid var(--border-dim)",
-        display: "flex",
-        flexDirection: "column",
-        zIndex: 50,
-        boxShadow: "4px 0 16px rgba(0,0,0,0.12)",
-      }}
-    >
-      <div
-        className="ai-project-drawer-title"
-        style={{
-          padding: "14px 14px 8px",
-          fontSize: 11,
-          fontWeight: 700,
-          color: "var(--text-hint)",
-          letterSpacing: 0.7,
-          textTransform: "uppercase",
-          borderBottom: "1px solid var(--border-dim)",
-          marginBottom: 4,
-        }}
-      >
-        项目
-      </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: "4px 8px 8px" }}>
+    <div ref={drawerRef} className="ai-project-drawer">
+      <div className="ai-project-drawer-title">项目</div>
+      <div className="ai-project-drawer-list">
         {projects.map((project) => {
           const status = getProjectStatus(allTasks, project.id);
           const isActive = project.id === activeProjectId;
@@ -150,60 +90,17 @@ function ProjectDrawer({
                 onSwitch(project);
                 onClose();
               }}
-              style={{
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "8px 8px",
-                borderRadius: 8,
-                border: "none",
-                background: isActive ? "var(--accent-subtle)" : "none",
-                cursor: isActive ? "default" : "pointer",
-                textAlign: "left",
-                transition: "background 0.12s",
-              }}
-              onMouseEnter={(e) => {
-                if (!isActive)
-                  (e.currentTarget as HTMLButtonElement).style.background = "var(--bg-hover)";
-              }}
-              onMouseLeave={(e) => {
-                if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = "none";
-              }}
             >
-              <div style={{ position: "relative", flexShrink: 0 }}>
+              <div className="ai-project-drawer-avatar">
                 <ProjectAvatar name={project.name} size={28} />
                 {status && (
                   <span
-                    style={{
-                      position: "absolute",
-                      bottom: -1,
-                      right: -1,
-                      width: 9,
-                      height: 9,
-                      borderRadius: "50%",
-                      background:
-                        status === "attention"
-                          ? "var(--color-warning, #f59e0b)"
-                          : "var(--color-success, #22c55e)",
-                      border: "2px solid var(--bg-panel)",
-                      boxSizing: "border-box",
-                    }}
+                    className="ai-project-drawer-status-dot"
+                    style={{ background: STATUS_COLOR[status] }}
                   />
                 )}
               </div>
-              <span
-                style={{
-                  fontSize: 13,
-                  fontWeight: isActive ? 600 : 500,
-                  color: isActive ? "var(--accent)" : "var(--text-primary)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {project.name}
-              </span>
+              <span className="ai-project-drawer-name">{project.name}</span>
             </button>
           );
         })}
@@ -229,48 +126,15 @@ export function ProjectRail({
   onSwitch: (project: Project) => void;
   onOpen: () => void;
 }) {
-  const [addHov, setAddHov] = useState(false);
-  const [expandHov, setExpandHov] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
-    <div
-      className="ai-project-rail"
-      style={{
-        position: "relative",
-        width: 52,
-        flexShrink: 0,
-        background: "var(--bg-sidebar)",
-        borderRight: "1px solid var(--border-dim)",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        paddingTop: 10,
-        paddingBottom: 10,
-        gap: 5,
-        overflow: "visible",
-        zIndex: drawerOpen ? 50 : "auto",
-      }}
-    >
+    <div className="ai-project-rail" style={{ zIndex: drawerOpen ? 50 : "auto" }}>
       {sessionSidebarCollapsed && (
         <button
           className="ai-project-rail-control is-attention"
           title="展开会话列表"
           onClick={onExpandSessionSidebar}
-          style={{
-            width: 32,
-            height: 32,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "var(--accent-subtle)",
-            border: "1px solid color-mix(in srgb, var(--accent) 24%, var(--border-dim))",
-            borderRadius: 8,
-            cursor: "pointer",
-            color: "var(--accent)",
-            marginBottom: 4,
-            boxShadow: "0 8px 20px rgba(15, 23, 42, 0.08)",
-          }}
         >
           <ChevronRight size={15} strokeWidth={2.5} />
         </button>
@@ -289,61 +153,20 @@ export function ProjectRail({
         />
       ))}
 
-      <div style={{ flex: 1 }} />
+      <div className="ai-project-rail-spacer" />
 
       <button
         className={drawerOpen ? "ai-project-rail-control is-active" : "ai-project-rail-control"}
         title="显示全部项目"
         onClick={() => setDrawerOpen((v) => !v)}
-        onMouseEnter={() => setExpandHov(true)}
-        onMouseLeave={() => setExpandHov(false)}
-        style={{
-          width: 32,
-          height: 32,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: drawerOpen ? "var(--accent-subtle)" : expandHov ? "var(--bg-hover)" : "none",
-          border: "none",
-          borderRadius: 8,
-          cursor: "pointer",
-          color: drawerOpen
-            ? "var(--accent)"
-            : expandHov
-              ? "var(--text-muted)"
-              : "var(--text-hint)",
-          transition: "background 0.12s, color 0.12s",
-        }}
       >
-        <ChevronsRight
-          size={14}
-          strokeWidth={2.5}
-          style={{
-            transform: drawerOpen ? "rotate(180deg)" : "none",
-            transition: "transform 0.18s",
-          }}
-        />
+        <ChevronsRight size={14} strokeWidth={2.5} className="ai-project-rail-control-icon" />
       </button>
 
       <button
         className="ai-project-rail-control ai-project-rail-add"
         title="打开项目"
         onClick={onOpen}
-        onMouseEnter={() => setAddHov(true)}
-        onMouseLeave={() => setAddHov(false)}
-        style={{
-          width: 32,
-          height: 32,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: addHov ? "var(--bg-hover)" : "none",
-          border: "1.5px dashed var(--border-medium)",
-          borderRadius: 8,
-          cursor: "pointer",
-          color: addHov ? "var(--text-muted)" : "var(--text-hint)",
-          transition: "background 0.12s, color 0.12s",
-        }}
       >
         <Plus size={14} strokeWidth={2.5} />
       </button>

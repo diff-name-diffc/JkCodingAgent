@@ -5,7 +5,7 @@ import type {
   DispatcherToolArtifactRef,
   DispatcherToolResultMode,
 } from "../types";
-import type { ToolActivityItem } from "./ToolActivityBubble";
+import type { ToolActivityItem } from "./dispatcher-chat/tool-activity";
 
 interface OutboundToolCall {
   id?: string;

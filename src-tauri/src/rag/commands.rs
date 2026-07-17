@@ -167,20 +167,6 @@ async fn rag_save_kb_config_impl(
     Ok(serde_json::json!({ "saved": true, "reloaded": manager.is_running() }))
 }
 
-/// 代理调用 sidecar 的 GET /health（便于前端确认服务就绪）。
-#[tauri::command]
-pub async fn rag_health(manager: State<'_, RagManager>) -> CommandResult<Value> {
-    rag_health_impl(manager)
-        .await
-        .context("读取 RAG 健康状态失败")
-        .into_command_result()
-}
-
-async fn rag_health_impl(manager: State<'_, RagManager>) -> anyhow::Result<Value> {
-    let handle = manager.current().ok_or_else(no_port_error)?;
-    handle.transport.health().await.context("GET RAG /health")
-}
-
 /// 保存当前草稿配置，并交给 sidecar 测试 Qdrant。
 ///
 /// 约束：配置权威存储在桌面端；测试动作在无状态 sidecar 内完成。
@@ -247,24 +233,6 @@ async fn rag_test_embedding_impl(
         .test_embedding(&config)
         .await
         .context("POST RAG /test/embedding")
-}
-
-/// 代理调用 sidecar 的 GET /config（脱敏视图）。
-#[tauri::command]
-pub async fn rag_sidecar_config(manager: State<'_, RagManager>) -> CommandResult<Value> {
-    rag_sidecar_config_impl(manager)
-        .await
-        .context("读取 RAG sidecar 配置失败")
-        .into_command_result()
-}
-
-async fn rag_sidecar_config_impl(manager: State<'_, RagManager>) -> anyhow::Result<Value> {
-    let handle = manager.current().ok_or_else(no_port_error)?;
-    handle
-        .transport
-        .get_config()
-        .await
-        .context("GET RAG /config")
 }
 
 /// 返回当前内存中的 RAG sidecar 滚动日志。

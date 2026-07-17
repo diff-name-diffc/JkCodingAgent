@@ -28,22 +28,7 @@ export function RightToolbar({
   const placeholders = [{ icon: <Search size={17} />, title: "搜索（即将上线）" }];
 
   return (
-    <div
-      className="ai-project-right-toolbar"
-      style={{
-        width: 44,
-        flexShrink: 0,
-        background: "var(--bg-sidebar)",
-        borderLeft: "1px solid var(--border-dim)",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        paddingTop: 6,
-        paddingBottom: 8,
-        gap: 2,
-        overflow: "hidden",
-      }}
-    >
+    <div className="ai-project-right-toolbar">
       {buttons.map((btn) => (
         <IconButton
           key={btn.key}
@@ -61,12 +46,12 @@ export function RightToolbar({
         onClick={onToggleTerminal}
       />
 
-      <div style={{ width: 20, height: 1, background: "var(--border-dim)", margin: "4px 0" }} />
+      <div className="ai-project-right-toolbar-divider" />
 
       {placeholders.map((p, i) => (
         <IconButton key={i} icon={p.icon} title={p.title} disabled />
       ))}
-      <div style={{ flex: 1 }} />
+      <div className="ai-project-right-toolbar-spacer" />
     </div>
   );
 }

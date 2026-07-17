@@ -1,27 +1,19 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { ThemeMode } from "../types";
 
 /**
- * Pure-frontend UI state for the refactored Chat surface.
+ * Pure-frontend UI state for the Chat surface.
  *
- * Scope deliberately kept narrow:
+ * Scope:
  *   - layout flags (sidebar / artifact panel)
- *   - theme mirror (the source of truth for applying `html.dark` still lives
- *     in App.tsx so we don't break the existing Radix Themes Theme wrapper;
- *     this store only mirrors the user's *choice* for components that need to
- *     read it without prop-drilling)
  *   - active conversation id
  *   - command-palette open state
  *
- * Chat message state, streaming state and the existing singleton stores
- * (dispatcherSessionStore / subAgentEventStore) are NOT moved here — they are
- * kept as-is per the refactor's "do not break existing logic" constraint.
+ * The app ships a single light theme, so there is no theme state here.
  */
 export interface UIState {
   sidebarCollapsed: boolean;
   artifactPanelOpen: boolean;
-  theme: ThemeMode;
   activeConversationId: string | null;
   commandPaletteOpen: boolean;
 
@@ -30,8 +22,6 @@ export interface UIState {
 
   setArtifactPanelOpen: (open: boolean) => void;
   toggleArtifactPanel: () => void;
-
-  setTheme: (theme: ThemeMode) => void;
 
   setActiveConversationId: (id: string | null) => void;
 
@@ -44,7 +34,6 @@ export const useUIStore = create<UIState>()(
     (set) => ({
       sidebarCollapsed: false,
       artifactPanelOpen: false,
-      theme: "system",
       activeConversationId: null,
       commandPaletteOpen: false,
 
@@ -54,8 +43,6 @@ export const useUIStore = create<UIState>()(
       setArtifactPanelOpen: (open) => set({ artifactPanelOpen: open }),
       toggleArtifactPanel: () =>
         set((s) => ({ artifactPanelOpen: !s.artifactPanelOpen })),
-
-      setTheme: (theme) => set({ theme }),
 
       setActiveConversationId: (id) => set({ activeConversationId: id }),
 
@@ -67,8 +54,11 @@ export const useUIStore = create<UIState>()(
       name: "jkcodingagent:ui",
       partialize: (s) => ({
         sidebarCollapsed: s.sidebarCollapsed,
-        theme: s.theme,
       }),
+      // Clean up legacy theme keys left over from the removed theme switcher.
+      onRehydrateStorage: () => () => {
+        localStorage.removeItem("jkcodingagent:theme");
+      },
     },
   ),
 );

@@ -454,15 +454,6 @@ pub fn claude_version_gte(saved_version: &str, min_version: &str) -> bool {
     parse_semver(&version) >= parse_semver(min_version)
 }
 
-/// Tauri 命令：检测 Claude 和 Codex 的版本并返回。
-#[tauri::command]
-pub fn detect_agent_versions() -> CommandResult<AgentVersions> {
-    Ok(AgentVersions {
-        claude_version: detect_claude_version().unwrap_or_default(),
-        codex_version: detect_codex_version().unwrap_or_default(),
-    })
-}
-
 #[tauri::command]
 pub fn detect_agent_versions_for_settings(settings: AppSettings) -> CommandResult<AgentVersions> {
     Ok(detect_versions_for_settings(&settings))

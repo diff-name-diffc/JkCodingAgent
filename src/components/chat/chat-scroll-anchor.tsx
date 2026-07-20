@@ -43,7 +43,7 @@ export function ChatScrollAnchor({
             <Button
               variant="outline"
               size="sm"
-              className="pointer-events-auto gap-1.5 rounded-full border-border bg-card/90 px-3 shadow-medium backdrop-blur"
+              className="pointer-events-auto gap-1.5 rounded-full border-border/70 bg-background/80 px-3 shadow-medium backdrop-blur-md"
               onClick={onJumpToLatest}
               aria-label="跳转到最新"
             >

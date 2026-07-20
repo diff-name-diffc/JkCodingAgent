@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
+use serde_json::Value;
 use tauri::AppHandle;
 
 use crate::agent::db::settings::SshReviewConfig;
@@ -30,4 +32,10 @@ pub struct ToolContext {
     pub sub_agent_tool_registry: Option<Arc<ToolRegistry>>,
     pub current_sub_agent_id: Option<String>,
     pub current_sub_agent_name: Option<String>,
+    /// 当前正在执行的 LLM 工具调用 ID，由 ToolRuntime 在调用前注入。
+    pub current_tool_call_id: Option<String>,
+    /// 父级 call_sub_agent 的工具调用 ID，供子智能体内部事件稳定关联。
+    pub sub_agent_parent_tool_call_id: Option<String>,
+    /// 子智能体运行期间聚合的可持久化事件；根 Agent 上下文中为 None。
+    pub sub_agent_trace_events: Option<Arc<Mutex<Vec<Value>>>>,
 }

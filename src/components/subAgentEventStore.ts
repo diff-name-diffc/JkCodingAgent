@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { SubAgentEventPayload, SubAgentUsage } from "../types";
+import type { SubAgentEvent, SubAgentEventPayload, SubAgentUsage } from "../types";
 
 export interface EventLine {
   id: string;
@@ -63,8 +63,8 @@ const starts: Record<string, number> = {};
 const subscribers = new Set<Subscriber>();
 let listenerRegistered = false;
 
-function keyFor(sessionId: string, agentId: string): string {
-  return `${sessionId}:${agentId}`;
+function keyFor(sessionId: string, toolCallId: string): string {
+  return `${sessionId}:${toolCallId}`;
 }
 
 function snapshotForSession(sessionId: string): SessionMap {
@@ -106,22 +106,17 @@ function buildEventText(eventType: string, data: SubAgentEventPayload["data"]): 
   return "";
 }
 
-function registerGlobalListener(): void {
-  if (listenerRegistered) return;
-  listenerRegistered = true;
-
-  listen<SubAgentEventPayload>("sub-agent-event", (event) => {
-    const payload = event.payload;
-    const { sessionId, event: eventType, data } = payload;
+function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): void {
+    const { sessionId, toolCallId, event: eventType, data } = payload;
     const agentId = data.agentId ?? "unknown";
-    const now = Date.now();
+    const now = payload.timestampMs || Date.now();
 
     if (!store[sessionId]) {
       store[sessionId] = {};
     }
     const sessionMap = store[sessionId];
-    const existing = sessionMap[agentId];
-    const storeKey = keyFor(sessionId, agentId);
+    const existing = sessionMap[toolCallId];
+    const storeKey = keyFor(sessionId, toolCallId);
 
     let name: string;
     let task: string;
@@ -244,7 +239,7 @@ function registerGlobalListener(): void {
           ? []
           : existing?.progressMessages ?? [];
 
-    sessionMap[agentId] = {
+    sessionMap[toolCallId] = {
       agentId,
       name,
       task,
@@ -261,7 +256,15 @@ function registerGlobalListener(): void {
       usageReceivedAt,
       iterations,
     };
-    notify();
+    if (notifyAfter) notify();
+}
+
+function registerGlobalListener(): void {
+  if (listenerRegistered) return;
+  listenerRegistered = true;
+
+  listen<SubAgentEventPayload>("sub-agent-event", (event) => {
+    applySubAgentEvent(event.payload);
   });
 }
 
@@ -284,13 +287,24 @@ export function useSubAgentSessions(sessionId: string): SessionMap {
   return snapshot;
 }
 
-export function extractAgentIdsFromToolInput(input: string | undefined): string | null {
-  if (!input) return null;
-  try {
-    const parsed = JSON.parse(input);
-    const id = parsed?.agent_id;
-    return typeof id === "string" ? id : null;
-  } catch {
-    return null;
+export function getSubAgentSession(
+  sessionId: string,
+  toolCallId: string,
+): SubAgentSession | null {
+  return store[sessionId]?.[toolCallId] ?? null;
+}
+
+export function hydrateSubAgentTrace(
+  sessionId: string,
+  toolCallId: string,
+  events: SubAgentEvent[],
+): SubAgentSession | null {
+  if (!store[sessionId]) store[sessionId] = {};
+  delete store[sessionId][toolCallId];
+  delete starts[keyFor(sessionId, toolCallId)];
+  for (const event of events) {
+    applySubAgentEvent({ sessionId, toolCallId, timestampMs: Date.now(), ...event }, false);
   }
+  notify();
+  return getSubAgentSession(sessionId, toolCallId);
 }

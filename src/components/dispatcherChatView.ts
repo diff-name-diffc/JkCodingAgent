@@ -50,6 +50,7 @@ export function buildDispatcherDisplayItems(
   messages: DispatcherMessage[],
 ): DispatcherDisplayItem[] {
   const items: DispatcherDisplayItem[] = [];
+  const toolStartedAt = new Map<string, number>();
   let currentTurn: DispatcherAssistantTurn | null = null;
 
   const ensureAssistantTurn = (seedId: string) => {
@@ -90,11 +91,13 @@ export function buildDispatcherDisplayItems(
 
       const toolCalls = parseToolCalls(message.toolCallsJson);
       for (const toolCall of toolCalls) {
+        const id = toolCall.id || `${message.id}-${toolCall.name}`;
+        toolStartedAt.set(id, Date.parse(message.createdAt));
         upsertToolActivity(turn.tools, {
-          key: toolCall.id || `${message.id}-${toolCall.name}`,
+          id,
           name: toolCall.name || "tool",
           input: prettyPrintToolPayload(toolCall.arguments),
-          status: "completed",
+          status: "running",
         });
       }
 
@@ -118,15 +121,30 @@ export function buildDispatcherDisplayItems(
 
     if (message.role === "tool") {
       const shouldInlineSummary = shouldRenderToolSummaryInline(message.toolResultMode);
-      const displayText = shouldInlineSummary ? undefined : message.content;
+      const output = message.content;
+      const id =
+        message.toolCallId ||
+        [...turn.tools]
+          .reverse()
+          .find((tool) => tool.name === (message.toolName || "tool") && tool.status === "running")
+          ?.id ||
+        `${message.id}-${message.toolName || "tool"}`;
+      const errorText = getToolErrorText(message.content);
+      const startedAtMs = toolStartedAt.get(id);
+      const finishedAtMs = Date.parse(message.createdAt);
 
       upsertToolActivity(turn.tools, {
-        key: message.toolCallId || `${message.id}-${message.toolName || "tool"}`,
+        id,
         name: message.toolName || "tool",
-        displayText,
+        output,
+        errorText,
+        durationMs:
+          startedAtMs != null && Number.isFinite(finishedAtMs)
+            ? Math.max(0, finishedAtMs - startedAtMs)
+            : undefined,
         detailRefs: message.toolArtifacts,
         resultMode: message.toolResultMode,
-        status: "completed",
+        status: errorText ? "error" : "success",
       });
 
       const content = message.content.trim();
@@ -157,12 +175,18 @@ export function startLiveToolActivity(
   payload: { toolCallId?: string; name: string; arguments: string },
 ): ToolActivityItem[] {
   const nextTools = [...tools];
-  const key = payload.toolCallId || createLiveToolKey(payload.name, nextTools.length);
+  const plannedId = payload.toolCallId
+    ? undefined
+    : [...nextTools]
+        .reverse()
+        .find((tool) => tool.name === payload.name && tool.status === "running")?.id;
+  const key = payload.toolCallId || plannedId || createLiveToolKey(payload.name, nextTools.length);
   upsertToolActivity(nextTools, {
-    key,
+    id: key,
     name: payload.name,
     input: prettyPrintToolPayload(payload.arguments),
     status: "running",
+    startedAtMs: Date.now(),
   });
   return nextTools;
 }
@@ -174,10 +198,11 @@ export function planLiveToolActivity(
   const nextTools = [...tools];
   const key = payload.toolCallId || createLiveToolKey(payload.name, nextTools.length);
   upsertToolActivity(nextTools, {
-    key,
+    id: key,
     name: payload.name,
     input: prettyPrintToolPayload(payload.arguments),
-    status: "planned",
+    status: "running",
+    startedAtMs: Date.now(),
   });
   return nextTools;
 }
@@ -194,7 +219,7 @@ export function finishLiveToolActivity(
 ): ToolActivityItem[] {
   const nextTools = [...tools];
   const byToolCallId = payload.toolCallId
-    ? nextTools.findIndex((tool) => tool.key === payload.toolCallId)
+    ? nextTools.findIndex((tool) => tool.id === payload.toolCallId)
     : -1;
   let byRunningName = -1;
   for (let index = nextTools.length - 1; index >= 0; index -= 1) {
@@ -207,25 +232,29 @@ export function finishLiveToolActivity(
   const matchIndex = byToolCallId >= 0 ? byToolCallId : byRunningName;
 
   if (matchIndex >= 0) {
+    const current = nextTools[matchIndex];
+    const errorText = getToolErrorText(payload.displayText);
     nextTools[matchIndex] = {
-      ...nextTools[matchIndex],
-      displayText: shouldRenderToolSummaryInline(payload.resultMode)
-        ? undefined
-        : payload.displayText,
+      ...current,
+      output: payload.displayText,
+      errorText,
+      durationMs: current.startedAtMs == null ? undefined : Date.now() - current.startedAtMs,
       detailRefs: payload.detailRefs,
       resultMode: payload.resultMode,
-      status: "completed",
+      status: errorText ? "error" : "success",
     };
     return nextTools;
   }
 
+  const errorText = getToolErrorText(payload.displayText);
   nextTools.push({
-    key: payload.toolCallId || createLiveToolKey(payload.name, nextTools.length),
+    id: payload.toolCallId || createLiveToolKey(payload.name, nextTools.length),
     name: payload.name,
-    displayText: shouldRenderToolSummaryInline(payload.resultMode) ? undefined : payload.displayText,
+    output: payload.displayText,
+    errorText,
     detailRefs: payload.detailRefs,
     resultMode: payload.resultMode,
-    status: "completed",
+    status: errorText ? "error" : "success",
   });
   return nextTools;
 }
@@ -243,7 +272,7 @@ export function updateLiveBrowserToolActivity(
     if (tool.status === "running" && tool.name.startsWith("browser_")) {
       nextTools[index] = {
         ...tool,
-        displayText: message,
+        output: message,
       };
       return nextTools;
     }
@@ -351,7 +380,7 @@ function parseToolCalls(raw: string | undefined): Array<{
 }
 
 function upsertToolActivity(tools: ToolActivityItem[], incoming: ToolActivityItem) {
-  const index = tools.findIndex((tool) => tool.key === incoming.key);
+  const index = tools.findIndex((tool) => tool.id === incoming.id);
   if (index < 0) {
     tools.push(incoming);
     return;
@@ -361,10 +390,30 @@ function upsertToolActivity(tools: ToolActivityItem[], incoming: ToolActivityIte
     ...tools[index],
     ...incoming,
     input: incoming.input ?? tools[index].input,
-    displayText: incoming.displayText ?? tools[index].displayText,
+    output: incoming.output ?? tools[index].output,
+    errorText: incoming.errorText ?? tools[index].errorText,
+    durationMs: incoming.durationMs ?? tools[index].durationMs,
     detailRefs: incoming.detailRefs ?? tools[index].detailRefs,
     resultMode: incoming.resultMode ?? tools[index].resultMode,
+    startedAtMs: tools[index].startedAtMs ?? incoming.startedAtMs,
   };
+}
+
+function getToolErrorText(output: string): string | undefined {
+  const trimmed = output.trim();
+  if (/^(错误：|错误:|error:|failed:|失败：|失败:)/i.test(trimmed)) return trimmed;
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      const error = (parsed as { error?: unknown }).error;
+      if (typeof error === "string" && error.trim()) return error.trim();
+    }
+  } catch {
+    // 普通文本结果不是异常，只有明确错误前缀或 error 字段才进入失败态。
+  }
+
+  return undefined;
 }
 
 function browserStateLabel(state: string): string {
@@ -400,9 +449,11 @@ function mergeTurnUsageStats(
   }
 
   turn.usageStats = {
-    promptTokens: turn.usageStats.promptTokens + incoming.promptTokens,
-    completionTokens: turn.usageStats.completionTokens + incoming.completionTokens,
-    totalTokens: turn.usageStats.totalTokens + incoming.totalTokens,
+    // Usage snapshots are cumulative for one user turn. Summing multiple
+    // assistant snapshots double-counts earlier model calls.
+    promptTokens: Math.max(turn.usageStats.promptTokens, incoming.promptTokens),
+    completionTokens: Math.max(turn.usageStats.completionTokens, incoming.completionTokens),
+    totalTokens: Math.max(turn.usageStats.totalTokens, incoming.totalTokens),
     elapsedMs: Math.max(turn.usageStats.elapsedMs, incoming.elapsedMs),
   };
 }

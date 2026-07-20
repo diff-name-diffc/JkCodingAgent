@@ -558,6 +558,9 @@ impl PlainChatAgent {
             sub_agent_tool_registry: Some(Arc::clone(&self.tools)),
             current_sub_agent_id: None,
             current_sub_agent_name: None,
+            current_tool_call_id: None,
+            sub_agent_parent_tool_call_id: None,
+            sub_agent_trace_events: None,
         }
     }
 

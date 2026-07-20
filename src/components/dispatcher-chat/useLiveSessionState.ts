@@ -31,6 +31,7 @@ export function useLiveSessionStateReadonly(
       setState(null);
       return;
     }
+    setState(getDispatcherLiveSessionState(sessionId) ?? null);
     const unsubscribe = subscribeDispatcherLiveSession(sessionId, (next) => {
       setState(next);
     });

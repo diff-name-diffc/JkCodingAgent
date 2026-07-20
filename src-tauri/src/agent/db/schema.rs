@@ -22,7 +22,7 @@ impl DispatcherDb {
         let mut conn = self.conn()?;
 
         // Fast path: if schema is already at the expected version, skip all DDL.
-        const SCHEMA_VERSION: i32 = 19;
+        const SCHEMA_VERSION: i32 = 20;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -593,6 +593,17 @@ impl DispatcherDb {
             apply_scenario_chat_category_defaults_tx(&tx)?;
             tx.commit()
                 .context("v14: commit scenario chat category config migration")?;
+        }
+
+        // v19 → v20: persist completed/failed sub-agent execution traces by
+        // parent tool_call_id so historical message cards remain inspectable.
+        if current_version < 20 {
+            let tx = conn
+                .transaction()
+                .context("v20: begin sub-agent trace migration")?;
+            crate::agent::sub_agent::db::ensure_sub_agent_trace_table_tx(&tx)?;
+            tx.commit()
+                .context("v20: commit sub-agent trace migration")?;
         }
 
         drop_obsolete_planning_columns(&conn)?;

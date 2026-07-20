@@ -1,5 +1,19 @@
 /* ── Design Tokens ─────────────────────────────────────────────── */
 :root {
+  color-scheme: light;
+  --background: #f6f7f4;
+  --foreground: #1f2328;
+  --card: #fffefa;
+  --muted: #edf0ec;
+  --muted-foreground: #6a717f;
+  --border: #d8ddd8;
+  --accent: #297c70;
+  --accent-soft: #dcece8;
+  --destructive: #dc2626;
+  --accent-foreground: #ffffff;
+  --destructive-foreground: #ffffff;
+  --composer-shadow: 0 4px 16px rgb(0 0 0 / 0.06);
+
   --brand-graphite: #202522;
   --brand-graphite-2: #2e3531;
   --brand-mist: #f4f6f1;
@@ -13,10 +27,12 @@
   --bg-root: #d6d9d3;
   --bg-shell: #ebece7;
   --bg-titlebar: #e4e6e0;
+  /* 页面级背景（聊天主区等通栏页面统一引用此令牌） */
+  --background: #f6f7f4;
   --bg-sidebar: #eceee9;
   --bg-sidebar-elevated: #e0e3dd;
   --bg-panel: #f4f4ef;
-  --bg-card: #faf9f5;
+  --bg-card: var(--card);
   --bg-hover: #e2e6e1;
   --bg-selected: #d9e8e3;
   --bg-subtle: #e9ece6;
@@ -26,14 +42,14 @@
   --bg-gradient-sidebar: linear-gradient(180deg, #eff1ec 0%, #e7e9e4 100%);
 
   --border-dim: rgba(30, 39, 36, 0.1);
-  --border-medium: rgba(30, 39, 36, 0.17);
+  --border-medium: var(--border);
   --border-strong: rgba(30, 39, 36, 0.28);
   --border-focus: #297c70;
   --border-accent: rgba(41, 124, 112, 0.4);
 
-  --text-primary: #17201d;
+  --text-primary: var(--foreground);
   --text-secondary: #3f4a46;
-  --text-muted: #68736f;
+  --text-muted: var(--muted-foreground);
   --text-hint: #89928e;
   --text-on-accent: #ffffff;
   --text-link: #1f665d;
@@ -41,7 +57,7 @@
 
   --accent: #297c70;
   --accent-strong: #1f665d;
-  --accent-soft: rgba(41, 124, 112, 0.2);
+  --accent-soft: #dcece8;
   --accent-hover: #18554e;
   --accent-subtle: rgba(41, 124, 112, 0.09);
   --accent-pressed: #134843;
@@ -54,6 +70,21 @@
   --warning-rgb: 249 115 22;
   --success-rgb: 22 163 74;
   --info-rgb: 37 99 235;
+  /* Tailwind 颜色别名用的 RGB 三元组（与上方 hex 令牌保持一致）——
+     tailwind.config.js 以 `rgb(var(--x-rgb) / <alpha-value>)` 引用，
+     使带透明度修饰的工具类（如 bg-card/70）能够被生成 */
+  --bg-card-rgb: 255 254 250;
+  --bg-subtle-rgb: 237 240 236;
+  --bg-input-rgb: 251 250 246;
+  --bg-sidebar-rgb: 236 238 233;
+  --bg-sidebar-elevated-rgb: 224 227 221;
+  --bg-selected-rgb: 217 232 227;
+  --bg-hover-rgb: 226 230 225;
+  --text-primary-rgb: 31 35 40;
+  --text-secondary-rgb: 63 74 70;
+  --text-muted-rgb: 106 113 127;
+  --border-medium-rgb: 30 39 36;
+  --accent-hover-rgb: 24 85 78;
 
   --chat-shell-bg: #ebece7;
   --chat-sidebar-bg: #eceee9;
@@ -66,7 +97,7 @@
   --chat-shadow-soft: 0 6px 18px rgba(31, 42, 38, 0.07);
   --chat-user-bubble-bg: #dcebe7;
   --chat-user-bubble-text: var(--text-primary);
-  --chat-composer-shadow: 0 8px 30px rgb(23 32 29 / 0.08);
+  --chat-composer-shadow: var(--composer-shadow);
   --motion-fast: 120ms;
   --motion-normal: 180ms;
   --motion-slow: 280ms;
@@ -83,6 +114,13 @@
   --markdown-code-text: #0f1e1c;
   --markdown-code-muted: #4a605c;
   --markdown-code-shadow: 0 14px 28px rgba(13, 148, 136, 0.1);
+  --streamdown-code-bg: #0d1117;
+  --streamdown-code-toolbar-bg: #161b22;
+  --streamdown-code-hover-bg: #252c35;
+  --streamdown-code-border: #30363d;
+  --streamdown-code-text: #e6edf3;
+  --streamdown-code-muted: #9ba7b4;
+  --streamdown-code-shadow: 0 12px 28px rgba(13, 17, 23, 0.16);
   --markdown-math-bg: #f0f9f7;
   --markdown-math-border: rgba(13, 148, 136, 0.28);
   --markdown-math-text: #0c2a27;
@@ -90,7 +128,7 @@
 
   --success: #16a34a;
   --warning: var(--brand-ember);
-  --danger: #dc2626;
+  --danger: var(--destructive);
   --usage-good: #22c55e;
   --usage-warn: #f59e0b;
   --usage-danger: #ef4444;
@@ -136,6 +174,92 @@
   --sf-glow-cyan: 0 0 20px rgba(13, 148, 136, 0.08);
 }
 
+.dark {
+  color-scheme: dark;
+  --background: #111513;
+  --foreground: #e7ece9;
+  --card: #171c19;
+  --muted: #202621;
+  --muted-foreground: #a2aaa5;
+  --border: #323a35;
+  --accent: #55c7ad;
+  --accent-soft: #183c34;
+  --destructive: #f87171;
+  --accent-foreground: #0d1f1a;
+  --destructive-foreground: #260b0b;
+  --composer-shadow: 0 4px 16px rgb(0 0 0 / 0.28);
+  --bg-root: #0d100f;
+  --bg-shell: var(--background);
+  --bg-titlebar: #141916;
+  --bg-sidebar: #141916;
+  --bg-sidebar-elevated: var(--muted);
+  --bg-panel: #151a17;
+  --bg-card: var(--card);
+  --bg-hover: #252c28;
+  --bg-selected: var(--accent-soft);
+  --bg-subtle: var(--muted);
+  --bg-input: #121714;
+  --bg-elevated: #1b211d;
+  --bg-gradient-surface: linear-gradient(180deg, #1b211d 0%, #151a17 100%);
+  --bg-gradient-sidebar: linear-gradient(180deg, #171c19 0%, #121714 100%);
+  --border-dim: rgb(231 236 233 / 0.09);
+  --border-medium: var(--border);
+  --border-strong: #48534c;
+  --border-focus: var(--accent);
+  --border-accent: rgb(85 199 173 / 0.44);
+  --text-primary: var(--foreground);
+  --text-secondary: #c3cbc6;
+  --text-muted: var(--muted-foreground);
+  --text-hint: #7f8983;
+  --text-on-accent: var(--accent-foreground);
+  --text-link: #70d6be;
+  --accent-strong: #70d6be;
+  --accent-hover: #65d0b7;
+  --accent-subtle: rgb(85 199 173 / 0.1);
+  --accent-pressed: #43ad95;
+  --accent-gradient: linear-gradient(135deg, #65d0b7 0%, #43ad95 100%);
+  --accent-rgb: 85 199 173;
+  --accent-strong-rgb: 112 214 190;
+  --danger-rgb: 248 113 113;
+  --bg-card-rgb: 23 28 25;
+  --bg-subtle-rgb: 32 38 33;
+  --bg-input-rgb: 18 23 20;
+  --bg-sidebar-rgb: 20 25 22;
+  --bg-sidebar-elevated-rgb: 32 38 33;
+  --bg-selected-rgb: 24 60 52;
+  --bg-hover-rgb: 37 44 40;
+  --text-primary-rgb: 231 236 233;
+  --text-secondary-rgb: 195 203 198;
+  --text-muted-rgb: 162 170 165;
+  --border-medium-rgb: 50 58 53;
+  --accent-hover-rgb: 101 208 183;
+  --chat-shell-bg: var(--background);
+  --chat-sidebar-bg: var(--bg-sidebar);
+  --chat-main-rail: #121714;
+  --chat-surface: #151a17;
+  --chat-surface-strong: var(--card);
+  --chat-glass-border: var(--border-dim);
+  --chat-focus-ring: 0 0 0 3px rgb(85 199 173 / 0.2);
+  --chat-shadow: 0 18px 44px rgb(0 0 0 / 0.28);
+  --chat-shadow-soft: 0 6px 18px rgb(0 0 0 / 0.22);
+  --chat-user-bubble-bg: #20342e;
+  --chat-composer-shadow: var(--composer-shadow);
+  --sf-shell-bg: var(--background);
+  --sf-surface: #151a17;
+  --sf-surface-elevated: #1b211d;
+  --sf-surface-sunken: #121714;
+  --sf-surface-grad: linear-gradient(180deg, #1b211d, #151a17);
+  --sf-overlay: rgb(0 0 0 / 0.58);
+  --sf-accent-border: rgb(85 199 173 / 0.18);
+  --sf-accent-border-strong: rgb(85 199 173 / 0.38);
+  --sf-accent-glow: rgb(85 199 173 / 0.08);
+  --sf-accent-hover-bg: rgb(85 199 173 / 0.08);
+  --sf-inset-highlight: rgb(255 255 255 / 0.035);
+  --sf-shadow-panel: 0 2px 8px rgb(0 0 0 / 0.22);
+  --sf-shadow-elevated: 0 8px 30px rgb(0 0 0 / 0.3);
+  --sf-glow-cyan: 0 0 20px rgb(85 199 173 / 0.09);
+}
+
 /* ── Reset ─────────────────────────────────────────────────────── */
 *,
 *::before,
@@ -150,8 +274,14 @@ body,
   height: 100%;
   overflow: hidden;
 }
+/* 基线按钮重置：preflight 已禁用，必须手动清除 WebKit 原生按钮样式
+   （否则 WKWebView 会把未显式设置背景的 <button> 渲染成银灰色原生按钮） */
 button {
-  font-family: inherit;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
 }
 input,
 textarea,

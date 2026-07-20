@@ -23,6 +23,8 @@ export interface ArtifactPanelProps {
   workspaceId?: string | null;
   artifact?: DispatcherToolArtifactRef | null;
   subAgentSession?: SubAgentSession | null;
+  traceLoading?: boolean;
+  traceError?: string | null;
   /** Tab labels → content. */
   tabs?: { label: string; value: string; content: React.ReactNode }[];
   /** If no tabs are provided, render this single content node. */
@@ -35,6 +37,8 @@ export function ArtifactPanel({
   workspaceId,
   artifact,
   subAgentSession,
+  traceLoading = false,
+  traceError,
   tabs,
   children,
   className,
@@ -101,6 +105,16 @@ export function ArtifactPanel({
         <div className="p-4">
           {subAgentSession ? (
             <SubAgentExecutionCard session={subAgentSession} />
+          ) : traceLoading ? (
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              正在加载执行轨迹...
+            </div>
+          ) : traceError ? (
+            <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{traceError}</span>
+            </div>
           ) : artifact ? (
             <ToolArtifactContent
               artifact={artifact}

@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context};
 use tauri::State;
 
 use super::config::SubAgentConfig;
-use super::db::{SubAgentRecord, ToolInfo};
+use super::db::{SubAgentRecord, SubAgentRunTraceRecord, ToolInfo};
 use crate::agent::DispatcherState;
 use crate::shared::error::{CommandResult, IntoCommandResult};
 
@@ -142,5 +142,30 @@ pub async fn sub_agent_get_global_enabled(
             .get_global_enabled()
             .context("查询全局启用子智能体失败")
     })();
+    result.into_command_result()
+}
+
+#[tauri::command]
+pub async fn sub_agent_get_run_trace(
+    state: State<'_, DispatcherState>,
+    workspace_id: String,
+    tool_call_id: String,
+) -> CommandResult<Option<SubAgentRunTraceRecord>> {
+    let manager = match state.sub_agent_manager() {
+        Some(manager) => manager,
+        None => return Err(anyhow!("子智能体管理器未初始化")).into_command_result(),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        manager
+            .get_run_trace(&workspace_id, &tool_call_id)
+            .with_context(|| {
+                format!(
+                    "查询子智能体执行轨迹失败（workspace_id={workspace_id}, tool_call_id={tool_call_id}）"
+                )
+            })
+    })
+    .await
+    .context("等待子智能体轨迹查询任务失败")
+    .and_then(|result| result);
     result.into_command_result()
 }

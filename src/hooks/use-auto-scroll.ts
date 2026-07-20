@@ -16,7 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
  */
 export interface AutoScrollApi {
   /** Attach to the scrolling element. */
-  containerRef: React.RefObject<HTMLDivElement | null>;
+  containerRef: (element: HTMLDivElement | null) => void;
   /** True while the view is parked at the bottom (auto-follow active). */
   pinned: boolean;
   /** Force-scroll to the bottom, ignoring current pin state. */
@@ -27,63 +27,126 @@ export interface AutoScrollApi {
 
 const BOTTOM_THRESHOLD_PX = 56;
 
-export function useAutoScroll(): AutoScrollApi {
-  const containerRef = useRef<HTMLDivElement | null>(null);
+export function useAutoScroll(sessionId: string | null): AutoScrollApi {
+  const elementRef = useRef<HTMLDivElement | null>(null);
+  const [element, setElement] = useState<HTMLDivElement | null>(null);
   const [pinned, setPinned] = useState(true);
   // Track pin state in a ref so the scroll handler (which closes over it) can
   // read the latest value without re-subscribing on every change.
   const pinnedRef = useRef(true);
   pinnedRef.current = pinned;
 
+  const containerRef = useCallback((next: HTMLDivElement | null) => {
+    elementRef.current = next;
+    setElement(next);
+  }, []);
+
+  const setFollowing = useCallback((following: boolean) => {
+    pinnedRef.current = following;
+    setPinned((current) => (current === following ? current : following));
+  }, []);
+
   const recompute = useCallback(() => {
-    const el = containerRef.current;
+    const el = elementRef.current;
     if (!el) return;
     const distanceFromBottom =
       el.scrollHeight - el.scrollTop - el.clientHeight;
     const isAtBottom = distanceFromBottom <= BOTTOM_THRESHOLD_PX;
-    setPinned((prev) => (prev !== isAtBottom ? isAtBottom : prev));
-  }, []);
+    setFollowing(isAtBottom);
+  }, [setFollowing]);
 
   const scrollToBottom = useCallback(
     (opts?: { behavior?: ScrollBehavior }) => {
-      const el = containerRef.current;
+      const el = elementRef.current;
       if (!el) return;
       el.scrollTo({
         top: el.scrollHeight,
         behavior: opts?.behavior ?? "auto",
       });
-      setPinned(true);
-      pinnedRef.current = true;
+      setFollowing(true);
     },
-    [],
+    [setFollowing],
   );
 
-  // Attach the native scroll listener once.
+  // Manual upward intent wins immediately, even inside the bottom threshold.
   useEffect(() => {
-    const el = containerRef.current;
+    const el = element;
     if (!el) return;
 
+    let lastScrollTop = el.scrollTop;
+    let touchY: number | null = null;
+
     const onScroll = () => {
+      const movedUp = el.scrollTop < lastScrollTop - 0.5;
+      lastScrollTop = el.scrollTop;
+      if (movedUp) {
+        setFollowing(false);
+        return;
+      }
       const distanceFromBottom =
         el.scrollHeight - el.scrollTop - el.clientHeight;
-      const isAtBottom = distanceFromBottom <= BOTTOM_THRESHOLD_PX;
-      if (isAtBottom !== pinnedRef.current) {
-        pinnedRef.current = isAtBottom;
-        setPinned(isAtBottom);
+      if (distanceFromBottom <= BOTTOM_THRESHOLD_PX && !pinnedRef.current) {
+        setFollowing(true);
       }
     };
 
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) setFollowing(false);
+    };
 
-  // Follow layout/content changes while pinned.
+    const onTouchStart = (event: TouchEvent) => {
+      touchY = event.touches[0]?.clientY ?? null;
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      const nextY = event.touches[0]?.clientY ?? null;
+      if (touchY !== null && nextY !== null && nextY > touchY) {
+        setFollowing(false);
+      }
+      touchY = nextY;
+    };
+
+    el.addEventListener("scroll", onScroll, { passive: true });
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+    };
+  }, [element, setFollowing]);
+
+  // Follow actual layout growth rather than every React render.
   useEffect(() => {
-    if (pinnedRef.current) {
-      const el = containerRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
-    }
-  });
+    if (!element) return;
+    let frame: number | null = null;
+    const follow = () => {
+      if (!pinnedRef.current) return;
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        element.scrollTop = element.scrollHeight;
+        frame = null;
+      });
+    };
+    const observer = new ResizeObserver(follow);
+    observer.observe(element);
+    if (element.firstElementChild) observer.observe(element.firstElementChild);
+    follow();
+    return () => {
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [element]);
+
+  useEffect(() => {
+    setFollowing(true);
+    requestAnimationFrame(() => {
+      const current = elementRef.current;
+      if (current) current.scrollTop = current.scrollHeight;
+    });
+  }, [sessionId, setFollowing]);
 
   return { containerRef, pinned, scrollToBottom, recompute };
 }

@@ -34,6 +34,17 @@ export function formatTokenGenerationSpeed(completionTokens: number, elapsedMs: 
   return tokensPerSecond.toFixed(1);
 }
 
+export function formatTokenCountK(totalTokens: number): string {
+  if (!Number.isFinite(totalTokens) || totalTokens <= 0) return "0.0k";
+  const value = totalTokens / 1000;
+  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)}k`;
+}
+
+export function formatElapsedSeconds(elapsedMs: number): string {
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return "0.0";
+  return (elapsedMs / 1000).toFixed(1);
+}
+
 export function getMcpIndicatorState(
   mcpStatus: ProjectMcpStatus | null,
   mcpChecking: boolean,

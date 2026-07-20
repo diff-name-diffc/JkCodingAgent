@@ -538,6 +538,11 @@ impl DispatcherDb {
         )
         .context("clear dispatcher tool runs")?;
         tx.execute(
+            "DELETE FROM sub_agent_run_traces WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("clear sub-agent run traces")?;
+        tx.execute(
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![workspace_id],
         )

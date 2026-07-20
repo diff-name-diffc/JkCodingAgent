@@ -100,6 +100,7 @@ export function notifyDispatcherLiveSessionSubscribers(
   const running = isLiveSessionRunning(state);
   setDispatcherSessionRunningState(sessionId, running);
   dispatcherRunningSubscribers.get(sessionId)?.forEach((subscriber) => subscriber(running));
+  cleanupIdleUnobservedSession(sessionId);
 }
 
 function hasSessionSubscribers(sessionId: string): boolean {
@@ -108,6 +109,12 @@ function hasSessionSubscribers(sessionId: string): boolean {
     (dispatcherMessageSubscribers.get(sessionId)?.size ?? 0) > 0 ||
     (dispatcherRunningSubscribers.get(sessionId)?.size ?? 0) > 0
   );
+}
+
+function cleanupIdleUnobservedSession(sessionId: string) {
+  if (hasSessionSubscribers(sessionId) || getDispatcherSessionRunning(sessionId)) return;
+  dispatcherLiveSessionStates.delete(sessionId);
+  dispatcherActiveRunIds.delete(sessionId);
 }
 
 export function subscribeDispatcherLiveSession(
@@ -121,10 +128,7 @@ export function subscribeDispatcherLiveSession(
     subscribers.delete(subscriber);
     if (subscribers.size === 0) {
       dispatcherLiveSessionSubscribers.delete(sessionId);
-      if (!hasSessionSubscribers(sessionId)) {
-        dispatcherLiveSessionStates.delete(sessionId);
-        dispatcherActiveRunIds.delete(sessionId);
-      }
+      cleanupIdleUnobservedSession(sessionId);
     }
   };
 }
@@ -145,10 +149,7 @@ export function subscribeDispatcherMessages(
     subscribers.delete(subscriber);
     if (subscribers.size === 0) {
       dispatcherMessageSubscribers.delete(sessionId);
-      if (!hasSessionSubscribers(sessionId)) {
-        dispatcherLiveSessionStates.delete(sessionId);
-        dispatcherActiveRunIds.delete(sessionId);
-      }
+      cleanupIdleUnobservedSession(sessionId);
     }
   };
 }
@@ -164,10 +165,7 @@ export function cleanupDispatcherSession(sessionId: string) {
 
 export function gcDispatcherSessions() {
   for (const id of dispatcherLiveSessionStates.keys()) {
-    if (!hasSessionSubscribers(id)) {
-      dispatcherLiveSessionStates.delete(id);
-      dispatcherActiveRunIds.delete(id);
-    }
+    cleanupIdleUnobservedSession(id);
   }
 }
 
@@ -199,6 +197,7 @@ export function subscribeDispatcherSessionRunning(
     subscribers.delete(subscriber);
     if (subscribers.size === 0) {
       dispatcherRunningSubscribers.delete(sessionId);
+      cleanupIdleUnobservedSession(sessionId);
     }
   };
 }

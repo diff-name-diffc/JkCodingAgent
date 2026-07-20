@@ -7,7 +7,7 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 
 use super::config::SubAgentConfig;
-use super::db::{SubAgentDb, SubAgentRecord};
+use super::db::{SubAgentDb, SubAgentRecord, SubAgentRunTraceRecord};
 
 pub struct SubAgentManager {
     db: SubAgentDb,
@@ -95,5 +95,25 @@ impl SubAgentManager {
 
     pub fn set_global_enabled(&self, sub_agent_ids: &[String]) -> Result<()> {
         self.db.set_global_enabled(sub_agent_ids)
+    }
+
+    pub fn save_run_trace(
+        &self,
+        workspace_id: &str,
+        tool_call_id: &str,
+        agent_id: &str,
+        status: &str,
+        events_json: &str,
+    ) -> Result<SubAgentRunTraceRecord> {
+        self.db
+            .save_run_trace(workspace_id, tool_call_id, agent_id, status, events_json)
+    }
+
+    pub fn get_run_trace(
+        &self,
+        workspace_id: &str,
+        tool_call_id: &str,
+    ) -> Result<Option<SubAgentRunTraceRecord>> {
+        self.db.get_run_trace(workspace_id, tool_call_id)
     }
 }

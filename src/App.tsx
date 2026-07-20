@@ -411,72 +411,81 @@ function App() {
         position: "relative",
       }}
     >
+      <div data-tauri-drag-region className="ai-titlebar" aria-hidden="true" />
       <div
         style={{
-          position: "absolute",
-          inset: 0,
-          overflow: "hidden",
+          position: "relative",
+          flex: 1,
+          minHeight: 0,
         }}
       >
-        {mountedProjects.map((project) => (
-          <Suspense key={project.id} fallback={<AppPaneFallback />}>
-            <ProjectPage
-              project={project}
-              visible={activeProject?.id === project.id}
-              allProjects={railProjects}
-              tasks={tasks}
-              getTaskRestoreState={tm.getTaskRestoreState}
-              onStartSubProcess={(taskInput) =>
-                handleStartDispatcherSubprocess(project, taskInput)
-              }
-              onStopTask={(taskId) =>
-                invoke("stop_task", { taskId })
-                  .catch((e: unknown) => {
-                    showToast(`停止任务失败：${String(e)}`);
-                  })
-                  .then(() => undefined)
-              }
-              onResumeTask={(task) => {
-                const sessionId =
-                  task.agent === "claude" ? task.claudeSessionId : task.codexSessionId;
-                if (!sessionId) {
-                  showToast("当前任务尚未记录可恢复的会话 ID，暂时无法继续。", "warning");
-                  return Promise.resolve();
-                }
-                updateTaskStatus(task.id, "pending");
-                return invokeResumeDispatcherSubprocess(task, project.path).then(() => undefined);
-              }}
-              onInput={tm.handleInput}
-              onResize={tm.handleResize}
-              onRegisterTerminal={tm.handleRegisterTerminal}
-              onTerminalReady={tm.handleTerminalReady}
-              onSnapshot={tm.handleSnapshot}
-              onRetainTaskBuffers={tm.retainTaskBuffers}
-              onReleaseTaskBuffers={tm.releaseTaskBuffers}
-              onRemoveTaskBuffers={tm.removeTaskBuffers}
-              onBack={handleBack}
-              onSwitchProject={handleProjectClick}
-              onOpen={handleOpen}
-            />
-          </Suspense>
-        ))}
-      </div>
-      {!activeProject && (
         <div
           style={{
             position: "absolute",
             inset: 0,
-            zIndex: 5,
+            overflow: "hidden",
           }}
         >
-          <WelcomePage
-            projects={sortedProjects}
-            onOpen={handleOpen}
-            onProjectClick={handleProjectClick}
-            onDeleteProject={handleDeleteProject}
-          />
+          {mountedProjects.map((project) => (
+            <Suspense key={project.id} fallback={<AppPaneFallback />}>
+              <ProjectPage
+                project={project}
+                visible={activeProject?.id === project.id}
+                allProjects={railProjects}
+                tasks={tasks}
+                getTaskRestoreState={tm.getTaskRestoreState}
+                onStartSubProcess={(taskInput) =>
+                  handleStartDispatcherSubprocess(project, taskInput)
+                }
+                onStopTask={(taskId) =>
+                  invoke("stop_task", { taskId })
+                    .catch((e: unknown) => {
+                      showToast(`停止任务失败：${String(e)}`);
+                    })
+                    .then(() => undefined)
+                }
+                onResumeTask={(task) => {
+                  const sessionId =
+                    task.agent === "claude" ? task.claudeSessionId : task.codexSessionId;
+                  if (!sessionId) {
+                    showToast("当前任务尚未记录可恢复的会话 ID，暂时无法继续。", "warning");
+                    return Promise.resolve();
+                  }
+                  updateTaskStatus(task.id, "pending");
+                  return invokeResumeDispatcherSubprocess(task, project.path).then(() => undefined);
+                }}
+                onInput={tm.handleInput}
+                onResize={tm.handleResize}
+                onRegisterTerminal={tm.handleRegisterTerminal}
+                onTerminalReady={tm.handleTerminalReady}
+                onSnapshot={tm.handleSnapshot}
+                onRetainTaskBuffers={tm.retainTaskBuffers}
+                onReleaseTaskBuffers={tm.releaseTaskBuffers}
+                onRemoveTaskBuffers={tm.removeTaskBuffers}
+                onBack={handleBack}
+                onSwitchProject={handleProjectClick}
+                onOpen={handleOpen}
+              />
+            </Suspense>
+          ))}
         </div>
-      )}
+        {!activeProject && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 5,
+            }}
+          >
+            <WelcomePage
+              projects={sortedProjects}
+              onOpen={handleOpen}
+              onProjectClick={handleProjectClick}
+              onDeleteProject={handleDeleteProject}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

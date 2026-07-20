@@ -328,13 +328,15 @@ export function SessionPanel({
                   onClick={() => onSelectSession(r.sessionId)}
                 >
                   <div className="ai-project-session-row-main">
-                    <div className="ai-project-session-row-title">{r.sessionTitle}</div>
+                    <div className="ai-project-session-row-title">
+                      <span>{r.sessionTitle}</span>
+                      {isRunning && (
+                        <LoaderCircle size={13} className="spin ai-project-session-running" />
+                      )}
+                    </div>
                     <div className="ai-project-session-row-sub">{formatTime(r.updatedAt)}</div>
                   </div>
                   <div className="ai-project-session-actions-inline">
-                    {isRunning && (
-                      <LoaderCircle size={13} className="spin ai-project-session-running" />
-                    )}
                     <button
                       className="ai-project-session-delete"
                       onClick={(e) => {
@@ -365,13 +367,15 @@ export function SessionPanel({
                   onClick={() => onSelectSession(session.id)}
                 >
                   <div className="ai-project-session-row-main">
-                    <div className="ai-project-session-row-title">{session.title}</div>
+                    <div className="ai-project-session-row-title">
+                      <span>{session.title}</span>
+                      {isRunning && (
+                        <LoaderCircle size={13} className="spin ai-project-session-running" />
+                      )}
+                    </div>
                     <div className="ai-project-session-row-sub">{formatTime(session.updatedAt)}</div>
                   </div>
                   <div className="ai-project-session-actions-inline">
-                    {isRunning && (
-                      <LoaderCircle size={13} className="spin ai-project-session-running" />
-                    )}
                     <button
                       className="ai-project-session-delete"
                       onClick={(e) => {

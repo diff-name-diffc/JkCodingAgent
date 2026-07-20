@@ -206,6 +206,7 @@ pub fn run() {
             agent::sub_agent::commands::sub_agent_list_tools,
             agent::sub_agent::commands::sub_agent_set_global_enabled,
             agent::sub_agent::commands::sub_agent_get_global_enabled,
+            agent::sub_agent::commands::sub_agent_get_run_trace,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -9,7 +9,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   AgentType,
   AhaSettingsV2,
@@ -36,9 +36,7 @@ import {
 } from "../hooks/use-chat-queries";
 import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTokenUsage";
 import { useLiveSessionState } from "./dispatcher-chat/useLiveSessionState";
-import {
-  useDispatcherActions,
-} from "./dispatcher-chat/useDispatcherActions";
+import { useDispatcherActions } from "./dispatcher-chat/useDispatcherActions";
 import {
   mergeDispatcherMessages,
   getMcpIndicatorState,
@@ -96,29 +94,28 @@ export interface ChatPageV2Props {
   embedded?: boolean;
 }
 
-export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
-  function ChatPageV2(
-    {
-      sessionId,
-      onSessionChange,
-      conversationKind = "chat",
-      projectPath = "",
-      mcpStatus = null,
-      mcpChecking = false,
-      subProcesses = [],
-      onOpenSettings,
-      onDispatchApproved,
-      onDispatchRejected,
-      onDispatchContinue,
-      onDispatchExit,
-      onStopActiveRun,
-      onResumeStoppedRun,
-      onOpenMcpStatus,
-      onClosePanel,
-      embedded = false,
-    },
-    ref,
-  ) {
+export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(function ChatPageV2(
+  {
+    sessionId,
+    onSessionChange,
+    conversationKind = "chat",
+    projectPath = "",
+    mcpStatus = null,
+    mcpChecking = false,
+    subProcesses = [],
+    onOpenSettings,
+    onDispatchApproved,
+    onDispatchRejected,
+    onDispatchContinue,
+    onDispatchExit,
+    onStopActiveRun,
+    onResumeStoppedRun,
+    onOpenMcpStatus,
+    onClosePanel,
+    embedded = false,
+  },
+  ref,
+) {
   const [uncontrolledSessionId, setUncontrolledSessionId] = useState<string | null>(null);
   const activeSessionId = sessionId !== undefined ? sessionId : uncontrolledSessionId;
   const setActiveSessionId = useCallback(
@@ -139,9 +136,7 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
   const [isStopping, setIsStopping] = useState(false);
   const [pythonDrawerOpen, setPythonDrawerOpen] = useState(false);
   const [pythonRunTarget, setPythonRunTarget] = useState<PythonCodeRunTarget | null>(null);
-  const [pythonRunRecords, setPythonRunRecords] = useState<Record<string, PythonCodeRunRecord>>(
-    {},
-  );
+  const [pythonRunRecords, setPythonRunRecords] = useState<Record<string, PythonCodeRunRecord>>({});
 
   const isPlainChat = conversationKind === "chat";
   useChatSessionUpdates(isPlainChat && !embedded);
@@ -289,10 +284,9 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
     setMessages([]);
     void (async () => {
       try {
-        const initial = await invoke<DispatcherMessage[]>(
-          "dispatcher_list_messages",
-          { workspaceId: activeSessionId },
-        );
+        const initial = await invoke<DispatcherMessage[]>("dispatcher_list_messages", {
+          workspaceId: activeSessionId,
+        });
         // Backend serializes segments as `segmentsJson` (string), not `segments`.
         // Normalize here so every downstream consumer (UserMessage, buildItems,
         // ...) sees a real array — same hydration the live pub/sub path uses.
@@ -369,6 +363,14 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
       void actions.sendUserMessage(text, attachedImages, targetSessionId);
     })();
   }, [actions, activeSessionId, attachedImages, ensurePlainChatSession, input]);
+
+  const handleAttach = useCallback(async () => {
+    const selected = await openDialog({ title: "添加附件", multiple: true, directory: false });
+    if (!selected) return;
+    const paths = Array.isArray(selected) ? selected : [selected];
+    const references = paths.map((path) => `附件：${path}`).join("\n");
+    setInput((current) => (current.trim() ? `${current}\n${references}` : references));
+  }, []);
 
   const handleStop = useCallback(async () => {
     if (!activeSessionId || isStopping) return;
@@ -474,11 +476,14 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
     ],
   );
 
-  const handleActiveSessionChange = useCallback((id: string | null) => {
-    setActiveSessionId(id);
-    setInput("");
-    setAttachedImages([]);
-  }, [setActiveSessionId]);
+  const handleActiveSessionChange = useCallback(
+    (id: string | null) => {
+      setActiveSessionId(id);
+      setInput("");
+      setAttachedImages([]);
+    },
+    [setActiveSessionId],
+  );
 
   const handleClearMessages = useCallback(async () => {
     if (!activeSessionId) return;
@@ -647,7 +652,7 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
   ) : undefined;
 
   const selectedPythonRun = pythonRunTarget
-    ? pythonRunRecords[pythonRunKey(pythonRunTarget.messageId, pythonRunTarget.codeHash)] ?? null
+    ? (pythonRunRecords[pythonRunKey(pythonRunTarget.messageId, pythonRunTarget.codeHash)] ?? null)
     : null;
   const selectedPythonRunning = selectedPythonRun?.status === "running";
   const trimmedSearch = debouncedSearch.trim();
@@ -684,9 +689,7 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
           searchActive={trimmedSearch.length > 0}
           onActiveSessionChange={handleActiveSessionChange}
           onNewConversation={handleNewConversation}
-          onNewSessionInCategory={
-            isPlainChat && !embedded ? handleNewSessionInCategory : undefined
-          }
+          onNewSessionInCategory={isPlainChat && !embedded ? handleNewSessionInCategory : undefined}
           onDeleteSession={isPlainChat && !embedded ? handleDeleteSession : undefined}
           searchValue={search}
           onSearchChange={setSearch}
@@ -703,6 +706,7 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(
           onSend={handleSend}
           onStop={handleStop}
           onResume={handleResume}
+          onAttach={() => void handleAttach()}
           onRegenerate={isPlainChat ? handleRegenerate : undefined}
           onApproveDispatch={handleApproveDispatch}
           onRejectDispatch={handleRejectDispatch}
@@ -732,11 +736,12 @@ function getUserMessagePayload(message: DispatcherMessage): {
   images: ImageSegment[];
 } {
   const segments = message.segments ?? [];
-  const text = segments
-    .filter(isTextSegment)
-    .map((segment) => segment.text)
-    .join("\n\n")
-    .trim() || message.content.trim();
+  const text =
+    segments
+      .filter(isTextSegment)
+      .map((segment) => segment.text)
+      .join("\n\n")
+      .trim() || message.content.trim();
   const images = segments.filter(isImageSegment);
   return { text, images };
 }
@@ -801,10 +806,7 @@ function ProjectChatHeader({
         免确认 {autoApprove ? "开" : "关"}
       </Button>
       <Button variant="outline" size="sm" onClick={onOpenMcpStatus}>
-        <span
-          className="h-2 w-2 rounded-full"
-          style={{ background: mcpIndicator.color }}
-        />
+        <span className="h-2 w-2 rounded-full" style={{ background: mcpIndicator.color }} />
         MCP
       </Button>
       {hasMessages && (

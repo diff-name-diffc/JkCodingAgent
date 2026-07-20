@@ -25,6 +25,7 @@ import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
  *   - When the user scrolls up, follow stops; a floating "最新" button appears.
  */
 export interface MessageListProps {
+  sessionId: string | null;
   messages: DispatcherMessage[];
   liveState: DispatcherLiveSessionState | null;
   pythonRunRecords?: Record<string, PythonCodeRunRecord>;
@@ -43,6 +44,7 @@ export interface MessageListProps {
 }
 
 export function MessageList({
+  sessionId,
   messages,
   liveState,
   pythonRunRecords,
@@ -55,34 +57,24 @@ export function MessageList({
   className,
 }: MessageListProps) {
   // Rebuild display items only when the message array identity changes.
-  const items: MessageDisplayItem[] = React.useMemo(
-    () => buildItems(messages),
-    [messages],
-  );
+  const items: MessageDisplayItem[] = React.useMemo(() => buildItems(messages), [messages]);
 
-  const isStreaming = Boolean(
-    liveState && (liveState.hasPendingRun || liveState.isLoading),
-  );
+  const isStreaming = Boolean(liveState && (liveState.hasPendingRun || liveState.isLoading));
   const hasLiveContent =
     (liveState?.streamingSegments.length ?? 0) > 0 ||
     (liveState?.liveToolCalls.length ?? 0) > 0 ||
     Boolean(liveState?.liveThinking) ||
     Boolean(liveState?.assistantPlaceholder);
 
-  const { containerRef, pinned, scrollToBottom } = useAutoScroll();
+  const { containerRef, pinned, scrollToBottom } = useAutoScroll(sessionId);
   const [scrollTop, setScrollTop] = React.useState(0);
+  const [viewportHeight, setViewportHeight] = React.useState(720);
   const rowEstimate = 180;
   const overscan = 8;
   const useWindowing = items.length > 300;
-  const viewportHeight = containerRef.current?.clientHeight ?? 720;
-  const startIndex = useWindowing
-    ? Math.max(0, Math.floor(scrollTop / rowEstimate) - overscan)
-    : 0;
+  const startIndex = useWindowing ? Math.max(0, Math.floor(scrollTop / rowEstimate) - overscan) : 0;
   const endIndex = useWindowing
-    ? Math.min(
-        items.length,
-        Math.ceil((scrollTop + viewportHeight) / rowEstimate) + overscan,
-      )
+    ? Math.min(items.length, Math.ceil((scrollTop + viewportHeight) / rowEstimate) + overscan)
     : items.length;
   const visibleItems = useWindowing ? items.slice(startIndex, endIndex) : items;
 
@@ -103,10 +95,11 @@ export function MessageList({
         onScroll={(event) => {
           if (useWindowing) {
             setScrollTop(event.currentTarget.scrollTop);
+            setViewportHeight(event.currentTarget.clientHeight);
           }
         }}
       >
-        <div className="chat-prose flex flex-col gap-6 px-4 py-6">
+        <div className="chat-prose flex flex-col gap-6 py-6">
           {useWindowing && <div style={{ height: startIndex * rowEstimate }} />}
           {visibleItems.map((item) => (
             <MessageItem
@@ -132,7 +125,9 @@ export function MessageList({
               thinking={liveState.liveThinking}
               placeholder={liveState.assistantPlaceholder}
               isStreaming={isStreaming}
+              showAvatar={items[items.length - 1]?.kind !== "assistant"}
               onOpenArtifact={onOpenArtifact}
+              onOpenSubAgent={onOpenSubAgent}
             />
           )}
 

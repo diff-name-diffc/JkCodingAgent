@@ -32,6 +32,8 @@ impl ToolRuntime {
         tool_call: &RequestedToolCall,
         context: &ToolContext,
     ) -> ToolResult {
+        let mut execution_context = context.clone();
+        execution_context.current_tool_call_id = Some(tool_call.id.clone());
         let spec = registry.spec_by_name(workspace, &tool_call.name, true);
         if !allowed_tool_names.contains(&tool_call.name) {
             return ToolResult::recoverable_error(format!(
@@ -46,14 +48,14 @@ impl ToolRuntime {
 
         if !spec.execution.unified_timeout {
             return registry
-                .execute(&tool_call.name, &tool_call.arguments, context)
+                .execute(&tool_call.name, &tool_call.arguments, &execution_context)
                 .await;
         }
 
         let timeout_secs = spec.execution.timeout_secs.max(1);
         match tokio::time::timeout(
             Duration::from_secs(timeout_secs),
-            registry.execute(&tool_call.name, &tool_call.arguments, context),
+            registry.execute(&tool_call.name, &tool_call.arguments, &execution_context),
         )
         .await
         {

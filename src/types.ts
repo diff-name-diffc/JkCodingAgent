@@ -699,8 +699,20 @@ export interface SubAgentEvent {
 
 export interface SubAgentEventPayload {
   sessionId: string;
+  toolCallId: string;
+  timestampMs: number;
   event: SubAgentEventType;
   data: SubAgentEvent["data"];
+}
+
+export interface SubAgentRunTrace {
+  workspaceId: string;
+  toolCallId: string;
+  agentId: string;
+  status: "completed" | "failed";
+  eventsJson: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // ── RAG Knowledge Base ───────────────────────────────────────────────────────

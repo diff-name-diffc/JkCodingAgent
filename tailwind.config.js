@@ -3,6 +3,12 @@ export default {
   content: [
     "./src/**/*.{ts,tsx}",
     "./index.html",
+    // Streamdown ships pre-classed components; scan its dist so the utility
+    // classes it uses (bg-sidebar, after:content-[var(--streamdown-caret)], …)
+    // are generated. This is the Tailwind v3 equivalent of the v4 `@source`
+    // directive recommended by streamdown's docs.
+    "./node_modules/streamdown/dist/*.js",
+    "./node_modules/@streamdown/*/dist/*.js",
   ],
   // Preflight is disabled: the app ships its own baseline reset + tokens via
   // App.css. Enabling preflight would reset margins, buttons and headings
@@ -12,53 +18,62 @@ export default {
     // Map shadcn-style tokens onto the app's existing CSS variables in
     // App.css so new Tailwind components inherit the established palette.
     extend: {
+      // NOTE: colors are expressed as `rgb(var(--x-rgb) / <alpha-value>)` so
+      // that opacity modifiers (e.g. bg-card/70, bg-success/15) actually get
+      // generated — Tailwind v3 cannot apply /NN alpha to a plain var() color
+      // and silently skips those utilities. The --x-rgb triplets live in
+      // App.css next to their hex counterparts.
       colors: {
-        background: "var(--bg-card)",
-        foreground: "var(--text-primary)",
+        background: "rgb(var(--bg-card-rgb) / <alpha-value>)",
+        foreground: "rgb(var(--text-primary-rgb) / <alpha-value>)",
         muted: {
-          DEFAULT: "var(--bg-subtle)",
-          foreground: "var(--text-muted)",
+          DEFAULT: "rgb(var(--bg-subtle-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--text-muted-rgb) / <alpha-value>)",
         },
         card: {
-          DEFAULT: "var(--bg-card)",
-          foreground: "var(--text-primary)",
+          DEFAULT: "rgb(var(--bg-card-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--text-primary-rgb) / <alpha-value>)",
         },
         popover: {
-          DEFAULT: "var(--bg-card)",
-          foreground: "var(--text-primary)",
+          DEFAULT: "rgb(var(--bg-card-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--text-primary-rgb) / <alpha-value>)",
         },
-        border: "var(--border-medium)",
-        input: "var(--bg-input)",
-        ring: "var(--accent)",
+        // --border-medium is rgba(30,39,36,0.17); keep the 0.17 factor so
+        // plain border-border renders exactly as before, while border-border/60
+        // scales from it (0.6 * 0.17).
+        border: "rgb(var(--border-medium-rgb) / calc(<alpha-value> * 0.17))",
+        input: "rgb(var(--bg-input-rgb) / <alpha-value>)",
+        ring: "rgb(var(--accent-rgb) / <alpha-value>)",
         primary: {
-          DEFAULT: "var(--accent)",
-          foreground: "#ffffff",
-          hover: "var(--accent-hover)",
+          DEFAULT: "rgb(var(--accent-rgb) / <alpha-value>)",
+          foreground: "var(--accent-foreground)",
+          hover: "rgb(var(--accent-hover-rgb) / <alpha-value>)",
         },
         secondary: {
-          DEFAULT: "var(--bg-sidebar-elevated)",
-          foreground: "var(--text-secondary)",
+          DEFAULT: "rgb(var(--bg-sidebar-elevated-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--text-secondary-rgb) / <alpha-value>)",
         },
         destructive: {
-          DEFAULT: "var(--danger)",
-          foreground: "#ffffff",
+          DEFAULT: "rgb(var(--danger-rgb) / <alpha-value>)",
+          foreground: "var(--destructive-foreground)",
         },
         accent: {
-          DEFAULT: "var(--bg-selected)",
-          foreground: "var(--text-primary)",
+          DEFAULT: "rgb(var(--accent-rgb) / <alpha-value>)",
+          foreground: "var(--accent-foreground)",
+          soft: "var(--accent-soft)",
         },
         sidebar: {
-          DEFAULT: "var(--bg-sidebar)",
-          foreground: "var(--text-primary)",
+          DEFAULT: "rgb(var(--bg-sidebar-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--text-primary-rgb) / <alpha-value>)",
           border: "var(--border-dim)",
-          accent: "var(--bg-selected)",
-          "accent-foreground": "var(--text-primary)",
-          hover: "var(--bg-hover)",
+          accent: "rgb(var(--bg-selected-rgb) / <alpha-value>)",
+          "accent-foreground": "rgb(var(--text-primary-rgb) / <alpha-value>)",
+          hover: "rgb(var(--bg-hover-rgb) / <alpha-value>)",
         },
-        success: "var(--success)",
-        warning: "var(--warning)",
-        danger: "var(--danger)",
-        info: "var(--info)",
+        success: "rgb(var(--success-rgb) / <alpha-value>)",
+        warning: "rgb(var(--warning-rgb) / <alpha-value>)",
+        danger: "rgb(var(--danger-rgb) / <alpha-value>)",
+        info: "rgb(var(--info-rgb) / <alpha-value>)",
       },
       borderRadius: {
         sm: "var(--radius-sm)",

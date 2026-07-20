@@ -1,18 +1,20 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { X, Pencil, Check, RefreshCw, Database, Settings2 } from "lucide-react";
+import { X, Pencil, Check, RefreshCw, Database, Settings2, Monitor, Moon, Sun } from "lucide-react";
 import { AhaAgentPanel } from "./app-settings/aha/AhaAgentPanel";
 import { RagKbConfigPanel } from "./app-settings/rag/RagKbConfigPanel";
 import claudeLogo from "../assets/claude.svg";
 import chatgptLogo from "../assets/chatgpt.svg";
 import appLogo from "../assets/app-logo.png";
 import { highlightCodeToHtml } from "../utils/shiki";
+import { applyThemePreference, persistThemePreference, type ThemePreference } from "../lib/theme";
 
 type NavKey = "general" | "aha" | "rag" | "claude" | "codex";
 
 interface AppSettings {
   claude_path: string;
   codex_path: string;
+  theme: ThemePreference;
 }
 
 interface AgentVersions {
@@ -51,30 +53,41 @@ const NAV_ITEMS: Array<{
 // ── General Panel ─────────────────────────────────────────────────────────────
 
 function GeneralPanel() {
-  const [settings, setSettings] = useState<AppSettings>({ claude_path: "", codex_path: "" });
-  const [original, setOriginal] = useState<AppSettings>({ claude_path: "", codex_path: "" });
+  const emptySettings: AppSettings = { claude_path: "", codex_path: "", theme: "system" };
+  const [settings, setSettings] = useState<AppSettings>(emptySettings);
+  const [original, setOriginal] = useState<AppSettings>(emptySettings);
   const [loading, setLoading] = useState(true);
   const [detectingPaths, setDetectingPaths] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const savedThemeRef = useRef<ThemePreference>("system");
 
   useEffect(() => {
     invoke<AppSettings>("load_app_settings")
       .then(async (loadedSettings) => {
         setSettings(loadedSettings);
         setOriginal(loadedSettings);
+        savedThemeRef.current = loadedSettings.theme;
+        persistThemePreference(loadedSettings.theme);
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(
+    () => () => {
+      applyThemePreference(savedThemeRef.current);
+    },
+    [],
+  );
 
   async function handleDetect() {
     setDetectingPaths(true);
     setError(null);
     try {
       const detected = await invoke<AppSettings>("detect_agent_paths");
-      setSettings(detected);
+      setSettings((current) => ({ ...detected, theme: current.theme }));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -88,6 +101,8 @@ function GeneralPanel() {
     setSaved(false);
     try {
       await invoke("save_app_settings", { settings });
+      persistThemePreference(settings.theme);
+      savedThemeRef.current = settings.theme;
       setOriginal(settings);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -99,7 +114,9 @@ function GeneralPanel() {
   }
 
   const isDirty =
-    settings.claude_path !== original.claude_path || settings.codex_path !== original.codex_path;
+    settings.claude_path !== original.claude_path ||
+    settings.codex_path !== original.codex_path ||
+    settings.theme !== original.theme;
 
   return (
     <>
@@ -110,6 +127,37 @@ function GeneralPanel() {
           <div className="ai-settings-empty">加载中...</div>
         ) : (
           <>
+            <div className="ai-settings-field-stack">
+              <span className="ai-settings-field-label">外观</span>
+              <div className="ai-theme-options" role="radiogroup" aria-label="外观主题">
+                {(
+                  [
+                    { value: "system", label: "跟随系统", icon: Monitor },
+                    { value: "light", label: "浅色", icon: Sun },
+                    { value: "dark", label: "深色", icon: Moon },
+                  ] as const
+                ).map(({ value, label, icon: Icon }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    role="radio"
+                    aria-checked={settings.theme === value}
+                    className={
+                      settings.theme === value ? "ai-theme-option is-active" : "ai-theme-option"
+                    }
+                    onClick={() => {
+                      setSettings((current) => ({ ...current, theme: value }));
+                      applyThemePreference(value);
+                    }}
+                  >
+                    <Icon size={14} />
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <span className="ai-settings-hint">默认跟随操作系统，可随时手动覆盖。</span>
+            </div>
+
             <div className="ai-settings-section-head">
               <span className="ai-settings-section-title">智能体安装路径</span>
               <button
@@ -172,9 +220,7 @@ function GeneralPanel() {
 // ── Agent Config Panel ────────────────────────────────────────────────────────
 
 type FileState =
-  | { status: "loading" }
-  | { status: "missing" }
-  | { status: "loaded"; content: string };
+  { status: "loading" } | { status: "missing" } | { status: "loaded"; content: string };
 
 function AgentConfigPanel({
   agentKey,
@@ -333,7 +379,11 @@ function AgentConfigPanel({
         <div className="ai-settings-file-row">
           <div className="ai-settings-path-pill">{filePath}</div>
           {fileState.status === "loaded" && !editing && (
-            <button className="ai-settings-tool-button" onClick={() => setEditing(true)} type="button">
+            <button
+              className="ai-settings-tool-button"
+              onClick={() => setEditing(true)}
+              type="button"
+            >
               <Pencil size={12} />
               编辑
             </button>
@@ -351,9 +401,7 @@ function AgentConfigPanel({
           <div className="ai-settings-empty">加载中...</div>
         )}
 
-        {fileState.status === "missing" && (
-          <div className="ai-settings-empty">未找到配置文件</div>
-        )}
+        {fileState.status === "missing" && <div className="ai-settings-empty">未找到配置文件</div>}
 
         {fileState.status === "loaded" && !editing && (
           <div
@@ -366,7 +414,7 @@ function AgentConfigPanel({
           <textarea
             autoFocus
             className="ai-settings-textarea"
-            style={{ caretColor: "#171B24" }}
+            style={{ caretColor: "var(--foreground)" }}
             value={fileState.content}
             onChange={(e) => setFileState({ status: "loaded", content: e.target.value })}
             spellCheck={false}
@@ -446,9 +494,7 @@ export function AppSettingsDialog({
               key={item.key}
               type="button"
               className={
-                activeNav === item.key
-                  ? "ai-settings-nav-item is-active"
-                  : "ai-settings-nav-item"
+                activeNav === item.key ? "ai-settings-nav-item is-active" : "ai-settings-nav-item"
               }
               onClick={() => setActiveNav(item.key)}
             >

@@ -30,7 +30,7 @@ export function UserMessage({ message, className }: UserMessageProps) {
       transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
       className={cn("ai-user-message flex items-start justify-end", className)}
     >
-      <div className="ai-user-bubble max-w-[75%] rounded-[18px] rounded-tr-md px-4 py-2.5 text-[15px] leading-7">
+      <div className="ai-user-bubble max-w-[72%] rounded-[18px] rounded-br-[4px] px-4 py-3 text-[15px] leading-7">
         {text && <p className="whitespace-pre-wrap break-words">{text}</p>}
         {images.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-2">

@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Cpu } from "lucide-react";
+import { Check, ChevronDown, Settings2 } from "lucide-react";
 import type { DispatcherModelConfig } from "../../types";
 import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
@@ -43,7 +43,7 @@ export function ModelSelector({ models, onSelect, className, disabled }: ModelSe
           className={cn("ai-model-selector gap-2 px-2.5 text-xs font-medium", className)}
           aria-label="选择模型"
         >
-          <Cpu className="ai-model-selector-icon h-3.5 w-3.5" />
+          <Settings2 className="ai-model-selector-icon h-3.5 w-3.5" />
           <span className="max-w-[140px] truncate">{active?.model || "未配置模型"}</span>
           <ChevronDown className="ai-model-selector-chevron h-3.5 w-3.5" />
         </Button>

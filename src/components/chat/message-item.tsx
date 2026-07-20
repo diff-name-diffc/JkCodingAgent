@@ -4,10 +4,7 @@ import type {
   DispatcherToolArtifactRef,
   PythonCodeRunRecord,
 } from "../../types";
-import type {
-  AssistantThinkingBlock,
-  AssistantTurnSegment,
-} from "../dispatcherChatView";
+import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcherChatView";
 import { buildDispatcherDisplayItems } from "../dispatcherChatView";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { AssistantMessage } from "./assistant-message";
@@ -27,6 +24,8 @@ export type MessageDisplayItem =
       segments: AssistantTurnSegment[];
       tools: ToolActivityItem[];
       thinking: AssistantThinkingBlock | null;
+      /** 连续 AI 消息分组中仅第一条为 true。 */
+      showAvatar: boolean;
       usageStats?: import("../../types").DispatcherMessageUsageStats;
       messageId?: string;
     };
@@ -67,6 +66,7 @@ export const MessageItem = React.memo(function MessageItem({
       thinking={item.thinking}
       usageStats={item.usageStats}
       messageId={item.messageId}
+      showAvatar={item.showAvatar}
       pythonRunRecords={pythonRunRecords}
       onRunPython={onRunPython}
       onCopy={onCopyMessage}
@@ -83,16 +83,23 @@ export function buildItems(messages: DispatcherMessage[]): MessageDisplayItem[] 
   // Defer to the existing, well-tested builder so segment-grouping, tool
   // upserting, and superseded-text logic stay identical to the legacy surface.
   const raw = buildDispatcherDisplayItems(messages);
-  return raw.map((item) =>
-    item.kind === "user"
-      ? { kind: "user", id: item.id, message: item.message }
-      : {
-          kind: "assistant",
-          id: item.id,
-          segments: item.turn.segments,
-          tools: item.turn.tools,
-          thinking: item.turn.thinking,
-          usageStats: item.turn.usageStats,
-        },
-  );
+  let prevKind: "user" | "assistant" | null = null;
+  return raw.map((item) => {
+    if (item.kind === "user") {
+      prevKind = "user";
+      return { kind: "user", id: item.id, message: item.message };
+    }
+    // 连续 AI 消息为一组，仅组内第一条显示头像锚点。
+    const showAvatar = prevKind !== "assistant";
+    prevKind = "assistant";
+    return {
+      kind: "assistant",
+      id: item.id,
+      segments: item.turn.segments,
+      tools: item.turn.tools,
+      thinking: item.turn.thinking,
+      usageStats: item.turn.usageStats,
+      showAvatar,
+    };
+  });
 }

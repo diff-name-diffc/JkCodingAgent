@@ -1,24 +1,23 @@
 import { motion } from "framer-motion";
 import { Sparkles } from "lucide-react";
-import type {
-  AssistantThinkingBlock,
-  AssistantTurnSegment,
-} from "../dispatcherChatView";
+import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcherChatView";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import type { DispatcherToolArtifactRef } from "../../types";
 import { cn } from "../../lib/cn";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { MarkdownRenderer } from "./markdown-renderer";
+import { ReasoningBlock } from "./reasoning-block";
 import { ToolCallList } from "./tool-call-card";
 
 /**
  * Live streaming assistant bubble.
  *
  * Renders the in-flight segments / tools / thinking from
- * dispatcherSessionStore's live state. The streaming flag is passed through
- * to MarkdownRenderer so it throttles re-parses to ~7fps (unchanged
- * behaviour). A blinking caret is shown at the tail while text is still
- * arriving.
+ * dispatcherSessionStore's live state. The streaming flag is passed to the
+ * tail segment's MarkdownRenderer only, so streamdown shows its built-in
+ * blinking caret at the end of the text being generated (and re-renders just
+ * that block); earlier segments render in static mode. The thinking block
+ * keeps its own plain-text caret.
  */
 export interface StreamingMessageProps {
   segments: AssistantTurnSegment[];
@@ -26,7 +25,10 @@ export interface StreamingMessageProps {
   thinking?: AssistantThinkingBlock | null;
   placeholder?: string | null;
   isStreaming: boolean;
+  /** 连续 AI 消息分组中仅第一条显示头像（锚点位置保留，仅隐藏）。 */
+  showAvatar?: boolean;
   onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
+  onOpenSubAgent?: (tool: ToolActivityItem) => void;
   className?: string;
 }
 
@@ -36,7 +38,9 @@ export function StreamingMessage({
   thinking,
   placeholder,
   isStreaming,
+  showAvatar = true,
   onOpenArtifact,
+  onOpenSubAgent,
   className,
 }: StreamingMessageProps) {
   const visibleSegments = segments.filter((s) => s.text.trim());
@@ -47,20 +51,27 @@ export function StreamingMessage({
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.15 }}
-      className={cn("flex items-start gap-3", className)}
+      className={cn("ai-assistant-message relative", className)}
     >
-      <Avatar className="ai-assistant-avatar mt-0.5 h-8 w-8 border border-border bg-primary/10">
+      <Avatar
+        className={cn(
+          "ai-assistant-avatar absolute left-7 top-1 h-5 w-5 border border-border bg-primary/10",
+          !showAvatar && "invisible",
+        )}
+      >
         <AvatarFallback>
-          <Sparkles className={cn("h-3.5 w-3.5 text-primary", isStreaming && "animate-pulse")} />
+          <Sparkles className={cn("h-3 w-3 text-primary", isStreaming && "animate-pulse")} />
         </AvatarFallback>
       </Avatar>
 
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 pl-[60px]">
         {thinking?.text && (
-          <pre className="chat-scroll mb-2 max-h-40 overflow-auto rounded-md border border-border/60 bg-muted/40 p-3 font-mono text-[12px] leading-relaxed text-muted-foreground">
-            {thinking.text}
-            {isStreaming && <Caret />}
-          </pre>
+          <ReasoningBlock
+            className="mb-2"
+            text={thinking.text}
+            elapsedMs={thinking.elapsedMs}
+            isStreaming={isStreaming}
+          />
         )}
 
         {tools && tools.length > 0 && (
@@ -68,6 +79,7 @@ export function StreamingMessage({
             items={tools}
             className="mb-2"
             onOpenArtifact={onOpenArtifact}
+            onOpenSubAgent={onOpenSubAgent}
           />
         )}
 
@@ -76,7 +88,7 @@ export function StreamingMessage({
             <MarkdownRenderer
               key={index}
               content={segment.text}
-              streaming={isStreaming}
+              streaming={isStreaming && index === visibleSegments.length - 1}
             />
           ))}
         </div>
@@ -87,26 +99,7 @@ export function StreamingMessage({
             <span>{placeholder}</span>
           </div>
         )}
-
-        {isStreaming && hasContent && (
-          <div className="mt-1 h-4">
-            <Caret />
-          </div>
-        )}
       </div>
     </motion.div>
-  );
-}
-
-function Caret() {
-  return (
-    <motion.span
-      aria-hidden
-      animate={{ opacity: [1, 0.2, 1] }}
-      transition={{ duration: 1, repeat: Infinity, ease: "easeInOut" }}
-      className="inline-block translate-y-[-1px] text-primary"
-    >
-      ▋
-    </motion.span>
   );
 }

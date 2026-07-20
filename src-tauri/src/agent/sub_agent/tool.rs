@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use tauri::Emitter;
 
 use super::manager::SubAgentManager;
-use super::runtime::{SubAgentEvent, SubAgentEventPayload, SubAgentRuntime};
+use super::runtime::{record_trace_event, SubAgentEvent, SubAgentEventPayload, SubAgentRuntime};
 use crate::agent::tools::{AgentTool, ToolContext};
 
 pub const SUB_AGENT_FAILURE_PREFIX: &str = "__SUB_AGENT_FAILURE__:";
@@ -88,15 +88,27 @@ impl AgentTool for NotifyUserProgressTool {
         };
 
         let visible_message = trim_progress_message(message);
+        let Some(tool_call_id) = context.sub_agent_parent_tool_call_id.as_deref() else {
+            return sub_agent_failure("错误：子智能体进度通知缺少父级 tool_call_id");
+        };
+        let event = SubAgentEvent::Progress {
+            agent_id: agent_id.to_string(),
+            agent_name,
+            message: visible_message.clone(),
+        };
+        let timestamp_ms = chrono::Utc::now().timestamp_millis();
+        if let Some(trace) = &context.sub_agent_trace_events {
+            if let Ok(value) = serde_json::to_value(&event) {
+                record_trace_event(trace, value, timestamp_ms);
+            }
+        }
         if let Err(error) = app_handle.emit(
             "sub-agent-event",
             SubAgentEventPayload {
                 session_id: context.workspace_id.clone(),
-                event: SubAgentEvent::Progress {
-                    agent_id: agent_id.to_string(),
-                    agent_name,
-                    message: visible_message.clone(),
-                },
+                tool_call_id: tool_call_id.to_string(),
+                timestamp_ms,
+                event,
             },
         ) {
             return sub_agent_failure(format!("错误：发送进度通知失败：{error}"));
@@ -176,16 +188,58 @@ impl AgentTool for SubAgentTool {
         let app_handle = context.app_handle.clone();
         let session_id = context.workspace_id.clone();
 
+        let Some(tool_call_id) = context.current_tool_call_id.clone() else {
+            return sub_agent_failure("错误：调用子智能体缺少 tool_call_id");
+        };
+
         match SubAgentRuntime::build(
             &config,
             parent_provider,
             Arc::clone(parent_tools),
             context.clone(),
         ) {
-            Ok(runtime) => match runtime.execute(task, app_handle, &session_id).await {
-                Ok(result) => result,
-                Err(e) => sub_agent_failure(format!("子智能体执行失败：{}", e)),
-            },
+            Ok(runtime) => {
+                let outcome = runtime.execute(task, app_handle, &session_id).await;
+                let trace_json = match runtime.trace_events_json() {
+                    Ok(trace) => trace,
+                    Err(error) => {
+                        return sub_agent_failure(format!("子智能体轨迹序列化失败：{error}"));
+                    }
+                };
+                let status = if outcome.is_ok() {
+                    "completed"
+                } else {
+                    "failed"
+                };
+                let manager = Arc::clone(&self.manager);
+                let persist_workspace_id = session_id.clone();
+                let persist_tool_call_id = tool_call_id.clone();
+                let persist_agent_id = config.agent_id.clone();
+                let persist_status = status.to_string();
+                let persisted = tokio::task::spawn_blocking(move || {
+                    manager.save_run_trace(
+                        &persist_workspace_id,
+                        &persist_tool_call_id,
+                        &persist_agent_id,
+                        &persist_status,
+                        &trace_json,
+                    )
+                })
+                .await;
+                match persisted {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        return sub_agent_failure(format!("子智能体轨迹持久化失败：{error}"));
+                    }
+                    Err(error) => {
+                        return sub_agent_failure(format!("子智能体轨迹任务失败：{error}"));
+                    }
+                }
+                match outcome {
+                    Ok(result) => result,
+                    Err(error) => sub_agent_failure(format!("子智能体执行失败：{error}")),
+                }
+            }
             Err(e) => sub_agent_failure(format!("子智能体初始化失败：{}", e)),
         }
     }

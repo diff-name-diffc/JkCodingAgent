@@ -1,15 +1,16 @@
 import * as React from "react";
 import { motion } from "framer-motion";
-import { Bot, Copy, RefreshCw, Sparkles } from "lucide-react";
+import { Bot } from "lucide-react";
 import type { DispatcherMessageUsageStats, DispatcherToolArtifactRef } from "../../types";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcherChatView";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { cn } from "../../lib/cn";
 import { Avatar, AvatarFallback } from "../ui/avatar";
-import { Button } from "../ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { MarkdownRenderer } from "./markdown-renderer";
+import { MessageActions } from "./message-actions";
+import { ReasoningBlock } from "./reasoning-block";
 import { ToolCallList } from "./tool-call-card";
+import { formatTokenCountK } from "../dispatcher-chat/dispatcherChatUtils";
 
 /**
  * Assistant message bubble for the refactored chat surface.
@@ -30,6 +31,8 @@ export interface AssistantMessageProps {
   usageStats?: DispatcherMessageUsageStats;
   /** Message id used to anchor markdown + python run records. */
   messageId?: string;
+  /** 连续 AI 消息分组中仅第一条显示头像（锚点位置保留，仅隐藏）。 */
+  showAvatar?: boolean;
   pythonRunRecords?: Record<string, import("../../types").PythonCodeRunRecord>;
   onRunPython?: (target: {
     messageId: string;
@@ -50,6 +53,7 @@ export function AssistantMessage({
   thinking,
   usageStats,
   messageId,
+  showAvatar = true,
   pythonRunRecords,
   onRunPython,
   onCopy,
@@ -58,7 +62,6 @@ export function AssistantMessage({
   onOpenSubAgent,
   className,
 }: AssistantMessageProps) {
-  const [thinkingOpen, setThinkingOpen] = React.useState(false);
   const visibleSegments = segments.filter((s) => s.text.trim());
 
   const handleCopy = () => {
@@ -75,36 +78,26 @@ export function AssistantMessage({
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-      className={cn("ai-assistant-message group flex items-start gap-3", className)}
+      className={cn("ai-assistant-message group relative", className)}
     >
-      <Avatar className="ai-assistant-avatar mt-0.5 h-8 w-8 border border-border bg-primary/10">
+      <Avatar
+        className={cn(
+          "ai-assistant-avatar absolute left-7 top-1 h-5 w-5 border border-border bg-primary/10",
+          !showAvatar && "invisible",
+        )}
+      >
         <AvatarFallback>
-          <Bot className="h-4 w-4 text-primary" />
+          <Bot className="h-3 w-3 text-primary" />
         </AvatarFallback>
       </Avatar>
 
-      <div className="min-w-0 flex-1">
-        {/* Thinking block — collapsible, dimmed */}
+      <div className="min-w-0 pl-[60px]">
         {thinking?.text && (
-          <div className="mb-2">
-            <button
-              onClick={() => setThinkingOpen((v) => !v)}
-              className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-            >
-              <Sparkles className="h-3 w-3" />
-              思考过程
-              {thinking.elapsedMs > 0 && (
-                <span className="text-muted-foreground/70">
-                  · {(thinking.elapsedMs / 1000).toFixed(1)}s
-                </span>
-              )}
-            </button>
-            {thinkingOpen && (
-              <pre className="chat-scroll max-h-64 overflow-auto rounded-md border border-border/60 bg-muted/40 p-3 font-mono text-[12px] leading-relaxed text-muted-foreground">
-                {thinking.text}
-              </pre>
-            )}
-          </div>
+          <ReasoningBlock
+            className="mb-2"
+            text={thinking.text}
+            elapsedMs={thinking.elapsedMs}
+          />
         )}
 
         {/* Tool calls */}
@@ -134,52 +127,11 @@ export function AssistantMessage({
           )}
         </div>
 
-        {/* Footer: usage + actions (actions reveal on hover) */}
-        {(usageStats || onCopy || onRegenerate) && (
-          <div className="mt-1.5 flex items-center gap-1 text-muted-foreground">
-            {usageStats && (
-              <span className="text-[11px]">
-                {usageStats.totalTokens} tokens
-                {usageStats.elapsedMs > 0 && ` · ${(usageStats.elapsedMs / 1000).toFixed(1)}s`}
-              </span>
-            )}
-            <div className="flex-1" />
-            <div className="flex items-center gap-1 opacity-0 transition-opacity duration-fast group-hover:opacity-100">
-              {onCopy && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="ai-message-action"
-                      aria-label="复制回复"
-                      onClick={handleCopy}
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>复制</TooltipContent>
-                </Tooltip>
-              )}
-              {onRegenerate && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="ai-message-action"
-                      aria-label="重新生成"
-                      onClick={onRegenerate}
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>重新生成</TooltipContent>
-                </Tooltip>
-              )}
-            </div>
-          </div>
-        )}
+        <MessageActions
+          tokenLabel={usageStats ? `${formatTokenCountK(usageStats.totalTokens)} tokens` : undefined}
+          onCopy={handleCopy}
+          onRegenerate={onRegenerate}
+        />
       </div>
     </motion.div>
   );

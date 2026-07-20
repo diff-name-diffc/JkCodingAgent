@@ -211,12 +211,28 @@ fn build_fallback_env() -> Vec<(String, String)> {
     env
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+fn default_theme() -> String {
+    "system".to_string()
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppSettings {
     #[serde(default)]
     pub claude_path: String,
     #[serde(default)]
     pub codex_path: String,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            claude_path: String::new(),
+            codex_path: String::new(),
+            theme: default_theme(),
+        }
+    }
 }
 
 fn get_agent_bin_from_settings(settings: &AppSettings, agent: &str) -> String {
@@ -289,6 +305,7 @@ pub fn load_settings_internal() -> AppSettings {
         let settings = AppSettings {
             claude_path: detect_path("claude"),
             codex_path: detect_path("codex"),
+            theme: default_theme(),
         };
         if let Ok(dir) = app_data_dir() {
             let _ = fs::create_dir_all(&dir);
@@ -365,6 +382,7 @@ pub fn detect_agent_paths() -> CommandResult<AppSettings> {
     Ok(AppSettings {
         claude_path: detect_path("claude"),
         codex_path: detect_path("codex"),
+        theme: default_theme(),
     })
 }
 

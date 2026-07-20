@@ -76,7 +76,7 @@ export function AppLayout({
             </div>
           )}
           <div className="ai-chat-stage relative flex min-h-0 flex-1 justify-center">
-            <div className="ai-chat-column flex min-h-0 w-full max-w-[768px] flex-1 flex-col">
+            <div className="ai-chat-column flex min-h-0 flex-1 flex-col">
               {children}
             </div>
           </div>

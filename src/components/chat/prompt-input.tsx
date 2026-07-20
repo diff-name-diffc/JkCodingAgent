@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ArrowUp, Loader2, Square } from "lucide-react";
+import { ArrowUp, Loader2, Paperclip, Square } from "lucide-react";
 import type { DispatcherModelConfig } from "../../types";
 import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
@@ -28,9 +28,13 @@ export interface PromptInputProps {
   /** Slot for extra trailing controls (attachment, voice, shortcuts). */
   leadingSlot?: React.ReactNode;
   trailingSlot?: React.ReactNode;
+  contextBar?: React.ReactNode;
+  onAttach?: () => void;
 }
 
-const MAX_HEIGHT = 240;
+const LINE_HEIGHT = 24;
+const MAX_ROWS = 8;
+const MAX_HEIGHT = LINE_HEIGHT * MAX_ROWS + 12;
 
 /**
  * Bottom-anchored prompt input for the refactored chat surface.
@@ -50,11 +54,13 @@ export function PromptInput({
   onResume,
   models,
   onSelectModel,
-  placeholder = "输入消息…  (Enter 发送 / Shift+Enter 换行)",
+  placeholder = "输入消息…",
   disabled,
   className,
   leadingSlot,
   trailingSlot,
+  contextBar,
+  onAttach,
 }: PromptInputProps) {
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const composingRef = React.useRef(false);
@@ -90,25 +96,46 @@ export function PromptInput({
   return (
     <div
       className={cn(
-        "ai-prompt-terminal mx-auto w-full max-w-[768px] rounded-2xl border border-border bg-card p-2",
+        "ai-prompt-terminal ai-chat-column rounded-2xl border border-border bg-card p-2",
         className,
       )}
     >
-      <Textarea
-        ref={textareaRef}
-        value={value}
-        onChange={(e) => onValueChange(e.target.value)}
-        onKeyDown={handleKeyDown}
-        onCompositionStart={() => (composingRef.current = true)}
-        onCompositionEnd={() => (composingRef.current = false)}
-        placeholder={placeholder}
-        disabled={disabled}
-        rows={1}
-        aria-label="消息输入框"
-        className="ai-prompt-textarea max-h-[240px] resize-none border-0 bg-transparent px-2 py-1.5 text-[15px] leading-6 shadow-none focus-visible:ring-0"
-      />
+      {contextBar}
+      <div className="ai-prompt-editor">
+        <Textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => onValueChange(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onCompositionStart={() => (composingRef.current = true)}
+          onCompositionEnd={() => (composingRef.current = false)}
+          placeholder={placeholder}
+          disabled={disabled}
+          rows={1}
+          aria-label="消息输入框"
+          className="ai-prompt-textarea min-h-9 max-h-[204px] resize-none border-0 bg-transparent px-2 py-1.5 text-[15px] leading-6 shadow-none focus-visible:ring-0"
+        />
+        <span className="ai-prompt-shortcut" aria-hidden="true">
+          Enter 发送 · Shift+Enter 换行
+        </span>
+      </div>
 
       <div className="ai-prompt-toolbar flex items-center gap-1 px-1 pt-1">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ai-attachment-button"
+              aria-label="添加附件"
+              onClick={onAttach}
+              type="button"
+            >
+              <Paperclip className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>添加附件</TooltipContent>
+        </Tooltip>
         {leadingSlot}
         {models && onSelectModel && <ModelSelector models={models} onSelect={onSelectModel} />}
         <div className="flex-1" />

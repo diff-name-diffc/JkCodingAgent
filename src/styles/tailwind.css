@@ -1,6 +1,7 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+@source "../../node_modules/streamdown/dist/index.js";
 
 /*
  * Tailwind layer for the refactored Chat UI.
@@ -343,8 +344,7 @@
     border: 1px solid rgb(var(--accent-rgb) / 0.18);
     border-radius: 8px;
     padding: 5px;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.42);
     outline: none;
   }
@@ -655,8 +655,7 @@
     display: flex;
     flex-direction: column;
     padding: 18px 14px 14px;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     border-right: 1px solid rgba(88, 241, 232, 0.16) !important;
     box-shadow:
       inset -1px 0 0 rgba(255, 255, 255, 0.04),
@@ -792,8 +791,7 @@
     min-height: 0;
     flex-direction: column;
     overflow: hidden;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
   }
 
   .ai-home-projects {
@@ -1203,8 +1201,7 @@
 
   .ai-project-main {
     min-width: 0;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
   }
 
   .ai-project-workbench-frame,
@@ -1219,8 +1216,7 @@
   .ai-project-chat-pane,
   .ai-project-editor-pane,
   .ai-project-right-panel {
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
   }
 
   .ai-project-workbench-pane {
@@ -1238,8 +1234,7 @@
     overflow: hidden;
     border-left: 1px solid rgb(var(--accent-rgb) / 0.16);
     border-right: 1px solid rgb(var(--accent-rgb) / 0.1);
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     box-shadow:
       inset 1px 0 0 rgba(255, 255, 255, 0.035),
       -18px 0 52px rgba(0, 0, 0, 0.18);
@@ -1466,8 +1461,7 @@
   .file-explorer-context-menu {
     border-color: rgb(var(--accent-rgb) / 0.2) !important;
     border-radius: 8px !important;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     box-shadow:
       0 26px 80px rgba(0, 0, 0, 0.42),
       0 0 0 1px rgba(255, 255, 255, 0.035) !important;
@@ -1513,8 +1507,7 @@
     flex: 1;
     flex-direction: column;
     overflow: hidden;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
   }
 
   .ai-file-viewer-header {
@@ -1641,8 +1634,7 @@
   .file-viewer-tab-menu {
     border-color: rgb(var(--accent-rgb) / 0.2) !important;
     border-radius: 8px !important;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     box-shadow:
       0 26px 80px rgba(0, 0, 0, 0.42),
       0 0 0 1px rgba(255, 255, 255, 0.035) !important;
@@ -1665,8 +1657,7 @@
     gap: 16px;
     overflow: hidden;
     padding: 18px;
-    background:
-      var(--sf-surface-sunken);
+    background: var(--sf-surface-sunken);
   }
 
   .ai-file-pane-shell.is-compact {
@@ -1683,8 +1674,7 @@
     overflow: hidden;
     border: 1px solid rgb(var(--accent-rgb) / 0.14);
     border-radius: 8px;
-    background:
-      linear-gradient(180deg, var(--sf-surface-sunken), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface-sunken), var(--sf-surface-sunken));
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.035),
       0 22px 58px rgba(0, 0, 0, 0.22);
@@ -1913,8 +1903,7 @@
     flex: 1;
     flex-direction: column;
     overflow: hidden;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
   }
 
   .ai-large-file-statusbar {
@@ -2041,8 +2030,7 @@
     flex-direction: column;
     overflow: hidden;
     border-left: 1px solid rgb(var(--accent-rgb) / 0.16);
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     box-shadow:
       inset 1px 0 0 rgba(255, 255, 255, 0.035),
       -18px 0 52px rgba(0, 0, 0, 0.18);
@@ -2402,8 +2390,7 @@
     flex: 1;
     flex-direction: column;
     overflow: hidden;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
   }
 
   .ai-git-diff-header {
@@ -2450,7 +2437,8 @@
 
   .ai-git-diff-shell .git-diff-file-header {
     border-color: rgb(var(--accent-rgb) / 0.16);
-    background: linear-gradient(90deg, rgb(var(--accent-rgb) / 0.1), transparent 72%), var(--sf-surface);
+    background:
+      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.1), transparent 72%), var(--sf-surface);
   }
 
   .ai-git-diff-shell .git-diff-file-path {
@@ -2501,7 +2489,8 @@
   .ai-branch-bar.is-open {
     border-color: rgb(var(--accent-rgb) / 0.36);
     background:
-      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.14), rgb(var(--warning-rgb) / 0.04)), var(--sf-surface);
+      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.14), rgb(var(--warning-rgb) / 0.04)),
+      var(--sf-surface);
     color: var(--text-primary);
     box-shadow: 0 0 24px rgb(var(--accent-rgb) / 0.1);
   }
@@ -2538,8 +2527,7 @@
     border: 1px solid rgb(var(--accent-rgb) / 0.18);
     border-radius: 10px;
     padding: 0;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     box-shadow:
       0 18px 42px rgba(0, 0, 0, 0.38),
       0 0 32px rgb(var(--accent-rgb) / 0.08);
@@ -3808,7 +3796,8 @@
     border: 1px solid rgb(var(--accent-rgb) / 0.14);
     border-radius: 8px;
     padding: 12px 14px;
-    background: linear-gradient(90deg, rgb(var(--accent-rgb) / 0.1), transparent 62%), var(--sf-surface);
+    background:
+      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.1), transparent 62%), var(--sf-surface);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   }
 
@@ -5629,7 +5618,8 @@
     border: 1px solid rgb(var(--accent-rgb) / 0.14);
     border-radius: 8px;
     padding: 0;
-    background: linear-gradient(180deg, rgb(var(--accent-rgb) / 0.06), transparent), var(--sf-surface);
+    background:
+      linear-gradient(180deg, rgb(var(--accent-rgb) / 0.06), transparent), var(--sf-surface);
     color: var(--text-muted);
     cursor: pointer;
     opacity: 0.72;
@@ -6281,8 +6271,7 @@
     flex-direction: column;
     overflow: hidden;
     border-left: 1px solid rgb(var(--accent-rgb) / 0.16);
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     box-shadow:
       inset 1px 0 0 rgba(255, 255, 255, 0.035),
       -18px 0 52px rgba(0, 0, 0, 0.2);
@@ -6294,7 +6283,8 @@
     flex-direction: column;
     border-bottom: 1px solid rgb(var(--accent-rgb) / 0.14);
     background:
-      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.08), transparent 58%), var(--sf-surface-sunken);
+      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.08), transparent 58%),
+      var(--sf-surface-sunken);
   }
 
   .ai-git-history-title-row {
@@ -6342,7 +6332,8 @@
   .ai-git-sync-button.is-active {
     border-color: rgb(var(--accent-rgb) / 0.5);
     background:
-      linear-gradient(135deg, rgb(var(--accent-rgb) / 0.28), rgb(var(--warning-rgb) / 0.12)), var(--sf-surface);
+      linear-gradient(135deg, rgb(var(--accent-rgb) / 0.28), rgb(var(--warning-rgb) / 0.12)),
+      var(--sf-surface);
     color: var(--text-primary);
   }
 
@@ -6530,7 +6521,11 @@
   .ai-git-commit-row.is-selected {
     border-color: rgb(var(--accent-rgb) / 0.28);
     border-left-color: var(--accent);
-    background: linear-gradient(90deg, rgb(var(--accent-rgb) / 0.16), rgb(var(--accent-rgb) / 0.04));
+    background: linear-gradient(
+      90deg,
+      rgb(var(--accent-rgb) / 0.16),
+      rgb(var(--accent-rgb) / 0.04)
+    );
   }
 
   .ai-git-commit-dot-wrap {
@@ -6784,8 +6779,7 @@
     gap: 5px;
     overflow: visible;
     border-right: 1px solid rgb(var(--accent-rgb) / 0.16) !important;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     box-shadow:
       inset -1px 0 0 rgba(255, 255, 255, 0.04),
       18px 0 50px rgba(0, 0, 0, 0.18);
@@ -6910,8 +6904,7 @@
     left: 56px !important;
     width: 250px !important;
     border-right: 1px solid rgb(var(--accent-rgb) / 0.18) !important;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     box-shadow: 24px 0 70px rgba(0, 0, 0, 0.34) !important;
   }
 
@@ -6996,8 +6989,7 @@
     flex-direction: column;
     overflow: hidden;
     border-right: 1px solid rgb(var(--accent-rgb) / 0.16) !important;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     box-shadow:
       inset -1px 0 0 rgba(255, 255, 255, 0.04),
       20px 0 58px rgba(0, 0, 0, 0.18);
@@ -7129,11 +7121,18 @@
   }
 
   .ai-project-session-row-title {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-primary);
+    font-weight: 750 !important;
+  }
+
+  .ai-project-session-row-title > span {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--text-primary);
-    font-weight: 750 !important;
   }
 
   .ai-project-session-row-main {
@@ -7214,8 +7213,7 @@
     gap: 2px;
     overflow: hidden;
     border-left: 1px solid rgb(var(--accent-rgb) / 0.16) !important;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
   }
 
   /* Shared square icon button (used by RightToolbar, ProjectRail controls) */
@@ -7275,8 +7273,7 @@
     flex-shrink: 0;
     position: relative;
     border-top: 1px solid rgb(var(--accent-rgb) / 0.16) !important;
-    background:
-      linear-gradient(180deg, var(--sf-surface-sunken), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface-sunken), var(--sf-surface-sunken));
     box-shadow: 0 -20px 48px rgba(0, 0, 0, 0.24);
   }
 
@@ -7484,8 +7481,7 @@
     overflow: hidden;
     color: var(--text-primary);
     border-left: 1px solid rgb(var(--accent-rgb) / 0.16) !important;
-    background:
-      linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
+    background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
     box-shadow: -20px 0 50px rgba(0, 0, 0, 0.18);
   }
 
@@ -7834,19 +7830,185 @@
   /* ── Chat surface: clean modern AI-chat look ─────────────────────── */
 
   .ai-chat-shell {
-    background: var(--chat-surface);
+    background: var(--background);
   }
 
   .ai-chat-main {
-    background: var(--chat-surface);
+    background: var(--background);
   }
 
   .ai-chat-stage {
-    background: var(--chat-surface);
+    background: var(--background);
+    /* 容器查询上下文：markdown 表格/代码块的 breakout 以舞台宽度为上限 */
+    container-type: inline-size;
+  }
+
+  /* 聊天内容列：宽度随窗口分档（<1280 / 1280–1600 / ≥1600），水平居中，
+     窗口缩放跨档时以 width transition 平滑变化 */
+  .ai-chat-column {
+    width: min(720px, 100% - 48px);
+    margin-inline: auto;
+    transition: width var(--motion-slow) var(--motion-ease);
+  }
+
+  @media (min-width: 1280px) {
+    .ai-chat-column {
+      width: 800px;
+    }
+  }
+
+  @media (min-width: 1600px) {
+    .ai-chat-column {
+      width: 920px;
+    }
+  }
+
+  /* Markdown 表格/代码块 breakout：相对正文列左右各伸出 80px（负 margin）。
+     以舞台宽度（100cqw）为上限线性回退并保留 24px 安全边距，
+     窗口不足以容纳时正好回退为列宽。 */
+  .ai-chat-stage .markdown-table-wrap,
+  .ai-chat-stage .markdown-code-block,
+  .ai-chat-stage .ai-streamdown [data-streamdown="table-wrapper"],
+  .ai-chat-stage .ai-streamdown [data-streamdown="code-block"] {
+    margin-inline: max(-80px, calc((100% - 100cqw) / 2 + 24px));
+    transition: margin-inline var(--motion-slow) var(--motion-ease);
+  }
+
+  /* ── Streamdown: AI message markdown ── */
+
+  .ai-streamdown {
+    min-width: 0;
+  }
+
+  .ai-streamdown [data-streamdown="code-block"] {
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--streamdown-code-border);
+    border-radius: 8px;
+    padding: 0;
+    background: var(--streamdown-code-bg);
+    box-shadow: var(--streamdown-code-shadow);
+  }
+
+  .ai-streamdown [data-streamdown="code-block-header"] {
+    height: 36px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--streamdown-code-border);
+    background: var(--streamdown-code-toolbar-bg);
+    color: var(--streamdown-code-muted);
+  }
+
+  .ai-streamdown [data-streamdown="code-block-header"] > span {
+    margin-left: 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+
+  .ai-streamdown [data-streamdown="code-block-actions"] {
+    margin-right: 6px;
+    border-color: var(--streamdown-code-border);
+    background: var(--streamdown-code-toolbar-bg);
+    color: var(--streamdown-code-muted);
+    box-shadow: none;
+  }
+
+  .ai-streamdown [data-streamdown="code-block-actions"] button {
+    border-radius: 5px;
+    color: inherit;
+    transition:
+      color var(--motion-fast) var(--motion-ease),
+      background var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-streamdown [data-streamdown="code-block-actions"] button:hover {
+    background: var(--streamdown-code-hover-bg);
+    color: var(--streamdown-code-text);
+  }
+
+  .ai-streamdown [data-streamdown="code-block-body"] {
+    border: 0;
+    border-radius: 0;
+    padding: 14px 16px 16px;
+    background: var(--streamdown-code-bg);
+    color: var(--streamdown-code-text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.65;
+  }
+
+  .ai-streamdown [data-streamdown="code-block-body"] pre,
+  .ai-streamdown [data-streamdown="code-block-body"] code,
+  .ai-streamdown [data-streamdown="code-block-body"] span {
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+
+  .ai-streamdown [data-streamdown="table-wrapper"] {
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-medium);
+    border-radius: 8px;
+    padding: 0;
+    background: var(--bg-card);
+  }
+
+  .ai-streamdown [data-streamdown="table-wrapper"] > div:last-child {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .ai-streamdown [data-streamdown="table"] {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+  }
+
+  .ai-streamdown [data-streamdown="table-header"] {
+    background: var(--bg-subtle);
+  }
+
+  .ai-streamdown [data-streamdown="table-row"] {
+    transition: background var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-streamdown [data-streamdown="table-body"] [data-streamdown="table-row"]:hover {
+    background: var(--bg-hover);
+  }
+
+  .ai-streamdown [data-streamdown="table-header-cell"],
+  .ai-streamdown [data-streamdown="table-cell"] {
+    padding: 10px 14px;
+    border-right: 1px solid var(--border-dim);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .ai-streamdown [data-streamdown="table-header-cell"]:last-child,
+  .ai-streamdown [data-streamdown="table-cell"]:last-child {
+    border-right: 0;
+  }
+
+  .ai-streamdown [data-streamdown="table-row"] > :first-child {
+    font-weight: 700;
   }
 
   .ai-chat-footer {
-    background: linear-gradient(180deg, transparent, var(--chat-surface) 40%);
+    background: linear-gradient(180deg, transparent, var(--background) 40%);
+  }
+
+  /* 自定义标题栏：整条为窗口拖拽区（data-tauri-drag-region），
+     左侧避让 macOS 红绿灯安全区（约 72px）外加 12px 间距 */
+  .ai-titlebar {
+    flex-shrink: 0;
+    height: 38px;
+    padding-left: 84px;
+    background: var(--bg-titlebar);
+    border-bottom: 1px solid var(--border-dim);
   }
 
   /* ── Sidebar ── */
@@ -8069,23 +8231,41 @@
   /* ── Composer ── */
 
   .ai-prompt-terminal {
-    border-color: var(--border-medium);
-    border-radius: var(--radius-xl);
-    background: var(--bg-elevated);
-    box-shadow: var(--chat-composer-shadow);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--card);
+    box-shadow: var(--composer-shadow);
     transition:
       border-color var(--motion-fast) var(--motion-ease),
       box-shadow var(--motion-fast) var(--motion-ease);
   }
 
   .ai-prompt-terminal:focus-within {
-    border-color: var(--border-focus);
-    box-shadow: var(--chat-composer-shadow), var(--chat-focus-ring);
+    border-color: var(--accent);
+    box-shadow: var(--composer-shadow), var(--chat-focus-ring);
+  }
+
+  .ai-prompt-editor {
+    position: relative;
   }
 
   .ai-prompt-textarea {
-    color: var(--text-primary);
+    width: 100%;
+    min-height: 36px;
+    max-height: 204px;
+    padding-right: 164px;
+    color: var(--foreground);
     caret-color: var(--accent);
+  }
+
+  .ai-prompt-shortcut {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    color: var(--muted-foreground);
+    font-size: 11px;
+    line-height: 1;
+    pointer-events: none;
   }
 
   .ai-prompt-toolbar {
@@ -8094,10 +8274,10 @@
 
   .ai-model-selector {
     height: 30px;
-    border: 1px solid transparent;
+    border: 1px solid var(--border);
     border-radius: var(--radius-full);
-    background: transparent;
-    color: var(--text-muted);
+    background: var(--muted);
+    color: var(--foreground);
     transition:
       background var(--motion-fast) var(--motion-ease),
       color var(--motion-fast) var(--motion-ease);
@@ -8105,8 +8285,9 @@
 
   .ai-model-selector:hover:not(:disabled),
   .ai-model-selector[data-state="open"] {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--foreground);
   }
 
   .ai-model-selector-icon {
@@ -8148,8 +8329,8 @@
   }
 
   .ai-composer-action.is-send:disabled {
-    background: var(--bg-hover);
-    color: var(--text-hint);
+    background: var(--muted);
+    color: var(--muted-foreground);
     box-shadow: none;
   }
 
@@ -8171,11 +8352,13 @@
   }
 
   .ai-user-bubble {
-    background: var(--chat-user-bubble-bg);
+    background: var(--accent-soft);
     color: var(--chat-user-bubble-text);
   }
 
   .ai-message-action {
+    width: 28px;
+    height: 28px;
     color: var(--text-muted);
     transition:
       background var(--motion-fast) var(--motion-ease),
@@ -8183,35 +8366,204 @@
   }
 
   .ai-message-action:hover {
-    background: var(--bg-hover);
+    background: var(--bg-subtle);
     color: var(--text-primary);
   }
 
-  /* ── Session keywords bar (top of the chat column) ── */
+  .ai-message-action-active {
+    background: var(--bg-subtle);
+    color: var(--accent-strong);
+  }
+
+  .ai-message-actions {
+    display: flex;
+    width: max-content;
+    align-items: center;
+    gap: 2px;
+    margin-top: 6px;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-2px);
+    transition:
+      opacity 120ms var(--motion-ease),
+      transform 120ms var(--motion-ease);
+  }
+
+  .ai-assistant-message:hover .ai-message-actions,
+  .ai-message-actions:focus-within {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+
+  .ai-reasoning-block {
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-subtle) 42%, transparent);
+  }
+
+  .ai-reasoning-trigger {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    color: var(--text-secondary);
+    text-align: left;
+    transition: background 120ms var(--motion-ease);
+  }
+
+  .ai-reasoning-trigger:hover {
+    background: var(--bg-subtle);
+  }
+
+  .ai-reasoning-title {
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .ai-reasoning-shimmer {
+    color: transparent;
+    background: linear-gradient(
+      100deg,
+      var(--text-muted) 20%,
+      var(--text-primary) 48%,
+      var(--text-muted) 76%
+    );
+    background-size: 220% 100%;
+    background-clip: text;
+    animation: ai-reasoning-shimmer 1.45s linear infinite;
+  }
+
+  @keyframes ai-reasoning-shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: -120% 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ai-reasoning-shimmer {
+      color: var(--text-secondary);
+      background: none;
+      animation: none;
+    }
+  }
+
+  /* ── Per-turn context bar inside the composer ── */
+
+  .ai-context-bar {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+    margin: 0 4px 4px;
+    padding: 2px 4px 7px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .ai-context-label {
+    flex-shrink: 0;
+    color: var(--muted-foreground);
+    font-size: 11px;
+    font-weight: 650;
+  }
 
   .ai-chat-keywords {
     display: flex;
-    flex-shrink: 0;
+    min-width: 0;
     align-items: center;
     gap: 6px;
     overflow-x: auto;
-    padding: 10px 20px 2px;
     scrollbar-width: none;
   }
 
-  .ai-chat-keywords::-webkit-scrollbar {
-    display: none;
-  }
-
   .ai-chat-keyword-pill {
+    display: inline-flex;
     flex-shrink: 0;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid var(--border);
     border-radius: var(--radius-full);
     padding: 2px 9px;
-    background: var(--accent-subtle);
-    color: var(--accent-strong);
+    background: var(--card);
+    color: var(--foreground);
     font-size: 11px;
     line-height: 18px;
     white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .ai-chat-keyword-pill:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .ai-context-chip-icon {
+    color: var(--accent);
+  }
+
+  .ai-context-chip-remove {
+    width: 0;
+    opacity: 0;
+    transition:
+      width var(--motion-fast) var(--motion-ease),
+      opacity var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-chat-keyword-pill:hover .ai-context-chip-remove,
+  .ai-chat-keyword-pill:focus-visible .ai-context-chip-remove {
+    width: 11px;
+    opacity: 1;
+  }
+
+  .ai-attachment-button {
+    display: inline-flex;
+    width: 30px;
+    height: 30px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: var(--radius-full);
+    color: var(--muted-foreground);
+  }
+
+  .ai-attachment-button:hover {
+    border-color: var(--border);
+    background: var(--muted);
+    color: var(--foreground);
+  }
+
+  .ai-theme-options {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .ai-theme-option {
+    display: inline-flex;
+    min-height: 38px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--card);
+    color: var(--muted-foreground);
+    cursor: pointer;
+  }
+
+  .ai-theme-option:hover,
+  .ai-theme-option.is-active {
+    border-color: var(--accent);
+    color: var(--foreground);
+  }
+
+  .ai-theme-option.is-active {
+    background: var(--accent-soft);
   }
 
   /* ── Tool call cards ── */
@@ -8225,8 +8577,17 @@
       background var(--motion-fast) var(--motion-ease);
   }
 
+  .ai-tool-call-card--running {
+    animation: ai-tool-call-breathe 1.5s ease-in-out infinite;
+  }
+
   .ai-tool-call-card:hover {
     border-color: var(--border-medium);
+  }
+
+  .ai-tool-call-card--error,
+  .ai-tool-call-card--error:hover {
+    border-color: var(--danger);
   }
 
   .ai-tool-call-trigger {
@@ -8236,6 +8597,76 @@
 
   .ai-tool-call-trigger:hover {
     background: var(--bg-hover);
+  }
+
+  .ai-tool-call-summary {
+    transition:
+      border-color var(--motion-fast) var(--motion-ease),
+      background var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-tool-call-line {
+    position: absolute;
+    top: 17px;
+    bottom: -10px;
+    left: 11px;
+    width: 1px;
+    background: var(--border-medium);
+  }
+
+  .ai-tool-call-node {
+    position: absolute;
+    top: 9px;
+    left: 4px;
+    z-index: 1;
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-full);
+    background: var(--bg-card);
+    color: var(--text-muted);
+  }
+
+  .ai-tool-call-node--success {
+    color: var(--success);
+  }
+
+  .ai-tool-call-node--error {
+    color: var(--danger);
+  }
+
+  .ai-tool-call-node--running {
+    color: var(--accent);
+  }
+
+  .ai-tool-call-code .shiki {
+    min-width: max-content;
+    margin: 0;
+    padding: 10px;
+    background: transparent !important;
+    font: inherit;
+  }
+
+  .ai-tool-call-code .shiki code {
+    font: inherit;
+  }
+
+  @keyframes ai-tool-call-breathe {
+    0%,
+    100% {
+      opacity: 0.6;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ai-tool-call-card--running {
+      animation: none;
+    }
   }
 
   .ai-migrated-tool-activity {
@@ -8254,6 +8685,7 @@
   .chat-scroll {
     scrollbar-width: thin;
     scrollbar-color: var(--border-strong) transparent;
+    overscroll-behavior: contain;
   }
 
   .chat-scroll::-webkit-scrollbar {
@@ -8270,10 +8702,9 @@
     background: transparent;
   }
 
+  /* 正文列宽由 .ai-chat-column 分档控制，这里只需撑满 */
   .chat-prose {
-    max-width: 46rem;
-    margin-left: auto;
-    margin-right: auto;
+    width: 100%;
   }
 
   @keyframes ai-spin {

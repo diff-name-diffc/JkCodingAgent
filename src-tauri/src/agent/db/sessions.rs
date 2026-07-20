@@ -178,6 +178,10 @@ impl DispatcherDb {
             params![session_id],
         )?;
         tx.execute(
+            "DELETE FROM sub_agent_run_traces WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
         )?;
@@ -369,6 +373,10 @@ impl DispatcherDb {
         )?;
         tx.execute(
             "DELETE FROM dispatcher_tool_runs WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM sub_agent_run_traces WHERE workspace_id = ?1",
             params![session_id],
         )?;
         tx.execute(
@@ -584,6 +592,10 @@ impl DispatcherDb {
         )?;
         tx.execute(
             "DELETE FROM dispatcher_tool_runs WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM sub_agent_run_traces WHERE workspace_id = ?1",
             params![session_id],
         )?;
         tx.execute(

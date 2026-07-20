@@ -1,4 +1,5 @@
 import * as React from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type {
   DispatcherMessage,
   DispatcherModelConfig,
@@ -6,6 +7,8 @@ import type {
   PythonCodeRunRecord,
   ChatSession,
   ChatCategory,
+  SubAgentEvent,
+  SubAgentRunTrace,
 } from "../../types";
 import { useUIStore } from "../../stores/ui-store";
 import { useChatModelsQuery, useSetActiveChatModel } from "../../hooks/use-chat-queries";
@@ -14,6 +17,7 @@ import { useChatShortcuts } from "../../hooks/use-chat-shortcuts";
 import { AppLayout } from "../layout/app-layout";
 import { Sidebar } from "../layout/sidebar";
 import { MessageList } from "./message-list";
+import { SessionKeywordBar } from "./session-keyword-bar";
 import { PromptInput, type ComposerMode } from "./prompt-input";
 import { ArtifactPanel } from "../artifact/artifact-panel";
 import { DispatchApprovalPanel } from "./dispatch-approval-panel";
@@ -21,7 +25,8 @@ import type { PendingDispatchApproval } from "../dispatcherSessionStore";
 import { CommandPalette } from "./command-palette";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import {
-  extractAgentIdsFromToolInput,
+  getSubAgentSession,
+  hydrateSubAgentTrace,
   useSubAgentSessions,
 } from "../subAgentEventStore";
 
@@ -63,7 +68,10 @@ export interface ChatShellProps {
   searchValue: string;
   onSearchChange: (value: string) => void;
   onOpenSettings: () => void;
-  onCreateCategory?: (name: string, config?: { systemPrompt?: string; allowedTools?: string[] }) => void;
+  onCreateCategory?: (
+    name: string,
+    config?: { systemPrompt?: string; allowedTools?: string[] },
+  ) => void;
   onRenameCategory?: (categoryId: string, name: string) => void;
   onDeleteCategory?: (categoryId: string) => void;
   onMoveSessionToCategory?: (sessionId: string, categoryId: string) => void;
@@ -75,6 +83,7 @@ export interface ChatShellProps {
   onSend: () => void;
   onStop: () => void;
   onResume?: () => void;
+  onAttach?: () => void;
   onRegenerate?: () => void;
   onApproveDispatch?: (dispatchId: string, taskPrompt: string) => void;
   onRejectDispatch?: (dispatchId: string) => void;
@@ -115,6 +124,7 @@ export function ChatShell({
   onSend,
   onStop,
   onResume,
+  onAttach,
   onRegenerate,
   onApproveDispatch,
   onRejectDispatch,
@@ -129,27 +139,37 @@ export function ChatShell({
   const commandPaletteOpen = useUIStore((s) => s.commandPaletteOpen);
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
   const toggleCommandPalette = useUIStore((s) => s.toggleCommandPalette);
-  const [selectedArtifact, setSelectedArtifact] =
-    React.useState<DispatcherToolArtifactRef | null>(null);
-  const [selectedSubAgentId, setSelectedSubAgentId] =
-    React.useState<string | null>(null);
+  const [selectedArtifact, setSelectedArtifact] = React.useState<DispatcherToolArtifactRef | null>(
+    null,
+  );
+  const [selectedSubAgentToolCallId, setSelectedSubAgentToolCallId] = React.useState<string | null>(
+    null,
+  );
+  const [traceLoading, setTraceLoading] = React.useState(false);
+  const [traceError, setTraceError] = React.useState<string | null>(null);
+  const traceRequestRef = React.useRef(0);
 
   // Keep the UI store's active conversation in sync (for the artifact panel
   // and other consumers). Pure UI state — no business logic.
   React.useEffect(() => {
+    traceRequestRef.current += 1;
     setActiveConversationId(sessionId);
   }, [sessionId, setActiveConversationId]);
 
   React.useEffect(() => {
     setSelectedArtifact(null);
-    setSelectedSubAgentId(null);
+    setSelectedSubAgentToolCallId(null);
+    setTraceLoading(false);
+    setTraceError(null);
   }, [sessionId]);
 
   const modelsQuery = useChatModelsQuery();
   const selectModel = useSetActiveChatModel();
   const liveState = useLiveSessionStateReadonly(sessionId);
   const subAgentSessions = useSubAgentSessions(sessionId ?? "");
-  const selectedSubAgent = selectedSubAgentId ? subAgentSessions[selectedSubAgentId] ?? null : null;
+  const selectedSubAgent = selectedSubAgentToolCallId
+    ? (subAgentSessions[selectedSubAgentToolCallId] ?? null)
+    : null;
   const currentPendingDispatch: PendingDispatchApproval | null =
     liveState?.pendingDispatches[0] ?? null;
 
@@ -181,24 +201,56 @@ export function ChatShell({
 
   const handleOpenArtifact = React.useCallback(
     (artifact: DispatcherToolArtifactRef) => {
+      traceRequestRef.current += 1;
       setSelectedArtifact(artifact);
-      setSelectedSubAgentId(null);
+      setSelectedSubAgentToolCallId(null);
+      setTraceLoading(false);
+      setTraceError(null);
       setArtifactPanelOpen(true);
     },
     [setArtifactPanelOpen],
   );
 
   const handleOpenSubAgent = React.useCallback(
-    (tool: ToolActivityItem) => {
-      const agentId = extractAgentIdsFromToolInput(tool.input);
-      if (!agentId) return;
-      const session = subAgentSessions[agentId];
-      if (!session) return;
+    async (tool: ToolActivityItem) => {
+      if (!sessionId) return;
+      const requestId = ++traceRequestRef.current;
       setSelectedArtifact(null);
-      setSelectedSubAgentId(agentId);
+      setSelectedSubAgentToolCallId(tool.id);
+      setTraceError(null);
+      setTraceLoading(false);
       setArtifactPanelOpen(true);
+
+      if (getSubAgentSession(sessionId, tool.id)) return;
+      if (tool.status === "running") {
+        setTraceLoading(true);
+        return;
+      }
+      setTraceLoading(true);
+      try {
+        const trace = await invoke<SubAgentRunTrace | null>("sub_agent_get_run_trace", {
+          workspaceId: sessionId,
+          toolCallId: tool.id,
+        });
+        if (requestId !== traceRequestRef.current) return;
+        if (!trace) {
+          setTraceError("该任务执行时未记录轨迹，旧版本任务无法补录。");
+          return;
+        }
+        const parsed: unknown = JSON.parse(trace.eventsJson);
+        if (!Array.isArray(parsed)) {
+          throw new Error("执行轨迹数据格式无效");
+        }
+        const hydrated = hydrateSubAgentTrace(sessionId, tool.id, parsed as SubAgentEvent[]);
+        if (!hydrated) throw new Error("执行轨迹为空");
+      } catch (error) {
+        if (requestId !== traceRequestRef.current) return;
+        setTraceError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (requestId === traceRequestRef.current) setTraceLoading(false);
+      }
     },
-    [setArtifactPanelOpen, subAgentSessions],
+    [sessionId, setArtifactPanelOpen],
   );
 
   return (
@@ -207,24 +259,24 @@ export function ChatShell({
       chatHeader={projectHeader}
       sidebar={
         embedded ? undefined : (
-        <Sidebar
-          sessions={sessions}
-          categories={categories}
-          activeSessionId={sessionId}
-          onActiveSessionChange={onActiveSessionChange}
-          onNewSessionInCategory={onNewSessionInCategory}
-          onDeleteSession={onDeleteSession}
-          searchValue={searchValue}
-          onSearchChange={onSearchChange}
-          onOpenSettings={onOpenSettings}
-          onCreateCategory={onCreateCategory}
-          onRenameCategory={onRenameCategory}
-          onDeleteCategory={onDeleteCategory}
-          onMoveSessionToCategory={onMoveSessionToCategory}
-          loading={sessionsLoading}
-          error={sessionsError}
-          searchActive={searchActive}
-        />
+          <Sidebar
+            sessions={sessions}
+            categories={categories}
+            activeSessionId={sessionId}
+            onActiveSessionChange={onActiveSessionChange}
+            onNewSessionInCategory={onNewSessionInCategory}
+            onDeleteSession={onDeleteSession}
+            searchValue={searchValue}
+            onSearchChange={onSearchChange}
+            onOpenSettings={onOpenSettings}
+            onCreateCategory={onCreateCategory}
+            onRenameCategory={onRenameCategory}
+            onDeleteCategory={onDeleteCategory}
+            onMoveSessionToCategory={onMoveSessionToCategory}
+            loading={sessionsLoading}
+            error={sessionsError}
+            searchActive={searchActive}
+          />
         )
       }
       chatFooter={
@@ -235,29 +287,29 @@ export function ChatShell({
           onSend={onSend}
           onStop={onStop}
           onResume={onResume}
+          onAttach={onAttach}
           models={modelsQuery.data}
           onSelectModel={(index) => selectModel.mutate(index)}
+          contextBar={
+            sessionId && activeSessionKeywords.length > 0 ? (
+              <SessionKeywordBar sessionId={sessionId} keywords={activeSessionKeywords} />
+            ) : undefined
+          }
         />
       }
       artifactPanel={
         <ArtifactPanel
-          title={selectedSubAgent ? "子智能体执行轨迹" : "详情"}
+          title={selectedSubAgentToolCallId ? "子智能体执行轨迹" : "详情"}
           workspaceId={sessionId}
           artifact={selectedArtifact}
           subAgentSession={selectedSubAgent}
+          traceLoading={traceLoading}
+          traceError={traceError}
         />
       }
     >
-      {activeSessionKeywords.length > 0 && (
-        <div className="ai-chat-keywords" aria-label="会话关键词">
-          {activeSessionKeywords.map((keyword) => (
-            <span key={keyword} className="ai-chat-keyword-pill">
-              {keyword}
-            </span>
-          ))}
-        </div>
-      )}
       <MessageList
+        sessionId={sessionId}
         messages={messages}
         liveState={liveState}
         pythonRunRecords={pythonRunRecords}

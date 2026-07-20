@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use futures::future::join_all;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::AppHandle;
@@ -130,6 +131,10 @@ pub enum SubAgentEvent {
 pub struct SubAgentEventPayload {
     #[serde(rename = "sessionId")]
     pub session_id: String,
+    #[serde(rename = "toolCallId")]
+    pub tool_call_id: String,
+    #[serde(rename = "timestampMs")]
+    pub timestamp_ms: i64,
     #[serde(flatten)]
     pub event: SubAgentEvent,
 }
@@ -146,6 +151,8 @@ pub struct SubAgentRuntime {
     tool_context: ToolContext,
     tool_definitions: Vec<crate::agent::llm::ToolDefinition>,
     allowed_tool_names: HashSet<String>,
+    parent_tool_call_id: String,
+    trace_events: Arc<Mutex<Vec<Value>>>,
 }
 
 impl SubAgentRuntime {
@@ -192,8 +199,15 @@ impl SubAgentRuntime {
         };
 
         let mut tool_context = tool_context;
+        let parent_tool_call_id = tool_context
+            .current_tool_call_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("构建子智能体运行时缺少父级 tool_call_id"))?;
+        let trace_events = Arc::new(Mutex::new(Vec::new()));
         tool_context.current_sub_agent_id = Some(config.agent_id.clone());
         tool_context.current_sub_agent_name = Some(config.agent_name.clone());
+        tool_context.sub_agent_parent_tool_call_id = Some(parent_tool_call_id.clone());
+        tool_context.sub_agent_trace_events = Some(Arc::clone(&trace_events));
 
         // 排除嵌套子智能体工具（call_sub_agent / list_sub_agents），避免递归派生。
         let excluded: HashSet<&str> = NESTED_SUB_AGENT_TOOLS.iter().copied().collect();
@@ -217,7 +231,32 @@ impl SubAgentRuntime {
             tool_context,
             tool_definitions,
             allowed_tool_names,
+            parent_tool_call_id,
+            trace_events,
         })
+    }
+
+    pub fn trace_events_json(&self) -> Result<String> {
+        serde_json::to_string(&*self.trace_events.lock())
+            .map_err(|error| anyhow::anyhow!("serialize sub-agent trace events: {error}"))
+    }
+
+    fn emit_event(&self, app_handle: &Option<AppHandle>, session_id: &str, event: SubAgentEvent) {
+        let timestamp_ms = chrono::Utc::now().timestamp_millis();
+        if let Ok(value) = serde_json::to_value(&event) {
+            record_trace_event(&self.trace_events, value, timestamp_ms);
+        }
+        if let Some(handle) = app_handle {
+            let _ = handle.emit(
+                "sub-agent-event",
+                SubAgentEventPayload {
+                    session_id: session_id.to_string(),
+                    tool_call_id: self.parent_tool_call_id.clone(),
+                    timestamp_ms,
+                    event,
+                },
+            );
+        }
     }
 
     /// 子智能体主执行循环：重复"请求 LLM → 执行工具 → 判断收口"。
@@ -239,19 +278,16 @@ impl SubAgentRuntime {
         #[allow(unused_assignments)]
         let mut last_iteration: u32 = 0;
 
-        if let Some(handle) = &app_handle {
-            let _ = handle.emit(
-                "sub-agent-event",
-                SubAgentEventPayload {
-                    session_id: session_id.to_string(),
-                    event: SubAgentEvent::Started {
-                        agent_id: self.config.agent_id.clone(),
-                        agent_name: self.config.agent_name.clone(),
-                        task: task.to_string(),
-                    },
-                },
-            );
-        }
+        self.trace_events.lock().clear();
+        self.emit_event(
+            &app_handle,
+            session_id,
+            SubAgentEvent::Started {
+                agent_id: self.config.agent_id.clone(),
+                agent_name: self.config.agent_name.clone(),
+                task: task.to_string(),
+            },
+        );
 
         let user_prompt = self.config.user_prompt_template.replace("{{task}}", task);
 
@@ -281,19 +317,15 @@ impl SubAgentRuntime {
             last_iteration = iteration + 1;
 
             let on_delta = |delta: &str| {
-                if let Some(handle) = &app_handle {
-                    let _ = handle.emit(
-                        "sub-agent-event",
-                        SubAgentEventPayload {
-                            session_id: session_id.to_string(),
-                            event: SubAgentEvent::LlmDelta {
-                                agent_id: self.config.agent_id.clone(),
-                                agent_name: self.config.agent_name.clone(),
-                                delta: delta.to_string(),
-                            },
-                        },
-                    );
-                }
+                self.emit_event(
+                    &app_handle,
+                    session_id,
+                    SubAgentEvent::LlmDelta {
+                        agent_id: self.config.agent_id.clone(),
+                        agent_name: self.config.agent_name.clone(),
+                        delta: delta.to_string(),
+                    },
+                );
             };
 
             // 若已触发强制收口（工具重试后仍失败），则传入空工具集，逼模型给出最终结论。
@@ -333,41 +365,33 @@ impl SubAgentRuntime {
 
             if let Some(usage_info) = response.usage.as_ref() {
                 usage.record(usage_info);
-                if let Some(handle) = &app_handle {
-                    let _ = handle.emit(
-                        "sub-agent-event",
-                        SubAgentEventPayload {
-                            session_id: session_id.to_string(),
-                            event: SubAgentEvent::UsageUpdated {
-                                agent_id: self.config.agent_id.clone(),
-                                agent_name: self.config.agent_name.clone(),
-                                token_usage: usage.clone(),
-                                elapsed_ms: start.elapsed().as_millis() as u64,
-                            },
-                        },
-                    );
-                }
+                self.emit_event(
+                    &app_handle,
+                    session_id,
+                    SubAgentEvent::UsageUpdated {
+                        agent_id: self.config.agent_id.clone(),
+                        agent_name: self.config.agent_name.clone(),
+                        token_usage: usage.clone(),
+                        elapsed_ms: start.elapsed().as_millis() as u64,
+                    },
+                );
             }
 
             // 无工具调用 ⇒ 模型给出最终答复，子智能体正常收口。
             if response.tool_calls.is_empty() {
                 let result = response.content.clone();
-                if let Some(handle) = &app_handle {
-                    let _ = handle.emit(
-                        "sub-agent-event",
-                        SubAgentEventPayload {
-                            session_id: session_id.to_string(),
-                            event: SubAgentEvent::Finished {
-                                agent_id: self.config.agent_id.clone(),
-                                agent_name: self.config.agent_name.clone(),
-                                result: result.clone(),
-                                iterations: last_iteration,
-                                elapsed_ms: start.elapsed().as_millis() as u64,
-                                token_usage: usage,
-                            },
-                        },
-                    );
-                }
+                self.emit_event(
+                    &app_handle,
+                    session_id,
+                    SubAgentEvent::Finished {
+                        agent_id: self.config.agent_id.clone(),
+                        agent_name: self.config.agent_name.clone(),
+                        result: result.clone(),
+                        iterations: last_iteration,
+                        elapsed_ms: start.elapsed().as_millis() as u64,
+                        token_usage: usage,
+                    },
+                );
                 return Ok(result);
             }
 
@@ -534,20 +558,16 @@ impl SubAgentRuntime {
         usage: &mut SubAgentUsage,
     ) -> ToolResult {
         let _ = usage;
-        if let Some(handle) = app_handle {
-            let _ = handle.emit(
-                "sub-agent-event",
-                SubAgentEventPayload {
-                    session_id: session_id.to_string(),
-                    event: SubAgentEvent::ToolStarted {
-                        agent_id: self.config.agent_id.clone(),
-                        agent_name: self.config.agent_name.clone(),
-                        tool_name: tc.name.clone(),
-                        arguments: tc.arguments.clone(),
-                    },
-                },
-            );
-        }
+        self.emit_event(
+            app_handle,
+            session_id,
+            SubAgentEvent::ToolStarted {
+                agent_id: self.config.agent_id.clone(),
+                agent_name: self.config.agent_name.clone(),
+                tool_name: tc.name.clone(),
+                arguments: tc.arguments.clone(),
+            },
+        );
 
         let result = ToolRuntime::execute_tool(
             &self.tool_registry,
@@ -561,20 +581,16 @@ impl SubAgentRuntime {
         let result_text = result.output_for_llm();
         let result_preview = tool_result_preview(&tc.name, &result_text);
 
-        if let Some(handle) = app_handle {
-            let _ = handle.emit(
-                "sub-agent-event",
-                SubAgentEventPayload {
-                    session_id: session_id.to_string(),
-                    event: SubAgentEvent::ToolFinished {
-                        agent_id: self.config.agent_id.clone(),
-                        agent_name: self.config.agent_name.clone(),
-                        tool_name: tc.name.clone(),
-                        result_preview,
-                    },
-                },
-            );
-        }
+        self.emit_event(
+            app_handle,
+            session_id,
+            SubAgentEvent::ToolFinished {
+                agent_id: self.config.agent_id.clone(),
+                agent_name: self.config.agent_name.clone(),
+                tool_name: tc.name.clone(),
+                result_preview,
+            },
+        );
 
         result
     }
@@ -588,20 +604,16 @@ impl SubAgentRuntime {
     ) -> Vec<(&'a RequestedToolCall, ToolResult)> {
         let _ = usage;
         for tc in tool_calls {
-            if let Some(handle) = app_handle {
-                let _ = handle.emit(
-                    "sub-agent-event",
-                    SubAgentEventPayload {
-                        session_id: session_id.to_string(),
-                        event: SubAgentEvent::ToolStarted {
-                            agent_id: self.config.agent_id.clone(),
-                            agent_name: self.config.agent_name.clone(),
-                            tool_name: tc.name.clone(),
-                            arguments: tc.arguments.clone(),
-                        },
-                    },
-                );
-            }
+            self.emit_event(
+                app_handle,
+                session_id,
+                SubAgentEvent::ToolStarted {
+                    agent_id: self.config.agent_id.clone(),
+                    agent_name: self.config.agent_name.clone(),
+                    tool_name: tc.name.clone(),
+                    arguments: tc.arguments.clone(),
+                },
+            );
         }
 
         let results = join_all(
@@ -627,40 +639,68 @@ impl SubAgentRuntime {
         for (tc, result) in &results {
             let result_text = result.output_for_llm();
             let result_preview = tool_result_preview(&tc.name, &result_text);
-            if let Some(handle) = app_handle {
-                let _ = handle.emit(
-                    "sub-agent-event",
-                    SubAgentEventPayload {
-                        session_id: session_id.to_string(),
-                        event: SubAgentEvent::ToolFinished {
-                            agent_id: self.config.agent_id.clone(),
-                            agent_name: self.config.agent_name.clone(),
-                            tool_name: tc.name.clone(),
-                            result_preview,
-                        },
-                    },
-                );
-            }
+            self.emit_event(
+                app_handle,
+                session_id,
+                SubAgentEvent::ToolFinished {
+                    agent_id: self.config.agent_id.clone(),
+                    agent_name: self.config.agent_name.clone(),
+                    tool_name: tc.name.clone(),
+                    result_preview,
+                },
+            );
         }
 
         results
     }
 
     fn emit_failed(&self, app_handle: &Option<AppHandle>, session_id: &str, error: &str) {
-        if let Some(handle) = app_handle {
-            let _ = handle.emit(
-                "sub-agent-event",
-                SubAgentEventPayload {
-                    session_id: session_id.to_string(),
-                    event: SubAgentEvent::Failed {
-                        agent_id: self.config.agent_id.clone(),
-                        agent_name: self.config.agent_name.clone(),
-                        error: error.to_string(),
-                    },
-                },
-            );
+        self.emit_event(
+            app_handle,
+            session_id,
+            SubAgentEvent::Failed {
+                agent_id: self.config.agent_id.clone(),
+                agent_name: self.config.agent_name.clone(),
+                error: error.to_string(),
+            },
+        );
+    }
+}
+
+pub(super) fn record_trace_event(
+    trace: &Arc<Mutex<Vec<Value>>>,
+    mut event: Value,
+    timestamp_ms: i64,
+) {
+    if let Some(object) = event.as_object_mut() {
+        object.insert("timestampMs".to_string(), Value::from(timestamp_ms));
+    }
+    let mut events = trace.lock();
+    let is_delta = event.get("event").and_then(Value::as_str) == Some("llmDelta");
+    if is_delta {
+        let incoming = event
+            .get("data")
+            .and_then(|data| data.get("delta"))
+            .and_then(Value::as_str);
+        if let (Some(delta), Some(last)) = (incoming, events.last_mut()) {
+            if last.get("event").and_then(Value::as_str) == Some("llmDelta") {
+                let existing = last
+                    .get_mut("data")
+                    .and_then(|data| data.get_mut("delta"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned);
+                if let Some(existing) = existing {
+                    let merged = format!("{existing}{delta}");
+                    if let Some(slot) = last.get_mut("data").and_then(|data| data.get_mut("delta"))
+                    {
+                        *slot = Value::String(merged);
+                        return;
+                    }
+                }
+            }
         }
     }
+    events.push(event);
 }
 
 fn readonly_tool_run_end(
@@ -711,4 +751,36 @@ fn is_command_review_result(tool_name: &str, result: &str) -> bool {
     matches!(tool_name, "ssh_exec" | "local_zsh")
         && (result.starts_with("## SSH 命令审查记录")
             || (result.starts_with("## local_zsh 执行结果") && result.contains("审查结论: `拦截`")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn trace_collector_merges_adjacent_llm_deltas_and_keeps_timestamps() {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        record_trace_event(
+            &trace,
+            json!({"event":"llmDelta","data":{"delta":"你"}}),
+            10,
+        );
+        record_trace_event(
+            &trace,
+            json!({"event":"llmDelta","data":{"delta":"好"}}),
+            11,
+        );
+        record_trace_event(
+            &trace,
+            json!({"event":"UsageUpdated","data":{"elapsedMs":20}}),
+            20,
+        );
+
+        let events = trace.lock();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["data"]["delta"], "你好");
+        assert_eq!(events[0]["timestampMs"], 10);
+        assert_eq!(events[1]["timestampMs"], 20);
+    }
 }

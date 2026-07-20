@@ -9,6 +9,9 @@ import { ToastProvider } from "./components/Toast";
 import { QueryProvider } from "./components/providers/query-provider";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { initializeTheme } from "./lib/theme";
+
+initializeTheme();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

@@ -9,6 +9,7 @@ import {
   Heart,
   Inbox,
   Layers,
+  LoaderCircle,
   MoreHorizontal,
   MessageSquarePlus,
   PanelLeftClose,
@@ -44,6 +45,7 @@ import {
   type ChatCategoryCreateConfig,
 } from "../ChatNewCategoryDialog";
 import { ChatCategoryContextMenu } from "../ChatCategoryContextMenu";
+import { useDispatcherSessionRunningSet } from "../../hooks/useDispatcherSessionRunningSet";
 
 export interface SidebarProps {
   sessions: ChatSession[];
@@ -199,6 +201,9 @@ export function Sidebar({
           : group.sessions.length > 0,
     );
   }, [categories, sessions]);
+  const visibleRunningSessionIds = useDispatcherSessionRunningSet(
+    React.useMemo(() => sessions.map((session) => session.id), [sessions]),
+  );
 
   React.useEffect(() => {
     if (searchActive || groupedCategories.length === 0) return;
@@ -324,6 +329,7 @@ export function Sidebar({
                 <ConversationItem
                   key={session.id}
                   session={session}
+                  isRunning={visibleRunningSessionIds.has(session.id)}
                   active={session.id === activeSessionId}
                   categoryLabel={
                     categories.find((category) => category.id === session.category)?.name ??
@@ -396,6 +402,7 @@ export function Sidebar({
 
 function ConversationItem({
   session,
+  isRunning,
   active,
   categoryLabel,
   categories,
@@ -404,6 +411,7 @@ function ConversationItem({
   onSelect,
 }: {
   session: ChatSession;
+  isRunning: boolean;
   active: boolean;
   categoryLabel?: string;
   categories?: ChatCategory[];
@@ -426,16 +434,16 @@ function ConversationItem({
         aria-current={active ? "true" : undefined}
         className="flex min-w-0 flex-1 items-center gap-2 bg-transparent px-2.5 py-2 text-left text-sm"
       >
-        <span
-          className={cn(
-            "h-1.5 w-1.5 shrink-0 rounded-full",
-            session.isRunning
-              ? "bg-primary animate-pulse"
-              : active
-                ? "bg-primary"
-                : "bg-transparent",
-          )}
-        />
+        {isRunning ? (
+          <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+        ) : (
+          <span
+            className={cn(
+              "h-1.5 w-1.5 shrink-0 rounded-full",
+              active ? "bg-primary" : "bg-transparent",
+            )}
+          />
+        )}
         <span className="min-w-0 flex-1 truncate">{trimmedTitle}</span>
         {categoryLabel && (
           <span className="ai-session-category-tag shrink-0 truncate">
@@ -539,6 +547,9 @@ function CategoryGroup({
     return [...uniqueSessions.values()];
   }, [categorySessionsQuery.data?.pages]);
   const displayedTotal = categorySessionsQuery.data?.pages[0]?.total ?? total;
+  const runningSessionIds = useDispatcherSessionRunningSet(
+    React.useMemo(() => sessions.map((session) => session.id), [sessions]),
+  );
   const loadMoreRef = React.useRef<HTMLLIElement | null>(null);
   const {
     fetchNextPage,
@@ -642,6 +653,7 @@ function CategoryGroup({
               <ConversationItem
                 key={session.id}
                 session={session}
+                isRunning={runningSessionIds.has(session.id)}
                 active={session.id === activeSessionId}
                 onSelect={() => onSelectSession(session.id)}
                 categories={categories}

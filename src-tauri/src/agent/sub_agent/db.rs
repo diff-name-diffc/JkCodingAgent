@@ -21,6 +21,18 @@ pub struct SubAgentRecord {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubAgentRunTraceRecord {
+    pub workspace_id: String,
+    pub tool_call_id: String,
+    pub agent_id: String,
+    pub status: String,
+    pub events_json: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolInfo {
     pub name: String,
@@ -47,6 +59,28 @@ pub fn ensure_sub_agent_tables_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> 
         ",
     )
     .context("create sub_agent tables")
+}
+
+pub fn ensure_sub_agent_trace_table_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS sub_agent_run_traces (
+            workspace_id TEXT NOT NULL,
+            tool_call_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            events_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, tool_call_id),
+            FOREIGN KEY (workspace_id) REFERENCES dispatcher_sessions(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sub_agent_run_traces_workspace_updated
+            ON sub_agent_run_traces(workspace_id, updated_at DESC);
+        ",
+    )
+    .context("create sub_agent_run_traces table")
 }
 
 pub fn seed_browser_agent_force_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
@@ -283,6 +317,71 @@ impl SubAgentDb {
         Ok(records)
     }
 
+    pub fn save_run_trace(
+        &self,
+        workspace_id: &str,
+        tool_call_id: &str,
+        agent_id: &str,
+        status: &str,
+        events_json: &str,
+    ) -> Result<SubAgentRunTraceRecord> {
+        if workspace_id.trim().is_empty() || tool_call_id.trim().is_empty() {
+            anyhow::bail!("workspace_id 和 tool_call_id 不能为空");
+        }
+        serde_json::from_str::<serde_json::Value>(events_json)
+            .context("validate sub-agent trace events_json")?;
+        let conn = self.conn()?;
+        let timestamp = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO sub_agent_run_traces (
+                workspace_id, tool_call_id, agent_id, status, events_json, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT(workspace_id, tool_call_id) DO UPDATE SET
+                agent_id = excluded.agent_id,
+                status = excluded.status,
+                events_json = excluded.events_json,
+                updated_at = excluded.updated_at",
+            params![
+                workspace_id,
+                tool_call_id,
+                agent_id,
+                status,
+                events_json,
+                timestamp
+            ],
+        )
+        .context("save sub-agent run trace")?;
+        self.get_run_trace(workspace_id, tool_call_id)?
+            .context("sub-agent run trace missing after save")
+    }
+
+    pub fn get_run_trace(
+        &self,
+        workspace_id: &str,
+        tool_call_id: &str,
+    ) -> Result<Option<SubAgentRunTraceRecord>> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT workspace_id, tool_call_id, agent_id, status, events_json, created_at, updated_at
+             FROM sub_agent_run_traces
+             WHERE workspace_id = ?1 AND tool_call_id = ?2",
+            params![workspace_id, tool_call_id],
+            |row| {
+                Ok(SubAgentRunTraceRecord {
+                    workspace_id: row.get(0)?,
+                    tool_call_id: row.get(1)?,
+                    agent_id: row.get(2)?,
+                    status: row.get(3)?,
+                    events_json: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .context("get sub-agent run trace")
+    }
+
     pub fn get_enabled_agent_ids(&self, session_id: &str) -> Result<Vec<String>> {
         let conn = self.conn()?;
         // 启用来源（并集）：
@@ -328,7 +427,7 @@ mod tests {
     fn setup() -> (DispatcherDb, SubAgentDb) {
         let path = std::env::temp_dir().join(format!(
             "jkcodingagent-subagent-category-{}.sqlite3",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+            uuid::Uuid::new_v4(),
         ));
         let dispatcher = DispatcherDb::new(path).expect("create dispatcher db");
         let sub_agent = SubAgentDb::new(dispatcher.pool());
@@ -431,5 +530,113 @@ mod tests {
             .get_enabled_agent_ids(&session.id)
             .expect("enabled ids");
         assert_eq!(ids, vec!["global-agent".to_string()]);
+    }
+
+    #[test]
+    fn run_traces_are_isolated_and_removed_with_session_resources() {
+        let (dispatcher, sub_agent) = setup();
+        let session = dispatcher
+            .create_chat_session("轨迹测试", Some("tech"))
+            .expect("create trace session");
+
+        sub_agent
+            .save_run_trace(
+                &session.id,
+                "tool-call-1",
+                "browser-agent",
+                "completed",
+                r#"[{"event":"Started","data":{"agentId":"browser-agent"}}]"#,
+            )
+            .expect("save first trace");
+        sub_agent
+            .save_run_trace(
+                &session.id,
+                "tool-call-2",
+                "browser-agent",
+                "failed",
+                r#"[{"event":"Failed","data":{"agentId":"browser-agent"}}]"#,
+            )
+            .expect("save second trace");
+
+        let first = sub_agent
+            .get_run_trace(&session.id, "tool-call-1")
+            .expect("get first trace")
+            .expect("first trace exists");
+        let second = sub_agent
+            .get_run_trace(&session.id, "tool-call-2")
+            .expect("get second trace")
+            .expect("second trace exists");
+        assert_eq!(first.status, "completed");
+        assert_eq!(second.status, "failed");
+
+        dispatcher
+            .clear_messages(&session.id)
+            .expect("clear session resources");
+        assert!(sub_agent
+            .get_run_trace(&session.id, "tool-call-1")
+            .expect("get cleared trace")
+            .is_none());
+
+        sub_agent
+            .save_run_trace(
+                &session.id,
+                "tool-call-3",
+                "browser-agent",
+                "completed",
+                "[]",
+            )
+            .expect("save trace before delete");
+        dispatcher
+            .delete_chat_session(&session.id)
+            .expect("delete trace session");
+        assert!(sub_agent
+            .get_run_trace(&session.id, "tool-call-3")
+            .expect("get deleted trace")
+            .is_none());
+    }
+
+    #[test]
+    fn run_trace_rejects_invalid_json() {
+        let (dispatcher, sub_agent) = setup();
+        let session = dispatcher
+            .create_chat_session("无效轨迹", Some("tech"))
+            .expect("create session");
+        let error = sub_agent
+            .save_run_trace(
+                &session.id,
+                "tool-call-invalid",
+                "browser-agent",
+                "failed",
+                "not-json",
+            )
+            .expect_err("invalid trace json must fail");
+        assert!(error.to_string().contains("validate sub-agent trace"));
+    }
+
+    #[test]
+    fn schema_v19_migrates_to_sub_agent_trace_table() {
+        let path = std::env::temp_dir().join(format!(
+            "jkcodingagent-subagent-trace-migration-{}.sqlite3",
+            uuid::Uuid::new_v4(),
+        ));
+        let conn = rusqlite::Connection::open(&path).expect("open v19 db");
+        conn.execute_batch("PRAGMA user_version = 19;")
+            .expect("mark v19");
+        drop(conn);
+
+        let dispatcher = DispatcherDb::new(path).expect("migrate v19 db");
+        let conn = dispatcher.conn().expect("migrated conn");
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read schema version");
+        let table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sub_agent_run_traces'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check trace table");
+        assert_eq!(version, 20);
+        assert_eq!(table_count, 1);
     }
 }

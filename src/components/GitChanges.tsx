@@ -2,7 +2,13 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, Filter, GitCommit, Sparkles, ChevronRight, ChevronDown } from "lucide-react";
 import { useCancellableInvoke } from "../hooks/useCancellableInvoke";
-import { getGitStatusColor, getGitStatusLabel, fileName, fileDir } from "../utils";
+import {
+  fileDir,
+  fileName,
+  getGitStatusColor,
+  getGitStatusLabel,
+  isImeComposing,
+} from "../utils";
 import { FileGlyph } from "../file-icons";
 
 interface GitFileChange {
@@ -282,7 +288,9 @@ export function GitChanges({
             rows={3}
             className={commitMsgError ? "ai-git-commit-textarea is-error" : "ai-git-commit-textarea"}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleCommit();
+              if (!isImeComposing(e) && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                handleCommit();
+              }
             }}
           />
           <button

@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import type { BrowserFrameEvent, BrowserLogEvent, BrowserStatus } from "../types";
+import { isImeComposing } from "../utils";
 
 interface BrowserProfileImportResult {
   profileName: string;
@@ -475,6 +476,7 @@ export function BrowserPanel({
               value={urlInput}
               onChange={(e) => setUrlInput(e.target.value)}
               onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                if (isImeComposing(e)) return;
                 if (e.key === "Enter") {
                   e.preventDefault();
                   navigateToUrl();

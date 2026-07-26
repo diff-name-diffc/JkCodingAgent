@@ -66,7 +66,7 @@ export function MessageActions({
   );
 }
 
-function ActionButton({
+export function ActionButton({
   label,
   pressed,
   onClick,

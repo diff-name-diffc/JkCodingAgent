@@ -9,7 +9,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { confirm, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import type {
   AgentType,
   AhaSettingsV2,
@@ -129,6 +129,8 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
   );
   const [input, setInput] = useState("");
   const [attachedImages, setAttachedImages] = useState<ImageSegment[]>([]);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
   const [messages, setMessages] = useState<DispatcherMessage[]>([]);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -278,8 +280,10 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
   useEffect(() => {
     if (!activeSessionId) {
       setMessages([]);
+      setEditingMessageId(null);
       return;
     }
+    setEditingMessageId(null);
     let cancelled = false;
     setMessages([]);
     void (async () => {
@@ -354,22 +358,100 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
 
   const handleSend = useCallback(() => {
     const text = input.trim();
-    if (!text && attachedImages.length === 0) return;
+    if ((!text && attachedImages.length === 0) || isSubmittingEdit) return;
     void (async () => {
       // 项目模式总会话 id 非空（ProjectPage 仅在 activeSessionId 存在时渲染本组件）；
       // 聊天模式可能为 null，懒创建后再发送。
       const targetSessionId = activeSessionId ?? (await ensurePlainChatSession());
       if (!targetSessionId) return;
-      void actions.sendUserMessage(text, attachedImages, targetSessionId);
-    })();
-  }, [actions, activeSessionId, attachedImages, ensurePlainChatSession, input]);
 
-  const handleAttach = useCallback(async () => {
-    const selected = await openDialog({ title: "添加附件", multiple: true, directory: false });
-    if (!selected) return;
-    const paths = Array.isArray(selected) ? selected : [selected];
-    const references = paths.map((path) => `附件：${path}`).join("\n");
-    setInput((current) => (current.trim() ? `${current}\n${references}` : references));
+      if (editingMessageId) {
+        const editIndex = messages.findIndex((message) => message.id === editingMessageId);
+        if (editIndex === -1) {
+          console.error(`编辑并重新发送失败：待编辑消息不存在：${editingMessageId}`);
+          return;
+        }
+        setIsSubmittingEdit(true);
+        try {
+          await invoke("dispatcher_truncate_messages_from", {
+            workspaceId: targetSessionId,
+            messageId: editingMessageId,
+          });
+          setMessages((prev) => prev.slice(0, editIndex));
+          setEditingMessageId(null);
+          await actions.sendUserMessage(text, attachedImages, targetSessionId);
+        } catch (err) {
+          console.error("编辑并重新发送失败:", err);
+        } finally {
+          setIsSubmittingEdit(false);
+        }
+        return;
+      }
+
+      await actions.sendUserMessage(text, attachedImages, targetSessionId);
+    })();
+  }, [
+    actions,
+    activeSessionId,
+    attachedImages,
+    editingMessageId,
+    ensurePlainChatSession,
+    input,
+    isSubmittingEdit,
+    messages,
+  ]);
+
+  const activeSessionTitle = useMemo(() => {
+    if (!activeSessionId) return null;
+    return (
+      (sessionsQuery.data ?? []).find((session) => session.id === activeSessionId)?.title ?? null
+    );
+  }, [activeSessionId, sessionsQuery.data]);
+
+  // 暂存图片附件：FileReader 转 base64 → 后端落盘到 chat-images 目录 →
+  // push ImageSegment。粘贴截图与回形针选图共用这一条管线。
+  const handleAttachImages = useCallback(
+    (files: File[]) => {
+      const sessionTitle = activeSessionTitle?.trim() || "untitled";
+      for (const file of files) {
+        const reader = new FileReader();
+        reader.onload = async () => {
+          const result = reader.result;
+          if (typeof result !== "string") return;
+          const base64 = result.split(",")[1];
+          if (!base64) return;
+          try {
+            const saved = await invoke<{ imageId: string; path: string; mimeType: string }>(
+              "save_chat_image",
+              {
+                sessionTitle,
+                imageDataBase64: base64,
+                mimeType: file.type || "image/png",
+              },
+            );
+            setAttachedImages((prev) => [
+              ...prev,
+              {
+                id: crypto.randomUUID(),
+                type: "image",
+                imageId: saved.imageId,
+                path: saved.path,
+                source: "user_paste",
+                mimeType: saved.mimeType,
+              },
+            ]);
+          } catch (err) {
+            console.error("保存图片失败:", err);
+          }
+        };
+        reader.readAsDataURL(file);
+      }
+    },
+    [activeSessionTitle],
+  );
+
+  const handleRemoveAttachment = useCallback((id: string) => {
+    setAttachedImages((prev) => prev.filter((image) => image.id !== id));
   }, []);
 
   const handleStop = useCallback(async () => {
@@ -392,23 +474,64 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
     await onResumeStoppedRun?.(activeSessionId);
   }, [activeSessionId, onResumeStoppedRun]);
 
-  const handleRegenerate = useCallback(() => {
-    if (!activeSessionId || isRunning) return;
+  // AI 回复下方的「重新生成」：绑定到该回复对应的用户消息，先截断再原样重发。
+  const handleRegenerateFromMessage = useCallback(
+    (message: DispatcherMessage) => {
+      if (!activeSessionId || isRunning || isSubmittingEdit) return;
 
-    const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
-    if (!lastUserMessage) {
-      console.error("重新生成失败：当前会话没有可重发的用户消息");
-      return;
-    }
+      const { text, images } = getUserMessagePayload(message);
+      if (!text && images.length === 0) return;
+      const messageIndex = messages.findIndex((item) => item.id === message.id);
+      if (messageIndex === -1) {
+        console.error(`重新生成失败：源用户消息不存在：${message.id}`);
+        return;
+      }
 
-    const { text, images } = getUserMessagePayload(lastUserMessage);
-    if (!text && images.length === 0) {
-      console.error("重新生成失败：最后一条用户消息没有可重发内容");
-      return;
-    }
+      void (async () => {
+        setIsSubmittingEdit(true);
+        try {
+          await invoke("dispatcher_truncate_messages_from", {
+            workspaceId: activeSessionId,
+            messageId: message.id,
+          });
+          setMessages((prev) => prev.slice(0, messageIndex));
+          await actions.sendUserMessage(text, images, activeSessionId);
+        } catch (err) {
+          console.error("重新生成失败:", err);
+        } finally {
+          setIsSubmittingEdit(false);
+        }
+      })();
+    },
+    [actions, activeSessionId, isRunning, isSubmittingEdit, messages],
+  );
 
-    void actions.sendUserMessage(text, images, activeSessionId);
-  }, [actions, activeSessionId, isRunning, messages]);
+  const handleEditMessage = useCallback(
+    (message: DispatcherMessage) => {
+      if (isRunning || isSubmittingEdit) return;
+      const { text, images } = getUserMessagePayload(message);
+      if (!text && images.length === 0) return;
+
+      setEditingMessageId(message.id);
+      setInput(text);
+      setAttachedImages(images);
+      window.requestAnimationFrame(() => {
+        const textarea = document.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="消息输入框"]',
+        );
+        textarea?.focus();
+        textarea?.setSelectionRange(text.length, text.length);
+      });
+    },
+    [isRunning, isSubmittingEdit],
+  );
+
+  const handleCancelEdit = useCallback(() => {
+    if (isSubmittingEdit) return;
+    setEditingMessageId(null);
+    setInput("");
+    setAttachedImages([]);
+  }, [isSubmittingEdit]);
 
   const handleNewConversation = useCallback(() => {
     if (!embedded) {
@@ -416,6 +539,7 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
     }
     setInput("");
     setAttachedImages([]);
+    setEditingMessageId(null);
     setMessages([]);
   }, [embedded, setActiveSessionId]);
 
@@ -433,6 +557,7 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
         setActiveSessionId(session.id);
         setInput("");
         setAttachedImages([]);
+        setEditingMessageId(null);
         setMessages([]);
       } catch (err) {
         console.error("在分类下创建会话失败:", err);
@@ -460,6 +585,7 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
           setActiveSessionId(nextSession?.id ?? null);
           setInput("");
           setAttachedImages([]);
+          setEditingMessageId(null);
           setMessages([]);
         }
       } catch (err) {
@@ -481,6 +607,7 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
       setActiveSessionId(id);
       setInput("");
       setAttachedImages([]);
+      setEditingMessageId(null);
     },
     [setActiveSessionId],
   );
@@ -488,6 +615,9 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
   const handleClearMessages = useCallback(async () => {
     if (!activeSessionId) return;
     await invoke("dispatcher_clear_messages", { workspaceId: activeSessionId });
+    setEditingMessageId(null);
+    setInput("");
+    setAttachedImages([]);
     setMessages([]);
   }, [activeSessionId]);
 
@@ -636,7 +766,9 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
     [activeSessionId],
   );
 
-  const projectHeader = !isPlainChat ? (
+  // 聊天模式（主页）也提供顶部栏：会话标题 + 运行状态 + 清空/设置，
+  // 让宽屏下的消息区有视觉锚点；embedded（项目内嵌面板）下保持紧凑不加栏。
+  const chatHeader = !isPlainChat ? (
     <ProjectChatHeader
       isLoading={liveState.isLoading || liveState.hasPendingRun}
       hasMessages={messages.length > 0}
@@ -649,7 +781,15 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
       onOpenSettings={onOpenSettings}
       onClosePanel={onClosePanel}
     />
-  ) : undefined;
+  ) : embedded ? undefined : (
+    <PlainChatHeader
+      title={activeSessionTitle}
+      isLoading={liveState.isLoading || liveState.hasPendingRun}
+      hasMessages={messages.length > 0}
+      onClearMessages={handleClearMessages}
+      onOpenSettings={onOpenSettings}
+    />
+  );
 
   const selectedPythonRun = pythonRunTarget
     ? (pythonRunRecords[pythonRunKey(pythonRunTarget.messageId, pythonRunTarget.codeHash)] ?? null)
@@ -706,14 +846,20 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
           onSend={handleSend}
           onStop={handleStop}
           onResume={handleResume}
-          onAttach={() => void handleAttach()}
-          onRegenerate={isPlainChat ? handleRegenerate : undefined}
+          attachments={attachedImages}
+          onAttachImages={handleAttachImages}
+          onRemoveAttachment={handleRemoveAttachment}
+          onRegenerateFromMessage={handleRegenerateFromMessage}
+          onEditMessage={handleEditMessage}
+          editingMessageId={editingMessageId}
+          onCancelEdit={handleCancelEdit}
+          composerDisabled={isSubmittingEdit}
           onApproveDispatch={handleApproveDispatch}
           onRejectDispatch={handleRejectDispatch}
           pythonRunRecords={pythonRunRecords}
           onRunPython={handleRunPython}
           embedded={embedded}
-          projectHeader={projectHeader}
+          projectHeader={chatHeader}
         />
       </div>
       {pythonDrawerOpen && (
@@ -765,6 +911,37 @@ function indexPythonRuns(records: PythonCodeRunRecord[]) {
     acc[pythonRunKey(record.messageId, record.codeHash)] = record;
     return acc;
   }, {});
+}
+
+function PlainChatHeader({
+  title,
+  isLoading,
+  hasMessages,
+  onClearMessages,
+  onOpenSettings,
+}: {
+  title: string | null;
+  isLoading: boolean;
+  hasMessages: boolean;
+  onClearMessages: () => void;
+  onOpenSettings: () => void;
+}) {
+  return (
+    <div className="flex min-h-12 items-center gap-3 px-5">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="truncate text-sm font-medium">{title?.trim() || "新对话"}</span>
+        {isLoading && <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />}
+      </div>
+      {hasMessages && (
+        <Button variant="ghost" size="sm" onClick={onClearMessages}>
+          清空
+        </Button>
+      )}
+      <Button variant="ghost" size="sm" onClick={onOpenSettings}>
+        设置
+      </Button>
+    </div>
+  );
 }
 
 function ProjectChatHeader({

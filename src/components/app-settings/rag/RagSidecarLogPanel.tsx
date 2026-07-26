@@ -13,6 +13,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { RagLogEntry, RagLogLevel } from "../../../types";
+import { isImeComposing } from "../../../utils";
 
 const MAX_LOG_LINES = 2000;
 
@@ -221,7 +222,7 @@ export function RagSidecarLogPanel() {
                 value={keyword}
                 onChange={(event) => setKeyword(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") {
+                  if (!isImeComposing(event) && event.key === "Enter") {
                     moveMatch(event.shiftKey ? -1 : 1);
                   }
                 }}

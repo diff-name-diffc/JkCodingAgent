@@ -114,6 +114,13 @@ App
 
 应用级与项目级配置、智能体系统提示词/工具集、SSH/RAG/子智能体设置统一在 `AppSettingsDialog` 中编辑，落盘到 `~/.jkcodingagent/`。聊天图片保存至 `~/.jkcodingagent/chat-images/{session-title-slug}/`，路径写入 `chat_images` 表供智能体读取。
 
+**设置中心结构（2025 重构后）：** 外壳 `components/AppSettingsDialog.tsx`（左侧栏单层导航 + 内容区两层结构），页面与共享组件在 `components/settings/`：
+- `use-aha-settings.ts` — Aha 设置的统一 store + 失焦/变更自动保存管线（debounce 400ms 整体调用 `aha_save_settings_v2`），通过 React Context 提供给各设置页。
+- `providers/` — 「模型服务」与「模型用途」页。「模型服务」页（`ProvidersPage.tsx` + `ModelEntryCard.tsx`）按模型调用方式分标签（对话/视觉/图片生成/图片编辑/语音识别/语音合成/向量）维护**分类模型库**（`AhaSettingsV2.modelLibrary`，每条目独立持有 url/apiKey/model/别名/启停用，纯函数层在 `model-library.ts`）；「模型用途」页（`PurposesPage.tsx` + `PurposeSelect.tsx`）的下拉选项来自对应分类的库条目，选中后由 `provider-registry.ts` 的 `bindPurpose` 把 url/apiKey/model 拷贝进用途槽位（存储结构中每个用途仍各持 `DispatcherModelConfig[]`，运行时不变）。最近测试结果等无存储字段的 UI 偏好存 localStorage（`provider-prefs.ts`）。旧用户首次打开设置时按分类从已有用途配置播种模型库（`use-aha-settings.ts` + `seedModelLibrary`）。
+- `ssh/` — SSH 服务器页（状态点 + 自动保存 + 删除二次确认）。
+- 共享组件：`ConfirmDialog`（删除二次确认）、`TestButton`（测试三态：spinner / ✓ms / 错误展开）、`ApiKeyInput`（字段级明文切换）、`StatusBadge`、`EmptyState`、`FieldLabel`（术语 tooltip）、`Section`、`toast.ts` + `Toaster`。
+- 设置中心样式类统一 `.ai-set-*` 前缀（`styles/tailwind.css` 的 `@layer components` 末尾）。
+
 ---
 
 ## 开发规范
@@ -221,7 +228,7 @@ impl AgentTool for MyTool {
 
 ### 组件规模
 
-- **单个组件文件不应超过 400 行。** 当前仍超标的大文件（按现状持续拆分）：`task_runtime/session.rs`（~1500）、`agent/db/schema.rs`（~1500）、`agent/commands.rs`（~1480）、`components/ProjectPage.tsx`（~1260）、`project/mcp.rs`（~1250）、`browser.rs`（~1240）、`file-viewer/LargeFileViewer.tsx`（~1120）、`AppSettingsDialog.tsx`（~950）等。新增功能若落在这些文件，优先拆分再扩展。
+- **单个组件文件不应超过 400 行。** 当前仍超标的大文件（按现状持续拆分）：`task_runtime/session.rs`（~1500）、`agent/db/schema.rs`（~1500）、`agent/commands.rs`（~1480）、`components/ProjectPage.tsx`（~1260）、`project/mcp.rs`（~1250）、`browser.rs`（~1240）、`file-viewer/LargeFileViewer.tsx`（~1120）等。新增功能若落在这些文件，优先拆分再扩展。
 
 ---
 

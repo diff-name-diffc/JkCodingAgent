@@ -11,6 +11,7 @@ import { EmptyChatState } from "./empty-chat-state";
 import { MessageItem, buildItems, type MessageDisplayItem } from "./message-item";
 import { StreamingMessage } from "./streaming-message";
 import { ChatScrollAnchor } from "./chat-scroll-anchor";
+import { useCopyOnSelect } from "./use-copy-on-select";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 
 /**
@@ -36,7 +37,8 @@ export interface MessageListProps {
     codeHash: string;
   }) => void;
   onCopyMessage?: (text: string) => void;
-  onRegenerate?: () => void;
+  onRegenerateFromMessage?: (message: DispatcherMessage) => void;
+  onEditMessage?: (message: DispatcherMessage) => void;
   onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
   onOpenSubAgent?: (tool: ToolActivityItem) => void;
   onPickPrompt?: (prompt: string) => void;
@@ -50,7 +52,8 @@ export function MessageList({
   pythonRunRecords,
   onRunPython,
   onCopyMessage,
-  onRegenerate,
+  onRegenerateFromMessage,
+  onEditMessage,
   onOpenArtifact,
   onOpenSubAgent,
   onPickPrompt,
@@ -67,6 +70,7 @@ export function MessageList({
     Boolean(liveState?.assistantPlaceholder);
 
   const { containerRef, pinned, scrollToBottom } = useAutoScroll(sessionId);
+  const handleCopyOnSelect = useCopyOnSelect();
   const [scrollTop, setScrollTop] = React.useState(0);
   const [viewportHeight, setViewportHeight] = React.useState(720);
   const rowEstimate = 180;
@@ -88,10 +92,11 @@ export function MessageList({
     <div className={cn("relative min-h-0 flex-1", className)}>
       <div
         ref={containerRef}
-        className="chat-scroll h-full overflow-y-auto"
+        className="chat-scroll h-full overflow-y-auto overflow-x-hidden"
         role="log"
         aria-live="polite"
         aria-busy={isStreaming}
+        onMouseUp={handleCopyOnSelect}
         onScroll={(event) => {
           if (useWindowing) {
             setScrollTop(event.currentTarget.scrollTop);
@@ -108,7 +113,8 @@ export function MessageList({
               pythonRunRecords={pythonRunRecords}
               onRunPython={onRunPython}
               onCopyMessage={onCopyMessage}
-              onRegenerate={item.kind === "assistant" ? onRegenerate : undefined}
+              onRegenerateFromMessage={onRegenerateFromMessage}
+              onEditMessage={item.kind === "user" ? onEditMessage : undefined}
               onOpenArtifact={onOpenArtifact}
               onOpenSubAgent={onOpenSubAgent}
             />

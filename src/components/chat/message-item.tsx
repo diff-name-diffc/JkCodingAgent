@@ -28,6 +28,7 @@ export type MessageDisplayItem =
       showAvatar: boolean;
       usageStats?: import("../../types").DispatcherMessageUsageStats;
       messageId?: string;
+      sourceUserMessage?: DispatcherMessage;
     };
 
 export interface MessageItemProps {
@@ -40,7 +41,8 @@ export interface MessageItemProps {
     codeHash: string;
   }) => void;
   onCopyMessage?: (text: string) => void;
-  onRegenerate?: () => void;
+  onRegenerateFromMessage?: (message: DispatcherMessage) => void;
+  onEditMessage?: (message: DispatcherMessage) => void;
   onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
   onOpenSubAgent?: (tool: ToolActivityItem) => void;
   className?: string;
@@ -51,14 +53,22 @@ export const MessageItem = React.memo(function MessageItem({
   pythonRunRecords,
   onRunPython,
   onCopyMessage,
-  onRegenerate,
+  onRegenerateFromMessage,
+  onEditMessage,
   onOpenArtifact,
   onOpenSubAgent,
   className,
 }: MessageItemProps) {
   if (item.kind === "user") {
-    return <UserMessage message={item.message} className={className} />;
+    return (
+      <UserMessage
+        message={item.message}
+        onEdit={onEditMessage}
+        className={className}
+      />
+    );
   }
+  const sourceUserMessage = item.sourceUserMessage;
   return (
     <AssistantMessage
       segments={item.segments}
@@ -70,7 +80,11 @@ export const MessageItem = React.memo(function MessageItem({
       pythonRunRecords={pythonRunRecords}
       onRunPython={onRunPython}
       onCopy={onCopyMessage}
-      onRegenerate={onRegenerate}
+      onRegenerate={
+        sourceUserMessage && onRegenerateFromMessage
+          ? () => onRegenerateFromMessage(sourceUserMessage)
+          : undefined
+      }
       onOpenArtifact={onOpenArtifact}
       onOpenSubAgent={onOpenSubAgent}
       className={className}
@@ -84,9 +98,11 @@ export function buildItems(messages: DispatcherMessage[]): MessageDisplayItem[] 
   // upserting, and superseded-text logic stay identical to the legacy surface.
   const raw = buildDispatcherDisplayItems(messages);
   let prevKind: "user" | "assistant" | null = null;
+  let sourceUserMessage: DispatcherMessage | undefined;
   return raw.map((item) => {
     if (item.kind === "user") {
       prevKind = "user";
+      sourceUserMessage = item.message;
       return { kind: "user", id: item.id, message: item.message };
     }
     // 连续 AI 消息为一组，仅组内第一条显示头像锚点。
@@ -100,6 +116,7 @@ export function buildItems(messages: DispatcherMessage[]): MessageDisplayItem[] 
       thinking: item.turn.thinking,
       usageStats: item.turn.usageStats,
       showAvatar,
+      sourceUserMessage,
     };
   });
 }

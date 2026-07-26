@@ -7,6 +7,7 @@ import { isActiveTaskStatus } from "./types";
 import { WelcomePage } from "./components/WelcomePage";
 import { useToast } from "./components/Toast";
 import { useTerminalManager } from "./hooks/useTerminalManager";
+import { normalizeThemePreference, persistThemePreference } from "./lib/theme";
 import "./App.css";
 
 const ProjectPage = lazy(() =>
@@ -46,6 +47,19 @@ function App() {
   const [mountedProjectIds, setMountedProjectIds] = useState<string[]>([]);
 
   const tm = useTerminalManager();
+
+  // 主题的权威来源是后端 settings.json；main.tsx 的 initializeTheme() 只用
+  // localStorage 缓存做首帧渲染，这里启动后立刻以后端值校准（缓存缺失或过期时
+  // 会错误落回 system，导致设置了亮色却显示暗色）。
+  useEffect(() => {
+    invoke<{ theme?: string }>("load_app_settings")
+      .then((settings) => {
+        persistThemePreference(normalizeThemePreference(settings.theme));
+      })
+      .catch(() => {
+        // 读取失败时保留 initializeTheme() 已应用的缓存主题。
+      });
+  }, []);
 
   // ── Debounced task persistence ─────────────────────────────────────────────
   const persistTimersRef = useRef<Record<string, number>>({});

@@ -34,7 +34,7 @@ export interface AppLayoutProps {
 }
 
 const SIDEBAR_WIDE = 264;
-const SIDEBAR_NARROW = 60;
+const SIDEBAR_NARROW = 56;
 
 export function AppLayout({
   sidebar,

@@ -48,11 +48,11 @@ type ImeKeyboardEvent = {
 export function isImeComposing(event: ImeKeyboardEvent): boolean {
   return Boolean(
     event.nativeEvent?.isComposing ||
-      event.nativeEvent?.keyCode === 229 ||
-      event.nativeEvent?.which === 229 ||
-      event.keyCode === 229 ||
-      event.which === 229 ||
-      event.key === "Process",
+    event.nativeEvent?.keyCode === 229 ||
+    event.nativeEvent?.which === 229 ||
+    event.keyCode === 229 ||
+    event.which === 229 ||
+    event.key === "Process",
   );
 }
 
@@ -79,6 +79,22 @@ export function formatElapsedMmSs(elapsedMs: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+/** 相对时间：1 分钟内「刚刚」，之后按 分钟/小时/天，超过 7 天显示 M/D。 */
+export function formatRelativeTime(iso: string): string {
+  const time = new Date(iso).getTime();
+  if (Number.isNaN(time)) return "";
+  const diff = Date.now() - time;
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diff < minute) return "刚刚";
+  if (diff < hour) return `${Math.floor(diff / minute)} 分钟前`;
+  if (diff < day) return `${Math.floor(diff / hour)} 小时前`;
+  if (diff < 7 * day) return `${Math.floor(diff / day)} 天前`;
+  const d = new Date(time);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
 // ── Git 状态工具 ──────────────────────────────────────────────────────────────

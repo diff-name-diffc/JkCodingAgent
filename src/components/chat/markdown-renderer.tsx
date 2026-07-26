@@ -10,14 +10,16 @@ import {
   type CustomRendererProps,
 } from "streamdown";
 import { createCodePlugin } from "@streamdown/code";
-import { math } from "@streamdown/math";
+import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import "streamdown/styles.css";
 import "katex/dist/katex.min.css";
 import type { PythonCodeRunRecord } from "../../types";
 import { cn } from "../../lib/cn";
+import { normalizeLatexMathDelimiters } from "../../lib/normalize-math";
 import { MarkdownImage } from "../markdown/MarkdownImage";
 import { useMarkdownLinkHandler } from "../markdown/MarkdownLinkContext";
+import { useKatexCopy } from "./katex-copy";
 
 /**
  * Streamdown-based markdown renderer for the chat surface (AI text messages).
@@ -283,9 +285,12 @@ const codePlugin = createCodePlugin({
   // use github-dark.
   themes: ["github-dark", "github-dark"],
 });
+// 默认的 `math` 预设关闭了单 `$` 行内公式（防货币误解析），模型输出普遍
+// 使用 `$…$`，这里显式开启。
+const mathPlugin = createMathPlugin({ singleDollarTextMath: true });
 const streamdownPlugins = {
   code: codePlugin,
-  math,
+  math: mathPlugin,
   mermaid,
   renderers: [{ language: ["python", "py"], component: PythonCodeRenderer }],
 };
@@ -308,15 +313,22 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   pythonRunRecords,
   className,
 }: MarkdownRendererProps) {
-  const normalizedContent = useMemo(() => normalizeSingleLineMathBlocks(content), [content]);
+  const normalizedContent = useMemo(
+    () => normalizeSingleLineMathBlocks(normalizeLatexMathDelimiters(content)),
+    [content],
+  );
   const codeIndexByHash = useMemo(() => indexCodeBlocks(normalizedContent), [normalizedContent]);
   const pythonRunContext = useMemo<PythonRunContextValue>(
     () => ({ messageId, streaming, onRunPython, pythonRunRecords, codeIndexByHash }),
     [messageId, streaming, onRunPython, pythonRunRecords, codeIndexByHash],
   );
+  const { containerProps: katexCopyProps, menuElement: katexCopyMenu } = useKatexCopy();
 
   return (
-    <div className={cn("ai-streamdown text-[15px] leading-7 text-foreground", className)}>
+    <div
+      className={cn("ai-streamdown text-[15px] leading-7 text-foreground", className)}
+      {...katexCopyProps}
+    >
       <PythonRunContext.Provider value={pythonRunContext}>
         <Streamdown
           mode={streaming ? "streaming" : "static"}
@@ -331,6 +343,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
           {normalizedContent}
         </Streamdown>
       </PythonRunContext.Provider>
+      {katexCopyMenu}
     </div>
   );
 });

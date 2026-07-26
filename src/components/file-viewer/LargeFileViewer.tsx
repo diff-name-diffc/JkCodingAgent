@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { isImeComposing } from "../../utils";
 
 const LINE_HEIGHT = 22;
 const OVERSCAN = 40;
@@ -673,6 +674,8 @@ export function LargeFileViewer({
   // ─── Keyboard handler ───────────────────────────────────────────
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLSpanElement>, lineIdx: number) => {
+      if (isImeComposing(e)) return;
+
       if (selectionRange) {
         if (e.key === "Backspace" || e.key === "Delete") {
           e.preventDefault();

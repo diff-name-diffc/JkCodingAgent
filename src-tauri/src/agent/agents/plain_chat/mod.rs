@@ -43,7 +43,7 @@ pub struct PlainChatAgent {
     config: DispatcherAgentConfig,
     provider: Mutex<OpenAiCompatProvider>,
     system_prompt: Mutex<String>,
-    vision_model: Mutex<String>,
+    vision_provider: Mutex<Option<OpenAiCompatProvider>>,
     summary_model: Mutex<String>,
     summary_api_key: Mutex<String>,
     summary_api_base: Mutex<String>,
@@ -93,7 +93,7 @@ impl PlainChatAgent {
             system_prompt: Mutex::new(
                 crate::agent::config::DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT.to_string(),
             ),
-            vision_model: Mutex::new(String::new()),
+            vision_provider: Mutex::new(None),
             summary_model: Mutex::new(crate::agent::config::DEFAULT_SUMMARY_MODEL.to_string()),
             summary_api_key: Mutex::new(String::new()),
             summary_api_base: Mutex::new(String::new()),
@@ -159,11 +159,29 @@ impl PlainChatAgent {
                 self.config.temperature,
             );
         }
-        if let Some(v) = active_vision {
-            if !v.model.trim().is_empty() {
-                *self.vision_model.lock() = v.model.trim().to_string();
-            }
-        }
+        // 视觉模型切换必须使用设置中视觉用途的完整配置（url/apiKey/model，
+        // 默认取第一个 active，否则第一个条目），url/apiKey 为空时回退聊天
+        // 主模型的凭据。只换模型名会把视觉模型名打到聊天网关，报 unknown provider。
+        *self.vision_provider.lock() = active_vision
+            .filter(|v| !v.model.trim().is_empty())
+            .map(|v| {
+                let fallback = self.provider.lock();
+                OpenAiCompatProvider::new(
+                    if v.api_key.trim().is_empty() {
+                        fallback.api_key().to_string()
+                    } else {
+                        v.api_key.trim().to_string()
+                    },
+                    if v.url.trim().is_empty() {
+                        fallback.api_base().to_string()
+                    } else {
+                        v.url.trim().to_string()
+                    },
+                    v.model.trim().to_string(),
+                    self.config.max_tokens,
+                    self.config.temperature,
+                )
+            });
         if let Some(smc) = active_summary {
             if !smc.model.trim().is_empty() {
                 *self.summary_model.lock() = smc.model.trim().to_string();
@@ -550,7 +568,12 @@ impl PlainChatAgent {
                 .unwrap_or_default(),
             app_handle: self.app_handle.clone(),
             llm_provider: Some(provider.clone()),
-            vision_model: self.vision_model.lock().clone(),
+            vision_model: self
+                .vision_provider
+                .lock()
+                .as_ref()
+                .map(|p| p.model().to_string())
+                .unwrap_or_default(),
             image_model_url: String::new(),
             image_model_api_key: String::new(),
             image_model: String::new(),
@@ -678,11 +701,11 @@ impl RunLoopAgent for PlainChatAgent {
         messages: &[ChatMessage],
         iteration: usize,
     ) -> Result<OpenAiCompatProvider> {
-        let vision_model = self.vision_model.lock().clone();
+        let vision_provider = self.vision_provider.lock().clone();
         select_provider_for_messages(
             &ctx.provider,
             messages,
-            &vision_model,
+            vision_provider.as_ref(),
             ctx.on_event,
             iteration == 0,
         )

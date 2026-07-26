@@ -26,7 +26,7 @@ pub(super) struct Models {
     summary_model: String,
     summary_api_key: String,
     summary_api_base: String,
-    vision_model: String,
+    vision_provider: Option<OpenAiCompatProvider>,
     image_model_url: String,
     image_model_api_key: String,
     image_model: String,
@@ -44,7 +44,11 @@ pub(super) struct ModelsSnapshot {
 impl Models {
     fn snapshot(&self) -> ModelsSnapshot {
         ModelsSnapshot {
-            vision_model: self.vision_model.clone(),
+            vision_model: self
+                .vision_provider
+                .as_ref()
+                .map(|p| p.model().to_string())
+                .unwrap_or_default(),
             image_model_url: self.image_model_url.clone(),
             image_model_api_key: self.image_model_api_key.clone(),
             image_model: self.image_model.clone(),
@@ -100,7 +104,18 @@ impl DispatcherAgent {
                 summary_model: helpers::normalize_summary_model(&config.summary_model),
                 summary_api_key: String::new(),
                 summary_api_base: String::new(),
-                vision_model: config.vision_model.trim().to_string(),
+                // env 兜底（VISION_MODEL_NAME）：只有模型名，沿用主模型凭据。
+                vision_provider: if config.vision_model.trim().is_empty() {
+                    None
+                } else {
+                    Some(OpenAiCompatProvider::new(
+                        config.api_key.clone(),
+                        config.api_base.clone(),
+                        config.vision_model.trim().to_string(),
+                        config.max_tokens,
+                        config.temperature,
+                    ))
+                },
                 image_model_url: config.image_model_url.clone(),
                 image_model_api_key: config.image_model_api_key.clone(),
                 image_model: config.image_model.clone(),
@@ -199,11 +214,28 @@ impl DispatcherAgent {
                 models.summary_api_base = smc.url.trim().to_string();
             }
         }
-        if let Some(v) = active_vision {
-            if !v.model.trim().is_empty() {
-                models.vision_model = v.model.trim().to_string();
-            }
-        }
+        // 视觉模型切换使用设置中视觉用途的完整配置（默认第一个 active，否则
+        // 第一个条目），url/apiKey 为空时回退聊天主模型凭据。
+        models.vision_provider = active_vision
+            .filter(|v| !v.model.trim().is_empty())
+            .map(|v| {
+                let fallback = self.provider.lock();
+                OpenAiCompatProvider::new(
+                    if v.api_key.trim().is_empty() {
+                        fallback.api_key().to_string()
+                    } else {
+                        v.api_key.trim().to_string()
+                    },
+                    if v.url.trim().is_empty() {
+                        fallback.api_base().to_string()
+                    } else {
+                        v.url.trim().to_string()
+                    },
+                    v.model.trim().to_string(),
+                    self.config.max_tokens,
+                    self.config.temperature,
+                )
+            });
         if let Some(img) = active_image {
             if !img.url.trim().is_empty() {
                 models.image_model_url = img.url.trim().to_string();
@@ -269,10 +301,6 @@ impl DispatcherAgent {
         )
     }
 
-    pub(super) fn vision_model(&self) -> String {
-        self.models.lock().vision_model.clone()
-    }
-
     pub(super) fn provider_for_messages(
         &self,
         provider: &OpenAiCompatProvider,
@@ -284,14 +312,13 @@ impl DispatcherAgent {
             return Ok(provider.clone());
         }
 
-        let vision_model = self.vision_model();
-        if vision_model.trim().is_empty() {
+        let vision_provider = self.models.lock().vision_provider.clone();
+        let Some(selected) = vision_provider else {
             anyhow::bail!(
                 "检测到用户上传了图片，但 Dispatcher 设置中的视觉模型为空。请先配置视觉模型后重试。"
             );
-        }
+        };
 
-        let selected = provider.with_model(vision_model.trim());
         if notify_user && selected.model() != provider.model() {
             helpers::emit(
                 on_event,

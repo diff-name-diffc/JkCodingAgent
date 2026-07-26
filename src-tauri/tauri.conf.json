@@ -18,7 +18,6 @@
         "minWidth": 1000,
         "minHeight": 680,
         "acceptFirstMouse": true,
-        "decorations": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true
       }

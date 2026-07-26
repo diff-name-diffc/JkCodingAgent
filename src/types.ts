@@ -395,6 +395,29 @@ export interface SshReviewConfig {
   systemPrompt: string;
 }
 
+/** 模型库分类：按模型调用方式划分，「模型服务」页按此分标签管理。 */
+export type ModelCategory =
+  | "text"
+  | "vision"
+  | "image"
+  | "imageEdit"
+  | "asr"
+  | "tts"
+  | "embedding";
+
+/** 分类模型库条目：每个条目独立持有 url/apiKey/model，供「模型用途」页按分类引用。 */
+export interface ModelLibraryEntry {
+  id: string;
+  category: ModelCategory;
+  url: string;
+  apiKey: string;
+  model: string;
+  /** 显示名，空则用 model。 */
+  alias?: string;
+  /** 停用后不出现在用途下拉的选项中。 */
+  enabled: boolean;
+}
+
 export interface AhaSettingsV2 {
   shared: AhaSharedModels;
   project: AhaContextConfig;
@@ -402,6 +425,7 @@ export interface AhaSettingsV2 {
   autoApproveDispatch: boolean;
   contextDebug: boolean;
   review: SshReviewConfig;
+  modelLibrary: ModelLibraryEntry[];
 }
 
 export type DispatcherSessionTokenUsageSource = "primary" | "summary";

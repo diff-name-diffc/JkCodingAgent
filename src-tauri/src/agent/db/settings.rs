@@ -84,6 +84,29 @@ pub struct AhaSharedModels {
     pub embedding_model_configs: Vec<DispatcherModelConfig>,
 }
 
+/// 分类模型库条目：按模型调用方式（text/vision/image/...）分类，
+/// 每个条目独立持有 url/apiKey/model，供「模型用途」页按分类引用。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelLibraryEntry {
+    pub id: String,
+    pub category: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub alias: String,
+    #[serde(default = "default_library_entry_enabled")]
+    pub enabled: bool,
+}
+
+fn default_library_entry_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AhaSettingsV2 {
@@ -94,6 +117,8 @@ pub struct AhaSettingsV2 {
     pub context_debug: bool,
     #[serde(default)]
     pub review: SshReviewConfig,
+    #[serde(default)]
+    pub model_library: Vec<ModelLibraryEntry>,
 }
 
 impl Default for AhaSettingsV2 {
@@ -105,6 +130,7 @@ impl Default for AhaSettingsV2 {
             auto_approve_dispatch: false,
             context_debug: false,
             review: SshReviewConfig::default(),
+            model_library: Vec::new(),
         }
     }
 }
@@ -190,7 +216,8 @@ impl DispatcherDb {
             auto_approve_dispatch,
             context_debug,
             review_model_config_json,
-            review_system_prompt
+            review_system_prompt,
+            model_library_json
         FROM dispatcher_settings_v2 WHERE id = 'default'";
 
         match conn.query_row(sql, [], |row| {
@@ -243,6 +270,10 @@ impl DispatcherDb {
                         },
                     }
                 },
+                model_library: {
+                    let raw: String = row.get(16).unwrap_or_default();
+                    serde_json::from_str::<Vec<ModelLibraryEntry>>(&raw).unwrap_or_default()
+                },
             })
         }) {
             Ok(settings) => Ok(settings),
@@ -281,6 +312,8 @@ impl DispatcherDb {
         let review_model = serde_json::to_string(&settings.review.model_config)
             .unwrap_or_else(|_| "{}".to_string());
         let review_prompt = settings.review.system_prompt.trim().to_string();
+        let model_library =
+            serde_json::to_string(&settings.model_library).unwrap_or_else(|_| "[]".to_string());
 
         let sql = "INSERT INTO dispatcher_settings_v2 (
             id,
@@ -299,9 +332,10 @@ impl DispatcherDb {
             auto_approve_dispatch,
             context_debug,
             review_model_config_json,
-            review_system_prompt
+            review_system_prompt,
+            model_library_json
         ) VALUES (
-            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
+            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
         )
         ON CONFLICT(id) DO UPDATE SET
             shared_vision_model_configs_json = ?1,
@@ -319,7 +353,8 @@ impl DispatcherDb {
             auto_approve_dispatch = ?13,
             context_debug = ?14,
             review_model_config_json = ?15,
-            review_system_prompt = ?16";
+            review_system_prompt = ?16,
+            model_library_json = ?17";
 
         conn.execute(
             sql,
@@ -340,6 +375,7 @@ impl DispatcherDb {
                 context_debug_int,
                 &review_model,
                 &review_prompt,
+                &model_library,
             ],
         )
         .context("save dispatcher settings v2")?;

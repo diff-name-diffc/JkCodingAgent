@@ -40,24 +40,24 @@ function SidebarItem({
   icon,
   label,
   active,
-  meta,
   onClick,
 }: {
   icon: React.ReactNode;
   label: string;
   active?: boolean;
-  meta?: string;
   onClick?: () => void;
 }) {
   return (
-    <div
+    <button
+      type="button"
       className={`ai-home-nav-item${active ? " is-active" : ""}`}
       onClick={onClick}
+      aria-label={label}
+      aria-current={active ? "page" : undefined}
     >
       <span className="ai-home-nav-icon">{icon}</span>
       <span className="ai-home-nav-label">{label}</span>
-      {meta && <span className="ai-home-nav-meta">{meta}</span>}
-    </div>
+    </button>
   );
 }
 
@@ -107,36 +107,31 @@ export function WelcomePage({
     <div className="ai-home-shell ai-migrated-home">
       <div className="ai-home-layout">
         <div className="ai-home-nav">
-          <div className="ai-home-brand">
-            <div className="ai-home-brand-icon" style={{ width: 44, height: 44, borderRadius: 12 }}>
+          <div className="ai-home-brand" aria-label="JKCodingAgent">
+            <div className="ai-home-brand-icon">
               <img
                 src={appLogo}
                 alt="JKCodingAgent"
-                style={{ width: "100%", height: "100%", borderRadius: 9, objectFit: "cover" }}
               />
             </div>
-            <div>
-              <div className="ai-home-brand-title">JKCodingAgent</div>
-              <div className="ai-home-brand-subtitle">智能体工作区</div>
-            </div>
+            <span className="ai-home-brand-title">JKCodingAgent</span>
           </div>
 
-          <nav className="ai-home-nav-list">
-            <div className="ai-home-nav-section-label">工作区</div>
+          <nav className="ai-home-nav-list" aria-label="主导航">
             <SidebarItem
-              icon={<MessageCircle size={15} />}
+              icon={<MessageCircle size={18} />}
               label="聊天"
               active={view === "chat"}
               onClick={() => setView("chat")}
             />
             <SidebarItem
-              icon={<Layers size={15} />}
+              icon={<Layers size={18} />}
               label="项目"
               active={view === "projects"}
               onClick={() => setView("projects")}
             />
             <SidebarItem
-              icon={<BarChart2 size={15} />}
+              icon={<BarChart2 size={18} />}
               label="分析"
               active={view === "analytics"}
               onClick={() => setView("analytics")}

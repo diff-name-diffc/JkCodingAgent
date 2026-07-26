@@ -22,7 +22,7 @@ impl DispatcherDb {
         let mut conn = self.conn()?;
 
         // Fast path: if schema is already at the expected version, skip all DDL.
-        const SCHEMA_VERSION: i32 = 20;
+        const SCHEMA_VERSION: i32 = 21;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -168,7 +168,8 @@ impl DispatcherDb {
                 auto_approve_dispatch INTEGER NOT NULL DEFAULT 0,
                 context_debug INTEGER NOT NULL DEFAULT 0,
                 review_model_config_json TEXT NOT NULL DEFAULT '',
-                review_system_prompt TEXT NOT NULL DEFAULT ''
+                review_system_prompt TEXT NOT NULL DEFAULT '',
+                model_library_json TEXT NOT NULL DEFAULT '[]'
             );
 
             CREATE TABLE IF NOT EXISTS dispatcher_session_token_usage (
@@ -604,6 +605,24 @@ impl DispatcherDb {
             crate::agent::sub_agent::db::ensure_sub_agent_trace_table_tx(&tx)?;
             tx.commit()
                 .context("v20: commit sub-agent trace migration")?;
+        }
+
+        // v20 → v21: categorized model library（按模型调用方式分类的模型库，
+        //             供设置中心「模型服务」页管理、「模型用途」页引用）。
+        if current_version < 21 {
+            let has_model_library_col = conn
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('dispatcher_settings_v2') WHERE name = 'model_library_json'")
+                .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+                .unwrap_or(0);
+            if has_model_library_col == 0 {
+                conn.execute_batch(
+                    "
+                    ALTER TABLE dispatcher_settings_v2
+                        ADD COLUMN model_library_json TEXT NOT NULL DEFAULT '[]';
+                    ",
+                )
+                .context("v21 migration: add model library column")?;
+            }
         }
 
         drop_obsolete_planning_columns(&conn)?;

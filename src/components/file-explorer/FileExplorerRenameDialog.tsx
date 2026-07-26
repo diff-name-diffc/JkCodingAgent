@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
+import { isImeComposing } from "../../utils";
 import { buildSiblingPath, getRelativePathDisplay } from "../../utils/filePaths";
 
 type RenameTarget = {
@@ -104,6 +105,8 @@ export function FileExplorerRenameDialog({
         className="ai-dialog ai-file-rename-dialog"
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => {
+          if (isImeComposing(event)) return;
+
           if (event.key === "Escape" && !saving) {
             event.preventDefault();
             onClose();

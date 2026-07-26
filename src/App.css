@@ -27,6 +27,8 @@
   --bg-root: #d6d9d3;
   --bg-shell: #ebece7;
   --bg-titlebar: #e4e6e0;
+  /* 窗口顶部拖拽区高度：与 macOS 红绿灯安全区配合，页面内容用它做顶部留白。 */
+  --titlebar-h: 38px;
   /* 页面级背景（聊天主区等通栏页面统一引用此令牌） */
   --background: #f6f7f4;
   --bg-sidebar: #eceee9;

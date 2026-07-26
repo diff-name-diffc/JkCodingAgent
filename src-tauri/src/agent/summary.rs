@@ -10,7 +10,8 @@ const SUMMARY_TIMEOUT_SECS: u64 = 120;
 const SUMMARY_DEBUG_PREVIEW_CHARS: usize = 1_200;
 const SESSION_TITLE_SOURCE_MAX_CHARS: usize = 6_000;
 const SESSION_TITLE_MESSAGE_MAX_CHARS: usize = 1_200;
-const SESSION_TITLE_MAX_CHARS: usize = 10;
+const SESSION_TITLE_FALLBACK_MAX_CHARS: usize = 24;
+const SESSION_TITLE_CANDIDATE_SANITY_MAX_CHARS: usize = 80;
 const SESSION_KEYWORDS_QA_MAX_CHARS: usize = 3_000;
 const SESSION_KEYWORDS_MAX: usize = 15;
 
@@ -644,7 +645,7 @@ fn build_session_title_prompt(messages: &[SessionTitleMessage], fallback_source:
         "你是桌面 AI 编程工具的会话标题生成器。请根据最近多条聊天消息生成一个极短中文标题。\n\
 要求：\n\
 - 只输出标题本身，不要解释，不要加引号、编号、Markdown 或「标题：」前缀。\n\
-- 标题必须是 5-10 个中文字符；不要超过 10 个字符。\n\
+- 标题应相当于 5-10 个中文字符；英文缩写按一个完整词处理，不要为了凑字符数截断词语。\n\
 - 标题应是名词短语，概括最后一轮完整对话的核心任务；如果最后用户消息是「另外/继续/这个」等追加要求，必须结合前文对象。\n\
 - 优先保留关键模块、功能、错误或对象；删除「帮我」「看看」「优化一下」「问题」「任务」等水词。\n\
 - 不要输出完整句子，不要包含标点。\n\n\
@@ -711,11 +712,14 @@ fn normalize_session_title(candidate: &str, fallback_source: &str) -> String {
     let fallback = if fallback_source == "新会话" {
         "新会话".to_string()
     } else {
-        truncate_title(clean_title_line(fallback_source))
+        truncate_fallback_title(clean_title_line(fallback_source))
     };
 
-    let title = truncate_title(clean_title_line(candidate));
-    if title.is_empty() || title == "新会话" {
+    let title = clean_title_line(candidate);
+    if title.is_empty()
+        || title == "新会话"
+        || title.chars().count() > SESSION_TITLE_CANDIDATE_SANITY_MAX_CHARS
+    {
         return fallback;
     }
 
@@ -759,8 +763,30 @@ fn clean_title_line(raw: &str) -> String {
     trimmed.split_whitespace().collect::<Vec<_>>().join("")
 }
 
-fn truncate_title(title: String) -> String {
-    title.chars().take(SESSION_TITLE_MAX_CHARS).collect()
+fn truncate_fallback_title(title: String) -> String {
+    if title.chars().count() <= SESSION_TITLE_FALLBACK_MAX_CHARS {
+        return title;
+    }
+
+    let mut truncated = title
+        .chars()
+        .take(SESSION_TITLE_FALLBACK_MAX_CHARS.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_session_title;
+
+    #[test]
+    fn mixed_language_title_keeps_complete_term() {
+        assert_eq!(
+            normalize_session_title("GPUCUDA查看命令", "查看 GPU CUDA 命令"),
+            "GPUCUDA查看命令"
+        );
+    }
 }
 
 fn build_keywords_prompt(qa_text: &str, existing_keywords_json: &str) -> String {

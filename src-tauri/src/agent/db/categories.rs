@@ -1,7 +1,7 @@
 //! 聊天分类（chat_categories 表）的 CRUD 与排序。
 
 use anyhow::{Context, Result};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -73,8 +73,11 @@ impl DispatcherDb {
     ) -> Result<ChatCategory> {
         let now = now();
         let mut conn = self.conn()?;
+        // IMMEDIATE：事务内先 SELECT（sort_order / backfill 读分类）再写入，
+        // 延迟事务在 WAL 下读后再升级写锁时，若期间有其他连接提交写入会立刻
+        // 报 SQLITE_BUSY（database is locked），busy_timeout 无法兜底。
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("begin create chat category transaction")?;
         let max_order: i32 = tx
             .query_row(
@@ -223,7 +226,7 @@ impl DispatcherDb {
     pub fn list_chat_category_agent_configs(&self) -> Result<Vec<ChatCategoryAgentConfig>> {
         let mut conn = self.conn()?;
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("begin list chat category agent configs")?;
         backfill_chat_category_agent_configs_tx(&tx)?;
         let configs = {
@@ -250,7 +253,7 @@ impl DispatcherDb {
     ) -> Result<Vec<ChatCategoryAgentConfig>> {
         let mut conn = self.conn()?;
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("begin save chat category agent configs")?;
         backfill_chat_category_agent_configs_tx(&tx)?;
         let ts = now();
@@ -293,7 +296,7 @@ impl DispatcherDb {
     ) -> Result<Option<ChatCategoryAgentConfig>> {
         let mut conn = self.conn()?;
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("begin get chat session category agent config")?;
         backfill_chat_category_agent_configs_tx(&tx)?;
         let config = tx

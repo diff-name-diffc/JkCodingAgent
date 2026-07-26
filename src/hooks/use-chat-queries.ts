@@ -3,11 +3,12 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  AhaSettingsV2,
   ChatCategory,
   ChatSession,
   DispatcherSession,
   DispatcherMessage,
-  DispatcherModelConfig,
+  ModelLibraryEntry,
   SessionKeyword,
   SessionSearchResult,
   SessionPage,
@@ -17,6 +18,11 @@ import {
   withDispatcherSessionsRunning,
 } from "../components/dispatcherSessionStore";
 import { normalizeDispatcherMessage } from "../components/dispatcher-chat/dispatcherChatUtils";
+import { bindPurpose } from "../components/settings/providers/provider-registry";
+import {
+  hasAnyPurposeConfigs,
+  seedModelLibrary,
+} from "../components/settings/providers/model-library";
 
 /**
  * TanStack Query hooks for the Chat UI.
@@ -327,25 +333,29 @@ export function useChatModelsQuery() {
   return useQuery({
     queryKey: QUERY_KEYS.models,
     queryFn: async () => {
-      // Reuse the existing settings v2 command — the chat model configs live
-      // there. Components that need only active models can filter client-side.
-      const settings = await invoke<{
-        chat: { chatModelConfigs: DispatcherModelConfig[] };
-      }>("aha_get_settings_v2");
-      return settings.chat.chatModelConfigs;
+      // 聊天输入框的可选模型与设置页「聊天主模型」共用统一数据源：分类模型库
+      // （AhaSettingsV2.modelLibrary 的 text 分类）。这里返回整份设置，由组件
+      // 用 entriesForCategory 取选项、用 getPurposeBinding 取当前生效绑定。
+      const loaded = await invoke<AhaSettingsV2>("aha_get_settings_v2");
+      // 与设置页一致：旧用户已有用途配置但模型库为空时，按分类播种（仅内存，
+      // 选择落盘由 useBindChatModel / 设置页负责），避免下拉为空。
+      const needsSeed =
+        (loaded.modelLibrary ?? []).length === 0 && hasAnyPurposeConfigs(loaded);
+      return needsSeed ? { ...loaded, modelLibrary: seedModelLibrary(loaded) } : loaded;
     },
   });
 }
 
-export function useSetActiveChatModel() {
+export function useBindChatModel() {
   const qc = useQueryClient();
   return useMutation({
-    // Backend takes a model index, not a model name — see
-    // src-tauri/src/agent/commands.rs:aha_set_active_chat_model.
-    mutationFn: (modelIndex: number) =>
-      invoke<DispatcherModelConfig[]>("aha_set_active_chat_model", {
-        modelIndex,
-      }),
+    // 选中模型库条目即把它绑定为「聊天主模型」用途（写入 chat.chatModelConfigs，
+    // 运行时与设置页消费的结构不变），与设置页 PurposeSelect 走同一 bindPurpose。
+    mutationFn: async (entry: ModelLibraryEntry) => {
+      const current = await invoke<AhaSettingsV2>("aha_get_settings_v2");
+      const next = bindPurpose(current, "chatChat", entry);
+      return invoke<AhaSettingsV2>("aha_save_settings_v2", { settings: next });
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: QUERY_KEYS.models });
     },

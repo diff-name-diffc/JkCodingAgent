@@ -4,7 +4,7 @@ import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcher
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import type { DispatcherToolArtifactRef } from "../../types";
 import { cn } from "../../lib/cn";
-import { Avatar, AvatarFallback } from "../ui/avatar";
+import { ChatAvatar } from "./chat-avatar";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { ReasoningBlock } from "./reasoning-block";
 import { ToolCallList } from "./tool-call-card";
@@ -53,16 +53,12 @@ export function StreamingMessage({
       transition={{ duration: 0.15 }}
       className={cn("ai-assistant-message relative", className)}
     >
-      <Avatar
-        className={cn(
-          "ai-assistant-avatar absolute left-7 top-1 h-5 w-5 border border-border bg-primary/10",
-          !showAvatar && "invisible",
-        )}
-      >
-        <AvatarFallback>
-          <Sparkles className={cn("h-3 w-3 text-primary", isStreaming && "animate-pulse")} />
-        </AvatarFallback>
-      </Avatar>
+      <ChatAvatar
+        role="assistant"
+        active={isStreaming}
+        hidden={!showAvatar}
+        className="absolute left-6 top-0.5"
+      />
 
       <div className="min-w-0 pl-[60px]">
         {thinking?.text && (

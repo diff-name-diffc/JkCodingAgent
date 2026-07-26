@@ -572,6 +572,52 @@ impl DispatcherDb {
         remove_chat_image_files(&image_paths)?;
         Ok(())
     }
+
+    /// 删除指定消息及其之后的所有消息（含属于这些消息的工具产物与工具运行记录）。
+    /// 用于「从该条用户消息重新生成」：先截断再重发，避免重复消息。
+    /// 注意：不删除 chat_images 记录与图片文件——重发会复用同一 image_id 引用，
+    /// insert_chat_images 的 ON CONFLICT(image_id) DO UPDATE 会把记录重新指向新消息。
+    pub fn truncate_messages_from(&self, workspace_id: &str, message_id: &str) -> Result<u64> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let target_rowid: i64 = tx
+            .query_row(
+                "SELECT rowid FROM dispatcher_messages WHERE workspace_id = ?1 AND id = ?2",
+                params![workspace_id, message_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("lookup dispatcher message rowid")?
+            .ok_or_else(|| {
+                anyhow::anyhow!("message {message_id} not found in workspace {workspace_id}")
+            })?;
+
+        tx.execute(
+            "DELETE FROM dispatcher_tool_artifacts
+             WHERE workspace_id = ?1 AND message_id IN (
+                 SELECT id FROM dispatcher_messages
+                 WHERE workspace_id = ?1 AND rowid >= ?2)",
+            params![workspace_id, target_rowid],
+        )
+        .context("delete truncated dispatcher tool artifacts")?;
+        tx.execute(
+            "DELETE FROM dispatcher_tool_runs
+             WHERE workspace_id = ?1 AND message_id IN (
+                 SELECT id FROM dispatcher_messages
+                 WHERE workspace_id = ?1 AND rowid >= ?2)",
+            params![workspace_id, target_rowid],
+        )
+        .context("delete truncated dispatcher tool runs")?;
+        let removed = tx
+            .execute(
+                "DELETE FROM dispatcher_messages WHERE workspace_id = ?1 AND rowid >= ?2",
+                params![workspace_id, target_rowid],
+            )
+            .context("truncate dispatcher messages")?;
+
+        tx.commit().context("commit dispatcher message truncation")?;
+        Ok(removed as u64)
+    }
     fn add_message(&self, params: NewDispatcherMessage<'_>) -> Result<DispatcherMessageRecord> {
         let tool_calls_json = params
             .tool_calls

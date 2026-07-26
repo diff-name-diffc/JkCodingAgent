@@ -4,6 +4,7 @@ import type {
   DispatcherMessage,
   DispatcherModelConfig,
   DispatcherToolArtifactRef,
+  ImageSegment,
   PythonCodeRunRecord,
   ChatSession,
   ChatCategory,
@@ -11,7 +12,13 @@ import type {
   SubAgentRunTrace,
 } from "../../types";
 import { useUIStore } from "../../stores/ui-store";
-import { useChatModelsQuery, useSetActiveChatModel } from "../../hooks/use-chat-queries";
+import { useChatModelsQuery, useBindChatModel } from "../../hooks/use-chat-queries";
+import { getPurposeBinding } from "../settings/providers/provider-registry";
+import {
+  entriesForCategory,
+  entryLabel,
+  findEnabledEntryForConfig,
+} from "../settings/providers/model-library";
 import { useLiveSessionStateReadonly } from "../dispatcher-chat/useLiveSessionState";
 import { useChatShortcuts } from "../../hooks/use-chat-shortcuts";
 import { AppLayout } from "../layout/app-layout";
@@ -83,8 +90,14 @@ export interface ChatShellProps {
   onSend: () => void;
   onStop: () => void;
   onResume?: () => void;
-  onAttach?: () => void;
-  onRegenerate?: () => void;
+  attachments?: ImageSegment[];
+  onAttachImages?: (files: File[]) => void;
+  onRemoveAttachment?: (id: string) => void;
+  onRegenerateFromMessage?: (message: DispatcherMessage) => void;
+  onEditMessage?: (message: DispatcherMessage) => void;
+  editingMessageId?: string | null;
+  onCancelEdit?: () => void;
+  composerDisabled?: boolean;
   onApproveDispatch?: (dispatchId: string, taskPrompt: string) => void;
   onRejectDispatch?: (dispatchId: string) => void;
 
@@ -124,8 +137,14 @@ export function ChatShell({
   onSend,
   onStop,
   onResume,
-  onAttach,
-  onRegenerate,
+  attachments,
+  onAttachImages,
+  onRemoveAttachment,
+  onRegenerateFromMessage,
+  onEditMessage,
+  editingMessageId,
+  onCancelEdit,
+  composerDisabled = false,
   onApproveDispatch,
   onRejectDispatch,
   pythonRunRecords,
@@ -164,7 +183,20 @@ export function ChatShell({
   }, [sessionId]);
 
   const modelsQuery = useChatModelsQuery();
-  const selectModel = useSetActiveChatModel();
+  const bindChatModel = useBindChatModel();
+  const settings = modelsQuery.data;
+  // 聊天输入框可选模型与设置页「聊天主模型」共用统一数据源：模型库 text 分类条目。
+  const chatModelEntries = React.useMemo(
+    () => entriesForCategory(settings?.modelLibrary ?? [], "text", { enabledOnly: true }),
+    [settings],
+  );
+  const chatBinding = settings ? getPurposeBinding(settings, "chatChat") : null;
+  const activeChatEntry = findEnabledEntryForConfig(settings?.modelLibrary ?? [], chatBinding);
+  const activeChatLabel =
+    (activeChatEntry ? entryLabel(activeChatEntry) : "") ||
+    chatBinding?.model ||
+    chatBinding?.url ||
+    undefined;
   const liveState = useLiveSessionStateReadonly(sessionId);
   const subAgentSessions = useSubAgentSessions(sessionId ?? "");
   const selectedSubAgent = selectedSubAgentToolCallId
@@ -287,14 +319,19 @@ export function ChatShell({
           onSend={onSend}
           onStop={onStop}
           onResume={onResume}
-          onAttach={onAttach}
-          models={modelsQuery.data}
-          onSelectModel={(index) => selectModel.mutate(index)}
-          contextBar={
-            sessionId && activeSessionKeywords.length > 0 ? (
-              <SessionKeywordBar sessionId={sessionId} keywords={activeSessionKeywords} />
-            ) : undefined
-          }
+          attachments={attachments}
+          onAttachImages={onAttachImages}
+          onRemoveAttachment={onRemoveAttachment}
+          editing={Boolean(editingMessageId)}
+          onCancelEdit={onCancelEdit}
+          disabled={composerDisabled}
+          models={chatModelEntries}
+          activeEntryId={activeChatEntry?.id}
+          activeLabel={activeChatLabel}
+          onSelectModel={(entryId) => {
+            const entry = chatModelEntries.find((item) => item.id === entryId);
+            if (entry) bindChatModel.mutate(entry);
+          }}
         />
       }
       artifactPanel={
@@ -308,6 +345,9 @@ export function ChatShell({
         />
       }
     >
+      {activeSessionKeywords.length > 0 && (
+        <SessionKeywordBar keywords={activeSessionKeywords} />
+      )}
       <MessageList
         sessionId={sessionId}
         messages={messages}
@@ -315,7 +355,8 @@ export function ChatShell({
         pythonRunRecords={pythonRunRecords}
         onRunPython={onRunPython}
         onCopyMessage={handleCopyMessage}
-        onRegenerate={onRegenerate}
+        onRegenerateFromMessage={onRegenerateFromMessage}
+        onEditMessage={onEditMessage}
         onOpenArtifact={handleOpenArtifact}
         onOpenSubAgent={handleOpenSubAgent}
         onPickPrompt={(prompt) => onInputChange(prompt)}

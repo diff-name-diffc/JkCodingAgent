@@ -19,6 +19,8 @@ pub enum ChatImageError {
     ImagesDirMissing(PathBuf),
     #[error("未找到 image_id={0} 对应的图片文件")]
     ImageNotFound(String),
+    #[error("解码图片 base64 失败：{0}")]
+    Decode(String),
     #[error("{action} 失败（{path}）：{source}")]
     Io {
         action: &'static str,
@@ -208,6 +210,106 @@ pub(crate) fn compress_image_bytes(raw: &[u8], max_dim: u32) -> Vec<u8> {
         compressed
     } else {
         raw.to_vec()
+    }
+}
+
+/// Result of saving a chat image.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveChatImageResult {
+    pub image_id: String,
+    pub path: String,
+    /// Actual mime type of the saved file (may differ from original when compression occurred)
+    pub mime_type: String,
+}
+
+/// Save a chat image pasted/attached from the frontend.
+/// Images exceeding COMPRESS_THRESHOLD are low-loss compressed (JPEG quality 92,
+/// resized to fit MAX_COMPRESS_DIM on the longest side) before being stored.
+/// Images are stored under `~/.jkcodingagent/chat-images/{session-title-slug}/`.
+#[tauri::command]
+pub async fn save_chat_image(
+    session_title: String,
+    image_data_base64: String,
+    mime_type: String,
+) -> CommandResult<SaveChatImageResult> {
+    save_chat_image_impl(session_title, image_data_base64, mime_type)
+        .await
+        .context("保存聊天图片失败")
+        .into_command_result()
+}
+
+async fn save_chat_image_impl(
+    session_title: String,
+    image_data_base64: String,
+    mime_type: String,
+) -> ChatImageResult<SaveChatImageResult> {
+    use base64::Engine;
+
+    let image_id = uuid::Uuid::new_v4().to_string();
+    let raw_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&image_data_base64)
+        .map_err(|e| ChatImageError::Decode(e.to_string()))?;
+
+    let ext_for = |mime: &str| match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        _ => "png",
+    };
+
+    let (ext, image_bytes) = if raw_bytes.len() >= COMPRESS_THRESHOLD {
+        let compressed = compress_image_bytes(&raw_bytes, MAX_COMPRESS_DIM);
+        if compressed.len() < raw_bytes.len() {
+            ("jpg", compressed)
+        } else {
+            (ext_for(&mime_type), raw_bytes)
+        }
+    } else {
+        (ext_for(&mime_type), raw_bytes)
+    };
+
+    let saved_mime_type = match ext {
+        "jpg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "image/png",
+    }
+    .to_string();
+
+    let slug = slugify(&session_title);
+    let (id_clone, bytes) = (image_id.clone(), image_bytes);
+    let mime_for_result = saved_mime_type.clone();
+    tokio::task::spawn_blocking(move || -> ChatImageResult<SaveChatImageResult> {
+        let images_dir = chat_images_dir()?.join(&slug);
+        std::fs::create_dir_all(&images_dir)
+            .map_err(io_error("创建聊天图片目录", images_dir.clone()))?;
+        let file_path = images_dir.join(format!("{}.{}", id_clone, ext));
+        std::fs::write(&file_path, &bytes).map_err(io_error("写入聊天图片", file_path.clone()))?;
+        Ok(SaveChatImageResult {
+            image_id: id_clone,
+            path: file_path.to_string_lossy().to_string(),
+            mime_type: mime_for_result,
+        })
+    })
+    .await?
+}
+
+fn slugify(s: &str) -> String {
+    let slug: String = s
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        "untitled".to_string()
+    } else {
+        slug
     }
 }
 

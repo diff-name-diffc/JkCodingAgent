@@ -708,6 +708,19 @@ pub async fn dispatcher_clear_messages(
 }
 
 #[tauri::command]
+pub async fn dispatcher_truncate_messages_from(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+    message_id: String,
+) -> Result<u64, String> {
+    let db = state.db().clone();
+    run_dispatcher_db("dispatcher_truncate_messages_from", move || {
+        db.truncate_messages_from(&workspace_id, &message_id)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn dispatcher_get_tool_artifact(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
@@ -1045,10 +1058,11 @@ fn build_test_messages(enable_multimodal: bool) -> Vec<ChatMessage> {
     if !enable_multimodal {
         return vec![ChatMessage::system("只输出 pong。".to_string())];
     }
-    // 8x8 red PNG. Intentionally tiny but a valid PNG that real vision models
-    // accept and text-only models reject with `unknown variant image_url`.
+    // 64x64 red PNG. Kept small to minimize request size, but every side
+    // exceeds the minimum image dimension enforced by some providers
+    // (e.g. Aliyun DashScope rejects images with width/height <= 10px).
     const TEST_PNG_DATA_URL: &str =
-        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX/AAD///9BHTQRAAAAC0lEQVR4nGNgQAAAAAYASm8pjnwAAAAASUVORK5CYII=";
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc8OLDQitxAAAAAElFTkSuQmCC";
     vec![
         ChatMessage::system("你是模型连通性测试器，只对图片中的颜色做最简短回答。".to_string()),
         ChatMessage {
@@ -1130,12 +1144,12 @@ async fn test_endpoint_reachable_model(
     let status = response.status();
     if status.is_server_error() {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("{label}（{model_name}）端点返回 HTTP {status}：{body}");
+        anyhow::bail!("{label}（{model_name}）端点返回 HTTP {status}，请求地址：{url}，响应：{body}");
     }
     if status.is_client_error() {
         let body = response.text().await.unwrap_or_default();
         anyhow::bail!(
-            "{label}（{model_name}）端点返回 HTTP {status}（请检查 API Key 和 URL），响应：{body}"
+            "{label}（{model_name}）端点返回 HTTP {status}（请检查 API Key 和 URL），请求地址：{url}，响应：{body}"
         );
     }
     Ok(format!(

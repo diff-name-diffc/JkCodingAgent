@@ -524,10 +524,16 @@ pub fn build_args_map(
 
 // ─── Vision Model Selection ──────────────────────────────────────────────────────
 
+/// Pick the provider for one run-loop iteration.
+///
+/// When the pending messages contain images, the pre-built `vision_provider`
+/// (constructed from the configured vision model's own url/apiKey/model) is
+/// used instead of the chat provider — the vision model may live on a
+/// different gateway, so swapping only the model name is not enough.
 pub fn select_provider_for_messages(
     provider: &OpenAiCompatProvider,
     messages: &[ChatMessage],
-    vision_model: &str,
+    vision_provider: Option<&OpenAiCompatProvider>,
     on_event: &Channel<AgentEvent>,
     notify_user: bool,
 ) -> Result<OpenAiCompatProvider> {
@@ -535,11 +541,11 @@ pub fn select_provider_for_messages(
         return Ok(provider.clone());
     }
 
-    if vision_model.trim().is_empty() {
+    let Some(vision) = vision_provider else {
         anyhow::bail!("检测到用户上传了图片，但视觉模型未配置。请先在设置中配置视觉模型后重试。");
-    }
+    };
 
-    let selected = provider.with_model(vision_model.trim());
+    let selected = vision.clone();
     if notify_user && selected.model() != provider.model() {
         emit(
             on_event,

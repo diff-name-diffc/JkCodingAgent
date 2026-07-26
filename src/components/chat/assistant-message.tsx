@@ -1,11 +1,10 @@
 import * as React from "react";
 import { motion } from "framer-motion";
-import { Bot } from "lucide-react";
 import type { DispatcherMessageUsageStats, DispatcherToolArtifactRef } from "../../types";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcherChatView";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { cn } from "../../lib/cn";
-import { Avatar, AvatarFallback } from "../ui/avatar";
+import { ChatAvatar } from "./chat-avatar";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { MessageActions } from "./message-actions";
 import { ReasoningBlock } from "./reasoning-block";
@@ -80,16 +79,11 @@ export function AssistantMessage({
       transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
       className={cn("ai-assistant-message group relative", className)}
     >
-      <Avatar
-        className={cn(
-          "ai-assistant-avatar absolute left-7 top-1 h-5 w-5 border border-border bg-primary/10",
-          !showAvatar && "invisible",
-        )}
-      >
-        <AvatarFallback>
-          <Bot className="h-3 w-3 text-primary" />
-        </AvatarFallback>
-      </Avatar>
+      <ChatAvatar
+        role="assistant"
+        hidden={!showAvatar}
+        className="absolute left-6 top-0.5"
+      />
 
       <div className="min-w-0 pl-[60px]">
         {thinking?.text && (

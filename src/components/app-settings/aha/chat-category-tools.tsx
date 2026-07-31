@@ -1,7 +1,8 @@
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, RotateCcw } from "lucide-react";
 import type { ChatCategoryAgentConfig } from "../../../types";
 import { ToolsTab } from "./tools-tab";
 import { SubAgentPicker } from "./sub-agent-picker";
+import { DEFAULT_CHAT_CATEGORY_SYSTEM_PROMPT } from "../../settings/use-aha-settings";
 
 export function ChatCategoryToolsTab({
   configs,
@@ -77,8 +78,7 @@ export function ChatCategoryToolsTab({
         <div className="ai-aha-section-description">
           该提示词只影响当前分类下的普通聊天会话；运行时会追加分类名称、分类 ID 和系统时间。
         </div>
-        <label className="ai-aha-field">
-          <span className="ai-aha-field-label">系统提示词</span>
+        <div className="ai-aha-field">
           <textarea
             className="ai-settings-textarea"
             style={{ minHeight: 220 }}
@@ -88,7 +88,22 @@ export function ChatCategoryToolsTab({
             }
             spellCheck={false}
           />
-        </label>
+          <div className="ai-aha-action-row is-end">
+            <span className="ai-aha-hint">{activeConfig.systemPrompt.length} 字</span>
+            <button
+              type="button"
+              className="ai-aha-ghost-button"
+              onClick={() =>
+                onChange(activeConfig.categoryId, {
+                  systemPrompt: DEFAULT_CHAT_CATEGORY_SYSTEM_PROMPT,
+                })
+              }
+            >
+              <RotateCcw size={13} />
+              恢复默认
+            </button>
+          </div>
+        </div>
       </section>
 
       <ToolsTab

@@ -3642,7 +3642,7 @@
     grid-template-columns: 16px minmax(0, 1fr);
     align-items: flex-start;
     gap: 9px;
-    padding: 8px 10px;
+    padding: 6px 10px;
     border: 1px solid rgb(var(--accent-rgb) / 0.1);
     border-radius: 8px;
     background: var(--sf-surface);
@@ -3688,7 +3688,7 @@
   .ai-aha-tool-description {
     color: var(--text-muted);
     font-size: 11.5px;
-    line-height: 1.45;
+    line-height: 1.4;
     overflow-wrap: anywhere;
   }
 
@@ -8185,6 +8185,11 @@
       color var(--motion-fast) var(--motion-ease);
   }
 
+  .ai-category-list {
+    /* Radix 滚动条会覆盖视口右缘；为分类操作和会话菜单保留稳定的点击区。 */
+    padding-right: 8px;
+  }
+
   .ai-category-header:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
@@ -10000,5 +10005,12 @@
   .ai-set-category-description {
     font-size: 12px;
     color: var(--text-muted);
+  }
+
+  /* ── 设置页内二级 Tab（复用 ui/tabs 的 Trigger，选中态走 accent 令牌）─ */
+  .ai-set-tabs-list .ai-set-subtab[data-state="active"] {
+    background: rgb(var(--accent-rgb) / 0.12);
+    color: var(--accent);
+    box-shadow: none;
   }
 }

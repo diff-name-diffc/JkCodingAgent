@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronDown } from "lucide-react";
 import type { SubAgentRecord } from "../../../types";
 
 export function SubAgentPicker({
@@ -16,7 +15,6 @@ export function SubAgentPicker({
 }) {
   const [agents, setAgents] = useState<SubAgentRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showAvailable, setShowAvailable] = useState(false);
 
   useEffect(() => {
     invoke<SubAgentRecord[]>("sub_agent_list")
@@ -25,9 +23,7 @@ export function SubAgentPicker({
       .finally(() => setLoading(false));
   }, []);
 
-  const enabledSet = new Set(enabledIds);
-  const selectedList = agents.filter((agent) => enabledSet.has(agent.id));
-  const availableList = agents.filter((agent) => !enabledSet.has(agent.id));
+  const enabledSet = useMemo(() => new Set(enabledIds), [enabledIds]);
 
   function toggle(id: string) {
     onChange(
@@ -44,71 +40,29 @@ export function SubAgentPicker({
         {description}
       </div>
       <div className="ai-aha-hint">
-        {loading ? "加载子智能体..." : `共 ${agents.length} 个子智能体`}
+        {loading
+          ? "加载子智能体..."
+          : `共 ${agents.length} 个子智能体 · 已选 ${enabledIds.length}`}
       </div>
 
-      <div className="ai-aha-field">
-        <button
-          type="button"
-          className="ai-aha-collapsible"
-          onClick={() => setShowAvailable((value) => !value)}
-        >
-          <ChevronDown
-            size={13}
-            className="ai-aha-collapsible-chevron"
-            style={{ transform: showAvailable ? "rotate(0deg)" : "rotate(-90deg)" }}
-          />
-          <span className="ai-aha-field-label">
-            可选子智能体 ({availableList.length})
-            {availableList.length === 0 && (
-              <span className="ai-aha-collapsible-count">无可选项</span>
-            )}
-          </span>
-        </button>
-        {showAvailable && (
-          <div className="ai-aha-tool-list">
-            {loading && <span className="ai-aha-hint">加载中...</span>}
-            {availableList.map((agent) => (
-              <SubAgentOptionRow
-                key={agent.id}
-                agent={agent}
-                checked={false}
-                onToggle={() => toggle(agent.id)}
-              />
-            ))}
-          </div>
+      <div className="ai-aha-tool-list">
+        {!loading && agents.length === 0 && (
+          <span className="ai-aha-hint">暂无子智能体，可先在「子智能体」标签页创建</span>
         )}
-      </div>
-
-      <div className="ai-aha-field">
-        <div className="ai-aha-collapsible is-static">
-          <ChevronDown size={13} className="ai-aha-collapsible-chevron" />
-          <span className="ai-aha-field-label">
-            已选子智能体 ({selectedList.length})
-            {selectedList.length === 0 && (
-              <span className="ai-aha-collapsible-count">该分类暂未启用子智能体</span>
-            )}
-          </span>
-        </div>
-        <div className="ai-aha-tool-list">
-          {selectedList.length === 0 && (
-            <span className="ai-aha-hint">展开上方「可选子智能体」进行勾选</span>
-          )}
-          {selectedList.map((agent) => (
-            <SubAgentOptionRow
-              key={agent.id}
-              agent={agent}
-              checked
-              onToggle={() => toggle(agent.id)}
-            />
-          ))}
-        </div>
+        {agents.map((agent) => (
+          <SubAgentOptionRow
+            key={agent.id}
+            agent={agent}
+            checked={enabledSet.has(agent.id)}
+            onToggle={() => toggle(agent.id)}
+          />
+        ))}
       </div>
     </section>
   );
 }
 
-function SubAgentOptionRow({
+const SubAgentOptionRow = memo(function SubAgentOptionRow({
   agent,
   checked,
   onToggle,
@@ -132,8 +86,10 @@ function SubAgentOptionRow({
           {agent.name}
           {!agent.enabled && <span className="ai-aha-tool-name-disabled">(已禁用)</span>}
         </span>
-        <span className="ai-aha-tool-description">{agent.description || "暂无描述"}</span>
+        <span className="ai-aha-tool-description line-clamp-2">
+          {agent.description || "暂无描述"}
+        </span>
       </span>
     </label>
   );
-}
+});

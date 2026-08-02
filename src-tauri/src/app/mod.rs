@@ -55,8 +55,6 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
-            task_runtime::pty::start_dispatcher_subprocess,
-            task_runtime::pty::resume_dispatcher_subprocess,
             task_runtime::pty::stop_task,
             task_runtime::pty::send_input,
             task_runtime::pty::resize_pty,
@@ -187,18 +185,11 @@ pub fn run() {
             agent::commands::aha_resolve_ssh_workspace,
             agent::commands::dispatcher_fetch_models,
             agent::commands::dispatcher_test_model,
-            agent::commands::dispatcher_continue_after_dispatch,
             agent::commands::dispatcher_stop_run,
             agent::commands::dispatcher_start_voice_input,
             agent::commands::dispatcher_append_voice_audio,
             agent::commands::dispatcher_finish_voice_input,
             agent::commands::dispatcher_cancel_voice_input,
-            agent::commands::dispatcher_mark_subprocess_round_completed,
-            agent::commands::dispatcher_mark_subprocess_running,
-            agent::commands::dispatcher_mark_subprocess_stopped,
-            agent::commands::dispatcher_mark_subprocess_finished,
-            agent::commands::dispatcher_send_to_subprocess,
-            agent::commands::dispatcher_exit_subprocess,
             agent::sub_agent::commands::sub_agent_list,
             agent::sub_agent::commands::sub_agent_get,
             agent::sub_agent::commands::sub_agent_create,
@@ -209,6 +200,11 @@ pub fn run() {
             agent::sub_agent::commands::sub_agent_set_global_enabled,
             agent::sub_agent::commands::sub_agent_get_global_enabled,
             agent::sub_agent::commands::sub_agent_get_run_trace,
+            agent::graph::commands::graph_plan_get,
+            agent::graph::commands::graph_plan_latest_for_session,
+            agent::graph::commands::graph_plan_update,
+            agent::graph::commands::graph_run_start,
+            agent::graph::commands::graph_run_cancel,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

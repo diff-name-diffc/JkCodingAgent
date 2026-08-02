@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::agents::{DispatcherAgent, DispatcherSubprocessRegistry, PlainChatAgent};
+use super::agents::{OrchestratorAgent, PlainChatAgent};
 use super::config::DispatcherAgentConfig;
 use super::db::{AgentContext, DispatcherDb};
 use super::sub_agent::db::ToolInfo;
@@ -16,21 +16,22 @@ mod run;
 mod tool_catalog;
 
 use generation::GenerationGate;
-use run::{ActiveRunHandle, ActiveRunStore};
+use run::{ActiveRunHandle, ActiveRunStore, GraphRunRegistry};
 use tool_catalog::{tool_infos_from_registry, ToolCatalog};
 
 /// 应用级状态聚合器，由 Tauri `.manage()` 托管，是整个调度智能体的长寿宿主。
 ///
-/// 与短命的 `DispatcherAgent`（每轮 run 重建）相对，DispatcherState 持有跨轮次、
-/// 跨会话共享的资源：DB 连接池、子进程注册表、并发控制、工具目录缓存等。
+/// 与短命的 `OrchestratorAgent`（每轮 run 重建）相对，DispatcherState 持有跨轮次、
+/// 跨会话共享的资源：DB 连接池、并发控制、工具目录缓存等。
 ///
 /// 职责：
-/// - 初始化并持有所有共享服务（DB / MCP / SSH / 子进程注册表 / 子智能体管理器）。
+/// - 初始化并持有所有共享服务（DB / MCP / SSH / 子智能体管理器）。
 /// - `build_run_agent` / `build_plain_chat_agent`：每轮按需构建短命 Agent 并实时应用 DB 设置。
 /// - 运行状态管理（同一 workspace 禁止重入）与异步生成的"最新代胜出"机制。
 pub struct DispatcherState {
     services: AgentServices,
     active_runs: ActiveRunStore,
+    graph_runs: GraphRunRegistry,
     title_generations: GenerationGate,
     keywords_generations: GenerationGate,
     tools: ToolCatalog,
@@ -41,7 +42,6 @@ struct AgentServices {
     config: DispatcherAgentConfig,
     project_mcp_registry: ProjectMcpRegistry,
     ssh_manager: SshSessionManager,
-    subprocesses: Arc<DispatcherSubprocessRegistry>,
     db: DispatcherDb,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
 }
@@ -53,7 +53,6 @@ impl DispatcherState {
     ) -> Result<Self> {
         let config = DispatcherAgentConfig::load()?;
         let db = DispatcherDb::new(config.db_path.clone())?;
-        let subprocesses = Arc::new(DispatcherSubprocessRegistry::default());
         let sub_agent_manager = Arc::new(SubAgentManager::new(db.pool()));
         if let Err(e) = sub_agent_manager.load_all() {
             eprintln!("failed to load sub_agent configs: {}", e);
@@ -68,11 +67,11 @@ impl DispatcherState {
                 config,
                 project_mcp_registry,
                 ssh_manager,
-                subprocesses,
                 db,
                 sub_agent_manager: Some(sub_agent_manager),
             },
             active_runs: ActiveRunStore::default(),
+            graph_runs: GraphRunRegistry::default(),
             title_generations: GenerationGate::default(),
             keywords_generations: GenerationGate::default(),
             tools: ToolCatalog::new(initial_tool_names),
@@ -87,23 +86,28 @@ impl DispatcherState {
         self.services.sub_agent_manager.clone()
     }
 
+    pub(crate) fn agent_config(&self) -> DispatcherAgentConfig {
+        self.services.config.clone()
+    }
+
+    pub(crate) fn project_mcp_registry(&self) -> ProjectMcpRegistry {
+        self.services.project_mcp_registry.clone()
+    }
+
+    pub(crate) fn ssh_manager(&self) -> SshSessionManager {
+        self.services.ssh_manager.clone()
+    }
+
     pub fn registered_tool_names(&self) -> Option<Vec<(String, String)>> {
         self.tools.registered_tool_names()
     }
 
-    pub fn set_registered_tools(&self, tools: Vec<(String, String)>) {
-        self.tools.set_registered_tools(tools);
-    }
-
-    /// 每轮构建一个新的 DispatcherAgent（短命对象）并从 DB 实时应用设置。
+    /// 每轮构建一个新的 OrchestratorAgent（短命对象）并从 DB 实时应用设置。
     /// 这是"每轮现建现用"模式的核心——保证设置变更在下一轮立即生效，
     /// 而当前轮次内部保持一致。
-    pub(crate) fn build_run_agent(&self) -> DispatcherAgent {
-        let mut agent = DispatcherAgent::new(
+    pub(crate) fn build_run_agent(&self) -> OrchestratorAgent {
+        let mut agent = OrchestratorAgent::new(
             self.services.config.clone(),
-            self.services.project_mcp_registry.clone(),
-            self.services.ssh_manager.clone(),
-            Arc::clone(&self.services.subprocesses),
             self.services.sub_agent_manager.clone(),
         );
 
@@ -113,12 +117,7 @@ impl DispatcherState {
             .get_settings_v2()
             .expect("load dispatcher settings v2");
         agent.apply_settings_v2(&settings, AgentContext::Project);
-        agent.set_auto_approve_dispatch(settings.auto_approve_dispatch);
         agent.set_context_debug(settings.context_debug);
-
-        if self.registered_tool_names().is_none() {
-            self.set_registered_tools(agent.tools_arc().tool_names_and_descriptions());
-        }
 
         agent
     }
@@ -241,6 +240,21 @@ impl DispatcherState {
         self.active_runs.stop(workspace_id)
     }
 
+    pub(crate) fn begin_graph_run(
+        &self,
+        plan_id: &str,
+    ) -> std::result::Result<tokio::sync::watch::Receiver<bool>, String> {
+        self.graph_runs.begin(plan_id)
+    }
+
+    pub(crate) fn finish_graph_run(&self, plan_id: &str) {
+        self.graph_runs.finish(plan_id);
+    }
+
+    pub(crate) fn cancel_graph_run(&self, plan_id: &str) -> bool {
+        self.graph_runs.cancel(plan_id)
+    }
+
     pub(crate) fn begin_title_generation(&self, workspace_id: &str) -> u64 {
         self.title_generations.begin(workspace_id)
     }
@@ -265,43 +279,6 @@ impl DispatcherState {
     ) -> bool {
         self.keywords_generations
             .finish_latest(workspace_id, generation)
-    }
-
-    pub(crate) fn register_subprocess(
-        &self,
-        workspace_id: &str,
-        task_id: &str,
-        dispatch_id: &str,
-        agent: &str,
-        description: &str,
-    ) -> Arc<std::sync::atomic::AtomicBool> {
-        self.services
-            .subprocesses
-            .register(workspace_id, task_id, dispatch_id, agent, description)
-    }
-
-    pub(crate) fn mark_subprocess_round_completed(&self, task_id: &str) {
-        self.services.subprocesses.mark_round_completed(task_id);
-    }
-
-    pub(crate) fn mark_subprocess_running(&self, task_id: &str) {
-        self.services.subprocesses.mark_running(task_id);
-    }
-
-    pub(crate) fn mark_subprocess_stopped(&self, task_id: &str) {
-        self.services.subprocesses.mark_stopped(task_id);
-    }
-
-    pub(crate) fn mark_subprocess_finished(&self, task_id: &str) {
-        self.services.subprocesses.mark_finished(task_id);
-    }
-
-    pub(crate) fn mark_subprocess_exit_requested(&self, task_id: &str) {
-        self.services.subprocesses.mark_exit_requested(task_id);
-    }
-
-    pub(crate) fn force_subprocess_idle(&self, task_id: &str) {
-        self.services.subprocesses.force_idle(task_id);
     }
 }
 

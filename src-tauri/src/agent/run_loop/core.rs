@@ -13,7 +13,6 @@ use super::super::prompt::PromptBundle;
 use super::super::tools::ToolContext;
 use super::agent_loop::AgentLoop;
 use super::types::{AgentEvent, AgentTurn};
-use crate::agent::agents::project::subprocess::ProtocolToolAction;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeAgentKind {
@@ -56,10 +55,20 @@ pub(crate) struct RunLoopIteration {
     pub request_provider: OpenAiCompatProvider,
 }
 
+/// 循环内由 Agent 拦截处理的协议级动作。
+///
+/// 对应工具只回显文本；真正的动作（校验、落库、广播）由 Agent 在
+/// `execute_loop_tool_calls` 中按工具名拦截完成，`resolve_loop_outcome`
+/// 再据此收口本轮。
+pub(crate) enum LoopProtocolAction {
+    /// 编排器已产出执行图并登记为待确认计划，等待用户在图面板确认。
+    GraphSubmitted { title: String, node_count: usize },
+}
+
 pub(crate) struct RunLoopToolOutcome {
     pub saw_retryable_tool_error: bool,
     pub final_message: Option<String>,
-    pub protocol_actions: Vec<ProtocolToolAction>,
+    pub protocol_actions: Vec<LoopProtocolAction>,
     pub llm_messages: Vec<ChatMessage>,
 }
 

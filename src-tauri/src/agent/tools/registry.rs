@@ -292,24 +292,6 @@ fn structured_action_from_args(name: &str, args: &Value) -> Option<ToolAction> {
                     content: content.to_string(),
                 })
         }
-        "dispatch_claude" => Some(ToolAction::DispatchSubAgent {
-            agent: "claude".to_string(),
-        }),
-        "dispatch_codex" => Some(ToolAction::DispatchSubAgent {
-            agent: "codex".to_string(),
-        }),
-        "continue_claude_session" => Some(ToolAction::ContinueSubAgent {
-            agent: "claude".to_string(),
-        }),
-        "continue_codex_session" => Some(ToolAction::ContinueSubAgent {
-            agent: "codex".to_string(),
-        }),
-        "exit_claude_session" => Some(ToolAction::ExitSubAgent {
-            agent: "claude".to_string(),
-        }),
-        "exit_codex_session" => Some(ToolAction::ExitSubAgent {
-            agent: "codex".to_string(),
-        }),
         _ => None,
     }
 }

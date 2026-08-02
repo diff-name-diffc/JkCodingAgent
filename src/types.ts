@@ -499,12 +499,6 @@ export interface PythonCodeRunTarget {
   codeHash: string;
 }
 
-export type DispatchFeedbackState =
-  | "round_completed"
-  | "process_done"
-  | "process_failed"
-  | "process_cancelled";
-
 /** Maps to the Rust `AgentEvent` enum (tagged union via serde) */
 export type DispatcherAgentEvent =
   | { event: "started"; data: { workspaceId: string } }
@@ -554,18 +548,6 @@ export type DispatcherAgentEvent =
       };
     }
   | { event: "toolRunUpdated"; data: { run: DispatcherToolRunRecord } }
-  | {
-      event: "dispatchProposed";
-      data: {
-        dispatchId: string;
-        agent: AgentType;
-        description: string;
-        taskPrompt: string;
-        permissionMode: string;
-      };
-    }
-  | { event: "dispatchContinue"; data: { dispatchId: string; agent: AgentType; text: string } }
-  | { event: "dispatchExit"; data: { dispatchId: string; agent: AgentType; reason: string } }
   | { event: "finished"; data: { messages: DispatcherMessage[] } }
   | { event: "failed"; data: { workspaceId: string; message: string } };
 
@@ -634,17 +616,6 @@ export interface SessionSearchResult {
   matchedKeywords: string[];
   relevanceScore: number;
   updatedAt: string;
-}
-
-export interface SubProcess {
-  id: string;
-  dispatchId: string;
-  sessionId: string;
-  agent: "claude" | "codex";
-  description: string;
-  status: "pending_approval" | "running" | "stopped" | "done" | "failed";
-  startedAt: number;
-  failureReason?: string;
 }
 
 export interface SubAgentModelConfig {
@@ -738,6 +709,185 @@ export interface SubAgentRunTrace {
   createdAt: string;
   updatedAt: string;
 }
+
+// ── Graph Orchestrator（图编排 Agent） ──────────────────────────────────────
+// 字段名严格对齐 src-tauri/src/agent/graph/types.rs（serde camelCase）。
+// 修改任一字段必须同步 Rust struct。
+
+export type GraphPlanStatus =
+  | "draft"
+  | "confirmed"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type GraphNodeStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "cancelled";
+
+/** 节点执行体：系统中配置的子智能体，或无头 claude / codex CLI。 */
+export type GraphNodeAgent =
+  | { kind: "subAgent"; agentId: string }
+  | { kind: "claude" }
+  | { kind: "codex" };
+
+export interface GraphStateKey {
+  key: string;
+  description: string;
+}
+
+/** GraphDefinition 中的节点定义（GraphNode）。 */
+export interface GraphNodeDef {
+  id: string;
+  title: string;
+  role: string;
+  agent: GraphNodeAgent;
+  task: string;
+  dependsOn: string[];
+  injectStateKeys: string[];
+  outputKey: string;
+}
+
+/** 项目 Agent 的核心产物：执行图 DAG 定义（definitionJson 解析后的结构）。 */
+export interface GraphDefinition {
+  title: string;
+  summary: string;
+  stateKeys: GraphStateKey[];
+  nodes: GraphNodeDef[];
+}
+
+export interface GraphNodeRunRecord {
+  planId: string;
+  nodeId: string;
+  agentKind: string;
+  agentId: string | null;
+  status: GraphNodeStatus;
+  inputText: string;
+  outputText: string;
+  errorText: string | null;
+  /** subAgent 节点轨迹关联键（`graphnode:{planId}:{nodeId}`）。 */
+  traceToolCallId: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  durationMs: number | null;
+  /** 节点影响文件（后端 git status 快照差分采集）。 */
+  affectedFiles: string[];
+}
+
+export interface GraphPlanRecord {
+  id: string;
+  workspaceId: string;
+  title: string;
+  summary: string;
+  /** 图定义原文（GraphDefinition 的 JSON 字符串）。 */
+  definitionJson: string;
+  status: GraphPlanStatus;
+  /** 共享 state 最新快照（JSON 对象：key → 节点输出文本）。 */
+  stateJson: string;
+  createdAt: number;
+  updatedAt: number;
+  nodeRuns: GraphNodeRunRecord[];
+}
+
+/** `graph-plan-updated` 全局事件载荷。 */
+export interface GraphPlanUpdatedPayload {
+  planId: string;
+  workspaceId: string;
+}
+
+// ── graph-run-event data 变体（#[serde(tag = "event", content = "data")]） ──
+
+export interface GraphRunStartedData {
+  title: string;
+  nodeCount: number;
+}
+
+export interface GraphNodeStartedData {
+  nodeId: string;
+  title: string;
+  agentKind: string;
+  agentId: string | null;
+  input: string;
+}
+
+export interface GraphNodeOutputDeltaData {
+  nodeId: string;
+  delta: string;
+}
+
+export interface GraphNodeFinishedData {
+  nodeId: string;
+  output: string;
+  durationMs: number;
+  /** 节点影响文件（后端 git status 快照差分采集）。 */
+  affectedFiles: string[];
+}
+
+export interface GraphNodeFailedData {
+  nodeId: string;
+  error: string;
+  durationMs: number;
+  /** 节点影响文件（后端 git status 快照差分采集；取消分支恒为空）。 */
+  affectedFiles: string[];
+}
+
+export interface GraphNodeSkippedData {
+  nodeId: string;
+  reason: string;
+}
+
+export interface GraphStateUpdatedData {
+  nodeId: string;
+  key: string;
+  value: string;
+  /** 全量共享 state 对象。 */
+  state: Record<string, unknown>;
+}
+
+export interface GraphRunFinishedData {
+  state: Record<string, unknown>;
+  failedNodes: string[];
+  skippedNodes: string[];
+}
+
+export interface GraphRunFailedData {
+  error: string;
+}
+
+export type GraphRunEventKind =
+  | "runStarted"
+  | "nodeStarted"
+  | "nodeOutputDelta"
+  | "nodeFinished"
+  | "nodeFailed"
+  | "nodeSkipped"
+  | "stateUpdated"
+  | "runFinished"
+  | "runFailed"
+  | "runCancelled";
+
+/** `graph-run-event` 全局事件载荷（判别联合，按 event 收窄 data）。 */
+export type GraphRunEventPayload = {
+  planId: string;
+  workspaceId: string;
+  timestampMs: number;
+} & (
+  | { event: "runStarted"; data: GraphRunStartedData }
+  | { event: "nodeStarted"; data: GraphNodeStartedData }
+  | { event: "nodeOutputDelta"; data: GraphNodeOutputDeltaData }
+  | { event: "nodeFinished"; data: GraphNodeFinishedData }
+  | { event: "nodeFailed"; data: GraphNodeFailedData }
+  | { event: "nodeSkipped"; data: GraphNodeSkippedData }
+  | { event: "stateUpdated"; data: GraphStateUpdatedData }
+  | { event: "runFinished"; data: GraphRunFinishedData }
+  | { event: "runFailed"; data: GraphRunFailedData }
+  | { event: "runCancelled"; data: Record<string, never> }
+);
 
 // ── RAG Knowledge Base ───────────────────────────────────────────────────────
 // 字段名严格对齐 src-tauri/src/rag/config.rs 的 #[serde(rename_all = "camelCase")]。

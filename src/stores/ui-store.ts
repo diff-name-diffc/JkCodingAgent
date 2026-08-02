@@ -13,12 +13,17 @@ import { persist } from "zustand/middleware";
  */
 export interface UIState {
   sidebarCollapsed: boolean;
+  /** 展开状态下的侧边栏宽度（px），可通过边框拖拽调整。 */
+  sidebarWidth: number;
   artifactPanelOpen: boolean;
   activeConversationId: string | null;
   commandPaletteOpen: boolean;
+  /** 当前打开的图编排面板对应的 planId（null = 关闭）。不持久化。 */
+  graphPanelPlanId: string | null;
 
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
+  setSidebarWidth: (width: number) => void;
 
   setArtifactPanelOpen: (open: boolean) => void;
   toggleArtifactPanel: () => void;
@@ -27,18 +32,23 @@ export interface UIState {
 
   setCommandPaletteOpen: (open: boolean) => void;
   toggleCommandPalette: () => void;
+
+  setGraphPanelPlanId: (planId: string | null) => void;
 }
 
 export const useUIStore = create<UIState>()(
   persist(
     (set) => ({
       sidebarCollapsed: false,
+      sidebarWidth: 264,
       artifactPanelOpen: false,
       activeConversationId: null,
       commandPaletteOpen: false,
+      graphPanelPlanId: null,
 
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+      setSidebarWidth: (width) => set({ sidebarWidth: width }),
 
       setArtifactPanelOpen: (open) => set({ artifactPanelOpen: open }),
       toggleArtifactPanel: () =>
@@ -49,11 +59,14 @@ export const useUIStore = create<UIState>()(
       setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
       toggleCommandPalette: () =>
         set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
+
+      setGraphPanelPlanId: (planId) => set({ graphPanelPlanId: planId }),
     }),
     {
       name: "jkcodingagent:ui",
       partialize: (s) => ({
         sidebarCollapsed: s.sidebarCollapsed,
+        sidebarWidth: s.sidebarWidth,
       }),
       // Clean up legacy theme keys left over from the removed theme switcher.
       onRehydrateStorage: () => () => {

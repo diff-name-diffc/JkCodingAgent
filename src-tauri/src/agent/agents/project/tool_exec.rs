@@ -8,46 +8,37 @@ use tokio::sync::watch;
 
 use crate::agent::common::{
     self, build_args_map, build_tool_calls_payload, cancellation_requested,
-    persist_tool_calls_message, with_usage_paused,
+    persist_tool_calls_message,
 };
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
-use crate::agent::llm::{ChatMessage, LlmResponse, OpenAiCompatProvider, RequestedToolCall};
-use crate::agent::run_loop::{core::RunLoopToolOutcome, AgentEvent};
-use crate::agent::sub_agent::tool::sub_agent_failure_message;
+use crate::agent::llm::{LlmResponse, OpenAiCompatProvider, RequestedToolCall};
+use crate::agent::run_loop::core::{LoopProtocolAction, RunLoopToolOutcome};
+use crate::agent::run_loop::AgentEvent;
 use crate::agent::tools::{
     ToolAction, ToolContext, ToolResult, ToolRunFinishUpdate, ToolRuntime, ToolStatus,
 };
 
+use super::graph_submit::SubmitGraphInterception;
 use super::helpers::{
     build_tool_retry_context, emit, extract_message_content, is_retryable_tool_error,
     record_run_token_usage,
 };
-use super::subprocess::{ProtocolBatchState, ProtocolToolAction};
-use super::DispatcherAgent;
-
-// ─── Internal types ───────────────────────────────────────────────────────────
-
-/// 单个工具调用经三级优先瀑布处理后的处置分类（见 process_single_tool_call）。
-pub(super) enum SingleToolDisposition {
-    Handled,
-    HandledWithRetry,
-    ProtocolAction(ProtocolToolAction),
-    NeedsSummary,
-}
+use super::OrchestratorAgent;
 
 pub(super) struct ExecutedToolCall {
     pub tool_call: RequestedToolCall,
     pub result: ToolResult,
     pub run_id: Option<String>,
+    pub graph_action: Option<LoopProtocolAction>,
 }
 
 // ─── Tool execution impl ──────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
-impl DispatcherAgent {
+impl OrchestratorAgent {
     /// 执行一批 tool_calls：先持久化 assistant 工具调用消息（协议正确性要求），
-    /// 再按模型顺序逐个执行——相邻只读工具合并为并行组，突变工具保持严格串行。
-    /// 每个结果经 process_single_tool_call 三级瀑布分类处理。
+    /// 再按模型顺序逐个执行——相邻只读工具合并为并行组，其余严格串行。
+    /// `submit_graph` 不在本地执行，而是拦截为「校验 → 落库 → 广播」的协议动作。
     pub(super) async fn execute_tool_calls(
         &self,
         db: &DispatcherDb,
@@ -93,17 +84,13 @@ impl DispatcherAgent {
             llm_messages.push(message);
         }
 
-        // ProtocolBatchState enforces batch-level rules such as one dispatch/continue/exit path per
-        // active agent. Without it, a single model response could propose conflicting subprocess
-        // state transitions.
-        let mut protocol_state =
-            ProtocolBatchState::new(self.active_subprocesses_for_workspace(workspace_id));
         let mut protocol_actions = Vec::new();
         let mut final_message: Option<String> = None;
         let mut saw_retryable_tool_error = false;
+        let mut graph_submitted_this_batch = false;
 
         // 按模型给出的顺序执行工具，但把相邻的只读工具合并为一个并行组。
-        // 突变工具（写文件、执行命令等）保持严格串行，确保文件/进程状态可预测。
+        // message / submit_graph 非只读，保持严格串行。
         let mut tool_call_index = 0usize;
         'outer: while tool_call_index < tool_calls.len() {
             if cancellation_requested(cancel_rx) {
@@ -132,6 +119,7 @@ impl DispatcherAgent {
                         tool_call,
                         result,
                         run_id,
+                        graph_action: None,
                     })
                     .collect::<Vec<_>>();
                 tool_call_index = readonly_end;
@@ -154,11 +142,32 @@ impl DispatcherAgent {
                 let run_id = self
                     .create_and_start_tool_run(db, workspace_id, workspace, on_event, &tool_call)
                     .await?;
-                let is_sub_agent_call = tool_call.name == "call_sub_agent";
-                // 子智能体调用有独立的 token 计量。暂停父级用量统计，
-                // 避免嵌套用量被重复计入主 run 的总量。
-                let result = if is_sub_agent_call {
-                    with_usage_paused(usage_tracker, workspace_id, on_event, || async {
+
+                // submit_graph 协议拦截：真正的动作（校验/落库/广播）在这里完成，
+                // 壳工具的 execute 只负责回显。
+                let (result, graph_action) = if tool_call.name == "submit_graph" {
+                    match self
+                        .intercept_submit_graph(
+                            db,
+                            workspace_id,
+                            &tool_call,
+                            graph_submitted_this_batch,
+                        )
+                        .await?
+                    {
+                        SubmitGraphInterception::Submitted {
+                            display_text,
+                            action,
+                        } => {
+                            graph_submitted_this_batch = true;
+                            (ToolResult::success_text(display_text), Some(action))
+                        }
+                        SubmitGraphInterception::Rejected { error } => {
+                            (ToolResult::recoverable_error(error), None)
+                        }
+                    }
+                } else {
+                    (
                         ToolRuntime::execute_tool(
                             &self.tools,
                             workspace,
@@ -166,23 +175,15 @@ impl DispatcherAgent {
                             &tool_call,
                             tool_context,
                         )
-                        .await
-                    })
-                    .await
-                } else {
-                    ToolRuntime::execute_tool(
-                        &self.tools,
-                        workspace,
-                        allowed_tool_names,
-                        &tool_call,
-                        tool_context,
+                        .await,
+                        None,
                     )
-                    .await
                 };
                 vec![ExecutedToolCall {
                     tool_call,
                     result,
                     run_id: Some(run_id),
+                    graph_action,
                 }]
             };
 
@@ -196,177 +197,123 @@ impl DispatcherAgent {
                 let result_text = result.output_for_llm();
                 let result_metadata_json = result.run_metadata_json();
 
-                // 子智能体失败会升级为父循环的致命错误。若继续执行，主 Agent 会基于
-                // 一个不完整的委派任务结果进行推理，这是不可接受的。
-                if let Some(message) = sub_agent_failure_message(&result_text) {
-                    if let Some(run_id) = &run_id {
-                        self.finish_tool_run(
-                            db,
-                            on_event,
-                            run_id,
-                            "fatal_error",
-                            None,
-                            None,
-                            Some("sub_agent_failure"),
-                            Some(message),
-                            None,
-                            result_metadata_json.as_deref(),
-                        )
-                        .await?;
-                    }
-                    anyhow::bail!("{}", message);
-                }
-
-                match self
-                    .process_single_tool_call(
-                        db,
-                        workspace_id,
-                        on_event,
-                        &tool_call,
-                        &mut protocol_state,
-                        &mut llm_messages,
-                    )
-                    .await?
-                {
-                    SingleToolDisposition::Handled => {
-                        if let Some(run_id) = &run_id {
-                            self.finish_tool_run(
-                                db,
-                                on_event,
-                                run_id,
-                                "succeeded",
-                                Some("raw"),
-                                None,
-                                None,
-                                None,
-                                None,
-                                result_metadata_json.as_deref(),
-                            )
-                            .await?;
-                        }
-                    }
-                    SingleToolDisposition::HandledWithRetry => {
-                        if let Some(run_id) = &run_id {
-                            self.finish_tool_run(
-                                db,
-                                on_event,
-                                run_id,
-                                "recoverable_error",
-                                Some("raw"),
-                                None,
-                                Some("retryable_tool_error"),
-                                Some(&result_text),
-                                None,
-                                result_metadata_json.as_deref(),
-                            )
-                            .await?;
-                        }
-                        saw_retryable_tool_error = true;
-                    }
-                    SingleToolDisposition::ProtocolAction(action) => {
-                        if let Some(run_id) = &run_id {
-                            self.finish_tool_run(
-                                db,
-                                on_event,
-                                run_id,
-                                "succeeded",
-                                Some("raw"),
-                                None,
-                                None,
-                                None,
-                                Some(protocol_action_kind(&action)),
-                                result_metadata_json.as_deref(),
-                            )
-                            .await?;
-                        }
-                        protocol_actions.push(action);
-                    }
-                    SingleToolDisposition::NeedsSummary => {
-                        // 普通工具可能返回超大或带产物的 payload。喂回模型前先压缩，
-                        // 但原始结果仍可通过 DB/UI 查到。
-                        if matches!(result.status, ToolStatus::RecoverableError)
-                            || is_retryable_tool_error(&tool_call.name, &result_text)
-                        {
-                            let retry_message = self
-                                .emit_tool_retry_feedback(
-                                    db,
-                                    workspace_id,
-                                    on_event,
-                                    &tool_call,
-                                    &result_text,
-                                )
-                                .await?;
-                            if let Some(run_id) = &run_id {
-                                self.finish_tool_run(
-                                    db,
-                                    on_event,
-                                    run_id,
-                                    "recoverable_error",
-                                    retry_message.tool_result_mode.as_deref(),
-                                    Some(&retry_message.id),
-                                    Some("retryable_tool_error"),
-                                    Some(&result_text),
-                                    None,
-                                    result_metadata_json.as_deref(),
-                                )
-                                .await?;
-                            }
-                            saw_retryable_tool_error = true;
-                            if let Some(message) = retry_message.to_llm_message() {
-                                llm_messages.push(message);
-                            }
-                            continue;
-                        }
-
-                        let summary_model = self.summary_model();
-                        let summary_provider = self.summary_provider(request_provider);
-                        let tool_message = common::persist_tool_result_with_compression(
+                // submit_graph 成功：按协议动作处理——持久化工具消息保证下一轮
+                // LLM 请求的因果链完整，动作本身交给 resolve_loop_outcome 收口。
+                if let Some(action) = executed.graph_action {
+                    let tool_message = self
+                        .emit_tool_result_message(
                             db,
                             workspace_id,
                             on_event,
                             &tool_call,
                             &result_text,
-                            &summary_provider,
-                            &summary_model,
-                            |usage| {
-                                record_run_token_usage(
-                                    db,
-                                    workspace_id,
-                                    &summary_model,
-                                    DispatcherSessionTokenUsageSource::Summary,
-                                    usage,
-                                    usage_tracker,
-                                    on_event,
-                                );
-                            },
                         )
                         .await?;
-                        if let Some(run_id) = &run_id {
-                            self.finish_tool_run(
-                                db,
-                                on_event,
-                                run_id,
-                                result.status.as_run_status(),
-                                tool_message.tool_result_mode.as_deref(),
-                                Some(&tool_message.id),
-                                result.status.error_kind(),
-                                result.status.error_kind().map(|_| result_text.as_str()),
-                                result.action.as_ref().map(ToolAction::kind),
-                                result_metadata_json.as_deref(),
-                            )
-                            .await?;
-                        }
-
-                        if let Some(message) = tool_message.to_llm_message() {
-                            llm_messages.push(message);
-                        }
-
-                        if let Some(ToolAction::FinalMessage { content }) = &result.action {
-                            final_message = Some(content.clone());
-                        } else if tool_call.name == "message" {
-                            final_message = extract_message_content(&tool_call.arguments);
-                        }
+                    if let Some(message) = tool_message.to_llm_message() {
+                        llm_messages.push(message);
                     }
+                    if let Some(run_id) = &run_id {
+                        self.finish_tool_run(
+                            db,
+                            on_event,
+                            run_id,
+                            "succeeded",
+                            Some("raw"),
+                            Some(&tool_message.id),
+                            None,
+                            None,
+                            Some("submit_graph"),
+                            result_metadata_json.as_deref(),
+                        )
+                        .await?;
+                    }
+                    protocol_actions.push(action);
+                    continue;
+                }
+
+                if matches!(result.status, ToolStatus::RecoverableError)
+                    || is_retryable_tool_error(&tool_call.name, &result_text)
+                {
+                    let retry_message = self
+                        .emit_tool_retry_feedback(
+                            db,
+                            workspace_id,
+                            on_event,
+                            &tool_call,
+                            &result_text,
+                        )
+                        .await?;
+                    if let Some(run_id) = &run_id {
+                        self.finish_tool_run(
+                            db,
+                            on_event,
+                            run_id,
+                            "recoverable_error",
+                            retry_message.tool_result_mode.as_deref(),
+                            Some(&retry_message.id),
+                            Some("retryable_tool_error"),
+                            Some(&result_text),
+                            None,
+                            result_metadata_json.as_deref(),
+                        )
+                        .await?;
+                    }
+                    saw_retryable_tool_error = true;
+                    if let Some(message) = retry_message.to_llm_message() {
+                        llm_messages.push(message);
+                    }
+                    continue;
+                }
+
+                // 普通工具可能返回超大 payload。喂回模型前先压缩，
+                // 但原始结果仍可通过 DB/UI 查到。
+                let summary_model = self.summary_model();
+                let summary_provider = self.summary_provider(request_provider);
+                let tool_message = common::persist_tool_result_with_compression(
+                    db,
+                    workspace_id,
+                    on_event,
+                    &tool_call,
+                    &result_text,
+                    &summary_provider,
+                    &summary_model,
+                    |usage| {
+                        record_run_token_usage(
+                            db,
+                            workspace_id,
+                            &summary_model,
+                            DispatcherSessionTokenUsageSource::Summary,
+                            usage,
+                            usage_tracker,
+                            on_event,
+                        );
+                    },
+                )
+                .await?;
+                if let Some(run_id) = &run_id {
+                    self.finish_tool_run(
+                        db,
+                        on_event,
+                        run_id,
+                        result.status.as_run_status(),
+                        tool_message.tool_result_mode.as_deref(),
+                        Some(&tool_message.id),
+                        result.status.error_kind(),
+                        result.status.error_kind().map(|_| result_text.as_str()),
+                        result.action.as_ref().map(ToolAction::kind),
+                        result_metadata_json.as_deref(),
+                    )
+                    .await?;
+                }
+
+                if let Some(message) = tool_message.to_llm_message() {
+                    llm_messages.push(message);
+                }
+
+                if let Some(ToolAction::FinalMessage { content }) = &result.action {
+                    final_message = Some(content.clone());
+                } else if tool_call.name == "message" {
+                    final_message = extract_message_content(&tool_call.arguments);
                 }
             }
         }
@@ -377,140 +324,6 @@ impl DispatcherAgent {
             protocol_actions,
             llm_messages,
         })
-    }
-
-    /// 两级优先瀑布分类单个工具调用：
-    ///   优先级 1 — 协议动作（dispatch / continue / exit 子进程），不在本地执行，
-    ///               只发出 UI/子进程命令并通常以等待消息结束本轮。
-    ///   优先级 2 — 普通工具，由调用方负责持久化/压缩并决定是否需要下一轮迭代。
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn process_single_tool_call(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        on_event: &Channel<AgentEvent>,
-        tool_call: &RequestedToolCall,
-        protocol_state: &mut ProtocolBatchState,
-        llm_messages: &mut Vec<ChatMessage>,
-    ) -> Result<SingleToolDisposition> {
-        // Priority 1: protocol actions do not execute locally. They emit UI/subprocess commands and
-        // then usually end this turn with a waiting message.
-        match self
-            .plan_protocol_action(db, workspace_id, tool_call, protocol_state)
-            .await
-        {
-            Ok(Some(action)) => {
-                if let ProtocolToolAction::Exit { agent, .. } = &action {
-                    self.mark_agent_exit_requested(workspace_id, agent.slug());
-                }
-                let message = self
-                    .emit_protocol_action(db, workspace_id, on_event, tool_call, &action)
-                    .await?;
-                if let Some(message) = message.to_llm_message() {
-                    llm_messages.push(message);
-                }
-                return Ok(SingleToolDisposition::ProtocolAction(action));
-            }
-            Ok(None) => {} // not a protocol action; treat it as a normal executable tool
-            Err(error) => {
-                let is_retryable = is_retryable_tool_error(&tool_call.name, &error);
-                let message = self
-                    .handle_tool_call_error(db, workspace_id, on_event, tool_call, &error)
-                    .await?;
-                if let Some(message) = message.to_llm_message() {
-                    llm_messages.push(message);
-                }
-                return Ok(if is_retryable {
-                    SingleToolDisposition::HandledWithRetry
-                } else {
-                    SingleToolDisposition::Handled
-                });
-            }
-        }
-
-        // Priority 2: not protocol. The caller will persist/compress the actual
-        // ToolResult and decide whether another LLM iteration is needed.
-        Ok(SingleToolDisposition::NeedsSummary)
-    }
-
-    pub(super) async fn handle_tool_call_error(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        on_event: &Channel<AgentEvent>,
-        tool_call: &RequestedToolCall,
-        error: &str,
-    ) -> Result<DispatcherMessageRecord> {
-        if is_retryable_tool_error(&tool_call.name, error) {
-            self.emit_tool_retry_feedback(db, workspace_id, on_event, tool_call, error)
-                .await
-        } else {
-            self.emit_tool_error(db, workspace_id, on_event, tool_call, error)
-                .await
-        }
-    }
-
-    /// 根据 execute_tool_calls 的结果决定本轮循环是否结束：
-    ///   - 出现可重试工具错误 ⇒ 不收口，让模型再修正一轮。
-    ///   - 有协议动作 ⇒ 输出"等待子任务"消息并收口（需子进程回流）。
-    ///   - 有 final_message ⇒ 输出最终答复并收口。
-    ///   - 以上都不是 ⇒ 返回 None，循环继续。
-    pub(super) async fn resolve_loop_outcome(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        on_event: &Channel<AgentEvent>,
-        outcome: RunLoopToolOutcome,
-        usage_tracker: &crate::agent::common::UsageTracker,
-    ) -> Result<Option<DispatcherMessageRecord>> {
-        if outcome.saw_retryable_tool_error {
-            return Ok(None);
-        }
-
-        if !outcome.protocol_actions.is_empty() {
-            let waiting_content = super::protocol::build_protocol_waiting_message(
-                &outcome.protocol_actions,
-                self.auto_approve_dispatch(),
-                outcome.final_message.as_deref(),
-            );
-            let usage_stats = usage_tracker.snapshot();
-            let waiting_msg = db
-                .add_visible_message_with_usage_async(
-                    workspace_id,
-                    "assistant",
-                    &waiting_content,
-                    &usage_stats,
-                )
-                .await?;
-            emit(
-                on_event,
-                AgentEvent::AssistantMessage {
-                    message: waiting_msg.clone(),
-                },
-            );
-            return Ok(Some(waiting_msg));
-        }
-
-        if let Some(final_message) = outcome.final_message {
-            let usage_stats = usage_tracker.snapshot();
-            let reply = db
-                .add_visible_message_with_usage_async(
-                    workspace_id,
-                    "assistant",
-                    &final_message,
-                    &usage_stats,
-                )
-                .await?;
-            emit(
-                on_event,
-                AgentEvent::AssistantMessage {
-                    message: reply.clone(),
-                },
-            );
-            return Ok(Some(reply));
-        }
-
-        Ok(None)
     }
 
     pub(super) async fn execute_parallel_readonly_tools(
@@ -615,6 +428,39 @@ impl DispatcherAgent {
         .await
     }
 
+    /// 持久化工具结果消息（原始文本、raw 模式），并补发 ToolFinished 事件。
+    async fn emit_tool_result_message(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        tool_call: &RequestedToolCall,
+        display_text: &str,
+    ) -> Result<DispatcherMessageRecord> {
+        emit(
+            on_event,
+            AgentEvent::ToolFinished {
+                tool_call_id: Some(tool_call.id.clone()),
+                name: tool_call.name.clone(),
+                display_text: display_text.to_string(),
+                result_mode: "raw".to_string(),
+                detail_refs: Vec::new(),
+            },
+        );
+        let message = db
+            .add_visible_message_with_tools_async(
+                workspace_id,
+                "tool",
+                display_text,
+                Some(&tool_call.id),
+                Some(&tool_call.name),
+                Some("raw"),
+                None,
+            )
+            .await?;
+        Ok(message)
+    }
+
     pub(super) async fn emit_tool_retry_feedback(
         &self,
         db: &DispatcherDb,
@@ -647,45 +493,5 @@ impl DispatcherAgent {
             )
             .await?;
         Ok(message)
-    }
-
-    pub(super) async fn emit_tool_error(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        on_event: &Channel<AgentEvent>,
-        tool_call: &RequestedToolCall,
-        error: &str,
-    ) -> Result<DispatcherMessageRecord> {
-        emit(
-            on_event,
-            AgentEvent::ToolFinished {
-                tool_call_id: Some(tool_call.id.clone()),
-                name: tool_call.name.clone(),
-                display_text: error.to_string(),
-                result_mode: "raw".to_string(),
-                detail_refs: Vec::new(),
-            },
-        );
-        let message = db
-            .add_visible_message_with_tools_async(
-                workspace_id,
-                "tool",
-                error,
-                Some(&tool_call.id),
-                Some(&tool_call.name),
-                Some("raw"),
-                None,
-            )
-            .await?;
-        Ok(message)
-    }
-}
-
-fn protocol_action_kind(action: &ProtocolToolAction) -> &'static str {
-    match action {
-        ProtocolToolAction::Dispatch { .. } => "dispatch_sub_agent",
-        ProtocolToolAction::Continue { .. } => "continue_sub_agent",
-        ProtocolToolAction::Exit { .. } => "exit_sub_agent",
     }
 }

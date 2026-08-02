@@ -110,16 +110,11 @@ pub struct DispatcherAgentConfig {
     pub model: String,
     pub summary_model: String,
     pub vision_model: String,
-    pub image_model_url: String,
-    pub image_model_api_key: String,
-    pub image_model: String,
-    pub image_edit_model: String,
     pub max_tokens: u32,
     pub temperature: f32,
     pub max_tool_iterations: usize,
     pub exec_timeout_secs: u64,
     pub restrict_to_workspace: bool,
-    pub auto_approve_dispatch: bool,
     pub context_debug: bool,
 }
 
@@ -158,22 +153,11 @@ impl DispatcherAgentConfig {
             summary_model: std::env::var("SUMMARY_MODEL_NAME")
                 .unwrap_or_else(|_| DEFAULT_SUMMARY_MODEL.to_string()),
             vision_model: std::env::var("VISION_MODEL_NAME").unwrap_or_default(),
-            image_model_url: std::env::var("IMAGE_MODEL_URL")
-                .unwrap_or_else(|_| "https://dashscope.aliyuncs.com/api/v1".to_string()),
-            image_model_api_key: std::env::var("IMAGE_MODEL_API_KEY")
-                .or_else(|_| std::env::var("DASHSCOPE_API_KEY"))
-                .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                .unwrap_or_default(),
-            image_model: std::env::var("IMAGE_MODEL_NAME")
-                .unwrap_or_else(|_| "qwen-image-2.0-pro".to_string()),
-            image_edit_model: std::env::var("IMAGE_EDIT_MODEL_NAME")
-                .unwrap_or_else(|_| "qwen-image-2.0-pro".to_string()),
             max_tokens: 8192,
             temperature: 0.1,
             max_tool_iterations: 200,
             exec_timeout_secs: 60,
             restrict_to_workspace: true,
-            auto_approve_dispatch: false,
             context_debug: false,
         })
     }

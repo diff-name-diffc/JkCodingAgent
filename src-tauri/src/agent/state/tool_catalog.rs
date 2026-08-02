@@ -20,10 +20,6 @@ impl ToolCatalog {
     pub(super) fn registered_tool_names(&self) -> Option<Vec<(String, String)>> {
         self.registered.lock().clone()
     }
-
-    pub(super) fn set_registered_tools(&self, tools: Vec<(String, String)>) {
-        *self.registered.lock() = Some(tools);
-    }
 }
 
 pub(super) fn tool_infos_from_registry(

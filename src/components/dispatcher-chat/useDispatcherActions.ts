@@ -1,8 +1,6 @@
 import { useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
-  AgentType,
-  DispatchFeedbackState,
   DispatcherAgentEvent,
   DispatcherAgentTurn,
   ImageSegment,
@@ -28,15 +26,6 @@ import {
   createEmptyUsageStats,
 } from "./dispatcherChatUtils";
 
-export interface DispatcherChatHandle {
-  continueWithResult: (
-    result: string,
-    dispatchState: DispatchFeedbackState,
-    targetSessionId?: string,
-    dispatchId?: string,
-  ) => void;
-}
-
 export interface UseDispatcherActionsOptions {
   sessionId: string;
   projectPath: string;
@@ -45,26 +34,6 @@ export interface UseDispatcherActionsOptions {
   scrollMessageListToBottom: () => void;
   currentSessionIdRef: React.RefObject<string>;
   refreshSessionTokenUsage: (targetSessionId?: string) => Promise<void>;
-  autoApproveRef: React.RefObject<boolean>;
-  onDispatchApprovedRef: React.RefObject<
-    | ((
-        dispatchId: string,
-        agent: AgentType,
-        description: string,
-        taskPrompt: string,
-        permissionMode: string,
-        sessionId: string,
-      ) => void)
-    | undefined
-  >;
-  onDispatchContinueRef: React.RefObject<
-    | ((agent: AgentType, text: string, sessionId: string) => void)
-    | undefined
-  >;
-  onDispatchExitRef: React.RefObject<
-    | ((agent: AgentType, reason: string, sessionId: string) => void)
-    | undefined
-  >;
   shouldStickToBottomRef: React.RefObject<boolean>;
   setInput: (value: string) => void;
   setAttachedImages: React.Dispatch<React.SetStateAction<ImageSegment[]>>;
@@ -80,12 +49,6 @@ export interface UseDispatcherActionsResult {
     images?: ImageSegment[],
     targetSessionId?: string,
   ) => Promise<void>;
-  continueWithResult: (
-    result: string,
-    dispatchState: DispatchFeedbackState,
-    targetSessionId?: string,
-    dispatchId?: string,
-  ) => Promise<void>;
 }
 
 export function useDispatcherActions({
@@ -96,10 +59,6 @@ export function useDispatcherActions({
   scrollMessageListToBottom,
   currentSessionIdRef,
   refreshSessionTokenUsage,
-  autoApproveRef,
-  onDispatchApprovedRef,
-  onDispatchContinueRef,
-  onDispatchExitRef,
   shouldStickToBottomRef,
   setInput,
   setAttachedImages,
@@ -226,37 +185,6 @@ export function useDispatcherActions({
           case "toolRunUpdated":
             if (!isActiveRun || event.data.run.workspaceId !== targetSessionId) return;
             break;
-          case "dispatchProposed": {
-            const { dispatchId, agent, description, taskPrompt, permissionMode } = event.data;
-            if (isPlainChat) return;
-            if (autoApproveRef.current && onDispatchApprovedRef.current) {
-              onDispatchApprovedRef.current(
-                dispatchId,
-                agent,
-                description,
-                taskPrompt,
-                permissionMode,
-                targetSessionId,
-              );
-            } else if (isActiveRun) {
-              updateLiveSessionState(targetSessionId, (state) => ({
-                ...state,
-                pendingDispatches: [
-                  ...state.pendingDispatches,
-                  { dispatchId, agent, description, taskPrompt, permissionMode },
-                ],
-              }));
-            }
-            break;
-          }
-          case "dispatchContinue": {
-            onDispatchContinueRef.current?.(event.data.agent, event.data.text, targetSessionId);
-            break;
-          }
-          case "dispatchExit": {
-            onDispatchExitRef.current?.(event.data.agent, event.data.reason, targetSessionId);
-            break;
-          }
           case "finished":
             if (!isActiveRun) return;
             notifyDispatcherMessages(
@@ -280,11 +208,6 @@ export function useDispatcherActions({
       return onEvent;
     },
     [
-      autoApproveRef,
-      isPlainChat,
-      onDispatchApprovedRef,
-      onDispatchContinueRef,
-      onDispatchExitRef,
       refreshSessionTokenUsage,
       updateLiveSessionState,
     ],
@@ -350,10 +273,6 @@ export function useDispatcherActions({
 
       setInput("");
       setAttachedImages([]);
-      updateLiveSessionState(targetSessionId, (state) => ({
-        ...state,
-        pendingDispatches: [],
-      }));
       if (currentSessionIdRef.current === targetSessionId) {
         shouldStickToBottomRef.current = true;
         window.requestAnimationFrame(() => scrollMessageListToBottom());
@@ -411,44 +330,8 @@ export function useDispatcherActions({
     ],
   );
 
-  const continueWithResult = useCallback(
-    async (
-      result: string,
-      dispatchState: DispatchFeedbackState,
-      targetSessionId = sessionId,
-      dispatchId?: string,
-    ) => {
-      updateLiveSessionState(targetSessionId, (state) => ({
-        ...state,
-        pendingDispatches: [],
-      }));
-
-      try {
-        if (isPlainChat) return;
-        await enqueueDispatcherRun(targetSessionId, async (onEvent) => {
-          await invoke<DispatcherAgentTurn>("dispatcher_continue_after_dispatch", {
-            workspaceId: targetSessionId,
-            projectPath,
-            dispatchResult: result,
-            dispatchState,
-            dispatchId,
-            onEvent,
-          });
-        });
-      } catch (err) {
-        console.error("dispatcher_continue_after_dispatch 失败:", err);
-        updateLiveSessionState(targetSessionId, (state) => ({
-          ...state,
-          runError: `调度智能体继续执行失败：${toErrorMessage(err)}`,
-        }));
-      }
-    },
-    [enqueueDispatcherRun, isPlainChat, projectPath, sessionId, updateLiveSessionState],
-  );
-
   return {
     enqueueDispatcherRun,
     sendUserMessage,
-    continueWithResult,
   };
 }

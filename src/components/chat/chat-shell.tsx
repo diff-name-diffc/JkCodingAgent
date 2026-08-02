@@ -27,8 +27,6 @@ import { MessageList } from "./message-list";
 import { SessionKeywordBar } from "./session-keyword-bar";
 import { PromptInput, type ComposerMode } from "./prompt-input";
 import { ArtifactPanel } from "../artifact/artifact-panel";
-import { DispatchApprovalPanel } from "./dispatch-approval-panel";
-import type { PendingDispatchApproval } from "../dispatcherSessionStore";
 import { CommandPalette } from "./command-palette";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import {
@@ -98,8 +96,6 @@ export interface ChatShellProps {
   editingMessageId?: string | null;
   onCancelEdit?: () => void;
   composerDisabled?: boolean;
-  onApproveDispatch?: (dispatchId: string, taskPrompt: string) => void;
-  onRejectDispatch?: (dispatchId: string) => void;
 
   pythonRunRecords?: Record<string, PythonCodeRunRecord>;
   onRunPython?: (target: {
@@ -145,8 +141,6 @@ export function ChatShell({
   editingMessageId,
   onCancelEdit,
   composerDisabled = false,
-  onApproveDispatch,
-  onRejectDispatch,
   pythonRunRecords,
   onRunPython,
   embedded = false,
@@ -202,8 +196,6 @@ export function ChatShell({
   const selectedSubAgent = selectedSubAgentToolCallId
     ? (subAgentSessions[selectedSubAgentToolCallId] ?? null)
     : null;
-  const currentPendingDispatch: PendingDispatchApproval | null =
-    liveState?.pendingDispatches[0] ?? null;
 
   // 会话关键词展示在聊天界面顶部（替代旧版会话列表内的关键词行）。
   const activeSessionKeywords = React.useMemo(() => {
@@ -361,17 +353,6 @@ export function ChatShell({
         onOpenSubAgent={handleOpenSubAgent}
         onPickPrompt={(prompt) => onInputChange(prompt)}
       />
-      {currentPendingDispatch && onApproveDispatch && onRejectDispatch && (
-        <DispatchApprovalPanel
-          dispatchId={currentPendingDispatch.dispatchId}
-          agent={currentPendingDispatch.agent}
-          description={currentPendingDispatch.description}
-          taskPrompt={currentPendingDispatch.taskPrompt}
-          permissionMode={currentPendingDispatch.permissionMode}
-          onApprove={onApproveDispatch}
-          onReject={onRejectDispatch}
-        />
-      )}
       <CommandPalette
         open={commandPaletteOpen}
         sessions={sessions}

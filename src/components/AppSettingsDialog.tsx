@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Cpu,
   Database,
@@ -133,7 +134,9 @@ export function AppSettingsDialog({
   const activeItem = NAV_ITEMS.find((item) => item.key === activeNav)!;
   const ActiveIcon = activeItem.icon;
 
-  return (
+  // 挂到 body：项目页 `.ai-*-shell > *` 会给祖先创建层叠上下文，
+  // 内联渲染时弹窗会被主内容区遮挡；portal 后 z-index 在根层级生效。
+  return createPortal(
     <AhaSettingsProvider value={store}>
       <div className="ai-dialog-overlay ai-settings-overlay" onClick={handleOverlayClick}>
         <div className="ai-settings-shell ai-migrated-settings">
@@ -219,6 +222,7 @@ export function AppSettingsDialog({
           onCancel={() => setConfirmingClose(false)}
         />
       </div>
-    </AhaSettingsProvider>
+    </AhaSettingsProvider>,
+    document.body,
   );
 }

@@ -1,12 +1,10 @@
 import { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { open as openDialog, confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import type { Project, Task, TaskStatus, AgentType, PermissionMode } from "./types";
+import type { Project, Task } from "./types";
 import { isActiveTaskStatus } from "./types";
 import { WelcomePage } from "./components/WelcomePage";
 import { useToast } from "./components/Toast";
-import { useTerminalManager } from "./hooks/useTerminalManager";
 import { normalizeThemePreference, persistThemePreference } from "./lib/theme";
 import "./App.css";
 
@@ -46,8 +44,6 @@ function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [mountedProjectIds, setMountedProjectIds] = useState<string[]>([]);
 
-  const tm = useTerminalManager();
-
   // 主题的权威来源是后端 settings.json；main.tsx 的 initializeTheme() 只用
   // localStorage 缓存做首帧渲染，这里启动后立刻以后端值校准（缓存缺失或过期时
   // 会错误落回 system，导致设置了亮色却显示暗色）。
@@ -86,80 +82,6 @@ function App() {
     [showToast],
   );
 
-  const updateTaskStatus = useCallback(
-    (
-      taskId: string,
-      status: TaskStatus,
-      extra?: Pick<Task, "attentionRequestedAt">,
-      failureReason?: string,
-    ) => {
-      setTasks((prev) => {
-        let changed = false;
-        const next = prev.map((task) => {
-          if (task.id !== taskId) return task;
-
-          const attentionRequestedAt =
-            status === "input_required" ? (extra?.attentionRequestedAt ?? Date.now()) : undefined;
-
-          const nextFailureReason =
-            status === "failed" ? (failureReason ?? task.failureReason) : undefined;
-
-          if (
-            task.status === status &&
-            task.attentionRequestedAt === attentionRequestedAt &&
-            task.failureReason === nextFailureReason
-          ) {
-            return task;
-          }
-
-          changed = true;
-          const updated: Task = { ...task, status, attentionRequestedAt };
-          if (nextFailureReason) updated.failureReason = nextFailureReason;
-          if (!nextFailureReason) delete updated.failureReason;
-          return updated;
-        });
-
-        if (changed) {
-          const task = next.find((t) => t.id === taskId);
-          if (task) debouncedPersistProjectTasks(task.projectId, next);
-        }
-        return changed ? next : prev;
-      });
-    },
-    [debouncedPersistProjectTasks],
-  );
-
-  const updateTaskSession = useCallback(
-    (taskId: string, sessionId: string, sessionPath: string) => {
-      setTasks((prev) => {
-        let changed = false;
-        const next = prev.map((task) => {
-          if (task.id !== taskId) return task;
-          if (task.agent === "claude") {
-            if (task.claudeSessionId === sessionId && task.claudeSessionPath === sessionPath) {
-              return task;
-            }
-            changed = true;
-            return { ...task, claudeSessionId: sessionId, claudeSessionPath: sessionPath };
-          }
-
-          if (task.codexSessionId === sessionId && task.codexSessionPath === sessionPath) {
-            return task;
-          }
-          changed = true;
-          return { ...task, codexSessionId: sessionId, codexSessionPath: sessionPath };
-        });
-
-        if (changed) {
-          const task = next.find((t) => t.id === taskId);
-          if (task) debouncedPersistProjectTasks(task.projectId, next);
-        }
-        return changed ? next : prev;
-      });
-    },
-    [debouncedPersistProjectTasks],
-  );
-
   const mountProject = useCallback((projectId: string) => {
     setMountedProjectIds((prev) => (prev.includes(projectId) ? prev : [...prev, projectId]));
   }, []);
@@ -179,35 +101,6 @@ function App() {
 
     init().catch(console.error);
   }, []);
-
-  // Tauri event listeners (agent-output is handled inside useTerminalManager)
-  useEffect(() => {
-    const p1 = listen<{ task_id: string; status: TaskStatus; failure_reason?: string }>(
-      "task-status",
-      (e) => {
-        const { task_id, status, failure_reason } = e.payload;
-        if (status === "failed" && failure_reason) {
-          tm.writeErrorToTerminal(task_id, `\r\n错误：${failure_reason}\r\n`);
-          showToast(`Agent 执行失败：${failure_reason}`);
-        }
-        updateTaskStatus(task_id, status, undefined, failure_reason);
-        if (status === "done" || status === "failed" || status === "cancelled") {
-          tm.removeInactiveTaskBuffers([task_id]);
-        }
-      },
-    );
-    const p2 = listen<{ task_id: string; session_id: string; session_path: string }>(
-      "task-session",
-      (e) => {
-        const { task_id, session_id, session_path } = e.payload;
-        updateTaskSession(task_id, session_id, session_path);
-      },
-    );
-    return () => {
-      p1.then((fn) => fn()).catch(() => {});
-      p2.then((fn) => fn()).catch(() => {});
-    };
-  }, [tm, showToast, updateTaskSession, updateTaskStatus]);
 
   async function handleOpen() {
     const selected = await openDialog({ directory: true, multiple: false });
@@ -245,110 +138,6 @@ function App() {
     setActiveProject(null);
   }
 
-  function invokeStartDispatcherSubprocess(task: Task, projectPath: string) {
-    if (!task.dispatcherDispatchId || !task.dispatcherSessionId || !task.dispatcherDescription) {
-      throw new Error("调度子进程缺少 Dispatcher 元数据");
-    }
-
-    invoke("start_dispatcher_subprocess", {
-      taskId: task.id,
-      projectPath,
-      prompt: task.prompt,
-      agent: task.agent,
-      permissionMode: task.permissionMode,
-      cols: tm.terminalSizeRef.current.cols,
-      rows: tm.terminalSizeRef.current.rows,
-      dispatcherDispatchId: task.dispatcherDispatchId,
-      dispatcherSessionId: task.dispatcherSessionId,
-      dispatcherDescription: task.dispatcherDescription,
-    }).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      tm.writeErrorToTerminal(task.id, `\r\n错误：${msg}\r\n`);
-      updateTaskStatus(task.id, "failed", undefined, msg);
-    });
-  }
-
-  function invokeResumeDispatcherSubprocess(task: Task, projectPath: string) {
-    const sessionId = task.agent === "claude" ? task.claudeSessionId : task.codexSessionId;
-    if (!sessionId) {
-      showToast("当前任务尚未记录可恢复的会话 ID，暂时无法继续。", "warning");
-      return Promise.resolve();
-    }
-
-    if (!task.dispatcherDispatchId) {
-      showToast("当前任务不是调度子进程，不能从这里继续。", "warning");
-      return Promise.resolve();
-    }
-
-    if (!task.dispatcherSessionId || !task.dispatcherDescription) {
-      showToast("当前调度子进程缺少 Dispatcher 元数据，暂时无法继续。", "warning");
-      return Promise.resolve();
-    }
-
-    return invoke("resume_dispatcher_subprocess", {
-      taskId: task.id,
-      projectPath,
-      agent: task.agent,
-      sessionId,
-      prompt: task.prompt,
-      permissionMode: task.permissionMode,
-      cols: tm.terminalSizeRef.current.cols,
-      rows: tm.terminalSizeRef.current.rows,
-      dispatcherDispatchId: task.dispatcherDispatchId,
-      dispatcherSessionId: task.dispatcherSessionId,
-      dispatcherDescription: task.dispatcherDescription,
-    }).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      tm.writeErrorToTerminal(task.id, `\r\n错误：${msg}\r\n`);
-      updateTaskStatus(task.id, "stopped");
-      showToast(`继续任务失败：${msg}`);
-    });
-  }
-
-  function handleStartDispatcherSubprocess(
-    project: Project,
-    {
-      prompt,
-      agent,
-      permissionMode,
-      dispatcherDispatchId,
-      dispatcherSessionId,
-      dispatcherDescription,
-    }: {
-      prompt: string;
-      agent: AgentType;
-      permissionMode: PermissionMode;
-      dispatcherDispatchId: string;
-      dispatcherSessionId: string;
-      dispatcherDescription: string;
-    },
-  ): string {
-    const task: Task = {
-      id: crypto.randomUUID(),
-      projectId: project.id,
-      prompt,
-      agent,
-      permissionMode,
-      status: "pending",
-      createdAt: Date.now(),
-      dispatcherDispatchId,
-      dispatcherSessionId,
-      dispatcherDescription,
-    };
-    setTasks((prev) => {
-      const next = [task, ...prev];
-      debouncedPersistProjectTasks(task.projectId, next);
-      return next;
-    });
-
-    // Ensure the project is mounted so the task's terminal can be initialized in the background.
-    mountProject(project.id);
-
-    tm.resetTaskTerminal(task.id);
-    invokeStartDispatcherSubprocess(task, project.path);
-    return task.id;
-  }
-
   async function deleteTasks(taskIds: string[]) {
     if (taskIds.length === 0) return;
 
@@ -375,8 +164,6 @@ function App() {
       affectedProjectIds.forEach((pid) => debouncedPersistProjectTasks(pid, next));
       return next;
     });
-
-    tm.removeTaskBuffers(taskIds);
   }
 
   async function handleDeleteProject(projectId: string) {
@@ -447,35 +234,6 @@ function App() {
                 visible={activeProject?.id === project.id}
                 allProjects={railProjects}
                 tasks={tasks}
-                getTaskRestoreState={tm.getTaskRestoreState}
-                onStartSubProcess={(taskInput) =>
-                  handleStartDispatcherSubprocess(project, taskInput)
-                }
-                onStopTask={(taskId) =>
-                  invoke("stop_task", { taskId })
-                    .catch((e: unknown) => {
-                      showToast(`停止任务失败：${String(e)}`);
-                    })
-                    .then(() => undefined)
-                }
-                onResumeTask={(task) => {
-                  const sessionId =
-                    task.agent === "claude" ? task.claudeSessionId : task.codexSessionId;
-                  if (!sessionId) {
-                    showToast("当前任务尚未记录可恢复的会话 ID，暂时无法继续。", "warning");
-                    return Promise.resolve();
-                  }
-                  updateTaskStatus(task.id, "pending");
-                  return invokeResumeDispatcherSubprocess(task, project.path).then(() => undefined);
-                }}
-                onInput={tm.handleInput}
-                onResize={tm.handleResize}
-                onRegisterTerminal={tm.handleRegisterTerminal}
-                onTerminalReady={tm.handleTerminalReady}
-                onSnapshot={tm.handleSnapshot}
-                onRetainTaskBuffers={tm.retainTaskBuffers}
-                onReleaseTaskBuffers={tm.releaseTaskBuffers}
-                onRemoveTaskBuffers={tm.removeTaskBuffers}
                 onBack={handleBack}
                 onSwitchProject={handleProjectClick}
                 onOpen={handleOpen}

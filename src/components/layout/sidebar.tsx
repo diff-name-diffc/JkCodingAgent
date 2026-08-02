@@ -96,15 +96,15 @@ function categoryKey(category: string | null | undefined) {
   return category || UNCATEGORIZED_CATEGORY;
 }
 
-function loadExpandedCategories(): Set<string> {
+function loadExpandedCategories(): Set<string> | null {
   try {
     const raw = localStorage.getItem(EXPANDED_STORAGE_KEY);
-    if (!raw) return new Set();
+    if (!raw) return null;
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return new Set();
+    if (!Array.isArray(parsed)) return null;
     return new Set(parsed.filter((item): item is string => typeof item === "string"));
   } catch {
-    return new Set();
+    return null;
   }
 }
 
@@ -145,8 +145,9 @@ export function Sidebar({
 }: SidebarProps) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
-  const [expandedCategories, setExpandedCategories] = React.useState<Set<string>>(() =>
-    loadExpandedCategories(),
+  const persistedExpandedCategoriesRef = React.useRef(loadExpandedCategories());
+  const [expandedCategories, setExpandedCategories] = React.useState<Set<string>>(
+    () => persistedExpandedCategoriesRef.current ?? new Set(),
   );
   const [categoryDialog, setCategoryDialog] = React.useState<
     { mode: "create"; category: null } | { mode: "rename"; category: ChatCategory } | null
@@ -199,21 +200,26 @@ export function Sidebar({
   );
 
   React.useEffect(() => {
-    if (searchActive || groupedCategories.length === 0) return;
+    if (
+      persistedExpandedCategoriesRef.current !== null ||
+      searchActive ||
+      groupedCategories.length === 0
+    ) {
+      return;
+    }
+
+    // 仅在首次使用、没有持久化偏好时展开当前（或首个）分类。
+    // 后续的会话刷新不能覆盖用户手动折叠的选择。
+    persistedExpandedCategoriesRef.current = new Set();
     setExpandedCategories((current) => {
-      const next = new Set(current);
-      let changed = false;
       const activeGroup = groupedCategories.find((group) =>
         group.sessions.some((session) => session.id === activeSessionId),
       );
-      const fallbackGroup = groupedCategories[0];
-      const targetId = activeGroup?.id ?? (next.size === 0 ? fallbackGroup?.id : null);
-      if (targetId && !next.has(targetId)) {
-        next.add(targetId);
-        changed = true;
-      }
-      if (changed) saveExpandedCategories(next);
-      return changed ? next : current;
+      const targetId = activeGroup?.id ?? groupedCategories[0]?.id;
+      if (!targetId || current.has(targetId)) return current;
+      const next = new Set(current).add(targetId);
+      saveExpandedCategories(next);
+      return next;
     });
   }, [activeSessionId, groupedCategories, searchActive]);
 
@@ -608,7 +614,7 @@ function CategoryGroup({
   const Icon = resolveCategoryIcon(icon);
   const header = (
     <div
-      className="ai-category-header group flex w-full items-center gap-1 rounded-md px-1.5 py-1"
+      className="ai-category-header w-full items-center gap-1 rounded-md px-1.5 py-1"
       data-expanded={expanded || undefined}
       style={{ "--category-color": color } as React.CSSProperties}
     >
@@ -625,8 +631,8 @@ function CategoryGroup({
         )}
         <Icon className="h-3.5 w-3.5 shrink-0" style={{ color }} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        <span className="ai-category-count">{displayedTotal}</span>
       </button>
+      <span className="ai-category-count">{displayedTotal}</span>
       {onNewSession && (
         <Tooltip>
           <TooltipTrigger asChild>

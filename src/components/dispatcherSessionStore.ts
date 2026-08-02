@@ -8,14 +8,6 @@ import type {
 } from "./dispatcherChatView";
 import type { ToolActivityItem } from "./dispatcher-chat/tool-activity";
 
-export interface PendingDispatchApproval {
-  dispatchId: string;
-  agent: "claude" | "codex";
-  description: string;
-  taskPrompt: string;
-  permissionMode: string;
-}
-
 export interface DispatcherLiveSessionState {
   hasPendingRun: boolean;
   isLoading: boolean;
@@ -24,7 +16,6 @@ export interface DispatcherLiveSessionState {
   liveToolCalls: ToolActivityItem[];
   assistantPlaceholder: string | null;
   runError: string | null;
-  pendingDispatches: PendingDispatchApproval[];
   activeUsageStats: DispatcherMessageUsageStats | null;
   activeUsageStatsReceivedAt: number;
   usageClockNow: number;
@@ -40,7 +31,6 @@ export function createIdleLiveSessionState(): DispatcherLiveSessionState {
     liveToolCalls: [],
     assistantPlaceholder: null,
     runError: null,
-    pendingDispatches: [],
     activeUsageStats: null,
     activeUsageStatsReceivedAt: now,
     usageClockNow: now,

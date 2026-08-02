@@ -4,6 +4,7 @@ pub(crate) mod common;
 pub(crate) mod config;
 pub(crate) mod db;
 pub(crate) mod debug;
+pub(crate) mod graph;
 pub(crate) mod llm;
 mod prompt;
 mod run_loop;

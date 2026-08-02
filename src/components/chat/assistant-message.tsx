@@ -2,6 +2,7 @@ import * as React from "react";
 import { motion } from "framer-motion";
 import type { DispatcherMessageUsageStats, DispatcherToolArtifactRef } from "../../types";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcherChatView";
+import { toolSummaryDisplayText } from "../dispatcherChatView";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { cn } from "../../lib/cn";
 import { ChatAvatar } from "./chat-avatar";
@@ -66,7 +67,7 @@ export function AssistantMessage({
   const handleCopy = () => {
     const text = visibleSegments
       .filter((s) => !s.superseded)
-      .map((s) => s.text)
+      .map((s) => segmentDisplayText(s))
       .join("\n\n");
     if (onCopy) onCopy(text);
     else void navigator.clipboard.writeText(text);
@@ -112,7 +113,7 @@ export function AssistantMessage({
             ) : (
               <MarkdownRenderer
                 key={index}
-                content={segment.text}
+                content={segmentDisplayText(segment)}
                 messageId={segment.messageId ?? messageId}
                 onRunPython={onRunPython}
                 pythonRunRecords={pythonRunRecords}
@@ -129,6 +130,11 @@ export function AssistantMessage({
       </div>
     </motion.div>
   );
+}
+
+/** tool-summary 段剥离双区块协议标签，仅展示 DISPLAY_SUMMARY 内容。 */
+function segmentDisplayText(segment: AssistantTurnSegment): string {
+  return segment.kind === "tool-summary" ? toolSummaryDisplayText(segment.text) : segment.text;
 }
 
 function SupersededBlock({ text }: { text: string }) {

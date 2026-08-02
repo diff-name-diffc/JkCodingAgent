@@ -9,4 +9,4 @@ pub(crate) mod core;
 pub(crate) mod types;
 
 pub(crate) use core::{run_agent_turn, AgentRunRequest, RuntimeAgentKind};
-pub use types::{AgentEvent, AgentTurn, DispatchFeedbackState};
+pub use types::{AgentEvent, AgentTurn};

@@ -1,9 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde_json::Value;
-use tokio::time::{sleep, Duration};
 
-use super::agents::DispatcherContinueAfterDispatchRequest;
 use super::config::DispatcherAgentConfig;
 use super::db::content::{segments_to_plain_text, try_parse_segments_json, ContentSegment};
 use super::db::{
@@ -16,9 +14,7 @@ use super::db::{
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
 use super::llm::{ChatMessageContentPart, ChatMessageImageSource};
-use super::run_loop::{
-    run_agent_turn, AgentEvent, AgentRunRequest, AgentTurn, DispatchFeedbackState, RuntimeAgentKind,
-};
+use super::run_loop::{run_agent_turn, AgentEvent, AgentRunRequest, AgentTurn, RuntimeAgentKind};
 use super::state::DispatcherState;
 use super::sub_agent::db::ToolInfo;
 use super::summary::{
@@ -27,15 +23,10 @@ use super::summary::{
 };
 use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::browser::BrowserManager;
-use crate::shared::TaskManager;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager};
 
 const SESSION_TITLE_RECENT_DIALOGUES: usize = 3;
-
-fn has_live_subprocess(task_manager: &TaskManager, task_id: &str) -> bool {
-    task_manager.child_handles.lock().contains_key(task_id)
-}
 
 fn resolve_voice_asr_config(state: &DispatcherState) -> Result<VoiceAsrConfig, String> {
     let saved = state
@@ -108,47 +99,6 @@ fn resolve_voice_asr_config(state: &DispatcherState) -> Result<VoiceAsrConfig, S
             )
         }),
     })
-}
-
-fn is_codex_subprocess(task_manager: &TaskManager, task_id: &str) -> bool {
-    task_manager.codex_sessions.lock().contains_key(task_id)
-}
-
-fn write_to_subprocess(
-    task_manager: &TaskManager,
-    task_id: &str,
-    data: &[u8],
-) -> Result<(), String> {
-    if !task_manager.pty_writers.lock().contains_key(task_id) {
-        return Err(format!("No active PTY writer found for task {}", task_id));
-    }
-    task_manager.write_to_pty(task_id, data, true)
-}
-
-async fn submit_subprocess_line(
-    task_manager: &TaskManager,
-    task_id: &str,
-    text: &str,
-    with_lf_fallback: bool,
-) -> Result<(), String> {
-    let line = text.trim_end_matches(['\r', '\n']);
-    if !line.is_empty() {
-        write_to_subprocess(task_manager, task_id, line.as_bytes())?;
-    }
-
-    sleep(Duration::from_millis(120)).await;
-    if has_live_subprocess(task_manager, task_id) {
-        write_to_subprocess(task_manager, task_id, b"\r")?;
-    }
-
-    if with_lf_fallback {
-        sleep(Duration::from_millis(120)).await;
-        if has_live_subprocess(task_manager, task_id) {
-            let _ = write_to_subprocess(task_manager, task_id, b"\n");
-        }
-    }
-
-    Ok(())
 }
 
 fn spawn_session_title_update(
@@ -1271,37 +1221,6 @@ pub async fn aha_resolve_ssh_workspace(
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub async fn dispatcher_continue_after_dispatch(
-    state: tauri::State<'_, DispatcherState>,
-    app: AppHandle,
-    workspace_id: String,
-    project_path: String,
-    dispatch_result: String,
-    dispatch_state: String,
-    dispatch_id: Option<String>,
-    on_event: tauri::ipc::Channel<AgentEvent>,
-) -> Result<AgentTurn, String> {
-    let run_handle = state.begin_run(&workspace_id)?;
-    let agent = state.build_run_agent().with_app_handle(app);
-    let result = agent
-        .continue_after_dispatch(DispatcherContinueAfterDispatchRequest {
-            db: state.db(),
-            workspace_id: &workspace_id,
-            workspace_path: &project_path,
-            dispatch_result: &dispatch_result,
-            dispatch_state: DispatchFeedbackState::from_wire(&dispatch_state),
-            dispatch_id: dispatch_id.as_deref(),
-            on_event,
-            cancel_rx: run_handle.cancel_rx,
-        })
-        .await
-        .map_err(|error| error.to_string());
-    state.finish_run(&workspace_id);
-    result
-}
-
-#[tauri::command]
 pub async fn dispatcher_stop_run(
     state: tauri::State<'_, DispatcherState>,
     browser_manager: tauri::State<'_, BrowserManager>,
@@ -1346,73 +1265,4 @@ pub fn dispatcher_cancel_voice_input(
     workspace_id: String,
 ) {
     voice_state.cancel_session(&workspace_id);
-}
-
-#[tauri::command]
-pub async fn dispatcher_mark_subprocess_round_completed(
-    state: tauri::State<'_, DispatcherState>,
-    task_id: String,
-) -> Result<(), String> {
-    state.mark_subprocess_round_completed(&task_id);
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn dispatcher_mark_subprocess_running(
-    state: tauri::State<'_, DispatcherState>,
-    task_id: String,
-) -> Result<(), String> {
-    state.mark_subprocess_running(&task_id);
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn dispatcher_mark_subprocess_stopped(
-    state: tauri::State<'_, DispatcherState>,
-    task_id: String,
-) -> Result<(), String> {
-    state.mark_subprocess_stopped(&task_id);
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn dispatcher_mark_subprocess_finished(
-    state: tauri::State<'_, DispatcherState>,
-    task_id: String,
-) -> Result<(), String> {
-    state.mark_subprocess_finished(&task_id);
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn dispatcher_send_to_subprocess(
-    task_manager: tauri::State<'_, TaskManager>,
-    task_id: String,
-    text: String,
-) -> Result<(), String> {
-    let is_codex = is_codex_subprocess(&task_manager, &task_id);
-    submit_subprocess_line(&task_manager, &task_id, &text, is_codex).await
-}
-
-#[tauri::command]
-pub async fn dispatcher_exit_subprocess(
-    task_manager: tauri::State<'_, TaskManager>,
-    state: tauri::State<'_, DispatcherState>,
-    task_id: String,
-) -> Result<(), String> {
-    task_manager
-        .set_task_termination_intent(&task_id, crate::shared::TaskTerminationIntent::Stopped);
-    task_manager.write_to_pty(&task_id, b"\x03", true)?;
-
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-    if has_live_subprocess(&task_manager, &task_id) {
-        task_manager
-            .set_task_termination_intent(&task_id, crate::shared::TaskTerminationIntent::Stopped);
-        let _ = task_manager.kill_child(&task_id);
-    }
-
-    state.mark_subprocess_exit_requested(&task_id);
-
-    Ok(())
 }

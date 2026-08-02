@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::AppHandle;
 use tauri::Emitter;
+use tokio::sync::watch;
 use tokio::time::timeout;
 
 use super::config::SubAgentConfig;
@@ -141,7 +142,7 @@ pub struct SubAgentEventPayload {
 
 /// 子智能体独立执行运行时。
 ///
-/// 与主 DispatcherAgent 的区别：无子进程调度、无计划/checklist、无协议动作，
+/// 与主编排 Agent 的区别：无图编排、无计划/checklist、无协议动作，
 /// 是一个纯粹的"LLM ↔ 工具"循环。支持工具错误重试（一次重试后强制收口）和
 /// 超时控制。结果会截断到 SUB_AGENT_RESULT_MAX_CHARS 后返回给父循环。
 pub struct SubAgentRuntime {
@@ -268,6 +269,19 @@ impl SubAgentRuntime {
         app_handle: Option<AppHandle>,
         session_id: &str,
     ) -> Result<String> {
+        self.execute_with_cancellation(task, app_handle, session_id, None)
+            .await
+    }
+
+    /// 带取消信号的变体：图运行器在迭代边界检查取消标志，
+    /// 命中后子智能体在当前迭代结束后退出（不强行打断进行中的单次请求/工具）。
+    pub async fn execute_with_cancellation(
+        &self,
+        task: &str,
+        app_handle: Option<AppHandle>,
+        session_id: &str,
+        cancel_rx: Option<watch::Receiver<bool>>,
+    ) -> Result<String> {
         let start = Instant::now();
         let overall_timeout = Duration::from_secs(self.config.timeout_secs);
         let llm_request_timeout = Duration::from_secs(SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS);
@@ -310,6 +324,15 @@ impl SubAgentRuntime {
                     "子智能体 '{}' 执行超时（{}秒）",
                     self.config.agent_id, self.config.timeout_secs
                 );
+                self.emit_failed(&app_handle, session_id, &err_msg);
+                anyhow::bail!("{}", err_msg);
+            }
+
+            if cancel_rx
+                .as_ref()
+                .is_some_and(|rx| *rx.borrow())
+            {
+                let err_msg = format!("子智能体 '{}' 执行已取消", self.config.agent_id);
                 self.emit_failed(&app_handle, session_id, &err_msg);
                 anyhow::bail!("{}", err_msg);
             }

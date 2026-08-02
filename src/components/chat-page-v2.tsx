@@ -1,8 +1,8 @@
 import {
-  forwardRef,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
-  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -11,16 +11,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type {
-  AgentType,
-  AhaSettingsV2,
   AnyContentSegment,
   DispatcherMessage,
+  GraphPlanRecord,
+  GraphPlanUpdatedPayload,
   ImageSegment,
   PythonCodeRunRecord,
   PythonCodeRunTarget,
   PythonRunEvent,
   ProjectMcpStatus,
-  SubProcess,
 } from "../types";
 import {
   useChatCategoriesQuery,
@@ -44,10 +43,16 @@ import {
 import { cleanupDispatcherSession, subscribeDispatcherMessages } from "./dispatcherSessionStore";
 import { ChatShell } from "./chat/chat-shell";
 import type { ComposerMode } from "./chat/prompt-input";
-import type { DispatcherChatHandle } from "./dispatcher-chat/useDispatcherActions";
 import { PythonRunDrawer } from "./dispatcher-chat/PythonRunDrawer";
+import { hydrateGraphPlan } from "./graph/graph-store";
+import { useUIStore } from "../stores/ui-store";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
+
+// 执行图面板（含 @xyflow/react + dagre）按需加载，避免膨胀聊天主 chunk。
+const GraphPanel = lazy(() =>
+  import("./graph/GraphPanel").then((module) => ({ default: module.GraphPanel })),
+);
 
 /**
  * ChatPageV2 — the integration adapter between the new ChatShell UI and the
@@ -74,48 +79,24 @@ export interface ChatPageV2Props {
   projectPath?: string;
   mcpStatus?: ProjectMcpStatus | null;
   mcpChecking?: boolean;
-  subProcesses?: SubProcess[];
   onOpenSettings: () => void;
-  onDispatchApproved?: (
-    dispatchId: string,
-    agent: AgentType,
-    description: string,
-    taskPrompt: string,
-    permissionMode: string,
-    sessionId: string,
-  ) => void;
-  onDispatchRejected?: (dispatchId: string) => void;
-  onDispatchContinue?: (agent: AgentType, text: string, sessionId: string) => void;
-  onDispatchExit?: (agent: AgentType, reason: string, sessionId: string) => void;
-  onStopActiveRun?: (sessionId: string) => Promise<void>;
-  onResumeStoppedRun?: (sessionId: string) => Promise<void>;
   onOpenMcpStatus?: () => void;
   onClosePanel?: () => void;
   embedded?: boolean;
 }
 
-export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(function ChatPageV2(
-  {
-    sessionId,
-    onSessionChange,
-    conversationKind = "chat",
-    projectPath = "",
-    mcpStatus = null,
-    mcpChecking = false,
-    subProcesses = [],
-    onOpenSettings,
-    onDispatchApproved,
-    onDispatchRejected,
-    onDispatchContinue,
-    onDispatchExit,
-    onStopActiveRun,
-    onResumeStoppedRun,
-    onOpenMcpStatus,
-    onClosePanel,
-    embedded = false,
-  },
-  ref,
-) {
+export function ChatPageV2({
+  sessionId,
+  onSessionChange,
+  conversationKind = "chat",
+  projectPath = "",
+  mcpStatus = null,
+  mcpChecking = false,
+  onOpenSettings,
+  onOpenMcpStatus,
+  onClosePanel,
+  embedded = false,
+}: ChatPageV2Props) {
   const [uncontrolledSessionId, setUncontrolledSessionId] = useState<string | null>(null);
   const activeSessionId = sessionId !== undefined ? sessionId : uncontrolledSessionId;
   const setActiveSessionId = useCallback(
@@ -134,7 +115,6 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
   const [messages, setMessages] = useState<DispatcherMessage[]>([]);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [autoApprove, setAutoApprove] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [pythonDrawerOpen, setPythonDrawerOpen] = useState(false);
   const [pythonRunTarget, setPythonRunTarget] = useState<PythonCodeRunTarget | null>(null);
@@ -165,14 +145,6 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
   const currentSessionIdRef = useRef<string | null>(activeSessionId);
   currentSessionIdRef.current = activeSessionId;
   const shouldStickToBottomRef = useRef(true);
-  const autoApproveRef = useRef(autoApprove);
-  autoApproveRef.current = autoApprove;
-  const onDispatchApprovedRef = useRef(onDispatchApproved);
-  onDispatchApprovedRef.current = onDispatchApproved;
-  const onDispatchContinueRef = useRef(onDispatchContinue);
-  onDispatchContinueRef.current = onDispatchContinue;
-  const onDispatchExitRef = useRef(onDispatchExit);
-  onDispatchExitRef.current = onDispatchExit;
 
   const scrollMessageListToBottom = useCallback(() => {
     // The new MessageList owns its own scroll via useAutoScroll; the existing
@@ -193,28 +165,10 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
     scrollMessageListToBottom,
     currentSessionIdRef: currentSessionIdRef as React.RefObject<string>,
     refreshSessionTokenUsage,
-    autoApproveRef,
-    onDispatchApprovedRef,
-    onDispatchContinueRef,
-    onDispatchExitRef,
     shouldStickToBottomRef,
     setInput,
     setAttachedImages,
   });
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      continueWithResult: actions.continueWithResult,
-    }),
-    [actions.continueWithResult],
-  );
-
-  useEffect(() => {
-    invoke<AhaSettingsV2>("aha_get_settings_v2")
-      .then((settings) => setAutoApprove(settings.autoApproveDispatch))
-      .catch(console.error);
-  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search), 260);
@@ -310,22 +264,9 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
     };
   }, [activeSessionId]);
 
-  // ── Composer mode (send / stop / resume) ────────────────────────────────
-  const sessionSubProcesses = useMemo(
-    () =>
-      activeSessionId
-        ? subProcesses.filter((subProcess) => subProcess.sessionId === activeSessionId)
-        : [],
-    [activeSessionId, subProcesses],
-  );
-  const hasRunningSubProcess =
-    !isPlainChat && sessionSubProcesses.some((subProcess) => subProcess.status === "running");
-  const hasStoppedSubProcess =
-    !isPlainChat && sessionSubProcesses.some((subProcess) => subProcess.status === "stopped");
-  const isRunning = Boolean(
-    liveState.hasPendingRun || liveState.isLoading || hasRunningSubProcess || isStopping,
-  );
-  const composerMode: ComposerMode = isRunning ? "stop" : hasStoppedSubProcess ? "resume" : "send";
+  // ── Composer mode (send / stop) ─────────────────────────────────────────
+  const isRunning = Boolean(liveState.hasPendingRun || liveState.isLoading || isStopping);
+  const composerMode: ComposerMode = isRunning ? "stop" : "send";
 
   // 聊天模式下，若还没有活跃会话，发送时懒创建一个。
   // 重构后 Sidebar/ChatPageV2 不再像旧 ChatSessionSidebar 那样在初始化时
@@ -458,21 +399,13 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
     if (!activeSessionId || isStopping) return;
     setIsStopping(true);
     try {
-      await Promise.all([
-        invoke("dispatcher_stop_run", { workspaceId: activeSessionId }).catch(console.error),
-        onStopActiveRun?.(activeSessionId) ?? Promise.resolve(),
-      ]);
+      await invoke("dispatcher_stop_run", { workspaceId: activeSessionId });
     } catch (err) {
       console.error("停止生成失败:", err);
     } finally {
       setIsStopping(false);
     }
-  }, [activeSessionId, isStopping, onStopActiveRun]);
-
-  const handleResume = useCallback(async () => {
-    if (!activeSessionId) return;
-    await onResumeStoppedRun?.(activeSessionId);
-  }, [activeSessionId, onResumeStoppedRun]);
+  }, [activeSessionId, isStopping]);
 
   // AI 回复下方的「重新生成」：绑定到该回复对应的用户消息，先截断再原样重发。
   const handleRegenerateFromMessage = useCallback(
@@ -621,21 +554,6 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
     setMessages([]);
   }, [activeSessionId]);
 
-  const handleToggleAutoApprove = useCallback(async () => {
-    const next = !autoApprove;
-    setAutoApprove(next);
-    try {
-      const settings = await invoke<AhaSettingsV2>("aha_get_settings_v2");
-      const saved = await invoke<AhaSettingsV2>("aha_save_settings_v2", {
-        settings: { ...settings, autoApproveDispatch: next },
-      });
-      setAutoApprove(saved.autoApproveDispatch);
-    } catch (error) {
-      setAutoApprove(!next);
-      console.error("更新 Aha 自动批准设置失败:", error);
-    }
-  }, [autoApprove]);
-
   const handleCreateCategory = useCallback(
     (name: string, config?: { systemPrompt?: string; allowedTools?: string[] }) => {
       if (!isPlainChat || embedded) return;
@@ -675,44 +593,53 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
     [activeSessionId, embedded, isPlainChat, onSessionChange, setSessionCategory],
   );
 
-  const handleApproveDispatch = useCallback(
-    (dispatchId: string, taskPrompt: string) => {
-      if (!activeSessionId) return;
-      const currentPendingDispatch = liveState.pendingDispatches.find(
-        (dispatch) => dispatch.dispatchId === dispatchId,
-      );
-      if (!currentPendingDispatch) return;
-      updateLiveSessionState(activeSessionId, (state) => ({
-        ...state,
-        pendingDispatches: state.pendingDispatches.filter(
-          (dispatch) => dispatch.dispatchId !== dispatchId,
-        ),
-      }));
-      onDispatchApproved?.(
-        dispatchId,
-        currentPendingDispatch.agent,
-        currentPendingDispatch.description,
-        taskPrompt,
-        currentPendingDispatch.permissionMode,
-        activeSessionId,
-      );
-    },
-    [activeSessionId, liveState.pendingDispatches, onDispatchApproved, updateLiveSessionState],
-  );
+  // ── 图编排面板 ──────────────────────────────────────────────────────────
+  const graphPanelPlanId = useUIStore((state) => state.graphPanelPlanId);
+  const setGraphPanelPlanId = useUIStore((state) => state.setGraphPanelPlanId);
+  const [latestGraphPlanId, setLatestGraphPlanId] = useState<string | null>(null);
 
-  const handleRejectDispatch = useCallback(
-    (dispatchId: string) => {
-      if (!activeSessionId) return;
-      updateLiveSessionState(activeSessionId, (state) => ({
-        ...state,
-        pendingDispatches: state.pendingDispatches.filter(
-          (dispatch) => dispatch.dispatchId !== dispatchId,
-        ),
-      }));
-      onDispatchRejected?.(dispatchId);
-    },
-    [activeSessionId, onDispatchRejected, updateLiveSessionState],
-  );
+  // 项目模式头部「执行图」入口：会话切换时查最近一次计划；
+  // submit_graph 成功与计划状态流转时的 graph-plan-updated 广播同步刷新入口。
+  useEffect(() => {
+    if (isPlainChat || !activeSessionId) {
+      setLatestGraphPlanId(null);
+      return;
+    }
+    let cancelled = false;
+    invoke<GraphPlanRecord | null>("graph_plan_latest_for_session", {
+      workspaceId: activeSessionId,
+    })
+      .then((plan) => {
+        if (!cancelled) setLatestGraphPlanId(plan?.id ?? null);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setLatestGraphPlanId(null);
+          console.error("查询最近图计划失败:", err);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, isPlainChat]);
+
+  useEffect(() => {
+    if (isPlainChat) return;
+    const unlisten = listen<GraphPlanUpdatedPayload>("graph-plan-updated", (event) => {
+      if (event.payload.workspaceId === currentSessionIdRef.current) {
+        setLatestGraphPlanId(event.payload.planId);
+      }
+    });
+    return () => {
+      unlisten.then((fn) => fn()).catch(() => {});
+    };
+  }, [isPlainChat]);
+
+  const handleOpenGraphPanel = useCallback(() => {
+    if (!latestGraphPlanId) return;
+    void hydrateGraphPlan(latestGraphPlanId);
+    setGraphPanelPlanId(latestGraphPlanId);
+  }, [latestGraphPlanId, setGraphPanelPlanId]);
 
   const handleRunPython = useCallback(
     async (target: PythonCodeRunTarget) => {
@@ -772,10 +699,10 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
     <ProjectChatHeader
       isLoading={liveState.isLoading || liveState.hasPendingRun}
       hasMessages={messages.length > 0}
-      autoApprove={autoApprove}
       mcpStatus={mcpStatus}
       mcpChecking={mcpChecking}
-      onToggleAutoApprove={handleToggleAutoApprove}
+      graphAvailable={latestGraphPlanId !== null}
+      onOpenGraphPanel={handleOpenGraphPanel}
       onOpenMcpStatus={onOpenMcpStatus}
       onClearMessages={handleClearMessages}
       onOpenSettings={onOpenSettings}
@@ -845,7 +772,6 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
           composerMode={composerMode}
           onSend={handleSend}
           onStop={handleStop}
-          onResume={handleResume}
           attachments={attachedImages}
           onAttachImages={handleAttachImages}
           onRemoveAttachment={handleRemoveAttachment}
@@ -854,8 +780,6 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
           editingMessageId={editingMessageId}
           onCancelEdit={handleCancelEdit}
           composerDisabled={isSubmittingEdit}
-          onApproveDispatch={handleApproveDispatch}
-          onRejectDispatch={handleRejectDispatch}
           pythonRunRecords={pythonRunRecords}
           onRunPython={handleRunPython}
           embedded={embedded}
@@ -873,9 +797,14 @@ export const ChatPageV2 = forwardRef<DispatcherChatHandle, ChatPageV2Props>(func
           onClear={handleClearPythonRun}
         />
       )}
+      {graphPanelPlanId && (
+        <Suspense fallback={null}>
+          <GraphPanel planId={graphPanelPlanId} onClose={() => setGraphPanelPlanId(null)} />
+        </Suspense>
+      )}
     </div>
   );
-});
+}
 
 function getUserMessagePayload(message: DispatcherMessage): {
   text: string;
@@ -947,10 +876,10 @@ function PlainChatHeader({
 function ProjectChatHeader({
   isLoading,
   hasMessages,
-  autoApprove,
   mcpStatus,
   mcpChecking,
-  onToggleAutoApprove,
+  graphAvailable,
+  onOpenGraphPanel,
   onOpenMcpStatus,
   onClearMessages,
   onOpenSettings,
@@ -958,10 +887,10 @@ function ProjectChatHeader({
 }: {
   isLoading: boolean;
   hasMessages: boolean;
-  autoApprove: boolean;
   mcpStatus: ProjectMcpStatus | null;
   mcpChecking: boolean;
-  onToggleAutoApprove: () => void;
+  graphAvailable: boolean;
+  onOpenGraphPanel: () => void;
   onOpenMcpStatus?: () => void;
   onClearMessages: () => void;
   onOpenSettings: () => void;
@@ -976,11 +905,13 @@ function ProjectChatHeader({
         {isLoading && <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />}
       </div>
       <Button
-        variant={autoApprove ? "secondary" : "outline"}
+        variant="outline"
         size="sm"
-        onClick={onToggleAutoApprove}
+        onClick={onOpenGraphPanel}
+        disabled={!graphAvailable}
+        title={graphAvailable ? "查看最近的执行图" : "当前会话还没有执行图"}
       >
-        免确认 {autoApprove ? "开" : "关"}
+        执行图
       </Button>
       <Button variant="outline" size="sm" onClick={onOpenMcpStatus}>
         <span className="h-2 w-2 rounded-full" style={{ background: mcpIndicator.color }} />

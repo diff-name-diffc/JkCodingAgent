@@ -7,6 +7,8 @@ import { cn } from "../../lib/cn";
 import { highlightCodeToHtml } from "../../utils/shiki";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { GraphPlanCard } from "../graph/GraphPlanCard";
+import { parseGraphPlanId } from "../graph/graph-utils";
 
 const MAX_COLLAPSED_OUTPUT_LINES = 20;
 
@@ -38,6 +40,11 @@ export function ToolCallCard({
 }: ToolCallCardProps) {
   const [expanded, setExpanded] = React.useState(defaultExpanded);
   const meta = STATUS_META[item.status];
+  // submit_graph 收口工具：从输出文本解析 plan_id，卡片下方内联图计划卡。
+  const graphPlanId =
+    item.name === "submit_graph" && typeof item.output === "string"
+      ? parseGraphPlanId(item.output)
+      : null;
 
   return (
     <div
@@ -73,6 +80,8 @@ export function ToolCallCard({
           )}
         />
       </button>
+
+      {graphPlanId && <GraphPlanCard planId={graphPlanId} />}
 
       <AnimatePresence initial={false}>
         {expanded && (

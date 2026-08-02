@@ -504,6 +504,47 @@ function pushAssistantSegment(segments: AssistantTurnSegment[], incoming: Assist
   segments.splice(0, segments.length, ...next);
 }
 
+/**
+ * 压缩工具结果的展示文本净化。
+ *
+ * 摘要模型按协议输出 `<DISPLAY_SUMMARY>`（前端展示）与 `<CONTEXT_PAYLOAD>`
+ * （模型上下文）双区块；早期后端解析兜底会把带标签的原始输出整体持久化，
+ * 导致协议标签与模型专用内容直接渲染进聊天界面。前端只应展示
+ * DISPLAY_SUMMARY 区块；无协议标签的普通文本原样返回。
+ */
+export function toolSummaryDisplayText(text: string): string {
+  if (!text.includes("<DISPLAY_SUMMARY>") && !text.includes("<CONTEXT_PAYLOAD>")) {
+    return text;
+  }
+
+  const display = extractTaggedBlock(text, "DISPLAY_SUMMARY", "CONTEXT_PAYLOAD");
+  if (display) return display;
+
+  const context = extractTaggedBlock(text, "CONTEXT_PAYLOAD", "DISPLAY_SUMMARY");
+  if (context) return context;
+
+  return stripDualSummaryTags(text);
+}
+
+function extractTaggedBlock(text: string, tag: string, otherTag: string): string | null {
+  const start = text.indexOf(`<${tag}>`);
+  if (start < 0) return null;
+  const rest = text.slice(start + tag.length + 2);
+  const endCandidates = [`</${tag}>`, `<${otherTag}>`]
+    .map((marker) => rest.indexOf(marker))
+    .filter((index) => index >= 0);
+  const end = endCandidates.length > 0 ? Math.min(...endCandidates) : rest.length;
+  const block = rest.slice(0, end).trim();
+  return block || null;
+}
+
+function stripDualSummaryTags(text: string): string {
+  return text
+    .replace(/<\/?DISPLAY_SUMMARY>/g, "")
+    .replace(/<\/?CONTEXT_PAYLOAD>/g, "")
+    .trim();
+}
+
 function shouldRenderToolSummaryInline(
   mode: DispatcherToolResultMode | undefined,
 ): mode is Exclude<DispatcherToolResultMode, "raw" | "pending_summary" | "truncated"> {

@@ -422,16 +422,6 @@ fn detect_versions_for_settings(settings: &AppSettings) -> AgentVersions {
     }
 }
 
-/// 将版本字符串解析为 (major, minor, patch) 三元组。
-fn parse_semver(v: &str) -> (u32, u32, u32) {
-    let parts: Vec<&str> = v.split('.').collect();
-    (
-        parts.first().and_then(|s| s.parse().ok()).unwrap_or(0),
-        parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
-        parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0),
-    )
-}
-
 /// 检测 Claude Code 版本（进程级缓存）。
 pub fn detect_claude_version() -> Option<String> {
     let cache = CACHED_CLAUDE_VERSION.get_or_init(|| Mutex::new(None));
@@ -456,20 +446,6 @@ pub fn detect_codex_version() -> Option<String> {
     let detected = detect_version(&get_agent_bin("codex"));
     *guard = Some(detected.clone());
     detected
-}
-
-/// 判断 Claude Code 版本是否 >= 指定最低版本。
-/// 优先使用已传入的 `saved_version`（来自项目配置），为空时再执行自动检测。
-pub fn claude_version_gte(saved_version: &str, min_version: &str) -> bool {
-    let version = if saved_version.is_empty() {
-        match detect_claude_version() {
-            Some(v) => v,
-            None => return false,
-        }
-    } else {
-        saved_version.to_string()
-    };
-    parse_semver(&version) >= parse_semver(min_version)
 }
 
 #[tauri::command]

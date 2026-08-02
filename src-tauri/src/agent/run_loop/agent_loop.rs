@@ -13,7 +13,7 @@ use super::super::llm::ChatMessage;
 /// 提示并替换掉这里的 system 消息（通过 `skip(1)` 跳过旧 system），
 /// 保证动态分片（工具可见性、子进程状态等）始终是最新的。
 ///
-/// 被 DispatcherAgent 和 PlainChatAgent 共同复用，是两者的历史管理抽象。
+/// 被 OrchestratorAgent 和 PlainChatAgent 共同复用，是两者的历史管理抽象。
 pub(crate) struct AgentLoop {
     system_prompt: String,
     messages: Vec<ChatMessage>,

@@ -5,51 +5,6 @@ use super::super::db::{
     DispatcherToolRunRecord,
 };
 
-/// Feedback state reported by a subprocess when it yields control back to the
-/// dispatcher.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DispatchFeedbackState {
-    RoundCompleted,
-    ProcessDone,
-    ProcessFailed,
-    ProcessCancelled,
-}
-
-impl DispatchFeedbackState {
-    pub fn from_wire(value: &str) -> Self {
-        match value {
-            "process_done" => Self::ProcessDone,
-            "process_failed" => Self::ProcessFailed,
-            "process_cancelled" => Self::ProcessCancelled,
-            _ => Self::RoundCompleted,
-        }
-    }
-
-    pub fn visible_message(self) -> &'static str {
-        match self {
-            Self::RoundCompleted => "🔄 子任务当前轮次已完成",
-            Self::ProcessDone => "✅ 子任务进程已结束",
-            Self::ProcessFailed => "⚠️ 子任务进程已失败退出",
-            Self::ProcessCancelled => "⏹️ 子任务进程已取消",
-        }
-    }
-
-    pub fn hidden_prefix(self) -> &'static str {
-        match self {
-            Self::RoundCompleted => {
-                "[系统通知] 子任务当前轮次已完成，但子进程仍在运行，可继续注入后续指令，也可在确认无需继续后主动退出。请先分析执行状态，再决定下一步："
-            }
-            Self::ProcessDone => "[系统通知] 子任务进程已结束。请根据以下执行结果总结反馈：",
-            Self::ProcessFailed => {
-                "[系统通知] 子任务进程已失败退出。请根据以下执行结果分析问题并决定下一步："
-            }
-            Self::ProcessCancelled => {
-                "[系统通知] 子任务进程已取消。请根据以下执行结果判断是否需要重试或调整方案："
-            }
-        }
-    }
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTurn {
@@ -127,23 +82,6 @@ pub enum AgentEvent {
     },
     ToolRunUpdated {
         run: DispatcherToolRunRecord,
-    },
-    DispatchProposed {
-        dispatch_id: String,
-        agent: String,
-        description: String,
-        task_prompt: String,
-        permission_mode: String,
-    },
-    DispatchContinue {
-        dispatch_id: String,
-        agent: String,
-        text: String,
-    },
-    DispatchExit {
-        dispatch_id: String,
-        agent: String,
-        reason: String,
     },
     Finished {
         messages: Vec<DispatcherMessageRecord>,

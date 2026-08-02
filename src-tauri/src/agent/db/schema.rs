@@ -22,7 +22,7 @@ impl DispatcherDb {
         let mut conn = self.conn()?;
 
         // Fast path: if schema is already at the expected version, skip all DDL.
-        const SCHEMA_VERSION: i32 = 21;
+        const SCHEMA_VERSION: i32 = 23;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -622,6 +622,64 @@ impl DispatcherDb {
                     ",
                 )
                 .context("v21 migration: add model library column")?;
+            }
+        }
+
+        // v21 → v22: 图编排（Graph Orchestrator）持久化——执行图计划与节点运行记录。
+        //             纯新增表，不影响存量数据；节点运行主键 (plan_id, node_id)，重跑覆盖。
+        if current_version < 22 {
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS graph_plans (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    definition_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    state_json TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_graph_plans_ws
+                ON graph_plans(workspace_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS graph_node_runs (
+                    plan_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    agent_kind TEXT NOT NULL,
+                    agent_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    input_text TEXT NOT NULL DEFAULT '',
+                    output_text TEXT NOT NULL DEFAULT '',
+                    error_text TEXT,
+                    trace_tool_call_id TEXT,
+                    started_at INTEGER,
+                    finished_at INTEGER,
+                    duration_ms INTEGER,
+                    PRIMARY KEY (plan_id, node_id)
+                );
+                ",
+            )
+            .context("v22 migration: create graph orchestration tables")?;
+        }
+
+        // v22 → v23: graph_node_runs 增加 affected_files_json（节点影响文件清单，
+        //             由运行器在节点执行前后做 git status 快照差分采集）。
+        if current_version < 23 {
+            let has_affected_files_col = conn
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('graph_node_runs') WHERE name = 'affected_files_json'")
+                .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+                .unwrap_or(0);
+            if has_affected_files_col == 0 {
+                conn.execute_batch(
+                    "
+                    ALTER TABLE graph_node_runs
+                        ADD COLUMN affected_files_json TEXT NOT NULL DEFAULT '[]';
+                    ",
+                )
+                .context("v23 migration: add graph node affected files column")?;
             }
         }
 

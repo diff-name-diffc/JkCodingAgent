@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import { Sparkles } from "lucide-react";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcherChatView";
+import { toolSummaryDisplayText } from "../dispatcherChatView";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import type { DispatcherToolArtifactRef } from "../../types";
 import { cn } from "../../lib/cn";
@@ -83,7 +84,11 @@ export function StreamingMessage({
           {visibleSegments.map((segment, index) => (
             <MarkdownRenderer
               key={index}
-              content={segment.text}
+              content={
+                segment.kind === "tool-summary"
+                  ? toolSummaryDisplayText(segment.text)
+                  : segment.text
+              }
               streaming={isStreaming && index === visibleSegments.length - 1}
             />
           ))}

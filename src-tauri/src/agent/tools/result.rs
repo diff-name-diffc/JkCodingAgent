@@ -40,18 +40,12 @@ impl ToolStatus {
 )]
 pub enum ToolAction {
     FinalMessage { content: String },
-    DispatchSubAgent { agent: String },
-    ContinueSubAgent { agent: String },
-    ExitSubAgent { agent: String },
 }
 
 impl ToolAction {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::FinalMessage { .. } => "final_message",
-            Self::DispatchSubAgent { .. } => "dispatch_sub_agent",
-            Self::ContinueSubAgent { .. } => "continue_sub_agent",
-            Self::ExitSubAgent { .. } => "exit_sub_agent",
         }
     }
 }

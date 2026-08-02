@@ -304,35 +304,6 @@ impl DispatcherDb {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_hidden_message(
-        &self,
-        workspace_id: &str,
-        role: &str,
-        content: &str,
-        tool_call_id: Option<&str>,
-        tool_name: Option<&str>,
-        tool_result_mode: Option<&str>,
-        tool_calls: Option<&[OutboundToolCall]>,
-    ) -> Result<DispatcherMessageRecord> {
-        self.add_message(NewDispatcherMessage {
-            workspace_id,
-            role,
-            content,
-            segments_json: None,
-            thinking_content: None,
-            thinking_elapsed_ms: 0,
-            context_payload: None,
-            tool_call_id,
-            tool_name,
-            tool_result_mode,
-            tool_calls,
-            tool_artifacts: &[],
-            usage_stats: None,
-            visible: false,
-        })
-    }
-
     pub fn list_visible_messages(
         &self,
         workspace_id: &str,
@@ -490,40 +461,6 @@ impl DispatcherDb {
         .context("load dispatcher visible message content")
     }
 
-    /// Fetch recent tool/assistant message content for subprocess context.
-    ///
-    /// Returns up to `limit` recent non-user messages (tool results and assistant replies),
-    /// each as (role, tool_name, content) tuples — enough to build exploration context
-    /// without loading the full LLM history.
-    pub fn list_recent_exploration_content(
-        &self,
-        workspace_id: &str,
-        limit: usize,
-    ) -> Result<Vec<(String, Option<String>, String)>> {
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT role, tool_name, segments_json
-             FROM dispatcher_messages
-             WHERE workspace_id = ?1
-               AND role IN ('tool', 'assistant')
-               AND visible = 1
-               AND context_cleared = 0
-             ORDER BY rowid DESC
-             LIMIT ?2",
-        )?;
-        let rows = stmt
-            .query_map(params![workspace_id, limit as i64], |row| {
-                let role: String = row.get(0)?;
-                let tool_name: Option<String> = row.get(1)?;
-                let segments_json: String = row.get(2)?;
-                let content = segments_to_plain_text(&parse_segments_json(&segments_json));
-                Ok((role, tool_name, content))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .context("load recent dispatcher exploration content")?;
-        Ok(rows)
-    }
-
     pub fn clear_messages(&self, workspace_id: &str) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
@@ -542,6 +479,18 @@ impl DispatcherDb {
             params![workspace_id],
         )
         .context("clear sub-agent run traces")?;
+        // 图编排产物（graph_plans / graph_node_runs）随会话清空同步删除。
+        tx.execute(
+            "DELETE FROM graph_node_runs
+             WHERE plan_id IN (SELECT id FROM graph_plans WHERE workspace_id = ?1)",
+            params![workspace_id],
+        )
+        .context("clear graph node runs")?;
+        tx.execute(
+            "DELETE FROM graph_plans WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("clear graph plans")?;
         tx.execute(
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![workspace_id],
@@ -943,39 +892,6 @@ impl DispatcherDb {
             .context("list_visible_messages spawn_blocking")?
     }
 
-    pub async fn add_hidden_message_async(
-        &self,
-        workspace_id: &str,
-        role: &str,
-        content: &str,
-        tool_call_id: Option<&str>,
-        tool_name: Option<&str>,
-        tool_result_mode: Option<&str>,
-        tool_calls: Option<&[OutboundToolCall]>,
-    ) -> Result<DispatcherMessageRecord> {
-        let db = self.clone();
-        let wid = workspace_id.to_string();
-        let role = role.to_string();
-        let content = content.to_string();
-        let tool_call_id = tool_call_id.map(str::to_string);
-        let tool_name = tool_name.map(str::to_string);
-        let tool_result_mode = tool_result_mode.map(str::to_string);
-        let tool_calls = tool_calls.map(|c| c.to_vec());
-        tokio::task::spawn_blocking(move || {
-            db.add_hidden_message(
-                &wid,
-                &role,
-                &content,
-                tool_call_id.as_deref(),
-                tool_name.as_deref(),
-                tool_result_mode.as_deref(),
-                tool_calls.as_deref(),
-            )
-        })
-        .await
-        .context("add_hidden_message spawn_blocking")?
-    }
-
     pub async fn add_visible_message_with_usage_async(
         &self,
         workspace_id: &str,
@@ -1037,18 +953,6 @@ impl DispatcherDb {
         tokio::task::spawn_blocking(move || db.get_latest_user_message_content(&wid))
             .await
             .context("get_latest_user_message_content spawn_blocking")?
-    }
-
-    pub async fn list_recent_exploration_content_async(
-        &self,
-        workspace_id: &str,
-        limit: usize,
-    ) -> Result<Vec<(String, Option<String>, String)>> {
-        let db = self.clone();
-        let wid = workspace_id.to_string();
-        tokio::task::spawn_blocking(move || db.list_recent_exploration_content(&wid, limit))
-            .await
-            .context("list_recent_exploration_content spawn_blocking")?
     }
 }
 

@@ -107,17 +107,6 @@ export function PurposesPage({
         description="这些开关影响智能体的执行方式（项目和聊天共享）。"
       >
         <SwitchRow
-          label="自动批准操作"
-          tip="开启后，智能体在运行子任务前不再额外请求确认。"
-          checked={settings.autoApproveDispatch}
-          onChange={(value) =>
-            store.updateSettings(
-              (prev) => ({ ...prev, autoApproveDispatch: value }),
-              "behavior:autoApprove",
-            )
-          }
-        />
-        <SwitchRow
           label="上下文调试日志"
           tip="仅在调试时开启。日志文件位于项目根目录的 logs/agent.debug。"
           checked={settings.contextDebug}

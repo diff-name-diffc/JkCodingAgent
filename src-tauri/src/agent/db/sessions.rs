@@ -181,6 +181,16 @@ impl DispatcherDb {
             "DELETE FROM sub_agent_run_traces WHERE workspace_id = ?1",
             params![session_id],
         )?;
+        // 图编排产物（graph_plans / graph_node_runs）随会话删除同步清理。
+        tx.execute(
+            "DELETE FROM graph_node_runs
+             WHERE plan_id IN (SELECT id FROM graph_plans WHERE workspace_id = ?1)",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM graph_plans WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
         tx.execute(
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
@@ -377,6 +387,16 @@ impl DispatcherDb {
         )?;
         tx.execute(
             "DELETE FROM sub_agent_run_traces WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
+        // 图编排产物（graph_plans / graph_node_runs）随会话删除同步清理。
+        tx.execute(
+            "DELETE FROM graph_node_runs
+             WHERE plan_id IN (SELECT id FROM graph_plans WHERE workspace_id = ?1)",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM graph_plans WHERE workspace_id = ?1",
             params![session_id],
         )?;
         tx.execute(
@@ -598,6 +618,16 @@ impl DispatcherDb {
             "DELETE FROM sub_agent_run_traces WHERE workspace_id = ?1",
             params![session_id],
         )?;
+        // 图编排产物（graph_plans / graph_node_runs）随会话删除同步清理。
+        tx.execute(
+            "DELETE FROM graph_node_runs
+             WHERE plan_id IN (SELECT id FROM graph_plans WHERE workspace_id = ?1)",
+            params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM graph_plans WHERE workspace_id = ?1",
+            params![session_id],
+        )?;
         tx.execute(
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
@@ -648,6 +678,20 @@ impl DispatcherDb {
             .unwrap_or_else(|| "untitled".to_string());
         Ok(title)
     }
+
+    /// 会话 → 项目 id（图运行器据此定位项目根路径）。
+    pub fn get_session_project_id(&self, session_id: &str) -> Result<Option<String>> {
+        let conn = self.conn()?;
+        let project_id = conn
+            .query_row(
+                "SELECT project_id FROM dispatcher_sessions WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("load dispatcher session project id")?;
+        Ok(project_id)
+    }
 }
 
 impl DispatcherDb {
@@ -657,6 +701,14 @@ impl DispatcherDb {
         tokio::task::spawn_blocking(move || db.get_session_title(&wid))
             .await
             .context("get_session_title spawn_blocking")?
+    }
+
+    pub async fn get_session_project_id_async(&self, workspace_id: &str) -> Result<Option<String>> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || db.get_session_project_id(&wid))
+            .await
+            .context("get_session_project_id spawn_blocking")?
     }
 }
 

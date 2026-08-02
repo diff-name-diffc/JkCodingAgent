@@ -9,8 +9,8 @@ import { cn } from "../../lib/cn";
  * Three regions:
  *   ┌──────────┬──────────────────────────┬──────────────┐
  *   │ Sidebar  │  Chat main area           │  Artifact    │
- *   │ (260px / │  (flex-1, max-w prose      │  (optional,  │
- *   │  56px)   │   column centered)         │   resizable) │
+ *   │ (resizable│  (flex-1, max-w prose     │  (optional,  │
+ *   │  / 56px) │   column centered)         │   resizable) │
  *   └──────────┴──────────────────────────┴──────────────┘
  *
  * The sidebar collapses to an icon rail; the artifact panel is opt-in and
@@ -33,8 +33,10 @@ export interface AppLayoutProps {
   embedded?: boolean;
 }
 
-const SIDEBAR_WIDE = 264;
 const SIDEBAR_NARROW = 56;
+const SIDEBAR_DEFAULT = 264;
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 480;
 
 export function AppLayout({
   sidebar,
@@ -45,7 +47,41 @@ export function AppLayout({
   titlebar,
 }: AppLayoutProps) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
+  const sidebarWidth = useUIStore((s) => s.sidebarWidth);
+  const setSidebarWidth = useUIStore((s) => s.setSidebarWidth);
   const artifactOpen = useUIStore((s) => s.artifactPanelOpen);
+  /** 拖拽中的实时宽度；为 null 表示未在拖拽。拖拽结束才写回 store，避免高频持久化。 */
+  const [dragWidth, setDragWidth] = React.useState<number | null>(null);
+
+  const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = dragWidth ?? sidebarWidth;
+    const latest = { current: startWidth };
+    const prevCursor = document.body.style.cursor;
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const handleMove = (e: PointerEvent) => {
+      const next = Math.min(
+        SIDEBAR_MAX,
+        Math.max(SIDEBAR_MIN, startWidth + e.clientX - startX),
+      );
+      latest.current = next;
+      setDragWidth(next);
+    };
+    const handleUp = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevUserSelect;
+      setSidebarWidth(latest.current);
+      setDragWidth(null);
+    };
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+  };
 
   return (
     <div
@@ -58,13 +94,30 @@ export function AppLayout({
       <div className="flex min-h-0 flex-1">
         {sidebar && (
           <motion.aside
-            animate={{ width: collapsed ? SIDEBAR_NARROW : SIDEBAR_WIDE }}
-            transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+            animate={{
+              width: collapsed ? SIDEBAR_NARROW : (dragWidth ?? sidebarWidth),
+            }}
+            transition={
+              dragWidth != null
+                ? { duration: 0 }
+                : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }
+            }
             className={cn(
               "ai-chat-sidebar relative z-20 flex h-full shrink-0 flex-col border-r border-sidebar-border bg-sidebar",
             )}
           >
             {sidebar}
+            {!collapsed && (
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="拖拽调整侧边栏宽度，双击恢复默认"
+                data-dragging={dragWidth != null}
+                onPointerDown={startSidebarResize}
+                onDoubleClick={() => setSidebarWidth(SIDEBAR_DEFAULT)}
+                className="ai-sidebar-resize-handle"
+              />
+            )}
           </motion.aside>
         )}
 

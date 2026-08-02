@@ -2,9 +2,7 @@ use serde_json::Value;
 use tauri::ipc::Channel;
 
 use crate::agent::common::{is_tool_error_message, UsageTracker};
-use crate::agent::db::{
-    DispatcherDb, DispatcherSessionTokenUsageSource, TOOL_RETRY_CONTEXT_PREFIX,
-};
+use crate::agent::db::{DispatcherDb, DispatcherSessionTokenUsageSource, TOOL_RETRY_CONTEXT_PREFIX};
 use crate::agent::llm::{LlmResponse, LlmUsage, RequestedToolCall};
 use crate::agent::run_loop::AgentEvent;
 use crate::shared::truncate_for_display;
@@ -55,49 +53,6 @@ pub(crate) fn is_retryable_tool_error(tool_name: &str, result: &str) -> bool {
         return false;
     }
     is_tool_error_message(trimmed)
-}
-
-// ─── Text Formatting ──────────────────────────────────────────────────────────
-
-pub(crate) fn compact_multiline(content: &str, max_chars: usize) -> String {
-    let normalized = content
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" / ");
-    truncate_for_display(&normalized, max_chars, "...")
-}
-
-pub(crate) fn should_include_latest_user_goal(
-    latest_user_goal: &str,
-    task_description: &str,
-) -> bool {
-    let normalized_task = compact_multiline(task_description.trim(), 320);
-    !normalized_task.is_empty()
-        && latest_user_goal != normalized_task
-        && !normalized_task.contains(latest_user_goal)
-}
-
-pub(crate) fn summarize_dispatch_description(task_description: &str) -> String {
-    let normalized = compact_multiline(task_description.trim(), 180);
-    if normalized.is_empty() {
-        "未命名子任务".to_string()
-    } else {
-        normalized
-    }
-}
-
-pub(crate) fn build_stopped_dispatch_reply(partial: &str) -> String {
-    let trimmed = partial.trim();
-    if trimmed.is_empty() {
-        "⏹️ 本轮调度已停止。当前会话上下文与已完成内容均已保留，可稍后继续。".to_string()
-    } else {
-        format!(
-            "{}\n\n[本轮已手动停止。当前会话上下文与以上输出均已保留，可稍后继续。]",
-            trimmed
-        )
-    }
 }
 
 // ─── Token Usage Recording ────────────────────────────────────────────────────
@@ -159,59 +114,4 @@ pub(crate) fn normalize_summary_model(model: &str) -> String {
 
 pub(crate) fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
     let _ = on_event.send(event);
-}
-
-pub(crate) async fn collect_recent_exploration_entries_from_db(
-    db: &DispatcherDb,
-    workspace_id: &str,
-) -> std::result::Result<String, String> {
-    const MAX_ENTRIES: usize = 3;
-    const MAX_TOTAL_CHARS: usize = 900;
-
-    let rows = db
-        .list_recent_exploration_content_async(workspace_id, MAX_ENTRIES)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    let mut entries = Vec::new();
-    let mut total_chars = 0usize;
-
-    // rows come in DESC order; collect then reverse for chronological order
-    for (role, tool_name, content) in rows {
-        let content = content.trim();
-        if content.is_empty() {
-            continue;
-        }
-
-        let label = match role.as_str() {
-            "tool" => tool_name
-                .map(|name| format!("工具 {}", name))
-                .unwrap_or_else(|| "工具".to_string()),
-            "assistant" => "调度结论".to_string(),
-            _ => continue,
-        };
-        let compact = compact_multiline(content, 220);
-        if compact.is_empty() {
-            continue;
-        }
-
-        let candidate = format!("- {}：{}", label, compact);
-        let candidate_len = candidate.chars().count();
-        if total_chars + candidate_len > MAX_TOTAL_CHARS && !entries.is_empty() {
-            break;
-        }
-
-        entries.push(candidate);
-        total_chars += candidate_len;
-        if entries.len() >= MAX_ENTRIES {
-            break;
-        }
-    }
-
-    if entries.is_empty() {
-        Ok(String::new())
-    } else {
-        entries.reverse();
-        Ok(entries.join("\n"))
-    }
 }

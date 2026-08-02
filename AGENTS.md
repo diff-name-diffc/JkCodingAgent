@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-JKCodingAgent 是一款面向 AI 智能体的现代桌面应用：以「会话（session）」为核心，内置 dispatcher 智能体运行时（多轮工具调用、子智能体、命令审查门禁）、RAG 知识库、嵌入式 Shell / 浏览器 / Python 运行器、文件浏览器、Git 集成与用量分析，外壳为 Tauri 2。
+JKCodingAgent 是一款面向 AI 智能体的现代桌面应用：以「会话（session）」为核心，内置 dispatcher 智能体运行时（多轮工具调用、子智能体、命令审查门禁；项目 Agent 为图编排器——产出执行图 DAG 并调度子智能体 / claude / codex 节点执行）、RAG 知识库、嵌入式 Shell / 浏览器 / Python 运行器、文件浏览器、Git 集成与用量分析，外壳为 Tauri 2。
 
 **技术栈：** React 19 + TypeScript + Vite（前端） · Tauri 2 + Rust（桌面壳） · **Tailwind CSS + shadcn 风格组件 + CSS 变量主题**（UI） · Zustand + React Query（状态/数据） · xterm.js（终端） · Shiki（语法高亮） · rusqlite（持久化）
 
@@ -50,7 +50,8 @@ App
 └── ProjectPage                      — 项目工作区
     ├── ProjectRail                  — 左侧项目切换栏
     ├── SessionPanel                 — 会话列表（搜索 / 新建 / 分页）
-    ├── 聊天工作台 (chat-page-v2)      — dispatcher 消息流、工具调用、审批、子智能体
+    ├── 聊天工作台 (chat-page-v2)      — dispatcher 消息流、工具调用、子智能体、图编排入口
+    ├── 图编排 UI (components/graph)    — GraphPlanCard 内联卡片 / GraphPanel 执行图画布 / GraphNodeDrawer 节点详情
     ├── SubAgentExecutionView         — 子智能体执行卡片（阶段/时间线/统计）
     ├── 文件浏览器 (file-explorer)     — FileViewer / LargeFileViewer / 图片预览
     ├── GitChanges / GitHistory       — 变更 / 提交 / 差异
@@ -60,11 +61,10 @@ App
 ```
 
 异步状态由 Tauri 事件驱动（`@tauri-apps/api/event` 的 `listen()`），当前在用的事件：
-- `agent-output` — 运行中子进程的原始 PTY 字节流
-- `task-status` — 任务/子进程生命周期状态
 - `dispatcher-session-updated` — 会话记录变更（消息、标题、用量等）
-- `dispatcher-subprocess-idle` — 子智能体空闲
 - `sub-agent-event` — 子智能体执行事件流
+- `graph-plan-updated` — 图编排计划登记/状态流转（收到后重新 `graph_plan_get`）
+- `graph-run-event` — 图执行进展（节点开始/输出增量/完成/失败/共享 state 更新/运行收尾）
 - `python-run-event` — Python 运行器事件
 - `shell-output` — 嵌入式 Shell 的 PTY 字节流
 - `browser-frame` / `browser-log` / `browser-status` — 内嵌浏览器
@@ -76,7 +76,7 @@ App
 
 | 模块 | 职责 |
 |------|------|
-| `agent/` | dispatcher 智能体核心：`run_loop/`（运行循环）、`llm.rs`（模型调用）、`tools/`（工具注册表 + builtin 工具）、`summary.rs`（工具输出分类/摘要）、`sub_agent/`（子智能体）、`db/`（SQLite schema 与读写）、`commands.rs`（Tauri 命令）、`config.rs`（智能体配置 + `~/.jkcodingagent` 初始化） |
+| `agent/` | dispatcher 智能体核心：`run_loop/`（运行循环）、`llm.rs`（模型调用）、`tools/`（工具注册表 + builtin 工具）、`summary.rs`（工具输出分类/摘要）、`sub_agent/`（子智能体）、`graph/`（图编排：定义/校验/执行引擎/命令）、`db/`（SQLite schema 与读写）、`commands.rs`（Tauri 命令）、`config.rs`（智能体配置 + `~/.jkcodingagent` 初始化） |
 | `task_runtime/` | `pty.rs`（PTY 创建/读写）、`session.rs`（会话/输出兜底） |
 | `project/` | `storage.rs`、`config.rs`（项目配置）、`analytics.rs`、`mcp.rs`（MCP 集成） |
 | `scm/git.rs` | Git 集成：状态、分支、日志、差异、暂存、提交、推送、拉取 |
@@ -99,12 +99,12 @@ App
 
 ## 数据模型
 
-会话为中心的核心类型定义在 `types.ts`：`Project`、`DispatcherSession`、`ProjectSession`、`Task`（子进程任务）等。
+会话为中心的核心类型定义在 `types.ts`：`Project`、`DispatcherSession`、`ProjectSession`、`GraphPlanRecord`（图编排计划）等；`Task` 为旧 dispatch 子进程的历史记录类型（dispatch 已下线，不再新增）。
 
 **持久化：SQLite（rusqlite）**
 - 数据库文件：`~/.jkcodingagent/jkbot.sqlite3`
 - 配置/资源目录：`~/.jkcodingagent/`（含 `memory/`、`skills/`、`local_env/zsh/`、`chat-images/` 等）
-- 主要表：`dispatcher_sessions`、`dispatcher_messages`、`dispatcher_session_token_usage`、`dispatcher_tool_artifacts`、`chat_images`、分类、关键字索引、python 运行记录等（schema 见 `agent/db/schema.rs`）
+- 主要表：`dispatcher_sessions`、`dispatcher_messages`、`dispatcher_session_token_usage`、`dispatcher_tool_artifacts`、`chat_images`、`graph_plans`、`graph_node_runs`、分类、关键字索引、python 运行记录等（schema 见 `agent/db/schema.rs`）
 
 > 修改数据结构时，**必须同步更新 `types.ts`（TS）与对应的 Rust 结构体/SQL schema**——否则新字段在序列化时会被静默丢弃。
 
@@ -183,20 +183,15 @@ impl AgentTool for MyTool {
 
 两处：顶部 `mod my_tool;` + `builtin_tools()` 函数中添加 `my_tool::my_tool()`。
 
-### 3. 分类工具输出 — `src-tauri/src/agent/summary.rs`
+### 3. 工具输出压缩（可选）— `src-tauri/src/agent/summary.rs`
 
-在 `tool_output_kind()` 中添加工具名到对应的 `ToolOutputKind`：
-- `Exact`：输出本身就是精确答案（read_file、grep 等）
-- `Command`：命令执行结果，大输出需摘要（exec）
-- `Mutation`：写操作结果，保持原文（write_file、generate_image）
-- `Message`：简单消息，保持原文
-- `Other`：默认，大输出时自动摘要
-
-可选：在 `tool_summary_focus()` 中添加该工具的摘要侧重点说明。
+工具结果压缩是阈值驱动、无需注册：超过 `FORCED_COMPRESS_THRESHOLD`（1000 字符，`agent/common.rs`）的结果由 `persist_tool_result_with_compression` 自动调用摘要模型压缩（模型也可用 `compress`/`compress_intent` 参数自声明压缩意图）。摘要模型失败时回退到零 LLM 的规则抽取 `extract_structured_summary(tool_name, raw_output)`（`summary.rs`）——新工具如需定制兜底摘要，在该函数的 `match tool_name` 中加一个分支即可。
 
 ### 4. 添加配置（可选）— `src-tauri/src/agent/config.rs`
 
-如工具需要 API Key / URL 等配置：在 `DispatcherAgentConfig` 加字段 → `load()` 中从环境变量读取 → `runtime.rs` 中传入 `ToolContext`。
+如工具需要 API Key / URL 等配置：在 `DispatcherAgentConfig` 加字段 → `load()` 中从环境变量读取 → 在构建 `ToolContext` 处传入（项目编排器：`agents/project/iteration.rs`；聊天 Agent：`agents/plain_chat/mod.rs`）。
+
+> 特例：`submit_graph`（图编排收口工具）只注册进编排器专用注册表（`ToolRegistry::orchestrator_tools`），不进通用 `builtin_tools()`，避免污染聊天上下文与设置页工具清单。
 
 ---
 
@@ -228,7 +223,7 @@ impl AgentTool for MyTool {
 
 ### 组件规模
 
-- **单个组件文件不应超过 400 行。** 当前仍超标的大文件（按现状持续拆分）：`task_runtime/session.rs`（~1500）、`agent/db/schema.rs`（~1500）、`agent/commands.rs`（~1480）、`components/ProjectPage.tsx`（~1260）、`project/mcp.rs`（~1250）、`browser.rs`（~1240）、`file-viewer/LargeFileViewer.tsx`（~1120）等。新增功能若落在这些文件，优先拆分再扩展。
+- **单个组件文件不应超过 400 行。** 当前仍超标的大文件（按现状持续拆分）：`task_runtime/session.rs`（~1500）、`agent/db/schema.rs`（~1500）、`agent/commands.rs`（~1480）、`project/mcp.rs`（~1250）、`browser.rs`（~1240）、`file-viewer/LargeFileViewer.tsx`（~1120）、`components/ProjectPage.tsx`（~680）等。新增功能若落在这些文件，优先拆分再扩展。
 
 ---
 

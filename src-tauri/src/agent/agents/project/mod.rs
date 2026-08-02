@@ -1,7 +1,23 @@
+//! 项目编排 Agent（OrchestratorAgent）。
+//!
+//! 彻底替换旧 DispatcherAgent（直接编码 + dispatch PTY 委派）：项目 Agent 现在
+//! 只做「任务拆解与编排」——用固定只读工具探索项目，核心产物是执行图（DAG），
+//! 通过 `submit_graph` 协议工具提交，经校验后落 `graph_plans` 并等待用户确认；
+//! 图的实际执行由 `agent::graph::runner` 承担。
+//!
+//! 模块划分：
+//! - `mod.rs`：结构体、构造与设置应用（模型配置沿用「模型用途」项目上下文）。
+//! - `prompt.rs`：编排器系统提示（角色 / 图 schema / 节点设计原则 / 可用 agent 清单）。
+//! - `turn.rs`：`RunLoopAgent` + `AgentRunAdapter` 实现（复用公共 run_loop）。
+//! - `iteration.rs`：单次迭代的 LLM 交互与消息收口。
+//! - `tool_exec.rs`：工具批量执行（只读并行组 / 压缩 / 重试）。
+//! - `graph_submit.rs`：`submit_graph` 协议拦截与本轮收口。
+//! - `helpers.rs`：事件、用量、错误分类等小工具。
+
+pub(crate) mod graph_submit;
 pub(crate) mod helpers;
+pub(crate) mod iteration;
 pub(crate) mod prompt;
-pub(crate) mod protocol;
-pub(crate) mod subprocess;
 pub(crate) mod tool_exec;
 pub(crate) mod turn;
 
@@ -11,14 +27,10 @@ use parking_lot::Mutex;
 use tauri::AppHandle;
 
 use crate::agent::config::DispatcherAgentConfig;
+use crate::agent::db::{AhaSettingsV2, AgentContext};
 use crate::agent::llm::OpenAiCompatProvider;
 use crate::agent::run_loop::AgentEvent;
 use crate::agent::tools::ToolRegistry;
-use crate::project::mcp::ProjectMcpRegistry;
-use crate::ssh_tool::SshSessionManager;
-
-pub(crate) use subprocess::DispatcherSubprocessRegistry;
-pub(crate) use turn::DispatcherContinueAfterDispatchRequest;
 
 // ─── Internal types ───────────────────────────────────────────────────────────
 
@@ -27,18 +39,10 @@ pub(super) struct Models {
     summary_api_key: String,
     summary_api_base: String,
     vision_provider: Option<OpenAiCompatProvider>,
-    image_model_url: String,
-    image_model_api_key: String,
-    image_model: String,
-    image_edit_model: String,
 }
 
 pub(super) struct ModelsSnapshot {
     vision_model: String,
-    image_model_url: String,
-    image_model_api_key: String,
-    image_model: String,
-    image_edit_model: String,
 }
 
 impl Models {
@@ -49,36 +53,26 @@ impl Models {
                 .as_ref()
                 .map(|p| p.model().to_string())
                 .unwrap_or_default(),
-            image_model_url: self.image_model_url.clone(),
-            image_model_api_key: self.image_model_api_key.clone(),
-            image_model: self.image_model.clone(),
-            image_edit_model: self.image_edit_model.clone(),
         }
     }
 }
 
-// ─── DispatcherAgent struct ───────────────────────────────────────────────────
+// ─── OrchestratorAgent struct ─────────────────────────────────────────────────
 
-pub struct DispatcherAgent {
+pub struct OrchestratorAgent {
     pub(super) config: DispatcherAgentConfig,
     pub(super) provider: Mutex<OpenAiCompatProvider>,
     pub(super) models: Mutex<Models>,
     pub(super) app_handle: Option<AppHandle>,
     pub(super) tools: Arc<ToolRegistry>,
-    pub(super) project_mcp_registry: ProjectMcpRegistry,
-    pub(super) subprocesses: Arc<DispatcherSubprocessRegistry>,
-    pub(super) allowed_tools: Mutex<Vec<String>>,
     pub(super) sub_agent_manager: Option<Arc<crate::agent::sub_agent::SubAgentManager>>,
 }
 
 // ─── Construction & configuration ─────────────────────────────────────────────
 
-impl DispatcherAgent {
+impl OrchestratorAgent {
     pub fn new(
         config: DispatcherAgentConfig,
-        project_mcp_registry: ProjectMcpRegistry,
-        ssh_manager: SshSessionManager,
-        subprocesses: Arc<DispatcherSubprocessRegistry>,
         sub_agent_manager: Option<Arc<crate::agent::sub_agent::SubAgentManager>>,
     ) -> Self {
         let provider = OpenAiCompatProvider::new(
@@ -88,16 +82,6 @@ impl DispatcherAgent {
             config.max_tokens,
             config.temperature,
         );
-
-        let mut registry = ToolRegistry::default_tools(project_mcp_registry.clone(), ssh_manager);
-        if let Some(manager) = &sub_agent_manager {
-            registry.add_tool(Box::new(crate::agent::sub_agent::SubAgentTool::new(
-                Arc::clone(manager),
-            )));
-            registry.add_tool(Box::new(crate::agent::sub_agent::ListSubAgentsTool::new(
-                Arc::clone(manager),
-            )));
-        }
 
         Self {
             models: Mutex::new(Models {
@@ -116,24 +100,13 @@ impl DispatcherAgent {
                         config.temperature,
                     ))
                 },
-                image_model_url: config.image_model_url.clone(),
-                image_model_api_key: config.image_model_api_key.clone(),
-                image_model: config.image_model.clone(),
-                image_edit_model: config.image_edit_model.clone(),
             }),
             app_handle: None,
+            tools: Arc::new(ToolRegistry::orchestrator_tools(sub_agent_manager.clone())),
             config,
             provider: Mutex::new(provider),
-            tools: Arc::new(registry),
-            project_mcp_registry,
-            subprocesses,
-            allowed_tools: Mutex::new(Vec::new()),
             sub_agent_manager,
         }
-    }
-
-    pub fn tools_arc(&self) -> Arc<ToolRegistry> {
-        Arc::clone(&self.tools)
     }
 
     pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
@@ -141,22 +114,18 @@ impl DispatcherAgent {
         self
     }
 
-    pub fn apply_settings_v2(
-        &self,
-        settings: &crate::agent::db::AhaSettingsV2,
-        context: crate::agent::db::AgentContext,
-    ) {
+    pub fn apply_settings_v2(&self, settings: &AhaSettingsV2, context: AgentContext) {
         let ctx_config = match context {
-            crate::agent::db::AgentContext::Project => &settings.project,
-            crate::agent::db::AgentContext::Chat => &settings.chat,
+            AgentContext::Project => &settings.project,
+            AgentContext::Chat => &settings.chat,
         };
         let shared = &settings.shared;
 
-        let active_chat = ctx_config
-            .chat_model_configs
-            .iter()
-            .find(|c| c.active)
-            .or_else(|| ctx_config.chat_model_configs.first());
+        {
+            let mut provider = self.provider.lock();
+            *provider = resolve_chat_provider(&self.config, ctx_config);
+        }
+
         let active_summary = ctx_config
             .summary_model_configs
             .iter()
@@ -167,40 +136,6 @@ impl DispatcherAgent {
             .iter()
             .find(|c| c.active)
             .or_else(|| shared.vision_model_configs.first());
-        let active_image = shared
-            .image_model_configs
-            .iter()
-            .find(|c| c.active)
-            .or_else(|| shared.image_model_configs.first());
-        let active_image_edit = shared
-            .image_edit_model_configs
-            .iter()
-            .find(|c| c.active)
-            .or_else(|| shared.image_edit_model_configs.first())
-            .or(active_image);
-
-        if let Some(chat) = active_chat {
-            let mut provider = self.provider.lock();
-            *provider = OpenAiCompatProvider::new(
-                if chat.api_key.is_empty() {
-                    self.config.api_key.clone()
-                } else {
-                    chat.api_key.clone()
-                },
-                if chat.url.is_empty() {
-                    self.config.api_base.clone()
-                } else {
-                    chat.url.clone()
-                },
-                if chat.model.is_empty() {
-                    self.config.model.clone()
-                } else {
-                    chat.model.clone()
-                },
-                self.config.max_tokens,
-                self.config.temperature,
-            );
-        }
 
         let mut models = self.models.lock();
         if let Some(smc) = active_summary {
@@ -236,31 +171,6 @@ impl DispatcherAgent {
                     self.config.temperature,
                 )
             });
-        if let Some(img) = active_image {
-            if !img.url.trim().is_empty() {
-                models.image_model_url = img.url.trim().to_string();
-            }
-            if !img.api_key.trim().is_empty() {
-                models.image_model_api_key = img.api_key.trim().to_string();
-            }
-            if !img.model.trim().is_empty() {
-                models.image_model = img.model.trim().to_string();
-            }
-        }
-        if let Some(ie) = active_image_edit {
-            if !ie.model.trim().is_empty() {
-                models.image_edit_model = ie.model.trim().to_string();
-            }
-        }
-        *self.allowed_tools.lock() = ctx_config.allowed_tools.clone();
-    }
-
-    pub fn auto_approve_dispatch(&self) -> bool {
-        self.config.auto_approve_dispatch
-    }
-
-    pub fn set_auto_approve_dispatch(&mut self, value: bool) {
-        self.config.auto_approve_dispatch = value;
     }
 
     pub fn context_debug_enabled(&self) -> bool {
@@ -301,6 +211,7 @@ impl DispatcherAgent {
         )
     }
 
+    /// 图片消息切视觉模型：消息中含图片时必须使用视觉用途 provider。
     pub(super) fn provider_for_messages(
         &self,
         provider: &OpenAiCompatProvider,
@@ -315,7 +226,7 @@ impl DispatcherAgent {
         let vision_provider = self.models.lock().vision_provider.clone();
         let Some(selected) = vision_provider else {
             anyhow::bail!(
-                "检测到用户上传了图片，但 Dispatcher 设置中的视觉模型为空。请先配置视觉模型后重试。"
+                "检测到用户上传了图片，但设置中的视觉模型为空。请先配置视觉模型后重试。"
             );
         };
 
@@ -332,39 +243,53 @@ impl DispatcherAgent {
 
         Ok(selected)
     }
+}
 
-    // ─── Subprocess accessors ─────────────────────────────────────────────────
+/// 按「模型用途」项目上下文配置解析当前生效的对话模型 provider。
+/// 图 Runner 执行 subAgent 节点时用它作为父级 provider（子智能体默认继承）。
+pub(crate) fn resolve_project_chat_provider(
+    config: &DispatcherAgentConfig,
+    settings: &AhaSettingsV2,
+) -> OpenAiCompatProvider {
+    resolve_chat_provider(config, &settings.project)
+}
 
-    pub(super) fn active_subprocesses_for_workspace(
-        &self,
-        workspace_id: &str,
-    ) -> Vec<subprocess::RegisteredSubprocess> {
-        self.subprocesses.list_for_workspace(workspace_id)
-    }
+fn resolve_chat_provider(
+    config: &DispatcherAgentConfig,
+    ctx_config: &crate::agent::db::AhaContextConfig,
+) -> OpenAiCompatProvider {
+    let active_chat = ctx_config
+        .chat_model_configs
+        .iter()
+        .find(|c| c.active)
+        .or_else(|| ctx_config.chat_model_configs.first());
 
-    pub(super) fn agent_runtime_flags(
-        &self,
-        workspace_id: &str,
-    ) -> Vec<(
-        &'static str,
-        bool,
-        Option<subprocess::RegisteredSubprocessPhase>,
-    )> {
-        ["claude", "codex"]
-            .into_iter()
-            .map(|agent| {
-                let entry = self
-                    .active_subprocesses_for_workspace(workspace_id)
-                    .into_iter()
-                    .find(|item| item.agent == agent);
-                let phase = entry.as_ref().map(|item| item.phase);
-                (agent, entry.is_some(), phase)
-            })
-            .collect()
-    }
-
-    pub(super) fn mark_agent_exit_requested(&self, workspace_id: &str, agent: &str) {
-        self.subprocesses
-            .set_exit_requested_for(workspace_id, agent);
+    match active_chat {
+        Some(chat) => OpenAiCompatProvider::new(
+            if chat.api_key.is_empty() {
+                config.api_key.clone()
+            } else {
+                chat.api_key.clone()
+            },
+            if chat.url.is_empty() {
+                config.api_base.clone()
+            } else {
+                chat.url.clone()
+            },
+            if chat.model.is_empty() {
+                config.model.clone()
+            } else {
+                chat.model.clone()
+            },
+            config.max_tokens,
+            config.temperature,
+        ),
+        None => OpenAiCompatProvider::new(
+            config.api_key.clone(),
+            config.api_base.clone(),
+            config.model.clone(),
+            config.max_tokens,
+            config.temperature,
+        ),
     }
 }

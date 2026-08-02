@@ -14,7 +14,6 @@ pub enum ToolCategory {
     Browser,
     Image,
     Ssh,
-    Delegation,
     Mcp,
     SubAgent,
     Other,
@@ -29,7 +28,6 @@ impl ToolCategory {
             Self::Browser => "browser",
             Self::Image => "image",
             Self::Ssh => "ssh",
-            Self::Delegation => "delegation",
             Self::Mcp => "mcp",
             Self::SubAgent => "sub_agent",
             Self::Other => "other",
@@ -253,12 +251,6 @@ fn category_for_name(name: &str) -> ToolCategory {
         name if name.starts_with("browser_") => ToolCategory::Browser,
         "generate_image" | "edit_image" => ToolCategory::Image,
         name if name.starts_with("ssh_") => ToolCategory::Ssh,
-        "dispatch_claude"
-        | "dispatch_codex"
-        | "continue_claude_session"
-        | "continue_codex_session"
-        | "exit_claude_session"
-        | "exit_codex_session" => ToolCategory::Delegation,
         "call_sub_agent" | "list_sub_agents" | "notify_user_progress" => ToolCategory::SubAgent,
         _ => ToolCategory::Other,
     }

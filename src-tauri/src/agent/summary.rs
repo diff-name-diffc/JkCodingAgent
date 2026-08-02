@@ -4,8 +4,6 @@ use super::llm::{
     messages_contain_images, ChatMessage, ChatMessageContentPart, LlmUsage, OpenAiCompatProvider,
 };
 
-const SUMMARY_MODE_THRESHOLD_CHARS: usize = 240;
-const SUMMARY_MODE_THRESHOLD_LINES: usize = 24;
 const SUMMARY_TIMEOUT_SECS: u64 = 120;
 const SUMMARY_DEBUG_PREVIEW_CHARS: usize = 1_200;
 const SESSION_TITLE_SOURCE_MAX_CHARS: usize = 6_000;
@@ -35,6 +33,8 @@ impl SummaryError {
         &self.message
     }
 
+    /// 诊断上下文（模型/提示词预览）。当前仅用于排障日志，保留给调用方按需打印。
+    #[allow(dead_code)]
     pub fn debug_context(&self) -> &str {
         &self.debug_context
     }
@@ -50,40 +50,6 @@ pub struct ToolSummaryResult {
 pub struct SessionTitleMessage {
     pub role: String,
     pub content: String,
-}
-
-// ─── Dispatch Result Summary (still uses LLM for subprocess result compression) ──
-
-pub async fn summarize_dispatch_result<FUsage>(
-    provider: &OpenAiCompatProvider,
-    summary_model: &str,
-    dispatch_result: &str,
-    on_usage: FUsage,
-) -> Result<String, SummaryError>
-where
-    FUsage: FnMut(&LlmUsage) + Send,
-{
-    let trimmed = dispatch_result.trim();
-    if trimmed.is_empty() {
-        return Ok(trimmed.to_string());
-    }
-
-    if !exceeds_limits(
-        trimmed,
-        SUMMARY_MODE_THRESHOLD_CHARS,
-        SUMMARY_MODE_THRESHOLD_LINES,
-    ) {
-        return Ok(trimmed.to_string());
-    }
-
-    summarize_with_model(
-        provider,
-        summary_model,
-        build_text_summary_messages(build_dispatch_summary_prompt(trimmed)),
-        |_| {},
-        on_usage,
-    )
-    .await
 }
 
 // ─── Tool Result Summary (LLM-based, intent-aware) ─────────────────────────────
@@ -269,37 +235,52 @@ fn normalize_tool_output_line(line: &str) -> String {
 }
 
 fn parse_dual_tool_summary(output: String) -> (String, String) {
-    let parsed = (
-        extract_tagged_block(&output, "CONTEXT_PAYLOAD"),
-        extract_tagged_block(&output, "DISPLAY_SUMMARY"),
-    );
+    let context_payload = extract_tagged_block(&output, "CONTEXT_PAYLOAD", "DISPLAY_SUMMARY");
+    let display_summary = extract_tagged_block(&output, "DISPLAY_SUMMARY", "CONTEXT_PAYLOAD");
 
-    match parsed {
-        (Some(context_payload), Some(display_summary))
-            if !context_payload.is_empty() && !display_summary.is_empty() =>
-        {
-            (context_payload, display_summary)
-        }
-        _ => {
-            let fallback = output.trim().to_string();
+    match (context_payload, display_summary) {
+        (Some(context_payload), Some(display_summary)) => (context_payload, display_summary),
+        // 摘要模型只产出一个区块时，另一侧复用同一内容，避免回退到带协议标签的原文。
+        (Some(context_payload), None) => (context_payload.clone(), context_payload),
+        (None, Some(display_summary)) => (display_summary.clone(), display_summary),
+        (None, None) => {
+            let fallback = strip_dual_summary_tags(&output);
             (fallback.clone(), fallback)
         }
     }
 }
 
-fn extract_tagged_block(output: &str, tag: &str) -> Option<String> {
+/// 提取 `<TAG>…</TAG>` 区块。摘要模型并不总是闭合标签（实测会出现
+/// `<DISPLAY_SUMMARY>` 后直接跟 `<CONTEXT_PAYLOAD>` 的输出），因此区块
+/// 也在「另一个区块的起始标签」或文本末尾处截止。起始标签缺失或内容为空时
+/// 返回 None。
+fn extract_tagged_block(output: &str, tag: &str, other_tag: &str) -> Option<String> {
     let start_tag = format!("<{tag}>");
-    let end_tag = format!("</{tag}>");
     let start = output.find(&start_tag)?;
-    let content_start = start + start_tag.len();
-    let end = output[content_start..].find(&end_tag)?;
-    let content = &output[content_start..content_start + end];
-    let trimmed = content.trim();
+    let rest = &output[start + start_tag.len()..];
+    let end = [format!("</{tag}>"), format!("<{other_tag}>")]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .unwrap_or(rest.len());
+    let trimmed = rest[..end].trim();
     if trimmed.is_empty() {
         None
     } else {
         Some(trimmed.to_string())
     }
+}
+
+/// 解析彻底失败时剥掉双区块协议标签，避免 `<DISPLAY_SUMMARY>` /
+/// `<CONTEXT_PAYLOAD>` 泄漏到聊天界面与模型上下文。
+fn strip_dual_summary_tags(output: &str) -> String {
+    output
+        .replace("<DISPLAY_SUMMARY>", "")
+        .replace("</DISPLAY_SUMMARY>", "")
+        .replace("<CONTEXT_PAYLOAD>", "")
+        .replace("</CONTEXT_PAYLOAD>", "")
+        .trim()
+        .to_string()
 }
 
 // ─── Rule-Based Structured Extraction (zero-LLM fallback) ──────────────────────
@@ -617,27 +598,6 @@ fn build_prompt_preview(prompt: &str) -> String {
     )
 }
 
-fn build_dispatch_summary_prompt(dispatch_result: &str) -> String {
-    format!(
-        "你是调度 Agent 的子任务回流摘要器。请把下面的子智能体执行结果压缩成可直接注入主调度上下文的中文摘要。\n\
-要求：\n\
-- 只保留事实，不要臆测。\n\
-- 必须保留：当前状态、已完成事项、失败/阻塞点、关键证据、建议下一步。\n\
-- 如有测试、构建、lint、报错、修改文件、退出状态，优先保留。\n\
-- 可以比工具结果摘要更激进地压缩冗余过程描述，但不能丢掉结论依据。\n\
-- 合并重复进度、重复日志和礼貌性措辞；只保留对主调度继续决策有价值的部分。\n\
-- 使用下面结构输出，最多 6 行：\n\
-【子任务回流摘要】\n\
-- 状态：...\n\
-- 已完成：...\n\
-- 阻塞/风险：...\n\
-- 关键证据：...\n\
-- 建议下一步：...\n\n\
-子任务原始结果如下：\n{}",
-        dispatch_result.trim()
-    )
-}
-
 fn build_session_title_prompt(messages: &[SessionTitleMessage], fallback_source: &str) -> String {
     let source = build_session_title_source(messages, fallback_source);
     let prompt = truncate_session_title_source(&source);
@@ -778,7 +738,7 @@ fn truncate_fallback_title(title: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_session_title;
+    use super::{normalize_session_title, parse_dual_tool_summary};
 
     #[test]
     fn mixed_language_title_keeps_complete_term() {
@@ -786,6 +746,56 @@ mod tests {
             normalize_session_title("GPUCUDA查看命令", "查看 GPU CUDA 命令"),
             "GPUCUDA查看命令"
         );
+    }
+
+    #[test]
+    fn dual_summary_parses_fully_closed_tags() {
+        let (context, display) = parse_dual_tool_summary(
+            "<DISPLAY_SUMMARY>\n给人看的摘要\n</DISPLAY_SUMMARY>\n<CONTEXT_PAYLOAD>\n给模型的负载\n</CONTEXT_PAYLOAD>"
+                .to_string(),
+        );
+        assert_eq!(display, "给人看的摘要");
+        assert_eq!(context, "给模型的负载");
+    }
+
+    #[test]
+    fn dual_summary_tolerates_unclosed_display_tag() {
+        // 实测场景：摘要模型漏掉 </DISPLAY_SUMMARY>，直接接 <CONTEXT_PAYLOAD>。
+        let (context, display) = parse_dual_tool_summary(
+            "<DISPLAY_SUMMARY>\n搜索命中 6 个文件。\n\n<CONTEXT_PAYLOAD>\n共 6 个文件 / 34 处匹配\n</CONTEXT_PAYLOAD>"
+                .to_string(),
+        );
+        assert_eq!(display, "搜索命中 6 个文件。");
+        assert_eq!(context, "共 6 个文件 / 34 处匹配");
+    }
+
+    #[test]
+    fn dual_summary_tolerates_unclosed_context_tag() {
+        let (context, display) = parse_dual_tool_summary(
+            "<DISPLAY_SUMMARY>\n摘要\n</DISPLAY_SUMMARY>\n<CONTEXT_PAYLOAD>\n负载到结尾"
+                .to_string(),
+        );
+        assert_eq!(display, "摘要");
+        assert_eq!(context, "负载到结尾");
+    }
+
+    #[test]
+    fn dual_summary_single_block_reuses_content_for_both_sides() {
+        let (context, display) =
+            parse_dual_tool_summary("<DISPLAY_SUMMARY>\n只有摘要\n</DISPLAY_SUMMARY>".to_string());
+        assert_eq!(display, "只有摘要");
+        assert_eq!(context, "只有摘要");
+    }
+
+    #[test]
+    fn dual_summary_fallback_strips_protocol_tags() {
+        let (context, display) = parse_dual_tool_summary(
+            "<DISPLAY_SUMMARY>\n</DISPLAY_SUMMARY>\n正文内容 <CONTEXT_PAYLOAD>".to_string(),
+        );
+        assert!(!display.contains("DISPLAY_SUMMARY"));
+        assert!(!display.contains("CONTEXT_PAYLOAD"));
+        assert_eq!(display, "正文内容");
+        assert_eq!(context, "正文内容");
     }
 }
 
@@ -829,8 +839,4 @@ fn build_keywords_prompt(qa_text: &str, existing_keywords_json: &str) -> String 
 ]",
         max_keywords = SESSION_KEYWORDS_MAX
     )
-}
-
-fn exceeds_limits(raw_output: &str, max_chars: usize, max_lines: usize) -> bool {
-    raw_output.chars().count() > max_chars || raw_output.lines().count() > max_lines
 }

@@ -455,63 +455,6 @@ impl ProjectMcpRegistry {
     }
 }
 
-pub fn build_workspace_mcp_prompt_block(
-    snapshot: Option<&WorkspaceMcpSnapshot>,
-    workspace: &Path,
-) -> String {
-    let Some(snapshot) = snapshot else {
-        return String::new();
-    };
-
-    let mut lines = vec![
-        "# 项目级 MCP 状态".to_string(),
-        format!("工作区：{}", workspace.display()),
-        format!("配置文件：{}", snapshot.status.config_path),
-        format!(
-            "整体状态：{}",
-            aggregate_status_label(&snapshot.status.aggregate)
-        ),
-    ];
-
-    if let Some(config_error) = &snapshot.status.config_error {
-        lines.push(format!("配置错误：{config_error}"));
-        return lines.join("\n");
-    }
-
-    if snapshot.status.servers.is_empty() {
-        lines.push("当前项目没有配置任何 MCP server。".to_string());
-        return lines.join("\n");
-    }
-
-    lines.push(
-        "规则：仅调用状态为 healthy 的 MCP 工具；工具名采用 mcp__{server}__{tool} 前缀。"
-            .to_string(),
-    );
-    for server in &snapshot.status.servers {
-        lines.push(format!(
-            "- server={} enabled={} transport={} state={} tools={}",
-            server.name,
-            server.enabled,
-            server.transport,
-            server_state_label(&server.state),
-            server.tool_count
-        ));
-        if let Some(error) = &server.error {
-            lines.push(format!("  error={error}"));
-        }
-        for tool in &server.tools {
-            lines.push(format!(
-                "  tool={} original={} task_support={}",
-                tool.exposed_name,
-                tool.name,
-                task_support_label(&tool.task_support)
-            ));
-        }
-    }
-
-    lines.join("\n")
-}
-
 pub fn tool_definitions_from_snapshot(
     snapshot: Option<&WorkspaceMcpSnapshot>,
 ) -> Vec<ResolvedMcpTool> {
@@ -1223,31 +1166,4 @@ fn workspace_cache_key(workspace: &Path) -> String {
 
 fn current_timestamp_millis() -> i64 {
     chrono::Utc::now().timestamp_millis()
-}
-
-fn aggregate_status_label(status: &ProjectMcpAggregateStatus) -> &'static str {
-    match status {
-        ProjectMcpAggregateStatus::NotConfigured => "not_configured",
-        ProjectMcpAggregateStatus::Healthy => "healthy",
-        ProjectMcpAggregateStatus::Degraded => "degraded",
-        ProjectMcpAggregateStatus::InvalidConfig => "invalid_config",
-    }
-}
-
-fn server_state_label(status: &ProjectMcpServerState) -> &'static str {
-    match status {
-        ProjectMcpServerState::Disabled => "disabled",
-        ProjectMcpServerState::Healthy => "healthy",
-        ProjectMcpServerState::InvalidConfig => "invalid_config",
-        ProjectMcpServerState::SpawnFailed => "spawn_failed",
-        ProjectMcpServerState::ConnectionFailed => "connection_failed",
-    }
-}
-
-fn task_support_label(status: &ProjectMcpToolTaskSupport) -> &'static str {
-    match status {
-        ProjectMcpToolTaskSupport::Forbidden => "forbidden",
-        ProjectMcpToolTaskSupport::Optional => "optional",
-        ProjectMcpToolTaskSupport::Required => "required",
-    }
 }

@@ -4,9 +4,9 @@
   "version": "0.2.1",
   "identifier": "com.jk.jkcodingagent",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm pi-sidecar:build && pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm pi-sidecar:build && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -42,7 +42,8 @@
       "resources/browser-sidecar/*"
     ],
     "externalBin": [
-      "binaries/rag-server"
+      "binaries/rag-server",
+      "binaries/pi-agent-sidecar"
     ],
     "icon": [
       "icons/32x32.png",

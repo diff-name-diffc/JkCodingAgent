@@ -23,6 +23,11 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -37,5 +42,11 @@ jobs:
       - name: Run ESLint
         run: pnpm lint
 
+      - name: Check and build PI sidecar
+        run: pnpm pi-sidecar:check && pnpm pi-sidecar:build
+
       - name: Run web build
         run: pnpm build
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml

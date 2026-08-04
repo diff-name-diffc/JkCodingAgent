@@ -153,7 +153,7 @@ pub(super) fn with_compression_parameters(
         json!({
             "type": "boolean",
             "description": format!(
-                "是否对工具结果进行语义压缩：调用摘要模型根据 compress_intent 描述的目的，从原始结果中提取关键信息并返回给主模型。结果超过 1000 字符时系统会强制压缩。{tool_specific_guidance}"
+                "是否允许对超长工具结果进行语义压缩。只有 compress=true 且原始结果超过 5000 字符时，才会调用摘要模型根据 compress_intent 提取关键信息；compress=false 绝不会进行摘要。未摘要的结果超过 2000 字符时会明确标记并截断，完整原文保留在工具产物中。{tool_specific_guidance}"
             ),
             "default": default_compress
         }),
@@ -162,7 +162,7 @@ pub(super) fn with_compression_parameters(
         "compress_intent".to_string(),
         json!({
             "type": "string",
-            "description": "当 compress=true 或系统强制压缩时，用一句话描述本次工具调用期望从结果中提取什么信息；任何时候都不应为空。例如：'查找 handleToolResult 函数的实现逻辑和调用链'、'确认 pnpm test 是否全部通过以及失败项'、'获取配置文件中的端口和数据库连接信息'。"
+            "description": "当 compress=true 时，用一句话描述期望从超长结果中提取什么信息。摘要会优先返回可用 path:start-end 精确定位的多段内容。例如：'查找 handleToolResult 函数的实现逻辑和调用链'。"
         }),
     );
     schema
@@ -241,42 +241,6 @@ pub(super) fn lexical_normalize(path: &Path) -> PathBuf {
         }
     }
     normalized
-}
-
-pub(super) fn collect_entries(
-    root: &Path,
-    current: &Path,
-    recursive: bool,
-    max_entries: usize,
-    entries: &mut Vec<String>,
-) {
-    if entries.len() >= max_entries {
-        return;
-    }
-    let Ok(read_dir) = fs::read_dir(current) else {
-        return;
-    };
-    let mut items = read_dir.filter_map(Result::ok).collect::<Vec<_>>();
-    items.sort_by_key(|entry| entry.file_name());
-
-    for item in items {
-        if entries.len() >= max_entries {
-            entries.push(format!("... ({max_entries} entries shown)"));
-            return;
-        }
-        if is_noise(&item.file_name()) {
-            continue;
-        }
-        let path = item.path();
-        if path.is_dir() {
-            entries.push(format!("[dir] {}/", rel(&path, root)));
-            if recursive {
-                collect_entries(root, &path, recursive, max_entries, entries);
-            }
-        } else {
-            entries.push(format!("[file] {}", rel(&path, root)));
-        }
-    }
 }
 
 pub(super) fn render_labeled_sections(sections: Vec<(String, String)>) -> String {

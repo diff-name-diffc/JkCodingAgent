@@ -36,6 +36,7 @@ impl AgentTool for SubmitGraphTool {
                     "type": "object",
                     "description": "执行图定义。边由节点的 dependsOn 派生（隐式 DAG）；节点完成后 state[outputKey]=节点输出，下游节点通过 dependsOn 接收上游输出全文、通过 injectStateKeys 接收指定 state 节选。",
                     "properties": {
+                        "version": { "type": "integer", "enum": [2], "description": "固定为 2" },
                         "title": { "type": "string", "description": "图标题，一句话概括任务目标" },
                         "summary": { "type": "string", "description": "编排思路摘要（为什么这样拆）" },
                         "stateKeys": {
@@ -59,14 +60,19 @@ impl AgentTool for SubmitGraphTool {
                                     "id": { "type": "string", "description": "节点唯一 id（如 n1、n2）" },
                                     "title": { "type": "string", "description": "节点标题" },
                                     "role": { "type": "string", "description": "该节点 Agent 的角色定位，会注入节点输入" },
-                                    "agent": {
-                                        "type": "object",
-                                        "description": "执行者：subAgent=已启用的子智能体（需 agentId）；claude/codex=本机 CLI Agent",
-                                        "properties": {
-                                            "kind": { "type": "string", "enum": ["subAgent", "claude", "codex"] },
-                                            "agentId": { "type": "string", "description": "kind=subAgent 时必填，必须是当前已启用的子智能体 id" }
-                                        },
-                                        "required": ["kind"]
+                                    "modelRef": { "type": "string", "description": "PI Harness 模型目录中的稳定模型 id" },
+                                    "baseToolGroup": { "type": "string", "enum": ["read_only", "coding"], "description": "PI 基础工具组" },
+                                    "specialTools": {
+                                        "type": "array",
+                                        "description": "按需启用的 PI 扩展或 Aha/MCP 工具",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "source": { "type": "string", "enum": ["pi_extension", "aha"] },
+                                                "name": { "type": "string" }
+                                            },
+                                            "required": ["source", "name"]
+                                        }
                                     },
                                     "task": { "type": "string", "description": "自包含的子任务说明：目标、背景、相关文件/符号、约束、验证方式、期望产出。节点看不到聊天记录，必须自包含。" },
                                     "dependsOn": {
@@ -81,11 +87,11 @@ impl AgentTool for SubmitGraphTool {
                                     },
                                     "outputKey": { "type": "string", "description": "本节点输出写回 state 的 key，全局唯一" }
                                 },
-                                "required": ["id", "title", "agent", "task", "outputKey"]
+                                "required": ["id", "title", "modelRef", "baseToolGroup", "task", "outputKey"]
                             }
                         }
                     },
-                    "required": ["title", "nodes"]
+                    "required": ["version", "title", "nodes"]
                 }
             },
             "required": ["definition"]

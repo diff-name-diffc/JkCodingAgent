@@ -3,7 +3,6 @@ use std::path::Path;
 
 use super::mcp::ensure_project_mcp_file;
 use super::storage::{atomic_write, StorageError};
-use crate::platform::{detect_claude_version, detect_codex_version};
 use crate::shared::error::{CommandResult, IntoCommandResult};
 use anyhow::Context;
 
@@ -11,10 +10,6 @@ type ConfigResult<T> = std::result::Result<T, ConfigError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("找不到用户主目录")]
-    HomeDirMissing,
-    #[error("未知智能体：{0}")]
-    UnknownAgent(String),
     #[error("{action} 失败（{path}）：{source}")]
     Io {
         action: &'static str,
@@ -63,15 +58,8 @@ const DEFAULT_CONFIG: &str = r#"# JKCodingAgent 项目配置
 # https://github.com/diff-name-diffc/JkCodingAgent
 
 [agent]
-# 新任务默认使用的智能体："claude" 或 "codex"
-default = "claude"
 # 每个任务提示词前自动追加的公共工程指令
 prompt_prefix = "- 先围绕当前任务目标确认相关代码和文件路径、和子任务相关的上下文。\n- 只做与目标直接相关的最小充分改动，避免无关重构。\n- 完成后简洁说明改动、验证结果和剩余风险。"
-
-# 自动检测回写的 Claude Code 版本，可留空
-claude_version = ""
-# 自动检测回写的 Codex 版本，可留空
-codex_version = ""
 
 [git]
 # 生成提交信息时使用的提示词
@@ -92,13 +80,8 @@ viewport_height = 800
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct AgentConfig {
-    pub default: String,
     #[serde(default)]
     pub prompt_prefix: String,
-    #[serde(default)]
-    pub claude_version: String,
-    #[serde(default)]
-    pub codex_version: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -147,10 +130,7 @@ impl Default for ProjectConfig {
     fn default() -> Self {
         ProjectConfig {
             agent: AgentConfig {
-                default: "claude".to_string(),
                 prompt_prefix: DEFAULT_AGENT_PROMPT_PREFIX.to_string(),
-                claude_version: String::new(),
-                codex_version: String::new(),
             },
             git: GitConfig {
                 commit_prompt: DEFAULT_COMMIT_PROMPT.to_string(),
@@ -176,6 +156,17 @@ fn should_refresh_prompt_prefix(prompt_prefix: &str) -> bool {
     prompt_prefix.is_empty()
         || prompt_prefix == PREVIOUS_DEFAULT_AGENT_PROMPT_PREFIX
         || prompt_prefix == LEGACY_DEFAULT_AGENT_PROMPT_PREFIX
+}
+
+fn contains_legacy_agent_fields(raw: &str) -> bool {
+    toml::from_str::<toml::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("agent").and_then(toml::Value::as_table).cloned())
+        .is_some_and(|agent| {
+            ["default", "default_agent", "claude_version", "codex_version"]
+                .iter()
+                .any(|key| agent.contains_key(*key))
+        })
 }
 
 /// Creates `.jkcodingagent/config.toml` in the project directory if it doesn't already exist.
@@ -208,23 +199,11 @@ fn init_project_config_impl(project_path: &str) -> ConfigResult<ProjectConfig> {
             source,
         })?;
 
-    // 首次打开或版本字段为空时，自动检测并回写
-    let mut updated = false;
+    // 反序列化会忽略旧字段；显式重写一次，确保磁盘上的 CLI 配置也真正消失。
+    let mut updated = contains_legacy_agent_fields(&raw);
     if should_refresh_prompt_prefix(&config.agent.prompt_prefix) {
         config.agent.prompt_prefix = DEFAULT_AGENT_PROMPT_PREFIX.to_string();
         updated = true;
-    }
-    if config.agent.claude_version.is_empty() {
-        if let Some(v) = detect_claude_version() {
-            config.agent.claude_version = v;
-            updated = true;
-        }
-    }
-    if config.agent.codex_version.is_empty() {
-        if let Some(v) = detect_codex_version() {
-            config.agent.codex_version = v;
-            updated = true;
-        }
     }
     if updated {
         let raw = toml::to_string_pretty(&config).map_err(|source| {
@@ -283,54 +262,4 @@ fn write_project_config_impl(project_path: &str, config: ProjectConfig) -> Confi
             source,
         })?;
     Ok(atomic_write(&config_path, &raw)?)
-}
-
-fn home_dir() -> ConfigResult<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .ok_or(ConfigError::HomeDirMissing)
-}
-
-fn agent_config_path(agent: &str) -> ConfigResult<std::path::PathBuf> {
-    let home = home_dir()?;
-    match agent {
-        "claude" => Ok(home.join(".claude").join("settings.json")),
-        "codex" => Ok(home.join(".codex").join("config.toml")),
-        _ => Err(ConfigError::UnknownAgent(agent.to_string())),
-    }
-}
-
-/// Reads the local settings file for the given agent ("claude" or "codex").
-/// Returns None if the file doesn't exist.
-#[tauri::command]
-pub fn read_agent_config_file(agent: String) -> CommandResult<Option<String>> {
-    read_agent_config_file_impl(&agent)
-        .with_context(|| format!("读取智能体配置失败（agent={agent}）"))
-        .into_command_result()
-}
-
-fn read_agent_config_file_impl(agent: &str) -> ConfigResult<Option<String>> {
-    let path = agent_config_path(agent)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    fs::read_to_string(&path)
-        .map(Some)
-        .map_err(io_error("读取智能体配置文件", path))
-}
-
-/// Writes raw content back to the agent's local settings file.
-#[tauri::command]
-pub fn write_agent_config_file(agent: String, content: String) -> CommandResult<()> {
-    write_agent_config_file_impl(&agent, &content)
-        .with_context(|| format!("写入智能体配置失败（agent={agent}）"))
-        .into_command_result()
-}
-
-fn write_agent_config_file_impl(agent: &str, content: &str) -> ConfigResult<()> {
-    let path = agent_config_path(agent)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(io_error("创建智能体配置目录", parent))?;
-    }
-    Ok(atomic_write(&path, content)?)
 }

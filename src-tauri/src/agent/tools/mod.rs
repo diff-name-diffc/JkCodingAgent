@@ -11,7 +11,7 @@ pub use context::ToolContext;
 pub use registry::{AgentTool, ToolRegistry};
 pub use result::{ToolAction, ToolInput, ToolResult, ToolStatus};
 pub use runtime::{ToolRunFinishUpdate, ToolRuntime};
-pub use spec::ToolSpec;
+pub use spec::{ToolSafety, ToolSpec};
 
 use std::sync::Arc;
 

@@ -5,6 +5,9 @@ use std::time::Duration;
 
 use anyhow::Context;
 
+use crate::agent::agents::project::resolve_project_chat_provider;
+use crate::agent::llm::ChatMessage;
+use crate::agent::DispatcherState;
 use crate::project::read_project_config;
 use crate::shared::error::{CommandResult, IntoCommandResult};
 use crate::shared::truncate_for_display;
@@ -138,16 +141,26 @@ async fn run_git_check<S: AsRef<std::ffi::OsStr>>(project_path: &str, args: &[S]
 // ── Tauri 命令 ───────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn generate_commit_message(project_path: String) -> CommandResult<String> {
-    generate_commit_message_impl(project_path.clone())
+pub async fn generate_commit_message(
+    project_path: String,
+    state: tauri::State<'_, DispatcherState>,
+) -> CommandResult<String> {
+    let agent_config = state.agent_config();
+    let settings = match state.db().get_settings_v2() {
+        Ok(settings) => settings,
+        Err(error) => return Err(format!("读取模型设置失败：{error:#}")),
+    };
+    let provider = resolve_project_chat_provider(&agent_config, &settings);
+    generate_commit_message_impl(project_path.clone(), provider)
         .await
         .with_context(|| format!("生成提交信息失败（{}）", project_path))
         .into_command_result()
 }
 
-async fn generate_commit_message_impl(project_path: String) -> GitResult<String> {
-    use std::process::Command;
-
+async fn generate_commit_message_impl(
+    project_path: String,
+    provider: crate::agent::llm::OpenAiCompatProvider,
+) -> GitResult<String> {
     // 1. Get staged diff
     let diff_output = run_git(&project_path, &["diff", "--staged"]).await?;
     let diff = String::from_utf8_lossy(&diff_output.stdout).into_owned();
@@ -158,10 +171,9 @@ async fn generate_commit_message_impl(project_path: String) -> GitResult<String>
     // Truncate diff if too large to avoid CLI arg limits
     let diff = truncate_for_display(&diff, 50_000, "...（diff 已截断）");
 
-    // 2. Read project config for prompt and default agent
+    // 2. Read project config for prompt.
     let config = read_project_config(project_path.clone()).map_err(GitError::ProjectConfig)?;
     let commit_prompt = config.git.commit_prompt;
-    let agent = config.agent.default;
 
     // 3. Build full prompt
     let full_prompt = format!(
@@ -169,71 +181,30 @@ async fn generate_commit_message_impl(project_path: String) -> GitResult<String>
         commit_prompt, diff
     );
 
-    // 4. Build PATH with common tool locations
-    let home = std::env::var("HOME").unwrap_or_default();
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let extra_paths = [
-        format!("{home}/.local/bin"),
-        format!("{home}/.npm-global/bin"),
-        "/opt/homebrew/bin".to_string(),
-        "/opt/homebrew/sbin".to_string(),
-        "/usr/local/bin".to_string(),
-        "/usr/bin".to_string(),
-        "/bin".to_string(),
-        "/usr/sbin".to_string(),
-        "/sbin".to_string(),
-    ];
-    let mut path_parts: Vec<String> = extra_paths.to_vec();
-    for p in current_path.split(':') {
-        if !p.is_empty() && !path_parts.contains(&p.to_string()) {
-            path_parts.push(p.to_string());
-        }
+    if !provider.is_configured() {
+        return Err(GitError::AgentFailed(
+            "项目对话模型未配置 API Key".to_string(),
+        ));
     }
-    let full_path = path_parts.join(":");
 
-    // 5. Run agent in non-interactive exec mode with 15 second timeout
-    let output = tokio::time::timeout(
+    let messages = vec![ChatMessage {
+        role: "user".to_string(),
+        content: full_prompt,
+        content_parts: Vec::new(),
+        reasoning_content: None,
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    }];
+    let response = tokio::time::timeout(
         Duration::from_secs(15),
-        tokio::task::spawn_blocking(move || {
-            if agent == "codex" {
-                // codex exec runs in non-interactive mode without requiring a TTY
-                Command::new("codex")
-                    .args(["exec", &full_prompt])
-                    .env("PATH", &full_path)
-                    .env("HOME", &home)
-                    .current_dir(&project_path)
-                    .output()
-                    .map_err(|source| GitError::CommandIo {
-                        cwd: PathBuf::from(&project_path),
-                        args: vec!["codex".into(), "exec".into()],
-                        source,
-                    })
-            } else {
-                // claude -p runs in non-interactive print mode; prompt is a positional arg
-                Command::new("claude")
-                    .args(["-p", &full_prompt, "--output-format", "text"])
-                    .env("PATH", &full_path)
-                    .env("HOME", &home)
-                    .current_dir(&project_path)
-                    .output()
-                    .map_err(|source| GitError::CommandIo {
-                        cwd: PathBuf::from(&project_path),
-                        args: vec!["claude".into(), "-p".into()],
-                        source,
-                    })
-            }
-        }),
+        provider.chat_stream(&messages, &[], false, |_| {}),
     )
     .await
-    .map_err(|_| GitError::CommitMessageTimeout)???;
+    .map_err(|_| GitError::CommitMessageTimeout)?
+    .map_err(|error| GitError::AgentFailed(format!("{error:#}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(GitError::AgentFailed(format!("{}{}", stderr, stdout)));
-    }
-
-    let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let result = response.content.trim().to_string();
     if result.is_empty() {
         return Err(GitError::EmptyAgentResult);
     }

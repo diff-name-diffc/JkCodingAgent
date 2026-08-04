@@ -274,6 +274,7 @@ impl OrchestratorAgent {
                     workspace_id,
                     on_event,
                     &tool_call,
+                    &self.tools,
                     &result_text,
                     &summary_provider,
                     &summary_model,

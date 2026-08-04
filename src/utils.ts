@@ -56,14 +56,6 @@ export function isImeComposing(event: ImeKeyboardEvent): boolean {
   );
 }
 
-// ── Usage 颜色工具 ────────────────────────────────────────────────────────────
-
-export function getUsageColor(remainingPercent: number): string {
-  if (remainingPercent > 70) return "var(--usage-good)";
-  if (remainingPercent >= 20) return "var(--usage-warn)";
-  return "var(--usage-danger)";
-}
-
 export function formatTokenCount(value: number): string {
   if (value >= 1_000_000) {
     return `${(value / 1_000_000).toFixed(2)}M`;

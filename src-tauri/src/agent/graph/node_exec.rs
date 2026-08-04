@@ -1,40 +1,35 @@
-//! 图节点执行器。
-//!
-//! - subAgent 节点：复用 `SubAgentRuntime`（合成 `graphnode:{plan_id}:{node_id}`
-//!   作为 tool_call_id，轨迹同时落 `sub_agent_run_traces` 供节点详情回放）。
-//! - claude/codex 节点：`tokio::process::Command` 无头一次性执行（不走旧交互式
-//!   PTY 协议），stdout/stderr 分行流式推送 `nodeOutputDelta`，整体超时 30 分钟，
-//!   工作目录 = 项目根，命中取消标志时 kill 子进程。
+//! 单节点 PI SDK RPC 执行器。每个节点拥有独立 sidecar 进程与内存会话。
 
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::{json, Value};
 use tauri::AppHandle;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
-use tokio::sync::watch;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::{watch, Mutex};
 
+use super::harness::ResolvedNodeHarness;
+use super::pi_rpc::{
+    global_agent_dir, spawn_sidecar, terminate_sidecar_process_group, SidecarEnvelope,
+};
 use super::runner::emit_run_event;
-use super::types::{GraphNode, GraphNodeAgent, GraphRunEvent};
-use crate::agent::llm::OpenAiCompatProvider;
-use crate::agent::sub_agent::runtime::SubAgentRuntime;
-use crate::agent::sub_agent::SubAgentManager;
-use crate::agent::tools::{ToolContext, ToolRegistry};
-use crate::platform::{get_agent_bin_checked, get_login_shell_env};
+use super::store::GraphStore;
+use super::types::{AgentActivity, GraphNode, GraphRunEvent};
+use crate::agent::tools::{ToolContext, ToolRegistry, ToolStatus};
 
-/// CLI 节点整体超时（30 分钟，v1 常量，后续可进设置）。
-const CLI_NODE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-/// claude 无头执行的权限模式（v1 固定，后续可进设置）。
-const CLAUDE_PERMISSION_MODE: &str = "acceptEdits";
-/// stdout 累积上限（超出后保留头部，防止超长输出撑爆内存）。
-const STDOUT_ACCUM_MAX_CHARS: usize = 1_000_000;
-/// stderr 尾部保留长度（仅用于失败诊断）。
-const STDERR_TAIL_MAX_CHARS: usize = 8_000;
+const NODE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const PROTOCOL_VERSION: i64 = 2;
 
 #[derive(Debug)]
 pub(crate) enum NodeExecOutcome {
-    Succeeded(String),
+    Succeeded {
+        output: String,
+        affected_files: Vec<String>,
+        tool_call_count: i64,
+        usage_json: String,
+    },
     Failed(String),
     Cancelled,
 }
@@ -42,344 +37,683 @@ pub(crate) enum NodeExecOutcome {
 pub(crate) struct NodeExecContext {
     pub app: AppHandle,
     pub plan_id: String,
+    pub run_id: String,
     pub workspace_id: String,
     pub workspace_root: PathBuf,
-    pub session_title: String,
-    pub user_requirement: String,
     pub node: GraphNode,
-    /// 装配后的完整节点输入（总体需求 + 角色 + 子任务 + 上游输出 + state 节选）。
     pub input: String,
-    /// subAgent 节点的父级 provider（子智能体默认继承其模型配置）。
-    pub parent_provider: OpenAiCompatProvider,
-    /// subAgent 节点可用的完整工具注册表（default_tools，含 MCP 动态工具）。
+    pub harness: ResolvedNodeHarness,
     pub tool_registry: Arc<ToolRegistry>,
-    pub sub_agent_manager: Option<Arc<SubAgentManager>>,
+    pub tool_context: ToolContext,
+    pub store: GraphStore,
     pub cancel_rx: watch::Receiver<bool>,
 }
 
-impl NodeExecContext {
-    fn emit_delta(&self, delta: &str) {
+pub(crate) async fn execute_node(ctx: &NodeExecContext) -> NodeExecOutcome {
+    match execute_pi_node(ctx).await {
+        Ok(outcome) => outcome,
+        Err(_error) if *ctx.cancel_rx.borrow() => NodeExecOutcome::Cancelled,
+        Err(error) => NodeExecOutcome::Failed(format!("PI Agent 执行失败：{error:#}")),
+    }
+}
+
+async fn execute_pi_node(ctx: &NodeExecContext) -> anyhow::Result<NodeExecOutcome> {
+    let mut child = spawn_sidecar()?;
+    let execution = execute_pi_node_process(ctx, &mut child).await;
+    // spawn 成功后只有这一条退出路径：先清理整个进程组，再做活动收尾。
+    terminate_sidecar_process_group(&mut child).await;
+    execution.assistant.finish(ctx).await;
+    execution.thinking.finish(ctx).await;
+    execution.outcome
+}
+
+struct PiNodeExecution {
+    outcome: anyhow::Result<NodeExecOutcome>,
+    assistant: TextActivity,
+    thinking: TextActivity,
+}
+
+async fn execute_pi_node_process(
+    ctx: &NodeExecContext,
+    child: &mut tokio::process::Child,
+) -> PiNodeExecution {
+    let mut assistant = TextActivity::new(ctx, "assistant_text", "Agent 响应");
+    let mut thinking = TextActivity::new(ctx, "thinking", "思考");
+    let outcome = async {
+        let stdin = Arc::new(Mutex::new(
+            child
+                .stdin
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("PI sidecar stdin 未捕获"))?,
+        ));
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("PI sidecar stdout 未捕获"))?;
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let start = json!({
+            "type": "start",
+            "requestId": request_id,
+            "runId": ctx.run_id,
+            "nodeId": ctx.node.id,
+            "sequence": 1,
+            "workspace": ctx.workspace_root,
+            "agentDir": global_agent_dir()?,
+            "projectResourceDir": ctx.workspace_root.join(".jkcodingagent/pi-agent"),
+            "prompt": ctx.input,
+            "model": ctx.harness.model,
+            "baseToolGroup": ctx.node.base_tool_group,
+            "specialTools": ctx.node.special_tools,
+            "hostTools": ctx.harness.host_tools,
+        });
+        write_jsonl(&stdin, &start).await?;
+
+        let mut lines = BufReader::new(stdout).lines();
+        let mut cancel_rx = ctx.cancel_rx.clone();
+        let mut tool_activities: HashMap<String, AgentActivity> = HashMap::new();
+        let mut affected_files = HashSet::new();
+        let mut tool_call_count = 0_i64;
+        let mut last_sequence = 0_i64;
+        let mut host_sequence = 1_i64;
+        let deadline = tokio::time::Instant::now() + NODE_TIMEOUT;
+
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => {
+                    request_sidecar_cancel(&stdin, &request_id, ctx, &mut host_sequence).await;
+                    return Err(anyhow::anyhow!("节点执行超过 30 分钟，已终止"));
+                }
+                _ = cancellation_requested(&mut cancel_rx) => {
+                    request_sidecar_cancel(&stdin, &request_id, ctx, &mut host_sequence).await;
+                    return Ok(NodeExecOutcome::Cancelled);
+                }
+                line = lines.next_line() => {
+                    let Some(line) = line? else {
+                        return Err(anyhow::anyhow!("PI sidecar 在完成事件前退出"));
+                    };
+                    let envelope = parse_sidecar_envelope(
+                        &line,
+                        &request_id,
+                        &ctx.run_id,
+                        &ctx.node.id,
+                        last_sequence,
+                    )?;
+                    if envelope.r#type == "ready" {
+                        continue;
+                    }
+                    last_sequence = envelope.sequence;
+                    match envelope.r#type.as_str() {
+                        "completed" => {
+                            let output = envelope.data.get("output").and_then(Value::as_str).unwrap_or(&assistant.content).to_string();
+                            let usage = envelope.data.get("usage").cloned().unwrap_or_else(|| json!({}));
+                            let usage_activity = AgentActivity {
+                                id: format!("{}:{}:usage", ctx.run_id, ctx.node.id),
+                                run_id: ctx.run_id.clone(),
+                                node_id: ctx.node.id.clone(),
+                                sequence: 1_000_000_000,
+                                kind: "usage".into(),
+                                status: "finished".into(),
+                                title: "Token 用量".into(),
+                                content: usage.to_string(),
+                                payload_json: usage.to_string(),
+                                started_at: chrono::Utc::now().timestamp_millis(),
+                                finished_at: Some(chrono::Utc::now().timestamp_millis()),
+                            };
+                            let _ = ctx.store.save_activity_async(&usage_activity).await;
+                            emit_run_event(&ctx.app, &ctx.plan_id, &ctx.run_id, &ctx.workspace_id, GraphRunEvent::NodeActivity { node_id: ctx.node.id.clone(), activity: usage_activity });
+                            let mut files = affected_files.into_iter().collect::<Vec<_>>(); files.sort();
+                            return Ok(NodeExecOutcome::Succeeded { output, affected_files: files, tool_call_count, usage_json: usage.to_string() });
+                        }
+                        "failed" => {
+                            let message = envelope.data.get("error").and_then(Value::as_str).unwrap_or("PI sidecar 未知错误");
+                            return Err(anyhow::anyhow!(message.to_string()));
+                        }
+                        "host_tool_call" => {
+                            let call_id = string_field(&envelope.data, "callId")?;
+                            let name = string_field(&envelope.data, "name")?;
+                            let args = envelope.data.get("args").cloned().unwrap_or_else(|| json!({}));
+                            collect_affected_file(&name, &args, &mut affected_files);
+                            let result = match await_interruptible(
+                                ctx.tool_registry.execute(&name, &args, &ctx.tool_context),
+                                &mut cancel_rx,
+                                deadline,
+                            ).await {
+                                Interruptible::Completed(result) => result,
+                                Interruptible::TimedOut => {
+                                    request_sidecar_cancel(&stdin, &request_id, ctx, &mut host_sequence).await;
+                                    return Err(anyhow::anyhow!("节点执行超过 30 分钟，已终止"));
+                                }
+                                Interruptible::Cancelled => {
+                                    request_sidecar_cancel(&stdin, &request_id, ctx, &mut host_sequence).await;
+                                    return Ok(NodeExecOutcome::Cancelled);
+                                }
+                            };
+                            host_sequence += 1;
+                            let response = if result.status == ToolStatus::Success {
+                                json!({"type":"host_tool_result","requestId":request_id,"runId":ctx.run_id,"nodeId":ctx.node.id,"sequence":host_sequence,"callId":call_id,"result":result.output_for_llm()})
+                            } else {
+                                json!({"type":"host_tool_result","requestId":request_id,"runId":ctx.run_id,"nodeId":ctx.node.id,"sequence":host_sequence,"callId":call_id,"error":result.output_for_llm()})
+                            };
+                            write_jsonl(&stdin, &response).await?;
+                        }
+                        "agent_event" => {
+                            handle_agent_event(ctx, envelope.sequence, &envelope.data, &mut assistant, &mut thinking, &mut tool_activities, &mut affected_files, &mut tool_call_count).await?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    .await;
+    PiNodeExecution {
+        outcome,
+        assistant,
+        thinking,
+    }
+}
+
+async fn cancellation_requested(cancel_rx: &mut watch::Receiver<bool>) {
+    loop {
+        if *cancel_rx.borrow() {
+            return;
+        }
+        if cancel_rx.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Interruptible<T> {
+    Completed(T),
+    Cancelled,
+    TimedOut,
+}
+
+async fn await_interruptible<T>(
+    future: impl std::future::Future<Output = T>,
+    cancel_rx: &mut watch::Receiver<bool>,
+    deadline: tokio::time::Instant,
+) -> Interruptible<T> {
+    tokio::select! {
+        result = future => Interruptible::Completed(result),
+        _ = tokio::time::sleep_until(deadline) => Interruptible::TimedOut,
+        _ = cancellation_requested(cancel_rx) => Interruptible::Cancelled,
+    }
+}
+
+async fn request_sidecar_cancel(
+    stdin: &Arc<Mutex<tokio::process::ChildStdin>>,
+    request_id: &str,
+    ctx: &NodeExecContext,
+    host_sequence: &mut i64,
+) {
+    *host_sequence += 1;
+    let _ = write_jsonl(
+        stdin,
+        &json!({
+            "type": "cancel",
+            "requestId": request_id,
+            "runId": ctx.run_id,
+            "nodeId": ctx.node.id,
+            "sequence": *host_sequence,
+        }),
+    )
+    .await;
+}
+
+fn parse_sidecar_envelope(
+    line: &str,
+    request_id: &str,
+    run_id: &str,
+    node_id: &str,
+    last_sequence: i64,
+) -> anyhow::Result<SidecarEnvelope> {
+    let envelope: SidecarEnvelope = serde_json::from_str(line)
+        .map_err(|error| anyhow::anyhow!("PI sidecar 输出非法 JSONL：{error}"))?;
+    if envelope.r#type == "ready" {
+        let version = envelope
+            .data
+            .get("protocolVersion")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        if version != PROTOCOL_VERSION {
+            return Err(anyhow::anyhow!(
+                "PI sidecar 协议版本不匹配：期望 {PROTOCOL_VERSION}，实际 {version}"
+            ));
+        }
+        return Ok(envelope);
+    }
+    if envelope.request_id != request_id {
+        return Err(anyhow::anyhow!("PI sidecar 返回了未知 requestId"));
+    }
+    if envelope.run_id.as_deref() != Some(run_id) || envelope.node_id.as_deref() != Some(node_id) {
+        return Err(anyhow::anyhow!(
+            "PI sidecar 返回的 runId/nodeId 与当前节点不匹配"
+        ));
+    }
+    if envelope.sequence <= last_sequence {
+        return Err(anyhow::anyhow!(
+            "PI sidecar sequence 非单调递增：{} <= {last_sequence}",
+            envelope.sequence
+        ));
+    }
+    Ok(envelope)
+}
+
+async fn handle_agent_event(
+    ctx: &NodeExecContext,
+    protocol_sequence: i64,
+    data: &Value,
+    assistant: &mut TextActivity,
+    thinking: &mut TextActivity,
+    tools: &mut HashMap<String, AgentActivity>,
+    affected: &mut HashSet<String>,
+    tool_call_count: &mut i64,
+) -> anyhow::Result<()> {
+    let activity_sequence = activity_sequence(protocol_sequence)?;
+    match data.get("kind").and_then(Value::as_str).unwrap_or_default() {
+        "assistant_text" => {
+            let delta = data
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            assistant.push(ctx, delta).await;
+            emit_run_event(
+                &ctx.app,
+                &ctx.plan_id,
+                &ctx.run_id,
+                &ctx.workspace_id,
+                GraphRunEvent::NodeOutputDelta {
+                    node_id: ctx.node.id.clone(),
+                    delta: delta.to_string(),
+                },
+            );
+            emit_phase(ctx, "responding");
+        }
+        "thinking" => {
+            thinking
+                .push(
+                    ctx,
+                    data.get("delta")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )
+                .await;
+            emit_phase(ctx, "thinking");
+        }
+        "tool_call" => {
+            emit_phase(ctx, "tool_running");
+            let call_id = data
+                .get("callId")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let status = data
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("updated")
+                .to_string();
+            let name = data
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("tool")
+                .to_string();
+            if status == "started" {
+                *tool_call_count += 1;
+                if let Some(args) = data.get("args") {
+                    collect_affected_file(&name, args, affected);
+                }
+            }
+            let sequence = tools
+                .get(&call_id)
+                .map(|a| a.sequence)
+                .unwrap_or(activity_sequence);
+            let now = chrono::Utc::now().timestamp_millis();
+            let activity = AgentActivity {
+                id: format!("{}:{}:tool:{call_id}", ctx.run_id, ctx.node.id),
+                run_id: ctx.run_id.clone(),
+                node_id: ctx.node.id.clone(),
+                sequence,
+                kind: "tool_call".into(),
+                status: status.clone(),
+                title: name,
+                content: data.get("result").map(value_text).unwrap_or_default(),
+                payload_json: redact(data.clone()).to_string(),
+                started_at: tools.get(&call_id).map(|a| a.started_at).unwrap_or(now),
+                finished_at: matches!(status.as_str(), "finished" | "failed").then_some(now),
+            };
+            let _ = ctx.store.save_activity_async(&activity).await;
+            emit_run_event(
+                &ctx.app,
+                &ctx.plan_id,
+                &ctx.run_id,
+                &ctx.workspace_id,
+                GraphRunEvent::NodeActivity {
+                    node_id: ctx.node.id.clone(),
+                    activity: activity.clone(),
+                },
+            );
+            tools.insert(call_id, activity);
+        }
+        "retry" | "compaction" => {
+            let kind = data
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("activity");
+            emit_phase(
+                ctx,
+                if kind == "retry" {
+                    "retrying"
+                } else {
+                    "compacting"
+                },
+            );
+            let activity = activity_from_event(ctx, data, activity_sequence);
+            let _ = ctx.store.save_activity_async(&activity).await;
+            emit_run_event(
+                &ctx.app,
+                &ctx.plan_id,
+                &ctx.run_id,
+                &ctx.workspace_id,
+                GraphRunEvent::NodeActivity {
+                    node_id: ctx.node.id.clone(),
+                    activity,
+                },
+            );
+        }
+        "lifecycle" => {
+            if let Some(phase) = data.get("phase").and_then(Value::as_str) {
+                emit_phase(ctx, phase)
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn activity_sequence(protocol_sequence: i64) -> anyhow::Result<i64> {
+    protocol_sequence.checked_mul(10).ok_or_else(|| {
+        anyhow::anyhow!("PI sidecar sequence 超出活动序号可表示范围：{protocol_sequence}")
+    })
+}
+
+struct TextActivity {
+    id: String,
+    kind: String,
+    title: String,
+    content: String,
+    sequence: i64,
+    started_at: i64,
+    last_flush: tokio::time::Instant,
+}
+impl TextActivity {
+    fn new(ctx: &NodeExecContext, kind: &str, title: &str) -> Self {
+        Self {
+            id: format!("{}:{}:{kind}", ctx.run_id, ctx.node.id),
+            kind: kind.into(),
+            title: title.into(),
+            content: String::new(),
+            sequence: if kind == "assistant_text" { 1 } else { 2 },
+            started_at: chrono::Utc::now().timestamp_millis(),
+            last_flush: tokio::time::Instant::now(),
+        }
+    }
+    async fn push(&mut self, ctx: &NodeExecContext, delta: &str) {
+        self.content.push_str(delta);
+        if self.last_flush.elapsed() >= Duration::from_millis(250) {
+            self.flush(ctx).await;
+            self.last_flush = tokio::time::Instant::now();
+        }
+    }
+    async fn flush(&self, ctx: &NodeExecContext) {
+        self.persist(ctx, "streaming", None).await;
+    }
+    async fn finish(&self, ctx: &NodeExecContext) {
+        self.persist(ctx, "finished", Some(chrono::Utc::now().timestamp_millis()))
+            .await;
+    }
+    async fn persist(&self, ctx: &NodeExecContext, status: &str, finished_at: Option<i64>) {
+        if self.content.is_empty() {
+            return;
+        }
+        let activity = AgentActivity {
+            id: self.id.clone(),
+            run_id: ctx.run_id.clone(),
+            node_id: ctx.node.id.clone(),
+            sequence: self.sequence,
+            kind: self.kind.clone(),
+            status: status.into(),
+            title: self.title.clone(),
+            content: self.content.clone(),
+            payload_json: "{}".into(),
+            started_at: self.started_at,
+            finished_at,
+        };
+        let _ = ctx.store.save_activity_async(&activity).await;
         emit_run_event(
-            &self.app,
-            &self.plan_id,
-            &self.workspace_id,
-            GraphRunEvent::NodeOutputDelta {
-                node_id: self.node.id.clone(),
-                delta: delta.to_string(),
+            &ctx.app,
+            &ctx.plan_id,
+            &ctx.run_id,
+            &ctx.workspace_id,
+            GraphRunEvent::NodeActivity {
+                node_id: ctx.node.id.clone(),
+                activity,
             },
         );
     }
-
-    fn cancellation_requested(&self) -> bool {
-        *self.cancel_rx.borrow()
-    }
 }
 
-pub(crate) async fn execute_node(ctx: &NodeExecContext) -> NodeExecOutcome {
-    match &ctx.node.agent {
-        GraphNodeAgent::SubAgent { agent_id } => {
-            execute_sub_agent_node(ctx, agent_id.clone()).await
+fn activity_from_event(ctx: &NodeExecContext, data: &Value, sequence: i64) -> AgentActivity {
+    let now = chrono::Utc::now().timestamp_millis();
+    let kind = data
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("activity")
+        .to_string();
+    AgentActivity {
+        id: format!("{}:{}:{kind}:{sequence}", ctx.run_id, ctx.node.id),
+        run_id: ctx.run_id.clone(),
+        node_id: ctx.node.id.clone(),
+        sequence,
+        kind: kind.clone(),
+        status: data
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("started")
+            .into(),
+        title: kind,
+        content: data.get("error").map(value_text).unwrap_or_default(),
+        payload_json: redact(data.clone()).to_string(),
+        started_at: now,
+        finished_at: None,
+    }
+}
+fn emit_phase(ctx: &NodeExecContext, phase: &str) {
+    emit_run_event(
+        &ctx.app,
+        &ctx.plan_id,
+        &ctx.run_id,
+        &ctx.workspace_id,
+        GraphRunEvent::NodePhaseChanged {
+            node_id: ctx.node.id.clone(),
+            phase: phase.to_string(),
+        },
+    );
+}
+async fn write_jsonl(
+    stdin: &Arc<Mutex<tokio::process::ChildStdin>>,
+    value: &Value,
+) -> anyhow::Result<()> {
+    let mut writer = stdin.lock().await;
+    writer.write_all(format!("{}\n", value).as_bytes()).await?;
+    writer.flush().await?;
+    Ok(())
+}
+fn string_field(value: &Value, key: &str) -> anyhow::Result<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("PI 消息缺少 {key}"))
+}
+fn value_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string())
+}
+fn collect_affected_file(name: &str, args: &Value, files: &mut HashSet<String>) {
+    if matches!(name, "edit" | "write" | "write_file" | "edit_file") {
+        for key in ["path", "filePath", "file_path"] {
+            if let Some(path) = args.get(key).and_then(Value::as_str) {
+                files.insert(path.to_string());
+            }
         }
-        GraphNodeAgent::Claude => execute_cli_node(ctx, "claude").await,
-        GraphNodeAgent::Codex => execute_cli_node(ctx, "codex").await,
     }
 }
-
-/// subAgent 节点的轨迹关联键：`sub-agent-event` 载荷的 toolCallId 即此值，
-/// 前端节点详情直接复用 subAgentEventStore 渲染执行轨迹。
-pub(crate) fn graph_node_tool_call_id(plan_id: &str, node_id: &str) -> String {
-    format!("graphnode:{plan_id}:{node_id}")
+fn redact(mut value: Value) -> Value {
+    fn walk(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                for (key, item) in map.iter_mut() {
+                    let normalized = key
+                        .chars()
+                        .filter(|ch| ch.is_ascii_alphanumeric())
+                        .flat_map(char::to_lowercase)
+                        .collect::<String>();
+                    if matches!(
+                        normalized.as_str(),
+                        "apikey"
+                            | "token"
+                            | "accesstoken"
+                            | "refreshtoken"
+                            | "idtoken"
+                            | "password"
+                            | "secret"
+                            | "authorization"
+                    ) {
+                        *item = Value::String("***".into())
+                    } else {
+                        walk(item)
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item)
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(&mut value);
+    value
 }
 
-// ─── subAgent 节点 ────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-async fn execute_sub_agent_node(ctx: &NodeExecContext, agent_id: String) -> NodeExecOutcome {
-    let Some(manager) = &ctx.sub_agent_manager else {
-        return NodeExecOutcome::Failed("子智能体管理器未初始化".to_string());
-    };
-    let Some(config) = manager.get(&agent_id) else {
-        return NodeExecOutcome::Failed(format!("未找到子智能体 '{agent_id}'"));
-    };
-    if !config.enabled {
-        return NodeExecOutcome::Failed(format!("子智能体 '{agent_id}' 已被禁用"));
+    #[test]
+    fn recursively_redacts_secrets() {
+        let value = json!({
+            "apiKey": "one",
+            "nested": { "refresh_token": "two", "safe": "visible" },
+            "items": [{ "authorization": "Bearer three" }]
+        });
+        let redacted = redact(value);
+        assert_eq!(redacted["apiKey"], "***");
+        assert_eq!(redacted["nested"]["refresh_token"], "***");
+        assert_eq!(redacted["nested"]["safe"], "visible");
+        assert_eq!(redacted["items"][0]["authorization"], "***");
     }
 
-    let tool_call_id = graph_node_tool_call_id(&ctx.plan_id, &ctx.node.id);
-    let tool_context = ToolContext {
-        workspace_id: ctx.workspace_id.clone(),
-        workspace: ctx.workspace_root.clone(),
-        session_title: ctx.session_title.clone(),
-        user_task: Some(ctx.user_requirement.clone()),
-        ssh_review: None,
-        exec_timeout_secs: 60,
-        restrict_to_workspace: true,
-        extra_allowed_dirs: dirs::home_dir()
-            .map(|home| vec![home.join(".jkcodingagent")])
-            .unwrap_or_default(),
-        app_handle: Some(ctx.app.clone()),
-        llm_provider: Some(ctx.parent_provider.clone()),
-        vision_model: String::new(),
-        image_model_url: String::new(),
-        image_model_api_key: String::new(),
-        image_model: String::new(),
-        image_edit_model: String::new(),
-        sub_agent_tool_registry: Some(Arc::clone(&ctx.tool_registry)),
-        current_sub_agent_id: None,
-        current_sub_agent_name: None,
-        current_tool_call_id: Some(tool_call_id.clone()),
-        sub_agent_parent_tool_call_id: None,
-        sub_agent_trace_events: None,
-    };
+    #[test]
+    fn rejects_invalid_sidecar_envelopes() {
+        assert!(parse_sidecar_envelope("not-json", "request", "run", "node", 0).is_err());
 
-    let runtime = match SubAgentRuntime::build(
-        &config,
-        &ctx.parent_provider,
-        Arc::clone(&ctx.tool_registry),
-        tool_context,
-    ) {
-        Ok(runtime) => runtime,
-        Err(error) => return NodeExecOutcome::Failed(format!("子智能体初始化失败：{error}")),
-    };
+        let frame = |request_id: &str, run_id: &str, node_id: &str, sequence: i64| {
+            json!({
+                "type": "agent_event",
+                "requestId": request_id,
+                "runId": run_id,
+                "nodeId": node_id,
+                "sequence": sequence,
+                "data": {},
+            })
+            .to_string()
+        };
+        assert!(parse_sidecar_envelope(
+            &frame("other", "run", "node", 1),
+            "request",
+            "run",
+            "node",
+            0
+        )
+        .is_err());
+        assert!(parse_sidecar_envelope(
+            &frame("request", "other", "node", 1),
+            "request",
+            "run",
+            "node",
+            0
+        )
+        .is_err());
+        assert!(parse_sidecar_envelope(
+            &frame("request", "run", "node", 1),
+            "request",
+            "run",
+            "node",
+            1
+        )
+        .is_err());
+        assert!(parse_sidecar_envelope(
+            &json!({
+                "type": "ready",
+                "requestId": "sidecar",
+                "sequence": 1,
+                "data": { "protocolVersion": PROTOCOL_VERSION + 1 },
+            })
+            .to_string(),
+            "request",
+            "run",
+            "node",
+            0,
+        )
+        .is_err());
+    }
 
-    let outcome = runtime
-        .execute_with_cancellation(
-            &ctx.input,
-            Some(ctx.app.clone()),
-            &ctx.workspace_id,
-            Some(ctx.cancel_rx.clone()),
+    #[test]
+    fn rejects_agent_event_sequence_overflow() {
+        assert_eq!(activity_sequence(42).unwrap(), 420);
+        assert!(activity_sequence(i64::MAX).is_err());
+        assert!(activity_sequence(i64::MIN).is_err());
+    }
+
+    #[tokio::test]
+    async fn pending_tool_future_is_interruptible_by_cancellation() {
+        let (cancel_tx, mut cancel_rx) = watch::channel(false);
+        cancel_tx.send(true).unwrap();
+        let result = await_interruptible(
+            std::future::pending::<()>(),
+            &mut cancel_rx,
+            tokio::time::Instant::now() + Duration::from_secs(1),
         )
         .await;
+        assert_eq!(result, Interruptible::Cancelled);
+    }
 
-    // trace 落库（主键 (workspace_id, tool_call_id)），供节点详情历史回放。
-    let trace_json = runtime
-        .trace_events_json()
-        .unwrap_or_else(|_| "[]".to_string());
-    let trace_status = if outcome.is_ok() { "completed" } else { "failed" };
-    let persist_manager = Arc::clone(manager);
-    let persist_workspace_id = ctx.workspace_id.clone();
-    let persist_agent_id = config.agent_id.clone();
-    let persisted = tokio::task::spawn_blocking(move || {
-        persist_manager.save_run_trace(
-            &persist_workspace_id,
-            &tool_call_id,
-            &persist_agent_id,
-            trace_status,
-            &trace_json,
+    #[tokio::test]
+    async fn pending_tool_future_is_interruptible_by_deadline() {
+        let (_cancel_tx, mut cancel_rx) = watch::channel(false);
+        let result = await_interruptible(
+            std::future::pending::<()>(),
+            &mut cancel_rx,
+            tokio::time::Instant::now() + Duration::from_millis(10),
         )
-    })
-    .await;
-    match persisted {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => eprintln!("[graph] 子智能体轨迹持久化失败：{error}"),
-        Err(error) => eprintln!("[graph] 子智能体轨迹任务失败：{error}"),
-    }
-
-    match outcome {
-        Ok(output) => NodeExecOutcome::Succeeded(output),
-        Err(error) => {
-            if ctx.cancellation_requested() {
-                NodeExecOutcome::Cancelled
-            } else {
-                NodeExecOutcome::Failed(format!("子智能体执行失败：{error}"))
-            }
-        }
-    }
-}
-
-// ─── claude / codex 节点（无头一次性执行） ────────────────────────────────────
-
-async fn execute_cli_node(ctx: &NodeExecContext, agent: &str) -> NodeExecOutcome {
-    let bin = match get_agent_bin_checked(agent) {
-        Ok(bin) => bin,
-        Err(error) => {
-            return NodeExecOutcome::Failed(format!(
-                "读取 {agent} 可执行文件路径失败：{error}"
-            ))
-        }
-    };
-
-    // 项目配置的 agent.prompt_prefix 前置到节点输入（与旧 dispatch 行为一致）。
-    let prompt = match load_project_prompt_prefix(&ctx.workspace_root).await {
-        Some(prefix) => format!("{}\n\n{}", prefix.trim(), ctx.input),
-        None => ctx.input.clone(),
-    };
-
-    let mut command = Command::new(&bin);
-    if agent == "claude" {
-        command
-            .arg("-p")
-            .arg(&prompt)
-            .arg("--output-format")
-            .arg("text")
-            .arg("--permission-mode")
-            .arg(CLAUDE_PERMISSION_MODE);
-    } else {
-        command.arg("exec").arg("--full-auto").arg(&prompt);
-    }
-    command
-        .current_dir(&ctx.workspace_root)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    for (key, value) in get_login_shell_env() {
-        command.env(key, value);
-    }
-
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => return NodeExecOutcome::Failed(format!("启动 {agent} 进程失败：{error}")),
-    };
-
-    // stdout/stderr 分行读取，统一经 channel 汇入主循环后流式推送。
-    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String)>();
-    if let Some(stdout) = child.stdout.take() {
-        let tx = line_tx.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if tx.send((false, line)).is_err() {
-                    break;
-                }
-            }
-        });
-    }
-    if let Some(stderr) = child.stderr.take() {
-        let tx = line_tx.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if tx.send((true, line)).is_err() {
-                    break;
-                }
-            }
-        });
-    }
-    drop(line_tx);
-
-    let mut stdout_text = String::new();
-    let mut stderr_tail = String::new();
-    let mut cancel_rx = ctx.cancel_rx.clone();
-    let deadline = tokio::time::Instant::now() + CLI_NODE_TIMEOUT;
-    let mut exit_status: Option<std::process::ExitStatus> = None;
-    let mut channels_open = true;
-
-    loop {
-        tokio::select! {
-            _ = tokio::time::sleep_until(deadline), if exit_status.is_none() => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                return NodeExecOutcome::Failed(format!(
-                    "{agent} 节点执行超过 30 分钟，已终止"
-                ));
-            }
-            _ = cancel_rx.changed(), if exit_status.is_none() => {
-                if *cancel_rx.borrow() {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    return NodeExecOutcome::Cancelled;
-                }
-            }
-            result = child.wait(), if exit_status.is_none() => {
-                match result {
-                    Ok(status) => exit_status = Some(status),
-                    Err(error) => {
-                        return NodeExecOutcome::Failed(format!(
-                            "读取 {agent} 进程退出状态失败：{error}"
-                        ))
-                    }
-                }
-                if !channels_open {
-                    break;
-                }
-            }
-            line = line_rx.recv(), if channels_open => {
-                match line {
-                    Some((is_stderr, text)) => {
-                        ctx.emit_delta(&format!("{text}\n"));
-                        if is_stderr {
-                            push_tail(&mut stderr_tail, &text, STDERR_TAIL_MAX_CHARS);
-                        } else {
-                            push_capped(&mut stdout_text, &text, STDOUT_ACCUM_MAX_CHARS);
-                        }
-                    }
-                    None => {
-                        channels_open = false;
-                        if exit_status.is_some() {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let Some(status) = exit_status else {
-        return NodeExecOutcome::Failed(format!("{agent} 进程状态异常"));
-    };
-    if !status.success() {
-        let code = status
-            .code()
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "未知".to_string());
-        let detail = if stderr_tail.trim().is_empty() {
-            tail_chars(&stdout_text, 2_000)
-        } else {
-            stderr_tail.trim().to_string()
-        };
-        return NodeExecOutcome::Failed(format!(
-            "{agent} 进程以非 0 状态退出（退出码 {code}）：{detail}"
-        ));
-    }
-
-    // 节点输出以 stdout 为准；stdout 为空时回退 stderr 尾部（部分 CLI 把结论打到 stderr）。
-    let output = if stdout_text.trim().is_empty() {
-        stderr_tail.trim().to_string()
-    } else {
-        stdout_text
-    };
-    NodeExecOutcome::Succeeded(output)
-}
-
-/// 读取项目配置的 agent.prompt_prefix（阻塞 I/O 走 spawn_blocking）。
-async fn load_project_prompt_prefix(workspace_root: &Path) -> Option<String> {
-    let path = workspace_root.to_string_lossy().into_owned();
-    let prefix = tokio::task::spawn_blocking(move || {
-        crate::project::read_project_config(path)
-            .map(|config| config.agent.prompt_prefix)
-            .unwrap_or_default()
-    })
-    .await
-    .ok()?;
-    let trimmed = prefix.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-fn push_capped(accumulator: &mut String, line: &str, max_chars: usize) {
-    accumulator.push_str(line);
-    accumulator.push('\n');
-    let char_count = accumulator.chars().count();
-    if char_count > max_chars {
-        let keep = max_chars / 2;
-        *accumulator = accumulator.chars().take(keep).collect();
-        accumulator.push_str("\n...[中间输出已截断]...\n");
-    }
-}
-
-fn push_tail(accumulator: &mut String, line: &str, max_chars: usize) {
-    accumulator.push_str(line);
-    accumulator.push('\n');
-    let char_count = accumulator.chars().count();
-    if char_count > max_chars {
-        *accumulator = accumulator.chars().skip(char_count - max_chars).collect();
-    }
-}
-
-fn tail_chars(text: &str, max_chars: usize) -> String {
-    let char_count = text.chars().count();
-    if char_count <= max_chars {
-        text.trim().to_string()
-    } else {
-        text.chars().skip(char_count - max_chars).collect()
+        .await;
+        assert_eq!(result, Interruptible::TimedOut);
     }
 }

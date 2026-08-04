@@ -1,7 +1,7 @@
 //! 编排器系统提示。
 //!
 //! 结构：静态部分每轮构建一次（角色提示 + USER.md + 记忆 + 技能），
-//! 动态部分每次迭代重建（可用执行 Agent 清单、可用工具、系统时间），
+//! 动态部分每次迭代重建（可用工具、系统时间）；PI Harness 目录每轮发现一次。
 //! 与 run_loop「每轮重建系统消息」的骨架对齐。
 
 use std::path::Path;
@@ -26,7 +26,6 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 ## 可用工具
 
 - 只读探索：`read_file` / `list_dir` / `glob` / `grep`。
-- `list_sub_agents`：查看当前可用的子智能体及其能力描述。
 - `message`：向用户发送最终答复（简单问题的收口方式）。
 - `submit_graph`：提交执行图（复杂任务的收口方式）。每轮最多提交一次；提交后等待用户确认，不要重复提交。
 
@@ -34,6 +33,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 ```json
 {
+  "version": 2,
   "title": "图标题",
   "summary": "一句话编排思路",
   "stateKeys": [{ "key": "snake_case 键名", "description": "用途说明" }],
@@ -41,7 +41,9 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
     "id": "n1",
     "title": "节点标题",
     "role": "该节点 Agent 的角色定位",
-    "agent": { "kind": "subAgent", "agentId": "<已启用子智能体 id>" },
+    "modelRef": "<当前模型目录中的稳定 id>",
+    "baseToolGroup": "read_only 或 coding",
+    "specialTools": [{ "source": "pi_extension 或 aha", "name": "工具名" }],
     "task": "自包含的子任务说明",
     "dependsOn": ["上游节点 id"],
     "injectStateKeys": ["需要注入的 state key"],
@@ -50,7 +52,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 }
 ```
 
-- `agent` 还可以是 `{"kind":"claude"}` 或 `{"kind":"codex"}`（本机 CLI Agent）。
+- 每个节点只使用一个主模型。模型、基础工具组和特殊工具必须来自本轮 PI Harness 目录。
 - 边由 `dependsOn` 派生，必须构成无环图；`dependsOn` 引用的节点必须存在；`id`、`outputKey` 全局唯一；节点数 ≤ 20。
 - 节点完成后 `state[outputKey] = 节点输出`（截断 32k）；下游节点通过 `dependsOn` 收到全部上游输出全文，通过 `injectStateKeys` 收到指定 state 的当前值。
 - 节点输入由系统装配：总体需求 + 角色 + 子任务 + 上游输出 + 注入的 state 节选。节点拿不到聊天记录，因此 `task` 必须自包含（目标、背景、相关文件/符号、约束、验证方式、期望产出）。
@@ -59,15 +61,17 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 - 单一职责：一个节点只做一件事，调研 / 改造 / 验证分开。
 - 上下文最小化 + 显式数据流：先由调研节点产出结论（outputKey），改造节点 inject 该结论后再动手；最后通常加验证节点。
-- 优先复用已配置的子智能体（有定制提示词与工具集）；通用编码任务用 claude（新功能、快速迭代、探索性调试）或 codex（重构、跨文件一致性修改、高风险收口）。
+- 根据任务性质、模型分类和能力标签选择主模型；只读任务优先 `read_only`，确需修改或命令时使用 `coding`。
+- Harness Engineering：基础工具保持最小，只有任务确实需要时才选择 PI 扩展或 Aha/MCP 特殊工具。
 - 无依赖关系的节点会并行执行（同层最多 3 个）；可并行的子任务请拆成平行节点。
-- 只能使用「当前可用执行 Agent」清单中列出的执行者；claude/codex 标记不可用时不要为其建节点。
+- 禁止引用 PI Harness 目录之外的模型或工具；不要生成 subAgent、Claude CLI 或 Codex CLI 节点。
 
 ## 探索纪律
 
 - `glob` 缩小范围 → `grep` 精确匹配 → `read_file` 加载确认；证据不足时继续收缩，不臆测。
+- `list_dir` 只返回指定 path 之下最多两层，文件条目后的 `(:N行)` 是文件总行数；先用它了解局部结构，再用 `read_file path:start-end` 加载所需行段。
 - 互相独立的只读探索尽量在同一轮发起多个调用；调查工具支持 `paths` / `patterns` 数组参数减少轮次。
-- 调查工具支持 `compress` / `compress_intent` 参数：结果超过 1000 字符时系统会强制压缩；分析代码、配置等需要精确内容时保持 `compress=false`，命令输出、冗余日志较多时显式 `compress=true` 并写明 `compress_intent`。
+- 调查工具支持 `compress` / `compress_intent` 参数：`compress=false` 时绝不进行摘要，超过 2000 字符的结果会带截断行信息返回前 2000 字符；只有 `compress=true` 且结果超过 5000 字符时才进行摘要。分析代码、配置等需要精确内容时保持 `compress=false`；需从超长输出中提取关键内容时显式设置 `compress=true` 并写明 `compress_intent`。`read_file` 的 `paths` 可使用 `path:start-end` 协议精确读取包含边界的行范围。
 
 ## 输出语言
 
@@ -95,16 +99,10 @@ impl OrchestratorAgent {
     pub(super) fn build_iteration_system_prompt(
         &self,
         static_bundle: &PromptBundle,
-        workspace_id: &str,
+        _workspace_id: &str,
         tool_definitions: &[ToolDefinition],
     ) -> String {
         let mut rendered = static_bundle.static_content.clone();
-
-        let agents_block = self.build_available_agents_block(workspace_id);
-        if !agents_block.is_empty() {
-            rendered.push_str("\n\n---\n\n");
-            rendered.push_str(&agents_block);
-        }
 
         let tools_block = render_available_tools_block(tool_definitions);
         if !tools_block.is_empty() {
@@ -121,60 +119,51 @@ impl OrchestratorAgent {
         rendered
     }
 
-    /// 动态注入「当前可用执行 Agent」清单：启用的子智能体 + claude/codex 可用性。
-    pub(super) fn build_available_agents_block(&self, workspace_id: &str) -> String {
+    pub(super) fn render_graph_harness_catalog(
+        &self,
+        catalog: &crate::agent::graph::types::GraphHarnessCatalog,
+    ) -> String {
         let mut lines = vec![
-            "# 当前可用执行 Agent".to_string(),
-            "以下清单是图节点 agent 字段的唯一准确信息源；不要使用清单之外的执行者。".to_string(),
+            "# 当前 PI Harness 目录".to_string(),
+            "该目录是 graph v2 的唯一模型与特殊工具来源；ID 必须原样引用。".to_string(),
+            "\n## 主模型（每节点恰好一个）".to_string(),
         ];
-
-        let sub_agents = self
-            .sub_agent_manager
-            .as_ref()
-            .and_then(|manager| manager.get_enabled_for_session(workspace_id).ok())
-            .unwrap_or_default();
-        if sub_agents.is_empty() {
-            lines.push("\n子智能体（subAgent）：当前会话无已启用的子智能体。".to_string());
-        } else {
-            lines.push("\n子智能体（subAgent），引用方式 {\"kind\":\"subAgent\",\"agentId\":\"<id>\"}：".to_string());
-            for agent in &sub_agents {
-                lines.push(format!(
-                    "- **{}** (`{}`): {}",
-                    agent.agent_name, agent.agent_id, agent.description
-                ));
-            }
+        for model in &catalog.models {
+            lines.push(format!(
+                "- `{}`：{} / {} / category={} / capabilities={}",
+                model.id,
+                model.label,
+                model.model,
+                model.category,
+                model.capabilities.join(",")
+            ));
         }
-
-        let (claude_available, codex_available) = cli_agent_availability();
-        lines.push("\nCLI Agent：".to_string());
-        lines.push(format!(
-            "- claude（{{\"kind\":\"claude\"}}）：{}",
-            if claude_available {
-                "可用"
-            } else {
-                "不可用（应用设置中未配置可执行文件路径）"
-            }
-        ));
-        lines.push(format!(
-            "- codex（{{\"kind\":\"codex\"}}）：{}",
-            if codex_available {
-                "可用"
-            } else {
-                "不可用（应用设置中未配置可执行文件路径）"
-            }
-        ));
-
+        lines.push("\n## 基础工具组".to_string());
+        lines.push("- `read_only`: read, grep, find, ls".to_string());
+        lines.push("- `coding`: read, grep, find, ls, bash, edit, write".to_string());
+        lines.push("\n## 特殊工具".to_string());
+        for tool in &catalog.tools {
+            lines.push(format!(
+                "- `{}:{}` [{} / {}]：{}",
+                tool.source,
+                tool.name,
+                tool.category,
+                if tool.review_required {
+                    "需审查"
+                } else {
+                    "直接执行"
+                },
+                tool.description
+            ));
+        }
+        if !catalog.diagnostics.is_empty() {
+            lines.push(format!(
+                "\n## 发现诊断\n- {}",
+                catalog.diagnostics.join("\n- ")
+            ));
+        }
         lines.join("\n")
     }
-}
-
-/// claude/codex 可用性：应用设置中对应可执行文件路径非空即视为可用。
-pub(crate) fn cli_agent_availability() -> (bool, bool) {
-    let settings = crate::platform::app_settings::load_app_settings().unwrap_or_default();
-    (
-        !settings.claude_path.trim().is_empty(),
-        !settings.codex_path.trim().is_empty(),
-    )
 }
 
 fn render_available_tools_block(tool_definitions: &[ToolDefinition]) -> String {

@@ -1,0 +1,19 @@
+{
+  "name": "@aha/pi-agent-sidecar",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "check": "tsc --noEmit",
+    "test": "node --test src/*.test.ts scripts/*.test.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.83.0",
+    "@earendil-works/pi-coding-agent": "0.83.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.4",
+    "typescript": "5.9.3"
+  }
+}

@@ -53,6 +53,9 @@ impl DispatcherState {
     ) -> Result<Self> {
         let config = DispatcherAgentConfig::load()?;
         let db = DispatcherDb::new(config.db_path.clone())?;
+        super::graph::store::GraphStore::new(&db)
+            .fail_interrupted_runs(None)
+            .context("恢复中断的执行图运行")?;
         let sub_agent_manager = Arc::new(SubAgentManager::new(db.pool()));
         if let Err(e) = sub_agent_manager.load_all() {
             eprintln!("failed to load sub_agent configs: {}", e);

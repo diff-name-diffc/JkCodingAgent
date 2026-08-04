@@ -32,7 +32,19 @@ pub const DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT: &str = r#"# 普通聊天
 - 如果你想在回答中展示生成的图片，直接使用 Markdown 图片引用语法引用工具返回的原始本地绝对路径即可。
 "#;
 
-const DEFAULT_SOUL: &str = r#"# JKBot 调度代理
+const DEFAULT_SOUL: &str = r#"# JKBot 项目编排器
+
+你是桌面客户端中的项目 Agent，负责调查代码、拆解任务并提交可执行的 PI Agent DAG。
+
+工作原则：
+- 先调查代码与约束，再规划；证据不足时继续读取，不臆测。
+- 节点任务必须自包含，明确目标、相关路径、限制、验证方式与交付结果。
+- 只使用运行时提供的 Harness 模型 ID、基础工具组和特殊工具。
+- 让无依赖节点并行；存在数据或写入顺序依赖时显式声明依赖。
+- 默认使用简体中文，结论直接、工程化。
+"#;
+
+const LEGACY_DEFAULT_SOUL: &str = r#"# JKBot 调度代理
 
 你是桌面客户端中的编程任务调度代理，负责把用户的编码需求高效推进到可交付结果。
 你的工作是拆解、调查、定位、补齐上下文、识别风险、整理执行说明，并把实现任务委派给 Claude 或 Codex。
@@ -68,7 +80,7 @@ const DEFAULT_SOUL: &str = r#"# JKBot 调度代理
 - 但同一 session 中，同一 agent 同时最多只允许一个活跃或待启动子进程。
 "#;
 
-const LEGACY_DEFAULT_SOUL: &str = r#"# JKBot Dispatcher
+const LEGACY_DEFAULT_SOUL_V1: &str = r#"# JKBot Dispatcher
 
 You are JKBot, a dispatcher coding agent embedded in a desktop client.
 You talk with the user, clarify intent when necessary, make concise plans, and use tools to inspect or modify the active workspace.
@@ -129,7 +141,7 @@ impl DispatcherAgentConfig {
         sync_bundled_prompt_file(
             root_dir.join("SOUL.md"),
             DEFAULT_SOUL,
-            &[LEGACY_DEFAULT_SOUL],
+            &[LEGACY_DEFAULT_SOUL, LEGACY_DEFAULT_SOUL_V1],
         )?;
         sync_bundled_prompt_file(
             root_dir.join("USER.md"),
@@ -184,5 +196,62 @@ fn sync_bundled_prompt_file(path: PathBuf, content: &str, legacy_variants: &[&st
             fs::write(&path, content).with_context(|| format!("write {}", path.display()))
         }
         Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_path() -> PathBuf {
+        std::env::temp_dir().join(format!("aha-prompt-sync-{}.md", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn upgrades_only_exact_bundled_prompt_variants() {
+        for legacy in [LEGACY_DEFAULT_SOUL, LEGACY_DEFAULT_SOUL_V1] {
+            let path = test_path();
+            fs::write(&path, legacy).unwrap();
+            sync_bundled_prompt_file(
+                path.clone(),
+                DEFAULT_SOUL,
+                &[LEGACY_DEFAULT_SOUL, LEGACY_DEFAULT_SOUL_V1],
+            )
+            .unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), DEFAULT_SOUL);
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn preserves_custom_prompt_even_with_legacy_heading() {
+        let path = test_path();
+        let custom = "# JKBot Dispatcher\n\n用户自定义内容\n";
+        fs::write(&path, custom).unwrap();
+        sync_bundled_prompt_file(
+            path.clone(),
+            DEFAULT_SOUL,
+            &[LEGACY_DEFAULT_SOUL, LEGACY_DEFAULT_SOUL_V1],
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), custom);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn creates_missing_prompt_and_preserves_unrelated_custom_prompt() {
+        let missing = test_path();
+        sync_bundled_prompt_file(missing.clone(), DEFAULT_SOUL, &[]).unwrap();
+        assert_eq!(fs::read_to_string(&missing).unwrap(), DEFAULT_SOUL);
+        fs::remove_file(missing).unwrap();
+
+        let custom = test_path();
+        fs::write(&custom, "# My Agent\n\ncustom\n").unwrap();
+        sync_bundled_prompt_file(custom.clone(), DEFAULT_SOUL, &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(&custom).unwrap(),
+            "# My Agent\n\ncustom\n"
+        );
+        fs::remove_file(custom).unwrap();
     }
 }

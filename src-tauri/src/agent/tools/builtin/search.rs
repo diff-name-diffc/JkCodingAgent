@@ -133,7 +133,7 @@ impl AgentTool for GrepTool {
     }
 
     fn description(&self) -> &'static str {
-        "使用 ripgrep 在工作区内搜索文本。推荐先用 glob 缩小文件范围，再用 grep 精确定位符号、配置键或错误文本，最后再 read_file 读取确认。默认关闭压缩保留精确匹配结果，结果很长时可设置 compress=true 并写明 compress_intent。"
+        "使用 ripgrep 在工作区内搜索文本。推荐先用 glob 缩小文件范围，再用 grep 精确定位符号、配置键或错误文本，最后用 read_file 读取确认。compress=false 时严格禁止摘要；超过 2000 字符的匹配结果会返回前 2000 字符，并标明截断行和完整产物位置。只有 compress=true 且结果超过 5000 字符时才进行摘要。"
     }
 
     fn parameters(&self) -> Value {
@@ -208,7 +208,7 @@ impl AgentTool for GrepTool {
                 ]
             }),
             false,
-            "grep 是精确检索工具，通常应关闭压缩保留原始匹配行与行号；只在结果很长且只需要概览时可开启并写明 compress_intent。",
+            "grep 是精确检索工具；compress=false 时不得摘要，超过 2000 字符则带行号信息截断。只在超长结果需要按路径和行号提取多段关键内容时开启 compress=true 并写明 compress_intent。",
         )
     }
 

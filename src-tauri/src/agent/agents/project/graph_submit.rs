@@ -6,18 +6,18 @@
 
 use anyhow::Result;
 use tauri::ipc::Channel;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord};
+use crate::agent::graph::commands::catalog_for_workspace;
 use crate::agent::graph::types::{GraphDefinition, GraphPlanUpdatedPayload};
-use crate::agent::graph::validate::{validate_graph, GraphAgentAvailability};
+use crate::agent::graph::validate::validate_graph;
 use crate::agent::graph::GraphStore;
 use crate::agent::llm::RequestedToolCall;
 use crate::agent::run_loop::core::{LoopProtocolAction, RunLoopToolOutcome};
 use crate::agent::run_loop::AgentEvent;
 
 use super::helpers::emit;
-use super::prompt::cli_agent_availability;
 use super::OrchestratorAgent;
 
 /// submit_graph 拦截结果：成功时携带协议动作（收口用），失败时按可重试工具错误交回模型自修复。
@@ -53,8 +53,21 @@ impl OrchestratorAgent {
             Err(error) => return Ok(SubmitGraphInterception::Rejected { error }),
         };
 
-        let availability = self.graph_agent_availability(workspace_id);
-        if let Err(error) = validate_graph(&definition, &availability) {
+        let Some(app_handle) = &self.app_handle else {
+            return Ok(SubmitGraphInterception::Rejected {
+                error: "错误：应用运行时未初始化，无法发现 PI Harness".to_string(),
+            });
+        };
+        let dispatcher_state = app_handle.state::<crate::agent::state::DispatcherState>();
+        let catalog = match catalog_for_workspace(&dispatcher_state, workspace_id).await {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                return Ok(SubmitGraphInterception::Rejected {
+                    error: format!("错误：发现 PI Harness 失败：{error}"),
+                })
+            }
+        };
+        if let Err(error) = validate_graph(&definition, &catalog) {
             return Ok(SubmitGraphInterception::Rejected { error });
         }
 
@@ -99,24 +112,6 @@ impl OrchestratorAgent {
                 node_count,
             },
         })
-    }
-
-    /// 装配图校验所需的 agent 可用性快照。
-    fn graph_agent_availability(&self, workspace_id: &str) -> GraphAgentAvailability {
-        let enabled_sub_agent_ids = self
-            .sub_agent_manager
-            .as_ref()
-            .and_then(|manager| manager.get_enabled_for_session(workspace_id).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|config| config.agent_id)
-            .collect();
-        let (claude_available, codex_available) = cli_agent_availability();
-        GraphAgentAvailability {
-            enabled_sub_agent_ids,
-            claude_available,
-            codex_available,
-        }
     }
 
     /// 根据 execute_tool_calls 的结果决定本轮循环是否结束：

@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import {
   Cpu,
   Database,
-  FileCode2,
   Server,
   Settings2,
   SquareTerminal,
@@ -16,7 +15,6 @@ import { AhaSettingsProvider, useAhaSettingsStore } from "./settings/use-aha-set
 import { Toaster } from "./settings/Toaster";
 import { ConfirmDialog } from "./settings/ConfirmDialog";
 import { GeneralPage } from "./settings/GeneralPage";
-import { AdvancedPage } from "./settings/AdvancedPage";
 import { ToolsPage } from "./settings/ToolsPage";
 import { SubAgentsPage } from "./settings/SubAgentsPage";
 import { ProvidersPage } from "./settings/providers/ProvidersPage";
@@ -32,8 +30,7 @@ export type SettingsNavKey =
   | "tools"
   | "subAgents"
   | "ssh"
-  | "rag"
-  | "advanced";
+  | "rag";
 
 const NAV_ITEMS: Array<{ key: SettingsNavKey; label: string; icon: LucideIcon }> = [
   { key: "general", label: "通用", icon: Settings2 },
@@ -43,10 +40,9 @@ const NAV_ITEMS: Array<{ key: SettingsNavKey; label: string; icon: LucideIcon }>
   { key: "subAgents", label: "子智能体", icon: Users },
   { key: "ssh", label: "SSH", icon: SquareTerminal },
   { key: "rag", label: "RAG 知识库", icon: Database },
-  { key: "advanced", label: "高级", icon: FileCode2 },
 ];
 
-/** 兼容旧调用点传入的导航 key（aha → 模型服务，claude/codex → 高级）。 */
+/** 兼容旧调用点传入的导航 key。 */
 function normalizeInitialTab(tab?: string): SettingsNavKey {
   switch (tab) {
     case "providers":
@@ -56,13 +52,9 @@ function normalizeInitialTab(tab?: string): SettingsNavKey {
     case "ssh":
     case "rag":
     case "general":
-    case "advanced":
       return tab;
     case "aha":
       return "providers";
-    case "claude":
-    case "codex":
-      return "advanced";
     default:
       return "general";
   }
@@ -75,7 +67,7 @@ export function AppSettingsDialog({
   projectPath,
 }: {
   onClose: () => void;
-  /** 兼容旧的 NavKey（"aha" / "claude" / "codex"），新 key 见 SettingsNavKey。 */
+  /** 兼容旧的 `aha` 导航 key，新 key 见 SettingsNavKey。 */
   initialTab?: string;
   projectId?: string;
   projectPath?: string;
@@ -87,7 +79,7 @@ export function AppSettingsDialog({
   const [confirmingClose, setConfirmingClose] = useState(false);
   // 「模型用途」跳转「模型服务」时携带的目标分类（激活对应标签）。
   const [providersCategory, setProvidersCategory] = useState<ModelCategory | null>(null);
-  // 保留手动保存的页面（通用/高级）通过 reportDirty 上报未保存状态。
+  // 通用页仍使用手动保存，通过 reportDirty 上报未保存状态。
   const manualDirtyRef = useRef(new Set<string>());
   const [manualDirty, setManualDirty] = useState(false);
 
@@ -202,7 +194,6 @@ export function AppSettingsDialog({
               {activeNav === "rag" && (
                 <RagKbConfigPanel projectId={projectId} projectPath={projectPath} />
               )}
-              {activeNav === "advanced" && <AdvancedPage reportDirty={reportDirty("advanced")} />}
             </div>
           </section>
         </div>

@@ -636,7 +636,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("check trace table");
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         assert_eq!(table_count, 1);
     }
 }

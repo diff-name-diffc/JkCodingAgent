@@ -354,8 +354,10 @@ mod tests {
     fn effective_args_applies_schema_defaults() {
         let registry = ToolRegistry::new(vec![Box::new(TestTool { name: "read_file" })]);
 
-        let args = registry.effective_args("read_file", &json!({}));
+        let defaulted = registry.effective_args("read_file", &json!({}));
+        let explicit_false = registry.effective_args("read_file", &json!({ "flag": false }));
 
-        assert_eq!(args["flag"], true);
+        assert_eq!(defaulted["flag"], true);
+        assert_eq!(explicit_false["flag"], false);
     }
 }

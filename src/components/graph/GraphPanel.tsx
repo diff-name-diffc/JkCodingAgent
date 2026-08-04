@@ -44,7 +44,7 @@ export interface GraphPanelProps {
  * 图编排全屏面板：React Flow 画布 + 两层头部（标题/状态/操作 + 任务统计/进度）
  * + 底部共享 state 检查器。
  * 操作语义：draft/confirmed →「确认执行」(graph_run_start)；failed/cancelled/
- * completed →「重新执行」（同一命令，后端重置节点记录）；running →「停止」
+ * completed →「重新执行」（同一命令，后端创建新 attempt 并保留历史）；running →「停止」
  * (graph_run_cancel)；任何状态都可关闭面板（关闭不影响后台执行）。
  */
 export function GraphPanel({ planId, onClose }: GraphPanelProps) {
@@ -123,16 +123,18 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
         data: {
           nodeId: node.id,
           title: node.title,
-          agentKind: node.agent.kind,
-          agentId: node.agent.kind === "subAgent" ? node.agent.agentId : null,
+          modelLabel: run?.modelLabel || node.modelRef,
+          task: node.task,
+          outputPreview: snapshot.liveOutputs[node.id] || run?.outputText || "",
           status,
+          phase: run?.phase ?? "starting",
           durationMs: run?.durationMs ?? null,
-          // CLI 节点运行中即有行流式输出（nodeOutputDelta），用作「…」指示。
-          streaming: status === "running" && node.agent.kind !== "subAgent",
+          toolCallCount: run?.toolCallCount ?? 0,
+          streaming: status === "running",
         },
       };
     });
-  }, [definition, runByNodeId, statusByNodeId]);
+  }, [definition, runByNodeId, snapshot.liveOutputs, statusByNodeId]);
 
   const flowEdges = useMemo<Edge[]>(() => {
     if (!definition) return [];

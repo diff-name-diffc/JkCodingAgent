@@ -177,34 +177,6 @@ export interface NotificationResult {
   hasUnreadPopup: boolean;
 }
 
-export interface UsageWindow {
-  usedPercent: number;
-  remainingPercent: number;
-  resetAt?: number | null;
-}
-
-export interface ClaudeUsageData {
-  fiveHour?: UsageWindow | null;
-  sevenDay?: UsageWindow | null;
-}
-
-export interface CodexUsageData {
-  email?: string | null;
-  planType?: string | null;
-  primary?: UsageWindow | null;
-  secondary?: UsageWindow | null;
-}
-
-export type UsageSource<T> =
-  | { status: "available"; data: T }
-  | { status: "unavailable"; reason: string };
-
-export interface UsageSnapshot {
-  claude: UsageSource<ClaudeUsageData>;
-  codex: UsageSource<CodexUsageData>;
-  fetchedAt: number;
-}
-
 // ── Content Segments ─────────────────────────────────────────────────────────
 
 export type ContentSegmentType = "text" | "image" | "file";
@@ -730,11 +702,16 @@ export type GraphNodeStatus =
   | "skipped"
   | "cancelled";
 
-/** 节点执行体：系统中配置的子智能体，或无头 claude / codex CLI。 */
-export type GraphNodeAgent =
-  | { kind: "subAgent"; agentId: string }
-  | { kind: "claude" }
-  | { kind: "codex" };
+export type GraphNodePhase =
+  | "starting"
+  | "thinking"
+  | "responding"
+  | "tool_running"
+  | "retrying"
+  | "compacting"
+  | "finalizing";
+export type GraphBaseToolGroup = "read_only" | "coding";
+export interface GraphToolRef { source: "pi_extension" | "aha"; name: string }
 
 export interface GraphStateKey {
   key: string;
@@ -746,7 +723,9 @@ export interface GraphNodeDef {
   id: string;
   title: string;
   role: string;
-  agent: GraphNodeAgent;
+  modelRef: string;
+  baseToolGroup: GraphBaseToolGroup;
+  specialTools: GraphToolRef[];
   task: string;
   dependsOn: string[];
   injectStateKeys: string[];
@@ -755,6 +734,7 @@ export interface GraphNodeDef {
 
 /** 项目 Agent 的核心产物：执行图 DAG 定义（definitionJson 解析后的结构）。 */
 export interface GraphDefinition {
+  version: 2;
   title: string;
   summary: string;
   stateKeys: GraphStateKey[];
@@ -762,22 +742,34 @@ export interface GraphDefinition {
 }
 
 export interface GraphNodeRunRecord {
+  runId: string;
   planId: string;
   nodeId: string;
-  agentKind: string;
-  agentId: string | null;
   status: GraphNodeStatus;
+  phase: GraphNodePhase;
+  modelRef: string;
+  modelLabel: string;
+  modelCategory: string;
+  baseToolGroup: GraphBaseToolGroup;
+  specialToolsJson: string;
   inputText: string;
   outputText: string;
   errorText: string | null;
-  /** subAgent 节点轨迹关联键（`graphnode:{planId}:{nodeId}`）。 */
-  traceToolCallId: string | null;
   startedAt: number | null;
   finishedAt: number | null;
   durationMs: number | null;
-  /** 节点影响文件（后端 git status 快照差分采集）。 */
+  /** 从受控写文件工具结构化参数中提取的节点影响文件。 */
   affectedFiles: string[];
+  usageJson: string;
+  toolCallCount: number;
 }
+
+export interface GraphRunSummary { id: string; planId: string; attemptNo: number; status: string; startedAt: number; finishedAt: number | null }
+export interface AgentActivity { id: string; runId: string; nodeId: string; sequence: number; kind: string; status: string; title: string; content: string; payloadJson: string; startedAt: number; finishedAt: number | null }
+export interface GraphRunDetail { run: GraphRunSummary; nodeRuns: GraphNodeRunRecord[]; activities: AgentActivity[] }
+export interface GraphHarnessModel { id: string; label: string; model: string; category: "text" | "vision"; capabilities: string[] }
+export interface GraphHarnessTool { source: "pi_extension" | "aha"; name: string; description: string; provider: string; category: string; readonly: boolean; reviewRequired: boolean }
+export interface GraphHarnessCatalog { models: GraphHarnessModel[]; tools: GraphHarnessTool[]; diagnostics: string[] }
 
 export interface GraphPlanRecord {
   id: string;
@@ -791,6 +783,8 @@ export interface GraphPlanRecord {
   stateJson: string;
   createdAt: number;
   updatedAt: number;
+  latestRunId: string | null;
+  runs: GraphRunSummary[];
   nodeRuns: GraphNodeRunRecord[];
 }
 
@@ -804,16 +798,20 @@ export interface GraphPlanUpdatedPayload {
 
 export interface GraphRunStartedData {
   title: string;
+  attemptNo: number;
   nodeCount: number;
 }
 
 export interface GraphNodeStartedData {
   nodeId: string;
   title: string;
-  agentKind: string;
-  agentId: string | null;
+  modelRef: string;
+  modelLabel: string;
   input: string;
 }
+
+export interface GraphNodePhaseChangedData { nodeId: string; phase: GraphNodePhase }
+export interface GraphNodeActivityData { nodeId: string; activity: AgentActivity }
 
 export interface GraphNodeOutputDeltaData {
   nodeId: string;
@@ -862,7 +860,9 @@ export interface GraphRunFailedData {
 export type GraphRunEventKind =
   | "runStarted"
   | "nodeStarted"
+  | "nodePhaseChanged"
   | "nodeOutputDelta"
+  | "nodeActivity"
   | "nodeFinished"
   | "nodeFailed"
   | "nodeSkipped"
@@ -874,12 +874,16 @@ export type GraphRunEventKind =
 /** `graph-run-event` 全局事件载荷（判别联合，按 event 收窄 data）。 */
 export type GraphRunEventPayload = {
   planId: string;
+  runId: string;
   workspaceId: string;
+  sequence: number;
   timestampMs: number;
 } & (
   | { event: "runStarted"; data: GraphRunStartedData }
   | { event: "nodeStarted"; data: GraphNodeStartedData }
+  | { event: "nodePhaseChanged"; data: GraphNodePhaseChangedData }
   | { event: "nodeOutputDelta"; data: GraphNodeOutputDeltaData }
+  | { event: "nodeActivity"; data: GraphNodeActivityData }
   | { event: "nodeFinished"; data: GraphNodeFinishedData }
   | { event: "nodeFailed"; data: GraphNodeFailedData }
   | { event: "nodeSkipped"; data: GraphNodeSkippedData }

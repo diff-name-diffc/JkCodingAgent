@@ -27,7 +27,7 @@ use parking_lot::Mutex;
 use tauri::AppHandle;
 
 use crate::agent::config::DispatcherAgentConfig;
-use crate::agent::db::{AhaSettingsV2, AgentContext};
+use crate::agent::db::{AgentContext, AhaSettingsV2};
 use crate::agent::llm::OpenAiCompatProvider;
 use crate::agent::run_loop::AgentEvent;
 use crate::agent::tools::ToolRegistry;
@@ -65,7 +65,6 @@ pub struct OrchestratorAgent {
     pub(super) models: Mutex<Models>,
     pub(super) app_handle: Option<AppHandle>,
     pub(super) tools: Arc<ToolRegistry>,
-    pub(super) sub_agent_manager: Option<Arc<crate::agent::sub_agent::SubAgentManager>>,
 }
 
 // ─── Construction & configuration ─────────────────────────────────────────────
@@ -102,10 +101,9 @@ impl OrchestratorAgent {
                 },
             }),
             app_handle: None,
-            tools: Arc::new(ToolRegistry::orchestrator_tools(sub_agent_manager.clone())),
+            tools: Arc::new(ToolRegistry::orchestrator_tools(sub_agent_manager)),
             config,
             provider: Mutex::new(provider),
-            sub_agent_manager,
         }
     }
 
@@ -225,9 +223,7 @@ impl OrchestratorAgent {
 
         let vision_provider = self.models.lock().vision_provider.clone();
         let Some(selected) = vision_provider else {
-            anyhow::bail!(
-                "检测到用户上传了图片，但设置中的视觉模型为空。请先配置视觉模型后重试。"
-            );
+            anyhow::bail!("检测到用户上传了图片，但设置中的视觉模型为空。请先配置视觉模型后重试。");
         };
 
         if notify_user && selected.model() != provider.model() {
@@ -246,7 +242,7 @@ impl OrchestratorAgent {
 }
 
 /// 按「模型用途」项目上下文配置解析当前生效的对话模型 provider。
-/// 图 Runner 执行 subAgent 节点时用它作为父级 provider（子智能体默认继承）。
+/// 项目编排器和图外子智能体共用该解析规则。
 pub(crate) fn resolve_project_chat_provider(
     config: &DispatcherAgentConfig,
     settings: &AhaSettingsV2,

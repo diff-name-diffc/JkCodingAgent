@@ -1,5 +1,10 @@
+packages:
+  - sidecars/*
+
 allowBuilds:
+  '@google/genai': true
   esbuild: true
+  protobufjs: true
 minimumReleaseAgeExclude:
   - cloakbrowser@0.4.4
   - prettier@3.9.1

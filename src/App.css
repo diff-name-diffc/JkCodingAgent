@@ -131,9 +131,6 @@
   --success: #16a34a;
   --warning: var(--brand-ember);
   --danger: var(--destructive);
-  --usage-good: #22c55e;
-  --usage-warn: #f59e0b;
-  --usage-danger: #ef4444;
   --info: var(--brand-cobalt);
   --info-soft: rgba(37, 99, 235, 0.1);
 

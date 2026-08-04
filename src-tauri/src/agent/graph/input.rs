@@ -24,6 +24,7 @@ pub(super) fn assemble_node_input(
     if !node.depends_on.is_empty() {
         let mut upstream = String::from("# 上游节点输出");
         for dep in &node.depends_on {
+            let dep = dep.trim();
             if let Some(output) = outputs.get(dep) {
                 upstream.push_str(&format!("\n\n## 节点 {dep} 的输出\n{output}"));
             }
@@ -51,14 +52,16 @@ pub(super) fn assemble_node_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::graph::types::GraphNodeAgent;
+    use crate::agent::graph::types::BaseToolGroup;
 
     fn node() -> GraphNode {
         GraphNode {
             id: "n2".to_string(),
             title: "改造后端".to_string(),
             role: "后端编码 Agent".to_string(),
-            agent: GraphNodeAgent::Claude,
+            model_ref: "m1".to_string(),
+            base_tool_group: BaseToolGroup::Coding,
+            special_tools: Vec::new(),
             task: "根据分析结论改造".to_string(),
             depends_on: vec!["n1".to_string()],
             inject_state_keys: vec!["auth_analysis".to_string(), "missing".to_string()],
@@ -99,5 +102,16 @@ mod tests {
         assert!(!input.contains("# 你的角色"));
         assert!(!input.contains("# 上游节点输出"));
         assert!(!input.contains("# 共享状态"));
+    }
+
+    #[test]
+    fn input_uses_trimmed_dependency_ids() {
+        let mut node = node();
+        node.depends_on = vec![" n1 ".to_string()];
+        let outputs = HashMap::from([("n1".to_string(), "分析结论全文".to_string())]);
+
+        let input = assemble_node_input("原始需求", &node, &outputs, &Map::new());
+
+        assert!(input.contains("## 节点 n1 的输出\n分析结论全文"));
     }
 }

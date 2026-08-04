@@ -112,6 +112,7 @@ fn build_tool_summary_prompt(
 ) -> String {
     let focus = tool_summary_focus(tool_name);
     let truncated_output = truncate_for_summary(raw_output);
+    let locator_guidance = "摘要必须优先组织成可复查的多段内容。每段使用「内容摘要：…」+「内容定位：path:start-end」的形式；不连续的相关内容拆成多段，一段可列出多个原文定位。路径和行号必须来自原始输出，严禁猜测或伪造；原始输出没有路径或行号时，改用原文中可复查的命令、标题或键名定位，并明确注明「原始输出未提供行号」。";
 
     if let Some(intent) = compress_intent {
         let user_ctx = user_question
@@ -127,9 +128,10 @@ fn build_tool_summary_prompt(
              - 只保留与「提取意图」直接相关的事实，不要猜测，不要添加原文没有的信息。\n\
              - 与提取意图无关的信息可以忽略；相关的路径、行号、符号名、配置键、错误文本、命令结果必须保留。\n\
              - 如果内容主要是代码、配置、逐行检索结果、文件清单或其他精确检索输出，只能做最轻量压缩，严禁改写代码含义、删除关键行号、文件名或配置键；{focus}\n\
+             - {locator_guidance}\n\
              - 输出必须严格分成两个区块，且只能使用下面的标签，不能额外添加解释、标题或 Markdown 代码块。\n\
              - `<DISPLAY_SUMMARY>`：写给前端用户展示，人类友好，用 1-3 句话概括本次工具调用针对提取意图发现了什么关键信息。\n\
-             - `<CONTEXT_PAYLOAD>`：写给主模型上下文，高信息密度，保留与意图相关的关键实体名、文件路径、符号名、行号、错误文本和数量。\n\
+             - `<CONTEXT_PAYLOAD>`：写给主模型上下文，高信息密度，按「内容摘要」+「内容定位」输出一段或多段，保留关键实体名、符号名、错误文本和数量。\n\
              - 严格使用以下格式：\n\
              <DISPLAY_SUMMARY>\n...\n</DISPLAY_SUMMARY>\n\
              <CONTEXT_PAYLOAD>\n...\n</CONTEXT_PAYLOAD>\n\
@@ -150,7 +152,8 @@ fn build_tool_summary_prompt(
          - 只保留原文里明确出现的事实，不要猜测。\n\
          - 输出必须严格分成两个区块，且只能使用下面的标签，不要额外添加解释、标题或 Markdown 代码块。\n\
          - `<DISPLAY_SUMMARY>`：写给前端展示，要求对人类更友好，聚焦结论、关键事实和为什么值得关注，可以比上下文回写更易读，但不能脱离原文事实。\n\
-         - `<CONTEXT_PAYLOAD>`：写给主模型，要求高信息密度，尽量保留原始顺序、关键实体名、文件路径、符号名、配置键、错误文本、数量和退出状态；\
+         - {locator_guidance}\n\
+         - `<CONTEXT_PAYLOAD>`：写给主模型，要求高信息密度，按「内容摘要」+「内容定位」输出一段或多段，尽量保留原始顺序、关键实体名、符号名、配置键、错误文本、数量和退出状态；\
            如果内容主要是代码、配置、逐行检索结果、文件清单或其他精确检索输出，只能做最轻量压缩，严禁改写代码含义、删除关键行号、文件名或配置键；{focus}\n\
          - 如果内容是命令输出，优先保留命令结果、失败原因、关键日志、测试失败项和退出状态。\n\
          - 需要压缩，但不要过度归纳；宁可稍长，也不要丢掉影响后续判断的细节。\n\
@@ -179,7 +182,8 @@ fn truncate_for_summary(raw_output: &str) -> String {
 fn tool_summary_focus(tool_name: &str) -> &str {
     match tool_name {
         "read_file" => "保留关键文件路径、符号名、行号范围、配置键和能支持判断的核心实现细节",
-        "list_dir" | "glob" => "保留目录层级、关键文件名、数量和显著的结构特征",
+        "list_dir" => "保留最多两层的目录关系、关键文件名及其总行数，便于后续用 read_file path:start-end 精确加载",
+        "glob" => "保留目录层级、关键文件名、数量和显著的结构特征",
         "grep" => "保留匹配文件路径、行号、命中片段、上下文和能支撑后续 read_file 的关键关键词",
         "exec" => "保留命令结果、错误文本、失败项、退出状态、关键路径和数量统计",
         _ => "保留后续判断最依赖的事实、路径、标识符和数量信息",
@@ -738,7 +742,7 @@ fn truncate_fallback_title(title: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_session_title, parse_dual_tool_summary};
+    use super::{build_tool_summary_prompt, normalize_session_title, parse_dual_tool_summary};
 
     #[test]
     fn mixed_language_title_keeps_complete_term() {
@@ -796,6 +800,21 @@ mod tests {
         assert!(!display.contains("CONTEXT_PAYLOAD"));
         assert_eq!(display, "正文内容");
         assert_eq!(context, "正文内容");
+    }
+
+    #[test]
+    fn tool_summary_prompt_requires_reviewable_multi_segment_locators() {
+        let prompt = build_tool_summary_prompt(
+            "read_file",
+            "## read_file path=src/app.rs:10-20\n10|fn main() {}",
+            None,
+            Some("定位主函数"),
+        );
+
+        assert!(prompt.contains("内容摘要：…"));
+        assert!(prompt.contains("内容定位：path:start-end"));
+        assert!(prompt.contains("不连续的相关内容拆成多段"));
+        assert!(prompt.contains("严禁猜测或伪造"));
     }
 }
 

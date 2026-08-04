@@ -236,11 +236,15 @@ fn normalized_total_tokens(usage: &LlmUsage) -> u64 {
     }
 }
 
-// ─── Tool Result Preparation (Hybrid: Forced 1000-char + Intent-Driven Summary) ─
+// ─── Tool Result Preparation (Explicit Compression + Bounded Raw Output) ───
 
-/// If a tool result exceeds this threshold in characters, compression is forced
-/// regardless of the model's `compress` parameter.
-pub const FORCED_COMPRESS_THRESHOLD: usize = 1_000;
+/// Raw tool results remain inline up to this many characters. Longer results are
+/// clipped with an explicit locator while the complete output remains an artifact.
+pub const TOOL_RESULT_INLINE_MAX_CHARS: usize = 2_000;
+
+/// Semantic compression is worthwhile only for genuinely large results and must
+/// always be explicitly enabled by the tool call's `compress` argument.
+pub const TOOL_RESULT_SUMMARY_MIN_CHARS: usize = 5_000;
 
 pub struct PreparedToolResult {
     pub display_content: String,
@@ -281,9 +285,7 @@ pub fn prepare_tool_result(
         .map(|s| s.to_string());
 
     let char_count = trimmed.chars().count();
-    let exceeds_threshold = char_count > FORCED_COMPRESS_THRESHOLD;
-
-    let needs_summary = model_compress || exceeds_threshold;
+    let needs_summary = model_compress && char_count > TOOL_RESULT_SUMMARY_MIN_CHARS;
 
     if needs_summary {
         PreparedToolResult {
@@ -292,6 +294,16 @@ pub fn prepare_tool_result(
             result_mode: "pending_summary",
             raw_output: trimmed.to_string(),
             needs_summary: true,
+            compress_intent,
+        }
+    } else if char_count > TOOL_RESULT_INLINE_MAX_CHARS {
+        let truncated = truncate_tool_result(trimmed, char_count);
+        PreparedToolResult {
+            display_content: truncated.clone(),
+            context_payload: truncated,
+            result_mode: "truncated",
+            raw_output: trimmed.to_string(),
+            needs_summary: false,
             compress_intent,
         }
     } else {
@@ -306,18 +318,59 @@ pub fn prepare_tool_result(
     }
 }
 
+fn truncate_tool_result(raw_output: &str, char_count: usize) -> String {
+    let prefix = raw_output
+        .chars()
+        .take(TOOL_RESULT_INLINE_MAX_CHARS)
+        .collect::<String>();
+    let truncated_at_output_line = prefix.chars().filter(|ch| *ch == '\n').count() + 1;
+    let total_lines = raw_output.lines().count().max(1);
+    let source_line_marker = source_line_number_at_cut(&prefix)
+        .map(|line| format!("（该行标注的源码/匹配行号为 {line}）"))
+        .unwrap_or_default();
+
+    format!(
+        "{prefix}\n\n[结果已截断：仅返回前 {TOOL_RESULT_INLINE_MAX_CHARS} / {char_count} 字符；截断发生在原始结果第 {truncated_at_output_line} 个输出行{source_line_marker}，原始结果共 {total_lines} 行。完整原始结果见工具产物。]"
+    )
+}
+
+fn source_line_number_at_cut(prefix: &str) -> Option<usize> {
+    let current_line = prefix.rsplit('\n').next()?.trim_start();
+    let digit_count = current_line
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .count();
+    if digit_count == 0 {
+        return None;
+    }
+    let (digits, suffix) = current_line.split_at(digit_count);
+    matches!(suffix.chars().next(), Some('|' | ':' | '-'))
+        .then(|| digits.parse::<usize>().ok())
+        .flatten()
+}
+
+fn bound_inline_tool_result(content: String) -> String {
+    let char_count = content.chars().count();
+    if char_count > TOOL_RESULT_INLINE_MAX_CHARS {
+        truncate_tool_result(&content, char_count)
+    } else {
+        content
+    }
+}
+
 // ─── Tool Result Persistence ─────────────────────────────────────────────────────
 
 /// Shared summary-aware tool result persistence used by both dispatcher and plain chat.
-/// Calls the summary model if the result exceeds `FORCED_COMPRESS_THRESHOLD` or the model
-/// requested compression via `compress=true`. On summary failure, falls back to
-/// rule-based structured extraction (zero LLM call), then to hard truncation.
+/// Calls the summary model only when `compress=true` and the result exceeds
+/// `TOOL_RESULT_SUMMARY_MIN_CHARS`. Otherwise large inline results are explicitly
+/// truncated while their complete raw output remains available as an artifact.
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_tool_result_with_compression<FUsage>(
     db: &DispatcherDb,
     workspace_id: &str,
     on_event: &Channel<AgentEvent>,
     tool_call: &RequestedToolCall,
+    registry: &ToolRegistry,
     result: &str,
     summary_provider: &OpenAiCompatProvider,
     summary_model: &str,
@@ -328,7 +381,10 @@ where
 {
     use crate::agent::summary::{extract_structured_summary, summarize_tool_result};
 
-    let prepared = prepare_tool_result(&tool_call.name, &tool_call.arguments, result);
+    // Compression policy must use the same schema-expanded arguments as execution;
+    // otherwise an omitted default could behave differently after the tool returns.
+    let effective_arguments = registry.effective_args(&tool_call.name, &tool_call.arguments);
+    let prepared = prepare_tool_result(&tool_call.name, &effective_arguments, result);
 
     if !prepared.needs_summary {
         let tool_message = db
@@ -423,6 +479,8 @@ pub async fn persist_tool_result_with_summary(
     context_payload: String,
     result_mode: &'static str,
 ) -> Result<DispatcherMessageRecord> {
+    let display_content = bound_inline_tool_result(display_content);
+    let context_payload = bound_inline_tool_result(context_payload);
     let tool_message = db
         .add_visible_tool_result_async(
             workspace_id,
@@ -671,7 +729,9 @@ pub(crate) fn is_tool_error_message(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_tool_result, ToolOutcome};
+    use serde_json::json;
+
+    use super::{classify_tool_result, prepare_tool_result, ToolOutcome};
 
     #[test]
     fn classifies_tool_error_as_recoverable_without_matching_specific_text() {
@@ -691,5 +751,58 @@ mod tests {
                 message: "子智能体初始化失败".to_string()
             }
         );
+    }
+
+    #[test]
+    fn compress_false_truncates_without_requesting_summary() {
+        let raw = (1..=300)
+            .map(|line| format!("{line}|0123456789"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prepared = prepare_tool_result("read_file", &json!({ "compress": false }), &raw);
+
+        assert!(!prepared.needs_summary);
+        assert_eq!(prepared.result_mode, "truncated");
+        assert!(prepared.display_content.contains("结果已截断"));
+        assert!(prepared.display_content.contains("截断发生在原始结果第"));
+        assert!(prepared
+            .display_content
+            .contains("该行标注的源码/匹配行号为"));
+        assert_eq!(
+            prepared
+                .display_content
+                .split("\n\n[")
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .count(),
+            2_000
+        );
+        assert_eq!(prepared.raw_output, raw);
+    }
+
+    #[test]
+    fn compress_true_summarizes_only_above_five_thousand_characters() {
+        let medium = "x".repeat(5_000);
+        let large = "x".repeat(5_001);
+
+        let medium_prepared = prepare_tool_result("grep", &json!({ "compress": true }), &medium);
+        let large_prepared = prepare_tool_result("grep", &json!({ "compress": true }), &large);
+
+        assert!(!medium_prepared.needs_summary);
+        assert_eq!(medium_prepared.result_mode, "truncated");
+        assert!(large_prepared.needs_summary);
+        assert_eq!(large_prepared.result_mode, "pending_summary");
+    }
+
+    #[test]
+    fn compress_false_never_summarizes_large_results() {
+        let raw = "x".repeat(6_000);
+
+        let prepared = prepare_tool_result("grep", &json!({ "compress": false }), &raw);
+
+        assert!(!prepared.needs_summary);
+        assert_eq!(prepared.result_mode, "truncated");
     }
 }

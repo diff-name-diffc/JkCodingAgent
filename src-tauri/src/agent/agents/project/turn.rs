@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use tauri::Manager;
 
 use crate::agent::common::LlmStreamOutcome;
 use crate::agent::db::{DispatcherMessageRecord, DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS};
@@ -45,8 +46,22 @@ impl AgentRunAdapter for OrchestratorAgent {
         "项目编排 Agent 的 LLM API Key 未配置。请在设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
     }
 
-    async fn build_run_prompt(&self, _workspace_id: &str) -> Result<RunPromptState> {
-        let static_prompt = self.build_static_prompt().await?;
+    async fn build_run_prompt(
+        &self,
+        workspace_id: &str,
+        _workspace: &Path,
+    ) -> Result<RunPromptState> {
+        let mut static_prompt = self.build_static_prompt().await?;
+        let app = self
+            .app_handle
+            .as_ref()
+            .context("项目 Agent 缺少 AppHandle")?;
+        let state = app.state::<crate::agent::state::DispatcherState>();
+        let catalog = crate::agent::graph::commands::catalog_for_workspace(&state, workspace_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        static_prompt.push_str("\n\n---\n\n");
+        static_prompt.push_str(&self.render_graph_harness_catalog(&catalog));
         Ok(RunPromptState {
             initial_system_prompt: static_prompt.clone(),
             project_prompt: Some(PromptBundle {
@@ -108,11 +123,8 @@ impl RunLoopAgent for OrchestratorAgent {
             );
         }
 
-        let system_prompt = self.build_iteration_system_prompt(
-            static_prompt,
-            ctx.workspace_id,
-            tool_definitions,
-        );
+        let system_prompt =
+            self.build_iteration_system_prompt(static_prompt, ctx.workspace_id, tool_definitions);
         let mut messages = vec![ChatMessage::system(system_prompt)];
         messages.extend(agent_loop.request_messages().into_iter().skip(1));
         Ok(messages)

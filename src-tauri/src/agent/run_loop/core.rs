@@ -142,7 +142,11 @@ pub(crate) trait AgentRunAdapter: RunLoopAgent {
 
     fn provider_missing_message(&self) -> &'static str;
 
-    async fn build_run_prompt(&self, workspace_id: &str) -> Result<RunPromptState>;
+    async fn build_run_prompt(
+        &self,
+        workspace_id: &str,
+        workspace: &Path,
+    ) -> Result<RunPromptState>;
 }
 
 /// 唯一的用户消息入口：准备工作区、刷新工具元数据、保存用户消息、校验模型配置、进入公共 run_loop。
@@ -171,7 +175,7 @@ where
             anyhow::bail!("{}", agent.provider_missing_message());
         }
 
-        let prompt = agent.build_run_prompt(workspace_id).await?;
+        let prompt = agent.build_run_prompt(workspace_id, &workspace).await?;
         let reply = run_loop(
             agent,
             RunLoopContext {

@@ -162,26 +162,27 @@ impl PlainChatAgent {
         // 视觉模型切换必须使用设置中视觉用途的完整配置（url/apiKey/model，
         // 默认取第一个 active，否则第一个条目），url/apiKey 为空时回退聊天
         // 主模型的凭据。只换模型名会把视觉模型名打到聊天网关，报 unknown provider。
-        *self.vision_provider.lock() = active_vision
-            .filter(|v| !v.model.trim().is_empty())
-            .map(|v| {
-                let fallback = self.provider.lock();
-                OpenAiCompatProvider::new(
-                    if v.api_key.trim().is_empty() {
-                        fallback.api_key().to_string()
-                    } else {
-                        v.api_key.trim().to_string()
-                    },
-                    if v.url.trim().is_empty() {
-                        fallback.api_base().to_string()
-                    } else {
-                        v.url.trim().to_string()
-                    },
-                    v.model.trim().to_string(),
-                    self.config.max_tokens,
-                    self.config.temperature,
-                )
-            });
+        *self.vision_provider.lock() =
+            active_vision
+                .filter(|v| !v.model.trim().is_empty())
+                .map(|v| {
+                    let fallback = self.provider.lock();
+                    OpenAiCompatProvider::new(
+                        if v.api_key.trim().is_empty() {
+                            fallback.api_key().to_string()
+                        } else {
+                            v.api_key.trim().to_string()
+                        },
+                        if v.url.trim().is_empty() {
+                            fallback.api_base().to_string()
+                        } else {
+                            v.url.trim().to_string()
+                        },
+                        v.model.trim().to_string(),
+                        self.config.max_tokens,
+                        self.config.temperature,
+                    )
+                });
         if let Some(smc) = active_summary {
             if !smc.model.trim().is_empty() {
                 *self.summary_model.lock() = smc.model.trim().to_string();
@@ -838,6 +839,7 @@ impl RunLoopAgent for PlainChatAgent {
                 ctx.workspace_id,
                 ctx.on_event,
                 &executed_tool.tool_call,
+                &self.tools,
                 &result_text,
                 &summary_provider,
                 &summary_model,
@@ -933,7 +935,11 @@ impl AgentRunAdapter for PlainChatAgent {
         "聊天 LLM API Key 未配置。请在设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
     }
 
-    async fn build_run_prompt(&self, workspace_id: &str) -> Result<RunPromptState> {
+    async fn build_run_prompt(
+        &self,
+        workspace_id: &str,
+        _workspace: &Path,
+    ) -> Result<RunPromptState> {
         Ok(RunPromptState {
             initial_system_prompt: self.build_effective_system_prompt(workspace_id),
             project_prompt: None,

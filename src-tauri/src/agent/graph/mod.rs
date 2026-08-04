@@ -6,9 +6,11 @@
 //! 节点间通过共享 state 流转数据，全程通过 `graph-run-event` 全局广播进展。
 
 pub(crate) mod commands;
+pub(crate) mod harness;
 pub(crate) mod input;
 pub(crate) mod node_exec;
 pub(crate) mod node_task;
+pub(crate) mod pi_rpc;
 pub(crate) mod runner;
 pub(crate) mod store;
 pub mod types;

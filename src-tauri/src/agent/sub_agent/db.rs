@@ -636,7 +636,8 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("check trace table");
-        assert_eq!(version, 24);
+        // 直接引用 schema.rs 的 SCHEMA_VERSION，迁移后应达到当前版本。
+        assert_eq!(version, crate::agent::db::schema::SCHEMA_VERSION);
         assert_eq!(table_count, 1);
     }
 }

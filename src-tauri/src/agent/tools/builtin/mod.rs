@@ -1,6 +1,7 @@
 mod browser;
 mod common;
 mod filesystem;
+mod graph_report;
 mod image_edit;
 mod image_generation;
 mod local_zsh;
@@ -30,8 +31,9 @@ pub(super) fn builtin_tools(ssh_manager: SshSessionManager) -> Vec<Box<dyn Agent
     tools
 }
 
-/// 编排器（项目 Agent）固定工具集：只读探索 + message 答复 + submit_graph 收口。
-/// 天然无写文件/执行命令能力；submit_graph 为协议壳工具，不进通用目录。
+/// 编排器（项目 Agent）固定工具集：只读探索 + message 答复 + submit_graph 收口
+/// + graph_plan_report 运行报告（反思闭环）。
+/// 天然无写文件/执行命令能力；协议壳工具不进通用目录。
 pub(super) fn orchestrator_tools() -> Vec<Box<dyn AgentTool>> {
     vec![
         filesystem::read_file_tool(),
@@ -40,6 +42,7 @@ pub(super) fn orchestrator_tools() -> Vec<Box<dyn AgentTool>> {
         search::grep_tool(),
         shell::message_tool(),
         submit_graph::submit_graph_tool(),
+        graph_report::graph_plan_report_tool(),
     ]
 }
 

@@ -201,14 +201,27 @@ pub fn run() {
             agent::graph::commands::graph_run_get,
             agent::graph::commands::graph_run_start,
             agent::graph::commands::graph_run_cancel,
+            agent::graph::commands::graph_run_resume,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // 应用退出时优雅停止 RAG sidecar，避免僵尸子进程。
+            // 应用退出时优雅停止 RAG sidecar，避免孤儿进程。
             // 退出回调是同步上下文，无法 await；这里只 take + kill，
             // 进程退出由 OS 回收，端口随进程消失而释放。
-            if let tauri::RunEvent::ExitRequested { .. } = event {
+            //
+            // 必须同时挂 ExitRequested 与 Exit 两个事件：
+            // - macOS 的 Cmd+Q / Dock 退出走 applicationShouldTerminate，
+            //   tao 只发 LoopDestroyed（→ RunEvent::Exit），不发
+            //   ExitRequested（仅「最后一个窗口 Destroyed」与
+            //   app_handle.exit() 两条路径触发），只挂 ExitRequested
+            //   会在 macOS 正常退出时漏杀 sidecar（tauri#9198/#13778）。
+            // - RunEvent::Exit 在事件循环结束后、进程退出前必达，
+            //   是兜底清理点；stop_for_exit 内部 take() 幂等，重复触发无害。
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
                 let manager = app_handle.state::<rag::RagManager>();
                 manager.stop_for_exit();
             }

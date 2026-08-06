@@ -119,6 +119,8 @@ pub struct AhaSettingsV2 {
     pub review: SshReviewConfig,
     #[serde(default)]
     pub model_library: Vec<ModelLibraryEntry>,
+    #[serde(default)]
+    pub graph: GraphExecutionConfig,
 }
 
 impl Default for AhaSettingsV2 {
@@ -131,6 +133,24 @@ impl Default for AhaSettingsV2 {
             context_debug: false,
             review: SshReviewConfig::default(),
             model_library: Vec::new(),
+            graph: GraphExecutionConfig::default(),
+        }
+    }
+}
+
+/// 执行图编排的运行期设置（设置中心「执行图」页）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphExecutionConfig {
+    /// 高危写检查点：每个 run 首个 coding 节点启动前暂停，等待用户在图面板恢复。
+    #[serde(default)]
+    pub pause_before_write: bool,
+}
+
+impl Default for GraphExecutionConfig {
+    fn default() -> Self {
+        Self {
+            pause_before_write: false,
         }
     }
 }
@@ -217,7 +237,8 @@ impl DispatcherDb {
             context_debug,
             review_model_config_json,
             review_system_prompt,
-            model_library_json
+            model_library_json,
+            graph_execution_config_json
         FROM dispatcher_settings_v2 WHERE id = 'default'";
 
         match conn.query_row(sql, [], |row| {
@@ -274,6 +295,10 @@ impl DispatcherDb {
                     let raw: String = row.get(16).unwrap_or_default();
                     serde_json::from_str::<Vec<ModelLibraryEntry>>(&raw).unwrap_or_default()
                 },
+                graph: {
+                    let raw: String = row.get(17).unwrap_or_default();
+                    serde_json::from_str::<GraphExecutionConfig>(&raw).unwrap_or_default()
+                },
             })
         }) {
             Ok(settings) => Ok(settings),
@@ -314,6 +339,8 @@ impl DispatcherDb {
         let review_prompt = settings.review.system_prompt.trim().to_string();
         let model_library =
             serde_json::to_string(&settings.model_library).unwrap_or_else(|_| "[]".to_string());
+        let graph_config =
+            serde_json::to_string(&settings.graph).unwrap_or_else(|_| "{}".to_string());
 
         let sql = "INSERT INTO dispatcher_settings_v2 (
             id,
@@ -333,9 +360,10 @@ impl DispatcherDb {
             context_debug,
             review_model_config_json,
             review_system_prompt,
-            model_library_json
+            model_library_json,
+            graph_execution_config_json
         ) VALUES (
-            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
         )
         ON CONFLICT(id) DO UPDATE SET
             shared_vision_model_configs_json = ?1,
@@ -354,7 +382,8 @@ impl DispatcherDb {
             context_debug = ?14,
             review_model_config_json = ?15,
             review_system_prompt = ?16,
-            model_library_json = ?17";
+            model_library_json = ?17,
+            graph_execution_config_json = ?18";
 
         conn.execute(
             sql,
@@ -376,6 +405,7 @@ impl DispatcherDb {
                 &review_model,
                 &review_prompt,
                 &model_library,
+                &graph_config,
             ],
         )
         .context("save dispatcher settings v2")?;

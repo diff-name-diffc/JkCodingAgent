@@ -48,6 +48,7 @@ pub(crate) struct PiHostToolSpec {
     pub parameters: serde_json::Value,
 }
 
+#[derive(Clone)]
 pub(crate) struct ResolvedNodeHarness {
     pub model: PiModelConfig,
     pub model_label: String,

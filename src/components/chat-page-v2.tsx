@@ -264,6 +264,26 @@ export function ChatPageV2({
     };
   }, [activeSessionId]);
 
+  // 图执行回执等「非活跃 run」路径会直接向会话写入消息并广播会话更新；
+  // 这里匹配当前会话时重载消息，保证回执即时可见。
+  // 与当前状态合并而非整体替换：run 进行中该事件也会触发（标题生成、会话创建等），
+  // 整体替换会丢弃快照之后经 pub/sub 到达、尚未入库的流式增量消息；
+  // 按 id 合并既保留未入库消息，也能去重追加新写入的消息。
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const unlisten = listen<{ id: string }>("dispatcher-session-updated", (event) => {
+      if (event.payload.id !== activeSessionId) return;
+      void invoke<DispatcherMessage[]>("dispatcher_list_messages", {
+        workspaceId: activeSessionId,
+      })
+        .then((fresh) => setMessages((prev) => mergeDispatcherMessages(prev, fresh)))
+        .catch((err) => console.error("刷新会话消息失败:", err));
+    });
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  }, [activeSessionId]);
+
   // ── Composer mode (send / stop) ─────────────────────────────────────────
   const isRunning = Boolean(liveState.hasPendingRun || liveState.isLoading || isStopping);
   const composerMode: ComposerMode = isRunning ? "stop" : "send";

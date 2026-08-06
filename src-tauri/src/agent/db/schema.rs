@@ -13,6 +13,10 @@ use super::settings::DispatcherModelConfig;
 use super::util::now;
 use super::DispatcherDb;
 
+/// 当前 schema 版本号（PRAGMA user_version），init() 内迁移按版本号阶梯推进。
+/// pub(crate)：跨模块的迁移测试直接引用本常量，避免硬编码版本号漂移。
+pub(crate) const SCHEMA_VERSION: i32 = 26;
+
 impl DispatcherDb {
     pub(super) fn init(&self) -> Result<()> {
         if let Some(parent) = self.path.parent() {
@@ -22,7 +26,6 @@ impl DispatcherDb {
         let mut conn = self.conn()?;
 
         // Fast path: if schema is already at the expected version, skip all DDL.
-        const SCHEMA_VERSION: i32 = 24;
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
@@ -625,6 +628,15 @@ impl DispatcherDb {
             }
         }
 
+        // v24/v25 都是「DROP 重建图表格」的破坏性迁移（按产品决策清空旧图
+        // 数据）。在首个破坏性迁移之前，对仍存有图数据的库做一次整库快照备份
+        // （VACUUM INTO），为不可逆清空兜底；同时打印各表行数便于事后审计。
+        // 注意 current_version < 24 的库会在同一次 init 内连续执行 v24 与 v25
+        // 两次 DROP，一次备份即可覆盖。
+        if current_version < 25 {
+            snapshot_before_graph_rebuild(&conn, &self.path, current_version);
+        }
+
         // v21 → v24: PI SDK 执行图 v2。按产品决策清空全部旧图数据，重建为
         // run/attempt 模型，后续每次重跑均保留独立节点记录与活动时间线。
         if current_version < 24 {
@@ -714,11 +726,163 @@ impl DispatcherDb {
             tx.commit().context("v24: commit PI graph migration")?;
         }
 
+        // 废弃列清理（幂等）放在破坏性的 v25 迁移之前：即便失败，版本号也不会
+        // 前进，下次启动可安全重试，不会触发 v25 的 DROP 重建。
         drop_obsolete_planning_columns(&conn)?;
 
-        // Mark schema as fully migrated (outside the transaction — PRAGMA is auto-commit).
-        conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION))
-            .context("set user_version")?;
+        // v24 → v25: 执行图 v3（闭环编排）。按产品决策清空全部旧图数据：
+        // 图定义升级为 v3（expectedFiles/exportPolicy/inheritsFrom），plan 携带
+        // 需求快照与继承来源，run 携带模式（full/resume）与验收结论（verdict），
+        // 节点记录携带重试计数。
+        if current_version < 25 {
+            let tx = conn
+                .transaction()
+                .context("v25: begin PI graph v3 migration")?;
+            tx.execute_batch(
+                "
+                DROP TABLE IF EXISTS graph_node_activities;
+                DROP TABLE IF EXISTS graph_node_runs;
+                DROP TABLE IF EXISTS graph_runs;
+                DROP TABLE IF EXISTS graph_plans;
+
+                CREATE TABLE graph_plans (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    definition_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    state_json TEXT NOT NULL DEFAULT '{}',
+                    requirement TEXT NOT NULL DEFAULT '',
+                    inherits_plan_id TEXT,
+                    inherits_run_id TEXT,
+                    latest_run_id TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE INDEX idx_graph_plans_ws
+                    ON graph_plans(workspace_id, updated_at DESC);
+
+                CREATE TABLE graph_runs (
+                    id TEXT PRIMARY KEY,
+                    plan_id TEXT NOT NULL,
+                    attempt_no INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    mode TEXT NOT NULL DEFAULT 'full',
+                    verdict_status TEXT NOT NULL DEFAULT '',
+                    verdict_reason TEXT NOT NULL DEFAULT '',
+                    started_at INTEGER NOT NULL,
+                    finished_at INTEGER,
+                    UNIQUE(plan_id, attempt_no),
+                    FOREIGN KEY(plan_id) REFERENCES graph_plans(id) ON DELETE CASCADE
+                );
+                CREATE INDEX idx_graph_runs_plan
+                    ON graph_runs(plan_id, attempt_no DESC);
+
+                CREATE TABLE graph_node_runs (
+                    run_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    phase TEXT NOT NULL DEFAULT 'starting',
+                    model_ref TEXT NOT NULL,
+                    model_label TEXT NOT NULL,
+                    model_category TEXT NOT NULL,
+                    base_tool_group TEXT NOT NULL,
+                    special_tools_json TEXT NOT NULL DEFAULT '[]',
+                    input_text TEXT NOT NULL DEFAULT '',
+                    output_text TEXT NOT NULL DEFAULT '',
+                    error_text TEXT,
+                    started_at INTEGER,
+                    finished_at INTEGER,
+                    duration_ms INTEGER,
+                    usage_json TEXT NOT NULL DEFAULT '{}',
+                    affected_files_json TEXT NOT NULL DEFAULT '[]',
+                    tool_call_count INTEGER NOT NULL DEFAULT 0,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(run_id, node_id),
+                    FOREIGN KEY(run_id) REFERENCES graph_runs(id) ON DELETE CASCADE,
+                    FOREIGN KEY(plan_id) REFERENCES graph_plans(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE graph_node_activities (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    started_at INTEGER NOT NULL,
+                    finished_at INTEGER,
+                    UNIQUE(run_id, node_id, sequence),
+                    FOREIGN KEY(run_id) REFERENCES graph_runs(id) ON DELETE CASCADE
+                );
+                ",
+            )
+            .context("v25: rebuild PI graph tables for v3")?;
+
+            // settings 列变更与版本号更新并入同一事务：若 ALTER 失败或提交前进程退出，
+            // 整体回滚，下次启动不会在「表已重建但版本号未更新」的中间状态上
+            // 再次 DROP 重建（会丢弃两次启动之间写入的图数据）。
+            let has_graph_config_col: i64 = tx
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('dispatcher_settings_v2') WHERE name = 'graph_execution_config_json'")
+                .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+                .context("v25: check dispatcher_settings_v2.graph_execution_config_json")?;
+            if has_graph_config_col == 0 {
+                tx.execute_batch(
+                    "
+                    ALTER TABLE dispatcher_settings_v2
+                        ADD COLUMN graph_execution_config_json TEXT NOT NULL DEFAULT '{}';
+                    ",
+                )
+                .context("v25 migration: add graph execution config column")?;
+            }
+            tx.pragma_update(None, "user_version", 25)
+                .context("v25: set user_version")?;
+            tx.commit().context("v25: commit PI graph v3 migration")?;
+        }
+
+        // v25 → v26: 图表加固（幂等）。
+        // 1) graph_node_runs(plan_id) 无索引，而清理/联表查询按 plan_id 过滤会全表扫描；
+        // 2) idx_graph_activities_node 与 UNIQUE(run_id,node_id,sequence) 约束自动索引重复；
+        // 3) graph_plans 增列 initial_state_json：full 模式重跑修复图时恢复提交时种入的
+        //    初始继承快照（运行中 state_json 会被部分产物持续写入，不能作为重跑起点）。
+        if current_version < 26 {
+            let tx = conn
+                .transaction()
+                .context("v26: begin graph hardening migration")?;
+            tx.execute_batch(
+                "
+                CREATE INDEX IF NOT EXISTS idx_graph_node_runs_plan
+                    ON graph_node_runs(plan_id);
+                DROP INDEX IF EXISTS idx_graph_activities_node;
+                ",
+            )
+            .context("v26: graph index maintenance")?;
+            let has_initial_state_col: i64 = tx
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('graph_plans') WHERE name = 'initial_state_json'")
+                .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+                .context("v26: check graph_plans.initial_state_json")?;
+            if has_initial_state_col == 0 {
+                tx.execute_batch(
+                    "ALTER TABLE graph_plans ADD COLUMN initial_state_json TEXT NOT NULL DEFAULT '{}';",
+                )
+                .context("v26: add graph_plans.initial_state_json")?;
+                // 存量回填：普通图初始即空；修复图只能以当前 state 近似（提交时的
+                // 原始快照在旧版本中未单独留存）。
+                tx.execute(
+                    "UPDATE graph_plans SET initial_state_json = CASE WHEN inherits_plan_id IS NULL THEN '{}' ELSE state_json END",
+                    params![],
+                )
+                .context("v26: backfill graph_plans.initial_state_json")?;
+            }
+            tx.pragma_update(None, "user_version", 26)
+                .context("v26: set user_version")?;
+            tx.commit().context("v26: commit graph hardening migration")?;
+        }
 
         Ok(())
     }
@@ -1315,6 +1479,123 @@ fn drop_obsolete_planning_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// 破坏性图迁移（v24/v25 的 DROP TABLE 重建）前的整库快照保险。
+///
+/// 四张图表中任一仍有数据时，用 `VACUUM INTO` 生成一份一致性快照（WAL 安全，
+/// 不受未 checkpoint 的 -wal 数据影响），并把各表行数写入日志便于审计。
+/// 任何失败（表不存在、磁盘满等）只告警不阻断迁移：备份是保险，不应让备份
+/// 故障导致应用无法启动。但备份失败意味着旧图数据即将在无兜底副本的情况下
+/// 被清空——这一事实必须在桌面应用的 stderr 之外留痕：失败时额外在数据库
+/// 目录写入 `*.pre-graph-rebuild-failed.marker` 标记文件（不动存储 schema），
+/// 供后续向用户提示与人工排查；备份成功时清理可能存在的过期失败标记。
+fn snapshot_before_graph_rebuild(conn: &Connection, db_path: &std::path::Path, current_version: i32) {
+    const GRAPH_TABLES: [&str; 4] = [
+        "graph_plans",
+        "graph_runs",
+        "graph_node_runs",
+        "graph_node_activities",
+    ];
+    let table_exists = |table: &str| -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            params![table],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+            > 0
+    };
+    let mut counts: Vec<(String, i64)> = Vec::new();
+    for table in GRAPH_TABLES {
+        if !table_exists(table) {
+            continue;
+        }
+        let count = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap_or(0);
+        counts.push((table.to_string(), count));
+    }
+    let total: i64 = counts.iter().map(|(_, count)| *count).sum();
+    if total == 0 {
+        return;
+    }
+    let detail = counts
+        .iter()
+        .map(|(table, count)| format!("{table}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let file_stem = db_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("database.sqlite3");
+    let backup_name = format!("{file_stem}.pre-graph-rebuild.v{current_version}.{stamp}.backup");
+    let Some(parent) = db_path.parent() else {
+        eprintln!("[db] 图数据备份跳过：无法解析数据库目录（{detail}）");
+        return;
+    };
+    let backup_path = parent.join(&backup_name);
+    // 「备份失败」标记文件（固定名）：备份失败时写入、成功时清理，见函数注释。
+    let failed_marker_path = parent.join(format!("{file_stem}.pre-graph-rebuild-failed.marker"));
+    match conn.execute("VACUUM INTO ?", params![backup_path.to_string_lossy().as_ref()]) {
+        Ok(_) => {
+            eprintln!(
+                "[db] 即将执行破坏性图迁移（user_version={current_version}），已备份数据库（{detail}）到 {}",
+                backup_path.display()
+            );
+            // 只保留这份最新快照：清理同前缀的其他历史备份。迁移反复失败时
+            // 每次启动都会新生成一份整库副本，不清理会无限累积占满磁盘。
+            // 仅在新备份成功后清理，避免备份失败时落得新旧皆无。
+            let backup_prefix = format!("{file_stem}.pre-graph-rebuild.");
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path == backup_path {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with(&backup_prefix) && name.ends_with(".backup") {
+                        if let Err(error) = std::fs::remove_file(&path) {
+                            eprintln!("[db] 清理历史备份 {} 失败：{error}", path.display());
+                        }
+                    }
+                }
+            }
+            // 本次备份成功：此前（如有）迁移重试期间留下的失败标记已过期。
+            if failed_marker_path.exists() {
+                if let Err(error) = std::fs::remove_file(&failed_marker_path) {
+                    eprintln!(
+                        "[db] 清理过期备份失败标记 {} 失败：{error}",
+                        failed_marker_path.display()
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            // 备份失败而迁移仍将继续：旧图数据即将在无兜底副本的情况下被清空。
+            // 桌面应用中 eprintln 用户基本不可见，把失败事实持久化到标记文件，
+            // 供后续向用户提示与人工排查（内容含行数明细、错误与备份目标）。
+            let marker = format!(
+                "time={}\nuser_version={current_version}\ntables={detail}\nbackup_target={}\nerror={error}\n",
+                chrono::Utc::now().to_rfc3339(),
+                backup_path.display()
+            );
+            if let Err(marker_error) = std::fs::write(&failed_marker_path, marker) {
+                eprintln!(
+                    "[db] 写入备份失败标记 {} 失败：{marker_error}",
+                    failed_marker_path.display()
+                );
+            }
+            eprintln!(
+                "[db] 严重：图数据备份失败（{detail}），迁移仍将继续，旧图数据将在无备份情况下被清空：{error}；备份目标：{}；失败标记：{}",
+                backup_path.display(),
+                failed_marker_path.display()
+            );
+        }
+    }
+}
+
 fn ensure_python_code_runs_table_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     tx.execute_batch(
         "
@@ -1616,5 +1897,112 @@ fn scenario_chat_category_agent_config(
 "#,
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::DispatcherDb;
+
+    /// v24 时代的库（图表含真实数据）升级到当前版本时，v25 破坏性迁移会 DROP
+    /// 重建四张图表：DROP 前必须生成保留原数据的整库快照备份。
+    #[test]
+    fn destructive_graph_migration_backs_up_existing_graph_data() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("aha-schema-backup-{}.sqlite3", uuid::Uuid::new_v4()));
+        // 构造 v24 时代的库：四张图表含数据，user_version=24。
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE graph_plans (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    definition_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    state_json TEXT NOT NULL DEFAULT '{}',
+                    latest_run_id TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE graph_runs (
+                    id TEXT PRIMARY KEY,
+                    plan_id TEXT NOT NULL,
+                    attempt_no INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at INTEGER NOT NULL,
+                    finished_at INTEGER
+                );
+                CREATE TABLE graph_node_runs (
+                    run_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    PRIMARY KEY(run_id, node_id)
+                );
+                CREATE TABLE graph_node_activities (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at INTEGER NOT NULL
+                );
+                INSERT INTO graph_plans
+                    (id, workspace_id, title, definition_json, created_at, updated_at)
+                    VALUES ('p1','w1','旧图 A','{}',1,1),('p2','w1','旧图 B','{}',1,1);
+                INSERT INTO graph_runs (id, plan_id, attempt_no, status, started_at)
+                    VALUES ('r1','p1',1,'completed',1);
+                PRAGMA user_version = 24;
+                ",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        drop(db);
+
+        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+        let backups: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| {
+                name.starts_with(&format!("{file_name}.pre-graph-rebuild.v24."))
+                    && name.ends_with(".backup")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "破坏性迁移前应恰好生成一份快照备份");
+
+        // 备份保留清空前的图数据；当前库按产品决策已重建清空并升到最新版本。
+        let backup_conn = rusqlite::Connection::open(dir.join(&backups[0])).unwrap();
+        let backup_plans: i64 = backup_conn
+            .query_row("SELECT COUNT(*) FROM graph_plans", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(backup_plans, 2);
+        let backup_runs: i64 = backup_conn
+            .query_row("SELECT COUNT(*) FROM graph_runs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(backup_runs, 1);
+        drop(backup_conn);
+
+        let current_conn = rusqlite::Connection::open(&path).unwrap();
+        let version: i32 = current_conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+        let current_plans: i64 = current_conn
+            .query_row("SELECT COUNT(*) FROM graph_plans", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(current_plans, 0, "当前库按产品决策重建清空");
+        drop(current_conn);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+        let _ = std::fs::remove_file(dir.join(&backups[0]));
     }
 }

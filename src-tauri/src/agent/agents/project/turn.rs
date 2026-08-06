@@ -60,8 +60,23 @@ impl AgentRunAdapter for OrchestratorAgent {
         let catalog = crate::agent::graph::commands::catalog_for_workspace(&state, workspace_id)
             .await
             .map_err(anyhow::Error::msg)?;
+        // 轻量学习回路：既往节点运行统计回注目录，辅助编排器选模型。
+        // 统计查询失败时跳过历史统计、不阻塞提示词构建，但必须留下日志，
+        // 否则学习回路静默失效时无任何可诊断痕迹。
+        let stats = match crate::agent::graph::GraphStore::new(state.db())
+            .node_run_stats_async(workspace_id)
+            .await
+        {
+            Ok(stats) => stats,
+            Err(error) => {
+                eprintln!(
+                    "[graph] 读取节点运行统计失败（{workspace_id}），目录回注不含历史统计：{error:#}"
+                );
+                Vec::new()
+            }
+        };
         static_prompt.push_str("\n\n---\n\n");
-        static_prompt.push_str(&self.render_graph_harness_catalog(&catalog));
+        static_prompt.push_str(&self.render_graph_harness_catalog(&catalog, &stats));
         Ok(RunPromptState {
             initial_system_prompt: static_prompt.clone(),
             project_prompt: Some(PromptBundle {
@@ -82,7 +97,7 @@ impl RunLoopAgent for OrchestratorAgent {
         self.config.max_tool_iterations
     }
 
-    /// 编排器工具集固定（只读 + message + submit_graph + list_sub_agents），
+    /// 编排器工具集固定（只读探索 + message + submit_graph + graph_plan_report），
     /// 不随设置变化；注册表本身即权威列表。
     fn tool_definitions_for_loop(
         &self,

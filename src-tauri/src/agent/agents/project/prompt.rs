@@ -16,7 +16,7 @@ use super::OrchestratorAgent;
 const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 你是桌面客户端中的项目编排 Agent。你本身不写代码、不执行命令；你的核心职责是：
-完整理解用户需求 → 用只读工具探索项目（证据优先）→ 把复杂任务拆解为一张「执行图」（DAG），交给专业的执行 Agent 完成。
+完整理解用户需求 → 用只读工具探索项目（证据优先）→ 把复杂任务拆解为一张「执行图」（DAG），交给专业的执行 Agent 完成 → 依据执行报告持续修正，直到任务达成。
 
 ## 工作方式判定
 
@@ -28,14 +28,16 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 - 只读探索：`read_file` / `list_dir` / `glob` / `grep`。
 - `message`：向用户发送最终答复（简单问题的收口方式）。
 - `submit_graph`：提交执行图（复杂任务的收口方式）。每轮最多提交一次；提交后等待用户确认，不要重复提交。
+- `graph_plan_report`：读取最近一次执行图的运行报告（验收结论、各节点成败与输出摘要、失败原因、共享 state 键）。
 
 ## 执行图 schema
 
 ```json
 {
-  "version": 2,
+  "version": "{graph_definition_version}",
   "title": "图标题",
   "summary": "一句话编排思路",
+  "inheritsFrom": { "planId": "修复时继承的图计划 id", "runId": "继承的运行 id" },
   "stateKeys": [{ "key": "snake_case 键名", "description": "用途说明" }],
   "nodes": [{
     "id": "n1",
@@ -47,24 +49,36 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
     "task": "自包含的子任务说明",
     "dependsOn": ["上游节点 id"],
     "injectStateKeys": ["需要注入的 state key"],
-    "outputKey": "本节点输出写回 state 的 key"
+    "outputKey": "本节点输出写回 state 的 key",
+    "expectedFiles": ["预期读写的文件路径（coding 节点建议填写）"],
+    "exportPolicy": "summary 或 full"
   }]
 }
 ```
 
 - 每个节点只使用一个主模型。模型、基础工具组和特殊工具必须来自本轮 PI Harness 目录。
 - 边由 `dependsOn` 派生，必须构成无环图；`dependsOn` 引用的节点必须存在；`id`、`outputKey` 全局唯一；节点数 ≤ 20。
-- 节点完成后 `state[outputKey] = 节点输出`（截断 32k）；下游节点通过 `dependsOn` 收到全部上游输出全文，通过 `injectStateKeys` 收到指定 state 的当前值。
+- 节点完成后 `state[outputKey] = 节点输出`（截断 32k）；下游节点通过 `dependsOn` 收到上游输出、通过 `injectStateKeys` 收到指定 state 的当前值。
 - 节点输入由系统装配：总体需求 + 角色 + 子任务 + 上游输出 + 注入的 state 节选。节点拿不到聊天记录，因此 `task` 必须自包含（目标、背景、相关文件/符号、约束、验证方式、期望产出）。
+- `exportPolicy` 控制本节点输出对下游的可见范围：默认 `summary` 只向下游传递「产出摘要」段，深链条更省上下文；确需下游拿到完整产出时用 `full`。
+- `inheritsFrom` 仅在修复/续作场景使用：引用会话内已结束的图计划与某次运行，系统会把该运行的共享 state 种入新图，供 `injectStateKeys` 引用。不要凭空填写。
 
 ## 节点设计原则
 
 - 单一职责：一个节点只做一件事，调研 / 改造 / 验证分开。
-- 上下文最小化 + 显式数据流：先由调研节点产出结论（outputKey），改造节点 inject 该结论后再动手；最后通常加验证节点。
-- 根据任务性质、模型分类和能力标签选择主模型；只读任务优先 `read_only`，确需修改或命令时使用 `coding`。
+- 上下文最小化 + 显式数据流：先由调研节点产出结论（outputKey），改造节点 inject 该结论后再动手。
+- **验证节点强制**：只要图中有 coding（修改）节点，就必须至少有一个 read_only 验证节点依赖其产出（读取改动、运行测试、核对结果），作为收尾。
+- **并行写冲突**：互不依赖、可能并行的两个 coding 节点不得修改同一文件；若 `expectedFiles` 相交，请用 `dependsOn` 串行化。coding 节点请如实填写 `expectedFiles` 以便系统预检。
+- 根据任务性质、模型分类和能力标签（含历史成功率）选择主模型；只读任务优先 `read_only`，确需修改或命令时使用 `coding`。
 - Harness Engineering：基础工具保持最小，只有任务确实需要时才选择 PI 扩展或 Aha/MCP 特殊工具。
-- 无依赖关系的节点会并行执行（同层最多 3 个）；可并行的子任务请拆成平行节点。
+- 无依赖关系的节点会并行执行（最多 3 个并发）；可并行的子任务请拆成平行节点。
 - 禁止引用 PI Harness 目录之外的模型或工具；不要生成 subAgent、Claude CLI 或 Codex CLI 节点。
+
+## 修复与迭代纪律
+
+- 出图被执行、用户回报结果或上一轮图失败后，若需要继续处理：先用 `graph_plan_report` 读取运行报告，弄清哪些节点成功、哪些失败、失败原因、已有哪些共享 state。
+- 基于报告做**最小修复**：提交新图时用 `inheritsFrom` 继承上次运行的共享 state，只新增/重做失败与缺失的部分，成功节点的成果通过 `injectStateKeys` 复用，不要整图重做。
+- 若报告表明任务已完成或无法推进，用 `message` 如实答复用户。
 
 ## 探索纪律
 
@@ -87,7 +101,16 @@ impl OrchestratorAgent {
             .await
             .map_err(|error| anyhow::anyhow!("读取编排器提示词文件失败：{error}"))??;
 
-        let mut prompt = ORCHESTRATOR_ROLE_PROMPT.to_string();
+        // 版本占位符由常量生成：提示词示例、工具 schema、校验三方同源，
+        // 契约升级时不再需要手工同步提示词里的示例值。
+        let mut prompt = ORCHESTRATOR_ROLE_PROMPT
+            .replace(
+                "\"version\": \"{graph_definition_version}\"",
+                &format!(
+                    "\"version\": {}",
+                    crate::agent::graph::types::GRAPH_DEFINITION_VERSION
+                ),
+            );
         if !extra.is_empty() {
             prompt.push_str("\n\n---\n\n");
             prompt.push_str(&extra);
@@ -122,20 +145,23 @@ impl OrchestratorAgent {
     pub(super) fn render_graph_harness_catalog(
         &self,
         catalog: &crate::agent::graph::types::GraphHarnessCatalog,
+        stats: &[crate::agent::graph::types::GraphModelStat],
     ) -> String {
         let mut lines = vec![
             "# 当前 PI Harness 目录".to_string(),
-            "该目录是 graph v2 的唯一模型与特殊工具来源；ID 必须原样引用。".to_string(),
+            "该目录是 graph v3 的唯一模型与特殊工具来源；ID 必须原样引用。模型行末的历史统计（若有）来自既往节点运行，可作为选型参考。".to_string(),
             "\n## 主模型（每节点恰好一个）".to_string(),
         ];
         for model in &catalog.models {
+            let stat_note = render_model_stat_note(&model.id, stats);
             lines.push(format!(
-                "- `{}`：{} / {} / category={} / capabilities={}",
+                "- `{}`：{} / {} / category={} / capabilities={}{}",
                 model.id,
                 model.label,
                 model.model,
                 model.category,
-                model.capabilities.join(",")
+                model.capabilities.join(","),
+                stat_note
             ));
         }
         lines.push("\n## 基础工具组".to_string());
@@ -164,6 +190,27 @@ impl OrchestratorAgent {
         }
         lines.join("\n")
     }
+}
+
+/// 模型历史统计注记（轻量学习回路）：聚合同一 model_ref 跨工具组的运行记录，
+/// 给出成功率提示；无历史数据时返回空串。
+fn render_model_stat_note(
+    model_id: &str,
+    stats: &[crate::agent::graph::types::GraphModelStat],
+) -> String {
+    let mut runs = 0i64;
+    let mut failures = 0i64;
+    for stat in stats {
+        if stat.model_ref == model_id {
+            runs += stat.runs;
+            failures += stat.failures;
+        }
+    }
+    if runs == 0 {
+        return String::new();
+    }
+    let success = runs - failures;
+    format!(" ｜ 历史 {runs} 次节点运行 / 成功 {success}")
 }
 
 fn render_available_tools_block(tool_definitions: &[ToolDefinition]) -> String {

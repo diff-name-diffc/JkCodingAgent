@@ -1,16 +1,21 @@
 import { useCallback } from "react";
 import { useReactFlow } from "@xyflow/react";
-import { LocateFixed, Maximize, ZoomIn, ZoomOut } from "lucide-react";
+import { LayoutGrid, LocateFixed, Maximize, ZoomIn, ZoomOut } from "lucide-react";
 import type { GraphNodeStatus } from "../../types";
+import { cn } from "../../lib/cn";
 import { GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH } from "./graph-layout";
 
-const FIT_VIEW_OPTIONS = { padding: 0.18, maxZoom: 1.1 } as const;
+const FIT_VIEW_OPTIONS = { padding: 0.18, maxZoom: 1 } as const;
 
-/** 画布左下角控制条：缩放 / 适应画布 / 定位当前任务。 */
+/** 画布左下角控制条：缩放 / 适应画布 / 定位当前任务 / 重置手动布局。 */
 export function GraphCanvasControls({
   statusByNodeId,
+  hasCustomLayout,
+  onResetLayout,
 }: {
   statusByNodeId: Map<string, GraphNodeStatus>;
+  hasCustomLayout: boolean;
+  onResetLayout: () => void;
 }) {
   const { zoomIn, zoomOut, fitView, setCenter, getZoom, getNode } = useReactFlow();
 
@@ -64,6 +69,16 @@ export function GraphCanvasControls({
         onClick={locateCurrent}
       >
         <LocateFixed className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        className={cn("ai-graph-control-btn", hasCustomLayout && "ai-graph-control-btn--active")}
+        aria-label="重置节点布局"
+        title="恢复自动排版"
+        disabled={!hasCustomLayout}
+        onClick={onResetLayout}
+      >
+        <LayoutGrid className="h-4 w-4" />
       </button>
     </div>
   );

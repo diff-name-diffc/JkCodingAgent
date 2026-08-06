@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Activity, BrainCircuit, ChevronDown, ChevronRight, ChevronsDown, Clock3, Pause, Play, RotateCcw, Square, Wrench, X } from "lucide-react";
+import { BrainCircuit, ChevronDown, ChevronRight, ChevronsDown, Clock3, Pause, Play, RotateCcw, Square, Wrench, X } from "lucide-react";
 import type { AgentActivity, GraphBaseToolGroup, GraphDefinition, GraphHarnessCatalog, GraphPlanStatus, GraphRunDetail } from "../../types";
 import { cn } from "../../lib/cn";
 import { useToast } from "../Toast";
@@ -10,7 +10,15 @@ import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { createSerialTaskQueue, hydrateGraphPlan, useGraphPlan } from "./graph-store";
-import { NODE_STATUS_META, formatGraphDuration, normalizeNodeStatus, parseGraphDefinition } from "./graph-utils";
+import {
+  NODE_STATUS_META,
+  buildToolCallEntries,
+  formatCharCount,
+  formatGraphDuration,
+  normalizeNodeStatus,
+  parseGraphDefinition,
+  type ToolCallEntry,
+} from "./graph-utils";
 
 interface GraphNodeDrawerProps {
   planId: string;
@@ -23,11 +31,6 @@ interface GraphNodeDrawerProps {
   onCancel: () => void;
 }
 
-const ACTIVITY_LABEL: Record<string, string> = {
-  assistant_text: "Agent 响应", thinking: "思考", tool_call: "工具调用",
-  retry: "自动重试", compaction: "上下文压缩", usage: "Token 用量", error: "错误",
-};
-
 export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   const { planId, nodeId, planStatus, actionPending, onClose, onSelectNode, onStart, onCancel } = props;
   const { showToast } = useToast();
@@ -38,14 +41,21 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   const [selectedRunId, setSelectedRunId] = useState<string>(plan?.latestRunId ?? "");
   const [runDetail, setRunDetail] = useState<GraphRunDetail | null>(null);
   const [catalog, setCatalog] = useState<GraphHarnessCatalog | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  // 输入区默认收起、输出区默认展开（执行时以工具调用列表为主视图）
+  const [inputOpen, setInputOpen] = useState(false);
+  const [outputOpen, setOutputOpen] = useState(true);
   const [draftTask, setDraftTask] = useState(node?.task ?? "");
+  const [draftExpectedFiles, setDraftExpectedFiles] = useState((node?.expectedFiles ?? []).join(", "));
   const [saving, setSaving] = useState(false);
   const [enqueueSave] = useState(() => createSerialTaskQueue());
   const pendingSaves = useRef(0);
 
   useEffect(() => { setSelectedRunId(plan?.latestRunId ?? ""); }, [plan?.latestRunId]);
+  // 切换节点时重置折叠状态：组件常驻挂载（不随 nodeId 重建），
+  // 否则会从上一节点继承输入/输出区的展开收起状态
+  useEffect(() => { setInputOpen(false); setOutputOpen(true); }, [nodeId]);
   useEffect(() => { setDraftTask(node?.task ?? ""); }, [node?.task, nodeId]);
+  useEffect(() => { setDraftExpectedFiles((node?.expectedFiles ?? []).join(", ")); }, [node?.expectedFiles, nodeId]);
   useEffect(() => {
     if (!selectedRunId) { setRunDetail(null); return; }
     let alive = true;
@@ -66,9 +76,29 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   const nodeRun = selectedRunId === plan?.latestRunId ? currentRun : historicalRun;
   const liveOutput = selectedRunId === plan?.latestRunId ? snapshot.liveOutputs[nodeId] ?? "" : "";
   const output = liveOutput || nodeRun?.outputText || "";
-  const historicalActivities = runDetail?.activities.filter((item) => item.nodeId === nodeId) ?? [];
-  const liveActivities = selectedRunId === plan?.latestRunId ? snapshot.liveActivities[nodeId] ?? [] : [];
+  // 历史 activities 用 useMemo 稳定引用：行内 filter 每次渲染都新建数组，
+  // 会让下方 toolEntries 的 useMemo 依赖恒变，查看历史运行（无实时
+  // activities）时跟随滚动/snapshot 更新引发的每次重渲染都会重复执行
+  // buildToolCallEntries（含 JSON.parse 与格式化）。空回退统一用模块级
+  // 常量，避免 `?? []` 每次生成新空数组。
+  const historicalActivities = useMemo(
+    () => runDetail?.activities.filter((item) => item.nodeId === nodeId) ?? EMPTY_ACTIVITIES,
+    [runDetail, nodeId],
+  );
+  const liveActivities = selectedRunId === plan?.latestRunId
+    ? snapshot.liveActivities[nodeId] ?? EMPTY_ACTIVITIES
+    : EMPTY_ACTIVITIES;
   const activities = liveActivities.length > 0 ? liveActivities : historicalActivities;
+  const toolEntries = useMemo(() => buildToolCallEntries(activities), [activities]);
+  const toolTotals = useMemo(() => {
+    let input = 0;
+    let outputChars = 0;
+    for (const entry of toolEntries) {
+      input += entry.inputChars;
+      outputChars += entry.outputChars;
+    }
+    return { input, output: outputChars };
+  }, [toolEntries]);
   const status = normalizeNodeStatus(nodeRun?.status ?? "pending");
   const statusMeta = NODE_STATUS_META[status];
   const editable = plan?.status === "draft" && Boolean(node && definition);
@@ -101,6 +131,36 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
     return updateDefinition((value) => ({ ...value, nodes: value.nodes.map((item) => item.id === nodeId ? { ...item, ...patch } : item) }));
   }
 
+  // 草稿提交：失焦与「切换节点/关闭抽屉前的兜底 flush」共用，逻辑保持单一。
+  function commitDraftTask(): void {
+    const task = draftTask.trim();
+    if (!task || task === node?.task) return;
+    void patchNode({ task }).then((saved) => { if (!saved) setDraftTask(node?.task ?? ""); });
+  }
+
+  function commitDraftExpectedFiles(): void {
+    const files = draftExpectedFiles.split(",").map((file) => file.trim()).filter(Boolean);
+    const current = node?.expectedFiles ?? [];
+    if (files.length === current.length && files.every((file, index) => file === current[index])) return;
+    void patchNode({ expectedFiles: files }).then((saved) => { if (!saved) setDraftExpectedFiles(current.join(", ")); });
+  }
+
+  // 切换节点 / 抽屉卸载（关闭抽屉、关闭面板）前兜底提交未失焦的草稿：
+  // 依赖 chips 切换与关闭都不会触发 onBlur，不 flush 会静默丢失编辑。
+  // ref 在无依赖 effect 中更新——同一提交阶段 cleanup 先于 setup 执行，
+  // 因此 cleanup 时读到的仍是「切换前」那次渲染的快照（旧节点 + 旧草稿）。
+  const flushDraftsRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    flushDraftsRef.current = () => {
+      if (!editable) return;
+      commitDraftTask();
+      commitDraftExpectedFiles();
+    };
+  });
+  useEffect(() => {
+    return () => flushDraftsRef.current();
+  }, [nodeId]);
+
   async function toggleTool(source: "aha" | "pi_extension", name: string): Promise<boolean> {
     return updateDefinition((value) => ({
       ...value,
@@ -120,6 +180,10 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   const upstream = node?.dependsOn ?? [];
   const downstream = definition?.nodes.filter((item) => item.dependsOn.includes(nodeId)).map((item) => item.id) ?? [];
   const titleOf = (id: string) => definition?.nodes.find((item) => item.id === id)?.title ?? id;
+  const inputText = nodeRun?.inputText || node?.task || "";
+  // 超长输出只渲染尾部最新部分，避免 MB 级文本拖慢渲染
+  const outputDisplay = output.length > OUTPUT_DISPLAY_LIMIT ? output.slice(-OUTPUT_DISPLAY_LIMIT) : output;
+  const outputOmitted = output.length - outputDisplay.length;
 
   return (
     <motion.aside initial={{ x: 460, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 460, opacity: 0 }} transition={{ duration: 0.2 }} className="ai-graph-drawer">
@@ -152,6 +216,19 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent><SelectItem value="read_only">只读 · read/grep/find/ls</SelectItem><SelectItem value="coding">编码 · 加 bash/edit/write</SelectItem></SelectContent>
             </Select>
+            <Select value={node.exportPolicy ?? "summary"} onValueChange={(exportPolicy) => void patchNode({ exportPolicy: exportPolicy as "summary" | "full" })} disabled={saving}>
+              <SelectTrigger><SelectValue placeholder="下游导出策略" /></SelectTrigger>
+              <SelectContent><SelectItem value="summary">下游只见产出摘要</SelectItem><SelectItem value="full">下游可见完整输出</SelectItem></SelectContent>
+            </Select>
+            <input
+              type="text"
+              className="ai-graph-expected-files"
+              placeholder="预期读写文件（逗号分隔，供并行写冲突预检）"
+              value={draftExpectedFiles}
+              disabled={saving}
+              onChange={(event) => setDraftExpectedFiles(event.target.value)}
+              onBlur={commitDraftExpectedFiles}
+            />
             <div className="ai-graph-tool-picker">
               {catalog.tools.map((tool) => {
                 const selected = node.specialTools.some((item) => item.source === tool.source && item.name === tool.name);
@@ -164,21 +241,50 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
         )}
 
         <section className="ai-graph-drawer-section">
-          <div className="ai-graph-drawer-label">Agent 输入 {editable && <span className="ai-graph-drawer-hint">可编辑任务，失焦保存</span>}</div>
-          {editable ? <Textarea value={draftTask} onChange={(event) => setDraftTask(event.target.value)} onBlur={() => { const task = draftTask.trim(); if (task && task !== node?.task) void patchNode({ task }).then((saved) => { if (!saved) setDraftTask(node?.task ?? ""); }); }} rows={8} className="resize-y font-mono text-xs leading-relaxed" /> : <pre className="ai-graph-drawer-pre">{nodeRun?.inputText || node?.task || "等待运行"}</pre>}
+          <div className="ai-graph-drawer-label">
+            工具调用
+            <span className="ai-graph-drawer-hint">
+              {toolEntries.length > 0
+                ? `${toolEntries.length} 次 · 入 ${formatCharCount(toolTotals.input)} / 出 ${formatCharCount(toolTotals.output)} 字符`
+                : status === "running" ? "等待调用…" : "暂无"}
+            </span>
+          </div>
+          <ToolCallList entries={toolEntries} live={status === "running"} />
+        </section>
+
+        <section className="ai-graph-drawer-section">
+          {editable ? (
+            <>
+              <div className="ai-graph-drawer-label">Agent 输入 <span className="ai-graph-drawer-hint">可编辑任务，失焦保存</span></div>
+              <Textarea value={draftTask} onChange={(event) => setDraftTask(event.target.value)} onBlur={commitDraftTask} rows={8} className="resize-y font-mono text-xs leading-relaxed" />
+            </>
+          ) : (
+            <>
+              <button type="button" className="ai-graph-drawer-label ai-graph-drawer-label--toggle" onClick={() => setInputOpen((value) => !value)} aria-expanded={inputOpen}>
+                {inputOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                Agent 输入
+                <span className="ai-graph-drawer-hint">{inputText ? `${formatCharCount(inputText.length)} 字符` : "等待运行"}</span>
+              </button>
+              {inputOpen && <pre className="ai-graph-drawer-pre">{inputText || "等待运行"}</pre>}
+            </>
+          )}
         </section>
 
         <section className="ai-graph-drawer-section ai-graph-output-section">
-          <div className="ai-graph-drawer-label">{liveOutput ? "实时响应" : "Agent 输出"}</div>
-          <pre className="ai-graph-drawer-pre ai-graph-drawer-pre--output">{output || (status === "running" ? "PI Agent 正在准备…" : "尚无输出")}</pre>
+          <button type="button" className="ai-graph-drawer-label ai-graph-drawer-label--toggle" onClick={() => setOutputOpen((value) => !value)} aria-expanded={outputOpen}>
+            {outputOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            {liveOutput ? "实时响应" : "Agent 输出"}
+            {output && <span className="ai-graph-drawer-hint">{formatCharCount(output.length)} 字符</span>}
+          </button>
+          {outputOpen && (
+            <pre className="ai-graph-drawer-pre ai-graph-drawer-pre--output">
+              {outputOmitted > 0 ? `…（前 ${formatCharCount(outputOmitted)} 字符已省略）\n` : ""}
+              {outputDisplay || (status === "running" ? "PI Agent 正在准备…" : "尚无输出")}
+            </pre>
+          )}
         </section>
 
         {(upstream.length > 0 || downstream.length > 0) && <section className="ai-graph-drawer-section"><div className="ai-graph-drawer-label">依赖关系</div><div className="ai-graph-drawer-deps-chips">{[...upstream, ...downstream].map((id) => <button key={id} className="ai-graph-dep-chip" onClick={() => onSelectNode(id)}>{titleOf(id)}</button>)}</div></section>}
-
-        <section className="ai-graph-drawer-section">
-          <button type="button" className="ai-graph-drawer-label ai-graph-drawer-label--toggle" onClick={() => setDetailsOpen((value) => !value)} aria-expanded={detailsOpen}>{detailsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}执行详情 <span className="ai-graph-drawer-hint">{activities.length} 条活动</span></button>
-          {detailsOpen && <VirtualActivityList activities={activities} />}
-        </section>
 
         {nodeRun?.errorText && <section className="ai-graph-drawer-section"><div className="ai-graph-drawer-label">错误</div><div className="ai-graph-drawer-error">{nodeRun.errorText}</div></section>}
       </div>
@@ -188,53 +294,81 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   );
 }
 
-function VirtualActivityList({ activities }: { activities: AgentActivity[] }) {
-  const ordered = useMemo(
-    () => [...activities].sort((left, right) => left.sequence - right.sequence),
-    [activities],
-  );
+// ── 工具调用列表（执行详情主视图） ──
+
+const TOOL_STATUS_META: Record<ToolCallEntry["status"], { label: string; className: string }> = {
+  running: { label: "执行中", className: "ai-graph-tool-status--running" },
+  succeeded: { label: "成功", className: "ai-graph-tool-status--succeeded" },
+  failed: { label: "失败", className: "ai-graph-tool-status--failed" },
+};
+
+/** Agent 输出区渲染上限（取尾部最新内容）。 */
+const OUTPUT_DISPLAY_LIMIT = 30_000;
+/** 单个工具输入/输出块的渲染上限。 */
+const TOOL_BLOCK_DISPLAY_LIMIT = 12_000;
+/** activities 空回退的稳定引用（避免行内 `?? []` 每次渲染新建数组）。 */
+const EMPTY_ACTIVITIES: AgentActivity[] = [];
+
+/**
+ * 超长块截断：
+ * - 输入参数保留开头（head）——参数结构通常前置；
+ * - 输出结果保留尾部（tail）——报错与结论多在结尾，与 Agent 输出区策略一致。
+ */
+function truncateBlock(text: string, keep: "head" | "tail"): { text: string; omitted: number } {
+  if (text.length <= TOOL_BLOCK_DISPLAY_LIMIT) return { text, omitted: 0 };
+  return {
+    text: keep === "tail" ? text.slice(-TOOL_BLOCK_DISPLAY_LIMIT) : text.slice(0, TOOL_BLOCK_DISPLAY_LIMIT),
+    omitted: text.length - TOOL_BLOCK_DISPLAY_LIMIT,
+  };
+}
+
+/** 虚拟化工具卡片列表：运行中自动跟随滚动，可暂停。 */
+function ToolCallList({ entries, live }: { entries: ToolCallEntry[]; live: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
   const virtualizer = useVirtualizer({
-    count: ordered.length,
+    count: entries.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 72,
-    overscan: 6,
+    estimateSize: () => 42,
+    overscan: 8,
   });
 
   useEffect(() => {
-    if (following && ordered.length > 0) {
-      virtualizer.scrollToIndex(ordered.length - 1, { align: "end" });
+    if (following && entries.length > 0) {
+      virtualizer.scrollToIndex(entries.length - 1, { align: "end" });
     }
-  }, [following, ordered.length, virtualizer]);
+  }, [following, entries.length, virtualizer]);
 
-  if (ordered.length === 0) {
-    return <p className="ai-graph-drawer-hint">尚未记录 Agent 活动。</p>;
+  if (entries.length === 0) {
+    return <p className="ai-graph-drawer-hint ai-graph-tool-empty">{live ? "等待 PI Agent 调用工具…" : "尚未记录工具调用。"}</p>;
   }
+
   return (
-    <div className="ai-graph-activity-shell">
-      <button type="button" className="ai-graph-follow-toggle" onClick={() => setFollowing((value) => !value)}>
-        {following ? <Pause className="h-3 w-3" /> : <ChevronsDown className="h-3 w-3" />}
-        {following ? "暂停跟随" : "恢复跟随"}
-      </button>
+    <div className="ai-graph-tool-shell">
+      {live && (
+        <button type="button" className="ai-graph-follow-toggle" onClick={() => setFollowing((value) => !value)}>
+          {following ? <Pause className="h-3 w-3" /> : <ChevronsDown className="h-3 w-3" />}
+          {following ? "暂停跟随" : "恢复跟随"}
+        </button>
+      )}
       <div
         ref={scrollRef}
-        className="ai-graph-activity-list"
+        className="ai-graph-tool-scroll"
         onScroll={(event) => {
           const target = event.currentTarget;
           if (target.scrollHeight - target.scrollTop - target.clientHeight > 40) setFollowing(false);
         }}
       >
-        <div className="ai-graph-activity-virtual" style={{ height: virtualizer.getTotalSize() }}>
+        <div className="ai-graph-tool-virtual" style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((item) => (
             <div
-              key={ordered[item.index].id}
+              key={entries[item.index].id}
               ref={virtualizer.measureElement}
               data-index={item.index}
-              className="ai-graph-activity-virtual-row"
+              className="ai-graph-tool-row"
               style={{ transform: `translateY(${item.start}px)` }}
             >
-              <ActivityRow activity={ordered[item.index]} />
+              <ToolCallCard entry={entries[item.index]} />
             </div>
           ))}
         </div>
@@ -243,7 +377,54 @@ function VirtualActivityList({ activities }: { activities: AgentActivity[] }) {
   );
 }
 
-function ActivityRow({ activity }: { activity: AgentActivity }) {
-  const [open, setOpen] = useState(activity.kind === "tool_call");
-  return <div className={cn("ai-graph-activity", `ai-graph-activity--${activity.kind}`)}><button type="button" className="ai-graph-activity-head" onClick={() => setOpen((value) => !value)}>{open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}<Activity className="h-3 w-3" /><span>{activity.title || ACTIVITY_LABEL[activity.kind] || activity.kind}</span><span className="ai-graph-activity-status">{activity.status}</span></button>{open && <pre className="ai-graph-activity-content">{activity.content || activity.payloadJson}</pre>}</div>;
-}
+/** 单个工具调用卡片：默认折叠只显示摘要，点击展开格式化后的输入/输出。
+ * memo 化：卡片位于虚拟列表 overscan 内，父级高频重渲染（跟随滚动、
+ * activities 更新）时仅在 entry 引用变化时才重新渲染。 */
+const ToolCallCard = memo(function ToolCallCard({ entry }: { entry: ToolCallEntry }) {
+  const [open, setOpen] = useState(false);
+  const statusMeta = TOOL_STATUS_META[entry.status];
+  const hasDetail = Boolean(entry.inputFormatted || entry.outputFormatted || entry.status === "running");
+  // 截断结果按 entry 缓存，避免跟随滚动的高频重渲染重复计算。
+  const inputBlock = useMemo(() => truncateBlock(entry.inputFormatted, "head"), [entry.inputFormatted]);
+  const outputBlock = useMemo(() => truncateBlock(entry.outputFormatted, "tail"), [entry.outputFormatted]);
+
+  return (
+    <div className={cn("ai-graph-tool-card", open && "ai-graph-tool-card--open", `ai-graph-tool-card--${entry.status}`)}>
+      <button
+        type="button"
+        className="ai-graph-tool-card-head"
+        onClick={() => hasDetail && setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <Wrench className="ai-graph-tool-card-icon" aria-hidden />
+        <span className="ai-graph-tool-card-name" title={entry.name}>{entry.name}</span>
+        <span className={cn("ai-graph-tool-status", statusMeta.className)}>{statusMeta.label}</span>
+        <span className="ai-graph-tool-card-chars" title="输入 / 输出字符数">入 {formatCharCount(entry.inputChars)} · 出 {formatCharCount(entry.outputChars)}</span>
+        {entry.durationMs != null && <span className="ai-graph-tool-card-duration">{formatGraphDuration(entry.durationMs)}</span>}
+      </button>
+      {open && (
+        <div className="ai-graph-tool-card-body">
+          {entry.inputFormatted ? (
+            <div className="ai-graph-tool-block">
+              <div className="ai-graph-tool-block-label">输入参数 <span className="ai-graph-drawer-hint">{formatCharCount(entry.inputChars)} 字符</span></div>
+              <pre className="ai-graph-tool-pre">{inputBlock.text}</pre>
+              {inputBlock.omitted > 0 && <div className="ai-graph-tool-truncated">已截断后 {formatCharCount(inputBlock.omitted)} 字符（保留开头）</div>}
+            </div>
+          ) : (
+            <div className="ai-graph-tool-block-empty">无输入参数</div>
+          )}
+          {entry.outputFormatted ? (
+            <div className="ai-graph-tool-block">
+              <div className="ai-graph-tool-block-label">输出结果 <span className="ai-graph-drawer-hint">{formatCharCount(entry.outputChars)} 字符</span></div>
+              <pre className="ai-graph-tool-pre">{outputBlock.text}</pre>
+              {outputBlock.omitted > 0 && <div className="ai-graph-tool-truncated">已截断前 {formatCharCount(outputBlock.omitted)} 字符（保留尾部）</div>}
+            </div>
+          ) : (
+            <div className="ai-graph-tool-block-empty">{entry.status === "running" ? "执行中，尚无输出…" : "无输出"}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});

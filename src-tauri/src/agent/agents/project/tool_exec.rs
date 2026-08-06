@@ -166,6 +166,24 @@ impl OrchestratorAgent {
                             (ToolResult::recoverable_error(error), None)
                         }
                     }
+                } else if tool_call.name == "graph_plan_report" {
+                    // graph_plan_report 协议拦截：返回最近运行的紧凑报告，不收口本轮，
+                    // 供模型决定答复用户或提交 inheritsFrom 修复图（反思闭环）。
+                    // 拦截硬错误（DB 读取失败等）转为可重试工具错误交回模型，
+                    // 与 submit_graph 分支保持一致：避免以 Err 中止本轮编排，
+                    // 留下永久 started 的悬挂运行记录，且让模型拿到失败反馈。
+                    match self
+                        .intercept_graph_plan_report(db, workspace_id, &tool_call)
+                        .await
+                    {
+                        Ok(report) => (ToolResult::success_text(report), None),
+                        Err(error) => (
+                            ToolResult::recoverable_error(format!(
+                                "读取执行图运行报告失败：{error:#}"
+                            )),
+                            None,
+                        ),
+                    }
                 } else {
                     (
                         ToolRuntime::execute_tool(

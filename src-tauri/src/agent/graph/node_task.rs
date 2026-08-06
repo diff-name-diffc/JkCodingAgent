@@ -17,6 +17,8 @@ pub(super) struct NodeTaskContext {
     pub exec: NodeExecContext,
     pub store: GraphStore,
     pub input: String,
+    /// 当前是第几次重试（0=首次执行）。重试时输入已注入上次失败原因。
+    pub retry_count: i32,
 }
 pub(super) struct NodeTaskResult {
     pub node_id: String,
@@ -38,6 +40,7 @@ pub(super) async fn run_node_task(ctx: NodeTaskContext) -> NodeTaskResult {
     record.model_label = ctx.exec.harness.model_label.clone();
     record.model_category = ctx.exec.harness.model.category.clone();
     record.started_at = Some(started);
+    record.retry_count = ctx.retry_count;
     if let Err(error) = ctx.store.save_node_run_async(&record).await {
         eprintln!("[graph] 保存节点运行记录失败：{error:#}")
     }

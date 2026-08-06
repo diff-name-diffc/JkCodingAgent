@@ -134,6 +134,11 @@ pub struct LlmResponse {
     pub raw_response: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<LlmUsage>,
+    /// 流式响应的终止原因（stop/length/tool_calls/…）。
+    /// `length` 表示输出被 max_tokens 截断——推理模型思考链耗尽预算时
+    /// 可见内容可能为空，调用方据此区分「截断」与「模型未遵循格式」。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -183,6 +188,8 @@ pub struct LlmResponseBodySnapshot {
     pub raw_response: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<LlmUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -273,6 +280,10 @@ pub struct OpenAiCompatProvider {
     model: String,
     max_tokens: u32,
     temperature: f32,
+    /// 是否允许模型输出思考链（推理模型）。默认 true 保持既有行为；
+    /// 短结论任务（如验收评审、格式分类）应显式关闭，避免思考 token
+    /// 与可见输出共享 max_tokens 预算时把结论挤掉。
+    enable_thinking: bool,
 }
 
 impl OpenAiCompatProvider {
@@ -293,6 +304,7 @@ impl OpenAiCompatProvider {
             model,
             max_tokens,
             temperature,
+            enable_thinking: true,
         }
     }
 
@@ -318,6 +330,14 @@ impl OpenAiCompatProvider {
         next
     }
 
+    /// 覆盖思考策略（见 `enable_thinking` 字段注释）。链式用法：
+    /// `OpenAiCompatProvider::new(...).with_thinking(false)`。
+    pub fn with_thinking(&self, enable_thinking: bool) -> Self {
+        let mut next = self.clone();
+        next.enable_thinking = enable_thinking;
+        next
+    }
+
     pub fn build_request_snapshot(
         &self,
         messages: &[ChatMessage],
@@ -336,7 +356,7 @@ impl OpenAiCompatProvider {
                 max_tokens: self.max_tokens,
                 temperature: self.temperature,
                 stream: true,
-                enable_thinking: true,
+                enable_thinking: self.enable_thinking,
                 stream_options: Some(StreamOptions {
                     include_usage: true,
                 }),
@@ -360,6 +380,7 @@ impl OpenAiCompatProvider {
                 tool_calls: response.tool_calls.clone(),
                 raw_response: response.raw_response.clone(),
                 usage: response.usage.clone(),
+                finish_reason: response.finish_reason.clone(),
             },
         }
     }
@@ -398,7 +419,7 @@ impl OpenAiCompatProvider {
             temperature: self.temperature,
             tools: if tools.is_empty() { None } else { Some(tools) },
             stream: true,
-            enable_thinking: true,
+            enable_thinking: self.enable_thinking,
             stream_options: Some(StreamOptions {
                 include_usage: true,
             }),
@@ -468,6 +489,7 @@ impl OpenAiCompatProvider {
         let mut thinking_elapsed_ms = 0_u64;
         let mut raw_response = String::new();
         let mut usage: Option<LlmUsage> = None;
+        let mut finish_reason: Option<String> = None;
         // index -> (id, name, accumulated_arguments)
         let mut tc_map: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
 
@@ -509,6 +531,16 @@ impl OpenAiCompatProvider {
                 let Some(choice) = choices.first() else {
                     continue;
                 };
+
+                // 终止原因（stop/length/…）：部分服务在最后一个分片才给出。
+                if let Some(reason) = choice
+                    .finish_reason
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|reason| !reason.is_empty())
+                {
+                    finish_reason = Some(reason.to_string());
+                }
 
                 if let Some(reasoning) = choice.delta.thinking_delta() {
                     if !reasoning.is_empty() {
@@ -568,6 +600,7 @@ impl OpenAiCompatProvider {
             tool_calls,
             raw_response,
             usage,
+            finish_reason,
         })
     }
 }
@@ -943,6 +976,8 @@ struct StreamChunk {
 #[derive(Deserialize)]
 struct StreamChoice {
     delta: StreamDelta,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]

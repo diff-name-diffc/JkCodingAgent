@@ -1,4 +1,5 @@
 import type {
+  AgentActivity,
   GraphDefinition,
   GraphNodeStatus,
   GraphPlanRecord,
@@ -47,7 +48,6 @@ export function parseGraphState(plan: GraphPlanRecord | null): Record<string, un
 
 export const PLAN_STATUS_META: Record<GraphPlanStatus, { label: string; className: string }> = {
   draft: { label: "待确认", className: "ai-graph-chip--draft" },
-  confirmed: { label: "已确认", className: "ai-graph-chip--confirmed" },
   running: { label: "运行中", className: "ai-graph-chip--running" },
   completed: { label: "已完成", className: "ai-graph-chip--completed" },
   failed: { label: "有失败", className: "ai-graph-chip--failed" },
@@ -150,4 +150,116 @@ export function previewStateValue(value: unknown, maxChars = 240): string {
   const raw =
     typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
   return raw.length > maxChars ? `${raw.slice(0, maxChars)}…` : raw;
+}
+
+/**
+ * 工具输入/输出的美观展示：
+ * - 对象/数组 → 两空格缩进的 JSON；
+ * - 字符串若是 JSON 文本（工具参数常被序列化成字符串）→ 解析后还原换行/转义，
+ *   对象则美化缩进，纯字符串则直接展示；
+ * - 其余字符串原样返回（pre-wrap 会保留真实换行）。
+ */
+export function formatToolPayload(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    const looksLikeJson =
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+      (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"'));
+    if (looksLikeJson) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (typeof parsed === "string") return parsed;
+        return JSON.stringify(parsed, null, 2) ?? value;
+      } catch {
+        // 不是合法 JSON，按原文展示
+      }
+    }
+    return value;
+  }
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** 字符数压缩展示：1234 → 1.2k。 */
+export function formatCharCount(count: number): string {
+  if (count < 1000) return String(count);
+  if (count < 10_000) return `${(count / 1000).toFixed(1)}k`;
+  return `${Math.round(count / 1000)}k`;
+}
+
+// ── 节点执行详情：工具调用卡片数据 ──
+
+export type ToolCallStatus = "running" | "succeeded" | "failed";
+
+export interface ToolCallEntry {
+  id: string;
+  sequence: number;
+  name: string;
+  status: ToolCallStatus;
+  inputFormatted: string;
+  outputFormatted: string;
+  inputChars: number;
+  outputChars: number;
+  durationMs: number | null;
+}
+
+export function normalizeToolCallStatus(status: string): ToolCallStatus {
+  if (status === "finished") return "succeeded";
+  if (status === "failed") return "failed";
+  return "running"; // started / updated
+}
+
+function payloadOf(activity: AgentActivity): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(activity.payloadJson);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // payload 损坏时按空处理，展示不受影响
+  }
+  return {};
+}
+
+/** 输出原文：优先取 activity.content（result 文本），缺失时回退 payload.result。 */
+function rawOutputOf(activity: AgentActivity, payload: Record<string, unknown>): string {
+  if (activity.content) return activity.content;
+  const result = payload.result;
+  if (result == null) return "";
+  return typeof result === "string" ? result : (JSON.stringify(result) ?? "");
+}
+
+/** 字符数统计口径：字符串直接取长度，其余值按 JSON 序列化后长度计。 */
+function charCountOf(value: unknown): number {
+  if (value == null) return 0;
+  if (typeof value === "string") return value.length;
+  return JSON.stringify(value)?.length ?? 0;
+}
+
+/** 把节点活动流过滤为工具调用卡片数据（按执行顺序）。 */
+export function buildToolCallEntries(activities: AgentActivity[]): ToolCallEntry[] {
+  return activities
+    .filter((activity) => activity.kind === "tool_call")
+    .sort((left, right) => left.sequence - right.sequence)
+    .map((activity) => {
+      const payload = payloadOf(activity);
+      const inputSource = payload.args ?? payload.input ?? null;
+      const outputRaw = rawOutputOf(activity, payload);
+      return {
+        id: activity.id,
+        sequence: activity.sequence,
+        name: activity.title || "工具调用",
+        status: normalizeToolCallStatus(activity.status),
+        inputFormatted: formatToolPayload(inputSource),
+        outputFormatted: formatToolPayload(outputRaw),
+        inputChars: charCountOf(inputSource),
+        outputChars: charCountOf(outputRaw),
+        durationMs: activity.finishedAt != null ? Math.max(0, activity.finishedAt - activity.startedAt) : null,
+      };
+    });
 }

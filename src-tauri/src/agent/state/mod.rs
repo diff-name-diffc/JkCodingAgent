@@ -17,6 +17,8 @@ mod tool_catalog;
 
 use generation::GenerationGate;
 use run::{ActiveRunHandle, ActiveRunStore, GraphRunRegistry};
+
+pub(crate) use run::GraphRunHandle;
 use tool_catalog::{tool_infos_from_registry, ToolCatalog};
 
 /// 应用级状态聚合器，由 Tauri `.manage()` 托管，是整个调度智能体的长寿宿主。
@@ -109,10 +111,7 @@ impl DispatcherState {
     /// 这是"每轮现建现用"模式的核心——保证设置变更在下一轮立即生效，
     /// 而当前轮次内部保持一致。
     pub(crate) fn build_run_agent(&self) -> OrchestratorAgent {
-        let mut agent = OrchestratorAgent::new(
-            self.services.config.clone(),
-            self.services.sub_agent_manager.clone(),
-        );
+        let mut agent = OrchestratorAgent::new(self.services.config.clone());
 
         let settings = self
             .services
@@ -243,10 +242,7 @@ impl DispatcherState {
         self.active_runs.stop(workspace_id)
     }
 
-    pub(crate) fn begin_graph_run(
-        &self,
-        plan_id: &str,
-    ) -> std::result::Result<tokio::sync::watch::Receiver<bool>, String> {
+    pub(crate) fn begin_graph_run(&self, plan_id: &str) -> std::result::Result<GraphRunHandle, String> {
         self.graph_runs.begin(plan_id)
     }
 
@@ -256,6 +252,11 @@ impl DispatcherState {
 
     pub(crate) fn cancel_graph_run(&self, plan_id: &str) -> bool {
         self.graph_runs.cancel(plan_id)
+    }
+
+    /// 恢复暂停中（高危写检查点）的图运行。
+    pub(crate) fn resume_graph_run(&self, plan_id: &str) -> bool {
+        self.graph_runs.resume(plan_id)
     }
 
     pub(crate) fn begin_title_generation(&self, workspace_id: &str) -> u64 {

@@ -166,6 +166,44 @@ impl DispatcherDb {
         Ok(record)
     }
 
+    /// 按 id 读取会话记录（供图执行回执等场景广播会话更新）。
+    pub fn get_dispatcher_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<DispatcherSessionRecord>> {
+        self.conn()?
+            .query_row(
+                "SELECT id, project_id, kind, title, category, created_at, updated_at
+                 FROM dispatcher_sessions
+                 WHERE id = ?1",
+                params![session_id],
+                |row| {
+                    Ok(DispatcherSessionRecord {
+                        id: row.get(0)?,
+                        project_id: row.get(1)?,
+                        kind: DispatcherSessionKind::from_sql_value(row.get(2)?),
+                        title: row.get(3)?,
+                        category: row.get(4)?,
+                        created_at: row.get(5)?,
+                        updated_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .context("load dispatcher session by id")
+    }
+
+    pub async fn get_dispatcher_session_async(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<DispatcherSessionRecord>> {
+        let db = self.clone();
+        let session_id = session_id.to_string();
+        tokio::task::spawn_blocking(move || db.get_dispatcher_session(&session_id))
+            .await
+            .context("get_dispatcher_session spawn_blocking")?
+    }
+
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;

@@ -10084,6 +10084,13 @@
 
   .ai-graph-overlay {
     padding: 28px;
+    /* 图面板是全屏工作区而非模态弹窗：去掉 .ai-dialog-overlay 继承来的
+       暗色蒙版与 backdrop-filter。backdrop-filter 会建立 backdrop root，
+       在 WKWebView 中会拉低其内部变换内容（React Flow 缩放/平移的画布）
+       的栅格化质量，导致启动执行后画布字体发虚。 */
+    background: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   /* 窄窗口下降级外边距，画布优先 */
@@ -10177,6 +10184,11 @@
     color: var(--danger);
   }
 
+  .ai-graph-stat--skipped,
+  .ai-graph-stat--cancelled {
+    color: var(--warning);
+  }
+
   .ai-graph-stat--progress {
     font-weight: 600;
     color: var(--text-secondary);
@@ -10200,6 +10212,10 @@
 
   .ai-graph-progress-bar--failed {
     background: var(--danger);
+  }
+
+  .ai-graph-progress-bar--cancelled {
+    background: var(--warning);
   }
 
   .ai-graph-panel-canvas {
@@ -10241,11 +10257,6 @@
   .ai-graph-chip--draft {
     background: rgb(var(--warning-rgb) / 0.14);
     color: var(--warning);
-  }
-
-  .ai-graph-chip--confirmed {
-    background: rgb(var(--info-rgb) / 0.12);
-    color: var(--info);
   }
 
   .ai-graph-chip--running {
@@ -10535,6 +10546,21 @@
   .ai-graph-control-btn:hover {
     background: var(--bg-subtle);
     color: var(--text-primary);
+  }
+
+  .ai-graph-control-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .ai-graph-control-btn:disabled:hover {
+    background: transparent;
+    color: var(--text-secondary);
+  }
+
+  /* 存在手动拖动的布局时高亮提示可重置 */
+  .ai-graph-control-btn--active {
+    color: var(--accent);
   }
 
   /* 底部共享 state 检查器 */
@@ -11016,6 +11042,22 @@
     background: var(--bg-subtle);
   }
 
+  .ai-graph-expected-files {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--border-accent);
+    border-radius: 8px;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .ai-graph-expected-files:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
   .ai-graph-tool-picker {
     display: flex;
     max-height: 116px;
@@ -11065,7 +11107,7 @@
     position: relative;
   }
 
-  .ai-graph-activity-shell {
+  .ai-graph-tool-shell {
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -11084,39 +11126,56 @@
     cursor: pointer;
   }
 
-  .ai-graph-activity-list {
+  .ai-graph-tool-empty {
+    margin: 0;
+    border: 1px dashed var(--border-dim);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+
+  .ai-graph-tool-scroll {
     position: relative;
-    height: min(420px, 46vh);
-    max-height: 420px;
+    height: min(400px, 44vh);
     overflow-y: auto;
   }
 
-  .ai-graph-activity-virtual {
+  .ai-graph-tool-virtual {
     position: relative;
     width: 100%;
   }
 
-  .ai-graph-activity-virtual-row {
+  .ai-graph-tool-row {
     position: absolute;
     top: 0;
     left: 0;
     width: 100%;
-    padding-bottom: 7px;
+    padding-bottom: 6px;
   }
 
-  .ai-graph-activity {
+  /* 工具调用卡片：折叠态单行摘要（名称/状态/字符数），展开态格式化输入/输出 */
+  .ai-graph-tool-card {
+    overflow: hidden;
     border: 1px solid var(--border-dim);
     border-radius: 8px;
     background: var(--bg-card);
+    transition: border-color 120ms ease-out;
   }
 
-  .ai-graph-activity-head {
+  .ai-graph-tool-card--open {
+    border-color: var(--border-strong);
+  }
+
+  .ai-graph-tool-card--failed {
+    border-color: rgb(var(--danger-rgb) / 0.4);
+  }
+
+  .ai-graph-tool-card-head {
     display: flex;
     width: 100%;
     align-items: center;
     gap: 6px;
-    padding: 7px 8px;
     border: 0;
+    padding: 7px 9px;
     background: transparent;
     color: var(--text-secondary);
     font-size: 11px;
@@ -11124,21 +11183,115 @@
     cursor: pointer;
   }
 
-  .ai-graph-activity-status {
-    margin-left: auto;
-    color: var(--text-hint);
-    font-size: 10px;
+  .ai-graph-tool-card-head:hover {
+    background: var(--bg-subtle);
   }
 
-  .ai-graph-activity-content {
-    max-height: 240px;
-    margin: 0;
-    overflow: auto;
-    padding: 8px;
+  .ai-graph-tool-card-icon {
+    height: 12px;
+    width: 12px;
+    flex-shrink: 0;
+    color: var(--text-hint);
+  }
+
+  .ai-graph-tool-card-name {
+    overflow: hidden;
+    min-width: 0;
+    flex-shrink: 1;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-weight: 500;
+    color: var(--text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-graph-tool-status {
+    flex-shrink: 0;
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: 10px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .ai-graph-tool-status--running {
+    background: rgb(var(--accent-rgb) / 0.12);
+    color: var(--accent);
+  }
+
+  .ai-graph-tool-status--succeeded {
+    background: rgb(var(--success-rgb) / 0.12);
+    color: var(--success);
+  }
+
+  .ai-graph-tool-status--failed {
+    background: rgb(var(--danger-rgb) / 0.12);
+    color: var(--danger);
+  }
+
+  .ai-graph-tool-card-chars {
+    margin-left: auto;
+    flex-shrink: 0;
+    color: var(--text-hint);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .ai-graph-tool-card-duration {
+    flex-shrink: 0;
+    color: var(--text-hint);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .ai-graph-tool-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
     border-top: 1px solid var(--border-dim);
+    background: var(--bg-panel);
+    padding: 8px 9px 9px;
+  }
+
+  .ai-graph-tool-block-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
     color: var(--text-muted);
-    font: 10px/1.55 var(--font-mono);
+  }
+
+  .ai-graph-tool-pre {
+    max-height: 220px;
+    overflow: auto;
+    margin: 0;
+    border-radius: 6px;
+    background: var(--bg-subtle);
+    padding: 8px 10px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    line-height: 1.55;
+    color: var(--text-primary);
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  .ai-graph-tool-truncated {
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-hint);
+  }
+
+  .ai-graph-tool-block-empty {
+    border: 1px dashed var(--border-dim);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: var(--text-hint);
   }
 }

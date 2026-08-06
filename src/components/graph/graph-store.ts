@@ -26,6 +26,9 @@ export interface GraphPlanSnapshot {
   liveActivities: Record<string, AgentActivity[]>;
   /** 最近一次图运行事件（面板状态提示用）。 */
   lastEvent: GraphRunEventPayload | null;
+  /** 高危写检查点暂停标记（plan 仍是 running，但等待用户恢复）。 */
+  paused: boolean;
+  pausedNodeId: string | null;
 }
 
 type Subscriber = (version: number) => void;
@@ -35,6 +38,8 @@ const EMPTY_SNAPSHOT: GraphPlanSnapshot = {
   liveOutputs: {},
   liveActivities: {},
   lastEvent: null,
+  paused: false,
+  pausedNodeId: null,
 };
 
 const snapshots = new Map<string, GraphPlanSnapshot>();
@@ -59,7 +64,7 @@ export function createSerialTaskQueue() {
 function ensureSnapshot(planId: string): GraphPlanSnapshot {
   let snapshot = snapshots.get(planId);
   if (!snapshot) {
-    snapshot = { plan: null, liveOutputs: {}, liveActivities: {}, lastEvent: null };
+    snapshot = { plan: null, liveOutputs: {}, liveActivities: {}, lastEvent: null, paused: false, pausedNodeId: null };
     snapshots.set(planId, snapshot);
   }
   return snapshot;
@@ -121,6 +126,8 @@ export function reduceGraphRunEvent(
       patchPlan(snapshot, { status: "running" });
       snapshot.liveOutputs = {};
       snapshot.liveActivities = {};
+      snapshot.paused = false;
+      snapshot.pausedNodeId = null;
       return { notification: "immediate", hydrate: true };
     case "nodeStarted":
       upsertNodeRun(snapshot, payload.data.nodeId, {
@@ -193,18 +200,32 @@ export function reduceGraphRunEvent(
     case "stateUpdated":
       patchPlan(snapshot, { stateJson: JSON.stringify(payload.data.state ?? {}) });
       return { notification: "immediate", hydrate: false };
+    case "runPaused":
+      snapshot.paused = true;
+      snapshot.pausedNodeId = payload.data.nodeId;
+      return { notification: "immediate", hydrate: false };
+    case "runResumed":
+      snapshot.paused = false;
+      snapshot.pausedNodeId = null;
+      return { notification: "immediate", hydrate: false };
     case "runFinished":
       patchPlan(snapshot, {
         status: payload.data.failedNodes.length > 0 ? "failed" : "completed",
         stateJson: JSON.stringify(payload.data.state ?? {}),
       });
+      snapshot.paused = false;
+      snapshot.pausedNodeId = null;
       // 终态回源：拿到权威 node runs（含持久化的 outputText/durationMs）。
       return { notification: "immediate", hydrate: true };
     case "runFailed":
       patchPlan(snapshot, { status: "failed" });
+      snapshot.paused = false;
+      snapshot.pausedNodeId = null;
       return { notification: "immediate", hydrate: true };
     case "runCancelled":
       patchPlan(snapshot, { status: "cancelled" });
+      snapshot.paused = false;
+      snapshot.pausedNodeId = null;
       return { notification: "immediate", hydrate: true };
   }
 }

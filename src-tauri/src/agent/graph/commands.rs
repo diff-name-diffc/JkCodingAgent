@@ -8,7 +8,7 @@ use super::runner::{emit_plan_updated, execute_graph_run, GraphRunServices};
 use super::store::GraphStore;
 use super::types::{
     GraphDefinition, GraphHarnessCatalog, GraphPlanRecord, GraphRunDetail, PLAN_CANCELLED,
-    PLAN_COMPLETED, PLAN_CONFIRMED, PLAN_DRAFT, PLAN_FAILED, PLAN_RUNNING,
+    PLAN_COMPLETED, PLAN_DRAFT, PLAN_FAILED, PLAN_RUNNING, RUN_MODE_FULL, RUN_MODE_RESUME,
 };
 use super::validate::validate_graph;
 use crate::agent::state::DispatcherState;
@@ -62,11 +62,25 @@ pub async fn graph_plan_update(
         ));
     }
 
-    let definition: GraphDefinition = serde_json::from_str(&definition_json)
+    let mut definition: GraphDefinition = serde_json::from_str(&definition_json)
         .map_err(|error| format!("错误：definition_json 不是合法的图定义：{error}"))?;
+    // 存量 v2 草稿编辑保存时一并升级，升级结果随本次保存持久化。
+    definition.upgrade_legacy();
+    definition.normalize_ids();
 
     let catalog = catalog_for_workspace(&state, &plan.workspace_id).await?;
-    validate_graph(&definition, &catalog)?;
+    // 种子键沿用 plan 当前 state（draft 态普通图为空，修复图为继承 state）。
+    // 解析失败必须显式报错：在空种子键前提下校验会把本应合法的修复图
+    // injectStateKeys 误报为「不在继承的共享 state 中」，且掩盖真实根因。
+    let seeded_keys =
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&plan.state_json)
+            .map_err(|error| {
+                format!("图计划共享 state 已损坏（JSON 解析失败：{error}），无法校验图定义")
+            })?
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+    validate_graph(&definition, &catalog, &seeded_keys)?;
 
     store
         .update_plan_definition_async(&plan_id, &definition)
@@ -76,13 +90,15 @@ pub async fn graph_plan_update(
     Ok(())
 }
 
-/// 确认执行 / 重新执行：draft/confirmed/failed/cancelled/completed 态允许；
-/// 置 running 后异步执行图运行器；每次重跑创建独立 run 快照。
+/// 确认执行 / 重新执行：draft/failed/cancelled/completed 态允许；置 running 后
+/// 异步执行图运行器。`mode`：full（默认，完整执行）/ resume（断点续跑，仅
+/// failed/cancelled 态可，用最近一次运行的成功节点与 state 起步）。
 #[tauri::command]
 pub async fn graph_run_start(
     app: AppHandle,
     state: State<'_, DispatcherState>,
     plan_id: String,
+    mode: Option<String>,
 ) -> Result<(), String> {
     let store = GraphStore::new(state.db());
     let plan = store
@@ -92,15 +108,46 @@ pub async fn graph_run_start(
         .ok_or_else(|| format!("图计划不存在：{plan_id}"))?;
     if !matches!(
         plan.status.as_str(),
-        PLAN_DRAFT | PLAN_CONFIRMED | PLAN_FAILED | PLAN_CANCELLED | PLAN_COMPLETED
+        PLAN_DRAFT | PLAN_FAILED | PLAN_CANCELLED | PLAN_COMPLETED
     ) {
         return Err(format!(
-            "当前状态（{}）不允许启动执行；仅 draft/confirmed/failed/cancelled/completed 可启动",
+            "当前状态（{}）不允许启动执行；仅 draft/failed/cancelled/completed 可启动",
             plan.status
         ));
     }
 
-    let cancel_rx = state.begin_graph_run(&plan_id)?;
+    let mode = match mode.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        None | Some(RUN_MODE_FULL) => RUN_MODE_FULL.to_string(),
+        Some(RUN_MODE_RESUME) => {
+            // 断点续跑仅对 failed/cancelled 有意义，且需存在已终态的历史运行。
+            if !matches!(plan.status.as_str(), PLAN_FAILED | PLAN_CANCELLED) {
+                return Err("仅 failed/cancelled 态的图支持断点续跑".to_string());
+            }
+            let latest = store
+                .get_latest_run_async(&plan_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let Some(latest) = latest else {
+                return Err("没有可续跑的历史运行".to_string());
+            };
+            if !matches!(latest.status.as_str(), PLAN_FAILED | PLAN_CANCELLED) {
+                return Err(format!(
+                    "最近一次运行状态为 {}，无法续跑",
+                    latest.status
+                ));
+            }
+            RUN_MODE_RESUME.to_string()
+        }
+        // 未知取值（拼写错误等）显式报错：若静默回退为 full，本意断点续跑的
+        // 调用会触发完整重跑——共享 state 被重置、写节点全部重新执行，且无提示。
+        Some(unknown) => {
+            return Err(format!(
+                "未知的执行模式：{unknown}；仅支持 {RUN_MODE_FULL} / {RUN_MODE_RESUME}"
+            ))
+        }
+    };
+
+    let handle = state.begin_graph_run(&plan_id)?;
     // 先置 running 再 spawn（命令返回后前端立即查询也能看到正确状态）；
     // 运行器内部会再次写入并广播 graph-plan-updated。
     if let Err(error) = store.update_plan_status_async(&plan_id, PLAN_RUNNING).await {
@@ -121,7 +168,8 @@ pub async fn graph_run_start(
             run_app.clone(),
             services,
             run_plan_id.clone(),
-            cancel_rx,
+            mode,
+            handle,
         ))
         .catch_unwind()
         .await;
@@ -167,6 +215,26 @@ pub async fn graph_run_cancel(
         }
     }
     Ok(cancelled)
+}
+
+/// 恢复暂停中（高危写检查点）的图运行。
+#[tauri::command]
+pub async fn graph_run_resume(
+    app: AppHandle,
+    state: State<'_, DispatcherState>,
+    plan_id: String,
+) -> Result<bool, String> {
+    let resumed = state.resume_graph_run(&plan_id);
+    if resumed {
+        // resumed 已为 true：查询失败不改变返回值，但需可观测——
+        // 否则前端收不到 graph-plan-updated，UI 状态不刷新且无线索。
+        match GraphStore::new(state.db()).get_plan_async(&plan_id).await {
+            Ok(Some(plan)) => emit_plan_updated(&app, &plan_id, &plan.workspace_id),
+            Ok(None) => eprintln!("[graph] resume 后计划不存在（{plan_id}），跳过事件广播"),
+            Err(error) => eprintln!("[graph] resume 后读取计划失败（{plan_id}）：{error:#}"),
+        }
+    }
+    Ok(resumed)
 }
 
 #[tauri::command]

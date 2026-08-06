@@ -390,6 +390,11 @@ export interface ModelLibraryEntry {
   enabled: boolean;
 }
 
+export interface GraphExecutionConfig {
+  /** 高危写检查点：每个 run 首个 coding 节点启动前暂停，等待用户恢复。 */
+  pauseBeforeWrite: boolean;
+}
+
 export interface AhaSettingsV2 {
   shared: AhaSharedModels;
   project: AhaContextConfig;
@@ -398,6 +403,8 @@ export interface AhaSettingsV2 {
   contextDebug: boolean;
   review: SshReviewConfig;
   modelLibrary: ModelLibraryEntry[];
+  /** 执行图编排运行期设置。 */
+  graph?: GraphExecutionConfig;
 }
 
 export type DispatcherSessionTokenUsageSource = "primary" | "summary";
@@ -688,7 +695,6 @@ export interface SubAgentRunTrace {
 
 export type GraphPlanStatus =
   | "draft"
-  | "confirmed"
   | "running"
   | "completed"
   | "failed"
@@ -711,11 +717,19 @@ export type GraphNodePhase =
   | "compacting"
   | "finalizing";
 export type GraphBaseToolGroup = "read_only" | "coding";
-export interface GraphToolRef { source: "pi_extension" | "aha"; name: string }
+/** 节点输出对下游的导出策略：summary=仅产出摘要段（默认），full=全文。 */
+export type GraphExportPolicy = "summary" | "full";
+export type GraphToolRef = { source: "pi_extension" | "aha"; name: string };
 
 export interface GraphStateKey {
   key: string;
   description: string;
+}
+
+/** 修复图继承来源：新 plan 从既有 plan 的某次 run 继承共享 state。 */
+export interface GraphInherits {
+  planId: string;
+  runId: string;
 }
 
 /** GraphDefinition 中的节点定义（GraphNode）。 */
@@ -730,15 +744,21 @@ export interface GraphNodeDef {
   dependsOn: string[];
   injectStateKeys: string[];
   outputKey: string;
+  /** 预期读写的文件（供并行写冲突预检）。 */
+  expectedFiles?: string[];
+  /** 输出对下游的导出策略（默认 summary）。 */
+  exportPolicy?: GraphExportPolicy;
 }
 
 /** 项目 Agent 的核心产物：执行图 DAG 定义（definitionJson 解析后的结构）。 */
 export interface GraphDefinition {
-  version: 2;
+  version: 3;
   title: string;
   summary: string;
   stateKeys: GraphStateKey[];
   nodes: GraphNodeDef[];
+  /** 修复图继承来源（可选）。 */
+  inheritsFrom?: GraphInherits;
 }
 
 export interface GraphNodeRunRecord {
@@ -762,9 +782,23 @@ export interface GraphNodeRunRecord {
   affectedFiles: string[];
   usageJson: string;
   toolCallCount: number;
+  /** 已消耗的失败重试次数。 */
+  retryCount: number;
 }
 
-export interface GraphRunSummary { id: string; planId: string; attemptNo: number; status: string; startedAt: number; finishedAt: number | null }
+export interface GraphRunSummary {
+  id: string;
+  planId: string;
+  attemptNo: number;
+  status: string;
+  /** full=完整执行，resume=断点续跑。 */
+  mode: string;
+  /** 验收结论：pass/partial/fail/unknown（空串=未验收）。 */
+  verdictStatus: string;
+  verdictReason: string;
+  startedAt: number;
+  finishedAt: number | null;
+}
 export interface AgentActivity { id: string; runId: string; nodeId: string; sequence: number; kind: string; status: string; title: string; content: string; payloadJson: string; startedAt: number; finishedAt: number | null }
 export interface GraphRunDetail { run: GraphRunSummary; nodeRuns: GraphNodeRunRecord[]; activities: AgentActivity[] }
 export interface GraphHarnessModel { id: string; label: string; model: string; category: "text" | "vision"; capabilities: string[] }
@@ -781,6 +815,10 @@ export interface GraphPlanRecord {
   status: GraphPlanStatus;
   /** 共享 state 最新快照（JSON 对象：key → 节点输出文本）。 */
   stateJson: string;
+  /** 提交时刻的需求快照。 */
+  requirement: string;
+  inheritsPlanId: string | null;
+  inheritsRunId: string | null;
   createdAt: number;
   updatedAt: number;
   latestRunId: string | null;
@@ -857,6 +895,14 @@ export interface GraphRunFailedData {
   error: string;
 }
 
+/** 高危写检查点：首个 coding 节点即将启动，运行暂停。 */
+export interface GraphRunPausedData {
+  nodeId: string;
+}
+
+/** runResumed/runCancelled 等无数据事件的空载荷（Rust 侧序列化为 `{}`）。 */
+export type GraphRunEmptyData = Record<string, never>;
+
 export type GraphRunEventKind =
   | "runStarted"
   | "nodeStarted"
@@ -867,6 +913,8 @@ export type GraphRunEventKind =
   | "nodeFailed"
   | "nodeSkipped"
   | "stateUpdated"
+  | "runPaused"
+  | "runResumed"
   | "runFinished"
   | "runFailed"
   | "runCancelled";
@@ -888,9 +936,11 @@ export type GraphRunEventPayload = {
   | { event: "nodeFailed"; data: GraphNodeFailedData }
   | { event: "nodeSkipped"; data: GraphNodeSkippedData }
   | { event: "stateUpdated"; data: GraphStateUpdatedData }
+  | { event: "runPaused"; data: GraphRunPausedData }
+  | { event: "runResumed"; data: GraphRunEmptyData }
   | { event: "runFinished"; data: GraphRunFinishedData }
   | { event: "runFailed"; data: GraphRunFailedData }
-  | { event: "runCancelled"; data: Record<string, never> }
+  | { event: "runCancelled"; data: GraphRunEmptyData }
 );
 
 // ── RAG Knowledge Base ───────────────────────────────────────────────────────

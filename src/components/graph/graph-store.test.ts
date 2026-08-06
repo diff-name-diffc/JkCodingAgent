@@ -29,6 +29,7 @@ function nodeRun(): GraphNodeRunRecord {
     affectedFiles: [],
     usageJson: "{}",
     toolCallCount: 0,
+    retryCount: 0,
   };
 }
 
@@ -38,9 +39,12 @@ function plan(): GraphPlanRecord {
     workspaceId: "workspace-1",
     title: "Plan",
     summary: "",
-    definitionJson: '{"version":2,"title":"Plan","stateKeys":[],"nodes":[]}',
+    definitionJson: '{"version":3,"title":"Plan","stateKeys":[],"nodes":[]}',
     status: "running",
     stateJson: "{}",
+    requirement: "需求",
+    inheritsPlanId: null,
+    inheritsRunId: null,
     createdAt: 1,
     updatedAt: 1,
     latestRunId: "run-1",
@@ -50,7 +54,7 @@ function plan(): GraphPlanRecord {
 }
 
 function snapshot(): GraphPlanSnapshot {
-  return { plan: plan(), liveOutputs: {}, liveActivities: {}, lastEvent: null };
+  return { plan: plan(), liveOutputs: {}, liveActivities: {}, lastEvent: null, paused: false, pausedNodeId: null };
 }
 
 function payload(
@@ -126,6 +130,29 @@ describe("graph run reducer", () => {
     expect(state.liveOutputs).toEqual({});
     expect(state.liveActivities).toEqual({});
     expect(effect.hydrate).toBe(true);
+  });
+
+  it("runPaused 置暂停标记且 plan 保持 running，runResumed 复位", () => {
+    const state = snapshot();
+    reduceGraphRunEvent(state, payload("runPaused", { nodeId: "node-1" }, 1));
+    expect(state.paused).toBe(true);
+    expect(state.pausedNodeId).toBe("node-1");
+    expect(state.plan?.status).toBe("running");
+
+    reduceGraphRunEvent(state, payload("runResumed", {}, 2));
+    expect(state.paused).toBe(false);
+    expect(state.pausedNodeId).toBeNull();
+  });
+
+  it("runFinished 复位暂停标记", () => {
+    const state = snapshot();
+    reduceGraphRunEvent(state, payload("runPaused", { nodeId: "node-1" }, 1));
+    reduceGraphRunEvent(
+      state,
+      payload("runFinished", { state: {}, failedNodes: [], skippedNodes: [] }, 2),
+    );
+    expect(state.paused).toBe(false);
+    expect(state.pausedNodeId).toBeNull();
   });
 });
 

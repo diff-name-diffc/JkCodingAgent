@@ -8,6 +8,11 @@ import type { GraphDefinition } from "../../types";
 
 export const GRAPH_NODE_WIDTH = 264;
 export const GRAPH_NODE_HEIGHT = 88;
+/**
+ * 布局估算高度：节点带任务摘要/输出预览行时实际渲染更高，
+ * 用它参与 dagre 排版避免层与层之间视觉重叠。
+ */
+const GRAPH_NODE_LAYOUT_HEIGHT = 136;
 
 export interface GraphNodePosition {
   x: number;
@@ -20,15 +25,19 @@ export function computeGraphLayout(
   const graph = new dagre.graphlib.Graph();
   graph.setGraph({
     rankdir: "TB",
-    nodesep: 44,
-    ranksep: 72,
-    marginx: 32,
-    marginy: 32,
+    // 节点间距适当放宽，避免默认排版过于拥挤
+    nodesep: 88,
+    ranksep: 128,
+    marginx: 40,
+    marginy: 40,
   });
   graph.setDefaultEdgeLabel(() => ({}));
 
   for (const node of definition.nodes) {
-    graph.setNode(node.id, { width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT });
+    graph.setNode(node.id, {
+      width: GRAPH_NODE_WIDTH,
+      height: GRAPH_NODE_LAYOUT_HEIGHT,
+    });
   }
   const nodeIds = new Set(definition.nodes.map((node) => node.id));
   for (const node of definition.nodes) {
@@ -46,10 +55,11 @@ export function computeGraphLayout(
   for (const node of definition.nodes) {
     const laidOut = graph.node(node.id);
     if (!laidOut) continue;
-    // dagre 输出中心点坐标，React Flow 需要左上角。
+    // dagre 输出中心点坐标，React Flow 需要左上角；
+    // 取整到整数像素，避免半像素平移导致文本发虚。
     positions.set(node.id, {
-      x: laidOut.x - GRAPH_NODE_WIDTH / 2,
-      y: laidOut.y - GRAPH_NODE_HEIGHT / 2,
+      x: Math.round(laidOut.x - GRAPH_NODE_WIDTH / 2),
+      y: Math.round(laidOut.y - GRAPH_NODE_LAYOUT_HEIGHT / 2),
     });
   }
   return positions;

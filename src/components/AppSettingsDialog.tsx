@@ -7,6 +7,7 @@ import {
   Settings2,
   SquareTerminal,
   Users,
+  Workflow,
   Wrench,
   X,
   type LucideIcon,
@@ -15,6 +16,7 @@ import { AhaSettingsProvider, useAhaSettingsStore } from "./settings/use-aha-set
 import { Toaster } from "./settings/Toaster";
 import { ConfirmDialog } from "./settings/ConfirmDialog";
 import { GeneralPage } from "./settings/GeneralPage";
+import { GraphPage } from "./settings/GraphPage";
 import { ToolsPage } from "./settings/ToolsPage";
 import { SubAgentsPage } from "./settings/SubAgentsPage";
 import { ProvidersPage } from "./settings/providers/ProvidersPage";
@@ -28,6 +30,7 @@ export type SettingsNavKey =
   | "providers"
   | "purposes"
   | "tools"
+  | "graph"
   | "subAgents"
   | "ssh"
   | "rag";
@@ -37,6 +40,7 @@ const NAV_ITEMS: Array<{ key: SettingsNavKey; label: string; icon: LucideIcon }>
   { key: "providers", label: "模型服务", icon: Server },
   { key: "purposes", label: "模型用途", icon: Cpu },
   { key: "tools", label: "工具", icon: Wrench },
+  { key: "graph", label: "执行图", icon: Workflow },
   { key: "subAgents", label: "子智能体", icon: Users },
   { key: "ssh", label: "SSH", icon: SquareTerminal },
   { key: "rag", label: "RAG 知识库", icon: Database },
@@ -48,6 +52,7 @@ function normalizeInitialTab(tab?: string): SettingsNavKey {
     case "providers":
     case "purposes":
     case "tools":
+    case "graph":
     case "subAgents":
     case "ssh":
     case "rag":
@@ -189,6 +194,7 @@ export function AppSettingsDialog({
                 />
               )}
               {activeNav === "tools" && <ToolsPage projectPath={projectPath} />}
+              {activeNav === "graph" && <GraphPage />}
               {activeNav === "subAgents" && <SubAgentsPage />}
               {activeNav === "ssh" && <SshServersPage projectPath={projectPath} />}
               {activeNav === "rag" && (

@@ -12,8 +12,10 @@
 //! - `iteration.rs`：单次迭代的 LLM 交互与消息收口。
 //! - `tool_exec.rs`：工具批量执行（只读并行组 / 压缩 / 重试）。
 //! - `graph_submit.rs`：`submit_graph` 协议拦截与本轮收口。
+//! - `graph_report.rs`：`graph_plan_report` 协议拦截（运行报告，反思闭环）。
 //! - `helpers.rs`：事件、用量、错误分类等小工具。
 
+pub(crate) mod graph_report;
 pub(crate) mod graph_submit;
 pub(crate) mod helpers;
 pub(crate) mod iteration;
@@ -70,10 +72,7 @@ pub struct OrchestratorAgent {
 // ─── Construction & configuration ─────────────────────────────────────────────
 
 impl OrchestratorAgent {
-    pub fn new(
-        config: DispatcherAgentConfig,
-        sub_agent_manager: Option<Arc<crate::agent::sub_agent::SubAgentManager>>,
-    ) -> Self {
+    pub fn new(config: DispatcherAgentConfig) -> Self {
         let provider = OpenAiCompatProvider::new(
             config.api_key.clone(),
             config.api_base.clone(),
@@ -101,7 +100,7 @@ impl OrchestratorAgent {
                 },
             }),
             app_handle: None,
-            tools: Arc::new(ToolRegistry::orchestrator_tools(sub_agent_manager)),
+            tools: Arc::new(ToolRegistry::orchestrator_tools()),
             config,
             provider: Mutex::new(provider),
         }

@@ -1,6 +1,6 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 /// 每个 workspace 的运行状态。
 ///
@@ -65,8 +65,22 @@ impl ActiveRunStore {
 ///
 /// 与 `ActiveRunStore` 同构但按 plan_id 索引——图执行独立于会话 run
 /// （用户在图运行期间仍可与会话对话）。
+///
+/// v3 增加 resume 通道（mpsc，带缓冲）：高危写检查点暂停后，`graph_run_resume`
+/// 命令通过它唤醒运行器。取消信号保持 watch<bool> 不变，node_exec 的取消轮询零改动。
+struct GraphRunEntry {
+    cancel_tx: watch::Sender<bool>,
+    resume_tx: mpsc::UnboundedSender<()>,
+}
+
+/// 运行器持有的图运行句柄：取消信号 + 恢复信号接收端。
+pub(crate) struct GraphRunHandle {
+    pub(crate) cancel_rx: watch::Receiver<bool>,
+    pub(crate) resume_rx: mpsc::UnboundedReceiver<()>,
+}
+
 pub(super) struct GraphRunRegistry {
-    entries: Mutex<HashMap<String, watch::Sender<bool>>>,
+    entries: Mutex<HashMap<String, GraphRunEntry>>,
 }
 
 impl Default for GraphRunRegistry {
@@ -78,14 +92,18 @@ impl Default for GraphRunRegistry {
 }
 
 impl GraphRunRegistry {
-    pub(super) fn begin(&self, plan_id: &str) -> std::result::Result<watch::Receiver<bool>, String> {
+    pub(super) fn begin(&self, plan_id: &str) -> std::result::Result<GraphRunHandle, String> {
         let mut entries = self.entries.lock();
         if entries.contains_key(plan_id) {
             return Err("该图正在运行中，请勿重复启动".to_string());
         }
-        let (stop_tx, cancel_rx) = watch::channel(false);
-        entries.insert(plan_id.to_string(), stop_tx);
-        Ok(cancel_rx)
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let (resume_tx, resume_rx) = mpsc::unbounded_channel();
+        entries.insert(
+            plan_id.to_string(),
+            GraphRunEntry { cancel_tx, resume_tx },
+        );
+        Ok(GraphRunHandle { cancel_rx, resume_rx })
     }
 
     pub(super) fn finish(&self, plan_id: &str) {
@@ -97,6 +115,15 @@ impl GraphRunRegistry {
         self.entries
             .lock()
             .get(plan_id)
-            .is_some_and(|sender| sender.send(true).is_ok())
+            .is_some_and(|entry| entry.cancel_tx.send(true).is_ok())
+    }
+
+    /// 恢复暂停中的图运行（高危写检查点）。mpsc 带缓冲：检查点等待前到达的
+    /// resume 不会丢失。
+    pub(super) fn resume(&self, plan_id: &str) -> bool {
+        self.entries
+            .lock()
+            .get(plan_id)
+            .is_some_and(|entry| entry.resume_tx.send(()).is_ok())
     }
 }

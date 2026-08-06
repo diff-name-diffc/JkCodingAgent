@@ -8,26 +8,23 @@ import {
   ReactFlow,
   ReactFlowProvider,
   type Edge,
+  type NodeChange,
   type NodeTypes,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, RotateCcw, Square, X } from "lucide-react";
 import type { GraphNodeStatus } from "../../types";
-import { cn } from "../../lib/cn";
 import { useToast } from "../Toast";
-import { Button } from "../ui/button";
 import { useGraphPlan } from "./graph-store";
-import { computeGraphLayout } from "./graph-layout";
+import { computeGraphLayout, type GraphNodePosition } from "./graph-layout";
 import { GraphNodeView, type GraphFlowNode } from "./GraphNodeView";
 import { GraphNodeDrawer } from "./GraphNodeDrawer";
 import { GraphCanvasControls } from "./GraphCanvasControls";
+import { GraphPanelHeader } from "./GraphPanelHeader";
 import { GraphStateInspector } from "./GraphStateInspector";
 import {
   EDGE_STATE_COLOR,
-  PLAN_STATUS_META,
   computeEdgeState,
-  computeGraphLayers,
   normalizeNodeStatus,
   normalizePlanStatus,
   parseGraphDefinition,
@@ -41,11 +38,8 @@ export interface GraphPanelProps {
 }
 
 /**
- * 图编排全屏面板：React Flow 画布 + 两层头部（标题/状态/操作 + 任务统计/进度）
- * + 底部共享 state 检查器。
- * 操作语义：draft/confirmed →「确认执行」(graph_run_start)；failed/cancelled/
- * completed →「重新执行」（同一命令，后端创建新 attempt 并保留历史）；running →「停止」
- * (graph_run_cancel)；任何状态都可关闭面板（关闭不影响后台执行）。
+ * 图编排全屏面板：React Flow 画布 + 两层头部（GraphPanelHeader）
+ * + 底部共享 state 检查器。任何状态都可关闭面板（关闭不影响后台执行）。
  */
 export function GraphPanel({ planId, onClose }: GraphPanelProps) {
   return (
@@ -63,13 +57,20 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState(false);
   const [stateOpen, setStateOpen] = useState(true);
+  /** 用户手动拖动后的节点位置覆盖（相对 dagre 自动布局）。 */
+  const [dragOverrides, setDragOverrides] = useState<Record<string, GraphNodePosition>>({});
+  const [overridesScope, setOverridesScope] = useState(planId);
+  if (overridesScope !== planId) {
+    // 切换计划时在渲染阶段同步清空（而非 useEffect——它在绘制后才执行，
+    // 切换瞬间会先用旧覆盖位置渲染一帧；各计划节点 id 形如 n1/n2 高度
+    // 重合，旧覆盖会直接命中新计划的同名节点）。
+    setOverridesScope(planId);
+    setDragOverrides({});
+  }
 
   const planStatus = plan ? normalizePlanStatus(plan.status) : "draft";
-  const statusMeta = PLAN_STATUS_META[planStatus];
-  const canStart = planStatus === "draft" || planStatus === "confirmed";
-  const canRestart =
-    planStatus === "failed" || planStatus === "cancelled" || planStatus === "completed";
-  const canCancel = planStatus === "running";
+  const paused = snapshot.paused;
+  const canResumeRun = planStatus === "failed" || planStatus === "cancelled";
 
   // Esc：先关抽屉，再关面板。
   useEffect(() => {
@@ -119,7 +120,9 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
       return {
         id: node.id,
         type: "graphNode" as const,
-        position: positions.get(node.id) ?? { x: 0, y: 0 },
+        position: dragOverrides[node.id] ?? positions.get(node.id) ?? { x: 0, y: 0 },
+        // 选中态由抽屉打开的节点推导，避免受控模式下内部选中状态丢失
+        selected: node.id === selectedNodeId,
         data: {
           nodeId: node.id,
           title: node.title,
@@ -134,7 +137,23 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
         },
       };
     });
-  }, [definition, runByNodeId, snapshot.liveOutputs, statusByNodeId]);
+  }, [definition, runByNodeId, snapshot.liveOutputs, statusByNodeId, dragOverrides, selectedNodeId]);
+
+  /** 受控节点：仅吸收拖动产生的位置变化，写回覆盖层。 */
+  const handleNodesChange = useCallback((changes: NodeChange[]) => {
+    const moved = changes.filter(
+      (change): change is Extract<NodeChange, { type: "position" }> =>
+        change.type === "position" && change.position != null,
+    );
+    if (moved.length === 0) return;
+    setDragOverrides((prev) => {
+      const next = { ...prev };
+      for (const change of moved) {
+        next[change.id] = change.position as GraphNodePosition;
+      }
+      return next;
+    });
+  }, []);
 
   const flowEdges = useMemo<Edge[]>(() => {
     if (!definition) return [];
@@ -165,32 +184,38 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
     return edges;
   }, [definition, statusByNodeId, readyNodeIds]);
 
-  // ── 头部统计：任务数 / 最大并行（最大层宽）/ 状态计数 / 整体进度 ──
-  const stats = useMemo(() => {
-    const nodes = definition?.nodes ?? [];
-    const layers = definition ? computeGraphLayers(definition) : [];
-    const maxParallel = layers.reduce((max, layer) => Math.max(max, layer.length), 0);
-    const counts = { running: 0, succeeded: 0, failed: 0, settled: 0 };
-    for (const node of nodes) {
-      const status = statusByNodeId.get(node.id) ?? "pending";
-      if (status === "running") counts.running += 1;
-      if (status === "succeeded") counts.succeeded += 1;
-      if (status === "failed") counts.failed += 1;
-      if (status !== "pending" && status !== "running") counts.settled += 1;
-    }
-    const total = nodes.length;
-    const progress = total > 0 ? Math.round((counts.settled / total) * 100) : 0;
-    return { total, maxParallel, progress, ...counts };
-  }, [definition, statusByNodeId]);
+  // ── 头部统计与验收结论在 GraphPanelHeader 内计算 ──
 
-  const handleStart = useCallback(async () => {
+  const handleStart = useCallback(
+    async (mode: "full" | "resume") => {
+      if (actionPending) return;
+      setActionPending(true);
+      try {
+        await invoke("graph_run_start", { planId, mode });
+        showToast(mode === "resume" ? "已从断点继续执行" : "执行图已启动");
+      } catch (err) {
+        showToast(`启动执行图失败：${err instanceof Error ? err.message : String(err)}`, "warning");
+      } finally {
+        setActionPending(false);
+      }
+    },
+    [actionPending, planId, showToast],
+  );
+
+  const handleResumeCheckpoint = useCallback(async () => {
     if (actionPending) return;
     setActionPending(true);
     try {
-      await invoke("graph_run_start", { planId });
-      showToast("执行图已启动");
+      // 后端返回 false 表示当前没有可恢复的暂停运行（无活跃 run 条目），
+      // 不能当成成功提示，否则会掩盖恢复未生效的事实。
+      const resumed = await invoke<boolean>("graph_run_resume", { planId });
+      if (resumed) {
+        showToast("已恢复执行");
+      } else {
+        showToast("当前没有可恢复的暂停运行", "warning");
+      }
     } catch (err) {
-      showToast(`启动执行图失败：${err instanceof Error ? err.message : String(err)}`, "warning");
+      showToast(`恢复执行失败：${err instanceof Error ? err.message : String(err)}`, "warning");
     } finally {
       setActionPending(false);
     }
@@ -215,73 +240,18 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
   return (
     <div className="ai-dialog-overlay ai-graph-overlay">
       <div className="ai-graph-panel" role="dialog" aria-label="执行图面板">
-        <header className="ai-graph-panel-header">
-          <div className="ai-graph-panel-header-top">
-            <div className="ai-graph-panel-heading">
-              <span className="ai-graph-panel-title">{plan?.title ?? "执行图"}</span>
-              {plan?.summary && (
-                <span className="ai-graph-panel-summary" title={plan.summary}>
-                  {plan.summary}
-                </span>
-              )}
-            </div>
-            <span className={cn("ai-graph-chip", statusMeta.className)}>{statusMeta.label}</span>
-            {canStart && (
-              <Button size="sm" onClick={() => void handleStart()} disabled={actionPending || !plan}>
-                <Play className="h-3.5 w-3.5" />
-                确认执行
-              </Button>
-            )}
-            {canRestart && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void handleStart()}
-                disabled={actionPending || !plan}
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                重新执行
-              </Button>
-            )}
-            {canCancel && (
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={() => void handleCancel()}
-                disabled={actionPending}
-              >
-                <Square className="h-3.5 w-3.5" />
-                停止
-              </Button>
-            )}
-            <Button variant="ghost" size="icon-sm" aria-label="关闭执行图面板" onClick={onClose}>
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-          <div className="ai-graph-panel-header-stats">
-            <span className="ai-graph-stat">任务 {stats.total}</span>
-            <span className="ai-graph-stat">并行 {stats.maxParallel}</span>
-            {stats.running > 0 && (
-              <span className="ai-graph-stat ai-graph-stat--running">运行中 {stats.running}</span>
-            )}
-            {stats.succeeded > 0 && (
-              <span className="ai-graph-stat ai-graph-stat--succeeded">成功 {stats.succeeded}</span>
-            )}
-            {stats.failed > 0 && (
-              <span className="ai-graph-stat ai-graph-stat--failed">失败 {stats.failed}</span>
-            )}
-            <div className="ai-graph-progress" role="progressbar" aria-valuenow={stats.progress}>
-              <div
-                className={cn(
-                  "ai-graph-progress-bar",
-                  stats.failed > 0 && "ai-graph-progress-bar--failed",
-                )}
-                style={{ width: `${stats.progress}%` }}
-              />
-            </div>
-            <span className="ai-graph-stat ai-graph-stat--progress">{stats.progress}%</span>
-          </div>
-        </header>
+        <GraphPanelHeader
+          plan={plan}
+          definition={definition}
+          planStatus={planStatus}
+          paused={paused}
+          actionPending={actionPending}
+          statusByNodeId={statusByNodeId}
+          onStart={(mode) => void handleStart(mode)}
+          onResumeCheckpoint={() => void handleResumeCheckpoint()}
+          onCancel={() => void handleCancel()}
+          onClose={onClose}
+        />
 
         <div className="ai-graph-panel-canvas">
           {definition && definition.nodes.length > 0 ? (
@@ -290,11 +260,13 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
               nodes={flowNodes}
               edges={flowEdges}
               nodeTypes={nodeTypes}
+              onNodesChange={handleNodesChange}
               fitView
-              fitViewOptions={{ padding: 0.18, maxZoom: 1.1 }}
+              // maxZoom 限制为 1：CSS transform 放大文本会明显发虚
+              fitViewOptions={{ padding: 0.18, maxZoom: 1 }}
               minZoom={0.3}
-              maxZoom={1.6}
-              nodesDraggable={false}
+              maxZoom={2}
+              nodesDraggable
               nodesConnectable={false}
               elementsSelectable
               proOptions={{ hideAttribution: true }}
@@ -302,7 +274,11 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
               onPaneClick={() => setSelectedNodeId(null)}
             >
               <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} />
-              <GraphCanvasControls statusByNodeId={statusByNodeId} />
+              <GraphCanvasControls
+                statusByNodeId={statusByNodeId}
+                hasCustomLayout={Object.keys(dragOverrides).length > 0}
+                onResetLayout={() => setDragOverrides({})}
+              />
               <MiniMap
                 pannable
                 zoomable
@@ -333,7 +309,7 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
               actionPending={actionPending}
               onClose={() => setSelectedNodeId(null)}
               onSelectNode={setSelectedNodeId}
-              onStart={() => void handleStart()}
+              onStart={() => void handleStart(canResumeRun ? "resume" : "full")}
               onCancel={() => void handleCancel()}
             />
           )}

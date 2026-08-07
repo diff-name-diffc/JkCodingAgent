@@ -13,8 +13,10 @@ import {
   useImperativeHandle,
   useRef,
 } from "react";
+import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
 
 const MONACO_THEME_LIGHT = "nezha-light";
+const MONACO_THEME_DARK = "nezha-dark";
 
 let monacoConfigured = false;
 let themesRegistered = false;
@@ -58,7 +60,19 @@ function ensureMonacoThemes(monacoInstance: Monaco) {
   monacoInstance.editor.defineTheme(MONACO_THEME_LIGHT, {
     base: "vs",
     inherit: true,
-    rules: [],
+    rules: [
+      { token: "comment", foreground: "89928E" },
+      { token: "string", foreground: "1B7A4B" },
+      { token: "keyword", foreground: "B45309" },
+      { token: "number", foreground: "0F766E" },
+      { token: "type", foreground: "155E54" },
+      { token: "tag", foreground: "0F766E" },
+      { token: "attribute.name", foreground: "B45309" },
+      { token: "link", foreground: "1F665D" },
+      { token: "meta.separator", foreground: "4A605C" },
+      { token: "emphasis", fontStyle: "italic" },
+      { token: "strong", fontStyle: "bold" },
+    ],
     colors: {
       "editor.background": "#FCFCFA",
       "editor.foreground": "#17201D",
@@ -70,6 +84,36 @@ function ensureMonacoThemes(monacoInstance: Monaco) {
       "editorCursor.foreground": "#297C70",
       "editorIndentGuide.background1": "#E7ECE8",
       "editorIndentGuide.activeBackground1": "#C5D8D2",
+    },
+  });
+
+  monacoInstance.editor.defineTheme(MONACO_THEME_DARK, {
+    base: "vs-dark",
+    inherit: true,
+    rules: [
+      { token: "comment", foreground: "7D8A85" },
+      { token: "string", foreground: "7EE0A8" },
+      { token: "keyword", foreground: "F5A97F" },
+      { token: "number", foreground: "5EEAD4" },
+      { token: "type", foreground: "55C7AD" },
+      { token: "tag", foreground: "55C7AD" },
+      { token: "attribute.name", foreground: "F5A97F" },
+      { token: "link", foreground: "70D6BE" },
+      { token: "meta.separator", foreground: "9BA7A2" },
+      { token: "emphasis", fontStyle: "italic" },
+      { token: "strong", fontStyle: "bold" },
+    ],
+    colors: {
+      "editor.background": "#101412",
+      "editor.foreground": "#E7ECE9",
+      "editor.lineHighlightBackground": "#17201D",
+      "editorLineNumber.foreground": "#5A6660",
+      "editorLineNumber.activeForeground": "#70D6BE",
+      "editor.selectionBackground": "#183C34",
+      "editor.inactiveSelectionBackground": "#142B25",
+      "editorCursor.foreground": "#55C7AD",
+      "editorIndentGuide.background1": "#232B27",
+      "editorIndentGuide.activeBackground1": "#3A453F",
     },
   });
 
@@ -102,6 +146,7 @@ export const MonacoEditorPane = forwardRef<
   { active = true, initialValue, filePath, language, onChange },
   ref,
 ) {
+  const isDark = useIsDarkTheme();
   const editorRef = useRef<MonacoTypes.editor.IStandaloneCodeEditor | null>(
     null,
   );
@@ -213,7 +258,7 @@ export const MonacoEditorPane = forwardRef<
         path={filePath}
         defaultValue={initialValue}
         language={language}
-        theme={MONACO_THEME_LIGHT}
+        theme={isDark ? MONACO_THEME_DARK : MONACO_THEME_LIGHT}
         beforeMount={(monacoInstance) => {
           ensureMonacoThemes(monacoInstance);
         }}

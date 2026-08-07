@@ -31,7 +31,7 @@ export function EmptyChatState({
   return (
     <div
       className={cn(
-        "ai-empty-state flex h-full flex-col items-center justify-center px-6 py-12",
+        "ai-empty-state flex h-full flex-col items-center justify-center px-6 pt-12 pb-[10vh]",
         className,
       )}
     >
@@ -74,10 +74,6 @@ export function EmptyChatState({
           </motion.button>
         ))}
       </motion.div>
-
-      <p className="ai-empty-hint mt-9 text-xs text-muted-foreground">
-        Enter 发送 · Shift+Enter 换行
-      </p>
     </div>
   );
 }

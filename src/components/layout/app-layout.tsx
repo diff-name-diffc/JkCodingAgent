@@ -134,7 +134,11 @@ export function AppLayout({
             </div>
           </div>
           {chatFooter && (
-            <div className="ai-chat-footer sticky bottom-0 z-10 px-4 pb-3 pt-2">
+            // 无 px-4、也不再包一层 .ai-chat-column：footer 内容（PromptInput）
+            // 根节点自带 .ai-chat-column 的列宽档位与居中逻辑；外层再套一层会
+            // 让 `min(…, 100% - 48px)` 基于外层列宽二次收缩，窄窗口下输入框
+            // 反而比消息列窄 48px。外层只提供 sticky 与渐隐背景。
+            <div className="ai-chat-footer sticky bottom-0 z-10 pb-3 pt-2">
               {chatFooter}
             </div>
           )}

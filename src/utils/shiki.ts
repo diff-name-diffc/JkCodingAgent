@@ -1,3 +1,6 @@
+import type { ThemeRegistration } from "shiki";
+import { isDarkActive } from "../lib/theme";
+
 interface ShikiHighlighter {
   codeToHtml: (code: string, options: { lang: string; theme: string }) => string;
   loadLanguage: (language: unknown) => Promise<void>;
@@ -46,10 +49,13 @@ const attemptedLanguages = new Set<string>(["plaintext"]);
 /**
  * 自定义青绿调亮色主题，配色与应用 `--accent` (#297c70) 体系一致，
  * 避免 github-light 的蓝紫高亮与整体令牌冲突。
+ * 注意：`bg` 与 App.css `:root` 的 `--markdown-code-bg` (#f9fdfc) 是分别
+ * 维护的两份取值，调整亮色面板色板时需同步两处。
+ * 显式 ThemeRegistration 标注：tokenColors 字段名/结构错误可在编译期发现。
  */
-const TEAL_LIGHT_THEME = {
+export const TEAL_LIGHT_THEME: ThemeRegistration = {
   name: "teal-light",
-  type: "light",
+  type: "light" as const,
   fg: "#17201D",
   bg: "#f9fdfc",
   colors: {
@@ -80,6 +86,45 @@ const TEAL_LIGHT_THEME = {
   ],
 };
 
+/**
+ * teal-light 的暗色对偶，与 `.dark` 面板色板一致。
+ * 注意：`bg` (#101412) 对应 App.css `.dark` 的 `--markdown-code-bg`，
+ * entity/tag 主色 (#55c7ad) 对应 `.dark` 的 `--accent`——两者在此为硬编码，
+ * 调整暗色面板色板时需同步 App.css 对应 CSS 变量。
+ */
+export const TEAL_DARK_THEME: ThemeRegistration = {
+  name: "teal-dark",
+  type: "dark" as const,
+  fg: "#e7ece9",
+  bg: "#101412",
+  colors: {
+    "editor.foreground": "#e7ece9",
+    "editor.background": "#101412",
+  },
+  tokenColors: [
+    { scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#7d8a85" } },
+    { scope: ["string", "punctuation.definition.string"], settings: { foreground: "#7ee0a8" } },
+    { scope: ["constant", "entity.name.constant"], settings: { foreground: "#5eead4" } },
+    { scope: ["keyword", "storage.type", "storage.modifier"], settings: { foreground: "#f5a97f" } },
+    { scope: ["keyword.control"], settings: { foreground: "#fda883" } },
+    { scope: ["entity", "entity.name.function", "support.function"], settings: { foreground: "#70d6be" } },
+    { scope: ["entity.name.type", "entity.name.class", "support.type", "support.class"], settings: { foreground: "#55c7ad" } },
+    { scope: ["entity.name.tag"], settings: { foreground: "#55c7ad" } },
+    { scope: ["entity.other.attribute-name"], settings: { foreground: "#f5a97f" } },
+    { scope: ["variable", "variable.parameter"], settings: { foreground: "#e7ece9" } },
+    { scope: ["variable.language"], settings: { foreground: "#fda883" } },
+    { scope: ["support"], settings: { foreground: "#55c7ad" } },
+    { scope: ["meta.property-name", "meta.property-value"], settings: { foreground: "#55c7ad" } },
+    { scope: ["punctuation"], settings: { foreground: "#9ba7a2" } },
+    { scope: ["markup.heading"], settings: { foreground: "#70d6be", fontStyle: "bold" } },
+    { scope: ["markup.bold"], settings: { fontStyle: "bold" } },
+    { scope: ["markup.italic"], settings: { fontStyle: "italic" } },
+    { scope: ["markup.inserted"], settings: { foreground: "#7ee0a8" } },
+    { scope: ["markup.deleted"], settings: { foreground: "#f87171" } },
+    { scope: ["markup.changed"], settings: { foreground: "#f5a97f" } },
+  ],
+};
+
 async function getHighlighter() {
   if (!highlighterPromise) {
     highlighterPromise = Promise.all([
@@ -89,7 +134,7 @@ async function getHighlighter() {
       async ([{ createHighlighterCore }, { createJavaScriptRegexEngine }]) => {
         const highlighter = (await createHighlighterCore({
           engine: createJavaScriptRegexEngine(),
-          themes: [TEAL_LIGHT_THEME] as never,
+          themes: [TEAL_LIGHT_THEME, TEAL_DARK_THEME],
         })) as unknown as ShikiHighlighter;
         return highlighter;
       },
@@ -131,12 +176,16 @@ async function ensureLanguage(language?: string | null) {
   return highlighter.getLoadedLanguages().includes(normalized) ? normalized : "plaintext";
 }
 
-export async function highlightCodeToHtml(code: string, language?: string | null) {
+export async function highlightCodeToHtml(
+  code: string,
+  language?: string | null,
+  dark = isDarkActive(),
+) {
   const highlighter = await getHighlighter();
   const resolvedLanguage = await ensureLanguage(language);
 
   return highlighter.codeToHtml(code, {
     lang: resolvedLanguage,
-    theme: "teal-light",
+    theme: dark ? "teal-dark" : "teal-light",
   });
 }

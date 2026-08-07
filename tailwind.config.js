@@ -1,5 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  // 主题经 <html>.dark class 切换（src/lib/theme.ts）；streamdown 等第三方
+  // 组件的双主题高亮依赖 `dark:` 变体走 class 策略。
+  darkMode: "class",
   content: [
     "./src/**/*.{ts,tsx}",
     "./index.html",

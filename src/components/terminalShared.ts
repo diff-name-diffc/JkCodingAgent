@@ -2,8 +2,9 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { isDarkActive } from "../lib/theme";
 
-// ── Theme ────────────────────────────────────────────────────────────────────
+// ── Theme ───────────────────────────────────────────────────────────────────
 
 export const LIGHT_THEME = {
   background: "#ffffff",
@@ -27,6 +28,33 @@ export const LIGHT_THEME = {
   brightCyan: "#3192aa",
   brightWhite: "#8c959f",
 };
+
+export const DARK_THEME = {
+  background: "#111513",
+  foreground: "#e7ece9",
+  cursor: "#55c7ad",
+  selectionBackground: "#183c34",
+  black: "#1f2622",
+  red: "#f87171",
+  green: "#7ee0a8",
+  yellow: "#f5a97f",
+  blue: "#79c0ff",
+  magenta: "#d2a8ff",
+  cyan: "#70d6be",
+  white: "#a2aaa5",
+  brightBlack: "#7f8983",
+  brightRed: "#ffa198",
+  brightGreen: "#96e6b8",
+  brightYellow: "#ffd8a8",
+  brightBlue: "#a5d6ff",
+  brightMagenta: "#e2c5ff",
+  brightCyan: "#9fdccb",
+  brightWhite: "#e7ece9",
+};
+
+export function currentTerminalTheme() {
+  return isDarkActive() ? DARK_THEME : LIGHT_THEME;
+}
 
 // ── Watermark flow control ───────────────────────────────────────────────────
 
@@ -236,14 +264,17 @@ interface InitTerminalResult {
  * 创建 xterm Terminal 实例并加载通用 addon（FitAddon, Unicode11, WebGL）。
  * 调用方负责 term.open(container)。
  */
-export function initTerminal(scrollback = 1000): InitTerminalResult {
+export function initTerminal(
+  scrollback = 1000,
+  theme: typeof LIGHT_THEME = currentTerminalTheme(),
+): InitTerminalResult {
   const term = new Terminal({
     convertEol: false,
     scrollback,
     cursorBlink: true,
     fontFamily: "monospace",
     fontSize: 12,
-    theme: LIGHT_THEME,
+    theme,
     allowProposedApi: true,
   });
 

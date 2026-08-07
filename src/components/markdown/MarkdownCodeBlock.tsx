@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Check, Copy, Play } from "lucide-react";
 import type { PythonCodeRunRecord } from "../../types";
 import { highlightCodeToHtml } from "../../utils/shiki";
+import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
 
 function escapeHtml(value: string) {
   return value
@@ -85,8 +86,9 @@ export function MarkdownCodeBlock({
   streaming?: boolean;
 }) {
   const fallbackHtml = useMemo(() => renderPlainCodeHtml(code), [code]);
-  const [highlighted, setHighlighted] = useState<{ code: string; html: string } | null>(null);
+  const [highlighted, setHighlighted] = useState<{ code: string; isDark: boolean; html: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const isDark = useIsDarkTheme();
   const resolvedLanguage = useMemo(
     () => (language?.trim() ? language.trim().toLowerCase() : "text"),
     [language],
@@ -97,32 +99,33 @@ export function MarkdownCodeBlock({
     typeof codeBlockIndex === "number" &&
     Boolean(codeHash) &&
     (resolvedLanguage === "python" || resolvedLanguage === "py");
-  // During streaming, always use plain fallback to avoid highlight↔fallback flash
+  // During streaming, always use plain fallback to avoid highlight↔fallback flash.
+  // 主题也是缓存有效性的一部分：isDark 变化后、新高亮结果返回前，
+  // 旧主题的 HTML 不能继续当作有效缓存渲染（否则主题切换瞬间闪烁旧配色）。
   const renderedHtml = streaming
     ? fallbackHtml
-    : (highlighted?.code === code ? highlighted.html : fallbackHtml);
+    : (highlighted?.code === code && highlighted.isDark === isDark ? highlighted.html : fallbackHtml);
 
   useEffect(() => {
     if (streaming) return;
     let cancelled = false;
-    setHighlighted({ code, html: fallbackHtml });
 
-    highlightCodeToHtml(code, resolvedLanguage)
+    highlightCodeToHtml(code, resolvedLanguage, isDark)
       .then((html) => {
         if (!cancelled) {
-          setHighlighted({ code, html: html || fallbackHtml });
+          setHighlighted({ code, isDark, html: html || fallbackHtml });
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setHighlighted({ code, html: fallbackHtml });
+          setHighlighted({ code, isDark, html: fallbackHtml });
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [code, fallbackHtml, resolvedLanguage, streaming]);
+  }, [code, fallbackHtml, resolvedLanguage, streaming, isDark]);
 
   useEffect(() => {
     if (!copied) {

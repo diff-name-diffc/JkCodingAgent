@@ -9,10 +9,10 @@ import {
   type FsEntry,
   type TreeNode,
 } from "./tree";
-import { ROW_HEIGHT } from "./FileExplorerTreeItem";
 
-const AUTO_REFRESH_MS = 2500;
-const OVERSCAN = 5;
+/* 兜底轮询间隔：事件驱动刷新（mount / focus / visibility / 手动）为主，
+   慢速轮询只保证 agent 外部写文件后列表 eventual 更新。 */
+const IDLE_REFRESH_MS = 15000;
 
 export function useFileExplorerTree({
   projectPath,
@@ -26,8 +26,6 @@ export function useFileExplorerTree({
   const [nodes, setNodes] = useState<TreeNode[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(500);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nodesRef = useRef<TreeNode[]>([]);
   const refreshIdRef = useRef(0);
@@ -103,7 +101,7 @@ export function useFileExplorerTree({
       }
 
       void refresh();
-    }, AUTO_REFRESH_MS);
+    }, IDLE_REFRESH_MS);
 
     window.addEventListener("focus", handleVisibilityRefresh);
     document.addEventListener("visibilitychange", handleVisibilityRefresh);
@@ -115,25 +113,7 @@ export function useFileExplorerTree({
     };
   }, [active, refresh]);
 
-  useEffect(() => {
-    const element = scrollRef.current;
-    if (!element) {
-      return;
-    }
-
-    setViewportHeight(element.clientHeight);
-    const observer = new ResizeObserver(() => setViewportHeight(element.clientHeight));
-    observer.observe(element);
-
-    return () => observer.disconnect();
-  }, []);
-
   const flatNodes = useMemo(() => flattenVisible(nodes), [nodes]);
-  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-  const endIndex = Math.min(
-    flatNodes.length - 1,
-    Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN,
-  );
 
   const handleToggle = useCallback(
     (dirPath: string) => {
@@ -199,11 +179,8 @@ export function useFileExplorerTree({
     scrollRef,
     loading,
     flatNodes,
-    startIndex,
-    endIndex,
     selectedPath,
     refresh,
-    setScrollTop,
     handleToggle,
     handleSelect,
     updateSelectedPath,

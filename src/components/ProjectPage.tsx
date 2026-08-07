@@ -78,17 +78,23 @@ export function ProjectPage({
   project,
   visible = true,
   allProjects = [],
+  openProjects,
   tasks,
   onBack,
   onSwitchProject,
+  onCloseProject,
   onOpen,
 }: {
   project: Project;
   visible?: boolean;
   allProjects?: Project[];
+  /** 当前已打开（挂载）的项目窗口，展示在左侧项目栏。必传：项目栏语义
+   * 是「仅展示已打开的窗口」，不在组件内回退 allProjects，避免两套语义。 */
+  openProjects: Project[];
   tasks: Task[];
   onBack: () => void;
   onSwitchProject: (project: Project) => void;
+  onCloseProject?: (project: Project) => void;
   onOpen: () => void;
 }) {
   const {
@@ -182,6 +188,16 @@ export function ProjectPage({
       setShowSessionWorkbench(true);
     }
   }, [hasEditorWorkbenchContent]);
+
+  // Files 面板是 lazy 块（含 seti 图标 eager 资源），首次打开才求值会卡顿；
+  // 挂载后的空闲窗口预取，让首次点击命中缓存。
+  useEffect(() => {
+    if (!visible) return;
+    const timer = window.setTimeout(() => {
+      void import("./FileExplorer");
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [visible]);
 
   const refreshMcpStatus = useCallback(async () => {
     setMcpChecking(true);
@@ -327,12 +343,14 @@ export function ProjectPage({
 
   const railNode = (
     <ProjectRail
-      projects={allProjects}
+      projects={openProjects}
+      allProjects={allProjects}
       allTasks={tasks}
       activeProjectId={project.id}
       sessionSidebarCollapsed={sessionSidebarCollapsed}
       onExpandSessionSidebar={() => setSessionSidebarCollapsed(false)}
       onSwitch={onSwitchProject}
+      onCloseProject={onCloseProject}
       onOpen={onOpen}
     />
   );

@@ -10,7 +10,10 @@ import {
   createSmartWriter,
   createInputBatcher,
   createResizeScheduler,
+  DARK_THEME,
+  LIGHT_THEME,
 } from "./terminalShared";
+import { useIsDarkTheme } from "../hooks/useIsDarkTheme";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalViewProps {
@@ -34,6 +37,7 @@ export function TerminalView({
   initialSnapshot,
   onSnapshot,
 }: TerminalViewProps) {
+  const isDark = useIsDarkTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -174,6 +178,13 @@ export function TerminalView({
       terminalRef.current.focus();
     });
   }, [isActive]);
+
+  useEffect(() => {
+    const term = terminalRef.current;
+    if (!term) return;
+    term.options.theme = isDark ? DARK_THEME : LIGHT_THEME;
+    term.refresh(0, term.rows - 1);
+  }, [isDark]);
 
   return (
     <div

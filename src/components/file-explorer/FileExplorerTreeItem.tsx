@@ -1,10 +1,10 @@
-import { forwardRef, type HTMLAttributes } from "react";
+import { memo } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { FileGlyph } from "../../file-icons";
 import { cn } from "../../lib/cn";
 import { isSystemGroupNode, type TreeNode } from "./tree";
 
-const ROW_HEIGHT = 30;
+const ROW_HEIGHT = 28;
 
 function FileIcon({
   name,
@@ -26,40 +26,28 @@ function FileIcon({
   return <FileGlyph name={name} path={path} extension={ext} size={20} />;
 }
 
-export const FileExplorerTreeItem = forwardRef<
-  HTMLDivElement,
-  HTMLAttributes<HTMLDivElement> & {
-    node: TreeNode;
-    depth: number;
-    selectedPath: string | null;
-    onNodeSelect: (node: TreeNode) => void;
-    onNodeToggle: (path: string) => void;
-  }
->(function FileExplorerTreeItem(
-  {
-    node,
-    depth,
-    selectedPath,
-    onNodeSelect,
-    onNodeToggle,
-    ...rest
-  },
-  ref,
-) {
-  const isSelected = selectedPath === node.path;
+export const FileExplorerTreeItem = memo(function FileExplorerTreeItem({
+  node,
+  depth,
+  selected,
+  onNodeSelect,
+  onNodeToggle,
+}: {
+  node: TreeNode;
+  depth: number;
+  selected: boolean;
+  onNodeSelect: (node: TreeNode) => void;
+  onNodeToggle: (path: string) => void;
+}) {
   const isSystemGroup = isSystemGroupNode(node);
-  const { className, ...itemProps } = rest;
 
   return (
     <div
-      {...itemProps}
-      ref={ref}
       onClick={() => (node.is_dir ? onNodeToggle(node.path) : onNodeSelect(node))}
       className={cn(
         "ai-file-explorer-row",
-        isSelected && "is-selected",
+        selected && "is-selected",
         isSystemGroup && "is-system-group",
-        className,
       )}
       style={{
         paddingLeft: 8 + depth * 14,

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, ChevronsRight, ChevronRight } from "lucide-react";
+import { Plus, ChevronsRight, ChevronRight, X } from "lucide-react";
 import type { Project, Task } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
 
@@ -13,8 +13,8 @@ function getProjectStatus(tasks: Task[], projectId: string): ProjectStatus {
 }
 
 const STATUS_COLOR: Record<Exclude<ProjectStatus, null>, string> = {
-  attention: "var(--color-warning, #f59e0b)",
-  running: "var(--color-success, #22c55e)",
+  attention: "var(--warning, #f59e0b)",
+  running: "var(--success, #22c55e)",
 };
 
 function StatusBadge({ status }: { status: ProjectStatus }) {
@@ -32,21 +32,42 @@ function RailItem({
   isActive,
   status,
   onSwitch,
+  onClose,
 }: {
   project: Project;
   isActive: boolean;
   status: ProjectStatus;
   onSwitch: (p: Project) => void;
+  onClose?: (p: Project) => void;
 }) {
+  // 外层为纯布局容器：项目切换与关闭是两个平级的真实 <button>，
+  // 避免「按钮套按钮」的嵌套交互控件（屏幕阅读器无法正确暴露内层按钮，
+  // 且会把关闭按钮的可访问名称拼进外层按钮名称）。
   return (
-    <button
-      title={project.name}
-      onClick={() => onSwitch(project)}
-      className={isActive ? "ai-project-rail-item is-active" : "ai-project-rail-item"}
-    >
-      <ProjectAvatar name={project.name} size={28} />
-      <StatusBadge status={status} />
-    </button>
+    <div className="ai-project-rail-item-slot">
+      <button
+        type="button"
+        className={isActive ? "ai-project-rail-item is-active" : "ai-project-rail-item"}
+        title={project.name}
+        aria-label={project.name}
+        aria-current={isActive ? "true" : undefined}
+        onClick={() => onSwitch(project)}
+      >
+        <ProjectAvatar name={project.name} size={28} />
+        <StatusBadge status={status} />
+      </button>
+      {onClose && (
+        <button
+          type="button"
+          className="ai-project-rail-close"
+          title={`关闭 ${project.name}`}
+          aria-label={`关闭 ${project.name}`}
+          onClick={() => onClose(project)}
+        >
+          <X size={10} strokeWidth={2.5} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -111,19 +132,25 @@ function ProjectDrawer({
 
 export function ProjectRail({
   projects,
+  allProjects = projects,
   allTasks,
   activeProjectId,
   sessionSidebarCollapsed,
   onExpandSessionSidebar,
   onSwitch,
+  onCloseProject,
   onOpen,
 }: {
+  /** 已打开的项目窗口，展示为栏内图标。 */
   projects: Project[];
+  /** 全部已知项目，展示在抽屉里供打开/重新打开。 */
+  allProjects?: Project[];
   allTasks: Task[];
   activeProjectId: string;
   sessionSidebarCollapsed: boolean;
   onExpandSessionSidebar: () => void;
   onSwitch: (project: Project) => void;
+  onCloseProject?: (project: Project) => void;
   onOpen: () => void;
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -150,6 +177,7 @@ export function ProjectRail({
             onSwitch(p);
             setDrawerOpen(false);
           }}
+          onClose={onCloseProject}
         />
       ))}
 
@@ -173,7 +201,7 @@ export function ProjectRail({
 
       {drawerOpen && (
         <ProjectDrawer
-          projects={projects}
+          projects={allProjects}
           allTasks={allTasks}
           activeProjectId={activeProjectId}
           onSwitch={onSwitch}

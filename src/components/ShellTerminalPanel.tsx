@@ -6,6 +6,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { attachSmartCopy } from "./terminalCopyHelper";
 import {
+  DARK_THEME,
   LIGHT_THEME,
   initTerminal,
   loadWebglAddon,
@@ -14,6 +15,7 @@ import {
   createInputBatcher,
   createResizeScheduler,
 } from "./terminalShared";
+import { useIsDarkTheme } from "../hooks/useIsDarkTheme";
 import { X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 
@@ -52,6 +54,7 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
     ref,
   ) {
     const shellId = `shell:${projectId}`;
+    const isDark = useIsDarkTheme();
     const containerRef = useRef<HTMLDivElement>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
@@ -207,10 +210,17 @@ export const ShellTerminalPanel = forwardRef<ShellTerminalPanelHandle, Props>(
       });
     }, [isActive, shellId]);
 
+    useEffect(() => {
+      const term = terminalRef.current;
+      if (!term) return;
+      term.options.theme = isDark ? DARK_THEME : LIGHT_THEME;
+      term.refresh(0, term.rows - 1);
+    }, [isDark]);
+
       return (
         <div
           className="ai-shell-terminal-panel ai-migrated-shell-terminal"
-          style={{ height, background: LIGHT_THEME.background }}
+          style={{ height, background: isDark ? DARK_THEME.background : LIGHT_THEME.background }}
         >
           {/* Drag handle */}
           {onResizeStart && (

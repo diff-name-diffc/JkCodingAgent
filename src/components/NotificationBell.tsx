@@ -7,7 +7,7 @@ import type { NotificationItem, NotificationResult } from "../types";
 function LevelIcon({ level }: { level: string }) {
   switch (level) {
     case "warning":
-      return <AlertTriangle size={14} strokeWidth={2} color="var(--color-warning, #f59e0b)" />;
+      return <AlertTriangle size={14} strokeWidth={2} color="var(--warning)" />;
     case "error":
       return <AlertCircle size={14} strokeWidth={2} color="var(--danger, #ef4444)" />;
     default:

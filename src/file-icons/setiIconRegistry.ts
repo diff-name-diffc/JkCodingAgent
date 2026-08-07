@@ -183,6 +183,12 @@ function withSetiPresentationAttributes(svg: string, fillColor: string): string 
   });
 }
 
+/* 图标名 × 颜色的组合通常有限，缓存避免每次渲染重复 SVG 正则替换。
+   防御性上限：fillColor 可能来自 presentation.accentColor（取值范围不受
+   SETI_ICON_COLORS 约束），若来源扩展导致组合膨胀，超限整体清空重建。 */
+const SVG_CACHE_MAX_ENTRIES = 512;
+const svgMarkupCache = new Map<string, string>();
+
 export function resolveSetiIconName(presentation: FilePresentation): string {
   if (presentation.isDir) {
     return FALLBACK_FOLDER_ICON_NAMES[presentation.iconKey] ?? "folder";
@@ -203,7 +209,18 @@ export function resolveSetiIconName(presentation: FilePresentation): string {
 
 export function getSetiIconSvgMarkup(presentation: FilePresentation): string {
   const iconName = resolveSetiIconName(presentation);
-  const svg = getSetiSvgByName(iconName);
   const fillColor = getSetiIconColor(iconName, presentation);
-  return withSetiPresentationAttributes(svg, fillColor);
+  const cacheKey = `${iconName}:${fillColor}`;
+
+  const cached = svgMarkupCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const markup = withSetiPresentationAttributes(getSetiSvgByName(iconName), fillColor);
+  if (svgMarkupCache.size >= SVG_CACHE_MAX_ENTRIES) {
+    svgMarkupCache.clear();
+  }
+  svgMarkupCache.set(cacheKey, markup);
+  return markup;
 }

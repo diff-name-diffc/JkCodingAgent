@@ -1,16 +1,18 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { RotateCcw } from "lucide-react";
 import { useToast } from "./Toast";
 import { FileGlyph } from "../file-icons";
 import { isSystemGroupNode, type TreeNode } from "./file-explorer/tree";
-import { FileExplorerContextMenu } from "./file-explorer/FileExplorerContextMenu";
 import {
   FileExplorerRenameDialog,
   type RenameTarget,
 } from "./file-explorer/FileExplorerRenameDialog";
 import { FileExplorerTreeItem, ROW_HEIGHT } from "./file-explorer/FileExplorerTreeItem";
+import { FileExplorerContextMenu } from "./file-explorer/FileExplorerContextMenu";
 import { buildFileContextActionGroups } from "./file-explorer/fileContextActions";
 import { useFileExplorerTree } from "./file-explorer/useFileExplorerTree";
 import {
@@ -49,11 +51,8 @@ export function FileExplorer({
     scrollRef,
     loading,
     flatNodes,
-    startIndex,
-    endIndex,
     selectedPath,
     refresh,
-    setScrollTop,
     handleToggle,
     handleSelect,
     updateSelectedPath,
@@ -61,6 +60,13 @@ export function FileExplorer({
     projectPath,
     active,
     onFileSelect,
+  });
+
+  const virtualizer = useVirtualizer({
+    count: flatNodes.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 6,
   });
 
   useEffect(() => {
@@ -180,6 +186,83 @@ export function FileExplorer({
     ],
   );
 
+  const handleCopyPath = useCallback(
+    (node: TreeNode) => {
+      void copyPath(node.path, false);
+    },
+    [copyPath],
+  );
+
+  const handleCopyMentionPath = useCallback(
+    (node: TreeNode) => {
+      void copyPath(node.path, true);
+    },
+    [copyPath],
+  );
+
+  const handleRenameRequest = useCallback((node: TreeNode) => {
+    setRenameTarget({ path: node.path, name: node.name, isDir: node.is_dir });
+  }, []);
+
+  const [menuTarget, setMenuTarget] = useState<TreeNode | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // 菜单关闭即清空目标节点：避免过期节点对象残留（删除/重命名触发 refresh
+  // 后，旧引用会指向已不存在的树节点），保证「菜单关闭后无目标残留」的闭环。
+  const handleMenuOpenChange = useCallback((nextOpen: boolean) => {
+    setMenuOpen(nextOpen);
+    if (!nextOpen) setMenuTarget(null);
+  }, []);
+
+  const handleTreeContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      const rowEl = (event.target as HTMLElement).closest("[data-row-path]");
+      const path = rowEl?.getAttribute("data-row-path");
+      const node = path ? flatNodes.find((item) => item.node.path === path)?.node : undefined;
+      if (!node || isSystemGroupNode(node)) {
+        // preventDefault 同时是阻止 Radix 打开菜单的手段：Trigger asChild 把本
+        // 处理器与 Radix 内部 onContextMenu 合并到同一节点，composeEventHandlers
+        // 在 defaultPrevented 时跳过打开逻辑。升级 @radix-ui/react-context-menu
+        // 时需确认该检查仍存在，否则系统节点/空白处会意外打开菜单。
+        event.preventDefault();
+        return;
+      }
+      // 同一事件内同步设置 target 与 open：「打开」不再依赖 Radix 内部
+      // onContextMenu 回调触发 onOpenChange(true)——该回调的执行顺序属于
+      // composeEventHandlers 的内部约定，Radix 升级可能变化；显式设置后
+      // 即使内部回调顺序改变或缺失，菜单也能带正确目标打开。
+      setMenuTarget(node);
+      setMenuOpen(true);
+    },
+    [flatNodes],
+  );
+
+  const menuRelativePath = useMemo(
+    () => (menuTarget ? getRelativePathDisplay(projectPath, menuTarget.path) : ""),
+    [projectPath, menuTarget],
+  );
+
+  const menuGroups = useMemo(() => {
+    if (!menuTarget) {
+      return [];
+    }
+    return buildFileContextActionGroups({
+      node: menuTarget,
+      relativePath: menuRelativePath,
+      onCopyPath: () => handleCopyPath(menuTarget),
+      onCopyMentionPath: () => handleCopyMentionPath(menuTarget),
+      onRename: () => handleRenameRequest(menuTarget),
+      onDelete: () => handleDelete(menuTarget),
+    });
+  }, [
+    menuTarget,
+    menuRelativePath,
+    handleCopyPath,
+    handleCopyMentionPath,
+    handleRenameRequest,
+    handleDelete,
+  ]);
+
   return (
     <div className="ai-file-explorer ai-migrated-file-explorer" style={{ width }}>
       <div className="ai-file-explorer-header">
@@ -199,70 +282,51 @@ export function FileExplorer({
         <span>{projectName}</span>
       </div>
 
-      <div
-        ref={scrollRef}
-        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-        className="ai-file-explorer-tree chat-scroll"
+      <FileExplorerContextMenu
+        open={menuOpen}
+        onOpenChange={handleMenuOpenChange}
+        node={menuTarget}
+        relativePath={menuRelativePath}
+        groups={menuGroups}
       >
-        {loading ? (
-          <div className="ai-file-explorer-empty">加载中...</div>
-        ) : flatNodes.length === 0 ? (
-          <div className="ai-file-explorer-empty">空目录</div>
-        ) : (
-          <div
-            className="ai-file-explorer-virtual"
-            style={{
-              height: flatNodes.length * ROW_HEIGHT + 12,
-            }}
-          >
-            {flatNodes.slice(startIndex, endIndex + 1).map(({ node, depth }, index) => {
-              const item = (
-                <FileExplorerTreeItem
-                  node={node}
-                  depth={depth}
-                  selectedPath={selectedPath}
-                  onNodeSelect={handleSelect}
-                  onNodeToggle={handleToggle}
-                />
-              );
+        <div
+          ref={scrollRef}
+          onContextMenu={handleTreeContextMenu}
+          className="ai-file-explorer-tree chat-scroll"
+        >
+          {loading ? (
+            <div className="ai-file-explorer-empty">加载中...</div>
+          ) : flatNodes.length === 0 ? (
+            <div className="ai-file-explorer-empty">空目录</div>
+          ) : (
+            <div
+              className="ai-file-explorer-virtual"
+              style={{ height: virtualizer.getTotalSize() }}
+            >
+              {virtualizer.getVirtualItems().map((virtualRow) => {
+                const { node, depth } = flatNodes[virtualRow.index];
 
-              return (
-                <div
-                  key={node.path}
-                  className="ai-file-explorer-virtual-row"
-                  style={{
-                    top: (startIndex + index) * ROW_HEIGHT + 2,
-                  }}
-                >
-                  {isSystemGroupNode(node) ? (
-                    item
-                  ) : (
-                    <FileExplorerContextMenu
+                return (
+                  <div
+                    key={node.path}
+                    data-row-path={node.path}
+                    className="ai-file-explorer-virtual-row"
+                    style={{ transform: `translateY(${virtualRow.start}px)` }}
+                  >
+                    <FileExplorerTreeItem
                       node={node}
-                      relativePath={getRelativePathDisplay(projectPath, node.path)}
-                      groups={buildFileContextActionGroups({
-                        node,
-                        relativePath: getRelativePathDisplay(projectPath, node.path),
-                        onCopyPath: () => copyPath(node.path, false),
-                        onCopyMentionPath: () => copyPath(node.path, true),
-                        onRename: () =>
-                          setRenameTarget({
-                            path: node.path,
-                            name: node.name,
-                            isDir: node.is_dir,
-                          }),
-                        onDelete: () => handleDelete(node),
-                      })}
-                    >
-                      {item}
-                    </FileExplorerContextMenu>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+                      depth={depth}
+                      selected={node.path === selectedPath}
+                      onNodeSelect={handleSelect}
+                      onNodeToggle={handleToggle}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </FileExplorerContextMenu>
 
       <FileExplorerRenameDialog
         projectPath={projectPath}

@@ -139,23 +139,89 @@ export function updateNode(
   return changed ? nextItems : items;
 }
 
+/**
+ * 目录读取并发上限：一次刷新会递归并行读取整棵已展开子树，大型项目
+ * （展开的 node_modules、monorepo）可能瞬间扇出数百个 read_dir_entries
+ * IPC。限制器在整个递归刷新间共享，全局生效；取 8 保留并行收益的同时
+ * 避免请求洪峰压垮后端。
+ */
+const REFRESH_READ_CONCURRENCY = 8;
+
+type ConcurrencyLimiter = <T>(task: () => Promise<T>) => Promise<T>;
+
+/** 简单信号量：活跃任务达到上限时排队等待，任务完成把名额让给队首。 */
+function createConcurrencyLimiter(max: number): ConcurrencyLimiter {
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  function release() {
+    const resume = queue.shift();
+    if (resume) {
+      resume(); // 名额直接移交给排队任务，active 不变
+    } else {
+      active -= 1;
+    }
+  }
+
+  return async function run<T>(task: () => Promise<T>): Promise<T> {
+    if (active >= max) {
+      await new Promise<void>((resolve) => queue.push(resolve));
+    } else {
+      active += 1;
+    }
+    try {
+      return await task();
+    } finally {
+      release();
+    }
+  };
+}
+
 export async function loadTreeNodes({
   path,
   rootPath,
   previousNodes,
   readEntries,
+  limiter,
 }: {
   path: string;
   rootPath: string;
   previousNodes: TreeNode[];
   readEntries: (path: string) => Promise<FsEntry[] | null>;
+  /** 本次刷新共享的并发限制器；顶层调用缺省时自动创建。 */
+  limiter?: ConcurrencyLimiter;
 }): Promise<TreeNode[] | null> {
-  const entries = await readEntries(path);
+  const run = limiter ?? createConcurrencyLimiter(REFRESH_READ_CONCURRENCY);
+  const entries = await run(() => readEntries(path));
   if (entries === null) return null;
 
   const comparablePreviousNodes = path === rootPath ? unwrapRootNodes(previousNodes) : previousNodes;
   const previousByPath = new Map(comparablePreviousNodes.map((node) => [node.path, node]));
   let changed = entries.length !== comparablePreviousNodes.length;
+
+  // 已展开子目录并行读取，避免逐目录串行 IPC 的延迟叠加；
+  // 并发数由共享限制器封顶，防止大树扇出海量 IPC。
+  const expandedDirs = entries.filter(
+    (entry) => entry.is_dir && previousByPath.get(entry.path)?.expanded,
+  );
+  const childResults = await Promise.all(
+    expandedDirs.map((entry) =>
+      loadTreeNodes({
+        path: entry.path,
+        rootPath,
+        previousNodes: previousByPath.get(entry.path)?.children ?? [],
+        readEntries,
+        limiter: run,
+      }),
+    ),
+  );
+  if (!childResults.every((result): result is TreeNode[] => result !== null)) return null;
+  const resolvedChildren = childResults;
+  const childrenByPath = new Map<string, TreeNode[]>();
+  expandedDirs.forEach((entry, index) => {
+    childrenByPath.set(entry.path, resolvedChildren[index]);
+  });
+
   const nextNodes: TreeNode[] = [];
 
   for (const [index, entry] of entries.entries()) {
@@ -165,14 +231,7 @@ export async function loadTreeNodes({
 
     if (entry.is_dir) {
       if (expanded) {
-        const nextChildren = await loadTreeNodes({
-          path: entry.path,
-          rootPath,
-          previousNodes: previous?.children ?? [],
-          readEntries,
-        });
-        if (nextChildren === null) return null;
-        children = nextChildren;
+        children = childrenByPath.get(entry.path) ?? null;
       } else {
         children = previous?.children ?? null;
       }

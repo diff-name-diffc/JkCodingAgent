@@ -43,13 +43,13 @@ function stateColor(state: ProjectMcpServerState): string {
     case "disabled":
       return "var(--text-hint)";
     case "healthy":
-      return "#1f9d55";
+      return "var(--success)";
     case "invalid_config":
-      return "#dc2626";
+      return "var(--danger)";
     case "spawn_failed":
-      return "#ea580c";
+      return "var(--warning)";
     case "connection_failed":
-      return "#dc2626";
+      return "var(--danger)";
   }
 }
 
@@ -160,6 +160,7 @@ export function McpStatusDialog({
                 {status.servers.map((server) => {
                   const expanded = expandedServers[server.name] ?? false;
                   const busy = updatingServer === server.name;
+                  const stateColorValue = stateColor(server.state);
 
                   return (
                     <div key={server.name} className="ai-mcp-server-card">
@@ -179,7 +180,7 @@ export function McpStatusDialog({
                           </span>
                           <span
                             className="ai-mcp-server-dot"
-                            style={{ background: stateColor(server.state) }}
+                            style={{ background: stateColorValue }}
                           />
                           <span className="ai-mcp-server-info">
                             <span className="ai-mcp-server-title">{server.name}</span>
@@ -194,9 +195,9 @@ export function McpStatusDialog({
                           <span
                             className="ai-mcp-state-badge"
                             style={{
-                              color: stateColor(server.state),
-                              borderColor: `${stateColor(server.state)}33`,
-                              background: `${stateColor(server.state)}12`,
+                              color: stateColorValue,
+                              borderColor: `color-mix(in srgb, ${stateColorValue} 20%, transparent)`,
+                              background: `color-mix(in srgb, ${stateColorValue} 8%, transparent)`,
                             }}
                           >
                             {server.summary}

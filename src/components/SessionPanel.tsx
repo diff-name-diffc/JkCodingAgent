@@ -278,8 +278,13 @@ export function SessionPanel({
         </button>
       </div>
 
-      {/* Branch bar */}
-      <BranchBar projectPath={project.path} />
+      {/* New Session row (primary action) */}
+      <div className="ai-project-session-actions">
+        <button className="ai-project-new-session-btn" onClick={handleNewSession}>
+          <Plus size={14} strokeWidth={2.5} />
+          新建会话
+        </button>
+      </div>
 
       {/* Search */}
       <div className="ai-field ai-project-session-search">
@@ -295,13 +300,8 @@ export function SessionPanel({
         />
       </div>
 
-      {/* New Session row */}
-      <div className="ai-project-session-actions">
-        <button className="ai-project-new-session-btn" onClick={handleNewSession}>
-          <Plus size={14} strokeWidth={2.5} />
-          新建会话
-        </button>
-      </div>
+      {/* Branch bar */}
+      <BranchBar projectPath={project.path} />
 
       <div className="ai-project-session-divider" />
 
@@ -344,6 +344,7 @@ export function SessionPanel({
                         handleDeleteSession(r.sessionId);
                       }}
                       title="删除会话"
+                      aria-label="删除会话"
                     >
                       <Trash2 size={13} color="var(--text-muted)" />
                     </button>
@@ -383,6 +384,7 @@ export function SessionPanel({
                         handleDeleteSession(session.id);
                       }}
                       title="删除会话"
+                      aria-label="删除会话"
                     >
                       <Trash2 size={13} color="var(--text-muted)" />
                     </button>

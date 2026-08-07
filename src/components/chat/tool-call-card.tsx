@@ -5,6 +5,7 @@ import type { ToolActivityItem, ToolCallStatus } from "../dispatcher-chat/tool-a
 import type { DispatcherToolArtifactRef } from "../../types";
 import { cn } from "../../lib/cn";
 import { highlightCodeToHtml } from "../../utils/shiki";
+import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { GraphPlanCard } from "../graph/GraphPlanCard";
@@ -187,11 +188,14 @@ function DataSection({
 
 function JsonCode({ value }: { value: string }) {
   const [highlighted, setHighlighted] = React.useState<string | null>(null);
+  const isDark = useIsDarkTheme();
 
   React.useEffect(() => {
     let active = true;
+    // 主题切换时先回退纯文本渲染：旧主题的高亮 HTML 携带固定前景/背景色，
+    // 保留到新主题 resolve 为止会出现样式错乱。
     setHighlighted(null);
-    highlightCodeToHtml(value, "json")
+    highlightCodeToHtml(value, "json", isDark)
       .then((html) => {
         if (active) setHighlighted(html);
       })
@@ -201,7 +205,7 @@ function JsonCode({ value }: { value: string }) {
     return () => {
       active = false;
     };
-  }, [value]);
+  }, [value, isDark]);
 
   if (!highlighted) {
     return (

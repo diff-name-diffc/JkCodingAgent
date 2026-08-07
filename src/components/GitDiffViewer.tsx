@@ -137,8 +137,8 @@ function FileStatusIcon({ meta }: { meta: string[] }) {
   const isNew = meta.some((m) => m.startsWith("new file"));
   const isDeleted = meta.some((m) => m.startsWith("deleted file"));
 
-  if (isNew) return <FilePlus2 size={13} color="#3fb950" />;
-  if (isDeleted) return <FileMinus2 size={13} color="#f85149" />;
+  if (isNew) return <FilePlus2 size={13} color="var(--success)" />;
+  if (isDeleted) return <FileMinus2 size={13} color="var(--danger)" />;
   return <FileText size={13} color="var(--text-hint)" />;
 }
 

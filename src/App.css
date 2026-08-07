@@ -5,8 +5,8 @@
   --foreground: #1f2328;
   --card: #fffefa;
   --muted: #edf0ec;
-  --muted-foreground: #6a717f;
-  --border: #d8ddd8;
+  --muted-foreground: #5f6670;
+  --border: #ccd3cc;
   --accent: #297c70;
   --accent-soft: #dcece8;
   --destructive: #dc2626;
@@ -24,7 +24,7 @@
   --brand-teal: #0d9488;
   --brand-teal-soft: #ccfbf1;
 
-  --bg-root: #d6d9d3;
+  --bg-root: #d0d4cd;
   --bg-shell: #ebece7;
   --bg-titlebar: #e4e6e0;
   /* 窗口顶部拖拽区高度：与 macOS 红绿灯安全区配合，页面内容用它做顶部留白。 */
@@ -33,17 +33,17 @@
   --background: #f6f7f4;
   --bg-sidebar: #eceee9;
   --bg-sidebar-elevated: #e0e3dd;
-  --bg-panel: #f4f4ef;
+  --bg-panel: #f2f2ec;
   --bg-card: var(--card);
-  --bg-hover: #e2e6e1;
-  --bg-selected: #d9e8e3;
+  --bg-hover: #dee4de;
+  --bg-selected: #d0e4dd;
   --bg-subtle: #e9ece6;
   --bg-input: #fbfaf6;
   --bg-elevated: #fffef9;
   --bg-gradient-surface: linear-gradient(180deg, #fffef9 0%, #f6f5f0 100%);
   --bg-gradient-sidebar: linear-gradient(180deg, #eff1ec 0%, #e7e9e4 100%);
 
-  --border-dim: rgba(30, 39, 36, 0.1);
+  --border-dim: rgba(30, 39, 36, 0.13);
   --border-medium: var(--border);
   --border-strong: rgba(30, 39, 36, 0.28);
   --border-focus: #297c70;
@@ -80,11 +80,11 @@
   --bg-input-rgb: 251 250 246;
   --bg-sidebar-rgb: 236 238 233;
   --bg-sidebar-elevated-rgb: 224 227 221;
-  --bg-selected-rgb: 217 232 227;
-  --bg-hover-rgb: 226 230 225;
+  --bg-selected-rgb: 208 228 221;
+  --bg-hover-rgb: 222 228 222;
   --text-primary-rgb: 31 35 40;
   --text-secondary-rgb: 63 74 70;
-  --text-muted-rgb: 106 113 127;
+  --text-muted-rgb: 95 102 112;
   --border-medium-rgb: 30 39 36;
   --accent-hover-rgb: 24 85 78;
 
@@ -116,13 +116,13 @@
   --markdown-code-text: #0f1e1c;
   --markdown-code-muted: #4a605c;
   --markdown-code-shadow: 0 14px 28px rgba(13, 148, 136, 0.1);
-  --streamdown-code-bg: #0d1117;
-  --streamdown-code-toolbar-bg: #161b22;
-  --streamdown-code-hover-bg: #252c35;
-  --streamdown-code-border: #30363d;
-  --streamdown-code-text: #e6edf3;
-  --streamdown-code-muted: #9ba7b4;
-  --streamdown-code-shadow: 0 12px 28px rgba(13, 17, 23, 0.16);
+  --streamdown-code-bg: #f4f7f4;
+  --streamdown-code-toolbar-bg: #e6efec;
+  --streamdown-code-hover-bg: #e0ebe8;
+  --streamdown-code-border: rgba(13, 148, 136, 0.28);
+  --streamdown-code-text: #17201d;
+  --streamdown-code-muted: #4a605c;
+  --streamdown-code-shadow: 0 12px 28px rgba(13, 148, 136, 0.12);
   --markdown-math-bg: #f0f9f7;
   --markdown-math-border: rgba(13, 148, 136, 0.28);
   --markdown-math-text: #0c2a27;
@@ -257,6 +257,33 @@
   --sf-shadow-panel: 0 2px 8px rgb(0 0 0 / 0.22);
   --sf-shadow-elevated: 0 8px 30px rgb(0 0 0 / 0.3);
   --sf-glow-cyan: 0 0 20px rgb(85 199 173 / 0.09);
+
+  /* markdown / streamdown 面在暗色下的对偶令牌 */
+  --markdown-inline-bg: rgb(85 199 173 / 0.14);
+  --markdown-inline-border: rgb(85 199 173 / 0.32);
+  --markdown-inline-text: #9fdccb;
+  --markdown-code-shell-bg: #1a201d;
+  --markdown-code-toolbar-bg: #171c19;
+  --markdown-code-bg: #101412;
+  --markdown-code-border: rgb(85 199 173 / 0.22);
+  --markdown-code-border-strong: rgb(85 199 173 / 0.5);
+  --markdown-code-text: #e7ece9;
+  --markdown-code-muted: #9ba7b4;
+  --markdown-code-shadow: 0 14px 28px rgb(0 0 0 / 0.4);
+  --streamdown-code-bg: #101412;
+  --streamdown-code-toolbar-bg: #171c19;
+  --streamdown-code-hover-bg: #1a201d;
+  --streamdown-code-border: rgb(85 199 173 / 0.22);
+  --streamdown-code-text: #e7ece9;
+  --streamdown-code-muted: #9ba7b4;
+  --streamdown-code-shadow: 0 12px 28px rgb(0 0 0 / 0.4);
+  --markdown-math-bg: #141a17;
+  --markdown-math-border: rgb(85 199 173 / 0.3);
+  --markdown-math-text: #cfe6de;
+  --markdown-math-shadow: 0 12px 28px rgb(0 0 0 / 0.35);
+
+  --success: #4ade80;
+  --success-rgb: 74 222 128;
 }
 
 /* ── Reset ─────────────────────────────────────────────────────── */
@@ -302,9 +329,9 @@ textarea::placeholder {
 
 .dispatcher-search-match--active {
   background: color-mix(in srgb, var(--warning) 72%, white);
-  color: #1f2937;
+  color: var(--brand-graphite);
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--warning) 84%, #1f2937),
+    inset 0 0 0 1px color-mix(in srgb, var(--warning) 84%, var(--brand-graphite)),
     0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
@@ -1866,28 +1893,28 @@ button:not(:disabled):active,
 }
 
 /* ── Git diff accents (light) ── */
-.git-diff-line--add {
+html:not(.dark) .git-diff-line--add {
   background: rgba(46, 160, 67, 0.1);
 }
-.git-diff-line--del {
+html:not(.dark) .git-diff-line--del {
   background: rgba(248, 81, 73, 0.08);
 }
-.git-diff-line--add .git-diff-content {
+html:not(.dark) .git-diff-line--add .git-diff-content {
   color: #1a7f37;
 }
-.git-diff-line--del .git-diff-content {
+html:not(.dark) .git-diff-line--del .git-diff-content {
   color: #cf222e;
 }
-.git-diff-line--ctx .git-diff-content {
+html:not(.dark) .git-diff-line--ctx .git-diff-content {
   color: var(--text-secondary);
 }
-.git-diff-hunk-header {
+html:not(.dark) .git-diff-hunk-header {
   background: rgba(54, 135, 235, 0.06);
   color: rgba(36, 100, 186, 0.75);
 }
-.git-diff-sign--add {
+html:not(.dark) .git-diff-sign--add {
   color: #1a7f37;
 }
-.git-diff-sign--del {
+html:not(.dark) .git-diff-sign--del {
   color: #cf222e;
 }

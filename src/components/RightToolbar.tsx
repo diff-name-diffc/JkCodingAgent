@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { IconButton } from "./IconButton";
-import { Folder, Search, GitBranch, History, Terminal, MonitorDot } from "lucide-react";
+import { Folder, GitBranch, History, Terminal, MonitorDot } from "lucide-react";
 import type { RightPanel } from "../hooks/projectPanelsFileState";
 
 export function RightToolbar({
@@ -25,8 +25,6 @@ export function RightToolbar({
     { key: "browser", icon: <MonitorDot size={17} />, title: "CloakBrowser" },
   ];
 
-  const placeholders = [{ icon: <Search size={17} />, title: "搜索（即将上线）" }];
-
   return (
     <div className="ai-project-right-toolbar">
       {buttons.map((btn) => (
@@ -46,11 +44,6 @@ export function RightToolbar({
         onClick={onToggleTerminal}
       />
 
-      <div className="ai-project-right-toolbar-divider" />
-
-      {placeholders.map((p, i) => (
-        <IconButton key={i} icon={p.icon} title={p.title} disabled />
-      ))}
       <div className="ai-project-right-toolbar-spacer" />
     </div>
   );

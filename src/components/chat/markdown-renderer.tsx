@@ -5,7 +5,6 @@ import {
   CodeBlock,
   CodeBlockCopyButton,
   Streamdown,
-  type BundledTheme,
   type Components,
   type CustomRendererProps,
 } from "streamdown";
@@ -16,6 +15,7 @@ import "streamdown/styles.css";
 import "katex/dist/katex.min.css";
 import type { PythonCodeRunRecord } from "../../types";
 import { cn } from "../../lib/cn";
+import { TEAL_DARK_THEME, TEAL_LIGHT_THEME } from "../../utils/shiki";
 import { normalizeLatexMathDelimiters } from "../../lib/normalize-math";
 import { MarkdownImage } from "../markdown/MarkdownImage";
 import { useMarkdownLinkHandler } from "../markdown/MarkdownLinkContext";
@@ -281,9 +281,8 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
 // Module-level constants so the memoized <Streamdown> never receives fresh
 // prop identities on re-render.
 const codePlugin = createCodePlugin({
-  // The chat code card is always dark (light-only app), so both theme slots
-  // use github-dark.
-  themes: ["github-dark", "github-dark"],
+  // 双主题一次输出：streamdown 经 `dark:` 变体随 <html>.dark 纯 CSS 切换。
+  themes: [TEAL_LIGHT_THEME, TEAL_DARK_THEME],
 });
 // 默认的 `math` 预设关闭了单 `$` 行内公式（防货币误解析），模型输出普遍
 // 使用 `$…$`，这里显式开启。
@@ -303,7 +302,10 @@ const streamdownControls = {
   table: false,
 } as const;
 const streamdownLinkSafety = { enabled: false } as const;
-const shikiTheme: [BundledTheme, BundledTheme] = ["github-dark", "github-dark"];
+const shikiTheme = [TEAL_LIGHT_THEME, TEAL_DARK_THEME] as [
+  typeof TEAL_LIGHT_THEME,
+  typeof TEAL_DARK_THEME,
+];
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,

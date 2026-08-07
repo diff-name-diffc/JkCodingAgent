@@ -47,7 +47,7 @@ import { PythonRunDrawer } from "./dispatcher-chat/PythonRunDrawer";
 import { hydrateGraphPlan } from "./graph/graph-store";
 import { useUIStore } from "../stores/ui-store";
 import { Button } from "./ui/button";
-import { Badge } from "./ui/badge";
+import { Waypoints, X } from "lucide-react";
 
 // 执行图面板（含 @xyflow/react + dagre）按需加载，避免膨胀聊天主 chunk。
 const GraphPanel = lazy(() =>
@@ -878,7 +878,7 @@ function PlainChatHeader({
   return (
     <div className="flex min-h-12 items-center gap-3 px-5">
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate text-sm font-medium">{title?.trim() || "新对话"}</span>
+        <span className="truncate text-[15px] font-semibold">{title?.trim() || "新对话"}</span>
         {isLoading && <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />}
       </div>
       {hasMessages && (
@@ -921,7 +921,7 @@ function ProjectChatHeader({
   return (
     <div className="flex min-h-12 items-center gap-2 px-4">
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="text-sm font-medium">调度智能体</span>
+        <span className="text-[15px] font-semibold">调度智能体</span>
         {isLoading && <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />}
       </div>
       <Button
@@ -931,11 +931,13 @@ function ProjectChatHeader({
         disabled={!graphAvailable}
         title={graphAvailable ? "查看最近的执行图" : "当前会话还没有执行图"}
       >
+        <Waypoints size={13} strokeWidth={2} />
         执行图
       </Button>
-      <Button variant="outline" size="sm" onClick={onOpenMcpStatus}>
+      <Button variant="outline" size="sm" onClick={onOpenMcpStatus} title="查看 MCP 状态">
         <span className="h-2 w-2 rounded-full" style={{ background: mcpIndicator.color }} />
         MCP
+        <span className="font-normal text-muted-foreground">{mcpIndicator.label}</span>
       </Button>
       {hasMessages && (
         <Button variant="ghost" size="sm" onClick={onClearMessages}>
@@ -947,12 +949,9 @@ function ProjectChatHeader({
       </Button>
       {onClosePanel && (
         <Button variant="ghost" size="icon-sm" aria-label="关闭会话面板" onClick={onClosePanel}>
-          ×
+          <X size={14} strokeWidth={2} />
         </Button>
       )}
-      <Badge variant="outline" className="hidden text-[10px] sm:inline-flex">
-        {mcpIndicator.label}
-      </Badge>
     </div>
   );
 }

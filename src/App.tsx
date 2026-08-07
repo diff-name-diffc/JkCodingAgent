@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from "react";
 import { open as openDialog, confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project, Task } from "./types";
@@ -138,6 +138,24 @@ function App() {
     setActiveProject(null);
   }
 
+  function handleCloseProject(target: Project) {
+    // 只更新挂载列表，激活项目的回退统一交给下方收敛守卫：这里若基于本次渲染
+    // 快照计算 nextId，同批连续关闭多个项目的边界场景下可能把激活项目切到同样
+    // 正被关闭的项目上，与守卫逻辑重复且结果不可靠。
+    setMountedProjectIds((prev) => prev.filter((id) => id !== target.id));
+  }
+
+  // 收敛守卫（激活项目回退的唯一出口）：activeProject 指向已卸载项目时
+  // （关闭激活项目、同批连续关闭等场景），回退到最近挂载的项目或欢迎页，
+  // 避免出现「激活项目不在挂载列表」导致的空白视图。用 useLayoutEffect 在
+  // 绘制前同步收敛，关闭激活项目时不会出现「全部项目页隐藏」的闪烁帧。
+  useLayoutEffect(() => {
+    if (activeProject && !mountedProjectIds.includes(activeProject.id)) {
+      const nextId = mountedProjectIds[mountedProjectIds.length - 1] ?? null;
+      setActiveProject(nextId ? (projects.find((p) => p.id === nextId) ?? null) : null);
+    }
+  }, [activeProject, mountedProjectIds, projects]);
+
   async function deleteTasks(taskIds: string[]) {
     if (taskIds.length === 0) return;
 
@@ -233,9 +251,11 @@ function App() {
                 project={project}
                 visible={activeProject?.id === project.id}
                 allProjects={railProjects}
+                openProjects={mountedProjects}
                 tasks={tasks}
                 onBack={handleBack}
                 onSwitchProject={handleProjectClick}
+                onCloseProject={handleCloseProject}
                 onOpen={handleOpen}
               />
             </Suspense>

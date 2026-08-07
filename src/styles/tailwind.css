@@ -1369,6 +1369,8 @@
 
   .ai-file-explorer-virtual-row {
     position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
   }
 
@@ -2512,17 +2514,15 @@
     height: 30px;
     align-items: center;
     gap: 6px;
-    margin: 8px 8px 6px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.16);
+    margin: 0 8px 8px;
+    border: 1px solid transparent;
     border-radius: 8px;
     padding: 0 8px;
-    background:
-      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.08), transparent 72%), var(--sf-surface);
+    background: transparent;
     color: var(--text-muted);
     cursor: pointer;
     font-family: var(--font-ui);
     font-size: 12px;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
     transition:
       border-color 0.15s ease,
       background 0.15s ease,
@@ -2532,12 +2532,9 @@
 
   .ai-branch-bar:hover,
   .ai-branch-bar.is-open {
-    border-color: rgb(var(--accent-rgb) / 0.36);
-    background:
-      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.14), rgb(var(--warning-rgb) / 0.04)),
-      var(--sf-surface);
+    border-color: var(--border-dim);
+    background: var(--sf-surface-sunken);
     color: var(--text-primary);
-    box-shadow: 0 0 24px rgb(var(--accent-rgb) / 0.1);
   }
 
   .ai-branch-bar > svg {
@@ -6751,13 +6748,19 @@
     overflow: visible;
     border-right: 1px solid rgb(var(--accent-rgb) / 0.16) !important;
     background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
-    box-shadow:
-      inset -1px 0 0 rgba(255, 255, 255, 0.04),
-      18px 0 50px rgba(0, 0, 0, 0.18);
+    box-shadow: var(--sf-shadow-panel);
   }
 
   .ai-project-rail-spacer {
     flex: 1;
+  }
+
+  /* rail 项布局容器：承载项目按钮与悬浮关闭按钮的相对定位。
+     项目切换按钮与关闭按钮是平级元素（不嵌套交互控件）。 */
+  .ai-project-rail-item-slot {
+    position: relative;
+    width: 36px;
+    height: 36px;
   }
 
   .ai-project-rail-item {
@@ -6772,7 +6775,9 @@
     padding: 0;
     background: var(--sf-surface) !important;
     box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
-    outline: none !important;
+    /* 仅抑制鼠标点击的默认焦点环（无 !important）：键盘导航的
+       :focus-visible 特异性更高，由下方规则给出可见焦点样式。 */
+    outline: none;
     cursor: pointer;
     transition:
       border-color 0.16s ease,
@@ -6781,11 +6786,17 @@
       transform 0.16s ease !important;
   }
 
+  .ai-project-rail-item:focus-visible,
+  .ai-project-rail-close:focus-visible {
+    outline: 2px solid rgb(var(--accent-rgb) / 0.75);
+    outline-offset: 2px;
+  }
+
   .ai-project-rail-item:hover,
   .ai-project-rail-item.is-active {
     border-color: rgb(var(--accent-rgb) / 0.42) !important;
     background: rgb(var(--accent-rgb) / 0.1) !important;
-    box-shadow: 0 0 24px rgb(var(--accent-rgb) / 0.14);
+    box-shadow: var(--sf-glow-cyan);
   }
 
   .ai-project-rail-item:hover {
@@ -6796,7 +6807,55 @@
     cursor: default !important;
     box-shadow:
       0 0 0 1px rgb(var(--accent-rgb) / 0.52),
-      0 0 28px rgb(var(--accent-rgb) / 0.18);
+      var(--sf-glow-cyan);
+  }
+
+  .ai-project-rail-close {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    z-index: 2;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-dim);
+    border-radius: 9999px;
+    background: var(--sf-surface-elevated);
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+    /* 隐藏态不参与命中测试：opacity:0 的元素默认可点击，会在淡入前被误触
+       触发关闭；显示态（下方 hover/focus 规则）再恢复 pointer-events。 */
+    pointer-events: none;
+    transform: scale(0.85);
+    transition:
+      opacity 0.12s ease,
+      transform 0.12s ease,
+      color 0.12s ease,
+      border-color 0.12s ease;
+  }
+
+  .ai-project-rail-item-slot:hover .ai-project-rail-close,
+  .ai-project-rail-item-slot:focus-within .ai-project-rail-close {
+    opacity: 1;
+    transform: scale(1);
+    pointer-events: auto;
+  }
+
+  /* 无 hover 的触屏设备没有悬停显示路径：直接常显，避免操作入口不可见。 */
+  @media (hover: none) {
+    .ai-project-rail-close {
+      opacity: 1;
+      transform: scale(1);
+      pointer-events: auto;
+    }
+  }
+
+  .ai-project-rail-close:hover {
+    color: var(--danger);
+    border-color: rgb(var(--danger-rgb) / 0.4);
   }
 
   .ai-project-status-dot {
@@ -6961,9 +7020,7 @@
     overflow: hidden;
     border-right: 1px solid rgb(var(--accent-rgb) / 0.16) !important;
     background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
-    box-shadow:
-      inset -1px 0 0 rgba(255, 255, 255, 0.04),
-      20px 0 58px rgba(0, 0, 0, 0.18);
+    box-shadow: var(--sf-shadow-elevated);
   }
 
   .ai-project-session-header {
@@ -7002,7 +7059,7 @@
 
   .ai-project-session-search {
     height: 38px;
-    margin: 10px !important;
+    margin: 0 10px 6px !important;
     padding: 0 10px !important;
   }
 
@@ -7020,7 +7077,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 0 10px 8px !important;
+    padding: 10px 10px 8px !important;
   }
 
   .ai-project-new-session-btn {
@@ -7033,15 +7090,16 @@
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    justify-content: flex-start;
-    border: 1px solid rgb(var(--accent-rgb) / 0.22) !important;
-    background: rgb(var(--accent-rgb) / 0.08) !important;
-    color: var(--accent) !important;
+    justify-content: center;
+    border: 1px solid var(--accent) !important;
+    background: var(--accent) !important;
+    color: var(--text-on-accent) !important;
   }
 
   .ai-project-new-session-btn:hover {
-    background: rgb(var(--accent-rgb) / 0.14) !important;
-    color: var(--text-primary);
+    border-color: var(--accent-hover) !important;
+    background: var(--accent-hover) !important;
+    color: var(--text-on-accent) !important;
   }
 
   .ai-project-session-divider {
@@ -7145,16 +7203,32 @@
     background: transparent !important;
     color: var(--text-hint);
     cursor: pointer;
-    opacity: 0.66;
+    opacity: 0;
+    /* 与 .ai-project-rail-close 同理：隐藏态禁用命中，防止淡入前误触删除。 */
+    pointer-events: none;
     transition:
       opacity 0.12s ease,
       background 0.12s ease,
       color 0.12s ease;
   }
 
+  .ai-project-session-row:hover .ai-project-session-delete,
+  .ai-project-session-delete:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  @media (hover: none) {
+    .ai-project-session-delete {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+
   .ai-project-session-delete:hover {
     border-color: rgb(var(--danger-rgb) / 0.28) !important;
     background: rgb(var(--danger-rgb) / 0.1) !important;
+    color: var(--danger);
     opacity: 1;
   }
 
@@ -7195,7 +7269,7 @@
     border: 1px solid transparent;
     border-radius: 6px;
     background: none;
-    color: var(--text-hint);
+    color: var(--text-muted);
     cursor: pointer;
     flex-shrink: 0;
     transition:
@@ -7227,6 +7301,11 @@
     border-color: rgb(var(--accent-rgb) / 0.34) !important;
   }
 
+  .ai-project-right-toolbar .ai-icon-button.is-active {
+    background: rgb(var(--accent-rgb) / 0.14) !important;
+    color: var(--accent-strong);
+  }
+
   .ai-project-right-toolbar-divider {
     width: 20px;
     height: 1px;
@@ -7245,7 +7324,7 @@
     position: relative;
     border-top: 1px solid rgb(var(--accent-rgb) / 0.16) !important;
     background: linear-gradient(180deg, var(--sf-surface-sunken), var(--sf-surface-sunken));
-    box-shadow: 0 -20px 48px rgba(0, 0, 0, 0.24);
+    box-shadow: var(--sf-shadow-elevated);
   }
 
   .ai-subprocess-resize {
@@ -10360,7 +10439,11 @@
 
   .ai-graph-node--running .ai-graph-node-status-ring {
     background: var(--accent);
-    animation: ai-graph-node-breathe 1.4s ease-in-out infinite;
+    /* 不加呼吸/脉冲动画：运行中的无限 opacity/box-shadow 动画会把节点提升为
+       合成层，而 React Flow 画布经 fitView 缩放（非整数 scale）后，WKWebView
+       会对持续重绘的缩放图层降级栅格化，导致整个图界面字体发虚（蒙版感）。
+       运行态用静态高亮 + 状态文案表达即可。 */
+    box-shadow: 0 0 0 2px rgb(var(--accent-rgb) / 0.28);
   }
 
   .ai-graph-node--succeeded .ai-graph-node-status-ring {
@@ -10382,18 +10465,6 @@
 
   .ai-graph-node--cancelled .ai-graph-node-status-ring {
     background: var(--text-hint);
-  }
-
-  @keyframes ai-graph-node-breathe {
-    0%,
-    100% {
-      opacity: 1;
-      box-shadow: 0 0 0 0 rgb(var(--accent-rgb) / 0.35);
-    }
-    50% {
-      opacity: 0.72;
-      box-shadow: 0 0 0 5px rgb(var(--accent-rgb) / 0);
-    }
   }
 
   .ai-graph-node-main {
@@ -11031,6 +11102,55 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
+  }
+
+  /* 头部上下文占用 chip：与耗时 chip 同形，突出可读性 */
+  .ai-graph-drawer-usage {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 执行时间线中的运行通知行（上下文压缩 / 自动重试） */
+  .ai-graph-notice-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* 进行中（started/updated 归一为 running）：accent 描边区别于已完成/失败。 */
+  .ai-graph-notice-row--running {
+    border-color: rgb(var(--accent-rgb) / 0.5);
+    color: var(--accent);
+  }
+
+  .ai-graph-notice-row--failed {
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+
+  .ai-graph-notice-icon {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+  }
+
+  .ai-graph-notice-title {
+    flex-shrink: 0;
+  }
+
+  .ai-graph-notice-detail {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .ai-graph-harness-editor {

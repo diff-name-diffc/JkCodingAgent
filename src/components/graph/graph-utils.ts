@@ -263,3 +263,117 @@ export function buildToolCallEntries(activities: AgentActivity[]): ToolCallEntry
       };
     });
 }
+
+// ── 节点执行详情：运行通知（compaction / retry）与上下文占用 ──
+
+/** 时间线上的单行通知：上下文压缩、自动重试等节点运行动态。 */
+export interface NodeNotice {
+  id: string;
+  sequence: number;
+  kind: "compaction" | "retry";
+  /** 与工具卡片同口径的归一化状态；原始 started/updated/finished 仅用于文案。 */
+  status: ToolCallStatus;
+  title: string;
+  detail: string;
+}
+
+function payloadString(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  return typeof value === "string" ? value : "";
+}
+
+function noticeTitle(kind: NodeNotice["kind"], status: string, payload: Record<string, unknown>): string {
+  if (kind === "compaction") {
+    if (status === "started") return "正在压缩上下文…";
+    if (status === "failed") return "上下文压缩失败";
+    return "上下文已压缩";
+  }
+  if (status === "started") {
+    const attempt = typeof payload.attempt === "number" ? payload.attempt : null;
+    const maxAttempts = typeof payload.maxAttempts === "number" ? payload.maxAttempts : null;
+    return attempt != null && maxAttempts != null ? `自动重试（${attempt}/${maxAttempts}）` : "自动重试";
+  }
+  return status === "failed" ? "重试失败" : "重试成功";
+}
+
+/** 提取 compaction / retry 活动为时间线通知（按执行顺序）。 */
+export function buildNodeNotices(activities: AgentActivity[]): NodeNotice[] {
+  return activities
+    .filter((activity) => activity.kind === "compaction" || activity.kind === "retry")
+    .sort((left, right) => left.sequence - right.sequence)
+    .map((activity) => {
+      const payload = payloadOf(activity);
+      const kind = activity.kind as NodeNotice["kind"];
+      const detail =
+        activity.content ||
+        payloadString(payload, "reason") ||
+        payloadString(payload, "error") ||
+        payloadString(payload, "errorMessage");
+      return {
+        id: activity.id,
+        sequence: activity.sequence,
+        kind,
+        status: normalizeToolCallStatus(activity.status),
+        title: noticeTitle(kind, activity.status, payload),
+        detail,
+      };
+    });
+}
+
+/** 执行时间线行：工具调用卡片与运行通知按 sequence 混排。 */
+export type TimelineRow =
+  | { kind: "tool"; sequence: number; entry: ToolCallEntry }
+  | { kind: "notice"; sequence: number; notice: NodeNotice };
+
+/**
+ * 执行时间线的一次性派生：工具条目、混排行与上下文占用读数共享同一次
+ * activities 遍历结果。分别调用 buildToolCallEntries + buildExecutionTimeline
+ * 会把含 JSON.parse 的条目构建执行两遍，running 状态下 activities 高频追加时
+ * 放大主线程开销——消费方一律经本函数取数（不提供单独的 rows 导出，
+ * 避免绕过该约定）。
+ */
+export interface ExecutionTimeline {
+  toolEntries: ToolCallEntry[];
+  timelineRows: TimelineRow[];
+  contextUsage: ContextUsageReading | null;
+}
+
+export function buildExecutionTimeline(activities: AgentActivity[]): ExecutionTimeline {
+  const toolEntries = buildToolCallEntries(activities);
+  const rows: TimelineRow[] = [
+    ...toolEntries.map((entry): TimelineRow => ({ kind: "tool", sequence: entry.sequence, entry })),
+    ...buildNodeNotices(activities).map((notice): TimelineRow => ({ kind: "notice", sequence: notice.sequence, notice })),
+  ];
+  rows.sort((left, right) => left.sequence - right.sequence);
+  return { toolEntries, timelineRows: rows, contextUsage: latestContextUsage(activities) };
+}
+
+/** 上下文占用读数（sidecar 节流传来的 PI 估算值；compaction 后 tokens/percent 短暂为 null）。 */
+export interface ContextUsageReading {
+  tokens: number | null;
+  contextWindow: number;
+  percent: number | null;
+}
+
+/** 取活动流中最后一次上下文占用读数；从未上报时返回 null。 */
+export function latestContextUsage(activities: AgentActivity[]): ContextUsageReading | null {
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index];
+    if (activity.kind !== "context_usage") continue;
+    const payload = payloadOf(activity);
+    return {
+      tokens: typeof payload.tokens === "number" ? payload.tokens : null,
+      contextWindow: typeof payload.contextWindow === "number" ? payload.contextWindow : 0,
+      percent: typeof payload.percent === "number" ? payload.percent : null,
+    };
+  }
+  return null;
+}
+
+/** 上下文占用的紧凑展示：`43.2% · 55k/128k`；读数未知时提示重新估算。 */
+export function formatContextUsage(reading: ContextUsageReading): string {
+  if (reading.percent == null || reading.tokens == null) return "重新估算中…";
+  // contextWindow 缺失或为 0 时只显示百分比，避免「55k/0」这类误导性读数。
+  if (reading.contextWindow <= 0) return `${reading.percent.toFixed(1)}%`;
+  return `${reading.percent.toFixed(1)}% · ${formatCharCount(reading.tokens)}/${formatCharCount(reading.contextWindow)}`;
+}

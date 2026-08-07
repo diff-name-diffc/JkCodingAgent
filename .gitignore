@@ -37,6 +37,8 @@ ruvector.db
 *.bak
 __pycache__/
 *.pyc
+# bun build --compile 的临时编译产物（sidecar 构建在仓库根产生）
+.*.bun-build
 
 # RAG sidecar 产物（由 rag/scripts/build_sidecar.* 生成，不入库）
 rag/.venv/

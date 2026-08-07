@@ -11,9 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{watch, Mutex};
 
 use super::harness::ResolvedNodeHarness;
-use super::pi_rpc::{
-    global_agent_dir, spawn_sidecar, terminate_sidecar_process_group, SidecarEnvelope,
-};
+use super::pi_rpc::{global_agent_dir, SidecarChildGuard, SidecarEnvelope};
 use super::runner::emit_run_event;
 use super::store::GraphStore;
 use super::types::{AgentActivity, GraphNode, GraphRunEvent};
@@ -21,6 +19,11 @@ use crate::agent::tools::{ToolContext, ToolRegistry, ToolStatus};
 
 const NODE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const PROTOCOL_VERSION: i64 = 2;
+
+/// 固定文本活动的序号约定：assistant_text=1、thinking=2（见 TextActivity::new），
+/// context_usage 顺延其后。在 1/2 之外新增固定活动时需同步更新这里
+/// （动态活动的序号为协议序号 ×10，见 activity_sequence，不会与之冲突）。
+const CONTEXT_USAGE_SEQUENCE: i64 = 3;
 
 #[derive(Debug)]
 pub(crate) enum NodeExecOutcome {
@@ -58,10 +61,11 @@ pub(crate) async fn execute_node(ctx: &NodeExecContext) -> NodeExecOutcome {
 }
 
 async fn execute_pi_node(ctx: &NodeExecContext) -> anyhow::Result<NodeExecOutcome> {
-    let mut child = spawn_sidecar()?;
-    let execution = execute_pi_node_process(ctx, &mut child).await;
-    // spawn 成功后只有这一条退出路径：先清理整个进程组，再做活动收尾。
-    terminate_sidecar_process_group(&mut child).await;
+    let mut guard = SidecarChildGuard::spawn()?;
+    let execution = execute_pi_node_process(ctx, guard.child_mut()).await;
+    // spawn 成功后只有这一条正常退出路径：显式终止并回收进程组。panic 展开或
+    // 任务 abort 等绕过此处的路径由守卫 Drop 兜底杀进程组（重复组杀无害）。
+    guard.terminate().await;
     execution.assistant.finish(ctx).await;
     execution.thinking.finish(ctx).await;
     execution.outcome
@@ -397,6 +401,37 @@ async fn handle_agent_event(
             );
             tools.insert(call_id, activity);
         }
+        "context_usage" => {
+            // 上下文占用估算：稳定 id upsert（每秒级采样只留一条活动记录），
+            // 原始数值留在 payload 供前端解析，content 为人类可读摘要。
+            // upsert 的 ON CONFLICT 子句不更新 started_at，保留首次观测时间；
+            // 前端按 sequence 展示与排序，不依赖该时间随采样刷新。
+            let now = chrono::Utc::now().timestamp_millis();
+            let activity = AgentActivity {
+                id: format!("{}:{}:context_usage", ctx.run_id, ctx.node.id),
+                run_id: ctx.run_id.clone(),
+                node_id: ctx.node.id.clone(),
+                sequence: CONTEXT_USAGE_SEQUENCE,
+                kind: "context_usage".into(),
+                status: "finished".into(),
+                title: "上下文占用".into(),
+                content: context_usage_content(data),
+                payload_json: redact(data.clone()).to_string(),
+                started_at: now,
+                finished_at: Some(now),
+            };
+            let _ = ctx.store.save_activity_async(&activity).await;
+            emit_run_event(
+                &ctx.app,
+                &ctx.plan_id,
+                &ctx.run_id,
+                &ctx.workspace_id,
+                GraphRunEvent::NodeActivity {
+                    node_id: ctx.node.id.clone(),
+                    activity,
+                },
+            );
+        }
         "retry" | "compaction" => {
             let kind = data
                 .get("kind")
@@ -437,6 +472,25 @@ fn activity_sequence(protocol_sequence: i64) -> anyhow::Result<i64> {
     protocol_sequence.checked_mul(10).ok_or_else(|| {
         anyhow::anyhow!("PI sidecar sequence 超出活动序号可表示范围：{protocol_sequence}")
     })
+}
+
+/// context_usage 事件的人类可读摘要；原始数值在 payload_json 中供前端解析。
+fn context_usage_content(data: &Value) -> String {
+    let percent = data.get("percent").and_then(Value::as_f64);
+    let tokens = data.get("tokens").and_then(Value::as_i64);
+    let window = data
+        .get("contextWindow")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    match (percent, tokens) {
+        (Some(percent), Some(tokens)) if window > 0 => {
+            format!("估算占用 {percent:.1}%（{tokens}/{window} tokens）")
+        }
+        // contextWindow 缺失或为 0 时省略分母，避免渲染「N/0 tokens」误导文案。
+        (Some(percent), Some(tokens)) => format!("估算占用 {percent:.1}%（{tokens} tokens）"),
+        // compaction 后、下一次 LLM 响应前 SDK 无法确知上下文体积（tokens=null）。
+        _ => "上下文压缩后重新估算中…".to_string(),
+    }
 }
 
 struct TextActivity {
@@ -690,6 +744,18 @@ mod tests {
         assert_eq!(activity_sequence(42).unwrap(), 420);
         assert!(activity_sequence(i64::MAX).is_err());
         assert!(activity_sequence(i64::MIN).is_err());
+    }
+
+    #[test]
+    fn context_usage_content_formats_reading_and_unknown() {
+        let reading = json!({ "tokens": 55_000, "contextWindow": 128_000, "percent": 42.97 });
+        assert_eq!(
+            context_usage_content(&reading),
+            "估算占用 43.0%（55000/128000 tokens）"
+        );
+        // compaction 后 tokens/percent 为 null：明确展示「重新估算中」而非 0%。
+        let unknown = json!({ "tokens": null, "contextWindow": 128_000, "percent": null });
+        assert_eq!(context_usage_content(&unknown), "上下文压缩后重新估算中…");
     }
 
     #[tokio::test]

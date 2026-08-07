@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { BrainCircuit, ChevronDown, ChevronRight, ChevronsDown, Clock3, Pause, Play, RotateCcw, Square, Wrench, X } from "lucide-react";
+import { BrainCircuit, ChevronDown, ChevronRight, ChevronsDown, Clock3, Gauge, Pause, Play, RotateCcw, Shrink, Square, Wrench, X } from "lucide-react";
 import type { AgentActivity, GraphBaseToolGroup, GraphDefinition, GraphHarnessCatalog, GraphPlanStatus, GraphRunDetail } from "../../types";
 import { cn } from "../../lib/cn";
 import { useToast } from "../Toast";
@@ -12,11 +12,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { createSerialTaskQueue, hydrateGraphPlan, useGraphPlan } from "./graph-store";
 import {
   NODE_STATUS_META,
-  buildToolCallEntries,
+  buildExecutionTimeline,
   formatCharCount,
+  formatContextUsage,
   formatGraphDuration,
   normalizeNodeStatus,
   parseGraphDefinition,
+  type NodeNotice,
+  type TimelineRow,
   type ToolCallEntry,
 } from "./graph-utils";
 
@@ -77,10 +80,9 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   const liveOutput = selectedRunId === plan?.latestRunId ? snapshot.liveOutputs[nodeId] ?? "" : "";
   const output = liveOutput || nodeRun?.outputText || "";
   // 历史 activities 用 useMemo 稳定引用：行内 filter 每次渲染都新建数组，
-  // 会让下方 toolEntries 的 useMemo 依赖恒变，查看历史运行（无实时
-  // activities）时跟随滚动/snapshot 更新引发的每次重渲染都会重复执行
-  // buildToolCallEntries（含 JSON.parse 与格式化）。空回退统一用模块级
-  // 常量，避免 `?? []` 每次生成新空数组。
+  // 会让下方派生的 useMemo 依赖恒变，查看历史运行（无实时 activities）时
+  // 跟随滚动/snapshot 更新引发的每次重渲染都会重复执行派生（含 JSON.parse
+  // 与格式化）。空回退统一用模块级常量，避免 `?? []` 每次生成新空数组。
   const historicalActivities = useMemo(
     () => runDetail?.activities.filter((item) => item.nodeId === nodeId) ?? EMPTY_ACTIVITIES,
     [runDetail, nodeId],
@@ -89,7 +91,11 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
     ? snapshot.liveActivities[nodeId] ?? EMPTY_ACTIVITIES
     : EMPTY_ACTIVITIES;
   const activities = liveActivities.length > 0 ? liveActivities : historicalActivities;
-  const toolEntries = useMemo(() => buildToolCallEntries(activities), [activities]);
+  // 工具条目、时间线行与上下文读数共享一次派生，避免 buildToolCallEntries 重复执行。
+  const { toolEntries, timelineRows, contextUsage } = useMemo(
+    () => buildExecutionTimeline(activities),
+    [activities],
+  );
   const toolTotals = useMemo(() => {
     let input = 0;
     let outputChars = 0;
@@ -191,6 +197,11 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
         <span className="ai-graph-drawer-agent ai-graph-drawer-agent--pi"><BrainCircuit className="h-3.5 w-3.5" />PI Agent</span>
         <span className={cn("ai-graph-chip", `ai-graph-chip--node-${status}`)}>{statusMeta.label}</span>
         {nodeRun?.durationMs != null && <span className="ai-graph-drawer-duration"><Clock3 className="h-3 w-3" />{formatGraphDuration(nodeRun.durationMs)}</span>}
+        {contextUsage && (
+          <span className="ai-graph-drawer-usage" title="上下文窗口占用（PI 运行时估算值）">
+            <Gauge className="h-3 w-3" />{formatContextUsage(contextUsage)}
+          </span>
+        )}
         <Button variant="ghost" size="icon-sm" aria-label="关闭节点详情" onClick={onClose}><X className="h-4 w-4" /></Button>
       </div>
 
@@ -242,14 +253,12 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
 
         <section className="ai-graph-drawer-section">
           <div className="ai-graph-drawer-label">
-            工具调用
+            执行过程
             <span className="ai-graph-drawer-hint">
-              {toolEntries.length > 0
-                ? `${toolEntries.length} 次 · 入 ${formatCharCount(toolTotals.input)} / 出 ${formatCharCount(toolTotals.output)} 字符`
-                : status === "running" ? "等待调用…" : "暂无"}
+              {executionHint(toolEntries.length, timelineRows.length, status, toolTotals)}
             </span>
           </div>
-          <ToolCallList entries={toolEntries} live={status === "running"} />
+          <ExecutionTimelineList rows={timelineRows} live={status === "running"} />
         </section>
 
         <section className="ai-graph-drawer-section">
@@ -294,7 +303,26 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   );
 }
 
-// ── 工具调用列表（执行详情主视图） ──
+// ── 执行时间线（执行详情主视图） ──
+
+/** 执行过程提示文案：统计口径统一为 timelineRows 行数（工具调用与运行通知
+ * 混排）；两者并存时分别列出「N 次调用」与「M 条动态」，避免条数对不上。 */
+function executionHint(
+  toolCount: number,
+  rowCount: number,
+  status: ReturnType<typeof normalizeNodeStatus>,
+  totals: { input: number; output: number },
+): string {
+  if (rowCount === 0) {
+    return status === "running" ? "等待动态…" : "暂无";
+  }
+  if (toolCount === 0) {
+    return `${rowCount} 条动态`;
+  }
+  const toolHint = `${toolCount} 次调用 · 入 ${formatCharCount(totals.input)} / 出 ${formatCharCount(totals.output)} 字符`;
+  const noticeCount = rowCount - toolCount;
+  return noticeCount > 0 ? `${toolHint} · ${noticeCount} 条动态` : toolHint;
+}
 
 const TOOL_STATUS_META: Record<ToolCallEntry["status"], { label: string; className: string }> = {
   running: { label: "执行中", className: "ai-graph-tool-status--running" },
@@ -322,25 +350,25 @@ function truncateBlock(text: string, keep: "head" | "tail"): { text: string; omi
   };
 }
 
-/** 虚拟化工具卡片列表：运行中自动跟随滚动，可暂停。 */
-function ToolCallList({ entries, live }: { entries: ToolCallEntry[]; live: boolean }) {
+/** 虚拟化执行时间线（工具卡片 + 运行通知混排）：运行中自动跟随滚动，可暂停。 */
+function ExecutionTimelineList({ rows, live }: { rows: TimelineRow[]; live: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
   const virtualizer = useVirtualizer({
-    count: entries.length,
+    count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 42,
     overscan: 8,
   });
 
   useEffect(() => {
-    if (following && entries.length > 0) {
-      virtualizer.scrollToIndex(entries.length - 1, { align: "end" });
+    if (following && rows.length > 0) {
+      virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
     }
-  }, [following, entries.length, virtualizer]);
+  }, [following, rows.length, virtualizer]);
 
-  if (entries.length === 0) {
-    return <p className="ai-graph-drawer-hint ai-graph-tool-empty">{live ? "等待 PI Agent 调用工具…" : "尚未记录工具调用。"}</p>;
+  if (rows.length === 0) {
+    return <p className="ai-graph-drawer-hint ai-graph-tool-empty">{live ? "等待执行动态…" : "尚未记录执行动态。"}</p>;
   }
 
   return (
@@ -360,22 +388,43 @@ function ToolCallList({ entries, live }: { entries: ToolCallEntry[]; live: boole
         }}
       >
         <div className="ai-graph-tool-virtual" style={{ height: virtualizer.getTotalSize() }}>
-          {virtualizer.getVirtualItems().map((item) => (
-            <div
-              key={entries[item.index].id}
-              ref={virtualizer.measureElement}
-              data-index={item.index}
-              className="ai-graph-tool-row"
-              style={{ transform: `translateY(${item.start}px)` }}
-            >
-              <ToolCallCard entry={entries[item.index]} />
-            </div>
-          ))}
+          {virtualizer.getVirtualItems().map((item) => {
+            const row = rows[item.index];
+            return (
+              <div
+                key={row.kind === "tool" ? row.entry.id : row.notice.id}
+                ref={virtualizer.measureElement}
+                data-index={item.index}
+                className="ai-graph-tool-row"
+                style={{ transform: `translateY(${item.start}px)` }}
+              >
+                {row.kind === "tool" ? <ToolCallCard entry={row.entry} /> : <NoticeRow notice={row.notice} />}
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
   );
 }
+
+/** 通知类型 → 图标映射：新增通知类型须在此显式登记，避免隐式 fallback。 */
+const NOTICE_ICONS: Record<NodeNotice["kind"], typeof Shrink> = {
+  compaction: Shrink,
+  retry: RotateCcw,
+};
+
+/** 运行通知行：上下文压缩 / 自动重试等节点动态（不可展开）。 */
+const NoticeRow = memo(function NoticeRow({ notice }: { notice: NodeNotice }) {
+  const NoticeIcon = NOTICE_ICONS[notice.kind];
+  return (
+    <div className={cn("ai-graph-notice-row", `ai-graph-notice-row--${notice.status}`)}>
+      <NoticeIcon className="ai-graph-notice-icon" aria-hidden />
+      <span className="ai-graph-notice-title">{notice.title}</span>
+      {notice.detail && <span className="ai-graph-notice-detail" title={notice.detail}>{notice.detail}</span>}
+    </div>
+  );
+});
 
 /** 单个工具调用卡片：默认折叠只显示摘要，点击展开格式化后的输入/输出。
  * memo 化：卡片位于虚拟列表 overscan 内，父级高频重渲染（跟随滚动、

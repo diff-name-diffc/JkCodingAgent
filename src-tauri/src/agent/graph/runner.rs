@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
 use super::harness::{build_harness_catalog, resolve_node_harness};
-use super::input::assemble_node_input;
+use super::input::{assemble_node_input, state_value_from_output};
 use super::node_exec::{NodeExecContext, NodeExecOutcome};
 use super::node_task::{
     cancel_pending_nodes, finish_node_record, mark_node_skipped, persist_and_emit_state,
@@ -33,7 +33,6 @@ use super::types::{
     BaseToolGroup, GraphDefinition, GraphNodeRunRecord, GraphPlanRecord, GraphPlanUpdatedPayload,
     GraphRunEvent, GraphRunEventPayload, GraphRunSummary, NODE_CANCELLED, NODE_FAILED,
     NODE_SUCCEEDED, PLAN_CANCELLED, PLAN_COMPLETED, PLAN_FAILED, RUN_MODE_RESUME,
-    STATE_VALUE_MAX_CHARS,
 };
 use super::validate::validate_graph;
 use super::verifier;
@@ -43,10 +42,8 @@ use crate::agent::db::DispatcherDb;
 use crate::agent::state::GraphRunHandle;
 use crate::agent::tools::{ToolContext, ToolRegistry};
 use crate::project::mcp::ProjectMcpRegistry;
-use crate::shared::truncate_for_display;
 use crate::ssh_tool::SshSessionManager;
 
-const STATE_TRUNCATE_SUFFIX: &str = "\n...[输出已截断]";
 static EVENT_SEQUENCE: AtomicI64 = AtomicI64::new(0);
 
 pub(crate) struct GraphRunServices {
@@ -464,8 +461,10 @@ async fn run_graph(
                 result.record.affected_files = affected_files.clone();
                 result.record.tool_call_count = tool_call_count;
                 result.record.usage_json = usage_json;
-                let state_value =
-                    truncate_for_display(&output, STATE_VALUE_MAX_CHARS, STATE_TRUNCATE_SUFFIX);
+                // 共享 state 承载「节点间流转的结论」：写回产出摘要（≤4k）而非全文，
+                // 全文保留在 node_runs.output_text；确需完整产出的下游通过
+                // dependsOn + exportPolicy=full 获取，而非 injectStateKeys。
+                let state_value = state_value_from_output(&output);
                 state.insert(result.output_key.clone(), Value::String(state_value.clone()));
                 finish_node_record(store, result.record, NODE_SUCCEEDED, Some(&output), None)
                     .await;

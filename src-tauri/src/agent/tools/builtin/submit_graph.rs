@@ -35,7 +35,7 @@ impl AgentTool for SubmitGraphTool {
             "properties": {
                 "definition": {
                     "type": "object",
-                    "description": "执行图定义。边由节点的 dependsOn 派生（隐式 DAG）；节点完成后 state[outputKey]=节点输出，下游节点通过 dependsOn 接收上游输出（摘要或全文见 exportPolicy）、通过 injectStateKeys 接收指定 state 节选。",
+                    "description": "执行图定义。边由节点的 dependsOn 派生（隐式 DAG）；节点完成后 state[outputKey]=节点产出摘要，下游节点通过 dependsOn 接收上游输出（摘要或全文见 exportPolicy）、通过 injectStateKeys 接收指定 state 值。",
                     "properties": {
                         "version": { "type": "integer", "enum": [GRAPH_DEFINITION_VERSION], "description": "契约版本，固定为当前版本" },
                         "title": { "type": "string", "description": "图标题，一句话概括任务目标" },
@@ -93,7 +93,7 @@ impl AgentTool for SubmitGraphTool {
                                     "injectStateKeys": {
                                         "type": "array",
                                         "items": { "type": "string" },
-                                        "description": "需要注入的共享 state key（必须是 stateKeys 声明的键、某个节点的 outputKey 或继承 state 的键，且生产者必须是本节点的上游）"
+                                        "description": "需要注入的共享 state key（值为对应节点的产出摘要；必须是 stateKeys 声明的键、某个节点的 outputKey 或继承 state 的键，且生产者必须是本节点的上游）"
                                     },
                                     "outputKey": { "type": "string", "description": "本节点输出写回 state 的 key，全局唯一" },
                                     "expectedFiles": {

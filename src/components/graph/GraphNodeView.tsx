@@ -65,7 +65,7 @@ export const GraphNodeView = memo(function GraphNodeView({
             {statusMeta.label}
             {data.streaming && ` · ${PHASE_LABEL[data.phase]}`}
           </span>
-          {data.streaming && <Activity className="h-3 w-3 animate-pulse" aria-hidden />}
+          {data.streaming && <Activity className="h-3 w-3" aria-hidden />}
           {data.toolCallCount > 0 && <span className="ai-graph-node-duration"><Wrench className="h-3 w-3" />{data.toolCallCount}</span>}
           {duration && <span className="ai-graph-node-duration">{duration}</span>}
         </div>

@@ -24,7 +24,6 @@ pub(crate) const NODE_SUCCEEDED: &str = "succeeded";
 pub(crate) const NODE_FAILED: &str = "failed";
 pub(crate) const NODE_SKIPPED: &str = "skipped";
 pub(crate) const NODE_CANCELLED: &str = "cancelled";
-pub(crate) const STATE_VALUE_MAX_CHARS: usize = 32_000;
 
 /// 运行模式：full=完整执行；resume=断点续跑（复用上次运行的成功节点与 state）。
 pub(crate) const RUN_MODE_FULL: &str = "full";
@@ -105,8 +104,12 @@ pub struct GraphNode {
     pub task: String,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// 要注入本节点输入的共享 state key 白名单（生产者必须是严格拓扑祖先）。
+    /// 注入的是摘要值，单键与总量均有预算上限（见 input.rs）。
     #[serde(default)]
     pub inject_state_keys: Vec<String>,
+    /// 本节点输出写回共享 state 的 key（写回的是「产出摘要」段，全文保留在
+    /// node_runs.output_text）。
     pub output_key: String,
     /// 预期读写的文件（相对工作区），供并行写冲突预检；可选，未填不检测。
     #[serde(default)]

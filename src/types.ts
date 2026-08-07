@@ -813,7 +813,7 @@ export interface GraphPlanRecord {
   /** 图定义原文（GraphDefinition 的 JSON 字符串）。 */
   definitionJson: string;
   status: GraphPlanStatus;
-  /** 共享 state 最新快照（JSON 对象：key → 节点输出文本）。 */
+  /** 共享 state 最新快照（JSON 对象：key → 节点产出摘要；全文在节点运行记录中）。 */
   stateJson: string;
   /** 提交时刻的需求快照。 */
   requirement: string;

@@ -53,6 +53,18 @@ impl ChatMessage {
             name: None,
         }
     }
+
+    pub fn user(content: String) -> Self {
+        Self {
+            role: "user".to_string(),
+            content,
+            content_parts: Vec::new(),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

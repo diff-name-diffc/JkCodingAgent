@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 
+use super::input::{annotate_omitted, collect_within_budget, extract_summary_section};
 use super::types::{
     GraphDefinition, GraphNodeRunRecord, NODE_FAILED, NODE_PHASE_CACHED, NODE_SKIPPED,
     NODE_SUCCEEDED, VERDICT_FAIL, VERDICT_PARTIAL, VERDICT_PASS, VERDICT_UNKNOWN,
@@ -307,7 +308,7 @@ fn build_facts(
         .iter()
         .filter(|run| run.status == NODE_SUCCEEDED)
         .map(|run| {
-            let summary = super::input::extract_summary_section(&run.output_text)
+            let summary = extract_summary_section(&run.output_text)
                 .unwrap_or_else(|| run.output_text.clone());
             let summary: String = summary.chars().take(NODE_OUTPUT_BUDGET_CHARS).collect();
             format!("- [{}] {}：{summary}", run.node_id, run.phase)
@@ -322,33 +323,6 @@ fn build_facts(
         failed.len(),
         if failed.is_empty() { "无".to_string() } else { failed.join("\n") }
     )
-}
-
-/// 在总字符预算内逐项收集；超预算的条目丢弃并计数（保留预算内顺序）。
-fn collect_within_budget(
-    lines: impl Iterator<Item = String>,
-    budget: usize,
-) -> (Vec<String>, usize) {
-    let mut kept = Vec::new();
-    let mut used = 0usize;
-    let mut omitted = 0usize;
-    for line in lines {
-        if used.saturating_add(line.len()) > budget {
-            omitted += 1;
-            continue;
-        }
-        used += line.len();
-        kept.push(line);
-    }
-    (kept, omitted)
-}
-
-/// 有截断时在文本末尾标注未列出的条目数，避免验收模型误以为信息完整。
-fn annotate_omitted(text: String, omitted: usize, unit: &str) -> String {
-    if omitted == 0 {
-        return text;
-    }
-    format!("{text}\n…（另有 {omitted} {unit}因体积限制未列出）")
 }
 
 fn build_verify_user_prompt(
@@ -452,24 +426,6 @@ mod tests {
     #[test]
     fn empty_content_is_unparseable() {
         assert!(parse_verdict("   \n  ").is_none());
-    }
-
-    #[test]
-    fn collect_within_budget_drops_overflow_and_counts() {
-        let lines = vec!["aaaa".to_string(), "bbbb".to_string(), "cccc".to_string()];
-        let (kept, omitted) = collect_within_budget(lines.into_iter(), 8);
-        assert_eq!(kept, vec!["aaaa", "bbbb"]);
-        assert_eq!(omitted, 1);
-
-        let annotated = annotate_omitted(kept.join("\n"), omitted, "个 state 键");
-        assert!(annotated.contains("另有 1 个 state 键因体积限制未列出"));
-
-        // 预算充足时不截断、不标注。
-        let lines = vec!["aaaa".to_string()];
-        let (kept, omitted) = collect_within_budget(lines.into_iter(), 8);
-        assert_eq!(kept.len(), 1);
-        assert_eq!(omitted, 0);
-        assert_eq!(annotate_omitted(kept.join("\n"), omitted, "x"), "aaaa");
     }
 
     #[test]

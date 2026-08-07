@@ -4,14 +4,27 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 
-use super::types::{GraphNode, ExportPolicy, STATE_VALUE_MAX_CHARS};
+use super::types::{ExportPolicy, GraphNode};
 
-/// 摘要导出缺失「## 产出摘要」段时的兜底截取长度。
-pub(super) const SUMMARY_FALLBACK_CHARS: usize = 4_000;
+/// 摘要导出的统一上限：既是缺失「## 产出摘要」段时的兜底截取长度，也是提取
+/// 出的超长摘要段的封顶（输出契约只要求摘要 ≤500 字，但无法强制上游遵守，
+/// 必须有硬上限，否则深链条下游 prompt 会无界膨胀）。
+pub(super) const SUMMARY_EXPORT_MAX_CHARS: usize = 4_000;
+/// Full 导出策略的全文上限（兜底截断）。
+const FULL_EXPORT_MAX_CHARS: usize = 32_000;
 /// 重试时注入的「上次失败原因」最大长度（失败详情理论上可很大，需设上限）。
 const RETRY_REASON_MAX_CHARS: usize = 2_000;
+/// 共享状态注入的单键上限。state 值写回时已是 ≤4k 的产出摘要
+/// （见 state_value_from_output），该上限主要防御早期版本遗留/继承的全量值。
+const INJECT_STATE_VALUE_MAX_CHARS: usize = 4_000;
+/// 共享状态注入的总量预算：可声明的注入键数没有硬上限（继承 state 可携带
+/// 任意多键），仅限单值会让节点 prompt 随注入键数线性膨胀。
+/// 口径说明：预算只累计块本体，块间 "\n\n" 分隔符、截断后缀与省略标注行
+/// 不计入，实际注入量可略超预算（数十至上百字符），不影响体量控制。
+const INJECT_STATE_TOTAL_BUDGET_CHARS: usize = 16_000;
 const FULL_TRUNCATE_SUFFIX: &str = "\n...[输出已截断]";
 const SUMMARY_TRUNCATE_SUFFIX: &str = "\n...[产出摘要过长，已截断]";
+const HEAD_TRUNCATE_SUFFIX: &str = "\n...[未提供产出摘要，已截取开头]";
 const RETRY_REASON_TRUNCATE_SUFFIX: &str = "\n...[失败原因过长，已截断]";
 
 /// 节点输入 = 总体需求 + 角色 + 子任务 + 上游输出（按各自 exportPolicy）+
@@ -43,18 +56,8 @@ pub(super) fn assemble_node_input(
         sections.push(upstream);
     }
 
-    if !node.inject_state_keys.is_empty() {
-        let mut injected = Map::new();
-        for key in &node.inject_state_keys {
-            if let Some(value) = state.get(key) {
-                injected.insert(key.clone(), value.clone());
-            }
-        }
-        if !injected.is_empty() {
-            let rendered = serde_json::to_string_pretty(&Value::Object(injected))
-                .unwrap_or_else(|_| "{}".to_string());
-            sections.push(format!("# 共享状态\n{rendered}"));
-        }
+    if let Some(section) = render_state_section(&node.inject_state_keys, state) {
+        sections.push(section);
     }
 
     if let Some(reason) = retry_context.map(str::trim).filter(|r| !r.is_empty()) {
@@ -77,23 +80,113 @@ pub(super) fn assemble_node_input(
     sections.join("\n\n")
 }
 
-/// 按上游节点的 exportPolicy 决定注入下游的内容：
-/// - Summary（默认）：「## 产出摘要」段（超长时同样截断兜底）；缺失时截取前 4000 字符。
-/// - Full：全文（32k 截断兜底）。
+/// 共享状态段：按声明顺序逐键渲染（`## key` + 值原文）。相比 JSON 转义渲染，
+/// 多行值对模型可读性更好；未声明/不存在的 key 不出现。单键与总量均有预算，
+/// 超预算的键丢弃并标注键名，避免模型误以为共享信息完整。值内行首标题经
+/// 反斜杠转义（`escape_heading_lines`），防止与段结构混淆或注入伪造标题。
+fn render_state_section(keys: &[String], state: &Map<String, Value>) -> Option<String> {
+    let mut blocks: Vec<String> = Vec::new();
+    let mut used_chars = 0usize;
+    let mut omitted: Vec<String> = Vec::new();
+    for key in keys {
+        let Some(value) = state.get(key) else {
+            continue;
+        };
+        // key 来自图定义（LLM 经 submit_graph 提交，非完全可信输入），可能携带
+        // 换行等控制字符：直接拼入标题会撕裂共享状态段结构、注入伪造的顶级
+        // 段标题。渲染前压平为空格（仅影响展示，state 查询仍用原始 key）。
+        let safe_key: String = key
+            .chars()
+            .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+            .collect();
+        let text = value
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string());
+        // 值并非只来自「## 产出摘要」段：无摘要时的头部兜底截取与早期版本
+        // 遗留/继承的 state 可含任意行首 `#` 标题，直接拼入会撕裂共享状态段
+        // 结构、注入伪造的顶级段标题。对行首标题做反斜杠转义中和其 Markdown
+        // 语义（与 key 压平同理），保留原文可读性。
+        // 必须先转义再截断：转义会给每个行首 `#` 行插入反斜杠（密集 `#\n`
+        // 行最多膨胀约一半），先截断后转义会让注入长度突破
+        // INJECT_STATE_VALUE_MAX_CHARS 的硬上限；截断按转义后的实际长度计。
+        let text = escape_heading_lines(&text);
+        let text = truncate_chars(&text, INJECT_STATE_VALUE_MAX_CHARS, FULL_TRUNCATE_SUFFIX);
+        let block = format!("## {safe_key}\n{text}");
+        let block_chars = block.chars().count();
+        if used_chars.saturating_add(block_chars) > INJECT_STATE_TOTAL_BUDGET_CHARS {
+            omitted.push(safe_key);
+            continue;
+        }
+        used_chars += block_chars;
+        blocks.push(block);
+    }
+    if blocks.is_empty() && omitted.is_empty() {
+        return None;
+    }
+    // blocks 为空但存在被丢弃的键时，仍输出仅含省略标注的段落，
+    // 让模型能察觉共享信息缺失，而非整段静默消失。
+    let mut section = if blocks.is_empty() {
+        "# 共享状态".to_string()
+    } else {
+        format!("# 共享状态\n{}", blocks.join("\n\n"))
+    };
+    if !omitted.is_empty() {
+        section.push_str(&format!(
+            "\n\n…（另有 {} 个共享状态键因体积限制未注入：{}）",
+            omitted.len(),
+            omitted.join("、")
+        ));
+    }
+    Some(section)
+}
+
+/// 转义文本中每行的行首 Markdown 标题标记：行首 `#`（CommonMark 允许标题
+/// 前 0–3 空格缩进）之前插入反斜杠，中和其标题语义，防止共享状态值内的
+/// 标题与 `## key` 结构混淆或被误读为伪造的顶级段标题；其余内容原样保留。
+fn escape_heading_lines(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            escaped.push('\n');
+        }
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        if indent <= 3 && line[indent..].starts_with('#') {
+            escaped.push_str(&line[..indent]);
+            escaped.push('\\');
+            escaped.push_str(&line[indent..]);
+        } else {
+            escaped.push_str(line);
+        }
+    }
+    escaped
+}
+
+/// 按上游节点的 exportPolicy 决定注入下游的内容（缺省 Summary）。
 pub(super) fn export_for_downstream(upstream: Option<&GraphNode>, output: &str) -> String {
-    let policy = upstream
-        .map(|node| node.export_policy)
-        .unwrap_or(ExportPolicy::Summary);
+    let policy = upstream.map(|node| node.export_policy).unwrap_or_default();
+    export_with_policy(policy, output)
+}
+
+/// 写入共享 state 的值：与下游摘要导出同策略。state 的定位是「节点间流转的
+/// 结论」而非全文仓库——全文保留在 node_runs.output_text，确需完整产出的
+/// 下游应通过 dependsOn + exportPolicy=full 获取，而非 injectStateKeys。
+pub(super) fn state_value_from_output(output: &str) -> String {
+    export_with_policy(ExportPolicy::Summary, output)
+}
+
+/// 按导出策略裁剪节点输出：
+/// - Summary：「## 产出摘要」段（超长时同样截断兜底）；缺失时截取开头。
+/// - Full：全文（32k 截断兜底）。
+fn export_with_policy(policy: ExportPolicy, output: &str) -> String {
     match policy {
-        // 输出契约只要求摘要 ≤500 字但无法强制上游遵守：提取出的摘要段
-        // 必须与兜底分支同上限，否则超长摘要会让深链条下游 Prompt 无界膨胀。
         ExportPolicy::Summary => match extract_summary_section(output) {
             Some(section) => {
-                truncate_chars(&section, SUMMARY_FALLBACK_CHARS, SUMMARY_TRUNCATE_SUFFIX)
+                truncate_chars(&section, SUMMARY_EXPORT_MAX_CHARS, SUMMARY_TRUNCATE_SUFFIX)
             }
-            None => truncate_chars(output, SUMMARY_FALLBACK_CHARS, "\n...[上游未提供产出摘要，已截取开头]"),
+            None => truncate_chars(output, SUMMARY_EXPORT_MAX_CHARS, HEAD_TRUNCATE_SUFFIX),
         },
-        ExportPolicy::Full => truncate_chars(output, STATE_VALUE_MAX_CHARS, FULL_TRUNCATE_SUFFIX),
+        ExportPolicy::Full => truncate_chars(output, FULL_EXPORT_MAX_CHARS, FULL_TRUNCATE_SUFFIX),
     }
 }
 
@@ -224,6 +317,36 @@ pub(super) fn truncate_chars(text: &str, max_chars: usize, suffix: &str) -> Stri
     format!("{truncated}{suffix}")
 }
 
+/// 在总字符预算内逐项收集；超预算的条目丢弃并计数（保留预算内顺序）。
+/// 计量与调用方的 `_CHARS` 预算常量及单值截断（`.chars().take()`）保持同口径，
+/// 按字符而非字节计数，避免中文内容被提前丢弃。
+pub(crate) fn collect_within_budget(
+    lines: impl Iterator<Item = String>,
+    budget: usize,
+) -> (Vec<String>, usize) {
+    let mut kept = Vec::new();
+    let mut used = 0usize;
+    let mut omitted = 0usize;
+    for line in lines {
+        let line_chars = line.chars().count();
+        if used.saturating_add(line_chars) > budget {
+            omitted += 1;
+            continue;
+        }
+        used += line_chars;
+        kept.push(line);
+    }
+    (kept, omitted)
+}
+
+/// 有截断时在文本末尾标注未列出的条目数，避免模型误以为信息完整。
+pub(crate) fn annotate_omitted(text: String, omitted: usize, unit: &str) -> String {
+    if omitted == 0 {
+        return text;
+    }
+    format!("{text}\n…（另有 {omitted} {unit}因体积限制未列出）")
+}
+
 /// 输出契约：要求节点按分区输出，供下游摘要注入与回执解析。
 pub(super) const OUTPUT_CONTRACT: &str = r#"# 输出要求
 最终输出必须按以下分区组织（这是下游节点与验收流程读取你产出的契约）：
@@ -295,7 +418,8 @@ mod tests {
         assert!(input.contains("# 你的角色\n后端编码 Agent"));
         assert!(input.contains("# 你的子任务\n根据分析结论改造"));
         assert!(input.contains("## 节点 n1 的输出\n分析结论全文"));
-        assert!(input.contains("\"auth_analysis\": \"共享结论\""));
+        // 共享状态按 `## key` + 值原文渲染（不再是 JSON 转义）
+        assert!(input.contains("# 共享状态\n## auth_analysis\n共享结论"));
         // 未声明/不存在的 key 不注入
         assert!(!input.contains("missing"));
         // 输出契约始终附加
@@ -311,18 +435,18 @@ mod tests {
 
     #[test]
     fn summary_policy_falls_back_to_truncated_head_when_section_missing() {
-        let output = "长".repeat(SUMMARY_FALLBACK_CHARS + 100);
+        let output = "长".repeat(SUMMARY_EXPORT_MAX_CHARS + 100);
         let exported = export_for_downstream(Some(&upstream_node(ExportPolicy::Summary)), &output);
-        assert!(exported.chars().count() <= SUMMARY_FALLBACK_CHARS + 30);
+        assert!(exported.chars().count() <= SUMMARY_EXPORT_MAX_CHARS + 30);
         assert!(exported.contains("已截取开头"));
     }
 
     #[test]
     fn summary_policy_caps_overlong_summary_section() {
         // 上游违反契约写出超长摘要段时，注入下游仍受统一上限约束。
-        let output = format!("## 产出摘要\n{}\n## 变更文件\nsrc/a.rs", "长".repeat(SUMMARY_FALLBACK_CHARS + 100));
+        let output = format!("## 产出摘要\n{}\n## 变更文件\nsrc/a.rs", "长".repeat(SUMMARY_EXPORT_MAX_CHARS + 100));
         let exported = export_for_downstream(Some(&upstream_node(ExportPolicy::Summary)), &output);
-        assert!(exported.chars().count() <= SUMMARY_FALLBACK_CHARS + 30);
+        assert!(exported.chars().count() <= SUMMARY_EXPORT_MAX_CHARS + 30);
         assert!(exported.contains("产出摘要过长"));
         assert!(!exported.contains("变更文件"));
     }
@@ -424,9 +548,9 @@ mod tests {
 
     #[test]
     fn full_policy_injects_full_text_with_cap() {
-        let long: String = "长".repeat(STATE_VALUE_MAX_CHARS + 100);
+        let long: String = "长".repeat(FULL_EXPORT_MAX_CHARS + 100);
         let exported = export_for_downstream(Some(&upstream_node(ExportPolicy::Full)), &long);
-        assert!(exported.chars().count() <= STATE_VALUE_MAX_CHARS + FULL_TRUNCATE_SUFFIX.chars().count());
+        assert!(exported.chars().count() <= FULL_EXPORT_MAX_CHARS + FULL_TRUNCATE_SUFFIX.chars().count());
         assert!(exported.ends_with(FULL_TRUNCATE_SUFFIX));
     }
 
@@ -510,5 +634,147 @@ mod tests {
         let input = assemble_node_input("原始需求", &node, &node_by_id, &outputs, &Map::new(), None);
 
         assert!(input.contains("## 节点 n1 的输出\n分析结论全文"));
+    }
+
+    #[test]
+    fn state_value_prefers_summary_section_over_full_output() {
+        // 共享 state 只承载结论摘要：全文保留在 node_runs.output_text。
+        let output = format!(
+                "## 产出摘要\n核心结论\n\n## 变更文件\nsrc/a.rs\n\n{}",
+                "冗长正文".repeat(2_000)
+            );
+        let value = state_value_from_output(&output);
+        assert_eq!(value, "核心结论");
+    }
+
+    #[test]
+    fn state_value_falls_back_to_capped_head_when_summary_missing() {
+        let output = "长".repeat(SUMMARY_EXPORT_MAX_CHARS + 100);
+        let value = state_value_from_output(&output);
+        assert!(value.chars().count() <= SUMMARY_EXPORT_MAX_CHARS + HEAD_TRUNCATE_SUFFIX.chars().count());
+        assert!(value.ends_with(HEAD_TRUNCATE_SUFFIX));
+    }
+
+    #[test]
+    fn state_section_caps_oversized_value_per_key() {
+        // 防御早期版本遗留/继承的全量 state 值：单键注入有硬上限。
+        let keys = vec!["legacy".to_string()];
+        let mut state = Map::new();
+        state.insert(
+            "legacy".to_string(),
+            Value::String("长".repeat(INJECT_STATE_VALUE_MAX_CHARS + 100)),
+        );
+        let section = render_state_section(&keys, &state).unwrap();
+        assert!(section.contains("输出已截断"));
+        assert!(section.chars().count() < INJECT_STATE_VALUE_MAX_CHARS + 100);
+    }
+
+    #[test]
+    fn state_section_cap_holds_after_heading_escape_inflation() {
+        // 先转义再截断：行首 `#` 转义会给每行插入反斜杠（"#" 行密集时膨胀
+        // 最凶），硬上限必须按转义后的实际注入长度计，否则可超限近一半。
+        let keys = vec!["legacy".to_string()];
+        let mut state = Map::new();
+        state.insert(
+            "legacy".to_string(),
+            Value::String("#\n".repeat(INJECT_STATE_VALUE_MAX_CHARS)),
+        );
+        let section = render_state_section(&keys, &state).unwrap();
+        let body = section
+            .strip_prefix("# 共享状态\n## legacy\n")
+            .expect("段落结构应保持完整");
+        assert!(
+            body.chars().count()
+                <= INJECT_STATE_VALUE_MAX_CHARS + FULL_TRUNCATE_SUFFIX.chars().count()
+        );
+        assert!(body.contains("输出已截断"));
+        // 截断发生在转义之后：后缀本身不被转义处理
+        assert!(body.ends_with(FULL_TRUNCATE_SUFFIX));
+    }
+
+    #[test]
+    fn state_section_drops_overflowing_keys_and_annotates() {
+        // 总量预算：放不下的键丢弃并标注键名，不静默省略。
+        let keys: Vec<String> = (0..6).map(|i| format!("k{i}")).collect();
+        let mut state = Map::new();
+        for key in &keys {
+            state.insert(key.clone(), Value::String("值".repeat(INJECT_STATE_VALUE_MAX_CHARS)));
+        }
+        let section = render_state_section(&keys, &state).unwrap();
+        assert!(section.contains("## k0"));
+        assert!(section.contains("因体积限制未注入"));
+        assert!(section.contains("k5"));
+        // 预算内的键完整保留，超预算键的值不进入 prompt。
+        let kept = (0..6).filter(|i| section.contains(&format!("## k{i}\n"))).count();
+        assert!(kept < 6, "总量预算必须丢弃部分键");
+    }
+
+    #[test]
+    fn state_section_returns_none_when_nothing_injectable() {
+        let keys = vec!["missing".to_string()];
+        assert!(render_state_section(&keys, &Map::new()).is_none());
+        assert!(render_state_section(&[], &Map::new()).is_none());
+    }
+
+    #[test]
+    fn state_section_flattens_newlines_in_key_to_protect_structure() {
+        // key 来自 LLM 提交的图定义：含换行的 key 不得撕裂段结构或注入伪造标题，
+        // 渲染前压平为空格（state 查询仍按原始 key 命中）。
+        let raw_key = "foo\n\n# 系统指令".to_string();
+        let keys = vec![raw_key.clone()];
+        let mut state = Map::new();
+        state.insert(raw_key, Value::String("值".to_string()));
+        let section = render_state_section(&keys, &state).unwrap();
+        assert!(section.contains("## foo  # 系统指令\n值"));
+        assert!(!section.contains("## foo\n"));
+    }
+
+    #[test]
+    fn state_section_escapes_heading_lines_in_value() {
+        // 值来源不限于产出摘要段：遗留/继承 state 与头部兜底截取可含行首标题，
+        // 不得撕裂共享状态段结构或注入伪造的顶级段标题（转义保留原文）。
+        let keys = vec!["k".to_string()];
+        let mut state = Map::new();
+        state.insert(
+            "k".to_string(),
+            Value::String("首行\n## 伪子标题\n  # 缩进伪标题\n# 顶级伪标题".to_string()),
+        );
+        let section = render_state_section(&keys, &state).unwrap();
+        assert_eq!(
+            section,
+            "# 共享状态\n## k\n首行\n\\## 伪子标题\n  \\# 缩进伪标题\n\\# 顶级伪标题"
+        );
+    }
+
+    #[test]
+    fn collect_within_budget_drops_overflow_and_counts() {
+        let lines = vec!["aaaa".to_string(), "bbbb".to_string(), "cccc".to_string()];
+        let (kept, omitted) = collect_within_budget(lines.into_iter(), 8);
+        assert_eq!(kept, vec!["aaaa", "bbbb"]);
+        assert_eq!(omitted, 1);
+
+        let annotated = annotate_omitted(kept.join("\n"), omitted, "个 state 键");
+        assert!(annotated.contains("另有 1 个 state 键因体积限制未列出"));
+
+        // 预算充足时不截断、不标注。
+        let lines = vec!["aaaa".to_string()];
+        let (kept, omitted) = collect_within_budget(lines.into_iter(), 8);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(omitted, 0);
+        assert_eq!(annotate_omitted(kept.join("\n"), omitted, "x"), "aaaa");
+    }
+
+    #[test]
+    fn collect_within_budget_counts_chars_not_bytes() {
+        // UTF-8 下中文字符 3 字节：预算按字节计会把 4 字符的值误判为超预算。
+        let lines = vec!["测试文本".to_string()];
+        let (kept, omitted) = collect_within_budget(lines.into_iter(), 4);
+        assert_eq!(kept, vec!["测试文本"]);
+        assert_eq!(omitted, 0);
+
+        let lines = vec!["测试文本".to_string(), "另一段".to_string()];
+        let (kept, omitted) = collect_within_budget(lines.into_iter(), 6);
+        assert_eq!(kept, vec!["测试文本"]);
+        assert_eq!(omitted, 1);
     }
 }

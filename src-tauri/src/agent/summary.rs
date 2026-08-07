@@ -67,22 +67,13 @@ where
     FUsage: FnMut(&LlmUsage) + Send,
 {
     let normalized = normalize_tool_output(raw_output);
-    let normalized_trimmed = normalized.trim();
-
-    let prompt = build_tool_summary_prompt(
+    let messages = build_tool_summary_messages(
         tool_name,
-        normalized_trimmed,
+        normalized.trim(),
         user_question,
         compress_intent,
     );
-    let summary = summarize_with_model(
-        provider,
-        summary_model,
-        build_text_summary_messages(prompt),
-        |_| {},
-        on_usage,
-    )
-    .await?;
+    let summary = summarize_with_model(provider, summary_model, messages, |_| {}, on_usage).await?;
     let (context_payload, display_content) = parse_dual_tool_summary(summary);
 
     if context_payload.is_empty() && display_content.is_empty() {
@@ -101,68 +92,88 @@ where
     })
 }
 
-/// Build the summary prompt. Two branches:
-/// - With `compress_intent`: intent-focused extraction (user_question + intent + raw_output)
-/// - Without intent: general high-fidelity compression with user_question context
-fn build_tool_summary_prompt(
+/// 上下文回写负载的篇幅预算。`common::bound_inline_tool_result` 会把负载硬性截断到
+/// `TOOL_RESULT_INLINE_MAX_CHARS`，预算略低于该上限，引导摘要模型自行收口，
+/// 避免硬截断切在内容段中间。
+const CONTEXT_PAYLOAD_BUDGET_CHARS: usize = super::common::TOOL_RESULT_INLINE_MAX_CHARS - 200;
+// 保证预算恒为正：上限调低时在编译期报错，而非静默溢出或产生无意义预算。
+const _: () = assert!(super::common::TOOL_RESULT_INLINE_MAX_CHARS > 200);
+
+const LOCATOR_RULE: &str = "定位必须精确、可复查：按「内容摘要：…」+「内容定位：path:start-end」组织成一段或多段，不连续的相关内容拆成多段，一段可列出多个原文定位。路径和行号只能来自原始输出，严禁猜测或伪造；原始输出没有路径或行号时，改用原文中可复查的命令、标题或键名定位，并明确注明「原始输出未提供行号」。";
+
+fn dual_summary_protocol(context_payload_guidance: &str) -> String {
+    format!(
+        "输出协议：只能使用以下两个标签，不得输出任何其他文字、标题或 Markdown 代码块。\n\
+         <DISPLAY_SUMMARY>\n写给前端用户：用 1-3 句话概括本次工具调用的关键发现。\n</DISPLAY_SUMMARY>\n\
+         <CONTEXT_PAYLOAD>\n{context_payload_guidance}总量控制在 {CONTEXT_PAYLOAD_BUDGET_CHARS} 字符以内，超预算时优先保留定位信息与最关键的原文摘录。\n</CONTEXT_PAYLOAD>"
+    )
+}
+
+/// Build the summary conversation. Rules live in the system message; the intent,
+/// user question and raw tool output go into a user message so the model treats
+/// them as data to extract from, instead of summarizing the whole document.
+/// Two branches:
+/// - With `compress_intent`: intent-focused, fidelity-preserving extraction
+/// - Without intent: general conservative compression with user_question context
+fn build_tool_summary_messages(
     tool_name: &str,
     raw_output: &str,
     user_question: Option<&str>,
     compress_intent: Option<&str>,
-) -> String {
+) -> Vec<ChatMessage> {
     let focus = tool_summary_focus(tool_name);
-    let truncated_output = truncate_for_summary(raw_output);
-    let locator_guidance = "摘要必须优先组织成可复查的多段内容。每段使用「内容摘要：…」+「内容定位：path:start-end」的形式；不连续的相关内容拆成多段，一段可列出多个原文定位。路径和行号必须来自原始输出，严禁猜测或伪造；原始输出没有路径或行号时，改用原文中可复查的命令、标题或键名定位，并明确注明「原始输出未提供行号」。";
-
-    if let Some(intent) = compress_intent {
-        let user_ctx = user_question
-            .filter(|q| !q.trim().is_empty())
-            .map(|q| format!("\n<用户原始问题>\n{q}\n</用户原始问题>\n"))
-            .unwrap_or_default();
-
-        return format!(
-            "你是调度 Agent 的工具结果信息提取器。模型调用此工具的目的是：\n\
-             <提取意图>\n{intent}\n</提取意图>\n\
-             {user_ctx}\
-             要求：\n\
-             - 只保留与「提取意图」直接相关的事实，不要猜测，不要添加原文没有的信息。\n\
-             - 与提取意图无关的信息可以忽略；相关的路径、行号、符号名、配置键、错误文本、命令结果必须保留。\n\
+    let system = if compress_intent.is_some() {
+        format!(
+            "你是调度 Agent 的工具结果提取器。调用方模型带着明确的「提取意图」执行了工具，你的任务是从工具原始输出中抽取与该意图直接相关的内容，供调用方决定下一步动作。\n\
+             规则：\n\
+             - 意图优先：只提取与「提取意图」直接相关的内容，与意图无关的一律丢弃。严禁对全文做泛泛的主题概括，严禁用无关信息填充输出；原文中与意图相关的内容很少时，如实说明，不要用无关内容凑字数。\n\
+             - 相关内容保真：与意图高度相关的代码、配置、命令结果、错误文本必须尽量原文摘录，不得改写含义，不得压缩到丢失细节；只有确认无关的内容才允许省略。{focus}\n\
+             - {LOCATOR_RULE}\n\
+             {}",
+            dual_summary_protocol(
+                "写给调用方模型：一段或多段「内容摘要 + 内容定位」。段内优先原文摘录，保留路径、行号、符号名、配置键、错误文本和数量。"
+            )
+        )
+    } else {
+        format!(
+            "你是调度 Agent 的工具结果压缩器。工具原始输出过长，需要压缩成两份内容：一份回写给调用方模型继续完成任务，一份展示给前端用户。\n\
+             规则：\n\
+             - 只保留原文里明确出现的事实，不要猜测；不要过度归纳，宁可稍长，也不要丢掉影响后续判断的细节。\n\
              - 如果内容主要是代码、配置、逐行检索结果、文件清单或其他精确检索输出，只能做最轻量压缩，严禁改写代码含义、删除关键行号、文件名或配置键；{focus}\n\
-             - {locator_guidance}\n\
-             - 输出必须严格分成两个区块，且只能使用下面的标签，不能额外添加解释、标题或 Markdown 代码块。\n\
-             - `<DISPLAY_SUMMARY>`：写给前端用户展示，人类友好，用 1-3 句话概括本次工具调用针对提取意图发现了什么关键信息。\n\
-             - `<CONTEXT_PAYLOAD>`：写给主模型上下文，高信息密度，按「内容摘要」+「内容定位」输出一段或多段，保留关键实体名、符号名、错误文本和数量。\n\
-             - 严格使用以下格式：\n\
-             <DISPLAY_SUMMARY>\n...\n</DISPLAY_SUMMARY>\n\
-             <CONTEXT_PAYLOAD>\n...\n</CONTEXT_PAYLOAD>\n\
-             工具名：{tool_name}\n\
-             工具原始输出如下：\n{truncated_output}"
-        );
+             - 如果内容是命令输出，优先保留命令结果、失败原因、关键日志、测试失败项和退出状态。\n\
+             - {LOCATOR_RULE}\n\
+             {}",
+            dual_summary_protocol(
+                "写给调用方模型：高信息密度，按「内容摘要 + 内容定位」输出一段或多段，尽量保留原始顺序、关键实体名、符号名、配置键、错误文本、数量和退出状态。"
+            )
+        )
+    };
+
+    vec![
+        ChatMessage::system(system),
+        build_tool_summary_user_message(tool_name, raw_output, user_question, compress_intent),
+    ]
+}
+
+fn build_tool_summary_user_message(
+    tool_name: &str,
+    raw_output: &str,
+    user_question: Option<&str>,
+    compress_intent: Option<&str>,
+) -> ChatMessage {
+    let mut content = String::new();
+    if let Some(intent) = compress_intent {
+        content.push_str(&format!("<提取意图>\n{intent}\n</提取意图>\n"));
     }
+    if let Some(question) = user_question.filter(|q| !q.trim().is_empty()) {
+        content.push_str(&format!("<用户原始问题>\n{question}\n</用户原始问题>\n"));
+    }
+    content.push_str(&format!(
+        "工具名：{tool_name}\n工具原始输出如下：\n{}",
+        truncate_for_summary(raw_output)
+    ));
 
-    let user_ctx = user_question
-        .filter(|q| !q.trim().is_empty())
-        .map(|q| format!("当前用户问题是：\n{q}\n"))
-        .unwrap_or_default();
-
-    format!(
-        "你在为调度 Agent 生成两份不同用途的工具结果摘要：一份用于继续注入模型上下文，一份用于前端展示给用户。\n\
-         {user_ctx}\
-         要求：\n\
-         - 只保留原文里明确出现的事实，不要猜测。\n\
-         - 输出必须严格分成两个区块，且只能使用下面的标签，不要额外添加解释、标题或 Markdown 代码块。\n\
-         - `<DISPLAY_SUMMARY>`：写给前端展示，要求对人类更友好，聚焦结论、关键事实和为什么值得关注，可以比上下文回写更易读，但不能脱离原文事实。\n\
-         - {locator_guidance}\n\
-         - `<CONTEXT_PAYLOAD>`：写给主模型，要求高信息密度，按「内容摘要」+「内容定位」输出一段或多段，尽量保留原始顺序、关键实体名、符号名、配置键、错误文本、数量和退出状态；\
-           如果内容主要是代码、配置、逐行检索结果、文件清单或其他精确检索输出，只能做最轻量压缩，严禁改写代码含义、删除关键行号、文件名或配置键；{focus}\n\
-         - 如果内容是命令输出，优先保留命令结果、失败原因、关键日志、测试失败项和退出状态。\n\
-         - 需要压缩，但不要过度归纳；宁可稍长，也不要丢掉影响后续判断的细节。\n\
-         - 严格使用以下格式输出：\n\
-         <DISPLAY_SUMMARY>\n...\n</DISPLAY_SUMMARY>\n\
-         <CONTEXT_PAYLOAD>\n...\n</CONTEXT_PAYLOAD>\n\
-         工具名：{tool_name}\n\
-         工具原始输出如下：\n{truncated_output}"
-    )
+    ChatMessage::user(content)
 }
 
 fn truncate_for_summary(raw_output: &str) -> String {
@@ -502,8 +513,10 @@ async fn summarize_with_model(
     mut on_usage: impl FnMut(&LlmUsage) + Send,
 ) -> Result<String, SummaryError> {
     let summary_provider = provider.with_model(summary_model);
+    // 诊断上下文取内容最长的那条消息（通常是携带工具原始输出的 user 消息）。
     let prompt = messages
-        .first()
+        .iter()
+        .max_by_key(|message| message.content.chars().count())
         .map(|message| message.content.as_str())
         .unwrap_or_default();
     let debug_context = build_summary_debug_context(&summary_provider, &prompt);
@@ -742,7 +755,7 @@ fn truncate_fallback_title(title: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_tool_summary_prompt, normalize_session_title, parse_dual_tool_summary};
+    use super::{build_tool_summary_messages, normalize_session_title, parse_dual_tool_summary};
 
     #[test]
     fn mixed_language_title_keeps_complete_term() {
@@ -804,17 +817,45 @@ mod tests {
 
     #[test]
     fn tool_summary_prompt_requires_reviewable_multi_segment_locators() {
-        let prompt = build_tool_summary_prompt(
+        let messages = build_tool_summary_messages(
             "read_file",
             "## read_file path=src/app.rs:10-20\n10|fn main() {}",
             None,
             Some("定位主函数"),
         );
+        let prompt = messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         assert!(prompt.contains("内容摘要：…"));
         assert!(prompt.contains("内容定位：path:start-end"));
         assert!(prompt.contains("不连续的相关内容拆成多段"));
         assert!(prompt.contains("严禁猜测或伪造"));
+    }
+
+    #[test]
+    fn tool_summary_intent_goes_to_user_message_with_fidelity_rules() {
+        let messages = build_tool_summary_messages(
+            "read_file",
+            "10|fn main() {}",
+            Some("前端视图结构是什么？"),
+            Some("了解项目的前端视图结构"),
+        );
+
+        assert_eq!(messages.len(), 2);
+        let (system, user) = (&messages[0], &messages[1]);
+        assert_eq!(system.role, "system");
+        assert_eq!(user.role, "user");
+        // 保真与意图优先规则在 system 中
+        assert!(system.content.contains("尽量原文摘录"));
+        assert!(system.content.contains("意图优先"));
+        // 意图、用户问题与原始输出作为数据放在 user 消息中
+        assert!(user.content.contains("<提取意图>\n了解项目的前端视图结构\n</提取意图>"));
+        assert!(user.content.contains("<用户原始问题>\n前端视图结构是什么？\n</用户原始问题>"));
+        assert!(user.content.contains("工具名：read_file"));
+        assert!(user.content.contains("10|fn main() {}"));
     }
 }
 

@@ -64,7 +64,7 @@ pub(crate) struct ImagePreviewData {
     byte_length: u64,
 }
 
-const IGNORED_DIRS: &[&str] = &[
+pub(crate) const IGNORED_DIRS: &[&str] = &[
     ".git",
     "node_modules",
     ".next",

@@ -58,7 +58,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 - 每个节点只使用一个主模型。模型、基础工具组和特殊工具必须来自本轮 PI Harness 目录。
 - 边由 `dependsOn` 派生，必须构成无环图；`dependsOn` 引用的节点必须存在；`id`、`outputKey` 全局唯一；节点数 ≤ 20。
-- 节点完成后 `state[outputKey] = 节点输出`（截断 32k）；下游节点通过 `dependsOn` 收到上游输出、通过 `injectStateKeys` 收到指定 state 的当前值。
+- 节点完成后 `state[outputKey] = 节点输出的「产出摘要」段`（≤4k，全文保留在节点运行记录中）；下游节点通过 `dependsOn` 收到上游输出、通过 `injectStateKeys` 收到指定 state 值。共享 state 只承载结论摘要：确需上游完整产出时用 `dependsOn` + `exportPolicy=full`，不要靠 injectStateKeys 拉全文。
 - 节点输入由系统装配：总体需求 + 角色 + 子任务 + 上游输出 + 注入的 state 节选。节点拿不到聊天记录，因此 `task` 必须自包含（目标、背景、相关文件/符号、约束、验证方式、期望产出）。
 - `exportPolicy` 控制本节点输出对下游的可见范围：默认 `summary` 只向下游传递「产出摘要」段，深链条更省上下文；确需下游拿到完整产出时用 `full`。
 - `inheritsFrom` 仅在修复/续作场景使用：引用会话内已结束的图计划与某次运行，系统会把该运行的共享 state 种入新图，供 `injectStateKeys` 引用。不要凭空填写。

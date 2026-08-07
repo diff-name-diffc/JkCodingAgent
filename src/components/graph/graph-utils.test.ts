@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentActivity } from "../../types";
 import {
+  buildExecutionTimeline,
+  buildNodeNotices,
   buildToolCallEntries,
   formatCharCount,
+  formatContextUsage,
   formatToolPayload,
+  latestContextUsage,
   normalizeToolCallStatus,
 } from "./graph-utils";
 
@@ -113,5 +117,78 @@ describe("buildToolCallEntries", () => {
     const entries = buildToolCallEntries([activity({ payloadJson: "不是 JSON" })]);
     expect(entries[0].inputChars).toBe(0);
     expect(entries[0].inputFormatted).toBe("");
+  });
+});
+
+describe("buildNodeNotices", () => {
+  it("compaction 活动转为压缩通知", () => {
+    const notices = buildNodeNotices([
+      activity({ id: "c1", kind: "compaction", status: "started", sequence: 20, content: "", payloadJson: JSON.stringify({ reason: "阈值触发" }) }),
+      activity({ id: "c2", kind: "compaction", status: "finished", sequence: 30, content: "" }),
+    ]);
+    expect(notices.map((notice) => notice.title)).toEqual(["正在压缩上下文…", "上下文已压缩"]);
+    expect(notices[0].detail).toBe("阈值触发");
+    // status 归一化为工具卡片同口径（started→running / finished→succeeded），
+    // 供样式修饰类区分「进行中 / 已完成 / 失败」。
+    expect(notices.map((notice) => notice.status)).toEqual(["running", "succeeded"]);
+  });
+
+  it("retry 活动带尝试次数，失败标注错误", () => {
+    const notices = buildNodeNotices([
+      activity({ id: "r1", kind: "retry", status: "started", sequence: 40, content: "", payloadJson: JSON.stringify({ attempt: 1, maxAttempts: 2, errorMessage: "超时" }) }),
+      activity({ id: "r2", kind: "retry", status: "failed", sequence: 50, content: "最终失败" }),
+    ]);
+    expect(notices[0].title).toBe("自动重试（1/2）");
+    expect(notices[0].detail).toBe("超时");
+    expect(notices[1].title).toBe("重试失败");
+    expect(notices[1].detail).toBe("最终失败");
+  });
+
+  it("忽略工具调用与上下文占用活动", () => {
+    expect(buildNodeNotices([activity({ kind: "tool_call" }), activity({ kind: "context_usage" })])).toEqual([]);
+  });
+});
+
+describe("buildExecutionTimeline", () => {
+  it("工具调用与通知按 sequence 混排", () => {
+    const { timelineRows } = buildExecutionTimeline([
+      activity({ id: "t1", kind: "tool_call", sequence: 10 }),
+      activity({ id: "c1", kind: "compaction", status: "started", sequence: 5 }),
+    ]);
+    expect(timelineRows.map((row) => row.kind)).toEqual(["notice", "tool"]);
+  });
+});
+
+describe("latestContextUsage / formatContextUsage", () => {
+  it("取最后一次读数并格式化", () => {
+    const reading = latestContextUsage([
+      activity({ kind: "context_usage", sequence: 1, payloadJson: JSON.stringify({ tokens: 20_000, contextWindow: 128_000, percent: 15.6 }) }),
+      activity({ kind: "context_usage", sequence: 2, payloadJson: JSON.stringify({ tokens: 55_000, contextWindow: 128_000, percent: 42.97 }) }),
+    ]);
+    expect(reading).toEqual({ tokens: 55_000, contextWindow: 128_000, percent: 42.97 });
+    expect(formatContextUsage(reading!)).toBe("43.0% · 55k/128k");
+  });
+
+  it("compaction 后 tokens 为 null 时提示重新估算", () => {
+    const reading = latestContextUsage([
+      activity({ kind: "context_usage", payloadJson: JSON.stringify({ tokens: null, contextWindow: 128_000, percent: null }) }),
+    ]);
+    expect(formatContextUsage(reading!)).toBe("重新估算中…");
+  });
+
+  it("contextWindow 缺失或为 0 时只显示百分比", () => {
+    const missing = latestContextUsage([
+      activity({ kind: "context_usage", payloadJson: JSON.stringify({ tokens: 55_000, percent: 43.21 }) }),
+    ]);
+    expect(formatContextUsage(missing!)).toBe("43.2%");
+
+    const zero = latestContextUsage([
+      activity({ kind: "context_usage", payloadJson: JSON.stringify({ tokens: 55_000, contextWindow: 0, percent: 43.21 }) }),
+    ]);
+    expect(formatContextUsage(zero!)).toBe("43.2%");
+  });
+
+  it("从未上报时返回 null", () => {
+    expect(latestContextUsage([activity({ kind: "tool_call" })])).toBeNull();
   });
 });

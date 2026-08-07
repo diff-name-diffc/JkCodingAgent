@@ -94,17 +94,17 @@ export function formatRelativeTime(iso: string): string {
 export function getGitStatusColor(status: string): string {
   switch (status) {
     case "A":
-      return "#3fb950";
+      return "var(--success)";
     case "D":
-      return "#f85149";
+      return "var(--danger)";
     case "M":
-      return "#e3b341";
+      return "var(--warning)";
     case "R":
-      return "#79c0ff";
+      return "var(--info)";
     case "?":
-      return "#79c0ff";
+      return "var(--info)";
     case "U":
-      return "#f85149";
+      return "var(--danger)";
     default:
       return "var(--text-muted)";
   }

@@ -16,7 +16,7 @@ import "katex/dist/katex.min.css";
 import type { PythonCodeRunRecord } from "../../types";
 import { cn } from "../../lib/cn";
 import { TEAL_DARK_THEME, TEAL_LIGHT_THEME } from "../../utils/shiki";
-import { normalizeLatexMathDelimiters } from "../../lib/normalize-math";
+import { normalizeLatexMathDelimiters, normalizeMathCodeFences } from "../../lib/normalize-math";
 import { MarkdownImage } from "../markdown/MarkdownImage";
 import { useMarkdownLinkHandler } from "../markdown/MarkdownLinkContext";
 import { useKatexCopy } from "./katex-copy";
@@ -316,7 +316,10 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   className,
 }: MarkdownRendererProps) {
   const normalizedContent = useMemo(
-    () => normalizeSingleLineMathBlocks(normalizeLatexMathDelimiters(content)),
+    () =>
+      normalizeSingleLineMathBlocks(
+        normalizeLatexMathDelimiters(normalizeMathCodeFences(content)),
+      ),
     [content],
   );
   const codeIndexByHash = useMemo(() => indexCodeBlocks(normalizedContent), [normalizedContent]);

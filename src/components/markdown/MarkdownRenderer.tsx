@@ -9,7 +9,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import type { PythonCodeRunRecord } from "../../types";
-import { normalizeLatexMathDelimiters } from "../../lib/normalize-math";
+import { normalizeLatexMathDelimiters, normalizeMathCodeFences } from "../../lib/normalize-math";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { MarkdownImage } from "./MarkdownImage";
 import { useMarkdownLinkHandler } from "./MarkdownLinkContext";
@@ -201,7 +201,10 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 
   const effectiveContent = streaming ? throttledContent : content;
   const normalizedContent = useMemo(
-    () => normalizeSingleLineMathBlocks(normalizeLatexMathDelimiters(effectiveContent)),
+    () =>
+      normalizeSingleLineMathBlocks(
+        normalizeLatexMathDelimiters(normalizeMathCodeFences(effectiveContent)),
+      ),
     [effectiveContent],
   );
 

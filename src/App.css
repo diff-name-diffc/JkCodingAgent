@@ -343,6 +343,34 @@ body {
   background: var(--bg-root);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* 界面文字默认可选中复制（Cmd/Ctrl+C）。
+   交互控件（按钮、菜单项、标签页、列表行、拖拽手柄等）单独退出文本选择，
+   避免拖选干扰点击/拖拽操作。 */
+button,
+[role="button"],
+[role="tab"],
+[role="menuitem"],
+[role="menuitemcheckbox"],
+[role="menuitemradio"],
+[role="option"],
+[role="switch"],
+[role="radio"],
+summary,
+[data-tauri-drag-region],
+.ai-titlebar,
+.ai-toolbar,
+.ai-splitter,
+.ai-sidebar-resize-handle,
+.ai-project-session-row,
+.ai-file-explorer-row,
+.ai-file-explorer-header,
+.ai-file-viewer-tab,
+.ai-graph-node,
+.ai-context-menu-item,
+.branch-popover-item,
+.ai-session-keyword-bar {
   -webkit-user-select: none;
   user-select: none;
 }

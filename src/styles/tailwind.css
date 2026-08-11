@@ -8057,7 +8057,8 @@
     font-weight: 600;
   }
 
-  /* body 全局禁用了文本选中，聊天内容（AI 输出 + 用户气泡）需显式 opt-in 回可选中。 */
+  /* 聊天内容（AI 输出 + 用户气泡）显式声明可选中，确保不被外层控件级的
+     user-select: none 拦截。 */
   .ai-streamdown,
   .ai-streamdown *,
   .ai-user-bubble,

@@ -46,7 +46,7 @@ const NAV_ITEMS: Array<{ key: SettingsNavKey; label: string; icon: LucideIcon }>
   { key: "rag", label: "RAG 知识库", icon: Database },
 ];
 
-/** 兼容旧调用点传入的导航 key。 */
+/** 校验调用点传入的导航 key。 */
 function normalizeInitialTab(tab?: string): SettingsNavKey {
   switch (tab) {
     case "providers":
@@ -58,8 +58,6 @@ function normalizeInitialTab(tab?: string): SettingsNavKey {
     case "rag":
     case "general":
       return tab;
-    case "aha":
-      return "providers";
     default:
       return "general";
   }

@@ -120,8 +120,7 @@ export function NotificationBell() {
             n.id === id ? { ...n, isRead: true } : n,
           );
           const unreadCount = notifications.filter((n) => !n.isRead).length;
-          const hasUnreadPopup = notifications.some((n) => !n.isRead && n.popup);
-          return { notifications, unreadCount, hasUnreadPopup };
+          return { notifications, unreadCount };
         });
       } catch {
         // Silent
@@ -136,7 +135,7 @@ export function NotificationBell() {
       setResult((prev) => {
         if (!prev) return prev;
         const notifications = prev.notifications.map((n) => ({ ...n, isRead: true }));
-        return { notifications, unreadCount: 0, hasUnreadPopup: false };
+        return { notifications, unreadCount: 0 };
       });
     } catch {
       // Silent

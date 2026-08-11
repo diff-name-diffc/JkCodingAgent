@@ -9,6 +9,7 @@ import { EmptyState } from "../EmptyState";
 import { FieldLabel } from "../FieldLabel";
 import { Section } from "../Section";
 import { toast } from "../toast";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip";
 import { useAhaSettings } from "../use-aha-settings";
 import {
   loadSshTestRecords,
@@ -277,16 +278,33 @@ export function SshServersPage({ projectPath }: { projectPath?: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <FieldLabel
               label="配置范围"
-              tip="「项目」配置仅当前项目可用，「聊天」配置用于不绑定项目的独立聊天工作区。"
+              tip={`「项目」配置仅当前项目可用，「聊天」配置用于不绑定项目的独立聊天工作区。${
+                projectPath ? "" : "当前未绑定项目，「项目」不可选。"
+              }`}
             />
-            <button
-              type="button"
-              className={cn("ai-aha-category-chip", context === "project" && "is-active")}
-              disabled={!projectPath}
-              onClick={() => setContext("project")}
-            >
-              项目
-            </button>
+            {projectPath ? (
+              <button
+                type="button"
+                className={cn("ai-aha-category-chip", context === "project" && "is-active")}
+                onClick={() => setContext("project")}
+              >
+                项目
+              </button>
+            ) : (
+              // disabled 按钮不触发指针事件，用 span 承载 Tooltip 才能悬停显示原因。
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex" tabIndex={0}>
+                    <button type="button" className="ai-aha-category-chip" disabled>
+                      项目
+                    </button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-64">
+                  当前未绑定项目：请在项目工作区内打开设置，再编辑「项目」范围的 SSH 配置。
+                </TooltipContent>
+              </Tooltip>
+            )}
             <button
               type="button"
               className={cn("ai-aha-category-chip", context === "chat" && "is-active")}
@@ -313,6 +331,12 @@ export function SshServersPage({ projectPath }: { projectPath?: string }) {
           {workspacePath && (
             <p className="ai-settings-hint">
               当前工作区：<span className="font-mono">{workspacePath}</span>
+            </p>
+          )}
+
+          {!projectPath && (
+            <p className="ai-settings-hint">
+              设置从未绑定项目的入口打开，仅可编辑「聊天」范围；进入项目后从项目内打开设置，即可编辑「项目」范围。
             </p>
           )}
 

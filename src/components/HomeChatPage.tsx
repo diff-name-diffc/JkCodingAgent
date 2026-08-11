@@ -143,7 +143,7 @@ export function HomeChatPage() {
       {showSettings && (
         <Suspense fallback={null}>
           <AppSettingsDialog
-            initialTab="aha"
+            initialTab="providers"
             onClose={() => setShowSettings(false)}
           />
         </Suspense>

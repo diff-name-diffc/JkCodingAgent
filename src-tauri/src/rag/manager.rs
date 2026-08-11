@@ -251,12 +251,6 @@ impl RagManager {
         self.register_handle(handle)
     }
 
-    /// 停止 sidecar：kill 后等待子进程真正退出，确保端口释放。
-    pub async fn stop(&self) {
-        let _guard = self.spawn_lock.lock().await;
-        self.stop_locked().await;
-    }
-
     /// 应用退出路径的同步停止：置退出标志 + 整组 kill，不等退出。
     /// 主进程即将退出，OS 会回收子进程；同步上下文也无法 await。
     ///

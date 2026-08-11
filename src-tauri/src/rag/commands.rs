@@ -52,41 +52,6 @@ fn io_error(
     }
 }
 
-/// 启动 sidecar（若未启动）并返回运行状态。
-#[tauri::command]
-pub async fn rag_start(
-    app: AppHandle,
-    manager: State<'_, RagManager>,
-    config_store: State<'_, RagConfigStore>,
-) -> CommandResult<Value> {
-    rag_start_impl(app, manager, config_store)
-        .await
-        .context("启动 RAG sidecar 失败")
-        .into_command_result()
-}
-
-async fn rag_start_impl(
-    app: AppHandle,
-    manager: State<'_, RagManager>,
-    config_store: State<'_, RagConfigStore>,
-) -> anyhow::Result<Value> {
-    let handle = manager
-        .ensure_started(&app, &config_store)
-        .await
-        .context("ensure RAG sidecar started")?;
-    Ok(serde_json::json!({
-        "running": true,
-        "port": handle.port,
-    }))
-}
-
-/// 停止 sidecar：kill 后等待子进程真正退出，确保端口/资源释放。
-#[tauri::command]
-pub async fn rag_stop(manager: State<'_, RagManager>) -> CommandResult<()> {
-    manager.stop().await;
-    Ok(())
-}
-
 /// 原子重启 sidecar：在同一把 spawn 锁内完成 stop + spawn，
 /// 避免前端两次 invoke 之间插入其他调用产生竞态或孤儿进程。
 #[tauri::command]

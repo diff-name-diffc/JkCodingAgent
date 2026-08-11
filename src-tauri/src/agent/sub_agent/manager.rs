@@ -79,10 +79,6 @@ impl SubAgentManager {
         self.db.list_all()
     }
 
-    pub fn get_record(&self, id: &str) -> Result<Option<SubAgentRecord>> {
-        self.db.get(id)
-    }
-
     pub fn get_enabled_for_session(&self, session_id: &str) -> Result<Vec<SubAgentConfig>> {
         let ids = self.db.get_enabled_agent_ids(session_id)?;
         let cache = self.cache.read();

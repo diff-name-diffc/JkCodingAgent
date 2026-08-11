@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { RefreshCw, Filter, GitCommit, Sparkles, ChevronRight, ChevronDown } from "lucide-react";
+import { RefreshCw, GitCommit, Sparkles, ChevronRight, ChevronDown } from "lucide-react";
 import { useCancellableInvoke } from "../hooks/useCancellableInvoke";
 import {
   fileDir,
@@ -19,20 +19,17 @@ interface GitFileChange {
 
 interface Props {
   projectPath: string;
-  currentTaskCreatedAt: number | null;
   onFileSelect: (filePath: string, staged: boolean, label: string) => void;
   width?: number;
 }
 
 export function GitChanges({
   projectPath,
-  currentTaskCreatedAt,
   onFileSelect,
   width = 280,
 }: Props) {
   const [changes, setChanges] = useState<GitFileChange[]>([]);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<"task" | "all">("all");
   const [commitMsg, setCommitMsg] = useState("");
   const [committing, setCommitting] = useState(false);
   const [generatingMsg, setGeneratingMsg] = useState(false);
@@ -61,15 +58,8 @@ export function GitChanges({
     refresh();
   }, [refresh]);
 
-  // "Current Task" tab: files modified after task start
-  const taskChanges = currentTaskCreatedAt
-    ? changes.filter((c) => c.staged) // staged = agent's work
-    : [];
-  const allChanges = changes;
-  const displayed = tab === "task" ? taskChanges : allChanges;
-
-  const trackedFiles = displayed.filter((c) => c.status !== "?");
-  const untrackedFiles = displayed.filter((c) => c.status === "?");
+  const trackedFiles = changes.filter((c) => c.status !== "?");
+  const untrackedFiles = changes.filter((c) => c.status === "?");
   const stagedFiles = trackedFiles.filter((c) => c.staged);
   const unstagedFiles = trackedFiles.filter((c) => !c.staged);
 
@@ -141,9 +131,6 @@ export function GitChanges({
     }
   };
 
-  const taskCount = taskChanges.length;
-  const allCount = allChanges.length;
-
   return (
     <div className="ai-git-changes ai-migrated-git-changes" style={{ width }}>
       {/* Header */}
@@ -156,28 +143,6 @@ export function GitChanges({
         >
           <RefreshCw size={13} className={loading ? "spin" : ""} />
         </button>
-        <button
-          title="筛选"
-          className="ai-git-icon-button"
-        >
-          <Filter size={13} />
-        </button>
-      </div>
-
-      {/* Tabs */}
-      <div className="ai-git-tabs">
-        <button
-          onClick={() => setTab("task")}
-          className={tab === "task" ? "ai-git-tab is-active" : "ai-git-tab"}
-        >
-          当前任务 {taskCount}
-        </button>
-        <button
-          onClick={() => setTab("all")}
-          className={tab === "all" ? "ai-git-tab is-active" : "ai-git-tab"}
-        >
-          全部 {allCount}
-        </button>
       </div>
 
       {/* Error */}
@@ -189,7 +154,7 @@ export function GitChanges({
 
       {/* File list */}
       <div className="ai-git-change-list chat-scroll">
-        {displayed.length === 0 && !loading && (
+        {changes.length === 0 && !loading && (
           <div className="ai-git-empty">
             暂无变更
           </div>

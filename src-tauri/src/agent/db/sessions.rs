@@ -204,61 +204,6 @@ impl DispatcherDb {
             .context("get_dispatcher_session spawn_blocking")?
     }
 
-    pub fn delete_session(&self, session_id: &str) -> Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
-        tx.execute(
-            "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM dispatcher_tool_runs WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM sub_agent_run_traces WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        // 图编排产物（graph_plans / graph_node_runs）随会话删除同步清理。
-        tx.execute(
-            "DELETE FROM graph_node_runs
-             WHERE plan_id IN (SELECT id FROM graph_plans WHERE workspace_id = ?1)",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM graph_plans WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        let image_paths = delete_chat_image_resources(&tx, session_id)?;
-        tx.execute(
-            "DELETE FROM session_keywords WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM chat_sessions WHERE id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM project_sessions WHERE id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM dispatcher_sessions WHERE id = ?1",
-            params![session_id],
-        )?;
-        tx.commit()?;
-        remove_chat_image_files(&image_paths)?;
-        Ok(())
-    }
-
     // ── Chat Sessions (v6) ────────────────────────────────────────
 
     pub fn list_chat_sessions_paginated(
@@ -472,58 +417,6 @@ impl DispatcherDb {
         )
         .context("update chat session updated_at")?;
         Ok(())
-    }
-
-    pub fn update_chat_session_title(
-        &self,
-        session_id: &str,
-        title: &str,
-    ) -> Result<Option<ChatSessionRecord>> {
-        let updated_at = now();
-        let conn = self.conn()?;
-        let changed = conn
-            .execute(
-                "UPDATE chat_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
-                params![title.trim(), &updated_at, session_id],
-            )
-            .context("update chat session title")?;
-        if changed == 0 {
-            return Ok(None);
-        }
-        conn.execute(
-            "UPDATE dispatcher_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
-            params![title.trim(), &updated_at, session_id],
-        )
-        .context("reflect chat title in dispatcher_sessions")?;
-        let record = conn
-            .query_row(
-                "SELECT id, title, category, created_at, updated_at
-             FROM chat_sessions WHERE id = ?1",
-                params![session_id],
-                |row| {
-                    Ok(ChatSessionRecord {
-                        id: row.get(0)?,
-                        title: row.get(1)?,
-                        category: row.get(2)?,
-                        created_at: row.get(3)?,
-                        updated_at: row.get(4)?,
-                        keywords: Vec::new(),
-                    })
-                },
-            )
-            .optional()
-            .context("load chat session after title update")?;
-        let mut record = record;
-        if let Some(session) = &mut record {
-            let mut keywords_by_workspace = super::keywords::load_keywords_by_workspace_ids(
-                &conn,
-                std::slice::from_ref(&session.id),
-            )?;
-            session.keywords = keywords_by_workspace
-                .remove(&session.id)
-                .unwrap_or_default();
-        }
-        Ok(record)
     }
 
     pub fn set_chat_session_category(&self, session_id: &str, category_id: &str) -> Result<()> {

@@ -13,6 +13,5 @@ mod state;
 pub mod sub_agent;
 mod summary;
 pub mod tools;
-pub mod voice;
 
 pub use state::DispatcherState;

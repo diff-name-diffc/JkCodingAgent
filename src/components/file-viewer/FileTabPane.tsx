@@ -1,8 +1,6 @@
 import {
-  forwardRef,
   useCallback,
   useEffect,
-  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -30,10 +28,6 @@ type FileMeta = {
   lineCount: number;
   isText: boolean;
 };
-
-export interface FileTabPaneHandle {
-  flushPendingSave: () => Promise<string | null>;
-}
 
 const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024;
 
@@ -222,15 +216,15 @@ function TextFileHeader({
   );
 }
 
-export const FileTabPane = forwardRef<FileTabPaneHandle, {
-  active: boolean;
-  tab: OpenFileTab;
-  projectPath: string;
-}>(function FileTabPane({
+export function FileTabPane({
   active,
   tab,
   projectPath,
-}, ref) {
+}: {
+  active: boolean;
+  tab: OpenFileTab;
+  projectPath: string;
+}) {
   const [previewMode, setPreviewMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -393,32 +387,6 @@ export const FileTabPane = forwardRef<FileTabPaneHandle, {
     [flushQueuedSave],
   );
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      async flushPendingSave() {
-        if (isImage || !fileMeta || fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD) {
-          return null;
-        }
-        const currentContent = contentRef.current;
-        if (currentContent === null) {
-          return null;
-        }
-        if (saveTimerRef.current) {
-          clearTimeout(saveTimerRef.current);
-          saveTimerRef.current = null;
-        }
-        if (savedContentRef.current !== currentContent) {
-          queuedSaveContentRef.current = currentContent;
-          setSaveStatus("saving");
-          await flushQueuedSave();
-        }
-        return currentContent;
-      },
-    }),
-    [fileMeta, flushQueuedSave, isImage],
-  );
-
   if (isImage) {
     return <ImageFilePane filePath={tab.path} fileName={tab.name} projectPath={projectPath} />;
   }
@@ -491,4 +459,4 @@ export const FileTabPane = forwardRef<FileTabPaneHandle, {
       </PaneCard>
     </PaneShell>
   );
-});
+}

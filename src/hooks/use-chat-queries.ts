@@ -7,7 +7,6 @@ import type {
   ChatCategory,
   ChatSession,
   DispatcherSession,
-  DispatcherMessage,
   ModelLibraryEntry,
   SessionKeyword,
   SessionSearchResult,
@@ -17,7 +16,6 @@ import {
   withDispatcherSessionRunning,
   withDispatcherSessionsRunning,
 } from "../components/dispatcherSessionStore";
-import { normalizeDispatcherMessage } from "../components/dispatcher-chat/dispatcherChatUtils";
 import { bindPurpose } from "../components/settings/providers/provider-registry";
 import {
   hasAnyPurposeConfigs,
@@ -296,33 +294,6 @@ export function useSetChatSessionCategory() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: QUERY_KEYS.categories });
       void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
-    },
-  });
-}
-
-// ── Messages ──────────────────────────────────────────────────────────────
-
-export function useConversationMessagesQuery(
-  workspaceId: string | null,
-  enabled = true,
-) {
-  return useQuery({
-    queryKey: workspaceId ? QUERY_KEYS.messages(workspaceId) : ["chat", "messages", "none"],
-    queryFn: () =>
-      invoke<DispatcherMessage[]>("dispatcher_list_messages", { workspaceId }).then(
-        (rows) => rows.map(normalizeDispatcherMessage),
-      ),
-    enabled: Boolean(workspaceId) && enabled,
-  });
-}
-
-export function useClearMessages() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (workspaceId: string) =>
-      invoke<void>("dispatcher_clear_messages", { workspaceId }),
-    onSuccess: (_data, workspaceId) => {
-      void qc.invalidateQueries({ queryKey: QUERY_KEYS.messages(workspaceId) });
     },
   });
 }

@@ -6,39 +6,6 @@ export interface Project {
   lastOpenedAt: number;
 }
 
-export type AgentType = "claude" | "codex";
-export type PermissionMode = "ask" | "auto_edit" | "full_access";
-export type TaskStatus =
-  | "todo"
-  | "pending"
-  | "running"
-  | "input_required"
-  | "stopped"
-  | "done"
-  | "failed"
-  | "cancelled";
-
-export interface Task {
-  id: string;
-  projectId: string;
-  name?: string;
-  prompt: string;
-  agent: AgentType;
-  permissionMode: PermissionMode;
-  status: TaskStatus;
-  createdAt: number;
-  attentionRequestedAt?: number;
-  starred?: boolean;
-  failureReason?: string;
-  codexSessionId?: string;
-  codexSessionPath?: string;
-  claudeSessionId?: string;
-  claudeSessionPath?: string;
-  dispatcherSessionId?: string;
-  dispatcherDispatchId?: string;
-  dispatcherDescription?: string;
-}
-
 export type ProjectMcpAggregateStatus =
   | "not_configured"
   | "healthy"
@@ -153,10 +120,6 @@ export interface BrowserLogEvent {
   message: string;
 }
 
-export function isActiveTaskStatus(status: TaskStatus): boolean {
-  return status === "pending" || status === "running" || status === "input_required";
-}
-
 // ── Notifications ────────────────────────────────────────────────────────────
 
 export interface NotificationItem {
@@ -167,14 +130,12 @@ export interface NotificationItem {
   body: string;
   url: string | null;
   createdAt: string;
-  popup: boolean;
   isRead: boolean;
 }
 
 export interface NotificationResult {
   notifications: NotificationItem[];
   unreadCount: number;
-  hasUnreadPopup: boolean;
 }
 
 // ── Content Segments ─────────────────────────────────────────────────────────

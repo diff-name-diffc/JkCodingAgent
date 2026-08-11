@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import type { BrowserFrameEvent, BrowserLogEvent, BrowserStatus } from "../types";
+import { normalizeBrowserUrlInput } from "../lib/browser-url";
 import { isImeComposing } from "../utils";
 
 interface BrowserProfileImportResult {
@@ -238,9 +239,9 @@ export function BrowserPanel({
       setIsEditingUrl(false);
       return;
     }
-    // Auto-prepend https:// if missing
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      url = "https://" + url;
+    const normalizedUrl = normalizeBrowserUrlInput(url);
+    if (normalizedUrl !== url) {
+      url = normalizedUrl;
       setUrlInput(url);
     }
     setIsEditingUrl(false);

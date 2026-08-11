@@ -1,42 +1,16 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, ChevronsRight, ChevronRight, X } from "lucide-react";
-import type { Project, Task } from "../types";
+import type { Project } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
-
-type ProjectStatus = "attention" | "running" | null;
-
-function getProjectStatus(tasks: Task[], projectId: string): ProjectStatus {
-  const projectTasks = tasks.filter((t) => t.projectId === projectId);
-  if (projectTasks.some((t) => t.status === "input_required")) return "attention";
-  if (projectTasks.some((t) => t.status === "running" || t.status === "pending")) return "running";
-  return null;
-}
-
-const STATUS_COLOR: Record<Exclude<ProjectStatus, null>, string> = {
-  attention: "var(--warning, #f59e0b)",
-  running: "var(--success, #22c55e)",
-};
-
-function StatusBadge({ status }: { status: ProjectStatus }) {
-  if (!status) return null;
-  return (
-    <span
-      className={`ai-project-status-dot ai-project-status-${status}`}
-      style={{ background: STATUS_COLOR[status] }}
-    />
-  );
-}
 
 function RailItem({
   project,
   isActive,
-  status,
   onSwitch,
   onClose,
 }: {
   project: Project;
   isActive: boolean;
-  status: ProjectStatus;
   onSwitch: (p: Project) => void;
   onClose?: (p: Project) => void;
 }) {
@@ -54,7 +28,6 @@ function RailItem({
         onClick={() => onSwitch(project)}
       >
         <ProjectAvatar name={project.name} size={28} />
-        <StatusBadge status={status} />
       </button>
       {onClose && (
         <button
@@ -73,13 +46,11 @@ function RailItem({
 
 function ProjectDrawer({
   projects,
-  allTasks,
   activeProjectId,
   onSwitch,
   onClose,
 }: {
   projects: Project[];
-  allTasks: Task[];
   activeProjectId: string;
   onSwitch: (p: Project) => void;
   onClose: () => void;
@@ -101,7 +72,6 @@ function ProjectDrawer({
       <div className="ai-project-drawer-title">项目</div>
       <div className="ai-project-drawer-list">
         {projects.map((project) => {
-          const status = getProjectStatus(allTasks, project.id);
           const isActive = project.id === activeProjectId;
           return (
             <button
@@ -114,12 +84,6 @@ function ProjectDrawer({
             >
               <div className="ai-project-drawer-avatar">
                 <ProjectAvatar name={project.name} size={28} />
-                {status && (
-                  <span
-                    className="ai-project-drawer-status-dot"
-                    style={{ background: STATUS_COLOR[status] }}
-                  />
-                )}
               </div>
               <span className="ai-project-drawer-name">{project.name}</span>
             </button>
@@ -133,7 +97,6 @@ function ProjectDrawer({
 export function ProjectRail({
   projects,
   allProjects = projects,
-  allTasks,
   activeProjectId,
   sessionSidebarCollapsed,
   onExpandSessionSidebar,
@@ -145,7 +108,6 @@ export function ProjectRail({
   projects: Project[];
   /** 全部已知项目，展示在抽屉里供打开/重新打开。 */
   allProjects?: Project[];
-  allTasks: Task[];
   activeProjectId: string;
   sessionSidebarCollapsed: boolean;
   onExpandSessionSidebar: () => void;
@@ -172,7 +134,6 @@ export function ProjectRail({
           key={project.id}
           project={project}
           isActive={project.id === activeProjectId}
-          status={getProjectStatus(allTasks, project.id)}
           onSwitch={(p) => {
             onSwitch(p);
             setDrawerOpen(false);
@@ -202,7 +163,6 @@ export function ProjectRail({
       {drawerOpen && (
         <ProjectDrawer
           projects={allProjects}
-          allTasks={allTasks}
           activeProjectId={activeProjectId}
           onSwitch={onSwitch}
           onClose={() => setDrawerOpen(false)}

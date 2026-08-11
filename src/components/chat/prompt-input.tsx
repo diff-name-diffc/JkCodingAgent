@@ -10,9 +10,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { ModelSelector } from "./model-selector";
 
 /**
- * Composer mode mirrors the existing send/stop/resume pipeline contract.
+ * Composer mode mirrors the existing send/stop pipeline contract.
  */
-export type ComposerMode = "send" | "stop" | "resume";
+export type ComposerMode = "send" | "stop";
 
 export interface PromptInputProps {
   value: string;
@@ -20,8 +20,6 @@ export interface PromptInputProps {
   mode: ComposerMode;
   onSend: () => void;
   onStop: () => void;
-  /** Called on Enter when mode === "resume" and the input is empty. */
-  onResume?: () => void;
   /** Images already saved to chat-images and staged for the next send. */
   attachments?: ImageSegment[];
   /** Receive image Files from paste / file picker; parent persists them. */
@@ -61,7 +59,7 @@ function imageFilesFromClipboard(data: DataTransfer | null): File[] {
  * Bottom-anchored prompt input for the refactored chat surface.
  *
  * Keyboard:
- *   Enter        → send (or stop-resume flow when mode==="resume" + empty)
+ *   Enter        → send
  *   Shift+Enter  → newline
  *   IME composition is respected.
  *
@@ -74,7 +72,6 @@ export function PromptInput({
   mode,
   onSend,
   onStop,
-  onResume,
   attachments = [],
   onAttachImages,
   onRemoveAttachment,
@@ -108,10 +105,6 @@ export function PromptInput({
     e.preventDefault();
 
     if (mode === "stop") return;
-    if (mode === "resume" && !hasContent) {
-      onResume?.();
-      return;
-    }
     if (mode === "send" && hasContent) {
       onSend();
     }

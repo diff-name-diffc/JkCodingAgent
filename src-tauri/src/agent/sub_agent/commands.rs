@@ -20,23 +20,6 @@ pub async fn sub_agent_list(
 }
 
 #[tauri::command]
-pub async fn sub_agent_get(
-    state: State<'_, DispatcherState>,
-    id: String,
-) -> CommandResult<SubAgentRecord> {
-    let result = (|| {
-        let manager = state
-            .sub_agent_manager()
-            .ok_or_else(|| anyhow!("子智能体管理器未初始化"))?;
-        manager
-            .get_record(&id)
-            .with_context(|| format!("查询子智能体失败（id={id}）"))?
-            .ok_or_else(|| anyhow!("子智能体 '{}' 不存在", id))
-    })();
-    result.into_command_result()
-}
-
-#[tauri::command]
 pub async fn sub_agent_create(
     state: State<'_, DispatcherState>,
     config_json: String,

@@ -56,23 +56,6 @@ export function isImeComposing(event: ImeKeyboardEvent): boolean {
   );
 }
 
-export function formatTokenCount(value: number): string {
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(2)}M`;
-  }
-  if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(1)}K`;
-  }
-  return String(value);
-}
-
-export function formatElapsedMmSs(elapsedMs: number): string {
-  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
 /** 相对时间：1 分钟内「刚刚」，之后按 分钟/小时/天，超过 7 天显示 M/D。 */
 export function formatRelativeTime(iso: string): string {
   const time = new Date(iso).getTime();

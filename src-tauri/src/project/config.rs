@@ -220,7 +220,9 @@ fn init_project_config_impl(project_path: &str) -> ConfigResult<ProjectConfig> {
 
 /// Reads `.jkcodingagent/config.toml` from the project directory.
 /// Returns the default config if the file doesn't exist yet.
-#[tauri::command]
+///
+/// 不再注册为前端命令：仅被 Rust 内部（git 提交信息生成、浏览器启动选项）
+/// 当普通函数调用。
 pub fn read_project_config(project_path: String) -> CommandResult<ProjectConfig> {
     read_project_config_impl(&project_path)
         .with_context(|| format!("读取项目配置失败（{}）", project_path))
@@ -242,24 +244,4 @@ fn read_project_config_impl(project_path: &str) -> ConfigResult<ProjectConfig> {
             source,
         })?;
     Ok(config)
-}
-
-/// Writes updated config to `.jkcodingagent/config.toml`, creating the directory if needed.
-#[tauri::command]
-pub fn write_project_config(project_path: String, config: ProjectConfig) -> CommandResult<()> {
-    write_project_config_impl(&project_path, config)
-        .with_context(|| format!("写入项目配置失败（{}）", project_path))
-        .into_command_result()
-}
-
-fn write_project_config_impl(project_path: &str, config: ProjectConfig) -> ConfigResult<()> {
-    let config_dir = Path::new(&project_path).join(".jkcodingagent");
-    fs::create_dir_all(&config_dir).map_err(io_error("创建项目配置目录", config_dir.clone()))?;
-    let config_path = config_dir.join("config.toml");
-    let raw =
-        toml::to_string_pretty(&config).map_err(|source| ConfigError::SerializeProjectConfig {
-            path: config_path.clone(),
-            source,
-        })?;
-    Ok(atomic_write(&config_path, &raw)?)
 }

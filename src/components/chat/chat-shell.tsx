@@ -87,7 +87,6 @@ export interface ChatShellProps {
   composerMode: ComposerMode;
   onSend: () => void;
   onStop: () => void;
-  onResume?: () => void;
   attachments?: ImageSegment[];
   onAttachImages?: (files: File[]) => void;
   onRemoveAttachment?: (id: string) => void;
@@ -132,7 +131,6 @@ export function ChatShell({
   composerMode,
   onSend,
   onStop,
-  onResume,
   attachments,
   onAttachImages,
   onRemoveAttachment,
@@ -146,7 +144,6 @@ export function ChatShell({
   embedded = false,
   projectHeader,
 }: ChatShellProps) {
-  const setActiveConversationId = useUIStore((s) => s.setActiveConversationId);
   const setArtifactPanelOpen = useUIStore((s) => s.setArtifactPanelOpen);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const commandPaletteOpen = useUIStore((s) => s.commandPaletteOpen);
@@ -162,12 +159,10 @@ export function ChatShell({
   const [traceError, setTraceError] = React.useState<string | null>(null);
   const traceRequestRef = React.useRef(0);
 
-  // Keep the UI store's active conversation in sync (for the artifact panel
-  // and other consumers). Pure UI state — no business logic.
+  // 会话切换时让进行中的轨迹请求失效（requestId 比对见 handleOpenSubAgent）。
   React.useEffect(() => {
     traceRequestRef.current += 1;
-    setActiveConversationId(sessionId);
-  }, [sessionId, setActiveConversationId]);
+  }, [sessionId]);
 
   React.useEffect(() => {
     setSelectedArtifact(null);
@@ -279,7 +274,6 @@ export function ChatShell({
 
   return (
     <AppLayout
-      embedded={embedded}
       chatHeader={projectHeader}
       sidebar={
         embedded ? undefined : (
@@ -310,7 +304,6 @@ export function ChatShell({
           mode={composerMode}
           onSend={onSend}
           onStop={onStop}
-          onResume={onResume}
           attachments={attachments}
           onAttachImages={onAttachImages}
           onRemoveAttachment={onRemoveAttachment}

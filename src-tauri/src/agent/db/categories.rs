@@ -315,37 +315,6 @@ impl DispatcherDb {
             .context("commit get chat session category agent config")?;
         Ok(config)
     }
-
-    pub fn set_session_category(&self, session_id: &str, category_id: &str) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE dispatcher_sessions SET category = ?1, updated_at = ?2 WHERE id = ?3",
-            params![category_id, now(), session_id],
-        )
-        .context("set session category")?;
-        Ok(())
-    }
-
-    pub fn reorder_chat_categories(&self, ordered_ids: &[String]) -> Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn
-            .transaction()
-            .context("begin reorder categories transaction")?;
-        {
-            let mut stmt = tx
-                .prepare(
-                    "UPDATE chat_categories SET sort_order = ?1, updated_at = ?2 WHERE id = ?3",
-                )
-                .context("prepare reorder statement")?;
-            let now = now();
-            for (order, id) in ordered_ids.iter().enumerate() {
-                stmt.execute(params![order as i32, &now, id])
-                    .with_context(|| format!("reorder category {id}"))?;
-            }
-        }
-        tx.commit().context("commit reorder categories")?;
-        Ok(())
-    }
 }
 
 fn map_chat_category_agent_config(

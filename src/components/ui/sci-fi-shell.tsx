@@ -8,13 +8,6 @@ export function AiPanel({
   return <div className={cn("ai-panel", className)} {...props} />;
 }
 
-export function AiToolbar({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("ai-toolbar", className)} {...props} />;
-}
-
 export function AiSectionHeader({
   title,
   caption,
@@ -68,11 +61,4 @@ export function AiEmptyState({
       {action ? <div className="ai-empty-action">{action}</div> : null}
     </div>
   );
-}
-
-export function AiSplitter({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("ai-splitter", className)} {...props} />;
 }

@@ -153,12 +153,6 @@ export function cleanupDispatcherSession(sessionId: string) {
   dispatcherMessageSubscribers.delete(sessionId);
 }
 
-export function gcDispatcherSessions() {
-  for (const id of dispatcherLiveSessionStates.keys()) {
-    cleanupIdleUnobservedSession(id);
-  }
-}
-
 export function getDispatcherSessionRunning(sessionId: string): boolean {
   return dispatcherSessionRunningStates.get(sessionId) ?? isLiveSessionRunning(dispatcherLiveSessionStates.get(sessionId));
 }
@@ -194,10 +188,6 @@ export function subscribeDispatcherSessionRunning(
 
 export function getDispatcherActiveRunId(sessionId: string) {
   return dispatcherActiveRunIds.get(sessionId);
-}
-
-export function setDispatcherActiveRunId(sessionId: string, runId: number) {
-  dispatcherActiveRunIds.set(sessionId, runId);
 }
 
 export function nextDispatcherActiveRunId(sessionId: string) {

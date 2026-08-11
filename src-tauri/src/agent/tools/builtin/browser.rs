@@ -6,7 +6,7 @@ use super::common::{string_arg, u64_arg, with_compression_parameters};
 use crate::agent::llm::{ChatMessage, ChatMessageContentPart, ChatMessageImageSource};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
-use crate::browser::BrowserManager;
+use crate::browser::{normalize_browser_url, BrowserManager};
 
 const DEFAULT_BROWSER_TIMEOUT_MS: u64 = 60_000;
 
@@ -119,7 +119,7 @@ impl AgentTool for OpenUrlTool {
     }
 
     fn description(&self) -> &'static str {
-        "使用项目级 CloakBrowser 打开网页。会自动启动嵌入式浏览器会话，并在右侧浏览器面板实时展示页面。"
+        "使用项目级 CloakBrowser 打开 URL。支持浏览器引擎可导航的 URL（包括 http、https、file、data、about 等），会自动启动嵌入式浏览器会话，并在右侧浏览器面板实时展示页面。"
     }
 
     fn parameters(&self) -> Value {
@@ -127,7 +127,7 @@ impl AgentTool for OpenUrlTool {
             json!({
                 "type": "object",
                 "properties": {
-                    "url": { "type": "string", "description": "要打开的 URL，必须包含 http:// 或 https://" },
+                    "url": { "type": "string", "description": "要打开的完整 URL；支持浏览器引擎可导航的协议，例如 http://、https://、file://、data:、about:" },
                     "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 60000", "minimum": 1 }
                 },
                 "required": ["url"]
@@ -141,9 +141,10 @@ impl AgentTool for OpenUrlTool {
         let Some(url) = string_arg(args, "url") else {
             return "错误：缺少必填参数 url".to_string();
         };
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            return "错误：url 必须以 http:// 或 https:// 开头".to_string();
-        }
+        let url = match normalize_browser_url(url) {
+            Ok(url) => url,
+            Err(error) => return format!("错误：{error}"),
+        };
         run_browser_command(
             context,
             "open_url",

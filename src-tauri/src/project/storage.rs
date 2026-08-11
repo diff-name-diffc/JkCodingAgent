@@ -63,54 +63,6 @@ pub struct Project {
     pub last_opened_at: i64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Task {
-    pub id: String,
-    #[serde(rename = "projectId")]
-    pub project_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    pub prompt: String,
-    pub agent: String,
-    #[serde(rename = "permissionMode")]
-    pub permission_mode: String,
-    pub status: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: i64,
-    #[serde(
-        rename = "attentionRequestedAt",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub attention_requested_at: Option<i64>,
-    #[serde(rename = "claudeSessionId", skip_serializing_if = "Option::is_none")]
-    pub claude_session_id: Option<String>,
-    #[serde(rename = "claudeSessionPath", skip_serializing_if = "Option::is_none")]
-    pub claude_session_path: Option<String>,
-    #[serde(rename = "codexSessionId", skip_serializing_if = "Option::is_none")]
-    pub codex_session_id: Option<String>,
-    #[serde(rename = "codexSessionPath", skip_serializing_if = "Option::is_none")]
-    pub codex_session_path: Option<String>,
-    #[serde(
-        rename = "dispatcherSessionId",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub dispatcher_session_id: Option<String>,
-    #[serde(
-        rename = "dispatcherDispatchId",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub dispatcher_dispatch_id: Option<String>,
-    #[serde(
-        rename = "dispatcherDescription",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub dispatcher_description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub starred: Option<bool>,
-    #[serde(rename = "failureReason", skip_serializing_if = "Option::is_none")]
-    pub failure_reason: Option<String>,
-}
-
 // ── Path helpers ─────────────────────────────────────────────────────────────
 
 fn app_data_dir() -> StorageResult<PathBuf> {
@@ -124,22 +76,9 @@ fn projects_path() -> StorageResult<PathBuf> {
     Ok(app_data_dir()?.join("projects.json"))
 }
 
-fn tasks_path(project_id: &str) -> StorageResult<PathBuf> {
-    Ok(project_dir(project_id)?.join("tasks.json"))
-}
-
-fn project_dir(project_id: &str) -> StorageResult<PathBuf> {
-    Ok(app_data_dir()?.join("projects").join(project_id))
-}
-
 fn ensure_app_data_dirs() -> StorageResult<()> {
     let dir = app_data_dir()?;
     fs::create_dir_all(&dir).map_err(io_error("创建应用数据目录", dir))
-}
-
-fn ensure_project_dir(project_id: &str) -> StorageResult<()> {
-    let dir = project_dir(project_id)?;
-    fs::create_dir_all(&dir).map_err(io_error("创建项目任务目录", dir))
 }
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
@@ -173,44 +112,6 @@ fn save_projects_impl(projects: Vec<Project>) -> StorageResult<()> {
     let raw = serde_json::to_string_pretty(&projects)
         .map_err(json_error("序列化项目列表", path.clone()))?;
     atomic_write(&projects_path()?, &raw)
-}
-
-#[tauri::command]
-pub fn load_project_tasks(project_id: String) -> CommandResult<Vec<Task>> {
-    load_project_tasks_impl(&project_id)
-        .with_context(|| format!("加载项目任务失败（project_id={project_id}）"))
-        .into_command_result()
-}
-
-fn load_project_tasks_impl(project_id: &str) -> StorageResult<Vec<Task>> {
-    let path = tasks_path(&project_id)?;
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-    let raw = fs::read_to_string(&path).map_err(io_error("读取项目任务", path.clone()))?;
-    serde_json::from_str(&raw).map_err(json_error("解析项目任务", path))
-}
-
-#[tauri::command]
-pub fn save_project_tasks(project_id: String, tasks: Vec<Task>) -> CommandResult<()> {
-    save_project_tasks_impl(&project_id, tasks)
-        .with_context(|| format!("保存项目任务失败（project_id={project_id}）"))
-        .into_command_result()
-}
-
-fn save_project_tasks_impl(project_id: &str, tasks: Vec<Task>) -> StorageResult<()> {
-    ensure_project_dir(&project_id)?;
-    let path = tasks_path(&project_id)?;
-    if tasks.is_empty() {
-        // Remove the file if no tasks left
-        if path.exists() {
-            fs::remove_file(&path).map_err(io_error("删除空任务文件", path))?;
-        }
-        return Ok(());
-    }
-    let raw =
-        serde_json::to_string_pretty(&tasks).map_err(json_error("序列化项目任务", path.clone()))?;
-    atomic_write(&path, &raw)
 }
 
 // ── Atomic write (write to tmp then rename) ───────────────────────────────────

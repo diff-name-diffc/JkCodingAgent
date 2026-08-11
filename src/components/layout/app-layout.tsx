@@ -28,9 +28,6 @@ export interface AppLayoutProps {
   /** Sticky footer (the prompt input). */
   chatFooter?: React.ReactNode;
   artifactPanel?: React.ReactNode;
-  /** Custom titlebar drag region. Pass a thin bar so the window is draggable. */
-  titlebar?: React.ReactNode;
-  embedded?: boolean;
 }
 
 const SIDEBAR_NARROW = 56;
@@ -44,7 +41,6 @@ export function AppLayout({
   children,
   chatFooter,
   artifactPanel,
-  titlebar,
 }: AppLayoutProps) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
   const sidebarWidth = useUIStore((s) => s.sidebarWidth);
@@ -90,7 +86,6 @@ export function AppLayout({
         "h-full w-full",
       )}
     >
-      {titlebar}
       <div className="flex min-h-0 flex-1">
         {sidebar && (
           <motion.aside

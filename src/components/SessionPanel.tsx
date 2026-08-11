@@ -45,12 +45,10 @@ export function SessionPanel({
   onSelectSession,
   onBack,
   onCollapse,
-  subprocessRunningSessionIds = new Set<string>(),
 }: {
   project: Project;
   activeSessionId: string | null;
   onSelectSession: (id: string | null) => void;
-  subprocessRunningSessionIds?: Set<string>;
   onBack: () => void;
   onCollapse: () => void;
 }) {
@@ -319,8 +317,7 @@ export function SessionPanel({
           ) : (
             searchResults?.map((r) => {
               const isRunning =
-                dispatcherRunningSessionIds.has(r.sessionId) ||
-                subprocessRunningSessionIds.has(r.sessionId);
+                dispatcherRunningSessionIds.has(r.sessionId);
               return (
                 <div
                   key={r.sessionId}
@@ -359,8 +356,7 @@ export function SessionPanel({
             {sessions.map((session) => {
               const isRunning =
                 Boolean(session.isRunning) ||
-                dispatcherRunningSessionIds.has(session.id) ||
-                subprocessRunningSessionIds.has(session.id);
+                dispatcherRunningSessionIds.has(session.id);
               return (
                 <div
                   key={session.id}

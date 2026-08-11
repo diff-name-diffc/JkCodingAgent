@@ -4,7 +4,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::platform::get_login_shell_env;
-use crate::shared::{ManagedPtySnapshot, TaskManager};
+use crate::shared::TaskManager;
 
 const PTY_READ_BUFFER_SIZE: usize = 64 * 1024;
 const PTY_EMIT_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
@@ -34,16 +34,12 @@ enum PtyEmitMode {
 }
 
 fn emit_pty_event(app: &AppHandle, id: &str, event_name: &str, id_key: &str, data: String) {
-    let seq = app.state::<TaskManager>().append_output(id, &data);
     let mut payload = serde_json::Map::new();
     payload.insert(
         id_key.to_string(),
         serde_json::Value::String(id.to_string()),
     );
     payload.insert("data".to_string(), serde_json::Value::String(data));
-    if let Some(seq) = seq {
-        payload.insert("seq".to_string(), serde_json::Value::from(seq));
-    }
     let _ = app.emit(event_name, serde_json::Value::Object(payload));
 }
 
@@ -150,14 +146,6 @@ fn spawn_pty_reader(
 // ── Tauri 命令 ───────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn stop_task(
-    task_manager: State<'_, TaskManager>,
-    task_id: String,
-) -> Result<(), String> {
-    task_manager.kill_child(&task_id)
-}
-
-#[tauri::command]
 pub async fn send_input(app: AppHandle, task_id: String, data: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let tm = app.state::<TaskManager>();
@@ -188,14 +176,6 @@ pub async fn resize_pty(
     })
     .await
     .map_err(|e| format!("spawn_blocking 失败: {e}"))?
-}
-
-#[tauri::command]
-pub async fn get_pty_output_snapshot(
-    task_manager: State<'_, TaskManager>,
-    task_id: String,
-) -> Result<ManagedPtySnapshot, String> {
-    task_manager.output_snapshot(&task_id)
 }
 
 #[tauri::command]

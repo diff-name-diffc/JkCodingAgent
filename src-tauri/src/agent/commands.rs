@@ -5,7 +5,7 @@ use serde_json::Value;
 use super::config::DispatcherAgentConfig;
 use super::db::content::{segments_to_plain_text, try_parse_segments_json, ContentSegment};
 use super::db::{
-    AgentContext, AhaContextConfig, AhaSettingsV2, ChatCategory, ChatCategoryAgentConfig,
+    AgentContext, AhaSettingsV2, ChatCategory, ChatCategoryAgentConfig,
     ChatSessionRecord, DispatcherDb, DispatcherMessageRecord, DispatcherModelConfig,
     DispatcherSessionKind, DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
     DispatcherToolArtifactRecord, KeywordAction, ProjectSessionRecord, SessionPage,
@@ -21,85 +21,11 @@ use super::summary::{
     fallback_session_title, parse_keyword_actions, summarize_session_keywords,
     summarize_session_title, SessionTitleMessage,
 };
-use super::voice::{resolve_dashscope_websocket_url, VoiceAsrConfig, VoiceAsrManager};
 use crate::browser::BrowserManager;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager};
 
 const SESSION_TITLE_RECENT_DIALOGUES: usize = 3;
-
-fn resolve_voice_asr_config(state: &DispatcherState) -> Result<VoiceAsrConfig, String> {
-    let saved = state
-        .db()
-        .get_settings_v2()
-        .map_err(|error| error.to_string())?;
-    let loaded = DispatcherAgentConfig::load().ok();
-    let asr_config = saved
-        .shared
-        .asr_model_configs
-        .iter()
-        .find(|config| config.active)
-        .or_else(|| saved.shared.asr_model_configs.first());
-
-    let api_key = asr_config
-        .map(|config| config.api_key.trim())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .or_else(|| {
-            std::env::var("DASHSCOPE_API_KEY").ok().and_then(|value| {
-                let trimmed = value.trim().to_string();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            })
-        })
-        .or_else(|| {
-            asr_config
-                .filter(|config| config.url.contains("dashscope"))
-                .map(|config| config.api_key.trim())
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-        })
-        .or_else(|| {
-            loaded.as_ref().and_then(|config| {
-                if config.api_base.contains("dashscope") && !config.api_key.trim().is_empty() {
-                    Some(config.api_key.trim().to_string())
-                } else {
-                    None
-                }
-            })
-        })
-        .ok_or_else(|| {
-            "未检测到 ASR API Key，请先在 Aha 智能体设置中填写 ASR API Key，或设置 DASHSCOPE_API_KEY。"
-                .to_string()
-        })?;
-
-    let saved_websocket_url = asr_config
-        .map(|config| config.url.trim())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-
-    let api_base = saved_websocket_url.clone().or_else(|| {
-        loaded
-            .as_ref()
-            .map(|config| config.api_base.trim())
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-    });
-
-    Ok(VoiceAsrConfig {
-        api_key,
-        websocket_url: saved_websocket_url.unwrap_or_else(|| {
-            resolve_dashscope_websocket_url(
-                api_base
-                    .as_deref()
-                    .unwrap_or("https://dashscope.aliyuncs.com/compatible-mode/v1"),
-            )
-        }),
-    })
-}
 
 fn spawn_session_title_update(
     state: &DispatcherState,
@@ -683,18 +609,6 @@ pub async fn dispatcher_get_tool_artifact(
     .await
 }
 
-#[tauri::command]
-pub async fn dispatcher_delete_session(
-    state: tauri::State<'_, DispatcherState>,
-    workspace_id: String,
-) -> Result<(), String> {
-    let db = state.db().clone();
-    run_dispatcher_db("dispatcher_delete_session", move || {
-        db.delete_session(&workspace_id)
-    })
-    .await
-}
-
 // ── v6: Chat Sessions (paginated) ─────────────────────────────
 
 #[tauri::command]
@@ -736,19 +650,6 @@ pub async fn chat_delete_session(
     let db = state.db().clone();
     run_dispatcher_db("chat_delete_session", move || {
         db.delete_chat_session(&session_id)
-    })
-    .await
-}
-
-#[tauri::command]
-pub async fn chat_update_session_title(
-    state: tauri::State<'_, DispatcherState>,
-    session_id: String,
-    title: String,
-) -> Result<Option<ChatSessionRecord>, String> {
-    let db = state.db().clone();
-    run_dispatcher_db("chat_update_session_title", move || {
-        db.update_chat_session_title(&session_id, &title)
     })
     .await
 }
@@ -885,31 +786,6 @@ pub async fn chat_delete_category(
     let db = state.db().clone();
     run_dispatcher_db("chat_delete_category", move || {
         db.delete_chat_category(&category_id)
-    })
-    .await
-}
-
-#[tauri::command]
-pub async fn chat_set_session_category(
-    state: tauri::State<'_, DispatcherState>,
-    workspace_id: String,
-    category_id: String,
-) -> Result<(), String> {
-    let db = state.db().clone();
-    run_dispatcher_db("chat_set_session_category", move || {
-        db.set_session_category(&workspace_id, &category_id)
-    })
-    .await
-}
-
-#[tauri::command]
-pub async fn chat_reorder_categories(
-    state: tauri::State<'_, DispatcherState>,
-    ordered_ids: Vec<String>,
-) -> Result<(), String> {
-    let db = state.db().clone();
-    run_dispatcher_db("chat_reorder_categories", move || {
-        db.reorder_chat_categories(&ordered_ids)
     })
     .await
 }
@@ -1161,43 +1037,6 @@ pub async fn aha_save_settings_v2(
 }
 
 #[tauri::command]
-pub async fn aha_set_active_chat_model(
-    state: tauri::State<'_, DispatcherState>,
-    model_index: usize,
-) -> Result<Vec<DispatcherModelConfig>, String> {
-    let mut settings = state
-        .db()
-        .get_settings_v2()
-        .map_err(|error| error.to_string())?;
-
-    if model_index >= settings.chat.chat_model_configs.len() {
-        return Err(format!("聊天主模型索引越界：{model_index}"));
-    }
-
-    for (index, config) in settings.chat.chat_model_configs.iter_mut().enumerate() {
-        config.active = index == model_index;
-    }
-
-    let saved = state
-        .db()
-        .save_settings_v2(&settings)
-        .map_err(|error| error.to_string())?;
-    Ok(saved.chat.chat_model_configs)
-}
-
-#[tauri::command]
-pub async fn aha_get_context_config(
-    state: tauri::State<'_, DispatcherState>,
-    context: String,
-) -> Result<AhaContextConfig, String> {
-    let ctx = AgentContext::from_wire(&context).map_err(|e| e.to_string())?;
-    state
-        .db()
-        .get_settings_for_context(ctx)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 pub async fn aha_list_agent_tools(
     state: tauri::State<'_, DispatcherState>,
     context: String,
@@ -1229,40 +1068,4 @@ pub async fn dispatcher_stop_run(
     let stopped = state.stop_run(&workspace_id);
     let _ = browser_manager.stop(&workspace_id).await;
     Ok(stopped)
-}
-
-#[tauri::command]
-pub fn dispatcher_start_voice_input(
-    state: tauri::State<'_, DispatcherState>,
-    voice_state: tauri::State<'_, VoiceAsrManager>,
-    app: AppHandle,
-    workspace_id: String,
-) -> Result<(), String> {
-    let config = resolve_voice_asr_config(&state)?;
-    voice_state.start_session(app, workspace_id, config)
-}
-
-#[tauri::command]
-pub fn dispatcher_append_voice_audio(
-    voice_state: tauri::State<'_, VoiceAsrManager>,
-    workspace_id: String,
-    audio_base64: String,
-) -> Result<(), String> {
-    voice_state.append_audio(&workspace_id, audio_base64)
-}
-
-#[tauri::command]
-pub fn dispatcher_finish_voice_input(
-    voice_state: tauri::State<'_, VoiceAsrManager>,
-    workspace_id: String,
-) -> Result<(), String> {
-    voice_state.finish_session(&workspace_id)
-}
-
-#[tauri::command]
-pub fn dispatcher_cancel_voice_input(
-    voice_state: tauri::State<'_, VoiceAsrManager>,
-    workspace_id: String,
-) {
-    voice_state.cancel_session(&workspace_id);
 }

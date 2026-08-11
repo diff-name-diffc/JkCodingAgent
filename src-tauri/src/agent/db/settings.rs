@@ -4,7 +4,6 @@ use anyhow::{Context, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-use super::sessions::AgentContext;
 use super::DispatcherDb;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -411,13 +410,5 @@ impl DispatcherDb {
         .context("save dispatcher settings v2")?;
 
         self.get_settings_v2()
-    }
-
-    pub fn get_settings_for_context(&self, context: AgentContext) -> Result<AhaContextConfig> {
-        let settings = self.get_settings_v2()?;
-        Ok(match context {
-            AgentContext::Project => settings.project,
-            AgentContext::Chat => settings.chat,
-        })
     }
 }

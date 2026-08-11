@@ -7,7 +7,6 @@ import {
   Layers,
   Plus,
   Trash2,
-  BarChart2,
   MessageCircle,
 } from "lucide-react";
 import type { Project } from "../types";
@@ -21,9 +20,6 @@ import {
 } from "./ui/sci-fi-shell";
 import appLogo from "../assets/app-logo.png";
 
-const AnalyticsDashboard = lazy(() =>
-  import("./AnalyticsDashboard").then((module) => ({ default: module.AnalyticsDashboard })),
-);
 const HomeChatPage = lazy(() =>
   import("./HomeChatPage").then((module) => ({ default: module.HomeChatPage })),
 );
@@ -93,7 +89,7 @@ export function WelcomePage({
   const [query, setQuery] = useState("");
   const [hov, setHov] = useState<string | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
-  const [view, setView] = useState<"projects" | "chat" | "analytics">("chat");
+  const [view, setView] = useState<"projects" | "chat">("chat");
 
   const filtered = useMemo(() => {
     if (!query.trim()) return projects;
@@ -130,12 +126,6 @@ export function WelcomePage({
               active={view === "projects"}
               onClick={() => setView("projects")}
             />
-            <SidebarItem
-              icon={<BarChart2 size={18} />}
-              label="分析"
-              active={view === "analytics"}
-              onClick={() => setView("analytics")}
-            />
           </nav>
 
           <div className="ai-home-nav-footer">
@@ -146,10 +136,6 @@ export function WelcomePage({
         {view === "chat" ? (
           <Suspense fallback={<WelcomePaneFallback />}>
             <HomeChatPage />
-          </Suspense>
-        ) : view === "analytics" ? (
-          <Suspense fallback={<WelcomePaneFallback />}>
-            <AnalyticsDashboard projects={projects} />
           </Suspense>
         ) : (
           <div className="ai-home-pane ai-home-projects">

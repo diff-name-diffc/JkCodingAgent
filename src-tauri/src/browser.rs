@@ -17,6 +17,10 @@ use tokio::time::{timeout, Duration};
 use crate::platform::get_login_shell_path;
 use crate::project::config::{read_project_config, BrowserConfig};
 
+mod url;
+
+pub(crate) use url::normalize_browser_url;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserStatus {
@@ -226,15 +230,6 @@ impl BrowserManager {
             }
         }
         Ok(process.status())
-    }
-
-    pub async fn list_sessions(&self) -> Vec<BrowserStatus> {
-        self.sessions
-            .lock()
-            .await
-            .values()
-            .map(|process| process.status())
-            .collect()
     }
 
     pub async fn command(
@@ -1148,9 +1143,7 @@ pub async fn browser_navigate(
     url: String,
     project_path: Option<String>,
 ) -> Result<Value, String> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err("URL 必须以 http:// 或 https:// 开头".to_string());
-    }
+    let url = normalize_browser_url(url)?;
     let project_path = match project_path {
         Some(path) if !path.trim().is_empty() => path,
         _ => plain_chat_browser_workspace()?
@@ -1231,11 +1224,4 @@ pub async fn browser_reopen(
     let status = manager.reopen(&session_id).await?;
     let _ = app.emit("browser-status", status);
     Ok(())
-}
-
-#[tauri::command]
-pub async fn browser_list_sessions(
-    manager: tauri::State<'_, BrowserManager>,
-) -> Result<Vec<BrowserStatus>, String> {
-    Ok(manager.list_sessions().await)
 }

@@ -1,8 +1,6 @@
 import * as React from "react";
-import { motion } from "framer-motion";
 import {
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   Code2,
   Folder,
@@ -740,14 +738,5 @@ function CollapsedRail({
         <TooltipContent side="right">设置</TooltipContent>
       </Tooltip>
     </div>
-  );
-}
-
-/** Small animated caret used by the sidebar header (kept here for reuse). */
-export function SidebarChevron({ open }: { open: boolean }) {
-  return (
-    <motion.span animate={{ rotate: open ? 0 : -90 }} transition={{ duration: 0.15 }}>
-      <ChevronLeft className="h-3.5 w-3.5" />
-    </motion.span>
   );
 }

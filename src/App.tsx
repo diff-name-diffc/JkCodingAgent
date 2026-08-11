@@ -1,8 +1,7 @@
-import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from "react";
+import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { open as openDialog, confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import type { Project, Task } from "./types";
-import { isActiveTaskStatus } from "./types";
+import type { Project } from "./types";
 import { WelcomePage } from "./components/WelcomePage";
 import { useToast } from "./components/Toast";
 import { normalizeThemePreference, persistThemePreference } from "./lib/theme";
@@ -40,7 +39,6 @@ function App() {
   const { showToast } = useToast();
 
   const [projects, setProjects] = useState<Project[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [mountedProjectIds, setMountedProjectIds] = useState<string[]>([]);
 
@@ -57,31 +55,6 @@ function App() {
       });
   }, []);
 
-  // ── Debounced task persistence ─────────────────────────────────────────────
-  const persistTimersRef = useRef<Record<string, number>>({});
-  const tasksRef = useRef<Task[]>([]);
-  tasksRef.current = tasks;
-
-  const debouncedPersistProjectTasks = useCallback(
-    (projectId: string, allTasks: Task[]) => {
-      const timers = persistTimersRef.current;
-      if (timers[projectId]) {
-        window.clearTimeout(timers[projectId]);
-      }
-      timers[projectId] = window.setTimeout(() => {
-        delete timers[projectId];
-        invoke("save_project_tasks", {
-          projectId,
-          tasks: allTasks.filter((t) => t.projectId === projectId),
-        }).catch((e: unknown) => {
-          console.error(e);
-          showToast(`保存任务失败（项目 ${projectId}）：${String(e)}`);
-        });
-      }, 400);
-    },
-    [showToast],
-  );
-
   const mountProject = useCallback((projectId: string) => {
     setMountedProjectIds((prev) => (prev.includes(projectId) ? prev : [...prev, projectId]));
   }, []);
@@ -91,12 +64,6 @@ function App() {
       // Load projects from ~/.jkcodingagent/projects.json
       const loadedProjects = await invoke<Project[]>("load_projects");
       setProjects(loadedProjects);
-
-      // Load tasks for all known projects
-      const chunks = await Promise.all(
-        loadedProjects.map((p) => invoke<Task[]>("load_project_tasks", { projectId: p.id })),
-      );
-      setTasks(chunks.flat());
     }
 
     init().catch(console.error);
@@ -156,44 +123,14 @@ function App() {
     }
   }, [activeProject, mountedProjectIds, projects]);
 
-  async function deleteTasks(taskIds: string[]) {
-    if (taskIds.length === 0) return;
-
-    // Phase 1: stop active tasks on backend (read via ref, not setTasks)
-    const toDelete = new Set(taskIds);
-    const activeTasks = tasksRef.current.filter(
-      (t) => toDelete.has(t.id) && isActiveTaskStatus(t.status),
-    );
-    await Promise.allSettled(
-      activeTasks.map((task) =>
-        invoke("stop_task", { taskId: task.id }).catch((e: unknown) => {
-          showToast(`停止任务失败：${String(e)}`);
-        }),
-      ),
-    );
-
-    // Phase 2: atomically remove from state and persist
-    setTasks((prev) => {
-      const next = prev.filter((task) => !toDelete.has(task.id));
-      if (next.length === prev.length) return prev;
-      const affectedProjectIds = new Set(
-        prev.filter((t) => toDelete.has(t.id)).map((t) => t.projectId),
-      );
-      affectedProjectIds.forEach((pid) => debouncedPersistProjectTasks(pid, next));
-      return next;
-    });
-  }
-
   async function handleDeleteProject(projectId: string) {
     const project = projects.find((p) => p.id === projectId);
     if (!project) return;
-    const ok = await confirm(`确定删除项目“${project.name}”及其全部任务记录吗？`, {
+    const ok = await confirm(`确定删除项目“${project.name}”吗？`, {
       title: "删除项目",
       kind: "warning",
     });
     if (!ok) return;
-    const projectTaskIds = tasks.filter((t) => t.projectId === projectId).map((t) => t.id);
-    await deleteTasks(projectTaskIds);
     setProjects((prev) => {
       const next = prev.filter((p) => p.id !== projectId);
       persistProjects(next, showToast);
@@ -252,7 +189,6 @@ function App() {
                 visible={activeProject?.id === project.id}
                 allProjects={railProjects}
                 openProjects={mountedProjects}
-                tasks={tasks}
                 onBack={handleBack}
                 onSwitchProject={handleProjectClick}
                 onCloseProject={handleCloseProject}

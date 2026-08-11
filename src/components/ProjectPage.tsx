@@ -3,15 +3,12 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Project,
-  Task,
   ProjectMcpStatus,
   BrowserStatus,
 } from "../types";
 import { SessionPanel } from "./SessionPanel";
-import type { FileViewerHandle } from "./FileViewer";
 import { ProjectRail } from "./ProjectRail";
 import { RightToolbar } from "./RightToolbar";
-import type { ShellTerminalPanelHandle } from "./ShellTerminalPanel";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
 import { ChatPageV2 } from "./chat-page-v2";
@@ -79,7 +76,6 @@ export function ProjectPage({
   visible = true,
   allProjects = [],
   openProjects,
-  tasks,
   onBack,
   onSwitchProject,
   onCloseProject,
@@ -91,7 +87,6 @@ export function ProjectPage({
   /** 当前已打开（挂载）的项目窗口，展示在左侧项目栏。必传：项目栏语义
    * 是「仅展示已打开的窗口」，不在组件内回退 allProjects，避免两套语义。 */
   openProjects: Project[];
-  tasks: Task[];
   onBack: () => void;
   onSwitchProject: (project: Project) => void;
   onCloseProject?: (project: Project) => void;
@@ -138,9 +133,7 @@ export function ProjectPage({
   const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
   const [showSessionWorkbench, setShowSessionWorkbench] = useState(true);
   const [sessionSidebarCollapsed, setSessionSidebarCollapsed] = useState(false);
-  const shellRef = useRef<ShellTerminalPanelHandle>(null);
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
-  const fileViewerRef = useRef<FileViewerHandle>(null);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
   const hasEditorWorkbenchContent = openDiff !== null || openFiles.length > 0;
@@ -345,7 +338,6 @@ export function ProjectPage({
     <ProjectRail
       projects={openProjects}
       allProjects={allProjects}
-      allTasks={tasks}
       activeProjectId={project.id}
       sessionSidebarCollapsed={sessionSidebarCollapsed}
       onExpandSessionSidebar={() => setSessionSidebarCollapsed(false)}
@@ -470,7 +462,6 @@ export function ProjectPage({
           )
         ) : (
           <FileViewer
-            ref={fileViewerRef}
             tabs={openFiles}
             activeTabId={activeFileTabId}
             projectPath={project.path}
@@ -540,7 +531,6 @@ export function ProjectPage({
   const shellTerminalNode = showShellTerminal ? (
     <Suspense fallback={null}>
       <ShellTerminalPanel
-        ref={shellRef}
         projectPath={project.path}
         projectId={project.id}
         isActive={visible}
@@ -588,7 +578,6 @@ export function ProjectPage({
           <Suspense fallback={<LazyPaneFallback label="Git 变更加载中..." />}>
             <GitChanges
               projectPath={project.path}
-              currentTaskCreatedAt={null}
               onFileSelect={handleDiffFileSelect}
               width={rightPanelWidth}
             />
@@ -641,7 +630,7 @@ export function ProjectPage({
       {showDispatcherSettings && (
         <Suspense fallback={null}>
           <AppSettingsDialog
-            initialTab="aha"
+            initialTab="providers"
             projectId={project.id}
             projectPath={project.path}
             onClose={() => setShowDispatcherSettings(false)}

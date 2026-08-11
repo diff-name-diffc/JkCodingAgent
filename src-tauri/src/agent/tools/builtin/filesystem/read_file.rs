@@ -36,7 +36,7 @@ impl AgentTool for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "读取文本文件，输出格式为 行号|内容。paths 支持普通文件路径，也支持 path:start-end 协议精确读取包含边界的行范围，例如 backend/app/services/workspace_files.py:123-156。大文件可配合 offset 和 limit 分段读取。compress=false 绝不进行摘要，超过 2000 字符的内联结果会带定位标记截断。"
+        "读取文本文件，输出格式为 行号|内容。paths 支持普通文件路径，也支持 path:start-end 协议精确读取包含边界的行范围，例如 backend/app/services/workspace_files.py:123-156；行范围超出文件实际行数时不报错，自动返回到文件末尾的可用内容。大文件可配合 offset 和 limit 分段读取。compress=false 绝不进行摘要，超过 2000 字符的内联结果会带定位标记截断。"
     }
 
     fn parameters(&self) -> Value {
@@ -127,23 +127,15 @@ fn read_file_lines(path: &str, offset: usize, limit: usize, context: &ToolContex
         .range
         .map(|(start, end)| (start, end - start + 1))
         .unwrap_or((offset, limit));
-    read_numbered_lines(reader, spec.path, start_line, line_limit, spec.range)
+    read_numbered_lines(reader, start_line, line_limit)
 }
 
-fn read_numbered_lines<R: BufRead>(
-    reader: R,
-    file_path_text: &str,
-    start_line: usize,
-    line_limit: usize,
-    requested_range: Option<(usize, usize)>,
-) -> String {
+fn read_numbered_lines<R: BufRead>(reader: R, start_line: usize, line_limit: usize) -> String {
     let skip_lines = start_line.saturating_sub(1);
     let mut output = Vec::new();
-    let mut last_line_number = 0;
 
     for (index, line_result) in reader.lines().enumerate() {
         let line_number = index + 1;
-        last_line_number = line_number;
         let line = match line_result {
             Ok(line) => line,
             Err(error) => return format!("读取文件失败：{error}"),
@@ -157,14 +149,7 @@ fn read_numbered_lines<R: BufRead>(
         output.push(format!("{line_number}|{line}"));
     }
 
-    if let Some((start, end)) = requested_range {
-        let expected_lines = end - start + 1;
-        if output.len() != expected_lines {
-            return format!(
-                "错误：行号范围 {start}-{end} 超出文件范围，{file_path_text} 共 {last_line_number} 行"
-            );
-        }
-    }
+    // 行范围超出文件实际行数时不报错，返回实际可读到的最大内容。
     output.join("\n")
 }
 
@@ -252,30 +237,22 @@ mod tests {
 
     #[test]
     fn reads_the_complete_inclusive_line_range() {
-        let result = read_numbered_lines(
-            Cursor::new("one\ntwo\nthree\nfour\nfive\n"),
-            "src/app.rs",
-            2,
-            3,
-            Some((2, 4)),
-        );
+        let result = read_numbered_lines(Cursor::new("one\ntwo\nthree\nfour\nfive\n"), 2, 3);
 
         assert_eq!(result, "2|two\n3|three\n4|four");
     }
 
     #[test]
-    fn rejects_a_line_range_beyond_the_end_of_the_file() {
-        let result = read_numbered_lines(
-            Cursor::new("one\ntwo\nthree\n"),
-            "src/app.rs",
-            2,
-            3,
-            Some((2, 4)),
-        );
+    fn returns_available_content_when_the_line_range_overshoots_the_file() {
+        let result = read_numbered_lines(Cursor::new("one\ntwo\nthree\n"), 2, 3);
 
-        assert_eq!(
-            result,
-            "错误：行号范围 2-4 超出文件范围，src/app.rs 共 3 行"
-        );
+        assert_eq!(result, "2|two\n3|three");
+    }
+
+    #[test]
+    fn returns_empty_when_the_start_line_is_beyond_the_file() {
+        let result = read_numbered_lines(Cursor::new("one\ntwo\nthree\n"), 10, 3);
+
+        assert_eq!(result, "");
     }
 }

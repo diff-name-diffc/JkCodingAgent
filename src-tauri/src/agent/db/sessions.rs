@@ -286,14 +286,14 @@ impl DispatcherDb {
         if has_more {
             items.pop();
         }
-        let workspace_ids = items
+        let session_ids = items
             .iter()
             .map(|session| session.id.clone())
             .collect::<Vec<_>>();
-        let mut keywords_by_workspace =
-            super::keywords::load_keywords_by_workspace_ids(&conn, &workspace_ids)?;
+        let mut keywords_by_session =
+            super::keywords::load_keywords_by_session_ids(&conn, &session_ids)?;
         for session in &mut items {
-            session.keywords = keywords_by_workspace
+            session.keywords = keywords_by_session
                 .remove(&session.id)
                 .unwrap_or_default();
         }
@@ -329,8 +329,10 @@ impl DispatcherDb {
             updated_at: now(),
             keywords: Vec::new(),
         };
-        let conn = self.conn()?;
-        conn.execute(
+        let mut conn = self.conn()?;
+        // 子表与统一表两条 INSERT 同一事务包裹，第二条失败时整体回滚，不留孤儿记录。
+        let tx = conn.transaction().context("begin create chat session")?;
+        tx.execute(
             "INSERT INTO chat_sessions (id, title, category, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
@@ -342,7 +344,7 @@ impl DispatcherDb {
             ],
         )
         .context("insert chat session")?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
              VALUES (?1, '__global_chat__', 'chat', ?2, ?3, ?4, ?5)",
             params![
@@ -354,12 +356,26 @@ impl DispatcherDb {
             ],
         )
         .context("insert chat session into dispatcher_sessions")?;
+        tx.commit().context("commit create chat session")?;
         Ok(record)
     }
 
     pub fn delete_chat_session(&self, session_id: &str) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
+        // 先校验会话类型，防止误删另一类型会话并在统一表/子表留下孤儿记录。
+        let kind: String = tx
+            .query_row(
+                "SELECT kind FROM dispatcher_sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("load dispatcher session kind")?
+            .ok_or_else(|| anyhow::anyhow!("chat session not found: {session_id}"))?;
+        if kind != "chat" {
+            anyhow::bail!("session {session_id} is not a chat session");
+        }
         tx.execute(
             "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
             params![session_id],
@@ -388,7 +404,7 @@ impl DispatcherDb {
         )?;
         let image_paths = delete_chat_image_resources(&tx, session_id)?;
         tx.execute(
-            "DELETE FROM session_keywords WHERE workspace_id = ?1",
+            "DELETE FROM session_keywords WHERE session_id = ?1",
             params![session_id],
         )?;
         tx.execute(
@@ -404,31 +420,42 @@ impl DispatcherDb {
             params![session_id],
         )?;
         tx.commit()?;
-        remove_chat_image_files(&image_paths)?;
+        // 数据库删除已提交，图片文件清理失败不应把删除误报为失败（否则调用方
+        // 按 Err 重试时记录已不存在，孤儿文件将永远无法清理）。改为 best-effort。
+        if let Err(error) = remove_chat_image_files(&image_paths) {
+            eprintln!("remove chat image files failed (chat session {session_id}): {error:#}");
+        }
         Ok(())
     }
 
     #[allow(dead_code)]
     pub fn update_chat_session_updated_at(&self, session_id: &str) -> Result<()> {
         let conn = self.conn()?;
+        let updated_at = now();
         conn.execute(
             "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![now(), session_id],
+            params![&updated_at, session_id],
         )
         .context("update chat session updated_at")?;
+        conn.execute(
+            "UPDATE dispatcher_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![&updated_at, session_id],
+        )
+        .context("reflect chat session updated_at in dispatcher_sessions")?;
         Ok(())
     }
 
     pub fn set_chat_session_category(&self, session_id: &str, category_id: &str) -> Result<()> {
         let conn = self.conn()?;
+        let updated_at = now();
         conn.execute(
             "UPDATE chat_sessions SET category = ?1, updated_at = ?2 WHERE id = ?3",
-            params![category_id, now(), session_id],
+            params![category_id, &updated_at, session_id],
         )
         .context("set chat session category")?;
         conn.execute(
-            "UPDATE dispatcher_sessions SET category = ?1 WHERE id = ?2",
-            params![category_id, session_id],
+            "UPDATE dispatcher_sessions SET category = ?1, updated_at = ?2 WHERE id = ?3",
+            params![category_id, &updated_at, session_id],
         )
         .context("reflect category in dispatcher_sessions")?;
         Ok(())
@@ -470,14 +497,14 @@ impl DispatcherDb {
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("list project sessions paginated")?;
         let mut items = items;
-        let workspace_ids = items
+        let session_ids = items
             .iter()
             .map(|session| session.id.clone())
             .collect::<Vec<_>>();
-        let mut keywords_by_workspace =
-            super::keywords::load_keywords_by_workspace_ids(&conn, &workspace_ids)?;
+        let mut keywords_by_session =
+            super::keywords::load_keywords_by_session_ids(&conn, &session_ids)?;
         for session in &mut items {
-            session.keywords = keywords_by_workspace
+            session.keywords = keywords_by_session
                 .remove(&session.id)
                 .unwrap_or_default();
         }
@@ -506,8 +533,10 @@ impl DispatcherDb {
             updated_at: now(),
             keywords: Vec::new(),
         };
-        let conn = self.conn()?;
-        conn.execute(
+        let mut conn = self.conn()?;
+        // 子表与统一表两条 INSERT 同一事务包裹，第二条失败时整体回滚，不留孤儿记录。
+        let tx = conn.transaction().context("begin create project session")?;
+        tx.execute(
             "INSERT INTO project_sessions (id, project_id, title, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
@@ -519,7 +548,7 @@ impl DispatcherDb {
             ],
         )
         .context("insert project session")?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
              VALUES (?1, ?2, 'project', ?3, '', ?4, ?5)",
             params![
@@ -531,12 +560,26 @@ impl DispatcherDb {
             ],
         )
         .context("insert project session into dispatcher_sessions")?;
+        tx.commit().context("commit create project session")?;
         Ok(record)
     }
 
     pub fn delete_project_session(&self, session_id: &str) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
+        // 先校验会话类型，防止误删另一类型会话并在统一表/子表留下孤儿记录。
+        let kind: String = tx
+            .query_row(
+                "SELECT kind FROM dispatcher_sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("load dispatcher session kind")?
+            .ok_or_else(|| anyhow::anyhow!("project session not found: {session_id}"))?;
+        if kind != "project" {
+            anyhow::bail!("session {session_id} is not a project session");
+        }
         tx.execute(
             "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
             params![session_id],
@@ -565,7 +608,7 @@ impl DispatcherDb {
         )?;
         let image_paths = delete_chat_image_resources(&tx, session_id)?;
         tx.execute(
-            "DELETE FROM session_keywords WHERE workspace_id = ?1",
+            "DELETE FROM session_keywords WHERE session_id = ?1",
             params![session_id],
         )?;
         tx.execute(
@@ -581,18 +624,28 @@ impl DispatcherDb {
             params![session_id],
         )?;
         tx.commit()?;
-        remove_chat_image_files(&image_paths)?;
+        // 数据库删除已提交，图片文件清理失败不应把删除误报为失败（否则调用方
+        // 按 Err 重试时记录已不存在，孤儿文件将永远无法清理）。改为 best-effort。
+        if let Err(error) = remove_chat_image_files(&image_paths) {
+            eprintln!("remove chat image files failed (project session {session_id}): {error:#}");
+        }
         Ok(())
     }
 
     #[allow(dead_code)]
     pub fn update_project_session_updated_at(&self, session_id: &str) -> Result<()> {
         let conn = self.conn()?;
+        let updated_at = now();
         conn.execute(
             "UPDATE project_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![now(), session_id],
+            params![&updated_at, session_id],
         )
         .context("update project session updated_at")?;
+        conn.execute(
+            "UPDATE dispatcher_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![&updated_at, session_id],
+        )
+        .context("reflect project session updated_at in dispatcher_sessions")?;
         Ok(())
     }
 

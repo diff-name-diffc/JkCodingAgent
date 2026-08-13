@@ -61,6 +61,20 @@ def connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def ensure_keywords_schema_migrated(conn: sqlite3.Connection) -> None:
+    """v28 迁移把 session_keywords.workspace_id 改名为 session_id；脚本按新列名
+    读写，旧库需先启动一次新版本应用完成迁移。"""
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(session_keywords)").fetchall()
+    }
+    if "session_id" not in columns:
+        raise SystemExit(
+            "session_keywords 仍为旧 schema（workspace_id 列），"
+            "请先启动一次新版本应用完成 v28 数据库迁移，再运行本脚本。"
+        )
+
+
 def active_config(configs: list[dict[str, Any]]) -> dict[str, Any] | None:
     for item in configs:
         if item.get("active"):
@@ -143,7 +157,7 @@ def list_candidate_sessions(conn: sqlite3.Connection, force: bool, limit: int) -
         sql += """
           AND NOT EXISTS (
             SELECT 1 FROM session_keywords sk
-            WHERE sk.workspace_id = ds.id
+            WHERE sk.session_id = ds.id
           )
         """
     sql += " ORDER BY ds.updated_at ASC"
@@ -199,7 +213,7 @@ def existing_keywords_json(conn: sqlite3.Connection, session_id: str) -> str:
         """
         SELECT keyword, weight
         FROM session_keywords
-        WHERE workspace_id = ?
+        WHERE session_id = ?
         ORDER BY weight DESC, keyword ASC
         """,
         (session_id,),
@@ -308,7 +322,7 @@ def apply_actions(
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
     with conn:
         if force:
-            conn.execute("DELETE FROM session_keywords WHERE workspace_id = ?", (session_id,))
+            conn.execute("DELETE FROM session_keywords WHERE session_id = ?", (session_id,))
         changed = 0
         for action in actions:
             kind = action["action"]
@@ -318,7 +332,7 @@ def apply_actions(
                     continue
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO session_keywords (workspace_id, keyword, weight, created_at)
+                    INSERT OR IGNORE INTO session_keywords (session_id, keyword, weight, created_at)
                     VALUES (?, ?, ?, ?)
                     """,
                     (session_id, keyword, float(action.get("weight") or 1.0), timestamp),
@@ -328,21 +342,21 @@ def apply_actions(
                 keyword = str(action.get("keyword") or "").strip()
                 if keyword:
                     conn.execute(
-                        "DELETE FROM session_keywords WHERE workspace_id = ? AND keyword = ?",
+                        "DELETE FROM session_keywords WHERE session_id = ? AND keyword = ?",
                         (session_id, keyword),
                     )
                     changed += 1
             elif kind == "merge":
                 for keyword in action.get("from") or []:
                     conn.execute(
-                        "DELETE FROM session_keywords WHERE workspace_id = ? AND keyword = ?",
+                        "DELETE FROM session_keywords WHERE session_id = ? AND keyword = ?",
                         (session_id, str(keyword).strip()),
                     )
                 to_keyword = str(action.get("to") or "").strip()
                 if to_keyword:
                     conn.execute(
                         """
-                        INSERT OR REPLACE INTO session_keywords (workspace_id, keyword, weight, created_at)
+                        INSERT OR REPLACE INTO session_keywords (session_id, keyword, weight, created_at)
                         VALUES (?, ?, ?, ?)
                         """,
                         (session_id, to_keyword, float(action.get("weight") or 1.0), timestamp),
@@ -356,6 +370,7 @@ def apply_actions(
 def main() -> int:
     args = parse_args()
     conn = connect(args.db)
+    ensure_keywords_schema_migrated(conn)
     config = load_chat_summary_config(conn)
     sessions = list_candidate_sessions(conn, args.force, args.limit)
     print(f"数据库：{Path(args.db).expanduser()}")

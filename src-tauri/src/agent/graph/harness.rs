@@ -33,10 +33,30 @@ const EXCLUDED_AHA_TOOLS: &[&str] = &[
 pub(crate) struct PiModelConfig {
     pub r#ref: String,
     pub url: String,
+    /// 明文 API Key。任何 Serialize 路径（日志、调试输出、DTO 下发前端）都
+    /// 跳过该字段；唯一出口是 `sidecar_value`——节点执行时经 stdin 传给 sidecar。
+    /// Clone 仅用于运行器内部向节点执行上下文传递密钥，不得用于对外序列化。
+    #[serde(skip_serializing)]
     pub api_key: String,
     pub model: String,
     pub category: String,
     pub alias: String,
+}
+
+impl PiModelConfig {
+    /// 明文密钥的唯一出口：sidecar start 消息的 model 字段。
+    /// 手工构建而非复用派生 Serialize，避免派生实现把密钥带到
+    /// 其他序列化点（派生侧 api_key 已 skip_serializing）。
+    pub(crate) fn sidecar_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "ref": self.r#ref,
+            "url": self.url,
+            "apiKey": self.api_key,
+            "model": self.model,
+            "category": self.category,
+            "alias": self.alias,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +121,8 @@ pub(crate) async fn build_harness_catalog(
         diagnostics.push("没有可用于执行图的已启用对话/视觉模型".to_string());
     }
 
+    // Aha 工具的安全元数据直接来自注册表 spec：readonly 取 access.readonly，
+    // review_required 按 spec.safety 重建（非 Safe 一律需审查）。
     let mut tools = aha_specs(registry, workspace)
         .into_iter()
         .map(|spec| GraphHarnessTool {
@@ -123,8 +145,11 @@ pub(crate) async fn build_harness_catalog(
                 description: tool.description,
                 provider: "pi".to_string(),
                 category: "extension".to_string(),
+                // fail-closed：扩展工具的能力无法静态判定，元数据缺失时一律
+                // 按「可写 + 需审查」处理——高危写检查点与审查门禁不得因
+                // 目录声明缺失而放行（旧实现 review_required=false 可绕过门禁）。
                 readonly: false,
-                review_required: false,
+                review_required: true,
             }));
         }
         Err(error) => diagnostics.push(format!("PI 扩展目录发现失败：{error:#}")),
@@ -171,6 +196,7 @@ pub(crate) fn resolve_node_harness(
     }
     let available = aha_specs(registry, workspace);
     let mut host_tools = Vec::new();
+    let mut runtime_names = HashSet::new();
     for selected in node
         .special_tools
         .iter()
@@ -185,9 +211,20 @@ pub(crate) fn resolve_node_harness(
                     node.id, selected.name
                 )
             })?;
+        let runtime_name = format!("aha__{}", sanitize_tool_name(&spec.name));
+        // fail-closed：不同工具名清洗后可能塌缩为同一 runtime_name
+        // （如 foo-bar 与 foo_bar），冲突会让 sidecar 的工具回调无法区分
+        // 目标工具，直接拒绝该节点配置。
+        if !runtime_names.insert(runtime_name.clone()) {
+            return Err(anyhow!(
+                "节点 '{}' 的 Aha 工具运行名冲突：{runtime_name}（工具 '{}' 清洗后与已有工具同名）",
+                node.id,
+                spec.name
+            ));
+        }
         host_tools.push(PiHostToolSpec {
             name: spec.name.clone(),
-            runtime_name: format!("aha__{}", sanitize_tool_name(&spec.name)),
+            runtime_name,
             description: spec.description.clone(),
             parameters: spec.parameters.clone(),
         });

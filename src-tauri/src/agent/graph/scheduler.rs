@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::types::GraphDefinition;
+use super::types::{GraphDefinition, NODE_CANCELLED, NODE_FAILED, NODE_SKIPPED, NODE_SUCCEEDED};
 
 /// 同一 run 内的最大并发节点数。
 pub(crate) const MAX_PARALLEL_NODES: usize = 3;
@@ -44,6 +44,9 @@ pub(crate) struct ReadyQueue {
     dependencies: HashMap<String, Vec<String>>,
     dependents: HashMap<String, Vec<String>>,
     in_flight: HashSet<String>,
+    /// 构造时按终态初始状态级联跳过的下游节点（new() 内已完成级联，
+    /// 驱动层经 cascade_initial_terminal 取回落库/发事件）。
+    initial_skipped: Vec<String>,
 }
 
 impl ReadyQueue {
@@ -57,10 +60,10 @@ impl ReadyQueue {
         for node in &definition.nodes {
             let id = node.id.trim().to_string();
             let state = match initial_status.get(&id).map(String::as_str) {
-                Some("succeeded") => NodeState::Succeeded,
-                Some("failed") => NodeState::Failed,
-                Some("skipped") => NodeState::Skipped,
-                Some("cancelled") => NodeState::Cancelled,
+                Some(NODE_SUCCEEDED) => NodeState::Succeeded,
+                Some(NODE_FAILED) => NodeState::Failed,
+                Some(NODE_SKIPPED) => NodeState::Skipped,
+                Some(NODE_CANCELLED) => NodeState::Cancelled,
                 _ => NodeState::Pending,
             };
             status.insert(id, state);
@@ -86,20 +89,23 @@ impl ReadyQueue {
             dependencies,
             dependents,
             in_flight: HashSet::new(),
+            initial_skipped: Vec::new(),
         }
+        .with_initial_cascade()
     }
 
-    /// 初始状态里 failed/cancelled/skipped 节点的下游必然无法运行（依赖需全部
-    /// 成功）：构造后立刻级联 skip，与 on_finished(FailedFinal) 的语义对齐。
-    /// 否则这些下游会永远停留在 Pending（ready_nodes 恒为空），收尾只能依赖
-    /// 驱动层的防御性 cancel_remaining 兜底，且状态语义不准（应为 skipped
-    /// 而非 cancelled）。注意 Skipped 同为终态（new() 会把 "skipped" 映射为
-    /// NodeState::Skipped），必须与 Failed/Cancelled 一并纳入级联触发集合，
-    /// 否则初始 skipped 节点的下游永久 Pending、调度无法收尾。
-    /// 当前 runner 数据流不会触发本方法（resume 仅复制 succeeded 行，见
-    /// ReadyQueue::new 注释）；作为未来可能出现终态初始状态的防御性兜底。
-    /// 返回新跳过的节点，由驱动层落库并发事件。
-    pub(crate) fn cascade_initial_terminal(&mut self) -> Vec<String> {
+    /// 构造收尾：对初始终态（failed/cancelled/skipped）节点的下游立刻级联
+    /// skip。级联在构造内完成（而非依赖驱动层事后显式调用），即使驱动层
+    /// 忘记调用 cascade_initial_terminal，状态机本身也不会留下永久 Pending
+    /// 的下游（has_unsettled 恒真、只能靠 cancel_remaining 兜底）；
+    /// 级联出的节点列表缓存供驱动层取回落库/发事件。
+    fn with_initial_cascade(mut self) -> Self {
+        self.initial_skipped = self.cascade_terminal_initial_state();
+        self
+    }
+
+    /// 初始终态节点的下游级联 skip 核心逻辑。返回新跳过的节点。
+    fn cascade_terminal_initial_state(&mut self) -> Vec<String> {
         let terminal: Vec<String> = self
             .node_ids
             .iter()
@@ -120,6 +126,18 @@ impl ReadyQueue {
         skipped.sort();
         skipped.dedup();
         skipped
+    }
+
+    /// 初始状态里 failed/cancelled/skipped 节点的下游必然无法运行（依赖需全部
+    /// 成功）：new() 已在构造时完成级联（见 with_initial_cascade），本方法
+    /// 幂等地取出被级联跳过的节点列表，由驱动层落库并发事件。重复调用返回
+    /// 空列表。注意 Skipped 同为终态（new() 会把 "skipped" 映射为
+    /// NodeState::Skipped），必须与 Failed/Cancelled 一并纳入级联触发集合，
+    /// 否则初始 skipped 节点的下游永久 Pending、调度无法收尾。
+    /// 当前 runner 数据流不会触发级联（resume 仅复制 succeeded 行，见
+    /// ReadyQueue::new 注释）；作为未来可能出现终态初始状态的防御性兜底。
+    pub(crate) fn cascade_initial_terminal(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.initial_skipped)
     }
 
     /// 可执行节点：状态 pending、未在执行中、全部依赖已 succeeded。按 id 排序保证确定性。
@@ -145,10 +163,27 @@ impl ReadyQueue {
         ready
     }
 
-    /// 驱动层取走节点投入执行。
-    pub(crate) fn claim(&mut self, node_id: &str) {
+    /// 驱动层取走节点投入执行。内部前置校验 fail-closed：仅接受状态为
+    /// Pending、未在执行中且全部依赖已 succeeded 的已知节点——与
+    /// ready_nodes 同口径，防御驱动层绕过 ready_nodes 直接 claim 造成
+    /// 重复执行/依赖绕过/未知节点入队。返回 false 表示拒绝接管。
+    pub(crate) fn claim(&mut self, node_id: &str) -> bool {
+        let claimable = self.status.get(node_id) == Some(&NodeState::Pending)
+            && !self.in_flight.contains(node_id)
+            && self
+                .dependencies
+                .get(node_id)
+                .map(|deps| {
+                    deps.iter()
+                        .all(|dep| self.status.get(dep) == Some(&NodeState::Succeeded))
+                })
+                .unwrap_or(false);
+        if !claimable {
+            return false;
+        }
         self.status.insert(node_id.to_string(), NodeState::Running);
         self.in_flight.insert(node_id.to_string());
+        true
     }
 
     /// 节点执行结束，推进状态机。FailedFinal 会传递性地把注定无法运行的下游标记为
@@ -221,14 +256,15 @@ impl ReadyQueue {
 
     /// 记录一次重试消耗（驱动层在重入队前调用）。
     ///
-    /// 仅当节点当前为 Running 时才接受重试：与 on_finished 相同的守卫，
-    /// 防御驱动层已通过其他路径结算该节点（如 cancel_remaining 把在途节点
-    /// 标为 Cancelled）后，迟到的失败结果把终态复活回 Pending——那会让
-    /// has_unsettled 恒真、与已发出的取消事件及 DB 记录矛盾。
+    /// 仅当节点当前为 Running 且重试预算未耗尽时才接受重试：状态守卫与
+    /// on_finished 相同，防御驱动层已通过其他路径结算该节点（如
+    /// cancel_remaining 把在途节点标为 Cancelled）后，迟到的失败结果把终态
+    /// 复活回 Pending——那会让 has_unsettled 恒真、与已发出的取消事件及 DB
+    /// 记录矛盾；预算校验内置（fail-closed），不再依赖驱动层先查 retryable。
     /// 返回 false 表示未接受重试，驱动层应按最终失败（on_finished）处理。
     pub(crate) fn record_retry(&mut self, node_id: &str) -> bool {
         self.in_flight.remove(node_id);
-        if self.status.get(node_id) != Some(&NodeState::Running) {
+        if self.status.get(node_id) != Some(&NodeState::Running) || !self.retryable(node_id) {
             return false;
         }
         *self.retry_count.entry(node_id.to_string()).or_insert(0) += 1;
@@ -453,5 +489,54 @@ mod tests {
         assert!(queue.failed_nodes().is_empty());
         assert!(queue.skipped_nodes().is_empty());
         assert!(!queue.has_unsettled(), "a 应保持 Cancelled，b 保持 Cancelled");
+    }
+
+    #[test]
+    fn cascade_runs_inside_new_even_if_driver_forgets() {
+        // 级联已并入构造：驱动层即使忘记调用 cascade_initial_terminal，
+        // 状态机也不会留下永久 Pending 的下游，可正常收尾。
+        let def = definition(vec![node("a", &[]), node("b", &["a"])]);
+        let mut initial = HashMap::new();
+        initial.insert("a".to_string(), "failed".to_string());
+        let mut queue = ReadyQueue::new(&def, &initial);
+        assert!(queue.ready_nodes().is_empty());
+        assert_eq!(queue.skipped_nodes(), vec!["b"]);
+        assert!(!queue.has_unsettled());
+        // 取回接口幂等：首次返回已级联列表，重复调用返回空。
+        assert_eq!(queue.cascade_initial_terminal(), vec!["b"]);
+        assert!(queue.cascade_initial_terminal().is_empty());
+    }
+
+    #[test]
+    fn claim_refuses_unready_or_unknown_nodes() {
+        let def = definition(vec![node("a", &[]), node("b", &["a"])]);
+        let mut queue = ReadyQueue::new(&def, &HashMap::new());
+        // 依赖未成功不得接管。
+        assert!(!queue.claim("b"));
+        assert_eq!(queue.status.get("b"), Some(&NodeState::Pending));
+        // 未知节点 fail-closed。
+        assert!(!queue.claim("ghost"));
+        // 正常接管 pending 且无依赖的节点。
+        assert!(queue.claim("a"));
+        // 重复接管在途节点被拒绝。
+        assert!(!queue.claim("a"));
+        queue.on_finished("a", FinishKind::Succeeded);
+        assert!(queue.claim("b"), "依赖成功后即可接管");
+    }
+
+    #[test]
+    fn record_retry_enforces_budget_internally() {
+        // 预算校验内置：驱动层即使不先查 retryable，也不能突破重试上限。
+        let def = definition(vec![node("a", &[])]);
+        let mut queue = ReadyQueue::new(&def, &HashMap::new());
+        queue.claim("a");
+        assert!(queue.record_retry("a"));
+        queue.claim("a");
+        assert!(!queue.record_retry("a"), "重试上限为一次");
+        assert_eq!(queue.retry_count("a"), 1, "拒绝时不消耗预算");
+        assert_eq!(queue.status.get("a"), Some(&NodeState::Running), "拒绝后不复活为 Pending");
+        let skipped = queue.on_finished("a", FinishKind::FailedFinal);
+        assert!(skipped.is_empty());
+        assert_eq!(queue.failed_nodes(), vec!["a"]);
     }
 }

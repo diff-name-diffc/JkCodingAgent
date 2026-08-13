@@ -1,9 +1,9 @@
 //! `submit_graph`：编排器收口工具（协议壳）。
 //!
-//! 与旧 dispatch 协议工具同构：工具 `execute` 只回显，真正的动作
-//! （校验 → 落 graph_plans → 广播 graph-plan-updated → 收口本轮）
+//! 真正的动作（校验 → 落 graph_plans → 广播 graph-plan-updated → 收口本轮）
 //! 由 OrchestratorAgent 在 `execute_loop_tool_calls` 中按工具名拦截完成。
-//! 因此该工具只注册进编排器专用注册表（`orchestrator_tools`），
+//! 工具自身的 `execute` 为 fail-closed 兜底：未经拦截直接调用时返回「错误：」
+//! 而非假成功回执。因此该工具只注册进编排器专用注册表（`orchestrator_tools`），
 //! 不进 `builtin_tools`，避免出现在普通工具目录与设置页中。
 
 use async_trait::async_trait;
@@ -63,7 +63,9 @@ impl AgentTool for SubmitGraphTool {
                         },
                         "nodes": {
                             "type": "array",
-                            "description": "执行节点列表（≤ 20 个）；无依赖关系的节点会并行执行",
+                            "minItems": 1,
+                            "maxItems": 20,
+                            "description": "执行节点列表（1–20 个）；无依赖关系的节点会并行执行",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -74,7 +76,7 @@ impl AgentTool for SubmitGraphTool {
                                     "baseToolGroup": { "type": "string", "enum": ["read_only", "coding"], "description": "PI 基础工具组" },
                                     "specialTools": {
                                         "type": "array",
-                                        "description": "按需启用的 PI 扩展或 Aha/MCP 工具",
+                                        "description": "按需启用的 PI 扩展或 Aha/MCP 工具（MCP 工具与 Aha 工具统一以 source=\"aha\" 提交）",
                                         "items": {
                                             "type": "object",
                                             "properties": {
@@ -115,7 +117,9 @@ impl AgentTool for SubmitGraphTool {
     }
 
     async fn execute(&self, _args: &Value, _context: &ToolContext) -> String {
-        // 协议壳：真正的校验/落库/广播由编排器拦截完成，这里只回显。
-        "已收到执行图提交，系统正在校验与登记…".to_string()
+        // fail-closed：真正的校验/落库/广播由编排器拦截完成。若未走拦截而直接
+        // 进入工具 execute（如误注册/重构删除拦截），不允许返回假成功回执，
+        // 立即以「错误：」暴露误用。
+        "错误：submit_graph 仅支持在编排器拦截环境下运行，当前上下文不可用。".to_string()
     }
 }

@@ -2,11 +2,15 @@
 //! `spawn_blocking` 异步包装。私有核心插入逻辑（add_message / insert_tool_artifacts）
 //! 亦在此处。
 
+use std::collections::HashSet;
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::agent::common::should_keep_llm_message;
 use crate::agent::llm::{
     ChatMessage, ChatMessageContentPart, ChatMessageImageSource, OutboundToolCall,
 };
@@ -14,7 +18,8 @@ use crate::agent::llm::{
 use super::artifacts::{DispatcherToolArtifactRef, ToolArtifactDraft};
 use super::content::{
     content_to_segments_json, delete_chat_image_resources, insert_chat_images, parse_segments_json,
-    remove_chat_image_files, segments_to_plain_text, try_parse_segments_json, ContentSegment,
+    remove_chat_image_files, safe_absolute_image_path, segments_to_plain_text,
+    try_parse_segments_json, ContentSegment,
 };
 use super::util::{map_dispatcher_message_record, now, MAX_LLM_DIALOGUES};
 use super::DispatcherDb;
@@ -127,31 +132,6 @@ struct NewDispatcherMessage<'a> {
 }
 
 impl DispatcherDb {
-    pub fn add_visible_message(
-        &self,
-        workspace_id: &str,
-        role: &str,
-        content: &str,
-        segments_json: Option<String>,
-    ) -> Result<DispatcherMessageRecord> {
-        self.add_message(NewDispatcherMessage {
-            workspace_id,
-            role,
-            content,
-            segments_json,
-            thinking_content: None,
-            thinking_elapsed_ms: 0,
-            context_payload: None,
-            tool_call_id: None,
-            tool_name: None,
-            tool_result_mode: None,
-            tool_calls: None,
-            tool_artifacts: &[],
-            usage_stats: None,
-            visible: true,
-        })
-    }
-
     pub fn add_visible_message_from_segments(
         &self,
         workspace_id: &str,
@@ -321,6 +301,20 @@ impl DispatcherDb {
             .context("load visible dispatcher messages")
     }
 
+    /// 统计可见消息条数（G7-11：Finished 事件轻量负载的对账依据）。
+    pub fn count_visible_messages(&self, workspace_id: &str) -> Result<usize> {
+        let conn = self.conn()?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dispatcher_messages
+                 WHERE workspace_id = ?1 AND visible = 1",
+                params![workspace_id],
+                |row| row.get(0),
+            )
+            .context("count visible dispatcher messages")?;
+        usize::try_from(count).context("visible dispatcher message count out of range")
+    }
+
     /// Load recent complete visible dialogues for session title generation.
     ///
     /// The cutoff is based on user-started turns, so the latest user message and its
@@ -365,7 +359,7 @@ impl DispatcherDb {
         let mut stmt = conn.prepare(
             "SELECT role, segments_json, context_payload, tool_call_id, tool_name, tool_calls_json, thinking_content
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND rowid >= ?2 AND context_cleared = 0
+             WHERE workspace_id = ?1 AND rowid >= ?2 AND visible = 1 AND context_cleared = 0
              ORDER BY rowid ASC",
         )?;
         let rows = stmt.query_map(params![workspace_id, cutoff_rowid], |row| {
@@ -498,7 +492,7 @@ impl DispatcherDb {
         .context("clear dispatcher session token usage")?;
         let image_paths = delete_chat_image_resources(&tx, workspace_id)?;
         tx.execute(
-            "DELETE FROM session_keywords WHERE workspace_id = ?1",
+            "DELETE FROM session_keywords WHERE session_id = ?1",
             params![workspace_id],
         )
         .context("clear session keywords")?;
@@ -517,15 +511,24 @@ impl DispatcherDb {
             params![now(), workspace_id],
         )
         .context("update chat session updated_at after clear")?;
+        tx.execute(
+            "UPDATE project_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![now(), workspace_id],
+        )
+        .context("update project session updated_at after clear")?;
         tx.commit().context("commit dispatcher message cleanup")?;
-        remove_chat_image_files(&image_paths)?;
+        // 数据库清空已提交，图片文件清理失败不应把清空误报为失败。改为 best-effort。
+        if let Err(error) = remove_chat_image_files(&image_paths) {
+            eprintln!("remove chat image files failed (clear messages {workspace_id}): {error:#}");
+        }
         Ok(())
     }
 
     /// 删除指定消息及其之后的所有消息（含属于这些消息的工具产物与工具运行记录）。
     /// 用于「从该条用户消息重新生成」：先截断再重发，避免重复消息。
-    /// 注意：不删除 chat_images 记录与图片文件——重发会复用同一 image_id 引用，
-    /// insert_chat_images 的 ON CONFLICT(image_id) DO UPDATE 会把记录重新指向新消息。
+    /// 同时在事务内删除被删消息的 chat_images 记录，提交后清理不再被引用的图片
+    /// 文件——一旦截断后未重发、或重发内容不含原图，也不会留下孤儿记录与文件泄漏。
+    /// 重发复用同一 image_id 时，insert_chat_images 会为图片重新插入记录。
     pub fn truncate_messages_from(&self, workspace_id: &str, message_id: &str) -> Result<u64> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
@@ -557,6 +560,57 @@ impl DispatcherDb {
             params![workspace_id, target_rowid],
         )
         .context("delete truncated dispatcher tool runs")?;
+
+        // 先收集将被删消息引用的图片路径（chat_images 记录 + 消息内图片段落），
+        // 必须在删除 dispatcher_messages 之前完成。
+        let mut candidate_paths: HashSet<String> = HashSet::new();
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT path FROM chat_images
+                     WHERE workspace_id = ?1 AND message_id IN (
+                         SELECT id FROM dispatcher_messages
+                         WHERE workspace_id = ?1 AND rowid >= ?2)",
+                )
+                .context("load truncated chat image paths")?;
+            let indexed = stmt
+                .query_map(params![workspace_id, target_rowid], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .context("collect truncated chat image paths")?;
+            candidate_paths.extend(indexed);
+        }
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT segments_json FROM dispatcher_messages
+                     WHERE workspace_id = ?1 AND rowid >= ?2",
+                )
+                .context("load truncated message segments for image cleanup")?;
+            let segments_json = stmt
+                .query_map(params![workspace_id, target_rowid], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .context("collect truncated message segments for image cleanup")?;
+            for json in segments_json {
+                for segment in parse_segments_json(&json) {
+                    if let ContentSegment::Image { path, .. } = segment {
+                        candidate_paths.insert(path);
+                    }
+                }
+            }
+        }
+
+        tx.execute(
+            "DELETE FROM chat_images
+             WHERE workspace_id = ?1 AND message_id IN (
+                 SELECT id FROM dispatcher_messages
+                 WHERE workspace_id = ?1 AND rowid >= ?2)",
+            params![workspace_id, target_rowid],
+        )
+        .context("delete truncated chat images")?;
         let removed = tx
             .execute(
                 "DELETE FROM dispatcher_messages WHERE workspace_id = ?1 AND rowid >= ?2",
@@ -564,7 +618,61 @@ impl DispatcherDb {
             )
             .context("truncate dispatcher messages")?;
 
+        // 删除后仍被幸存记录（更早消息的 chat_images 记录或消息段落）引用的图片
+        // 不能删文件，只清理真正无引用的孤儿文件。
+        let mut orphan_paths: Vec<PathBuf> = Vec::new();
+        for path in candidate_paths {
+            let still_referenced: i64 = tx
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM chat_images
+                         WHERE workspace_id = ?1 AND path = ?2
+                     ) OR EXISTS(
+                         SELECT 1 FROM dispatcher_messages
+                         WHERE workspace_id = ?1 AND instr(segments_json, ?2) > 0
+                     )",
+                    params![workspace_id, &path],
+                    |row| row.get(0),
+                )
+                // 查询失败时保守处理：视为仍被引用，不删文件。
+                .unwrap_or(1);
+            if still_referenced != 0 {
+                continue;
+            }
+            match safe_absolute_image_path(&path) {
+                Ok(safe_path) => orphan_paths.push(safe_path),
+                Err(error) => {
+                    eprintln!("skip invalid chat image path {path:?}: {error:#}");
+                }
+            }
+        }
+
+        // 消息删除改变了会话状态，同步全部会话表的 updated_at，避免统一会话列表排序错乱。
+        let updated_at = now();
+        tx.execute(
+            "UPDATE dispatcher_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![&updated_at, workspace_id],
+        )
+        .context("update dispatcher session updated_at after truncate")?;
+        tx.execute(
+            "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![&updated_at, workspace_id],
+        )
+        .context("update chat session updated_at after truncate")?;
+        tx.execute(
+            "UPDATE project_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![&updated_at, workspace_id],
+        )
+        .context("update project session updated_at after truncate")?;
+
         tx.commit().context("commit dispatcher message truncation")?;
+
+        // 数据库截断已提交，图片文件清理失败不应把截断误报为失败。改为 best-effort。
+        if let Err(error) = remove_chat_image_files(&orphan_paths) {
+            eprintln!(
+                "remove chat image files failed (truncate messages {workspace_id}): {error:#}"
+            );
+        }
         Ok(removed as u64)
     }
     fn add_message(&self, params: NewDispatcherMessage<'_>) -> Result<DispatcherMessageRecord> {
@@ -738,24 +846,6 @@ impl DispatcherDb {
 
         Ok(refs)
     }
-    pub async fn add_visible_message_async(
-        &self,
-        workspace_id: &str,
-        role: &str,
-        content: &str,
-        segments_json: Option<String>,
-    ) -> Result<DispatcherMessageRecord> {
-        let db = self.clone();
-        let wid = workspace_id.to_string();
-        let role = role.to_string();
-        let content = content.to_string();
-        tokio::task::spawn_blocking(move || {
-            db.add_visible_message(&wid, &role, &content, segments_json)
-        })
-        .await
-        .context("add_visible_message spawn_blocking")?
-    }
-
     pub async fn add_visible_message_from_segments_async(
         &self,
         workspace_id: &str,
@@ -881,15 +971,12 @@ impl DispatcherDb {
         .context("add_visible_tool_result spawn_blocking")?
     }
 
-    pub async fn list_visible_messages_async(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Vec<DispatcherMessageRecord>> {
+    pub async fn count_visible_messages_async(&self, workspace_id: &str) -> Result<usize> {
         let db = self.clone();
         let wid = workspace_id.to_string();
-        tokio::task::spawn_blocking(move || db.list_visible_messages(&wid))
+        tokio::task::spawn_blocking(move || db.count_visible_messages(&wid))
             .await
-            .context("list_visible_messages spawn_blocking")?
+            .context("count_visible_messages spawn_blocking")?
     }
 
     pub async fn add_visible_message_with_usage_async(
@@ -956,57 +1043,46 @@ impl DispatcherDb {
     }
 }
 
-fn should_keep_llm_message(message: &ChatMessage) -> bool {
-    match message.role.as_str() {
-        "assistant" => {
-            !is_process_only_assistant_message(&message.content)
-                && !is_process_only_assistant_tool_call(message)
-        }
-        "tool" => !message
-            .name
-            .as_deref()
-            .is_some_and(is_dispatch_plumbing_tool_name),
-        _ => true,
+// G9-05：LLM 上下文过滤的唯一实现位于 `crate::agent::common::should_keep_llm_message`。
+// 本文件的 `load_llm_history` 与 `DispatcherMessageRecord::to_llm_message` 直接委托，
+// 不再维护同口径的第二份私有过滤函数，消除双实现漂移风险。
+
+#[cfg(test)]
+mod tests {
+    use super::DispatcherDb;
+
+    fn test_db() -> DispatcherDb {
+        let path = std::env::temp_dir().join(format!(
+            "jkcodingagent-messages-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        DispatcherDb::new(path).expect("create test dispatcher db")
     }
-}
 
-fn is_process_only_assistant_message(content: &str) -> bool {
-    let trimmed = content.trim();
-    matches!(
-        trimmed,
-        "🔄 子任务当前轮次已完成"
-            | "✅ 子任务进程已结束"
-            | "⚠️ 子任务进程已失败退出"
-            | "⏹️ 子任务进程已取消"
-            | "🔄 子任务当前轮次已完成，执行结果已同步供后续分析。"
-            | "✅ 子任务进程已结束，执行结果已同步供后续分析。"
-            | "⚠️ 子任务进程已失败退出，执行结果已同步供后续分析。"
-            | "⏹️ 子任务进程已取消，执行结果已同步供后续分析。"
-    ) || trimmed.starts_with("📋 已自动批准 ")
-        || content.starts_with("📋 已提交 ")
-        || content.starts_with("📨 已向 ")
-        || content.starts_with("⏹️ 已向 ")
-}
+    fn add_text_message(db: &DispatcherDb, session_id: &str, role: &str, text: &str) {
+        let segments_json = super::super::content::content_to_segments_json(text);
+        db.add_visible_message_from_segments(session_id, role, segments_json)
+            .expect("add message");
+    }
 
-fn is_process_only_assistant_tool_call(message: &ChatMessage) -> bool {
-    message
-        .tool_calls
-        .as_ref()
-        .is_some_and(|calls| !calls.is_empty() && calls.iter().all(is_dispatch_plumbing_tool_call))
-}
+    #[test]
+    fn count_visible_messages_is_session_scoped() {
+        let db = test_db();
+        let session = db
+            .create_chat_session("messages", Some("tech"))
+            .expect("create chat session");
+        assert_eq!(db.count_visible_messages(&session.id).expect("count"), 0);
 
-fn is_dispatch_plumbing_tool_call(call: &OutboundToolCall) -> bool {
-    is_dispatch_plumbing_tool_name(&call.function.name)
-}
+        add_text_message(&db, &session.id, "user", "你好");
+        add_text_message(&db, &session.id, "assistant", "有什么可以帮你？");
+        assert_eq!(db.count_visible_messages(&session.id).expect("count"), 2);
 
-fn is_dispatch_plumbing_tool_name(name: &str) -> bool {
-    matches!(
-        name,
-        "dispatch_claude"
-            | "dispatch_codex"
-            | "continue_claude_session"
-            | "continue_codex_session"
-            | "exit_claude_session"
-            | "exit_codex_session"
-    )
+        // 会话隔离：其他会话的消息不计入本会话计数。
+        let other = db
+            .create_chat_session("other", Some("tech"))
+            .expect("create other chat session");
+        add_text_message(&db, &other.id, "user", "另一会话的消息");
+        assert_eq!(db.count_visible_messages(&session.id).expect("count"), 2);
+        assert_eq!(db.count_visible_messages(&other.id).expect("count"), 1);
+    }
 }

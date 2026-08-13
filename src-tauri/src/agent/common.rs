@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -81,10 +82,61 @@ impl UsageTracker {
     }
 }
 
+/// RAII 用量暂停守卫：构造时暂停 `UsageTracker` 并发出一次 `RunUsageUpdated`，
+/// `Drop` 时无条件恢复并再发一次快照。
+///
+/// 相比手动 pause/resume 配对：持有该守卫的 future 即使 panic、被取消或被丢弃
+/// （tokio::select! 丢弃分支、Tauri 命令中止、run loop 提前返回），守卫也会被
+/// drop，`UsageTracker` 不会永久停留在 paused 状态（paused_at 残留会持续错误扣减
+/// elapsed_ms 并污染主 Agent 的 token 生成速度统计）。
+pub struct UsagePauseGuard<'a> {
+    usage_tracker: &'a mut UsageTracker,
+    workspace_id: String,
+    on_event: &'a Channel<AgentEvent>,
+}
+
+impl<'a> UsagePauseGuard<'a> {
+    /// 进入暂停状态：暂停计时并立即发出一次用量快照（前端据此停止 live 计时）。
+    pub fn new(
+        usage_tracker: &'a mut UsageTracker,
+        workspace_id: &str,
+        on_event: &'a Channel<AgentEvent>,
+    ) -> Self {
+        usage_tracker.pause();
+        emit(
+            on_event,
+            AgentEvent::RunUsageUpdated {
+                workspace_id: workspace_id.to_string(),
+                stats: usage_tracker.snapshot(),
+            },
+        );
+        Self {
+            usage_tracker,
+            workspace_id: workspace_id.to_string(),
+            on_event,
+        }
+    }
+}
+
+impl Drop for UsagePauseGuard<'_> {
+    fn drop(&mut self) {
+        self.usage_tracker.resume();
+        emit(
+            self.on_event,
+            AgentEvent::RunUsageUpdated {
+                workspace_id: self.workspace_id.clone(),
+                stats: self.usage_tracker.snapshot(),
+            },
+        );
+    }
+}
+
 /// Runs `execute` with the main agent's usage timer paused, then emits a
 /// `RunUsageUpdated` event so the frontend can stop padding live elapsed.
 /// Used to wrap `call_sub_agent` execution: the sub-agent's wall-clock time
 /// must not dilute the main agent's token-generation-speed denominator.
+///
+/// 内部以 `UsagePauseGuard`（RAII）实现：panic / 取消路径也必然恢复计时。
 pub async fn with_usage_paused<F, Fut, T>(
     usage_tracker: &mut UsageTracker,
     workspace_id: &str,
@@ -95,31 +147,34 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = T>,
 {
-    usage_tracker.pause();
-    emit(
-        on_event,
-        AgentEvent::RunUsageUpdated {
-            workspace_id: workspace_id.to_string(),
-            stats: usage_tracker.snapshot(),
-        },
-    );
+    let guard = UsagePauseGuard::new(usage_tracker, workspace_id, on_event);
     let result = execute().await;
-    usage_tracker.resume();
-    emit(
-        on_event,
-        AgentEvent::RunUsageUpdated {
-            workspace_id: workspace_id.to_string(),
-            stats: usage_tracker.snapshot(),
-        },
-    );
+    drop(guard);
     result
 }
 
 // ─── LLM Streaming ──────────────────────────────────────────────────────────────
 
+/// 流式生命周期契约（重要）：
+/// 本函数只负责发出 `AssistantStarted` 与增量 delta，**不保证发出任何终止事件**，
+/// 终止收口是调用方的强契约：
+/// - `Cancelled`：调用方必须持久化部分文本并发出终止消息
+///   （见 `RunLoopAgent::handle_cancelled_loop`，普通聊天为 `emit_stop_and_finish`）；
+/// - `Err`：错误经 `?` 透传后由 `run_agent_turn` 统一发出 `AgentEvent::Failed` 收口。
+/// 新增调用方必须自行处理这两条终止路径，否则前端会卡在流式状态且部分文本丢失。
+///
+/// G9-08：`last_seq` 为本次流式实际发出的最后一个 delta 序号（正文与思考增量
+/// 共享同一 message_id 计数器）；无 delta 时为 None。调用方收口时应随
+/// `AssistantMessage.last_seq` 下发，供前端做去重 / 完整性校验。
 pub enum LlmStreamOutcome {
-    Cancelled(String),
-    Response(LlmResponse),
+    Cancelled {
+        partial: String,
+        last_seq: Option<u64>,
+    },
+    Response {
+        response: LlmResponse,
+        last_seq: Option<u64>,
+    },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -144,30 +199,43 @@ pub async fn stream_llm_response(
     );
 
     let streamed_text = Arc::new(Mutex::new(String::new()));
+    // G9-08：同一 message_id 内的正文/思考增量共享一个从 0 开始的单调计数器，
+    // 前端可据此检测漏包/乱序/重复；计数在两个 delta 闭包间原子递增。
+    let seq_counter = Arc::new(AtomicU64::new(0));
     let msg_id = stream_msg_id.clone();
     let streamed_text_clone = Arc::clone(&streamed_text);
+    let delta_seq = Arc::clone(&seq_counter);
     let on_delta = move |delta: &str| {
+        let seq = delta_seq.fetch_add(1, Ordering::Relaxed);
         streamed_text_clone.lock().push_str(delta);
         let _ = on_event.send(AgentEvent::AssistantDelta {
             message_id: msg_id.clone(),
+            seq,
             delta: delta.to_string(),
         });
     };
 
     let thinking_msg_id = stream_msg_id.clone();
+    let thinking_seq = Arc::clone(&seq_counter);
     let on_thinking_delta = move |delta: &str, elapsed_ms: u64| {
+        let seq = thinking_seq.fetch_add(1, Ordering::Relaxed);
         let _ = on_event.send(AgentEvent::AssistantThinkingDelta {
             message_id: thinking_msg_id.clone(),
+            seq,
             delta: delta.to_string(),
             elapsed_ms,
         });
     };
 
+    enum StreamSettlement {
+        Cancelled(String),
+        Response(LlmResponse),
+    }
+
     let mut stream_cancel_rx = cancel_rx;
-    let response = tokio::select! {
+    let settlement = tokio::select! {
         _ = wait_for_cancellation(&mut stream_cancel_rx) => {
-            let partial = streamed_text.lock().clone();
-            return Ok(LlmStreamOutcome::Cancelled(partial));
+            StreamSettlement::Cancelled(streamed_text.lock().clone())
         }
         response = provider.chat_stream_with_thinking(
             messages,
@@ -175,22 +243,37 @@ pub async fn stream_llm_response(
             messages_contain_images(messages),
             on_delta,
             on_thinking_delta,
-        ) => response
-    }?;
+        ) => StreamSettlement::Response(response?)
+    };
 
-    if let Some(usage) = response.usage.as_ref() {
-        record_usage(
-            db,
-            workspace_id,
-            model,
-            source_kind,
-            usage,
-            usage_tracker,
-            on_event,
-        );
+    // 流结束（正常完成或取消抢占）后 delta 闭包已随 select 分支 drop，
+    // 计数器不再增长；末序号供收口方随 AssistantMessage.last_seq 下发对账。
+    let last_seq = seq_counter.load(Ordering::Relaxed).checked_sub(1);
+
+    match settlement {
+        StreamSettlement::Cancelled(partial) => Ok(LlmStreamOutcome::Cancelled {
+            partial,
+            last_seq,
+        }),
+        StreamSettlement::Response(response) => {
+            if let Some(usage) = response.usage.as_ref() {
+                record_usage(
+                    db,
+                    workspace_id,
+                    model,
+                    source_kind,
+                    usage,
+                    usage_tracker,
+                    on_event,
+                );
+            }
+
+            Ok(LlmStreamOutcome::Response {
+                response,
+                last_seq,
+            })
+        }
     }
-
-    Ok(LlmStreamOutcome::Response(response))
 }
 
 fn record_usage(
@@ -384,6 +467,9 @@ where
     // Compression policy must use the same schema-expanded arguments as execution;
     // otherwise an omitted default could behave differently after the tool returns.
     let effective_arguments = registry.effective_args(&tool_call.name, &tool_call.arguments);
+    // G9-14：序列化失败不再静默降级为 `{}`——错误上抛，由运行循环以 Failed 收口，
+    // 保证模型/前端看到的参数与工具实际执行所用的 effective_args 永远一致。
+    let arguments_json = serialize_tool_arguments(&tool_call.name, &effective_arguments)?;
     let prepared = prepare_tool_result(&tool_call.name, &effective_arguments, result);
 
     if !prepared.needs_summary {
@@ -401,8 +487,9 @@ where
         emit(
             on_event,
             AgentEvent::ToolFinished {
-                tool_call_id: Some(tool_call.id.clone()),
+                tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
+                arguments: arguments_json,
                 display_text: tool_message.content.clone(),
                 result_mode: prepared.result_mode.to_string(),
                 detail_refs: tool_message.tool_artifacts.clone(),
@@ -440,6 +527,7 @@ where
                 workspace_id,
                 on_event,
                 tool_call,
+                &arguments_json,
                 result,
                 summary.display_content,
                 summary.context_payload,
@@ -459,6 +547,7 @@ where
                 workspace_id,
                 on_event,
                 tool_call,
+                &arguments_json,
                 result,
                 structured.clone(),
                 structured,
@@ -474,6 +563,7 @@ pub async fn persist_tool_result_with_summary(
     workspace_id: &str,
     on_event: &Channel<AgentEvent>,
     tool_call: &RequestedToolCall,
+    arguments_json: &str,
     result: &str,
     display_content: String,
     context_payload: String,
@@ -496,8 +586,9 @@ pub async fn persist_tool_result_with_summary(
     emit(
         on_event,
         AgentEvent::ToolFinished {
-            tool_call_id: Some(tool_call.id.clone()),
+            tool_call_id: tool_call.id.clone(),
             name: tool_call.name.clone(),
+            arguments: arguments_json.to_string(),
             display_text: tool_message.content.clone(),
             result_mode: result_mode.to_string(),
             detail_refs: tool_message.tool_artifacts.clone(),
@@ -548,20 +639,20 @@ pub async fn persist_tool_calls_message(
 pub fn build_tool_calls_payload(
     tool_calls: &[RequestedToolCall],
     registry: &ToolRegistry,
-) -> Vec<OutboundToolCall> {
+) -> Result<Vec<OutboundToolCall>> {
     tool_calls
         .iter()
         .map(|call| {
             let enriched = registry.effective_args(&call.name, &call.arguments);
-            let args_json = serde_json::to_string(&enriched).unwrap_or_else(|_| "{}".to_string());
-            OutboundToolCall {
+            let args_json = serialize_tool_arguments(&call.name, &enriched)?;
+            Ok(OutboundToolCall {
                 id: call.id.clone(),
                 kind: "function".to_string(),
                 function: FunctionCall {
                     name: call.name.clone(),
                     arguments: args_json,
                 },
-            }
+            })
         })
         .collect()
 }
@@ -569,15 +660,31 @@ pub fn build_tool_calls_payload(
 pub fn build_args_map(
     tool_calls: &[RequestedToolCall],
     registry: &ToolRegistry,
-) -> HashMap<String, String> {
+) -> Result<HashMap<String, String>> {
     tool_calls
         .iter()
         .map(|tc| {
             let enriched = registry.effective_args(&tc.name, &tc.arguments);
-            let args_json = serde_json::to_string(&enriched).unwrap_or_else(|_| "{}".to_string());
-            (tc.id.clone(), args_json)
+            let args_json = serialize_tool_arguments(&tc.name, &enriched)?;
+            Ok((tc.id.clone(), args_json))
         })
         .collect()
+}
+
+/// 序列化工具参数供模型/前端展示。
+///
+/// G9-14：失败（如非有限浮点数）不再记日志降级为空对象 `{}`，而是返回错误上抛——
+/// 静默降级会让模型/前端看到的参数与工具实际执行所用的 effective_args 不一致
+/// 且无线索可查。调用方（run loop 的工具执行入口）以 `?` 透传，运行以 Failed
+/// 事件收口；错误消息以「错误：」开头，符合前端展示与 `is_tool_error_message`
+/// 的既有契约。实践中 LLM 响应经 JSON 解析得到的参数不可能含非有限浮点数，
+/// 该分支是防御性兜底。
+pub(crate) fn serialize_tool_arguments(
+    tool_name: &str,
+    arguments: &serde_json::Value,
+) -> Result<String> {
+    serde_json::to_string(arguments)
+        .map_err(|error| anyhow::anyhow!("错误：工具 '{tool_name}' 参数序列化失败：{error}"))
 }
 
 // ─── Vision Model Selection ──────────────────────────────────────────────────────
@@ -604,7 +711,12 @@ pub fn select_provider_for_messages(
     };
 
     let selected = vision.clone();
-    if notify_user && selected.model() != provider.model() {
+    // 视觉模型可能部署在独立 gateway（url/apiKey 不同）：仅模型名相同并不代表
+    // 同一 provider。三项（模型名/网关/密钥）全部一致才视为未切换，否则即通知。
+    let same_provider = selected.model() == provider.model()
+        && selected.api_base() == provider.api_base()
+        && selected.api_key() == provider.api_key();
+    if notify_user && !same_provider {
         emit(
             on_event,
             AgentEvent::ModelSwitched {
@@ -616,6 +728,75 @@ pub fn select_provider_for_messages(
     }
 
     Ok(selected)
+}
+
+// ─── LLM Context Filtering ─────────────────────────────────────────────────────
+
+/// 纯调度 plumbing 工具名：其 assistant/tool 消息不进入 LLM 上下文。
+/// 本常量是 LLM 上下文过滤的唯一口径来源；DB 加载路径
+/// （`db::messages::load_llm_history`）直接委托 `should_keep_llm_message`。
+const DISPATCH_PLUMBING_TOOL_NAMES: [&str; 6] = [
+    "dispatch_claude",
+    "dispatch_codex",
+    "continue_claude_session",
+    "continue_codex_session",
+    "exit_claude_session",
+    "exit_codex_session",
+];
+
+/// 消息是否应保留在 LLM 上下文中（全仓唯一实现，G9-05）。
+///
+/// 过滤纯调度 plumbing 工具（dispatch_claude 等）的工具结果，以及仅承载
+/// 流程状态、对模型决策无意义的 process-only assistant 消息。
+/// 内存追加路径（`AgentLoop::append`）与 DB 加载路径
+/// （`db::messages::load_llm_history` / `DispatcherMessageRecord::to_llm_message`）
+/// 均直接委托本函数，保证「同 run 多轮迭代」与「新 run 从 DB 重新加载」
+/// 使用同一上下文口径，不再存在双份实现漂移的可能。
+pub(crate) fn should_keep_llm_message(message: &ChatMessage) -> bool {
+    match message.role.as_str() {
+        "assistant" => {
+            !is_process_only_assistant_message(&message.content)
+                && !is_process_only_assistant_tool_call(message)
+        }
+        "tool" => !message
+            .name
+            .as_deref()
+            .is_some_and(is_dispatch_plumbing_tool_name),
+        _ => true,
+    }
+}
+
+fn is_process_only_assistant_message(content: &str) -> bool {
+    let trimmed = content.trim();
+    matches!(
+        trimmed,
+        "🔄 子任务当前轮次已完成"
+            | "✅ 子任务进程已结束"
+            | "⚠️ 子任务进程已失败退出"
+            | "⏹️ 子任务进程已取消"
+            | "🔄 子任务当前轮次已完成，执行结果已同步供后续分析。"
+            | "✅ 子任务进程已结束，执行结果已同步供后续分析。"
+            | "⚠️ 子任务进程已失败退出，执行结果已同步供后续分析。"
+            | "⏹️ 子任务进程已取消，执行结果已同步供后续分析。"
+    ) || trimmed.starts_with("📋 已自动批准 ")
+        || content.starts_with("📋 已提交 ")
+        || content.starts_with("📨 已向 ")
+        || content.starts_with("⏹️ 已向 ")
+}
+
+fn is_process_only_assistant_tool_call(message: &ChatMessage) -> bool {
+    message
+        .tool_calls
+        .as_ref()
+        .is_some_and(|calls| !calls.is_empty() && calls.iter().all(is_dispatch_plumbing_tool_call))
+}
+
+fn is_dispatch_plumbing_tool_call(call: &OutboundToolCall) -> bool {
+    is_dispatch_plumbing_tool_name(&call.function.name)
+}
+
+fn is_dispatch_plumbing_tool_name(name: &str) -> bool {
+    DISPATCH_PLUMBING_TOOL_NAMES.contains(&name)
 }
 
 // ─── Cancellation ────────────────────────────────────────────────────────────────
@@ -731,7 +912,78 @@ pub(crate) fn is_tool_error_message(message: &str) -> bool {
 mod tests {
     use serde_json::json;
 
-    use super::{classify_tool_result, prepare_tool_result, ToolOutcome};
+    use super::{
+        classify_tool_result, prepare_tool_result, should_keep_llm_message, ChatMessage,
+        FunctionCall, OutboundToolCall, ToolOutcome,
+    };
+
+    fn chat_message(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            reasoning_content: None,
+            role: role.to_string(),
+            content: content.to_string(),
+            content_parts: Vec::new(),
+            tool_call_id: None,
+            name: None,
+            tool_calls: None,
+        }
+    }
+
+    #[test]
+    fn keeps_normal_user_assistant_and_tool_messages() {
+        assert!(should_keep_llm_message(&chat_message("user", "帮我查一下天气")));
+        assert!(should_keep_llm_message(&chat_message(
+            "assistant",
+            "已经为你查询了天气"
+        )));
+        let mut tool_result = chat_message("tool", "北京今天晴");
+        tool_result.name = Some("browser_read_text".to_string());
+        assert!(should_keep_llm_message(&tool_result));
+    }
+
+    #[test]
+    fn filters_dispatch_plumbing_tool_results() {
+        let mut tool_result = chat_message("tool", "claude 子进程输出...");
+        tool_result.name = Some("dispatch_claude".to_string());
+        assert!(!should_keep_llm_message(&tool_result));
+    }
+
+    #[test]
+    fn filters_process_only_assistant_messages() {
+        assert!(!should_keep_llm_message(&chat_message(
+            "assistant",
+            "✅ 子任务进程已结束"
+        )));
+        assert!(!should_keep_llm_message(&chat_message(
+            "assistant",
+            "📋 已提交 执行图，等待确认"
+        )));
+    }
+
+    #[test]
+    fn filters_assistant_message_that_only_makes_plumbing_tool_calls() {
+        let mut message = chat_message("assistant", "");
+        message.tool_calls = Some(vec![OutboundToolCall {
+            id: "call_1".to_string(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: "dispatch_claude".to_string(),
+                arguments: "{}".to_string(),
+            },
+        }]);
+        assert!(!should_keep_llm_message(&message));
+
+        // 混合了非 plumbing 工具调用时保留（与 DB 加载口径一致）
+        message.tool_calls.as_mut().unwrap().push(OutboundToolCall {
+            id: "call_2".to_string(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: "read_file_content".to_string(),
+                arguments: "{}".to_string(),
+            },
+        });
+        assert!(should_keep_llm_message(&message));
+    }
 
     #[test]
     fn classifies_tool_error_as_recoverable_without_matching_specific_text() {

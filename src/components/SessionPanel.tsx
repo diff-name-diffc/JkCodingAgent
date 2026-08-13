@@ -87,14 +87,14 @@ export function SessionPanel({
       });
     });
     const unlistenKeywords = listen<{
-      workspaceId: string;
+      sessionId: string;
       keywords: SessionKeyword[];
     }>("session-keywords-updated", (event) => {
-      const { workspaceId, keywords } = event.payload;
+      const { sessionId, keywords } = event.payload;
       const values = keywords.map((keyword) => keyword.keyword);
       setSessions((prev) =>
         prev.map((session) =>
-          session.id === workspaceId ? { ...session, keywords: values } : session,
+          session.id === sessionId ? { ...session, keywords: values } : session,
         ),
       );
       setKeywordsRevision((revision) => revision + 1);

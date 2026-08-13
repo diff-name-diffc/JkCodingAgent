@@ -40,6 +40,9 @@ const ERROR_BUDGET_CHARS: usize = 600;
 const STATE_PREVIEW_BUDGET_CHARS: usize = 8_000;
 /// 各节点产出摘要的总量预算（节点数上限 20 × 单值预算 1200 ≈ 24k）。
 const NODE_OUTPUTS_BUDGET_CHARS: usize = 24_000;
+/// 失败明细的总量预算：单条错误已有 ERROR_BUDGET_CHARS 限制，但节点全失败
+/// 时条数×单条仍会线性膨胀（20 × 600 = 12k），与 state/产出的预算设计对齐。
+const FAILED_DETAILS_BUDGET_CHARS: usize = 8_000;
 /// 解析失败时附进失败原因的原始输出预览长度。
 const UNPARSEABLE_PREVIEW_CHARS: usize = 200;
 
@@ -144,24 +147,31 @@ pub(crate) async fn verify_run(
 }
 
 /// 解析失败的原因诊断：区分「输出被截断」「可见内容为空」「格式不符」，
-/// 并在格式不符时附上原始输出开头，保证事故可事后定位。
+/// 并在截断/格式不符时附上原始输出开头，保证事故可事后定位。
+/// 截断判定优先于格式判定：max_tokens 截断也可能发生在非空输出上
+/// （带前导文字的结论句被腰斩），若归为「格式不符」会掩盖思考/预算
+/// 耗尽这一真实根因。
 fn unparseable_cause(response: &LlmResponse) -> String {
     let truncated = response.finish_reason.as_deref() == Some("length");
-    if response.content.trim().is_empty() {
-        if truncated {
+    let preview: String = response
+        .content
+        .trim()
+        .chars()
+        .take(UNPARSEABLE_PREVIEW_CHARS)
+        .collect();
+    if truncated {
+        if response.content.trim().is_empty() {
             "验收输出被 max_tokens 截断（finish_reason=length），未产生可见结论：\
              推理模型的思考/推理可能耗尽了输出预算"
                 .to_string()
         } else {
-            "验收模型未返回可见内容".to_string()
+            format!(
+                "验收输出被 max_tokens 截断（finish_reason=length），结论行可能被截断丢失。原始输出开头：{preview}"
+            )
         }
+    } else if response.content.trim().is_empty() {
+        "验收模型未返回可见内容".to_string()
     } else {
-        let preview: String = response
-            .content
-            .trim()
-            .chars()
-            .take(UNPARSEABLE_PREVIEW_CHARS)
-            .collect();
         format!(
             "验收模型输出无法解析（未按首行 PASS/PARTIAL/FAIL/UNKNOWN 契约返回）。原始输出开头：{preview}"
         )
@@ -180,11 +190,28 @@ fn unknown_with_facts(cause: &str, facts: &str) -> VerdictOutcome {
 /// 1) 严格：首行即验收关键词（容忍 markdown 加粗/列表/标题等常见修饰）；
 /// 2) 兜底：模型先输出前导文字时，全文扫描第一个以关键词开头的行作为结论行。
 /// 理由 = 结论行内关键词之后的剩余部分 + 结论行之后的全部文本（截 300 字）。
+///
+/// 首行严格性的额外约束：关键词后紧跟无结论标记（：/。等）的解释性散文
+/// （如「PASS 表示全部节点成功…」）不构成明确结论——先在剩余行中寻找
+/// 独立结论行（找到则优先，避免解释性首行伪造 PASS 掩盖后续真实 FAIL），
+/// 找不到才按首行解释兜底。
 fn parse_verdict(content: &str) -> Option<(String, String)> {
     let mut lines = content.lines();
     let first = lines.next()?;
-    let (status, seed, remaining) = match classify_verdict_line(first) {
-        Some((status, rest)) => (status, rest, lines.collect::<Vec<_>>()),
+    let (status, seed, remaining) = match classify_verdict_line_detailed(first) {
+        // rest 为空（关键词单独成行）或关键词后紧跟结论标记：明确的首行结论。
+        Some((status, rest, has_marker)) if rest.trim().is_empty() || has_marker => {
+            (status, rest, lines.collect::<Vec<_>>())
+        }
+        Some((first_status, first_rest, _)) => {
+            let rest_lines: Vec<&str> = lines.collect();
+            match rest_lines.iter().enumerate().find_map(|(index, line)| {
+                classify_verdict_line(line).map(|(status, rest)| (index, status, rest))
+            }) {
+                Some((index, status, rest)) => (status, rest, rest_lines[index + 1..].to_vec()),
+                None => (first_status, first_rest, rest_lines),
+            }
+        }
         None => {
             let all: Vec<&str> = std::iter::once(first).chain(lines).collect();
             let (index, status, rest) = all.iter().enumerate().find_map(|(index, line)| {
@@ -231,6 +258,14 @@ const VERDICT_KEYWORDS: [(&str, &str); 4] = [
 /// "PASSING all checks…"、"FAILED nodes include…"）误判为结论行，
 /// 并把句子剩余部分当成「理由」。
 fn classify_verdict_line(line: &str) -> Option<(&'static str, String)> {
+    let (status, rest, _) = classify_verdict_line_detailed(line)?;
+    Some((status, rest))
+}
+
+/// 同 classify_verdict_line，额外返回关键词后是否紧跟结论标记
+/// （：/。等，允许前置空白）——用于区分「明确的首行结论」与
+/// 「关键词 + 解释性散文」，见 parse_verdict 的首行严格性约束。
+fn classify_verdict_line_detailed(line: &str) -> Option<(&'static str, String, bool)> {
     let stripped = line
         .trim()
         .trim_start_matches(|c: char| matches!(c, '#' | '*' | '>' | '-' | '`'))
@@ -251,13 +286,17 @@ fn classify_verdict_line(line: &str) -> Option<(&'static str, String)> {
             })?;
     // to_ascii_uppercase 对 ASCII 逐字节映射、不改变长度；前 keyword_len 字节
     // 与 ASCII 关键词相同，按该字节偏移截取剩余部分是安全的。
-    let rest = stripped[keyword_len..].to_string();
-    let rest = rest
+    let raw_rest = &stripped[keyword_len..];
+    let has_marker = matches!(
+        raw_rest.trim_start().chars().next(),
+        Some(':' | '：' | '.' | '。')
+    );
+    let rest = raw_rest
         .trim()
         .trim_start_matches(|c: char| matches!(c, ':' | '：' | '.' | '。' | '、' | ',' | '，'))
         .trim()
         .to_string();
-    Some((status, rest))
+    Some((status, rest, has_marker))
 }
 
 fn build_facts(
@@ -293,6 +332,10 @@ fn build_facts(
     }
     // 总量预算：单值预算之外再限制整体体积，键数/节点数很多时截断并标注，
     // 防止验收 prompt 线性膨胀导致上下文溢出、验收退化为 unknown。
+    // 失败明细同样套用总量预算（节点全失败时错误文本 20 × 600 = 12k）。
+    let (failed_lines, failed_omitted) =
+        collect_within_budget(failed.iter().cloned(), FAILED_DETAILS_BUDGET_CHARS);
+    let failed_detail = annotate_omitted(failed_lines.join("\n"), failed_omitted, "条失败明细");
     let state_lines = state.iter().map(|(key, value)| {
         let preview = value
             .as_str()
@@ -321,7 +364,7 @@ fn build_facts(
         definition.title,
         definition.nodes.len(),
         failed.len(),
-        if failed.is_empty() { "无".to_string() } else { failed.join("\n") }
+        if failed.is_empty() { "无".to_string() } else { failed_detail }
     )
 }
 
@@ -356,6 +399,7 @@ const VERIFY_SYSTEM_PROMPT: &str = r#"你是执行图运行的验收评审。给
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::graph::types::{BaseToolGroup, GraphNode};
 
     #[test]
     fn parses_verdict_first_line() {
@@ -429,6 +473,74 @@ mod tests {
     }
 
     #[test]
+    fn explanatory_first_line_prefers_later_conclusion_line() {
+        // 「关键词 + 无结论标记的解释性散文」首行不构成明确结论：
+        // 后续存在独立结论行时优先采用，避免解释性首行伪造 PASS
+        // 掩盖真实 FAIL。
+        let content = "PASS 表示全部节点成功，本次执行全部完成\nFAIL\n关键路径阻断";
+        let (status, reason) = parse_verdict(content).unwrap();
+        assert_eq!(status, "fail");
+        assert_eq!(reason, "关键路径阻断");
+    }
+
+    #[test]
+    fn explanatory_first_line_without_other_conclusion_kept() {
+        // 无其他结论行时仍按首行解释兜底，不把可用的长理由降级为解析失败。
+        let (status, reason) = parse_verdict("PASS 表示产出符合预期，整体可用").unwrap();
+        assert_eq!(status, "pass");
+        assert_eq!(reason, "表示产出符合预期，整体可用");
+    }
+
+    #[test]
+    fn marker_first_line_is_definitive_over_later_lines() {
+        // 关键词后紧跟结论标记（：/。）的首行是明确结论，不再全文扫描。
+        let (status, _) = parse_verdict("PASS：产出满足需求\nFAIL\n后续引用文本").unwrap();
+        assert_eq!(status, "pass");
+    }
+
+    #[test]
+    fn failed_details_respect_total_budget() {
+        let runs: Vec<GraphNodeRunRecord> = (0..20)
+            .map(|i| {
+                let node = GraphNode {
+                    id: format!("n{i}"),
+                    title: format!("n{i}"),
+                    role: String::new(),
+                    model_ref: "m1".into(),
+                    base_tool_group: BaseToolGroup::Coding,
+                    special_tools: vec![],
+                    task: "task".into(),
+                    depends_on: vec![],
+                    inject_state_keys: vec![],
+                    output_key: format!("out_n{i}"),
+                    expected_files: vec![],
+                    export_policy: Default::default(),
+                };
+                let mut record = GraphNodeRunRecord::pending("run", "plan", &node);
+                record.status = NODE_FAILED.to_string();
+                record.error_text = Some("错".repeat(ERROR_BUDGET_CHARS));
+                record
+            })
+            .collect();
+        let definition = GraphDefinition {
+            version: 3,
+            title: "测试图".into(),
+            summary: String::new(),
+            state_keys: vec![],
+            nodes: vec![],
+            inherits_from: None,
+        };
+        let facts = build_facts(&definition, &Map::new(), &runs);
+        assert!(facts.contains("失败 20"), "条数统计按全量，不受预算影响");
+        assert!(facts.contains("条失败明细因体积限制未列出"), "超预算条数需标注");
+        let detail_len = facts.chars().count();
+        assert!(
+            detail_len < 20 * (ERROR_BUDGET_CHARS + 10),
+            "全失败时错误文本总量应受预算约束：{detail_len}"
+        );
+    }
+
+    #[test]
     fn unparseable_cause_distinguishes_truncation_and_format() {
         let mut truncated = LlmResponse {
             status_code: 200,
@@ -448,11 +560,22 @@ mod tests {
         let bad_format = LlmResponse {
             content: "总体来看基本完成了任务".to_string(),
             finish_reason: Some("stop".to_string()),
-            ..truncated
+            ..truncated.clone()
         };
         let cause = unparseable_cause(&bad_format);
         assert!(cause.contains("无法解析"));
         assert!(cause.contains("总体来看"), "失败原因需附原始输出开头");
+
+        // 截断也可能发生在非空输出上：截断判定优先于格式判定，
+        // 否则「思考/预算耗尽」这一真实根因会被误归为格式不符。
+        let truncated_nonempty = LlmResponse {
+            content: "总体来看本次执行基本完成".to_string(),
+            finish_reason: Some("length".to_string()),
+            ..truncated
+        };
+        let cause = unparseable_cause(&truncated_nonempty);
+        assert!(cause.contains("截断"));
+        assert!(cause.contains("总体来看本次执行基本完成"));
     }
 
     #[test]

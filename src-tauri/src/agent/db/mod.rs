@@ -60,7 +60,7 @@ impl DispatcherDb {
         Ok(db)
     }
 
-    pub fn pool(&self) -> Arc<Pool<SqliteConnectionManager>> {
+    pub(crate) fn pool(&self) -> Arc<Pool<SqliteConnectionManager>> {
         Arc::clone(&self.pool)
     }
 
@@ -78,7 +78,7 @@ impl DispatcherDb {
         let mut stmt = conn.prepare(
             "SELECT rowid
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND role = 'user' AND context_cleared = 0
+             WHERE workspace_id = ?1 AND role = 'user' AND visible = 1 AND context_cleared = 0
              ORDER BY rowid DESC
              LIMIT ?2",
         )?;
@@ -95,14 +95,26 @@ impl DispatcherDb {
     /// Rough token estimate for context budget management.
     /// Uses a ~4 chars/token heuristic suitable for mixed CJK/Latin content.
     pub(crate) fn estimate_context_tokens(messages: &[crate::agent::llm::ChatMessage]) -> u64 {
+        // 按字符而非字节统计：CJK 内容字节数可达字符数 3 倍，按字节估算会明显
+        // 偏离真实 token 占用（低估时可能突破上下文窗口）。
         let total_chars: usize = messages
             .iter()
             .map(|m| {
-                m.content.len()
-                    + m.reasoning_content.as_ref().map_or(0, |s| s.len())
-                    + m.tool_calls
-                        .as_ref()
-                        .map_or(0, |tc| serde_json::to_string(tc).map_or(0, |s| s.len()))
+                let tool_calls_chars = m.tool_calls.as_ref().map_or(0, |tool_calls| {
+                    match serde_json::to_string(tool_calls) {
+                        Ok(json) => json.chars().count(),
+                        Err(error) => {
+                            // 序列化失败不再静默按 0 计入：用 Debug 表示做保守估算并告警。
+                            eprintln!(
+                                "estimate_context_tokens: serialize tool_calls failed: {error}"
+                            );
+                            format!("{tool_calls:?}").chars().count()
+                        }
+                    }
+                });
+                m.content.chars().count()
+                    + m.reasoning_content.as_ref().map_or(0, |s| s.chars().count())
+                    + tool_calls_chars
             })
             .sum();
         (total_chars as u64) / 4

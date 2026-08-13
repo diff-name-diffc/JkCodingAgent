@@ -385,7 +385,6 @@ export interface DispatcherSessionTokenUsage {
 
 export interface DispatcherAgentTurn {
   reply: DispatcherMessage;
-  messages: DispatcherMessage[];
 }
 
 export type PythonCodeRunStatus = "running" | "done" | "failed" | "stopped";
@@ -448,22 +447,25 @@ export type DispatcherAgentEvent =
       event: "modelSwitched";
       data: { fromModel: string; toModel: string; reason: string };
     }
-  | { event: "assistantDelta"; data: { messageId: string; delta: string } }
+  | { event: "assistantDelta"; data: { messageId: string; seq: number; delta: string } }
   | {
       event: "assistantThinkingDelta";
-      data: { messageId: string; delta: string; elapsedMs: number };
+      data: { messageId: string; seq: number; delta: string; elapsedMs: number };
     }
-  | { event: "assistantMessage"; data: { message: DispatcherMessage } }
+  | {
+      event: "assistantMessage";
+      data: { message: DispatcherMessage; lastSeq: number | null };
+    }
   | {
       event: "runUsageUpdated";
       data: { workspaceId: string; stats: DispatcherMessageUsageStats };
     }
-  | { event: "toolPlanned"; data: { toolCallId?: string; name: string; arguments: string } }
-  | { event: "toolStarted"; data: { toolCallId?: string; name: string; arguments: string } }
+  | { event: "toolPlanned"; data: { toolCallId: string; name: string; arguments: string } }
+  | { event: "toolStarted"; data: { toolCallId: string; name: string; arguments: string } }
   | {
       event: "toolSummaryStarted";
       data: {
-        toolCallId?: string;
+        toolCallId: string;
         name: string;
         resultMode: DispatcherToolResultMode;
       };
@@ -471,7 +473,7 @@ export type DispatcherAgentEvent =
   | {
       event: "toolSummaryDelta";
       data: {
-        toolCallId?: string;
+        toolCallId: string;
         name: string;
         delta: string;
         resultMode: DispatcherToolResultMode;
@@ -480,15 +482,19 @@ export type DispatcherAgentEvent =
   | {
       event: "toolFinished";
       data: {
-        toolCallId?: string;
+        toolCallId: string;
         name: string;
+        arguments: string;
         displayText: string;
         resultMode: DispatcherToolResultMode;
         detailRefs: DispatcherToolArtifactRef[];
       };
     }
   | { event: "toolRunUpdated"; data: { run: DispatcherToolRunRecord } }
-  | { event: "finished"; data: { messages: DispatcherMessage[] } }
+  | {
+      event: "finished";
+      data: { workspaceId: string; messageCount: number };
+    }
   | { event: "failed"; data: { workspaceId: string; message: string } };
 
 export interface DispatcherSession {
@@ -541,7 +547,7 @@ export interface ChatCategory {
 }
 
 export interface SessionKeyword {
-  workspaceId: string;
+  sessionId: string;
   keyword: string;
   weight: number;
   createdAt: string;
@@ -838,6 +844,11 @@ export interface GraphNodeSkippedData {
   reason: string;
 }
 
+/** 节点因运行取消而终止（区别于上游失败导致的 nodeSkipped）。 */
+export interface GraphNodeCancelledData {
+  nodeId: string;
+}
+
 export interface GraphStateUpdatedData {
   nodeId: string;
   key: string;
@@ -856,7 +867,8 @@ export interface GraphRunFailedData {
   error: string;
 }
 
-/** 高危写检查点：首个 coding 节点即将启动，运行暂停。 */
+/** 高危写检查点：就绪节点只剩可能写盘的节点（coding 工具组、可写特殊工具或
+ * expectedFiles 任一），运行暂停等待恢复（后端 runner::node_may_write 判定）。 */
 export interface GraphRunPausedData {
   nodeId: string;
 }
@@ -873,6 +885,7 @@ export type GraphRunEventKind =
   | "nodeFinished"
   | "nodeFailed"
   | "nodeSkipped"
+  | "nodeCancelled"
   | "stateUpdated"
   | "runPaused"
   | "runResumed"
@@ -896,6 +909,7 @@ export type GraphRunEventPayload = {
   | { event: "nodeFinished"; data: GraphNodeFinishedData }
   | { event: "nodeFailed"; data: GraphNodeFailedData }
   | { event: "nodeSkipped"; data: GraphNodeSkippedData }
+  | { event: "nodeCancelled"; data: GraphNodeCancelledData }
   | { event: "stateUpdated"; data: GraphStateUpdatedData }
   | { event: "runPaused"; data: GraphRunPausedData }
   | { event: "runResumed"; data: GraphRunEmptyData }

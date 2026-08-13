@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -27,19 +27,14 @@ impl SubAgentManager {
         let mut configs = Vec::new();
         let mut new_cache = HashMap::new();
         for record in records {
-            match serde_json::from_str::<SubAgentConfig>(&record.config_json) {
-                Ok(mut config) => {
-                    config.enabled = record.enabled;
-                    new_cache.insert(config.agent_id.clone(), config.clone());
-                    configs.push(config);
-                }
-                Err(e) => {
-                    eprintln!(
-                        "SubAgentManager: failed to parse config for '{}': {}",
-                        record.id, e
-                    );
-                }
-            }
+            // 单条解析失败直接向上抛错：不得用「部分成功」结果覆盖缓存，
+            // 否则该代理会在内存视图中静默消失，而 DB/list_all 仍可见，
+            // 造成前后端行为分叉。降级策略由调用方决定。
+            let mut config = serde_json::from_str::<SubAgentConfig>(&record.config_json)
+                .with_context(|| format!("子智能体 '{}' 配置解析失败", record.id))?;
+            config.enabled = record.enabled;
+            new_cache.insert(config.agent_id.clone(), config.clone());
+            configs.push(config);
         }
         *self.cache.write() = new_cache;
         Ok(configs)
@@ -58,6 +53,14 @@ impl SubAgentManager {
 
     pub fn update(&self, id: &str, config: SubAgentConfig) -> Result<SubAgentRecord> {
         config.validate()?;
+        // DB 只按主键 id 更新行，id 列本身不会被改写。若允许 config.agent_id
+        // 与 id 不一致，缓存会插入新键而旧键残留，导致缓存与 DB 永久分叉。
+        if config.agent_id != id {
+            anyhow::bail!(
+                "错误：子智能体 id 不允许变更（期望 '{id}'，配置中为 '{}'）",
+                config.agent_id
+            );
+        }
         let record = self.db.update(id, &config)?;
         self.cache.write().insert(config.agent_id.clone(), config);
         Ok(record)
@@ -90,7 +93,11 @@ impl SubAgentManager {
     }
 
     pub fn set_global_enabled(&self, sub_agent_ids: &[String]) -> Result<()> {
-        self.db.set_global_enabled(sub_agent_ids)
+        self.db.set_global_enabled(sub_agent_ids)?;
+        // 与 create/update/delete/seed_browser_force 保持一致：写库后刷新缓存，
+        // 避免 cache 与 DB 的使能状态长期不一致。
+        self.load_all()?;
+        Ok(())
     }
 
     pub fn save_run_trace(

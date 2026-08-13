@@ -19,6 +19,11 @@ struct SshListServersTool {
     manager: SshSessionManager,
 }
 
+/// SSH 命令执行工具。
+///
+/// 并发语义：同一 `server_id + session_id` 的并发调用复用同一条 SSH 连接，
+/// 连接级锁保证命令整段串行执行（输出不交错、状态不串扰）；后到的调用会排队
+/// 等待，最长占用一个命令超时周期（≤300s）。跨 session_id 的调用互不阻塞。
 struct SshExecTool {
     manager: SshSessionManager,
 }
@@ -89,7 +94,7 @@ impl AgentTool for SshExecTool {
                     },
                     "stdin": {
                         "type": "string",
-                        "description": "可选。命令启动后写入其标准输入的字节，随后关闭输入端。用于 here-doc / 管道喂入场景（如向读取 stdin 的程序提供内容）。不可用于回应交互式密码/确认提示——这类场景请改写为非交互命令。"
+                        "description": "可选。命令启动后写入其标准输入的字节，随后关闭输入端。用于 here-doc / 管道喂入场景（如向读取 stdin 的程序提供内容）。stdin 内容会随命令一起提交安全审查，禁止用 stdin 携带未审查的破坏性内容。不可用于回应交互式密码/确认提示——这类场景请改写为非交互命令。"
                     },
                     "timeout_secs": {
                         "type": "integer",
@@ -117,71 +122,109 @@ impl AgentTool for SshExecTool {
         };
         let stdin = string_arg(args, "stdin");
 
-        // 安全审查门禁：已配置审查 AI 且服务器开启审查时，执行前先评估命令安全性。
-        // fail-closed：审查异常或判定不通过一律拦截（并写入审计），不执行命令。
-        let review_outcome: Option<crate::ssh_tool::SshAuditReview> = if let Some(review_config) =
-            context.ssh_review.as_ref()
-        {
-            match self
-                .manager
-                .server_config_async(context.workspace.clone(), server_id.clone())
-                .await
-            {
-                Ok(server) if server.review_enabled => {
-                    let intent = string_arg(args, "compress_intent")
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| context.session_title.clone());
-                    let payload = crate::agent::ssh_review::SshReviewPayload {
-                        intent,
-                        task: context.user_task.clone().unwrap_or_default(),
-                        server_info: crate::agent::ssh_review::SshReviewServerInfo {
-                            id: server.id.clone(),
-                            description: server.description.clone(),
-                            host: server.host.clone(),
-                            port: server.port,
-                            username: server.username.clone(),
-                            tags: server.tags.clone(),
-                        },
-                        command: command.clone(),
+        // 安全审查门禁：fail-closed。
+        // - 未配置审查模型：默认拦截可执行命令，不得跳过审查放行。
+        // - 已配置且服务器开启审查：执行前评估命令（含 stdin）安全性。
+        // - 审查异常或判定不通过：拦截并写入审计，不执行命令。
+        // - 服务器显式关闭「执行前审查」开关：按配置放行（设计内的豁免通道）。
+        let review_outcome: Option<crate::ssh_tool::SshAuditReview> =
+            match context.ssh_review.as_ref() {
+                None => {
+                    let blocked = crate::ssh_tool::SshAuditReview {
+                        allowed: false,
+                        reason: "未配置安全审查，无法评估命令安全性".to_string(),
                     };
-                    match crate::agent::ssh_review::review_command(review_config, &payload).await {
-                        Ok(verdict) => Some(crate::ssh_tool::SshAuditReview {
-                            allowed: verdict.allowed,
-                            reason: verdict.reason,
-                        }),
-                        Err(error) => {
-                            let blocked = crate::ssh_tool::SshAuditReview {
-                                allowed: false,
-                                reason: format!("审查服务异常：{error}"),
+                    if let Ok(record) = self
+                        .manager
+                        .record_review_blocked(
+                            context.workspace.clone(),
+                            context.workspace_id.clone(),
+                            context.session_title.clone(),
+                            server_id.clone(),
+                            session_id.clone(),
+                            command.clone(),
+                            blocked,
+                        )
+                        .await
+                    {
+                        return format!(
+                            "错误：未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。\n\n{}",
+                            crate::ssh_tool::render_ssh_audit_record_markdown(&record)
+                        );
+                    }
+                    return "错误：未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。"
+                        .to_string();
+                }
+                Some(review_config) => {
+                    match self
+                        .manager
+                        .server_config_async(context.workspace.clone(), server_id.clone())
+                        .await
+                    {
+                        Ok(server) if server.review_enabled => {
+                            let intent = string_arg(args, "compress_intent")
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or_else(|| context.session_title.clone());
+                            let payload = crate::agent::ssh_review::SshReviewPayload {
+                                intent,
+                                task: context.user_task.clone().unwrap_or_default(),
+                                server_info: crate::agent::ssh_review::SshReviewServerInfo {
+                                    id: server.id.clone(),
+                                    description: server.description.clone(),
+                                    host: server.host.clone(),
+                                    port: server.port,
+                                    username: server.username.clone(),
+                                    tags: server.tags.clone(),
+                                },
+                                command: command.clone(),
+                                stdin: stdin.clone(),
                             };
-                            let record_result = self
-                                .manager
-                                .record_review_blocked(
-                                    context.workspace.clone(),
-                                    context.workspace_id.clone(),
-                                    context.session_title.clone(),
-                                    server_id.clone(),
-                                    session_id.clone(),
-                                    command.clone(),
-                                    blocked,
-                                )
-                                .await;
-                            if let Ok(record) = record_result {
-                                return crate::ssh_tool::render_ssh_audit_record_markdown(&record);
+                            match crate::agent::ssh_review::review_command(
+                                review_config, &payload,
+                            )
+                            .await
+                            {
+                                Ok(verdict) => Some(crate::ssh_tool::SshAuditReview {
+                                    allowed: verdict.allowed,
+                                    reason: verdict.reason,
+                                }),
+                                Err(error) => {
+                                    let blocked = crate::ssh_tool::SshAuditReview {
+                                        allowed: false,
+                                        reason: format!("审查服务异常：{error}"),
+                                    };
+                                    let record_result = self
+                                        .manager
+                                        .record_review_blocked(
+                                            context.workspace.clone(),
+                                            context.workspace_id.clone(),
+                                            context.session_title.clone(),
+                                            server_id.clone(),
+                                            session_id.clone(),
+                                            command.clone(),
+                                            blocked,
+                                        )
+                                        .await;
+                                    if let Ok(record) = record_result {
+                                        return format!(
+                                            "错误：命令已被安全审查拦截（审查服务异常：{error}）。\n\n{}",
+                                            crate::ssh_tool::render_ssh_audit_record_markdown(
+                                                &record
+                                            )
+                                        );
+                                    }
+                                    return format!(
+                                        "错误：命令已被安全审查拦截（审查服务异常：{error}）。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
+                                    );
+                                }
                             }
-                            return format!(
-                                    "命令已被安全审查拦截（审查服务异常：{error}）。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
-                                );
                         }
+                        Ok(_) => None,
+                        Err(error) => return format!("错误：{error}"),
                     }
                 }
-                Ok(_) => None,
-                Err(error) => return format!("错误：{error}"),
-            }
-        } else {
-            None
-        };
+            };
 
         // 判定为不通过：写入「被拦截」审计记录并阻断。
         if let Some(ref review) = review_outcome {
@@ -203,7 +246,7 @@ impl AgentTool for SshExecTool {
                     return crate::ssh_tool::render_ssh_audit_record_markdown(&record);
                 }
                 return format!(
-                    "命令已被安全审查拦截：{reason}。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
+                    "错误：命令已被安全审查拦截：{reason}。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
                 );
             }
         }

@@ -12,12 +12,28 @@ use serde_json::Value;
 /// （tools/builtin/submit_graph）都引用本常量，避免再次升级时多处漂移。
 pub(crate) const GRAPH_DEFINITION_VERSION: u8 = 3;
 
+// ── 状态词表（集中定义，禁止散落魔法字符串）────────────────────────────
+// 计划/运行状态（graph_plans.status 与 graph_runs.status 共用同一词表）。
+// 注意：这些值同时被前端与 SQL 过滤条件引用，是落库/协议的稳定契约——
+// 任何改动都等同于数据迁移，禁止调整既有值。
+//
+// 关于枚举化：本波次评估后维持「集中常量」方案，不引入状态 enum——
+// 1) 落库值绝不能变：enum 序列化形态（tag/重命名）一旦与既有字符串值
+//    漂移，存量用户数据（graph_plans/graph_runs/graph_node_runs）读取即错；
+// 2) 读取侧是字符串世界：rusqlite 读出的 status/phase 是 String，SQL 过滤
+//    条件与前端 normalize 都按字面值比较，enum 化需要全链路（store 读写、
+//    serde 契约、前端类型）同步改造，收益不抵回归面；
+// 3) phase 本身是开放集：sidecar lifecycle 事件会透传运行期阶段字符串
+//    （不经下方固定表），phase 字段无法用封闭 enum 表达。
+// 新增代码一律引用常量，不要再引入字面量；测试中的字面量是刻意保留的
+// 落库值锁定（值变了测试必须红），不属于散落魔法字符串。
 pub(crate) const PLAN_DRAFT: &str = "draft";
 pub(crate) const PLAN_RUNNING: &str = "running";
 pub(crate) const PLAN_COMPLETED: &str = "completed";
 pub(crate) const PLAN_FAILED: &str = "failed";
 pub(crate) const PLAN_CANCELLED: &str = "cancelled";
 
+// 节点状态（graph_node_runs.status / 调度器事件）。
 pub(crate) const NODE_PENDING: &str = "pending";
 pub(crate) const NODE_RUNNING: &str = "running";
 pub(crate) const NODE_SUCCEEDED: &str = "succeeded";
@@ -36,8 +52,25 @@ pub(crate) const VERDICT_PARTIAL: &str = "partial";
 pub(crate) const VERDICT_FAIL: &str = "fail";
 pub(crate) const VERDICT_UNKNOWN: &str = "unknown";
 
+// 节点阶段（graph_node_runs.phase / NodePhaseChanged 事件）。
+// sidecar 的 lifecycle 事件还会透传运行期阶段字符串（不经此表），
+// 故 phase 字段保持 String；本表覆盖应用侧自行写入的固定阶段。
+/// 节点行创建时的初始阶段（pending 快照）。
+pub(crate) const NODE_PHASE_STARTING: &str = "starting";
+/// 节点结算（成功/失败/跳过）落终态前的阶段。
+pub(crate) const NODE_PHASE_FINALIZING: &str = "finalizing";
 /// resume 复制的成功节点行使用的 phase 标记：回执与前端据此区分「本次执行」与「续跑复用」。
 pub(crate) const NODE_PHASE_CACHED: &str = "cached";
+/// 等待模型响应。
+pub(crate) const NODE_PHASE_RESPONDING: &str = "responding";
+/// 模型思考中。
+pub(crate) const NODE_PHASE_THINKING: &str = "thinking";
+/// 工具执行中。
+pub(crate) const NODE_PHASE_TOOL_RUNNING: &str = "tool_running";
+/// 失败自动重试中。
+pub(crate) const NODE_PHASE_RETRYING: &str = "retrying";
+/// 上下文压缩中。
+pub(crate) const NODE_PHASE_COMPACTING: &str = "compacting";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -135,21 +168,29 @@ pub struct GraphDefinition {
 }
 
 impl GraphDefinition {
-    /// 存量持久化定义的一次性升级：v2 → v3。
-    /// v3 新增字段（expectedFiles/exportPolicy/inheritsFrom 等）均有 serde
-    /// default，旧 v2 JSON 可完整反序列化，这里只需补版本号；升级后的定义
-    /// 由 validate 正常放行（可重跑/续跑/编辑）。未知版本不动，由 validate 报错。
+    /// 存量持久化定义的一次性升级：低于当前版本的历史版本（v2/v1/…）统一
+    /// 升到当前版本。各历史版本的新增字段（expectedFiles/exportPolicy/
+    /// inheritsFrom 等）均有 serde default，能完整反序列化的旧 JSON 字段必然
+    /// 齐全，这里只需补版本号；升级后的定义由 validate 正常放行（可重跑/续跑/
+    /// 编辑）。高于当前版本的定义不动，由 validate 报错（避免静默降级）。
     /// 在 run_graph 与 graph_plan_update 入口调用，落库路径会把升级结果持久化。
     pub(crate) fn upgrade_legacy(&mut self) {
-        if self.version == 2 {
+        if self.version < GRAPH_DEFINITION_VERSION {
             self.version = GRAPH_DEFINITION_VERSION;
         }
     }
 
-    /// 统一 trim 节点 id、依赖引用、outputKey 与 injectStateKeys 的首尾空白。
-    /// 校验/调度/持久化各处都以 trim 后的 id 为准（见 ReadyQueue 与 validate），
-    /// 在解析入口统一规整可避免「原始 id 与 trim id 混用」导致的状态机错位。
+    /// 统一 trim 节点 id、依赖引用、outputKey、injectStateKeys 以及共享 state
+    /// 定义侧 key（state_keys）的首尾空白。校验/调度/持久化各处都以 trim 后的
+    /// id 为准（见 ReadyQueue 与 validate），在解析入口统一规整可避免「原始 id
+    /// 与 trim id 混用」导致的状态机错位。injectStateKeys/outputKey 与
+    /// state_keys.key 同属一个命名空间：只 trim 引用侧不 trim 定义侧，带空白
+    /// 的定义键会匹配不上注入引用，造成运行期注入/写回错位。
+    /// GraphInherits 的 planId/runId 参与精确匹配查询，一并归一化。
     pub(crate) fn normalize_ids(&mut self) {
+        for key in &mut self.state_keys {
+            key.key = key.key.trim().to_string();
+        }
         for node in &mut self.nodes {
             node.id = node.id.trim().to_string();
             node.output_key = node.output_key.trim().to_string();
@@ -160,6 +201,10 @@ impl GraphDefinition {
                 *key = key.trim().to_string();
             }
         }
+        if let Some(inherits) = &mut self.inherits_from {
+            inherits.plan_id = inherits.plan_id.trim().to_string();
+            inherits.run_id = inherits.run_id.trim().to_string();
+        }
     }
 }
 
@@ -169,8 +214,10 @@ pub struct GraphRunSummary {
     pub id: String,
     pub plan_id: String,
     pub attempt_no: i64,
+    /// 运行状态：取值见 PLAN_RUNNING / PLAN_COMPLETED / PLAN_FAILED /
+    /// PLAN_CANCELLED（graph_runs 与 graph_plans 共用同一状态词表）。
     pub status: String,
-    /// full | resume。
+    /// full | resume（RUN_MODE_FULL / RUN_MODE_RESUME）。
     #[serde(default = "default_run_mode")]
     pub mode: String,
     /// pass | partial | fail | unknown。统一以 VERDICT_UNKNOWN 表示「尚未/未能验收」，
@@ -199,6 +246,8 @@ pub struct GraphPlanRecord {
     pub title: String,
     pub summary: String,
     pub definition_json: String,
+    /// 计划状态：PLAN_DRAFT / PLAN_RUNNING / PLAN_COMPLETED / PLAN_FAILED /
+    /// PLAN_CANCELLED。命令层与 store 层的状态门禁都以此组常量为准。
     pub status: String,
     pub state_json: String,
     /// 提交时刻的用户需求快照：节点输入与终局验收都以它为准，避免运行前消息漂移。
@@ -223,7 +272,12 @@ pub struct GraphNodeRunRecord {
     pub run_id: String,
     pub plan_id: String,
     pub node_id: String,
+    /// 节点状态：NODE_PENDING / NODE_RUNNING / NODE_SUCCEEDED / NODE_FAILED /
+    /// NODE_SKIPPED / NODE_CANCELLED。
     pub status: String,
+    /// 节点阶段：应用侧固定阶段见 NODE_PHASE_*（STARTING/FINALIZING/CACHED/
+    /// RESPONDING/THINKING/TOOL_RUNNING/RETRYING/COMPACTING）；sidecar
+    /// lifecycle 事件还会透传运行期阶段字符串，故保持 String。
     pub phase: String,
     pub model_ref: String,
     pub model_label: String,
@@ -252,7 +306,7 @@ impl GraphNodeRunRecord {
             plan_id: plan_id.to_string(),
             node_id: node.id.clone(),
             status: NODE_PENDING.to_string(),
-            phase: "starting".to_string(),
+            phase: NODE_PHASE_STARTING.to_string(),
             model_ref: node.model_ref.clone(),
             model_label: node.model_ref.clone(),
             model_category: String::new(),
@@ -347,6 +401,24 @@ pub struct GraphPlanUpdatedPayload {
     pub workspace_id: String,
 }
 
+/// graph-run-event 全局广播的载荷。
+///
+/// 线上 JSON 形态（由序列化测试 run_event_payload_flattens_event_into_top_level
+/// 锁定，前端消费以此为准）：
+/// ```json
+/// {
+///   "planId": "…", "runId": "…", "workspaceId": "…",
+///   "sequence": 1, "timestampMs": 1700000000000,
+///   "event": "nodePhaseChanged",
+///   "data": { "nodeId": "…", "phase": "…" }
+/// }
+/// ```
+/// `event`/`data` 两个键来自 adjacently tagged 的 GraphRunEvent 经
+/// #[serde(flatten)] 内联，键名由 tag/content 固定、不受外层 rename_all
+/// 影响；event 取值为变体名的 camelCase（rename_all_fields）。
+/// 当前仅实现 Serialize：serde 对 flatten + adjacently tagged 的
+/// Deserialize 支持有限，未来需要反序列化时必须自行实现，
+/// 修改本结构前请先更新锁定测试并与前端对齐。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphRunEventPayload {
@@ -381,6 +453,8 @@ pub enum GraphRunEvent {
     },
     NodePhaseChanged {
         node_id: String,
+        /// 阶段字符串：应用侧固定阶段见 NODE_PHASE_*；sidecar lifecycle
+        /// 事件透传的运行期阶段原样广播。
         phase: String,
     },
     NodeOutputDelta {
@@ -394,18 +468,27 @@ pub enum GraphRunEvent {
     NodeFinished {
         node_id: String,
         output: String,
-        duration_ms: u64,
+        /// 与 GraphNodeRunRecord.duration_ms 统一为 i64（毫秒），消除事件→
+        /// 落库的跨层类型转换（u64→i64 溢出/符号歧义）。
+        duration_ms: i64,
         affected_files: Vec<String>,
     },
     NodeFailed {
         node_id: String,
         error: String,
-        duration_ms: u64,
+        /// 与 GraphNodeRunRecord.duration_ms 统一为 i64（毫秒）。
+        duration_ms: i64,
         affected_files: Vec<String>,
     },
     NodeSkipped {
         node_id: String,
         reason: String,
+    },
+    /// 节点因运行取消而终止（落库状态 NODE_CANCELLED）：与 NodeSkipped
+    /// （上游失败导致的传递性跳过）语义不同，前端据此区分「被取消」与
+    /// 「被跳过」。仅在落库成功后广播（见 node_task::mark_node_cancelled）。
+    NodeCancelled {
+        node_id: String,
     },
     StateUpdated {
         node_id: String,
@@ -413,9 +496,11 @@ pub enum GraphRunEvent {
         value: String,
         state: Value,
     },
-    /// 高危写检查点：就绪节点只剩 coding 节点且检查点未通过，运行暂停等待
-    /// graph_run_resume。node_id 为触发暂停的 coding 节点；暂停期间已启动的
-    /// 在途节点继续运行，就绪的非 coding 节点不受阻塞。
+    /// 高危写检查点：就绪节点只剩「可能写盘」的节点（判定见
+    /// runner::node_may_write——coding 工具组、可写特殊工具或 expectedFiles
+    /// 任一即视为可写）且检查点未通过，运行暂停等待 graph_run_resume。
+    /// node_id 为触发暂停的节点；暂停期间已启动的在途节点继续运行，
+    /// 就绪的不可能写盘的节点不受阻塞。
     RunPaused {
         node_id: String,
     },
@@ -457,5 +542,102 @@ mod tests {
         assert_eq!(node.export_policy, ExportPolicy::Summary);
         assert!(node.expected_files.is_empty());
         assert!(definition.inherits_from.is_none());
+    }
+
+    #[test]
+    fn upgrade_legacy_promotes_any_older_version_and_keeps_newer() {
+        let mut definition: GraphDefinition = serde_json::from_str(
+            r#"{"version":1,"title":"测试","nodes":[{"id":"n1","title":"实现","modelRef":"m1","baseToolGroup":"read_only","task":"调研","outputKey":"result"}]}"#,
+        )
+        .unwrap();
+        definition.upgrade_legacy();
+        assert_eq!(definition.version, GRAPH_DEFINITION_VERSION, "v1 等历史版本统一升级");
+
+        definition.version = 2;
+        definition.upgrade_legacy();
+        assert_eq!(definition.version, GRAPH_DEFINITION_VERSION, "v2 升级路径不回归");
+
+        definition.version = GRAPH_DEFINITION_VERSION + 1;
+        definition.upgrade_legacy();
+        assert_eq!(
+            definition.version,
+            GRAPH_DEFINITION_VERSION + 1,
+            "更高版本不静默降级，交由 validate 报错"
+        );
+    }
+
+    #[test]
+    fn normalize_ids_trims_state_keys_and_inherits() {
+        let mut definition: GraphDefinition = serde_json::from_str(
+            r#"{"version":3,"title":"测试","stateKeys":[{"key":" key1 ","description":"d"}],"inheritsFrom":{"planId":" p1 ","runId":" r1 "},"nodes":[{"id":" n1 ","title":"实现","modelRef":"m1","baseToolGroup":"coding","task":"调研","dependsOn":[" n0 "],"injectStateKeys":[" key1 "],"outputKey":" out "}]} "#,
+        )
+        .unwrap();
+        definition.normalize_ids();
+        assert_eq!(definition.state_keys[0].key, "key1", "定义侧 key 与引用侧同命名空间归一");
+        assert_eq!(definition.inherits_from.as_ref().unwrap().plan_id, "p1");
+        assert_eq!(definition.inherits_from.as_ref().unwrap().run_id, "r1");
+        let node = &definition.nodes[0];
+        assert_eq!(node.id, "n1");
+        assert_eq!(node.depends_on, vec!["n0"]);
+        assert_eq!(node.inject_state_keys, vec!["key1"]);
+        assert_eq!(node.output_key, "out");
+    }
+
+    #[test]
+    fn run_event_payload_flattens_event_into_top_level() {
+        // 锁定前端消费的扁平 JSON 形态：event/data 键来自 adjacently tagged
+        // 枚举经 flatten 内联，不受外层 rename_all 影响。
+        let payload = GraphRunEventPayload {
+            plan_id: "p1".into(),
+            run_id: "r1".into(),
+            workspace_id: "w1".into(),
+            sequence: 7,
+            timestamp_ms: 123,
+            event: GraphRunEvent::NodePhaseChanged {
+                node_id: "n1".into(),
+                phase: NODE_PHASE_THINKING.into(),
+            },
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value.get("planId").and_then(Value::as_str), Some("p1"));
+        assert_eq!(value.get("timestampMs").and_then(Value::as_i64), Some(123));
+        assert_eq!(
+            value.get("event").and_then(Value::as_str),
+            Some("nodePhaseChanged"),
+            "变体名按 rename_all_fields 取 camelCase"
+        );
+        let data = value.get("data").and_then(Value::as_object).expect("data 为对象");
+        assert_eq!(data.get("nodeId").and_then(Value::as_str), Some("n1"));
+        assert_eq!(data.get("phase").and_then(Value::as_str), Some(NODE_PHASE_THINKING));
+
+        // 无字段变体：data 为空对象，event 键名稳定。
+        let payload = GraphRunEventPayload {
+            plan_id: "p1".into(),
+            run_id: "r1".into(),
+            workspace_id: "w1".into(),
+            sequence: 8,
+            timestamp_ms: 124,
+            event: GraphRunEvent::RunCancelled {},
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value.get("event").and_then(Value::as_str), Some("runCancelled"));
+        assert_eq!(value.get("data"), Some(&serde_json::json!({})));
+
+        // NodeCancelled：取消与跳过是不同语义，event 键名必须与
+        // nodeSkipped 区分（前端按 event 判别节点终态展示）。
+        let payload = GraphRunEventPayload {
+            plan_id: "p1".into(),
+            run_id: "r1".into(),
+            workspace_id: "w1".into(),
+            sequence: 9,
+            timestamp_ms: 125,
+            event: GraphRunEvent::NodeCancelled {
+                node_id: "n1".into(),
+            },
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value.get("event").and_then(Value::as_str), Some("nodeCancelled"));
+        let data = value.get("data").and_then(Value::as_object).expect("data 为对象");
+        assert_eq!(data.get("nodeId").and_then(Value::as_str), Some("n1"));
     }
 }

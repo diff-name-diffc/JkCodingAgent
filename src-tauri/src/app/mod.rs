@@ -4,6 +4,7 @@ use crate::{
     ssh_tool, task_runtime, workspace,
 };
 use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
 
 fn build_task_manager() -> TaskManager {
     TaskManager::default()
@@ -13,12 +14,33 @@ fn build_task_manager() -> TaskManager {
 pub fn run() {
     let project_mcp_registry = project::mcp::ProjectMcpRegistry::default();
     let ssh_session_manager = ssh_tool::SshSessionManager::default();
-    let dispatcher_state =
-        DispatcherState::new(project_mcp_registry.clone(), ssh_session_manager.clone())
-            .expect("failed to initialize Dispatcher state");
+    let dispatcher_mcp_registry = project_mcp_registry.clone();
+    let dispatcher_ssh_manager = ssh_session_manager.clone();
 
     tauri::Builder::default()
-        .setup(|app| {
+        .setup(move |app| {
+            // G11-02：DispatcherState 构造移出主线程同步路径——DB 打开/迁移、
+            // 中断运行恢复、子智能体配置加载等阻塞 I/O 全部在 spawn_blocking
+            // 中进行，这里只等待异步构造结果。失败时给出可读错误对话框并退出，
+            // 而不是裸 panic 导致无法启动且无任何提示。
+            let dispatcher_state = tauri::async_runtime::block_on(DispatcherState::new(
+                dispatcher_mcp_registry.clone(),
+                dispatcher_ssh_manager.clone(),
+            ));
+            let dispatcher_state = match dispatcher_state {
+                Ok(state) => state,
+                Err(error) => {
+                    let message = format!("初始化智能体核心状态失败：{error:#}");
+                    eprintln!("{message}");
+                    app.dialog()
+                        .message(message)
+                        .title("JKCodingAgent 启动失败")
+                        .blocking_show();
+                    return Err("初始化智能体核心状态失败".into());
+                }
+            };
+            app.manage(dispatcher_state);
+
             // 后台预热 login shell 环境，避免第一次启动任务时阻塞
             std::thread::spawn(|| {
                 platform::get_login_shell_path();
@@ -40,7 +62,6 @@ pub fn run() {
             Ok(())
         })
         .manage(build_task_manager())
-        .manage(dispatcher_state)
         .manage(browser::BrowserManager::default())
         .manage(python_runner::PythonRunnerState::default())
         .manage(project_mcp_registry)

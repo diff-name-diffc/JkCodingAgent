@@ -7,8 +7,10 @@ use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
 use super::common::{is_dangerous, string_arg, with_compression_parameters};
+use crate::agent::ssh_review::{review_shell_command, CommandReviewPayload, CommandReviewTarget};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
+use crate::ssh_tool::SshAuditReview;
 
 pub(super) fn exec_tool() -> Box<dyn AgentTool> {
     Box::new(ExecTool)
@@ -21,7 +23,7 @@ pub(super) fn message_tool() -> Box<dyn AgentTool> {
 struct ExecTool;
 struct MessageTool;
 
-const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
 struct CapturedCommandOutput {
     output: Output,
@@ -36,7 +38,7 @@ impl AgentTool for ExecTool {
     }
 
     fn description(&self) -> &'static str {
-        "在当前工作区执行 shell 命令并返回输出。适合搜索、构建、测试、查看 git 信息；优先使用只读命令。默认开启压缩（compress=true）并需填写 compress_intent；需要保留原始报错原文时设 compress=false。"
+        "在当前工作区执行 shell 命令并返回输出。适合搜索、构建、测试、查看 git 信息；优先使用只读命令。命令执行前会经过安全审查（未配置审查模型时拒绝执行）。默认开启压缩（compress=true）并需填写 compress_intent；需要保留原始报错原文时设 compress=false。"
     }
 
     fn parameters(&self) -> Value {
@@ -60,24 +62,34 @@ impl AgentTool for ExecTool {
         if is_dangerous(&command) {
             return format!("错误：基于安全策略已拦截命令：{command}");
         }
+        // 安全审查门禁（fail-closed）：与 local_zsh/ssh_exec 同链路。
+        // 未配置审查、审查异常或判定不通过一律拒绝执行。
+        match review_exec_command(args, context, &command).await {
+            Ok(review) if review.allowed => {}
+            Ok(review) => {
+                return format!("错误：命令已被安全审查拦截：{}", review.reason)
+            }
+            Err(error) => return format!("错误：{error}"),
+        }
         let timeout_secs = context.exec_timeout_secs.max(1);
 
-        let mut child = match Command::new("sh")
-            .arg("-lc")
+        let mut cmd = Command::new("sh");
+        cmd.arg("-lc")
             .arg(&command)
             .current_dir(&context.workspace)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-        {
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0); // 独立进程组：超时可按组终止全部派生进程
+        let mut child = match cmd.spawn() {
             Ok(child) => child,
-            Err(error) => return format!("执行命令失败：{error}"),
+            Err(error) => return format!("错误：执行命令失败：{error}"),
         };
 
         let captured = match capture_command_output(&mut child, timeout_secs).await {
             Ok(output) => output,
-            Err(error) => return format!("执行命令失败：{error}"),
+            Err(error) => return format!("错误：执行命令失败：{error}"),
         };
 
         let stdout = String::from_utf8_lossy(&captured.output.stdout)
@@ -116,6 +128,38 @@ impl AgentTool for ExecTool {
     }
 }
 
+/// exec 的安全审查：复用 ssh_review 链路。未配置审查模型时返回 Err（调用方 fail-closed 拦截）。
+/// 审计：拦截结果作为工具返回持久化进会话消息记录（exec 运行在用户项目工作区内，
+/// 不在项目目录中额外落审计文件，避免污染用户仓库）。
+async fn review_exec_command(
+    args: &Value,
+    context: &ToolContext,
+    command: &str,
+) -> Result<SshAuditReview, String> {
+    let Some(review_config) = context.ssh_review.as_ref() else {
+        return Err("未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。".to_string());
+    };
+    let intent = string_arg(args, "compress_intent")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| context.session_title.clone());
+    let payload = CommandReviewPayload {
+        intent,
+        task: context.user_task.clone().unwrap_or_default(),
+        target: CommandReviewTarget::WorkspaceShell {
+            workspace_path: context.workspace.display().to_string(),
+        },
+        command: command.to_string(),
+        stdin: None,
+    };
+    review_shell_command(review_config, &payload)
+        .await
+        .map(|verdict| SshAuditReview {
+            allowed: verdict.allowed,
+            reason: verdict.reason,
+        })
+}
+
 async fn capture_command_output(
     child: &mut tokio::process::Child,
     timeout_secs: u64,
@@ -128,7 +172,9 @@ async fn capture_command_output(
     let (status, timed_out) = match timeout(Duration::from_secs(timeout_secs), child.wait()).await {
         Ok(status) => (status?, false),
         Err(_) => {
-            child.kill().await?;
+            // 超时：杀整个进程组（含派生的孙进程），确保管道写端全部关闭、
+            // reader 能读到 EOF，不会永久阻塞。
+            kill_process_group(child);
             (child.wait().await?, true)
         }
     };
@@ -145,6 +191,23 @@ async fn capture_command_output(
         total_bytes_read: stdout_read + stderr_read,
         timed_out,
     })
+}
+
+/// 终止子进程所在的整个进程组。spawn 时设置了 `process_group(0)`，
+/// 子进程 pid 即进程组 id；组杀失败时兜底单杀直接子进程。
+#[cfg(unix)]
+fn kill_process_group(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+    let _ = child.start_kill();
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
 }
 
 async fn read_limited<R>(reader: Option<R>) -> (Vec<u8>, usize)

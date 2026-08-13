@@ -15,7 +15,8 @@ use super::DispatcherDb;
 
 /// 当前 schema 版本号（PRAGMA user_version），init() 内迁移按版本号阶梯推进。
 /// pub(crate)：跨模块的迁移测试直接引用本常量，避免硬编码版本号漂移。
-pub(crate) const SCHEMA_VERSION: i32 = 26;
+/// v28：session_keywords.workspace_id 改名为 session_id（该列实际存储会话 id）。
+pub(crate) const SCHEMA_VERSION: i32 = 28;
 
 impl DispatcherDb {
     pub(super) fn init(&self) -> Result<()> {
@@ -29,7 +30,14 @@ impl DispatcherDb {
         let current_version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
-        if current_version >= SCHEMA_VERSION {
+        if current_version > SCHEMA_VERSION {
+            // 数据库由更高版本的应用写入，旧代码无法识别新 schema：继续读写
+            // 轻则查询报错、重则写入不兼容数据损坏库，直接报错提示升级。
+            anyhow::bail!(
+                "数据库版本({current_version})高于当前程序支持的版本({SCHEMA_VERSION})，请升级应用后再打开"
+            );
+        }
+        if current_version == SCHEMA_VERSION {
             // Still need to set WAL mode on first open of each connection.
             conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
                 .context("set pragmas")?;
@@ -278,11 +286,14 @@ impl DispatcherDb {
                 "context_cleared",
                 "INTEGER NOT NULL DEFAULT 0",
             )?;
+            // 旧库缺少 kind 列时默认 'chat' 而非 'project'：后续 v6 迁移会删除
+            // 全部 kind='project' 会话及其消息/图片，默认 'project' 会把未经
+            // v5→v6 的旧库全部聊天数据不可恢复地清空；'chat' 保留数据。
             ensure_column_exists_tx(
                 &tx,
                 "dispatcher_sessions",
                 "kind",
-                "TEXT NOT NULL DEFAULT 'project'",
+                "TEXT NOT NULL DEFAULT 'chat'",
             )?;
             tx.execute(
                 "CREATE INDEX IF NOT EXISTS idx_dispatcher_sessions_project_kind
@@ -442,6 +453,7 @@ impl DispatcherDb {
         }
 
         // v6 → v7: add session_keywords table for keyword extraction per session.
+        // 列名 session_id（存储会话 id）；旧库中的 workspace_id 列由 v28 迁移改名。
         if conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_keywords'",
@@ -454,15 +466,15 @@ impl DispatcherDb {
             conn.execute_batch(
                 "
                 CREATE TABLE IF NOT EXISTS session_keywords (
-                    workspace_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
                     keyword TEXT NOT NULL,
                     weight REAL NOT NULL DEFAULT 1.0,
                     created_at TEXT NOT NULL,
-                    PRIMARY KEY (workspace_id, keyword),
-                    FOREIGN KEY (workspace_id) REFERENCES dispatcher_sessions(id) ON DELETE CASCADE
+                    PRIMARY KEY (session_id, keyword),
+                    FOREIGN KEY (session_id) REFERENCES dispatcher_sessions(id) ON DELETE CASCADE
                 );
-                CREATE INDEX IF NOT EXISTS idx_session_keywords_workspace
-                    ON session_keywords(workspace_id, weight DESC);
+                CREATE INDEX IF NOT EXISTS idx_session_keywords_session
+                    ON session_keywords(session_id, weight DESC);
                 CREATE INDEX IF NOT EXISTS idx_session_keywords_keyword
                     ON session_keywords(keyword);
                 ",
@@ -884,6 +896,80 @@ impl DispatcherDb {
             tx.commit().context("v26: commit graph hardening migration")?;
         }
 
+        // v26 → v27: 清理 v6 迁移遗漏的悬空 dispatcher_tool_runs 记录。
+        // v6（已发布，语义不再改动）删除 project 会话的消息/产物/token 用量等
+        // 数据时遗漏了无外键约束的 dispatcher_tool_runs，会话删除后其
+        // workspace_id 成为悬空引用；此处统一删除工作区已不存在的记录。
+        if current_version < 27 {
+            let tx = conn
+                .transaction()
+                .context("v27: begin tool runs dangling cleanup migration")?;
+            let removed = tx
+                .execute(
+                    "DELETE FROM dispatcher_tool_runs
+                     WHERE workspace_id NOT IN (SELECT id FROM dispatcher_sessions)",
+                    [],
+                )
+                .context("v27: delete dangling dispatcher_tool_runs")?;
+            if removed > 0 {
+                eprintln!("[db] v27 迁移：清理悬空 dispatcher_tool_runs 记录 {removed} 条");
+            }
+            tx.pragma_update(None, "user_version", 27)
+                .context("v27: set user_version")?;
+            tx.commit().context("v27: commit tool runs dangling cleanup migration")?;
+        }
+
+        // v27 → v28: session_keywords.workspace_id 改名为 session_id。
+        // 该列实际存储会话 id（FK → dispatcher_sessions(id)，查询中按
+        // sk.workspace_id = ds.id 关联），旧名与语义严重不符。SQLite ≥ 3.25 的
+        // RENAME COLUMN 会同步更新 PK/FK 中的列引用；索引按列序号引用不受影响，
+        // 但会话维度索引顺势重建为新名。改名前先清理会话已删除的悬空行（否则
+        // foreign_key_check 会把历史残留算成违例），改名后以
+        // PRAGMA foreign_key_check 兜底校验。新建库直接以 session_id 建表
+        // （见上方建表语句），此块对其为空操作，天然幂等。
+        if current_version < 28 {
+            let tx = conn
+                .transaction()
+                .context("v28: begin session_keywords rename migration")?;
+            if table_has_column(&tx, "session_keywords", "workspace_id")? {
+                let removed = tx
+                    .execute(
+                        "DELETE FROM session_keywords
+                         WHERE workspace_id NOT IN (SELECT id FROM dispatcher_sessions)",
+                        [],
+                    )
+                    .context("v28: delete dangling session_keywords")?;
+                if removed > 0 {
+                    eprintln!("[db] v28 迁移：清理悬空 session_keywords 记录 {removed} 条");
+                }
+                tx.execute_batch(
+                    "
+                    ALTER TABLE session_keywords RENAME COLUMN workspace_id TO session_id;
+                    DROP INDEX IF EXISTS idx_session_keywords_workspace;
+                    CREATE INDEX IF NOT EXISTS idx_session_keywords_session
+                        ON session_keywords(session_id, weight DESC);
+                    ",
+                )
+                .context("v28: rename session_keywords.workspace_id to session_id")?;
+            }
+            let fk_violations: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_foreign_key_check
+                     WHERE \"table\" = 'session_keywords'",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("v28: foreign_key_check session_keywords")?;
+            if fk_violations > 0 {
+                anyhow::bail!(
+                    "v28: session_keywords 外键校验发现 {fk_violations} 条违例，迁移中止"
+                );
+            }
+            tx.pragma_update(None, "user_version", 28)
+                .context("v28: set user_version")?;
+            tx.commit().context("v28: commit session_keywords rename migration")?;
+        }
+
         Ok(())
     }
 }
@@ -902,7 +988,54 @@ fn migrate_session_token_usage_primary_key_on_tx(tx: &rusqlite::Transaction<'_>)
 }
 
 fn migrate_session_token_usage_primary_key_inner(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
+    // 旧表形态可能缺少后续引入的列，先探测再用常量兜底，确保迁移在任何旧
+    // 数据形态下都不因缺列硬失败。
+    let has_source_kind = table_has_column(conn, "dispatcher_session_token_usage", "source_kind")?;
+    let has_cached_tokens =
+        table_has_column(conn, "dispatcher_session_token_usage", "cached_tokens")?;
+    let has_context_window_tokens = table_has_column(
+        conn,
+        "dispatcher_session_token_usage",
+        "context_window_tokens",
+    )?;
+    let has_context_window_capacity = table_has_column(
+        conn,
+        "dispatcher_session_token_usage",
+        "context_window_capacity",
+    )?;
+    let has_updated_at = table_has_column(conn, "dispatcher_session_token_usage", "updated_at")?;
+
+    // 空串与 NULL 的 source_kind 归一为 'primary' 后，旧数据可能存在重复的
+    // (workspace_id, model, source_kind) 组合（旧主键更弱时）；直接 INSERT 会触发
+    // UNIQUE 冲突导致整个迁移事务回滚。按归一化主键 GROUP BY 聚合去重：
+    // token 列求和无损合并，容量取 MAX，updated_at 取最新。
+    let source_kind_expr = if has_source_kind {
+        "COALESCE(NULLIF(source_kind, ''), 'primary')"
+    } else {
+        "'primary'"
+    };
+    let cached_expr = if has_cached_tokens {
+        "SUM(cached_tokens)"
+    } else {
+        "0"
+    };
+    let context_tokens_expr = if has_context_window_tokens {
+        "SUM(context_window_tokens)"
+    } else {
+        "0"
+    };
+    let capacity_expr = if has_context_window_capacity {
+        "MAX(context_window_capacity)"
+    } else {
+        "1000000"
+    };
+    let updated_at_expr = if has_updated_at {
+        "MAX(updated_at)".to_string()
+    } else {
+        format!("'{}'", now())
+    };
+
+    let sql = format!(
         "
         ALTER TABLE dispatcher_session_token_usage RENAME TO dispatcher_session_token_usage_old;
 
@@ -927,23 +1060,36 @@ fn migrate_session_token_usage_primary_key_inner(conn: &Connection) -> Result<()
         SELECT
             workspace_id,
             model,
-            COALESCE(NULLIF(source_kind, ''), 'primary'),
-            prompt_tokens,
-            completion_tokens,
-            total_tokens,
-            cached_tokens,
-            context_window_tokens,
-            context_window_capacity,
-            updated_at
-        FROM dispatcher_session_token_usage_old;
+            {source_kind_expr},
+            SUM(prompt_tokens),
+            SUM(completion_tokens),
+            SUM(total_tokens),
+            {cached_expr},
+            {context_tokens_expr},
+            {capacity_expr},
+            {updated_at_expr}
+        FROM dispatcher_session_token_usage_old
+        GROUP BY workspace_id, model, {source_kind_expr};
 
         DROP TABLE dispatcher_session_token_usage_old;
 
         CREATE INDEX IF NOT EXISTS idx_dispatcher_session_token_usage_workspace_updated
         ON dispatcher_session_token_usage(workspace_id, updated_at DESC);
-        ",
-    )
-    .context("migrate dispatcher session token usage primary key")
+        "
+    );
+    conn.execute_batch(&sql)
+        .context("migrate dispatcher session token usage primary key")
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let count: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+            params![column],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("read column info for {table}.{column}"))?;
+    Ok(count > 0)
 }
 
 fn migrate_legacy_dispatcher_settings_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
@@ -1538,7 +1684,14 @@ fn snapshot_before_graph_rebuild(conn: &Connection, db_path: &std::path::Path, c
     let backup_path = parent.join(&backup_name);
     // 「备份失败」标记文件（固定名）：备份失败时写入、成功时清理，见函数注释。
     let failed_marker_path = parent.join(format!("{file_stem}.pre-graph-rebuild-failed.marker"));
-    match conn.execute("VACUUM INTO ?", params![backup_path.to_string_lossy().as_ref()]) {
+    // SQLite 的 VACUUM INTO 只接受字符串字面量/标识符，不支持绑定参数
+    // （`VACUUM INTO ?` 会在 prepare 阶段直接语法报错，导致快照从未生成）。
+    // 这里把文件名以字面量拼入 SQL，单引号按 SQL 规则转义为两个单引号。
+    let backup_sql = format!(
+        "VACUUM INTO '{}'",
+        backup_path.to_string_lossy().replace('\'', "''")
+    );
+    match conn.execute(&backup_sql, []) {
         Ok(_) => {
             eprintln!(
                 "[db] 即将执行破坏性图迁移（user_version={current_version}），已备份数据库（{detail}）到 {}",
@@ -1903,6 +2056,334 @@ fn scenario_chat_category_agent_config(
 #[cfg(test)]
 mod tests {
     use super::super::DispatcherDb;
+
+    fn temp_db_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("aha-schema-{tag}-{}.sqlite3", uuid::Uuid::new_v4()))
+    }
+
+    fn cleanup_db_files(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+    }
+
+    /// 数据库版本高于当前代码版本（用户降级安装）时必须拒绝打开，而不是静默继续。
+    #[test]
+    fn newer_database_version_is_rejected() {
+        let path = temp_db_path("newer-version");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.pragma_update(None, "user_version", super::SCHEMA_VERSION + 1)
+                .unwrap();
+        }
+        let result = DispatcherDb::new(path.clone());
+        assert!(result.is_err(), "更高版本的数据库必须报错拒绝打开");
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("请升级应用"), "错误信息应提示升级：{message}");
+        cleanup_db_files(&path);
+    }
+
+    /// 旧库（无 kind 列、无 chat_sessions 表）升级时，缺列默认值必须为 'chat'：
+    /// 会话在 v6 迁移后保留，而不是被当作 project 数据清空。
+    #[test]
+    fn legacy_db_without_kind_column_keeps_sessions() {
+        let path = temp_db_path("legacy-kind");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE dispatcher_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO dispatcher_sessions (id, project_id, title, created_at, updated_at)
+                    VALUES ('s1', 'p1', '旧会话', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z');
+                CREATE TABLE dispatcher_messages (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    context_cleared INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO dispatcher_messages (id, workspace_id, role, created_at)
+                    VALUES ('m1', 's1', 'user', '2020-01-01T00:00:00Z');
+                ",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        let conn = db.conn().expect("db conn");
+        let chat_sessions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chat_sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(chat_sessions, 1, "旧会话应保留为 chat 会话");
+        let messages: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dispatcher_messages", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(messages, 1, "旧会话消息不应被清空");
+        drop(conn);
+        drop(db);
+        cleanup_db_files(&path);
+    }
+
+    /// token 用量主键迁移：归一化后重复的 (workspace_id, model, source_kind)
+    /// 旧行必须聚合去重（SUM），不能触发 UNIQUE 冲突让迁移失败。
+    #[test]
+    fn token_usage_primary_key_migration_merges_duplicates() {
+        let path = temp_db_path("token-usage-pk");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            // 旧形态：弱主键（rowid 表）+ 可空串 source_kind，存在归一化后重复的行。
+            conn.execute_batch(
+                "
+                CREATE TABLE dispatcher_session_token_usage (
+                    workspace_id TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    source_kind TEXT NOT NULL DEFAULT '',
+                    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_tokens INTEGER NOT NULL DEFAULT 0,
+                    context_window_tokens INTEGER NOT NULL DEFAULT 0,
+                    context_window_capacity INTEGER NOT NULL DEFAULT 1000000,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO dispatcher_session_token_usage
+                    (workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens, updated_at)
+                    VALUES ('w1', 'gpt', 'primary', 10, 20, 30, '2026-01-01T00:00:00Z');
+                INSERT INTO dispatcher_session_token_usage
+                    (workspace_id, model, source_kind, prompt_tokens, completion_tokens, total_tokens, updated_at)
+                    VALUES ('w1', 'gpt', '', 5, 7, 12, '2026-01-02T00:00:00Z');
+                ",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        let conn = db.conn().expect("db conn");
+        let (count, prompt, completion, total, source_kind, updated_at): (
+            i64,
+            i64,
+            i64,
+            i64,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(prompt_tokens), SUM(completion_tokens), SUM(total_tokens),
+                        source_kind, MAX(updated_at)
+                 FROM dispatcher_session_token_usage
+                 WHERE workspace_id = 'w1' AND model = 'gpt'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(count, 1, "归一化后重复行应合并为一行");
+        assert_eq!((prompt, completion, total), (15, 27, 42), "token 列应求和合并");
+        assert_eq!(source_kind, "primary", "空串 source_kind 应归一为 primary");
+        assert_eq!(updated_at, "2026-01-02T00:00:00Z", "updated_at 应保留最新");
+        drop(conn);
+        drop(db);
+        cleanup_db_files(&path);
+    }
+
+    /// v27 迁移：清理 v6 遗漏的悬空 dispatcher_tool_runs（workspace 已不存在），
+    /// 并保留仍有效工作区的记录。
+    #[test]
+    fn v27_migration_removes_dangling_tool_runs() {
+        let path = temp_db_path("v27-dangling");
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().expect("db conn");
+            conn.execute(
+                "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
+                 VALUES ('w-live', 'p1', 'chat', '活跃会话', 'tech', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            let insert_run =
+                "INSERT INTO dispatcher_tool_runs
+                     (id, workspace_id, tool_call_id, tool_name, provider, category, status, created_at, updated_at)
+                 VALUES (?1, ?2, 'call-1', 'local_zsh', 'dispatcher', 'shell', 'completed',
+                         '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')";
+            conn.execute(insert_run, rusqlite::params!["run-live", "w-live"])
+                .unwrap();
+            conn.execute(insert_run, rusqlite::params!["run-dangling", "w-gone"])
+                .unwrap();
+            // 回退版本号，让 init 重新执行 v27 迁移块。
+            conn.pragma_update(None, "user_version", 26).unwrap();
+        }
+        db.init().expect("v27 migration should succeed");
+
+        let conn = db.conn().expect("db conn");
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+        let live: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dispatcher_tool_runs WHERE id = 'run-live'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, 1, "有效工作区的 tool run 必须保留");
+        let dangling: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dispatcher_tool_runs WHERE id = 'run-dangling'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(dangling, 0, "悬空 tool run 必须被清理");
+        drop(conn);
+        drop(db);
+        cleanup_db_files(&path);
+    }
+
+    /// v28 迁移：session_keywords.workspace_id 改名为 session_id——存量数据保留、
+    /// 列名/主键/外键引用更新、悬空行清理、旧索引重建为新名、级联删除仍有效。
+    #[test]
+    fn v28_migration_renames_session_keywords_workspace_id() {
+        let path = temp_db_path("v28-keywords-rename");
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().expect("db conn");
+            conn.execute(
+                "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
+                 VALUES ('s-live', 'p1', 'chat', '存活会话', 'tech', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            // 还原 v27 时代的表形态：列名回退 workspace_id、旧索引重建回来，
+            // 再塞入存量数据（含一条会话已不存在的悬空行）。悬空行只能在
+            // foreign_keys=OFF 下写入，批处理结束后必须恢复 ON。
+            conn.execute_batch(
+                "
+                PRAGMA foreign_keys = OFF;
+                ALTER TABLE session_keywords RENAME COLUMN session_id TO workspace_id;
+                DROP INDEX IF EXISTS idx_session_keywords_session;
+                CREATE INDEX IF NOT EXISTS idx_session_keywords_workspace
+                    ON session_keywords(workspace_id, weight DESC);
+                INSERT INTO session_keywords (workspace_id, keyword, weight, created_at)
+                    VALUES ('s-live', 'Rust', 8.0, '2026-01-01T00:00:00Z'),
+                           ('s-live', 'Tauri', 6.0, '2026-01-02T00:00:00Z'),
+                           ('s-gone', '悬空', 1.0, '2026-01-01T00:00:00Z');
+                PRAGMA foreign_keys = ON;
+                ",
+            )
+            .unwrap();
+            // 回退版本号，让 init 重新执行 v28 迁移块。
+            conn.pragma_update(None, "user_version", 27).unwrap();
+        }
+        db.init().expect("v28 migration should succeed");
+
+        let conn = db.conn().expect("db conn");
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+
+        let has_session_id: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_keywords') WHERE name = 'session_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_session_id, 1, "session_id 列必须存在");
+        let has_legacy: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_keywords') WHERE name = 'workspace_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_legacy, 0, "旧 workspace_id 列不得残留");
+
+        let kept: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_keywords WHERE session_id = 's-live'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 2, "存活会话的存量关键词必须保留");
+        let (weight, created_at): (f64, String) = conn
+            .query_row(
+                "SELECT weight, created_at FROM session_keywords
+                 WHERE session_id = 's-live' AND keyword = 'Rust'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(weight, 8.0, "权重必须保留");
+        assert_eq!(created_at, "2026-01-01T00:00:00Z", "created_at 必须保留");
+        let dangling: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_keywords WHERE session_id = 's-gone'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(dangling, 0, "悬空关键词行必须被清理");
+
+        let fk_from: String = conn
+            .query_row(
+                "SELECT \"from\" FROM pragma_foreign_key_list('session_keywords')
+                 WHERE \"table\" = 'dispatcher_sessions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fk_from, "session_id", "外键列引用必须随改名更新");
+
+        let new_index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_session_keywords_session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_index, 1, "会话维度索引应以新名重建");
+        let legacy_index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_session_keywords_workspace'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_index, 0, "旧名索引应被删除");
+
+        // ON DELETE CASCADE 在改名后仍然有效。
+        conn.execute("DELETE FROM dispatcher_sessions WHERE id = 's-live'", [])
+            .unwrap();
+        let after_cascade: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_keywords", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(after_cascade, 0, "会话删除后关键词应级联清空");
+
+        drop(conn);
+        drop(db);
+        cleanup_db_files(&path);
+    }
 
     /// v24 时代的库（图表含真实数据）升级到当前版本时，v25 破坏性迁移会 DROP
     /// 重建四张图表：DROP 前必须生成保留原数据的整库快照备份。

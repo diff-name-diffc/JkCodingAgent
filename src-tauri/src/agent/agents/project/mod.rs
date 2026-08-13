@@ -36,7 +36,15 @@ use crate::agent::tools::ToolRegistry;
 
 // ─── Internal types ───────────────────────────────────────────────────────────
 
+/// 编排器全部模型凭据的单一状态容器。
+///
+/// 聊天主模型 / 摘要 / 视觉三类凭据合并到同一把锁（审查项 G8-09/G8-11）：
+/// 旧实现拆成 provider 与 models 两把锁、且持 models 锁时嵌套 provider 锁，
+/// 既有潜在锁序死锁风险，设置更新也存在「新聊天模型 + 旧摘要凭据」的半更新窗口；
+/// 合并后 `apply_settings_v2` 在单锁内按固定顺序一次性应用，读取方
+/// 永远不会观察到混合状态。
 pub(super) struct Models {
+    provider: OpenAiCompatProvider,
     summary_model: String,
     summary_api_key: String,
     summary_api_base: String,
@@ -63,7 +71,6 @@ impl Models {
 
 pub struct OrchestratorAgent {
     pub(super) config: DispatcherAgentConfig,
-    pub(super) provider: Mutex<OpenAiCompatProvider>,
     pub(super) models: Mutex<Models>,
     pub(super) app_handle: Option<AppHandle>,
     pub(super) tools: Arc<ToolRegistry>,
@@ -83,9 +90,6 @@ impl OrchestratorAgent {
 
         Self {
             models: Mutex::new(Models {
-                summary_model: helpers::normalize_summary_model(&config.summary_model),
-                summary_api_key: String::new(),
-                summary_api_base: String::new(),
                 // env 兜底（VISION_MODEL_NAME）：只有模型名，沿用主模型凭据。
                 vision_provider: if config.vision_model.trim().is_empty() {
                     None
@@ -98,11 +102,14 @@ impl OrchestratorAgent {
                         config.temperature,
                     ))
                 },
+                provider,
+                summary_model: helpers::normalize_summary_model(&config.summary_model),
+                summary_api_key: String::new(),
+                summary_api_base: String::new(),
             }),
             app_handle: None,
             tools: Arc::new(ToolRegistry::orchestrator_tools()),
             config,
-            provider: Mutex::new(provider),
         }
     }
 
@@ -118,10 +125,11 @@ impl OrchestratorAgent {
         };
         let shared = &settings.shared;
 
-        {
-            let mut provider = self.provider.lock();
-            *provider = resolve_chat_provider(&self.config, ctx_config);
-        }
+        // 锁外一次性解析全部凭据（只读 settings/config，不持锁）：旧实现先锁
+        // provider 再锁 models，且构建视觉回退时在 models 锁内嵌套 provider 锁，
+        // 存在锁序风险与「新聊天模型 + 旧摘要/视觉凭据」的半更新窗口。
+        // 现在全部解析完成后在单锁内按固定顺序（聊天 → 摘要 → 视觉）一次应用。
+        let new_provider = resolve_chat_provider(&self.config, ctx_config);
 
         let active_summary = ctx_config
             .summary_model_configs
@@ -134,32 +142,19 @@ impl OrchestratorAgent {
             .find(|c| c.active)
             .or_else(|| shared.vision_model_configs.first());
 
-        let mut models = self.models.lock();
-        if let Some(smc) = active_summary {
-            if !smc.model.trim().is_empty() {
-                models.summary_model = helpers::normalize_summary_model(&smc.model);
-            }
-            if !smc.api_key.trim().is_empty() {
-                models.summary_api_key = smc.api_key.trim().to_string();
-            }
-            if !smc.url.trim().is_empty() {
-                models.summary_api_base = smc.url.trim().to_string();
-            }
-        }
         // 视觉模型切换使用设置中视觉用途的完整配置（默认第一个 active，否则
-        // 第一个条目），url/apiKey 为空时回退聊天主模型凭据。
-        models.vision_provider = active_vision
+        // 第一个条目），url/apiKey 为空时回退**新**聊天主模型凭据。
+        let new_vision = active_vision
             .filter(|v| !v.model.trim().is_empty())
             .map(|v| {
-                let fallback = self.provider.lock();
                 OpenAiCompatProvider::new(
                     if v.api_key.trim().is_empty() {
-                        fallback.api_key().to_string()
+                        new_provider.api_key().to_string()
                     } else {
                         v.api_key.trim().to_string()
                     },
                     if v.url.trim().is_empty() {
-                        fallback.api_base().to_string()
+                        new_provider.api_base().to_string()
                     } else {
                         v.url.trim().to_string()
                     },
@@ -168,6 +163,23 @@ impl OrchestratorAgent {
                     self.config.temperature,
                 )
             });
+
+        let mut models = self.models.lock();
+        models.provider = new_provider;
+        if let Some(smc) = active_summary {
+            if !smc.model.trim().is_empty() {
+                models.summary_model = helpers::normalize_summary_model(&smc.model);
+            }
+            // 凭据显式覆盖（审查项 G8-10）：设置中清空凭据后旧值不再残留；
+            // 空凭据由 summary_provider() 回退到聊天主模型凭据。
+            models.summary_api_key = smc.api_key.trim().to_string();
+            models.summary_api_base = smc.url.trim().to_string();
+        }
+        // 视觉仅在设置给出有效条目（非空模型名）时覆盖；无有效条目保留现有
+        // 配置（含构造期的 env 兜底），避免误清空（审查项 G8-10）。
+        if let Some(vision) = new_vision {
+            models.vision_provider = Some(vision);
+        }
     }
 
     pub fn context_debug_enabled(&self) -> bool {

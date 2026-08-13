@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -16,6 +16,12 @@ use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 
 const FILE_IO_TIMEOUT_SECS: u64 = 30;
+
+/// 单文件读取字节硬上限（2MB）。先打开文件、再基于同一文件句柄复检大小，
+/// 并用 take() 截断读取——检查与读取基于同一 inode，消除 metadata 与 open
+/// 之间文件被替换/增长的 TOCTOU 窗口；即使文件并发增长也不会超限读取，
+/// 保证阻塞任务有界，而非仅依赖外层 timeout 兜底。
+const MAX_READ_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 pub(super) fn read_file_tool() -> Box<dyn AgentTool> {
     Box::new(ReadFileTool)
@@ -88,8 +94,8 @@ impl AgentTool for ReadFileTool {
         .await
         {
             Ok(Ok(output)) => output,
-            Ok(Err(error)) => format!("读取文件任务失败：{error}"),
-            Err(_) => format!("读取文件超时（{FILE_IO_TIMEOUT_SECS} 秒）"),
+            Ok(Err(error)) => format!("错误：读取文件任务失败：{error}"),
+            Err(_) => format!("错误：读取文件超时（{FILE_IO_TIMEOUT_SECS} 秒）"),
         }
     }
 }
@@ -110,19 +116,22 @@ fn read_file_lines(path: &str, offset: usize, limit: usize, context: &ToolContex
         return format!("错误：{path} 是目录，不是文件");
     }
 
-    match fs::metadata(&file_path) {
-        Ok(meta) if meta.len() > 2 * 1024 * 1024 => {
+    // 先打开文件，再基于打开的句柄复检大小：检查与读取针对同一文件，
+    // 消除 metadata 检查与 open 之间文件被并发替换/增长的 TOCTOU 窗口。
+    let file = match fs::File::open(&file_path) {
+        Ok(file) => file,
+        Err(error) => return format!("错误：读取文件失败：{error}"),
+    };
+    match file.metadata() {
+        Ok(meta) if meta.len() > MAX_READ_FILE_BYTES => {
             return format!("错误：文件过大（{} bytes），超过 2MB 读取限制", meta.len());
         }
         _ => {}
     }
 
-    let file = match fs::File::open(&file_path) {
-        Ok(file) => file,
-        Err(error) => return format!("读取文件失败：{error}"),
-    };
-
-    let reader = BufReader::new(file);
+    // take() 对读取字节数做硬截断：即便文件在读取期间并发增长，也不会超过
+    // 2MB 上限，阻塞任务保持有界。
+    let reader = BufReader::new(file.take(MAX_READ_FILE_BYTES));
     let (start_line, line_limit) = spec
         .range
         .map(|(start, end)| (start, end - start + 1))
@@ -138,7 +147,7 @@ fn read_numbered_lines<R: BufRead>(reader: R, start_line: usize, line_limit: usi
         let line_number = index + 1;
         let line = match line_result {
             Ok(line) => line,
-            Err(error) => return format!("读取文件失败：{error}"),
+            Err(error) => return format!("错误：读取文件失败：{error}"),
         };
         if index < skip_lines {
             continue;

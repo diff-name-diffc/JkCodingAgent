@@ -19,6 +19,7 @@ use crate::agent::run_loop::core::{
 };
 use crate::agent::tools::ToolContext;
 
+use super::helpers;
 use super::OrchestratorAgent;
 
 #[async_trait]
@@ -26,8 +27,15 @@ impl AgentRunAdapter for OrchestratorAgent {
     async fn prepare_run_workspace(&self, request: &AgentRunRequest<'_>) -> Result<PathBuf> {
         let workspace_path = request
             .workspace_path
-            .ok_or_else(|| anyhow::anyhow!("项目 Agent 启动缺少 workspace_path"))?;
-        let workspace = PathBuf::from(workspace_path);
+            .ok_or_else(|| anyhow::anyhow!("错误：项目 Agent 启动缺少 workspace_path"))?
+            .to_string();
+        // 命令边界校验（审查项 G8-12）：只允许受管项目列表（projects.json）内的
+        // 路径作为工作区，先解析符号链接再做包含性判断，防止前端可控路径被用于
+        // 任意目录创建/读取。文件读取放在 spawn_blocking，不阻塞执行器。
+        let workspace =
+            tokio::task::spawn_blocking(move || validate_project_workspace(&workspace_path))
+                .await
+                .map_err(|error| anyhow::anyhow!("错误：工作区校验任务失败：{error}"))??;
         let workspace_for_create = workspace.clone();
         tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&workspace_for_create)
@@ -39,7 +47,7 @@ impl AgentRunAdapter for OrchestratorAgent {
     }
 
     fn provider_snapshot(&self) -> OpenAiCompatProvider {
-        self.provider.lock().clone()
+        self.models.lock().provider.clone()
     }
 
     fn provider_missing_message(&self) -> &'static str {
@@ -69,9 +77,11 @@ impl AgentRunAdapter for OrchestratorAgent {
         {
             Ok(stats) => stats,
             Err(error) => {
-                eprintln!(
+                // 持久化警告：打包后 stderr 不落盘，学习回路静默失效时必须
+                // 有可诊断痕迹（审查项 G8-13）。
+                helpers::log_warning(&format!(
                     "[graph] 读取节点运行统计失败（{workspace_id}），目录回注不含历史统计：{error:#}"
-                );
+                ));
                 Vec::new()
             }
         };
@@ -139,7 +149,7 @@ impl RunLoopAgent for OrchestratorAgent {
         }
 
         let system_prompt =
-            self.build_iteration_system_prompt(static_prompt, ctx.workspace_id, tool_definitions);
+            self.build_iteration_system_prompt(static_prompt, tool_definitions);
         let mut messages = vec![ChatMessage::system(system_prompt)];
         messages.extend(agent_loop.request_messages().into_iter().skip(1));
         Ok(messages)
@@ -168,13 +178,15 @@ impl RunLoopAgent for OrchestratorAgent {
         &self,
         ctx: &RunLoopContext<'_>,
         partial: &str,
+        last_seq: Option<u64>,
     ) -> Result<DispatcherMessageRecord> {
         self.emit_stop_and_finish(
             ctx.db,
             ctx.workspace_id,
             ctx.on_event,
             partial,
-            Some(&ctx.usage_tracker),
+            &ctx.usage_tracker,
+            last_seq,
         )
         .await
     }
@@ -183,6 +195,7 @@ impl RunLoopAgent for OrchestratorAgent {
         &self,
         ctx: &RunLoopContext<'_>,
         response: &LlmResponse,
+        last_seq: Option<u64>,
     ) -> Result<DispatcherMessageRecord> {
         OrchestratorAgent::handle_no_tool_response(
             self,
@@ -191,6 +204,7 @@ impl RunLoopAgent for OrchestratorAgent {
             ctx.on_event,
             response,
             &ctx.usage_tracker,
+            last_seq,
         )
         .await
     }
@@ -202,10 +216,11 @@ impl RunLoopAgent for OrchestratorAgent {
         tool_context: &ToolContext,
         response: LlmResponse,
     ) -> Result<RunLoopToolOutcome> {
+        // workspace 单一来源：统一取 tool_context.workspace（执行入口已规范化），
+        // 不再额外传入可能与上下文漂移的平行路径（审查项 G8-23）。
         self.execute_tool_calls(
             ctx.db,
             ctx.workspace_id,
-            ctx.workspace,
             ctx.on_event,
             response,
             &iteration.allowed_tool_names,
@@ -244,5 +259,106 @@ impl RunLoopAgent for OrchestratorAgent {
                 self.config.max_tool_iterations
             ),
         }
+    }
+}
+
+// ─── Workspace boundary validation ───────────────────────────────────────────
+
+/// 项目编排器工作区边界校验（审查项 G8-12）：
+/// 1. 路径必须为绝对路径且不含 `..` 组件；
+/// 2. 解析符号链接（对最深的已存在祖先目录 canonicalize 后拼回缺失尾部）；
+/// 3. 解析后的路径必须命中受管项目列表（~/.jkcodingagent/projects.json）。
+/// 校验通过时返回解析后的路径，供后续建目录与工具路径边界统一使用。
+fn validate_project_workspace(workspace_path: &str) -> Result<PathBuf> {
+    let raw = PathBuf::from(workspace_path);
+    anyhow::ensure!(
+        raw.is_absolute(),
+        "错误：项目路径必须是绝对路径：{workspace_path}"
+    );
+    anyhow::ensure!(
+        !raw.components()
+            .any(|component| matches!(component, std::path::Component::ParentDir)),
+        "错误：项目路径不允许包含 ..：{workspace_path}"
+    );
+
+    let projects = crate::project::storage::load_projects()
+        .map_err(|error| anyhow::anyhow!("错误：读取受管项目列表失败：{error}"))?;
+    anyhow::ensure!(
+        !projects.is_empty(),
+        "错误：受管项目列表为空，无法校验项目路径：{workspace_path}"
+    );
+
+    let candidate = resolve_with_existing_prefix(&raw)
+        .ok_or_else(|| anyhow::anyhow!("错误：解析项目路径失败：{workspace_path}"))?;
+    let managed = projects.iter().any(|project| {
+        resolve_with_existing_prefix(Path::new(&project.path))
+            .is_some_and(|path| path == candidate)
+    });
+    anyhow::ensure!(
+        managed,
+        "错误：项目路径不在受管项目列表中：{workspace_path}"
+    );
+    Ok(candidate)
+}
+
+/// 对可能尚不存在的路径做尽力解析：canonicalize 最深的已存在祖先目录，
+/// 再拼回缺失的尾部组件；对已存在路径等价于 canonicalize。
+/// 解析失败（无祖先可解析 / canonicalize 失败）返回 None。
+fn resolve_with_existing_prefix(path: &Path) -> Option<PathBuf> {
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = path;
+    loop {
+        match std::fs::symlink_metadata(cursor) {
+            Ok(_) => {
+                let mut resolved = cursor.canonicalize().ok()?;
+                for name in missing.iter().rev() {
+                    resolved.push(name);
+                }
+                return Some(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = cursor.file_name()?;
+                missing.push(name.to_os_string());
+                cursor = cursor.parent()?;
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_with_existing_prefix;
+    use std::path::{Component, Path, PathBuf};
+
+    #[test]
+    fn resolve_with_existing_prefix_handles_missing_tail() {
+        let base = std::env::temp_dir();
+        let canonical_base = base.canonicalize().expect("canonicalize temp dir");
+        let target = canonical_base.join("jk-no-such-dir-a").join("jk-no-such-dir-b");
+        let resolved = resolve_with_existing_prefix(&target).expect("resolve");
+        assert_eq!(resolved, canonical_base.join("jk-no-such-dir-a").join("jk-no-such-dir-b"));
+    }
+
+    #[test]
+    fn resolve_with_existing_prefix_equivalent_to_canonicalize_for_existing() {
+        let base = std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+        assert_eq!(
+            resolve_with_existing_prefix(&base).as_ref(),
+            Some(&base)
+        );
+    }
+
+    #[test]
+    fn parent_dir_component_detection() {
+        // 与 validate_project_workspace 相同的 Component::ParentDir 判定逻辑。
+        let hostile = PathBuf::from("/tmp/foo/../bar");
+        assert!(hostile
+            .components()
+            .any(|component| matches!(component, Component::ParentDir)));
+        let clean = Path::new("/tmp/foo/bar");
+        assert!(!clean
+            .components()
+            .any(|component| matches!(component, Component::ParentDir)));
     }
 }

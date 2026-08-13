@@ -308,9 +308,58 @@ impl DispatcherDb {
 
     pub fn save_settings_v2(&self, settings: &AhaSettingsV2) -> Result<AhaSettingsV2> {
         let conn = self.conn()?;
-        let shared = &settings.shared;
-        let project = &settings.project;
-        let chat = &settings.chat;
+
+        // 保存前统一规范化，确保与读取端（get_settings_v2）语义对称：
+        // - 全部模型配置列表经 normalize_model_configs（trim、过滤空条目、active 唯一化）；
+        // - 聊天对话模型配置按既有约定清除 system_prompt 后再规范化；
+        // - 审查模型 trim，空提示词回落默认文案（与读取端一致）。
+        // 落盘的就是规范化结果，函数直接返回它，写后读回不再漂移。
+        let shared = AhaSharedModels {
+            vision_model_configs: normalize_model_configs(
+                settings.shared.vision_model_configs.clone(),
+            ),
+            image_model_configs: normalize_model_configs(
+                settings.shared.image_model_configs.clone(),
+            ),
+            image_edit_model_configs: normalize_model_configs(
+                settings.shared.image_edit_model_configs.clone(),
+            ),
+            asr_model_configs: normalize_model_configs(settings.shared.asr_model_configs.clone()),
+            tts_model_configs: normalize_model_configs(settings.shared.tts_model_configs.clone()),
+            embedding_model_configs: normalize_model_configs(
+                settings.shared.embedding_model_configs.clone(),
+            ),
+        };
+        let project = AhaContextConfig {
+            chat_model_configs: normalize_model_configs(
+                settings.project.chat_model_configs.clone(),
+            ),
+            summary_model_configs: normalize_model_configs(
+                settings.project.summary_model_configs.clone(),
+            ),
+            allowed_tools: settings.project.allowed_tools.clone(),
+        };
+        let chat = AhaContextConfig {
+            chat_model_configs: normalize_model_configs(Self::without_model_system_prompts(
+                &settings.chat.chat_model_configs,
+            )),
+            summary_model_configs: normalize_model_configs(
+                settings.chat.summary_model_configs.clone(),
+            ),
+            allowed_tools: settings.chat.allowed_tools.clone(),
+        };
+        let review = SshReviewConfig {
+            model_config: settings.review.model_config.clone().trimmed(),
+            system_prompt: {
+                let prompt = settings.review.system_prompt.trim().to_string();
+                if prompt.is_empty() {
+                    default_review_system_prompt()
+                } else {
+                    prompt
+                }
+            },
+        };
+
         let auto_approve_int = if settings.auto_approve_dispatch { 1 } else { 0 };
         let context_debug_int = if settings.context_debug { 1 } else { 0 };
 
@@ -326,16 +375,14 @@ impl DispatcherDb {
         let project_tools =
             serde_json::to_string(&project.allowed_tools).unwrap_or_else(|_| "[]".to_string());
 
-        let chat_agent_chat = Self::serialize_json(&Self::without_model_system_prompts(
-            &chat.chat_model_configs,
-        ));
+        let chat_agent_chat = Self::serialize_json(&chat.chat_model_configs);
         let chat_agent_summary = Self::serialize_json(&chat.summary_model_configs);
         let chat_agent_tools =
             serde_json::to_string(&chat.allowed_tools).unwrap_or_else(|_| "[]".to_string());
 
-        let review_model = serde_json::to_string(&settings.review.model_config)
-            .unwrap_or_else(|_| "{}".to_string());
-        let review_prompt = settings.review.system_prompt.trim().to_string();
+        let review_model =
+            serde_json::to_string(&review.model_config).unwrap_or_else(|_| "{}".to_string());
+        let review_prompt = review.system_prompt.clone();
         let model_library =
             serde_json::to_string(&settings.model_library).unwrap_or_else(|_| "[]".to_string());
         let graph_config =
@@ -409,6 +456,16 @@ impl DispatcherDb {
         )
         .context("save dispatcher settings v2")?;
 
-        self.get_settings_v2()
+        // 直接返回落盘的规范化结果，保证返回值与 DB 状态一致。
+        Ok(AhaSettingsV2 {
+            shared,
+            project,
+            chat,
+            auto_approve_dispatch: settings.auto_approve_dispatch,
+            context_debug: settings.context_debug,
+            review,
+            model_library: settings.model_library.clone(),
+            graph: settings.graph,
+        })
     }
 }

@@ -34,6 +34,9 @@ impl ToolRuntime {
     ) -> ToolResult {
         let mut execution_context = context.clone();
         execution_context.current_tool_call_id = Some(tool_call.id.clone());
+        // 执行入口统一规范化路径边界输入，保证所有工具拿到的
+        // workspace / extra_allowed_dirs 均为 canonical 形式。
+        execution_context.normalize_paths();
         let spec = registry.spec_by_name(workspace, &tool_call.name, true);
         if !allowed_tool_names.contains(&tool_call.name) {
             return ToolResult::recoverable_error(format!(
@@ -46,13 +49,16 @@ impl ToolRuntime {
             return ToolResult::recoverable_error(format!("错误：未找到工具 '{}'", tool_call.name));
         };
 
-        if !spec.execution.unified_timeout {
+        // unified_timeout=false：工具自管超时（exec / call_sub_agent 等）；
+        // timeout_secs=0：策略层明确约定为「不设统一超时限制」，同样跳过包裹，
+        // 避免把 0 曲解为 1 秒而误中止长耗时工具。
+        if !spec.execution.unified_timeout || spec.execution.timeout_secs == 0 {
             return registry
                 .execute(&tool_call.name, &tool_call.arguments, &execution_context)
                 .await;
         }
 
-        let timeout_secs = spec.execution.timeout_secs.max(1);
+        let timeout_secs = spec.execution.timeout_secs;
         match tokio::time::timeout(
             Duration::from_secs(timeout_secs),
             registry.execute(&tool_call.name, &tool_call.arguments, &execution_context),
@@ -75,22 +81,29 @@ impl ToolRuntime {
         on_event: &Channel<AgentEvent>,
         tool_call: &RequestedToolCall,
     ) -> Result<String> {
-        let spec = registry
-            .spec_by_name(workspace, &tool_call.name, true)
-            .unwrap_or_else(|| {
-                super::ToolSpec::new(
-                    &tool_call.name,
-                    "未注册工具调用",
-                    serde_json::json!({ "type": "object", "properties": {} }),
-                )
-            });
+        let registered_spec = registry.spec_by_name(workspace, &tool_call.name, true);
+        let registered = registered_spec.is_some();
+        let spec = registered_spec.unwrap_or_else(|| {
+            super::ToolSpec::new(
+                &tool_call.name,
+                "未注册工具调用",
+                serde_json::json!({ "type": "object", "properties": {} }),
+            )
+        });
         let effective_args = registry.effective_args(&tool_call.name, &tool_call.arguments);
-        let metadata_json = serde_json::to_string(&serde_json::json!({
-            "safety": spec.safety,
-            "access": spec.access,
-            "execution": spec.execution,
-            "resultPolicy": spec.result_policy
-        }))?;
+        // 未注册（LLM 幻觉）工具名：不落任何策略审计字段并显式标记
+        // registered=false，避免审计侧误以为该调用经过真实策略评估。
+        let metadata_json = if registered {
+            serde_json::to_string(&serde_json::json!({
+                "registered": true,
+                "safety": spec.safety,
+                "access": spec.access,
+                "execution": spec.execution,
+                "resultPolicy": spec.result_policy
+            }))?
+        } else {
+            serde_json::to_string(&serde_json::json!({ "registered": false }))?
+        };
         let run = db
             .create_tool_run_async(NewToolRun {
                 workspace_id: workspace_id.to_string(),
@@ -105,7 +118,31 @@ impl ToolRuntime {
             .await?;
         common::emit(on_event, AgentEvent::ToolRunUpdated { run: run.clone() });
 
-        let started = db.mark_tool_run_started_async(&run.id).await?;
+        let started = match db.mark_tool_run_started_async(&run.id).await {
+            Ok(started) => started,
+            Err(error) => {
+                // 补偿：标记启动失败时把记录收敛到失败终态，
+                // 避免遗留「已创建未启动」的永久中间态记录。
+                if let Ok(finished) = db
+                    .finish_tool_run_async(
+                        &run.id,
+                        FinishToolRun {
+                            status: "failed".to_string(),
+                            result_mode: None,
+                            message_id: None,
+                            error_kind: Some("internal".to_string()),
+                            error_message: Some(format!("标记工具运行启动失败：{error}")),
+                            action_kind: None,
+                            metadata_json: None,
+                        },
+                    )
+                    .await
+                {
+                    common::emit(on_event, AgentEvent::ToolRunUpdated { run: finished });
+                }
+                return Err(error);
+            }
+        };
         common::emit(
             on_event,
             AgentEvent::ToolRunUpdated {

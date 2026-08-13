@@ -1,0 +1,80 @@
+{
+  "include": [
+    "**/*.test.{ts,tsx,js,jsx,mjs}",
+    "rag/tests/**/*.py"
+  ],
+  "exclude": [
+    "**/pnpm-lock.yaml",
+    "**/Cargo.lock",
+    "**/uv.lock",
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/*.{png,jpg,jpeg,gif,webp,ico,icns,svg}",
+    "**/dist/**",
+    "src-tauri/gen/**",
+    "src-tauri/icons/**",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "**/*.min.{js,css}",
+    ".zcode/**",
+    ".swarm/**",
+    ".codegraph/**",
+    ".code-review-graph/**",
+    ".jkcodingagent/**",
+    ".playwright-mcp/**"
+  ],
+  "rules": [
+    {
+      "path": "{src-tauri/tauri.conf.json,src-tauri/capabilities/**/*.json}",
+      "rule": "Tauri 桌面端安全配置评审。重点：capabilities 权限是否最小化，scope/path 允许范围是否过宽（警惕不必要的 ** 通配）；tauri.conf.json 中 CSP、devtools、远程 URL IPC 等安全项是否被放宽；打包/窗口配置变更是否与前端构建产物路径一致。任何放宽权限的改动都应给出明确理由。"
+    },
+    {
+      "path": ".github/workflows/**/*.{yml,yaml}",
+      "rule": "GitHub Actions CI/发布流水线评审。重点：不得硬编码或泄露密钥/证书/签名材料；来自 github.event.* 等不可信上下文的值直接拼入 shell 命令会造成注入，应通过 env 传递；macOS 签名、公证与发布步骤的变更需保持可重放；第三方 action 与工具版本是否固定。"
+    },
+    {
+      "path": "**/*.test.{ts,tsx,js,jsx,mjs}",
+      "rule": "前端单元测试评审（Vitest）。重点：断言是否真正验证行为而非实现细节；是否覆盖边界与异常路径；是否存在为通过而放宽断言、.skip、空测试；新功能是否缺少对应测试。不纠结风格类小问题。"
+    },
+    {
+      "path": "rag/tests/**/*.py",
+      "rule": "Python 单元测试评审（pytest）。重点：断言有效性与覆盖度（边界、异常路径）；不得为通过而弱化测试或跳过用例；测试数据不得依赖本机环境。"
+    },
+    {
+      "path": "src-tauri/src/**/*.rs",
+      "rule": "Rust/Tauri 后端评审（本项目核心约束）：1) Tauri async 命令中凡涉及文件 I/O、子进程、网络、Git、数据库的重型/阻塞操作必须走 tokio::task::spawn_blocking，严禁直接阻塞主线程；2) parking_lot::Mutex 持锁期间禁止任何 I/O——先 clone/取出数据再释放锁；锁获取不得裸 .unwrap()，需处理中毒风险；3) 一切接受路径参数的命令/工具必须校验路径位于工作区内（防目录遍历），工具实现须经 resolve_path；4) 大体积或流式数据用 tauri::Emitter 事件推送，不要从命令直接返回；5) 新增 Tauri 命令必须同步在 app/mod.rs 的 invoke_handler! 注册；6) 可执行命令的工具（shell/ssh 等）必须接入 AI 审查 + fail-closed 门禁链路；7) SQLite schema（~/.jkcodingagent/jkbot.sqlite3）变更必须考虑存量用户数据的迁移兼容，不得破坏性改表；8) 工具错误消息以「错误：」开头；9) PTY 读取缓冲区不小于 32KB；会话消息不得全量一次性加载，需流式/分页；10) 新命令按领域归入对应模块，避免继续膨胀已超标的单文件。"
+    },
+    {
+      "path": "src/**/*.{ts,tsx}",
+      "rule": "React 19 + TypeScript 前端评审。重点：1) 渲染范围控制——列表行组件必须 memo；Tauri 事件/PTY 输出等高频回调中禁止逐条 setState，须用 buffer/ref 批处理；2) 长列表必须虚拟滚动；超过约 10KB 的 markdown 禁止同步 marked()；3) Shiki/CodeMirror/Monaco 等语言包必须动态 import()，不得进主包；4) 搜索/@提及必须防抖（约 200ms）；5) 样式三层体系：优先 components/ui（Radix/shadcn）→ Tailwind 工具类 → .ai-* 组件类；className 合并必须用 cn()；颜色一律走 App.css 设计令牌，不得硬编码色值；禁止新建业务 .css 文件或重新引入 CSS-in-JS；6) UI 状态用 Zustand、异步数据用 React Query，不得引入第二套全局状态库；7) 严格 TS：不得用 any，数据结构变更必须同步 types.ts 与 Rust 结构体/SQL schema（否则字段会被静默丢弃）；Tauri invoke 必须带返回类型泛型；8) 交互式原语用 Radix/ui 组件而非原生 <select>/<dialog>，图标用 lucide-react；9) 删除会话/项目/清空消息的路径必须同步清理文件系统资源（chat-images、工具产物），不得只删 DB 记录。"
+    },
+    {
+      "path": "src/**/*.css",
+      "rule": "样式令牌与组件类评审。App.css 是设计令牌唯一来源：新颜色应扩展 --bg-*/--text-*/--border-*/--accent 等令牌而非写死色值；业务组件类以 .ai- 前缀集中在 tailwind.css 的 @layer components，命名与现有保持一致；注意 preflight 已禁用，不得依赖 Tailwind 全局 reset；不要删除仍被引用的令牌或组件类。"
+    },
+    {
+      "path": "sidecars/**/*.{ts,tsx,mjs}",
+      "rule": "Node/TS sidecar 评审：进程生命周期管理（启动、退出、僵尸与重启）；与主进程间协议解析的健壮性（JSON 边界校验，不信任对端输出）；构建脚本不得硬编码本机绝对路径或密钥；错误需有兜底，不得导致主进程挂起。"
+    },
+    {
+      "path": "rag/**/*.py",
+      "rule": "Python RAG sidecar（FastAPI）评审：路由入口必须校验输入；文件路径与子进程参数防注入、防越界；嵌入/入库/检索流程的异常处理与资源释放；Qdrant 等外部依赖调用要有错误兜底；日志与响应不得泄露 API key 等敏感信息。"
+    },
+    {
+      "path": "scripts/**/*.py",
+      "rule": "仓库级 Python 脚本（数据回填/迁移类）评审：操作对象是用户真实 SQLite 数据（~/.jkcodingagent/jkbot.sqlite3），必须幂等、先查后写、不得破坏性清数据；异常要有明确提示与回滚考虑；不得提交任何密钥。"
+    },
+    {
+      "path": "rag/scripts/**/*.{sh,ps1}",
+      "rule": "PyInstaller sidecar 构建脚本评审：构建参数与产物路径正确（产物不入库）；不得硬编码本机绝对路径或密钥；sh 与 ps1 两套脚本的行为保持一致。"
+    },
+    {
+      "path": "{**/package.json,**/Cargo.toml,**/pyproject.toml}",
+      "rule": "依赖清单评审：新增依赖是否确有必要（前端主包体积敏感，monaco/shiki 类大型依赖需特别谨慎）；版本范围与现有约束是否兼容（pnpm workspace、Rust 工具链、Python 版本）；scripts 变更是否安全；警惕来源不明或带安装脚本风险的包。"
+    },
+    {
+      "path": "{*.config.*,tsconfig*.json,index.html}",
+      "rule": "工程配置评审：tsconfig 不得放宽 strict 等既有约束；vite 配置变更需保持 devServer 端口 1420 与 Tauri 预期一致、不破坏产物结构；eslint 规则放宽需有理由；index.html 仅作为 Vite 入口，不得引入外部脚本或内联脚本。"
+    }
+  ]
+}

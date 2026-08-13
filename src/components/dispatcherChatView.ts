@@ -172,17 +172,13 @@ export function buildDispatcherDisplayItems(
 
 export function startLiveToolActivity(
   tools: ToolActivityItem[],
-  payload: { toolCallId?: string; name: string; arguments: string },
+  payload: { toolCallId: string; name: string; arguments: string },
 ): ToolActivityItem[] {
   const nextTools = [...tools];
-  const plannedId = payload.toolCallId
-    ? undefined
-    : [...nextTools]
-        .reverse()
-        .find((tool) => tool.name === payload.name && tool.status === "running")?.id;
-  const key = payload.toolCallId || plannedId || createLiveToolKey(payload.name, nextTools.length);
+  // G9-07：后端保证 toolCallId 必填（Planned→Started→Finished 贯穿同一 id），
+  // 不再需要按名称回溯匹配计划中的条目。
   upsertToolActivity(nextTools, {
-    id: key,
+    id: payload.toolCallId,
     name: payload.name,
     input: prettyPrintToolPayload(payload.arguments),
     status: "running",
@@ -193,12 +189,11 @@ export function startLiveToolActivity(
 
 export function planLiveToolActivity(
   tools: ToolActivityItem[],
-  payload: { toolCallId?: string; name: string; arguments: string },
+  payload: { toolCallId: string; name: string; arguments: string },
 ): ToolActivityItem[] {
   const nextTools = [...tools];
-  const key = payload.toolCallId || createLiveToolKey(payload.name, nextTools.length);
   upsertToolActivity(nextTools, {
-    id: key,
+    id: payload.toolCallId,
     name: payload.name,
     input: prettyPrintToolPayload(payload.arguments),
     status: "running",
@@ -210,26 +205,16 @@ export function planLiveToolActivity(
 export function finishLiveToolActivity(
   tools: ToolActivityItem[],
   payload: {
-    toolCallId?: string;
+    toolCallId: string;
     name: string;
+    arguments: string;
     displayText: string;
     resultMode: DispatcherToolResultMode;
     detailRefs: DispatcherToolArtifactRef[];
   },
 ): ToolActivityItem[] {
   const nextTools = [...tools];
-  const byToolCallId = payload.toolCallId
-    ? nextTools.findIndex((tool) => tool.id === payload.toolCallId)
-    : -1;
-  let byRunningName = -1;
-  for (let index = nextTools.length - 1; index >= 0; index -= 1) {
-    const tool = nextTools[index];
-    if (tool.name === payload.name && tool.status === "running") {
-      byRunningName = index;
-      break;
-    }
-  }
-  const matchIndex = byToolCallId >= 0 ? byToolCallId : byRunningName;
+  const matchIndex = nextTools.findIndex((tool) => tool.id === payload.toolCallId);
 
   if (matchIndex >= 0) {
     const current = nextTools[matchIndex];
@@ -246,9 +231,10 @@ export function finishLiveToolActivity(
     return nextTools;
   }
 
+  // 兜底：对应的 Planned/Started 事件未被处理（如 run 切换）时直接落一条完成态。
   const errorText = getToolErrorText(payload.displayText);
   nextTools.push({
-    id: payload.toolCallId || createLiveToolKey(payload.name, nextTools.length),
+    id: payload.toolCallId,
     name: payload.name,
     output: payload.displayText,
     errorText,
@@ -311,7 +297,7 @@ export function demoteActiveTextSegments(
 export function appendToolSummarySegment(
   segments: AssistantTurnSegment[],
   payload: {
-    toolCallId?: string;
+    toolCallId: string;
     name: string;
     delta: string;
     resultMode: DispatcherToolResultMode;
@@ -493,10 +479,6 @@ function prettyPrintToolPayload(raw: string | undefined): string {
   } catch {
     return raw;
   }
-}
-
-function createLiveToolKey(name: string, index: number): string {
-  return `live-${name}-${index}-${Date.now()}`;
 }
 
 function pushAssistantSegment(segments: AssistantTurnSegment[], incoming: AssistantTurnSegment) {

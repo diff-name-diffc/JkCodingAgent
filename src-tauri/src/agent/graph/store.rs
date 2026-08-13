@@ -9,7 +9,8 @@ use rusqlite::{params, OptionalExtension, TransactionBehavior};
 
 use super::types::{
     AgentActivity, GraphDefinition, GraphModelStat, GraphNodeRunRecord, GraphPlanRecord,
-    GraphRunDetail, GraphRunSummary, NODE_PHASE_CACHED, NODE_SUCCEEDED, PLAN_DRAFT, PLAN_RUNNING,
+    GraphRunDetail, GraphRunSummary, NODE_FAILED, NODE_PENDING, NODE_PHASE_CACHED,
+    NODE_PHASE_FINALIZING, NODE_RUNNING, NODE_SUCCEEDED, PLAN_DRAFT, PLAN_FAILED, PLAN_RUNNING,
     RUN_MODE_FULL, RUN_MODE_RESUME, VERDICT_UNKNOWN,
 };
 
@@ -85,10 +86,31 @@ impl GraphStore {
         definition: &GraphDefinition,
     ) -> Result<()> {
         let json = serde_json::to_string(definition)?;
-        self.conn()?.execute(
-            "UPDATE graph_plans SET title=?2,summary=?3,definition_json=?4,updated_at=?5 WHERE id=?1",
-            params![plan_id, definition.title.trim(), definition.summary.trim(), json, chrono::Utc::now().timestamp_millis()],
+        let mut conn = self.conn()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // 条件更新：仅 draft 态允许改写定义。命令层的前置状态检查与这里写入
+        // 之间隔着多个 await（目录刷新、校验），无条件 UPDATE 会把新定义覆盖
+        // 到已被并发启动（running）的计划上；检查影响行数并给出可区分报错。
+        let affected = tx.execute(
+            "UPDATE graph_plans SET title=?2,summary=?3,definition_json=?4,updated_at=?5 WHERE id=?1 AND status=?6",
+            params![plan_id, definition.title.trim(), definition.summary.trim(), json, chrono::Utc::now().timestamp_millis(), PLAN_DRAFT],
         ).context("更新图计划定义失败")?;
+        if affected == 0 {
+            let status: Option<String> = tx
+                .query_row(
+                    "SELECT status FROM graph_plans WHERE id=?1",
+                    params![plan_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match status {
+                None => anyhow::bail!("错误：图计划不存在：{plan_id}"),
+                Some(status) => anyhow::bail!(
+                    "错误：图计划状态已变更（当前：{status}），仅 draft 态可编辑定义，请刷新后重试"
+                ),
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -116,6 +138,16 @@ impl GraphStore {
         let mut conn = self.conn()?;
         // 先取得写锁，再读取 attempt_no；否则两个池连接可能读到相同的 MAX。
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // 显式校验计划存在：虽然 graph_runs 的 FK(plan_id) 能兜住孤儿记录，
+        // 但裸外键报错无上下文，且与 create_resume_run 的显式校验口径不一致。
+        let plan_exists: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM graph_plans WHERE id=?1",
+            params![plan_id],
+            |row| row.get(0),
+        )?;
+        if plan_exists == 0 {
+            anyhow::bail!("错误：图计划 {plan_id} 不存在");
+        }
         let attempt_no: i64 = tx.query_row(
             "SELECT COALESCE(MAX(attempt_no),0)+1 FROM graph_runs WHERE plan_id=?1",
             params![plan_id],
@@ -136,7 +168,7 @@ impl GraphStore {
         tx.execute(
             "INSERT INTO graph_runs (id,plan_id,attempt_no,status,mode,verdict_status,started_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![run.id, run.plan_id, run.attempt_no, run.status, run.mode, run.verdict_status, run.started_at],
-        )?;
+        ).context("创建图运行记录失败")?;
         tx.execute(
             "UPDATE graph_plans SET latest_run_id=?2,status=?3,
                 state_json=CASE WHEN inherits_plan_id IS NOT NULL THEN initial_state_json ELSE '{}' END,
@@ -230,17 +262,17 @@ impl GraphStore {
     /// 统计数据污染当前项目的选型信号；`phase='cached'` 的续跑复用节点不重复计数。
     pub(crate) fn node_run_stats(&self, workspace_id: &str) -> Result<Vec<GraphModelStat>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT nr.model_ref, nr.base_tool_group, COUNT(*),
-                    SUM(CASE WHEN nr.status='failed' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN nr.status='{NODE_FAILED}' THEN 1 ELSE 0 END),
                     COALESCE(AVG(nr.duration_ms),0)
              FROM graph_node_runs nr
              JOIN graph_plans p ON p.id = nr.plan_id
-             WHERE nr.status IN ('succeeded','failed')
+             WHERE nr.status IN ('{NODE_SUCCEEDED}','{NODE_FAILED}')
                AND nr.phase <> ?2
                AND p.workspace_id = ?1
              GROUP BY nr.model_ref, nr.base_tool_group",
-        )?;
+        ))?;
         let rows = stmt
             .query_map(params![workspace_id, NODE_PHASE_CACHED], |row| {
                 Ok(GraphModelStat {
@@ -265,28 +297,38 @@ impl GraphStore {
 
     pub(crate) fn fail_interrupted_runs(&self, plan_id: Option<&str>) -> Result<usize> {
         let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        // 与 create_run/create_resume_run 一致用 Immediate：事务内多条 UPDATE
+        // 依赖「运行中」状态快照，DEFERRED 首次写才拿写锁，可能基于过期快照
+        // 恢复并在锁升级时撞 SQLITE_BUSY；立即拿写锁串行化恢复与其他写路径。
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = chrono::Utc::now().timestamp_millis();
         let reason = "进程中断";
+        // 状态词表统一引用 types 常量（编译期拼入 SQL，无注入面）。
         tx.execute(
-            "UPDATE graph_plans SET status='failed',updated_at=?2
-             WHERE id IN (SELECT plan_id FROM graph_runs
-                 WHERE status='running' AND (?1 IS NULL OR plan_id=?1))",
+            &format!(
+                "UPDATE graph_plans SET status='{PLAN_FAILED}',updated_at=?2
+                 WHERE id IN (SELECT plan_id FROM graph_runs
+                     WHERE status='{PLAN_RUNNING}' AND (?1 IS NULL OR plan_id=?1))"
+            ),
             params![plan_id, now],
         )?;
         tx.execute(
-            "UPDATE graph_node_runs
-             SET status='failed',phase='finalizing',error_text=?2,
-                 finished_at=COALESCE(finished_at,?3),
-                 duration_ms=CASE WHEN started_at IS NULL THEN duration_ms ELSE ?3-started_at END
-             WHERE status IN ('pending','running')
-               AND run_id IN (SELECT id FROM graph_runs
-                   WHERE status='running' AND (?1 IS NULL OR plan_id=?1))",
+            &format!(
+                "UPDATE graph_node_runs
+                 SET status='{NODE_FAILED}',phase='{NODE_PHASE_FINALIZING}',error_text=?2,
+                     finished_at=COALESCE(finished_at,?3),
+                     duration_ms=CASE WHEN started_at IS NULL THEN duration_ms ELSE ?3-started_at END
+                 WHERE status IN ('{NODE_PENDING}','{NODE_RUNNING}')
+                   AND run_id IN (SELECT id FROM graph_runs
+                       WHERE status='{PLAN_RUNNING}' AND (?1 IS NULL OR plan_id=?1))"
+            ),
             params![plan_id, reason, now],
         )?;
         let changed = tx.execute(
-            "UPDATE graph_runs SET status='failed',finished_at=?2
-             WHERE status='running' AND (?1 IS NULL OR plan_id=?1)",
+            &format!(
+                "UPDATE graph_runs SET status='{PLAN_FAILED}',finished_at=?2
+                 WHERE status='{PLAN_RUNNING}' AND (?1 IS NULL OR plan_id=?1)"
+            ),
             params![plan_id, now],
         )?;
         tx.commit()?;
@@ -304,8 +346,22 @@ impl GraphStore {
 
     pub(crate) fn save_node_run(&self, run: &GraphNodeRunRecord) -> Result<()> {
         let affected = serde_json::to_string(&run.affected_files)?;
+        // 冲突时原地 UPDATE 而非 INSERT OR REPLACE（先删后插会让隐式 rowid
+        // 重新分配）：list_node_runs 按 rowid 排序，rowid 漂移会把每次状态
+        // 变更（pending→running→succeeded/失败重试）的节点打到行尾，破坏
+        // 报告与 UI 的节点顺序。
         self.conn()?.execute(
-            "INSERT OR REPLACE INTO graph_node_runs (run_id,plan_id,node_id,status,phase,model_ref,model_label,model_category,base_tool_group,special_tools_json,input_text,output_text,error_text,started_at,finished_at,duration_ms,usage_json,affected_files_json,tool_call_count,retry_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+            "INSERT INTO graph_node_runs (run_id,plan_id,node_id,status,phase,model_ref,model_label,model_category,base_tool_group,special_tools_json,input_text,output_text,error_text,started_at,finished_at,duration_ms,usage_json,affected_files_json,tool_call_count,retry_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
+             ON CONFLICT(run_id,node_id) DO UPDATE SET
+                 plan_id=excluded.plan_id,status=excluded.status,phase=excluded.phase,
+                 model_ref=excluded.model_ref,model_label=excluded.model_label,
+                 model_category=excluded.model_category,base_tool_group=excluded.base_tool_group,
+                 special_tools_json=excluded.special_tools_json,input_text=excluded.input_text,
+                 output_text=excluded.output_text,error_text=excluded.error_text,
+                 started_at=excluded.started_at,finished_at=excluded.finished_at,
+                 duration_ms=excluded.duration_ms,usage_json=excluded.usage_json,
+                 affected_files_json=excluded.affected_files_json,
+                 tool_call_count=excluded.tool_call_count,retry_count=excluded.retry_count",
             params![run.run_id,run.plan_id,run.node_id,run.status,run.phase,run.model_ref,run.model_label,run.model_category,run.base_tool_group,run.special_tools_json,run.input_text,run.output_text,run.error_text,run.started_at,run.finished_at,run.duration_ms,run.usage_json,affected,run.tool_call_count,run.retry_count],
         ).context("保存节点运行记录失败")?;
         Ok(())
@@ -822,8 +878,9 @@ mod tests {
         assert!(format!("{error:#}").contains("不属于"));
     }
 
-    /// v25→v26 升级回归：旧 v25 库（无 initial_state_json 列、带冗余
-    /// idx_graph_activities_node、无 plan_id 索引）打开后应原子升级到 v26。
+    /// v25→当前版本升级回归：旧 v25 库（无 initial_state_json 列、带冗余
+    /// idx_graph_activities_node、无 plan_id 索引）打开后应原子升级到当前
+    /// SCHEMA_VERSION。
     #[test]
     fn migrates_legacy_v25_graph_tables_to_v26() {
         let path = std::env::temp_dir().join(format!(
@@ -911,13 +968,14 @@ mod tests {
             .unwrap();
         }
 
-        // 重新打开触发 v25→v26 迁移。
+        // 重新打开触发 v25→当前版本的迁移。
         let db = crate::agent::db::DispatcherDb::new(path).unwrap();
         let conn = db.conn().unwrap();
         let version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 26);
+        // 直接引用 schema.rs 的 SCHEMA_VERSION，后续版本升级不再破坏本测试。
+        assert_eq!(version, crate::agent::db::schema::SCHEMA_VERSION);
 
         let index_exists = |name: &str| -> i64 {
             conn.query_row(
@@ -963,5 +1021,68 @@ mod tests {
         let latest = store.get_latest_run(&plan.id).unwrap().unwrap();
         assert_eq!(latest.verdict_status, "partial");
         assert_eq!(latest.verdict_reason, "部分节点失败但有产出");
+    }
+
+    #[test]
+    fn save_node_run_update_keeps_rowid_order() {
+        // 状态变更（重复保存同一 (run_id,node_id)）不得改变行序：
+        // INSERT OR REPLACE 会重排 rowid，把更新过的节点打到行尾。
+        let db = test_db();
+        let store = GraphStore::new(&db);
+        let plan = create_plain_plan(&store);
+        let run = store.create_run(&plan.id).unwrap();
+        for id in ["n1", "n2", "n3"] {
+            store
+                .save_node_run(&GraphNodeRunRecord::pending(&run.id, &plan.id, &node(id)))
+                .unwrap();
+        }
+        let mut updated = GraphNodeRunRecord::pending(&run.id, &plan.id, &node("n1"));
+        updated.status = "running".into();
+        store.save_node_run(&updated).unwrap();
+
+        let order = store
+            .list_node_runs(&run.id)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.node_id)
+            .collect::<Vec<_>>();
+        assert_eq!(order, vec!["n1", "n2", "n3"], "更新后 n1 不应被排到行尾");
+        assert_eq!(store.list_node_runs(&run.id).unwrap()[0].status, "running");
+    }
+
+    #[test]
+    fn create_run_rejects_missing_plan() {
+        let db = test_db();
+        let store = GraphStore::new(&db);
+        let error = store.create_run("不存在的计划").unwrap_err();
+        assert!(format!("{error:#}").contains("不存在"));
+    }
+
+    #[test]
+    fn update_plan_definition_rejects_non_draft_plan() {
+        let db = test_db();
+        let store = GraphStore::new(&db);
+        let plan = create_plain_plan(&store);
+        let mut definition = definition();
+        definition.title = "改写标题".into();
+
+        // draft 态可编辑。
+        store.update_plan_definition(&plan.id, &definition).unwrap();
+        assert_eq!(store.get_plan(&plan.id).unwrap().unwrap().title, "改写标题");
+
+        // 置为 running 后拒绝编辑（TOCTOU 门禁：条件更新 + 影响行数检查）。
+        store.update_plan_status(&plan.id, "running").unwrap();
+        definition.title = "并发覆盖".into();
+        let error = store.update_plan_definition(&plan.id, &definition).unwrap_err();
+        assert!(format!("{error:#}").contains("状态已变更"));
+        assert_eq!(
+            store.get_plan(&plan.id).unwrap().unwrap().title,
+            "改写标题",
+            "非 draft 态的定义写入必须被整体拒绝"
+        );
+
+        // 计划不存在：给出可区分的错误而非静默 0 行。
+        let error = store.update_plan_definition("不存在", &definition).unwrap_err();
+        assert!(format!("{error:#}").contains("不存在"));
     }
 }

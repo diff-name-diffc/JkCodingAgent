@@ -197,6 +197,14 @@ export function reduceGraphRunEvent(
         finishedAt: now,
       });
       return { notification: "immediate", hydrate: false };
+    case "nodeCancelled":
+      // 与 nodeSkipped（上游失败被跳过）区分：展示层按 cancelled 状态
+      // 渲染「取消」文案与统计（NODE_STATUS_META / GraphPanelHeader）。
+      upsertNodeRun(snapshot, payload.data.nodeId, {
+        status: "cancelled",
+        finishedAt: now,
+      });
+      return { notification: "immediate", hydrate: false };
     case "stateUpdated":
       patchPlan(snapshot, { stateJson: JSON.stringify(payload.data.state ?? {}) });
       return { notification: "immediate", hydrate: false };

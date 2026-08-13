@@ -154,6 +154,13 @@ describe("graph run reducer", () => {
     expect(state.paused).toBe(false);
     expect(state.pausedNodeId).toBeNull();
   });
+
+  it("nodeCancelled 落 cancelled 状态，与 nodeSkipped 区分", () => {
+    const state = snapshot();
+    reduceGraphRunEvent(state, payload("nodeCancelled", { nodeId: "node-1" }, 1));
+    expect(state.plan?.nodeRuns[0].status).toBe("cancelled");
+    expect(state.plan?.nodeRuns[0].finishedAt).toBe(1);
+  });
 });
 
 describe("serial task queue", () => {

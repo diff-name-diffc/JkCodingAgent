@@ -16,7 +16,7 @@ use crate::agent::run_loop::core::{RunLoopContext, RunLoopIteration};
 use crate::agent::run_loop::AgentEvent;
 use crate::agent::tools::ToolContext;
 
-use super::helpers::{emit, empty_llm_response_error};
+use super::helpers::{self, emit, empty_llm_response_error};
 use super::OrchestratorAgent;
 
 impl OrchestratorAgent {
@@ -27,15 +27,26 @@ impl OrchestratorAgent {
         workspace: &Path,
         provider: &OpenAiCompatProvider,
     ) -> ToolContext {
-        let session_title = db
-            .get_session_title_async(workspace_id)
-            .await
-            .unwrap_or_else(|_| "untitled".to_string());
-        let user_task = db
-            .get_latest_user_message_content_async(workspace_id)
-            .await
-            .ok()
-            .flatten();
+        // 两个查询失败都降级兜底，但必须留下持久化警告：user_task 是工具上下文
+        // 的关键信息，缺失时 LLM/工具可能不知道用户任务，无日志则问题无法追踪。
+        let session_title = match db.get_session_title_async(workspace_id).await {
+            Ok(title) => title,
+            Err(error) => {
+                helpers::log_warning(&format!(
+                    "[orchestrator] 读取会话标题失败，降级为 untitled（workspace_id={workspace_id}）：{error:#}"
+                ));
+                "untitled".to_string()
+            }
+        };
+        let user_task = match db.get_latest_user_message_content_async(workspace_id).await {
+            Ok(content) => content,
+            Err(error) => {
+                helpers::log_warning(&format!(
+                    "[orchestrator] 读取最新用户消息失败，工具上下文将不含用户任务（workspace_id={workspace_id}）：{error:#}"
+                ));
+                None
+            }
+        };
         let ms = self.models.lock().snapshot();
         ToolContext {
             workspace_id: workspace_id.to_string(),
@@ -45,6 +56,10 @@ impl OrchestratorAgent {
             ssh_review: None,
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: self.config.restrict_to_workspace,
+            // 白名单说明：~/.jkcodingagent 是应用自身资源目录（memory/、skills/ 等），
+            // 只读工具需要读取其中的用户级记忆与技能。所有接受路径参数的工具必须
+            // 经 builtin/common.rs 的 resolve_path（canonicalize + starts_with）校验，
+            // 该白名单仅对走 resolve_path 的路径生效；请勿扩大此列表。
             extra_allowed_dirs: dirs::home_dir()
                 .map(|h| vec![h.join(".jkcodingagent")])
                 .unwrap_or_default(),
@@ -116,7 +131,7 @@ impl OrchestratorAgent {
         .await?;
 
         if debug_logger.enabled() {
-            if let LlmStreamOutcome::Response(ref response) = outcome {
+            if let LlmStreamOutcome::Response { response, .. } = &outcome {
                 let response_snapshot = iteration_ctx
                     .request_provider
                     .build_response_snapshot(response);
@@ -153,6 +168,7 @@ impl OrchestratorAgent {
         on_event: &Channel<AgentEvent>,
         response: &LlmResponse,
         usage_tracker: &UsageTracker,
+        last_seq: Option<u64>,
     ) -> Result<DispatcherMessageRecord> {
         let content = response.content.trim().to_string();
         if content.is_empty() {
@@ -173,37 +189,38 @@ impl OrchestratorAgent {
             on_event,
             AgentEvent::AssistantMessage {
                 message: reply.clone(),
+                last_seq,
             },
         );
         Ok(reply)
     }
 
+    /// 手动停止收口：usage_tracker 必传——停止路径同样要落用量，
+    /// 否则会话用量统计/计费不完整（审查项 G8-08）。
     pub(super) async fn emit_stop_and_finish(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
         on_event: &Channel<AgentEvent>,
         partial: &str,
-        usage_tracker: Option<&UsageTracker>,
+        usage_tracker: &UsageTracker,
+        last_seq: Option<u64>,
     ) -> Result<DispatcherMessageRecord> {
         let content = build_stopped_orchestration_reply(partial);
-        let usage_stats = usage_tracker.map(UsageTracker::snapshot);
-        let reply = if let Some(usage_stats) = usage_stats.as_ref() {
-            db.add_visible_message_with_usage_async(
+        let usage_stats = usage_tracker.snapshot();
+        let reply = db
+            .add_visible_message_with_usage_async(
                 workspace_id,
                 "assistant",
                 &content,
-                usage_stats,
+                &usage_stats,
             )
-            .await?
-        } else {
-            db.add_visible_message_async(workspace_id, "assistant", &content, None)
-                .await?
-        };
+            .await?;
         emit(
             on_event,
             AgentEvent::AssistantMessage {
                 message: reply.clone(),
+                last_seq,
             },
         );
         Ok(reply)

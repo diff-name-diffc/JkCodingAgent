@@ -15,7 +15,9 @@ use tauri::{Emitter, Manager};
 
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord};
 use crate::agent::graph::commands::catalog_for_workspace;
-use crate::agent::graph::types::{GraphDefinition, GraphPlanUpdatedPayload};
+use crate::agent::graph::types::{
+    GraphDefinition, GraphPlanUpdatedPayload, PLAN_COMPLETED, PLAN_FAILED,
+};
 use crate::agent::graph::validate::validate_graph;
 use crate::agent::graph::GraphStore;
 use crate::agent::llm::RequestedToolCall;
@@ -170,8 +172,11 @@ impl OrchestratorAgent {
     }
 
     /// 根据 execute_tool_calls 的结果决定本轮循环是否结束：
-    ///   - 出现可重试工具错误 ⇒ 不收口，让模型再修正一轮。
     ///   - 有协议动作（图已提交）⇒ 输出「图已生成，等待确认」消息并收口。
+    ///     协议动作优先于可重试错误（审查项 G8-14）：已登记并广播的图绝不能
+    ///     因为同轮另有工具报可重试错误而被丢弃——否则循环空转，下一轮
+    ///     `graph_submitted_this_batch` 复位后模型可能重复提交计划。
+    ///   - 出现可重试工具错误 ⇒ 不收口，让模型再修正一轮。
     ///   - 有 final_message ⇒ 输出最终答复并收口。
     ///   - 以上都不是 ⇒ 返回 None，循环继续。
     pub(super) async fn resolve_loop_outcome(
@@ -182,10 +187,6 @@ impl OrchestratorAgent {
         outcome: RunLoopToolOutcome,
         usage_tracker: &crate::agent::common::UsageTracker,
     ) -> Result<Option<DispatcherMessageRecord>> {
-        if outcome.saw_retryable_tool_error {
-            return Ok(None);
-        }
-
         if !outcome.protocol_actions.is_empty() {
             let mut sections = Vec::new();
             for action in &outcome.protocol_actions {
@@ -217,9 +218,15 @@ impl OrchestratorAgent {
                 on_event,
                 AgentEvent::AssistantMessage {
                     message: closing_msg.clone(),
+                    // 工具循环后的合成收口消息，无关联的流式 delta 序号。
+                    last_seq: None,
                 },
             );
             return Ok(Some(closing_msg));
+        }
+
+        if outcome.saw_retryable_tool_error {
+            return Ok(None);
         }
 
         if let Some(final_message) = outcome.final_message {
@@ -236,6 +243,8 @@ impl OrchestratorAgent {
                 on_event,
                 AgentEvent::AssistantMessage {
                     message: reply.clone(),
+                    // 工具循环后的合成收口消息，无关联的流式 delta 序号。
+                    last_seq: None,
                 },
             );
             return Ok(Some(reply));
@@ -286,8 +295,14 @@ async fn resolve_inheritance(
                 inherits.run_id, inherits.plan_id
             )
         })?;
-    if matches!(source_run.status.as_str(), "running") {
-        return Err("错误：不能继承仍在运行中的图运行，请等待其结束".to_string());
+    // 终态白名单（审查项 G8-15）：仅允许继承 completed/failed 两种已知终态；
+    // running 之外任何未来新增的非终态（paused/queued/cancelled 等）或未知状态
+    // 一律拒绝，避免把未结束的 state 误种入新 plan。
+    if !matches!(source_run.status.as_str(), PLAN_COMPLETED | PLAN_FAILED) {
+        return Err(format!(
+            "错误：不能继承尚未结束的图运行（当前状态：{}），请等待其结束",
+            source_run.status
+        ));
     }
     // plan.state_json 是跨 run 持续累积的计划级 state，并非某次 run 的快照：
     // 只允许继承最近一次运行，确保种入新图的是该 plan 最新运行结束时的 state，

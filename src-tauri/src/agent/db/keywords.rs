@@ -13,7 +13,7 @@ use super::DispatcherDb;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionKeywordRecord {
-    pub workspace_id: String,
+    pub session_id: String,
     pub keyword: String,
     pub weight: f64,
     pub created_at: String,
@@ -47,17 +47,17 @@ pub struct KeywordAction {
 }
 
 impl DispatcherDb {
-    pub fn list_session_keywords(&self, workspace_id: &str) -> Result<Vec<SessionKeywordRecord>> {
+    pub fn list_session_keywords(&self, session_id: &str) -> Result<Vec<SessionKeywordRecord>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT workspace_id, keyword, weight, created_at
+            "SELECT session_id, keyword, weight, created_at
              FROM session_keywords
-             WHERE workspace_id = ?1
+             WHERE session_id = ?1
              ORDER BY weight DESC, keyword ASC",
         )?;
-        let rows = stmt.query_map(params![workspace_id], |row| {
+        let rows = stmt.query_map(params![session_id], |row| {
             Ok(SessionKeywordRecord {
-                workspace_id: row.get(0)?,
+                session_id: row.get(0)?,
                 keyword: row.get(1)?,
                 weight: row.get(2)?,
                 created_at: row.get(3)?,
@@ -69,7 +69,7 @@ impl DispatcherDb {
 
     pub fn apply_keyword_actions(
         &self,
-        workspace_id: &str,
+        session_id: &str,
         actions: &[KeywordAction],
     ) -> Result<()> {
         let mut conn = self.conn()?;
@@ -82,21 +82,34 @@ impl DispatcherDb {
                     let Some(keyword) = action.keyword.as_deref() else {
                         continue;
                     };
+                    let keyword = keyword.trim();
+                    if keyword.is_empty() {
+                        continue;
+                    }
                     let weight = action.weight.unwrap_or(1.0);
-                    let _ = tx.execute(
-                        "INSERT INTO session_keywords (workspace_id, keyword, weight, created_at)
-                         VALUES (?1, ?2, ?3, ?4)",
-                        params![workspace_id, keyword.trim(), weight, ts],
-                    );
+                    // UPSERT：重复关键词聚合权重，且保留首次写入的 created_at。
+                    tx.execute(
+                        "INSERT INTO session_keywords (session_id, keyword, weight, created_at)
+                         VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT(session_id, keyword) DO UPDATE SET
+                             weight = session_keywords.weight + excluded.weight",
+                        params![session_id, keyword, weight, ts],
+                    )
+                    .with_context(|| format!("upsert session keyword {keyword}"))?;
                 }
                 "remove" => {
                     let Some(keyword) = action.keyword.as_deref() else {
                         continue;
                     };
-                    let _ = tx.execute(
-                        "DELETE FROM session_keywords WHERE workspace_id = ?1 AND keyword = ?2",
-                        params![workspace_id, keyword.trim()],
-                    );
+                    let keyword = keyword.trim();
+                    if keyword.is_empty() {
+                        continue;
+                    }
+                    tx.execute(
+                        "DELETE FROM session_keywords WHERE session_id = ?1 AND keyword = ?2",
+                        params![session_id, keyword],
+                    )
+                    .with_context(|| format!("remove session keyword {keyword}"))?;
                 }
                 "keep" => {
                     // Nothing to do, keyword already persisted
@@ -105,20 +118,36 @@ impl DispatcherDb {
                     let Some(to_keyword) = action.to.as_deref() else {
                         continue;
                     };
+                    let to_keyword = to_keyword.trim();
+                    if to_keyword.is_empty() {
+                        continue;
+                    }
                     let weight = action.weight.unwrap_or(1.0);
                     if let Some(from_keywords) = &action.from {
                         for from_keyword in from_keywords {
-                            let _ = tx.execute(
-                                "DELETE FROM session_keywords WHERE workspace_id = ?1 AND keyword = ?2",
-                                params![workspace_id, from_keyword.trim()],
-                            );
+                            let from_keyword = from_keyword.trim();
+                            if from_keyword.is_empty() {
+                                continue;
+                            }
+                            tx.execute(
+                                "DELETE FROM session_keywords WHERE session_id = ?1 AND keyword = ?2",
+                                params![session_id, from_keyword],
+                            )
+                            .with_context(|| {
+                                format!("remove merged session keyword {from_keyword}")
+                            })?;
                         }
                     }
-                    let _ = tx.execute(
-                        "INSERT OR REPLACE INTO session_keywords (workspace_id, keyword, weight, created_at)
-                         VALUES (?1, ?2, ?3, ?4)",
-                        params![workspace_id, to_keyword.trim(), weight, ts],
-                    );
+                    // UPSERT：合并到已存在的关键词时聚合权重，且保留原 created_at，
+                    // 不再用 INSERT OR REPLACE 整行重写。
+                    tx.execute(
+                        "INSERT INTO session_keywords (session_id, keyword, weight, created_at)
+                         VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT(session_id, keyword) DO UPDATE SET
+                             weight = session_keywords.weight + excluded.weight",
+                        params![session_id, to_keyword, weight, ts],
+                    )
+                    .with_context(|| format!("merge session keyword into {to_keyword}"))?;
                 }
                 _ => {}
             }
@@ -168,7 +197,7 @@ impl DispatcherDb {
                             ELSE 25.0
                         END)
                         FROM session_keywords sk
-                        WHERE sk.workspace_id = ds.id
+                        WHERE sk.session_id = ds.id
                           AND sk.keyword LIKE ?3 ESCAPE '\\' COLLATE NOCASE
                     ), 0.0) AS relevance_score
              FROM dispatcher_sessions ds
@@ -179,7 +208,7 @@ impl DispatcherDb {
                    OR EXISTS (
                        SELECT 1
                        FROM session_keywords sk
-                       WHERE sk.workspace_id = ds.id
+                       WHERE sk.session_id = ds.id
                          AND sk.keyword LIKE ?3 ESCAPE '\\' COLLATE NOCASE
                    )
                )
@@ -211,76 +240,73 @@ impl DispatcherDb {
         let mut results = rows
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("search sessions")?;
-        let workspace_ids = results
+        let session_ids = results
             .iter()
             .map(|result| result.session_id.clone())
             .collect::<Vec<_>>();
-        let mut keywords_by_workspace = load_keywords_by_workspace_ids(&conn, &workspace_ids)?;
+        let mut keywords_by_session = load_keywords_by_session_ids(&conn, &session_ids)?;
 
-        let mut keyword_stmt = conn.prepare(
-            "SELECT keyword
-             FROM session_keywords
-             WHERE workspace_id = ?1
-               AND keyword LIKE ?2 ESCAPE '\\' COLLATE NOCASE
-             ORDER BY weight DESC, keyword ASC",
-        )?;
+        // 命中关键词直接在上面已批量取回的关键词列表上做大小写不敏感的包含过滤，
+        // 不再为每个会话单独发一条 SQL（消除 N+1 查询）。
+        // 列表本身按 weight DESC, keyword ASC 排序，过滤后顺序与单独查询一致。
+        let query_lower = query.to_lowercase();
         for result in &mut results {
-            result.keywords = keywords_by_workspace
+            let keywords = keywords_by_session
                 .remove(&result.session_id)
                 .unwrap_or_default();
-            result.matched_keywords = keyword_stmt
-                .query_map(params![result.session_id, contains_pattern], |row| {
-                    row.get(0)
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .context("load matched session keywords")?;
+            result.matched_keywords = keywords
+                .iter()
+                .filter(|keyword| keyword.to_lowercase().contains(&query_lower))
+                .cloned()
+                .collect();
+            result.keywords = keywords;
         }
 
         Ok(results)
     }
 
     #[allow(dead_code)]
-    pub fn clear_keywords(&self, workspace_id: &str) -> Result<()> {
+    pub fn clear_keywords(&self, session_id: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
-            "DELETE FROM session_keywords WHERE workspace_id = ?1",
-            params![workspace_id],
+            "DELETE FROM session_keywords WHERE session_id = ?1",
+            params![session_id],
         )
         .context("clear session keywords")?;
         Ok(())
     }
 }
 
-pub(super) fn load_keywords_by_workspace_ids(
+pub(super) fn load_keywords_by_session_ids(
     conn: &Connection,
-    workspace_ids: &[String],
+    session_ids: &[String],
 ) -> Result<HashMap<String, Vec<String>>> {
-    if workspace_ids.is_empty() {
+    if session_ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let placeholders = std::iter::repeat_n("?", workspace_ids.len())
+    let placeholders = std::iter::repeat_n("?", session_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "SELECT workspace_id, keyword
+        "SELECT session_id, keyword
          FROM session_keywords
-         WHERE workspace_id IN ({placeholders})
-         ORDER BY workspace_id ASC, weight DESC, keyword ASC"
+         WHERE session_id IN ({placeholders})
+         ORDER BY session_id ASC, weight DESC, keyword ASC"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(workspace_ids), |row| {
+    let rows = stmt.query_map(params_from_iter(session_ids), |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
-    let mut keywords_by_workspace = HashMap::<String, Vec<String>>::new();
+    let mut keywords_by_session = HashMap::<String, Vec<String>>::new();
     for row in rows {
-        let (workspace_id, keyword) = row?;
-        keywords_by_workspace
-            .entry(workspace_id)
+        let (session_id, keyword) = row?;
+        keywords_by_session
+            .entry(session_id)
             .or_default()
             .push(keyword);
     }
-    Ok(keywords_by_workspace)
+    Ok(keywords_by_session)
 }
 
 fn escape_like(value: &str) -> String {
@@ -303,9 +329,9 @@ mod tests {
         DispatcherDb::new(path).expect("create test dispatcher db")
     }
 
-    fn add_keyword(db: &DispatcherDb, workspace_id: &str, keyword: &str, weight: f64) {
+    fn add_keyword(db: &DispatcherDb, session_id: &str, keyword: &str, weight: f64) {
         db.apply_keyword_actions(
-            workspace_id,
+            session_id,
             &[KeywordAction {
                 action: "add".to_string(),
                 keyword: Some(keyword.to_string()),
@@ -396,5 +422,67 @@ mod tests {
         assert!(error
             .to_string()
             .contains("project session search requires project_id"));
+    }
+
+    #[test]
+    fn adding_existing_keyword_aggregates_weight_and_keeps_created_at() {
+        let db = test_db();
+        let session = db
+            .create_chat_session("权重聚合", Some("tech"))
+            .expect("create chat session");
+
+        add_keyword(&db, &session.id, "Rust", 2.0);
+        let before = db
+            .list_session_keywords(&session.id)
+            .expect("list keywords after first add");
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].weight, 2.0);
+        let created_at = before[0].created_at.clone();
+
+        add_keyword(&db, &session.id, "Rust", 3.5);
+        let after = db
+            .list_session_keywords(&session.id)
+            .expect("list keywords after duplicate add");
+
+        assert_eq!(after.len(), 1, "重复添加不得产生第二行");
+        assert_eq!(after[0].weight, 5.5, "重复添加应聚合权重");
+        assert_eq!(after[0].created_at, created_at, "created_at 必须保留");
+    }
+
+    #[test]
+    fn merge_into_existing_keyword_aggregates_weight_and_keeps_created_at() {
+        let db = test_db();
+        let session = db
+            .create_chat_session("合并聚合", Some("tech"))
+            .expect("create chat session");
+        add_keyword(&db, &session.id, "Tauri", 4.0);
+        add_keyword(&db, &session.id, "桌面壳", 1.0);
+        let created_at = db
+            .list_session_keywords(&session.id)
+            .expect("list keywords")
+            .into_iter()
+            .find(|record| record.keyword == "Tauri")
+            .expect("tauri keyword")
+            .created_at;
+
+        db.apply_keyword_actions(
+            &session.id,
+            &[KeywordAction {
+                action: "merge".to_string(),
+                keyword: None,
+                from: Some(vec!["桌面壳".to_string()]),
+                to: Some("Tauri".to_string()),
+                weight: Some(2.0),
+            }],
+        )
+        .expect("merge keywords");
+
+        let after = db
+            .list_session_keywords(&session.id)
+            .expect("list keywords after merge");
+        assert_eq!(after.len(), 1, "来源关键词应被移除");
+        assert_eq!(after[0].keyword, "Tauri");
+        assert_eq!(after[0].weight, 6.0, "合并应聚合权重");
+        assert_eq!(after[0].created_at, created_at, "created_at 必须保留");
     }
 }

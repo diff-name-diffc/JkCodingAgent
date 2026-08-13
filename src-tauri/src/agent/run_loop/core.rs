@@ -7,6 +7,7 @@ use tauri::ipc::Channel;
 use tokio::sync::watch;
 
 use super::super::common::{cancellation_requested, LlmStreamOutcome, UsageTracker};
+use super::super::config::validate_provider_completeness;
 use super::super::db::{DispatcherDb, DispatcherMessageRecord};
 use super::super::llm::{ChatMessage, LlmResponse, OpenAiCompatProvider, ToolDefinition};
 use super::super::prompt::PromptBundle;
@@ -109,12 +110,14 @@ pub(crate) trait RunLoopAgent: Sync {
         &self,
         ctx: &RunLoopContext<'_>,
         partial: &str,
+        last_seq: Option<u64>,
     ) -> Result<DispatcherMessageRecord>;
 
     async fn handle_no_tool_response(
         &self,
         ctx: &RunLoopContext<'_>,
         response: &LlmResponse,
+        last_seq: Option<u64>,
     ) -> Result<DispatcherMessageRecord>;
 
     async fn execute_loop_tool_calls(
@@ -174,6 +177,9 @@ where
         if !provider.is_configured() {
             anyhow::bail!("{}", agent.provider_missing_message());
         }
+        // 完整性校验（G9-15）：API Key / Base URL / 模型名任一缺失都在 run 入口
+        // 显式失败并给出「错误：」提示，避免延迟到 HTTP 请求时才以晦涩错误暴露。
+        validate_provider_completeness(provider.api_key(), provider.api_base(), provider.model())?;
 
         let prompt = agent.build_run_prompt(workspace_id, &workspace).await?;
         let reply = run_loop(
@@ -193,14 +199,21 @@ where
         )
         .await?;
 
-        let messages = request.db.list_visible_messages_async(workspace_id).await?;
+        // G7-11：Finished 改为轻量负载——不再全量加载可见消息（含
+        // segments_json/context_payload）随事件下发；前端收到 finished 后自行
+        // 调用 dispatcher_list_messages 拉全量刷新。此处只查计数供对账。
+        let message_count = request
+            .db
+            .count_visible_messages_async(workspace_id)
+            .await?;
         emit(
             on_event,
             AgentEvent::Finished {
-                messages: messages.clone(),
+                workspace_id: workspace_id.to_string(),
+                message_count,
             },
         );
-        Ok(AgentTurn { reply, messages })
+        Ok(AgentTurn { reply })
     }
     .await;
 
@@ -239,7 +252,8 @@ where
 
     for iteration_index in 0..agent.max_tool_iterations() {
         if cancellation_requested(&ctx.cancel_rx) {
-            return agent.handle_cancelled_loop(&ctx, "").await;
+            // 循环边界取消时尚未开始流式输出，无 delta 序号可对账。
+            return agent.handle_cancelled_loop(&ctx, "", None).await;
         }
 
         if iteration_index > 0 {
@@ -259,18 +273,23 @@ where
             request_provider,
         };
 
-        let response = match agent
+        let (response, last_seq) = match agent
             .stream_iteration_response(&mut ctx, &iteration, iteration_index)
             .await?
         {
-            LlmStreamOutcome::Cancelled(partial) => {
-                return agent.handle_cancelled_loop(&ctx, &partial).await;
+            LlmStreamOutcome::Cancelled { partial, last_seq } => {
+                return agent.handle_cancelled_loop(&ctx, &partial, last_seq).await;
             }
-            LlmStreamOutcome::Response(response) => response,
+            LlmStreamOutcome::Response {
+                response,
+                last_seq,
+            } => (response, last_seq),
         };
 
         if response.tool_calls.is_empty() {
-            return agent.handle_no_tool_response(&ctx, &response).await;
+            return agent
+                .handle_no_tool_response(&ctx, &response, last_seq)
+                .await;
         }
 
         let outcome = agent

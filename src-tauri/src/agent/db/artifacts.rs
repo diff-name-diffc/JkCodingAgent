@@ -68,8 +68,9 @@ impl DispatcherDb {
                     kind: row.get(6)?,
                     preview: row.get(7)?,
                     content: row.get(8)?,
-                    char_count: row.get::<_, i64>(9)? as usize,
-                    line_count: row.get::<_, i64>(10)? as usize,
+                    // DB i64 → usize 不再用 as 强转，越界时显式报错而不是静默回绕。
+                    char_count: usize_from_sql(row.get::<_, i64>(9)?, 9)?,
+                    line_count: usize_from_sql(row.get::<_, i64>(10)?, 10)?,
                     created_at: row.get(11)?,
                 })
             },
@@ -78,4 +79,10 @@ impl DispatcherDb {
         .context("load dispatcher tool artifact")?
         .with_context(|| format!("dispatcher tool artifact not found: {artifact_id}"))
     }
+}
+
+fn usize_from_sql(value: i64, column: usize) -> rusqlite::Result<usize> {
+    usize::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Integer, Box::new(error))
+    })
 }

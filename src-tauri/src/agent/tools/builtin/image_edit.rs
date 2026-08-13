@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-use super::common::{resolve_path, string_arg};
+use super::common::{bounded_dimension_arg, resolve_path, string_arg};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 use crate::chat_images::{is_chat_image_path, resolve_chat_image_id_async};
@@ -31,8 +31,8 @@ impl AgentTool for EditImageTool {
                 "image_path": { "type": "string", "description": "要编辑的图片引用。支持：chat-image://uuid（对话中图片引用）、本地绝对路径、相对工作区路径" },
                 "prompt": { "type": "string", "description": "编辑描述文本，详细描述要进行的修改" },
                 "image_name": { "type": "string", "description": "输出图片文件名（可选，不含扩展名）。用于生成可读的文件名" },
-                "width": { "type": "integer", "description": "输出图片宽度（可选）" },
-                "height": { "type": "integer", "description": "输出图片高度（可选）" }
+                "width": { "type": "integer", "description": "输出图片宽度（可选，支持范围 256-4096）" },
+                "height": { "type": "integer", "description": "输出图片高度（可选，支持范围 256-4096）" }
             },
             "required": ["image_path", "prompt"]
         })
@@ -55,28 +55,51 @@ impl AgentTool for EditImageTool {
         } else {
             let stripped = raw_image_path
                 .strip_prefix("file://")
-                .unwrap_or(&raw_image_path);
-
-            let raw_path_buf = PathBuf::from(stripped);
-            if is_chat_image_path(&raw_path_buf) {
-                raw_path_buf
-            } else {
-                match resolve_path(context, stripped) {
-                    Ok(p) => p,
-                    Err(e) => return e,
+                .unwrap_or(&raw_image_path)
+                .to_string();
+            let ctx = context.clone();
+            // is_chat_image_path / resolve_path 内部含同步文件系统 I/O
+            // （canonicalize / symlink_metadata），移入 spawn_blocking，
+            // 避免阻塞 Tokio 工作线程。
+            match tokio::task::spawn_blocking(move || {
+                let raw_path_buf = PathBuf::from(&stripped);
+                if is_chat_image_path(&raw_path_buf) {
+                    // is_chat_image_path 内部会 canonicalize（或词法归一化）后校验路径必须
+                    // 位于应用托管的可信目录 ~/.jkcodingagent/chat-images/ 之内，因此这里
+                    // 直接使用解析后的路径是安全的——它属于受信任目录白名单，而非绕过校验。
+                    return Ok(raw_path_buf);
                 }
+                resolve_path(&ctx, &stripped)
+            })
+            .await
+            {
+                Ok(Ok(p)) => p,
+                Ok(Err(e)) => return e,
+                Err(e) => return format!("错误：解析图片路径任务失败：{e}"),
             }
         };
 
-        if !image_path.exists() {
+        // 存在性检查同样是同步文件系统 I/O，移入 spawn_blocking。
+        let image_path_exists = {
+            let p = image_path.clone();
+            tokio::task::spawn_blocking(move || p.exists())
+                .await
+                .unwrap_or(false)
+        };
+        if !image_path_exists {
             return format!("错误：图片文件不存在：{}", image_path.display());
         }
 
         let image_name = string_arg(args, "image_name");
-        let width = args.get("width").and_then(|v| v.as_u64().map(|v| v as u32));
-        let height = args
-            .get("height")
-            .and_then(|v| v.as_u64().map(|v| v as u32));
+        // width/height 做范围校验（256-4096）而非 u64→u32 静默截断，与 generate_image 一致。
+        let width = match bounded_dimension_arg(args, "width") {
+            Ok(value) => value,
+            Err(message) => return message,
+        };
+        let height = match bounded_dimension_arg(args, "height") {
+            Ok(value) => value,
+            Err(message) => return message,
+        };
 
         let api_key = &context.image_model_api_key;
         let base_url = &context.image_model_url;
@@ -90,8 +113,14 @@ impl AgentTool for EditImageTool {
             return "错误：图片编辑 API Key 未配置，请先在设置中配置".to_string();
         }
 
+        // 路径必须可表示为 UTF-8 才能交给下层；解析失败时显式报错，
+        // 不能回退到用户原始输入（那会绕过 resolve_path 的工作区校验）。
+        let Some(image_path_str) = image_path.to_str() else {
+            return "错误：图片路径包含非 UTF-8 字符，无法处理".to_string();
+        };
+
         match edit_image(
-            image_path.to_str().unwrap_or(&raw_image_path),
+            image_path_str,
             prompt,
             image_name,
             width,
@@ -110,7 +139,7 @@ impl AgentTool for EditImageTool {
                     output.width, output.height, output.generation_prompt, ref_uri
                 )
             }
-            Err(e) => format!("图片编辑失败：{}", e),
+            Err(e) => format!("错误：图片编辑失败：{}", e),
         }
     }
 }

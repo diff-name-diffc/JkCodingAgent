@@ -1,7 +1,7 @@
 //! 聊天分类（chat_categories 表）的 CRUD 与排序。
 
 use anyhow::{Context, Result};
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -79,13 +79,15 @@ impl DispatcherDb {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("begin create chat category transaction")?;
+        // 该聚合查询恒有返回行，出错只可能是真实的数据库故障（磁盘 I/O、损坏等），
+        // 必须向上传播而不是吞成 -1（会造成重复/错误的 sort_order）。
         let max_order: i32 = tx
             .query_row(
                 "SELECT COALESCE(MAX(sort_order), -1) FROM chat_categories",
                 [],
                 |row| row.get(0),
             )
-            .unwrap_or(-1);
+            .context("query max chat category sort_order")?;
         let next_order = max_order + 1;
         let id = Uuid::new_v4().to_string();
         tx.execute(
@@ -203,6 +205,18 @@ impl DispatcherDb {
         let tx = conn
             .transaction()
             .context("begin delete category transaction")?;
+        // 不存在的分类必须与“删除成功”区分开（与 update 返回 Option 的语义对齐），
+        // 先校验存在性，避免前端拿到无差别的 Ok。
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM chat_categories WHERE id = ?1)",
+                params![category_id],
+                |row| row.get(0),
+            )
+            .context("check chat category exists")?;
+        if !exists {
+            anyhow::bail!("聊天分类不存在：{}", category_id);
+        }
         let now_val = now();
         tx.execute(
             "UPDATE dispatcher_sessions SET category = '', updated_at = ?2 WHERE category = ?1",
@@ -224,27 +238,30 @@ impl DispatcherDb {
     }
 
     pub fn list_chat_category_agent_configs(&self) -> Result<Vec<ChatCategoryAgentConfig>> {
+        // 常规路径：无锁只读，不再为读取开 Immediate 写事务。
+        let conn = self.conn()?;
+        let configs = read_chat_category_agent_configs(&conn)?;
+        let category_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chat_categories", [], |row| row.get(0))
+            .context("count chat categories")?;
+        let complete = usize::try_from(category_count)
+            .map(|count| configs.len() == count)
+            .unwrap_or(false);
+        if complete {
+            return Ok(configs);
+        }
+        drop(configs);
+        drop(conn);
+        // 仅当配置行缺失（旧库升级 / 手工删除）时才走一次写路径按需补行并自愈坏行。
         let mut conn = self.conn()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .context("begin list chat category agent configs")?;
+            .context("begin backfill chat category agent configs")?;
         backfill_chat_category_agent_configs_tx(&tx)?;
-        let configs = {
-            let mut stmt = tx
-                .prepare(
-                    "SELECT c.id, c.name, cfg.allowed_tools_json, cfg.sub_agent_ids_json, cfg.system_prompt, cfg.created_at, cfg.updated_at
-                     FROM chat_categories c
-                     INNER JOIN chat_category_agent_configs cfg ON cfg.category_id = c.id
-                     ORDER BY c.sort_order ASC, c.created_at ASC",
-                )
-                .context("prepare list chat category agent configs")?;
-            let rows = stmt.query_map([], map_chat_category_agent_config)?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .context("list chat category agent configs")?
-        };
+        repair_corrupt_chat_category_agent_configs_tx(&tx)?;
         tx.commit()
-            .context("commit list chat category agent configs")?;
-        Ok(configs)
+            .context("commit backfill chat category agent configs")?;
+        read_chat_category_agent_configs(&conn)
     }
 
     pub fn save_chat_category_agent_configs(
@@ -256,6 +273,8 @@ impl DispatcherDb {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("begin save chat category agent configs")?;
         backfill_chat_category_agent_configs_tx(&tx)?;
+        // 保存前先自愈存量坏行，避免单行损坏 JSON 让整个保存/读取链路永久失败。
+        repair_corrupt_chat_category_agent_configs_tx(&tx)?;
         let ts = now();
         for config in configs {
             let allowed_tools_json = serde_json::to_string(&config.allowed_tools)
@@ -294,26 +313,141 @@ impl DispatcherDb {
         &self,
         session_id: &str,
     ) -> Result<Option<ChatCategoryAgentConfig>> {
+        // 常规路径：无锁只读。
+        let conn = self.conn()?;
+        let config = read_chat_session_category_agent_config(&conn, session_id)?;
+        if config.is_some() {
+            return Ok(config);
+        }
+        // 仅当“会话挂了分类但配置行缺失”时才补行；无分类会话保持纯读不拿写锁。
+        let has_category: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1
+                     FROM chat_sessions s
+                     INNER JOIN chat_categories c ON c.id = s.category
+                     WHERE s.id = ?1 AND s.category != ''
+                 )",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .context("check chat session category")?;
+        if !has_category {
+            return Ok(None);
+        }
+        drop(conn);
         let mut conn = self.conn()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .context("begin get chat session category agent config")?;
+            .context("begin backfill chat session category agent config")?;
         backfill_chat_category_agent_configs_tx(&tx)?;
-        let config = tx
-            .query_row(
-                "SELECT c.id, c.name, cfg.allowed_tools_json, cfg.sub_agent_ids_json, cfg.system_prompt, cfg.created_at, cfg.updated_at
-                 FROM chat_sessions s
-                 INNER JOIN chat_categories c ON c.id = s.category
-                 INNER JOIN chat_category_agent_configs cfg ON cfg.category_id = c.id
-                 WHERE s.id = ?1 AND s.category != ''",
-                params![session_id],
-                map_chat_category_agent_config,
-            )
-            .optional()
-            .context("get chat session category agent config")?;
+        repair_corrupt_chat_category_agent_configs_tx(&tx)?;
         tx.commit()
-            .context("commit get chat session category agent config")?;
-        Ok(config)
+            .context("commit backfill chat session category agent config")?;
+        read_chat_session_category_agent_config(&conn, session_id)
+    }
+}
+
+fn read_chat_category_agent_configs(conn: &Connection) -> Result<Vec<ChatCategoryAgentConfig>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.id, c.name, cfg.allowed_tools_json, cfg.sub_agent_ids_json, cfg.system_prompt, cfg.created_at, cfg.updated_at
+             FROM chat_categories c
+             INNER JOIN chat_category_agent_configs cfg ON cfg.category_id = c.id
+             ORDER BY c.sort_order ASC, c.created_at ASC",
+        )
+        .context("prepare list chat category agent configs")?;
+    let rows = stmt.query_map([], map_chat_category_agent_config)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("list chat category agent configs")
+}
+
+fn read_chat_session_category_agent_config(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<ChatCategoryAgentConfig>> {
+    conn.query_row(
+        "SELECT c.id, c.name, cfg.allowed_tools_json, cfg.sub_agent_ids_json, cfg.system_prompt, cfg.created_at, cfg.updated_at
+         FROM chat_sessions s
+         INNER JOIN chat_categories c ON c.id = s.category
+         INNER JOIN chat_category_agent_configs cfg ON cfg.category_id = c.id
+         WHERE s.id = ?1 AND s.category != ''",
+        params![session_id],
+        map_chat_category_agent_config,
+    )
+    .optional()
+    .context("get chat session category agent config")
+}
+
+/// 写路径自愈：把 JSON 已损坏的配置行重置为默认值。
+///
+/// 与 `backfill_chat_category_agent_configs_tx`（只补缺失行）互补：
+/// backfill 修不了已存在的坏行，这里按字段判断并只覆盖损坏的字段。
+fn repair_corrupt_chat_category_agent_configs_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let mut stmt = tx
+        .prepare(
+            "SELECT category_id, allowed_tools_json, sub_agent_ids_json
+             FROM chat_category_agent_configs",
+        )
+        .context("prepare chat category agent config corruption scan")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut corrupt = Vec::new();
+    for row in rows {
+        let (category_id, allowed_tools_json, sub_agent_ids_json) =
+            row.context("scan chat category agent config row")?;
+        let tools_corrupt = serde_json::from_str::<Vec<String>>(&allowed_tools_json).is_err();
+        let sub_agents_corrupt = serde_json::from_str::<Vec<String>>(&sub_agent_ids_json).is_err();
+        if tools_corrupt || sub_agents_corrupt {
+            corrupt.push((category_id, tools_corrupt, sub_agents_corrupt));
+        }
+    }
+    drop(stmt);
+
+    for (category_id, tools_corrupt, sub_agents_corrupt) in corrupt {
+        let ts = now();
+        if tools_corrupt {
+            let (allowed_tools_json, _) = default_chat_category_agent_config_tx(tx, &category_id)?;
+            tx.execute(
+                "UPDATE chat_category_agent_configs
+                 SET allowed_tools_json = ?1, updated_at = ?2
+                 WHERE category_id = ?3",
+                params![allowed_tools_json, ts, category_id],
+            )
+            .with_context(|| format!("repair corrupt allowed_tools for category {category_id}"))?;
+        }
+        if sub_agents_corrupt {
+            tx.execute(
+                "UPDATE chat_category_agent_configs
+                 SET sub_agent_ids_json = '[]', updated_at = ?1
+                 WHERE category_id = ?2",
+                params![ts, category_id],
+            )
+            .with_context(|| format!("repair corrupt sub_agent_ids for category {category_id}"))?;
+        }
+        eprintln!(
+            "警告：聊天分类 {category_id} 的智能体配置 JSON 损坏（allowed_tools_corrupt={tools_corrupt}, sub_agent_ids_corrupt={sub_agents_corrupt}），已重置为默认值"
+        );
+    }
+    Ok(())
+}
+
+fn parse_category_json_list(category_id: &str, field: &str, raw: &str) -> Vec<String> {
+    match serde_json::from_str::<Vec<String>>(raw) {
+        Ok(value) => value,
+        Err(error) => {
+            // 单行坏数据不得拖垮全局：降级为空列表并记录日志，
+            // 持久化的默认值由写路径的 repair 负责重写。
+            eprintln!(
+                "警告：聊天分类 {category_id} 的 {field} 解析失败（{error}），本次按空列表处理"
+            );
+            Vec::new()
+        }
     }
 }
 
@@ -322,23 +456,10 @@ fn map_chat_category_agent_config(
 ) -> rusqlite::Result<ChatCategoryAgentConfig> {
     let category_id: String = row.get(0)?;
     let allowed_tools_json: String = row.get(2)?;
-    let allowed_tools =
-        serde_json::from_str::<Vec<String>>(&allowed_tools_json).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                2,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })?;
     let sub_agent_ids_json: String = row.get(3)?;
+    let allowed_tools = parse_category_json_list(&category_id, "allowed_tools_json", &allowed_tools_json);
     let sub_agent_ids =
-        serde_json::from_str::<Vec<String>>(&sub_agent_ids_json).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                3,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })?;
+        parse_category_json_list(&category_id, "sub_agent_ids_json", &sub_agent_ids_json);
     Ok(ChatCategoryAgentConfig {
         category_id,
         category_name: row.get(1)?,
@@ -405,6 +526,83 @@ mod tests {
             .expect("list category configs");
 
         assert!(configs.iter().any(|config| config.category_id == "tech"));
+    }
+
+    #[test]
+    fn corrupt_config_json_degrades_on_read_and_self_heals_on_save() {
+        let db = test_db();
+        db.conn()
+            .expect("db conn")
+            .execute(
+                "UPDATE chat_category_agent_configs
+                 SET allowed_tools_json = '{not valid json', sub_agent_ids_json = 'oops'
+                 WHERE category_id = 'tech'",
+                [],
+            )
+            .expect("corrupt one config row");
+
+        // 读取不得因单行坏数据整体失败：降级为空列表。
+        let configs = db
+            .list_chat_category_agent_configs()
+            .expect("list category configs despite corrupt row");
+        let tech = configs
+            .iter()
+            .find(|config| config.category_id == "tech")
+            .expect("tech config still readable");
+        assert!(tech.allowed_tools.is_empty(), "坏 JSON 应降级为空列表");
+        assert!(tech.sub_agent_ids.is_empty(), "坏 JSON 应降级为空列表");
+
+        // 保存路径应自愈坏行：重写为默认值。
+        let mut repaired = configs.clone();
+        let tech_config = repaired
+            .iter_mut()
+            .find(|config| config.category_id == "tech")
+            .expect("tech config to save");
+        tech_config.system_prompt = "repaired prompt".to_string();
+        let saved = db
+            .save_chat_category_agent_configs(&repaired)
+            .expect("save category configs after corruption");
+        let tech_saved = saved
+            .iter()
+            .find(|config| config.category_id == "tech")
+            .expect("tech config after save");
+        assert_eq!(tech_saved.system_prompt, "repaired prompt");
+
+        // 再次读取确认坏行已被修复为可解析的默认工具列表。
+        let raw_tools: String = db
+            .conn()
+            .expect("db conn")
+            .query_row(
+                "SELECT allowed_tools_json FROM chat_category_agent_configs WHERE category_id = 'tech'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read repaired json");
+        assert!(
+            serde_json::from_str::<Vec<String>>(&raw_tools).is_ok(),
+            "保存后坏行必须被修复为合法 JSON"
+        );
+    }
+
+    #[test]
+    fn deleting_missing_category_reports_error() {
+        let db = test_db();
+        let error = db
+            .delete_chat_category("no-such-category")
+            .expect_err("deleting a missing category must fail");
+        assert!(error.to_string().contains("聊天分类不存在"));
+    }
+
+    #[test]
+    fn deleting_existing_category_succeeds() {
+        let db = test_db();
+        let category = db
+            .create_chat_category("待删除", "Folder", "#222222", None, None)
+            .expect("create category");
+        db.delete_chat_category(&category.id)
+            .expect("delete existing category");
+        let remaining = db.list_chat_categories().expect("list categories");
+        assert!(remaining.iter().all(|item| item.id != category.id));
     }
 
     #[test]

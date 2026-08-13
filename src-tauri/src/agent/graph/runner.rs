@@ -4,8 +4,9 @@
 //! - 节点完成即解锁下游（scheduler::ReadyQueue 纯状态机驱动）；
 //! - 节点失败先重试一次（输入注入失败原因），仍失败才阻断下游；
 //! - resume 模式复用上次运行的成功节点（cached）与共享 state，实现断点续跑；
-//! - 高危写检查点：设置开启时，就绪节点只剩 coding 节点即暂停全 run 等待恢复
-//!   （暂停不阻塞已就绪的只读节点；任何 coding 节点不会在确认前启动）；
+//! - 高危写检查点：设置开启时，就绪节点只剩「可能写盘」的节点即暂停全 run
+//!   等待恢复（判定含 coding 工具组、可写特殊工具与 expectedFiles，见
+//!   node_may_write；暂停不阻塞已就绪的只读节点；写盘节点不会在确认前启动）；
 //! - 收尾由 verifier 产出验收结论、receipt 把执行回执写回会话消息（闭环）。
 
 use std::collections::{HashMap, HashSet};
@@ -30,9 +31,10 @@ use super::receipt;
 use super::scheduler::{FinishKind, ReadyQueue, MAX_PARALLEL_NODES};
 use super::store::GraphStore;
 use super::types::{
-    BaseToolGroup, GraphDefinition, GraphNodeRunRecord, GraphPlanRecord, GraphPlanUpdatedPayload,
-    GraphRunEvent, GraphRunEventPayload, GraphRunSummary, NODE_CANCELLED, NODE_FAILED,
-    NODE_SUCCEEDED, PLAN_CANCELLED, PLAN_COMPLETED, PLAN_FAILED, RUN_MODE_RESUME,
+    BaseToolGroup, GraphDefinition, GraphHarnessCatalog, GraphNode, GraphNodeRunRecord,
+    GraphPlanRecord, GraphPlanUpdatedPayload, GraphRunEvent, GraphRunEventPayload,
+    GraphRunSummary, NODE_CANCELLED, NODE_FAILED, NODE_SUCCEEDED, PLAN_CANCELLED, PLAN_COMPLETED,
+    PLAN_FAILED, RUN_MODE_RESUME,
 };
 use super::validate::validate_graph;
 use super::verifier;
@@ -142,10 +144,31 @@ pub(crate) async fn execute_graph_run(
 async fn wait_for_cancel(cancel_rx: &mut watch::Receiver<bool>) {
     while !*cancel_rx.borrow() {
         if cancel_rx.changed().await.is_err() {
-            // 发送端被丢弃：按未取消处理，交给节点自身的超时兜底。
-            std::future::pending::<()>().await;
+            // 发送端被丢弃：按取消处理（fail-closed）。永久 pending 会让
+            // 高危写检查点无法了结——配合 resume 通道被丢弃（recv 返回 None）
+            // 的分支，旧实现会滑向「未经确认静默继续」。
+            return;
         }
     }
+}
+
+/// 高危写检查点的「节点可能写盘」判定：写能力来自三处合集的并集——
+/// sidecar 内置工具组（coding 组含 write/edit/bash）、specialTools
+/// （按目录条目的 readonly 标记；目录缺失的工具 fail-closed 视为可写）、
+/// 以及 expectedFiles 声明。仅看 base_tool_group 会漏掉「误标 read_only
+/// 但携带可写扩展工具」的节点，使其在检查点确认前就被派发执行写操作。
+fn node_may_write(node: &GraphNode, catalog: &GraphHarnessCatalog) -> bool {
+    if node.base_tool_group == BaseToolGroup::Coding || !node.expected_files.is_empty() {
+        return true;
+    }
+    node.special_tools.iter().any(|tool_ref| {
+        catalog
+            .tools
+            .iter()
+            .find(|entry| entry.source == tool_ref.source && entry.name == tool_ref.name)
+            .map(|entry| !entry.readonly)
+            .unwrap_or(true)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -156,7 +179,7 @@ async fn run_graph(
     plan: GraphPlanRecord,
     run: GraphRunSummary,
     mut cancel_rx: watch::Receiver<bool>,
-    mut resume_rx: mpsc::UnboundedReceiver<()>,
+    mut resume_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
     let plan_id = plan.id.clone();
     let workspace_id = plan.workspace_id.clone();
@@ -258,7 +281,7 @@ async fn run_graph(
             .flatten()
             .unwrap_or_default();
     }
-    let base_tool_context = ToolContext {
+    let mut base_tool_context = ToolContext {
         workspace_id: workspace_id.clone(),
         workspace: workspace_root.clone(),
         session_title,
@@ -286,6 +309,10 @@ async fn run_graph(
         sub_agent_parent_tool_call_id: None,
         sub_agent_trace_events: None,
     };
+    // G1-23 统一契约：图节点经 registry.execute 直连工具注册表，绕过
+    // ToolRuntime::execute_tool 入口的 normalize_paths，需在此显式补调，
+    // 保证宿主工具拿到的 workspace/extra_allowed_dirs 已 canonicalize。
+    base_tool_context.normalize_paths();
 
     // 初始共享 state 与上游输出：resume 复用 plan 现有 state 与 cached 节点产出。
     let mut state = plan_state;
@@ -326,16 +353,16 @@ async fn run_graph(
         // 补满并发池。
         while task_error.is_none() && !cancelled && joins.len() < MAX_PARALLEL_NODES {
             let ready = queue.ready_nodes();
-            // 高危写检查点通过前，优先派发就绪的非 coding 节点（如独立分支的
-            // 调研节点），不让暂停阻塞无害的只读工作；剩余就绪节点全是 coding
-            // 时才落入下方暂停分支。承诺不变：coding 节点不会在确认前启动。
+            // 高危写检查点通过前，优先派发就绪的「不可能写盘」节点（如独立分支
+            // 的调研节点），不让暂停阻塞无害的只读工作；剩余就绪节点全都可能
+            // 写盘时才落入下方暂停分支。承诺不变：写盘节点不会在确认前启动。
             let node_id = if !checkpoint_passed && settings.graph.pause_before_write {
                 ready
                     .iter()
                     .find(|id| {
                         node_by_id
                             .get(*id)
-                            .map(|n| n.base_tool_group != BaseToolGroup::Coding)
+                            .map(|n| !node_may_write(n, &catalog))
                             .unwrap_or(false)
                     })
                     .or_else(|| ready.first())
@@ -346,15 +373,21 @@ async fn run_graph(
             let Some(node_id) = node_id else {
                 break;
             };
-            let node = node_by_id
-                .get(&node_id)
-                .context("调度器返回了未知节点")?
-                .clone();
+            let node = match node_by_id.get(&node_id) {
+                Some(node) => node.clone(),
+                // 不能直接 `?` 返回：JoinSet drop 会 abort 在途任务，节点记录
+                // 停留 running。统一走停止派发→排空在途→整体返回的错误路径。
+                None => {
+                    task_error = Some(anyhow::anyhow!("调度器返回了未知节点：{node_id}"));
+                    break;
+                }
+            };
 
-            // 高危写检查点：每个 run 只拦一次，就绪节点只剩 coding 时暂停等待恢复。
+            // 高危写检查点：每个 run 只拦一次，就绪节点只剩可能写盘的节点时
+            // 暂停等待恢复。
             if !checkpoint_passed
                 && settings.graph.pause_before_write
-                && node.base_tool_group == BaseToolGroup::Coding
+                && node_may_write(&node, &catalog)
             {
                 emit_run_event(
                     app,
@@ -372,7 +405,14 @@ async fn run_graph(
                     _ = wait_for_cancel(&mut cancel_rx) => {
                         cancelled = true;
                     }
-                    _ = resume_rx.recv() => {}
+                    signal = resume_rx.recv() => {
+                        if signal.is_none() {
+                            // 控制通道被丢弃：不能当作「确认恢复」。高危写
+                            // 检查点未确认前必须按取消处理（fail-closed），
+                            // 否则会违背「coding 节点不在确认前启动」的承诺。
+                            cancelled = true;
+                        }
+                    }
                 }
                 if cancelled {
                     // 不能直接 break：JoinSet 中可能已有检查点前并发启动的在途
@@ -404,10 +444,15 @@ async fn run_graph(
                 &state,
                 last_errors.get(&node_id).map(String::as_str),
             );
-            let harness = harnesses
-                .get(&node_id)
-                .cloned()
-                .context("节点 Harness 丢失")?;
+            let harness = match harnesses.get(&node_id).cloned() {
+                Some(harness) => harness,
+                // 同「未知节点」分支：不能 `?` 直接返回，统一走停止派发→
+                // 排空在途→整体返回的错误路径。
+                None => {
+                    task_error = Some(anyhow::anyhow!("节点 Harness 丢失：{node_id}"));
+                    break;
+                }
+            };
             joins.spawn(run_node_task(NodeTaskContext {
                 exec: NodeExecContext {
                     app: app.clone(),
@@ -480,7 +525,7 @@ async fn run_graph(
                         affected_files,
                     },
                 );
-                persist_and_emit_state(
+                if let Err(error) = persist_and_emit_state(
                     app,
                     store,
                     &plan_id,
@@ -491,12 +536,21 @@ async fn run_graph(
                     &state_value,
                     &state,
                 )
-                .await;
+                .await
+                {
+                    // fail-closed：共享 state 落库失败则停止派发，排空在途任务后
+                    // 整体按失败收尾（续跑可恢复），不得带漂移状态继续执行。
+                    task_error = Some(error.context("持久化图共享状态失败"));
+                    continue 'main;
+                }
                 outputs.insert(result.node_id.trim().to_string(), output);
                 last_errors.remove(&result.node_id);
                 queue.on_finished(&result.node_id, FinishKind::Succeeded);
             }
-            NodeExecOutcome::Failed(error) => {
+            NodeExecOutcome::Failed { error, usage_json } => {
+                // 失败结算同样落库已发生的 usage：LLM 调用已消耗 token 后节点
+                // 失败（含重试前的首次尝试），用量不得在记录层丢失。
+                result.record.usage_json = usage_json;
                 // record_retry 返回 false 表示节点已被其他路径结算（状态守卫
                 // 拒绝），按最终失败处理，不得把终态复活回 Pending 重试。
                 if queue.retryable(&result.node_id) && queue.record_retry(&result.node_id) {
@@ -570,6 +624,8 @@ async fn run_graph(
     }
 
     if cancelled {
+        // fail-closed：节点记录读取失败时不执行取消落库（不得把未确认节点
+        // 的记录当作空集全量覆盖），错误向上传播由整体失败路径收尾。
         cancel_pending_nodes(
             app,
             store,
@@ -578,7 +634,7 @@ async fn run_graph(
             &workspace_id,
             &definition.nodes,
         )
-        .await;
+        .await?;
         store.finish_run_async(&run.id, PLAN_CANCELLED).await?;
         store
             .update_plan_status_async(&plan_id, PLAN_CANCELLED)
@@ -685,7 +741,14 @@ async fn resolve_workspace_root(db: &DispatcherDb, workspace_id: &str) -> Result
     })
     .await
     .context("读取项目列表任务失败")?;
-    path.map(PathBuf::from).ok_or_else(|| {
+    let path = path.map(PathBuf::from).ok_or_else(|| {
         anyhow::anyhow!("无法定位图计划所属项目路径（项目 {project_id} 可能已被删除）")
-    })
+    })?;
+    // 规范化工作区根（解析符号链接与 ../）：后续 sidecar 消息、受影响文件
+    // 校验都以此为基准，目录不存在时 fail-closed。
+    let root = tokio::task::spawn_blocking(move || path.canonicalize())
+        .await
+        .context("规范化工作区路径任务失败")?
+        .with_context(|| format!("工作区路径不存在或无法访问：{project_id}"))?;
+    Ok(root)
 }

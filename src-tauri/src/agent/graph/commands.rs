@@ -82,6 +82,20 @@ pub async fn graph_plan_update(
             .collect::<std::collections::HashSet<_>>();
     validate_graph(&definition, &catalog, &seeded_keys)?;
 
+    // 写入前重读状态：前置检查与这里之间隔着目录刷新/校验等多个 await，
+    // 若 graph_run_start 并发把计划置为 running，必须放弃写入。store 层的
+    // 条件更新（AND status='draft' + 影响行数检查）是最终门禁。
+    let plan_now = store
+        .get_plan_async(&plan_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("图计划不存在：{plan_id}"))?;
+    if plan_now.status != PLAN_DRAFT {
+        return Err(format!(
+            "当前状态（{}）不允许编辑图定义；仅 draft 态可编辑",
+            plan_now.status
+        ));
+    }
     store
         .update_plan_definition_async(&plan_id, &definition)
         .await
@@ -179,8 +193,30 @@ pub async fn graph_run_start(
             if let Err(store_error) = store.fail_interrupted_runs_async(Some(&run_plan_id)).await {
                 eprintln!("[graph] panic 后恢复中断运行状态失败（{run_plan_id}）：{store_error:#}");
             }
-            if let Ok(Some(plan)) = store.get_plan_async(&run_plan_id).await {
-                emit_plan_updated(&run_app, &run_plan_id, &plan.workspace_id);
+            // 无论 fail_interrupted_runs 是否成功/生效（panic 早于 create_run 时
+            // 没有 running 的运行行可更新，计划仍停留在 running），都显式把仍处
+            // running 的计划复位为 failed 并广播 graph-plan-updated——否则计划
+            // 长期卡在 running 且前端无任何事件可感知异常、无法驱动重试。
+            match store.get_plan_async(&run_plan_id).await {
+                Ok(Some(plan)) => {
+                    if plan.status == PLAN_RUNNING {
+                        if let Err(store_error) = store
+                            .update_plan_status_async(&run_plan_id, PLAN_FAILED)
+                            .await
+                        {
+                            eprintln!(
+                                "[graph] panic 后复位计划状态失败（{run_plan_id}）：{store_error:#}"
+                            );
+                        }
+                    }
+                    emit_plan_updated(&run_app, &run_plan_id, &plan.workspace_id);
+                }
+                Ok(None) => {
+                    eprintln!("[graph] panic 后计划不存在（{run_plan_id}），跳过事件广播")
+                }
+                Err(error) => {
+                    eprintln!("[graph] panic 后读取计划失败（{run_plan_id}）：{error:#}")
+                }
             }
             run_app
                 .state::<DispatcherState>()

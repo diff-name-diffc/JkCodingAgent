@@ -1,7 +1,7 @@
 mod browser;
 mod common;
 mod filesystem;
-mod graph_report;
+mod graph_plan_report;
 mod image_edit;
 mod image_generation;
 mod local_zsh;
@@ -42,7 +42,7 @@ pub(super) fn orchestrator_tools() -> Vec<Box<dyn AgentTool>> {
         search::grep_tool(),
         shell::message_tool(),
         submit_graph::submit_graph_tool(),
-        graph_report::graph_plan_report_tool(),
+        graph_plan_report::graph_plan_report_tool(),
     ]
 }
 

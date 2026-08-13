@@ -112,13 +112,17 @@ pub fn seed_browser_agent_force_tx(tx: &rusqlite::Transaction<'_>) -> Result<()>
 }
 
 pub fn seed_browser_agent_if_missing_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    // 与 seed_browser_agent_force_tx 同源取 agent_id，避免硬编码字面量
+    // 在默认配置改名后出现重复种子或误判；查询错误向上传播，
+    // 不再用 unwrap_or(0) 把表缺失等底层问题当成「不存在」继续种子。
+    let config = SubAgentConfig::browser_agent_default();
     let existing = tx
         .query_row(
-            "SELECT COUNT(*) FROM sub_agents WHERE id = 'browser-agent'",
-            [],
+            "SELECT COUNT(*) FROM sub_agents WHERE id = ?1",
+            params![config.agent_id],
             |row| row.get::<_, i64>(0),
         )
-        .unwrap_or(0);
+        .context("check browser-agent existence")?;
 
     if existing > 0 {
         return Ok(());
@@ -397,7 +401,9 @@ impl SubAgentDb {
                      OR EXISTS (
                          SELECT 1
                          FROM chat_sessions s
-                         INNER JOIN chat_category_agent_configs cfg ON cfg.category_id = s.category
+                         INNER JOIN chat_category_agent_configs cfg
+                             ON cfg.category_id = s.category
+                            AND json_valid(cfg.sub_agent_ids_json)
                          CROSS JOIN json_each(cfg.sub_agent_ids_json) AS je
                          WHERE s.id = ?1 AND je.value = sa.id
                      )
@@ -491,6 +497,45 @@ mod tests {
             .get_enabled_agent_ids(&life_session.id)
             .expect("enabled for life");
         assert_eq!(life_ids, vec!["life-agent".to_string()]);
+    }
+
+    #[test]
+    fn invalid_category_sub_agent_json_does_not_break_other_sessions() {
+        let (dispatcher, sub_agent) = setup();
+        sub_agent.set_global_enabled(&[]).expect("clear global");
+        seed_sub_agent(&sub_agent, "tech-agent");
+        set_category_sub_agents(&dispatcher, "tech", &["tech-agent"]);
+
+        // 手工把另一个分类的 JSON 损坏成非法值（模拟空串/手改数据）。
+        let conn = dispatcher.conn().expect("dispatcher conn");
+        conn.execute(
+            "UPDATE chat_category_agent_configs SET sub_agent_ids_json = 'not-json'
+             WHERE category_id = 'life'",
+            [],
+        )
+        .expect("corrupt life category json");
+
+        let session = dispatcher
+            .create_chat_session("技术", Some("tech"))
+            .expect("create session");
+
+        // 其它分类的坏 JSON 不得拖垮当前会话的子智能体加载。
+        let ids = sub_agent
+            .get_enabled_agent_ids(&session.id)
+            .expect("enabled ids despite corrupted category elsewhere");
+        assert_eq!(ids, vec!["tech-agent".to_string()]);
+
+        // 坏分类自己的会话应降级为空列表而非报错。
+        let broken_session = dispatcher
+            .create_chat_session("生活", Some("life"))
+            .expect("create broken category session");
+        let broken_ids = sub_agent
+            .get_enabled_agent_ids(&broken_session.id)
+            .expect("enabled ids for corrupted category session");
+        assert!(
+            broken_ids.is_empty(),
+            "corrupted category json must degrade to empty list"
+        );
     }
 
     #[test]

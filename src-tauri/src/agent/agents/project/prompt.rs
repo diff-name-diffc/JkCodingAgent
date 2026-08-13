@@ -11,6 +11,7 @@ use anyhow::Result;
 use crate::agent::llm::ToolDefinition;
 use crate::agent::prompt::PromptBundle;
 
+use super::helpers::log_warning;
 use super::OrchestratorAgent;
 
 const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
@@ -99,7 +100,7 @@ impl OrchestratorAgent {
         let root = self.config.root_dir.clone();
         let extra = tokio::task::spawn_blocking(move || load_prompt_files(&root))
             .await
-            .map_err(|error| anyhow::anyhow!("读取编排器提示词文件失败：{error}"))??;
+            .map_err(|error| anyhow::anyhow!("读取编排器提示词文件失败：{error}"))?;
 
         // 版本占位符由常量生成：提示词示例、工具 schema、校验三方同源，
         // 契约升级时不再需要手工同步提示词里的示例值。
@@ -119,27 +120,23 @@ impl OrchestratorAgent {
     }
 
     /// 每次迭代重建的完整系统提示：静态内容 + 动态分片。
+    /// 静态部分按引用直接装配进最终 format!，避免逐迭代对 static_content
+    /// 做大块中间克隆（最终 String 是唯一分配点，审查项 G8-21）。
     pub(super) fn build_iteration_system_prompt(
         &self,
         static_bundle: &PromptBundle,
-        _workspace_id: &str,
         tool_definitions: &[ToolDefinition],
     ) -> String {
-        let mut rendered = static_bundle.static_content.clone();
-
+        let static_content = static_bundle.static_content.as_str();
         let tools_block = render_available_tools_block(tool_definitions);
-        if !tools_block.is_empty() {
-            rendered.push_str("\n\n---\n\n");
-            rendered.push_str(&tools_block);
+        let local_time = crate::agent::prompt::current_local_time();
+        if tools_block.is_empty() {
+            format!("{static_content}\n\n---\n\n# 系统时间\n\n当前本地时间：{local_time}")
+        } else {
+            format!(
+                "{static_content}\n\n---\n\n{tools_block}\n\n---\n\n# 系统时间\n\n当前本地时间：{local_time}"
+            )
         }
-
-        rendered.push_str("\n\n---\n\n");
-        rendered.push_str(&format!(
-            "# 系统时间\n\n当前本地时间：{}",
-            crate::agent::prompt::current_local_time()
-        ));
-
-        rendered
     }
 
     pub(super) fn render_graph_harness_catalog(
@@ -241,34 +238,71 @@ fn render_available_tools_block(tool_definitions: &[ToolDefinition]) -> String {
     lines.join("\n")
 }
 
+/// 单个提示词文件（USER.md / SKILL.md / MEMORY.md）的大小上限：
+/// 这些内容会拼入系统提示并在每次迭代整体发送给 LLM，超大文件必须跳过告警，
+/// 防止撑爆上下文窗口与失控的 token 费用（审查项 G8-20）。
+const MAX_PROMPT_FILE_BYTES: u64 = 64 * 1024;
+
 /// 读取用户级提示词文件（USER.md / 记忆 / 技能）。
 /// 刻意不读 SOUL.md：其内容是旧调度 Agent 的角色设定，与编排器角色冲突。
-fn load_prompt_files(root: &Path) -> Result<String> {
+///
+/// 安全与健壮性契约（审查项 G8-19/G8-20）：
+/// - 所有文件 canonicalize 后必须仍位于 root 内——指向工作区外的符号链接
+///   会把外部敏感内容注入系统提示并随请求发给（可能是云端的）LLM，一律跳过；
+/// - 超过大小上限的文件跳过并告警；
+/// - 任一文件读取失败（非 UTF-8 / 权限 / 遍历中消失）只跳过该文件并留下
+///   持久化警告，整体构建不因单文件失败而报错，保证编排器可启动。
+fn load_prompt_files(root: &Path) -> String {
+    let root_canonical = match root.canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            log_warning(&format!(
+                "[prompt] 解析提示词根目录 {} 失败，跳过用户级提示词：{error}",
+                root.display()
+            ));
+            return String::new();
+        }
+    };
     let mut sections: Vec<String> = Vec::new();
 
     let user = root.join("USER.md");
-    if user.exists() {
-        sections.push(
-            std::fs::read_to_string(&user)
-                .map_err(|error| anyhow::anyhow!("读取 {} 失败：{error}", user.display()))?,
-        );
+    if let Some(content) = read_prompt_file(&root_canonical, &user) {
+        sections.push(content);
     }
 
     let skills_dir = root.join("skills");
     if skills_dir.exists() {
         let mut skill_parts = Vec::new();
-        for entry in std::fs::read_dir(&skills_dir)
-            .map_err(|error| anyhow::anyhow!("读取 {} 失败：{error}", skills_dir.display()))?
-        {
-            let entry = entry?;
-            let skill_md = entry.path().join("SKILL.md");
-            if skill_md.exists() {
-                skill_parts.push(format!(
-                    "### 技能：{}\n\n{}",
-                    entry.file_name().to_string_lossy(),
-                    std::fs::read_to_string(&skill_md).map_err(|error| {
-                        anyhow::anyhow!("读取 {} 失败：{error}", skill_md.display())
-                    })?
+        match std::fs::read_dir(&skills_dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = match entry {
+                        Ok(entry) => entry,
+                        Err(error) => {
+                            log_warning(&format!(
+                                "[prompt] 读取 {} 的目录条目失败，跳过该条目：{error}",
+                                skills_dir.display()
+                            ));
+                            continue;
+                        }
+                    };
+                    // 技能条目本身可能是越界符号链接：read_prompt_file 会对
+                    // SKILL.md 的真实路径做 root 包含校验，越界即跳过。
+                    let skill_md = entry.path().join("SKILL.md");
+                    let Some(content) = read_prompt_file(&root_canonical, &skill_md) else {
+                        continue;
+                    };
+                    skill_parts.push(format!(
+                        "### 技能：{}\n\n{}",
+                        entry.file_name().to_string_lossy(),
+                        content
+                    ));
+                }
+            }
+            Err(error) => {
+                log_warning(&format!(
+                    "[prompt] 读取 {} 失败，跳过技能加载：{error}",
+                    skills_dir.display()
                 ));
             }
         }
@@ -279,18 +313,174 @@ fn load_prompt_files(root: &Path) -> Result<String> {
     }
 
     let memory = root.join("memory").join("MEMORY.md");
-    if memory.exists() {
-        sections.push(format!(
-            "# 记忆\n\n{}",
-            std::fs::read_to_string(&memory)
-                .map_err(|error| anyhow::anyhow!("读取 {} 失败：{error}", memory.display()))?
-        ));
+    if let Some(content) = read_prompt_file(&root_canonical, &memory) {
+        sections.push(format!("# 记忆\n\n{content}"));
     }
 
-    Ok(sections
+    sections
         .into_iter()
         .map(|section| section.trim().to_string())
         .filter(|section| !section.is_empty())
         .collect::<Vec<_>>()
-        .join("\n\n---\n\n"))
+        .join("\n\n---\n\n")
+}
+
+/// 读取单个提示词文件：canonicalize 后必须仍位于 root_canonical 内（符号链接
+/// 越界跳过）、超过大小上限跳过、读取失败跳过——三种跳过均留持久化警告，
+/// 返回 None。文件不存在静默返回 None（用户未创建属正常状态）。
+fn read_prompt_file(root_canonical: &Path, path: &Path) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    let canonical = match path.canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            log_warning(&format!("[prompt] 解析 {} 失败，已跳过：{error}", path.display()));
+            return None;
+        }
+    };
+    if !canonical.starts_with(root_canonical) {
+        log_warning(&format!(
+            "[prompt] {} 解析后指向 {} ，超出根目录 {}，疑似符号链接越界，已跳过",
+            path.display(),
+            canonical.display(),
+            root_canonical.display()
+        ));
+        return None;
+    }
+    match std::fs::metadata(&canonical) {
+        Ok(meta) if meta.len() > MAX_PROMPT_FILE_BYTES => {
+            log_warning(&format!(
+                "[prompt] 跳过超大提示词文件 {}（{} 字节，上限 {} 字节）",
+                canonical.display(),
+                meta.len(),
+                MAX_PROMPT_FILE_BYTES
+            ));
+            return None;
+        }
+        Ok(_) => {}
+        Err(error) => {
+            log_warning(&format!(
+                "[prompt] 读取 {} 元信息失败，已跳过：{error}",
+                canonical.display()
+            ));
+            return None;
+        }
+    }
+    match std::fs::read_to_string(&canonical) {
+        Ok(content) => Some(content),
+        Err(error) => {
+            log_warning(&format!(
+                "[prompt] 读取 {} 失败（非 UTF-8 或权限不足等），已跳过：{error}",
+                canonical.display()
+            ));
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{load_prompt_files, MAX_PROMPT_FILE_BYTES};
+    use std::path::PathBuf;
+
+    fn unique_temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "jk-prompt-test-{tag}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn cleanup(dir: &PathBuf) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn loads_user_skills_memory_sections() {
+        let root = unique_temp_dir("basic");
+        std::fs::write(root.join("USER.md"), "用户偏好内容").unwrap();
+        std::fs::create_dir_all(root.join("skills").join("alpha")).unwrap();
+        std::fs::write(root.join("skills").join("alpha").join("SKILL.md"), "技能内容").unwrap();
+        std::fs::create_dir_all(root.join("memory")).unwrap();
+        std::fs::write(root.join("memory").join("MEMORY.md"), "记忆内容").unwrap();
+
+        let prompt = load_prompt_files(&root);
+        assert!(prompt.contains("用户偏好内容"));
+        assert!(prompt.contains("# 已启用技能"));
+        assert!(prompt.contains("技能：alpha"));
+        assert!(prompt.contains("技能内容"));
+        assert!(prompt.contains("# 记忆"));
+        assert!(prompt.contains("记忆内容"));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn skips_oversized_file_with_warning() {
+        let root = unique_temp_dir("oversized");
+        let big = "x".repeat((MAX_PROMPT_FILE_BYTES + 1) as usize);
+        std::fs::write(root.join("USER.md"), big).unwrap();
+
+        let prompt = load_prompt_files(&root);
+        assert!(prompt.is_empty(), "超大 USER.md 应被跳过");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn skips_invalid_utf8_file_without_failing() {
+        let root = unique_temp_dir("bad-utf8");
+        std::fs::write(root.join("USER.md"), [0xffu8, 0xfe, 0x00, 0x80]).unwrap();
+        std::fs::create_dir_all(root.join("memory")).unwrap();
+        std::fs::write(root.join("memory").join("MEMORY.md"), "记忆内容").unwrap();
+
+        let prompt = load_prompt_files(&root);
+        assert!(prompt.contains("# 记忆"), "单文件损坏不应阻断其余提示词");
+        assert!(prompt.contains("记忆内容"));
+        cleanup(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_symlink_escaping_root() {
+        let root = unique_temp_dir("symlink-root");
+        let outside = unique_temp_dir("symlink-outside");
+        let secret = outside.join("SECRET.md");
+        std::fs::write(&secret, "工作区外的敏感内容").unwrap();
+
+        // skills/evil/SKILL.md -> 工作区外文件：必须被跳过，不得注入提示词。
+        std::fs::create_dir_all(root.join("skills").join("evil")).unwrap();
+        std::os::unix::fs::symlink(
+            &secret,
+            root.join("skills").join("evil").join("SKILL.md"),
+        )
+        .unwrap();
+
+        let prompt = load_prompt_files(&root);
+        assert!(!prompt.contains("工作区外的敏感内容"), "符号链接越界文件不得进入提示词");
+        cleanup(&root);
+        cleanup(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_user_md_symlink_escaping_root() {
+        let root = unique_temp_dir("symlink-user-root");
+        let outside = unique_temp_dir("symlink-user-outside");
+        let secret = outside.join("SECRET.md");
+        std::fs::write(&secret, "外部用户档案").unwrap();
+        std::os::unix::fs::symlink(&secret, root.join("USER.md")).unwrap();
+
+        let prompt = load_prompt_files(&root);
+        assert!(!prompt.contains("外部用户档案"));
+        cleanup(&root);
+        cleanup(&outside);
+    }
+
+    #[test]
+    fn missing_root_returns_empty() {
+        let root = std::env::temp_dir().join(format!("jk-prompt-missing-{}", uuid::Uuid::new_v4()));
+        assert!(load_prompt_files(&root).is_empty());
+    }
 }

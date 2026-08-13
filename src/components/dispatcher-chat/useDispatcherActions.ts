@@ -3,6 +3,7 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   DispatcherAgentEvent,
   DispatcherAgentTurn,
+  DispatcherMessage,
   ImageSegment,
 } from "../../types";
 import {
@@ -101,6 +102,9 @@ export function useDispatcherActions({
             break;
           case "assistantDelta":
             if (!isActiveRun) return;
+            // G9-08：事件携带同一 messageId 内单调递增的 seq，可用于去重/乱序
+            // 校验。Tauri Channel 保证单通道有序投递，此处按到达顺序追加即可，
+            // seq 暂不额外消费。
             updateLiveSessionState(targetSessionId, (state) => ({
               ...state,
               assistantPlaceholder: null,
@@ -186,11 +190,23 @@ export function useDispatcherActions({
             if (!isActiveRun || event.data.run.workspaceId !== targetSessionId) return;
             break;
           case "finished":
-            if (!isActiveRun) return;
-            notifyDispatcherMessages(
-              targetSessionId,
-              event.data.messages.filter((message: { workspaceId: string }) => message.workspaceId === targetSessionId),
-            );
+            if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
+            // G7-11：Finished 改为轻量负载（workspaceId + messageCount），
+            // 不再随事件下发全量消息；此处改调 dispatcher_list_messages 拉全量，
+            // 经 mergeDispatcherMessages 按 id 合并刷新（与 dispatcher-session-updated
+            // 的重载路径一致）。messageCount 仅用于日志对账。
+            void invoke<DispatcherMessage[]>("dispatcher_list_messages", {
+              workspaceId: targetSessionId,
+            })
+              .then((fresh) => {
+                if (fresh.length !== event.data.messageCount) {
+                  console.warn(
+                    `Finished 对账不一致：后端 ${event.data.messageCount} 条，拉取到 ${fresh.length} 条`,
+                  );
+                }
+                notifyDispatcherMessages(targetSessionId, fresh);
+              })
+              .catch((err) => console.error("Finished 后刷新消息失败:", err));
             void refreshSessionTokenUsage(targetSessionId);
             clearDispatcherActiveRunId(targetSessionId);
             updateLiveSessionState(targetSessionId, () => createIdleLiveSessionState());

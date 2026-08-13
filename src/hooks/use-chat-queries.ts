@@ -89,14 +89,14 @@ export function useChatSessionUpdates(enabled = true) {
       void qc.invalidateQueries({ queryKey: ["sessions", "search"] });
     });
     const unlistenKeywords = listen<{
-      workspaceId: string;
+      sessionId: string;
       keywords: SessionKeyword[];
     }>("session-keywords-updated", (event) => {
-      const { workspaceId, keywords } = event.payload;
+      const { sessionId, keywords } = event.payload;
       const values = keywords.map((keyword) => keyword.keyword);
       qc.setQueryData<ChatSession[]>(QUERY_KEYS.sessions(), (sessions) =>
         sessions?.map((session) =>
-          session.id === workspaceId ? { ...session, keywords: values } : session,
+          session.id === sessionId ? { ...session, keywords: values } : session,
         ),
       );
       void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });

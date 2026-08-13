@@ -23,6 +23,24 @@ pub fn sub_agent_failure_message(result: &str) -> Option<&str> {
     result.strip_prefix(SUB_AGENT_FAILURE_PREFIX)
 }
 
+/// 成功结果透传前的哨兵前缀碰撞检测（G13-03）。
+///
+/// 父循环（tools/result.rs 的 `from_text`，判定前会先 trim）以
+/// `SUB_AGENT_FAILURE_PREFIX` 开头判定子智能体失败，并升级为整个父循环的
+/// 致命错误。若子智能体的正常产出恰好以该保留前缀开头（例如任务本身要求
+/// 输出该前缀），直接透传会被误判。命中时对结果做显式包装转义：包装文案
+/// 不以哨兵前缀（也不以「错误：」）开头，保证父循环按成功路径处理，
+/// 同时保留原始结果全文。哨兵前缀协议本身保持不变。
+fn sanitize_sub_agent_success_result(result: String) -> String {
+    if result.trim_start().starts_with(SUB_AGENT_FAILURE_PREFIX) {
+        format!(
+            "子智能体返回结果（原始文本以保留的失败哨兵前缀开头，已转义为普通文本）：\n{result}"
+        )
+    } else {
+        result
+    }
+}
+
 pub struct NotifyUserProgressTool;
 
 pub fn notify_user_progress_tool() -> Box<dyn AgentTool> {
@@ -155,13 +173,17 @@ impl AgentTool for SubAgentTool {
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+        // LLM 传参常带前后空白/换行：先 trim 再校验，避免纯空白参数
+        // 绕过空值检查、白白触发一次子智能体调用（G13-02）。
         let agent_id = args
             .get("agent_id")
             .and_then(|v| v.as_str())
+            .map(str::trim)
             .unwrap_or_default();
         let task = args
             .get("task")
             .and_then(|v| v.as_str())
+            .map(str::trim)
             .unwrap_or_default();
 
         if agent_id.is_empty() {
@@ -203,7 +225,7 @@ impl AgentTool for SubAgentTool {
                 let trace_json = match runtime.trace_events_json() {
                     Ok(trace) => trace,
                     Err(error) => {
-                        return sub_agent_failure(format!("子智能体轨迹序列化失败：{error}"));
+                        return sub_agent_failure(format!("错误：子智能体轨迹序列化失败：{error}"));
                     }
                 };
                 let status = if outcome.is_ok() {
@@ -229,18 +251,19 @@ impl AgentTool for SubAgentTool {
                 match persisted {
                     Ok(Ok(_)) => {}
                     Ok(Err(error)) => {
-                        return sub_agent_failure(format!("子智能体轨迹持久化失败：{error}"));
+                        return sub_agent_failure(format!("错误：子智能体轨迹持久化失败：{error}"));
                     }
                     Err(error) => {
-                        return sub_agent_failure(format!("子智能体轨迹任务失败：{error}"));
+                        return sub_agent_failure(format!("错误：子智能体轨迹任务失败：{error}"));
                     }
                 }
                 match outcome {
-                    Ok(result) => result,
-                    Err(error) => sub_agent_failure(format!("子智能体执行失败：{error}")),
+                    // 成功结果透传前做哨兵前缀碰撞检测（G13-03）。
+                    Ok(result) => sanitize_sub_agent_success_result(result),
+                    Err(error) => sub_agent_failure(format!("错误：子智能体执行失败：{error}")),
                 }
             }
-            Err(e) => sub_agent_failure(format!("子智能体初始化失败：{}", e)),
+            Err(e) => sub_agent_failure(format!("错误：子智能体初始化失败：{}", e)),
         }
     }
 }
@@ -273,9 +296,18 @@ impl AgentTool for ListSubAgentsTool {
     }
 
     async fn execute(&self, _args: &Value, context: &ToolContext) -> String {
-        let configs = match self.manager.get_enabled_for_session(&context.workspace_id) {
-            Ok(c) => c,
-            Err(e) => return format!("错误：无法获取子智能体列表：{}", e),
+        // get_enabled_for_session 内部是同步 SQLite 读取：阻塞 I/O 必须
+        // 走 spawn_blocking，不得阻塞 async 运行时（项目规范）。
+        let manager = Arc::clone(&self.manager);
+        let workspace_id = context.workspace_id.clone();
+        let joined = tokio::task::spawn_blocking(move || {
+            manager.get_enabled_for_session(&workspace_id)
+        })
+        .await;
+        let configs = match joined {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => return format!("错误：无法获取子智能体列表：{}", e),
+            Err(e) => return format!("错误：子智能体列表查询任务失败：{}", e),
         };
 
         if configs.is_empty() {
@@ -291,5 +323,36 @@ impl AgentTool for ListSubAgentsTool {
         }
         output.push_str("使用 call_sub_agent(agent_id=\"...\", task=\"...\") 来调用子智能体。");
         output
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sanitize_sub_agent_success_result, sub_agent_failure_message, SUB_AGENT_FAILURE_PREFIX};
+
+    #[test]
+    fn sanitize_success_result_passes_through_normal_text() {
+        let result = "正常的子智能体结果".to_string();
+        assert_eq!(sanitize_sub_agent_success_result(result.clone()), result);
+    }
+
+    #[test]
+    fn sanitize_success_result_escapes_sentinel_prefix_collision() {
+        // 碰撞：正常产出恰好以哨兵前缀开头，必须转义，
+        // 否则父循环会把它误判为子智能体失败并升级为致命错误。
+        let colliding = format!("{SUB_AGENT_FAILURE_PREFIX}这是任务要求输出的前缀");
+        let sanitized = sanitize_sub_agent_success_result(colliding.clone());
+        assert!(!sanitized.trim_start().starts_with(SUB_AGENT_FAILURE_PREFIX));
+        assert!(sub_agent_failure_message(&sanitized).is_none());
+        // 原始结果全文保留。
+        assert!(sanitized.contains(&colliding));
+    }
+
+    #[test]
+    fn sanitize_success_result_handles_leading_whitespace_collision() {
+        // 父循环判定前会 trim，因此前导空白的碰撞同样需要转义。
+        let colliding = format!("  \n{SUB_AGENT_FAILURE_PREFIX}内容");
+        let sanitized = sanitize_sub_agent_success_result(colliding);
+        assert!(!sanitized.trim_start().starts_with(SUB_AGENT_FAILURE_PREFIX));
     }
 }

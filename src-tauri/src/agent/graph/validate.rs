@@ -144,11 +144,17 @@ fn validate_semantics(
     errors: &mut Vec<String>,
 ) {
     let ancestors = transitive_ancestors(definition);
-    let producers: HashMap<&str, &str> = definition
-        .nodes
-        .iter()
-        .map(|node| (node.output_key.trim(), node.id.trim()))
-        .collect();
+    // outputKey → 生产者。重复 outputKey 已作为结构错误上报；这里记录歧义键，
+    // 规则 1 对其跳过祖先判定——否则基于 HashMap 任意选中的生产者会给出
+    // 误导性的「通过」或「非上游」结论。
+    let mut producers: HashMap<&str, &str> = HashMap::new();
+    let mut ambiguous_keys: HashSet<&str> = HashSet::new();
+    for node in &definition.nodes {
+        let key = node.output_key.trim();
+        if producers.insert(key, node.id.trim()).is_some() {
+            ambiguous_keys.insert(key);
+        }
+    }
 
     // 1) injectStateKeys 时序：生产者必须是严格祖先；无生产者则必须已种入 state。
     for node in &definition.nodes {
@@ -157,6 +163,12 @@ fn validate_semantics(
         for key in &node.inject_state_keys {
             let key = key.trim();
             if key.is_empty() {
+                // 与 id/title/task/outputKey 的空值检查同口径 fail-fast：
+                // 静默跳过会让配置笔误拖到运行期注入不到值才暴露。
+                errors.push(format!("节点 '{id}' 的 injectStateKeys 中存在空的 key"));
+                continue;
+            }
+            if ambiguous_keys.contains(key) {
                 continue;
             }
             match producers.get(key) {
@@ -199,16 +211,21 @@ fn validate_semantics(
             if related {
                 continue;
             }
-            let left_files = left
+            // 与运行期 resolve_path 对齐的路径归一化（./ 前缀、.. 折叠、
+            // 分隔符统一），避免同一文件的不同写法漏判冲突，两个并行写
+            // 节点在运行期改同一文件互相覆盖。
+            let left_files: HashSet<String> = left
                 .expected_files
                 .iter()
-                .map(|file| file.trim())
-                .collect::<HashSet<_>>();
+                .map(|file| normalize_expected_path(file))
+                .filter(|file| !file.is_empty())
+                .collect();
             let conflict = right
                 .expected_files
                 .iter()
-                .map(|file| file.trim())
-                .any(|file| left_files.contains(file));
+                .map(|file| normalize_expected_path(file))
+                .filter(|file| !file.is_empty())
+                .any(|file| left_files.contains(&file));
             if conflict {
                 errors.push(format!(
                     "节点 '{left_id}' 与 '{right_id}' 可能并行执行且 expectedFiles 相交：两个写节点同时改同一文件会互相覆盖，请通过 dependsOn 串行化或拆分文件范围"
@@ -241,6 +258,24 @@ fn validate_semantics(
             );
         }
     }
+}
+
+/// expectedFiles 冲突预检的路径归一化：统一 `/` 与 `\` 分隔符，去掉 `./`
+/// 空段，折叠 `..`（与运行期 resolve_path 的语义对齐），使
+/// './src/main.rs'、'src/a/../main.rs'、'src\\main.rs' 与 'src/main.rs'
+/// 判定为同一文件。仅用于写冲突比较，不落库、不改原始定义。
+fn normalize_expected_path(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.trim().split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            part => parts.push(part),
+        }
+    }
+    parts.join("/")
 }
 
 /// 每个节点的严格传递祖先集（id 已 trim）。
@@ -283,13 +318,19 @@ pub(crate) fn topological_layers(definition: &GraphDefinition) -> Result<Vec<Vec
     for node in &definition.nodes {
         in_degree.entry(node.id.trim()).or_insert(0);
     }
+    // 只认实际存在的节点 id：缺失依赖已作为结构错误单独上报，拓扑排序忽略
+    // 指向幻影节点的边——否则幻影节点永不入队，placed 计数失真，缺失依赖
+    // 会被误报为「环」并连带跳过语义校验。同理，trim 后重复的节点 id 在
+    // in_degree 中天然折叠为一个条目，收尾比较以去重后的条目数为准（重复
+    // id 也已作为结构错误上报），避免假环误报。
     for node in &definition.nodes {
         for dep in &node.depends_on {
+            let dep = dep.trim();
+            if !in_degree.contains_key(dep) {
+                continue;
+            }
             *in_degree.entry(node.id.trim()).or_insert(0) += 1;
-            dependents
-                .entry(dep.trim())
-                .or_default()
-                .push(node.id.trim());
+            dependents.entry(dep).or_default().push(node.id.trim());
         }
     }
     let mut current = in_degree
@@ -321,10 +362,10 @@ pub(crate) fn topological_layers(definition: &GraphDefinition) -> Result<Vec<Vec
         next.dedup();
         current = next;
     }
-    if placed != definition.nodes.len() {
+    if placed != in_degree.len() {
         return Err(format!(
             "节点依赖存在环（仅 {placed} / {} 个节点可拓扑排序）",
-            definition.nodes.len()
+            in_degree.len()
         ));
     }
     Ok(layers)
@@ -509,5 +550,98 @@ mod tests {
             validate_graph(&definition(vec![node("a", &[]), node("b", &["a"])]), &catalog(), &seeded())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn missing_dependency_is_not_misreported_as_cycle() {
+        // 缺失依赖已单独报结构错误，不得再误判为「环」而跳过语义校验：
+        // 两类问题应一次性返回，避免用户修完一轮再撞下一轮。
+        let def = definition(vec![node("a", &["ghost"]), coding("b", &["a"])]);
+        let error = validate_graph(&def, &catalog(), &seeded()).unwrap_err();
+        assert!(error.contains("依赖了不存在的节点 'ghost'"));
+        assert!(!error.contains("环"), "缺失依赖不应触发假环误报");
+        assert!(
+            error.contains("验证节点"),
+            "无环前提下语义校验必须照常执行"
+        );
+    }
+
+    #[test]
+    fn duplicate_ids_after_trim_are_not_misreported_as_cycle() {
+        // trim 后重复的 id 在拓扑表中折叠为一个条目，不应造成假环；
+        // 重复本身仍作为结构错误上报。
+        let def = definition(vec![node("a", &[]), node(" a ", &[])]);
+        let error = validate_graph(&def, &catalog(), &seeded()).unwrap_err();
+        assert!(error.contains("重复"));
+        assert!(!error.contains("环"));
+    }
+
+    #[test]
+    fn real_cycle_is_still_reported() {
+        // 回归：跳过缺失依赖边后，真实环的判定不受影响。
+        let def = definition(vec![
+            node("a", &["b"]),
+            node("b", &["a"]),
+            node("c", &["ghost"]),
+        ]);
+        let error = validate_graph(&def, &catalog(), &seeded()).unwrap_err();
+        assert!(error.contains("环"));
+        assert!(error.contains("依赖了不存在的节点 'ghost'"));
+    }
+
+    #[test]
+    fn ambiguous_duplicate_output_key_skips_ancestor_rule() {
+        // 重复 outputKey 已作为结构错误上报；生产者不明确时规则 1 跳过判定，
+        // 不基于任意选中的生产者给出误导性「非上游」/「通过」结论。
+        let mut def = definition(vec![node("a", &[]), coding("b", &["a"]), node("c", &["a"])]);
+        def.nodes[0].output_key = "out_x".into();
+        def.nodes[1].output_key = "out_x".into();
+        def.nodes[2].inject_state_keys = vec!["out_x".into()];
+        def.nodes.push(node("v", &["b", "c"]));
+        let error = validate_graph(&def, &catalog(), &seeded()).unwrap_err();
+        assert!(error.contains("outputKey 'out_x' 被多个节点使用"));
+        assert!(
+            !error.contains("不是它的上游依赖"),
+            "歧义键不应触发规则 1 的误导性判定"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_inject_state_key() {
+        let mut def = definition(vec![node("a", &[])]);
+        def.nodes[0].inject_state_keys = vec!["  ".into()];
+        let error = validate_graph(&def, &catalog(), &seeded()).unwrap_err();
+        assert!(error.contains("injectStateKeys 中存在空的 key"));
+    }
+
+    #[test]
+    fn expected_files_conflict_uses_normalized_paths() {
+        let variants = [
+            ("./src/main.rs", "src/main.rs"),
+            ("src/a/../main.rs", "src/main.rs"),
+            ("src\\main.rs", "src/main.rs"),
+        ];
+        for (left_path, right_path) in variants {
+            let mut left = coding("l", &[]);
+            left.expected_files = vec![left_path.into()];
+            let mut right = coding("r", &[]);
+            right.expected_files = vec![right_path.into()];
+            let def = definition(vec![left, right, node("v", &["l", "r"])]);
+            let error = match validate_graph(&def, &catalog(), &seeded()) {
+                Ok(()) => panic!("{left_path} 与 {right_path} 归一化后应判为冲突"),
+                Err(error) => error,
+            };
+            assert!(error.contains("expectedFiles 相交"), "{error}");
+        }
+    }
+
+    #[test]
+    fn normalized_distinct_files_do_not_conflict() {
+        let mut left = coding("l", &[]);
+        left.expected_files = vec!["src/a.rs".into()];
+        let mut right = coding("r", &[]);
+        right.expected_files = vec!["./src/b.rs".into()];
+        let def = definition(vec![left, right, node("v", &["l", "r"])]);
+        assert!(validate_graph(&def, &catalog(), &seeded()).is_ok());
     }
 }

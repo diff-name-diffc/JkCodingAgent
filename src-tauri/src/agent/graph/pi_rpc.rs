@@ -12,6 +12,56 @@ use tokio::process::{Child, Command};
 const SIDECAR_NAME: &str = "pi-agent-sidecar";
 const PROTOCOL_VERSION: i64 = 2;
 
+/// sidecar 单行 JSONL 的字节上限：正常响应在 KB 量级（大产出另有摘要机制），
+/// 1 MiB 已非常宽裕。故障或被篡改的 sidecar 若持续输出超长行，
+/// `AsyncBufReadExt::lines()` 会让内存无界膨胀直至 OOM——超限即报错触发清理。
+pub(crate) const MAX_SIDECAR_LINE_BYTES: usize = 1024 * 1024;
+
+/// 读取单行 JSONL（不含结尾换行符），EOF 返回 None。
+/// 与 `lines()` 不同：对单行长度做 `MAX_SIDECAR_LINE_BYTES` 限制，fail-closed。
+pub(crate) async fn read_bounded_line<R>(reader: &mut R) -> Result<Option<String>>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut newline = false;
+    loop {
+        if buffer.len() > MAX_SIDECAR_LINE_BYTES {
+            return Err(anyhow!(
+                "PI sidecar 单行输出超出 {MAX_SIDECAR_LINE_BYTES} 字节上限"
+            ));
+        }
+        let chunk = reader.fill_buf().await.context("读取 PI sidecar 输出失败")?;
+        if chunk.is_empty() {
+            break;
+        }
+        // 先在块内完成拷贝再 consume：chunk 借用 reader，consume 需要
+        // 独占借用，两者不能在同一作用域重叠。
+        let line_end = chunk.iter().position(|byte| *byte == b'\n');
+        let take = line_end.unwrap_or(chunk.len());
+        buffer.extend_from_slice(&chunk[..take]);
+        reader.consume(if line_end.is_some() { take + 1 } else { take });
+        if line_end.is_some() {
+            newline = true;
+            break;
+        }
+    }
+    if !newline && buffer.is_empty() {
+        return Ok(None);
+    }
+    if buffer.len() > MAX_SIDECAR_LINE_BYTES {
+        return Err(anyhow!(
+            "PI sidecar 单行输出超出 {MAX_SIDECAR_LINE_BYTES} 字节上限"
+        ));
+    }
+    if buffer.last() == Some(&b'\r') {
+        buffer.pop();
+    }
+    String::from_utf8(buffer)
+        .map(Some)
+        .map_err(|error| anyhow!("PI sidecar 输出非 UTF-8：{error}"))
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PiExtensionTool {
     pub name: String,
@@ -35,6 +85,15 @@ pub(crate) struct SidecarEnvelope {
 pub(crate) async fn discover_extension_tools(
     workspace: &Path,
 ) -> Result<(Vec<PiExtensionTool>, Vec<String>)> {
+    // 传给 sidecar 子进程前先规范化路径：canonicalize 解析符号链接与 ../，
+    // 防止上游未规范化/用户可控的路径原样进入 sidecar 造成越界（目录遍历）。
+    // workspace 本身即本次校验的根，目录不存在时 fail-closed。
+    let workspace = workspace
+        .canonicalize()
+        .with_context(|| format!("工作区路径规范化失败：{}", workspace.display()))?;
+    if !workspace.is_dir() {
+        return Err(anyhow!("工作区路径不是目录：{}", workspace.display()));
+    }
     let mut guard = SidecarChildGuard::spawn()?;
     let response: Result<Value> = async {
         let mut stdin = guard
@@ -62,11 +121,16 @@ pub(crate) async fn discover_extension_tools(
         });
         stdin.write_all(format!("{}\n", request).as_bytes()).await?;
         stdin.flush().await?;
-        let mut lines = BufReader::new(stdout).lines();
+        let mut reader = BufReader::new(stdout);
         tokio::time::timeout(std::time::Duration::from_secs(20), async {
-            while let Some(line) = lines.next_line().await.context("读取 PI catalog 响应")? {
-                let envelope: SidecarEnvelope = serde_json::from_str(&line)
-                    .with_context(|| format!("PI sidecar 输出非法 JSONL：{line}"))?;
+            while let Some(line) = read_bounded_line(&mut reader).await? {
+                let envelope: SidecarEnvelope =
+                    serde_json::from_str(&line).with_context(|| {
+                        format!(
+                            "PI sidecar 输出非法 JSONL：{}",
+                            line.chars().take(200).collect::<String>()
+                        )
+                    })?;
                 if envelope.r#type == "catalog" && envelope.request_id == request_id {
                     return Ok(envelope.data);
                 }
@@ -278,11 +342,12 @@ impl SidecarChildGuard {
             return;
         };
         kill_process_group_async(&mut child).await;
-        // wait 失败时进程可能尚未退出：不置位 reaped，放回子进程，
-        // 交由 Drop 的兜底组杀收尾。
-        match child.wait().await {
-            Ok(_) => self.reaped = true, // 已确认回收，跳过 Drop 的重复组杀
-            Err(_) => self.child = Some(child),
+        // wait 加超时：SIGKILL/taskkill 未能让 sidecar 退出时（Linux D 状态进程、
+        // taskkill 失败或权限不足），无限 wait 会让 discover 的 20 秒超时保护
+        // 完全失效并卡死上层命令。超时后放回 child，交由 Drop 兜底组杀收尾。
+        match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+            Ok(Ok(_)) => self.reaped = true, // 已确认回收，跳过 Drop 的重复组杀
+            _ => self.child = Some(child),
         }
     }
 }
@@ -301,35 +366,60 @@ impl Drop for SidecarChildGuard {
         let pid = child.id();
         if matches!(child.try_wait(), Ok(Some(_))) {
             // 直接子进程已确认退出时，PID/PGID 存在被复用的竞态，组杀前必须
-            // 确认目标仍存在——两个平台的保护是对称的：
+            // 确认目标仍存在——两个平台的保护是对称的。
             #[cfg(unix)]
-            // 信号 0 探测；ESRCH 即跳过（组内已无进程可杀，孤儿孙进程若仍在
-            // 运行则占用着该 PGID，探测为存在，组杀照常进行）。
-            if !pid.is_some_and(process_group_alive) {
-                return;
-            }
-            #[cfg(windows)]
-            if let Some(pid) = pid {
-                // taskkill 是独立外部进程：若 fire-and-forget，本函数返回后
-                // Child 句柄随 Drop 关闭，已退出子进程的 PID 可能被复用，
-                // taskkill 的 OpenProcess 一旦晚于复用就会按 PID 递归误杀无关
-                // 进程树。把句柄移入分离线程：句柄存活期间进程对象不销毁、
-                // PID 不会被复用；线程内同步等待 taskkill 完成再释放句柄，
-                // 闭合竞态窗口。Drop 自身不能阻塞（可能在 tokio worker 线程
-                // 上），故由线程代劳等待。
-                match std::thread::Builder::new()
-                    .spawn(move || kill_process_group_pid_hold_handle(pid, child))
-                {
-                    Ok(_) => return,
-                    // 建线程失败（闭包连同 child 被丢弃；kill_on_drop 对已退出
-                    // 进程是 no-op）：退化为 fire-and-forget，同旧实现。
-                    Err(_) => kill_process_group_pid(pid),
+            {
+                // 信号 0 探测：ESRCH 表示整组已退出（PGID 可能已被复用），跳过
+                // 组杀；孤儿孙进程仍占用该 PGID 存活时探测为存在，必须组杀——
+                // 这正是最需要兜底的场景，不能跳过 kill_process_group_pid，
+                // 否则 sidecar 的 bash 等孤儿工具进程全部泄漏（旧实现在「组已死」
+                // 时提前返回，而「组存活」分支会落到函数末尾直接返回，漏掉组杀）。
+                if let Some(pid) = pid {
+                    if process_group_alive(pid) {
+                        kill_process_group_pid(pid);
+                    }
                 }
                 return;
             }
-            // pid 为 None 却已确认回收：理论上不可达（try_wait 之前 id() 必为
-            // Some）；即便到达也无 PID 可用于组杀。
-            return;
+            #[cfg(windows)]
+            {
+                let Some(pid) = pid else {
+                    // pid 为 None 却已确认回收：理论上不可达（try_wait 之前
+                    // id() 必为 Some）；即便到达也无 PID 可用于组杀。
+                    return;
+                };
+                // taskkill 是独立外部进程：若 fire-and-forget，本函数返回后
+                // Child 句柄随 Drop 关闭，已退出子进程的 PID 可能被复用，
+                // taskkill 的 OpenProcess 一旦晚于复用就会按 PID 递归误杀无关
+                // 进程树。经 channel 把句柄交给分离线程：句柄存活期间进程对象
+                // 不销毁、PID 不会被复用；线程内同步等待 taskkill 完成再释放
+                // 句柄，闭合竞态窗口。Drop 自身不能阻塞（可能在 tokio worker
+                // 线程上），故由线程代劳等待。
+                let (handle_tx, handle_rx) = std::sync::mpsc::channel::<Child>();
+                match std::thread::Builder::new().spawn(move || {
+                    if let Ok(handle) = handle_rx.recv() {
+                        kill_process_group_pid_hold_handle(pid, handle);
+                    }
+                }) {
+                    Ok(_) => {
+                        if let Err(send_error) = handle_tx.send(child) {
+                            // 极罕见：线程提前退出未接收句柄。退化为持句柄同步等待。
+                            kill_process_group_pid_hold_handle(pid, send_error.0);
+                        }
+                    }
+                    // 建线程失败：不能把 child 直接 move 进闭包——spawn 失败时
+                    // 闭包连同句柄被丢弃，随后 fire-and-forget taskkill 会重开
+                    // PID 复用竞态（OpenProcess 晚于复用即误杀无关进程树）。
+                    // 退化为持有句柄同步等待 taskkill：短暂阻塞 Drop 好过误杀。
+                    Err(_) => kill_process_group_pid_hold_handle(pid, child),
+                }
+                return;
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                // 无进程组 API 的平台：直接子进程已退出，kill_on_drop 对其为 no-op。
+                return;
+            }
         }
         #[cfg(any(unix, windows))]
         if let Some(pid) = pid {
@@ -423,5 +513,45 @@ fn platform_triple() -> &'static str {
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
         _ => "unsupported-target",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn bounded_line_reader_splits_lines_and_reports_eof() {
+        let input: &[u8] = b"first\nsecond\r\n";
+        let mut reader = BufReader::new(input);
+        assert_eq!(
+            read_bounded_line(&mut reader).await.unwrap().as_deref(),
+            Some("first")
+        );
+        // \r\n 行尾与 lines() 语义一致：\r 被剥离。
+        assert_eq!(
+            read_bounded_line(&mut reader).await.unwrap().as_deref(),
+            Some("second")
+        );
+        assert_eq!(read_bounded_line(&mut reader).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn bounded_line_reader_returns_trailing_line_without_newline() {
+        let input: &[u8] = b"tail";
+        let mut reader = BufReader::new(input);
+        assert_eq!(
+            read_bounded_line(&mut reader).await.unwrap().as_deref(),
+            Some("tail")
+        );
+        assert_eq!(read_bounded_line(&mut reader).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn bounded_line_reader_rejects_oversized_line() {
+        let input = vec![b'x'; MAX_SIDECAR_LINE_BYTES + 1];
+        let mut reader = BufReader::new(&input[..]);
+        let error = read_bounded_line(&mut reader).await.unwrap_err();
+        assert!(format!("{error:#}").contains("上限"));
     }
 }

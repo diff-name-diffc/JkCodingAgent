@@ -431,7 +431,7 @@ impl OpenAiCompatProvider {
             temperature: self.temperature,
             tools: if tools.is_empty() { None } else { Some(tools) },
             stream: true,
-            enable_thinking: self.enable_thinking,
+            enable_thinking: Some(self.enable_thinking),
             stream_options: Some(StreamOptions {
                 include_usage: true,
             }),
@@ -452,9 +452,16 @@ impl OpenAiCompatProvider {
         } else {
             let initial_status = status;
             let body = response.text().await.context("读取 LLM 错误响应失败")?;
-            if should_retry_without_stream_options(status, &body, request.stream_options.is_some())
-            {
+            if should_retry_without_extra_fields(
+                status,
+                &body,
+                request.stream_options.is_some(),
+                request.enable_thinking.is_some(),
+            ) {
+                // 严格的 OpenAI 兼容服务会拒绝 stream_options / enable_thinking
+                // 这类非标准字段，一并移除后重试。
                 request.stream_options = None;
+                request.enable_thinking = None;
                 let retry_response = self
                     .client
                     .post(&url)
@@ -464,7 +471,7 @@ impl OpenAiCompatProvider {
                     .await
                     .with_context(|| {
                         format!(
-                            "发送无 stream_options 的流式对话重试请求失败：model={} url={}",
+                            "发送移除附加字段后的流式对话重试请求失败：model={} url={}",
                             self.model, url
                         )
                     })?;
@@ -477,7 +484,7 @@ impl OpenAiCompatProvider {
                         .await
                         .context("读取 LLM 重试错误响应失败")?;
                     return Err(anyhow!(
-                        "{}；去除 stream_options 后仍失败：{}",
+                        "{}；去除 stream_options/enable_thinking 后仍失败：{}",
                         format_llm_http_error(initial_status, &body),
                         format_llm_http_error(status, &retry_body)
                     ));
@@ -521,9 +528,7 @@ impl OpenAiCompatProvider {
                 if line.is_empty() || line.starts_with(':') {
                     continue;
                 }
-                let data = if let Some(stripped) = line.strip_prefix("data: ") {
-                    stripped
-                } else {
+                let Some(data) = parse_sse_data_line(&line) else {
                     continue;
                 };
                 if data == "[DONE]" {
@@ -627,6 +632,18 @@ fn format_llm_http_error(status: StatusCode, body: &str) -> String {
     format!("LLM 请求失败，HTTP {}：{}", status, detail)
 }
 
+/// 解析 SSE 行的 `data:` 负载。按 SSE 规范 `data:` 后可无空格
+/// （部分 OpenAI 兼容服务输出 `data:{...}`），两种格式都要兼容；
+/// 非 data 行或空负载返回 None。
+fn parse_sse_data_line(line: &str) -> Option<&str> {
+    let data = line.strip_prefix("data:")?.trim_start();
+    if data.is_empty() {
+        None
+    } else {
+        Some(data)
+    }
+}
+
 fn split_tagged_thinking(content: &str) -> (String, String) {
     let lower = content.to_ascii_lowercase();
     let mut visible = String::new();
@@ -672,16 +689,23 @@ fn append_raw_response(raw_response: &mut String, data: &str) {
     );
 }
 
-fn should_retry_without_stream_options(
+/// 400 错误是否应去掉非标准/可选字段（stream_options、enable_thinking）后重试。
+/// OpenAI 官方及部分严格的 OpenAI 兼容服务会对未知请求参数直接返回 400。
+fn should_retry_without_extra_fields(
     status: StatusCode,
     response_body: &str,
     has_stream_options: bool,
+    has_enable_thinking: bool,
 ) -> bool {
-    has_stream_options
-        && status == StatusCode::BAD_REQUEST
-        && (response_body.contains("Required body invalid")
-            || response_body.contains("stream_options")
-            || response_body.contains("request body"))
+    if status != StatusCode::BAD_REQUEST || (!has_stream_options && !has_enable_thinking) {
+        return false;
+    }
+    response_body.contains("Required body invalid")
+        || response_body.contains("stream_options")
+        || response_body.contains("enable_thinking")
+        || response_body.contains("request body")
+        || response_body.contains("Unknown parameter")
+        || response_body.contains("Unsupported parameter")
 }
 
 fn build_requested_tool_calls(
@@ -758,6 +782,21 @@ async fn build_api_message_content(message: &ChatMessage) -> Result<ApiMessageCo
         .iter()
         .any(|part| matches!(part, ApiMessageContentPart::ImageUrl { .. }))
     {
+        // 说明文字可能只存在于 content（如 context_payload 恢复的消息或调用方
+        // 只构造了图片 part）：一个 Text part 都没有时把 content 补为首个 Text part，
+        // 避免用户指令被静默丢弃。
+        if !parts
+            .iter()
+            .any(|part| matches!(part, ApiMessageContentPart::Text { .. }))
+            && !message.content.trim().is_empty()
+        {
+            parts.insert(
+                0,
+                ApiMessageContentPart::Text {
+                    text: message.content.trim().to_string(),
+                },
+            );
+        }
         Ok(ApiMessageContent::Parts(parts))
     } else {
         Ok(ApiMessageContent::Text(message.content.clone()))
@@ -815,11 +854,14 @@ fn local_image_path(url: &str) -> Result<PathBuf> {
     if !path.is_absolute() {
         anyhow::bail!("图片路径必须是绝对路径：{trimmed}");
     }
+    // 包含性校验：只允许应用管理的聊天图片目录，防止本机任意文件被
+    // base64 编码后随 LLM 请求外泄；同时拒绝 ".." 父目录跳转。
     if path
         .components()
         .any(|component| matches!(component, Component::ParentDir))
+        || !crate::chat_images::is_chat_image_path(path)
     {
-        anyhow::bail!("图片路径不能包含父目录跳转：{trimmed}");
+        anyhow::bail!("图片路径必须位于聊天图片目录内：{trimmed}");
     }
 
     image_mime_from_path(path)?;
@@ -867,7 +909,10 @@ fn image_mime_from_path(path: &Path) -> Result<&'static str> {
 /// Fetch model list from an OpenAI-compatible `/v1/models` endpoint.
 pub async fn fetch_models(api_base: &str, api_key: &str) -> Result<Vec<String>> {
     let base_url = format!("{}/models", api_base.trim_end_matches('/'));
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("构建模型列表 HTTP 客户端失败")?;
 
     let response = client
         .get(&base_url)
@@ -964,7 +1009,10 @@ struct StreamChatRequest<'a> {
     max_tokens: u32,
     temperature: f32,
     stream: bool,
-    enable_thinking: bool,
+    /// 非标准字段：OpenAI 官方等严格兼容服务会因未知参数返回 400，
+    /// 故改为 Option 并在 400 重试路径中置 None（见 should_retry_without_extra_fields）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enable_thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1021,4 +1069,181 @@ struct StreamToolCall {
 struct StreamFunctionCall {
     name: Option<String>,
     arguments: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sse_data_line_accepts_missing_space_and_rejects_non_data_lines() {
+        assert_eq!(parse_sse_data_line("data: {\"a\":1}"), Some("{\"a\":1}"));
+        assert_eq!(parse_sse_data_line("data:{\"a\":1}"), Some("{\"a\":1}"));
+        assert_eq!(parse_sse_data_line("data:[DONE]"), Some("[DONE]"));
+        assert_eq!(parse_sse_data_line("data:   "), None);
+        assert_eq!(parse_sse_data_line("data:"), None);
+        assert_eq!(parse_sse_data_line("event: message"), None);
+        assert_eq!(parse_sse_data_line(""), None);
+    }
+
+    #[test]
+    fn stream_chat_request_skips_none_fields_and_keeps_some_fields() {
+        let plain = StreamChatRequest {
+            model: "test-model",
+            messages: &[],
+            max_tokens: 16,
+            temperature: 0.0,
+            stream: true,
+            enable_thinking: None,
+            stream_options: None,
+            tools: None,
+        };
+        let value = serde_json::to_value(&plain).expect("request serializable");
+        assert!(value.get("enable_thinking").is_none());
+        assert!(value.get("stream_options").is_none());
+        assert!(value.get("tools").is_none());
+
+        let with_extras = StreamChatRequest {
+            model: "test-model",
+            messages: &[],
+            max_tokens: 16,
+            temperature: 0.0,
+            stream: true,
+            enable_thinking: Some(false),
+            stream_options: Some(StreamOptions { include_usage: true }),
+            tools: None,
+        };
+        let value = serde_json::to_value(&with_extras).expect("request serializable");
+        assert_eq!(value["enable_thinking"], serde_json::json!(false));
+        assert_eq!(value["stream_options"]["include_usage"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn retry_heuristic_covers_enable_thinking_and_stream_options_rejections() {
+        let bad_request = StatusCode::BAD_REQUEST;
+        assert!(should_retry_without_extra_fields(
+            bad_request,
+            "Unsupported parameter: 'enable_thinking' is not supported with this model.",
+            false,
+            true
+        ));
+        assert!(should_retry_without_extra_fields(
+            bad_request,
+            "Unknown parameter: 'stream_options'",
+            true,
+            false
+        ));
+        assert!(should_retry_without_extra_fields(
+            bad_request,
+            "Required body invalid",
+            true,
+            true
+        ));
+        // 没有可移除字段时不重试
+        assert!(!should_retry_without_extra_fields(
+            bad_request,
+            "Unsupported parameter: 'enable_thinking'",
+            false,
+            false
+        ));
+        // 非 400 不重试
+        assert!(!should_retry_without_extra_fields(
+            StatusCode::UNAUTHORIZED,
+            "enable_thinking",
+            true,
+            true
+        ));
+        // 与其他字段相关的 400 不触发重试
+        assert!(!should_retry_without_extra_fields(
+            bad_request,
+            "messages is required",
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn local_image_path_rejects_paths_outside_chat_images_dir() {
+        assert!(local_image_path("").is_err());
+        assert!(local_image_path("relative/img.png").is_err());
+        assert!(local_image_path("/tmp/not-a-chat-image.png").is_err());
+        assert!(local_image_path("/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn local_image_path_accepts_image_inside_chat_images_dir() {
+        let dir = crate::chat_images::chat_images_dir().expect("home directory available");
+        let candidate = dir.join("unit-test-session").join("sample.png");
+        let resolved = local_image_path(candidate.to_str().expect("utf8 path"))
+            .expect("path inside chat images dir accepted");
+        assert_eq!(resolved, candidate);
+
+        let traversal = dir.join("..").join("escape.png");
+        assert!(local_image_path(traversal.to_str().expect("utf8 path")).is_err());
+    }
+
+    fn data_url_image_message(content: &str, parts: Vec<ChatMessageContentPart>) -> ChatMessage {
+        ChatMessage {
+            role: "user".to_string(),
+            content: content.to_string(),
+            content_parts: parts,
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    fn data_url_part() -> ChatMessageContentPart {
+        ChatMessageContentPart::Image {
+            source: ChatMessageImageSource::DataUrl {
+                data_url: "data:image/png;base64,AAA=".to_string(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn build_api_message_content_restores_text_from_content_when_missing() {
+        let message = data_url_image_message("请看这张图片", vec![data_url_part()]);
+
+        let content = build_api_message_content(&message)
+            .await
+            .expect("multimodal content built");
+        let ApiMessageContent::Parts(parts) = content else {
+            panic!("expected parts for message with image");
+        };
+
+        assert_eq!(parts.len(), 2);
+        match &parts[0] {
+            ApiMessageContentPart::Text { text } => assert_eq!(text, "请看这张图片"),
+            other => panic!("expected text part first, got {other:?}"),
+        }
+        assert!(matches!(parts[1], ApiMessageContentPart::ImageUrl { .. }));
+    }
+
+    #[tokio::test]
+    async fn build_api_message_content_keeps_existing_text_parts() {
+        let message = data_url_image_message(
+            "不应重复注入的文本",
+            vec![
+                ChatMessageContentPart::Text {
+                    text: "已有文本".to_string(),
+                },
+                data_url_part(),
+            ],
+        );
+
+        let content = build_api_message_content(&message)
+            .await
+            .expect("multimodal content built");
+        let ApiMessageContent::Parts(parts) = content else {
+            panic!("expected parts for message with image");
+        };
+
+        assert_eq!(parts.len(), 2);
+        match &parts[0] {
+            ApiMessageContentPart::Text { text } => assert_eq!(text, "已有文本"),
+            other => panic!("expected existing text part first, got {other:?}"),
+        }
+    }
 }

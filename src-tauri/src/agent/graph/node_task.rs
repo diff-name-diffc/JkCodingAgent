@@ -10,7 +10,8 @@ use super::node_exec::{execute_node, NodeExecContext, NodeExecOutcome};
 use super::runner::emit_run_event;
 use super::store::GraphStore;
 use super::types::{
-    GraphNode, GraphNodeRunRecord, GraphRunEvent, NODE_CANCELLED, NODE_RUNNING, NODE_SKIPPED,
+    GraphNode, GraphNodeRunRecord, GraphRunEvent, NODE_CANCELLED, NODE_PENDING,
+    NODE_PHASE_FINALIZING, NODE_PHASE_STARTING, NODE_RUNNING, NODE_SKIPPED,
 };
 
 pub(super) struct NodeTaskContext {
@@ -25,7 +26,7 @@ pub(super) struct NodeTaskResult {
     pub output_key: String,
     pub record: GraphNodeRunRecord,
     pub outcome: NodeExecOutcome,
-    pub duration_ms: u64,
+    pub duration_ms: i64,
 }
 
 pub(super) async fn run_node_task(ctx: NodeTaskContext) -> NodeTaskResult {
@@ -35,7 +36,7 @@ pub(super) async fn run_node_task(ctx: NodeTaskContext) -> NodeTaskResult {
     let mut record =
         GraphNodeRunRecord::pending(&ctx.exec.run_id, &ctx.exec.plan_id, &ctx.exec.node);
     record.status = NODE_RUNNING.into();
-    record.phase = "starting".into();
+    record.phase = NODE_PHASE_STARTING.into();
     record.input_text = ctx.input.clone();
     record.model_label = ctx.exec.harness.model_label.clone();
     record.model_category = ctx.exec.harness.model.category.clone();
@@ -60,17 +61,20 @@ pub(super) async fn run_node_task(ctx: NodeTaskContext) -> NodeTaskResult {
     let outcome = std::panic::AssertUnwindSafe(execute_node(&ctx.exec))
         .catch_unwind()
         .await
-        .unwrap_or_else(|error| NodeExecOutcome::Failed(format!("节点执行内部错误：{error:?}")));
+        .unwrap_or_else(|error| NodeExecOutcome::Failed {
+            error: format!("节点执行内部错误：{error:?}"),
+            usage_json: "{}".into(),
+        });
     let finished = chrono::Utc::now().timestamp_millis();
     record.finished_at = Some(finished);
     record.duration_ms = Some((finished - started).max(0));
-    record.phase = "finalizing".into();
+    record.phase = NODE_PHASE_FINALIZING.into();
     NodeTaskResult {
         node_id,
         output_key,
         record,
         outcome,
-        duration_ms: (finished - started).max(0) as u64,
+        duration_ms: (finished - started).max(0),
     }
 }
 
@@ -104,11 +108,11 @@ pub(super) async fn persist_and_emit_state(
     key: &str,
     value: &str,
     state: &Map<String, Value>,
-) {
+) -> anyhow::Result<()> {
     let state_json = Value::Object(state.clone()).to_string();
-    if let Err(error) = store.update_plan_state_async(plan_id, &state_json).await {
-        eprintln!("[graph] 持久化共享状态失败：{error:#}")
-    }
+    // fail-closed：DB 写失败向上传播，仅在写库成功后广播 StateUpdated——
+    // 否则前端事件状态与 DB 持久化漂移且无告警。
+    store.update_plan_state_async(plan_id, &state_json).await?;
     emit_run_event(
         app,
         plan_id,
@@ -121,6 +125,7 @@ pub(super) async fn persist_and_emit_state(
             state: Value::Object(state.clone()),
         },
     );
+    Ok(())
 }
 
 pub(super) async fn mark_node_skipped(
@@ -135,19 +140,24 @@ pub(super) async fn mark_node_skipped(
     let mut record = GraphNodeRunRecord::pending(run_id, plan_id, node);
     record.status = NODE_SKIPPED.into();
     record.error_text = Some(reason.into());
-    if let Err(error) = store.save_node_run_async(&record).await {
-        eprintln!("[graph] 保存跳过节点记录失败（{}）：{error:#}", node.id);
+    // 仅在落库成功后广播事件，避免前端状态与 DB 漂移。
+    match store.save_node_run_async(&record).await {
+        Ok(()) => {
+            emit_run_event(
+                app,
+                plan_id,
+                run_id,
+                workspace_id,
+                GraphRunEvent::NodeSkipped {
+                    node_id: node.id.clone(),
+                    reason: reason.into(),
+                },
+            );
+        }
+        Err(error) => {
+            eprintln!("[graph] 保存跳过节点记录失败（{}）：{error:#}", node.id);
+        }
     }
-    emit_run_event(
-        app,
-        plan_id,
-        run_id,
-        workspace_id,
-        GraphRunEvent::NodeSkipped {
-            node_id: node.id.clone(),
-            reason: reason.into(),
-        },
-    );
 }
 
 async fn mark_node_cancelled(
@@ -161,19 +171,25 @@ async fn mark_node_cancelled(
     let mut record = GraphNodeRunRecord::pending(run_id, plan_id, node);
     record.status = NODE_CANCELLED.into();
     record.error_text = Some("运行已取消".into());
-    if let Err(error) = store.save_node_run_async(&record).await {
-        eprintln!("[graph] 保存取消节点记录失败（{}）：{error:#}", node.id);
+    // 仅在落库成功后广播事件，避免前端状态与 DB 漂移。
+    // 取消与跳过语义不同：发 NodeCancelled（而非复用 NodeSkipped），
+    // 前端据此区分「被取消」与「上游失败被跳过」。
+    match store.save_node_run_async(&record).await {
+        Ok(()) => {
+            emit_run_event(
+                app,
+                plan_id,
+                run_id,
+                workspace_id,
+                GraphRunEvent::NodeCancelled {
+                    node_id: node.id.clone(),
+                },
+            );
+        }
+        Err(error) => {
+            eprintln!("[graph] 保存取消节点记录失败（{}）：{error:#}", node.id);
+        }
     }
-    emit_run_event(
-        app,
-        plan_id,
-        run_id,
-        workspace_id,
-        GraphRunEvent::NodeSkipped {
-            node_id: node.id.clone(),
-            reason: "运行已取消".into(),
-        },
-    );
 }
 
 pub(super) async fn cancel_pending_nodes(
@@ -183,16 +199,26 @@ pub(super) async fn cancel_pending_nodes(
     run_id: &str,
     workspace_id: &str,
     nodes: &[GraphNode],
-) {
-    let existing = store.list_node_runs_async(run_id).await.unwrap_or_default();
-    let settled = existing
+) -> anyhow::Result<()> {
+    // fail-closed：读取既有节点记录失败时返回错误并跳过取消（保留未确认节点
+    // 的原状态）。绝不能 unwrap_or_default 当空集——那会让 settled 为空，
+    // mark_node_cancelled 的 INSERT OR REPLACE 将把所有节点（含已成功/失败/
+    // 已取消的终态记录）覆盖成 pending 重建的 cancelled 行，丢失产出与用量。
+    let existing = store.list_node_runs_async(run_id).await?;
+    // 仅取消状态【显式为 pending】的节点：running/终态一律不覆盖。
+    // 与旧实现（status != "pending" 即视为已结算）相比，停留在 running 的
+    // 异常记录不再被静默放过也不被覆盖，由 fail_interrupted_runs 兜底。
+    // id 两侧都 trim 后比较：兼容历史运行遗留的带空白 node_id（resume 续跑
+    // 的 cached 行可能来自规整前的旧数据），避免已结算节点匹配不上被覆盖。
+    let pending = existing
         .iter()
-        .filter(|run| run.status != "pending")
-        .map(|run| run.node_id.as_str())
+        .filter(|run| run.status == NODE_PENDING)
+        .map(|run| run.node_id.trim().to_string())
         .collect::<HashSet<_>>();
     for node in nodes {
-        if !settled.contains(node.id.as_str()) {
+        if pending.contains(node.id.trim()) {
             mark_node_cancelled(app, store, plan_id, run_id, workspace_id, node).await
         }
     }
+    Ok(())
 }

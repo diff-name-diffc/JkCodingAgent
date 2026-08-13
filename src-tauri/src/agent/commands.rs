@@ -15,7 +15,7 @@ use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
 use super::llm::{ChatMessageContentPart, ChatMessageImageSource};
 use super::run_loop::{run_agent_turn, AgentEvent, AgentRunRequest, AgentTurn, RuntimeAgentKind};
-use super::state::DispatcherState;
+use super::state::{DispatcherState, GenerationGuard};
 use super::sub_agent::db::ToolInfo;
 use super::summary::{
     fallback_session_title, parse_keyword_actions, summarize_session_keywords,
@@ -23,7 +23,7 @@ use super::summary::{
 };
 use crate::browser::BrowserManager;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 const SESSION_TITLE_RECENT_DIALOGUES: usize = 3;
 
@@ -33,7 +33,7 @@ fn spawn_session_title_update(
     workspace_id: &str,
     segments_json: &str,
     context: AgentContext,
-    generation: u64,
+    generation: GenerationGuard,
 ) {
     let app = app.clone();
     let db = state.db().clone();
@@ -43,8 +43,9 @@ fn spawn_session_title_update(
     tokio::spawn(async move {
         let title =
             generate_session_title(db.clone(), workspace_id.clone(), segments_json, context).await;
-        let state = app.state::<DispatcherState>();
-        if !state.finish_latest_title_generation(&workspace_id, generation) {
+        // G11-13：代际守卫在统一锁内校验「最新代胜出」；即使本任务提前
+        // return/abort，守卫 Drop 也会结算 active 条目，不会泄漏。
+        if !generation.finish() {
             return;
         }
 
@@ -81,7 +82,7 @@ fn spawn_session_keywords_update(
     app: &AppHandle,
     workspace_id: &str,
     context: AgentContext,
-    generation: u64,
+    generation: GenerationGuard,
 ) {
     let app = app.clone();
     let db = state.db().clone();
@@ -89,8 +90,8 @@ fn spawn_session_keywords_update(
 
     tokio::spawn(async move {
         let actions = generate_session_keywords(db.clone(), workspace_id.clone(), context).await;
-        let state = app.state::<DispatcherState>();
-        if !state.finish_latest_keywords_generation(&workspace_id, generation) {
+        // G11-13：代际守卫在统一锁内校验「最新代胜出」；Drop 兜底清理。
+        if !generation.finish() {
             return;
         }
 
@@ -113,7 +114,7 @@ fn spawn_session_keywords_update(
                         let _ = app.emit(
                             "session-keywords-updated",
                             serde_json::json!({
-                                "workspaceId": workspace_id,
+                                "sessionId": workspace_id,
                                 "keywords": keywords,
                             }),
                         );
@@ -134,6 +135,32 @@ fn spawn_session_keywords_update(
             }
         }
     });
+}
+
+/// 关键字提取的问答配对（G11-14）：以最后一条消息的角色决定配对——
+/// 仅当最后一条是 assistant 时才向前查找最近的 user，组成同一轮问答；
+/// 最后一条是 user（运行中断/失败等场景）时只使用最后一条 user 内容，
+/// 避免新问题与上一轮旧助手回复错配、或两条连续 user 消息取到更旧的问题。
+fn latest_qa_pair(
+    messages: &[DispatcherMessageRecord],
+) -> (
+    Option<&DispatcherMessageRecord>,
+    Option<&DispatcherMessageRecord>,
+) {
+    let Some(last) = messages.last() else {
+        return (None, None);
+    };
+    match last.role.as_str() {
+        "assistant" => {
+            let user = messages[..messages.len() - 1]
+                .iter()
+                .rev()
+                .find(|message| message.role == "user");
+            (user, Some(last))
+        }
+        "user" => (Some(last), None),
+        _ => (None, None),
+    }
 }
 
 async fn generate_session_keywords(
@@ -186,9 +213,11 @@ async fn generate_session_keywords(
         }
     };
 
+    let (user, assistant) = latest_qa_pair(&messages);
+    if user.is_none() && assistant.is_none() {
+        return None;
+    }
     let qa_text = {
-        let user = messages.iter().find(|m| m.role == "user");
-        let assistant = messages.iter().find(|m| m.role == "assistant");
         let mut s = String::new();
         if let Some(u) = user {
             s.push_str("【用户】\n");
@@ -462,11 +491,14 @@ pub async fn dispatcher_send_project_agent_message(
     segments_json: String,
     on_event: Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
+    // G11-03：执行入口同样拒绝越权项目路径（canonicalize + 已注册工作区校验）。
+    let validated_project_path = state.validate_project_workspace(&project_path).await?;
+    let project_path = validated_project_path.to_string_lossy().into_owned();
     let title_segments_json = segments_json.clone();
-    let agent = state.build_run_agent().with_app_handle(app.clone());
+    let agent = state.build_run_agent().await?.with_app_handle(app.clone());
     let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
-    let title_generation_index = state.begin_title_generation(&workspace_id);
-    let keywords_generation_index = state.begin_keywords_generation(&workspace_id);
+    let title_guard = state.begin_title_generation(&workspace_id);
+    let keywords_guard = state.begin_keywords_generation(&workspace_id);
     let result = run_agent_turn(
         &agent,
         AgentRunRequest {
@@ -476,26 +508,27 @@ pub async fn dispatcher_send_project_agent_message(
             workspace_path: Some(&project_path),
             user_segments_json: segments_json,
             on_event,
-            cancel_rx: run_handle.cancel_rx,
+            cancel_rx: run_handle.cancel_receiver(),
         },
     )
     .await
     .map_err(|error| error.to_string());
-    state.finish_run(&workspace_id);
+    // G11-09/10：运行槽位清理由句柄 RAII 负责（含 panic/提前 return 路径）。
+    state.finish_run(run_handle);
     spawn_session_title_update(
         &state,
         &app,
         &workspace_id,
         &title_segments_json,
         AgentContext::Project,
-        title_generation_index,
+        title_guard,
     );
     spawn_session_keywords_update(
         &state,
         &app,
         &workspace_id,
         AgentContext::Project,
-        keywords_generation_index,
+        keywords_guard,
     );
     result
 }
@@ -510,11 +543,12 @@ pub async fn dispatcher_send_chat_agent_message(
 ) -> Result<AgentTurn, String> {
     let title_segments_json = segments_json.clone();
     let agent = state
-        .build_plain_chat_agent(&workspace_id)?
+        .build_plain_chat_agent(&workspace_id)
+        .await?
         .with_app_handle(app.clone());
     let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
-    let title_generation_index = state.begin_title_generation(&workspace_id);
-    let keywords_generation_index = state.begin_keywords_generation(&workspace_id);
+    let title_guard = state.begin_title_generation(&workspace_id);
+    let keywords_guard = state.begin_keywords_generation(&workspace_id);
     let result = run_agent_turn(
         &agent,
         AgentRunRequest {
@@ -524,26 +558,27 @@ pub async fn dispatcher_send_chat_agent_message(
             workspace_path: None,
             user_segments_json: segments_json,
             on_event,
-            cancel_rx: run_handle.cancel_rx,
+            cancel_rx: run_handle.cancel_receiver(),
         },
     )
     .await
     .map_err(|error| error.to_string());
-    state.finish_run(&workspace_id);
+    // G11-09/10：运行槽位清理由句柄 RAII 负责（含 panic/提前 return 路径）。
+    state.finish_run(run_handle);
     spawn_session_title_update(
         &state,
         &app,
         &workspace_id,
         &title_segments_json,
         AgentContext::Chat,
-        title_generation_index,
+        title_guard,
     );
     spawn_session_keywords_update(
         &state,
         &app,
         &workspace_id,
         AgentContext::Chat,
-        keywords_generation_index,
+        keywords_guard,
     );
     result
 }
@@ -1012,6 +1047,96 @@ fn embedding_endpoint(url: &str) -> String {
         format!("{trimmed}/embeddings")
     } else {
         format!("{trimmed}/v1/embeddings")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{embedding_endpoint, latest_qa_pair};
+    use crate::agent::db::DispatcherMessageRecord;
+
+    fn message(role: &str, content: &str) -> DispatcherMessageRecord {
+        DispatcherMessageRecord {
+            id: String::new(),
+            workspace_id: String::new(),
+            role: role.to_string(),
+            content: content.to_string(),
+            segments_json: String::new(),
+            thinking_content: None,
+            thinking_elapsed_ms: None,
+            context_payload: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_result_mode: None,
+            tool_artifacts: Vec::new(),
+            tool_calls_json: None,
+            usage_stats: None,
+            created_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn qa_pair_last_assistant_matches_nearest_preceding_user() {
+        let messages = vec![
+            message("user", "旧问题"),
+            message("assistant", "旧回答"),
+            message("user", "新问题"),
+            message("assistant", "新回答"),
+        ];
+        let (user, assistant) = latest_qa_pair(&messages);
+        assert_eq!(user.unwrap().content, "新问题");
+        assert_eq!(assistant.unwrap().content, "新回答");
+    }
+
+    #[test]
+    fn qa_pair_last_user_only_uses_last_user_content() {
+        // 最后一轮只有用户消息（运行中断/失败）：不得与上一轮旧助手回复配对。
+        let messages = vec![
+            message("user", "旧问题"),
+            message("assistant", "旧回答"),
+            message("user", "新问题"),
+        ];
+        let (user, assistant) = latest_qa_pair(&messages);
+        assert_eq!(user.unwrap().content, "新问题");
+        assert!(assistant.is_none());
+    }
+
+    #[test]
+    fn qa_pair_consecutive_user_messages_pick_latest() {
+        // 两条连续 user 消息：取最后一条而不是更旧的问题。
+        let messages = vec![
+            message("user", "更旧的问题"),
+            message("user", "最新的问题"),
+        ];
+        let (user, assistant) = latest_qa_pair(&messages);
+        assert_eq!(user.unwrap().content, "最新的问题");
+        assert!(assistant.is_none());
+    }
+
+    #[test]
+    fn qa_pair_empty_or_non_dialogue_messages_yield_none() {
+        let (user, assistant) = latest_qa_pair(&[]);
+        assert!(user.is_none() && assistant.is_none());
+
+        let messages = vec![message("tool", "工具输出")];
+        let (user, assistant) = latest_qa_pair(&messages);
+        assert!(user.is_none() && assistant.is_none());
+    }
+
+    #[test]
+    fn embedding_endpoint_appends_suffix() {
+        assert_eq!(
+            embedding_endpoint("https://api.example.com"),
+            "https://api.example.com/v1/embeddings"
+        );
+        assert_eq!(
+            embedding_endpoint("https://api.example.com/v1/"),
+            "https://api.example.com/v1/embeddings"
+        );
+        assert_eq!(
+            embedding_endpoint("https://api.example.com/embeddings"),
+            "https://api.example.com/embeddings"
+        );
     }
 }
 

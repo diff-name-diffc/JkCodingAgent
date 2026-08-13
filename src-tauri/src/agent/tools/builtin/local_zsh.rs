@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -64,7 +67,7 @@ impl AgentTool for LocalZshTool {
     }
 
     fn description(&self) -> &'static str {
-        "在 macOS 本地 zsh 环境执行命令。命令固定运行于当前会话工作区的 .jkcodingagent/local_env/zsh，产物也应写入该目录；工具会维护 audit.json，记录最新 20 条命令、结果和执行会话。禁止 cd 和少量高危系统命令。"
+        "在 macOS 本地 zsh 环境执行命令。命令执行前会经过安全审查（未配置审查模型时拒绝执行）。命令固定运行于当前会话工作区的 .jkcodingagent/local_env/zsh，产物也应写入该目录；工具会维护 audit.json，记录最新 20 条命令、结果和执行会话。禁止 cd 和少量高危系统命令。"
     }
 
     fn parameters(&self) -> Value {
@@ -103,81 +106,60 @@ impl AgentTool for LocalZshTool {
         let run_result = tokio::task::spawn_blocking(move || {
             let run_dir = local_zsh_dir(&workspace)?;
             fs::create_dir_all(&run_dir)
-                .map_err(|error| format!("创建 local_zsh 目录失败：{error}"))?;
+                .map_err(|error| format!("错误：创建 local_zsh 目录失败：{error}"))?;
             Ok::<PathBuf, String>(run_dir)
         })
         .await
-        .map_err(|error| format!("准备 local_zsh 目录失败：{error}"));
+        .map_err(|error| format!("错误：准备 local_zsh 目录失败：{error}"));
 
         let run_dir = match run_result {
             Ok(Ok(dir)) => dir,
             Ok(Err(error)) | Err(error) => return error,
         };
 
-        let review_outcome = match review_local_command(args, context, &run_dir, &command).await {
-            Ok(outcome) => outcome,
+        // 安全审查门禁（fail-closed）：未配置审查 / 审查异常 / 判定不通过一律拒绝执行，
+        // 并把「被拦截」写入 audit.json 审计。
+        let review = match review_local_command(args, context, &run_dir, &command).await {
+            Ok(review) => review,
             Err(error) => {
-                let review = crate::ssh_tool::SshAuditReview {
+                let blocked = crate::ssh_tool::SshAuditReview {
                     allowed: false,
-                    reason: format!("审查服务异常：{error}"),
+                    reason: error.clone(),
                 };
-                let entry = blocked_audit_entry(&session_id, &command, review);
-                let run_dir_for_audit = run_dir.clone();
-                let session_id_for_history = session_id.clone();
-                let audit_result = tokio::task::spawn_blocking(move || {
-                    append_audit_entry(&run_dir_for_audit, entry.clone(), &session_id_for_history)
-                        .map(|history| (entry, history))
-                })
-                .await
-                .map_err(|error| format!("写入 local_zsh 审计历史失败：{error}"));
-                return match audit_result {
-                    Ok(Ok((entry, history))) => {
-                        render_local_audit_entry(&run_dir, &entry, true, &history)
-                    }
-                    Ok(Err(error)) | Err(error) => {
-                        format!("错误：命令已被安全审查拦截，但审计历史写入失败：{error}")
-                    }
-                };
+                return blocked_command_response(
+                    &run_dir,
+                    &session_id,
+                    &command,
+                    blocked,
+                    format!("错误：{error}"),
+                )
+                .await;
             }
         };
-
-        if let Some(review) = review_outcome.as_ref().filter(|review| !review.allowed) {
-            let entry = blocked_audit_entry(&session_id, &command, review.clone());
-            let run_dir_for_audit = run_dir.clone();
-            let session_id_for_history = session_id.clone();
-            let audit_result = tokio::task::spawn_blocking(move || {
-                append_audit_entry(&run_dir_for_audit, entry.clone(), &session_id_for_history)
-                    .map(|history| (entry, history))
-            })
-            .await
-            .map_err(|error| format!("写入 local_zsh 审计历史失败：{error}"));
-            return match audit_result {
-                Ok(Ok((entry, history))) => {
-                    render_local_audit_entry(&run_dir, &entry, true, &history)
-                }
-                Ok(Err(error)) | Err(error) => {
-                    format!("错误：命令已被安全审查拦截，但审计历史写入失败：{error}")
-                }
-            };
+        if !review.allowed {
+            let headline = format!("错误：命令已被安全审查拦截：{}", review.reason);
+            return blocked_command_response(&run_dir, &session_id, &command, review, headline)
+                .await;
         }
 
         let started = std::time::Instant::now();
-        let mut child = match Command::new("/bin/zsh")
-            .arg("-lc")
+        let mut cmd = Command::new("/bin/zsh");
+        cmd.arg("-lc")
             .arg(&command)
             .current_dir(&run_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-        {
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0); // 独立进程组：超时可按组终止全部派生进程
+        let mut child = match cmd.spawn() {
             Ok(child) => child,
-            Err(error) => return format!("执行 zsh 命令失败：{error}"),
+            Err(error) => return format!("错误：执行 zsh 命令失败：{error}"),
         };
 
         let captured = match capture_command_output(&mut child, timeout_secs).await {
             Ok(output) => output,
-            Err(error) => return format!("执行 zsh 命令失败：{error}"),
+            Err(error) => return format!("错误：执行 zsh 命令失败：{error}"),
         };
         let duration_ms = started.elapsed().as_millis();
         let stdout = String::from_utf8_lossy(&captured.output.stdout)
@@ -194,7 +176,7 @@ impl AgentTool for LocalZshTool {
             session_id: session_id.clone(),
             executed_at: Utc::now().to_rfc3339(),
             command: command.clone(),
-            review: review_outcome.clone(),
+            review: Some(review.clone()),
             exit_code: captured.output.status.code(),
             timed_out: captured.timed_out,
             duration_ms,
@@ -210,13 +192,13 @@ impl AgentTool for LocalZshTool {
             append_audit_entry(&run_dir_for_audit, entry, &session_id_for_history)
         })
         .await
-        .map_err(|error| format!("写入 local_zsh 审计历史失败：{error}"));
+        .map_err(|error| format!("错误：写入 local_zsh 审计历史失败：{error}"));
 
         let session_history = match audit_result {
             Ok(Ok(history)) => history,
             Ok(Err(error)) | Err(error) => {
                 return format!(
-                    "命令已执行，但审计历史写入失败：{error}\n\n{}",
+                    "错误：命令已执行，但审计历史写入失败：{error}\n\n{}",
                     render_command_result(
                         &run_dir,
                         &command,
@@ -226,7 +208,7 @@ impl AgentTool for LocalZshTool {
                         captured.timed_out,
                         duration_ms,
                         output_truncated,
-                        review_outcome.as_ref(),
+                        Some(&review),
                         false,
                         &[],
                     )
@@ -243,7 +225,7 @@ impl AgentTool for LocalZshTool {
             captured.timed_out,
             duration_ms,
             output_truncated,
-            review_outcome.as_ref(),
+            Some(&review),
             command_contains_ssh(&command),
             &session_history,
         )
@@ -251,27 +233,29 @@ impl AgentTool for LocalZshTool {
 }
 
 fn local_zsh_dir(workspace: &Path) -> Result<PathBuf, String> {
-    let dir = if workspace
+    // plain-chat-browser 是聊天占位工作区，其执行目录按设计落在
+    // workspace.parent()/local_env/zsh；此时以 workspace.parent() 为合法根目录做
+    // 包含性校验。其余情况执行目录必须位于工作区根目录内。
+    let is_plain_chat = workspace
         .file_name()
-        .is_some_and(|name| name == "plain-chat-browser")
-    {
+        .is_some_and(|name| name == "plain-chat-browser");
+    let allowed_root = if is_plain_chat {
         workspace
             .parent()
-            .ok_or_else(|| "无法解析聊天 local_env 根目录".to_string())?
-            .join("local_env")
-            .join("zsh")
+            .ok_or_else(|| "错误：无法解析聊天工作区根目录".to_string())?
+            .to_path_buf()
     } else {
-        workspace
-            .join(".jkcodingagent")
-            .join("local_env")
-            .join("zsh")
+        workspace.to_path_buf()
+    };
+    let dir = if is_plain_chat {
+        allowed_root.join("local_env").join("zsh")
+    } else {
+        workspace.join(".jkcodingagent").join("local_env").join("zsh")
     };
     let normalized = super::common::lexical_normalize(&dir);
-    let allowed_root = normalized
-        .parent()
-        .ok_or_else(|| "无法解析 local_env 根目录".to_string())?;
-    if !normalized.starts_with(allowed_root) {
-        return Err("local_zsh 目录解析到了 local_env 之外".to_string());
+    let normalized_root = super::common::lexical_normalize(&allowed_root);
+    if !normalized.starts_with(&normalized_root) {
+        return Err("错误：local_zsh 目录解析到了合法根目录之外".to_string());
     }
     Ok(normalized)
 }
@@ -327,9 +311,10 @@ async fn review_local_command(
     context: &ToolContext,
     run_dir: &Path,
     command: &str,
-) -> Result<Option<crate::ssh_tool::SshAuditReview>, String> {
+) -> Result<crate::ssh_tool::SshAuditReview, String> {
+    // fail-closed：未配置审查时对可执行命令默认拦截，不得跳过审查放行。
     let Some(review_config) = context.ssh_review.as_ref() else {
-        return Ok(None);
+        return Err("未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。".to_string());
     };
 
     let intent = string_arg(args, "compress_intent")
@@ -344,16 +329,42 @@ async fn review_local_command(
             run_dir: run_dir.display().to_string(),
         },
         command: command.to_string(),
+        stdin: None,
     };
 
     crate::agent::ssh_review::review_shell_command(review_config, &payload)
         .await
-        .map(|verdict| {
-            Some(crate::ssh_tool::SshAuditReview {
-                allowed: verdict.allowed,
-                reason: verdict.reason,
-            })
+        .map_err(|error| format!("审查服务异常：{error}"))
+        .map(|verdict| crate::ssh_tool::SshAuditReview {
+            allowed: verdict.allowed,
+            reason: verdict.reason,
         })
+}
+
+/// 写入「被拦截」审计条目，并返回带「错误：」前缀的拦截响应（含审计明细）。
+async fn blocked_command_response(
+    run_dir: &Path,
+    session_id: &str,
+    command: &str,
+    review: crate::ssh_tool::SshAuditReview,
+    headline: String,
+) -> String {
+    let entry = blocked_audit_entry(session_id, command, review);
+    let render_entry = entry.clone();
+    let run_dir_for_audit = run_dir.to_path_buf();
+    let session_id_for_history = session_id.to_string();
+    let audit_result = tokio::task::spawn_blocking(move || {
+        append_audit_entry(&run_dir_for_audit, entry, &session_id_for_history)
+    })
+    .await;
+    match audit_result {
+        Ok(Ok(history)) => format!(
+            "{headline}\n\n{}",
+            render_local_audit_entry(run_dir, &render_entry, true, &history)
+        ),
+        Ok(Err(error)) => format!("{headline}\n\n错误：审计历史写入失败：{error}"),
+        Err(error) => format!("{headline}\n\n错误：审计历史写入失败：{error}"),
+    }
 }
 
 fn blocked_audit_entry(
@@ -396,7 +407,9 @@ async fn capture_command_output(
     let (status, timed_out) = match timeout(Duration::from_secs(timeout_secs), child.wait()).await {
         Ok(status) => (status?, false),
         Err(_) => {
-            child.kill().await?;
+            // 超时：杀整个进程组（含派生的孙进程），确保管道写端全部关闭、
+            // reader 能读到 EOF，不会永久阻塞。
+            kill_process_group(child);
             (child.wait().await?, true)
         }
     };
@@ -443,11 +456,43 @@ where
     (retained, total_read)
 }
 
+/// 终止子进程所在的整个进程组。spawn 时设置了 `process_group(0)`，
+/// 子进程 pid 即进程组 id；组杀失败时兜底单杀直接子进程。
+#[cfg(unix)]
+fn kill_process_group(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+    let _ = child.start_kill();
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+}
+
+/// 按 run_dir 粒度的审计写锁：并发调用串行化 audit.json 的读-改-写，避免互相覆盖。
+fn audit_lock_for(run_dir: &Path) -> Arc<Mutex<()>> {
+    static AUDIT_LOCKS: std::sync::OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+        std::sync::OnceLock::new();
+    AUDIT_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .entry(run_dir.to_path_buf())
+        .or_default()
+        .clone()
+}
+
 fn append_audit_entry(
     run_dir: &Path,
     entry: LocalZshAuditEntry,
     session_id: &str,
 ) -> Result<Vec<LocalZshAuditEntry>, String> {
+    // 锁的用途就是串行化本文件的读-改-写，持锁期间仅做该审计文件的 I/O。
+    let lock = audit_lock_for(run_dir);
+    let _guard = lock.lock();
     let audit_path = run_dir.join(AUDIT_FILE_NAME);
     let mut log = match fs::read_to_string(&audit_path) {
         Ok(content) if !content.trim().is_empty() => {
@@ -468,7 +513,11 @@ fn append_audit_entry(
 
     let content = serde_json::to_string_pretty(&log)
         .map_err(|error| format!("序列化 audit.json 失败：{error}"))?;
-    fs::write(&audit_path, content).map_err(|error| format!("写入 audit.json 失败：{error}"))?;
+    // 原子写：先写临时文件再 rename，避免写一半崩溃留下损坏的 JSON。
+    let tmp_path = run_dir.join(format!(".{AUDIT_FILE_NAME}.tmp"));
+    fs::write(&tmp_path, content).map_err(|error| format!("写入 audit.json 失败：{error}"))?;
+    fs::rename(&tmp_path, &audit_path)
+        .map_err(|error| format!("写入 audit.json 失败：{error}"))?;
 
     Ok(log
         .entries

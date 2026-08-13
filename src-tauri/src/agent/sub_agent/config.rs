@@ -1,5 +1,10 @@
+use std::collections::{BTreeSet, HashSet};
+
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+
+/// timeout_secs 允许的上限（秒）。超过该值的任务视为配置错误，避免长时间挂起。
+pub const MAX_TIMEOUT_SECS: u64 = 3600;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentModelConfig {
@@ -41,9 +46,9 @@ pub struct SubAgentConfig {
     pub timeout_secs: u64,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_timestamp")]
     pub created_at: i64,
-    #[serde(default)]
+    #[serde(default = "default_timestamp")]
     pub updated_at: i64,
 }
 
@@ -69,6 +74,11 @@ fn default_timeout_secs() -> u64 {
 
 fn default_true() -> bool {
     true
+}
+
+/// 时间戳缺省值：字段缺失时生成当前毫秒时间戳，避免落到 1970-01-01。
+fn default_timestamp() -> i64 {
+    chrono::Utc::now().timestamp_millis()
 }
 
 impl SubAgentConfig {
@@ -102,19 +112,64 @@ impl SubAgentConfig {
             return Err(anyhow!("description 长度必须在 1-512 之间"));
         }
         if self.system_prompt.is_empty() {
-            return Err(anyhow!("system_prompt 不能为空"));
+            return Err(anyhow!("错误：system_prompt 不能为空"));
+        }
+        if self.user_prompt_template.trim().is_empty() {
+            return Err(anyhow!("错误：user_prompt_template 不能为空"));
         }
         if self.allowed_tools.is_empty() {
-            return Err(anyhow!("allowed_tools 不能为空"));
+            return Err(anyhow!("错误：allowed_tools 不能为空"));
+        }
+        // 声明不继承父级模型配置时，必须自带模型名；api_base/api_key 缺失会在
+        // 运行期回退到父级配置（见 runtime.rs），属于有意保留的降级行为。
+        if !self.model_config.inherit_from_parent
+            && self
+                .model_config
+                .model_name
+                .as_deref()
+                .map(str::trim)
+                .map(str::is_empty)
+                .unwrap_or(true)
+        {
+            return Err(anyhow!(
+                "错误：inherit_from_parent 为 false 时 model_name 不能为空"
+            ));
         }
         if self.max_iterations < 1 || self.max_iterations > 100 {
-            return Err(anyhow!("max_iterations 必须在 1-100 之间"));
+            return Err(anyhow!("错误：max_iterations 必须在 1-100 之间"));
         }
         if self.max_output_tokens < 256 || self.max_output_tokens > 65536 {
-            return Err(anyhow!("max_output_tokens 必须在 256-65536 之间"));
+            return Err(anyhow!("错误：max_output_tokens 必须在 256-65536 之间"));
         }
-        if self.temperature < 0.0 || self.temperature > 2.0 {
-            return Err(anyhow!("temperature 必须在 0-2 之间"));
+        // 用 is_finite + contains 拦截 NaN/无穷大：IEEE 754 下 NaN 与任何值
+        // 的比较都为 false，裸 `<`/`>` 判断会让 NaN 通过校验。
+        if !self.temperature.is_finite() || !(0.0..=2.0).contains(&self.temperature) {
+            return Err(anyhow!("错误：temperature 必须在 0-2 之间"));
+        }
+        if self.timeout_secs < 1 || self.timeout_secs > MAX_TIMEOUT_SECS {
+            return Err(anyhow!(
+                "错误：timeout_secs 必须在 1-{MAX_TIMEOUT_SECS} 之间"
+            ));
+        }
+        Ok(())
+    }
+
+    /// 校验 allowed_tools 是否都在已知工具集合内（系统边界调用）。
+    ///
+    /// 与 `validate()` 拆分的原因：工具注册表属于应用层资源，`SubAgentConfig`
+    /// 作为纯数据结构不持有它；由 commands 层在创建/更新入口取注册表名称集合后调用。
+    pub fn validate_allowed_tools(&self, known_tool_names: &HashSet<String>) -> Result<()> {
+        let unknown: BTreeSet<&str> = self
+            .allowed_tools
+            .iter()
+            .filter(|name| !known_tool_names.contains(name.as_str()))
+            .map(String::as_str)
+            .collect();
+        if !unknown.is_empty() {
+            return Err(anyhow!(
+                "错误：allowed_tools 包含未注册的工具：{}",
+                unknown.into_iter().collect::<Vec<_>>().join("、")
+            ));
         }
         Ok(())
     }
@@ -169,5 +224,119 @@ impl SubAgentConfig {
             created_at: chrono::Utc::now().timestamp_millis(),
             updated_at: chrono::Utc::now().timestamp_millis(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_config() -> SubAgentConfig {
+        SubAgentConfig::browser_agent_default()
+    }
+
+    #[test]
+    fn browser_agent_default_passes_validation() {
+        base_config().validate().expect("default config must be valid");
+    }
+
+    #[test]
+    fn blank_user_prompt_template_is_rejected() {
+        let mut config = base_config();
+        config.user_prompt_template = "   ".to_string();
+        let error = config.validate().expect_err("blank template must fail");
+        assert!(error.to_string().contains("user_prompt_template"));
+    }
+
+    #[test]
+    fn independent_model_config_requires_model_name() {
+        let mut config = base_config();
+        config.model_config.inherit_from_parent = false;
+        config.model_config.model_name = None;
+        let error = config
+            .validate()
+            .expect_err("missing model_name must fail when not inheriting");
+        assert!(error.to_string().contains("model_name"));
+
+        config.model_config.model_name = Some("  ".to_string());
+        assert!(config.validate().is_err(), "blank model_name must fail");
+
+        config.model_config.model_name = Some("gpt-test".to_string());
+        config.validate().expect("model_name present must pass");
+    }
+
+    #[test]
+    fn timeout_secs_range_is_enforced() {
+        let mut config = base_config();
+        config.timeout_secs = 0;
+        assert!(config.validate().is_err(), "timeout 0 must fail");
+        config.timeout_secs = MAX_TIMEOUT_SECS + 1;
+        assert!(config.validate().is_err(), "timeout above cap must fail");
+        config.timeout_secs = 600;
+        config.validate().expect("timeout 600 must pass");
+    }
+
+    #[test]
+    fn temperature_rejects_nan_and_out_of_range() {
+        let mut config = base_config();
+        config.temperature = f64::NAN;
+        assert!(config.validate().is_err(), "NaN must fail");
+        config.temperature = f64::INFINITY;
+        assert!(config.validate().is_err(), "infinity must fail");
+        config.temperature = -0.1;
+        assert!(config.validate().is_err(), "negative must fail");
+        config.temperature = 2.1;
+        assert!(config.validate().is_err(), "above 2 must fail");
+        config.temperature = 0.0;
+        config.validate().expect("0.0 must pass");
+        config.temperature = 2.0;
+        config.validate().expect("2.0 must pass");
+    }
+
+    #[test]
+    fn timestamps_default_to_now_when_missing() {
+        let json = r#"{
+            "agent_id": "demo-agent",
+            "agent_name": "demo",
+            "description": "demo",
+            "system_prompt": "demo",
+            "allowed_tools": ["browser_open_url"]
+        }"#;
+        let config: SubAgentConfig = serde_json::from_str(json).expect("deserialize");
+        let before = chrono::Utc::now().timestamp_millis();
+        assert!(
+            config.created_at > 0 && config.updated_at > 0,
+            "missing timestamps must default to current millis, got {} / {}",
+            config.created_at,
+            config.updated_at
+        );
+        assert!(config.created_at <= before + 1000);
+    }
+
+    #[test]
+    fn allowed_tools_checked_against_known_registry_names() {
+        let mut config = base_config();
+        let known: HashSet<String> = ["browser_open_url", "browser_click"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        config.allowed_tools = vec!["browser_open_url".to_string()];
+        config
+            .validate_allowed_tools(&known)
+            .expect("known tool must pass");
+
+        config.allowed_tools = vec![
+            "browser_open_url".to_string(),
+            "browser_typo".to_string(),
+            "ghost_tool".to_string(),
+        ];
+        let error = config
+            .validate_allowed_tools(&known)
+            .expect_err("unknown tools must fail");
+        let message = error.to_string();
+        assert!(message.contains("browser_typo"));
+        assert!(message.contains("ghost_tool"));
+        assert!(!message.contains("browser_open_url"));
     }
 }

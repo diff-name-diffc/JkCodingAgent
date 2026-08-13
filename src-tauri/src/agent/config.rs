@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 
@@ -175,11 +175,51 @@ impl DispatcherAgentConfig {
     }
 }
 
+/// 模型 provider 配置完整性校验（G9-15）：API Key / Base URL / 模型名任一缺失
+/// 时显式失败并给出「错误：」提示，避免配置缺失延迟到 HTTP 请求时才以晦涩错误暴露。
+///
+/// 调用点是 run 入口（`run_agent_turn`）。`DispatcherAgentConfig::load()` 不做
+/// 该校验：环境变量回退允许为空，用户可以在设置页提供模型服务配置。
+pub fn validate_provider_completeness(api_key: &str, api_base: &str, model: &str) -> Result<()> {
+    if api_key.trim().is_empty() {
+        anyhow::bail!("错误：模型服务缺少 API Key，请先在设置中配置对应模型服务。");
+    }
+    if api_base.trim().is_empty() {
+        anyhow::bail!("错误：模型服务缺少 API 基础地址（Base URL），请先在设置中配置对应模型服务。");
+    }
+    if model.trim().is_empty() {
+        anyhow::bail!("错误：模型服务缺少模型名称，请先在设置中配置对应模型服务。");
+    }
+    Ok(())
+}
+
+/// 原子写：先写同目录临时文件，再 rename 原子替换（G9-16）。
+///
+/// `fs::write` 直接截断覆盖是非原子的：进程在写入中途崩溃（或磁盘错误）会留下
+/// 截断/损坏的 SOUL.md / USER.md，而损坏内容既不等于内置版本也不等于任何 legacy
+/// 变体，`sync_bundled_prompt_file` 会把它当成「用户自定义内容」永久保留，
+/// 系统无法自愈。同一文件系统下 rename 是原子的：目标文件要么是旧内容、
+/// 要么是完整新内容。
+fn atomic_write(path: &Path, content: &str) -> Result<()> {
+    let tmp_path = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
+    let result = fs::write(&tmp_path, content)
+        .with_context(|| format!("write {}", tmp_path.display()))
+        .and_then(|()| {
+            fs::rename(&tmp_path, path).with_context(|| {
+                format!("rename {} -> {}", tmp_path.display(), path.display())
+            })
+        });
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    result
+}
+
 fn write_if_missing(path: PathBuf, content: &str) -> Result<()> {
     if path.exists() {
         return Ok(());
     }
-    fs::write(&path, content).with_context(|| format!("write {}", path.display()))
+    atomic_write(&path, content).with_context(|| format!("write {}", path.display()))
 }
 
 fn sync_bundled_prompt_file(path: PathBuf, content: &str, legacy_variants: &[&str]) -> Result<()> {
@@ -188,12 +228,13 @@ fn sync_bundled_prompt_file(path: PathBuf, content: &str, legacy_variants: &[&st
             let can_overwrite =
                 existing == content || legacy_variants.iter().any(|legacy| existing == *legacy);
             if can_overwrite && existing != content {
-                fs::write(&path, content).with_context(|| format!("write {}", path.display()))?;
+                atomic_write(&path, content)
+                    .with_context(|| format!("write {}", path.display()))?;
             }
             Ok(())
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            fs::write(&path, content).with_context(|| format!("write {}", path.display()))
+            atomic_write(&path, content).with_context(|| format!("write {}", path.display()))
         }
         Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
     }
@@ -253,5 +294,28 @@ mod tests {
             "# My Agent\n\ncustom\n"
         );
         fs::remove_file(custom).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_creates_and_replaces_file() {
+        let path = test_path();
+        atomic_write(&path, "v1").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "v1");
+        atomic_write(&path, "v2").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "v2");
+        // 不残留临时文件
+        let tmp = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
+        assert!(!tmp.exists());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn provider_completeness_requires_key_base_and_model() {
+        assert!(validate_provider_completeness("sk-x", "https://api.example/v1", "qwen").is_ok());
+        assert!(validate_provider_completeness("", "https://api.example/v1", "qwen").is_err());
+        assert!(validate_provider_completeness("sk-x", "  ", "qwen").is_err());
+        assert!(validate_provider_completeness("sk-x", "https://api.example/v1", "").is_err());
+        let error = validate_provider_completeness("", "u", "m").unwrap_err();
+        assert!(error.to_string().starts_with("错误："));
     }
 }

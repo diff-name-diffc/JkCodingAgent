@@ -64,12 +64,27 @@ fn verdict_badge(status: &str) -> &'static str {
 
 /// 外部内容（节点错误信息、共享 state 值、验收理由等）嵌入回执 markdown 前的
 /// 中性化：换行/连续空白折叠为单个空格（多行堆栈会破坏回执所在的列表/段落
-/// 结构），反引号替换为全角形式（避免意外撑开代码块、截断后续渲染）。
+/// 结构）；反引号与 `* _ # [ ] < >` 等 markdown 元字符替换为全角形式——
+/// 嵌入值位于行内纯文本位置（不在代码围栏内），元字符若保留会被前端
+/// markdown 渲染器解释为标题/列表/链接/内联 HTML，节点错误输出或共享
+/// state 可借此注入结构、破坏回执（不依赖渲染层净化）。
 fn sanitize_for_markdown(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .replace('`', "｀")
+        .chars()
+        .map(|c| match c {
+            '`' => '｀',
+            '*' => '＊',
+            '_' => '＿',
+            '#' => '＃',
+            '[' => '［',
+            ']' => '］',
+            '<' => '＜',
+            '>' => '＞',
+            other => other,
+        })
+        .collect()
 }
 
 fn build_receipt_markdown(
@@ -135,8 +150,10 @@ fn build_receipt_markdown(
             .filter(|record| record.status == NODE_FAILED)
         {
             if let Some(error) = run_record.error_text.as_deref() {
-                let error = sanitize_for_markdown(error);
+                // 先按字符截断再清洗：错误详情可达数十 KB（编译输出/堆栈），
+                // 先 sanitize 会让 split_whitespace 对全量大文本做整串复制。
                 let error: String = error.chars().take(200).collect();
+                let error = sanitize_for_markdown(&error);
                 lines.push(format!(
                     "  - `{}`：{error}",
                     sanitize_for_markdown(&run_record.node_id)
@@ -152,12 +169,13 @@ fn build_receipt_markdown(
         lines.push(String::new());
         lines.push("**共享 state**：".to_string());
         for (key, value) in state {
+            // 先按字符截断再清洗：共享 state 值可达数 MB（嵌套 JSON/长文本），
+            // 先 sanitize 会对全量文本做整串复制，产生不必要的 CPU/内存峰值。
             let preview = value
                 .as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| value.to_string());
+                .map(|text| text.chars().take(160).collect::<String>())
+                .unwrap_or_else(|| value.to_string().chars().take(160).collect::<String>());
             let preview = sanitize_for_markdown(&preview);
-            let preview: String = preview.chars().take(160).collect();
             lines.push(format!("- `{}`：{preview}", sanitize_for_markdown(key)));
         }
     }
@@ -182,6 +200,10 @@ fn build_receipt_markdown(
 }
 
 /// 聚合本次 run 的 token 用量。cached（断点续跑复用）节点不计入本次消耗；
+/// 其余节点只要记录了 usage_json 就全部统计——节点（含重试前的首次尝试）
+/// 在 LLM 调用已产生 token 消耗后才失败时，这部分用量不应丢弃，否则回执
+/// 与 turn 级用量被低估。（失败结算路径把已发生 usage 写入 usage_json 依赖
+/// runner 的 Failed 分支配合，见跨界依赖记录。）
 /// usage_json 形态容错（prompt/input、completion/output 等常见键名）。
 /// `elapsed_ms`：run 的真实耗时（started_at→finished_at）。回执与主 agent 消息
 /// 同属一个 user turn 时前端按字段取 max 聚合，若这里写 0，纯图编排轮次或
@@ -194,7 +216,7 @@ fn aggregate_usage(
     let mut prompt = 0u64;
     let mut completion = 0u64;
     for record in node_runs {
-        if record.status != NODE_SUCCEEDED || record.phase == NODE_PHASE_CACHED {
+        if record.phase == NODE_PHASE_CACHED {
             continue;
         }
         let (p, c) = parse_usage(&record.usage_json);
@@ -292,6 +314,26 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_counts_usage_recorded_on_non_succeeded_nodes() {
+        // 节点在 LLM 调用产生 token 后才失败时，已记录的 usage 不得丢弃，
+        // 否则回执与 turn 级用量被低估（只跳过 cached，不再排除非 succeeded）。
+        let runs = vec![
+            record("n1", "succeeded", "finalizing", r#"{"prompt_tokens":10,"completion_tokens":5}"#),
+            record("n2", "failed", "finalizing", r#"{"prompt_tokens":7,"completion_tokens":3}"#),
+            record("n3", "cancelled", "finalizing", r#"{"input":2,"output":1}"#),
+        ];
+        let verdict = VerdictOutcome {
+            status: VERDICT_PARTIAL.into(),
+            reason: String::new(),
+            usage: None,
+        };
+        let stats = aggregate_usage(&runs, &verdict, 0);
+        assert_eq!(stats.prompt_tokens, 19);
+        assert_eq!(stats.completion_tokens, 9);
+        assert_eq!(stats.total_tokens, 28);
+    }
+
+    #[test]
     fn aggregate_backfills_elapsed_ms() {
         let runs = vec![record("n1", "succeeded", "finalizing", "{}")];
         let verdict = VerdictOutcome {
@@ -314,6 +356,16 @@ mod tests {
         );
         assert_eq!(sanitize_for_markdown("带 `反引号` 的```围栏"), "带 ｀反引号｀ 的｀｀｀围栏");
         assert_eq!(sanitize_for_markdown("  前后空白  "), "前后空白");
+    }
+
+    #[test]
+    fn sanitize_neutralizes_markdown_metachars() {
+        // 嵌入值位于行内纯文本位置：* _ # [ ] < > 等元字符必须中和，
+        // 否则节点错误/共享 state 可注入标题、链接、内联 HTML。
+        assert_eq!(
+            sanitize_for_markdown("**强调** [链接](http://x) <script> # 标题 _斜体_"),
+            "＊＊强调＊＊ ［链接］(http://x) ＜script＞ ＃ 标题 ＿斜体＿"
+        );
     }
 
     #[test]
@@ -367,8 +419,9 @@ mod tests {
             &verdict,
             &aggregate_usage(&runs, &verdict, 0),
         );
-        // 错误/state/验收理由中的换行与反引号均被中性化，不再破坏列表结构。
-        assert!(content.contains("  - `n1`：编译失败 ｀｀｀ error[E0308] ｀｀｀ 见 src/a.rs"));
+        // 错误/state/验收理由中的换行、反引号与 markdown 元字符均被中性化，
+        // 不再破坏列表结构或注入链接/标题。
+        assert!(content.contains("  - `n1`：编译失败 ｀｀｀ error［E0308］ ｀｀｀ 见 src/a.rs"));
         assert!(content.contains("- `analysis`：多行 state ｀值｀"));
         assert!(content.contains("**验收结论**：节点失败 结论"));
         assert!(!content.contains("编译失败\n"));

@@ -20,7 +20,7 @@ use crate::agent::tools::{
 
 use super::graph_submit::SubmitGraphInterception;
 use super::helpers::{
-    build_tool_retry_context, emit, extract_message_content, is_retryable_tool_error,
+    self, build_tool_retry_context, emit, extract_message_content, is_retryable_tool_error,
     record_run_token_usage,
 };
 use super::OrchestratorAgent;
@@ -39,11 +39,14 @@ impl OrchestratorAgent {
     /// 执行一批 tool_calls：先持久化 assistant 工具调用消息（协议正确性要求），
     /// 再按模型顺序逐个执行——相邻只读工具合并为并行组，其余严格串行。
     /// `submit_graph` 不在本地执行，而是拦截为「校验 → 落库 → 广播」的协议动作。
+    ///
+    /// workspace 单一来源（审查项 G8-23）：统一使用 `tool_context.workspace`
+    /// （执行入口已 canonicalize），不再接受平行的 workspace 参数，
+    /// 避免只读分组判定与实际执行/落库基于不同路径而漂移。
     pub(super) async fn execute_tool_calls(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
-        workspace: &Path,
         on_event: &Channel<AgentEvent>,
         response: LlmResponse,
         allowed_tool_names: &HashSet<String>,
@@ -52,18 +55,19 @@ impl OrchestratorAgent {
         request_provider: &OpenAiCompatProvider,
         usage_tracker: &mut crate::agent::common::UsageTracker,
     ) -> Result<RunLoopToolOutcome> {
+        let workspace = tool_context.workspace.as_path();
         // Persist the assistant tool-call message before executing tools. The LLM protocol expects
         // later tool results to answer a concrete assistant tool_call_id, so this write is part of
         // protocol correctness rather than UI bookkeeping.
         let tool_calls = response.tool_calls.clone();
-        let tool_calls_payload = build_tool_calls_payload(&tool_calls, &self.tools);
-        let args_map = build_args_map(&tool_calls, &self.tools);
+        let tool_calls_payload = build_tool_calls_payload(&tool_calls, &self.tools)?;
+        let args_map = build_args_map(&tool_calls, &self.tools)?;
 
         for tc in &tool_calls_payload {
             emit(
                 on_event,
                 AgentEvent::ToolPlanned {
-                    tool_call_id: Some(tc.id.clone()),
+                    tool_call_id: tc.id.clone(),
                     name: tc.function.name.clone(),
                     arguments: tc.function.arguments.clone(),
                 },
@@ -88,6 +92,9 @@ impl OrchestratorAgent {
         let mut final_message: Option<String> = None;
         let mut saw_retryable_tool_error = false;
         let mut graph_submitted_this_batch = false;
+        // 用量持久化任务句柄收集：收口处统一 await（审查项 G8-01/G8-03），
+        // 用量不再 fire-and-forget 静默丢失。
+        let mut usage_persist_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
         // 按模型给出的顺序执行工具，但把相邻的只读工具合并为一个并行组。
         // message / submit_graph 非只读，保持严格串行。
@@ -134,7 +141,7 @@ impl OrchestratorAgent {
                 emit(
                     on_event,
                     AgentEvent::ToolStarted {
-                        tool_call_id: Some(tool_call.id.clone()),
+                        tool_call_id: tool_call.id.clone(),
                         name: tool_call.name.clone(),
                         arguments: tool_args_json,
                     },
@@ -176,7 +183,9 @@ impl OrchestratorAgent {
                         .intercept_graph_plan_report(db, workspace_id, &tool_call)
                         .await
                     {
-                        Ok(report) => (ToolResult::success_text(report), None),
+                        // from_text 按「错误：」前缀契约分类：显式 planId 不存在等
+                        // 业务错误会进入可重试通道交回模型纠正（审查项 G8-17）。
+                        Ok(report) => (ToolResult::from_text(report), None),
                         Err(error) => (
                             ToolResult::recoverable_error(format!(
                                 "读取执行图运行报告失败：{error:#}"
@@ -305,6 +314,7 @@ impl OrchestratorAgent {
                             usage,
                             usage_tracker,
                             on_event,
+                            &mut usage_persist_handles,
                         );
                     },
                 )
@@ -337,6 +347,15 @@ impl OrchestratorAgent {
             }
         }
 
+        // 用量持久化收口（审查项 G8-01/G8-03）：逐一 await 持久化任务，
+        // 应用退出/DB 瞬时故障时用量不再静默丢失；任务内失败已记录持久化警告，
+        // 任务本身异常退出（panic）在此补充告警。
+        for handle in usage_persist_handles {
+            if let Err(error) = handle.await {
+                helpers::log_warning(&format!("用量持久化任务异常退出：{error}"));
+            }
+        }
+
         Ok(RunLoopToolOutcome {
             saw_retryable_tool_error,
             final_message,
@@ -361,13 +380,14 @@ impl OrchestratorAgent {
             let enriched = self
                 .tools
                 .effective_args(&tool_call.name, &tool_call.arguments);
+            // G9-14：序列化失败上抛（「错误：」前缀），不再静默降级为 `{}`。
+            let arguments_json = common::serialize_tool_arguments(&tool_call.name, &enriched)?;
             emit(
                 on_event,
                 AgentEvent::ToolStarted {
-                    tool_call_id: Some(tool_call.id.clone()),
+                    tool_call_id: tool_call.id.clone(),
                     name: tool_call.name.clone(),
-                    arguments: serde_json::to_string(&enriched)
-                        .unwrap_or_else(|_| "{}".to_string()),
+                    arguments: arguments_json,
                 },
             );
             let run_id = self
@@ -456,11 +476,18 @@ impl OrchestratorAgent {
         tool_call: &RequestedToolCall,
         display_text: &str,
     ) -> Result<DispatcherMessageRecord> {
+        let arguments_json = common::serialize_tool_arguments(
+            &tool_call.name,
+            &self
+                .tools
+                .effective_args(&tool_call.name, &tool_call.arguments),
+        )?;
         emit(
             on_event,
             AgentEvent::ToolFinished {
-                tool_call_id: Some(tool_call.id.clone()),
+                tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
+                arguments: arguments_json,
                 display_text: display_text.to_string(),
                 result_mode: "raw".to_string(),
                 detail_refs: Vec::new(),
@@ -490,11 +517,18 @@ impl OrchestratorAgent {
     ) -> Result<DispatcherMessageRecord> {
         let context_payload = build_tool_retry_context(tool_call, error);
         let display_text = "工具调用参数需要修正，已交回模型重试。";
+        let arguments_json = common::serialize_tool_arguments(
+            &tool_call.name,
+            &self
+                .tools
+                .effective_args(&tool_call.name, &tool_call.arguments),
+        )?;
         emit(
             on_event,
             AgentEvent::ToolFinished {
-                tool_call_id: Some(tool_call.id.clone()),
+                tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
+                arguments: arguments_json,
                 display_text: display_text.to_string(),
                 result_mode: "raw".to_string(),
                 detail_refs: Vec::new(),

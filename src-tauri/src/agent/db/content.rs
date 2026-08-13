@@ -67,9 +67,11 @@ pub(super) fn parse_segments_json(segments_json: &str) -> Vec<ContentSegment> {
         Ok(segments) => segments,
         Err(e) => {
             let preview = if segments_json.len() > 500 {
+                // 按字符边界安全截断：直接切第 500 字节在多字节 UTF-8 字符中间会 panic。
+                let end = segments_json.floor_char_boundary(500);
                 format!(
                     "{}...(truncated, {} bytes)",
-                    &segments_json[..500],
+                    &segments_json[..end],
                     segments_json.len()
                 )
             } else {
@@ -104,15 +106,32 @@ pub(super) fn safe_absolute_image_path(path: &str) -> Result<PathBuf> {
 
     let normalized = lexical_normalize_path(path);
     let base = crate::chat_images::chat_images_dir().map_err(anyhow::Error::msg)?;
-    let normalized_base = lexical_normalize_path(&base);
-    if !normalized.starts_with(&normalized_base) {
+    // 解析符号链接后再校验前缀：chat-images 目录内若存在指向外部的符号链接
+    // （如 base/link -> /outside），仅词法校验会让后续 remove_file 沿链接删除
+    // 目录外文件，构成目录穿越/任意文件删除。
+    let normalized_base = std::fs::canonicalize(&base)
+        .with_context(|| format!("canonicalize chat images dir {}", base.display()))?;
+    let canonical = match std::fs::canonicalize(&normalized) {
+        Ok(canonical) => canonical,
+        // 文件尚不存在（或已被删除）时，解析其父目录再拼接文件名。
+        Err(_) => {
+            let parent = normalized.parent().unwrap_or(&normalized);
+            let canonical_parent = std::fs::canonicalize(parent)
+                .with_context(|| format!("canonicalize chat image parent {}", parent.display()))?;
+            match normalized.file_name() {
+                Some(file_name) => canonical_parent.join(file_name),
+                None => canonical_parent,
+            }
+        }
+    };
+    if !canonical.starts_with(&normalized_base) {
         anyhow::bail!(
             "chat image path must be inside app-managed chat images directory: {}",
-            normalized.display()
+            canonical.display()
         );
     }
 
-    Ok(normalized)
+    Ok(canonical)
 }
 
 pub(super) fn insert_chat_images(
@@ -145,8 +164,6 @@ pub(super) fn insert_chat_images(
              )
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(image_id) DO UPDATE SET
-                workspace_id = excluded.workspace_id,
-                message_id = excluded.message_id,
                 segment_index = excluded.segment_index,
                 path = excluded.path,
                 alt = excluded.alt,
@@ -155,7 +172,9 @@ pub(super) fn insert_chat_images(
                 mime_type = excluded.mime_type,
                 source = excluded.source,
                 generation_prompt = excluded.generation_prompt,
-                created_at = excluded.created_at",
+                created_at = excluded.created_at
+              WHERE chat_images.workspace_id = excluded.workspace_id
+                AND chat_images.message_id = excluded.message_id",
             params![
                 Uuid::new_v4().to_string(),
                 image_id,
@@ -210,10 +229,18 @@ pub(super) fn delete_chat_image_resources(
         }
     }
 
+    // 坏路径（如 DB 残留的非法记录）不应阻断整个清理流程：跳过并留痕，
+    // 保证 DB 记录删除与其余文件清理尽量完整执行。
     let safe_paths = paths
         .into_iter()
-        .map(|path| safe_absolute_image_path(&path))
-        .collect::<Result<Vec<_>>>()?;
+        .filter_map(|path| match safe_absolute_image_path(&path) {
+            Ok(safe_path) => Some(safe_path),
+            Err(error) => {
+                eprintln!("skip invalid chat image path {path:?}: {error:#}");
+                None
+            }
+        })
+        .collect();
 
     tx.execute(
         "DELETE FROM chat_images WHERE workspace_id = ?1",

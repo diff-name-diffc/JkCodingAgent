@@ -16,6 +16,10 @@ pub(super) fn list_dir_tool() -> Box<dyn AgentTool> {
     Box::new(ListDirTool)
 }
 
+/// 行数统计会完整读取文件内容。超过该阈值的文件跳过行数统计并显式标注，
+/// 避免对大体积 bundle / 日志 / 二进制文件逐字节读取、长时间占用阻塞线程池。
+const LINE_COUNT_MAX_BYTES: u64 = 4 * 1024 * 1024;
+
 struct ListDirTool;
 
 #[async_trait]
@@ -74,7 +78,7 @@ impl AgentTool for ListDirTool {
         .await
         {
             Ok(output) => output,
-            Err(error) => format!("读取目录任务失败：{error}"),
+            Err(error) => format!("错误：读取目录任务失败：{error}"),
         }
     }
 }
@@ -130,14 +134,18 @@ impl DirectoryListing {
         true
     }
 
-    fn finish(mut self, max_depth: usize) -> String {
+    fn finish(self, max_depth: usize) -> String {
+        // 截断提示与条目列表分离（空行隔开的独立尾注）：条目数严格不超过
+        // max_entries，提示行也不会被 Agent 误当作目录条目解析。
+        let body = self.entries.join("\n");
         if self.truncated {
-            self.entries.push(format!(
-                "... [目录列表已截断：最多展示 {} 个条目，层级上限为 path 之下 {max_depth} 层]",
+            format!(
+                "{body}\n\n[目录列表已截断：最多展示 {} 个条目，层级上限为 path 之下 {max_depth} 层]",
                 self.max_entries
-            ));
+            )
+        } else {
+            body
         }
-        self.entries.join("\n")
     }
 }
 
@@ -156,7 +164,7 @@ fn collect_dir_entries(
         Ok(read_dir) => read_dir,
         Err(error) => {
             listing.push(format!(
-                "[错误] 无法读取目录 {}: {error}",
+                "错误：无法读取目录 {}: {error}",
                 rel(current, root)
             ));
             return;
@@ -168,7 +176,7 @@ fn collect_dir_entries(
             Ok(entry) => items.push(entry),
             Err(error) => {
                 if !listing.push(format!(
-                    "[错误] 目录条目读取失败 {}: {error}",
+                    "错误：目录条目读取失败 {}: {error}",
                     rel(current, root)
                 )) {
                     return;
@@ -192,7 +200,7 @@ fn collect_dir_entries(
             Ok(file_type) => file_type,
             Err(error) => {
                 listing.push(format!(
-                    "[错误] {} (:无法读取类型：{error})",
+                    "错误：{} (无法读取类型：{error})",
                     rel(&path, root)
                 ));
                 continue;
@@ -212,9 +220,16 @@ fn collect_dir_entries(
                 collect_dir_entries(root, &path, entry_depth, max_depth, listing);
             }
         } else if file_type.is_file() {
-            let line_info = match file_total_lines(&path) {
-                Ok(lines) => format!(":{lines}行"),
-                Err(error) => format!(":行数读取失败：{error}"),
+            let line_info = match fs::metadata(&path) {
+                // 行数统计会完整读文件；超大文件（bundle、日志等）直接跳过，
+                // 避免 list_dir 在阻塞线程池上长时间逐字节读取。
+                Ok(meta) if meta.len() > LINE_COUNT_MAX_BYTES => {
+                    ":行数未统计（文件过大）".to_string()
+                }
+                _ => match file_total_lines(&path) {
+                    Ok(lines) => format!(":{lines}行"),
+                    Err(error) => format!(":错误：行数读取失败：{error}"),
+                },
             };
             if !listing.push(format!("[file] {} ({line_info})", rel(&path, root))) {
                 return;

@@ -37,6 +37,9 @@ pub(crate) trait DynamicToolProvider: Send + Sync {
             })
             .collect()
     }
+    /// 执行动态工具。契约与 `ToolProvider` 一致：返回 None 表示
+    /// 「本 provider 不处理该工具名」；命中时错误消息必须以「错误：」开头，
+    /// 路径参数必须经 ToolContext 工作区校验，阻塞操作必须 spawn_blocking。
     async fn execute(&self, name: &str, args: &Value, context: &ToolContext) -> Option<String>;
 }
 
@@ -106,16 +109,6 @@ impl ToolRegistry {
     where
         I: IntoIterator<Item = &'a str>,
     {
-        if allowed.is_none() && include_dynamic {
-            let provider: &dyn ToolProvider = self;
-            let _provider_name = provider.provider_name();
-            return provider
-                .specs_for_workspace(workspace)
-                .into_iter()
-                .map(|spec| spec.to_definition())
-                .collect();
-        }
-
         self.specs_for_workspace(workspace, allowed, include_dynamic)
             .into_iter()
             .map(|spec| spec.to_definition())
@@ -146,7 +139,23 @@ impl ToolRegistry {
 
         if include_dynamic {
             if let Some(provider) = &self.dynamic_provider {
-                specs.extend(provider.specs_for_workspace(workspace));
+                specs.extend(
+                    provider
+                        .specs_for_workspace(workspace)
+                        .into_iter()
+                        // 与内置工具重名的动态工具在执行期会被 find_by_name 优先命中
+                        // 内置实现而静默遮蔽，定义层面同样去重，避免向 LLM 暴露
+                        // 两份同名定义造成调用歧义。
+                        .filter(|spec| !self.name_index.contains_key(&spec.name))
+                        // allowed 白名单对动态（MCP 等）工具同样生效，
+                        // 防止动态工具绕过白名单进入 LLM 可见工具集。
+                        .filter(|spec| {
+                            allowed
+                                .as_ref()
+                                .map(|names| names.contains(spec.name.as_str()))
+                                .unwrap_or(true)
+                        }),
+                );
             }
         }
         specs
@@ -184,9 +193,7 @@ impl ToolRegistry {
 
     pub async fn execute(&self, name: &str, args: &Value, context: &ToolContext) -> ToolResult {
         let input = ToolInput {
-            call_id: String::new(),
             name: name.to_string(),
-            arguments: args.clone(),
             effective_arguments: self.effective_args(name, args),
         };
         <Self as ToolProvider>::execute(self, name, input, context)
@@ -196,27 +203,29 @@ impl ToolRegistry {
 
     pub async fn execute_input(&self, input: ToolInput, context: &ToolContext) -> ToolResult {
         let ToolInput {
-            call_id,
             name,
-            arguments,
             effective_arguments,
         } = input;
-        let _execution_metadata = (call_id, effective_arguments);
 
+        // 必须使用 effective_arguments（补齐 schema 默认值后的参数）执行：
+        // 与 runtime.rs 落库的 effective_arguments_json、摘要压缩路径保持同一套参数，
+        // 避免「执行的参数」与「记录/压缩的参数」不一致。
         match self.find_by_name(&name) {
             Some(tool) => attach_structured_action(
                 &name,
-                &arguments,
-                ToolResult::from_text(tool.execute(&arguments, context).await)
-                    .with_artifacts(Vec::new()),
+                &effective_arguments,
+                ToolResult::from_text(tool.execute(&effective_arguments, context).await),
             ),
             None => {
                 if let Some(provider) = &self.dynamic_provider {
-                    if let Some(result) = provider.execute(&name, &arguments, context).await {
+                    if let Some(result) = provider
+                        .execute(&name, &effective_arguments, context)
+                        .await
+                    {
                         return attach_structured_action(
                             &name,
-                            &arguments,
-                            ToolResult::from_text(result).with_artifacts(Vec::new()),
+                            &effective_arguments,
+                            ToolResult::from_text(result),
                         );
                     }
                 }
@@ -253,19 +262,6 @@ impl ToolRegistry {
 
 #[async_trait]
 impl ToolProvider for ToolRegistry {
-    fn provider_name(&self) -> &'static str {
-        "registry"
-    }
-
-    fn specs_for_workspace(&self, workspace: &Path) -> Vec<ToolSpec> {
-        ToolRegistry::specs_for_workspace(
-            self,
-            workspace,
-            Option::<std::iter::Empty<&str>>::None,
-            true,
-        )
-    }
-
     async fn execute(
         &self,
         _name: &str,
@@ -300,9 +296,12 @@ fn structured_action_from_args(name: &str, args: &Value) -> Option<ToolAction> {
 mod tests {
     use async_trait::async_trait;
     use serde_json::{json, Value};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
-    use super::{AgentTool, ToolRegistry};
+    use super::{AgentTool, DynamicToolProvider, ToolRegistry};
+    use crate::agent::llm::ToolDefinition;
+    use crate::agent::tools::spec::ToolSpec;
     use crate::agent::tools::ToolContext;
 
     struct TestTool {
@@ -333,6 +332,83 @@ mod tests {
         }
     }
 
+    /// 回显实际收到的参数，用于断言执行期拿到的是补默认后的 effective 参数。
+    struct EchoArgsTool {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl AgentTool for EchoArgsTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn description(&self) -> &'static str {
+            "echo args"
+        }
+
+        fn parameters(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "flag": { "type": "boolean", "default": true }
+                }
+            })
+        }
+
+        async fn execute(&self, args: &Value, _context: &ToolContext) -> String {
+            args.to_string()
+        }
+    }
+
+    struct TestDynamicProvider {
+        specs: Vec<ToolSpec>,
+    }
+
+    #[async_trait]
+    impl DynamicToolProvider for TestDynamicProvider {
+        fn definitions_for_workspace(&self, _workspace: &Path) -> Vec<ToolDefinition> {
+            self.specs.iter().map(ToolSpec::to_definition).collect()
+        }
+
+        fn specs_for_workspace(&self, _workspace: &Path) -> Vec<ToolSpec> {
+            self.specs.clone()
+        }
+
+        async fn execute(&self, name: &str, args: &Value, _context: &ToolContext) -> Option<String> {
+            self.specs
+                .iter()
+                .find(|spec| spec.name == name)
+                .map(|_| format!("dynamic:{args}"))
+        }
+    }
+
+    fn test_context() -> ToolContext {
+        ToolContext {
+            workspace_id: "ws-test".to_string(),
+            workspace: PathBuf::from("/tmp"),
+            session_title: "test".to_string(),
+            user_task: None,
+            ssh_review: None,
+            exec_timeout_secs: 60,
+            restrict_to_workspace: true,
+            extra_allowed_dirs: Vec::new(),
+            app_handle: None,
+            llm_provider: None,
+            vision_model: String::new(),
+            image_model_url: String::new(),
+            image_model_api_key: String::new(),
+            image_model: String::new(),
+            image_edit_model: String::new(),
+            sub_agent_tool_registry: None,
+            current_sub_agent_id: None,
+            current_sub_agent_name: None,
+            current_tool_call_id: None,
+            sub_agent_parent_tool_call_id: None,
+            sub_agent_trace_events: None,
+        }
+    }
+
     #[test]
     #[should_panic(expected = "duplicate agent tool registered")]
     fn duplicate_tool_names_fail_loudly() {
@@ -359,5 +435,87 @@ mod tests {
 
         assert_eq!(defaulted["flag"], true);
         assert_eq!(explicit_false["flag"], false);
+    }
+
+    #[test]
+    fn allowed_whitelist_applies_to_dynamic_specs() {
+        let registry = ToolRegistry::new(vec![Box::new(TestTool { name: "read_file" })])
+            .with_dynamic_provider(Arc::new(TestDynamicProvider {
+                specs: vec![ToolSpec::mcp(
+                    "mcp__demo__tool".to_string(),
+                    "动态工具".to_string(),
+                    json!({ "type": "object", "properties": {} }),
+                )],
+            }));
+
+        // 白名单未包含动态工具时不得泄露给 LLM。
+        let filtered = registry.specs_for_workspace(
+            Path::new("."),
+            Some(["read_file"].into_iter()),
+            true,
+        );
+        assert_eq!(filtered.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["read_file"]);
+
+        // 白名单显式包含时放行。
+        let included = registry.specs_for_workspace(
+            Path::new("."),
+            Some(["read_file", "mcp__demo__tool"].into_iter()),
+            true,
+        );
+        assert_eq!(included.len(), 2);
+
+        // 无白名单时全部放行。
+        let all = registry.specs_for_workspace(
+            Path::new("."),
+            Option::<std::iter::Empty<&str>>::None,
+            true,
+        );
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn dynamic_spec_shadowed_by_builtin_is_deduplicated() {
+        let registry = ToolRegistry::new(vec![Box::new(TestTool { name: "read_file" })])
+            .with_dynamic_provider(Arc::new(TestDynamicProvider {
+                specs: vec![ToolSpec::mcp(
+                    "read_file".to_string(),
+                    "同名动态工具".to_string(),
+                    json!({ "type": "object", "properties": {} }),
+                )],
+            }));
+
+        let specs = registry.specs_for_workspace(
+            Path::new("."),
+            Option::<std::iter::Empty<&str>>::None,
+            true,
+        );
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].provider, "builtin");
+    }
+
+    #[tokio::test]
+    async fn execute_input_runs_tools_with_effective_arguments() {
+        let registry = ToolRegistry::new(vec![Box::new(EchoArgsTool { name: "echo" })]);
+        let context = test_context();
+
+        let result = registry.execute("echo", &json!({}), &context).await;
+
+        // 工具实际收到的参数必须包含 schema 默认值（effective_arguments）。
+        assert_eq!(result.status, crate::agent::tools::result::ToolStatus::Success);
+        assert_eq!(result.display, "{\"flag\":true}");
+    }
+
+    #[tokio::test]
+    async fn execute_input_reports_unknown_tool_with_error_prefix() {
+        let registry = ToolRegistry::new(vec![Box::new(TestTool { name: "read_file" })]);
+        let context = test_context();
+
+        let result = registry.execute("missing_tool", &json!({}), &context).await;
+
+        assert_eq!(
+            result.status,
+            crate::agent::tools::result::ToolStatus::RecoverableError
+        );
+        assert!(result.display.starts_with("错误："));
     }
 }

@@ -20,10 +20,10 @@ const DEFAULT_CONFIG: SubAgentConfig = {
   userPromptTemplate: "{{task}}",
   allowedTools: [],
   modelConfig: { inheritFromParent: true },
-  maxIterations: 20,
+  maxIterations: 60,
   maxOutputTokens: 4096,
   temperature: 0.7,
-  timeoutSecs: 120,
+  timeoutSecs: 3600,
   enabled: true,
   createdAt: 0,
   updatedAt: 0,
@@ -103,13 +103,18 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
       setActiveTab("runtime");
       return;
     }
-    if (draft.maxOutputTokens < 256 || draft.maxOutputTokens > 65536) {
-      setError("最大输出 Token 必须在 256-65536 之间");
+    if (draft.maxOutputTokens < 1024 || draft.maxOutputTokens > 262144) {
+      setError("最大输出 Token 必须在 1024-262144 之间");
       setActiveTab("runtime");
       return;
     }
     if (draft.temperature < 0 || draft.temperature > 2) {
       setError("Temperature 必须在 0-2 之间");
+      setActiveTab("runtime");
+      return;
+    }
+    if (draft.timeoutSecs < 1 || draft.timeoutSecs > 3600) {
+      setError("超时时间必须在 1-3600 秒之间");
       setActiveTab("runtime");
       return;
     }
@@ -357,12 +362,12 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                     />
                   </div>
                   <div className="ai-settings-field-stack">
-                    <label className="ai-settings-field-label">最大输出 Token (256-65536)</label>
+                    <label className="ai-settings-field-label">最大输出 Token (1024-262144)</label>
                     <input
                       className="ai-settings-input"
                       type="number"
-                      min={256}
-                      max={65536}
+                      min={1024}
+                      max={262144}
                       value={draft.maxOutputTokens}
                       onChange={(e) =>
                         setDraft((d) => ({ ...d, maxOutputTokens: Number(e.target.value) }))
@@ -384,10 +389,12 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                     />
                   </div>
                   <div className="ai-settings-field-stack">
-                    <label className="ai-settings-field-label">超时时间 (秒)</label>
+                    <label className="ai-settings-field-label">超时时间 (1-3600 秒)</label>
                     <input
                       className="ai-settings-input"
                       type="number"
+                      min={1}
+                      max={3600}
                       value={draft.timeoutSecs}
                       onChange={(e) =>
                         setDraft((d) => ({ ...d, timeoutSecs: Number(e.target.value) }))

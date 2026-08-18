@@ -42,7 +42,7 @@ impl AgentTool for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "读取文本文件，输出格式为 行号|内容。paths 支持普通文件路径，也支持 path:start-end 协议精确读取包含边界的行范围，例如 backend/app/services/workspace_files.py:123-156；行范围超出文件实际行数时不报错，自动返回到文件末尾的可用内容。大文件可配合 offset 和 limit 分段读取。compress=false 绝不进行摘要，超过 2000 字符的内联结果会带定位标记截断。"
+        "读取文本文件，输出格式为 行号|内容。paths 支持普通文件路径，也支持 path:start-end 协议精确读取包含边界的行范围，例如 backend/app/services/workspace_files.py:123-156；行范围超出文件实际行数时不报错，自动返回到文件末尾的可用内容。大文件可配合 offset 和 limit 分段读取。compress=false 绝不进行摘要；内联结果默认 10000 字符截断，显式传 offset 或 limit 分页读取时上限提高到 20000，截断均带定位标记。"
     }
 
     fn parameters(&self) -> Value {

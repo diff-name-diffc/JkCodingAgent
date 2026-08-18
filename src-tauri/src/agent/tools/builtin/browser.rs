@@ -1,8 +1,15 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tauri::Manager;
 
-use super::common::{canonicalize_existing_prefix, string_arg, u64_arg, with_compression_parameters};
+use super::common::{
+    canonicalize_existing_prefix, string_arg, u64_arg, usize_arg, with_compression_parameters,
+};
 use crate::agent::llm::{ChatMessage, ChatMessageContentPart, ChatMessageImageSource};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
@@ -55,7 +62,15 @@ async fn auto_recover_snapshot(context: &ToolContext, original_error: &str) -> S
 
     match recovery_result {
         Ok(snapshot_value) => {
-            let snapshot_text = format_browser_result(snapshot_value);
+            // 复用 read_text 的行号分页渲染：恢复快照同样登记缓存，模型可直接用
+            // offset/limit 接续读取，而不必整包重读。
+            let snapshot_text = format_snapshot_response(
+                snapshot_value,
+                &context.workspace_id,
+                None,
+                1,
+                READ_TEXT_DEFAULT_LINE_LIMIT,
+            );
             format!(
                 "错误：[ref_expired] {original_error}\n\n\
                 ⚠️ 页面元素引用已失效（可能是页面发生了导航或内容变化）。\n\
@@ -166,6 +181,10 @@ impl AgentTool for OpenUrlTool {
                 Err(error) => return format!("错误：file:// URL 校验任务失败：{error}"),
             }
         }
+        // 即将导航：sidecar 的 ref 映射与缓存快照都会随之失效。提前丢弃缓存，
+        // 避免导航后的分页读取返回旧页面内容（即使 open_url 失败，代价也只是
+        // 下次分页读取多一次全量抓取）。
+        snapshot_cache().lock().remove(&context.workspace_id);
         run_browser_command(
             context,
             "open_url",
@@ -340,6 +359,143 @@ impl AgentTool for WaitForTool {
     }
 }
 
+// ─── read_text 快照分页 ─────────────────────────────────────────────────────
+
+/// read_text 不传 limit 时读取的行数上限（与 read_file 的默认 limit 对齐）。
+const READ_TEXT_DEFAULT_LINE_LIMIT: usize = 2_000;
+
+/// sidecar read_text 结果的解析产物：结构化元信息 + 快照树行。
+#[derive(Clone)]
+struct SnapshotContent {
+    url: String,
+    node_count: u64,
+    emitted: u64,
+    ref_count: u64,
+    truncated: bool,
+    lines: Vec<String>,
+}
+
+/// 每个 workspace 缓存最近一次全量快照。带 offset/limit 的分页读取直接命中缓存：
+/// 不再重复请求 CDP，既保证行号与模型刚看到的快照一致，也避免刷新 sidecar 的
+/// ref 映射导致此前下发的 ref 全部失效。
+struct CachedSnapshot {
+    snapshot_id: u64,
+    content: SnapshotContent,
+}
+
+/// 全局快照序号：让模型能察觉两次分页读取之间快照是否已被刷新。
+static SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn snapshot_cache() -> &'static Mutex<HashMap<String, CachedSnapshot>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedSnapshot>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn store_snapshot(workspace_id: &str, content: SnapshotContent) -> u64 {
+    let snapshot_id = SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
+    snapshot_cache().lock().insert(
+        workspace_id.to_string(),
+        CachedSnapshot {
+            snapshot_id,
+            content,
+        },
+    );
+    snapshot_id
+}
+
+/// 从 sidecar read_text 返回值提取快照内容。sidecar 的 text 自带
+/// `# Accessibility Tree Snapshot\nurl: …\nnode_count: …\ntruncated: …\n\n` 头部，
+/// 元信息改由结构化字段渲染，只有头部之后的树行才参与行号分页——否则整棵树
+/// 会挤在 pretty JSON 的单个字符串行里，行级截断定位完全失效。
+fn extract_snapshot(value: &Value) -> Option<SnapshotContent> {
+    let text = value.get("text")?.as_str()?;
+    let tree = text.split_once("\n\n").map(|(_, tree)| tree).unwrap_or(text);
+    Some(SnapshotContent {
+        url: value
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        node_count: value.get("nodeCount").and_then(Value::as_u64).unwrap_or(0),
+        emitted: value
+            .get("emittedNodeCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        ref_count: value.get("refCount").and_then(Value::as_u64).unwrap_or(0),
+        truncated: value.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+        lines: tree.lines().map(str::to_string).collect(),
+    })
+}
+
+/// 渲染快照的一页：元信息头 + `行号|内容` 树行切片，行号格式与 read_file 一致，
+/// 通用管线的字符截断定位器可直接命中行号前缀。offset/limit 语义与 read_file
+/// 对齐：1 起始、包含边界、越界时返回可用内容。
+fn render_snapshot_page(
+    content: &SnapshotContent,
+    ref_arg: Option<&str>,
+    snapshot_id: Option<u64>,
+    offset: usize,
+    limit: usize,
+) -> String {
+    let total = content.lines.len();
+    let start = offset.max(1);
+    let limit = limit.max(1);
+
+    let mut header = match ref_arg {
+        Some(ref_id) => format!("# Accessibility Tree Snapshot（ref={ref_id} 局部树）"),
+        None => "# Accessibility Tree Snapshot".to_string(),
+    };
+    header.push_str(&format!("\nurl: {}", content.url));
+    if ref_arg.is_some() {
+        header.push_str(&format!(
+            "\nnodes: {} emitted / {} refs",
+            content.emitted, content.ref_count
+        ));
+    } else {
+        header.push_str(&format!(
+            "\nnodes: {} total / {} emitted / {} refs",
+            content.node_count, content.emitted, content.ref_count
+        ));
+    }
+    header.push_str(&format!("\nsnapshot_truncated: {}", content.truncated));
+    if let Some(id) = snapshot_id {
+        header.push_str(&format!("\nsnapshot: #{id}"));
+    }
+
+    if start > total {
+        return format!("{header}\n\n（起始行 {start} 超出快照总行数 {total}，无内容返回）");
+    }
+
+    let end = (start + limit - 1).min(total);
+    let mut parts = vec![header, format!("lines: {start}-{end} / {total}"), String::new()];
+    for (index, line) in content.lines[start - 1..end].iter().enumerate() {
+        parts.push(format!("{}|{}", start + index, line));
+    }
+    // 只陈述剩余行数，不引导下一步动作——是否继续读取由 Agent 决定
+    // （头部的 lines: start-end / total 已足够推算后续行号）。
+    if end < total {
+        parts.push(String::new());
+        parts.push(format!("（还有 {} 行未返回）", total - end));
+    }
+    parts.join("\n")
+}
+
+/// 全量/局部读取 sidecar 快照后：登记缓存（仅全量）并渲染行号分页结果。
+/// sidecar 返回结构不符合预期时退回整包 JSON 展示。
+fn format_snapshot_response(
+    value: Value,
+    workspace_id: &str,
+    ref_arg: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> String {
+    let Some(content) = extract_snapshot(&value) else {
+        return format_browser_result(value);
+    };
+    let snapshot_id = (ref_arg.is_none()).then(|| store_snapshot(workspace_id, content.clone()));
+    render_snapshot_page(&content, ref_arg, snapshot_id, offset, limit)
+}
+
 #[async_trait]
 impl AgentTool for ReadTextTool {
     fn name(&self) -> &'static str {
@@ -347,7 +503,7 @@ impl AgentTool for ReadTextTool {
     }
 
     fn description(&self) -> &'static str {
-        "读取 CloakBrowser 当前页面或指定 ref 元素的可访问性树文本快照。快照会为可交互/可定位节点生成 ref，后续浏览器自动化统一使用这些 ref。"
+        "读取 CloakBrowser 当前页面或指定 ref 元素的可访问性树文本快照，输出为「行号|内容」格式；快照会为可交互/可定位节点生成 ref，后续浏览器自动化统一使用这些 ref。快照较长时超过内联上限（默认 10000 字符）会被截断并注明行位置，此时用 offset/limit 按行号接续读取剩余部分（分页读取的内联上限提高到 20000 字符，一次可读约一两百行）；带行范围的调用读取的是最近一次全量快照（不重新请求页面、ref 保持有效），需要刷新页面状态时省略行范围重新读取。"
     }
 
     fn parameters(&self) -> Value {
@@ -355,8 +511,10 @@ impl AgentTool for ReadTextTool {
             json!({
                 "type": "object",
                 "properties": {
-                    "ref": { "type": "string", "description": "可选。读取某个已知 ref 对应元素的局部 Accessibility Tree；不传则读取整个页面并刷新 ref 映射。" },
-                    "max_nodes": { "type": "integer", "description": "最多返回的可访问性节点数，默认 600", "minimum": 1 },
+                    "ref": { "type": "string", "description": "可选。读取某个已知 ref 对应元素的局部 Accessibility Tree；不传则读取整个页面并刷新 ref 映射。局部树的行号独立编号。" },
+                    "offset": { "type": "integer", "description": "起始行号，从 1 开始。传了 offset/limit 时读取最近一次全量快照的对应行范围，不会重新请求页面，ref 保持有效；需要最新页面状态时省略行范围重新读取。", "minimum": 1 },
+                    "limit": { "type": "integer", "description": "最多读取多少行，默认 2000（即读到快照末尾）。内联字符上限默认 10000，显式指定 offset/limit 分页读取时提高到 20000；输出为 行号|内容，超过上限仍会截断并注明行位置，用 offset 从截断行的下一行接续读取即可。", "minimum": 1 },
+                    "max_nodes": { "type": "integer", "description": "最多返回的可访问性节点数，默认 600。仅在不带行范围（重新抓取快照）时生效。", "minimum": 1 },
                     "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 60000", "minimum": 1 }
                 }
             }),
@@ -366,16 +524,49 @@ impl AgentTool for ReadTextTool {
     }
 
     async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        run_browser_command(
+        // 与 sidecar 的空 ref 语义对齐：空字符串按未传处理（读取整页）。
+        let ref_arg = string_arg(args, "ref").filter(|value| !value.trim().is_empty());
+        let offset = usize_arg(args, "offset");
+        let limit_arg = usize_arg(args, "limit");
+        let has_range = offset.is_some() || limit_arg.is_some();
+        let limit = limit_arg.unwrap_or(READ_TEXT_DEFAULT_LINE_LIMIT);
+
+        // 分页读取：全量快照直接命中缓存切片，不重复请求 CDP，也不会刷新
+        // sidecar 的 ref 映射（此前下发的 ref 保持有效）。
+        if ref_arg.is_none() && has_range {
+            let cache = snapshot_cache().lock();
+            if let Some(snapshot) = cache.get(&context.workspace_id) {
+                return render_snapshot_page(
+                    &snapshot.content,
+                    None,
+                    Some(snapshot.snapshot_id),
+                    offset.unwrap_or(1),
+                    limit,
+                );
+            }
+            // 无缓存（sidecar 重启 / 冷启动）：继续走全量读取后按行范围切片。
+        }
+
+        match run_browser_command_value(
             context,
             "read_text",
             json!({
-                "ref": string_arg(args, "ref"),
+                "ref": ref_arg,
                 "maxNodes": u64_arg(args, "max_nodes").unwrap_or(600).max(1),
                 "timeout": timeout_arg(args)
             }),
         )
         .await
+        {
+            Ok(value) => format_snapshot_response(
+                value,
+                &context.workspace_id,
+                ref_arg.as_deref(),
+                offset.unwrap_or(1),
+                limit,
+            ),
+            Err(error) => handle_browser_error(context, error).await,
+        }
     }
 }
 
@@ -502,7 +693,11 @@ impl AgentTool for CloseTool {
         };
         let manager = app.state::<BrowserManager>();
         match manager.stop(&context.workspace_id).await {
-            Ok(()) => "CloakBrowser 已关闭".to_string(),
+            Ok(()) => {
+                // 浏览器已停：缓存快照与 sidecar 的 ref 映射一并失效，同步丢弃。
+                snapshot_cache().lock().remove(&context.workspace_id);
+                "CloakBrowser 已关闭".to_string()
+            }
             Err(error) => format!("错误：{error}"),
         }
     }
@@ -650,7 +845,8 @@ fn format_browser_result(value: Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{file_url_to_path, percent_decode};
+    use super::{extract_snapshot, file_url_to_path, percent_decode, render_snapshot_page};
+    use serde_json::json;
 
     #[test]
     fn file_url_to_path_parses_local_paths() {
@@ -698,5 +894,80 @@ mod tests {
         assert_eq!(percent_decode("a+b"), "a+b");
         // 非法转义按原样保留
         assert_eq!(percent_decode("%ZZ"), "%ZZ");
+    }
+
+    // ─── read_text 快照分页 ───
+
+    fn sample_snapshot_value() -> serde_json::Value {
+        json!({
+            "text": "# Accessibility Tree Snapshot\nurl: https://example.com/\nnode_count: 5\ntruncated: false\n\n- button [ref=r1] \"登录\"\n  - textbox [ref=r2] \"用户名\" value=\"jk\"\n- link [ref=r3] \"下一页\"",
+            "nodeCount": 5,
+            "emittedNodeCount": 3,
+            "refCount": 3,
+            "truncated": false,
+            "url": "https://example.com/"
+        })
+    }
+
+    #[test]
+    fn extract_snapshot_separates_sidecar_header_from_tree_lines() {
+        let content = extract_snapshot(&sample_snapshot_value()).unwrap();
+        assert_eq!(content.url, "https://example.com/");
+        assert_eq!(content.node_count, 5);
+        assert_eq!(content.emitted, 3);
+        assert_eq!(content.ref_count, 3);
+        assert!(!content.truncated);
+        assert_eq!(
+            content.lines,
+            vec![
+                "- button [ref=r1] \"登录\"",
+                "  - textbox [ref=r2] \"用户名\" value=\"jk\"",
+                "- link [ref=r3] \"下一页\""
+            ]
+        );
+    }
+
+    #[test]
+    fn render_snapshot_page_numbers_all_lines_by_default() {
+        let content = extract_snapshot(&sample_snapshot_value()).unwrap();
+        let page = render_snapshot_page(&content, None, Some(7), 1, 2_000);
+        assert!(page.contains("# Accessibility Tree Snapshot\nurl: https://example.com/"));
+        assert!(page.contains("nodes: 5 total / 3 emitted / 3 refs"));
+        assert!(page.contains("snapshot: #7"));
+        assert!(page.contains("lines: 1-3 / 3"));
+        assert!(page.contains("1|- button [ref=r1] \"登录\""));
+        assert!(page.contains("3|- link [ref=r3] \"下一页\""));
+        // 已读到末行，不再输出翻页提示
+        assert!(!page.contains("继续读取"));
+    }
+
+    #[test]
+    fn render_snapshot_page_slices_inclusive_range_and_states_remaining_neutrally() {
+        let content = extract_snapshot(&sample_snapshot_value()).unwrap();
+        let page = render_snapshot_page(&content, None, None, 2, 1);
+        assert!(page.contains("lines: 2-2 / 3"));
+        assert!(page.contains("2|  - textbox [ref=r2] \"用户名\" value=\"jk\""));
+        assert!(!page.contains("1|- button"));
+        // 只陈述剩余行数，不出现指令式引导
+        assert!(page.contains("（还有 1 行未返回）"));
+        assert!(!page.contains("继续读取"));
+        assert!(!page.contains("offset=3"));
+    }
+
+    #[test]
+    fn render_snapshot_page_reports_offset_beyond_total() {
+        let content = extract_snapshot(&sample_snapshot_value()).unwrap();
+        let page = render_snapshot_page(&content, None, None, 10, 50);
+        assert!(page.contains("起始行 10 超出快照总行数 3，无内容返回"));
+        assert!(!page.contains("请省略"));
+        assert!(!page.contains("|-"));
+    }
+
+    #[test]
+    fn render_snapshot_page_marks_partial_tree_scope() {
+        let content = extract_snapshot(&sample_snapshot_value()).unwrap();
+        let page = render_snapshot_page(&content, Some("r12"), None, 1, 2_000);
+        assert!(page.contains("# Accessibility Tree Snapshot（ref=r12 局部树）"));
+        assert!(page.contains("nodes: 3 emitted / 3 refs"));
     }
 }

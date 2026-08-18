@@ -325,6 +325,40 @@ fn normalized_total_tokens(usage: &LlmUsage) -> u64 {
 /// clipped with an explicit locator while the complete output remains an artifact.
 pub const TOOL_RESULT_INLINE_MAX_CHARS: usize = 2_000;
 
+/// 读取类工具未显式分页时的内联上限：读取结果通常是要精读的正文或检索命中，
+/// 2000 字符过于紧凑。
+pub const TOOL_RESULT_INLINE_MAX_CHARS_READ: usize = 10_000;
+
+/// 显式按行分页读取时的内联上限。分页本身就是模型在主动控制读取粒度，
+/// 一页只给 2000 字符（约二三十行）会导致接续读取的往返次数过多。
+pub const TOOL_RESULT_INLINE_MAX_CHARS_PAGED: usize = 20_000;
+
+/// 内容读取类工具：结果主体是供模型精读的文本。这些工具享有两档内联预算——
+/// 默认 READ（10000），显式传入 offset/limit 分页读取时 PAGED（20000）；
+/// 其余工具维持 2000。
+/// 注意：effective_args 会注入 schema default，列入此处的工具其 offset/limit
+/// 参数不得声明 default，否则无法区分显式分页与默认读取。
+const INLINE_READ_TOOLS: &[&str] = &[
+    "read_file",
+    "browser_read_text",
+    "grep",
+    "glob",
+    "list_dir",
+    "graph_plan_report",
+];
+
+/// 按工具与入参决定本次调用的内联字符上限。
+fn inline_max_chars(tool_name: &str, args: &serde_json::Value) -> usize {
+    if !INLINE_READ_TOOLS.contains(&tool_name) {
+        return TOOL_RESULT_INLINE_MAX_CHARS;
+    }
+    if args.get("offset").is_some() || args.get("limit").is_some() {
+        TOOL_RESULT_INLINE_MAX_CHARS_PAGED
+    } else {
+        TOOL_RESULT_INLINE_MAX_CHARS_READ
+    }
+}
+
 /// Semantic compression is worthwhile only for genuinely large results and must
 /// always be explicitly enabled by the tool call's `compress` argument.
 pub const TOOL_RESULT_SUMMARY_MIN_CHARS: usize = 5_000;
@@ -340,7 +374,7 @@ pub struct PreparedToolResult {
 }
 
 pub fn prepare_tool_result(
-    _tool_name: &str,
+    tool_name: &str,
     args: &serde_json::Value,
     raw_output: &str,
 ) -> PreparedToolResult {
@@ -368,6 +402,7 @@ pub fn prepare_tool_result(
         .map(|s| s.to_string());
 
     let char_count = trimmed.chars().count();
+    let max_inline = inline_max_chars(tool_name, args);
     let needs_summary = model_compress && char_count > TOOL_RESULT_SUMMARY_MIN_CHARS;
 
     if needs_summary {
@@ -379,8 +414,8 @@ pub fn prepare_tool_result(
             needs_summary: true,
             compress_intent,
         }
-    } else if char_count > TOOL_RESULT_INLINE_MAX_CHARS {
-        let truncated = truncate_tool_result(trimmed, char_count);
+    } else if char_count > max_inline {
+        let truncated = truncate_tool_result(trimmed, char_count, max_inline);
         PreparedToolResult {
             display_content: truncated.clone(),
             context_payload: truncated,
@@ -401,10 +436,10 @@ pub fn prepare_tool_result(
     }
 }
 
-fn truncate_tool_result(raw_output: &str, char_count: usize) -> String {
+fn truncate_tool_result(raw_output: &str, char_count: usize, max_chars: usize) -> String {
     let prefix = raw_output
         .chars()
-        .take(TOOL_RESULT_INLINE_MAX_CHARS)
+        .take(max_chars)
         .collect::<String>();
     let truncated_at_output_line = prefix.chars().filter(|ch| *ch == '\n').count() + 1;
     let total_lines = raw_output.lines().count().max(1);
@@ -413,7 +448,7 @@ fn truncate_tool_result(raw_output: &str, char_count: usize) -> String {
         .unwrap_or_default();
 
     format!(
-        "{prefix}\n\n[结果已截断：仅返回前 {TOOL_RESULT_INLINE_MAX_CHARS} / {char_count} 字符；截断发生在原始结果第 {truncated_at_output_line} 个输出行{source_line_marker}，原始结果共 {total_lines} 行。完整原始结果见工具产物。]"
+        "{prefix}\n\n[结果已截断：仅返回前 {max_chars} / {char_count} 字符；截断发生在原始结果第 {truncated_at_output_line} 个输出行{source_line_marker}，原始结果共 {total_lines} 行。完整原始结果见工具产物。]"
     )
 }
 
@@ -433,9 +468,10 @@ fn source_line_number_at_cut(prefix: &str) -> Option<usize> {
 }
 
 fn bound_inline_tool_result(content: String) -> String {
+    // 摘要结果的展示上限保持紧凑值：压缩后的内容本就该足够精炼。
     let char_count = content.chars().count();
     if char_count > TOOL_RESULT_INLINE_MAX_CHARS {
-        truncate_tool_result(&content, char_count)
+        truncate_tool_result(&content, char_count, TOOL_RESULT_INLINE_MAX_CHARS)
     } else {
         content
     }
@@ -914,7 +950,8 @@ mod tests {
 
     use super::{
         classify_tool_result, prepare_tool_result, should_keep_llm_message, ChatMessage,
-        FunctionCall, OutboundToolCall, ToolOutcome,
+        FunctionCall, OutboundToolCall, ToolOutcome, TOOL_RESULT_INLINE_MAX_CHARS_PAGED,
+        TOOL_RESULT_INLINE_MAX_CHARS_READ,
     };
 
     fn chat_message(role: &str, content: &str) -> ChatMessage {
@@ -1007,7 +1044,7 @@ mod tests {
 
     #[test]
     fn compress_false_truncates_without_requesting_summary() {
-        let raw = (1..=300)
+        let raw = (1..=1_000)
             .map(|line| format!("{line}|0123456789"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -1029,7 +1066,7 @@ mod tests {
                 .unwrap_or_default()
                 .chars()
                 .count(),
-            2_000
+            TOOL_RESULT_INLINE_MAX_CHARS_READ
         );
         assert_eq!(prepared.raw_output, raw);
     }
@@ -1043,18 +1080,99 @@ mod tests {
         let large_prepared = prepare_tool_result("grep", &json!({ "compress": true }), &large);
 
         assert!(!medium_prepared.needs_summary);
-        assert_eq!(medium_prepared.result_mode, "truncated");
+        // grep 属读取类工具，5000 字符在 10000 内联预算内，完整内联返回。
+        assert_eq!(medium_prepared.result_mode, "raw");
         assert!(large_prepared.needs_summary);
         assert_eq!(large_prepared.result_mode, "pending_summary");
     }
 
     #[test]
     fn compress_false_never_summarizes_large_results() {
-        let raw = "x".repeat(6_000);
+        let raw = "x".repeat(TOOL_RESULT_INLINE_MAX_CHARS_READ + 1_000);
 
         let prepared = prepare_tool_result("grep", &json!({ "compress": false }), &raw);
 
         assert!(!prepared.needs_summary);
         assert_eq!(prepared.result_mode, "truncated");
+    }
+
+    #[test]
+    fn explicit_line_range_raises_browser_read_text_inline_budget() {
+        let raw = (1..=3_000)
+            .map(|line| format!("{line}|0123456789"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let paged = prepare_tool_result(
+            "browser_read_text",
+            &json!({ "compress": false, "offset": 51, "limit": 200 }),
+            &raw,
+        );
+
+        assert!(!paged.needs_summary);
+        assert_eq!(paged.result_mode, "truncated");
+        assert!(paged.display_content.contains("仅返回前 20000 /"));
+        assert_eq!(
+            paged.display_content
+                .split("\n\n[")
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .count(),
+            TOOL_RESULT_INLINE_MAX_CHARS_PAGED
+        );
+        assert_eq!(paged.raw_output, raw);
+    }
+
+    #[test]
+    fn read_file_explicit_line_range_also_raises_inline_budget() {
+        let raw = "x".repeat(30_000);
+
+        let paged = prepare_tool_result(
+            "read_file",
+            &json!({ "compress": false, "offset": 101, "limit": 500 }),
+            &raw,
+        );
+
+        assert_eq!(paged.result_mode, "truncated");
+        assert!(paged.display_content.contains("仅返回前 20000 /"));
+    }
+
+    #[test]
+    fn browser_read_text_without_explicit_range_uses_read_budget() {
+        let raw = "x".repeat(TOOL_RESULT_INLINE_MAX_CHARS_READ + 1);
+
+        let prepared = prepare_tool_result("browser_read_text", &json!({ "compress": false }), &raw);
+
+        assert_eq!(prepared.result_mode, "truncated");
+        assert!(prepared.display_content.contains("仅返回前 10000 /"));
+    }
+
+    #[test]
+    fn read_tools_without_paging_params_use_read_budget() {
+        for tool_name in ["grep", "glob", "list_dir", "graph_plan_report"] {
+            let raw = "x".repeat(TOOL_RESULT_INLINE_MAX_CHARS_READ + 1);
+
+            let prepared = prepare_tool_result(tool_name, &json!({ "compress": false }), &raw);
+
+            assert_eq!(prepared.result_mode, "truncated", "{tool_name}");
+            assert!(
+                prepared.display_content.contains("仅返回前 10000 /"),
+                "{tool_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn offset_on_non_read_tools_keeps_default_budget() {
+        let raw = "x".repeat(6_000);
+
+        let prepared = prepare_tool_result(
+            "exec",
+            &json!({ "compress": false, "offset": 51, "limit": 200 }),
+            &raw,
+        );
+
+        assert!(prepared.display_content.contains("仅返回前 2000 /"));
     }
 }

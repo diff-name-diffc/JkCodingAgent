@@ -52,10 +52,10 @@ export function fromBackendConfig(record: SubAgentRecord): SubAgentConfig | null
         modelName:
           raw.model_config?.model_name ?? raw.modelConfig?.modelName ?? undefined,
       },
-      maxIterations: raw.max_iterations ?? raw.maxIterations ?? 20,
+      maxIterations: raw.max_iterations ?? raw.maxIterations ?? 60,
       maxOutputTokens: raw.max_output_tokens ?? raw.maxOutputTokens ?? 4096,
       temperature: raw.temperature ?? 0.7,
-      timeoutSecs: raw.timeout_secs ?? raw.timeoutSecs ?? 120,
+      timeoutSecs: raw.timeout_secs ?? raw.timeoutSecs ?? 3600,
       enabled: record.enabled,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,

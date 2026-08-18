@@ -57,7 +57,7 @@ fn default_user_prompt_template() -> String {
 }
 
 fn default_max_iterations() -> u32 {
-    20
+    60
 }
 
 fn default_max_output_tokens() -> u32 {
@@ -69,7 +69,7 @@ fn default_temperature() -> f64 {
 }
 
 fn default_timeout_secs() -> u64 {
-    120
+    MAX_TIMEOUT_SECS
 }
 
 fn default_true() -> bool {
@@ -138,8 +138,10 @@ impl SubAgentConfig {
         if self.max_iterations < 1 || self.max_iterations > 100 {
             return Err(anyhow!("错误：max_iterations 必须在 1-100 之间"));
         }
-        if self.max_output_tokens < 256 || self.max_output_tokens > 65536 {
-            return Err(anyhow!("错误：max_output_tokens 必须在 256-65536 之间"));
+        // 主流模型上下文已达 1M 级别，输出上限同步放宽：下限排除截断风险高的
+        // 玩具值，上限 256K 覆盖当前最大输出窗口（如 128K/256K 级别的长输出模型）。
+        if self.max_output_tokens < 1024 || self.max_output_tokens > 262_144 {
+            return Err(anyhow!("错误：max_output_tokens 必须在 1024-262144 之间"));
         }
         // 用 is_finite + contains 拦截 NaN/无穷大：IEEE 754 下 NaN 与任何值
         // 的比较都为 false，裸 `<`/`>` 判断会让 NaN 通过校验。
@@ -274,6 +276,19 @@ mod tests {
         assert!(config.validate().is_err(), "timeout above cap must fail");
         config.timeout_secs = 600;
         config.validate().expect("timeout 600 must pass");
+    }
+
+    #[test]
+    fn max_output_tokens_range_is_enforced() {
+        let mut config = base_config();
+        config.max_output_tokens = 1023;
+        assert!(config.validate().is_err(), "tokens below floor must fail");
+        config.max_output_tokens = 262_145;
+        assert!(config.validate().is_err(), "tokens above cap must fail");
+        config.max_output_tokens = 1024;
+        config.validate().expect("tokens 1024 must pass");
+        config.max_output_tokens = 262_144;
+        config.validate().expect("tokens 262144 must pass");
     }
 
     #[test]

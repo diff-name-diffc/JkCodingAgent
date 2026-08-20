@@ -1,12 +1,13 @@
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
+
 use super::context::ToolContext;
-use super::provider::ToolProvider;
-use super::result::{ToolAction, ToolResult};
+use super::result::ToolResult;
 use super::spec::ToolSpec;
 use super::ToolInput;
 use crate::agent::llm::ToolDefinition;
@@ -19,7 +20,7 @@ pub trait AgentTool: Send + Sync {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(self.name(), self.description(), self.parameters())
     }
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String;
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult;
 }
 
 #[async_trait]
@@ -37,21 +38,24 @@ pub(crate) trait DynamicToolProvider: Send + Sync {
             })
             .collect()
     }
-    /// 执行动态工具。契约与 `ToolProvider` 一致：返回 None 表示
-    /// 「本 provider 不处理该工具名」；命中时错误消息必须以「错误：」开头，
+    /// 执行动态工具。返回 None 表示
+    /// 「本 provider 不处理该工具名」；命中时必须返回明确的 ToolResult，
     /// 路径参数必须经 ToolContext 工作区校验，阻塞操作必须 spawn_blocking。
-    async fn execute(&self, name: &str, args: &Value, context: &ToolContext) -> Option<String>;
+    async fn execute(&self, name: &str, args: &Value, context: &ToolContext) -> Option<ToolResult>;
 }
 
 pub struct ToolRegistry {
     tools: Vec<Box<dyn AgentTool>>,
     name_index: HashMap<String, usize>,
+    validators: HashMap<String, jsonschema::Validator>,
+    dynamic_validators: Mutex<HashMap<String, (String, Arc<jsonschema::Validator>)>>,
     dynamic_provider: Option<Arc<dyn DynamicToolProvider>>,
 }
 
 impl ToolRegistry {
     pub(crate) fn new(tools: Vec<Box<dyn AgentTool>>) -> Self {
         let mut name_index = HashMap::new();
+        let mut validators = HashMap::new();
         for (index, tool) in tools.iter().enumerate() {
             let duplicate = name_index.insert(tool.name().to_string(), index);
             assert!(
@@ -59,10 +63,16 @@ impl ToolRegistry {
                 "duplicate agent tool registered: {}",
                 tool.name()
             );
+            validators.insert(
+                tool.name().to_string(),
+                compile_builtin_schema(tool.name(), &tool.parameters()),
+            );
         }
         Self {
             tools,
             name_index,
+            validators,
+            dynamic_validators: Mutex::new(HashMap::new()),
             dynamic_provider: None,
         }
     }
@@ -76,6 +86,7 @@ impl ToolRegistry {
     }
 
     pub fn add_tool(&mut self, tool: Box<dyn AgentTool>) {
+        let validator = compile_builtin_schema(tool.name(), &tool.parameters());
         let duplicate = self
             .name_index
             .insert(tool.name().to_string(), self.tools.len());
@@ -84,6 +95,7 @@ impl ToolRegistry {
             "duplicate agent tool registered: {}",
             tool.name()
         );
+        self.validators.insert(tool.name().to_string(), validator);
         self.tools.push(tool);
     }
 
@@ -191,17 +203,11 @@ impl ToolRegistry {
             .is_some_and(|spec| spec.supports_parallel_readonly())
     }
 
-    pub async fn execute(&self, name: &str, args: &Value, context: &ToolContext) -> ToolResult {
-        let input = ToolInput {
-            name: name.to_string(),
-            effective_arguments: self.effective_args(name, args),
-        };
-        <Self as ToolProvider>::execute(self, name, input, context)
-            .await
-            .unwrap_or_else(|| ToolResult::recoverable_error(format!("错误：未找到工具 '{name}'")))
-    }
-
-    pub async fn execute_input(&self, input: ToolInput, context: &ToolContext) -> ToolResult {
+    pub(super) async fn execute_input(
+        &self,
+        input: ToolInput,
+        context: &ToolContext,
+    ) -> ToolResult {
         let ToolInput {
             name,
             effective_arguments,
@@ -211,22 +217,13 @@ impl ToolRegistry {
         // 与 runtime.rs 落库的 effective_arguments_json、摘要压缩路径保持同一套参数，
         // 避免「执行的参数」与「记录/压缩的参数」不一致。
         match self.find_by_name(&name) {
-            Some(tool) => attach_structured_action(
-                &name,
-                &effective_arguments,
-                ToolResult::from_text(tool.execute(&effective_arguments, context).await),
-            ),
+            Some(tool) => tool.execute(&effective_arguments, context).await,
             None => {
                 if let Some(provider) = &self.dynamic_provider {
-                    if let Some(result) = provider
-                        .execute(&name, &effective_arguments, context)
-                        .await
+                    if let Some(result) =
+                        provider.execute(&name, &effective_arguments, context).await
                     {
-                        return attach_structured_action(
-                            &name,
-                            &effective_arguments,
-                            ToolResult::from_text(result),
-                        );
+                        return result;
                     }
                 }
                 ToolResult::recoverable_error(format!("错误：未找到工具 '{}'", name))
@@ -234,61 +231,169 @@ impl ToolRegistry {
         }
     }
 
+    /// 将模型原始参数转换为唯一、可执行的 ToolInput。
+    ///
+    /// 顺序固定为：查找工具规范 → 递归补 schema default → Draft 2020-12
+    /// 严格校验。所有真实执行都必须经过此入口，工具实现只会收到
+    /// effective_arguments，绝不能自行绕过校验执行原始参数。
+    pub(super) fn prepare_input(
+        &self,
+        workspace: &Path,
+        tool_name: &str,
+        args: &Value,
+        include_dynamic: bool,
+    ) -> Result<ToolInput, ToolResult> {
+        let Some(spec) = self.spec_by_name(workspace, tool_name, include_dynamic) else {
+            return Err(ToolResult::recoverable_error(format!(
+                "错误：未找到工具 '{tool_name}'"
+            )));
+        };
+
+        let mut effective_arguments = args.clone();
+        apply_schema_defaults(&spec.parameters, &mut effective_arguments);
+
+        let dynamic_validator: Option<Arc<jsonschema::Validator>>;
+        let validator = if let Some(validator) = self.validators.get(tool_name) {
+            validator
+        } else {
+            let fingerprint = spec.fingerprint();
+            let cached_validator = self
+                .dynamic_validators
+                .lock()
+                .get(tool_name)
+                .filter(|(cached_fingerprint, _)| cached_fingerprint == &fingerprint)
+                .map(|(_, validator)| Arc::clone(validator));
+            let resolved_validator = match cached_validator {
+                Some(validator) => validator,
+                None => {
+                    let validator = match jsonschema::draft202012::new(&spec.parameters) {
+                        Ok(validator) => Arc::new(validator),
+                        Err(error) => {
+                            let mut result = ToolResult::recoverable_error(format!(
+                                "错误：工具 '{tool_name}' 的参数 Schema 无效：{error}"
+                            ));
+                            result.metadata = json!({
+                                "code": "invalid_tool_schema",
+                                "toolName": tool_name,
+                            });
+                            return Err(result);
+                        }
+                    };
+                    self.dynamic_validators
+                        .lock()
+                        .insert(tool_name.to_string(), (fingerprint, Arc::clone(&validator)));
+                    validator
+                }
+            };
+            // 在分支外保持 Arc 存活，validator 引用仅覆盖本次同步校验。
+            dynamic_validator = Some(resolved_validator);
+            dynamic_validator
+                .as_deref()
+                .expect("dynamic validator assigned")
+        };
+
+        let errors = validator
+            .iter_errors(&effective_arguments)
+            .take(16)
+            .map(|error| {
+                let instance_path = error.instance_path().to_string();
+                json!({
+                    "path": if instance_path.is_empty() { "/" } else { instance_path.as_str() },
+                    "schemaPath": error.schema_path().to_string(),
+                    "message": error.to_string(),
+                })
+            })
+            .collect::<Vec<_>>();
+        if !errors.is_empty() {
+            let summary = errors
+                .iter()
+                .take(3)
+                .map(|error| {
+                    format!(
+                        "{}: {}",
+                        error["path"].as_str().unwrap_or("/"),
+                        error["message"].as_str().unwrap_or("参数无效")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("；");
+            let mut result = ToolResult::recoverable_error(format!(
+                "错误：工具 '{tool_name}' 参数不符合 JSON Schema：{summary}"
+            ));
+            result.metadata = json!({
+                "code": "invalid_arguments",
+                "toolName": tool_name,
+                "errors": errors,
+            });
+            return Err(result);
+        }
+
+        Ok(ToolInput {
+            name: tool_name.to_string(),
+            effective_arguments,
+        })
+    }
+
+    /// 为控制面协议处理器提供与 CapabilityBroker 完全相同的参数准备路径。
+    ///
+    /// submit_graph / graph_plan_report 等工具由编排器拦截，不能进入普通
+    /// AgentTool::execute；但它们仍必须在任何协议副作用前完成默认值注入与
+    /// Draft 2020-12 Schema 校验。只暴露最终参数，不泄露可执行 ToolInput，
+    /// 因而真实数据面工具仍只能由 Broker 执行。
+    pub(crate) fn prepare_control_arguments(
+        &self,
+        workspace: &Path,
+        tool_name: &str,
+        args: &Value,
+    ) -> Result<Value, ToolResult> {
+        self.prepare_input(workspace, tool_name, args, false)
+            .map(|input| input.effective_arguments)
+    }
+
     pub fn effective_args(&self, tool_name: &str, args: &Value) -> Value {
         let Some(tool) = self.find_by_name(tool_name) else {
             return args.clone();
         };
         let schema = tool.parameters();
-        let Some(properties) = schema.get("properties").and_then(|v| v.as_object()) else {
-            return args.clone();
-        };
-
         let mut result = args.clone();
-        let obj = match result.as_object_mut() {
-            Some(obj) => obj,
-            None => return args.clone(),
-        };
-
-        for (key, prop_schema) in properties {
-            if !obj.contains_key(key) {
-                if let Some(default_val) = prop_schema.get("default") {
-                    obj.insert(key.clone(), default_val.clone());
-                }
-            }
-        }
+        apply_schema_defaults(&schema, &mut result);
         result
     }
 }
 
-#[async_trait]
-impl ToolProvider for ToolRegistry {
-    async fn execute(
-        &self,
-        _name: &str,
-        input: ToolInput,
-        context: &ToolContext,
-    ) -> Option<ToolResult> {
-        Some(self.execute_input(input, context).await)
-    }
+fn compile_builtin_schema(name: &str, schema: &Value) -> jsonschema::Validator {
+    jsonschema::draft202012::new(schema)
+        .unwrap_or_else(|error| panic!("invalid JSON Schema for builtin tool '{name}': {error}"))
 }
 
-fn attach_structured_action(name: &str, args: &Value, result: ToolResult) -> ToolResult {
-    let Some(action) = structured_action_from_args(name, args) else {
-        return result;
-    };
-    result.with_action(action)
-}
-
-fn structured_action_from_args(name: &str, args: &Value) -> Option<ToolAction> {
-    match name {
-        "message" => {
-            args.get("content")
-                .and_then(Value::as_str)
-                .map(|content| ToolAction::FinalMessage {
-                    content: content.to_string(),
-                })
+/// JSON Schema 的 default 是注解，不会由 validator 自动写入实例。
+/// 这里只执行确定性的 properties/items 递归：不会猜测 anyOf/oneOf 分支，
+/// 也不会凭空创建没有自身 default 的父对象。
+fn apply_schema_defaults(schema: &Value, instance: &mut Value) {
+    match instance {
+        Value::Object(object) => {
+            let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+                return;
+            };
+            for (name, property_schema) in properties {
+                if !object.contains_key(name) {
+                    if let Some(default) = property_schema.get("default") {
+                        object.insert(name.clone(), default.clone());
+                    }
+                }
+                if let Some(value) = object.get_mut(name) {
+                    apply_schema_defaults(property_schema, value);
+                }
+            }
         }
-        _ => None,
+        Value::Array(items) => {
+            if let Some(item_schema) = schema.get("items") {
+                for item in items {
+                    apply_schema_defaults(item_schema, item);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -302,7 +407,7 @@ mod tests {
     use super::{AgentTool, DynamicToolProvider, ToolRegistry};
     use crate::agent::llm::ToolDefinition;
     use crate::agent::tools::spec::ToolSpec;
-    use crate::agent::tools::ToolContext;
+    use crate::agent::tools::{ToolContext, ToolResult};
 
     struct TestTool {
         name: &'static str,
@@ -327,8 +432,8 @@ mod tests {
             })
         }
 
-        async fn execute(&self, _args: &Value, _context: &ToolContext) -> String {
-            "ok".to_string()
+        async fn execute(&self, _args: &Value, _context: &ToolContext) -> ToolResult {
+            ToolResult::success_text("ok")
         }
     }
 
@@ -356,8 +461,8 @@ mod tests {
             })
         }
 
-        async fn execute(&self, args: &Value, _context: &ToolContext) -> String {
-            args.to_string()
+        async fn execute(&self, args: &Value, _context: &ToolContext) -> ToolResult {
+            ToolResult::success_text(args.to_string())
         }
     }
 
@@ -375,11 +480,16 @@ mod tests {
             self.specs.clone()
         }
 
-        async fn execute(&self, name: &str, args: &Value, _context: &ToolContext) -> Option<String> {
+        async fn execute(
+            &self,
+            name: &str,
+            args: &Value,
+            _context: &ToolContext,
+        ) -> Option<ToolResult> {
             self.specs
                 .iter()
                 .find(|spec| spec.name == name)
-                .map(|_| format!("dynamic:{args}"))
+                .map(|_| ToolResult::success_text(format!("dynamic:{args}")))
         }
     }
 
@@ -404,6 +514,8 @@ mod tests {
             current_sub_agent_id: None,
             current_sub_agent_name: None,
             current_tool_call_id: None,
+            current_tool_spec_hash: None,
+            cancel_rx: None,
             sub_agent_parent_tool_call_id: None,
             sub_agent_trace_events: None,
         }
@@ -438,6 +550,113 @@ mod tests {
     }
 
     #[test]
+    fn schema_defaults_are_applied_recursively_to_existing_objects_and_arrays() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "nested": {
+                    "type": "object",
+                    "properties": {
+                        "mode": { "type": "string", "default": "safe" }
+                    }
+                },
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "enabled": { "type": "boolean", "default": true }
+                        }
+                    }
+                }
+            }
+        });
+        let mut instance = json!({ "nested": {}, "items": [{}, { "enabled": false }] });
+
+        super::apply_schema_defaults(&schema, &mut instance);
+
+        assert_eq!(instance["nested"]["mode"], "safe");
+        assert_eq!(instance["items"][0]["enabled"], true);
+        assert_eq!(instance["items"][1]["enabled"], false);
+        assert!(instance.get("missing_parent").is_none());
+    }
+
+    #[test]
+    fn prepare_input_rejects_invalid_arguments_with_structured_metadata() {
+        let registry = ToolRegistry::new(vec![Box::new(TestTool { name: "read_file" })]);
+
+        let error = registry
+            .prepare_input(
+                Path::new("."),
+                "read_file",
+                &json!({ "flag": "not-a-boolean" }),
+                false,
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error.status,
+            crate::agent::tools::result::ToolStatus::RecoverableError
+        );
+        assert_eq!(error.metadata["code"], "invalid_arguments");
+        assert_eq!(error.metadata["toolName"], "read_file");
+        assert!(error.metadata["errors"]
+            .as_array()
+            .is_some_and(|v| !v.is_empty()));
+    }
+
+    #[test]
+    fn orchestrator_runtime_tools_reject_unbounded_fanout_before_execution() {
+        let registry = ToolRegistry::orchestrator_tools();
+        let cases = [
+            (
+                "read_file",
+                json!({ "paths": (0..9).map(|index| format!("{index}.rs")).collect::<Vec<_>>() }),
+            ),
+            ("list_dir", json!({ "paths": ["."], "max_entries": 201 })),
+            (
+                "glob",
+                json!({ "patterns": ["a", "b", "c", "d", "e"], "paths": ["."] }),
+            ),
+            (
+                "grep",
+                json!({ "pattern": "needle", "paths": ["."], "max_files": 201 }),
+            ),
+        ];
+
+        for (tool_name, arguments) in cases {
+            let result = registry
+                .prepare_input(Path::new("."), tool_name, &arguments, false)
+                .expect_err("oversized runtime fanout must fail schema validation");
+            assert_eq!(result.metadata["code"], "invalid_arguments", "{tool_name}");
+        }
+    }
+
+    #[test]
+    fn prepare_input_applies_defaults_and_validates_dynamic_tools() {
+        let registry =
+            ToolRegistry::new(Vec::new()).with_dynamic_provider(Arc::new(TestDynamicProvider {
+                specs: vec![ToolSpec::mcp(
+                    "mcp__demo__tool".to_string(),
+                    "动态工具".to_string(),
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "flag": { "type": "boolean", "default": true }
+                        },
+                        "required": ["flag"]
+                    }),
+                )],
+            }));
+
+        let input = registry
+            .prepare_input(Path::new("."), "mcp__demo__tool", &json!({}), true)
+            .unwrap();
+
+        assert_eq!(input.effective_arguments["flag"], true);
+    }
+
+    #[test]
     fn allowed_whitelist_applies_to_dynamic_specs() {
         let registry = ToolRegistry::new(vec![Box::new(TestTool { name: "read_file" })])
             .with_dynamic_provider(Arc::new(TestDynamicProvider {
@@ -449,12 +668,12 @@ mod tests {
             }));
 
         // 白名单未包含动态工具时不得泄露给 LLM。
-        let filtered = registry.specs_for_workspace(
-            Path::new("."),
-            Some(["read_file"].into_iter()),
-            true,
+        let filtered =
+            registry.specs_for_workspace(Path::new("."), Some(["read_file"].into_iter()), true);
+        assert_eq!(
+            filtered.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["read_file"]
         );
-        assert_eq!(filtered.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["read_file"]);
 
         // 白名单显式包含时放行。
         let included = registry.specs_for_workspace(
@@ -498,19 +717,27 @@ mod tests {
         let registry = ToolRegistry::new(vec![Box::new(EchoArgsTool { name: "echo" })]);
         let context = test_context();
 
-        let result = registry.execute("echo", &json!({}), &context).await;
+        let input = registry
+            .prepare_input(&context.workspace, "echo", &json!({}), false)
+            .unwrap();
+        let result = registry.execute_input(input, &context).await;
 
         // 工具实际收到的参数必须包含 schema 默认值（effective_arguments）。
-        assert_eq!(result.status, crate::agent::tools::result::ToolStatus::Success);
+        assert_eq!(
+            result.status,
+            crate::agent::tools::result::ToolStatus::Success
+        );
         assert_eq!(result.display, "{\"flag\":true}");
     }
 
     #[tokio::test]
-    async fn execute_input_reports_unknown_tool_with_error_prefix() {
+    async fn prepare_input_reports_unknown_tool_with_error_prefix() {
         let registry = ToolRegistry::new(vec![Box::new(TestTool { name: "read_file" })]);
         let context = test_context();
 
-        let result = registry.execute("missing_tool", &json!({}), &context).await;
+        let result = registry
+            .prepare_input(&context.workspace, "missing_tool", &json!({}), false)
+            .unwrap_err();
 
         assert_eq!(
             result.status,

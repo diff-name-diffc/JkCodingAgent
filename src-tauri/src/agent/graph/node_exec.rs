@@ -18,15 +18,20 @@ use super::types::{
     AgentActivity, GraphNode, GraphRunEvent, NODE_PHASE_COMPACTING, NODE_PHASE_RESPONDING,
     NODE_PHASE_RETRYING, NODE_PHASE_THINKING, NODE_PHASE_TOOL_RUNNING,
 };
-use crate::agent::tools::{ToolContext, ToolRegistry, ToolStatus};
+use crate::agent::tools::{
+    CapabilityBroker, CapabilityInvocation, CapabilitySet, ToolContext, ToolRegistry, ToolStatus,
+};
 
 const NODE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const PROTOCOL_VERSION: i64 = 2;
+const SIDECAR_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const PROTOCOL_VERSION: i64 = 3;
+/// host_tool_result 与 sidecar 的 JSONL 控制协议共用 stdout。单条工具结果必须
+/// 明显低于 1 MiB 协议读上限，给 JSON 转义和 envelope 字段留出余量。
+const MAX_HOST_TOOL_RESULT_BYTES: usize = 256 * 1024;
 
 /// 节点被取消/超时后，对在途宿主工具的有界收尾等待：工具内部的
 /// spawn_blocking（文件写、shell）不会随 future 被丢弃而停止，短暂等待其
 /// 收敛；不收敛则记录日志后再走取消/超时路径（fail-closed 可见性）。
-const IN_FLIGHT_TOOL_GRACE: Duration = Duration::from_secs(3);
 
 /// 固定文本活动的序号约定：assistant_text=1、thinking=2（见 TextActivity::new），
 /// context_usage 顺延其后。在 1/2 之外新增固定活动时需同步更新这里
@@ -122,6 +127,28 @@ async fn execute_pi_node_process(
             .take()
             .ok_or_else(|| anyhow::anyhow!("PI sidecar stdout 未捕获"))?;
         let request_id = uuid::Uuid::new_v4().to_string();
+
+        // 先验证 sidecar 版本，再发送包含 API Key 与工作区信息的 start。
+        // 这不仅是兼容性检查，也是安全边界：旧 sidecar 会直接加载项目扩展，
+        // 若先写 start，即使随后发现版本不匹配，也已给了它执行工作区代码的窗口。
+        let mut reader = BufReader::new(stdout);
+        let ready_line = tokio::time::timeout(SIDECAR_HANDSHAKE_TIMEOUT, read_bounded_line(&mut reader))
+            .await
+            .map_err(|_| anyhow::anyhow!("等待 PI sidecar ready 握手超时"))??
+            .ok_or_else(|| anyhow::anyhow!("PI sidecar 在 ready 握手前退出"))?;
+        let ready = parse_sidecar_envelope(
+            &ready_line,
+            &request_id,
+            &ctx.run_id,
+            &ctx.node.id,
+            0,
+        )?;
+        let mut ready_seen = false;
+        enforce_handshake_order(&ready.r#type, &mut ready_seen)?;
+        if ready.r#type != "ready" {
+            return Err(anyhow::anyhow!("PI sidecar 首条消息不是 ready 握手"));
+        }
+
         let start = json!({
             "type": "start",
             "requestId": request_id,
@@ -140,16 +167,12 @@ async fn execute_pi_node_process(
         });
         write_jsonl(&stdin, &start).await?;
 
-        let mut reader = BufReader::new(stdout);
         let mut cancel_rx = ctx.cancel_rx.clone();
         let mut tool_activities: HashMap<String, AgentActivity> = HashMap::new();
         let mut affected_files = HashSet::new();
         let mut tool_call_count = 0_i64;
-        let mut last_sequence = 0_i64;
+        let mut last_sequence = ready.sequence;
         let mut host_sequence = 1_i64;
-        // 协议握手门控位：首条消息必须是 ready（协议版本在其内校验），
-        // 之后才允许处理业务消息（见 enforce_handshake_order）。
-        let mut ready_seen = false;
         let deadline = tokio::time::Instant::now() + NODE_TIMEOUT;
 
         loop {
@@ -214,12 +237,19 @@ async fn execute_pi_node_process(
                         "host_tool_call" => {
                             let call_id = string_field(&envelope.data, "callId")?;
                             let name = string_field(&envelope.data, "name")?;
+                            let runtime_name = string_field(&envelope.data, "runtimeName")?;
                             let args = envelope.data.get("args").cloned().unwrap_or_else(|| json!({}));
-                            // fail-closed：只执行本节点显式声明的宿主工具。sidecar
-                            // 按名回调，未校验时可调用任意注册表工具（含被目录排除的
-                            // write_file/exec 等），绕过 harness 工具选择门禁。
-                            if !ctx.harness.host_tools.iter().any(|tool| tool.name == name) {
-                                let message = format!("错误：宿主工具 '{name}' 未在本节点声明，拒绝执行");
+                            // fail-closed：能力名与 sidecar 运行时别名必须成对匹配。
+                            // 仅校验 capability name 会让被篡改的 sidecar 借任意别名
+                            // 调用本节点其他能力，破坏模型可见面与授权面的对应关系。
+                            if !host_tool_mapping_is_declared(
+                                &ctx.harness.host_tools,
+                                &runtime_name,
+                                &name,
+                            ) {
+                                let message = format!(
+                                    "错误：宿主工具映射 '{runtime_name}' -> '{name}' 未在本节点声明，拒绝执行"
+                                );
                                 eprintln!("[graph] PI sidecar 越权调用（节点 {}）：{message}", ctx.node.id);
                                 host_sequence += 1;
                                 let response = json!({"type":"host_tool_result","requestId":request_id,"runId":ctx.run_id,"nodeId":ctx.node.id,"sequence":host_sequence,"callId":call_id,"error":message});
@@ -227,8 +257,29 @@ async fn execute_pi_node_process(
                                 continue;
                             }
                             collect_affected_file(&ctx.workspace_root, &name, &args, &mut affected_files);
-                            let mut tool_future =
-                                std::pin::pin!(ctx.tool_registry.execute(&name, &args, &ctx.tool_context));
+                            let capabilities = CapabilitySet::new(
+                                ctx.harness.host_tools.iter().map(|tool| tool.name.clone()),
+                            )
+                            // expectedFiles 在提交/更新时已经过相对路径校验；这里把
+                            // 它升级为 Broker 的真实写授权，而不再只是并发冲突提示。
+                            // 空列表意味着该节点可运行命令/测试，但不能直接调用
+                            // write_file/edit_file 修改任意文件。
+                            .restrict_writes_to(ctx.node.expected_files.clone());
+                            // 节点 deadline 与外层取消都先由本循环裁决，再转发给
+                            // Broker。这样节点超时不仅停止等待，还会触发工具级
+                            // 进程终止/协作取消。
+                            let (tool_cancel_tx, tool_cancel_rx) =
+                                watch::channel(*cancel_rx.borrow());
+                            let broker = CapabilityBroker::new(
+                                &ctx.tool_registry,
+                                &ctx.tool_context.workspace,
+                                capabilities,
+                                &ctx.tool_context,
+                            )
+                            .with_cancellation(tool_cancel_rx);
+                            let mut tool_future = std::pin::pin!(broker.invoke(
+                                CapabilityInvocation::model(call_id.clone(), name.clone(), args.clone())
+                            ));
                             let interrupted = await_interruptible(
                                 tool_future.as_mut(),
                                 &mut cancel_rx,
@@ -237,11 +288,13 @@ async fn execute_pi_node_process(
                             let result = match interrupted {
                                 Interruptible::Completed(result) => result,
                                 interrupted => {
-                                    // 工具 future 仍在途：其内部 spawn_blocking（文件写、
-                                    // shell 等）不会随 future 丢弃立即停止，节点已取消/超时
-                                    // 后工作区可能继续被修改。有界等待其收敛；不收敛则记录
-                                    // 日志明示「后台副作用可能仍在进行」，再进入取消/超时收尾。
-                                    if tokio::time::timeout(IN_FLIGHT_TOOL_GRACE, tool_future).await.is_err() {
+                                    let _ = tool_cancel_tx.send(true);
+                                    // Broker 自带固定收敛上限；必须拿到它的终态，不能在
+                                    // 外层再提前丢 Future，否则会重新制造后台副作用盲区。
+                                    let settled = tool_future.await;
+                                    if settled.metadata["termination"]["state"]
+                                        == "termination_unknown"
+                                    {
                                         eprintln!(
                                             "[graph] 节点 '{}' 已中断，宿主工具 '{name}' 仍在途：后台副作用可能继续写入工作区",
                                             ctx.node.id
@@ -261,10 +314,12 @@ async fn execute_pi_node_process(
                                 }
                             };
                             host_sequence += 1;
+                            let transport_output =
+                                bound_host_tool_result(result.output_for_llm());
                             let response = if result.status == ToolStatus::Success {
-                                json!({"type":"host_tool_result","requestId":request_id,"runId":ctx.run_id,"nodeId":ctx.node.id,"sequence":host_sequence,"callId":call_id,"result":result.output_for_llm()})
+                                json!({"type":"host_tool_result","requestId":request_id,"runId":ctx.run_id,"nodeId":ctx.node.id,"sequence":host_sequence,"callId":call_id,"result":transport_output})
                             } else {
-                                json!({"type":"host_tool_result","requestId":request_id,"runId":ctx.run_id,"nodeId":ctx.node.id,"sequence":host_sequence,"callId":call_id,"error":result.output_for_llm()})
+                                json!({"type":"host_tool_result","requestId":request_id,"runId":ctx.run_id,"nodeId":ctx.node.id,"sequence":host_sequence,"callId":call_id,"error":transport_output})
                             };
                             write_jsonl(&stdin, &response).await?;
                         }
@@ -283,6 +338,33 @@ async fn execute_pi_node_process(
         assistant,
         thinking,
     }
+}
+
+fn bound_host_tool_result(mut output: String) -> String {
+    if output.len() <= MAX_HOST_TOOL_RESULT_BYTES {
+        return output;
+    }
+    let original_bytes = output.len();
+    let marker = format!(
+        "\n\n[宿主工具结果已按 Graph JSONL 传输预算截断：原始 {original_bytes} 字节；请缩小工具参数。]"
+    );
+    let mut boundary = MAX_HOST_TOOL_RESULT_BYTES.saturating_sub(marker.len());
+    while !output.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    output.truncate(boundary);
+    output.push_str(&marker);
+    output
+}
+
+fn host_tool_mapping_is_declared(
+    tools: &[super::harness::PiHostToolSpec],
+    runtime_name: &str,
+    capability_name: &str,
+) -> bool {
+    tools
+        .iter()
+        .any(|tool| tool.name == capability_name && tool.runtime_name == runtime_name)
 }
 
 async fn cancellation_requested(cancel_rx: &mut watch::Receiver<bool>) {
@@ -306,7 +388,7 @@ enum Interruptible<T> {
 }
 
 /// 以可重入方式等待工具 future：调用方持有 pinned future，中断（取消/超时）
-/// 返回后 future 仍可用于有界收尾等待（见 IN_FLIGHT_TOOL_GRACE 相关逻辑）。
+/// 返回后 future 仍由调用方交给 Broker 完成有界收敛。
 async fn await_interruptible<T, F>(
     future: std::pin::Pin<&mut F>,
     cancel_rx: &mut watch::Receiver<bool>,
@@ -351,6 +433,12 @@ fn parse_sidecar_envelope(
 ) -> anyhow::Result<SidecarEnvelope> {
     let envelope: SidecarEnvelope = serde_json::from_str(line)
         .map_err(|error| anyhow::anyhow!("PI sidecar 输出非法 JSONL：{error}"))?;
+    if envelope.sequence <= last_sequence {
+        return Err(anyhow::anyhow!(
+            "PI sidecar sequence 非单调递增：{} <= {last_sequence}",
+            envelope.sequence
+        ));
+    }
     if envelope.r#type == "ready" {
         let version = envelope
             .data
@@ -370,12 +458,6 @@ fn parse_sidecar_envelope(
     if envelope.run_id.as_deref() != Some(run_id) || envelope.node_id.as_deref() != Some(node_id) {
         return Err(anyhow::anyhow!(
             "PI sidecar 返回的 runId/nodeId 与当前节点不匹配"
-        ));
-    }
-    if envelope.sequence <= last_sequence {
-        return Err(anyhow::anyhow!(
-            "PI sidecar sequence 非单调递增：{} <= {last_sequence}",
-            envelope.sequence
         ));
     }
     Ok(envelope)
@@ -888,6 +970,69 @@ mod tests {
             0,
         )
         .is_err());
+    }
+
+    #[test]
+    fn accepts_only_current_protocol_ready_before_business_messages() {
+        let ready = parse_sidecar_envelope(
+            &json!({
+                "type": "ready",
+                "requestId": "sidecar",
+                "sequence": 1,
+                "data": { "protocolVersion": 3 },
+            })
+            .to_string(),
+            "request",
+            "run",
+            "node",
+            0,
+        )
+        .unwrap();
+        assert_eq!(PROTOCOL_VERSION, 3);
+        assert_eq!(ready.r#type, "ready");
+
+        let mut ready_seen = false;
+        assert!(enforce_handshake_order("agent_event", &mut ready_seen).is_err());
+        enforce_handshake_order(&ready.r#type, &mut ready_seen).unwrap();
+        assert!(enforce_handshake_order("agent_event", &mut ready_seen).is_ok());
+
+        // ready 本身也必须遵守正数、单调 sequence，不能以 0 绕过边界。
+        assert!(parse_sidecar_envelope(
+            &json!({
+                "type": "ready",
+                "requestId": "sidecar",
+                "sequence": 0,
+                "data": { "protocolVersion": 3 },
+            })
+            .to_string(),
+            "request",
+            "run",
+            "node",
+            0,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn host_alias_and_capability_must_match_as_a_pair() {
+        let tools = vec![super::super::harness::PiHostToolSpec {
+            name: "exec".into(),
+            runtime_name: "bash".into(),
+            description: String::new(),
+            parameters: json!({ "type": "object" }),
+        }];
+        assert!(host_tool_mapping_is_declared(&tools, "bash", "exec"));
+        assert!(!host_tool_mapping_is_declared(&tools, "bash", "read_file"));
+        assert!(!host_tool_mapping_is_declared(&tools, "read", "exec"));
+    }
+
+    #[test]
+    fn host_tool_result_is_bounded_on_utf8_boundary() {
+        let output = "你".repeat(MAX_HOST_TOOL_RESULT_BYTES);
+        let bounded = bound_host_tool_result(output);
+        assert!(bounded.len() <= MAX_HOST_TOOL_RESULT_BYTES);
+        assert!(bounded.contains("Graph JSONL 传输预算截断"));
+        assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
     }
 
     #[test]

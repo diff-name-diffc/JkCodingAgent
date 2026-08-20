@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
 
@@ -186,6 +187,12 @@ pub struct ToolSpec {
     pub category: ToolCategory,
     pub access: ToolAccess,
     pub safety: ToolSafety,
+    /// 该工具在内部自管安全审查（携带完整目标环境上下文做 fail-closed 判定）。
+    /// CapabilityBroker 对这类工具不再做通用 JSON 参数审查——否则同一调用会
+    /// 出现两套审查标准互相覆盖（例如 per-server 审查开关会被 broker 的通用
+    /// 结论短路）。目前为 exec / local_zsh / ssh_exec（策略表）与全部 MCP
+    /// 动态工具（ToolSpec::mcp）。
+    pub review_self_managed: bool,
     pub execution: ToolExecutionPolicy,
     pub result_policy: ToolResultPolicy,
 }
@@ -201,6 +208,7 @@ impl ToolSpec {
             category: profile.category,
             access: profile.access,
             safety: profile.safety,
+            review_self_managed: profile.review_self_managed,
             execution: profile.execution,
             result_policy: profile.result_policy,
         }
@@ -221,6 +229,9 @@ impl ToolSpec {
                 mutates_external_state: true,
             },
             safety: ToolSafety::ReviewRequired,
+            // MCP 桥接层（tools/mcp.rs）在执行前带工具名与完整参数做
+            // fail-closed 审查，broker 不再重复做通用 JSON 审查。
+            review_self_managed: true,
             execution: ToolExecutionPolicy::sequential(60),
             result_policy: ToolResultPolicy::new(true),
         }
@@ -240,15 +251,35 @@ impl ToolSpec {
     pub fn supports_parallel_readonly(&self) -> bool {
         self.access.readonly && self.execution.parallelizable
     }
+
+    /// 绑定动态工具目录快照的稳定摘要。执行前会再次计算并比对，目录中
+    /// 同名工具的 server、Schema 或策略发生变化时必须让模型重新规划。
+    pub fn fingerprint(&self) -> String {
+        let digest = Sha256::digest(serde_json::to_vec(self).unwrap_or_default());
+        let mut encoded = String::with_capacity(digest.len() * 2);
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for byte in digest {
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        encoded
+    }
 }
 
 struct ToolProfile {
     category: ToolCategory,
     access: ToolAccess,
     safety: ToolSafety,
+    review_self_managed: bool,
     execution: ToolExecutionPolicy,
     result_policy: ToolResultPolicy,
 }
+
+/// 在工具内部自管安全审查的命令类工具（与 TOOL_POLICY_TABLE 同处一个文件维护）。
+/// 它们的审查携带完整目标环境上下文（目标服务器 / 执行目录、stdin、服务器级
+/// 审查开关），比 broker 的通用 JSON 参数审查更准确；broker 必须让位，
+/// 避免同一调用出现两套结论。新增此类工具时在此登记。
+const SELF_REVIEWED_TOOLS: &[&str] = &["exec", "local_zsh", "ssh_exec"];
 
 /// 未注册/未知工具名的兜底统一超时（秒）。
 const DEFAULT_UNKNOWN_TIMEOUT_SECS: u64 = 60;
@@ -294,46 +325,309 @@ const fn policy_row(
 ///
 /// 约定：
 /// - 浏览器共用同一会话，browser_* 一律不参与并行调度（含只读读取类）；
-/// - exec / local_zsh / ssh_* 必须 ReviewRequired，access 按最坏能力声明；
+/// - exec / local_zsh / ssh_exec 是命令执行类工具：ReviewRequired 且 access 按
+///   最坏能力声明；安全审查由工具内部自管（见 SELF_REVIEWED_TOOLS）；
+/// - ssh_list_servers 是纯只读枚举（读取应用全局配置做投影），按 Safe 声明；
 /// - 表中未收录的工具名视为未知工具，走 fail-closed 兜底。
 static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
     // ── 文件系统 ──
-    policy_row("read_file", ToolCategory::Filesystem, ToolAccess::READONLY_WORKSPACE, ToolSafety::Safe, 30, false, true, false),
-    policy_row("write_file", ToolCategory::Filesystem, ToolAccess::MUTATES_WORKSPACE, ToolSafety::Safe, 30, false, false, false),
-    policy_row("edit_file", ToolCategory::Filesystem, ToolAccess::MUTATES_WORKSPACE, ToolSafety::Safe, 30, false, false, false),
-    policy_row("list_dir", ToolCategory::Filesystem, ToolAccess::READONLY_WORKSPACE, ToolSafety::Safe, 30, false, true, false),
+    policy_row(
+        "read_file",
+        ToolCategory::Filesystem,
+        ToolAccess::READONLY_WORKSPACE,
+        ToolSafety::Safe,
+        30,
+        false,
+        true,
+        false,
+    ),
+    policy_row(
+        "write_file",
+        ToolCategory::Filesystem,
+        ToolAccess::MUTATES_WORKSPACE,
+        ToolSafety::Safe,
+        30,
+        false,
+        false,
+        false,
+    ),
+    policy_row(
+        "edit_file",
+        ToolCategory::Filesystem,
+        ToolAccess::MUTATES_WORKSPACE,
+        ToolSafety::Safe,
+        30,
+        false,
+        false,
+        false,
+    ),
+    policy_row(
+        "list_dir",
+        ToolCategory::Filesystem,
+        ToolAccess::READONLY_WORKSPACE,
+        ToolSafety::Safe,
+        30,
+        false,
+        true,
+        false,
+    ),
     // ── 搜索 ──
-    policy_row("glob", ToolCategory::Search, ToolAccess::READONLY_WORKSPACE, ToolSafety::Safe, 60, false, true, false),
-    policy_row("grep", ToolCategory::Search, ToolAccess::READONLY_WORKSPACE, ToolSafety::Safe, 60, false, true, false),
+    policy_row(
+        "glob",
+        ToolCategory::Search,
+        ToolAccess::READONLY_WORKSPACE,
+        ToolSafety::Safe,
+        60,
+        false,
+        true,
+        false,
+    ),
+    policy_row(
+        "grep",
+        ToolCategory::Search,
+        ToolAccess::READONLY_WORKSPACE,
+        ToolSafety::Safe,
+        60,
+        false,
+        true,
+        false,
+    ),
     // ── 命令执行（能力边界按最坏情况声明，强制审查）──
-    policy_row("exec", ToolCategory::Shell, ToolAccess::FULL_EFFECTS, ToolSafety::ReviewRequired, 60, true, false, true),
-    policy_row("local_zsh", ToolCategory::Shell, ToolAccess::FULL_EFFECTS, ToolSafety::ReviewRequired, 60, true, false, true),
+    policy_row(
+        "exec",
+        ToolCategory::Shell,
+        ToolAccess::FULL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        60,
+        true,
+        false,
+        true,
+    ),
+    policy_row(
+        "local_zsh",
+        ToolCategory::Shell,
+        ToolAccess::FULL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        60,
+        true,
+        false,
+        true,
+    ),
     // message 是面向用户的最终消息通知工具（映射为 ToolAction::FinalMessage），
     // 并非 shell 命令，不归入 Shell 类。
-    policy_row("message", ToolCategory::Other, ToolAccess::SUBSYSTEM_MANAGED, ToolSafety::Safe, 60, false, false, false),
+    policy_row(
+        "message",
+        ToolCategory::Other,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        60,
+        false,
+        false,
+        false,
+    ),
     // ── 浏览器（共享会话：统一 requires_network、禁止并行）──
-    policy_row("browser_open_url", ToolCategory::Browser, ToolAccess::EXTERNAL_EFFECTS, ToolSafety::ReviewRequired, 30, false, false, false),
-    policy_row("browser_click", ToolCategory::Browser, ToolAccess::EXTERNAL_EFFECTS, ToolSafety::ReviewRequired, 30, false, false, false),
-    policy_row("browser_type", ToolCategory::Browser, ToolAccess::EXTERNAL_EFFECTS, ToolSafety::ReviewRequired, 30, false, false, false),
-    policy_row("browser_press", ToolCategory::Browser, ToolAccess::EXTERNAL_EFFECTS, ToolSafety::ReviewRequired, 30, false, false, false),
-    policy_row("browser_wait_for", ToolCategory::Browser, ToolAccess::EXTERNAL_EFFECTS, ToolSafety::ReviewRequired, 30, false, false, false),
-    policy_row("browser_close", ToolCategory::Browser, ToolAccess::EXTERNAL_EFFECTS, ToolSafety::ReviewRequired, 30, false, false, false),
+    policy_row(
+        "browser_open_url",
+        ToolCategory::Browser,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        30,
+        false,
+        false,
+        false,
+    ),
+    policy_row(
+        "browser_click",
+        ToolCategory::Browser,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        30,
+        false,
+        false,
+        false,
+    ),
+    policy_row(
+        "browser_type",
+        ToolCategory::Browser,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        30,
+        false,
+        false,
+        false,
+    ),
+    policy_row(
+        "browser_press",
+        ToolCategory::Browser,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        30,
+        false,
+        false,
+        false,
+    ),
+    policy_row(
+        "browser_wait_for",
+        ToolCategory::Browser,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        30,
+        false,
+        false,
+        false,
+    ),
+    policy_row(
+        "browser_close",
+        ToolCategory::Browser,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        30,
+        false,
+        false,
+        false,
+    ),
     // 只读读取类同样驱动浏览器会话：requires_network=true、不参与并行。
-    policy_row("browser_read_text", ToolCategory::Browser, ToolAccess { readonly: true, workspace_bound: false, requires_network: true, mutates_filesystem: false, mutates_external_state: false }, ToolSafety::Safe, 30, false, false, false),
-    policy_row("browser_visual_analyze", ToolCategory::Browser, ToolAccess { readonly: true, workspace_bound: false, requires_network: true, mutates_filesystem: false, mutates_external_state: false }, ToolSafety::Safe, 30, false, false, false),
+    policy_row(
+        "browser_read_text",
+        ToolCategory::Browser,
+        ToolAccess {
+            readonly: true,
+            workspace_bound: false,
+            requires_network: true,
+            mutates_filesystem: false,
+            mutates_external_state: false,
+        },
+        ToolSafety::Safe,
+        30,
+        false,
+        false,
+        false,
+    ),
+    policy_row(
+        "browser_visual_analyze",
+        ToolCategory::Browser,
+        ToolAccess {
+            readonly: true,
+            workspace_bound: false,
+            requires_network: true,
+            mutates_filesystem: false,
+            mutates_external_state: false,
+        },
+        ToolSafety::Safe,
+        30,
+        false,
+        false,
+        false,
+    ),
     // ── 图像生成 ──
-    policy_row("generate_image", ToolCategory::Image, ToolAccess::EXTERNAL_EFFECTS, ToolSafety::ReviewRequired, 60, false, false, false),
-    policy_row("edit_image", ToolCategory::Image, ToolAccess::EXTERNAL_EFFECTS, ToolSafety::ReviewRequired, 60, false, false, false),
-    // ── SSH（强制审查，默认声明压缩参数）──
-    policy_row("ssh_list_servers", ToolCategory::Ssh, ToolAccess::EXTERNAL_EFFECTS, ToolSafety::ReviewRequired, 60, true, false, false),
-    policy_row("ssh_exec", ToolCategory::Ssh, ToolAccess::EXTERNAL_EFFECTS, ToolSafety::ReviewRequired, 60, true, false, false),
+    policy_row(
+        "generate_image",
+        ToolCategory::Image,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        60,
+        false,
+        false,
+        false,
+    ),
+    policy_row(
+        "edit_image",
+        ToolCategory::Image,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        60,
+        false,
+        false,
+        false,
+    ),
+    // ── SSH ──
+    // ssh_list_servers 只做本地配置的只读投影（不含凭据），安全声明为只读；
+    // ssh_exec 按命令执行类工具的最坏能力声明，审查在工具内部自管，
+    // 超时也由工具按每次调用的 timeout_secs 自管（上限 300s）。
+    policy_row(
+        "ssh_list_servers",
+        ToolCategory::Ssh,
+        ToolAccess::READONLY_UNBOUND,
+        ToolSafety::Safe,
+        60,
+        false,
+        true,
+        false,
+    ),
+    policy_row(
+        "ssh_exec",
+        ToolCategory::Ssh,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        300,
+        true,
+        false,
+        true,
+    ),
     // ── 子智能体 ──
-    policy_row("call_sub_agent", ToolCategory::SubAgent, ToolAccess::SUBSYSTEM_MANAGED, ToolSafety::Safe, 600, false, false, true),
-    policy_row("list_sub_agents", ToolCategory::SubAgent, ToolAccess::READONLY_UNBOUND, ToolSafety::Safe, 60, false, false, false),
-    policy_row("notify_user_progress", ToolCategory::SubAgent, ToolAccess::SUBSYSTEM_MANAGED, ToolSafety::Safe, 60, false, false, false),
+    policy_row(
+        "call_sub_agent",
+        ToolCategory::SubAgent,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        600,
+        false,
+        false,
+        true,
+    ),
+    policy_row(
+        "list_sub_agents",
+        ToolCategory::SubAgent,
+        ToolAccess::READONLY_UNBOUND,
+        ToolSafety::Safe,
+        60,
+        false,
+        false,
+        false,
+    ),
+    policy_row(
+        "notify_user_progress",
+        ToolCategory::SubAgent,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        60,
+        false,
+        false,
+        false,
+    ),
     // ── 图编排协议壳 ──
-    policy_row("submit_graph", ToolCategory::Other, ToolAccess::SUBSYSTEM_MANAGED, ToolSafety::Safe, 60, false, false, false),
-    policy_row("graph_plan_report", ToolCategory::Other, ToolAccess::SUBSYSTEM_MANAGED, ToolSafety::Safe, 60, false, false, false),
+    // 外层运行时本身不代表子调用的权限；每个子调用仍由 CapabilityBroker 按
+    // 真实 ToolSpec 逐项执行策略。该入口仅在项目编排器注册。
+    policy_row(
+        "run_tool_program",
+        ToolCategory::Other,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        120,
+        false,
+        false,
+        true,
+    ),
+    policy_row(
+        "submit_graph",
+        ToolCategory::Other,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        60,
+        false,
+        false,
+        false,
+    ),
+    policy_row(
+        "graph_plan_report",
+        ToolCategory::Other,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        60,
+        false,
+        false,
+        false,
+    ),
 ];
 
 fn lookup_policy(name: &str) -> Option<&'static ToolPolicyRow> {
@@ -361,6 +655,7 @@ impl ToolProfile {
             category: row.category,
             access: row.access,
             safety: row.safety,
+            review_self_managed: SELF_REVIEWED_TOOLS.contains(&row.name),
             execution,
             result_policy: ToolResultPolicy::new(row.default_compress),
         }
@@ -374,6 +669,7 @@ impl ToolProfile {
             category: ToolCategory::Other,
             access: ToolAccess::READONLY_WORKSPACE,
             safety: ToolSafety::ReviewRequired,
+            review_self_managed: false,
             execution: ToolExecutionPolicy::sequential(DEFAULT_UNKNOWN_TIMEOUT_SECS),
             result_policy: ToolResultPolicy::new(false),
         }
@@ -389,7 +685,11 @@ mod tests {
     use super::{ToolCategory, ToolSafety, ToolSpec, TOOL_POLICY_TABLE};
 
     fn spec_for(name: &str) -> ToolSpec {
-        ToolSpec::new(name, "测试工具", json!({ "type": "object", "properties": {} }))
+        ToolSpec::new(
+            name,
+            "测试工具",
+            json!({ "type": "object", "properties": {} }),
+        )
     }
 
     #[test]
@@ -406,6 +706,28 @@ mod tests {
         assert_eq!(definition.function.name, "read_file");
         assert_eq!(definition.function.description, "读取文件");
         assert_eq!(definition.function.parameters["type"], "object");
+    }
+
+    #[test]
+    fn fingerprint_changes_with_dynamic_contract() {
+        let first = ToolSpec::mcp(
+            "mcp__server__tool".to_string(),
+            "[MCP/server] tool".to_string(),
+            json!({ "type": "object", "properties": { "value": { "type": "string" } } }),
+        );
+        let changed_schema = ToolSpec::mcp(
+            "mcp__server__tool".to_string(),
+            "[MCP/server] tool".to_string(),
+            json!({ "type": "object", "properties": { "value": { "type": "integer" } } }),
+        );
+        let changed_server = ToolSpec::mcp(
+            "mcp__server__tool".to_string(),
+            "[MCP/other] tool".to_string(),
+            first.parameters.clone(),
+        );
+
+        assert_ne!(first.fingerprint(), changed_schema.fingerprint());
+        assert_ne!(first.fingerprint(), changed_server.fingerprint());
     }
 
     #[test]
@@ -546,15 +868,41 @@ mod tests {
     }
 
     #[test]
-    fn ssh_tools_are_review_required_and_compressed_by_default() {
-        for name in ["ssh_exec", "ssh_list_servers"] {
+    fn ssh_list_servers_is_readonly_and_safe() {
+        let spec = spec_for("ssh_list_servers");
+
+        assert_eq!(spec.category, ToolCategory::Ssh);
+        assert_eq!(spec.safety, ToolSafety::Safe);
+        assert!(spec.access.readonly);
+        assert!(!spec.access.mutates_external_state);
+        assert!(spec.execution.parallelizable);
+        assert!(!spec.review_self_managed);
+    }
+
+    #[test]
+    fn ssh_exec_is_review_required_and_self_managed() {
+        let spec = spec_for("ssh_exec");
+
+        assert_eq!(spec.category, ToolCategory::Ssh);
+        assert_eq!(spec.safety, ToolSafety::ReviewRequired);
+        assert!(spec.access.mutates_external_state);
+        assert!(spec.result_policy.default_compress);
+        // 审查由工具内部带服务器上下文自管；超时按每次调用参数自管（≤300s）
+        assert!(spec.review_self_managed);
+        assert!(!spec.execution.unified_timeout);
+    }
+
+    #[test]
+    fn command_tools_manage_their_own_review() {
+        for name in ["exec", "local_zsh", "ssh_exec"] {
             let spec = spec_for(name);
 
-            assert_eq!(spec.category, ToolCategory::Ssh);
+            assert!(spec.review_self_managed, "{name} 应自管安全审查");
             assert_eq!(spec.safety, ToolSafety::ReviewRequired);
-            assert!(spec.access.requires_network);
-            assert!(spec.result_policy.default_compress);
         }
+        // 其他 ReviewRequired 工具仍由 broker 做通用审查
+        let browser_tool = spec_for("browser_click");
+        assert!(!browser_tool.review_self_managed);
     }
 
     #[test]
@@ -576,11 +924,7 @@ mod tests {
     fn policy_table_rows_are_unique_and_consistent() {
         let mut seen = HashSet::new();
         for row in TOOL_POLICY_TABLE {
-            assert!(
-                seen.insert(row.name),
-                "策略表存在重复工具名：{}",
-                row.name
-            );
+            assert!(seen.insert(row.name), "策略表存在重复工具名：{}", row.name);
             // 并行调度仅允许真正的只读工具。
             if row.parallel_readonly {
                 assert!(row.access.readonly, "{} 声明并行但非只读", row.name);

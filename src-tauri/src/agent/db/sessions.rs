@@ -293,9 +293,7 @@ impl DispatcherDb {
         let mut keywords_by_session =
             super::keywords::load_keywords_by_session_ids(&conn, &session_ids)?;
         for session in &mut items {
-            session.keywords = keywords_by_session
-                .remove(&session.id)
-                .unwrap_or_default();
+            session.keywords = keywords_by_session.remove(&session.id).unwrap_or_default();
         }
         let next_cursor = items
             .last()
@@ -504,9 +502,7 @@ impl DispatcherDb {
         let mut keywords_by_session =
             super::keywords::load_keywords_by_session_ids(&conn, &session_ids)?;
         for session in &mut items {
-            session.keywords = keywords_by_session
-                .remove(&session.id)
-                .unwrap_or_default();
+            session.keywords = keywords_by_session.remove(&session.id).unwrap_or_default();
         }
 
         let has_more = (offset + items.len() as i64) < total;

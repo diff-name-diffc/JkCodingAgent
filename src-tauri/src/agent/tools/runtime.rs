@@ -1,12 +1,12 @@
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::Result;
 use tauri::ipc::Channel;
+use tokio::sync::watch;
 
-use super::ToolRegistry;
+use super::{CapabilityBroker, CapabilityInvocation, CapabilitySet, ToolRegistry};
 use crate::agent::common;
-use crate::agent::db::{DispatcherDb, FinishToolRun, NewToolRun};
+use crate::agent::db::{DispatcherDb, FinishToolRun, NewToolRun, ToolRunTraceContext};
 use crate::agent::llm::RequestedToolCall;
 use crate::agent::run_loop::AgentEvent;
 use crate::agent::tools::{ToolContext, ToolResult};
@@ -25,52 +25,22 @@ pub struct ToolRunFinishUpdate<'a> {
 pub struct ToolRuntime;
 
 impl ToolRuntime {
-    pub async fn execute_tool(
+    pub async fn execute_tool_with_cancellation(
         registry: &ToolRegistry,
         workspace: &Path,
-        allowed_tool_names: &std::collections::HashSet<String>,
+        capabilities: &CapabilitySet,
         tool_call: &RequestedToolCall,
         context: &ToolContext,
+        cancel_rx: watch::Receiver<bool>,
     ) -> ToolResult {
-        let mut execution_context = context.clone();
-        execution_context.current_tool_call_id = Some(tool_call.id.clone());
-        // 执行入口统一规范化路径边界输入，保证所有工具拿到的
-        // workspace / extra_allowed_dirs 均为 canonical 形式。
-        execution_context.normalize_paths();
-        let spec = registry.spec_by_name(workspace, &tool_call.name, true);
-        if !allowed_tool_names.contains(&tool_call.name) {
-            return ToolResult::recoverable_error(format!(
-                "错误：禁止调用工具 '{}'；它未在当前模式、运行状态或用户配置的可用工具列表中。",
-                tool_call.name
-            ));
-        }
-
-        let Some(spec) = spec else {
-            return ToolResult::recoverable_error(format!("错误：未找到工具 '{}'", tool_call.name));
-        };
-
-        // unified_timeout=false：工具自管超时（exec / call_sub_agent 等）；
-        // timeout_secs=0：策略层明确约定为「不设统一超时限制」，同样跳过包裹，
-        // 避免把 0 曲解为 1 秒而误中止长耗时工具。
-        if !spec.execution.unified_timeout || spec.execution.timeout_secs == 0 {
-            return registry
-                .execute(&tool_call.name, &tool_call.arguments, &execution_context)
-                .await;
-        }
-
-        let timeout_secs = spec.execution.timeout_secs;
-        match tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            registry.execute(&tool_call.name, &tool_call.arguments, &execution_context),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => ToolResult::recoverable_error(format!(
-                "错误：工具 '{}' 执行超过统一策略超时 {} 秒，已中止等待。",
-                tool_call.name, timeout_secs
-            )),
-        }
+        CapabilityBroker::new(registry, workspace, capabilities.clone(), context)
+            .with_cancellation(cancel_rx)
+            .invoke(CapabilityInvocation::model(
+                tool_call.id.clone(),
+                tool_call.name.clone(),
+                tool_call.arguments.clone(),
+            ))
+            .await
     }
 
     pub async fn create_and_start_tool_run(
@@ -81,6 +51,27 @@ impl ToolRuntime {
         on_event: &Channel<AgentEvent>,
         tool_call: &RequestedToolCall,
     ) -> Result<String> {
+        Self::create_and_start_tool_run_with_trace(
+            db,
+            registry,
+            workspace_id,
+            workspace,
+            on_event,
+            tool_call,
+            ToolRunTraceContext::default(),
+        )
+        .await
+    }
+
+    pub async fn create_and_start_tool_run_with_trace(
+        db: &DispatcherDb,
+        registry: &ToolRegistry,
+        workspace_id: &str,
+        workspace: &Path,
+        on_event: &Channel<AgentEvent>,
+        tool_call: &RequestedToolCall,
+        trace: ToolRunTraceContext,
+    ) -> Result<String> {
         let registered_spec = registry.spec_by_name(workspace, &tool_call.name, true);
         let registered = registered_spec.is_some();
         let spec = registered_spec.unwrap_or_else(|| {
@@ -90,7 +81,12 @@ impl ToolRuntime {
                 serde_json::json!({ "type": "object", "properties": {} }),
             )
         });
-        let effective_args = registry.effective_args(&tool_call.name, &tool_call.arguments);
+        let effective_args = registry
+            .prepare_input(workspace, &tool_call.name, &tool_call.arguments, true)
+            .map(|input| input.effective_arguments)
+            // 非法调用同样必须先进入台账。此时保留原始参数（内置工具仍补可确定
+            // default）供审计，真正执行会在 Broker 的唯一 prepare_input 入口失败。
+            .unwrap_or_else(|_| registry.effective_args(&tool_call.name, &tool_call.arguments));
         // 未注册（LLM 幻觉）工具名：不落任何策略审计字段并显式标记
         // registered=false，避免审计侧误以为该调用经过真实策略评估。
         let metadata_json = if registered {
@@ -105,16 +101,19 @@ impl ToolRuntime {
             serde_json::to_string(&serde_json::json!({ "registered": false }))?
         };
         let run = db
-            .create_tool_run_async(NewToolRun {
-                workspace_id: workspace_id.to_string(),
-                tool_call_id: tool_call.id.clone(),
-                tool_name: tool_call.name.clone(),
-                provider: spec.provider.clone(),
-                category: spec.category.as_str().to_string(),
-                arguments_json: serde_json::to_string(&tool_call.arguments)?,
-                effective_arguments_json: serde_json::to_string(&effective_args)?,
-                metadata_json,
-            })
+            .create_tool_run_with_trace_async(
+                NewToolRun {
+                    workspace_id: workspace_id.to_string(),
+                    tool_call_id: tool_call.id.clone(),
+                    tool_name: tool_call.name.clone(),
+                    provider: spec.provider.clone(),
+                    category: spec.category.as_str().to_string(),
+                    arguments_json: serde_json::to_string(&tool_call.arguments)?,
+                    effective_arguments_json: serde_json::to_string(&effective_args)?,
+                    metadata_json,
+                },
+                trace,
+            )
             .await?;
         common::emit(on_event, AgentEvent::ToolRunUpdated { run: run.clone() });
 
@@ -127,7 +126,7 @@ impl ToolRuntime {
                     .finish_tool_run_async(
                         &run.id,
                         FinishToolRun {
-                            status: "failed".to_string(),
+                            status: "internal_error".to_string(),
                             result_mode: None,
                             message_id: None,
                             error_kind: Some("internal".to_string()),
@@ -172,7 +171,16 @@ impl ToolRuntime {
                 },
             )
             .await?;
-        common::emit(on_event, AgentEvent::ToolRunUpdated { run });
+        if let Some(message_id) = update.message_id {
+            let tree = db
+                .attach_tool_run_tree_message_async(&run.id, message_id)
+                .await?;
+            for run in tree {
+                common::emit(on_event, AgentEvent::ToolRunUpdated { run });
+            }
+        } else {
+            common::emit(on_event, AgentEvent::ToolRunUpdated { run });
+        }
         Ok(())
     }
 }

@@ -1,17 +1,30 @@
+mod broker;
 mod builtin;
+mod capability;
 mod context;
 mod mcp;
-pub mod provider;
+pub mod program;
 mod registry;
 mod result;
 mod runtime;
 mod spec;
+mod surface;
 
+pub use broker::{BrokerAudit, CapabilityBroker, CapabilityInvocation};
+pub use capability::CapabilitySet;
 pub use context::ToolContext;
 pub use registry::{AgentTool, ToolRegistry};
-pub use result::{ToolAction, ToolInput, ToolResult, ToolStatus};
+pub(super) use result::ToolInput;
+pub use result::{ToolAction, ToolResult, ToolStatus};
 pub use runtime::{ToolRunFinishUpdate, ToolRuntime};
-pub use spec::{ToolSafety, ToolSpec};
+pub use spec::{ToolResultPolicy, ToolSafety, ToolSpec};
+pub use surface::ToolSurface;
+
+/// 项目编排器授权给受限运行时的数据面能力。协议/控制面工具不在用户可配置
+/// 范围内，始终由编排器顶层显式处理。
+pub const ORCHESTRATOR_RUNTIME_TOOL_NAMES: [&str; 4] = ["read_file", "list_dir", "glob", "grep"];
+pub(crate) const MAX_TOOL_CALLS_PER_BATCH: usize = 32;
+pub(crate) const MAX_PARALLEL_TOOL_CALLS: usize = 4;
 
 use crate::project::mcp::ProjectMcpRegistry;
 use crate::ssh_tool::SshSessionManager;

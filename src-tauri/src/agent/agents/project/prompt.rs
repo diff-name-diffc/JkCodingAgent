@@ -17,7 +17,7 @@ use super::OrchestratorAgent;
 const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 你是桌面客户端中的项目编排 Agent。你本身不写代码、不执行命令；你的核心职责是：
-完整理解用户需求 → 用只读工具探索项目（证据优先）→ 把复杂任务拆解为一张「执行图」（DAG），交给专业的执行 Agent 完成 → 依据执行报告持续修正，直到任务达成。
+完整理解用户需求 → 用受限工具运行时探索项目（证据优先）→ 把复杂任务拆解为一张「执行图」（DAG），交给专业的执行 Agent 完成 → 依据执行报告持续修正，直到任务达成。
 
 ## 工作方式判定
 
@@ -26,7 +26,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 ## 可用工具
 
-- 只读探索：`read_file` / `list_dir` / `glob` / `grep`。
+- `run_tool_program`：只读探索的唯一入口。它在宿主授权边界内组合 `read_file` / `list_dir` / `glob` / `grep`，实际可代理能力以本轮工具描述为准。
 - `message`：向用户发送最终答复（简单问题的收口方式）。
 - `submit_graph`：提交执行图（复杂任务的收口方式）。每轮最多提交一次；提交后等待用户确认，不要重复提交。
 - `graph_plan_report`：读取最近一次执行图的运行报告（验收结论、各节点成败与输出摘要、失败原因、共享 state 键）。
@@ -46,7 +46,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
     "role": "该节点 Agent 的角色定位",
     "modelRef": "<当前模型目录中的稳定 id>",
     "baseToolGroup": "read_only 或 coding",
-    "specialTools": [{ "source": "pi_extension 或 aha", "name": "工具名" }],
+    "specialTools": [{ "source": "aha", "name": "宿主工具名" }],
     "task": "自包含的子任务说明",
     "dependsOn": ["上游节点 id"],
     "injectStateKeys": ["需要注入的 state key"],
@@ -71,7 +71,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 - **验证节点强制**：只要图中有 coding（修改）节点，就必须至少有一个 read_only 验证节点依赖其产出（读取改动、运行测试、核对结果），作为收尾。
 - **并行写冲突**：互不依赖、可能并行的两个 coding 节点不得修改同一文件；若 `expectedFiles` 相交，请用 `dependsOn` 串行化。coding 节点请如实填写 `expectedFiles` 以便系统预检。
 - 根据任务性质、模型分类和能力标签（含历史成功率）选择主模型；只读任务优先 `read_only`，确需修改或命令时使用 `coding`。
-- Harness Engineering：基础工具保持最小，只有任务确实需要时才选择 PI 扩展或 Aha/MCP 特殊工具。
+- Harness Engineering：基础工具保持最小，只有任务确实需要时才选择 Aha/MCP 宿主特殊工具；PI 可执行扩展已禁用。
 - 无依赖关系的节点会并行执行（最多 3 个并发）；可并行的子任务请拆成平行节点。
 - 禁止引用 PI Harness 目录之外的模型或工具；不要生成 subAgent、Claude CLI 或 Codex CLI 节点。
 
@@ -83,9 +83,11 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 ## 探索纪律
 
-- `glob` 缩小范围 → `grep` 精确匹配 → `read_file` 加载确认；证据不足时继续收缩，不臆测。
+- 不要直接调用数据面工具；将一次调查写成一个 `run_tool_program`。程序只支持 `call` / `sequence` / `parallel` / `return`，根节点必须是 sequence，最后一步必须是全程序唯一 return。
+- `glob` 缩小范围 → `grep` 精确匹配 → `read_file` 加载确认；用 `{"$ref":{"step":"步骤ID","pointer":"/data/..."}}` 把前一步结构化结果传给后一步，证据不足时继续收缩，不臆测。
 - `list_dir` 只返回指定 path 之下最多两层，文件条目后的 `(:N行)` 是文件总行数；先用它了解局部结构，再用 `read_file path:start-end` 加载所需行段。
-- 互相独立的只读探索尽量在同一轮发起多个调用；调查工具支持 `paths` / `patterns` 数组参数减少轮次。
+- 互相独立且在本轮工具描述中标记为可并行的只读探索放进 parallel；有数据依赖的调用必须放进 sequence。不要把写入、命令、浏览器或任何控制面工具塞进运行时程序。
+- 每个 call 的 `id` 全局唯一；引用只能读取已经完成的步骤。parallel 分支不能互相引用；并行块结束后，后续 sequence 才能读取各分支结果。
 - 调查工具支持 `compress` / `compress_intent` 参数：`compress=false` 时绝不进行摘要，超过 2000 字符的结果会带截断行信息返回前 2000 字符；只有 `compress=true` 且结果超过 5000 字符时才进行摘要。分析代码、配置等需要精确内容时保持 `compress=false`；需从超长输出中提取关键内容时显式设置 `compress=true` 并写明 `compress_intent`。`read_file` 的 `paths` 可使用 `path:start-end` 协议精确读取包含边界的行范围。
 
 ## 输出语言
@@ -104,14 +106,13 @@ impl OrchestratorAgent {
 
         // 版本占位符由常量生成：提示词示例、工具 schema、校验三方同源，
         // 契约升级时不再需要手工同步提示词里的示例值。
-        let mut prompt = ORCHESTRATOR_ROLE_PROMPT
-            .replace(
-                "\"version\": \"{graph_definition_version}\"",
-                &format!(
-                    "\"version\": {}",
-                    crate::agent::graph::types::GRAPH_DEFINITION_VERSION
-                ),
-            );
+        let mut prompt = ORCHESTRATOR_ROLE_PROMPT.replace(
+            "\"version\": \"{graph_definition_version}\"",
+            &format!(
+                "\"version\": {}",
+                crate::agent::graph::types::GRAPH_DEFINITION_VERSION
+            ),
+        );
         if !extra.is_empty() {
             prompt.push_str("\n\n---\n\n");
             prompt.push_str(&extra);
@@ -335,7 +336,10 @@ fn read_prompt_file(root_canonical: &Path, path: &Path) -> Option<String> {
     let canonical = match path.canonicalize() {
         Ok(path) => path,
         Err(error) => {
-            log_warning(&format!("[prompt] 解析 {} 失败，已跳过：{error}", path.display()));
+            log_warning(&format!(
+                "[prompt] 解析 {} 失败，已跳过：{error}",
+                path.display()
+            ));
             return None;
         }
     };
@@ -403,7 +407,11 @@ mod tests {
         let root = unique_temp_dir("basic");
         std::fs::write(root.join("USER.md"), "用户偏好内容").unwrap();
         std::fs::create_dir_all(root.join("skills").join("alpha")).unwrap();
-        std::fs::write(root.join("skills").join("alpha").join("SKILL.md"), "技能内容").unwrap();
+        std::fs::write(
+            root.join("skills").join("alpha").join("SKILL.md"),
+            "技能内容",
+        )
+        .unwrap();
         std::fs::create_dir_all(root.join("memory")).unwrap();
         std::fs::write(root.join("memory").join("MEMORY.md"), "记忆内容").unwrap();
 
@@ -451,14 +459,14 @@ mod tests {
 
         // skills/evil/SKILL.md -> 工作区外文件：必须被跳过，不得注入提示词。
         std::fs::create_dir_all(root.join("skills").join("evil")).unwrap();
-        std::os::unix::fs::symlink(
-            &secret,
-            root.join("skills").join("evil").join("SKILL.md"),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink(&secret, root.join("skills").join("evil").join("SKILL.md"))
+            .unwrap();
 
         let prompt = load_prompt_files(&root);
-        assert!(!prompt.contains("工作区外的敏感内容"), "符号链接越界文件不得进入提示词");
+        assert!(
+            !prompt.contains("工作区外的敏感内容"),
+            "符号链接越界文件不得进入提示词"
+        );
         cleanup(&root);
         cleanup(&outside);
     }

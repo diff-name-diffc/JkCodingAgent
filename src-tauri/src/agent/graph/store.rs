@@ -183,7 +183,11 @@ impl GraphStore {
     /// 更新 latest_run_id。共享 state 保持 plan 当前值（上次运行结束时的状态），不重置。
     /// `from_run_id` 必须属于 `plan_id`：复制行写入目标 plan_id，避免跨 plan 误传时
     /// graph_node_runs.plan_id 与 graph_runs.plan_id 不一致，破坏报告关联与后续续跑。
-    pub(crate) fn create_resume_run(&self, plan_id: &str, from_run_id: &str) -> Result<GraphRunSummary> {
+    pub(crate) fn create_resume_run(
+        &self,
+        plan_id: &str,
+        from_run_id: &str,
+    ) -> Result<GraphRunSummary> {
         let mut conn = self.conn()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let from_belongs: i64 = tx.query_row(
@@ -249,7 +253,12 @@ impl GraphStore {
     }
 
     /// 写入验收结论（run 收尾由 verifier 产出）。
-    pub(crate) fn update_run_verdict(&self, run_id: &str, status: &str, reason: &str) -> Result<()> {
+    pub(crate) fn update_run_verdict(
+        &self,
+        run_id: &str,
+        status: &str,
+        reason: &str,
+    ) -> Result<()> {
         self.conn()?.execute(
             "UPDATE graph_runs SET verdict_status=?2,verdict_reason=?3 WHERE id=?1",
             params![run_id, status, reason],
@@ -435,7 +444,12 @@ impl GraphStore {
         let requirement = requirement.to_string();
         let initial_state_json = initial_state_json.to_string();
         tokio::task::spawn_blocking(move || {
-            s.create_plan(&workspace_id, &definition, &requirement, &initial_state_json)
+            s.create_plan(
+                &workspace_id,
+                &definition,
+                &requirement,
+                &initial_state_json,
+            )
         })
         .await
         .context("创建图计划任务失败")?
@@ -540,7 +554,10 @@ impl GraphStore {
             .await
             .context("创建续跑运行任务失败")?
     }
-    pub(crate) async fn get_latest_run_async(&self, plan_id: &str) -> Result<Option<GraphRunSummary>> {
+    pub(crate) async fn get_latest_run_async(
+        &self,
+        plan_id: &str,
+    ) -> Result<Option<GraphRunSummary>> {
         let s = self.clone();
         let plan_id = plan_id.to_string();
         tokio::task::spawn_blocking(move || s.get_latest_run(&plan_id))
@@ -561,7 +578,10 @@ impl GraphStore {
             .await
             .context("写入验收结论任务失败")?
     }
-    pub(crate) async fn node_run_stats_async(&self, workspace_id: &str) -> Result<Vec<GraphModelStat>> {
+    pub(crate) async fn node_run_stats_async(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<GraphModelStat>> {
         let s = self.clone();
         let workspace_id = workspace_id.to_string();
         tokio::task::spawn_blocking(move || s.node_run_stats(&workspace_id))
@@ -682,7 +702,9 @@ mod tests {
         }
     }
     fn create_plain_plan(store: &GraphStore) -> GraphPlanRecord {
-        store.create_plan("w", &definition(), "原始需求", "{}").unwrap()
+        store
+            .create_plan("w", &definition(), "原始需求", "{}")
+            .unwrap()
     }
     #[test]
     fn preserves_run_attempts() {
@@ -751,7 +773,9 @@ mod tests {
 
         // 普通图：full run 清空 state。
         let plain = create_plain_plan(&store);
-        store.update_plan_state(&plain.id, r#"{"leftover":"x"}"#).unwrap();
+        store
+            .update_plan_state(&plain.id, r#"{"leftover":"x"}"#)
+            .unwrap();
         store.create_run(&plain.id).unwrap();
         assert_eq!(store.get_plan(&plain.id).unwrap().unwrap().state_json, "{}");
 
@@ -763,16 +787,27 @@ mod tests {
             run_id: "r-old".into(),
         });
         let inherited = store
-            .create_plan("w", &inherited_def, "修复需求", r#"{"auth_analysis":"结论"}"#)
+            .create_plan(
+                "w",
+                &inherited_def,
+                "修复需求",
+                r#"{"auth_analysis":"结论"}"#,
+            )
             .unwrap();
         store
-            .update_plan_state(&inherited.id, r#"{"auth_analysis":"结论","partial":"失败运行残留"}"#)
+            .update_plan_state(
+                &inherited.id,
+                r#"{"auth_analysis":"结论","partial":"失败运行残留"}"#,
+            )
             .unwrap();
         store.create_run(&inherited.id).unwrap();
         let reloaded = store.get_plan(&inherited.id).unwrap().unwrap();
         assert_eq!(reloaded.state_json, r#"{"auth_analysis":"结论"}"#);
         assert_eq!(reloaded.requirement, "修复需求");
-        assert_eq!(reloaded.inherits_plan_id.as_deref(), Some(plain.id.as_str()));
+        assert_eq!(
+            reloaded.inherits_plan_id.as_deref(),
+            Some(plain.id.as_str())
+        );
     }
 
     #[test]
@@ -792,7 +827,9 @@ mod tests {
         failed.error_text = Some("boom".into());
         store.save_node_run(&failed).unwrap();
         store.finish_run(&base.id, "failed").unwrap();
-        store.update_plan_state(&plan.id, r#"{"out_n1":"产出"}"#).unwrap();
+        store
+            .update_plan_state(&plan.id, r#"{"out_n1":"产出"}"#)
+            .unwrap();
 
         let resumed = store.create_resume_run(&plan.id, &base.id).unwrap();
         assert_eq!(resumed.mode, RUN_MODE_RESUME);
@@ -872,9 +909,7 @@ mod tests {
         let run_a = store.create_run(&plan_a.id).unwrap();
         store.finish_run(&run_a.id, "failed").unwrap();
 
-        let error = store
-            .create_resume_run(&plan_b.id, &run_a.id)
-            .unwrap_err();
+        let error = store.create_resume_run(&plan_b.id, &run_a.id).unwrap_err();
         assert!(format!("{error:#}").contains("不属于"));
     }
 
@@ -985,8 +1020,16 @@ mod tests {
             )
             .unwrap()
         };
-        assert_eq!(index_exists("idx_graph_node_runs_plan"), 1, "新增 plan_id 索引");
-        assert_eq!(index_exists("idx_graph_activities_node"), 0, "冗余索引被清理");
+        assert_eq!(
+            index_exists("idx_graph_node_runs_plan"),
+            1,
+            "新增 plan_id 索引"
+        );
+        assert_eq!(
+            index_exists("idx_graph_activities_node"),
+            0,
+            "冗余索引被清理"
+        );
 
         // initial_state_json 回填：普通图为空，修复图沿用当前 state（近似）。
         let initial = |plan_id: &str| -> String {
@@ -1017,7 +1060,9 @@ mod tests {
         let store = GraphStore::new(&db);
         let plan = create_plain_plan(&store);
         let run = store.create_run(&plan.id).unwrap();
-        store.update_run_verdict(&run.id, "partial", "部分节点失败但有产出").unwrap();
+        store
+            .update_run_verdict(&run.id, "partial", "部分节点失败但有产出")
+            .unwrap();
         let latest = store.get_latest_run(&plan.id).unwrap().unwrap();
         assert_eq!(latest.verdict_status, "partial");
         assert_eq!(latest.verdict_reason, "部分节点失败但有产出");
@@ -1073,7 +1118,9 @@ mod tests {
         // 置为 running 后拒绝编辑（TOCTOU 门禁：条件更新 + 影响行数检查）。
         store.update_plan_status(&plan.id, "running").unwrap();
         definition.title = "并发覆盖".into();
-        let error = store.update_plan_definition(&plan.id, &definition).unwrap_err();
+        let error = store
+            .update_plan_definition(&plan.id, &definition)
+            .unwrap_err();
         assert!(format!("{error:#}").contains("状态已变更"));
         assert_eq!(
             store.get_plan(&plan.id).unwrap().unwrap().title,
@@ -1082,7 +1129,9 @@ mod tests {
         );
 
         // 计划不存在：给出可区分的错误而非静默 0 行。
-        let error = store.update_plan_definition("不存在", &definition).unwrap_err();
+        let error = store
+            .update_plan_definition("不存在", &definition)
+            .unwrap_err();
         assert!(format!("{error:#}").contains("不存在"));
     }
 }

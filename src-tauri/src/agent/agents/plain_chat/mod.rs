@@ -32,7 +32,8 @@ use crate::agent::run_loop::AgentEvent;
 use crate::agent::sub_agent::config::SubAgentConfig;
 use crate::agent::sub_agent::{tool::sub_agent_failure_message, SubAgentManager};
 use crate::agent::tools::{
-    ToolAction, ToolContext, ToolRegistry, ToolResult, ToolRunFinishUpdate, ToolRuntime,
+    CapabilitySet, ToolAction, ToolContext, ToolRegistry, ToolResult, ToolRunFinishUpdate,
+    ToolRuntime, ToolSurface,
 };
 use crate::project::mcp::{ensure_project_mcp_file, ProjectMcpRegistry};
 use crate::shared::truncate_for_display;
@@ -70,9 +71,9 @@ struct SubAgentExposure {
 /// 单个已执行工具收尾的结果。
 enum ExecutedToolFinalize {
     Done,
-    /// 子智能体致命失败：当前 run 已按 fatal_error 收尾，由调用方决定中止时机
+    /// 工具致命失败：当前 run 已按 fatal_error 收尾，由调用方决定中止时机
     /// （只读并行批需先把兄弟结果全部收尾，串行批可立即中止）。
-    FatalSubAgent(String),
+    FatalTool(String),
 }
 
 impl PlainChatAgent {
@@ -269,7 +270,7 @@ impl PlainChatAgent {
         tool_calls: &[RequestedToolCall],
         args_map: &std::collections::HashMap<String, String>,
         tool_context: &ToolContext,
-        allowed_tool_names: &std::collections::HashSet<String>,
+        direct_capabilities: &CapabilitySet,
         on_event: &Channel<AgentEvent>,
         cancel_rx: &watch::Receiver<bool>,
         usage_tracker: &mut UsageTracker,
@@ -315,16 +316,29 @@ impl PlainChatAgent {
                 }
             }
 
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(
+                crate::agent::tools::MAX_PARALLEL_TOOL_CALLS,
+            ));
             let readonly_results: Vec<ToolResult> =
-                futures::future::join_all(readonly_run.iter().map(|tool_call| async move {
-                    ToolRuntime::execute_tool(
-                        &self.tools,
-                        &tool_context.workspace,
-                        allowed_tool_names,
-                        tool_call,
-                        tool_context,
-                    )
-                    .await
+                futures::future::join_all(readonly_run.iter().map(|tool_call| {
+                    let cancel_rx = cancel_rx.clone();
+                    let semaphore = Arc::clone(&semaphore);
+                    async move {
+                        let Ok(_permit) = semaphore.acquire().await else {
+                            return ToolResult::fatal_error(
+                                "只读工具并发调度器意外关闭，已拒绝执行",
+                            );
+                        };
+                        ToolRuntime::execute_tool_with_cancellation(
+                            &self.tools,
+                            &tool_context.workspace,
+                            direct_capabilities,
+                            tool_call,
+                            tool_context,
+                            cancel_rx,
+                        )
+                        .await
+                    }
                 }))
                 .await;
 
@@ -345,6 +359,7 @@ impl PlainChatAgent {
                         db,
                         on_event,
                         workspace_id,
+                        &tool_context.workspace,
                         &tool_call,
                         result,
                         &run_id,
@@ -356,7 +371,7 @@ impl PlainChatAgent {
                     .await
                 {
                     Ok(ExecutedToolFinalize::Done) => {}
-                    Ok(ExecutedToolFinalize::FatalSubAgent(message)) => {
+                    Ok(ExecutedToolFinalize::FatalTool(message)) => {
                         // 先收尾兄弟结果，循环结束后再中止。
                         fatal_message.get_or_insert(message);
                     }
@@ -406,10 +421,11 @@ impl PlainChatAgent {
                     .execute_single_tool_with_usage(
                         tool_call,
                         tool_context,
-                        allowed_tool_names,
+                        direct_capabilities,
                         on_event,
                         usage_tracker,
                         workspace_id,
+                        cancel_rx,
                     )
                     .await;
                 match self
@@ -417,6 +433,7 @@ impl PlainChatAgent {
                         db,
                         on_event,
                         workspace_id,
+                        &tool_context.workspace,
                         tool_call,
                         result,
                         &run_id,
@@ -429,7 +446,7 @@ impl PlainChatAgent {
                 {
                     ExecutedToolFinalize::Done => {}
                     // 串行批：后续工具尚未创建 run 记录，可立即中止
-                    ExecutedToolFinalize::FatalSubAgent(message) => {
+                    ExecutedToolFinalize::FatalTool(message) => {
                         anyhow::bail!("{}", message);
                     }
                 }
@@ -459,10 +476,11 @@ impl PlainChatAgent {
                     .execute_single_tool_with_usage(
                         tool_call,
                         tool_context,
-                        allowed_tool_names,
+                        direct_capabilities,
                         on_event,
                         usage_tracker,
                         workspace_id,
+                        cancel_rx,
                     )
                     .await;
                 match self
@@ -470,6 +488,7 @@ impl PlainChatAgent {
                         db,
                         on_event,
                         workspace_id,
+                        &tool_context.workspace,
                         tool_call,
                         result,
                         &run_id,
@@ -482,7 +501,7 @@ impl PlainChatAgent {
                 {
                     ExecutedToolFinalize::Done => {}
                     // 串行批：后续工具尚未创建 run 记录，可立即中止
-                    ExecutedToolFinalize::FatalSubAgent(message) => {
+                    ExecutedToolFinalize::FatalTool(message) => {
                         anyhow::bail!("{}", message);
                     }
                 }
@@ -493,8 +512,8 @@ impl PlainChatAgent {
 
     /// 持久化单个已执行工具的结果并收尾其 run 记录。
     ///
-    /// - 检测到子智能体致命失败：当前 run 以 fatal_error 收尾，返回
-    ///   `FatalSubAgent` 由调用方决定中止时机（不在此处直接抛错，避免
+    /// - 检测到结构化致命错误：当前 run 以 fatal_error 收尾，返回
+    ///   `FatalTool` 由调用方决定中止时机（不在此处直接抛错，避免
     ///   并行批中其余已执行工具的 run 被悬挂）；
     /// - 结果持久化失败：尽力把当前 run 收敛为 failed 后再向上抛错；
     /// - run 收尾失败：结果已落库，仅告警不中断主流程。
@@ -504,6 +523,7 @@ impl PlainChatAgent {
         db: &DispatcherDb,
         on_event: &Channel<AgentEvent>,
         workspace_id: &str,
+        workspace: &Path,
         tool_call: &RequestedToolCall,
         result: ToolResult,
         run_id: &str,
@@ -514,7 +534,16 @@ impl PlainChatAgent {
     ) -> Result<ExecutedToolFinalize> {
         let result_text = result.output_for_llm();
         let result_metadata_json = result.run_metadata_json();
-        if let Some(message) = sub_agent_failure_message(&result_text) {
+        let fatal_message = if result.status == crate::agent::tools::ToolStatus::FatalError {
+            Some(
+                sub_agent_failure_message(&result_text)
+                    .unwrap_or(result_text.as_str())
+                    .to_string(),
+            )
+        } else {
+            sub_agent_failure_message(&result_text).map(str::to_string)
+        };
+        if let Some(message) = fatal_message {
             self.finish_tool_run(
                 db,
                 on_event,
@@ -523,12 +552,12 @@ impl PlainChatAgent {
                 None,
                 None,
                 Some("sub_agent_failure"),
-                Some(message),
+                Some(&message),
                 None,
                 result_metadata_json.as_deref(),
             )
             .await?;
-            return Ok(ExecutedToolFinalize::FatalSubAgent(message.to_string()));
+            return Ok(ExecutedToolFinalize::FatalTool(message));
         }
 
         let tool_message = match persist_tool_result_with_compression(
@@ -537,6 +566,7 @@ impl PlainChatAgent {
             on_event,
             tool_call,
             &self.tools,
+            workspace,
             &result_text,
             summary_provider,
             summary_model,
@@ -672,32 +702,35 @@ impl PlainChatAgent {
         &self,
         tool_call: &RequestedToolCall,
         tool_context: &ToolContext,
-        allowed_tool_names: &std::collections::HashSet<String>,
+        direct_capabilities: &CapabilitySet,
         on_event: &Channel<AgentEvent>,
         usage_tracker: &mut UsageTracker,
         workspace_id: &str,
+        cancel_rx: &watch::Receiver<bool>,
     ) -> ToolResult {
         let is_sub_agent_call = tool_call.name == "call_sub_agent";
 
         if is_sub_agent_call {
             with_usage_paused(usage_tracker, workspace_id, on_event, || async {
-                ToolRuntime::execute_tool(
+                ToolRuntime::execute_tool_with_cancellation(
                     &self.tools,
                     &tool_context.workspace,
-                    allowed_tool_names,
+                    direct_capabilities,
                     tool_call,
                     tool_context,
+                    cancel_rx.clone(),
                 )
                 .await
             })
             .await
         } else {
-            ToolRuntime::execute_tool(
+            ToolRuntime::execute_tool_with_cancellation(
                 &self.tools,
                 &tool_context.workspace,
-                allowed_tool_names,
+                direct_capabilities,
                 tool_call,
                 tool_context,
+                cancel_rx.clone(),
             )
             .await
         }
@@ -745,6 +778,15 @@ impl PlainChatAgent {
             .await
             .ok()
             .flatten();
+        let chat_image_paths = match db.list_chat_image_paths_async(workspace_id).await {
+            Ok(paths) => paths,
+            Err(error) => {
+                eprintln!(
+                    "读取会话聊天图片授权失败（workspace_id={workspace_id}），按空白名单收紧：{error:#}"
+                );
+                Vec::new()
+            }
+        };
         // get_settings_v2 是同步 SQLite 读取，async 路径必须经 spawn_blocking，
         // 避免阻塞 Tokio 运行时线程（G9-02）。
         let settings_db = db.clone();
@@ -764,9 +806,9 @@ impl PlainChatAgent {
             ssh_review,
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: true,
-            extra_allowed_dirs: dirs::home_dir()
-                .map(|home| vec![home.join(".jkcodingagent")])
-                .unwrap_or_default(),
+            // 只放行当前会话已绑定的精确图片文件；其他会话图片和全局设置
+            // 目录均不可见。路径规范化失败会继续 fail-closed 剔除。
+            extra_allowed_dirs: chat_image_paths,
             app_handle: self.app_handle.clone(),
             llm_provider: Some(provider.clone()),
             vision_model: self
@@ -783,6 +825,8 @@ impl PlainChatAgent {
             current_sub_agent_id: None,
             current_sub_agent_name: None,
             current_tool_call_id: None,
+            current_tool_spec_hash: None,
+            cancel_rx: None,
             sub_agent_parent_tool_call_id: None,
             sub_agent_trace_events: None,
         }
@@ -820,7 +864,9 @@ impl PlainChatAgent {
                         agent.agent_name, agent.agent_id, agent.description
                     ));
                 }
-                prompt.push_str("\n使用方式：调用 call_sub_agent(agent_id, task) 来让子智能体处理特定任务。\n");
+                prompt.push_str(
+                    "\n使用方式：调用 call_sub_agent(agent_id, task) 来让子智能体处理特定任务。\n",
+                );
             }
         }
         prompt
@@ -905,12 +951,8 @@ impl RunLoopAgent for PlainChatAgent {
         self.config.max_tool_iterations
     }
 
-    fn tool_definitions_for_loop(
-        &self,
-        workspace_id: &str,
-        workspace: &Path,
-    ) -> Vec<ToolDefinition> {
-        self.build_tool_definitions(workspace_id, workspace)
+    fn tool_surface_for_loop(&self, workspace_id: &str, workspace: &Path) -> ToolSurface {
+        ToolSurface::direct(self.build_tool_definitions(workspace_id, workspace))
     }
 
     fn build_iteration_messages(
@@ -1022,6 +1064,13 @@ impl RunLoopAgent for PlainChatAgent {
         tool_context: &ToolContext,
         response: LlmResponse,
     ) -> Result<RunLoopToolOutcome> {
+        if response.tool_calls.len() > crate::agent::tools::MAX_TOOL_CALLS_PER_BATCH {
+            anyhow::bail!(
+                "模型单轮返回 {} 个工具调用，超过运行时上限 {}；已在持久化或执行前拒绝。",
+                response.tool_calls.len(),
+                crate::agent::tools::MAX_TOOL_CALLS_PER_BATCH
+            );
+        }
         let tool_calls_payload = build_tool_calls_payload(&response.tool_calls, &self.tools)?;
         let args_map = build_args_map(&response.tool_calls, &self.tools)?;
         let mut llm_messages = Vec::new();
@@ -1061,7 +1110,7 @@ impl RunLoopAgent for PlainChatAgent {
                 &response.tool_calls,
                 &args_map,
                 tool_context,
-                &iteration.allowed_tool_names,
+                &iteration.direct_capabilities,
                 ctx.on_event,
                 &ctx.cancel_rx,
                 &mut ctx.usage_tracker,
@@ -1225,8 +1274,14 @@ mod tests {
         // G9-03 显式契约：空列表 = 全部放行（fail-open 默认）
         assert!(is_tool_allowed_by_config(&[], "local_zsh"));
         assert!(is_tool_allowed_by_config(&[], "call_sub_agent"));
-        assert!(!is_tool_allowed_by_config(&["browser_read_text".to_string()], "local_zsh"));
-        assert!(is_tool_allowed_by_config(&["local_zsh".to_string()], "local_zsh"));
+        assert!(!is_tool_allowed_by_config(
+            &["browser_read_text".to_string()],
+            "local_zsh"
+        ));
+        assert!(is_tool_allowed_by_config(
+            &["local_zsh".to_string()],
+            "local_zsh"
+        ));
     }
 
     #[test]

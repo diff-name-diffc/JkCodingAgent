@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseHostRequest } from "./protocol.ts";
+import { PROTOCOL_VERSION, parseHostRequest } from "./protocol.ts";
 
 function completeStart(): Record<string, unknown> {
   return {
@@ -22,6 +22,7 @@ function completeStart(): Record<string, unknown> {
 }
 
 test("parses a complete start frame", () => {
+  assert.equal(PROTOCOL_VERSION, 3);
   const request = parseHostRequest(JSON.stringify(completeStart()));
   assert.equal(request.type, "start");
   assert.equal(request.runId, "run-1");
@@ -31,6 +32,16 @@ test("rejects malformed and unknown frames loudly", () => {
   assert.throws(() => parseHostRequest("not-json"));
   assert.throws(() => parseHostRequest('{"type":"start","requestId":"x"}'), /runId/);
   assert.throws(() => parseHostRequest('{"type":"legacy","requestId":"x","runId":"x","nodeId":"x","sequence":1}'), /未知协议/);
+  assert.throws(() => parseHostRequest(JSON.stringify({
+    type: "discover",
+    requestId: "x",
+    runId: "x",
+    nodeId: "x",
+    sequence: 1,
+    workspace: "/tmp/workspace",
+    agentDir: "/tmp/agent",
+    projectResourceDir: "/tmp/project-agent",
+  })), /未知协议/);
 });
 
 test("rejects malformed nested model fields", () => {
@@ -52,6 +63,19 @@ test("rejects malformed tool specifications", () => {
     ...completeStart(),
     hostTools: [{ name: "tool", runtimeName: "aha__tool", description: "tool", parameters: [] }],
   })), /hostTools/);
+  assert.throws(() => parseHostRequest(JSON.stringify({
+    ...completeStart(),
+    specialTools: [{ source: "pi_extension", name: "unsafe" }],
+  })), /已禁用/);
+  const hostTool = { name: "read_file", runtimeName: "read", description: "read", parameters: {} };
+  assert.throws(() => parseHostRequest(JSON.stringify({
+    ...completeStart(),
+    hostTools: [hostTool, { ...hostTool, name: "other" }],
+  })), /runtimeName 重复/);
+  assert.throws(() => parseHostRequest(JSON.stringify({
+    ...completeStart(),
+    hostTools: [hostTool, { ...hostTool, runtimeName: "other" }],
+  })), /name 重复/);
 });
 
 test("requires exactly one host tool result payload", () => {

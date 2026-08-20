@@ -15,8 +15,11 @@ use super::DispatcherDb;
 
 /// 当前 schema 版本号（PRAGMA user_version），init() 内迁移按版本号阶梯推进。
 /// pub(crate)：跨模块的迁移测试直接引用本常量，避免硬编码版本号漂移。
-/// v28：session_keywords.workspace_id 改名为 session_id（该列实际存储会话 id）。
-pub(crate) const SCHEMA_VERSION: i32 = 28;
+/// v30：SSH 服务器 / 主机密钥 / 审计从按项目分键的 JSON 文件收敛为全局表。
+/// v31：受管项目注册表从 projects.json 收敛为全局表（会话级联删除的锚点）。
+/// v32：MCP 全局注册表建表，普通聊天工作区的旧「全局」mcp.json 导入。
+/// v33：应用级键值配置（app_config）：theme / 全局浏览器选项 / RAG 配置入库。
+pub(crate) const SCHEMA_VERSION: i32 = 33;
 
 impl DispatcherDb {
     pub(super) fn init(&self) -> Result<()> {
@@ -117,6 +120,7 @@ impl DispatcherDb {
                 workspace_id TEXT NOT NULL,
                 message_id TEXT,
                 tool_call_id TEXT,
+                tool_run_id TEXT,
                 tool_name TEXT,
                 title TEXT NOT NULL,
                 kind TEXT NOT NULL,
@@ -124,7 +128,8 @@ impl DispatcherDb {
                 content TEXT NOT NULL,
                 char_count INTEGER NOT NULL DEFAULT 0,
                 line_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (tool_run_id) REFERENCES dispatcher_tool_runs(id) ON DELETE CASCADE
             );
 
             CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_artifacts_workspace_created
@@ -137,6 +142,10 @@ impl DispatcherDb {
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
                 tool_call_id TEXT NOT NULL,
+                parent_run_id TEXT,
+                origin TEXT NOT NULL DEFAULT 'model' CHECK(length(trim(origin)) > 0),
+                step_id TEXT,
+                sequence INTEGER NOT NULL DEFAULT 0 CHECK(sequence >= 0),
                 tool_name TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 category TEXT NOT NULL,
@@ -153,7 +162,8 @@ impl DispatcherDb {
                 duration_ms INTEGER NOT NULL DEFAULT 0,
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (parent_run_id) REFERENCES dispatcher_tool_runs(id) ON DELETE CASCADE
             );
 
             CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_runs_workspace_created
@@ -257,6 +267,49 @@ impl DispatcherDb {
                 sub_agent_id TEXT PRIMARY KEY,
                 FOREIGN KEY (sub_agent_id) REFERENCES sub_agents(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS ssh_servers (
+                id TEXT PRIMARY KEY,
+                config_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ssh_host_keys (
+                server_id TEXT PRIMARY KEY,
+                fingerprint TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ssh_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                server_id TEXT NOT NULL,
+                record_json TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ssh_audit_log_server
+            ON ssh_audit_log(server_id, id DESC);
+
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL UNIQUE,
+                branch TEXT,
+                last_opened_at INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS mcp_servers (
+                name TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                config_json TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS app_config (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL
+            );
             ",
         )
         .context("initialize dispatcher sqlite schema")?;
@@ -343,6 +396,10 @@ impl DispatcherDb {
                     id TEXT PRIMARY KEY,
                     workspace_id TEXT NOT NULL,
                     tool_call_id TEXT NOT NULL,
+                    parent_run_id TEXT,
+                    origin TEXT NOT NULL DEFAULT 'model' CHECK(length(trim(origin)) > 0),
+                    step_id TEXT,
+                    sequence INTEGER NOT NULL DEFAULT 0 CHECK(sequence >= 0),
                     tool_name TEXT NOT NULL,
                     provider TEXT NOT NULL,
                     category TEXT NOT NULL,
@@ -359,7 +416,8 @@ impl DispatcherDb {
                     duration_ms INTEGER NOT NULL DEFAULT 0,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (parent_run_id) REFERENCES dispatcher_tool_runs(id) ON DELETE CASCADE
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_runs_workspace_created
@@ -893,7 +951,8 @@ impl DispatcherDb {
             }
             tx.pragma_update(None, "user_version", 26)
                 .context("v26: set user_version")?;
-            tx.commit().context("v26: commit graph hardening migration")?;
+            tx.commit()
+                .context("v26: commit graph hardening migration")?;
         }
 
         // v26 → v27: 清理 v6 迁移遗漏的悬空 dispatcher_tool_runs 记录。
@@ -916,7 +975,8 @@ impl DispatcherDb {
             }
             tx.pragma_update(None, "user_version", 27)
                 .context("v27: set user_version")?;
-            tx.commit().context("v27: commit tool runs dangling cleanup migration")?;
+            tx.commit()
+                .context("v27: commit tool runs dangling cleanup migration")?;
         }
 
         // v27 → v28: session_keywords.workspace_id 改名为 session_id。
@@ -967,7 +1027,194 @@ impl DispatcherDb {
             }
             tx.pragma_update(None, "user_version", 28)
                 .context("v28: set user_version")?;
-            tx.commit().context("v28: commit session_keywords rename migration")?;
+            tx.commit()
+                .context("v28: commit session_keywords rename migration")?;
+        }
+
+        // v28 → v29：工具运行从扁平台账升级为可审计的父子调用树。
+        // 新列均具有兼容默认值，存量根调用无需回填；artifact.tool_run_id
+        // 保持 NULL，只有新运行产生的产物才要求绑定真实 run。
+        if current_version < 29 {
+            let tx = conn
+                .transaction()
+                .context("v29: begin tool run trace migration")?;
+            if !table_has_column(&tx, "dispatcher_tool_runs", "parent_run_id")? {
+                tx.execute_batch(
+                    "ALTER TABLE dispatcher_tool_runs
+                         ADD COLUMN parent_run_id TEXT
+                         REFERENCES dispatcher_tool_runs(id) ON DELETE CASCADE;",
+                )
+                .context("v29: add dispatcher_tool_runs.parent_run_id")?;
+            }
+            if !table_has_column(&tx, "dispatcher_tool_runs", "origin")? {
+                tx.execute_batch(
+                    "ALTER TABLE dispatcher_tool_runs
+                         ADD COLUMN origin TEXT NOT NULL DEFAULT 'model'
+                         CHECK(length(trim(origin)) > 0);",
+                )
+                .context("v29: add dispatcher_tool_runs.origin")?;
+            }
+            if !table_has_column(&tx, "dispatcher_tool_runs", "step_id")? {
+                tx.execute_batch("ALTER TABLE dispatcher_tool_runs ADD COLUMN step_id TEXT;")
+                    .context("v29: add dispatcher_tool_runs.step_id")?;
+            }
+            if !table_has_column(&tx, "dispatcher_tool_runs", "sequence")? {
+                tx.execute_batch(
+                    "ALTER TABLE dispatcher_tool_runs
+                         ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0 CHECK(sequence >= 0);",
+                )
+                .context("v29: add dispatcher_tool_runs.sequence")?;
+            }
+            if !table_has_column(&tx, "dispatcher_tool_artifacts", "tool_run_id")? {
+                tx.execute_batch(
+                    "ALTER TABLE dispatcher_tool_artifacts
+                         ADD COLUMN tool_run_id TEXT
+                         REFERENCES dispatcher_tool_runs(id) ON DELETE CASCADE;",
+                )
+                .context("v29: add dispatcher_tool_artifacts.tool_run_id")?;
+            }
+            tx.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatcher_tool_runs_parent_sequence
+                     ON dispatcher_tool_runs(parent_run_id, sequence)
+                     WHERE parent_run_id IS NOT NULL;
+                 CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_artifacts_run
+                     ON dispatcher_tool_artifacts(tool_run_id, created_at);",
+            )
+            .context("v29: create tool run trace indexes")?;
+
+            let fk_violations: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_foreign_key_check
+                     WHERE \"table\" IN ('dispatcher_tool_runs', 'dispatcher_tool_artifacts')",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("v29: foreign_key_check tool run trace tables")?;
+            if fk_violations > 0 {
+                anyhow::bail!("v29: 工具运行追踪表外键校验发现 {fk_violations} 条违例，迁移中止");
+            }
+            tx.pragma_update(None, "user_version", 29)
+                .context("v29: set user_version")?;
+            tx.commit()
+                .context("v29: commit tool run trace migration")?;
+        }
+
+        // v29 → v30：SSH 配置收敛为全局 SQLite 权威源（应用生命周期配置，
+        // 不再按项目路径分键存文件）。建表 + 一次性导入旧文件数据；导入过程
+        // 只读文件，旧凭据文件在 commit 成功后清理（明文凭据不宜多处留存）。
+        if current_version < 30 {
+            let tx = conn
+                .transaction()
+                .context("v30: begin ssh global store migration")?;
+            crate::ssh_tool::db::ensure_ssh_tables_tx(&tx)
+                .context("v30: create ssh global tables")?;
+            let root_dir = self
+                .path
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default();
+            let outcome = crate::ssh_tool::db::import_legacy_ssh_store(&tx, &root_dir)
+                .map_err(anyhow::Error::msg)
+                .context("v30: import legacy ssh files")?;
+            tx.pragma_update(None, "user_version", 30)
+                .context("v30: set user_version")?;
+            tx.commit()
+                .context("v30: commit ssh global store migration")?;
+            if outcome.servers > 0 || outcome.audit_records > 0 {
+                eprintln!(
+                    "[ssh-tool] 已迁移 {} 台 SSH 服务器、{} 条审计记录到全局数据库",
+                    outcome.servers, outcome.audit_records
+                );
+            }
+            crate::ssh_tool::db::cleanup_legacy_files(&outcome, &root_dir);
+        }
+
+        // v30 → v31：受管项目注册表入库（projects.json → projects 表）。
+        // 注册表是会话 project_id 外键的锚点，入库后项目删除才能做级联清理。
+        // 导入在事务内完成；projects.json 在 commit 成功后删除（best-effort）。
+        if current_version < 31 {
+            let tx = conn
+                .transaction()
+                .context("v31: begin projects registry migration")?;
+            super::projects::ensure_projects_table_tx(&tx)
+                .context("v31: create projects table")?;
+            let root_dir = self
+                .path
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default();
+            let imported =
+                super::projects::import_legacy_projects_json(&tx, &root_dir)
+                    .context("v31: import legacy projects.json")?;
+            tx.pragma_update(None, "user_version", 31)
+                .context("v31: set user_version")?;
+            tx.commit()
+                .context("v31: commit projects registry migration")?;
+            if imported > 0 {
+                eprintln!("[projects] 已迁移 {imported} 个受管项目到全局数据库");
+            }
+            // DB 已是权威源：旧文件无论导入条数都清理，失败仅告警。
+            let legacy = root_dir.join("projects.json");
+            if legacy.exists() {
+                if let Err(error) = std::fs::remove_file(&legacy) {
+                    eprintln!(
+                        "[projects] 迁移后清理 projects.json 失败（{}）：{error}；建议手动删除。",
+                        legacy.display()
+                    );
+                }
+            }
+        }
+
+        // v31 → v32：MCP 全局注册表建表并导入普通聊天工作区的旧「全局」
+        // mcp.json。此后全局 MCP 存 SQLite，项目级 mcp.json 保留并在解析时
+        // 覆盖同名全局条目。
+        if current_version < 32 {
+            let tx = conn
+                .transaction()
+                .context("v32: begin global mcp registry migration")?;
+            super::mcp_servers::ensure_mcp_servers_table_tx(&tx)
+                .context("v32: create mcp_servers table")?;
+            let root_dir = self
+                .path
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default();
+            let (imported, found_legacy) =
+                super::mcp_servers::import_legacy_global_mcp_json(&tx, &root_dir)
+                    .context("v32: import legacy global mcp json")?;
+            tx.pragma_update(None, "user_version", 32)
+                .context("v32: set user_version")?;
+            tx.commit()
+                .context("v32: commit global mcp registry migration")?;
+            if imported > 0 {
+                eprintln!("[mcp] 已迁移 {imported} 个全局 MCP 服务器到全局数据库");
+            }
+            if found_legacy {
+                super::mcp_servers::cleanup_legacy_global_mcp_file(&root_dir);
+            }
+        }
+
+        // v32 → v33：应用级键值配置建表并导入散落的 JSON 文件（settings.json →
+        // app_settings、rag/config.json → rag、项目 config.toml 的首个非默认
+        // [browser] → browser）。导入在事务内，文件在 commit 后清理。
+        if current_version < 33 {
+            let tx = conn
+                .transaction()
+                .context("v33: begin app config migration")?;
+            super::app_config::ensure_app_config_table_tx(&tx)
+                .context("v33: create app_config table")?;
+            let root_dir = self
+                .path
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default();
+            let cleanup = super::app_config::import_legacy_app_config_files(&tx, &root_dir)
+                .context("v33: import legacy app config files")?;
+            tx.pragma_update(None, "user_version", 33)
+                .context("v33: set user_version")?;
+            tx.commit()
+                .context("v33: commit app config migration")?;
+            super::app_config::cleanup_legacy_files(&cleanup);
         }
 
         Ok(())
@@ -1488,6 +1735,7 @@ fn legacy_configs(
         model: non_empty_or(model, fallback.2).to_string(),
         active: true,
         system_prompt: String::new(),
+        library_id: String::new(),
     };
     if legacy_model_config_is_empty(&config) {
         Vec::new()
@@ -1634,7 +1882,11 @@ fn drop_obsolete_planning_columns(conn: &Connection) -> Result<()> {
 /// 被清空——这一事实必须在桌面应用的 stderr 之外留痕：失败时额外在数据库
 /// 目录写入 `*.pre-graph-rebuild-failed.marker` 标记文件（不动存储 schema），
 /// 供后续向用户提示与人工排查；备份成功时清理可能存在的过期失败标记。
-fn snapshot_before_graph_rebuild(conn: &Connection, db_path: &std::path::Path, current_version: i32) {
+fn snapshot_before_graph_rebuild(
+    conn: &Connection,
+    db_path: &std::path::Path,
+    current_version: i32,
+) {
     const GRAPH_TABLES: [&str; 4] = [
         "graph_plans",
         "graph_runs",
@@ -2079,7 +2331,10 @@ mod tests {
         let result = DispatcherDb::new(path.clone());
         assert!(result.is_err(), "更高版本的数据库必须报错拒绝打开");
         let message = format!("{:#}", result.unwrap_err());
-        assert!(message.contains("请升级应用"), "错误信息应提示升级：{message}");
+        assert!(
+            message.contains("请升级应用"),
+            "错误信息应提示升级：{message}"
+        );
         cleanup_db_files(&path);
     }
 
@@ -2194,7 +2449,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1, "归一化后重复行应合并为一行");
-        assert_eq!((prompt, completion, total), (15, 27, 42), "token 列应求和合并");
+        assert_eq!(
+            (prompt, completion, total),
+            (15, 27, 42),
+            "token 列应求和合并"
+        );
         assert_eq!(source_kind, "primary", "空串 source_kind 应归一为 primary");
         assert_eq!(updated_at, "2026-01-02T00:00:00Z", "updated_at 应保留最新");
         drop(conn);
@@ -2376,9 +2635,203 @@ mod tests {
         conn.execute("DELETE FROM dispatcher_sessions WHERE id = 's-live'", [])
             .unwrap();
         let after_cascade: i64 = conn
-            .query_row("SELECT COUNT(*) FROM session_keywords", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM session_keywords", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(after_cascade, 0, "会话删除后关键词应级联清空");
+
+        drop(conn);
+        drop(db);
+        cleanup_db_files(&path);
+    }
+
+    #[test]
+    fn v29_migration_adds_tool_run_trace_columns_and_preserves_legacy_rows() {
+        let path = temp_db_path("v29-tool-run-trace");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE dispatcher_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'project',
+                    title TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE dispatcher_tool_runs (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    tool_call_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    arguments_json TEXT NOT NULL DEFAULT '{}',
+                    effective_arguments_json TEXT NOT NULL DEFAULT '{}',
+                    result_mode TEXT,
+                    message_id TEXT,
+                    error_kind TEXT,
+                    error_message TEXT,
+                    action_kind TEXT,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    duration_ms INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE dispatcher_tool_artifacts (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    message_id TEXT,
+                    tool_call_id TEXT,
+                    tool_name TEXT,
+                    title TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    preview TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL,
+                    char_count INTEGER NOT NULL DEFAULT 0,
+                    line_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO dispatcher_sessions
+                    (id, project_id, kind, title, category, created_at, updated_at)
+                    VALUES ('ws', 'project', 'chat', 'legacy', 'tech',
+                            '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                INSERT INTO dispatcher_tool_runs
+                    (id, workspace_id, tool_call_id, tool_name, provider, category, status,
+                     created_at, updated_at)
+                    VALUES ('root', 'ws', 'call-root', 'grep', 'builtin', 'search', 'succeeded',
+                            '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                INSERT INTO dispatcher_tool_artifacts
+                    (id, workspace_id, tool_call_id, tool_name, title, kind, content, created_at)
+                    VALUES ('legacy-artifact', 'ws', 'call-root', 'grep', 'legacy',
+                            'tool_raw_output', 'content', '2026-01-01T00:00:00Z');
+                PRAGMA user_version = 28;
+                ",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).expect("v29 migration should succeed");
+        let conn = db.conn().expect("db conn");
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+
+        let migrated: (Option<String>, String, Option<String>, i64) = conn
+            .query_row(
+                "SELECT parent_run_id, origin, step_id, sequence
+                 FROM dispatcher_tool_runs WHERE id = 'root'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(migrated, (None, "model".to_string(), None, 0));
+        let legacy_artifact_run: Option<String> = conn
+            .query_row(
+                "SELECT tool_run_id FROM dispatcher_tool_artifacts
+                 WHERE id = 'legacy-artifact'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_artifact_run, None);
+
+        for index in [
+            "idx_dispatcher_tool_runs_parent_sequence",
+            "idx_dispatcher_tool_artifacts_run",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    rusqlite::params![index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "v29 index {index} must exist");
+        }
+
+        conn.execute(
+            "INSERT INTO dispatcher_tool_runs
+                (id, workspace_id, tool_call_id, parent_run_id, origin, step_id, sequence,
+                 tool_name, provider, category, status, created_at, updated_at)
+             VALUES ('child', 'ws', 'call-child', 'root', 'tool_program', 'read', 0,
+                     'read_file', 'builtin', 'filesystem', 'planned',
+                     '2026-01-01T00:00:01Z', '2026-01-01T00:00:01Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO dispatcher_tool_artifacts
+                (id, workspace_id, tool_run_id, title, kind, content, created_at)
+             VALUES ('child-artifact', 'ws', 'child', 'child output', 'tool_raw_output',
+                     'content', '2026-01-01T00:00:01Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM dispatcher_tool_runs WHERE id = 'root'", [])
+            .unwrap();
+        let cascaded: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM dispatcher_tool_runs WHERE id = 'child') +
+                        (SELECT COUNT(*) FROM dispatcher_tool_artifacts WHERE id = 'child-artifact')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cascaded, 0, "child run and its artifact must cascade");
+
+        drop(conn);
+        drop(db);
+        cleanup_db_files(&path);
+    }
+
+    #[test]
+    fn fresh_v29_schema_contains_tool_run_trace_foreign_keys() {
+        let path = temp_db_path("fresh-v29-tool-run-trace");
+        let db = DispatcherDb::new(path.clone()).expect("create fresh v29 db");
+        let conn = db.conn().expect("db conn");
+
+        for (table, column) in [
+            ("dispatcher_tool_runs", "parent_run_id"),
+            ("dispatcher_tool_runs", "origin"),
+            ("dispatcher_tool_runs", "step_id"),
+            ("dispatcher_tool_runs", "sequence"),
+            ("dispatcher_tool_artifacts", "tool_run_id"),
+        ] {
+            let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1");
+            let exists: i64 = conn
+                .query_row(&sql, rusqlite::params![column], |row| row.get(0))
+                .unwrap();
+            assert_eq!(exists, 1, "fresh schema must contain {table}.{column}");
+        }
+
+        let parent_fk: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_foreign_key_list('dispatcher_tool_runs')
+                 WHERE \"from\" = 'parent_run_id' AND \"table\" = 'dispatcher_tool_runs'
+                   AND on_delete = 'CASCADE'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(parent_fk, 1);
+        let artifact_fk: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_foreign_key_list('dispatcher_tool_artifacts')
+                 WHERE \"from\" = 'tool_run_id' AND \"table\" = 'dispatcher_tool_runs'
+                   AND on_delete = 'CASCADE'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(artifact_fk, 1);
 
         drop(conn);
         drop(db);
@@ -2390,7 +2843,10 @@ mod tests {
     #[test]
     fn destructive_graph_migration_backs_up_existing_graph_data() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("aha-schema-backup-{}.sqlite3", uuid::Uuid::new_v4()));
+        let path = dir.join(format!(
+            "aha-schema-backup-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
         // 构造 v24 时代的库：四张图表含数据，user_version=24。
         {
             let conn = rusqlite::Connection::open(&path).unwrap();

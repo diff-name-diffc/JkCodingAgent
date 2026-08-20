@@ -42,9 +42,9 @@ function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [mountedProjectIds, setMountedProjectIds] = useState<string[]>([]);
 
-  // 主题的权威来源是后端 settings.json；main.tsx 的 initializeTheme() 只用
-  // localStorage 缓存做首帧渲染，这里启动后立刻以后端值校准（缓存缺失或过期时
-  // 会错误落回 system，导致设置了亮色却显示暗色）。
+  // 主题的权威来源是后端全局库（app_config 表）；main.tsx 的 initializeTheme()
+  // 只用 localStorage 缓存做首帧渲染，这里启动后立刻以后端值校准（缓存缺失
+  // 或过期时会错误落回 system，导致设置了亮色却显示暗色）。
   useEffect(() => {
     invoke<{ theme?: string }>("load_app_settings")
       .then((settings) => {
@@ -61,7 +61,7 @@ function App() {
 
   useEffect(() => {
     async function init() {
-      // Load projects from ~/.jkcodingagent/projects.json
+      // Load projects from the global projects table
       const loadedProjects = await invoke<Project[]>("load_projects");
       setProjects(loadedProjects);
     }
@@ -126,16 +126,21 @@ function App() {
   async function handleDeleteProject(projectId: string) {
     const project = projects.find((p) => p.id === projectId);
     if (!project) return;
-    const ok = await confirm(`确定删除项目“${project.name}”吗？`, {
-      title: "删除项目",
-      kind: "warning",
-    });
+    const ok = await confirm(
+      `确定删除项目“${project.name}”吗？该项目下的全部会话、图计划与运行数据将一并删除。`,
+      {
+        title: "删除项目",
+        kind: "warning",
+      },
+    );
     if (!ok) return;
-    setProjects((prev) => {
-      const next = prev.filter((p) => p.id !== projectId);
-      persistProjects(next, showToast);
-      return next;
-    });
+    try {
+      await invoke("project_delete", { projectId });
+    } catch (e) {
+      showToast(`删除项目失败：${String(e)}`, "error");
+      return;
+    }
+    setProjects((prev) => prev.filter((p) => p.id !== projectId));
     setMountedProjectIds((prev) => prev.filter((id) => id !== projectId));
     setActiveProject((prev) => (prev?.id === projectId ? null : prev));
   }

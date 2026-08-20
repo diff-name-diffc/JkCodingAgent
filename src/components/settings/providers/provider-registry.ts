@@ -127,16 +127,24 @@ export function getPurposeBinding(
 }
 
 /**
- * 用途绑定：把该用途设为指向目标模型（通常来自模型库条目）的单条配置。
+ * 用途绑定：把该用途设为指向目标模型（来自模型库条目）的单条配置。
+ * 绑定携带 libraryId 引用（落盘只保留引用，凭据由库解析）；
  * 传入空 url 表示解除绑定（回到「未配置」）。
  */
 export function bindPurpose(
   settings: AhaSettingsV2,
   kind: PurposeKind,
-  target: { url: string; apiKey: string; model: string },
+  target: { id?: string; url: string; apiKey: string; model: string },
 ): AhaSettingsV2 {
   return setPurposeConfigs(settings, kind, [
-    { url: target.url, apiKey: target.apiKey, model: target.model, active: true, systemPrompt: "" },
+    {
+      url: target.url,
+      apiKey: target.apiKey,
+      model: target.model,
+      active: true,
+      systemPrompt: "",
+      ...(target.id ? { libraryId: target.id } : {}),
+    },
   ]);
 }
 

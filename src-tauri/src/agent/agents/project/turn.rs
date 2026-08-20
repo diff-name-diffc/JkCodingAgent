@@ -17,7 +17,9 @@ use crate::agent::run_loop::core::{
     AgentRunAdapter, AgentRunRequest, RunLoopAgent, RunLoopContext, RunLoopIteration,
     RunLoopToolOutcome, RunPromptState, RuntimeAgentKind,
 };
-use crate::agent::tools::ToolContext;
+use crate::agent::tools::{
+    CapabilitySet, ToolContext, ToolSurface, ORCHESTRATOR_RUNTIME_TOOL_NAMES,
+};
 
 use super::helpers;
 use super::OrchestratorAgent;
@@ -29,13 +31,15 @@ impl AgentRunAdapter for OrchestratorAgent {
             .workspace_path
             .ok_or_else(|| anyhow::anyhow!("错误：项目 Agent 启动缺少 workspace_path"))?
             .to_string();
-        // 命令边界校验（审查项 G8-12）：只允许受管项目列表（projects.json）内的
+        // 命令边界校验（审查项 G8-12）：只允许受管项目列表（projects 表）内的
         // 路径作为工作区，先解析符号链接再做包含性判断，防止前端可控路径被用于
-        // 任意目录创建/读取。文件读取放在 spawn_blocking，不阻塞执行器。
-        let workspace =
-            tokio::task::spawn_blocking(move || validate_project_workspace(&workspace_path))
-                .await
-                .map_err(|error| anyhow::anyhow!("错误：工作区校验任务失败：{error}"))??;
+        // 任意目录创建/读取。DB 读取放在 spawn_blocking，不阻塞执行器。
+        let db = self.db.clone();
+        let workspace = tokio::task::spawn_blocking(move || {
+            validate_project_workspace(&db, &workspace_path)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("错误：工作区校验任务失败：{error}"))??;
         let workspace_for_create = workspace.clone();
         tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&workspace_for_create)
@@ -107,18 +111,46 @@ impl RunLoopAgent for OrchestratorAgent {
         self.config.max_tool_iterations
     }
 
-    /// 编排器工具集固定（只读探索 + message + submit_graph + graph_plan_report），
-    /// 不随设置变化；注册表本身即权威列表。
-    fn tool_definitions_for_loop(
-        &self,
-        _workspace_id: &str,
-        workspace: &Path,
-    ) -> Vec<ToolDefinition> {
-        self.tools.definitions_for_workspace(
+    /// 模型只看到运行时入口与控制面工具；真实只读能力通过独立 grant 注入
+    /// ToolProgram。项目工具设置只收窄该 grant，不会隐藏协议收口工具。
+    fn tool_surface_for_loop(&self, _workspace_id: &str, workspace: &Path) -> ToolSurface {
+        let mut definitions = self.tools.definitions_for_workspace(
             workspace,
             Option::<std::iter::Empty<&str>>::None,
             false,
-        )
+        );
+        definitions.retain(|definition| {
+            matches!(
+                definition.function.name.as_str(),
+                "run_tool_program" | "message" | "submit_graph" | "graph_plan_report"
+            )
+        });
+
+        let configured = self.allowed_runtime_tools.lock().clone();
+        let runtime_names = ORCHESTRATOR_RUNTIME_TOOL_NAMES
+            .into_iter()
+            .filter(|name| configured.is_empty() || configured.iter().any(|item| item == name))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if let Some(runtime_definition) = definitions
+            .iter_mut()
+            .find(|definition| definition.function.name == "run_tool_program")
+        {
+            let granted = if runtime_names.is_empty() {
+                "（无；当前设置禁止全部数据面能力）".to_string()
+            } else {
+                runtime_names
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join("、")
+            };
+            runtime_definition
+                .function
+                .description
+                .push_str(&format!(" 当前会话实际授权的数据面能力：{granted}。"));
+        }
+        ToolSurface::layered(definitions, CapabilitySet::new(runtime_names))
     }
 
     fn build_iteration_messages(
@@ -148,8 +180,7 @@ impl RunLoopAgent for OrchestratorAgent {
             );
         }
 
-        let system_prompt =
-            self.build_iteration_system_prompt(static_prompt, tool_definitions);
+        let system_prompt = self.build_iteration_system_prompt(static_prompt, tool_definitions);
         let mut messages = vec![ChatMessage::system(system_prompt)];
         messages.extend(agent_loop.request_messages().into_iter().skip(1));
         Ok(messages)
@@ -223,7 +254,8 @@ impl RunLoopAgent for OrchestratorAgent {
             ctx.workspace_id,
             ctx.on_event,
             response,
-            &iteration.allowed_tool_names,
+            &iteration.direct_capabilities,
+            &iteration.runtime_capabilities,
             tool_context,
             &ctx.cancel_rx,
             &iteration.request_provider,
@@ -267,9 +299,12 @@ impl RunLoopAgent for OrchestratorAgent {
 /// 项目编排器工作区边界校验（审查项 G8-12）：
 /// 1. 路径必须为绝对路径且不含 `..` 组件；
 /// 2. 解析符号链接（对最深的已存在祖先目录 canonicalize 后拼回缺失尾部）；
-/// 3. 解析后的路径必须命中受管项目列表（~/.jkcodingagent/projects.json）。
+/// 3. 解析后的路径必须命中受管项目列表（全局 projects 表）。
 /// 校验通过时返回解析后的路径，供后续建目录与工具路径边界统一使用。
-fn validate_project_workspace(workspace_path: &str) -> Result<PathBuf> {
+fn validate_project_workspace(
+    db: &crate::agent::db::DispatcherDb,
+    workspace_path: &str,
+) -> Result<PathBuf> {
     let raw = PathBuf::from(workspace_path);
     anyhow::ensure!(
         raw.is_absolute(),
@@ -281,7 +316,8 @@ fn validate_project_workspace(workspace_path: &str) -> Result<PathBuf> {
         "错误：项目路径不允许包含 ..：{workspace_path}"
     );
 
-    let projects = crate::project::storage::load_projects()
+    let projects = db
+        .list_projects()
         .map_err(|error| anyhow::anyhow!("错误：读取受管项目列表失败：{error}"))?;
     anyhow::ensure!(
         !projects.is_empty(),
@@ -291,8 +327,7 @@ fn validate_project_workspace(workspace_path: &str) -> Result<PathBuf> {
     let candidate = resolve_with_existing_prefix(&raw)
         .ok_or_else(|| anyhow::anyhow!("错误：解析项目路径失败：{workspace_path}"))?;
     let managed = projects.iter().any(|project| {
-        resolve_with_existing_prefix(Path::new(&project.path))
-            .is_some_and(|path| path == candidate)
+        resolve_with_existing_prefix(Path::new(&project.path)).is_some_and(|path| path == candidate)
     });
     anyhow::ensure!(
         managed,
@@ -335,18 +370,24 @@ mod tests {
     fn resolve_with_existing_prefix_handles_missing_tail() {
         let base = std::env::temp_dir();
         let canonical_base = base.canonicalize().expect("canonicalize temp dir");
-        let target = canonical_base.join("jk-no-such-dir-a").join("jk-no-such-dir-b");
+        let target = canonical_base
+            .join("jk-no-such-dir-a")
+            .join("jk-no-such-dir-b");
         let resolved = resolve_with_existing_prefix(&target).expect("resolve");
-        assert_eq!(resolved, canonical_base.join("jk-no-such-dir-a").join("jk-no-such-dir-b"));
+        assert_eq!(
+            resolved,
+            canonical_base
+                .join("jk-no-such-dir-a")
+                .join("jk-no-such-dir-b")
+        );
     }
 
     #[test]
     fn resolve_with_existing_prefix_equivalent_to_canonicalize_for_existing() {
-        let base = std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
-        assert_eq!(
-            resolve_with_existing_prefix(&base).as_ref(),
-            Some(&base)
-        );
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        assert_eq!(resolve_with_existing_prefix(&base).as_ref(), Some(&base));
     }
 
     #[test]

@@ -116,12 +116,7 @@ impl OrchestratorAgent {
             }
         };
         let plan = match store
-            .create_plan_async(
-                workspace_id,
-                &definition,
-                &requirement,
-                &initial_state_json,
-            )
+            .create_plan_async(workspace_id, &definition, &requirement, &initial_state_json)
             .await
         {
             Ok(plan) => plan,
@@ -315,14 +310,13 @@ async fn resolve_inheritance(
     }
     // 解析失败必须拒绝提交：损坏的 state_json 若被静默当成空 Map，
     // 校验会误拒合法的 injectStateKeys，且损坏内容还会原样种入新 plan。
-    let state: Map<String, Value> = serde_json::from_str(&source_plan.state_json).map_err(
-        |error| {
+    let state: Map<String, Value> =
+        serde_json::from_str(&source_plan.state_json).map_err(|error| {
             format!(
                 "错误：图计划 '{}' 的共享 state 已损坏（JSON 解析失败：{error}），无法继承",
                 inherits.plan_id
             )
-        },
-    )?;
+        })?;
     let seeded_keys = state.keys().cloned().collect::<HashSet<_>>();
     Ok(Some(InheritedState {
         state_json: Value::Object(state).to_string(),

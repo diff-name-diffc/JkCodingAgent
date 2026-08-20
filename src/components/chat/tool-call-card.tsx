@@ -10,6 +10,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { GraphPlanCard } from "../graph/GraphPlanCard";
 import { parseGraphPlanId } from "../graph/graph-utils";
+import { ToolRunTrace } from "./tool-run-trace";
 
 const MAX_COLLAPSED_OUTPUT_LINES = 20;
 
@@ -94,6 +95,7 @@ export function ToolCallCard({
             className="overflow-hidden border-t border-border/70"
           >
             <div className="space-y-3 px-3 py-3">
+              <ToolRunTrace item={item} active={expanded} />
               {item.input != null && <DataSection label="Input" value={item.input} />}
               {item.output != null && item.output !== item.errorText && (
                 <DataSection label="Output" value={item.output} collapsible />
@@ -127,7 +129,9 @@ export function ToolCallCard({
                     >
                       <FileSearch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-primary" />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs font-medium text-foreground">{ref.title}</span>
+                        <span className="block truncate text-xs font-medium text-foreground">
+                          {ref.title}
+                        </span>
                         <span className="mt-0.5 block text-[11px] text-muted-foreground">
                           {ref.kind} · {ref.lineCount} 行 · {ref.charCount} 字符
                         </span>
@@ -162,9 +166,8 @@ function DataSection({
   const content = serializeData(value);
   const lines = content.split("\n");
   const isLong = collapsible && lines.length > MAX_COLLAPSED_OUTPUT_LINES;
-  const visibleContent = isLong && !showAll
-    ? lines.slice(0, MAX_COLLAPSED_OUTPUT_LINES).join("\n")
-    : content;
+  const visibleContent =
+    isLong && !showAll ? lines.slice(0, MAX_COLLAPSED_OUTPUT_LINES).join("\n") : content;
 
   return (
     <section>
@@ -257,7 +260,9 @@ export function ToolCallList({
           aria-expanded={expanded}
           className="ai-tool-call-summary flex w-full items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-2 text-left text-xs text-foreground hover:border-primary/30 hover:bg-muted/40"
         >
-          <span aria-hidden className="text-sm">⚙</span>
+          <span aria-hidden className="text-sm">
+            ⚙
+          </span>
           <span className="min-w-0 flex-1">
             已执行 {items.length} 个工具 · 总耗时 {formatTotalDuration(items)}
           </span>

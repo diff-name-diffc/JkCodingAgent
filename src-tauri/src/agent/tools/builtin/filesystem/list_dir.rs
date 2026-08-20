@@ -11,6 +11,7 @@ use super::super::common::{
 };
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
+use crate::agent::tools::ToolResult;
 
 pub(super) fn list_dir_tool() -> Box<dyn AgentTool> {
     Box::new(ListDirTool)
@@ -36,15 +37,17 @@ impl AgentTool for ListDirTool {
         with_compression_parameters(
             json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                     "paths": {
                         "type": "array",
                         "description": "要查看的目录路径列表。即使只查看一个目录，也必须传单元素数组。传入多个路径时，结果会按目录路径分段返回。",
                         "minItems": 1,
-                        "items": { "type": "string" }
+                        "maxItems": 4,
+                        "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
                     },
-                    "recursive": { "type": "string", "description": "是否包含第二层子项，默认 false。开启后仍严格限制为 path 之下最多两层，不会递归整棵目录树。", "enum": ["true", "false"] },
-                    "max_entries": { "type": "integer", "description": "最多返回多少个文件/目录条目，默认 200", "minimum": 1 }
+                    "recursive": { "type": "boolean", "description": "是否包含第二层子项，默认 false。开启后仍严格限制为 path 之下最多两层，不会递归整棵目录树。", "default": false },
+                    "max_entries": { "type": "integer", "description": "每个目录最多返回多少个文件/目录条目，默认 200", "minimum": 1, "maximum": 200 }
                 },
                 "required": ["paths"]
             }),
@@ -53,34 +56,54 @@ impl AgentTool for ListDirTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
         let Some(paths) = non_empty_string_array_arg(args, "paths") else {
-            return "错误：缺少必填参数 paths，且 paths 必须是非空字符串数组".to_string();
+            return ToolResult::recoverable_error(
+                "错误：缺少必填参数 paths，且 paths 必须是非空字符串数组",
+            );
         };
         let recursive = boolish_arg(args, "recursive").unwrap_or(false);
         let max_entries = usize_arg(args, "max_entries").unwrap_or(200).max(1);
         let context = context.clone();
 
         match task::spawn_blocking(move || {
-            let sections = paths
+            let outcomes = paths
                 .iter()
-                .map(|path| {
-                    (
-                        format!("list_dir path={path}"),
-                        list_dir_entries(path, recursive, max_entries, &context),
-                    )
-                })
+                .map(|path| (path, list_dir_entries(path, recursive, max_entries, &context)))
                 .collect::<Vec<_>>();
 
             // 单路径也保留根目录标签，便于 Agent 将相对文件名组装为 read_file 定位。
-            render_labeled_sections(sections)
+            let display = render_labeled_sections(
+                outcomes
+                    .iter()
+                    .map(|(path, outcome)| {
+                        (format!("list_dir path={path}"), outcome.display.clone())
+                    })
+                    .collect(),
+            );
+            let all_failed = !outcomes.is_empty()
+                && outcomes
+                    .iter()
+                    .all(|(_, outcome)| outcome.data.get("error").is_some());
+            let data = json!({
+                "directories": outcomes.into_iter().map(|(_, outcome)| outcome.data).collect::<Vec<_>>()
+            });
+            (display, data, all_failed)
         })
         .await
         {
-            Ok(output) => output,
-            Err(error) => format!("错误：读取目录任务失败：{error}"),
+            Ok((display, data, true)) => ToolResult::recoverable_error(display).with_data(data),
+            Ok((display, data, false)) => ToolResult::success_data(data, display.clone(), display),
+            Err(error) => {
+                ToolResult::recoverable_error(format!("错误：读取目录任务失败：{error}"))
+            }
         }
     }
+}
+
+struct DirectoryOutcome {
+    display: String,
+    data: Value,
 }
 
 fn list_dir_entries(
@@ -88,28 +111,56 @@ fn list_dir_entries(
     recursive: bool,
     max_entries: usize,
     context: &ToolContext,
-) -> String {
+) -> DirectoryOutcome {
     let dir_path = match resolve_path(context, path) {
         Ok(path) => path,
-        Err(message) => return message,
+        Err(message) => {
+            return DirectoryOutcome {
+                display: message.clone(),
+                data: json!({ "path": path, "error": message }),
+            }
+        }
     };
     if !dir_path.exists() {
-        return format!("错误：目录不存在：{path}");
+        let message = format!("错误：目录不存在：{path}");
+        return DirectoryOutcome {
+            display: message.clone(),
+            data: json!({ "path": path, "error": message }),
+        };
     }
     if !dir_path.is_dir() {
-        return format!("错误：{path} 不是目录");
+        let message = format!("错误：{path} 不是目录");
+        return DirectoryOutcome {
+            display: message.clone(),
+            data: json!({ "path": path, "error": message }),
+        };
     }
 
     let max_depth = if recursive { 2 } else { 1 };
     let mut listing = DirectoryListing::new(max_entries);
     collect_dir_entries(&dir_path, &dir_path, 0, max_depth, &mut listing);
-    listing.finish(max_depth)
+    let (display, entries, truncated) = listing.finish(max_depth);
+    DirectoryOutcome {
+        display,
+        data: json!({
+            "path": path,
+            "resolvedPath": dir_path.to_string_lossy(),
+            "maxDepth": max_depth,
+            "truncated": truncated,
+            "entries": entries,
+        }),
+    }
 }
 
 struct DirectoryListing {
-    entries: Vec<String>,
+    entries: Vec<DirectoryEntry>,
     max_entries: usize,
     truncated: bool,
+}
+
+struct DirectoryEntry {
+    display: String,
+    data: Value,
 }
 
 impl DirectoryListing {
@@ -125,27 +176,37 @@ impl DirectoryListing {
         self.entries.len() >= self.max_entries
     }
 
-    fn push(&mut self, entry: String) -> bool {
+    fn push(&mut self, display: String, data: Value) -> bool {
         if self.is_full() {
             self.truncated = true;
             return false;
         }
-        self.entries.push(entry);
+        self.entries.push(DirectoryEntry { display, data });
         true
     }
 
-    fn finish(self, max_depth: usize) -> String {
+    fn finish(self, max_depth: usize) -> (String, Vec<Value>, bool) {
         // 截断提示与条目列表分离（空行隔开的独立尾注）：条目数严格不超过
         // max_entries，提示行也不会被 Agent 误当作目录条目解析。
-        let body = self.entries.join("\n");
-        if self.truncated {
+        let body = self
+            .entries
+            .iter()
+            .map(|entry| entry.display.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let display = if self.truncated {
             format!(
                 "{body}\n\n[目录列表已截断：最多展示 {} 个条目，层级上限为 path 之下 {max_depth} 层]",
                 self.max_entries
             )
         } else {
             body
-        }
+        };
+        (
+            display,
+            self.entries.into_iter().map(|entry| entry.data).collect(),
+            self.truncated,
+        )
     }
 }
 
@@ -163,10 +224,11 @@ fn collect_dir_entries(
     let read_dir = match fs::read_dir(current) {
         Ok(read_dir) => read_dir,
         Err(error) => {
-            listing.push(format!(
-                "错误：无法读取目录 {}: {error}",
-                rel(current, root)
-            ));
+            let path = rel(current, root);
+            listing.push(
+                format!("错误：无法读取目录 {path}: {error}"),
+                json!({ "kind": "error", "path": path, "error": error.to_string() }),
+            );
             return;
         }
     };
@@ -175,10 +237,11 @@ fn collect_dir_entries(
         match entry {
             Ok(entry) => items.push(entry),
             Err(error) => {
-                if !listing.push(format!(
-                    "错误：目录条目读取失败 {}: {error}",
-                    rel(current, root)
-                )) {
+                let path = rel(current, root);
+                if !listing.push(
+                    format!("错误：目录条目读取失败 {path}: {error}"),
+                    json!({ "kind": "error", "path": path, "error": error.to_string() }),
+                ) {
                     return;
                 }
             }
@@ -199,17 +262,22 @@ fn collect_dir_entries(
         let file_type = match item.file_type() {
             Ok(file_type) => file_type,
             Err(error) => {
-                listing.push(format!(
-                    "错误：{} (无法读取类型：{error})",
-                    rel(&path, root)
-                ));
+                let relative = rel(&path, root);
+                listing.push(
+                    format!("错误：{relative} (无法读取类型：{error})"),
+                    json!({ "kind": "error", "path": relative, "error": error.to_string() }),
+                );
                 continue;
             }
         };
         let entry_depth = current_depth + 1;
 
         if file_type.is_dir() {
-            if !listing.push(format!("[dir] {}/", rel(&path, root))) {
+            let relative = rel(&path, root);
+            if !listing.push(
+                format!("[dir] {relative}/"),
+                json!({ "kind": "directory", "path": relative }),
+            ) {
                 return;
             }
             if entry_depth < max_depth {
@@ -220,23 +288,41 @@ fn collect_dir_entries(
                 collect_dir_entries(root, &path, entry_depth, max_depth, listing);
             }
         } else if file_type.is_file() {
-            let line_info = match fs::metadata(&path) {
+            let (line_info, line_count, line_error) = match fs::metadata(&path) {
                 // 行数统计会完整读文件；超大文件（bundle、日志等）直接跳过，
                 // 避免 list_dir 在阻塞线程池上长时间逐字节读取。
                 Ok(meta) if meta.len() > LINE_COUNT_MAX_BYTES => {
-                    ":行数未统计（文件过大）".to_string()
+                    (":行数未统计（文件过大）".to_string(), None, None)
                 }
                 _ => match file_total_lines(&path) {
-                    Ok(lines) => format!(":{lines}行"),
-                    Err(error) => format!(":错误：行数读取失败：{error}"),
+                    Ok(lines) => (format!(":{lines}行"), Some(lines), None),
+                    Err(error) => (
+                        format!(":错误：行数读取失败：{error}"),
+                        None,
+                        Some(error.to_string()),
+                    ),
                 },
             };
-            if !listing.push(format!("[file] {} ({line_info})", rel(&path, root))) {
+            let relative = rel(&path, root);
+            if !listing.push(
+                format!("[file] {relative} ({line_info})"),
+                json!({
+                    "kind": "file",
+                    "path": relative,
+                    "lineCount": line_count,
+                    "lineCountError": line_error,
+                }),
+            ) {
                 return;
             }
-        } else if file_type.is_symlink() && !listing.push(format!("[symlink] {}", rel(&path, root)))
-        {
-            return;
+        } else if file_type.is_symlink() {
+            let relative = rel(&path, root);
+            if !listing.push(
+                format!("[symlink] {relative}"),
+                json!({ "kind": "symlink", "path": relative }),
+            ) {
+                return;
+            }
         }
     }
 }
@@ -322,13 +408,15 @@ mod tests {
 
         let mut listing = DirectoryListing::new(100);
         collect_dir_entries(temp.path(), temp.path(), 0, 2, &mut listing);
-        let rendered = listing.finish(2);
+        let (rendered, entries, truncated) = listing.finish(2);
 
         assert!(rendered.contains("[file] top.rs (:2行)"));
         assert!(rendered.contains("child.py (:3行)"));
         assert!(rendered.contains("[dir] first/"));
         assert!(rendered.contains("second/"));
         assert!(!rendered.contains("deep.ts"));
+        assert_eq!(entries.len(), 4);
+        assert!(!truncated);
     }
 
     #[test]
@@ -341,11 +429,13 @@ mod tests {
 
         let mut listing = DirectoryListing::new(100);
         collect_dir_entries(temp.path(), temp.path(), 0, 1, &mut listing);
-        let rendered = listing.finish(1);
+        let (rendered, entries, truncated) = listing.finish(1);
 
         assert!(rendered.contains("[dir] child/"));
         assert!(rendered.contains("[file] top.rs (:1行)"));
         assert!(!rendered.contains("nested.rs"));
+        assert_eq!(entries.len(), 2);
+        assert!(!truncated);
     }
 
     #[test]
@@ -356,10 +446,12 @@ mod tests {
 
         let mut listing = DirectoryListing::new(1);
         collect_dir_entries(temp.path(), temp.path(), 0, 1, &mut listing);
-        let rendered = listing.finish(1);
+        let (rendered, entries, truncated) = listing.finish(1);
 
         assert!(rendered.contains("[file] a.rs (:1行)"));
         assert!(rendered.contains("目录列表已截断"));
         assert!(!rendered.contains("b.rs"));
+        assert_eq!(entries.len(), 1);
+        assert!(truncated);
     }
 }

@@ -181,41 +181,40 @@ pub async fn read_dir_entries(path: String, project_path: String) -> CommandResu
 async fn read_dir_entries_impl(path: &str, project_path: &str) -> FsResult<Vec<FsEntry>> {
     validate_path_within(&path, &project_path)?;
     let path = path.to_string();
-    let result =
-        tauri::async_runtime::spawn_blocking(move || -> FsResult<Vec<FsEntry>> {
-            let entries = std::fs::read_dir(&path).map_err(io_error("读取目录", &path))?;
-            let mut result: Vec<FsEntry> = entries
-                .flatten()
-                .filter(|entry| {
-                    let p = entry.path();
-                    let name = entry.file_name();
-                    let name_str = name.to_string_lossy();
-                    !should_ignore_entry_name(name_str.as_ref(), p.is_dir())
-                })
-                .map(|entry| {
-                    let p = entry.path();
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    let is_dir = p.is_dir();
-                    let extension = p
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|s| s.to_lowercase());
-                    FsEntry {
-                        name,
-                        path: p.to_string_lossy().into_owned(),
-                        is_dir,
-                        extension,
-                    }
-                })
-                .collect();
-            result.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            });
-            Ok(result)
-        })
-        .await?;
+    let result = tauri::async_runtime::spawn_blocking(move || -> FsResult<Vec<FsEntry>> {
+        let entries = std::fs::read_dir(&path).map_err(io_error("读取目录", &path))?;
+        let mut result: Vec<FsEntry> = entries
+            .flatten()
+            .filter(|entry| {
+                let p = entry.path();
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                !should_ignore_entry_name(name_str.as_ref(), p.is_dir())
+            })
+            .map(|entry| {
+                let p = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let is_dir = p.is_dir();
+                let extension = p
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_lowercase());
+                FsEntry {
+                    name,
+                    path: p.to_string_lossy().into_owned(),
+                    is_dir,
+                    extension,
+                }
+            })
+            .collect();
+        result.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        });
+        Ok(result)
+    })
+    .await?;
     Ok(result?)
 }
 

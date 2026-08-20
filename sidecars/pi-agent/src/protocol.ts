@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 export type ModelConfig = {
   ref: string;
@@ -16,16 +16,9 @@ export type HostToolSpec = {
   parameters: Record<string, unknown>;
 };
 
-export type ToolRef = { source: "pi_extension" | "aha"; name: string };
+export type ToolRef = { source: "aha"; name: string };
 
 type Envelope = { requestId: string; runId: string; nodeId: string; sequence: number };
-
-export type DiscoverRequest = Envelope & {
-  type: "discover";
-  workspace: string;
-  agentDir: string;
-  projectResourceDir: string;
-};
 
 export type StartRequest = Envelope & {
   type: "start";
@@ -41,12 +34,12 @@ export type StartRequest = Envelope & {
   hostTools: HostToolSpec[];
 };
 
-export type HostRequest = DiscoverRequest | StartRequest |
+export type HostRequest = StartRequest |
   (Envelope & { type: "cancel" }) |
   (Envelope & { type: "host_tool_result"; callId: string; result?: string; error?: string });
 
 export type SidecarMessage = Envelope & {
-  type: "ready" | "catalog" | "agent_event" | "host_tool_call" | "completed" | "failed";
+  type: "ready" | "agent_event" | "host_tool_call" | "completed" | "failed";
   data?: unknown;
 };
 
@@ -82,7 +75,10 @@ function validateSpecialTools(value: unknown): asserts value is ToolRef[] {
   if (!Array.isArray(value)) throw new Error("start 消息缺少 specialTools");
   value.forEach((tool, index) => {
     if (!record(tool)) throw new Error(`specialTools[${index}] 必须是对象`);
-    if (tool.source !== "pi_extension" && tool.source !== "aha") {
+    if (tool.source === "pi_extension") {
+      throw new Error(`specialTools[${index}] 引用了已禁用的 PI 可执行扩展`);
+    }
+    if (tool.source !== "aha") {
       throw new Error(`specialTools[${index}].source 非法`);
     }
     stringField(tool, "name");
@@ -91,12 +87,20 @@ function validateSpecialTools(value: unknown): asserts value is ToolRef[] {
 
 function validateHostTools(value: unknown): asserts value is HostToolSpec[] {
   if (!Array.isArray(value)) throw new Error("start 消息缺少 hostTools");
+  const names = new Set<string>();
+  const runtimeNames = new Set<string>();
   value.forEach((tool, index) => {
     if (!record(tool)) throw new Error(`hostTools[${index}] 必须是对象`);
-    stringField(tool, "name");
-    stringField(tool, "runtimeName");
+    const name = stringField(tool, "name");
+    const runtimeName = stringField(tool, "runtimeName");
     stringValue(tool, "description");
     if (!record(tool.parameters)) throw new Error(`hostTools[${index}].parameters 必须是对象`);
+    if (names.has(name)) throw new Error(`hostTools[${index}].name 重复：${name}`);
+    if (runtimeNames.has(runtimeName)) {
+      throw new Error(`hostTools[${index}].runtimeName 重复：${runtimeName}`);
+    }
+    names.add(name);
+    runtimeNames.add(runtimeName);
   });
 }
 
@@ -108,9 +112,7 @@ export function parseHostRequest(line: string): HostRequest {
   if (!Number.isSafeInteger(value.sequence) || (value.sequence as number) <= 0) {
     throw new Error("协议字段 sequence 必须是正整数");
   }
-  if (type === "discover") {
-    for (const key of ["workspace", "agentDir", "projectResourceDir"]) stringField(value, key);
-  } else if (type === "start") {
+  if (type === "start") {
     for (const key of ["runId", "nodeId", "workspace", "agentDir", "projectResourceDir", "prompt", "baseToolGroup"]) stringField(value, key);
     validateModel(value.model);
     validateSpecialTools(value.specialTools);

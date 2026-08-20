@@ -4,12 +4,14 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
-use tokio::time::{timeout, Duration};
+use tokio::sync::watch;
+use tokio::time::{sleep, Duration};
 
 use super::common::{is_dangerous, string_arg, with_compression_parameters};
 use crate::agent::ssh_review::{review_shell_command, CommandReviewPayload, CommandReviewTarget};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
+use crate::agent::tools::{ToolAction, ToolResult};
 use crate::ssh_tool::SshAuditReview;
 
 pub(super) fn exec_tool() -> Box<dyn AgentTool> {
@@ -29,6 +31,7 @@ struct CapturedCommandOutput {
     output: Output,
     total_bytes_read: usize,
     timed_out: bool,
+    cancelled: bool,
 }
 
 #[async_trait]
@@ -55,75 +58,89 @@ impl AgentTool for ExecTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        let Some(command) = string_arg(args, "command") else {
-            return "错误：缺少必填参数 command".to_string();
-        };
-        if is_dangerous(&command) {
-            return format!("错误：基于安全策略已拦截命令：{command}");
-        }
-        // 安全审查门禁（fail-closed）：与 local_zsh/ssh_exec 同链路。
-        // 未配置审查、审查异常或判定不通过一律拒绝执行。
-        match review_exec_command(args, context, &command).await {
-            Ok(review) if review.allowed => {}
-            Ok(review) => {
-                return format!("错误：命令已被安全审查拦截：{}", review.reason)
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
+        let mut command_cancelled = false;
+        let result = async {
+            let Some(command) = string_arg(args, "command") else {
+                return "错误：缺少必填参数 command".to_string();
+            };
+            if is_dangerous(&command) {
+                return format!("错误：基于安全策略已拦截命令：{command}");
             }
-            Err(error) => return format!("错误：{error}"),
-        }
-        let timeout_secs = context.exec_timeout_secs.max(1);
-
-        let mut cmd = Command::new("sh");
-        cmd.arg("-lc")
-            .arg(&command)
-            .current_dir(&context.workspace)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        cmd.process_group(0); // 独立进程组：超时可按组终止全部派生进程
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(error) => return format!("错误：执行命令失败：{error}"),
-        };
-
-        let captured = match capture_command_output(&mut child, timeout_secs).await {
-            Ok(output) => output,
-            Err(error) => return format!("错误：执行命令失败：{error}"),
-        };
-
-        let stdout = String::from_utf8_lossy(&captured.output.stdout)
-            .trim_end()
-            .to_string();
-        let stderr = String::from_utf8_lossy(&captured.output.stderr)
-            .trim_end()
-            .to_string();
-        let mut result = String::new();
-        if !stdout.is_empty() {
-            result.push_str(&stdout);
-        }
-        if !stderr.is_empty() {
-            if !result.is_empty() {
-                result.push_str("\n【标准错误】\n");
+            // 安全审查门禁（fail-closed）：与 local_zsh/ssh_exec 同链路。
+            // 未配置审查、审查异常或判定不通过一律拒绝执行。
+            match review_exec_command(args, context, &command).await {
+                Ok(review) if review.allowed => {}
+                Ok(review) => return format!("错误：命令已被安全审查拦截：{}", review.reason),
+                Err(error) => return format!("错误：{error}"),
             }
-            result.push_str(&stderr);
+            let timeout_secs = context.exec_timeout_secs.max(1);
+
+            let mut cmd = Command::new("sh");
+            cmd.arg("-lc")
+                .arg(&command)
+                .current_dir(&context.workspace)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            #[cfg(unix)]
+            cmd.process_group(0); // 独立进程组：超时可按组终止全部派生进程
+            let mut child = match cmd.spawn() {
+                Ok(child) => child,
+                Err(error) => return format!("错误：执行命令失败：{error}"),
+            };
+
+            let captured =
+                match capture_command_output(&mut child, timeout_secs, context.cancel_rx.clone())
+                    .await
+                {
+                    Ok(output) => output,
+                    Err(error) => return format!("错误：执行命令失败：{error}"),
+                };
+            command_cancelled = captured.cancelled;
+
+            let stdout = String::from_utf8_lossy(&captured.output.stdout)
+                .trim_end()
+                .to_string();
+            let stderr = String::from_utf8_lossy(&captured.output.stderr)
+                .trim_end()
+                .to_string();
+            let mut result = String::new();
+            if !stdout.is_empty() {
+                result.push_str(&stdout);
+            }
+            if !stderr.is_empty() {
+                if !result.is_empty() {
+                    result.push_str("\n【标准错误】\n");
+                }
+                result.push_str(&stderr);
+            }
+            let retained_bytes = captured.output.stdout.len() + captured.output.stderr.len();
+            if captured.total_bytes_read > retained_bytes {
+                result.push_str(&format!(
+                    "\n\n[...输出已截断，共 {} 字节，仅保留 stdout/stderr 各前 {} 字节...]",
+                    captured.total_bytes_read, MAX_OUTPUT_BYTES
+                ));
+            }
+            if captured.timed_out {
+                result.push_str(&format!("\n\n[命令执行超时（{timeout_secs} 秒），已终止]"));
+            } else if captured.cancelled {
+                result.push_str("\n\n[命令已取消，进程组及其派生进程已终止]");
+            } else if !captured.output.status.success() {
+                result.push_str(&format!("\n\n[退出状态：{}]", captured.output.status));
+            }
+            if result.is_empty() {
+                "[命令已完成，无输出]".to_string()
+            } else {
+                result
+            }
         }
-        let retained_bytes = captured.output.stdout.len() + captured.output.stderr.len();
-        if captured.total_bytes_read > retained_bytes {
-            result.push_str(&format!(
-                "\n\n[...输出已截断，共 {} 字节，仅保留 stdout/stderr 各前 {} 字节...]",
-                captured.total_bytes_read, MAX_OUTPUT_BYTES
-            ));
-        }
-        if captured.timed_out {
-            result.push_str(&format!("\n\n[命令执行超时（{timeout_secs} 秒），已终止]"));
-        } else if !captured.output.status.success() {
-            result.push_str(&format!("\n\n[退出状态：{}]", captured.output.status));
-        }
-        if result.is_empty() {
-            "[命令已完成，无输出]".to_string()
+        .await;
+
+        if command_cancelled {
+            ToolResult::cancelled(result)
         } else {
-            result
+            ToolResult::from_text(result)
         }
     }
 }
@@ -137,7 +154,9 @@ async fn review_exec_command(
     command: &str,
 ) -> Result<SshAuditReview, String> {
     let Some(review_config) = context.ssh_review.as_ref() else {
-        return Err("未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。".to_string());
+        return Err(
+            "未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。".to_string(),
+        );
     };
     let intent = string_arg(args, "compress_intent")
         .map(|s| s.trim().to_string())
@@ -163,19 +182,42 @@ async fn review_exec_command(
 async fn capture_command_output(
     child: &mut tokio::process::Child,
     timeout_secs: u64,
+    cancel_rx: Option<watch::Receiver<bool>>,
 ) -> std::io::Result<CapturedCommandOutput> {
     let stdout_reader = child.stdout.take();
     let stderr_reader = child.stderr.take();
     let stdout_task = tokio::spawn(async move { read_limited(stdout_reader).await });
     let stderr_task = tokio::spawn(async move { read_limited(stderr_reader).await });
 
-    let (status, timed_out) = match timeout(Duration::from_secs(timeout_secs), child.wait()).await {
-        Ok(status) => (status?, false),
-        Err(_) => {
+    let wait_outcome = {
+        let wait = child.wait();
+        tokio::pin!(wait);
+        let deadline = sleep(Duration::from_secs(timeout_secs));
+        tokio::pin!(deadline);
+        let cancellation = wait_for_cancellation(cancel_rx);
+        tokio::pin!(cancellation);
+
+        tokio::select! {
+            biased;
+            status = &mut wait => CommandWaitOutcome::Exited(status),
+            _ = &mut cancellation => CommandWaitOutcome::Cancelled,
+            _ = &mut deadline => CommandWaitOutcome::TimedOut,
+        }
+    };
+
+    let (status, timed_out, cancelled) = match wait_outcome {
+        CommandWaitOutcome::Exited(status) => (status?, false, false),
+        CommandWaitOutcome::TimedOut => {
             // 超时：杀整个进程组（含派生的孙进程），确保管道写端全部关闭、
             // reader 能读到 EOF，不会永久阻塞。
             kill_process_group(child);
-            (child.wait().await?, true)
+            (child.wait().await?, true, false)
+        }
+        CommandWaitOutcome::Cancelled => {
+            // 取消与超时具有相同的资源收敛要求：不能只 drop wait future，
+            // 否则 shell 派生的后台进程仍会继续执行副作用。
+            kill_process_group(child);
+            (child.wait().await?, false, true)
         }
     };
 
@@ -190,7 +232,32 @@ async fn capture_command_output(
         },
         total_bytes_read: stdout_read + stderr_read,
         timed_out,
+        cancelled,
     })
+}
+
+enum CommandWaitOutcome {
+    Exited(std::io::Result<std::process::ExitStatus>),
+    TimedOut,
+    Cancelled,
+}
+
+async fn wait_for_cancellation(mut cancel_rx: Option<watch::Receiver<bool>>) {
+    let Some(cancel_rx) = cancel_rx.as_mut() else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    if *cancel_rx.borrow() {
+        return;
+    }
+    loop {
+        match cancel_rx.changed().await {
+            Ok(()) if *cancel_rx.borrow() => return,
+            Ok(()) => {}
+            // 发送端消失意味着所属运行已结束；按取消处理，避免遗留子进程。
+            Err(_) => return,
+        }
+    }
 }
 
 /// 终止子进程所在的整个进程组。spawn 时设置了 `process_group(0)`，
@@ -262,17 +329,23 @@ impl AgentTool for MessageTool {
         )
     }
 
-    async fn execute(&self, args: &Value, _context: &ToolContext) -> String {
+    async fn execute(&self, args: &Value, _context: &ToolContext) -> ToolResult {
         match string_arg(args, "content") {
-            Some(content) => format!("消息已发送（{} 字符）", content.len()),
-            None => "错误：缺少必填参数 content".to_string(),
+            Some(content) => {
+                ToolResult::success_text(format!("消息已发送（{} 字符）", content.len()))
+                    .with_action(ToolAction::FinalMessage { content })
+            }
+            None => ToolResult::recoverable_error("错误：缺少必填参数 content"),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentTool, ExecTool};
+    use std::process::Stdio;
+
+    use super::{capture_command_output, AgentTool, ExecTool};
+    use tokio::process::Command;
 
     #[test]
     fn exec_schema_does_not_expose_runtime_timeout() {
@@ -280,5 +353,31 @@ mod tests {
 
         assert!(parameters["properties"].get("command").is_some());
         assert!(parameters["properties"].get("timeout").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_kills_the_shell_process_group() {
+        let mut command = Command::new("sh");
+        command
+            .arg("-lc")
+            .arg("sleep 30 & wait")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        let mut child = command.spawn().expect("spawn shell");
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        cancel_tx.send(true).expect("request cancellation");
+
+        let captured = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            capture_command_output(&mut child, 30, Some(cancel_rx)),
+        )
+        .await
+        .expect("process group should settle")
+        .expect("capture output");
+
+        assert!(captured.cancelled);
+        assert!(!captured.timed_out);
     }
 }

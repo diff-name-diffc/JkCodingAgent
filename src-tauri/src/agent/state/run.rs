@@ -83,10 +83,7 @@ impl Default for ActiveRunStore {
 impl ActiveRunStore {
     /// 开始一次 run：禁止同 workspace 重入，并保存取消信号。
     /// epoch 分配与条目写入在同一把锁内完成（原子登记）。
-    pub(super) fn begin(
-        &self,
-        workspace_id: &str,
-    ) -> std::result::Result<ActiveRunHandle, String> {
+    pub(super) fn begin(&self, workspace_id: &str) -> std::result::Result<ActiveRunHandle, String> {
         let mut data = self.data.lock();
         // 兜底清理（G11-09）：取消接收端全部消失说明运行方已不复存在
         // （句柄异常丢失等极端路径），残留条目在此回收，避免永久卡死重入。
@@ -182,10 +179,7 @@ impl Default for GraphRunRegistry {
 }
 
 impl GraphRunRegistry {
-    pub(super) fn begin(
-        &self,
-        plan_id: &str,
-    ) -> std::result::Result<GraphRunHandle, String> {
+    pub(super) fn begin(&self, plan_id: &str) -> std::result::Result<GraphRunHandle, String> {
         let mut data = self.data.lock();
         // 兜底清理（G11-09）：取消接收端归零说明运行器已消失——panic/abort/
         // 正常结束但 finish 未到——残留条目在此回收，槽位不会永久卡死。
@@ -198,8 +192,13 @@ impl GraphRunRegistry {
         data.next_epoch = data.next_epoch.wrapping_add(1);
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let (resume_tx, resume_rx) = mpsc::channel(1);
-        data.entries
-            .insert(plan_id.to_string(), GraphRunEntry { cancel_tx, resume_tx });
+        data.entries.insert(
+            plan_id.to_string(),
+            GraphRunEntry {
+                cancel_tx,
+                resume_tx,
+            },
+        );
         Ok(GraphRunHandle {
             cancel_rx,
             resume_rx,

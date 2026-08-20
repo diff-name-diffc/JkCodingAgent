@@ -457,7 +457,8 @@ fn map_chat_category_agent_config(
     let category_id: String = row.get(0)?;
     let allowed_tools_json: String = row.get(2)?;
     let sub_agent_ids_json: String = row.get(3)?;
-    let allowed_tools = parse_category_json_list(&category_id, "allowed_tools_json", &allowed_tools_json);
+    let allowed_tools =
+        parse_category_json_list(&category_id, "allowed_tools_json", &allowed_tools_json);
     let sub_agent_ids =
         parse_category_json_list(&category_id, "sub_agent_ids_json", &sub_agent_ids_json);
     Ok(ChatCategoryAgentConfig {

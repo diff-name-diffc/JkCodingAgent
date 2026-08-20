@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -18,7 +19,7 @@ use super::llm::{
     OpenAiCompatProvider, OutboundToolCall, RequestedToolCall, ToolDefinition,
 };
 use super::run_loop::AgentEvent;
-use super::tools::ToolRegistry;
+use super::tools::{ToolRegistry, ToolResultPolicy};
 
 // ─── Usage Tracking ────────────────────────────────────────────────────────────
 
@@ -251,10 +252,9 @@ pub async fn stream_llm_response(
     let last_seq = seq_counter.load(Ordering::Relaxed).checked_sub(1);
 
     match settlement {
-        StreamSettlement::Cancelled(partial) => Ok(LlmStreamOutcome::Cancelled {
-            partial,
-            last_seq,
-        }),
+        StreamSettlement::Cancelled(partial) => {
+            Ok(LlmStreamOutcome::Cancelled { partial, last_seq })
+        }
         StreamSettlement::Response(response) => {
             if let Some(usage) = response.usage.as_ref() {
                 record_usage(
@@ -268,10 +268,7 @@ pub async fn stream_llm_response(
                 );
             }
 
-            Ok(LlmStreamOutcome::Response {
-                response,
-                last_seq,
-            })
+            Ok(LlmStreamOutcome::Response { response, last_seq })
         }
     }
 }
@@ -359,8 +356,8 @@ fn inline_max_chars(tool_name: &str, args: &serde_json::Value) -> usize {
     }
 }
 
-/// Semantic compression is worthwhile only for genuinely large results and must
-/// always be explicitly enabled by the tool call's `compress` argument.
+/// 未携带 ToolSpec 的旧调用/纯函数测试使用的保守摘要阈值。
+#[cfg(test)]
 pub const TOOL_RESULT_SUMMARY_MIN_CHARS: usize = 5_000;
 
 pub struct PreparedToolResult {
@@ -373,10 +370,29 @@ pub struct PreparedToolResult {
     pub compress_intent: Option<String>,
 }
 
+#[cfg(test)]
 pub fn prepare_tool_result(
     tool_name: &str,
     args: &serde_json::Value,
     raw_output: &str,
+) -> PreparedToolResult {
+    prepare_tool_result_with_policy(
+        tool_name,
+        args,
+        raw_output,
+        &ToolResultPolicy {
+            default_compress: false,
+            force_compress_after_chars: TOOL_RESULT_SUMMARY_MIN_CHARS,
+            persist_raw_artifact: true,
+        },
+    )
+}
+
+fn prepare_tool_result_with_policy(
+    tool_name: &str,
+    args: &serde_json::Value,
+    raw_output: &str,
+    policy: &ToolResultPolicy,
 ) -> PreparedToolResult {
     let trimmed = raw_output.trim();
     if trimmed.is_empty() {
@@ -393,7 +409,7 @@ pub fn prepare_tool_result(
     let model_compress = args
         .get("compress")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .unwrap_or(policy.default_compress);
     let compress_intent = args
         .get("compress_intent")
         .and_then(|v| v.as_str())
@@ -403,7 +419,7 @@ pub fn prepare_tool_result(
 
     let char_count = trimmed.chars().count();
     let max_inline = inline_max_chars(tool_name, args);
-    let needs_summary = model_compress && char_count > TOOL_RESULT_SUMMARY_MIN_CHARS;
+    let needs_summary = model_compress && char_count > policy.force_compress_after_chars;
 
     if needs_summary {
         PreparedToolResult {
@@ -437,10 +453,7 @@ pub fn prepare_tool_result(
 }
 
 fn truncate_tool_result(raw_output: &str, char_count: usize, max_chars: usize) -> String {
-    let prefix = raw_output
-        .chars()
-        .take(max_chars)
-        .collect::<String>();
+    let prefix = raw_output.chars().take(max_chars).collect::<String>();
     let truncated_at_output_line = prefix.chars().filter(|ch| *ch == '\n').count() + 1;
     let total_lines = raw_output.lines().count().max(1);
     let source_line_marker = source_line_number_at_cut(&prefix)
@@ -490,6 +503,7 @@ pub async fn persist_tool_result_with_compression<FUsage>(
     on_event: &Channel<AgentEvent>,
     tool_call: &RequestedToolCall,
     registry: &ToolRegistry,
+    workspace: &Path,
     result: &str,
     summary_provider: &OpenAiCompatProvider,
     summary_model: &str,
@@ -503,12 +517,26 @@ where
     // Compression policy must use the same schema-expanded arguments as execution;
     // otherwise an omitted default could behave differently after the tool returns.
     let effective_arguments = registry.effective_args(&tool_call.name, &tool_call.arguments);
+    let result_policy = registry
+        .spec_by_name(workspace, &tool_call.name, true)
+        .map(|spec| spec.result_policy)
+        .unwrap_or_else(|| ToolResultPolicy::new(false));
     // G9-14：序列化失败不再静默降级为 `{}`——错误上抛，由运行循环以 Failed 收口，
     // 保证模型/前端看到的参数与工具实际执行所用的 effective_args 永远一致。
     let arguments_json = serialize_tool_arguments(&tool_call.name, &effective_arguments)?;
-    let prepared = prepare_tool_result(&tool_call.name, &effective_arguments, result);
+    let prepared = prepare_tool_result_with_policy(
+        &tool_call.name,
+        &effective_arguments,
+        result,
+        &result_policy,
+    );
 
     if !prepared.needs_summary {
+        let artifacts = result_policy
+            .persist_raw_artifact
+            .then(|| build_tool_artifact(&tool_call.name, result))
+            .into_iter()
+            .collect::<Vec<_>>();
         let tool_message = db
             .add_visible_tool_result_async(
                 workspace_id,
@@ -517,7 +545,7 @@ where
                 Some(&tool_call.id),
                 Some(&tool_call.name),
                 Some(prepared.result_mode),
-                &[build_tool_artifact(&tool_call.name, result)],
+                &artifacts,
             )
             .await?;
         emit(
@@ -568,6 +596,7 @@ where
                 summary.display_content,
                 summary.context_payload,
                 mode,
+                result_policy.persist_raw_artifact,
             )
             .await
         }
@@ -588,6 +617,7 @@ where
                 structured.clone(),
                 structured,
                 "structured_fallback",
+                result_policy.persist_raw_artifact,
             )
             .await
         }
@@ -604,9 +634,14 @@ pub async fn persist_tool_result_with_summary(
     display_content: String,
     context_payload: String,
     result_mode: &'static str,
+    persist_raw_artifact: bool,
 ) -> Result<DispatcherMessageRecord> {
     let display_content = bound_inline_tool_result(display_content);
     let context_payload = bound_inline_tool_result(context_payload);
+    let artifacts = persist_raw_artifact
+        .then(|| build_tool_artifact(&tool_call.name, result))
+        .into_iter()
+        .collect::<Vec<_>>();
     let tool_message = db
         .add_visible_tool_result_async(
             workspace_id,
@@ -615,7 +650,7 @@ pub async fn persist_tool_result_with_summary(
             Some(&tool_call.id),
             Some(&tool_call.name),
             Some(result_mode),
-            &[build_tool_artifact(&tool_call.name, result)],
+            &artifacts,
         )
         .await?;
 
@@ -838,7 +873,7 @@ fn is_dispatch_plumbing_tool_name(name: &str) -> bool {
 // ─── Cancellation ────────────────────────────────────────────────────────────────
 
 pub fn cancellation_requested(cancel_rx: &watch::Receiver<bool>) -> bool {
-    *cancel_rx.borrow()
+    *cancel_rx.borrow() || cancel_rx.has_changed().is_err()
 }
 
 pub async fn wait_for_cancellation(cancel_rx: &mut watch::Receiver<bool>) {
@@ -860,29 +895,7 @@ pub fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
 }
 
 fn build_tool_artifact(tool_name: &str, raw_output: &str) -> ToolArtifactDraft {
-    let preview = raw_output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .take(3)
-        .collect::<Vec<_>>()
-        .join(" / ");
-    let preview = if preview.is_empty() {
-        "原始结果为空白或仅包含空行".to_string()
-    } else if preview.chars().count() > 160 {
-        format!("{}...", preview.chars().take(160).collect::<String>())
-    } else {
-        preview
-    };
-
-    ToolArtifactDraft {
-        kind: "tool_raw_output".to_string(),
-        title: format!("{tool_name} 原始结果"),
-        preview,
-        content: raw_output.to_string(),
-        char_count: raw_output.chars().count(),
-        line_count: raw_output.lines().count().max(1),
-    }
+    ToolArtifactDraft::raw_tool_output(tool_name, raw_output)
 }
 
 pub fn is_parallel_readonly_tool_call(
@@ -949,10 +962,18 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        classify_tool_result, prepare_tool_result, should_keep_llm_message, ChatMessage,
-        FunctionCall, OutboundToolCall, ToolOutcome, TOOL_RESULT_INLINE_MAX_CHARS_PAGED,
-        TOOL_RESULT_INLINE_MAX_CHARS_READ,
+        cancellation_requested, classify_tool_result, prepare_tool_result, should_keep_llm_message,
+        ChatMessage, FunctionCall, OutboundToolCall, ToolOutcome,
+        TOOL_RESULT_INLINE_MAX_CHARS_PAGED, TOOL_RESULT_INLINE_MAX_CHARS_READ,
     };
+
+    #[test]
+    fn dropped_cancellation_sender_is_fail_closed() {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        assert!(!cancellation_requested(&cancel_rx));
+        drop(cancel_tx);
+        assert!(cancellation_requested(&cancel_rx));
+    }
 
     fn chat_message(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
@@ -968,7 +989,10 @@ mod tests {
 
     #[test]
     fn keeps_normal_user_assistant_and_tool_messages() {
-        assert!(should_keep_llm_message(&chat_message("user", "帮我查一下天气")));
+        assert!(should_keep_llm_message(&chat_message(
+            "user",
+            "帮我查一下天气"
+        )));
         assert!(should_keep_llm_message(&chat_message(
             "assistant",
             "已经为你查询了天气"
@@ -1113,7 +1137,8 @@ mod tests {
         assert_eq!(paged.result_mode, "truncated");
         assert!(paged.display_content.contains("仅返回前 20000 /"));
         assert_eq!(
-            paged.display_content
+            paged
+                .display_content
                 .split("\n\n[")
                 .next()
                 .unwrap_or_default()
@@ -1142,7 +1167,8 @@ mod tests {
     fn browser_read_text_without_explicit_range_uses_read_budget() {
         let raw = "x".repeat(TOOL_RESULT_INLINE_MAX_CHARS_READ + 1);
 
-        let prepared = prepare_tool_result("browser_read_text", &json!({ "compress": false }), &raw);
+        let prepared =
+            prepare_tool_result("browser_read_text", &json!({ "compress": false }), &raw);
 
         assert_eq!(prepared.result_mode, "truncated");
         assert!(prepared.display_content.contains("仅返回前 10000 /"));

@@ -5,7 +5,7 @@
 //! 不包含真实的 embedding / ingestion / retrieval 实现。
 //!
 //! 子模块：
-//! - `config`：知识库配置的权威存储（~/.jkcodingagent/rag/config.json）
+//! - `config`：知识库配置的权威存储（全局库 app_config 表 rag 键）
 //! - `manager`：sidecar 进程启停 + 端口握手
 //! - `logs`：sidecar stdout/stderr 的内存滚动日志
 //! - `transport`：对 sidecar 的 HTTP 调用

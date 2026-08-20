@@ -3,7 +3,9 @@ use tauri::ipc::Channel;
 use tokio::task::JoinHandle;
 
 use crate::agent::common::{is_tool_error_message, UsageTracker};
-use crate::agent::db::{DispatcherDb, DispatcherSessionTokenUsageSource, TOOL_RETRY_CONTEXT_PREFIX};
+use crate::agent::db::{
+    DispatcherDb, DispatcherSessionTokenUsageSource, TOOL_RETRY_CONTEXT_PREFIX,
+};
 use crate::agent::llm::{LlmResponse, LlmUsage, RequestedToolCall};
 use crate::agent::run_loop::AgentEvent;
 use crate::shared::truncate_for_display;
@@ -18,9 +20,11 @@ const MAX_WARNING_LOG_BYTES: u64 = 5 * 1024 * 1024;
 /// 否则静默失效时完全不可诊断。写盘失败时退化为 eprintln。
 pub(crate) fn log_warning(message: &str) {
     eprintln!("{message}");
-    let Some(log_path) = dirs::home_dir()
-        .map(|home| home.join(".jkcodingagent").join("logs").join("orchestrator.log"))
-    else {
+    let Some(log_path) = dirs::home_dir().map(|home| {
+        home.join(".jkcodingagent")
+            .join("logs")
+            .join("orchestrator.log")
+    }) else {
         return;
     };
     let entry = format!("{} {message}\n", chrono::Utc::now().to_rfc3339());
@@ -220,7 +224,10 @@ mod tests {
     #[test]
     fn empty_llm_response_error_carries_error_prefix() {
         let message = empty_llm_response_error(&response_with_raw(""));
-        assert!(message.starts_with("错误："), "错误文案必须以「错误：」开头：{message}");
+        assert!(
+            message.starts_with("错误："),
+            "错误文案必须以「错误：」开头：{message}"
+        );
         assert!(message.contains("<空>"));
     }
 

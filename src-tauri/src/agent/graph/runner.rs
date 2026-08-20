@@ -32,9 +32,9 @@ use super::scheduler::{FinishKind, ReadyQueue, MAX_PARALLEL_NODES};
 use super::store::GraphStore;
 use super::types::{
     BaseToolGroup, GraphDefinition, GraphHarnessCatalog, GraphNode, GraphNodeRunRecord,
-    GraphPlanRecord, GraphPlanUpdatedPayload, GraphRunEvent, GraphRunEventPayload,
-    GraphRunSummary, NODE_CANCELLED, NODE_FAILED, NODE_SUCCEEDED, PLAN_CANCELLED, PLAN_COMPLETED,
-    PLAN_FAILED, RUN_MODE_RESUME,
+    GraphPlanRecord, GraphPlanUpdatedPayload, GraphRunEvent, GraphRunEventPayload, GraphRunSummary,
+    NODE_CANCELLED, NODE_FAILED, NODE_SUCCEEDED, PLAN_CANCELLED, PLAN_COMPLETED, PLAN_FAILED,
+    RUN_MODE_RESUME,
 };
 use super::validate::validate_graph;
 use super::verifier;
@@ -122,8 +122,16 @@ pub(crate) async fn execute_graph_run(
         return;
     };
     let run_id = run.id.clone();
-    if let Err(error) =
-        run_graph(&app, &services, &store, plan, run, handle.cancel_rx, handle.resume_rx).await
+    if let Err(error) = run_graph(
+        &app,
+        &services,
+        &store,
+        plan,
+        run,
+        handle.cancel_rx,
+        handle.resume_rx,
+    )
+    .await
     {
         let message = format!("{error:#}");
         eprintln!("[graph] 图运行失败（{plan_id}）：{message}");
@@ -281,7 +289,7 @@ async fn run_graph(
             .flatten()
             .unwrap_or_default();
     }
-    let mut base_tool_context = ToolContext {
+    let base_tool_context = ToolContext {
         workspace_id: workspace_id.clone(),
         workspace: workspace_root.clone(),
         session_title,
@@ -292,9 +300,8 @@ async fn run_graph(
             .then_some(settings.review.clone()),
         exec_timeout_secs: 60,
         restrict_to_workspace: true,
-        extra_allowed_dirs: dirs::home_dir()
-            .map(|home| vec![home.join(".jkcodingagent")])
-            .unwrap_or_default(),
+        // PI 文本资源由宿主加载；图节点的 read/exec 能力严格限定在项目工作区。
+        extra_allowed_dirs: Vec::new(),
         app_handle: Some(app.clone()),
         llm_provider: Some(provider),
         vision_model: String::new(),
@@ -306,20 +313,22 @@ async fn run_graph(
         current_sub_agent_id: None,
         current_sub_agent_name: None,
         current_tool_call_id: None,
+        current_tool_spec_hash: None,
+        cancel_rx: None,
         sub_agent_parent_tool_call_id: None,
         sub_agent_trace_events: None,
     };
-    // G1-23 统一契约：图节点经 registry.execute 直连工具注册表，绕过
-    // ToolRuntime::execute_tool 入口的 normalize_paths，需在此显式补调，
-    // 保证宿主工具拿到的 workspace/extra_allowed_dirs 已 canonicalize。
-    base_tool_context.normalize_paths();
-
     // 初始共享 state 与上游输出：resume 复用 plan 现有 state 与 cached 节点产出。
     let mut state = plan_state;
     let mut outputs: HashMap<String, String> = existing_runs
         .iter()
         .filter(|record| record.status == NODE_SUCCEEDED)
-        .map(|record| (record.node_id.trim().to_string(), record.output_text.clone()))
+        .map(|record| {
+            (
+                record.node_id.trim().to_string(),
+                record.output_text.clone(),
+            )
+        })
         .collect();
 
     let mut queue = ReadyQueue::new(&definition, &initial_status);
@@ -489,9 +498,7 @@ async fn run_graph(
                 // 没有对应终态事件。停止派发、排空在途任务让其正常结算（产出
                 // 各自的结果与事件），再整体返回错误；panic 节点停留在 running
                 // 的记录由 fail_interrupted_runs 兜底置为 failed。
-                eprintln!(
-                    "[graph] 节点任务异常（{plan_id}）：{error}；停止派发，等待在途任务结算"
-                );
+                eprintln!("[graph] 节点任务异常（{plan_id}）：{error}；停止派发，等待在途任务结算");
                 task_error = Some(anyhow::anyhow!("节点任务异常：{error}"));
                 continue 'main;
             }
@@ -510,9 +517,11 @@ async fn run_graph(
                 // 全文保留在 node_runs.output_text；确需完整产出的下游通过
                 // dependsOn + exportPolicy=full 获取，而非 injectStateKeys。
                 let state_value = state_value_from_output(&output);
-                state.insert(result.output_key.clone(), Value::String(state_value.clone()));
-                finish_node_record(store, result.record, NODE_SUCCEEDED, Some(&output), None)
-                    .await;
+                state.insert(
+                    result.output_key.clone(),
+                    Value::String(state_value.clone()),
+                );
+                finish_node_record(store, result.record, NODE_SUCCEEDED, Some(&output), None).await;
                 emit_run_event(
                     app,
                     &plan_id,
@@ -578,8 +587,7 @@ async fn run_graph(
                     );
                 } else {
                     let newly_skipped = queue.on_finished(&result.node_id, FinishKind::FailedFinal);
-                    finish_node_record(store, result.record, NODE_FAILED, None, Some(&error))
-                        .await;
+                    finish_node_record(store, result.record, NODE_FAILED, None, Some(&error)).await;
                     emit_run_event(
                         app,
                         &plan_id,
@@ -729,15 +737,13 @@ async fn resolve_workspace_root(db: &DispatcherDb, workspace_id: &str) -> Result
         .await?
         .ok_or_else(|| anyhow::anyhow!("找不到图计划所属会话：{workspace_id}"))?;
     let lookup = project_id.clone();
+    let db_for_lookup = db.clone();
     let path = tokio::task::spawn_blocking(move || {
-        crate::project::storage::load_projects()
+        db_for_lookup
+            .find_project(&lookup)
             .ok()
-            .and_then(|projects| {
-                projects
-                    .into_iter()
-                    .find(|project| project.id == lookup)
-                    .map(|project| project.path)
-            })
+            .flatten()
+            .map(|project| project.path)
     })
     .await
     .context("读取项目列表任务失败")?;

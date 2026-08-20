@@ -7,17 +7,10 @@ export interface Project {
 }
 
 export type ProjectMcpAggregateStatus =
-  | "not_configured"
-  | "healthy"
-  | "degraded"
-  | "invalid_config";
+  "not_configured" | "healthy" | "degraded" | "invalid_config";
 
 export type ProjectMcpServerState =
-  | "disabled"
-  | "healthy"
-  | "invalid_config"
-  | "spawn_failed"
-  | "connection_failed";
+  "disabled" | "healthy" | "invalid_config" | "spawn_failed" | "connection_failed";
 
 export type ProjectMcpToolTaskSupport = "forbidden" | "optional" | "required";
 
@@ -49,6 +42,24 @@ export interface ProjectMcpStatus {
   healthyServerCount: number;
   servers: ProjectMcpServerStatus[];
   configError?: string;
+}
+
+/** MCP 服务器配置（全局注册表与项目级 mcp.json 共用同一形状）。 */
+export interface ProjectMcpServerConfig {
+  enabled?: boolean;
+  transport?: string;
+  command?: string;
+  args: string[];
+  env: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  socketPath?: string;
+  headers: Record<string, string>;
+  startupTimeoutSeconds?: number;
+}
+
+export interface ProjectMcpConfig {
+  mcpServers: Record<string, ProjectMcpServerConfig>;
 }
 
 export interface SshServerConfig {
@@ -101,7 +112,16 @@ export interface SshAuditLog {
 
 export interface BrowserStatus {
   sessionId: string;
-  state: "booting" | "starting" | "downloading" | "launching" | "ready" | "minimized" | "page_closed" | "closed" | string;
+  state:
+    | "booting"
+    | "starting"
+    | "downloading"
+    | "launching"
+    | "ready"
+    | "minimized"
+    | "page_closed"
+    | "closed"
+    | string;
   url?: string | null;
   message?: string | null;
   minimized?: boolean;
@@ -250,6 +270,7 @@ export interface DispatcherToolArtifact {
   workspaceId: string;
   messageId?: string;
   toolCallId?: string;
+  toolRunId?: string | null;
   toolName?: string;
   title: string;
   kind: string;
@@ -260,10 +281,16 @@ export interface DispatcherToolArtifact {
   createdAt: string;
 }
 
+export type DispatcherToolRunOrigin = "model" | "tool_program";
+
 export interface DispatcherToolRunRecord {
   id: string;
   workspaceId: string;
   toolCallId: string;
+  parentRunId?: string | null;
+  origin: DispatcherToolRunOrigin;
+  stepId?: string | null;
+  sequence: number;
   toolName: string;
   provider: string;
   category: string;
@@ -289,6 +316,8 @@ export interface DispatcherModelConfig {
   model: string;
   active: boolean;
   systemPrompt?: string;
+  /** 模型库条目引用：非空时后端保存剥离 url/apiKey/model、读取时从库回填。 */
+  libraryId?: string;
 }
 
 export type AgentContext = "project" | "chat";
@@ -329,14 +358,7 @@ export interface SshReviewConfig {
 }
 
 /** 模型库分类：按模型调用方式划分，「模型服务」页按此分标签管理。 */
-export type ModelCategory =
-  | "text"
-  | "vision"
-  | "image"
-  | "imageEdit"
-  | "asr"
-  | "tts"
-  | "embedding";
+export type ModelCategory = "text" | "vision" | "image" | "imageEdit" | "asr" | "tts" | "embedding";
 
 /** 分类模型库条目：每个条目独立持有 url/apiKey/model，供「模型用途」页按分类引用。 */
 export interface ModelLibraryEntry {
@@ -415,7 +437,8 @@ export interface PythonRunToolEvent {
 }
 
 export interface PythonRunEvent {
-  event: "started" | "output" | "toolStarted" | "toolFinished" | "final" | "failed" | "stopped" | string;
+  event:
+    "started" | "output" | "toolStarted" | "toolFinished" | "final" | "failed" | "stopped" | string;
   runId: string;
   workspaceId: string;
   messageId: string;
@@ -660,20 +683,10 @@ export interface SubAgentRunTrace {
 // 字段名严格对齐 src-tauri/src/agent/graph/types.rs（serde camelCase）。
 // 修改任一字段必须同步 Rust struct。
 
-export type GraphPlanStatus =
-  | "draft"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
+export type GraphPlanStatus = "draft" | "running" | "completed" | "failed" | "cancelled";
 
 export type GraphNodeStatus =
-  | "pending"
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "skipped"
-  | "cancelled";
+  "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
 
 export type GraphNodePhase =
   | "starting"
@@ -766,11 +779,45 @@ export interface GraphRunSummary {
   startedAt: number;
   finishedAt: number | null;
 }
-export interface AgentActivity { id: string; runId: string; nodeId: string; sequence: number; kind: string; status: string; title: string; content: string; payloadJson: string; startedAt: number; finishedAt: number | null }
-export interface GraphRunDetail { run: GraphRunSummary; nodeRuns: GraphNodeRunRecord[]; activities: AgentActivity[] }
-export interface GraphHarnessModel { id: string; label: string; model: string; category: "text" | "vision"; capabilities: string[] }
-export interface GraphHarnessTool { source: "pi_extension" | "aha"; name: string; description: string; provider: string; category: string; readonly: boolean; reviewRequired: boolean }
-export interface GraphHarnessCatalog { models: GraphHarnessModel[]; tools: GraphHarnessTool[]; diagnostics: string[] }
+export interface AgentActivity {
+  id: string;
+  runId: string;
+  nodeId: string;
+  sequence: number;
+  kind: string;
+  status: string;
+  title: string;
+  content: string;
+  payloadJson: string;
+  startedAt: number;
+  finishedAt: number | null;
+}
+export interface GraphRunDetail {
+  run: GraphRunSummary;
+  nodeRuns: GraphNodeRunRecord[];
+  activities: AgentActivity[];
+}
+export interface GraphHarnessModel {
+  id: string;
+  label: string;
+  model: string;
+  category: "text" | "vision";
+  capabilities: string[];
+}
+export interface GraphHarnessTool {
+  source: "pi_extension" | "aha";
+  name: string;
+  description: string;
+  provider: string;
+  category: string;
+  readonly: boolean;
+  reviewRequired: boolean;
+}
+export interface GraphHarnessCatalog {
+  models: GraphHarnessModel[];
+  tools: GraphHarnessTool[];
+  diagnostics: string[];
+}
 
 export interface GraphPlanRecord {
   id: string;
@@ -815,8 +862,14 @@ export interface GraphNodeStartedData {
   input: string;
 }
 
-export interface GraphNodePhaseChangedData { nodeId: string; phase: GraphNodePhase }
-export interface GraphNodeActivityData { nodeId: string; activity: AgentActivity }
+export interface GraphNodePhaseChangedData {
+  nodeId: string;
+  phase: GraphNodePhase;
+}
+export interface GraphNodeActivityData {
+  nodeId: string;
+  activity: AgentActivity;
+}
 
 export interface GraphNodeOutputDeltaData {
   nodeId: string;
@@ -964,7 +1017,7 @@ export interface RagOcrConfig {
   pdfImageHeightRatio: number;
 }
 
-/** RAG 知识库完整运行时配置（权威存储于 ~/.jkcodingagent/rag/config.json）。 */
+/** RAG 知识库完整运行时配置（权威存储于全局库 app_config 表 rag 键）。 */
 export interface RagKbConfig {
   qdrant: RagQdrantConfig;
   embedding: RagEmbeddingConfig;

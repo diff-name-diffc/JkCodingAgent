@@ -5,6 +5,7 @@ mod graph_plan_report;
 mod image_edit;
 mod image_generation;
 mod local_zsh;
+mod run_tool_program;
 mod search;
 mod shell;
 mod ssh;
@@ -40,6 +41,7 @@ pub(super) fn orchestrator_tools() -> Vec<Box<dyn AgentTool>> {
         filesystem::list_dir_tool(),
         search::glob_tool(),
         search::grep_tool(),
+        run_tool_program::run_tool_program_tool(),
         shell::message_tool(),
         submit_graph::submit_graph_tool(),
         graph_plan_report::graph_plan_report_tool(),

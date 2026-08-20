@@ -17,25 +17,17 @@ fn manager_from(state: &DispatcherState) -> anyhow::Result<Arc<SubAgentManager>>
         .ok_or_else(|| anyhow!("错误：子智能体管理器未初始化"))
 }
 
-/// 子智能体运行期能使用项目上下文（default_tools）与聊天上下文（plain_chat_tools）
-/// 两套注册表里的静态工具，这里取两者并集作为 allowed_tools 的校验依据。
-/// MCP 等动态工具不进入子智能体执行注册表（runtime 以 include_dynamic=false 构建
-/// 工具定义），因此不纳入白名单。注册表只读构建，不产生 I/O。
+/// 子智能体只从普通聊天 Agent 派生，运行时拿到的也是父级 plain-chat 注册表。
+/// 保存校验必须使用同一 execution profile；不能取全局并集，否则会出现配置
+/// 可保存但运行时静默缺工具。MCP 与嵌套子智能体工具均不在该 profile 中。
 fn known_static_tool_names(state: &DispatcherState) -> HashSet<String> {
     let mcp = state.project_mcp_registry();
     let ssh = state.ssh_manager();
-    let mut names: HashSet<String> = ToolRegistry::default_tools(mcp.clone(), ssh.clone())
+    ToolRegistry::plain_chat_tools(mcp, ssh)
         .tool_names_and_descriptions()
         .into_iter()
         .map(|(name, _)| name)
-        .collect();
-    names.extend(
-        ToolRegistry::plain_chat_tools(mcp, ssh)
-            .tool_names_and_descriptions()
-            .into_iter()
-            .map(|(name, _)| name),
-    );
-    names
+        .collect()
 }
 
 // 说明：以下命令均为 async Tauri 命令，manager 内部是同步 rusqlite I/O，
@@ -48,12 +40,12 @@ pub async fn sub_agent_list(
     state: State<'_, DispatcherState>,
 ) -> CommandResult<Vec<SubAgentRecord>> {
     let result = match manager_from(&state) {
-        Ok(manager) => tokio::task::spawn_blocking(move || {
-            manager.list_all().context("查询子智能体列表失败")
-        })
-        .await
-        .context("等待子智能体列表任务失败")
-        .and_then(|inner| inner),
+        Ok(manager) => {
+            tokio::task::spawn_blocking(move || manager.list_all().context("查询子智能体列表失败"))
+                .await
+                .context("等待子智能体列表任务失败")
+                .and_then(|inner| inner)
+        }
         Err(error) => Err(error),
     };
     result.into_command_result()

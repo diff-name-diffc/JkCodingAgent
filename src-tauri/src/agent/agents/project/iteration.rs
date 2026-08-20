@@ -7,9 +7,7 @@ use anyhow::Result;
 use tauri::ipc::Channel;
 
 use crate::agent::common::{stream_llm_response, LlmStreamOutcome, UsageTracker};
-use crate::agent::db::{
-    DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource,
-};
+use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
 use crate::agent::debug::{render_json, ContextDebugLogger, DebugSection};
 use crate::agent::llm::{LlmResponse, OpenAiCompatProvider};
 use crate::agent::run_loop::core::{RunLoopContext, RunLoopIteration};
@@ -56,13 +54,9 @@ impl OrchestratorAgent {
             ssh_review: None,
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: self.config.restrict_to_workspace,
-            // 白名单说明：~/.jkcodingagent 是应用自身资源目录（memory/、skills/ 等），
-            // 只读工具需要读取其中的用户级记忆与技能。所有接受路径参数的工具必须
-            // 经 builtin/common.rs 的 resolve_path（canonicalize + starts_with）校验，
-            // 该白名单仅对走 resolve_path 的路径生效；请勿扩大此列表。
-            extra_allowed_dirs: dirs::home_dir()
-                .map(|h| vec![h.join(".jkcodingagent")])
-                .unwrap_or_default(),
+            // memory/skills 已由提示词加载器读取；工具本身只允许项目工作区，
+            // 不能把含设置、数据库与模型密钥的全局配置目录暴露给模型。
+            extra_allowed_dirs: Vec::new(),
             app_handle: self.app_handle.clone(),
             llm_provider: Some(provider.clone()),
             vision_model: ms.vision_model,
@@ -74,6 +68,8 @@ impl OrchestratorAgent {
             current_sub_agent_id: None,
             current_sub_agent_name: None,
             current_tool_call_id: None,
+            current_tool_spec_hash: None,
+            cancel_rx: None,
             sub_agent_parent_tool_call_id: None,
             sub_agent_trace_events: None,
         }
@@ -209,12 +205,7 @@ impl OrchestratorAgent {
         let content = build_stopped_orchestration_reply(partial);
         let usage_stats = usage_tracker.snapshot();
         let reply = db
-            .add_visible_message_with_usage_async(
-                workspace_id,
-                "assistant",
-                &content,
-                &usage_stats,
-            )
+            .add_visible_message_with_usage_async(workspace_id, "assistant", &content, &usage_stats)
             .await?;
         emit(
             on_event,

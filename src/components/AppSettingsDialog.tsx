@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Cpu,
   Database,
+  Plug,
   Server,
   Settings2,
   SquareTerminal,
@@ -22,6 +23,7 @@ import { SubAgentsPage } from "./settings/SubAgentsPage";
 import { ProvidersPage } from "./settings/providers/ProvidersPage";
 import { PurposesPage } from "./settings/providers/PurposesPage";
 import { SshServersPage } from "./settings/ssh/SshServersPage";
+import { McpServersPage } from "./settings/mcp/McpServersPage";
 import { RagKbConfigPanel } from "./app-settings/rag/RagKbConfigPanel";
 import type { ModelCategory } from "../types";
 
@@ -32,6 +34,7 @@ export type SettingsNavKey =
   | "tools"
   | "graph"
   | "subAgents"
+  | "mcp"
   | "ssh"
   | "rag";
 
@@ -42,6 +45,7 @@ const NAV_ITEMS: Array<{ key: SettingsNavKey; label: string; icon: LucideIcon }>
   { key: "tools", label: "工具", icon: Wrench },
   { key: "graph", label: "执行图", icon: Workflow },
   { key: "subAgents", label: "子智能体", icon: Users },
+  { key: "mcp", label: "MCP 服务器", icon: Plug },
   { key: "ssh", label: "SSH", icon: SquareTerminal },
   { key: "rag", label: "RAG 知识库", icon: Database },
 ];
@@ -54,6 +58,7 @@ function normalizeInitialTab(tab?: string): SettingsNavKey {
     case "tools":
     case "graph":
     case "subAgents":
+    case "mcp":
     case "ssh":
     case "rag":
     case "general":
@@ -194,7 +199,8 @@ export function AppSettingsDialog({
               {activeNav === "tools" && <ToolsPage projectPath={projectPath} />}
               {activeNav === "graph" && <GraphPage />}
               {activeNav === "subAgents" && <SubAgentsPage />}
-              {activeNav === "ssh" && <SshServersPage projectPath={projectPath} />}
+              {activeNav === "mcp" && <McpServersPage />}
+              {activeNav === "ssh" && <SshServersPage />}
               {activeNav === "rag" && (
                 <RagKbConfigPanel projectId={projectId} projectPath={projectPath} />
               )}

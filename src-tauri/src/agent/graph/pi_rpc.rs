@@ -1,16 +1,15 @@
 //! PI SDK sidecar 的严格 JSONL 传输。协议 stdout 与诊断 stderr 完全隔离。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
-use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tokio::process::{Child, Command};
 
 const SIDECAR_NAME: &str = "pi-agent-sidecar";
-const PROTOCOL_VERSION: i64 = 2;
 
 /// sidecar 单行 JSONL 的字节上限：正常响应在 KB 量级（大产出另有摘要机制），
 /// 1 MiB 已非常宽裕。故障或被篡改的 sidecar 若持续输出超长行，
@@ -31,7 +30,10 @@ where
                 "PI sidecar 单行输出超出 {MAX_SIDECAR_LINE_BYTES} 字节上限"
             ));
         }
-        let chunk = reader.fill_buf().await.context("读取 PI sidecar 输出失败")?;
+        let chunk = reader
+            .fill_buf()
+            .await
+            .context("读取 PI sidecar 输出失败")?;
         if chunk.is_empty() {
             break;
         }
@@ -62,12 +64,6 @@ where
         .map_err(|error| anyhow!("PI sidecar 输出非 UTF-8：{error}"))
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct PiExtensionTool {
-    pub name: String,
-    pub description: String,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SidecarEnvelope {
@@ -80,114 +76,6 @@ pub(crate) struct SidecarEnvelope {
     pub sequence: i64,
     #[serde(default)]
     pub data: Value,
-}
-
-pub(crate) async fn discover_extension_tools(
-    workspace: &Path,
-) -> Result<(Vec<PiExtensionTool>, Vec<String>)> {
-    // 传给 sidecar 子进程前先规范化路径：canonicalize 解析符号链接与 ../，
-    // 防止上游未规范化/用户可控的路径原样进入 sidecar 造成越界（目录遍历）。
-    // workspace 本身即本次校验的根，目录不存在时 fail-closed。
-    let workspace = workspace
-        .canonicalize()
-        .with_context(|| format!("工作区路径规范化失败：{}", workspace.display()))?;
-    if !workspace.is_dir() {
-        return Err(anyhow!("工作区路径不是目录：{}", workspace.display()));
-    }
-    let mut guard = SidecarChildGuard::spawn()?;
-    let response: Result<Value> = async {
-        let mut stdin = guard
-            .child_mut()
-            .stdin
-            .take()
-            .context("PI sidecar stdin 未捕获")?;
-        let stdout = guard
-            .child_mut()
-            .stdout
-            .take()
-            .context("PI sidecar stdout 未捕获")?;
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let agent_dir = global_agent_dir()?;
-        let project_resource_dir = workspace.join(".jkcodingagent/pi-agent");
-        let request = json!({
-            "type": "discover",
-            "requestId": request_id,
-            "runId": "catalog",
-            "nodeId": "catalog",
-            "sequence": 1,
-            "workspace": workspace,
-            "agentDir": agent_dir,
-            "projectResourceDir": project_resource_dir,
-        });
-        stdin.write_all(format!("{}\n", request).as_bytes()).await?;
-        stdin.flush().await?;
-        let mut reader = BufReader::new(stdout);
-        tokio::time::timeout(std::time::Duration::from_secs(20), async {
-            while let Some(line) = read_bounded_line(&mut reader).await? {
-                let envelope: SidecarEnvelope =
-                    serde_json::from_str(&line).with_context(|| {
-                        format!(
-                            "PI sidecar 输出非法 JSONL：{}",
-                            line.chars().take(200).collect::<String>()
-                        )
-                    })?;
-                if envelope.r#type == "catalog" && envelope.request_id == request_id {
-                    return Ok(envelope.data);
-                }
-                if envelope.r#type == "failed" && envelope.request_id == request_id {
-                    return Err(anyhow!(
-                        "{}",
-                        envelope
-                            .data
-                            .get("error")
-                            .and_then(Value::as_str)
-                            .unwrap_or("PI catalog 失败")
-                    ));
-                }
-            }
-            Err(anyhow!("PI sidecar 在 catalog 响应前退出"))
-        })
-        .await
-        .context("PI catalog 发现超时")?
-    }
-    .await;
-    // spawn 后所有结果都经过统一清理，避免协议错误或超时遗留孙进程。
-    guard.terminate().await;
-    let response = response?;
-    let version = response
-        .get("protocolVersion")
-        .and_then(Value::as_i64)
-        .unwrap_or_default();
-    if version != PROTOCOL_VERSION {
-        return Err(anyhow!(
-            "PI sidecar 协议版本不匹配：期望 {PROTOCOL_VERSION}，实际 {version}"
-        ));
-    }
-    let tools = response
-        .get("tools")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|tool| {
-            Some(PiExtensionTool {
-                name: tool.get("name")?.as_str()?.to_string(),
-                description: tool
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-            })
-        })
-        .collect();
-    let diagnostics = response
-        .get("diagnostics")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_string)
-        .collect();
-    Ok((tools, diagnostics))
 }
 
 pub(crate) fn spawn_sidecar() -> Result<Child> {
@@ -519,6 +407,7 @@ fn platform_triple() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::BufReader;
 
     #[tokio::test]
     async fn bounded_line_reader_splits_lines_and_reports_eof() {

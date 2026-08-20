@@ -1,16 +1,13 @@
 //! RAG 知识库配置——权威存储位于 Rust 宿主侧。
 //!
 //! 设计约定（见 AGENTS.md 与 rag/README.md）：
-//! - 配置文件：`~/.jkcodingagent/rag/config.json`
+//! - 配置存全局库 app_config 表（键 `rag`）；v33 前为 ~/.jkcodingagent/rag/config.json
 //! - 本模块是配置的唯一写入方；Python sidecar 只接收、不回写
 //! - 启动 sidecar 时通过环境变量注入；变更时通过 HTTP /config/reload 推送
 //!
 //! 骨架阶段只提供结构体 + load/save；真实业务字段可在后续迭代扩展，
 //! 但新增字段必须同步更新 `rag/src/rag_server/config.py` 的对应 Pydantic 模型，
 //! 否则 Python 侧 reload 会因 schema 不匹配而失败。
-
-use std::fs;
-use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
@@ -236,43 +233,22 @@ fn default_log_level() -> String {
 }
 
 impl RagKbConfig {
-    /// 配置文件路径：`~/.jkcodingagent/rag/config.json`。
-    pub fn config_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("failed to resolve home directory")?;
-        Ok(home.join(".jkcodingagent").join("rag").join("config.json"))
-    }
-
-    /// 从磁盘加载；文件不存在时返回默认值并尝试落盘一份默认配置。
-    pub fn load() -> Result<Self> {
-        let path = Self::config_path()?;
-        match fs::read_to_string(&path) {
-            Ok(content) => {
-                let config: Self = serde_json::from_str(&content)
-                    .with_context(|| format!("parse {}", path.display()))?;
-                Ok(config)
+    /// 从全局库加载（app_config 表 `rag` 键）；未配置时返回默认值。
+    pub fn load_from_db(db: &crate::agent::db::DispatcherDb) -> Result<Self> {
+        match db.get_app_config_json(crate::agent::db::app_config::RAG_KEY) {
+            Ok(Some(raw)) => {
+                serde_json::from_str(&raw).context("parse rag config from app_config")
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let config = Self::default();
-                // 落盘默认配置，便于用户了解可用字段
-                let _ = Self::save_raw(&config);
-                Ok(config)
-            }
-            Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
+            Ok(None) => Ok(Self::default()),
+            Err(error) => Err(error.context("load rag config from app_config")),
         }
     }
 
-    /// 写入磁盘。
-    pub fn save(&self) -> Result<()> {
-        Self::save_raw(self)
-    }
-
-    fn save_raw(config: &Self) -> Result<()> {
-        let path = Self::config_path()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        }
-        let body = serde_json::to_string_pretty(config).context("serialize rag config")?;
-        fs::write(&path, body).with_context(|| format!("write {}", path.display()))
+    /// 写入全局库（app_config 表 `rag` 键）。
+    pub fn save_to_db(&self, db: &crate::agent::db::DispatcherDb) -> Result<()> {
+        let body = serde_json::to_string(self).context("serialize rag config")?;
+        db.set_app_config_json(crate::agent::db::app_config::RAG_KEY, &body)
+            .context("save rag config to app_config")
     }
 
     /// 将配置展开为注入 sidecar 子进程的环境变量键值列表。
@@ -350,20 +326,33 @@ impl RagKbConfig {
 #[derive(Default)]
 pub struct RagConfigStore {
     inner: Mutex<Option<RagKbConfig>>,
+    /// 配置权威源的读取入口。store 在 DispatcherState 之前注册（builder 链），
+    /// DB 打开后由 setup 注入。
+    db: Mutex<Option<crate::agent::db::DispatcherDb>>,
 }
 
 impl RagConfigStore {
-    /// 取一份当前配置的快照；尚未加载则从磁盘读取并缓存。
+    /// 注入全局 DB（app 启动 setup 中调用一次）。
+    pub fn attach_db(&self, db: crate::agent::db::DispatcherDb) {
+        *self.db.lock() = Some(db);
+    }
+
+    /// 取一份当前配置的快照；尚未加载则从全局库读取并缓存。
     pub fn get_or_load(&self) -> Result<RagKbConfig> {
         if let Some(snapshot) = self.inner.lock().as_ref() {
             return Ok(snapshot.clone());
         }
-        let loaded = RagKbConfig::load()?;
+        let db = self
+            .db
+            .lock()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("RAG 配置存储尚未挂载数据库（应用初始化未完成）"))?;
+        let loaded = RagKbConfig::load_from_db(&db)?;
         *self.inner.lock() = Some(loaded.clone());
         Ok(loaded)
     }
 
-    /// 用一份新配置替换内存快照（不落盘、不通知 sidecar，由调用方组合）。
+    /// 用一份新配置替换内存快照（不落库、不通知 sidecar，由调用方组合）。
     pub fn replace(&self, config: RagKbConfig) {
         *self.inner.lock() = Some(config);
     }

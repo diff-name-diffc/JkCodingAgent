@@ -13,6 +13,7 @@ use super::common::{
 use crate::agent::llm::{ChatMessage, ChatMessageContentPart, ChatMessageImageSource};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
+use crate::agent::tools::ToolResult;
 use crate::browser::{normalize_browser_url, BrowserManager};
 
 const DEFAULT_BROWSER_TIMEOUT_MS: u64 = 60_000;
@@ -152,13 +153,13 @@ impl AgentTool for OpenUrlTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
         let Some(url) = string_arg(args, "url") else {
-            return "错误：缺少必填参数 url".to_string();
+            return ToolResult::recoverable_error("错误：缺少必填参数 url");
         };
         let url = match normalize_browser_url(url) {
             Ok(url) => url,
-            Err(error) => return format!("错误：{error}"),
+            Err(error) => return ToolResult::recoverable_error(format!("错误：{error}")),
         };
         // file: URL 可被用来读取任意本地文件（随后 browser_read_text 会把内容读入
         // 上下文），属于高危面。这里强制解析出本地路径并校验其必须位于当前工作区内，
@@ -177,8 +178,12 @@ impl AgentTool for OpenUrlTool {
             .await;
             match validation {
                 Ok(Ok(())) => {}
-                Ok(Err(message)) => return message,
-                Err(error) => return format!("错误：file:// URL 校验任务失败：{error}"),
+                Ok(Err(message)) => return ToolResult::recoverable_error(message),
+                Err(error) => {
+                    return ToolResult::recoverable_error(format!(
+                        "错误：file:// URL 校验任务失败：{error}"
+                    ))
+                }
             }
         }
         // 即将导航：sidecar 的 ref 映射与缓存快照都会随之失效。提前丢弃缓存，
@@ -219,9 +224,11 @@ impl AgentTool for ClickTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
         let Some(ref_id) = string_arg(args, "ref") else {
-            return "错误：缺少必填参数 ref；请先调用 browser_read_text 获取元素 ref".to_string();
+            return ToolResult::recoverable_error(
+                "错误：缺少必填参数 ref；请先调用 browser_read_text 获取元素 ref",
+            );
         };
         match run_browser_command_value(
             context,
@@ -233,8 +240,8 @@ impl AgentTool for ClickTool {
         )
         .await
         {
-            Ok(value) => format_browser_result(value),
-            Err(error) => handle_browser_error(context, error).await,
+            Ok(value) => browser_value_result(value),
+            Err(error) => ToolResult::from_text(handle_browser_error(context, error).await),
         }
     }
 }
@@ -265,13 +272,14 @@ impl AgentTool for TypeTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
         let Some(ref_id) = string_arg(args, "ref") else {
-            return "错误：缺少必填参数 ref；请先调用 browser_read_text 获取输入元素 ref"
-                .to_string();
+            return ToolResult::recoverable_error(
+                "错误：缺少必填参数 ref；请先调用 browser_read_text 获取输入元素 ref",
+            );
         };
         let Some(text) = string_arg(args, "text") else {
-            return "错误：缺少必填参数 text".to_string();
+            return ToolResult::recoverable_error("错误：缺少必填参数 text");
         };
         match run_browser_command_value(
             context,
@@ -280,8 +288,8 @@ impl AgentTool for TypeTool {
         )
         .await
         {
-            Ok(value) => format_browser_result(value),
-            Err(error) => handle_browser_error(context, error).await,
+            Ok(value) => browser_value_result(value),
+            Err(error) => ToolResult::from_text(handle_browser_error(context, error).await),
         }
     }
 }
@@ -310,9 +318,9 @@ impl AgentTool for PressTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
         let Some(key) = string_arg(args, "key") else {
-            return "错误：缺少必填参数 key".to_string();
+            return ToolResult::recoverable_error("错误：缺少必填参数 key");
         };
         run_browser_command(context, "press", json!({ "key": key })).await
     }
@@ -346,7 +354,7 @@ impl AgentTool for WaitForTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
         run_browser_command(
             context,
             "wait_for",
@@ -409,7 +417,10 @@ fn store_snapshot(workspace_id: &str, content: SnapshotContent) -> u64 {
 /// 会挤在 pretty JSON 的单个字符串行里，行级截断定位完全失效。
 fn extract_snapshot(value: &Value) -> Option<SnapshotContent> {
     let text = value.get("text")?.as_str()?;
-    let tree = text.split_once("\n\n").map(|(_, tree)| tree).unwrap_or(text);
+    let tree = text
+        .split_once("\n\n")
+        .map(|(_, tree)| tree)
+        .unwrap_or(text);
     Some(SnapshotContent {
         url: value
             .get("url")
@@ -422,7 +433,10 @@ fn extract_snapshot(value: &Value) -> Option<SnapshotContent> {
             .and_then(Value::as_u64)
             .unwrap_or(0),
         ref_count: value.get("refCount").and_then(Value::as_u64).unwrap_or(0),
-        truncated: value.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+        truncated: value
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         lines: tree.lines().map(str::to_string).collect(),
     })
 }
@@ -467,7 +481,11 @@ fn render_snapshot_page(
     }
 
     let end = (start + limit - 1).min(total);
-    let mut parts = vec![header, format!("lines: {start}-{end} / {total}"), String::new()];
+    let mut parts = vec![
+        header,
+        format!("lines: {start}-{end} / {total}"),
+        String::new(),
+    ];
     for (index, line) in content.lines[start - 1..end].iter().enumerate() {
         parts.push(format!("{}|{}", start + index, line));
     }
@@ -523,50 +541,55 @@ impl AgentTool for ReadTextTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        // 与 sidecar 的空 ref 语义对齐：空字符串按未传处理（读取整页）。
-        let ref_arg = string_arg(args, "ref").filter(|value| !value.trim().is_empty());
-        let offset = usize_arg(args, "offset");
-        let limit_arg = usize_arg(args, "limit");
-        let has_range = offset.is_some() || limit_arg.is_some();
-        let limit = limit_arg.unwrap_or(READ_TEXT_DEFAULT_LINE_LIMIT);
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
+        ToolResult::from_text(
+            async {
+                // 与 sidecar 的空 ref 语义对齐：空字符串按未传处理（读取整页）。
+                let ref_arg = string_arg(args, "ref").filter(|value| !value.trim().is_empty());
+                let offset = usize_arg(args, "offset");
+                let limit_arg = usize_arg(args, "limit");
+                let has_range = offset.is_some() || limit_arg.is_some();
+                let limit = limit_arg.unwrap_or(READ_TEXT_DEFAULT_LINE_LIMIT);
 
-        // 分页读取：全量快照直接命中缓存切片，不重复请求 CDP，也不会刷新
-        // sidecar 的 ref 映射（此前下发的 ref 保持有效）。
-        if ref_arg.is_none() && has_range {
-            let cache = snapshot_cache().lock();
-            if let Some(snapshot) = cache.get(&context.workspace_id) {
-                return render_snapshot_page(
-                    &snapshot.content,
-                    None,
-                    Some(snapshot.snapshot_id),
-                    offset.unwrap_or(1),
-                    limit,
-                );
+                // 分页读取：全量快照直接命中缓存切片，不重复请求 CDP，也不会刷新
+                // sidecar 的 ref 映射（此前下发的 ref 保持有效）。
+                if ref_arg.is_none() && has_range {
+                    let cache = snapshot_cache().lock();
+                    if let Some(snapshot) = cache.get(&context.workspace_id) {
+                        return render_snapshot_page(
+                            &snapshot.content,
+                            None,
+                            Some(snapshot.snapshot_id),
+                            offset.unwrap_or(1),
+                            limit,
+                        );
+                    }
+                    // 无缓存（sidecar 重启 / 冷启动）：继续走全量读取后按行范围切片。
+                }
+
+                match run_browser_command_value(
+                    context,
+                    "read_text",
+                    json!({
+                        "ref": ref_arg,
+                        "maxNodes": u64_arg(args, "max_nodes").unwrap_or(600).max(1),
+                        "timeout": timeout_arg(args)
+                    }),
+                )
+                .await
+                {
+                    Ok(value) => format_snapshot_response(
+                        value,
+                        &context.workspace_id,
+                        ref_arg.as_deref(),
+                        offset.unwrap_or(1),
+                        limit,
+                    ),
+                    Err(error) => handle_browser_error(context, error).await,
+                }
             }
-            // 无缓存（sidecar 重启 / 冷启动）：继续走全量读取后按行范围切片。
-        }
-
-        match run_browser_command_value(
-            context,
-            "read_text",
-            json!({
-                "ref": ref_arg,
-                "maxNodes": u64_arg(args, "max_nodes").unwrap_or(600).max(1),
-                "timeout": timeout_arg(args)
-            }),
+            .await,
         )
-        .await
-        {
-            Ok(value) => format_snapshot_response(
-                value,
-                &context.workspace_id,
-                ref_arg.as_deref(),
-                offset.unwrap_or(1),
-                limit,
-            ),
-            Err(error) => handle_browser_error(context, error).await,
-        }
     }
 }
 
@@ -595,37 +618,42 @@ impl AgentTool for VisualAnalyzeTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        let Some(instruction) = string_arg(args, "instruction") else {
-            return "错误：缺少必填参数 instruction".to_string();
-        };
-        let Some(provider) = context.llm_provider.as_ref() else {
-            return "错误：浏览器视觉分析缺少 LLM provider，无法调用视觉模型".to_string();
-        };
-        if context.vision_model.trim().is_empty() {
-            return "错误：浏览器视觉分析需要先在 Dispatcher 设置中配置视觉模型".to_string();
-        }
-        if !provider.is_configured() {
-            return "错误：LLM API Key 未配置，无法调用视觉模型".to_string();
-        }
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
+        ToolResult::from_text(execute_visual_analyze(args, context).await)
+    }
+}
 
-        let screenshot = match run_browser_command_value(
-            context,
-            "screenshot",
-            json!({ "fullPage": false, "timeout": timeout_arg(args) }),
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(error) => return format!("错误：{error}"),
-        };
-        let Some(data_url) = screenshot.get("data").and_then(Value::as_str) else {
-            return "错误：浏览器截图结果缺少 data URL，无法进行视觉分析".to_string();
-        };
+async fn execute_visual_analyze(args: &Value, context: &ToolContext) -> String {
+    let Some(instruction) = string_arg(args, "instruction") else {
+        return "错误：缺少必填参数 instruction".to_string();
+    };
+    let Some(provider) = context.llm_provider.as_ref() else {
+        return "错误：浏览器视觉分析缺少 LLM provider，无法调用视觉模型".to_string();
+    };
+    if context.vision_model.trim().is_empty() {
+        return "错误：浏览器视觉分析需要先在 Dispatcher 设置中配置视觉模型".to_string();
+    }
+    if !provider.is_configured() {
+        return "错误：LLM API Key 未配置，无法调用视觉模型".to_string();
+    }
 
-        let vision_provider = provider.with_model(context.vision_model.trim());
-        let prompt = build_visual_analysis_prompt(&instruction);
-        match vision_provider
+    let screenshot = match run_browser_command_value(
+        context,
+        "screenshot",
+        json!({ "fullPage": false, "timeout": timeout_arg(args) }),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => return format!("错误：{error}"),
+    };
+    let Some(data_url) = screenshot.get("data").and_then(Value::as_str) else {
+        return "错误：浏览器截图结果缺少 data URL，无法进行视觉分析".to_string();
+    };
+
+    let vision_provider = provider.with_model(context.vision_model.trim());
+    let prompt = build_visual_analysis_prompt(&instruction);
+    match vision_provider
             .chat_stream(
                 &[
                     ChatMessage::system(
@@ -664,7 +692,6 @@ impl AgentTool for VisualAnalyzeTool {
                 }
             }
             Err(error) => format!("错误：视觉模型分析网页截图失败：{error}"),
-        }
     }
 }
 
@@ -686,19 +713,24 @@ impl AgentTool for CloseTool {
         )
     }
 
-    async fn execute(&self, _args: &Value, context: &ToolContext) -> String {
+    async fn execute(&self, _args: &Value, context: &ToolContext) -> ToolResult {
         let Some(app) = context.app_handle.clone() else {
-            return "错误：浏览器工具缺少 Tauri AppHandle，无法访问 CloakBrowser 管理器"
-                .to_string();
+            return ToolResult::recoverable_error(
+                "错误：浏览器工具缺少 Tauri AppHandle，无法访问 CloakBrowser 管理器",
+            );
         };
         let manager = app.state::<BrowserManager>();
         match manager.stop(&context.workspace_id).await {
             Ok(()) => {
                 // 浏览器已停：缓存快照与 sidecar 的 ref 映射一并失效，同步丢弃。
                 snapshot_cache().lock().remove(&context.workspace_id);
-                "CloakBrowser 已关闭".to_string()
+                ToolResult::success_data(
+                    json!({ "closed": true }),
+                    "CloakBrowser 已关闭",
+                    "CloakBrowser 已关闭",
+                )
             }
-            Err(error) => format!("错误：{error}"),
+            Err(error) => ToolResult::recoverable_error(format!("错误：{error}")),
         }
     }
 }
@@ -780,13 +812,13 @@ fn validate_file_url_within_workspace(url: &str, context: &ToolContext) -> Resul
     Ok(())
 }
 
-async fn run_browser_command(context: &ToolContext, method: &str, params: Value) -> String {
+async fn run_browser_command(context: &ToolContext, method: &str, params: Value) -> ToolResult {
     match run_browser_command_value(context, method, params).await {
-        Ok(value) => format_browser_result(value),
+        Ok(value) => browser_value_result(value),
         Err(error) => {
             // For non-ref tools, classify errors but skip auto-snapshot
             let kind = classify_browser_error(&error);
-            match kind {
+            ToolResult::from_text(match kind {
                 BrowserErrorKind::Behavioral => {
                     format!(
                         "错误：{error}\n\n提示：这是一个可恢复的行为错误。请检查当前页面状态，\
@@ -798,8 +830,15 @@ async fn run_browser_command(context: &ToolContext, method: &str, params: Value)
                     // Should not happen for non-ref tools, but handle gracefully
                     handle_browser_error(context, error).await
                 }
-            }
+            })
         }
+    }
+}
+
+fn browser_value_result(value: Value) -> ToolResult {
+    match serde_json::to_string_pretty(&value) {
+        Ok(text) => ToolResult::success_data(value, text.clone(), text),
+        Err(error) => ToolResult::recoverable_error(format!("错误：浏览器结果序列化失败：{error}")),
     }
 }
 

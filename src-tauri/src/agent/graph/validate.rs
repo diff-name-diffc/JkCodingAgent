@@ -8,11 +8,20 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::types::{
-    BaseToolGroup, GraphDefinition, GraphHarnessCatalog, GRAPH_DEFINITION_VERSION,
-};
+use super::types::{BaseToolGroup, GraphDefinition, GraphHarnessCatalog, GRAPH_DEFINITION_VERSION};
 
 pub(crate) const MAX_GRAPH_NODES: usize = 20;
+const MAX_GRAPH_DEFINITION_BYTES: usize = 256 * 1024;
+const MAX_GRAPH_TITLE_CHARS: usize = 200;
+const MAX_GRAPH_SUMMARY_CHARS: usize = 2_000;
+const MAX_STATE_KEYS: usize = 64;
+const MAX_NODE_ROLE_CHARS: usize = 1_000;
+const MAX_NODE_TASK_CHARS: usize = 32_000;
+const MAX_SPECIAL_TOOLS: usize = 16;
+const MAX_DEPENDENCIES: usize = 20;
+const MAX_INJECT_STATE_KEYS: usize = 64;
+const MAX_EXPECTED_FILES: usize = 256;
+const MAX_EXPECTED_PATH_CHARS: usize = 4_096;
 
 /// `seeded_keys`：运行期 state 中已存在的键（修复图继承的 state；普通图为空）。
 pub(crate) fn validate_graph(
@@ -29,6 +38,27 @@ pub(crate) fn validate_graph(
     }
     if definition.title.trim().is_empty() {
         errors.push("title 不能为空".to_string());
+    }
+    if definition.title.chars().count() > MAX_GRAPH_TITLE_CHARS {
+        errors.push(format!("title 超过 {MAX_GRAPH_TITLE_CHARS} 字符上限"));
+    }
+    if definition.summary.chars().count() > MAX_GRAPH_SUMMARY_CHARS {
+        errors.push(format!("summary 超过 {MAX_GRAPH_SUMMARY_CHARS} 字符上限"));
+    }
+    if definition.state_keys.len() > MAX_STATE_KEYS {
+        errors.push(format!(
+            "stateKeys 数量 {} 超过上限 {MAX_STATE_KEYS}",
+            definition.state_keys.len()
+        ));
+    }
+    if serde_json::to_vec(definition)
+        .map(|bytes| bytes.len() > MAX_GRAPH_DEFINITION_BYTES)
+        .unwrap_or(true)
+    {
+        errors.push(format!(
+            "图定义序列化体积超过 {} KiB 上限",
+            MAX_GRAPH_DEFINITION_BYTES / 1024
+        ));
     }
     if definition.nodes.is_empty() {
         errors.push("nodes 不能为空：执行图至少需要一个节点".to_string());
@@ -50,20 +80,51 @@ pub(crate) fn validate_graph(
         .iter()
         .map(|tool| (tool.source.as_str(), tool.name.as_str()))
         .collect::<HashSet<_>>();
+    let mut declared_state_keys = HashSet::new();
+    for state_key in &definition.state_keys {
+        let key = state_key.key.trim();
+        if !valid_graph_identifier(key) {
+            errors.push(format!(
+                "stateKeys 中的 key '{key}' 非法：必须匹配 [A-Za-z][A-Za-z0-9_-]{{0,63}}"
+            ));
+        } else if !declared_state_keys.insert(key) {
+            errors.push(format!("stateKeys 中的 key '{key}' 重复"));
+        }
+        if state_key.description.chars().count() > MAX_NODE_ROLE_CHARS {
+            errors.push(format!(
+                "state key '{key}' 的 description 超过 1000 字符上限"
+            ));
+        }
+    }
+
     let mut ids = HashSet::new();
     let mut output_keys = HashSet::new();
     for node in &definition.nodes {
         let id = node.id.trim();
-        if id.is_empty() {
-            errors.push("存在 id 为空的节点".to_string());
+        if !valid_graph_identifier(id) {
+            errors.push(format!(
+                "节点 id '{id}' 非法：必须匹配 [A-Za-z][A-Za-z0-9_-]{{0,63}}"
+            ));
         } else if !ids.insert(id) {
             errors.push(format!("节点 id '{id}' 重复"));
         }
         if node.title.trim().is_empty() {
             errors.push(format!("节点 '{id}' 的 title 不能为空"));
         }
+        if node.title.chars().count() > MAX_GRAPH_TITLE_CHARS {
+            errors.push(format!("节点 '{id}' 的 title 超过 200 字符上限"));
+        }
+        if node.role.chars().count() > MAX_NODE_ROLE_CHARS {
+            errors.push(format!("节点 '{id}' 的 role 超过 1000 字符上限"));
+        }
         if node.task.trim().is_empty() {
             errors.push(format!("节点 '{id}' 的 task 不能为空"));
+        }
+        if node.task.chars().count() > MAX_NODE_TASK_CHARS {
+            errors.push(format!("节点 '{id}' 的 task 超过 32000 字符上限"));
+        }
+        if node.model_ref.trim().is_empty() || node.model_ref.chars().count() > 256 {
+            errors.push(format!("节点 '{id}' 的 modelRef 必须为 1–256 字符"));
         }
         if !model_ids.contains(node.model_ref.trim()) {
             errors.push(format!(
@@ -72,14 +133,48 @@ pub(crate) fn validate_graph(
             ));
         }
         let output_key = node.output_key.trim();
-        if output_key.is_empty() {
-            errors.push(format!("节点 '{id}' 的 outputKey 不能为空"));
+        if !valid_graph_identifier(output_key) {
+            errors.push(format!(
+                "节点 '{id}' 的 outputKey '{output_key}' 非法：必须匹配 [A-Za-z][A-Za-z0-9_-]{{0,63}}"
+            ));
         } else if !output_keys.insert(output_key) {
             errors.push(format!("outputKey '{output_key}' 被多个节点使用"));
         }
+        if node.special_tools.len() > MAX_SPECIAL_TOOLS {
+            errors.push(format!(
+                "节点 '{id}' 的 specialTools 数量超过上限 {MAX_SPECIAL_TOOLS}"
+            ));
+        }
+        if node.depends_on.len() > MAX_DEPENDENCIES {
+            errors.push(format!(
+                "节点 '{id}' 的 dependsOn 数量超过上限 {MAX_DEPENDENCIES}"
+            ));
+        }
+        if node.inject_state_keys.len() > MAX_INJECT_STATE_KEYS {
+            errors.push(format!(
+                "节点 '{id}' 的 injectStateKeys 数量超过上限 {MAX_INJECT_STATE_KEYS}"
+            ));
+        }
+        if node.expected_files.len() > MAX_EXPECTED_FILES {
+            errors.push(format!(
+                "节点 '{id}' 的 expectedFiles 数量超过上限 {MAX_EXPECTED_FILES}"
+            ));
+        }
+        for path in &node.expected_files {
+            if !valid_expected_path(path) {
+                errors.push(format!(
+                    "节点 '{id}' 的 expectedFiles 路径 '{path}' 非法：必须是工作区内相对路径，不能包含空值、NUL、绝对路径或 '..' 段，且最长 {MAX_EXPECTED_PATH_CHARS} 字符"
+                ));
+            }
+        }
         let mut selected = HashSet::new();
         for tool in &node.special_tools {
-            if !matches!(tool.source.as_str(), "pi_extension" | "aha") {
+            if tool.source == "pi_extension" {
+                errors.push(format!(
+                    "节点 '{id}' 引用了已禁用的 PI 扩展工具 '{}'；请迁移为经 CapabilityBroker 托管的 Aha 工具",
+                    tool.name
+                ));
+            } else if tool.source != "aha" {
                 errors.push(format!(
                     "节点 '{id}' 的工具 '{}' 来源 '{}' 非法",
                     tool.name, tool.source
@@ -138,6 +233,30 @@ pub(crate) fn validate_graph(
     }
 }
 
+fn valid_graph_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && value.len() <= 64
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+}
+
+fn valid_expected_path(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty()
+        || value.chars().count() > MAX_EXPECTED_PATH_CHARS
+        || value.contains('\0')
+        || value.starts_with('/')
+        || value.starts_with('\\')
+        || value.as_bytes().get(1) == Some(&b':')
+    {
+        return false;
+    }
+    !value.split(['/', '\\']).any(|component| component == "..")
+}
+
 fn validate_semantics(
     definition: &GraphDefinition,
     seeded_keys: &HashSet<String>,
@@ -173,8 +292,7 @@ fn validate_semantics(
             }
             match producers.get(key) {
                 Some(producer) => {
-                    let is_ancestor =
-                        node_ancestors.is_some_and(|set| set.contains(*producer));
+                    let is_ancestor = node_ancestors.is_some_and(|set| set.contains(*producer));
                     if !is_ancestor {
                         errors.push(format!(
                             "节点 '{id}' 注入的 state key '{key}' 由节点 '{producer}' 产出，但 '{producer}' 不是它的上游依赖：运行到该节点时 state 中还没有这个值，请补充 dependsOn"
@@ -196,7 +314,9 @@ fn validate_semantics(
     let coding_nodes = definition
         .nodes
         .iter()
-        .filter(|node| node.base_tool_group == BaseToolGroup::Coding && !node.expected_files.is_empty())
+        .filter(|node| {
+            node.base_tool_group == BaseToolGroup::Coding && !node.expected_files.is_empty()
+        })
         .collect::<Vec<_>>();
     for (i, left) in coding_nodes.iter().enumerate() {
         for right in coding_nodes.iter().skip(i + 1) {
@@ -279,16 +399,15 @@ fn normalize_expected_path(path: &str) -> String {
 }
 
 /// 每个节点的严格传递祖先集（id 已 trim）。
-pub(crate) fn transitive_ancestors(definition: &GraphDefinition) -> HashMap<String, HashSet<String>> {
+pub(crate) fn transitive_ancestors(
+    definition: &GraphDefinition,
+) -> HashMap<String, HashSet<String>> {
     let mut direct: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut ids = Vec::new();
     for node in &definition.nodes {
         let id = node.id.trim();
         ids.push(id);
-        direct.insert(
-            id,
-            node.depends_on.iter().map(|dep| dep.trim()).collect(),
-        );
+        direct.insert(id, node.depends_on.iter().map(|dep| dep.trim()).collect());
     }
     // 拓扑序（Kahn）上逐层累积祖先集，保证计算祖先时其依赖已算完。
     let layers = topological_layers(definition).unwrap_or_default();
@@ -400,7 +519,7 @@ mod tests {
             task: "task".into(),
             depends_on: deps.iter().map(|v| v.to_string()).collect(),
             inject_state_keys: vec![],
-            output_key: format!("out_{id}"),
+            output_key: format!("out_{}", id.trim()),
             expected_files: vec![],
             export_policy: Default::default(),
         }
@@ -546,10 +665,12 @@ mod tests {
 
     #[test]
     fn pure_readonly_graph_needs_no_verification_node() {
-        assert!(
-            validate_graph(&definition(vec![node("a", &[]), node("b", &["a"])]), &catalog(), &seeded())
-                .is_ok()
-        );
+        assert!(validate_graph(
+            &definition(vec![node("a", &[]), node("b", &["a"])]),
+            &catalog(),
+            &seeded()
+        )
+        .is_ok());
     }
 
     #[test]
@@ -560,10 +681,7 @@ mod tests {
         let error = validate_graph(&def, &catalog(), &seeded()).unwrap_err();
         assert!(error.contains("依赖了不存在的节点 'ghost'"));
         assert!(!error.contains("环"), "缺失依赖不应触发假环误报");
-        assert!(
-            error.contains("验证节点"),
-            "无环前提下语义校验必须照常执行"
-        );
+        assert!(error.contains("验证节点"), "无环前提下语义校验必须照常执行");
     }
 
     #[test]
@@ -643,5 +761,33 @@ mod tests {
         right.expected_files = vec!["./src/b.rs".into()];
         let def = definition(vec![left, right, node("v", &["l", "r"])]);
         assert!(validate_graph(&def, &catalog(), &seeded()).is_ok());
+    }
+
+    #[test]
+    fn rejects_unbounded_graph_fields() {
+        let mut def = definition(vec![node("a", &[])]);
+        def.title = "x".repeat(MAX_GRAPH_TITLE_CHARS + 1);
+        def.nodes[0].task = "x".repeat(MAX_NODE_TASK_CHARS + 1);
+
+        let error = validate_graph(&def, &catalog(), &seeded()).unwrap_err();
+
+        assert!(error.contains("title 超过"), "{error}");
+        assert!(error.contains("task 超过"), "{error}");
+    }
+
+    #[test]
+    fn rejects_invalid_identifiers_and_escaping_paths() {
+        let mut def = definition(vec![node("1bad", &[])]);
+        def.nodes[0].output_key = "bad key".into();
+        def.nodes[0].expected_files = vec!["../outside.rs".into()];
+
+        let error = validate_graph(&def, &catalog(), &seeded()).unwrap_err();
+
+        assert!(error.contains("节点 id '1bad' 非法"), "{error}");
+        assert!(error.contains("outputKey 'bad key' 非法"), "{error}");
+        assert!(
+            error.contains("expectedFiles 路径 '../outside.rs' 非法"),
+            "{error}"
+        );
     }
 }

@@ -6,7 +6,7 @@
 use anyhow::Context;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use super::config::{RagConfigStore, RagKbConfig};
 use super::logs::{RagLogEntry, RagLogStore};
@@ -99,26 +99,33 @@ pub fn rag_get_kb_config(config_store: State<'_, RagConfigStore>) -> CommandResu
         .into_command_result()
 }
 
-/// 保存知识库配置：落盘 + 更新内存 + 若 sidecar 在运行则推送 reload。
+/// 保存知识库配置：写全局库 + 更新内存 + 若 sidecar 在运行则推送 reload。
 #[tauri::command]
 pub async fn rag_save_kb_config(
+    state: State<'_, crate::agent::DispatcherState>,
     manager: State<'_, RagManager>,
     config_store: State<'_, RagConfigStore>,
     config: RagKbConfig,
 ) -> CommandResult<Value> {
-    rag_save_kb_config_impl(manager, config_store, config)
+    rag_save_kb_config_impl(state, manager, config_store, config)
         .await
         .context("保存 RAG 知识库配置失败")
         .into_command_result()
 }
 
 async fn rag_save_kb_config_impl(
+    state: State<'_, crate::agent::DispatcherState>,
     manager: State<'_, RagManager>,
     config_store: State<'_, RagConfigStore>,
     config: RagKbConfig,
 ) -> anyhow::Result<Value> {
-    // 1. 落盘（锁外 I/O）
-    config.save().context("save RAG config")?;
+    // 1. 写全局库 app_config（阻塞线程池执行，不占 Tokio worker）
+    let db = state.db().clone();
+    let config_for_save = config.clone();
+    tokio::task::spawn_blocking(move || config_for_save.save_to_db(&db))
+        .await
+        .context("保存 RAG 配置任务失败")?
+        .context("save RAG config")?;
     // 2. 更新内存快照
     config_store.replace(config.clone());
     // 3. 若 sidecar 在运行，热推送
@@ -154,7 +161,7 @@ async fn rag_test_qdrant_impl(
     config_store: State<'_, RagConfigStore>,
     config: RagKbConfig,
 ) -> anyhow::Result<Value> {
-    save_rag_config(&config_store, &config)?;
+    save_rag_config(&app, &config_store, &config)?;
     let handle = manager
         .ensure_started(&app, &config_store)
         .await
@@ -188,7 +195,7 @@ async fn rag_test_embedding_impl(
     config_store: State<'_, RagConfigStore>,
     config: RagKbConfig,
 ) -> anyhow::Result<Value> {
-    save_rag_config(&config_store, &config)?;
+    save_rag_config(&app, &config_store, &config)?;
     let handle = manager
         .ensure_started(&app, &config_store)
         .await
@@ -276,10 +283,15 @@ async fn rag_ingest_job_status_impl(
 }
 
 fn save_rag_config(
+    app: &AppHandle,
     config_store: &State<'_, RagConfigStore>,
     config: &RagKbConfig,
 ) -> anyhow::Result<()> {
-    config.save().context("保存 RAG 配置")?;
+    let db = app
+        .state::<crate::agent::DispatcherState>()
+        .db()
+        .clone();
+    config.save_to_db(&db).context("保存 RAG 配置")?;
     config_store.replace(config.clone());
     Ok(())
 }

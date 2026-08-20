@@ -48,9 +48,9 @@ pub(super) fn map_dispatcher_message_record(
         tool_call_id: row.get("tool_call_id")?,
         tool_name: row.get("tool_name")?,
         tool_result_mode: row.get("tool_result_mode")?,
-        tool_artifacts: parse_tool_artifact_refs(row.get::<_, Option<String>>(
-            "tool_artifacts_json",
-        )?),
+        tool_artifacts: parse_tool_artifact_refs(
+            row.get::<_, Option<String>>("tool_artifacts_json")?,
+        ),
         tool_calls_json: row.get("tool_calls_json")?,
         usage_stats: parse_message_usage_stats(
             row.get::<_, Option<String>>("usage_stats_json")?,

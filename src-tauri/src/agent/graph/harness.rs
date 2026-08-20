@@ -6,8 +6,9 @@ use std::path::Path;
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 
-use super::pi_rpc::discover_extension_tools;
-use super::types::{GraphHarnessCatalog, GraphHarnessModel, GraphHarnessTool, GraphNode};
+use super::types::{
+    BaseToolGroup, GraphHarnessCatalog, GraphHarnessModel, GraphHarnessTool, GraphNode,
+};
 use crate::agent::db::settings::ModelLibraryEntry;
 use crate::agent::db::AhaSettingsV2;
 use crate::agent::tools::{ToolRegistry, ToolSafety, ToolSpec};
@@ -26,6 +27,21 @@ const EXCLUDED_AHA_TOOLS: &[&str] = &[
     "list_sub_agents",
     "call_sub_agent",
     "notify_user_progress",
+];
+
+/// PI 只保留模型熟悉的短工具名；真正的能力名、Schema 与执行策略全部来自
+/// Rust ToolRegistry。sidecar 只能把调用数据回传，不能直接持有文件或 shell
+/// 能力。数组顺序也是模型看到的稳定工具顺序。
+const READ_ONLY_BASE_TOOLS: &[(&str, &str)] = &[
+    ("read", "read_file"),
+    ("grep", "grep"),
+    ("find", "glob"),
+    ("ls", "list_dir"),
+];
+const CODING_BASE_TOOLS: &[(&str, &str)] = &[
+    ("bash", "exec"),
+    ("edit", "edit_file"),
+    ("write", "write_file"),
 ];
 
 #[derive(Clone, Serialize)]
@@ -136,23 +152,8 @@ pub(crate) async fn build_harness_catalog(
         })
         .collect::<Vec<_>>();
 
-    match discover_extension_tools(workspace).await {
-        Ok((pi_tools, pi_diagnostics)) => {
-            diagnostics.extend(pi_diagnostics);
-            tools.extend(pi_tools.into_iter().map(|tool| GraphHarnessTool {
-                source: "pi_extension".to_string(),
-                name: tool.name,
-                description: tool.description,
-                provider: "pi".to_string(),
-                category: "extension".to_string(),
-                // fail-closed：扩展工具的能力无法静态判定，元数据缺失时一律
-                // 按「可写 + 需审查」处理——高危写检查点与审查门禁不得因
-                // 目录声明缺失而放行（旧实现 review_required=false 可绕过门禁）。
-                readonly: false,
-                review_required: true,
-            }));
-        }
-        Err(error) => diagnostics.push(format!("PI 扩展目录发现失败：{error:#}")),
+    if let Some(diagnostic) = disabled_project_extension_diagnostic(workspace).await {
+        diagnostics.push(diagnostic);
     }
     tools.sort_by(|left, right| {
         (left.source.as_str(), left.name.as_str())
@@ -194,9 +195,30 @@ pub(crate) fn resolve_node_harness(
     if entry.url.trim().is_empty() || entry.model.trim().is_empty() {
         return Err(anyhow!("节点 '{}' 的模型配置缺少 URL 或模型名", node.id));
     }
+    reject_pi_extensions(node)?;
+
     let available = aha_specs(registry, workspace);
     let mut host_tools = Vec::new();
     let mut runtime_names = HashSet::new();
+
+    for (runtime_name, capability_name) in base_tool_aliases(node.base_tool_group) {
+        let spec = registry
+            .spec_by_name(workspace, capability_name, false)
+            .with_context(|| {
+                format!(
+                    "节点 '{}' 所需的基础宿主能力 '{}' 未注册",
+                    node.id, capability_name
+                )
+            })?;
+        push_host_tool(
+            &node.id,
+            &mut host_tools,
+            &mut runtime_names,
+            spec,
+            runtime_name.to_string(),
+        )?;
+    }
+
     for selected in node
         .special_tools
         .iter()
@@ -212,22 +234,13 @@ pub(crate) fn resolve_node_harness(
                 )
             })?;
         let runtime_name = format!("aha__{}", sanitize_tool_name(&spec.name));
-        // fail-closed：不同工具名清洗后可能塌缩为同一 runtime_name
-        // （如 foo-bar 与 foo_bar），冲突会让 sidecar 的工具回调无法区分
-        // 目标工具，直接拒绝该节点配置。
-        if !runtime_names.insert(runtime_name.clone()) {
-            return Err(anyhow!(
-                "节点 '{}' 的 Aha 工具运行名冲突：{runtime_name}（工具 '{}' 清洗后与已有工具同名）",
-                node.id,
-                spec.name
-            ));
-        }
-        host_tools.push(PiHostToolSpec {
-            name: spec.name.clone(),
+        push_host_tool(
+            &node.id,
+            &mut host_tools,
+            &mut runtime_names,
+            spec.clone(),
             runtime_name,
-            description: spec.description.clone(),
-            parameters: spec.parameters.clone(),
-        });
+        )?;
     }
     let label = if entry.alias.trim().is_empty() {
         entry.model.clone()
@@ -246,6 +259,72 @@ pub(crate) fn resolve_node_harness(
         model_label: label,
         host_tools,
     })
+}
+
+fn base_tool_aliases(group: BaseToolGroup) -> impl Iterator<Item = (&'static str, &'static str)> {
+    READ_ONLY_BASE_TOOLS.iter().copied().chain(
+        (group == BaseToolGroup::Coding)
+            .then_some(CODING_BASE_TOOLS)
+            .into_iter()
+            .flatten()
+            .copied(),
+    )
+}
+
+fn push_host_tool(
+    node_id: &str,
+    host_tools: &mut Vec<PiHostToolSpec>,
+    runtime_names: &mut HashSet<String>,
+    spec: ToolSpec,
+    runtime_name: String,
+) -> Result<()> {
+    // fail-closed：不同工具名清洗后可能塌缩为同一 runtime_name
+    // （如 foo-bar 与 foo_bar），或扩展工具试图占用 read/bash 等基础别名。
+    if !runtime_names.insert(runtime_name.clone()) {
+        return Err(anyhow!(
+            "节点 '{node_id}' 的宿主工具运行名冲突：{runtime_name}（能力 '{}'）",
+            spec.name
+        ));
+    }
+    host_tools.push(PiHostToolSpec {
+        name: spec.name,
+        runtime_name,
+        description: spec.description,
+        parameters: spec.parameters,
+    });
+    Ok(())
+}
+
+fn reject_pi_extensions(node: &GraphNode) -> Result<()> {
+    if let Some(extension) = node
+        .special_tools
+        .iter()
+        .find(|tool| tool.source == "pi_extension")
+    {
+        return Err(anyhow!(
+            "节点 '{}' 仍引用 PI 扩展工具 '{}'；执行图已禁用可执行扩展，请迁移为经 CapabilityBroker 托管的 Aha 工具",
+            node.id,
+            extension.name
+        ));
+    }
+    Ok(())
+}
+
+async fn disabled_project_extension_diagnostic(workspace: &Path) -> Option<String> {
+    let extensions = workspace.join(".jkcodingagent/pi-agent/extensions");
+    let display = extensions.display().to_string();
+    match tokio::task::spawn_blocking(move || std::fs::symlink_metadata(extensions)).await {
+        Ok(Ok(_)) => Some(format!(
+            "检测到项目 PI 扩展目录 {display}；为保证所有工具调用都经过 CapabilityBroker，执行图已禁用这些可执行扩展，请迁移为 Aha 工具"
+        )),
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Ok(Err(error)) => Some(format!(
+            "无法检查项目 PI 扩展目录 {display}，已按 fail-closed 禁用扩展：{error}"
+        )),
+        Err(error) => Some(format!(
+            "检查项目 PI 扩展目录的任务失败，已按 fail-closed 禁用扩展：{error}"
+        )),
+    }
 }
 
 fn is_supported_graph_model(entry: &ModelLibraryEntry) -> bool {
@@ -304,4 +383,82 @@ fn model_capabilities(model: &str, category: &str) -> Vec<String> {
         result.push("long_context".to_string());
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_tool_groups_map_only_to_broker_capabilities() {
+        assert_eq!(
+            base_tool_aliases(BaseToolGroup::ReadOnly).collect::<Vec<_>>(),
+            vec![
+                ("read", "read_file"),
+                ("grep", "grep"),
+                ("find", "glob"),
+                ("ls", "list_dir"),
+            ]
+        );
+        assert_eq!(
+            base_tool_aliases(BaseToolGroup::Coding).collect::<Vec<_>>(),
+            vec![
+                ("read", "read_file"),
+                ("grep", "grep"),
+                ("find", "glob"),
+                ("ls", "list_dir"),
+                ("bash", "exec"),
+                ("edit", "edit_file"),
+                ("write", "write_file"),
+            ]
+        );
+    }
+
+    #[test]
+    fn persisted_pi_extension_selection_is_rejected_loudly() {
+        let node = GraphNode {
+            id: "node".into(),
+            title: "node".into(),
+            role: String::new(),
+            model_ref: "model".into(),
+            base_tool_group: BaseToolGroup::ReadOnly,
+            special_tools: vec![super::super::types::GraphToolRef {
+                source: "pi_extension".into(),
+                name: "unsafe".into(),
+            }],
+            task: "task".into(),
+            depends_on: Vec::new(),
+            inject_state_keys: Vec::new(),
+            output_key: "output".into(),
+            expected_files: Vec::new(),
+            export_policy: Default::default(),
+        };
+
+        let error = reject_pi_extensions(&node).unwrap_err().to_string();
+        assert!(error.contains("已禁用可执行扩展"));
+        assert!(error.contains("unsafe"));
+    }
+
+    #[tokio::test]
+    async fn project_extension_directory_is_only_reported_never_loaded() {
+        let workspace = std::env::temp_dir().join(format!(
+            "aha-graph-extension-policy-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let extension_dir = workspace.join(".jkcodingagent/pi-agent/extensions");
+        std::fs::create_dir_all(&extension_dir).unwrap();
+        std::fs::write(
+            extension_dir.join("must-not-run.ts"),
+            "throw new Error('must not execute');",
+        )
+        .unwrap();
+
+        let diagnostic = disabled_project_extension_diagnostic(&workspace)
+            .await
+            .expect("检测到扩展目录时必须给出诊断");
+        assert!(diagnostic.contains("已禁用这些可执行扩展"));
+        assert!(diagnostic.contains("CapabilityBroker"));
+
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
 }

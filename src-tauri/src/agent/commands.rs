@@ -5,11 +5,11 @@ use serde_json::Value;
 use super::config::DispatcherAgentConfig;
 use super::db::content::{segments_to_plain_text, try_parse_segments_json, ContentSegment};
 use super::db::{
-    AgentContext, AhaSettingsV2, ChatCategory, ChatCategoryAgentConfig,
-    ChatSessionRecord, DispatcherDb, DispatcherMessageRecord, DispatcherModelConfig,
-    DispatcherSessionKind, DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
-    DispatcherToolArtifactRecord, KeywordAction, ProjectSessionRecord, SessionPage,
-    SessionSearchResult,
+    AgentContext, AhaSettingsV2, ChatCategory, ChatCategoryAgentConfig, ChatSessionRecord,
+    DispatcherDb, DispatcherMessageRecord, DispatcherModelConfig, DispatcherSessionKind,
+    DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
+    DispatcherToolArtifactRecord, DispatcherToolRunRecord, KeywordAction, ProjectSessionRecord,
+    SessionPage, SessionSearchResult,
 };
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
@@ -596,6 +596,20 @@ pub async fn dispatcher_list_messages(
 }
 
 #[tauri::command]
+pub async fn dispatcher_get_tool_run_tree(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+    tool_call_id: String,
+    root_run_id: Option<String>,
+) -> Result<Vec<DispatcherToolRunRecord>, String> {
+    let db = state.db().clone();
+    run_dispatcher_db("dispatcher_get_tool_run_tree", move || {
+        db.list_tool_run_tree_for_call(&workspace_id, &tool_call_id, root_run_id.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
 pub fn dispatcher_get_session_token_usage(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
@@ -1005,7 +1019,9 @@ async fn test_endpoint_reachable_model(
     let status = response.status();
     if status.is_server_error() {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("{label}（{model_name}）端点返回 HTTP {status}，请求地址：{url}，响应：{body}");
+        anyhow::bail!(
+            "{label}（{model_name}）端点返回 HTTP {status}，请求地址：{url}，响应：{body}"
+        );
     }
     if status.is_client_error() {
         let body = response.text().await.unwrap_or_default();
@@ -1104,10 +1120,7 @@ mod tests {
     #[test]
     fn qa_pair_consecutive_user_messages_pick_latest() {
         // 两条连续 user 消息：取最后一条而不是更旧的问题。
-        let messages = vec![
-            message("user", "更旧的问题"),
-            message("user", "最新的问题"),
-        ];
+        let messages = vec![message("user", "更旧的问题"), message("user", "最新的问题")];
         let (user, assistant) = latest_qa_pair(&messages);
         assert_eq!(user.unwrap().content, "最新的问题");
         assert!(assistant.is_none());
@@ -1169,19 +1182,6 @@ pub async fn aha_list_agent_tools(
 ) -> Result<Vec<ToolInfo>, String> {
     let ctx = AgentContext::from_wire(&context).map_err(|e| e.to_string())?;
     state.list_agent_tools(ctx, project_path).await
-}
-
-#[tauri::command]
-pub async fn aha_resolve_ssh_workspace(
-    state: tauri::State<'_, DispatcherState>,
-    context: String,
-    project_path: Option<String>,
-) -> Result<String, String> {
-    let ctx = AgentContext::from_wire(&context).map_err(|e| e.to_string())?;
-    state
-        .ssh_workspace_for_context(ctx, project_path)
-        .await
-        .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]

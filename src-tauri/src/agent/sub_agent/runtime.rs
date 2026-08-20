@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -6,7 +7,7 @@ use anyhow::Result;
 use futures::future::join_all;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::AppHandle;
 use tauri::Emitter;
 use tokio::sync::watch;
@@ -17,7 +18,9 @@ use crate::agent::llm::{
     ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider, OutboundToolCall, RequestedToolCall,
     ToolDefinition,
 };
-use crate::agent::tools::{ToolContext, ToolRegistry, ToolResult, ToolRuntime, ToolStatus};
+use crate::agent::tools::{
+    CapabilitySet, ToolContext, ToolRegistry, ToolResult, ToolRuntime, ToolStatus,
+};
 
 const SUB_AGENT_RESULT_MAX_CHARS: usize = 32_000;
 const SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS: u64 = 120;
@@ -164,7 +167,7 @@ pub struct SubAgentRuntime {
     tool_registry: Arc<ToolRegistry>,
     tool_context: ToolContext,
     tool_definitions: Vec<crate::agent::llm::ToolDefinition>,
-    allowed_tool_names: HashSet<String>,
+    capabilities: CapabilitySet,
     parent_tool_call_id: String,
     trace_events: Arc<Mutex<Vec<Value>>>,
 }
@@ -227,18 +230,44 @@ impl SubAgentRuntime {
 
         // 排除嵌套子智能体工具（call_sub_agent / list_sub_agents），避免递归派生。
         let excluded: HashSet<&str> = NESTED_SUB_AGENT_TOOLS.iter().copied().collect();
-        let allowed_tool_names: HashSet<String> = config
+        let mut nested_tools = config
             .allowed_tools
             .iter()
-            .filter(|s| !excluded.contains(s.as_str()))
+            .filter(|name| excluded.contains(name.as_str()))
             .cloned()
-            .collect();
+            .collect::<Vec<_>>();
+        nested_tools.sort();
+        if !nested_tools.is_empty() {
+            anyhow::bail!(
+                "错误：子智能体 '{}' 不允许递归调用子智能体工具：{}。请在设置中移除这些工具。",
+                config.agent_name,
+                nested_tools.join("、")
+            );
+        }
+        let allowed_tool_names: HashSet<String> = config.allowed_tools.iter().cloned().collect();
 
         let tool_definitions = tool_registry.definitions_for_workspace(
             &tool_context.workspace,
             Some(allowed_tool_names.iter().map(String::as_str)),
             false,
         );
+        let resolved_tool_names = tool_definitions
+            .iter()
+            .map(|definition| definition.function.name.clone())
+            .collect::<HashSet<_>>();
+        let mut unavailable = allowed_tool_names
+            .difference(&resolved_tool_names)
+            .cloned()
+            .collect::<Vec<_>>();
+        unavailable.sort();
+        if !unavailable.is_empty() {
+            anyhow::bail!(
+                "错误：子智能体 '{}' 配置了当前普通聊天执行环境不可用的工具：{}。请在设置中重新选择工具。",
+                config.agent_name,
+                unavailable.join("、")
+            );
+        }
+        let capabilities = CapabilitySet::from_definitions(&tool_definitions);
 
         Ok(Self {
             config: config.clone(),
@@ -246,7 +275,7 @@ impl SubAgentRuntime {
             tool_registry,
             tool_context,
             tool_definitions,
-            allowed_tool_names,
+            capabilities,
             parent_tool_call_id,
             trace_events,
         })
@@ -352,10 +381,7 @@ impl SubAgentRuntime {
                 anyhow::bail!("{}", err_msg);
             }
 
-            if cancel_rx
-                .as_ref()
-                .is_some_and(|rx| *rx.borrow())
-            {
+            if cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
                 let err_msg = format!("子智能体 '{}' 执行已取消", self.config.agent_id);
                 self.emit_failed(&app_handle, session_id, &err_msg);
                 anyhow::bail!("{}", err_msg);
@@ -464,6 +490,17 @@ impl SubAgentRuntime {
                 return Ok(result);
             }
 
+            if response.tool_calls.len() > crate::agent::tools::MAX_TOOL_CALLS_PER_BATCH {
+                let err_msg = format!(
+                    "子智能体 '{}' 单轮返回 {} 个工具调用，超过运行时上限 {}，已拒绝执行",
+                    self.config.agent_id,
+                    response.tool_calls.len(),
+                    crate::agent::tools::MAX_TOOL_CALLS_PER_BATCH
+                );
+                self.emit_failed(&app_handle, session_id, &err_msg);
+                anyhow::bail!(err_msg);
+            }
+
             let assistant_msg = ChatMessage {
                 role: "assistant".to_string(),
                 content: response.content.clone(),
@@ -504,34 +541,34 @@ impl SubAgentRuntime {
                 );
 
                 // G13-04：把整体超时预算传入工具执行层，保证每次工具等待有界。
-                let executed: Vec<(&RequestedToolCall, ToolResult)> = if readonly_end
-                    .saturating_sub(tc_index)
-                    >= 2
-                {
-                    let run = &tool_calls[tc_index..readonly_end];
-                    self.execute_parallel_readonly_tools(
-                        run,
-                        &app_handle,
-                        session_id,
-                        &mut usage,
-                        start,
-                        overall_timeout,
-                    )
-                    .await
-                } else {
-                    let tc = &tool_calls[tc_index];
-                    let result = self
-                        .execute_single_tool(
-                            tc,
+                let executed: Vec<(&RequestedToolCall, ToolResult)> =
+                    if readonly_end.saturating_sub(tc_index) >= 2 {
+                        let run = &tool_calls[tc_index..readonly_end];
+                        self.execute_parallel_readonly_tools(
+                            run,
                             &app_handle,
                             session_id,
                             &mut usage,
                             start,
                             overall_timeout,
+                            cancel_rx.as_ref(),
                         )
-                        .await;
-                    vec![(tc, result)]
-                };
+                        .await
+                    } else {
+                        let tc = &tool_calls[tc_index];
+                        let result = self
+                            .execute_single_tool(
+                                tc,
+                                &app_handle,
+                                session_id,
+                                &mut usage,
+                                start,
+                                overall_timeout,
+                                cancel_rx.as_ref(),
+                            )
+                            .await;
+                        vec![(tc, result)]
+                    };
 
                 let next_index = if readonly_end.saturating_sub(tc_index) >= 2 {
                     readonly_end
@@ -541,7 +578,10 @@ impl SubAgentRuntime {
 
                 // 致命错误优先处理：任何致命/取消结果立即收口退出。
                 for (tc, result) in &executed {
-                    if matches!(result.status, ToolStatus::FatalError | ToolStatus::Cancelled) {
+                    if matches!(
+                        result.status,
+                        ToolStatus::FatalError | ToolStatus::Cancelled
+                    ) {
                         let err_msg = format!(
                             "子智能体 '{}' 内部工具 '{}' 执行失败：{}",
                             self.config.agent_id,
@@ -569,10 +609,7 @@ impl SubAgentRuntime {
                     // 统一决策：任一失败工具已消耗重试资格（此前轮次已失败过）
                     // ⇒ 升级强制收口；否则允许一次重试。
                     let escalate = force_final_response
-                        || should_escalate_tool_failures(
-                            &failed_tool_names,
-                            &tool_failure_rounds,
-                        );
+                        || should_escalate_tool_failures(&failed_tool_names, &tool_failure_rounds);
                     if escalate {
                         force_final_response = true;
                     } else {
@@ -647,6 +684,7 @@ impl SubAgentRuntime {
         usage: &mut SubAgentUsage,
         started_at: Instant,
         overall_timeout: Duration,
+        cancel_rx: Option<&watch::Receiver<bool>>,
     ) -> ToolResult {
         let _ = usage;
         self.emit_event(
@@ -661,7 +699,7 @@ impl SubAgentRuntime {
         );
 
         let result = self
-            .execute_tool_with_budget(tc, started_at, overall_timeout)
+            .execute_tool_with_budget(tc, started_at, overall_timeout, cancel_rx)
             .await;
 
         let result_text = result.output_for_llm();
@@ -681,39 +719,91 @@ impl SubAgentRuntime {
         result
     }
 
-    /// G13-04：子智能体层面的工具执行看门狗——以整体剩余时间为上限包裹
-    /// `ToolRuntime::execute_tool`，保证单次工具等待绝不越过整体超时预算。
-    ///
-    /// 可终止性评估：`tokio::time::timeout` 超时后仅中止「等待」（drop future）。
-    /// 若工具内部是阻塞 I/O、`spawn_blocking` 任务或子进程，底层工作仍会继续运行
-    /// 并可能产生副作用——真正终止它们需要工具层（agent/tools/）支持
-    /// CancellationToken / 显式 kill（见报告「跨界依赖」）。因此这里按
-    /// fail-closed 处理：超限时返回显式致命错误，既让本循环立即收口，
-    /// 也把「底层任务可能仍在运行」如实上报给父循环与前端。
+    /// 子智能体整体预算到期时向 Broker 发送取消，而不是丢弃执行 Future。
+    /// Broker 负责调用工具级取消并在固定宽限期内等待收敛；因此这里返回时，
+    /// 结果会明确区分“已终止”和“终止状态未知”。
     async fn execute_tool_with_budget(
         &self,
         tc: &RequestedToolCall,
         started_at: Instant,
         overall_timeout: Duration,
+        cancel_rx: Option<&watch::Receiver<bool>>,
     ) -> ToolResult {
         let remaining = overall_timeout.saturating_sub(started_at.elapsed());
-        match timeout(
-            remaining,
-            ToolRuntime::execute_tool(
-                &self.tool_registry,
-                &self.tool_context.workspace,
-                &self.allowed_tool_names,
-                tc,
-                &self.tool_context,
-            ),
+        let parent_cancelled = cancel_rx.is_some_and(|cancel_rx| *cancel_rx.borrow());
+        let (budget_cancel_tx, budget_cancel_rx) = watch::channel(parent_cancelled);
+        let deadline_triggered = Arc::new(AtomicBool::new(false));
+
+        let signal_task = if parent_cancelled {
+            None
+        } else {
+            let mut parent_cancel_rx = cancel_rx.cloned();
+            let deadline_triggered = Arc::clone(&deadline_triggered);
+            Some(tokio::spawn(async move {
+                let deadline = tokio::time::sleep(remaining);
+                tokio::pin!(deadline);
+
+                if let Some(parent_cancel_rx) = &mut parent_cancel_rx {
+                    loop {
+                        tokio::select! {
+                            _ = &mut deadline => {
+                                deadline_triggered.store(true, Ordering::Release);
+                                let _ = budget_cancel_tx.send(true);
+                                return;
+                            }
+                            changed = parent_cancel_rx.changed() => {
+                                match changed {
+                                    Ok(()) if *parent_cancel_rx.borrow() => {
+                                        let _ = budget_cancel_tx.send(true);
+                                        return;
+                                    }
+                                    Ok(()) => {}
+                                    Err(_) => {
+                                        let _ = budget_cancel_tx.send(true);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    deadline.await;
+                    deadline_triggered.store(true, Ordering::Release);
+                    let _ = budget_cancel_tx.send(true);
+                }
+            }))
+        };
+
+        let result = ToolRuntime::execute_tool_with_cancellation(
+            &self.tool_registry,
+            &self.tool_context.workspace,
+            &self.capabilities,
+            tc,
+            &self.tool_context,
+            budget_cancel_rx,
         )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => ToolResult::fatal_error(format!(
-                "错误：工具 '{}' 执行达到子智能体 '{}' 的整体超时边界（{}秒），已中止等待；底层任务（阻塞 I/O / 子进程）可能仍在运行。",
+        .await;
+        if let Some(signal_task) = signal_task {
+            signal_task.abort();
+        }
+
+        if deadline_triggered.load(Ordering::Acquire) {
+            let original_status = result.status.as_run_status();
+            let termination = result.metadata.get("termination").cloned();
+            let mut timeout_result = ToolResult::fatal_error(format!(
+                "错误：工具 '{}' 达到子智能体 '{}' 的整体超时边界（{}秒）；底层终止状态见结果元数据。",
                 tc.name, self.config.agent_id, self.config.timeout_secs
-            )),
+            ));
+            timeout_result.metadata = json!({
+                "overallTimeout": {
+                    "timeoutSeconds": self.config.timeout_secs,
+                    "originalStatus": original_status,
+                    "termination": termination,
+                }
+            });
+            timeout_result
+        } else {
+            result
         }
     }
 
@@ -725,6 +815,7 @@ impl SubAgentRuntime {
         usage: &mut SubAgentUsage,
         started_at: Instant,
         overall_timeout: Duration,
+        cancel_rx: Option<&watch::Receiver<bool>>,
     ) -> Vec<(&'a RequestedToolCall, ToolResult)> {
         let _ = usage;
         for tc in tool_calls {
@@ -740,46 +831,28 @@ impl SubAgentRuntime {
             );
         }
 
-        // G13-04：并行批次共享同一份整体剩余预算；超时后整批按致命错误收口。
-        // 底层任务的可终止性限制与单工具路径相同（见 execute_tool_with_budget 注释）。
-        let remaining = overall_timeout.saturating_sub(started_at.elapsed());
-        let results = match timeout(
-            remaining,
-            join_all(
-                tool_calls
-                    .iter()
-                    .map(|tc| async move {
-                        (
-                            tc,
-                            ToolRuntime::execute_tool(
-                                &self.tool_registry,
-                                &self.tool_context.workspace,
-                                &self.allowed_tool_names,
-                                tc,
-                                &self.tool_context,
-                            )
-                            .await,
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        )
-        .await
-        {
-            Ok(results) => results,
-            Err(_) => tool_calls
-                .iter()
-                .map(|tc| {
-                    (
+        // 并行调用共享同一个绝对整体截止时间。每个分支自行把该截止时间
+        // 转成 Broker 取消信号，join_all 只负责等待所有已启动分支完成收敛。
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(
+            crate::agent::tools::MAX_PARALLEL_TOOL_CALLS,
+        ));
+        let results = join_all(tool_calls.iter().map(|tc| {
+            let cancel_rx = cancel_rx.cloned();
+            let semaphore = Arc::clone(&semaphore);
+            async move {
+                let Ok(_permit) = semaphore.acquire().await else {
+                    return (
                         tc,
-                        ToolResult::fatal_error(format!(
-                            "错误：只读工具 '{}' 所在并行批次达到子智能体 '{}' 的整体超时边界（{}秒），已中止等待；底层任务可能仍在运行。",
-                            tc.name, self.config.agent_id, self.config.timeout_secs
-                        )),
-                    )
-                })
-                .collect(),
-        };
+                        ToolResult::fatal_error("只读工具并发调度器意外关闭，已拒绝执行"),
+                    );
+                };
+                let result = self
+                    .execute_tool_with_budget(tc, started_at, overall_timeout, cancel_rx.as_ref())
+                    .await;
+                (tc, result)
+            }
+        }))
+        .await;
 
         for (tc, result) in &results {
             let result_text = result.output_for_llm();
@@ -872,7 +945,10 @@ fn trim_trace_events_to_limit(events: &mut Vec<Value>, timestamp_ms: i64) {
                 .and_then(|data| data.get("dropped"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            if let Some(slot) = marker.get_mut("data").and_then(|data| data.get_mut("dropped")) {
+            if let Some(slot) = marker
+                .get_mut("data")
+                .and_then(|data| data.get_mut("dropped"))
+            {
                 *slot = Value::from(previous + dropped as u64);
             }
             if let Some(slot) = marker.get_mut("timestampMs") {
@@ -1135,10 +1211,7 @@ mod tests {
         // 丢弃 50 条超限事件 + 1 条为标记腾位 = 51。
         assert_eq!(events[0]["data"]["dropped"], 51);
         // 最新事件必须保留。
-        assert_eq!(
-            events.last().unwrap()["data"]["index"],
-            (total - 1) as u64
-        );
+        assert_eq!(events.last().unwrap()["data"]["index"], (total - 1) as u64);
     }
 
     #[test]

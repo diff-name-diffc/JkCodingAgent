@@ -1,8 +1,11 @@
+pub(crate) mod app_config;
 pub(crate) mod artifacts;
 pub(crate) mod categories;
 pub(crate) mod content;
 pub(crate) mod keywords;
+pub(crate) mod mcp_servers;
 pub(crate) mod messages;
+pub(crate) mod projects;
 pub(crate) mod python_runs;
 pub(crate) mod schema;
 pub(crate) mod sessions;
@@ -30,7 +33,7 @@ pub use sessions::{
 };
 pub use settings::{AhaContextConfig, AhaSettingsV2, DispatcherModelConfig};
 pub use token_usage::{DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource};
-pub use tool_runs::{DispatcherToolRunRecord, FinishToolRun, NewToolRun};
+pub use tool_runs::{DispatcherToolRunRecord, FinishToolRun, NewToolRun, ToolRunTraceContext};
 use util::MAX_DIALOGUE_QUERY_LIMIT;
 pub(crate) use util::{DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS, TOOL_RETRY_CONTEXT_PREFIX};
 
@@ -113,7 +116,9 @@ impl DispatcherDb {
                     }
                 });
                 m.content.chars().count()
-                    + m.reasoning_content.as_ref().map_or(0, |s| s.chars().count())
+                    + m.reasoning_content
+                        .as_ref()
+                        .map_or(0, |s| s.chars().count())
                     + tool_calls_chars
             })
             .sum();

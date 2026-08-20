@@ -67,11 +67,7 @@ impl DispatcherDb {
             .map_err(|e| anyhow!("list_session_keywords: {}", e))
     }
 
-    pub fn apply_keyword_actions(
-        &self,
-        session_id: &str,
-        actions: &[KeywordAction],
-    ) -> Result<()> {
+    pub fn apply_keyword_actions(&self, session_id: &str, actions: &[KeywordAction]) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let ts = now();

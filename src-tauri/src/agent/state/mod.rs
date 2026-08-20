@@ -8,7 +8,7 @@ use super::db::{AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, Dispatcher
 use super::sub_agent::db::ToolInfo;
 use super::sub_agent::SubAgentManager;
 use super::tools::ToolRegistry;
-use crate::project::mcp::{ensure_project_mcp_file, ProjectMcpRegistry};
+use crate::project::mcp::ProjectMcpRegistry;
 use crate::ssh_tool::SshSessionManager;
 
 mod generation;
@@ -54,10 +54,7 @@ struct AgentServices {
 }
 
 impl DispatcherState {
-    pub async fn new(
-        project_mcp_registry: ProjectMcpRegistry,
-        ssh_manager: SshSessionManager,
-    ) -> Result<Self> {
+    pub async fn new(project_mcp_registry: ProjectMcpRegistry) -> Result<Self> {
         let config = tokio::task::spawn_blocking(DispatcherAgentConfig::load)
             .await
             .context("等待智能体配置初始化任务失败")?
@@ -85,6 +82,14 @@ impl DispatcherState {
         )
         .await
         .context("等待数据库初始化任务失败")??;
+
+        // SSH 配置已收敛为全局 SQLite 权威源：管理器直接共享 DispatcherDb
+        // 连接池，配置 / 主机密钥 / 审计全部读写全局库。
+        let ssh_manager = SshSessionManager::new(db.pool());
+
+        // MCP 全局注册表同样以全局库为权威源：注入读取入口，
+        // refresh 时按「全局 ∪ 项目文件（同名覆盖）」合并。
+        project_mcp_registry.attach_db(db.clone());
 
         // G11-07：初始工具目录即包含子智能体工具
         //（修复旧实现缺失 call_sub_agent / list_sub_agents 的问题）。
@@ -131,17 +136,17 @@ impl DispatcherState {
         self.services.ssh_manager.clone()
     }
 
-    /// 已注册工具清单（设置页/子智能体工具选择用）。
+    /// 子智能体工具选择清单。它必须与 SubAgentRuntime 实际继承的普通聊天
+    /// execution profile 一致；项目编排器工具和嵌套子智能体工具都不能混入。
     ///
     /// G11-07：每次读取重建并 refresh 缓存——子智能体配置变更点在
     /// sub_agent/commands.rs（本模块边界外，无法在变更后主动触发刷新），
     /// 而工具枚举为纯内存操作、成本可忽略，读取即重建从机制上消除缓存陈旧。
     pub fn registered_tool_names(&self) -> Option<Vec<(String, String)>> {
-        let mut registry = ToolRegistry::default_tools(
+        let registry = ToolRegistry::plain_chat_tools(
             self.services.project_mcp_registry.clone(),
             self.services.ssh_manager.clone(),
         );
-        self.add_sub_agent_tools(&mut registry);
         let names = registry.tool_names_and_descriptions();
         self.tools.refresh(names);
         self.tools.registered_tool_names()
@@ -153,10 +158,11 @@ impl DispatcherState {
     ///
     /// G11-01 / G7-06：DB 读取放入阻塞线程池执行；失败以 Result 透传可读错误，
     /// 不再 expect panic 导致 async 命令崩溃。
-    pub(crate) async fn build_run_agent(
-        &self,
-    ) -> std::result::Result<OrchestratorAgent, String> {
-        let mut agent = OrchestratorAgent::new(self.services.config.clone());
+    pub(crate) async fn build_run_agent(&self) -> std::result::Result<OrchestratorAgent, String> {
+        let mut agent = OrchestratorAgent::new(
+            self.services.config.clone(),
+            self.services.db.clone(),
+        );
 
         let db = self.services.db.clone();
         let settings = tokio::task::spawn_blocking(move || db.get_settings_v2())
@@ -213,8 +219,7 @@ impl DispatcherState {
     ) -> std::result::Result<Vec<ToolInfo>, String> {
         let (workspace, chat_mode) = match context {
             AgentContext::Project => {
-                let Some(project_path) = project_path.filter(|path| !path.trim().is_empty())
-                else {
+                let Some(project_path) = project_path.filter(|path| !path.trim().is_empty()) else {
                     // 无项目路径：仅静态工具（含子智能体工具）。
                     // 动态工具依赖工作区上下文，显式不包含（见 tool_catalog 说明）。
                     return self.enumerate_tools(None, false, false).await;
@@ -255,12 +260,25 @@ impl DispatcherState {
             let mut registry = if chat_mode {
                 ToolRegistry::plain_chat_tools(mcp_registry, ssh_manager)
             } else {
-                ToolRegistry::default_tools(mcp_registry, ssh_manager)
+                ToolRegistry::orchestrator_tools()
             };
-            if let Some(manager) = sub_agent_manager {
-                register_sub_agent_tools(&manager, &mut registry);
+            if chat_mode {
+                if let Some(manager) = sub_agent_manager {
+                    register_sub_agent_tools(&manager, &mut registry);
+                }
             }
-            tool_infos_from_registry(&registry, workspace.as_deref(), include_dynamic)
+            let mut tools = tool_infos_from_registry(
+                &registry,
+                workspace.as_deref(),
+                chat_mode && include_dynamic,
+            );
+            if !chat_mode {
+                tools.retain(|tool| {
+                    crate::agent::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES
+                        .contains(&tool.name.as_str())
+                });
+            }
+            tools
         })
         .await
         .map_err(|error| format!("错误：枚举工具列表任务失败：{error}"))
@@ -277,6 +295,7 @@ impl DispatcherState {
     ) -> std::result::Result<PathBuf, String> {
         let raw = PathBuf::from(project_path.trim());
         let root_dir = self.services.config.root_dir.clone();
+        let db = self.services.db.clone();
         tokio::task::spawn_blocking(move || -> std::result::Result<PathBuf, String> {
             let canonical = raw
                 .canonicalize()
@@ -284,7 +303,8 @@ impl DispatcherState {
             if canonical.starts_with(&root_dir) {
                 return Ok(canonical);
             }
-            let projects = crate::project::storage::load_projects()
+            let projects = db
+                .list_projects()
                 .map_err(|error| format!("错误：加载项目列表失败：{error}"))?;
             let registered = projects.iter().any(|project| {
                 let registered_path = PathBuf::from(&project.path);
@@ -304,32 +324,6 @@ impl DispatcherState {
         .map_err(|error| format!("错误：校验项目路径任务失败：{error}"))?
     }
 
-    pub(crate) async fn ssh_workspace_for_context(
-        &self,
-        context: AgentContext,
-        project_path: Option<String>,
-    ) -> std::result::Result<PathBuf, String> {
-        match context {
-            AgentContext::Project => {
-                let Some(project_path) = project_path.filter(|path| !path.trim().is_empty())
-                else {
-                    return Err("项目 SSH 配置需要项目路径".to_string());
-                };
-                // G11-03：同 list_agent_tools，先校验再返回，防止探测任意路径。
-                self.validate_project_workspace(&project_path).await
-            }
-            AgentContext::Chat => plain_chat_workspace(&self.services.config)
-                .await
-                .map_err(|error| error.to_string()),
-        }
-    }
-
-    fn add_sub_agent_tools(&self, registry: &mut ToolRegistry) {
-        if let Some(manager) = &self.services.sub_agent_manager {
-            register_sub_agent_tools(manager, registry);
-        }
-    }
-
     pub(crate) fn begin_run(&self, workspace_id: &str) -> Result<ActiveRunHandle, String> {
         self.active_runs.begin(workspace_id)
     }
@@ -344,7 +338,10 @@ impl DispatcherState {
         self.active_runs.stop(workspace_id)
     }
 
-    pub(crate) fn begin_graph_run(&self, plan_id: &str) -> std::result::Result<GraphRunHandle, String> {
+    pub(crate) fn begin_graph_run(
+        &self,
+        plan_id: &str,
+    ) -> std::result::Result<GraphRunHandle, String> {
         self.graph_runs.begin(plan_id)
     }
 
@@ -384,11 +381,13 @@ fn register_sub_agent_tools(manager: &Arc<SubAgentManager>, registry: &mut ToolR
 async fn plain_chat_workspace(config: &DispatcherAgentConfig) -> Result<PathBuf> {
     let workspace = config.root_dir.join("plain-chat-browser");
     let workspace_for_init = workspace.clone();
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> Result<()> {
         let config_dir = workspace_for_init.join(".jkcodingagent");
         std::fs::create_dir_all(&config_dir)
             .with_context(|| format!("create {}", config_dir.display()))?;
-        ensure_project_mcp_file(&workspace_for_init.to_string_lossy()).map_err(anyhow::Error::msg)
+        // 聊天工作区不再维护 mcp.json：聊天 MCP 一律来自全局注册表
+        // （v32 起存 SQLite，项目级 mcp.json 仅对项目工作区生效）。
+        Ok(())
     })
     .await
     .map_err(|error| anyhow!("create plain chat workspace task failed: {error}"))??;

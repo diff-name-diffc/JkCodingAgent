@@ -13,7 +13,7 @@ export function getStoredThemePreference(): ThemePreference {
   return isThemePreference(stored) ? stored : "system";
 }
 
-/** 后端 settings.json 中的 theme 是自由字符串，收敛为合法值，非法时回退 system。 */
+/** 后端全局库（app_config 表）中的 theme 是自由字符串，收敛为合法值，非法时回退 system。 */
 export function normalizeThemePreference(value: unknown): ThemePreference {
   return value === "light" || value === "dark" || value === "system" ? value : "system";
 }

@@ -1,13 +1,19 @@
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::fs;
+use std::io;
 use std::path::Path;
+use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures::future::join_all;
-use glob::glob;
+use glob::{MatchOptions, Pattern};
 use serde_json::{json, Value};
+use tokio::io::AsyncReadExt;
 use tokio::{process::Command, task};
+use walkdir::WalkDir;
 
 use super::common::{
     boolish_arg, is_noise, lexical_normalize, non_empty_string_array_arg, rel,
@@ -16,6 +22,7 @@ use super::common::{
 };
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
+use crate::agent::tools::ToolResult;
 use crate::workspace::fs::IGNORED_DIRS;
 
 /// macOS GUI 进程不继承 shell 的 PATH（Homebrew/cargo 等目录缺失），
@@ -90,6 +97,18 @@ pub(super) fn grep_tool() -> Box<dyn AgentTool> {
 
 /// 单次 grep 调用内并发执行的 rg/grep 子进程上限（patterns×paths 组合数封顶）。
 const MAX_CONCURRENT_GREP_QUERIES: usize = 4;
+/// 单个 glob 查询最多检查的目录项数。结果数上限只约束返回值，不能约束
+/// `**/*` 的遍历成本；扫描预算是避免超大仓库拖死后台线程的第二道边界。
+const MAX_GLOB_SCAN_ENTRIES: usize = 100_000;
+
+/// 搜索后端可能在 Rust 侧命中 `max_files` 之前产生大量输出。必须在读取
+/// 子进程管道时限流，而不是等 `Command::output` 将全部内容装进内存后再截断。
+const MAX_GREP_STDOUT_BYTES: usize = 8 * 1024 * 1024;
+/// 单次 grep 工具调用中所有 pattern×path 查询共享的 stdout 总预算。
+/// 每个子进程在 spawn 前获得固定份额，不能先全量读取、完成后再聚合截断。
+const MAX_GREP_CALL_STDOUT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_GREP_STDERR_BYTES: usize = 64 * 1024;
+const GREP_TIMEOUT: Duration = Duration::from_secs(60);
 
 struct GlobTool;
 struct GrepTool;
@@ -106,6 +125,39 @@ struct GrepLine {
     line_number: u64,
     text: String,
     is_match: bool,
+}
+
+struct SearchOutcome {
+    display: String,
+    data: Value,
+}
+
+struct GrepRendered {
+    display: String,
+    files: Vec<Value>,
+    total_matches: usize,
+    truncated: bool,
+}
+
+struct BoundedCommandOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    truncated: bool,
+}
+
+impl SearchOutcome {
+    fn error(kind: &str, path: &str, pattern: &str, message: String) -> Self {
+        Self {
+            display: message.clone(),
+            data: json!({
+                "kind": kind,
+                "path": path,
+                "pattern": pattern,
+                "error": message,
+            }),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -138,20 +190,24 @@ impl AgentTool for GlobTool {
         with_compression_parameters(
             json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
-                    "pattern": { "type": "string", "description": "匹配模式，例如 '*.rs' 或 'src/**/*.ts'" },
+                    "pattern": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "匹配模式，例如 '*.rs' 或 'src/**/*.ts'" },
                     "patterns": {
                         "type": "array",
                         "description": "要批量搜索的 glob 模式列表。传入多个模式时，结果会按 pattern 分段返回。",
-                        "items": { "type": "string" }
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
                     },
                     "paths": {
                         "type": "array",
                         "description": "搜索起始目录列表，默认 ['.']。即使只指定一个目录，也必须传单元素数组。与 patterns 同时提供时会搜索每个 path + pattern 组合。",
                         "minItems": 1,
-                        "items": { "type": "string" }
+                        "maxItems": 4,
+                        "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
                     },
-                    "max_results": { "type": "integer", "description": "最多返回多少个结果，默认 250", "minimum": 1 }
+                    "max_results": { "type": "integer", "description": "每个 path + pattern 组合最多返回多少个结果，默认 250", "minimum": 1, "maximum": 1000 }
                 },
                 "anyOf": [
                     { "required": ["pattern"] },
@@ -163,10 +219,10 @@ impl AgentTool for GlobTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
         let patterns = match string_list_arg(args, "pattern", "patterns") {
             Ok(patterns) => patterns,
-            Err(message) => return message,
+            Err(message) => return ToolResult::recoverable_error(message),
         };
         let paths =
             non_empty_string_array_arg(args, "paths").unwrap_or_else(|| vec![".".to_string()]);
@@ -174,22 +230,43 @@ impl AgentTool for GlobTool {
         let context = context.clone();
 
         match task::spawn_blocking(move || {
-            let mut sections = Vec::new();
+            let mut outcomes = Vec::new();
             for path in &paths {
                 for pattern in &patterns {
-                    sections.push((
-                        format!("glob path={path} pattern={pattern}"),
+                    outcomes.push((
+                        path,
+                        pattern,
                         run_glob_query(path, pattern, max_results, &context),
                     ));
                 }
             }
-
-            render_single_or_grouped_sections(sections)
+            let display = render_single_or_grouped_sections(
+                outcomes
+                    .iter()
+                    .map(|(path, pattern, outcome)| {
+                        (
+                            format!("glob path={path} pattern={pattern}"),
+                            outcome.display.clone(),
+                        )
+                    })
+                    .collect(),
+            );
+            let all_failed = !outcomes.is_empty()
+                && outcomes
+                    .iter()
+                    .all(|(_, _, outcome)| outcome.data.get("error").is_some());
+            let data = json!({
+                "queries": outcomes.into_iter().map(|(_, _, outcome)| outcome.data).collect::<Vec<_>>()
+            });
+            (display, data, all_failed)
         })
         .await
         {
-            Ok(output) => output,
-            Err(error) => format!("错误：glob 搜索任务失败：{error}"),
+            Ok((display, data, true)) => ToolResult::recoverable_error(display).with_data(data),
+            Ok((display, data, false)) => ToolResult::success_data(data, display.clone(), display),
+            Err(error) => {
+                ToolResult::recoverable_error(format!("错误：glob 搜索任务失败：{error}"))
+            }
         }
     }
 }
@@ -208,28 +285,34 @@ impl AgentTool for GrepTool {
         with_compression_parameters(
             json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
-                    "pattern": { "type": "string", "description": "要搜索的模式。默认按正则处理。" },
+                    "pattern": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "要搜索的模式。默认按正则处理。" },
                     "patterns": {
                         "type": "array",
                         "description": "要批量搜索的模式列表。传入多个模式时，结果会按 pattern 分段返回。",
-                        "items": { "type": "string" }
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
                     },
                     "paths": {
                         "type": "array",
                         "description": "搜索起点列表，默认 ['.']；可传目录或单个文件。即使只指定一个搜索起点，也必须传单元素数组。与 patterns 同时提供时会搜索每个 path + pattern 组合。",
                         "minItems": 1,
-                        "items": { "type": "string" }
+                        "maxItems": 4,
+                        "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
                     },
                     "include": {
                         "type": "array",
                         "description": "可选的 glob 过滤列表，例如 ['src/**/*.rs', 'src/**/*.ts']",
-                        "items": { "type": "string" }
+                        "maxItems": 16,
+                        "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
                     },
                     "exclude": {
                         "type": "array",
                         "description": "要排除的 glob 列表，例如 ['target/**', 'dist/**']",
-                        "items": { "type": "string" }
+                        "maxItems": 16,
+                        "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
                     },
                     "match_mode": {
                         "type": "string",
@@ -245,17 +328,19 @@ impl AgentTool for GrepTool {
                         "type": "boolean",
                         "description": "是否按完整单词匹配。"
                     },
-                    "context_before": { "type": "integer", "description": "前置上下文行数，默认 0", "minimum": 0 },
-                    "context_after": { "type": "integer", "description": "后置上下文行数，默认 0", "minimum": 0 },
+                    "context_before": { "type": "integer", "description": "前置上下文行数，默认 0", "minimum": 0, "maximum": 50 },
+                    "context_after": { "type": "integer", "description": "后置上下文行数，默认 0", "minimum": 0, "maximum": 50 },
                     "max_matches_per_file": {
                         "type": "integer",
                         "description": "每个文件最多返回多少处匹配，默认 20",
-                        "minimum": 1
+                        "minimum": 1,
+                        "maximum": 200
                     },
                     "max_files": {
                         "type": "integer",
                         "description": "最多展示多少个命中文件，默认 25",
-                        "minimum": 1
+                        "minimum": 1,
+                        "maximum": 200
                     },
                     "files_with_matches": {
                         "type": "boolean",
@@ -280,10 +365,10 @@ impl AgentTool for GrepTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
         let patterns = match string_list_arg(args, "pattern", "patterns") {
             Ok(patterns) => patterns,
-            Err(message) => return message,
+            Err(message) => return ToolResult::recoverable_error(message),
         };
         let paths =
             non_empty_string_array_arg(args, "paths").unwrap_or_else(|| vec![".".to_string()]);
@@ -310,24 +395,54 @@ impl AgentTool for GrepTool {
                     .map(move |path| (pattern.clone(), path.clone()))
             })
             .collect::<Vec<_>>();
+        let stdout_limit = grep_stdout_budget_per_query(queries.len());
         // 并发上限：patterns×paths 组合过多时限制同时启动的 rg/grep 子进程数，
         // 避免一次调用瞬间拉起数十上百个进程扫满工作区造成资源耗尽。
-        let mut sections = Vec::new();
+        let mut outcomes = Vec::new();
         for chunk in queries.chunks(MAX_CONCURRENT_GREP_QUERIES) {
             let futures = chunk.iter().map(|(pattern, path)| {
                 let options = &options;
                 async move {
                     (
-                        format!("grep path={path} pattern={pattern}"),
-                        run_grep_query(pattern, path, options, context).await,
+                        path,
+                        pattern,
+                        run_grep_query(pattern, path, options, context, stdout_limit).await,
                     )
                 }
             });
-            sections.extend(join_all(futures).await);
+            outcomes.extend(join_all(futures).await);
         }
 
-        render_single_or_grouped_sections(sections)
+        let display = render_single_or_grouped_sections(
+            outcomes
+                .iter()
+                .map(|(path, pattern, outcome)| {
+                    (
+                        format!("grep path={path} pattern={pattern}"),
+                        outcome.display.clone(),
+                    )
+                })
+                .collect(),
+        );
+        let all_failed = !outcomes.is_empty()
+            && outcomes
+                .iter()
+                .all(|(_, _, outcome)| outcome.data.get("error").is_some());
+        let data = json!({
+            "queries": outcomes.into_iter().map(|(_, _, outcome)| outcome.data).collect::<Vec<_>>(),
+            "stdoutBudgetBytes": MAX_GREP_CALL_STDOUT_BYTES,
+            "perQueryStdoutBudgetBytes": stdout_limit,
+        });
+        if all_failed {
+            ToolResult::recoverable_error(display).with_data(data)
+        } else {
+            ToolResult::success_data(data, display.clone(), display)
+        }
     }
+}
+
+fn grep_stdout_budget_per_query(query_count: usize) -> usize {
+    (MAX_GREP_CALL_STDOUT_BYTES / query_count.max(1)).min(MAX_GREP_STDOUT_BYTES)
 }
 
 fn render_single_or_grouped_sections(sections: Vec<(String, String)>) -> String {
@@ -342,56 +457,173 @@ fn render_single_or_grouped_sections(sections: Vec<(String, String)>) -> String 
     }
 }
 
-fn run_glob_query(path: &str, pattern: &str, max_results: usize, context: &ToolContext) -> String {
+fn safe_glob_entries(
+    root: &Path,
+    max_depth: Option<usize>,
+) -> impl Iterator<Item = Result<walkdir::DirEntry, walkdir::Error>> {
+    let mut builder = WalkDir::new(root).follow_links(false).min_depth(1);
+    if let Some(max_depth) = max_depth {
+        builder = builder.max_depth(max_depth);
+    }
+    builder
+        .into_iter()
+        .filter_entry(|entry| !entry.file_type().is_symlink() && !is_noise(entry.file_name()))
+}
+
+fn run_glob_query(
+    path: &str,
+    pattern: &str,
+    max_results: usize,
+    context: &ToolContext,
+) -> SearchOutcome {
     let dir_path = match resolve_path(context, path) {
         Ok(path) => path,
-        Err(message) => return message,
+        Err(message) => return SearchOutcome::error("glob", path, pattern, message),
     };
     let search_pattern = match glob_search_pattern(context, &dir_path, pattern) {
         Ok(search_pattern) => search_pattern,
-        Err(message) => return message,
+        Err(message) => return SearchOutcome::error("glob", path, pattern, message),
+    };
+    let relative_pattern = match Path::new(&search_pattern).strip_prefix(&dir_path) {
+        Ok(pattern) => pattern,
+        Err(_) => {
+            return SearchOutcome::error(
+                "glob",
+                path,
+                pattern,
+                "错误：glob 模式无法转换为工作区相对路径".to_string(),
+            )
+        }
+    };
+    let matcher = match Pattern::new(&relative_pattern.to_string_lossy()) {
+        Ok(matcher) => matcher,
+        Err(error) => {
+            return SearchOutcome::error(
+                "glob",
+                path,
+                pattern,
+                format!("错误：glob 模式无效：{error}"),
+            )
+        }
+    };
+    let max_depth = relative_pattern
+        .components()
+        .all(|component| component.as_os_str() != "**")
+        .then(|| relative_pattern.components().count());
+    let match_options = MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
     };
 
-    let mut matches = Vec::new();
-    for entry in match glob(&search_pattern) {
-        Ok(entries) => entries,
-        Err(error) => return format!("错误：glob 模式无效：{error}"),
-    } {
+    // 只保留修改时间最新的 max_results 项；总命中数单独计数。旧实现先把
+    // 整个工作区所有匹配路径与 metadata 全量收进 Vec 后才截断，`**/*`
+    // 可轻易把单次调用变成无界内存增长。
+    let mut newest: BinaryHeap<Reverse<(Option<std::time::SystemTime>, std::path::PathBuf)>> =
+        BinaryHeap::with_capacity(max_results.saturating_add(1));
+    let mut total_matches = 0usize;
+    let mut scanned_entries = 0usize;
+    let mut scan_truncated = false;
+    for entry in safe_glob_entries(&dir_path, max_depth) {
+        if scanned_entries >= MAX_GLOB_SCAN_ENTRIES {
+            scan_truncated = true;
+            break;
+        }
+        scanned_entries += 1;
         match entry {
-            Ok(path) if !path.file_name().is_some_and(is_noise) => matches.push(path),
-            Ok(_) => {}
-            Err(error) => return format!("错误：glob 搜索失败：{error}"),
+            Ok(entry) => {
+                let path = entry.into_path();
+                let relative = path.strip_prefix(&dir_path).unwrap_or(&path);
+                if !matcher.matches_path_with(relative, match_options) {
+                    continue;
+                }
+                total_matches = total_matches.saturating_add(1);
+                let modified = fs::symlink_metadata(&path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok();
+                let candidate = (modified, path);
+                if newest.len() < max_results {
+                    newest.push(Reverse(candidate));
+                } else if newest
+                    .peek()
+                    .is_some_and(|Reverse(oldest)| candidate > *oldest)
+                {
+                    newest.pop();
+                    newest.push(Reverse(candidate));
+                }
+            }
+            Err(error) => {
+                return SearchOutcome::error(
+                    "glob",
+                    path,
+                    pattern,
+                    format!("错误：glob 搜索失败：{error}"),
+                )
+            }
         }
     }
-    let mut matches_with_metadata = matches
+    let mut matches_with_metadata = newest
         .into_iter()
-        .map(|path| {
-            let modified = fs::metadata(&path)
-                .and_then(|metadata| metadata.modified())
-                .ok();
-            (path, modified)
-        })
+        .map(|Reverse((modified, path))| (path, modified))
         .collect::<Vec<_>>();
     matches_with_metadata.sort_by_key(|(_, modified)| *modified);
     matches_with_metadata.reverse();
 
     if matches_with_metadata.is_empty() {
-        return format!("未找到匹配文件：{}", dir_path.display());
+        let display = if scan_truncated {
+            format!(
+                "在前 {MAX_GLOB_SCAN_ENTRIES} 个目录项中未找到匹配文件；扫描已达上限，请缩小路径或模式：{}",
+                dir_path.display()
+            )
+        } else {
+            format!("未找到匹配文件：{}", dir_path.display())
+        };
+        return SearchOutcome {
+            display,
+            data: json!({
+                "kind": "glob",
+                "path": path,
+                "pattern": pattern,
+                "matches": [],
+                "total": 0,
+                "truncated": scan_truncated,
+                "scanTruncated": scan_truncated,
+                "scannedEntries": scanned_entries,
+            }),
+        };
     }
 
-    let mut lines = matches_with_metadata
+    let matches = matches_with_metadata
         .iter()
-        .take(max_results)
         .map(|(path, _)| rel(path, &dir_path))
         .collect::<Vec<_>>();
-    if matches_with_metadata.len() > max_results {
+    let mut lines = matches.clone();
+    let result_truncated = total_matches > matches.len();
+    if result_truncated {
         lines.push(format!(
             "...（已显示 {} / {}）",
-            max_results,
-            matches_with_metadata.len()
+            matches.len(),
+            total_matches
         ));
     }
-    lines.join("\n")
+    if scan_truncated {
+        lines.push(format!(
+            "...（扫描达到 {MAX_GLOB_SCAN_ENTRIES} 个目录项上限；命中总数仅代表已扫描范围，请缩小路径或模式）"
+        ));
+    }
+    SearchOutcome {
+        display: lines.join("\n"),
+        data: json!({
+            "kind": "glob",
+            "path": path,
+            "pattern": pattern,
+            "matches": matches,
+            "total": total_matches,
+            "truncated": result_truncated || scan_truncated,
+            "scanTruncated": scan_truncated,
+            "scannedEntries": scanned_entries,
+        }),
+    }
 }
 
 /// 将起始目录与用户传入的 glob 模式拼接后做归一化与工作区校验，防止
@@ -430,19 +662,152 @@ fn path_within_allowed_roots(joined: &Path, allowed_roots: &[std::path::PathBuf]
     })
 }
 
+/// 以硬上限并发读取 stdout/stderr。任一管道超过上限时立即终止子进程，
+/// 但保留已经读取的完整前缀供调用方渲染并显式标记 truncated。
+async fn run_bounded_search_command(
+    mut command: Command,
+    stdout_limit: usize,
+) -> io::Result<BoundedCommandOutput> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+
+    match tokio::time::timeout(
+        GREP_TIMEOUT,
+        collect_bounded_output(&mut child, stdout_limit),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "grep 搜索超时（60 秒）",
+            ))
+        }
+    }
+}
+
+async fn collect_bounded_output(
+    child: &mut tokio::process::Child,
+    stdout_limit: usize,
+) -> io::Result<BoundedCommandOutput> {
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("grep stdout 管道未创建"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("grep stderr 管道未创建"))?;
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+    let mut status = None;
+    let mut truncated = false;
+    let mut stdout_chunk = [0u8; 16 * 1024];
+    let mut stderr_chunk = [0u8; 4 * 1024];
+
+    enum Event {
+        Stdout(io::Result<usize>),
+        Stderr(io::Result<usize>),
+        Exited(io::Result<ExitStatus>),
+    }
+
+    while status.is_none() || !stdout_done || !stderr_done {
+        let event = tokio::select! {
+            read = stdout.read(&mut stdout_chunk), if !stdout_done => Event::Stdout(read),
+            read = stderr.read(&mut stderr_chunk), if !stderr_done => Event::Stderr(read),
+            exited = child.wait(), if status.is_none() => Event::Exited(exited),
+        };
+
+        let exceeded = match event {
+            Event::Stdout(Ok(0)) => {
+                stdout_done = true;
+                false
+            }
+            Event::Stdout(Ok(read)) => {
+                append_capped(&mut stdout_bytes, &stdout_chunk[..read], stdout_limit)
+            }
+            Event::Stdout(Err(error)) => return Err(error),
+            Event::Stderr(Ok(0)) => {
+                stderr_done = true;
+                false
+            }
+            Event::Stderr(Ok(read)) => append_capped(
+                &mut stderr_bytes,
+                &stderr_chunk[..read],
+                MAX_GREP_STDERR_BYTES,
+            ),
+            Event::Stderr(Err(error)) => return Err(error),
+            Event::Exited(result) => {
+                status = Some(result?);
+                false
+            }
+        };
+
+        if exceeded && !truncated {
+            truncated = true;
+            child.start_kill()?;
+        }
+    }
+
+    Ok(BoundedCommandOutput {
+        status: status.ok_or_else(|| io::Error::other("grep 子进程未返回退出状态"))?,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+        truncated,
+    })
+}
+
+/// 返回本次追加是否超过上限。目标缓冲区永远不会增长到 limit 之外。
+fn append_capped(target: &mut Vec<u8>, chunk: &[u8], limit: usize) -> bool {
+    let remaining = limit.saturating_sub(target.len());
+    target.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    chunk.len() > remaining
+}
+
+fn search_status_is_success(output: &BoundedCommandOutput) -> bool {
+    output.truncated || matches!(output.status.code(), Some(0 | 1))
+}
+
+fn mark_backend_truncated(rendered: &mut GrepRendered, backend: &str, stdout_limit: usize) {
+    rendered.truncated = true;
+    let note = format!(
+        "...（{backend} 原始输出达到 {stdout_limit} bytes 上限，结果为部分数据；请缩小路径或模式）"
+    );
+    if rendered.display.is_empty() {
+        rendered.display = note;
+    } else {
+        rendered.display.push('\n');
+        rendered.display.push_str(&note);
+    }
+}
+
 async fn run_grep_query(
     pattern: &str,
     path: &str,
     options: &GrepOptions,
     context: &ToolContext,
-) -> String {
+    stdout_limit: usize,
+) -> SearchOutcome {
     // 路径解析、存在性检查、workspace canonicalize 与 rg 可执行文件探测都是
     // 同步文件系统 I/O，统一移入 spawn_blocking，避免阻塞 Tokio 工作线程。
     let context = context.clone();
-    let path = path.to_string();
-    let prep = match task::spawn_blocking(move || prepare_grep_search(&path, &context)).await {
+    let path_owned = path.to_string();
+    let prep = match task::spawn_blocking(move || prepare_grep_search(&path_owned, &context)).await
+    {
         Ok(result) => result,
-        Err(error) => return format!("错误：grep 搜索准备任务失败：{error}"),
+        Err(error) => {
+            return SearchOutcome::error(
+                "grep",
+                path,
+                pattern,
+                format!("错误：grep 搜索准备任务失败：{error}"),
+            )
+        }
     };
     let GrepSearchPrep {
         workspace,
@@ -450,7 +815,7 @@ async fn run_grep_query(
         rg_tool,
     } = match prep {
         Ok(prep) => prep,
-        Err(message) => return message,
+        Err(message) => return SearchOutcome::error("grep", path, pattern, message),
     };
 
     let mut command = Command::new(rg_tool);
@@ -516,31 +881,74 @@ async fn run_grep_query(
     // 否则会被解析为命令行选项；`--` 同样保护以 `-` 开头的 target 路径。
     command.arg("-e").arg(pattern).arg("--").arg(&target);
 
-    let output =
-        match tokio::time::timeout(std::time::Duration::from_secs(60), command.output()).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                return run_grep_fallback(pattern, &workspace, &target, options).await;
-            }
-            Ok(Err(error)) => return format!("错误：执行 grep 搜索失败：{error}"),
-            Err(_) => return "错误：grep 搜索超时（60 秒）".to_string(),
-        };
+    let output = match run_bounded_search_command(command, stdout_limit).await {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return run_grep_fallback(pattern, &workspace, &target, options, stdout_limit).await;
+        }
+        Err(error) => {
+            return SearchOutcome::error(
+                "grep",
+                path,
+                pattern,
+                format!("错误：执行 grep 搜索失败：{error}"),
+            )
+        }
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let status = output.status.code().unwrap_or_default();
-    if status != 0 && status != 1 {
+    if !search_status_is_success(&output) {
         if stderr.is_empty() {
-            return format!("错误：grep 搜索失败，退出状态：{}", output.status);
+            return SearchOutcome::error(
+                "grep",
+                path,
+                pattern,
+                format!("错误：grep 搜索失败，退出状态：{}", output.status),
+            );
         }
-        return format!("错误：grep 搜索失败：{stderr}\n\n[退出状态：{}]", output.status);
+        return SearchOutcome::error(
+            "grep",
+            path,
+            pattern,
+            format!(
+                "错误：grep 搜索失败：{stderr}\n\n[退出状态：{}]",
+                output.status
+            ),
+        );
     }
 
-    let rendered = render_grep_stdout(&stdout, options.max_files, options.files_with_matches);
-    if rendered.is_empty() {
-        return format!("未找到匹配内容：{pattern}");
+    let mut rendered = render_grep_stdout(&stdout, options.max_files, options.files_with_matches);
+    if output.truncated {
+        mark_backend_truncated(&mut rendered, "ripgrep", stdout_limit);
     }
-    rendered
+    if rendered.display.is_empty() {
+        let display = format!("未找到匹配内容：{pattern}");
+        return SearchOutcome {
+            display,
+            data: json!({
+                "kind": "grep",
+                "path": path,
+                "pattern": pattern,
+                "files": [],
+                "totalMatches": 0,
+                "truncated": output.truncated,
+                "backend": "ripgrep",
+            }),
+        };
+    }
+    SearchOutcome {
+        display: rendered.display,
+        data: json!({
+            "kind": "grep",
+            "path": path,
+            "pattern": pattern,
+            "files": rendered.files,
+            "totalMatches": rendered.total_matches,
+            "truncated": rendered.truncated,
+            "backend": "ripgrep",
+        }),
+    }
 }
 
 async fn run_grep_fallback(
@@ -548,11 +956,19 @@ async fn run_grep_fallback(
     workspace: &std::path::Path,
     target: &str,
     options: &GrepOptions,
-) -> String {
+    stdout_limit: usize,
+) -> SearchOutcome {
     // 同主路径：可执行文件探测是同步文件系统 I/O，移入 spawn_blocking。
     let grep_tool = match task::spawn_blocking(|| resolve_tool("grep")).await {
         Ok(tool) => tool,
-        Err(error) => return format!("错误：grep 回退工具探测任务失败：{error}"),
+        Err(error) => {
+            return SearchOutcome::error(
+                "grep",
+                target,
+                pattern,
+                format!("错误：grep 回退工具探测任务失败：{error}"),
+            )
+        }
     };
     let mut command = Command::new(grep_tool);
     // grep 只在 TTY 上着色，管道输出无需禁色参数；--no-color 是 ripgrep 专属，BSD/GNU grep 会报退出状态 2。
@@ -641,43 +1057,113 @@ async fn run_grep_fallback(
     // 与 rg 主路径同理：`-e` 保护以 `-` 开头的 pattern，`--` 保护 target。
     command.arg("-e").arg(pattern).arg("--").arg(target);
 
-    let output =
-        match tokio::time::timeout(std::time::Duration::from_secs(60), command.output()).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                return "错误：未找到 ripgrep (`rg`) 或系统 grep，无法执行搜索".to_string();
-            }
-            Ok(Err(error)) => return format!("错误：grep 回退搜索失败：{error}"),
-            Err(_) => return "错误：grep 回退搜索超时（60 秒）".to_string(),
-        };
+    let output = match run_bounded_search_command(command, stdout_limit).await {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return SearchOutcome::error(
+                "grep",
+                target,
+                pattern,
+                "错误：未找到 ripgrep (`rg`) 或系统 grep，无法执行搜索".to_string(),
+            );
+        }
+        Err(error) => {
+            return SearchOutcome::error(
+                "grep",
+                target,
+                pattern,
+                format!("错误：grep 回退搜索失败：{error}"),
+            )
+        }
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let status = output.status.code().unwrap_or_default();
-    if status != 0 && status != 1 {
+    if !search_status_is_success(&output) {
         if stderr.is_empty() {
-            return format!("错误：grep 回退搜索失败，退出状态：{}", output.status);
+            return SearchOutcome::error(
+                "grep",
+                target,
+                pattern,
+                format!("错误：grep 回退搜索失败，退出状态：{}", output.status),
+            );
         }
-        return format!("错误：grep 回退搜索失败：{stderr}\n\n[退出状态：{}]", output.status);
+        return SearchOutcome::error(
+            "grep",
+            target,
+            pattern,
+            format!(
+                "错误：grep 回退搜索失败：{stderr}\n\n[退出状态：{}]",
+                output.status
+            ),
+        );
     }
     if stdout.trim().is_empty() {
-        return format!("{}未找到匹配内容：{pattern}", relaxed_note.unwrap_or_default());
+        let backend_note = output.truncated.then(|| {
+            format!(
+                "...（grep 原始输出达到 {stdout_limit} bytes 上限，未得到完整记录；请缩小路径或模式）"
+            )
+        });
+        let display = match backend_note {
+            Some(note) => format!("{}{note}", relaxed_note.clone().unwrap_or_default()),
+            None => format!(
+                "{}未找到匹配内容：{pattern}",
+                relaxed_note.clone().unwrap_or_default()
+            ),
+        };
+        return SearchOutcome {
+            display,
+            data: json!({
+                "kind": "grep",
+                "path": target,
+                "pattern": pattern,
+                "files": [],
+                "totalMatches": 0,
+                "truncated": output.truncated,
+                "backend": "grep",
+                "relaxedFilters": relaxed,
+            }),
+        };
     }
     // 渲染含逐候选路径的同步 stat（split_grep_line），移入 spawn_blocking
     // 避免在 async worker 线程上做文件系统 I/O（与 glob 工具的处理一致）。
     let workspace_owned = workspace.to_path_buf();
     let max_files = options.max_files;
     let files_with_matches = options.files_with_matches;
+    let backend_truncated = output.truncated;
     match task::spawn_blocking(move || {
         render_grep_fallback_output(&stdout, &workspace_owned, max_files, files_with_matches)
     })
     .await
     {
-        Ok(rendered) => match relaxed_note {
-            Some(note) => format!("{note}{rendered}"),
-            None => rendered,
-        },
-        Err(error) => format!("错误：grep 回退结果渲染失败：{error}"),
+        Ok(mut rendered) => {
+            if backend_truncated {
+                mark_backend_truncated(&mut rendered, "grep", stdout_limit);
+            }
+            let display = match relaxed_note {
+                Some(note) => format!("{note}{}", rendered.display),
+                None => rendered.display,
+            };
+            SearchOutcome {
+                display,
+                data: json!({
+                    "kind": "grep",
+                    "path": target,
+                    "pattern": pattern,
+                    "files": rendered.files,
+                    "totalMatches": rendered.total_matches,
+                    "truncated": rendered.truncated,
+                    "backend": "grep",
+                    "relaxedFilters": relaxed,
+                }),
+            }
+        }
+        Err(error) => SearchOutcome::error(
+            "grep",
+            target,
+            pattern,
+            format!("错误：grep 回退结果渲染失败：{error}"),
+        ),
     }
 }
 
@@ -804,14 +1290,8 @@ fn render_grep_fallback_output(
     workspace: &std::path::Path,
     max_files: usize,
     files_with_matches: bool,
-) -> String {
-    struct FileEntry {
-        path: String,
-        match_count: usize,
-        lines: Vec<String>,
-    }
-
-    let mut file_results: Vec<FileEntry> = Vec::new();
+) -> GrepRendered {
+    let mut file_results: Vec<GrepFileResult> = Vec::new();
     let mut file_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut path_cache: HashMap<&str, bool> = HashMap::new();
     let mut total_matches = 0usize;
@@ -833,7 +1313,7 @@ fn render_grep_fallback_output(
             Some(&idx) => Some(idx),
             None if file_results.len() < max_files => {
                 let idx = file_results.len();
-                file_results.push(FileEntry {
+                file_results.push(GrepFileResult {
                     path: path.to_string(),
                     match_count: 0,
                     lines: Vec::new(),
@@ -858,10 +1338,11 @@ fn render_grep_fallback_output(
         if files_with_matches {
             continue;
         }
-        let separator = if is_match { ':' } else { '-' };
-        file_results[idx]
-            .lines
-            .push(format!("{line_number}{separator} {text}"));
+        file_results[idx].lines.push(GrepLine {
+            line_number,
+            text: text.to_string(),
+            is_match,
+        });
     }
 
     let matched_files = file_results
@@ -869,7 +1350,12 @@ fn render_grep_fallback_output(
         .filter(|file| file.match_count > 0)
         .collect::<Vec<_>>();
     if matched_files.is_empty() {
-        return String::new();
+        return GrepRendered {
+            display: String::new(),
+            files: Vec::new(),
+            total_matches: 0,
+            truncated: false,
+        };
     }
 
     let mut lines = vec![format!(
@@ -886,15 +1372,51 @@ fn render_grep_fallback_output(
 
     if files_with_matches {
         lines.extend(matched_files.iter().map(|file| file.path.clone()));
-        return lines.join("\n");
+        return GrepRendered {
+            display: lines.join("\n"),
+            files: matched_files
+                .into_iter()
+                .map(|file| {
+                    json!({
+                        "path": file.path,
+                        "matchCount": file.match_count,
+                        "lines": [],
+                    })
+                })
+                .collect(),
+            total_matches,
+            truncated: truncated_by_file_limit,
+        };
     }
 
-    for file in matched_files {
+    for file in &matched_files {
         lines.push(String::new());
         lines.push(file.path.clone());
-        lines.extend(file.lines.iter().cloned());
+        for entry in &file.lines {
+            let separator = if entry.is_match { ':' } else { '-' };
+            lines.push(format!("{}{} {}", entry.line_number, separator, entry.text));
+        }
     }
-    lines.join("\n")
+    let files = matched_files
+        .into_iter()
+        .map(|file| {
+            json!({
+                "path": file.path,
+                "matchCount": file.match_count,
+                "lines": file.lines.iter().map(|line| json!({
+                    "lineNumber": line.line_number,
+                    "text": line.text,
+                    "isMatch": line.is_match,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    GrepRendered {
+        display: lines.join("\n"),
+        files,
+        total_matches,
+        truncated: truncated_by_file_limit,
+    }
 }
 
 fn workspace_relative_target(workspace: &std::path::Path, target: &std::path::Path) -> String {
@@ -933,7 +1455,7 @@ fn prepare_grep_search(path: &str, context: &ToolContext) -> Result<GrepSearchPr
     })
 }
 
-fn render_grep_stdout(stdout: &str, max_files: usize, files_with_matches: bool) -> String {
+fn render_grep_stdout(stdout: &str, max_files: usize, files_with_matches: bool) -> GrepRendered {
     let mut file_results = Vec::<GrepFileResult>::new();
     let mut file_indexes = HashMap::<String, usize>::new();
     let mut total_matches = 0usize;
@@ -1000,7 +1522,12 @@ fn render_grep_stdout(stdout: &str, max_files: usize, files_with_matches: bool) 
         .filter(|file| file.match_count > 0)
         .collect::<Vec<_>>();
     if matched_files.is_empty() {
-        return String::new();
+        return GrepRendered {
+            display: String::new(),
+            files: Vec::new(),
+            total_matches: 0,
+            truncated: false,
+        };
     }
 
     let mut lines = vec![format!(
@@ -1017,10 +1544,24 @@ fn render_grep_stdout(stdout: &str, max_files: usize, files_with_matches: bool) 
 
     if files_with_matches {
         lines.extend(matched_files.iter().map(|file| file.path.clone()));
-        return lines.join("\n");
+        return GrepRendered {
+            display: lines.join("\n"),
+            files: matched_files
+                .into_iter()
+                .map(|file| {
+                    json!({
+                        "path": file.path,
+                        "matchCount": file.match_count,
+                        "lines": [],
+                    })
+                })
+                .collect(),
+            total_matches,
+            truncated: truncated_by_file_limit,
+        };
     }
 
-    for file in matched_files {
+    for file in &matched_files {
         lines.push(String::new());
         lines.push(file.path.clone());
         for entry in &file.lines {
@@ -1029,7 +1570,26 @@ fn render_grep_stdout(stdout: &str, max_files: usize, files_with_matches: bool) 
         }
     }
 
-    lines.join("\n")
+    let files = matched_files
+        .into_iter()
+        .map(|file| {
+            json!({
+                "path": file.path,
+                "matchCount": file.match_count,
+                "lines": file.lines.iter().map(|line| json!({
+                    "lineNumber": line.line_number,
+                    "text": line.text,
+                    "isMatch": line.is_match,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    GrepRendered {
+        display: lines.join("\n"),
+        files,
+        total_matches,
+        truncated: truncated_by_file_limit,
+    }
 }
 
 fn grep_event_path(value: &Value) -> Option<String> {
@@ -1062,9 +1622,12 @@ fn grep_event_text(value: &Value) -> Option<String> {
 mod tests {
     use super::*;
 
+    const BOUNDED_TEST_STDOUT_BYTES: usize = 64 * 1024;
+
     /// 在临时目录中创建相对路径文件，返回目录（测试结束由调用方清理）。
     fn make_workspace(name: &str, files: &[&str]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("jk-search-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("jk-search-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         for file in files {
             let path = dir.join(file);
@@ -1116,12 +1679,10 @@ mod tests {
         let workspace = make_workspace("dash-dir", &["logs-2024-1/app.rs"]);
         let mut cache = HashMap::new();
 
-        let parsed =
-            split_grep_line("logs-2024-1/app.rs:7:hit", &workspace, &mut cache).unwrap();
+        let parsed = split_grep_line("logs-2024-1/app.rs:7:hit", &workspace, &mut cache).unwrap();
         assert_eq!(parsed, ("logs-2024-1/app.rs", 7, true, "hit"));
 
-        let parsed =
-            split_grep_line("logs-2024-1/app.rs-6-ctx", &workspace, &mut cache).unwrap();
+        let parsed = split_grep_line("logs-2024-1/app.rs-6-ctx", &workspace, &mut cache).unwrap();
         assert_eq!(parsed, ("logs-2024-1/app.rs", 6, false, "ctx"));
 
         let _ = fs::remove_dir_all(&workspace);
@@ -1195,23 +1756,111 @@ mod tests {
         let _ = fs::remove_dir_all(&workspace_raw);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn safe_glob_entries_never_follows_or_returns_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = make_workspace("glob-symlink", &["local.rs"]);
+        let outside = make_workspace("glob-outside", &["secret.rs"]);
+        symlink(&outside, workspace.join("outside-link")).unwrap();
+
+        let entries = safe_glob_entries(&workspace, None)
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .strip_prefix(&workspace)
+                    .unwrap()
+                    .to_path_buf()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(entries, [std::path::PathBuf::from("local.rs")]);
+
+        let _ = fs::remove_dir_all(&workspace);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
     #[test]
     fn render_grep_fallback_output_marks_file_limit_truncation() {
         let workspace = make_workspace("fallback-trunc", &["a.rs", "b.rs", "c.rs"]);
         let stdout = "a.rs:1:match\nb.rs:1:match\nc.rs:1:match\n";
 
         let rendered = render_grep_fallback_output(stdout, &workspace, 1, false);
-        assert!(rendered.contains("a.rs"), "应保留首个命中文件");
+        assert!(rendered.display.contains("a.rs"), "应保留首个命中文件");
         assert!(
-            rendered.contains("只展示前 1 个命中文件"),
-            "超过 max_files 时必须给出截断提示：{rendered}"
+            rendered.display.contains("只展示前 1 个命中文件"),
+            "超过 max_files 时必须给出截断提示：{}",
+            rendered.display
         );
         assert!(
-            rendered.contains("部分统计"),
-            "截断时必须注明匹配数为部分统计：{rendered}"
+            rendered.display.contains("部分统计"),
+            "截断时必须注明匹配数为部分统计：{}",
+            rendered.display
         );
-        assert!(!rendered.contains("b.rs:1"), "超限文件的匹配行应被丢弃");
+        assert!(rendered.truncated);
+        assert_eq!(rendered.files.len(), 1);
+        assert!(
+            !rendered.display.contains("b.rs:1"),
+            "超限文件的匹配行应被丢弃"
+        );
 
         let _ = fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn append_capped_never_grows_past_limit() {
+        let mut output = vec![1, 2];
+        assert!(append_capped(&mut output, &[3, 4, 5], 4));
+        assert_eq!(output, [1, 2, 3, 4]);
+        assert!(append_capped(&mut output, &[6], 4));
+        assert_eq!(output.len(), 4);
+    }
+
+    #[test]
+    fn grep_queries_share_the_call_stdout_budget() {
+        assert_eq!(grep_stdout_budget_per_query(1), MAX_GREP_STDOUT_BYTES);
+        assert_eq!(grep_stdout_budget_per_query(2), MAX_GREP_STDOUT_BYTES);
+
+        for query_count in 1..=16 {
+            let per_query = grep_stdout_budget_per_query(query_count);
+            assert!(per_query <= MAX_GREP_STDOUT_BYTES);
+            assert!(per_query * query_count <= MAX_GREP_CALL_STDOUT_BYTES);
+        }
+        assert_eq!(grep_stdout_budget_per_query(16), 1024 * 1024);
+    }
+
+    /// 由下一个测试作为独立子进程精确调用；普通测试运行时不产生大输出。
+    #[test]
+    fn bounded_command_child_writes_past_limit() {
+        if std::env::var_os("JK_SEARCH_BOUNDED_OUTPUT_CHILD").is_none() {
+            return;
+        }
+        use std::io::Write as _;
+        let chunk = vec![b'x'; BOUNDED_TEST_STDOUT_BYTES];
+        let mut stdout = std::io::stdout().lock();
+        for _ in 0..=4 {
+            stdout.write_all(&chunk).unwrap();
+        }
+        stdout.flush().unwrap();
+    }
+
+    #[tokio::test]
+    async fn bounded_command_kills_child_at_stdout_limit() {
+        let executable = std::env::current_exe().unwrap();
+        let mut command = Command::new(executable);
+        command
+            .arg("--exact")
+            .arg("agent::tools::builtin::search::tests::bounded_command_child_writes_past_limit")
+            .arg("--nocapture")
+            .env("JK_SEARCH_BOUNDED_OUTPUT_CHILD", "1")
+            .kill_on_drop(true);
+
+        let output = run_bounded_search_command(command, BOUNDED_TEST_STDOUT_BYTES)
+            .await
+            .unwrap();
+        assert!(output.truncated);
+        assert_eq!(output.stdout.len(), BOUNDED_TEST_STDOUT_BYTES);
+        assert!(search_status_is_success(&output));
     }
 }

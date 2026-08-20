@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { InputHTMLAttributes, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, FolderOpen, Trash2 } from "lucide-react";
+import { ChevronDown, FolderOpen, ShieldCheck, Trash2 } from "lucide-react";
 import type { SshServerConfig } from "../../../types";
 import { cn } from "../../../lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip";
@@ -42,6 +42,31 @@ export function SshServerCard({
   const fieldError = (field: string) =>
     errorFieldId === fid(field) ? errorMessage : undefined;
 
+  // 主机密钥 TOFU：测试失败且原因是「指纹与固定值不一致」时，提供显式的
+  // 「信任新指纹并重测」恢复入口（服务器重建等合法变更场景）。
+  const [hostKeyMismatch, setHostKeyMismatch] = useState(false);
+  const [resettingHostKey, setResettingHostKey] = useState(false);
+
+  function runTest(resetHostKey: boolean) {
+    return invoke<string>("ssh_tool_test_server_config", {
+      server,
+      resetHostKey,
+    });
+  }
+
+  async function trustNewHostKey() {
+    setResettingHostKey(true);
+    try {
+      await runTest(true);
+      setHostKeyMismatch(false);
+      onTested("ok");
+    } catch {
+      onTested("failed");
+    } finally {
+      setResettingHostKey(false);
+    }
+  }
+
   async function pickKeyFile() {
     const selected = await openDialog({
       directory: false,
@@ -80,11 +105,36 @@ export function SshServerCard({
           </button>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
+          {hostKeyMismatch && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="ai-set-ghost-button"
+                  disabled={resettingHostKey}
+                  onClick={trustNewHostKey}
+                >
+                  <ShieldCheck size={16} strokeWidth={1.5} />
+                  {resettingHostKey ? "更新中..." : "信任新主机密钥"}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                主机密钥与固定指纹不一致。仅在确认服务器重建 / 换机属于合法变更时点击，
+                会删除旧指纹并以本次连接的主机公钥重新固定。
+              </TooltipContent>
+            </Tooltip>
+          )}
           <TestButton
             disabled={!server.id.trim()}
-            onTest={() => invoke<string>("ssh_tool_test_server_config", { server })}
+            onTest={() =>
+              runTest(false).catch((error: unknown) => {
+                setHostKeyMismatch(String(error).includes("主机密钥"));
+                throw error;
+              })
+            }
             onResult={(result) => {
               if (!result) return;
+              if (result.status === "success") setHostKeyMismatch(false);
               onTested(result.status === "success" ? "ok" : "failed");
             }}
           />

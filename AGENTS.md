@@ -103,8 +103,10 @@ App
 
 **持久化：SQLite（rusqlite）**
 - 数据库文件：`~/.jkcodingagent/jkbot.sqlite3`
-- 配置/资源目录：`~/.jkcodingagent/`（含 `memory/`、`skills/`、`local_env/zsh/`、`chat-images/` 等）
-- 主要表：`dispatcher_sessions`、`dispatcher_messages`、`dispatcher_session_token_usage`、`dispatcher_tool_artifacts`、`chat_images`、`graph_plans`、`graph_node_runs`、分类、关键字索引、python 运行记录等（schema 见 `agent/db/schema.rs`）
+- 资源目录：`~/.jkcodingagent/`（含 `memory/`、`skills/`、`local_env/zsh/`、`chat-images/` 等）
+- **应用配置的权威源是全局库**（分层原则：应用生命周期配置一律全局一份；只有随项目变化之物放项目目录）：SSH 服务器/主机密钥/审计（`ssh_servers` 等表）、受管项目注册表（`projects` 表，v31 起替代 projects.json）、MCP 全局注册表（`mcp_servers` 表，与项目级 `mcp.json` 并存、同名项目覆盖）、应用级键值配置（`app_config` 表：theme/全局浏览器选项/RAG 配置）。
+- 主要表：`dispatcher_settings_v2`、`ssh_servers`/`ssh_host_keys`/`ssh_audit_log`、`projects`、`mcp_servers`、`app_config`、`sub_agents`、`dispatcher_sessions`、`dispatcher_messages`、`dispatcher_session_token_usage`、`dispatcher_tool_artifacts`、`chat_images`、`graph_plans`、`graph_node_runs`、分类、关键字索引、python 运行记录等（schema 见 `agent/db/schema.rs`）
+- 模型配置：`dispatcher_settings_v2.model_library` 为唯一权威；用途槽位以 `libraryId` 引用库条目（保存剥离凭据、读取回填），旧内联条目读取时自动挂接。环境变量回退（DASHSCOPE_*/MODEL_NAME 等）默认关闭，仅 `AHA_ALLOW_ENV_PROVIDER=1` 显式开启。
 
 > 修改数据结构时，**必须同步更新 `types.ts`（TS）与对应的 Rust 结构体/SQL schema**——否则新字段在序列化时会被静默丢弃。
 
@@ -112,11 +114,11 @@ App
 
 ## 项目配置
 
-应用级与项目级配置、智能体系统提示词/工具集、SSH/RAG/子智能体设置统一在 `AppSettingsDialog` 中编辑，落盘到 `~/.jkcodingagent/`。聊天图片保存至 `~/.jkcodingagent/chat-images/{session-title-slug}/`，路径写入 `chat_images` 表供智能体读取。
+应用级与项目级配置、智能体系统提示词/工具集、SSH/RAG/子智能体设置统一在 `AppSettingsDialog` 中编辑，存全局库。项目目录下仅保留随仓库共享的配置（`.jkcodingagent/config.toml` 的 `[git].commit_prompt`）与项目级 MCP（`.jkcodingagent/mcp.json`，同名覆盖全局注册表）。聊天图片保存至 `~/.jkcodingagent/chat-images/{session-title-slug}/`，路径写入 `chat_images` 表供智能体读取。
 
 **设置中心结构（2025 重构后）：** 外壳 `components/AppSettingsDialog.tsx`（左侧栏单层导航 + 内容区两层结构），页面与共享组件在 `components/settings/`：
 - `use-aha-settings.ts` — Aha 设置的统一 store + 失焦/变更自动保存管线（debounce 400ms 整体调用 `aha_save_settings_v2`），通过 React Context 提供给各设置页。
-- `providers/` — 「模型服务」与「模型用途」页。「模型服务」页（`ProvidersPage.tsx` + `ModelEntryCard.tsx`）按模型调用方式分标签（对话/视觉/图片生成/图片编辑/语音识别/语音合成/向量）维护**分类模型库**（`AhaSettingsV2.modelLibrary`，每条目独立持有 url/apiKey/model/别名/启停用，纯函数层在 `model-library.ts`）；「模型用途」页（`PurposesPage.tsx` + `PurposeSelect.tsx`）的下拉选项来自对应分类的库条目，选中后由 `provider-registry.ts` 的 `bindPurpose` 把 url/apiKey/model 拷贝进用途槽位（存储结构中每个用途仍各持 `DispatcherModelConfig[]`，运行时不变）。最近测试结果等无存储字段的 UI 偏好存 localStorage（`provider-prefs.ts`）。旧用户首次打开设置时按分类从已有用途配置播种模型库（`use-aha-settings.ts` + `seedModelLibrary`）。
+- `providers/` — 「模型服务」与「模型用途」页。「模型服务」页（`ProvidersPage.tsx` + `ModelEntryCard.tsx`）按模型调用方式分标签（对话/视觉/图片生成/图片编辑/语音识别/语音合成/向量）维护**分类模型库**（`AhaSettingsV2.modelLibrary`，每条目独立持有 url/apiKey/model/别名/启停用，纯函数层在 `model-library.ts`）；「模型用途」页（`PurposesPage.tsx` + `PurposeSelect.tsx`）的下拉选项来自对应分类的库条目，选中后由 `provider-registry.ts` 的 `bindPurpose` 写入携带 `libraryId` 的引用绑定——落库只保留引用（后端剥离 url/apiKey/model），读取时由库条目回填凭据，库更新后用途自动跟随。最近测试结果等无存储字段的 UI 偏好存 localStorage（`provider-prefs.ts`）。旧用户首次打开设置时按分类从已有用途配置播种模型库（`use-aha-settings.ts` + `seedModelLibrary`）。
 - `ssh/` — SSH 服务器页（状态点 + 自动保存 + 删除二次确认）。
 - 共享组件：`ConfirmDialog`（删除二次确认）、`TestButton`（测试三态：spinner / ✓ms / 错误展开）、`ApiKeyInput`（字段级明文切换）、`StatusBadge`、`EmptyState`、`FieldLabel`（术语 tooltip）、`Section`、`toast.ts` + `Toaster`。
 - 设置中心样式类统一 `.ai-set-*` 前缀（`styles/tailwind.css` 的 `@layer components` 末尾）。
@@ -244,5 +246,5 @@ impl AgentTool for MyTool {
 
 1. **图片文件**：`chat_images` 表记录通过外键 `ON DELETE CASCADE` 随 `dispatcher_messages` 删除，但 `~/.jkcodingagent/chat-images/{session-title-slug}/` 下的**实际文件不会被自动删除**。删除/清空会话前，必须先按 `workspace_id` 查询全部图片路径并删除文件，再删数据库记录。
 2. **工具产物文件**：`dispatcher_tool_artifacts` 指向的产物文件同样需显式清理。
-3. **项目删除**：目前缺少项目删除的后端命令与前端 UI；后续实现时必须遍历删除该项目下所有会话的关联资源（DB 记录 + 文件）。
+3. **项目删除**：`project_delete` 命令（`project/storage.rs`）在同一事务内遍历该项目全部会话执行与 `delete_project_session` 相同的级联清理，并删除项目行；提交后 best-effort 清理聊天图片文件与项目仓库内应用自有目录（`.jkcodingagent/browser-profile/`、`.jkcodingagent/local_env/`）。config.toml / mcp.json 可能随仓库共享给团队，保留不删。
 4. **通用约定**：任何与会话绑定的文件资源（图片、附件、缓存），在会话删除/清空时必须同步清理文件系统，不能只清 DB。

@@ -157,9 +157,13 @@ export function removeLibraryEntry(settings: AhaSettingsV2, id: string): AhaSett
 // ── 引用统计 ──────────────────────────────────────────────────────────────────
 
 function configMatchesEntry(
-  config: { url: string; apiKey: string; model: string },
+  config: { url: string; apiKey: string; model: string; libraryId?: string },
   entry: ModelLibraryEntry,
 ): boolean {
+  // 引用绑定优先按 libraryId 匹配（凭据由后端解析，url/apiKey 可能是回填值）。
+  if (config.libraryId?.trim()) {
+    return config.libraryId.trim() === entry.id;
+  }
   return (
     config.url.trim() === entry.url.trim() &&
     config.apiKey.trim() === entry.apiKey.trim() &&
@@ -168,14 +172,20 @@ function configMatchesEntry(
 }
 
 /**
- * 在模型库中查找与某用途绑定配置（url/apiKey/model）匹配的启用条目。
- * 设置页与聊天输入框的模型下拉用它确定「当前生效」的库条目，保证两处一致。
+ * 在模型库中查找与某用途绑定配置匹配的启用条目：引用绑定按 libraryId
+ * 匹配，旧内联绑定按 url/apiKey/model 匹配。设置页与聊天输入框的模型下拉
+ * 用它确定「当前生效」的库条目，保证两处一致。
  */
 export function findEnabledEntryForConfig(
   library: ModelLibraryEntry[],
-  config: { url: string; apiKey: string; model: string } | null | undefined,
+  config: { url: string; apiKey: string; model: string; libraryId?: string } | null | undefined,
 ): ModelLibraryEntry | undefined {
-  if (!config?.url.trim()) return undefined;
+  if (!config) return undefined;
+  const libraryId = config.libraryId?.trim();
+  if (libraryId) {
+    return library.find((entry) => entry.enabled !== false && libraryId === entry.id);
+  }
+  if (!config.url.trim()) return undefined;
   return library.find((entry) => entry.enabled !== false && configMatchesEntry(config, entry));
 }
 

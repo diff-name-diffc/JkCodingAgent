@@ -15,11 +15,63 @@ use tokio::sync::{oneshot, Mutex};
 use tokio::time::{timeout, Duration};
 
 use crate::platform::get_login_shell_path;
-use crate::project::config::{read_project_config, BrowserConfig};
 
 mod url;
 
 pub(crate) use url::normalize_browser_url;
+
+/// 全局浏览器选项（app_config 表 `browser` 键）。机器级用户偏好，
+/// 不随项目走；v33 前存放在项目 config.toml 的 [browser] 段。
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct BrowserConfig {
+    #[serde(default = "default_browser_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub proxy: String,
+    #[serde(default)]
+    pub locale: String,
+    #[serde(default)]
+    pub timezone: String,
+    #[serde(default = "default_browser_viewport_width")]
+    pub viewport_width: u32,
+    #[serde(default = "default_browser_viewport_height")]
+    pub viewport_height: u32,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_browser_enabled(),
+            proxy: String::new(),
+            locale: String::new(),
+            timezone: String::new(),
+            viewport_width: default_browser_viewport_width(),
+            viewport_height: default_browser_viewport_height(),
+        }
+    }
+}
+
+fn default_browser_enabled() -> bool {
+    true
+}
+
+fn default_browser_viewport_width() -> u32 {
+    1280
+}
+
+fn default_browser_viewport_height() -> u32 {
+    800
+}
+
+/// 读取全局浏览器配置；未配置时返回默认值。
+pub fn read_global_browser_config(db: &crate::agent::db::DispatcherDb) -> Result<BrowserConfig, String> {
+    match db.get_app_config_json(crate::agent::db::app_config::BROWSER_KEY) {
+        Ok(Some(raw)) => serde_json::from_str::<BrowserConfig>(&raw)
+            .map_err(|error| format!("解析全局浏览器配置失败：{error}")),
+        Ok(None) => Ok(BrowserConfig::default()),
+        Err(error) => Err(format!("读取全局浏览器配置失败：{error}")),
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,9 +145,9 @@ impl BrowserManager {
         }
 
         let project_path = PathBuf::from(project_path);
-        let options = load_launch_options(&project_path, &session_id)?;
+        let options = load_launch_options(&app, &project_path, &session_id)?;
         if !options.config.enabled {
-            return Err("CloakBrowser 已在项目配置中禁用：.jkcodingagent/config.toml [browser].enabled = false".to_string());
+            return Err("CloakBrowser 已在全局浏览器设置中禁用".to_string());
         }
         let profile_directory = options.profile_directory.clone();
         let user_data_dir = options.user_data_dir;
@@ -405,17 +457,20 @@ fn sanitize_profile_segment(value: &str) -> String {
 }
 
 fn load_launch_options(
+    app: &AppHandle,
     project_path: &Path,
     session_id: &str,
 ) -> Result<BrowserLaunchOptions, String> {
-    let config = read_project_config(project_path.to_string_lossy().to_string())?;
+    let db = app.state::<crate::agent::DispatcherState>();
+    let config = read_global_browser_config(db.db())?;
+    drop(db);
     let base_profile_dir = project_path.join(".jkcodingagent").join("browser-profile");
     let (user_data_dir, profile_directory) =
         resolve_browser_profile_dir(&base_profile_dir, session_id)?;
     Ok(BrowserLaunchOptions {
         user_data_dir,
         profile_directory,
-        config: config.browser,
+        config,
     })
 }
 

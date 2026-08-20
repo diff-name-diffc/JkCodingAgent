@@ -145,10 +145,7 @@ pub async fn graph_run_start(
                 return Err("没有可续跑的历史运行".to_string());
             };
             if !matches!(latest.status.as_str(), PLAN_FAILED | PLAN_CANCELLED) {
-                return Err(format!(
-                    "最近一次运行状态为 {}，无法续跑",
-                    latest.status
-                ));
+                return Err(format!("最近一次运行状态为 {}，无法续跑", latest.status));
             }
             RUN_MODE_RESUME.to_string()
         }
@@ -303,19 +300,15 @@ pub(crate) async fn catalog_for_workspace(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("找不到图计划所属会话：{workspace_id}"))?;
-    let workspace = tokio::task::spawn_blocking(move || {
-        crate::project::storage::load_projects()
-            .ok()
-            .and_then(|projects| {
-                projects
-                    .into_iter()
-                    .find(|project| project.id == project_id)
-                    .map(|project| project.path)
-            })
-    })
-    .await
-    .map_err(|error| error.to_string())?
-    .ok_or_else(|| "无法定位图计划所属项目".to_string())?;
+    let workspace = {
+        let db = state.db().clone();
+        let lookup = project_id.clone();
+        tokio::task::spawn_blocking(move || db.find_project(&lookup).ok().flatten())
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "无法定位图计划所属项目".to_string())?
+        .path
+    };
     state
         .project_mcp_registry()
         .ensure_recent(std::path::Path::new(&workspace))

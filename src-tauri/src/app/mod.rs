@@ -13,9 +13,7 @@ fn build_task_manager() -> TaskManager {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let project_mcp_registry = project::mcp::ProjectMcpRegistry::default();
-    let ssh_session_manager = ssh_tool::SshSessionManager::default();
     let dispatcher_mcp_registry = project_mcp_registry.clone();
-    let dispatcher_ssh_manager = ssh_session_manager.clone();
 
     tauri::Builder::default()
         .setup(move |app| {
@@ -25,7 +23,6 @@ pub fn run() {
             // 而不是裸 panic 导致无法启动且无任何提示。
             let dispatcher_state = tauri::async_runtime::block_on(DispatcherState::new(
                 dispatcher_mcp_registry.clone(),
-                dispatcher_ssh_manager.clone(),
             ));
             let dispatcher_state = match dispatcher_state {
                 Ok(state) => state,
@@ -39,6 +36,12 @@ pub fn run() {
                     return Err("初始化智能体核心状态失败".into());
                 }
             };
+            // SSH 管理器由 DispatcherState 内部基于共享 DB 连接池创建，
+            // 这里把同一实例注册给 Tauri 命令层（Clone 共享底层 Arc 与连接池）。
+            app.manage(dispatcher_state.ssh_manager());
+            // RAG 配置权威源同样在全局库：注入读取入口（store 在 builder 链注册）。
+            app.state::<rag::RagConfigStore>()
+                .attach_db(dispatcher_state.db().clone());
             app.manage(dispatcher_state);
 
             // 后台预热 login shell 环境，避免第一次启动任务时阻塞
@@ -65,7 +68,6 @@ pub fn run() {
         .manage(browser::BrowserManager::default())
         .manage(python_runner::PythonRunnerState::default())
         .manage(project_mcp_registry)
-        .manage(ssh_session_manager)
         .manage(workspace::RopeManager::new())
         .manage(rag::RagManager::default())
         .manage(rag::RagConfigStore::default())
@@ -144,12 +146,15 @@ pub fn run() {
             project::config::init_project_config,
             project::mcp::refresh_project_mcp_status,
             project::mcp::set_project_mcp_server_enabled,
+            project::mcp::mcp_get_global_config,
+            project::mcp::mcp_save_global_config,
             ssh_tool::ssh_tool_load_config,
             ssh_tool::ssh_tool_load_audit,
             ssh_tool::ssh_tool_save_config,
             ssh_tool::ssh_tool_test_server_config,
             project::storage::load_projects,
             project::storage::save_projects,
+            project::storage::project_delete,
             platform::app_settings::load_app_settings,
             platform::app_settings::save_app_settings,
             platform::notification::get_notifications,
@@ -158,6 +163,7 @@ pub fn run() {
             agent::commands::dispatcher_send_project_agent_message,
             agent::commands::dispatcher_send_chat_agent_message,
             agent::commands::dispatcher_list_messages,
+            agent::commands::dispatcher_get_tool_run_tree,
             agent::commands::dispatcher_get_session_token_usage,
             agent::commands::dispatcher_clear_messages,
             agent::commands::dispatcher_truncate_messages_from,
@@ -179,7 +185,6 @@ pub fn run() {
             agent::commands::aha_get_chat_category_agent_configs,
             agent::commands::aha_save_chat_category_agent_configs,
             agent::commands::aha_list_agent_tools,
-            agent::commands::aha_resolve_ssh_workspace,
             agent::commands::dispatcher_fetch_models,
             agent::commands::dispatcher_test_model,
             agent::commands::dispatcher_stop_run,

@@ -1110,12 +1110,17 @@ mod tests {
             temperature: 0.0,
             stream: true,
             enable_thinking: Some(false),
-            stream_options: Some(StreamOptions { include_usage: true }),
+            stream_options: Some(StreamOptions {
+                include_usage: true,
+            }),
             tools: None,
         };
         let value = serde_json::to_value(&with_extras).expect("request serializable");
         assert_eq!(value["enable_thinking"], serde_json::json!(false));
-        assert_eq!(value["stream_options"]["include_usage"], serde_json::json!(true));
+        assert_eq!(
+            value["stream_options"]["include_usage"],
+            serde_json::json!(true)
+        );
     }
 
     #[test]

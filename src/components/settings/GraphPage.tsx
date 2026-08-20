@@ -7,7 +7,7 @@ import { useAhaSettings } from "./use-aha-settings";
  */
 export function GraphPage() {
   const { settings, updateSettings } = useAhaSettings();
-  const graph = settings?.graph ?? { pauseBeforeWrite: false };
+  const graph = settings?.graph ?? { pauseBeforeWrite: true };
 
   return (
     <div className="ai-set-page">
@@ -26,8 +26,8 @@ export function GraphPage() {
               updateSettings((prev) => ({
                 ...prev,
                 graph: {
-                  ...(prev.graph ?? { pauseBeforeWrite: false }),
-                  pauseBeforeWrite: !(prev.graph?.pauseBeforeWrite ?? false),
+                  ...(prev.graph ?? { pauseBeforeWrite: true }),
+                  pauseBeforeWrite: !(prev.graph?.pauseBeforeWrite ?? true),
                 },
               }))
             }

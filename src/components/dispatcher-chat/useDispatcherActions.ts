@@ -13,6 +13,7 @@ import {
   planLiveToolActivity,
   startLiveToolActivity,
   finishLiveToolActivity,
+  updateLiveToolRunActivity,
 } from "../dispatcherChatView";
 import {
   clearDispatcherActiveRunId,
@@ -22,10 +23,7 @@ import {
   notifyDispatcherMessages,
 } from "../dispatcherSessionStore";
 import type { LiveSessionUpdater } from "./useLiveSessionState";
-import {
-  toErrorMessage,
-  createEmptyUsageStats,
-} from "./dispatcherChatUtils";
+import { toErrorMessage, createEmptyUsageStats } from "./dispatcherChatUtils";
 
 export interface UseDispatcherActionsOptions {
   sessionId: string;
@@ -155,7 +153,10 @@ export function useDispatcherActions({
             updateLiveSessionState(targetSessionId, (state) => ({
               ...state,
               assistantPlaceholder: "正在规划工具调用...",
-              liveToolCalls: planLiveToolActivity(state.liveToolCalls, event.data),
+              liveToolCalls: planLiveToolActivity(state.liveToolCalls, {
+                ...event.data,
+                workspaceId: targetSessionId,
+              }),
             }));
             break;
           case "toolStarted":
@@ -163,7 +164,10 @@ export function useDispatcherActions({
             updateLiveSessionState(targetSessionId, (state) => ({
               ...state,
               assistantPlaceholder: "正在执行工具...",
-              liveToolCalls: startLiveToolActivity(state.liveToolCalls, event.data),
+              liveToolCalls: startLiveToolActivity(state.liveToolCalls, {
+                ...event.data,
+                workspaceId: targetSessionId,
+              }),
             }));
             break;
           case "toolSummaryStarted":
@@ -173,21 +177,25 @@ export function useDispatcherActions({
             if (!isActiveRun) return;
             updateLiveSessionState(targetSessionId, (state) => ({
               ...state,
-              streamingSegments: appendToolSummarySegment(
-                state.streamingSegments,
-                event.data,
-              ),
+              streamingSegments: appendToolSummarySegment(state.streamingSegments, event.data),
             }));
             break;
           case "toolFinished":
             if (!isActiveRun) return;
             updateLiveSessionState(targetSessionId, (state) => ({
               ...state,
-              liveToolCalls: finishLiveToolActivity(state.liveToolCalls, event.data),
+              liveToolCalls: finishLiveToolActivity(state.liveToolCalls, {
+                ...event.data,
+                workspaceId: targetSessionId,
+              }),
             }));
             break;
           case "toolRunUpdated":
             if (!isActiveRun || event.data.run.workspaceId !== targetSessionId) return;
+            updateLiveSessionState(targetSessionId, (state) => ({
+              ...state,
+              liveToolCalls: updateLiveToolRunActivity(state.liveToolCalls, event.data.run),
+            }));
             break;
           case "finished":
             if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
@@ -223,10 +231,7 @@ export function useDispatcherActions({
       };
       return onEvent;
     },
-    [
-      refreshSessionTokenUsage,
-      updateLiveSessionState,
-    ],
+    [refreshSessionTokenUsage, updateLiveSessionState],
   );
 
   const enqueueDispatcherRun = useCallback(
@@ -279,11 +284,7 @@ export function useDispatcherActions({
   );
 
   const sendUserMessage = useCallback(
-    async (
-      rawText: string,
-      images: ImageSegment[] = [],
-      targetSessionId = sessionId,
-    ) => {
+    async (rawText: string, images: ImageSegment[] = [], targetSessionId = sessionId) => {
       const text = rawText.trim();
       if (!text && images.length === 0) return;
 

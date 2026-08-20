@@ -80,8 +80,7 @@ pub(crate) fn build_summary_provider(
     );
     // 验收是短结论分类任务：低温 + 关思考。推理模型的思考 token 与可见输出
     // 共享 max_tokens 预算，若带着思考调用，思考链可能耗尽预算导致结论为空。
-    OpenAiCompatProvider::new(api_key, api_base, model, VERIFY_MAX_TOKENS, 0.0)
-        .with_thinking(false)
+    OpenAiCompatProvider::new(api_key, api_base, model, VERIFY_MAX_TOKENS, 0.0).with_thinking(false)
 }
 
 /// 执行验收。永不失败：任何异常回退 unknown + 事实罗列。
@@ -271,19 +270,16 @@ fn classify_verdict_line_detailed(line: &str) -> Option<(&'static str, String, b
         .trim_start_matches(|c: char| matches!(c, '#' | '*' | '>' | '-' | '`'))
         .trim();
     let upper = stripped.to_ascii_uppercase();
-    let (status, keyword_len) =
-        VERDICT_KEYWORDS
-            .iter()
-            .find_map(|(keyword, status)| {
-                let rest = upper.strip_prefix(*keyword)?;
-                // 词边界：下一个字符不是 ASCII 字母数字/下划线即视为边界
-                // （空白、标点、中文等均可；行尾天然成立）。
-                let boundary = rest
-                    .chars()
-                    .next()
-                    .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
-                boundary.then_some((*status, keyword.len()))
-            })?;
+    let (status, keyword_len) = VERDICT_KEYWORDS.iter().find_map(|(keyword, status)| {
+        let rest = upper.strip_prefix(*keyword)?;
+        // 词边界：下一个字符不是 ASCII 字母数字/下划线即视为边界
+        // （空白、标点、中文等均可；行尾天然成立）。
+        let boundary = rest
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+        boundary.then_some((*status, keyword.len()))
+    })?;
     // to_ascii_uppercase 对 ASCII 逐字节映射、不改变长度；前 keyword_len 字节
     // 与 ASCII 关键词相同，按该字节偏移截取剩余部分是安全的。
     let raw_rest = &stripped[keyword_len..];
@@ -532,7 +528,10 @@ mod tests {
         };
         let facts = build_facts(&definition, &Map::new(), &runs);
         assert!(facts.contains("失败 20"), "条数统计按全量，不受预算影响");
-        assert!(facts.contains("条失败明细因体积限制未列出"), "超预算条数需标注");
+        assert!(
+            facts.contains("条失败明细因体积限制未列出"),
+            "超预算条数需标注"
+        );
         let detail_len = facts.chars().count();
         assert!(
             detail_len < 20 * (ERROR_BUDGET_CHARS + 10),

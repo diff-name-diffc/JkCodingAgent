@@ -301,6 +301,27 @@ impl DispatcherDb {
             .context("load visible dispatcher messages")
     }
 
+    /// 当前会话实际绑定的聊天图片文件。运行时可把这些精确文件加入路径授权，
+    /// 无需放行整个全局 chat-images 目录或其他会话的图片。
+    pub fn list_chat_image_paths(&self, workspace_id: &str) -> Result<Vec<PathBuf>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT path FROM chat_images
+                 WHERE workspace_id = ?1
+                 GROUP BY path
+                 ORDER BY MIN(created_at) ASC, path ASC",
+            )
+            .context("prepare chat image path list")?;
+        let paths = stmt
+            .query_map(params![workspace_id], |row| {
+                row.get::<_, String>(0).map(PathBuf::from)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("collect chat image paths")?;
+        Ok(paths)
+    }
+
     /// 统计可见消息条数（G7-11：Finished 事件轻量负载的对账依据）。
     pub fn count_visible_messages(&self, workspace_id: &str) -> Result<usize> {
         let conn = self.conn()?;
@@ -532,11 +553,12 @@ impl DispatcherDb {
     pub fn truncate_messages_from(&self, workspace_id: &str, message_id: &str) -> Result<u64> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
-        let target_rowid: i64 = tx
+        let (target_rowid, target_created_at): (i64, String) = tx
             .query_row(
-                "SELECT rowid FROM dispatcher_messages WHERE workspace_id = ?1 AND id = ?2",
+                "SELECT rowid, created_at FROM dispatcher_messages
+                 WHERE workspace_id = ?1 AND id = ?2",
                 params![workspace_id, message_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .context("lookup dispatcher message rowid")?
@@ -554,10 +576,14 @@ impl DispatcherDb {
         .context("delete truncated dispatcher tool artifacts")?;
         tx.execute(
             "DELETE FROM dispatcher_tool_runs
-             WHERE workspace_id = ?1 AND message_id IN (
-                 SELECT id FROM dispatcher_messages
-                 WHERE workspace_id = ?1 AND rowid >= ?2)",
-            params![workspace_id, target_rowid],
+             WHERE workspace_id = ?1 AND (
+                 message_id IN (
+                     SELECT id FROM dispatcher_messages
+                     WHERE workspace_id = ?1 AND rowid >= ?2
+                 )
+                 OR (message_id IS NULL AND created_at >= ?3)
+             )",
+            params![workspace_id, target_rowid, target_created_at],
         )
         .context("delete truncated dispatcher tool runs")?;
 
@@ -665,7 +691,8 @@ impl DispatcherDb {
         )
         .context("update project session updated_at after truncate")?;
 
-        tx.commit().context("commit dispatcher message truncation")?;
+        tx.commit()
+            .context("commit dispatcher message truncation")?;
 
         // 数据库截断已提交，图片文件清理失败不应把截断误报为失败。改为 best-effort。
         if let Err(error) = remove_chat_image_files(&orphan_paths) {
@@ -808,19 +835,35 @@ impl DispatcherDb {
         created_at: &str,
     ) -> Result<Vec<DispatcherToolArtifactRef>> {
         let mut refs = Vec::with_capacity(drafts.len());
+        let tool_run_id = match tool_call_id {
+            Some(tool_call_id) => tx
+                .query_row(
+                    "SELECT id FROM dispatcher_tool_runs
+                     WHERE workspace_id = ?1 AND tool_call_id = ?2
+                     ORDER BY created_at DESC, rowid DESC
+                     LIMIT 1",
+                    params![workspace_id, tool_call_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .context("resolve dispatcher tool run for artifact")?,
+            None => None,
+        };
 
         for draft in drafts {
             let artifact_id = Uuid::new_v4().to_string();
             tx.execute(
                 "INSERT INTO dispatcher_tool_artifacts (
-                    id, workspace_id, message_id, tool_call_id, tool_name, title, kind, preview, content, char_count, line_count, created_at
+                    id, workspace_id, message_id, tool_call_id, tool_run_id, tool_name,
+                    title, kind, preview, content, char_count, line_count, created_at
                  )
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     &artifact_id,
                     workspace_id,
                     message_id,
                     tool_call_id,
+                    &tool_run_id,
                     tool_name,
                     &draft.title,
                     &draft.kind,
@@ -979,6 +1022,14 @@ impl DispatcherDb {
             .context("count_visible_messages spawn_blocking")?
     }
 
+    pub async fn list_chat_image_paths_async(&self, workspace_id: &str) -> Result<Vec<PathBuf>> {
+        let db = self.clone();
+        let workspace_id = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || db.list_chat_image_paths(&workspace_id))
+            .await
+            .context("list_chat_image_paths spawn_blocking")?
+    }
+
     pub async fn add_visible_message_with_usage_async(
         &self,
         workspace_id: &str,
@@ -1049,6 +1100,10 @@ impl DispatcherDb {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use rusqlite::params;
+
     use super::DispatcherDb;
 
     fn test_db() -> DispatcherDb {
@@ -1084,5 +1139,59 @@ mod tests {
         add_text_message(&db, &other.id, "user", "另一会话的消息");
         assert_eq!(db.count_visible_messages(&session.id).expect("count"), 2);
         assert_eq!(db.count_visible_messages(&other.id).expect("count"), 1);
+    }
+
+    #[test]
+    fn chat_image_path_list_is_session_scoped() {
+        let db = test_db();
+        let first = db
+            .create_chat_session("first", Some("tech"))
+            .expect("create first session");
+        let second = db
+            .create_chat_session("second", Some("tech"))
+            .expect("create second session");
+        let first_message = db
+            .add_visible_message_from_segments(
+                &first.id,
+                "user",
+                super::super::content::content_to_segments_json("first"),
+            )
+            .expect("add first message");
+        let second_message = db
+            .add_visible_message_from_segments(
+                &second.id,
+                "user",
+                super::super::content::content_to_segments_json("second"),
+            )
+            .expect("add second message");
+        let conn = db.conn().expect("db conn");
+        for (index, (workspace_id, message_id, path)) in [
+            (&first.id, &first_message.id, "/tmp/first.png"),
+            (&second.id, &second_message.id, "/tmp/second.png"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO chat_images (
+                    id, image_id, workspace_id, message_id, segment_index, path, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
+                params![
+                    format!("row-{index}"),
+                    format!("image-{index}"),
+                    workspace_id,
+                    message_id,
+                    path,
+                    format!("2026-01-01T00:00:0{index}Z"),
+                ],
+            )
+            .expect("insert chat image");
+        }
+
+        assert_eq!(
+            db.list_chat_image_paths(&first.id)
+                .expect("list first paths"),
+            vec![PathBuf::from("/tmp/first.png")]
+        );
     }
 }

@@ -528,10 +528,7 @@ mod tests {
         assert_eq!(definition.nodes[0].base_tool_group, BaseToolGroup::Coding);
         assert_eq!(definition.nodes[0].export_policy, ExportPolicy::Full);
         assert_eq!(definition.nodes[0].expected_files, vec!["src/a.rs"]);
-        assert_eq!(
-            definition.inherits_from.as_ref().unwrap().plan_id,
-            "p1"
-        );
+        assert_eq!(definition.inherits_from.as_ref().unwrap().plan_id, "p1");
     }
 
     #[test]
@@ -551,11 +548,17 @@ mod tests {
         )
         .unwrap();
         definition.upgrade_legacy();
-        assert_eq!(definition.version, GRAPH_DEFINITION_VERSION, "v1 等历史版本统一升级");
+        assert_eq!(
+            definition.version, GRAPH_DEFINITION_VERSION,
+            "v1 等历史版本统一升级"
+        );
 
         definition.version = 2;
         definition.upgrade_legacy();
-        assert_eq!(definition.version, GRAPH_DEFINITION_VERSION, "v2 升级路径不回归");
+        assert_eq!(
+            definition.version, GRAPH_DEFINITION_VERSION,
+            "v2 升级路径不回归"
+        );
 
         definition.version = GRAPH_DEFINITION_VERSION + 1;
         definition.upgrade_legacy();
@@ -573,7 +576,10 @@ mod tests {
         )
         .unwrap();
         definition.normalize_ids();
-        assert_eq!(definition.state_keys[0].key, "key1", "定义侧 key 与引用侧同命名空间归一");
+        assert_eq!(
+            definition.state_keys[0].key, "key1",
+            "定义侧 key 与引用侧同命名空间归一"
+        );
         assert_eq!(definition.inherits_from.as_ref().unwrap().plan_id, "p1");
         assert_eq!(definition.inherits_from.as_ref().unwrap().run_id, "r1");
         let node = &definition.nodes[0];
@@ -606,9 +612,15 @@ mod tests {
             Some("nodePhaseChanged"),
             "变体名按 rename_all_fields 取 camelCase"
         );
-        let data = value.get("data").and_then(Value::as_object).expect("data 为对象");
+        let data = value
+            .get("data")
+            .and_then(Value::as_object)
+            .expect("data 为对象");
         assert_eq!(data.get("nodeId").and_then(Value::as_str), Some("n1"));
-        assert_eq!(data.get("phase").and_then(Value::as_str), Some(NODE_PHASE_THINKING));
+        assert_eq!(
+            data.get("phase").and_then(Value::as_str),
+            Some(NODE_PHASE_THINKING)
+        );
 
         // 无字段变体：data 为空对象，event 键名稳定。
         let payload = GraphRunEventPayload {
@@ -620,7 +632,10 @@ mod tests {
             event: GraphRunEvent::RunCancelled {},
         };
         let value = serde_json::to_value(&payload).unwrap();
-        assert_eq!(value.get("event").and_then(Value::as_str), Some("runCancelled"));
+        assert_eq!(
+            value.get("event").and_then(Value::as_str),
+            Some("runCancelled")
+        );
         assert_eq!(value.get("data"), Some(&serde_json::json!({})));
 
         // NodeCancelled：取消与跳过是不同语义，event 键名必须与
@@ -636,8 +651,14 @@ mod tests {
             },
         };
         let value = serde_json::to_value(&payload).unwrap();
-        assert_eq!(value.get("event").and_then(Value::as_str), Some("nodeCancelled"));
-        let data = value.get("data").and_then(Value::as_object).expect("data 为对象");
+        assert_eq!(
+            value.get("event").and_then(Value::as_str),
+            Some("nodeCancelled")
+        );
+        let data = value
+            .get("data")
+            .and_then(Value::as_object)
+            .expect("data 为对象");
         assert_eq!(data.get("nodeId").and_then(Value::as_str), Some("n1"));
     }
 }

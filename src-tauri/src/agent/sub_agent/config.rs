@@ -239,7 +239,9 @@ mod tests {
 
     #[test]
     fn browser_agent_default_passes_validation() {
-        base_config().validate().expect("default config must be valid");
+        base_config()
+            .validate()
+            .expect("default config must be valid");
     }
 
     #[test]

@@ -1,8 +1,6 @@
-use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
-use futures::future::join_all;
 use tauri::ipc::Channel;
 use tokio::sync::watch;
 
@@ -11,11 +9,12 @@ use crate::agent::common::{
     persist_tool_calls_message,
 };
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
-use crate::agent::llm::{LlmResponse, OpenAiCompatProvider, RequestedToolCall};
+use crate::agent::llm::{ChatMessage, LlmResponse, OpenAiCompatProvider, RequestedToolCall};
 use crate::agent::run_loop::core::{LoopProtocolAction, RunLoopToolOutcome};
 use crate::agent::run_loop::AgentEvent;
 use crate::agent::tools::{
-    ToolAction, ToolContext, ToolResult, ToolRunFinishUpdate, ToolRuntime, ToolStatus,
+    CapabilitySet, ToolAction, ToolContext, ToolResult, ToolRunFinishUpdate, ToolRuntime,
+    ToolStatus,
 };
 
 use super::graph_submit::SubmitGraphInterception;
@@ -25,11 +24,11 @@ use super::helpers::{
 };
 use super::OrchestratorAgent;
 
-pub(super) struct ExecutedToolCall {
-    pub tool_call: RequestedToolCall,
-    pub result: ToolResult,
-    pub run_id: Option<String>,
-    pub graph_action: Option<LoopProtocolAction>,
+#[derive(Default)]
+struct PersistedProjectToolOutcome {
+    retryable: bool,
+    final_message: Option<String>,
+    fatal_message: Option<String>,
 }
 
 // ─── Tool execution impl ──────────────────────────────────────────────────────
@@ -49,12 +48,20 @@ impl OrchestratorAgent {
         workspace_id: &str,
         on_event: &Channel<AgentEvent>,
         response: LlmResponse,
-        allowed_tool_names: &HashSet<String>,
+        direct_capabilities: &CapabilitySet,
+        runtime_capabilities: &CapabilitySet,
         tool_context: &ToolContext,
         cancel_rx: &watch::Receiver<bool>,
         request_provider: &OpenAiCompatProvider,
         usage_tracker: &mut crate::agent::common::UsageTracker,
     ) -> Result<RunLoopToolOutcome> {
+        if response.tool_calls.len() > crate::agent::tools::MAX_TOOL_CALLS_PER_BATCH {
+            anyhow::bail!(
+                "模型单轮返回 {} 个工具调用，超过运行时上限 {}；已在持久化或执行前拒绝。",
+                response.tool_calls.len(),
+                crate::agent::tools::MAX_TOOL_CALLS_PER_BATCH
+            );
+        }
         let workspace = tool_context.workspace.as_path();
         // Persist the assistant tool-call message before executing tools. The LLM protocol expects
         // later tool results to answer a concrete assistant tool_call_id, so this write is part of
@@ -96,254 +103,166 @@ impl OrchestratorAgent {
         // 用量不再 fire-and-forget 静默丢失。
         let mut usage_persist_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
-        // 按模型给出的顺序执行工具，但把相邻的只读工具合并为一个并行组。
-        // message / submit_graph 非只读，保持严格串行。
+        // 项目编排器的模型可见面只有 ToolProgram 与控制面工具，顶层严格串行；
+        // 数据面并行只能在经过静态验证和有界调度的 ToolProgram 内发生。
         let mut tool_call_index = 0usize;
-        'outer: while tool_call_index < tool_calls.len() {
+        while tool_call_index < tool_calls.len() {
             if cancellation_requested(cancel_rx) {
                 break;
             }
 
-            let readonly_end =
-                common::readonly_tool_run_end(&self.tools, workspace, &tool_calls, tool_call_index);
-            let ready_tool_results = if readonly_end.saturating_sub(tool_call_index) >= 2 {
-                let run = &tool_calls[tool_call_index..readonly_end];
-                let results = self
-                    .execute_parallel_readonly_tools(
-                        db,
-                        workspace_id,
-                        run,
-                        tool_context,
-                        on_event,
-                        allowed_tool_names,
-                    )
-                    .await?;
-                let items = run
-                    .iter()
-                    .cloned()
-                    .zip(results)
-                    .map(|(tool_call, (result, run_id))| ExecutedToolCall {
-                        tool_call,
-                        result,
-                        run_id,
-                        graph_action: None,
-                    })
-                    .collect::<Vec<_>>();
-                tool_call_index = readonly_end;
-                items
-            } else {
-                let tool_call = tool_calls[tool_call_index].clone();
-                tool_call_index += 1;
-                let tool_args_json = args_map
-                    .get(&tool_call.id)
-                    .cloned()
-                    .unwrap_or_else(|| "{}".to_string());
-                emit(
-                    on_event,
-                    AgentEvent::ToolStarted {
-                        tool_call_id: tool_call.id.clone(),
-                        name: tool_call.name.clone(),
-                        arguments: tool_args_json,
-                    },
-                );
-                let run_id = self
-                    .create_and_start_tool_run(db, workspace_id, workspace, on_event, &tool_call)
-                    .await?;
+            let mut tool_call = tool_calls[tool_call_index].clone();
+            tool_call_index += 1;
+            let tool_args_json = args_map
+                .get(&tool_call.id)
+                .cloned()
+                .unwrap_or_else(|| "{}".to_string());
+            emit(
+                on_event,
+                AgentEvent::ToolStarted {
+                    tool_call_id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    arguments: tool_args_json,
+                },
+            );
+            let run_id = self
+                .create_and_start_tool_run(db, workspace_id, workspace, on_event, &tool_call)
+                .await?;
 
-                // submit_graph 协议拦截：真正的动作（校验/落库/广播）在这里完成，
-                // 壳工具的 execute 只负责回显。
-                let (result, graph_action) = if tool_call.name == "submit_graph" {
-                    match self
-                        .intercept_submit_graph(
-                            db,
-                            workspace_id,
-                            &tool_call,
-                            graph_submitted_this_batch,
-                        )
-                        .await?
-                    {
-                        SubmitGraphInterception::Submitted {
-                            display_text,
-                            action,
-                        } => {
-                            graph_submitted_this_batch = true;
-                            (ToolResult::success_text(display_text), Some(action))
-                        }
-                        SubmitGraphInterception::Rejected { error } => {
-                            (ToolResult::recoverable_error(error), None)
-                        }
-                    }
-                } else if tool_call.name == "graph_plan_report" {
-                    // graph_plan_report 协议拦截：返回最近运行的紧凑报告，不收口本轮，
-                    // 供模型决定答复用户或提交 inheritsFrom 修复图（反思闭环）。
-                    // 拦截硬错误（DB 读取失败等）转为可重试工具错误交回模型，
-                    // 与 submit_graph 分支保持一致：避免以 Err 中止本轮编排，
-                    // 留下永久 started 的悬挂运行记录，且让模型拿到失败反馈。
-                    match self
-                        .intercept_graph_plan_report(db, workspace_id, &tool_call)
-                        .await
-                    {
-                        // from_text 按「错误：」前缀契约分类：显式 planId 不存在等
-                        // 业务错误会进入可重试通道交回模型纠正（审查项 G8-17）。
-                        Ok(report) => (ToolResult::from_text(report), None),
-                        Err(error) => (
-                            ToolResult::recoverable_error(format!(
-                                "读取执行图运行报告失败：{error:#}"
-                            )),
-                            None,
-                        ),
-                    }
-                } else {
-                    (
-                        ToolRuntime::execute_tool(
-                            &self.tools,
-                            workspace,
-                            allowed_tool_names,
-                            &tool_call,
-                            tool_context,
-                        )
-                        .await,
-                        None,
-                    )
-                };
-                vec![ExecutedToolCall {
-                    tool_call,
-                    result,
-                    run_id: Some(run_id),
-                    graph_action,
-                }]
+            // 控制面协议不能借“宿主拦截”绕过模型可见能力和权威 JSON Schema。
+            // 先按本轮 direct grant 授权，再走与 Broker 同源的 default+校验路径；
+            // 只有合法的 effective arguments 才能触发落图/报告等副作用。
+            let prepared_arguments = if !direct_capabilities.contains(&tool_call.name) {
+                Err(ToolResult::recoverable_error(format!(
+                    "错误：禁止调用工具 '{}'；该控制面能力未授予本轮模型。",
+                    tool_call.name
+                )))
+            } else {
+                self.tools.prepare_control_arguments(
+                    workspace,
+                    &tool_call.name,
+                    &tool_call.arguments,
+                )
             };
 
-            for executed in ready_tool_results {
-                if cancellation_requested(cancel_rx) {
-                    break 'outer;
-                }
-                let tool_call = executed.tool_call;
-                let result = executed.result;
-                let run_id = executed.run_id;
-                let result_text = result.output_for_llm();
-                let result_metadata_json = result.run_metadata_json();
-
-                // submit_graph 成功：按协议动作处理——持久化工具消息保证下一轮
-                // LLM 请求的因果链完整，动作本身交给 resolve_loop_outcome 收口。
-                if let Some(action) = executed.graph_action {
-                    let tool_message = self
-                        .emit_tool_result_message(
-                            db,
-                            workspace_id,
-                            on_event,
-                            &tool_call,
-                            &result_text,
-                        )
-                        .await?;
-                    if let Some(message) = tool_message.to_llm_message() {
-                        llm_messages.push(message);
-                    }
-                    if let Some(run_id) = &run_id {
-                        self.finish_tool_run(
-                            db,
-                            on_event,
-                            run_id,
-                            "succeeded",
-                            Some("raw"),
-                            Some(&tool_message.id),
+            // 控制面/运行时协议由编排器拦截；壳工具自身永不直接执行。
+            let (result, graph_action) = match prepared_arguments {
+                Err(result) => (result, None),
+                Ok(arguments) => {
+                    tool_call.arguments = arguments;
+                    if tool_call.name == "run_tool_program" {
+                        (
+                            self.intercept_tool_program(
+                                db,
+                                workspace_id,
+                                on_event,
+                                &tool_call,
+                                &run_id,
+                                runtime_capabilities,
+                                tool_context,
+                                cancel_rx,
+                            )
+                            .await,
                             None,
+                        )
+                    } else if tool_call.name == "submit_graph" {
+                        match self
+                            .intercept_submit_graph(
+                                db,
+                                workspace_id,
+                                &tool_call,
+                                graph_submitted_this_batch,
+                            )
+                            .await
+                        {
+                            Ok(SubmitGraphInterception::Submitted {
+                                display_text,
+                                action,
+                            }) => {
+                                graph_submitted_this_batch = true;
+                                (ToolResult::success_text(display_text), Some(action))
+                            }
+                            Ok(SubmitGraphInterception::Rejected { error }) => {
+                                (ToolResult::recoverable_error(error), None)
+                            }
+                            Err(error) => (
+                                ToolResult::fatal_error(format!(
+                                    "提交执行图协议处理失败：{error:#}"
+                                )),
+                                None,
+                            ),
+                        }
+                    } else if tool_call.name == "graph_plan_report" {
+                        // graph_plan_report 协议拦截：返回最近运行的紧凑报告，不收口本轮，
+                        // 供模型决定答复用户或提交 inheritsFrom 修复图（反思闭环）。
+                        match self
+                            .intercept_graph_plan_report(db, workspace_id, &tool_call)
+                            .await
+                        {
+                            Ok(report) => (ToolResult::from_text(report), None),
+                            Err(error) => (
+                                ToolResult::recoverable_error(format!(
+                                    "读取执行图运行报告失败：{error:#}"
+                                )),
+                                None,
+                            ),
+                        }
+                    } else {
+                        (
+                            ToolRuntime::execute_tool_with_cancellation(
+                                &self.tools,
+                                workspace,
+                                direct_capabilities,
+                                &tool_call,
+                                tool_context,
+                                cancel_rx.clone(),
+                            )
+                            .await,
                             None,
-                            Some("submit_graph"),
-                            result_metadata_json.as_deref(),
                         )
-                        .await?;
                     }
-                    protocol_actions.push(action);
-                    continue;
                 }
+            };
 
-                if matches!(result.status, ToolStatus::RecoverableError)
-                    || is_retryable_tool_error(&tool_call.name, &result_text)
-                {
-                    let retry_message = self
-                        .emit_tool_retry_feedback(
-                            db,
-                            workspace_id,
-                            on_event,
-                            &tool_call,
-                            &result_text,
-                        )
-                        .await?;
-                    if let Some(run_id) = &run_id {
-                        self.finish_tool_run(
-                            db,
-                            on_event,
-                            run_id,
-                            "recoverable_error",
-                            retry_message.tool_result_mode.as_deref(),
-                            Some(&retry_message.id),
-                            Some("retryable_tool_error"),
-                            Some(&result_text),
-                            None,
-                            result_metadata_json.as_deref(),
-                        )
-                        .await?;
-                    }
-                    saw_retryable_tool_error = true;
-                    if let Some(message) = retry_message.to_llm_message() {
-                        llm_messages.push(message);
-                    }
-                    continue;
-                }
-
-                // 普通工具可能返回超大 payload。喂回模型前先压缩，
-                // 但原始结果仍可通过 DB/UI 查到。
-                let summary_model = self.summary_model();
-                let summary_provider = self.summary_provider(request_provider);
-                let tool_message = common::persist_tool_result_with_compression(
+            // 取消只阻止下一次尚未开始的调用。当前结果已经执行完成（控制面甚至
+            // 可能已提交图计划），必须先落 tool message、收尾 run 并保留协议动作。
+            let persisted = self
+                .persist_project_tool_result(
                     db,
                     workspace_id,
+                    workspace,
                     on_event,
                     &tool_call,
-                    &self.tools,
-                    &result_text,
-                    &summary_provider,
-                    &summary_model,
-                    |usage| {
-                        record_run_token_usage(
-                            db,
-                            workspace_id,
-                            &summary_model,
-                            DispatcherSessionTokenUsageSource::Summary,
-                            usage,
-                            usage_tracker,
-                            on_event,
-                            &mut usage_persist_handles,
-                        );
-                    },
+                    result,
+                    graph_action,
+                    &run_id,
+                    request_provider,
+                    usage_tracker,
+                    &mut usage_persist_handles,
+                    &mut llm_messages,
+                    &mut protocol_actions,
                 )
-                .await?;
-                if let Some(run_id) = &run_id {
-                    self.finish_tool_run(
+                .await;
+            let persisted = match persisted {
+                Ok(persisted) => persisted,
+                Err(error) => {
+                    self.finish_started_run_after_error(
                         db,
+                        workspace_id,
                         on_event,
-                        run_id,
-                        result.status.as_run_status(),
-                        tool_message.tool_result_mode.as_deref(),
-                        Some(&tool_message.id),
-                        result.status.error_kind(),
-                        result.status.error_kind().map(|_| result_text.as_str()),
-                        result.action.as_ref().map(ToolAction::kind),
-                        result_metadata_json.as_deref(),
+                        &run_id,
+                        &error,
                     )
-                    .await?;
+                    .await;
+                    return Err(error);
                 }
-
-                if let Some(message) = tool_message.to_llm_message() {
-                    llm_messages.push(message);
-                }
-
-                if let Some(ToolAction::FinalMessage { content }) = &result.action {
-                    final_message = Some(content.clone());
-                } else if tool_call.name == "message" {
-                    final_message = extract_message_content(&tool_call.arguments);
-                }
+            };
+            saw_retryable_tool_error |= persisted.retryable;
+            if persisted.final_message.is_some() {
+                final_message = persisted.final_message;
+            }
+            if let Some(message) = persisted.fatal_message {
+                anyhow::bail!(message);
             }
         }
 
@@ -364,57 +283,192 @@ impl OrchestratorAgent {
         })
     }
 
-    pub(super) async fn execute_parallel_readonly_tools(
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_project_tool_result(
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
-        tool_calls: &[RequestedToolCall],
-        tool_context: &ToolContext,
+        workspace: &std::path::Path,
         on_event: &Channel<AgentEvent>,
-        allowed_tool_names: &HashSet<String>,
-    ) -> Result<Vec<(ToolResult, Option<String>)>> {
-        let mut run_ids = Vec::with_capacity(tool_calls.len());
-        for tool_call in tool_calls {
-            // Even readonly tools get run records before parallel execution so the UI can display
-            // deterministic start events instead of a burst of unordered completions.
-            let enriched = self
-                .tools
-                .effective_args(&tool_call.name, &tool_call.arguments);
-            // G9-14：序列化失败上抛（「错误：」前缀），不再静默降级为 `{}`。
-            let arguments_json = common::serialize_tool_arguments(&tool_call.name, &enriched)?;
-            emit(
-                on_event,
-                AgentEvent::ToolStarted {
-                    tool_call_id: tool_call.id.clone(),
-                    name: tool_call.name.clone(),
-                    arguments: arguments_json,
-                },
-            );
-            let run_id = self
-                .create_and_start_tool_run(
-                    db,
-                    workspace_id,
-                    &tool_context.workspace,
-                    on_event,
-                    tool_call,
-                )
+        tool_call: &RequestedToolCall,
+        result: ToolResult,
+        graph_action: Option<LoopProtocolAction>,
+        run_id: &str,
+        request_provider: &OpenAiCompatProvider,
+        usage_tracker: &mut crate::agent::common::UsageTracker,
+        usage_persist_handles: &mut Vec<tokio::task::JoinHandle<()>>,
+        llm_messages: &mut Vec<ChatMessage>,
+        protocol_actions: &mut Vec<LoopProtocolAction>,
+    ) -> Result<PersistedProjectToolOutcome> {
+        let result_text = result.output_for_llm();
+        let result_metadata_json = result.run_metadata_json();
+
+        if let Some(action) = graph_action {
+            let tool_message = self
+                .emit_tool_result_message(db, workspace_id, on_event, tool_call, &result_text)
                 .await?;
-            run_ids.push(Some(run_id));
+            self.finish_tool_run(
+                db,
+                on_event,
+                run_id,
+                "succeeded",
+                Some("raw"),
+                Some(&tool_message.id),
+                None,
+                None,
+                Some("submit_graph"),
+                result_metadata_json.as_deref(),
+            )
+            .await?;
+            if let Some(message) = tool_message.to_llm_message() {
+                llm_messages.push(message);
+            }
+            protocol_actions.push(action);
+            return Ok(PersistedProjectToolOutcome::default());
         }
 
-        let results = join_all(tool_calls.iter().map(|tool_call| async move {
-            ToolRuntime::execute_tool(
-                &self.tools,
-                &tool_context.workspace,
-                allowed_tool_names,
-                tool_call,
-                tool_context,
+        if matches!(result.status, ToolStatus::RecoverableError)
+            || is_retryable_tool_error(&tool_call.name, &result_text)
+        {
+            let retry_message = self
+                .emit_tool_retry_feedback(db, workspace_id, on_event, tool_call, &result_text)
+                .await?;
+            self.finish_tool_run(
+                db,
+                on_event,
+                run_id,
+                "recoverable_error",
+                retry_message.tool_result_mode.as_deref(),
+                Some(&retry_message.id),
+                Some("retryable_tool_error"),
+                Some(&result_text),
+                None,
+                result_metadata_json.as_deref(),
+            )
+            .await?;
+            if let Some(message) = retry_message.to_llm_message() {
+                llm_messages.push(message);
+            }
+            return Ok(PersistedProjectToolOutcome {
+                retryable: true,
+                ..Default::default()
+            });
+        }
+
+        // 普通工具可能返回超大 payload。喂回模型前先压缩，原始结果保留为产物。
+        let summary_model = self.summary_model();
+        let summary_provider = self.summary_provider(request_provider);
+        let tool_message = common::persist_tool_result_with_compression(
+            db,
+            workspace_id,
+            on_event,
+            tool_call,
+            &self.tools,
+            workspace,
+            &result_text,
+            &summary_provider,
+            &summary_model,
+            |usage| {
+                record_run_token_usage(
+                    db,
+                    workspace_id,
+                    &summary_model,
+                    DispatcherSessionTokenUsageSource::Summary,
+                    usage,
+                    usage_tracker,
+                    on_event,
+                    usage_persist_handles,
+                );
+            },
+        )
+        .await?;
+        self.finish_tool_run(
+            db,
+            on_event,
+            run_id,
+            result.status.as_run_status(),
+            tool_message.tool_result_mode.as_deref(),
+            Some(&tool_message.id),
+            result.status.error_kind(),
+            result.status.error_kind().map(|_| result_text.as_str()),
+            result.action.as_ref().map(ToolAction::kind),
+            result_metadata_json.as_deref(),
+        )
+        .await?;
+        if let Some(message) = tool_message.to_llm_message() {
+            llm_messages.push(message);
+        }
+
+        let final_message = if let Some(ToolAction::FinalMessage { content }) = &result.action {
+            Some(content.clone())
+        } else if tool_call.name == "message" {
+            extract_message_content(&tool_call.arguments)
+        } else {
+            None
+        };
+        let fatal_message =
+            (result.status == ToolStatus::FatalError).then_some(result_text.clone());
+        Ok(PersistedProjectToolOutcome {
+            final_message,
+            fatal_message,
+            ..Default::default()
+        })
+    }
+
+    async fn finish_started_run_after_error(
+        &self,
+        db: &DispatcherDb,
+        workspace_id: &str,
+        on_event: &Channel<AgentEvent>,
+        run_id: &str,
+        error: &anyhow::Error,
+    ) {
+        let message = format!("错误：项目工具结果处理失败：{error:#}");
+        if let Err(finish_error) = self
+            .finish_tool_run(
+                db,
+                on_event,
+                run_id,
+                "internal_error",
+                None,
+                None,
+                Some("internal"),
+                Some(&message),
+                None,
+                None,
             )
             .await
-        }))
-        .await;
-
-        Ok(results.into_iter().zip(run_ids).collect())
+        {
+            helpers::log_warning(&format!(
+                "项目工具 run 收尾失败（run_id={run_id}）：{finish_error:#}"
+            ));
+        }
+        // 若 tool message 已落库但树绑定失败，优先补挂；若消息根本没生成，则
+        // 删除未绑定树，避免 message_id=NULL 的 child runs/artifacts 绕过清理。
+        match db.load_tool_run_async(run_id).await {
+            Ok(run) => {
+                if let Some(message_id) = run.message_id {
+                    if let Err(attach_error) = db
+                        .attach_tool_run_tree_message_async(run_id, &message_id)
+                        .await
+                    {
+                        helpers::log_warning(&format!(
+                            "项目工具运行树补挂失败（run_id={run_id}）：{attach_error:#}"
+                        ));
+                    }
+                } else if let Err(delete_error) = db
+                    .delete_unattached_tool_run_tree_async(workspace_id, run_id)
+                    .await
+                {
+                    helpers::log_warning(&format!(
+                        "项目工具未绑定运行树清理失败（run_id={run_id}）：{delete_error:#}"
+                    ));
+                }
+            }
+            Err(load_error) => helpers::log_warning(&format!(
+                "项目工具运行树补偿读取失败（run_id={run_id}）：{load_error:#}"
+            )),
+        }
     }
 
     async fn create_and_start_tool_run(

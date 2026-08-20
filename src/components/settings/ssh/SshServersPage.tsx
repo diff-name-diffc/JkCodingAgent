@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Plus, RefreshCw, RotateCcw, Server } from "lucide-react";
-import type { AgentContext, SshAuditLog, SshServerConfig, SshToolsConfig } from "../../../types";
-import { cn } from "../../../lib/cn";
+import type { SshAuditLog, SshServerConfig, SshToolsConfig } from "../../../types";
 import { SshAuditRecordList } from "../../app-settings/aha/SshAuditRecordList";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { EmptyState } from "../EmptyState";
 import { FieldLabel } from "../FieldLabel";
 import { Section } from "../Section";
 import { toast } from "../toast";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip";
 import { useAhaSettings } from "../use-aha-settings";
 import {
   loadSshTestRecords,
@@ -52,10 +50,8 @@ const REVIEW_PROMPT_FIELD_ID = "ssh-review.systemPrompt";
  * 设置弹窗的「SSH 服务器」页：服务器列表（自动保存）、命令审查 AI（引用制）、审计记录。
  * 外层弹窗提供滚动容器、header 与 AhaSettingsProvider，本页不渲染弹窗级元素。
  */
-export function SshServersPage({ projectPath }: { projectPath?: string }) {
+export function SshServersPage() {
   const { settings, updateSettings, saveError: settingsSaveError } = useAhaSettings();
-  const [context, setContext] = useState<AgentContext>(projectPath ? "project" : "chat");
-  const [workspacePath, setWorkspacePath] = useState("");
   const [config, setConfig] = useState<SshToolsConfig>({ servers: [] });
   const [audit, setAudit] = useState<SshAuditLog>({ records: [] });
   const [loading, setLoading] = useState(false);
@@ -72,29 +68,18 @@ export function SshServersPage({ projectPath }: { projectPath?: string }) {
   // 自动保存是异步的，通过 ref 读取最新状态，避免闭包捕获过期值。
   const configRef = useRef(config);
   configRef.current = config;
-  const workspaceRef = useRef(workspacePath);
-  workspaceRef.current = workspacePath;
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fieldIdRef = useRef<string | undefined>(undefined);
   const savingRef = useRef(false);
 
   const loadConfig = useCallback(async () => {
-    if (context === "project" && !projectPath) {
-      setLoadError("当前没有项目路径，请切换到聊天 SSH 配置。");
-      return;
-    }
     setLoading(true);
     setLoadError(null);
     try {
-      const resolvedWorkspace = await invoke<string>("aha_resolve_ssh_workspace", {
-        context,
-        projectPath: context === "project" ? projectPath : null,
-      });
       const [loadedConfig, loadedAudit] = await Promise.all([
-        invoke<SshToolsConfig>("ssh_tool_load_config", { projectPath: resolvedWorkspace }),
-        invoke<SshAuditLog>("ssh_tool_load_audit", { projectPath: resolvedWorkspace }),
+        invoke<SshToolsConfig>("ssh_tool_load_config"),
+        invoke<SshAuditLog>("ssh_tool_load_audit"),
       ]);
-      setWorkspacePath(resolvedWorkspace);
       setConfig(loadedConfig);
       setAudit(loadedAudit);
     } catch (err) {
@@ -102,7 +87,7 @@ export function SshServersPage({ projectPath }: { projectPath?: string }) {
     } finally {
       setLoading(false);
     }
-  }, [context, projectPath]);
+  }, []);
 
   useEffect(() => {
     loadConfig();
@@ -112,12 +97,10 @@ export function SshServersPage({ projectPath }: { projectPath?: string }) {
   }, [loadConfig]);
 
   const saveNow = useCallback(async () => {
-    const workspace = workspaceRef.current;
-    if (!workspace || savingRef.current) return;
+    if (savingRef.current) return;
     savingRef.current = true;
     try {
       const savedConfig = await invoke<SshToolsConfig>("ssh_tool_save_config", {
-        projectPath: workspace,
         config: configRef.current,
       });
       setConfig(savedConfig);
@@ -272,46 +255,10 @@ export function SshServersPage({ projectPath }: { projectPath?: string }) {
       <Section
         id="ssh-servers"
         title="SSH 服务器"
-        description="项目和聊天分别使用自己的本地 SSH 环境；配置与审计文件位于工作区的 .jkcodingagent/local_env/ssh。字段失焦或开关切换后自动保存。"
+        description="SSH 服务器为应用全局配置，所有项目与聊天共享同一份服务器列表；凭据、审计与主机密钥固定存储在应用数据库（~/.jkcodingagent/jkbot.sqlite3）中，不在项目仓库内，智能体文件工具无法读取。字段失焦或开关切换后自动保存。"
       >
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-2">
-            <FieldLabel
-              label="配置范围"
-              tip={`「项目」配置仅当前项目可用，「聊天」配置用于不绑定项目的独立聊天工作区。${
-                projectPath ? "" : "当前未绑定项目，「项目」不可选。"
-              }`}
-            />
-            {projectPath ? (
-              <button
-                type="button"
-                className={cn("ai-aha-category-chip", context === "project" && "is-active")}
-                onClick={() => setContext("project")}
-              >
-                项目
-              </button>
-            ) : (
-              // disabled 按钮不触发指针事件，用 span 承载 Tooltip 才能悬停显示原因。
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="inline-flex" tabIndex={0}>
-                    <button type="button" className="ai-aha-category-chip" disabled>
-                      项目
-                    </button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-64">
-                  当前未绑定项目：请在项目工作区内打开设置，再编辑「项目」范围的 SSH 配置。
-                </TooltipContent>
-              </Tooltip>
-            )}
-            <button
-              type="button"
-              className={cn("ai-aha-category-chip", context === "chat" && "is-active")}
-              onClick={() => setContext("chat")}
-            >
-              聊天
-            </button>
             <div className="flex-1" />
             <button
               type="button"
@@ -327,18 +274,6 @@ export function SshServersPage({ projectPath }: { projectPath?: string }) {
               添加服务器
             </button>
           </div>
-
-          {workspacePath && (
-            <p className="ai-settings-hint">
-              当前工作区：<span className="font-mono">{workspacePath}</span>
-            </p>
-          )}
-
-          {!projectPath && (
-            <p className="ai-settings-hint">
-              设置从未绑定项目的入口打开，仅可编辑「聊天」范围；进入项目后从项目内打开设置，即可编辑「项目」范围。
-            </p>
-          )}
 
           {loadError && <p className="ai-set-field-error">{loadError}</p>}
 

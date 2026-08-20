@@ -50,7 +50,8 @@ impl OrchestratorAgent {
             return Ok(if explicit_plan_id {
                 "错误：指定的 plan_id 不存在或已被清理，请重新确认后查询。".to_string()
             } else {
-                "当前会话还没有提交过执行图。若任务复杂，请先探索项目后用 submit_graph 出图。".to_string()
+                "当前会话还没有提交过执行图。若任务复杂，请先探索项目后用 submit_graph 出图。"
+                    .to_string()
             });
         };
         // workspace 校验只对显式传 planId 的路径有意义：未传 planId 时
@@ -73,7 +74,10 @@ impl OrchestratorAgent {
         let Some(latest_run) = latest_run else {
             return Ok(format!(
                 "执行图《{}》（plan_id={}，状态 {}）尚未运行过。{}",
-                plan.title, plan.id, plan.status, plan.summary.trim()
+                plan.title,
+                plan.id,
+                plan.status,
+                plan.summary.trim()
             ));
         };
         let total_node_runs = plan.node_runs.len();
@@ -146,7 +150,10 @@ fn build_report(
     if node_run_mismatch {
         // 防御性告警：节点明细与报告头运行不同源（正常不应发生），
         // 已按报告头运行过滤，避免把其他运行的明细混入本报告。
-        lines.push("警告：部分节点明细与最近运行不一致，已按最近运行过滤；节点详情请以图面板为准。".to_string());
+        lines.push(
+            "警告：部分节点明细与最近运行不一致，已按最近运行过滤；节点详情请以图面板为准。"
+                .to_string(),
+        );
     }
     for record in node_runs {
         let cached_note = if record.phase == NODE_PHASE_CACHED {
@@ -156,10 +163,9 @@ fn build_report(
         };
         match record.status.as_str() {
             NODE_SUCCEEDED => {
-                let summary = crate::agent::graph::input::extract_summary_section(
-                    &record.output_text,
-                )
-                .unwrap_or_else(|| record.output_text.clone());
+                let summary =
+                    crate::agent::graph::input::extract_summary_section(&record.output_text)
+                        .unwrap_or_else(|| record.output_text.clone());
                 let summary: String = summary.chars().take(OUTPUT_PREVIEW_CHARS).collect();
                 lines.push(format!(
                     "- [{}] 成功{cached_note}：{summary}",
@@ -256,7 +262,10 @@ mod tests {
     #[test]
     fn empty_state_json_produces_no_warning() {
         let report = report_with_state("");
-        assert!(!report.contains("解析失败"), "空 state_json 不应触发解析失败告警：{report}");
+        assert!(
+            !report.contains("解析失败"),
+            "空 state_json 不应触发解析失败告警：{report}"
+        );
         assert!(!report.contains("共享 state 键"));
         let blank = report_with_state("   ");
         assert!(!blank.contains("解析失败"));
@@ -281,8 +290,17 @@ mod tests {
         let runs = vec![node_run("n1", "run-1", "succeeded")];
         let refs = runs.iter().collect::<Vec<_>>();
         let report = build_report(
-            "测试图", "plan-1", "completed", 1, "full", "completed", "pass", "",
-            &refs, "{}", true,
+            "测试图",
+            "plan-1",
+            "completed",
+            1,
+            "full",
+            "completed",
+            "pass",
+            "",
+            &refs,
+            "{}",
+            true,
         );
         assert!(report.contains("部分节点明细与最近运行不一致"));
     }

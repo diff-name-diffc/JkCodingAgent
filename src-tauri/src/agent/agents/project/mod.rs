@@ -21,6 +21,7 @@ pub(crate) mod helpers;
 pub(crate) mod iteration;
 pub(crate) mod prompt;
 pub(crate) mod tool_exec;
+pub(crate) mod tool_program;
 pub(crate) mod turn;
 
 use std::sync::Arc;
@@ -71,15 +72,20 @@ impl Models {
 
 pub struct OrchestratorAgent {
     pub(super) config: DispatcherAgentConfig,
+    /// 受管项目注册表等全局配置的读取入口（工作区校验用）。
+    pub(super) db: crate::agent::db::DispatcherDb,
     pub(super) models: Mutex<Models>,
     pub(super) app_handle: Option<AppHandle>,
     pub(super) tools: Arc<ToolRegistry>,
+    /// 仅控制 ToolProgram 可代理的数据面能力。空列表表示使用编排器全部固定
+    /// 只读能力；message/submit_graph 等控制面不受该设置影响。
+    pub(super) allowed_runtime_tools: Mutex<Vec<String>>,
 }
 
 // ─── Construction & configuration ─────────────────────────────────────────────
 
 impl OrchestratorAgent {
-    pub fn new(config: DispatcherAgentConfig) -> Self {
+    pub fn new(config: DispatcherAgentConfig, db: crate::agent::db::DispatcherDb) -> Self {
         let provider = OpenAiCompatProvider::new(
             config.api_key.clone(),
             config.api_base.clone(),
@@ -109,6 +115,8 @@ impl OrchestratorAgent {
             }),
             app_handle: None,
             tools: Arc::new(ToolRegistry::orchestrator_tools()),
+            allowed_runtime_tools: Mutex::new(Vec::new()),
+            db,
             config,
         }
     }
@@ -180,6 +188,9 @@ impl OrchestratorAgent {
         if let Some(vision) = new_vision {
             models.vision_provider = Some(vision);
         }
+        drop(models);
+
+        *self.allowed_runtime_tools.lock() = ctx_config.allowed_tools.clone();
     }
 
     pub fn context_debug_enabled(&self) -> bool {

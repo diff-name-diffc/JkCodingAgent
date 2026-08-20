@@ -130,6 +130,13 @@ pub struct DispatcherAgentConfig {
     pub context_debug: bool,
 }
 
+/// 模型 env 回退开关：默认关闭。设置中心（dispatcher_settings_v2 表）是模型
+/// 配置的唯一权威源；仅当显式设置 `AHA_ALLOW_ENV_PROVIDER=1`（开发场景）
+/// 时才允许从环境变量解析模型凭据，消除「DB + env 双权威源」的漂移面。
+fn env_provider_allowed() -> bool {
+    std::env::var("AHA_ALLOW_ENV_PROVIDER").is_ok_and(|value| value == "1")
+}
+
 impl DispatcherAgentConfig {
     pub fn load() -> Result<Self> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("failed to resolve home directory"))?;
@@ -150,21 +157,33 @@ impl DispatcherAgentConfig {
         )?;
         write_if_missing(root_dir.join("memory").join("MEMORY.md"), "# 记忆\n\n")?;
 
+        let (api_key, api_base, model, summary_model, vision_model) = if env_provider_allowed() {
+            (
+                std::env::var("DASHSCOPE_API_KEY")
+                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
+                    .unwrap_or_default(),
+                std::env::var("DASHSCOPE_API_BASE")
+                    .or_else(|_| std::env::var("OPENAI_API_BASE"))
+                    .unwrap_or_else(|_| {
+                        "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()
+                    }),
+                std::env::var("MODEL_NAME").unwrap_or_else(|_| "qwen3.6-plus".to_string()),
+                std::env::var("SUMMARY_MODEL_NAME")
+                    .unwrap_or_else(|_| DEFAULT_SUMMARY_MODEL.to_string()),
+                std::env::var("VISION_MODEL_NAME").unwrap_or_default(),
+            )
+        } else {
+            (String::new(), String::new(), String::new(), String::new(), String::new())
+        };
+
         Ok(Self {
             db_path: root_dir.join("jkbot.sqlite3"),
             root_dir,
-            api_key: std::env::var("DASHSCOPE_API_KEY")
-                .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                .unwrap_or_default(),
-            api_base: std::env::var("DASHSCOPE_API_BASE")
-                .or_else(|_| std::env::var("OPENAI_API_BASE"))
-                .unwrap_or_else(|_| {
-                    "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()
-                }),
-            model: std::env::var("MODEL_NAME").unwrap_or_else(|_| "qwen3.6-plus".to_string()),
-            summary_model: std::env::var("SUMMARY_MODEL_NAME")
-                .unwrap_or_else(|_| DEFAULT_SUMMARY_MODEL.to_string()),
-            vision_model: std::env::var("VISION_MODEL_NAME").unwrap_or_default(),
+            api_key,
+            api_base,
+            model,
+            summary_model,
+            vision_model,
             max_tokens: 8192,
             temperature: 0.1,
             max_tool_iterations: 200,
@@ -185,7 +204,9 @@ pub fn validate_provider_completeness(api_key: &str, api_base: &str, model: &str
         anyhow::bail!("错误：模型服务缺少 API Key，请先在设置中配置对应模型服务。");
     }
     if api_base.trim().is_empty() {
-        anyhow::bail!("错误：模型服务缺少 API 基础地址（Base URL），请先在设置中配置对应模型服务。");
+        anyhow::bail!(
+            "错误：模型服务缺少 API 基础地址（Base URL），请先在设置中配置对应模型服务。"
+        );
     }
     if model.trim().is_empty() {
         anyhow::bail!("错误：模型服务缺少模型名称，请先在设置中配置对应模型服务。");
@@ -205,9 +226,8 @@ fn atomic_write(path: &Path, content: &str) -> Result<()> {
     let result = fs::write(&tmp_path, content)
         .with_context(|| format!("write {}", tmp_path.display()))
         .and_then(|()| {
-            fs::rename(&tmp_path, path).with_context(|| {
-                format!("rename {} -> {}", tmp_path.display(), path.display())
-            })
+            fs::rename(&tmp_path, path)
+                .with_context(|| format!("rename {} -> {}", tmp_path.display(), path.display()))
         });
     if result.is_err() {
         let _ = fs::remove_file(&tmp_path);

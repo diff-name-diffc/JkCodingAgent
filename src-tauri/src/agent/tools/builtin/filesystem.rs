@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use super::common::{boolish_arg, resolve_path, string_arg, with_compression_parameters};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
+use crate::agent::tools::ToolResult;
 
 mod list_dir;
 mod read_file;
@@ -54,39 +55,44 @@ impl AgentTool for WriteFileTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        let Some(path) = string_arg(args, "path") else {
-            return "错误：缺少必填参数 path".to_string();
-        };
-        let Some(content) = string_arg(args, "content") else {
-            return "错误：缺少必填参数 content".to_string();
-        };
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
+        ToolResult::from_text(
+            async {
+                let Some(path) = string_arg(args, "path") else {
+                    return "错误：缺少必填参数 path".to_string();
+                };
+                let Some(content) = string_arg(args, "content") else {
+                    return "错误：缺少必填参数 content".to_string();
+                };
 
-        let context = context.clone();
-        match tokio::task::spawn_blocking(move || {
-            let file_path = match resolve_path(&context, &path) {
-                Ok(path) => path,
-                Err(message) => return message,
-            };
-            if let Some(parent) = file_path.parent() {
-                if let Err(error) = fs::create_dir_all(parent) {
-                    return format!("错误：创建父目录失败：{error}");
+                let context = context.clone();
+                match tokio::task::spawn_blocking(move || {
+                    let file_path = match resolve_path(&context, &path) {
+                        Ok(path) => path,
+                        Err(message) => return message,
+                    };
+                    if let Some(parent) = file_path.parent() {
+                        if let Err(error) = fs::create_dir_all(parent) {
+                            return format!("错误：创建父目录失败：{error}");
+                        }
+                    }
+                    match fs::write(&file_path, &content) {
+                        Ok(()) => format!(
+                            "写入成功：{} 字符 -> {}",
+                            content.chars().count(),
+                            file_path.display()
+                        ),
+                        Err(error) => format!("错误：写入文件失败：{error}"),
+                    }
+                })
+                .await
+                {
+                    Ok(output) => output,
+                    Err(error) => format!("错误：写入文件任务失败：{error}"),
                 }
             }
-            match fs::write(&file_path, &content) {
-                Ok(()) => format!(
-                    "写入成功：{} 字符 -> {}",
-                    content.chars().count(),
-                    file_path.display()
-                ),
-                Err(error) => format!("错误：写入文件失败：{error}"),
-            }
-        })
-        .await
-        {
-            Ok(output) => output,
-            Err(error) => format!("错误：写入文件任务失败：{error}"),
-        }
+            .await,
+        )
     }
 }
 
@@ -108,7 +114,7 @@ impl AgentTool for EditFileTool {
                     "path": { "type": "string", "description": "要编辑的文件路径" },
                     "old_text": { "type": "string", "description": "要查找并替换的原文本" },
                     "new_text": { "type": "string", "description": "替换后的新文本" },
-                    "replace_all": { "type": "string", "description": "是否替换全部命中项，默认 false", "enum": ["true", "false"] }
+                    "replace_all": { "type": "boolean", "description": "是否替换全部命中项，默认 false", "default": false }
                 },
                 "required": ["path", "old_text", "new_text"]
             }),
@@ -117,35 +123,40 @@ impl AgentTool for EditFileTool {
         )
     }
 
-    async fn execute(&self, args: &Value, context: &ToolContext) -> String {
-        let Some(path) = string_arg(args, "path") else {
-            return "错误：缺少必填参数 path".to_string();
-        };
-        let Some(old_text) = string_arg(args, "old_text") else {
-            return "错误：缺少必填参数 old_text".to_string();
-        };
-        let Some(new_text) = string_arg(args, "new_text") else {
-            return "错误：缺少必填参数 new_text".to_string();
-        };
-        if old_text.is_empty() {
-            // 空 old_text 必须显式拦截：`content.replace("", new)` 会在每个字符边界
-            // 插入 new_text 严重破坏文件；空文件场景还能绕过“命中多处”检查。
-            return "错误：old_text 不能为空字符串".to_string();
-        }
-        if old_text == new_text {
-            return "编辑成功（无变化：old_text 与 new_text 相同）".to_string();
-        }
-        let replace_all = boolish_arg(args, "replace_all").unwrap_or(false);
+    async fn execute(&self, args: &Value, context: &ToolContext) -> ToolResult {
+        ToolResult::from_text(
+            async {
+                let Some(path) = string_arg(args, "path") else {
+                    return "错误：缺少必填参数 path".to_string();
+                };
+                let Some(old_text) = string_arg(args, "old_text") else {
+                    return "错误：缺少必填参数 old_text".to_string();
+                };
+                let Some(new_text) = string_arg(args, "new_text") else {
+                    return "错误：缺少必填参数 new_text".to_string();
+                };
+                if old_text.is_empty() {
+                    // 空 old_text 必须显式拦截：`content.replace("", new)` 会在每个字符边界
+                    // 插入 new_text 严重破坏文件；空文件场景还能绕过“命中多处”检查。
+                    return "错误：old_text 不能为空字符串".to_string();
+                }
+                if old_text == new_text {
+                    return "编辑成功（无变化：old_text 与 new_text 相同）".to_string();
+                }
+                let replace_all = boolish_arg(args, "replace_all").unwrap_or(false);
 
-        let context = context.clone();
-        match tokio::task::spawn_blocking(move || {
-            edit_file_checked(&context, &path, &old_text, &new_text, replace_all)
-        })
-        .await
-        {
-            Ok(output) => output,
-            Err(error) => format!("错误：编辑文件任务失败：{error}"),
-        }
+                let context = context.clone();
+                match tokio::task::spawn_blocking(move || {
+                    edit_file_checked(&context, &path, &old_text, &new_text, replace_all)
+                })
+                .await
+                {
+                    Ok(output) => output,
+                    Err(error) => format!("错误：编辑文件任务失败：{error}"),
+                }
+            }
+            .await,
+        )
     }
 }
 

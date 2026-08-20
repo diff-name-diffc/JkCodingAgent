@@ -67,12 +67,8 @@ where
     FUsage: FnMut(&LlmUsage) + Send,
 {
     let normalized = normalize_tool_output(raw_output);
-    let messages = build_tool_summary_messages(
-        tool_name,
-        normalized.trim(),
-        user_question,
-        compress_intent,
-    );
+    let messages =
+        build_tool_summary_messages(tool_name, normalized.trim(), user_question, compress_intent);
     let summary = summarize_with_model(provider, summary_model, messages, |_| {}, on_usage).await?;
     let (context_payload, display_content) = parse_dual_tool_summary(summary);
 
@@ -270,9 +266,7 @@ fn extract_tagged_block(output: &str, tag: &str, other_tag: &str) -> Option<Stri
     let end = match rest.find(&format!("</{tag}>")) {
         Some(pos) => pos,
         None => {
-            eprintln!(
-                "警告：摘要输出缺少 </{tag}> 闭合标签，按下一区块起始标签或文本末尾截止"
-            );
+            eprintln!("警告：摘要输出缺少 </{tag}> 闭合标签，按下一区块起始标签或文本末尾截止");
             rest.find(&format!("<{other_tag}>")).unwrap_or(rest.len())
         }
     };
@@ -462,10 +456,8 @@ pub async fn summarize_session_title<FUsage>(
 where
     FUsage: FnMut(&LlmUsage) + Send,
 {
-    let source = truncate_session_title_source(&build_session_title_source(
-        messages,
-        fallback_source,
-    ));
+    let source =
+        truncate_session_title_source(&build_session_title_source(messages, fallback_source));
     let title_messages =
         build_session_title_messages(source.trim().to_string(), current_user_parts);
     let raw_title =
@@ -843,18 +835,18 @@ mod tests {
 
     #[test]
     fn structured_summary_exit_status_only_matches_explicit_patterns() {
-        let with_exit = extract_structured_summary(
-            "exec",
-            "running tests\nProcess finished with exit code 2",
-        );
+        let with_exit =
+            extract_structured_summary("exec", "running tests\nProcess finished with exit code 2");
         assert!(with_exit.contains("退出/状态: Process finished with exit code 2"));
 
         let with_chinese = extract_structured_summary("exec", "编译结束\n退出状态：0");
         assert!(with_chinese.contains("退出/状态: 退出状态：0"));
 
         // "$ 提示符"、含 exit 的普通日志、error 开头的行都不再被当作退出状态
-        let without_exit =
-            extract_structured_summary("exec", "$ cargo test\ncalling exit() in test\nerror happened");
+        let without_exit = extract_structured_summary(
+            "exec",
+            "$ cargo test\ncalling exit() in test\nerror happened",
+        );
         assert!(!without_exit.contains("退出/状态:"));
     }
 
@@ -879,7 +871,10 @@ mod tests {
         assert_eq!(normalize_tool_output_line("a  b"), "a b");
         assert_eq!(normalize_tool_output_line("a b"), "a b");
         // 行首缩进保留，行尾空格去除
-        assert_eq!(normalize_tool_output_line("    indented   text   "), "    indented text");
+        assert_eq!(
+            normalize_tool_output_line("    indented   text   "),
+            "    indented text"
+        );
     }
 
     #[test]
@@ -977,8 +972,12 @@ mod tests {
         assert!(system.content.contains("尽量原文摘录"));
         assert!(system.content.contains("意图优先"));
         // 意图、用户问题与原始输出作为数据放在 user 消息中
-        assert!(user.content.contains("<提取意图>\n了解项目的前端视图结构\n</提取意图>"));
-        assert!(user.content.contains("<用户原始问题>\n前端视图结构是什么？\n</用户原始问题>"));
+        assert!(user
+            .content
+            .contains("<提取意图>\n了解项目的前端视图结构\n</提取意图>"));
+        assert!(user
+            .content
+            .contains("<用户原始问题>\n前端视图结构是什么？\n</用户原始问题>"));
         assert!(user.content.contains("工具名：read_file"));
         assert!(user.content.contains("10|fn main() {}"));
     }

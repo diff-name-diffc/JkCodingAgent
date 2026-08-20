@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -11,7 +10,7 @@ use super::super::config::validate_provider_completeness;
 use super::super::db::{DispatcherDb, DispatcherMessageRecord};
 use super::super::llm::{ChatMessage, LlmResponse, OpenAiCompatProvider, ToolDefinition};
 use super::super::prompt::PromptBundle;
-use super::super::tools::ToolContext;
+use super::super::tools::{CapabilitySet, ToolContext, ToolSurface};
 use super::agent_loop::AgentLoop;
 use super::types::{AgentEvent, AgentTurn};
 
@@ -51,7 +50,8 @@ pub(crate) struct RunPromptState {
 
 pub(crate) struct RunLoopIteration {
     pub tool_definitions: Vec<ToolDefinition>,
-    pub allowed_tool_names: HashSet<String>,
+    pub direct_capabilities: CapabilitySet,
+    pub runtime_capabilities: CapabilitySet,
     pub messages: Vec<ChatMessage>,
     pub request_provider: OpenAiCompatProvider,
 }
@@ -79,11 +79,7 @@ pub(crate) trait RunLoopAgent: Sync {
 
     fn max_tool_iterations(&self) -> usize;
 
-    fn tool_definitions_for_loop(
-        &self,
-        workspace_id: &str,
-        workspace: &Path,
-    ) -> Vec<ToolDefinition>;
+    fn tool_surface_for_loop(&self, workspace_id: &str, workspace: &Path) -> ToolSurface;
 
     fn build_iteration_messages(
         &self,
@@ -242,11 +238,7 @@ where
     A: RunLoopAgent,
 {
     let tool_context = agent.build_loop_tool_context(&ctx).await;
-    let mut tool_definitions = agent.tool_definitions_for_loop(ctx.workspace_id, ctx.workspace);
-    let mut allowed_tool_names: HashSet<String> = tool_definitions
-        .iter()
-        .map(|tool| tool.function.name.clone())
-        .collect();
+    let mut tool_surface = agent.tool_surface_for_loop(ctx.workspace_id, ctx.workspace);
     let mut agent_loop =
         AgentLoop::new(ctx.db, ctx.workspace_id, ctx.initial_system_prompt.clone()).await?;
 
@@ -257,18 +249,16 @@ where
         }
 
         if iteration_index > 0 {
-            tool_definitions = agent.tool_definitions_for_loop(ctx.workspace_id, ctx.workspace);
-            allowed_tool_names = tool_definitions
-                .iter()
-                .map(|tool| tool.function.name.clone())
-                .collect();
+            tool_surface = agent.tool_surface_for_loop(ctx.workspace_id, ctx.workspace);
         }
 
-        let messages = agent.build_iteration_messages(&ctx, &agent_loop, &tool_definitions)?;
+        let messages =
+            agent.build_iteration_messages(&ctx, &agent_loop, &tool_surface.definitions)?;
         let request_provider = agent.provider_for_iteration(&ctx, &messages, iteration_index)?;
         let iteration = RunLoopIteration {
-            tool_definitions: tool_definitions.clone(),
-            allowed_tool_names: allowed_tool_names.clone(),
+            tool_definitions: tool_surface.definitions.clone(),
+            direct_capabilities: tool_surface.direct_capabilities.clone(),
+            runtime_capabilities: tool_surface.runtime_capabilities.clone(),
             messages,
             request_provider,
         };
@@ -280,10 +270,7 @@ where
             LlmStreamOutcome::Cancelled { partial, last_seq } => {
                 return agent.handle_cancelled_loop(&ctx, &partial, last_seq).await;
             }
-            LlmStreamOutcome::Response {
-                response,
-                last_seq,
-            } => (response, last_seq),
+            LlmStreamOutcome::Response { response, last_seq } => (response, last_seq),
         };
 
         if response.tool_calls.is_empty() {

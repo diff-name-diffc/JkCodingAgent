@@ -1,59 +1,37 @@
-use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::project::atomic_write;
-use crate::project::storage::StorageError;
 use crate::shared::error::{CommandResult, IntoCommandResult};
 
 type AppSettingsResult<T> = std::result::Result<T, AppSettingsError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppSettingsError {
-    #[error("找不到用户主目录")]
-    HomeDirMissing,
-    #[error("{action} 失败（{path}）：{source}")]
-    Io {
+    #[error("{action} 失败：{source}")]
+    Db {
         action: &'static str,
-        path: PathBuf,
         #[source]
-        source: std::io::Error,
+        source: anyhow::Error,
     },
-    #[error("{action} 失败（{path}）：{source}")]
+    #[error("{action} 失败：{source}")]
     Json {
         action: &'static str,
-        path: PathBuf,
         #[source]
         source: serde_json::Error,
     },
-    #[error(transparent)]
-    Storage(#[from] StorageError),
 }
 
-fn io_error(
+fn db_error(
     action: &'static str,
-    path: impl Into<PathBuf>,
-) -> impl FnOnce(std::io::Error) -> AppSettingsError {
-    move |source| AppSettingsError::Io {
-        action,
-        path: path.into(),
-        source,
-    }
+) -> impl FnOnce(anyhow::Error) -> AppSettingsError {
+    move |source| AppSettingsError::Db { action, source }
 }
 
-fn json_error(
-    action: &'static str,
-    path: impl Into<PathBuf>,
-) -> impl FnOnce(serde_json::Error) -> AppSettingsError {
-    move |source| AppSettingsError::Json {
-        action,
-        path: path.into(),
-        source,
-    }
+fn json_error(action: &'static str) -> impl FnOnce(serde_json::Error) -> AppSettingsError {
+    move |source| AppSettingsError::Json { action, source }
 }
 
 static LOGIN_SHELL_ENV: OnceLock<Vec<(String, String)>> = OnceLock::new();
@@ -186,58 +164,50 @@ impl Default for AppSettings {
     }
 }
 
-fn app_data_dir() -> AppSettingsResult<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(".jkcodingagent"))
-        .ok_or(AppSettingsError::HomeDirMissing)
-}
-
-fn settings_path() -> AppSettingsResult<PathBuf> {
-    Ok(app_data_dir()?.join("settings.json"))
-}
-
-fn load_settings() -> AppSettingsResult<AppSettings> {
-    let path = settings_path()?;
-    if !path.exists() {
-        return Ok(AppSettings::default());
-    }
-    let raw = fs::read_to_string(&path).map_err(io_error("读取应用设置", path.clone()))?;
-    let value: serde_json::Value =
-        serde_json::from_str(&raw).map_err(json_error("解析应用设置", path.clone()))?;
-    let contains_legacy_cli_fields = value.as_object().is_some_and(|object| {
-        object.contains_key("claude_path") || object.contains_key("codex_path")
-    });
-    let settings: AppSettings =
-        serde_json::from_value(value).map_err(json_error("解析应用设置", path.clone()))?;
-    if contains_legacy_cli_fields {
-        if let Err(error) = save_app_settings_impl(settings.clone()) {
-            eprintln!("[settings] 清理遗留 CLI 配置字段失败：{error}");
-        }
-    }
-    Ok(settings)
-}
-
+/// 应用设置存全局库 app_config 表（键 `app_settings`）；v33 迁移已把
+/// 旧 settings.json 导入并删除，这里不再读写任何文件。
 #[tauri::command]
-pub fn load_app_settings() -> CommandResult<AppSettings> {
-    load_settings()
+pub fn load_app_settings(
+    state: tauri::State<'_, crate::agent::DispatcherState>,
+) -> CommandResult<AppSettings> {
+    load_settings(state)
         .context("加载应用设置失败")
         .into_command_result()
 }
 
+fn load_settings(
+    state: tauri::State<'_, crate::agent::DispatcherState>,
+) -> AppSettingsResult<AppSettings> {
+    match state
+        .db()
+        .get_app_config_json(crate::agent::db::app_config::APP_SETTINGS_KEY)
+    {
+        Ok(Some(raw)) => {
+            serde_json::from_str(&raw).map_err(json_error("解析应用设置"))
+        }
+        Ok(None) => Ok(AppSettings::default()),
+        Err(error) => Err(db_error("读取应用设置")(error)),
+    }
+}
+
 #[tauri::command]
-pub fn save_app_settings(settings: AppSettings) -> CommandResult<()> {
-    save_app_settings_impl(settings)
+pub fn save_app_settings(
+    state: tauri::State<'_, crate::agent::DispatcherState>,
+    settings: AppSettings,
+) -> CommandResult<()> {
+    save_app_settings_impl(state, settings)
         .context("保存应用设置失败")
         .into_command_result()
 }
 
-fn save_app_settings_impl(settings: AppSettings) -> AppSettingsResult<()> {
-    let dir = app_data_dir()?;
-    fs::create_dir_all(&dir).map_err(io_error("创建应用数据目录", dir))?;
-    let path = settings_path()?;
-    let raw = serde_json::to_string_pretty(&settings)
-        .map_err(json_error("序列化应用设置", path.clone()))?;
-    atomic_write(&path, &raw)?;
-    Ok(())
+fn save_app_settings_impl(
+    state: tauri::State<'_, crate::agent::DispatcherState>,
+    settings: AppSettings,
+) -> AppSettingsResult<()> {
+    let raw =
+        serde_json::to_string(&settings).map_err(json_error("序列化应用设置"))?;
+    state
+        .db()
+        .set_app_config_json(crate::agent::db::app_config::APP_SETTINGS_KEY, &raw)
+        .map_err(db_error("保存应用设置"))
 }

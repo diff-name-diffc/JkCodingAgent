@@ -1,10 +1,12 @@
+pub mod db;
+
 use std::collections::HashMap;
-use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
 use parking_lot::Mutex;
@@ -12,24 +14,40 @@ use serde::{Deserialize, Serialize};
 use ssh2::{Channel, Session};
 use tauri::State;
 
-use crate::project::storage::atomic_write;
+pub use db::{SshDb, SharedPool};
 
 const CONFIG_FILE_NAME: &str = "ssh-tools.json";
 const AUDIT_FILE_NAME: &str = "audit.json";
+const HOST_KEYS_FILE_NAME: &str = "host-keys.json";
 const AUDIT_RECORD_LIMIT: usize = 100;
+/// 单条审计记录里 stdout / stderr 各自保留的最大字符数（头尾各半）。
+/// 完整输出仍随工具结果返回；这里只限制审计文件的落盘体积。
+const AUDIT_OUTPUT_CHARS: usize = 8_000;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_TIMEOUT_SECS: u64 = 300;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const ID_MAX_LEN: usize = 64;
-// 交互阻塞检测：连续 N 秒无输出且 channel 未关闭 → 疑似等待交互输入
-const IDLE_DETECT_SECS: u64 = 8;
-const MIN_IDLE_SECS: u64 = 3;
+// 交互阻塞检测分两档：
+// - 有证据（输出末尾命中密码 / 确认 / 分页器等提示符）→ 最快 PROMPT_IDLE_SECS 秒中止；
+// - 纯静默（sleep、慢查询、写文件的备份等）→ 阈值随 timeout_secs 放大（timeout / 4），
+//   避免误杀安静的长命令，上限 MAX_SILENT_IDLE_SECS。
+const PROMPT_IDLE_SECS: u64 = 8;
+const MAX_SILENT_IDLE_SECS: u64 = 60;
 const IDLE_POLL_MS: u64 = 150;
 const READ_CHUNK: usize = 8192;
-const MAX_STDIN_BYTES: usize = 512 * 1024;
+/// stdin 的执行上限，同时也是安全审查的送审上限（见 agent::ssh_review）：
+/// 凡执行的内容必须完整送审，不允许「执行一大段、只审开头」的盲区。
+pub const MAX_STDIN_CHARS: usize = 32_000;
 const TIMEOUT_EXIT_CODE: i32 = 124;
 const INTERACTIVE_EXIT_CODE: i32 = -1;
+/// 命令正常结束但协议未带回退出码（极少见）；与交互阻塞的 -1 区分开。
+const UNKNOWN_EXIT_CODE: i32 = -2;
+/// 旧版 SSH 凭据的按项目分键目录名（`~/.jkcodingagent/ssh-tools/<project-key>/`），
+/// 现仅作为一次性迁移（schema v30）的扫描来源；权威存储已迁入 SQLite。
+const SSH_STORE_DIR_NAME: &str = "ssh-tools";
+/// 连接池中空闲连接的保留时长；正在执行命令的连接不受影响。
+const CONNECTION_IDLE_SECS: u64 = 30 * 60;
 const LIBSSH2_ERROR_SOCKET_SEND: i32 = -7;
 const LIBSSH2_ERROR_SOCKET_DISCONNECT: i32 = -13;
 const LIBSSH2_ERROR_CHANNEL_CLOSED: i32 = -26;
@@ -46,17 +64,12 @@ pub struct SshToolsConfig {
 
 /// SSH 认证方式：密码或私钥文件。
 /// 默认 Password 以兼容旧配置（缺少该字段时回退为密码认证）。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SshAuthMethod {
+    #[default]
     Password,
     Key,
-}
-
-impl Default for SshAuthMethod {
-    fn default() -> Self {
-        Self::Password
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,21 +166,57 @@ pub struct SshAuditRecord {
     pub review: Option<SshAuditReview>,
 }
 
-#[derive(Clone, Default)]
+/// SSH 连接池与全局配置仓库。
+///
+/// 配置（服务器凭据 / 主机密钥 / 审计）权威存储在全局 SQLite 库（`SshDb`），
+/// 对所有项目与聊天上下文共享；本结构只额外持有跨命令复用的连接池。
+///
+/// 锁纪律（防止一条慢命令冻结全部 SSH 操作）：
+/// - `sessions` 只保护 HashMap 本身：查找 / 插入瞬间完成，绝不持它做网络 I/O；
+/// - 建立连接（TCP + 握手 + 认证 + 主机密钥校验，可达数十秒）在 `sessions` 锁外进行；
+/// - 每条连接的 `session` 锁在整条命令期间独占（保证输出不交错、状态不串扰）；
+///   空闲回收只读 `last_used_ms` 原子量，不会为了 reap 去碰正在执行命令的连接。
+#[derive(Clone)]
 pub struct SshSessionManager {
-    sessions: Arc<Mutex<HashMap<SshSessionKey, Arc<Mutex<SshConnection>>>>>,
+    db: SshDb,
+    sessions: Arc<Mutex<HashMap<SshSessionKey, Arc<SshConnection>>>>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct SshSessionKey {
-    project_path: String,
     server_id: String,
     session_id: String,
 }
 
 struct SshConnection {
-    session: Session,
-    last_used_at: Instant,
+    /// 整条命令执行期间独占：channel 操作与阻塞模式切换都依赖它。
+    session: Mutex<Session>,
+    /// 最近一次命令结束的 Unix 毫秒时间戳；原子量供空闲回收无锁读取。
+    last_used_ms: AtomicU64,
+}
+
+impl SshConnection {
+    fn new(session: Session) -> Self {
+        Self {
+            session: Mutex::new(session),
+            last_used_ms: AtomicU64::new(unix_now_ms()),
+        }
+    }
+
+    fn touch(&self) {
+        self.last_used_ms.store(unix_now_ms(), Ordering::Relaxed);
+    }
+
+    fn idle_secs(&self) -> u64 {
+        unix_now_ms().saturating_sub(self.last_used_ms.load(Ordering::Relaxed)) / 1000
+    }
+}
+
+fn unix_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 enum SshCommandStartError {
@@ -176,43 +225,36 @@ enum SshCommandStartError {
 }
 
 #[tauri::command]
-pub async fn ssh_tool_load_config(project_path: String) -> Result<SshToolsConfig, String> {
-    tokio::task::spawn_blocking(move || read_config(&PathBuf::from(project_path)))
-        .await
-        .map_err(|error| error.to_string())?
+pub async fn ssh_tool_load_config(manager: State<'_, SshSessionManager>) -> Result<SshToolsConfig, String> {
+    manager.load_config_async().await
 }
 
 #[tauri::command]
-pub async fn ssh_tool_load_audit(project_path: String) -> Result<SshAuditLog, String> {
-    tokio::task::spawn_blocking(move || read_audit(&PathBuf::from(project_path)))
-        .await
-        .map_err(|error| error.to_string())?
+pub async fn ssh_tool_load_audit(manager: State<'_, SshSessionManager>) -> Result<SshAuditLog, String> {
+    manager.load_audit_async().await
 }
 
 #[tauri::command]
 pub async fn ssh_tool_save_config(
     manager: State<'_, SshSessionManager>,
-    project_path: String,
     config: SshToolsConfig,
 ) -> Result<SshToolsConfig, String> {
-    let project_path_buf = PathBuf::from(project_path.clone());
-    let cleaned = tokio::task::spawn_blocking(move || {
-        let cleaned = validate_config(config)?;
-        write_config(&project_path_buf, &cleaned)?;
-        Ok::<_, String>(cleaned)
-    })
-    .await
-    .map_err(|error| error.to_string())??;
-
-    manager.drop_project_sessions(&project_path);
-    Ok(cleaned)
+    manager.save_config_async(config).await
 }
 
 #[tauri::command]
-pub async fn ssh_tool_test_server_config(server: SshServerConfig) -> Result<String, String> {
+pub async fn ssh_tool_test_server_config(
+    manager: State<'_, SshSessionManager>,
+    server: SshServerConfig,
+    reset_host_key: Option<bool>,
+) -> Result<String, String> {
+    let ssh_db = manager.db.clone();
     tokio::task::spawn_blocking(move || {
         let config = validate_single_server(server)?;
-        let session = connect(&config)?;
+        if reset_host_key.unwrap_or(false) {
+            ssh_db.remove_host_key_pin(&config.id)?;
+        }
+        let session = connect(&config, &ssh_db)?;
         session
             .disconnect(None, "connection test completed", None)
             .ok();
@@ -223,47 +265,75 @@ pub async fn ssh_tool_test_server_config(server: SshServerConfig) -> Result<Stri
 }
 
 impl SshSessionManager {
-    pub fn list_servers(&self, project_path: &Path) -> Result<Vec<SshServerSummary>, String> {
-        let config = read_config(project_path)?;
-        Ok(config
-            .servers
-            .into_iter()
-            .filter(|server| server.enabled)
-            .map(|server| SshServerSummary {
-                id: server.id,
-                description: server.description,
-                tags: server.tags,
-            })
-            .collect())
+    pub fn new(pool: SharedPool) -> Self {
+        Self {
+            db: SshDb::new(pool),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
-    pub async fn list_servers_async(
-        &self,
-        project_path: PathBuf,
-    ) -> Result<Vec<SshServerSummary>, String> {
+    pub async fn load_config_async(&self) -> Result<SshToolsConfig, String> {
+        let ssh_db = self.db.clone();
+        tokio::task::spawn_blocking(move || ssh_db.load_config())
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
+    pub async fn load_audit_async(&self) -> Result<SshAuditLog, String> {
+        let ssh_db = self.db.clone();
+        tokio::task::spawn_blocking(move || ssh_db.list_audit())
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
+    /// 保存全局服务器列表：校验 → 全量替换入库 → 丢弃全部复用连接
+    /// （凭据可能已变更，旧连接不可继续使用）。
+    pub async fn save_config_async(&self, config: SshToolsConfig) -> Result<SshToolsConfig, String> {
+        let ssh_db = self.db.clone();
+        let cleaned = tokio::task::spawn_blocking(move || {
+            let cleaned = validate_config(config)?;
+            ssh_db.save_servers(&cleaned.servers)?;
+            Ok::<_, String>(cleaned)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        self.drop_all();
+        Ok(cleaned)
+    }
+
+    /// 列出已启用的 SSH server（不含凭据等敏感字段）。
+    pub async fn list_servers_async(&self) -> Result<Vec<SshServerSummary>, String> {
+        let ssh_db = self.db.clone();
         tokio::task::spawn_blocking(move || {
-            let manager = SshSessionManager::default();
-            manager.list_servers(&project_path)
+            let config = ssh_db.load_config()?;
+            Ok(config
+                .servers
+                .into_iter()
+                .filter(|server| server.enabled)
+                .map(|server| SshServerSummary {
+                    id: server.id,
+                    description: server.description,
+                    tags: server.tags,
+                })
+                .collect())
         })
         .await
         .map_err(|error| error.to_string())?
     }
 
     /// 读取指定已启用服务器的完整配置（含 review_enabled 等字段），供审查门禁使用。
-    pub async fn server_config_async(
-        &self,
-        project_path: PathBuf,
-        server_id: String,
-    ) -> Result<SshServerConfig, String> {
-        tokio::task::spawn_blocking(move || find_enabled_server(&project_path, &server_id))
+    pub async fn server_config_async(&self, server_id: String) -> Result<SshServerConfig, String> {
+        let ssh_db = self.db.clone();
+        tokio::task::spawn_blocking(move || ssh_db.find_enabled_server(&server_id))
             .await
             .map_err(|error| error.to_string())?
     }
 
+    /// `workspace_path` 仅作为审计元数据记录（配置已全局化，不再决定存储位置）。
     #[allow(clippy::too_many_arguments)]
     pub async fn execute(
         &self,
-        project_path: PathBuf,
+        workspace_path: PathBuf,
         workspace_id: String,
         session_title: String,
         server_id: String,
@@ -276,7 +346,7 @@ impl SshSessionManager {
         let manager = self.clone();
         tokio::task::spawn_blocking(move || {
             manager.execute_blocking(
-                project_path,
+                workspace_path,
                 workspace_id,
                 session_title,
                 server_id,
@@ -295,7 +365,7 @@ impl SshSessionManager {
     #[allow(clippy::too_many_arguments)]
     pub async fn record_review_blocked(
         &self,
-        project_path: PathBuf,
+        workspace_path: PathBuf,
         workspace_id: String,
         session_title: String,
         server_id: String,
@@ -303,10 +373,11 @@ impl SshSessionManager {
         command: String,
         review: SshAuditReview,
     ) -> Result<SshAuditRecord, String> {
+        let ssh_db = self.db.clone();
         tokio::task::spawn_blocking(move || {
             let record = SshAuditRecord {
                 created_at: Utc::now().to_rfc3339(),
-                workspace_path: normalize_project_key(&project_path),
+                workspace_path: normalize_project_key(&workspace_path),
                 workspace_id,
                 session_title,
                 server_id,
@@ -321,7 +392,7 @@ impl SshSessionManager {
                 error: None,
                 review: Some(review),
             };
-            write_audit_record(&project_path, record.clone())?;
+            ssh_db.append_audit_record(&record)?;
             Ok(record)
         })
         .await
@@ -331,7 +402,7 @@ impl SshSessionManager {
     #[allow(clippy::too_many_arguments)]
     fn execute_blocking(
         &self,
-        project_path: PathBuf,
+        workspace_path: PathBuf,
         workspace_id: String,
         session_title: String,
         server_id: String,
@@ -342,55 +413,60 @@ impl SshSessionManager {
         review: Option<SshAuditReview>,
     ) -> Result<SshExecResult, String> {
         let result = self.execute_command_blocking(
-            &project_path,
             server_id.clone(),
             session_id.clone(),
             command.clone(),
             stdin,
             timeout_secs,
         );
-        let audit_result = write_audit_record(
-            &project_path,
-            SshAuditRecord::from_execution(
-                &project_path,
-                workspace_id,
-                session_title,
-                server_id,
-                session_id,
-                command,
-                &result,
-                review.as_ref(),
-            ),
+        let audit_record = SshAuditRecord::from_execution(
+            &workspace_path,
+            workspace_id,
+            session_title,
+            server_id,
+            session_id,
+            command,
+            &result,
+            review.as_ref(),
         );
-        if let Err(error) = audit_result {
-            return Err(format!("写入 SSH 审计记录失败：{error}"));
+        if let Err(error) = self.db.append_audit_record(&audit_record) {
+            // 命令已经执行过：审计失败不能伪装成命令失败。保留真实结果，
+            // 把审计写入失败作为警告附在 stderr 里返回。
+            eprintln!("[ssh-tool] 写入 SSH 审计记录失败：{error}");
+            if let Ok(mut output) = result {
+                output
+                    .stderr
+                    .push_str(&format!("\n[警告：审计记录写入失败：{error}]"));
+                return Ok(output);
+            }
         }
         result
     }
 
     fn execute_command_blocking(
         &self,
-        project_path: &Path,
         server_id: String,
         session_id: String,
         command: String,
         stdin: Option<String>,
         timeout_secs: Option<u64>,
     ) -> Result<SshExecResult, String> {
-        let server = find_enabled_server(project_path, &server_id)?;
+        let server = self.db.find_enabled_server(&server_id)?;
         let timeout_secs = timeout_secs.unwrap_or(server.default_timeout_secs);
         let timeout_secs = timeout_secs.clamp(1, MAX_TIMEOUT_SECS);
         let max_output_bytes = server.max_output_bytes.clamp(1, MAX_OUTPUT_BYTES);
         validate_session_id(&session_id)?;
         validate_command(&command)?;
         if let Some(input) = stdin.as_deref() {
-            if input.len() > MAX_STDIN_BYTES {
-                return Err(format!("错误：stdin 长度不能超过 {MAX_STDIN_BYTES} 字节"));
+            let chars = input.chars().count();
+            if chars > MAX_STDIN_CHARS {
+                return Err(format!(
+                    "错误：stdin 长度 {chars} 字符超过上限 {MAX_STDIN_CHARS}（与安全审查送审上限一致，不允许执行未完整送审的内容；请改用分批写入）"
+                ));
             }
         }
 
         let key = SshSessionKey {
-            project_path: normalize_project_key(project_path),
             server_id: server.id.clone(),
             session_id: session_id.clone(),
         };
@@ -427,36 +503,41 @@ impl SshSessionManager {
         }
     }
 
+    /// 取指定 key 的连接；不存在则在锁外新建后入池。
     fn connection_for(
         &self,
         key: SshSessionKey,
         server: &SshServerConfig,
-    ) -> Result<Arc<Mutex<SshConnection>>, String> {
-        let mut sessions = self.sessions.lock();
-        sessions.retain(|_, connection| {
-            connection.lock().last_used_at.elapsed() < Duration::from_secs(30 * 60)
-        });
-
-        if let Some(connection) = sessions.get(&key) {
-            if connection.lock().session.authenticated() {
-                return Ok(Arc::clone(connection));
-            }
+    ) -> Result<Arc<SshConnection>, String> {
+        self.reap_idle_connections();
+        if let Some(connection) = self.sessions.lock().get(&key).cloned() {
+            // 缓存连接直接复用；连接若已死亡，由执行侧的 stale 错误码检测触发丢弃重连。
+            return Ok(connection);
         }
-
-        let session = connect(server)?;
-        let connection = Arc::new(Mutex::new(SshConnection {
-            session,
-            last_used_at: Instant::now(),
-        }));
-        sessions.insert(key, Arc::clone(&connection));
+        // 在 sessions 锁外建立连接（TCP + 握手 + 认证 + 主机密钥校验），
+        // 否则一台服务器连不上会拖住所有服务器的 SSH 操作。
+        let ssh_db = self.db.clone();
+        let connection = Arc::new(SshConnection::new(connect(server, &ssh_db)?));
+        let mut sessions = self.sessions.lock();
+        if let Some(existing) = sessions.get(&key).cloned() {
+            // 并发下同 key 先连者获胜：复用已入池连接，丢弃本次新建（drop 即断开）。
+            return Ok(existing);
+        }
+        sessions.insert(key, connection.clone());
         Ok(connection)
     }
 
-    fn drop_project_sessions(&self, project_path: &str) {
-        let project_key = normalize_project_key(Path::new(project_path));
+    /// 回收空闲连接。只读原子时间戳，不碰任何连接的 session 锁，
+    /// 因此正在执行命令（最长 300s）的连接不会阻塞回收或其他连接的建立。
+    fn reap_idle_connections(&self) {
         self.sessions
             .lock()
-            .retain(|key, _| key.project_path != project_key);
+            .retain(|_, connection| connection.idle_secs() < CONNECTION_IDLE_SECS);
+    }
+
+    /// 配置保存后丢弃全部复用连接（凭据可能已变更）。
+    fn drop_all(&self) {
+        self.sessions.lock().clear();
     }
 
     fn drop_session(&self, key: &SshSessionKey) {
@@ -485,6 +566,7 @@ fn default_max_output_bytes() -> usize {
 }
 
 impl SshAuditRecord {
+    #[allow(clippy::too_many_arguments)]
     fn from_execution(
         workspace_path: &Path,
         workspace_id: String,
@@ -506,8 +588,8 @@ impl SshAuditRecord {
                 session_id,
                 command,
                 exit_code: Some(output.exit_code),
-                stdout: output.stdout.clone(),
-                stderr: output.stderr.clone(),
+                stdout: truncate_for_audit(&output.stdout),
+                stderr: truncate_for_audit(&output.stderr),
                 duration_ms: Some(output.duration_ms),
                 truncated: output.truncated,
                 interactive_blocked: output.interactive_blocked,
@@ -535,6 +617,22 @@ impl SshAuditRecord {
     }
 }
 
+/// 审计落盘只保留头尾各半的输出，防止单条大输出把审计文件撑大；
+/// 完整输出仍随工具结果返回给调用方。
+fn truncate_for_audit(text: &str) -> String {
+    let total = text.chars().count();
+    if total <= AUDIT_OUTPUT_CHARS {
+        return text.to_string();
+    }
+    let half = AUDIT_OUTPUT_CHARS / 2;
+    let head: String = text.chars().take(half).collect();
+    let tail: String = text.chars().skip(total - half).collect();
+    format!(
+        "{head}\n…[审计输出已截断，省略 {} 字符]…\n{tail}",
+        total - half * 2
+    )
+}
+
 impl SshCommandStartError {
     fn is_stale_connection(&self) -> bool {
         match self {
@@ -552,7 +650,7 @@ impl SshCommandStartError {
 
 #[allow(clippy::too_many_arguments)]
 fn run_command_on_connection(
-    connection: &Arc<Mutex<SshConnection>>,
+    connection: &Arc<SshConnection>,
     server_id: &str,
     session_id: &str,
     command: &str,
@@ -561,32 +659,45 @@ fn run_command_on_connection(
     max_output_bytes: usize,
     started: Instant,
 ) -> Result<SshExecResult, SshCommandStartError> {
-    let (mut guard, mut channel) = open_exec_channel(connection, command)?;
+    let (session, mut channel) = open_exec_channel(connection, command)?;
 
-    // 在阻塞模式下写入 stdin（若有）并关闭输入端
+    // 在阻塞模式下写入 stdin（若有）并关闭输入端。写入失败（如命令很快退出、
+    // 不再读输入）不判为命令失败，但要把原因带到 stderr，避免无声丢失。
+    let mut stdin_write_note = None;
     if let Some(input) = stdin {
         if !input.is_empty() {
-            let _ = channel.write_all(input.as_bytes());
-            let _ = channel.flush();
+            if let Err(error) = channel.write_all(input.as_bytes()) {
+                stdin_write_note = Some(format!(
+                    "\n[写入 stdin 失败（命令可能未读取标准输入）：{}]",
+                    sanitize_error_text(&error.to_string())
+                ));
+            } else {
+                let _ = channel.flush();
+            }
         }
     }
     let _ = channel.send_eof();
 
     // 切换非阻塞读取：libssh2 的 socket 超时会污染整个会话（缓存的连接需丢弃），
     // 改用非阻塞 + 空转计时来检测交互阻塞，会话保持可复用。
-    // 当前命令独占连接互斥锁，中途切换阻塞模式是安全的。
-    guard.session.set_blocking(false);
-    let idle_secs = IDLE_DETECT_SECS.min(timeout_secs / 2).max(MIN_IDLE_SECS);
+    // 当前命令独占 session 互斥锁，中途切换阻塞模式是安全的。
+    session.set_blocking(false);
+    let (prompt_idle_secs, silent_idle_secs) = idle_thresholds(timeout_secs);
     let deadline = started + Duration::from_secs(timeout_secs);
-    let (outcome, stdout_raw, stderr_raw, stdout_capped, stderr_capped) =
-        drain_channel(&mut channel, max_output_bytes, idle_secs, deadline);
-    guard.session.set_blocking(true);
+    let (outcome, stdout_raw, stderr_raw, stdout_capped, stderr_capped) = drain_channel(
+        &mut channel,
+        max_output_bytes,
+        prompt_idle_secs,
+        silent_idle_secs,
+        deadline,
+    );
+    session.set_blocking(true);
 
     let stdout = finalize_output(&stdout_raw, stdout_capped);
-    let (exit_code, stderr) = match outcome {
+    let (exit_code, mut stderr) = match outcome {
         DrainOutcome::Completed => {
             let _ = channel.wait_close();
-            let code = channel.exit_status().unwrap_or(INTERACTIVE_EXIT_CODE);
+            let code = channel.exit_status().unwrap_or(UNKNOWN_EXIT_CODE);
             (code, finalize_output(&stderr_raw, stderr_capped))
         }
         DrainOutcome::TimedOut => {
@@ -601,13 +712,16 @@ fn run_command_on_connection(
             let hint =
                 interactive_prompt_hint(&stdout_raw, &stderr_raw).unwrap_or("未匹配到明显提示符");
             text.push_str(&format!(
-                "\n[工具检测到命令疑似在等待交互输入（连续 {idle_secs}s 无输出且未退出，疑似：{hint}），已主动中止以免长时间挂起。最近输出结尾：{:?}。请改用非交互形式后重试：sudo→免密账号或 NOPASSWD；确认提示→加 -y/--yes；分页器→PAGER=cat、GIT_PAGER=cat；REPL→用 -e/-c 或通过 stdin 参数喂入。]",
+                "\n[工具检测到命令疑似在等待交互输入（连续 {silent_idle_secs}s 无输出且未退出；若命中密码/确认等提示符最快 {prompt_idle_secs}s 即中止。疑似：{hint}），已主动中止以免长时间挂起。最近输出结尾：{:?}。请改用非交互形式后重试：sudo→免密账号或 NOPASSWD；确认提示→加 -y/--yes；分页器→PAGER=cat、GIT_PAGER=cat；REPL→用 -e/-c 或通过 stdin 参数喂入。]",
                 tail_snippet(&stdout_raw, &stderr_raw)
             ));
             (INTERACTIVE_EXIT_CODE, text)
         }
     };
-    guard.last_used_at = Instant::now();
+    if let Some(note) = stdin_write_note {
+        stderr.push_str(&note);
+    }
+    connection.touch();
 
     Ok(SshExecResult {
         server_id: server_id.to_string(),
@@ -621,17 +735,24 @@ fn run_command_on_connection(
     })
 }
 
+/// 静默阈值随命令超时放大：短命令保持灵敏（8s），长命令（如 300s 备份）放宽到
+/// 最多 60s，避免误杀安静的长任务；命中提示符证据时始终用快速阈值。
+fn idle_thresholds(timeout_secs: u64) -> (u64, u64) {
+    let silent_idle_secs = (timeout_secs / 4).clamp(PROMPT_IDLE_SECS, MAX_SILENT_IDLE_SECS);
+    let prompt_idle_secs = PROMPT_IDLE_SECS.min(silent_idle_secs);
+    (prompt_idle_secs, silent_idle_secs)
+}
+
 fn open_exec_channel<'a>(
-    connection: &'a Arc<Mutex<SshConnection>>,
+    connection: &'a Arc<SshConnection>,
     command: &str,
-) -> Result<(parking_lot::MutexGuard<'a, SshConnection>, Channel), SshCommandStartError> {
-    let guard = connection.lock();
-    let mut channel = guard
-        .session
+) -> Result<(parking_lot::MutexGuard<'a, Session>, Channel), SshCommandStartError> {
+    let session = connection.session.lock();
+    let mut channel = session
         .channel_session()
         .map_err(SshCommandStartError::Channel)?;
     channel.exec(command).map_err(SshCommandStartError::Exec)?;
-    Ok((guard, channel))
+    Ok((session, channel))
 }
 
 fn is_stale_ssh_error(error: &ssh2::Error) -> bool {
@@ -644,81 +765,6 @@ fn is_stale_ssh_error(error: &ssh2::Error) -> bool {
             | ssh2::ErrorCode::Session(LIBSSH2_ERROR_SOCKET_RECV)
             | ssh2::ErrorCode::Session(LIBSSH2_ERROR_BAD_SOCKET)
     )
-}
-
-fn ssh_dir(project_path: &Path) -> PathBuf {
-    project_path
-        .join(".jkcodingagent")
-        .join("local_env")
-        .join("ssh")
-}
-
-fn config_path(project_path: &Path) -> PathBuf {
-    ssh_dir(project_path).join(CONFIG_FILE_NAME)
-}
-
-fn legacy_config_path(project_path: &Path) -> PathBuf {
-    project_path.join(".jkcodingagent").join(CONFIG_FILE_NAME)
-}
-
-fn audit_path(project_path: &Path) -> PathBuf {
-    ssh_dir(project_path).join(AUDIT_FILE_NAME)
-}
-
-fn read_config(project_path: &Path) -> Result<SshToolsConfig, String> {
-    let mut path = config_path(project_path);
-    if !path.exists() {
-        let legacy = legacy_config_path(project_path);
-        if legacy.exists() {
-            path = legacy;
-        }
-    }
-    if !path.exists() {
-        return Ok(SshToolsConfig::default());
-    }
-    let raw = fs::read_to_string(&path)
-        .map_err(|error| format!("读取 SSH 工具配置失败（{}）：{error}", path.display()))?;
-    let config: SshToolsConfig = serde_json::from_str(&raw)
-        .map_err(|error| format!("解析 SSH 工具配置失败（{}）：{error}", path.display()))?;
-    validate_config(config)
-}
-
-fn read_audit(project_path: &Path) -> Result<SshAuditLog, String> {
-    let path = audit_path(project_path);
-    if !path.exists() {
-        return Ok(SshAuditLog::default());
-    }
-    let raw = fs::read_to_string(&path)
-        .map_err(|error| format!("读取 SSH 审计记录失败（{}）：{error}", path.display()))?;
-    serde_json::from_str(&raw)
-        .map_err(|error| format!("解析 SSH 审计记录失败（{}）：{error}", path.display()))
-}
-
-fn write_config(project_path: &Path, config: &SshToolsConfig) -> Result<(), String> {
-    let path = config_path(project_path);
-    let dir = path
-        .parent()
-        .ok_or_else(|| format!("无法解析 SSH 工具配置目录：{}", path.display()))?;
-    fs::create_dir_all(dir).map_err(|error| error.to_string())?;
-    let raw = serde_json::to_string_pretty(config).map_err(|error| error.to_string())?;
-    atomic_write(&path, &raw).map_err(|error| error.to_string())
-}
-
-fn write_audit_record(project_path: &Path, record: SshAuditRecord) -> Result<(), String> {
-    let path = audit_path(project_path);
-    let dir = path
-        .parent()
-        .ok_or_else(|| format!("无法解析 SSH 审计目录：{}", path.display()))?;
-    fs::create_dir_all(dir).map_err(|error| error.to_string())?;
-
-    let mut audit = read_audit(project_path)?;
-    audit.records.push(record);
-    if audit.records.len() > AUDIT_RECORD_LIMIT {
-        let overflow = audit.records.len() - AUDIT_RECORD_LIMIT;
-        audit.records.drain(0..overflow);
-    }
-    let raw = serde_json::to_string_pretty(&audit).map_err(|error| error.to_string())?;
-    atomic_write(&path, &raw).map_err(|error| error.to_string())
 }
 
 pub fn render_ssh_audit_record_markdown(record: &SshAuditRecord) -> String {
@@ -908,16 +954,7 @@ fn validate_command(command: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn find_enabled_server(project_path: &Path, server_id: &str) -> Result<SshServerConfig, String> {
-    let config = read_config(project_path)?;
-    config
-        .servers
-        .into_iter()
-        .find(|server| server.enabled && server.id == server_id)
-        .ok_or_else(|| format!("未找到已启用的 SSH server：{server_id}"))
-}
-
-fn connect(server: &SshServerConfig) -> Result<Session, String> {
+fn connect(server: &SshServerConfig, ssh_db: &SshDb) -> Result<Session, String> {
     let address = format!("{}:{}", server.host, server.port);
     let tcp = TcpStream::connect(&address).map_err(|error| {
         format!(
@@ -938,6 +975,8 @@ fn connect(server: &SshServerConfig) -> Result<Session, String> {
     session
         .handshake()
         .map_err(|error| sanitize_ssh_error("SSH 握手失败", error))?;
+    // 主机密钥校验必须在认证之前：否则密码/私钥会被交给伪造的服务端。
+    verify_or_learn_host_key(ssh_db, server, &session)?;
     match server.auth_method {
         SshAuthMethod::Password => {
             session
@@ -962,6 +1001,31 @@ fn connect(server: &SshServerConfig) -> Result<Session, String> {
     Ok(session)
 }
 
+/// 主机公钥指纹固定（TOFU：首次连接学习，之后指纹变更即拒绝）。
+/// 存储在全局库的 ssh_host_keys 表，按 server_id 区分。
+/// 服务器重建等合法变更时，可在应用的 SSH 设置中重试连接测试并选择更新指纹。
+fn verify_or_learn_host_key(
+    ssh_db: &SshDb,
+    server: &SshServerConfig,
+    session: &Session,
+) -> Result<(), String> {
+    let Some(raw) = session.host_key_hash(ssh2::HashType::Sha256) else {
+        return Err(format!(
+            "SSH server {} 未提供主机公钥，已拒绝连接",
+            server.id
+        ));
+    };
+    let fingerprint: String = raw.iter().map(|byte| format!("{byte:02x}")).collect();
+    match ssh_db.host_key_pin(&server.id)? {
+        Some(pinned) if pinned == fingerprint => Ok(()),
+        Some(pinned) => Err(format!(
+            "SSH server {} 的主机密钥与已固定指纹不一致（疑似中间人攻击，或服务器已重建）：\n固定指纹：{pinned}\n实际指纹：{fingerprint}\n如确认是合法变更，请在应用的 SSH 设置中重新测试连接并更新指纹。",
+            server.id
+        )),
+        None => ssh_db.set_host_key_pin(&server.id, &fingerprint),
+    }
+}
+
 /// drain 通道的最终结局：正常结束 / 疑似交互阻塞 / 超时
 #[derive(Clone, Copy)]
 enum DrainOutcome {
@@ -971,12 +1035,18 @@ enum DrainOutcome {
 }
 
 /// 在非阻塞模式下读取 channel 的 stdout 与 stderr。
-/// 连续 `idle_secs` 秒无任何输出且通道未关闭 → 判定为交互阻塞；
-/// 到达 `deadline` 仍未结束 → 超时；两端都 EOF → 正常结束。
+/// 判定规则（按优先级）：
+/// - 两端都 EOF → 正常结束；到达 `deadline` → 超时；
+/// - 连续 `silent_idle_secs` 无输出且通道未关闭 → 疑似交互阻塞（给安静的长命令
+///   留出随 timeout 放大的静默预算）；
+/// - 连续 `prompt_idle_secs` 无输出且输出末尾命中密码/确认等提示符 → 立即中止
+///   （有交互证据时不必等静默预算耗尽）。
+#[allow(clippy::too_many_arguments)]
 fn drain_channel(
     channel: &mut Channel,
     max_output_bytes: usize,
-    idle_secs: u64,
+    prompt_idle_secs: u64,
+    silent_idle_secs: u64,
     deadline: Instant,
 ) -> (DrainOutcome, Vec<u8>, Vec<u8>, bool, bool) {
     let mut stdout = Vec::new();
@@ -987,7 +1057,8 @@ fn drain_channel(
     let mut stderr_capped = false;
     let mut last_data_at = Instant::now();
     let mut chunk = [0u8; READ_CHUNK];
-    let idle = Duration::from_secs(idle_secs);
+    let prompt_idle = Duration::from_secs(prompt_idle_secs);
+    let silent_idle = Duration::from_secs(silent_idle_secs);
     let poll = Duration::from_millis(IDLE_POLL_MS);
 
     let outcome = loop {
@@ -1057,7 +1128,11 @@ fn drain_channel(
         if got_data {
             continue;
         }
-        if now.duration_since(last_data_at) >= idle {
+        let idle_for = now.duration_since(last_data_at);
+        if idle_for >= silent_idle {
+            break DrainOutcome::InteractiveBlocked;
+        }
+        if idle_for >= prompt_idle && interactive_prompt_hint(&stdout, &stderr).is_some() {
             break DrainOutcome::InteractiveBlocked;
         }
         std::thread::sleep(poll);
@@ -1174,4 +1249,34 @@ fn sanitize_error_text(error: &str) -> String {
         .replace("passphrase", "[redacted]")
         .replace("Passphrase", "[redacted]")
         .replace("PASSPHRASE", "[redacted]")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_thresholds_scale_with_timeout() {
+        // 短命令保持 8s 灵敏阈值
+        assert_eq!(idle_thresholds(30), (8, 8));
+        // 长命令静默预算随 timeout 放大，最长 60s；提示符证据始终 8s
+        assert_eq!(idle_thresholds(120), (8, 30));
+        assert_eq!(idle_thresholds(300), (8, 60));
+        // 超长 timeout 也不再超过静默上限
+        assert_eq!(idle_thresholds(600), (8, 60));
+    }
+
+    #[test]
+    fn audit_truncation_keeps_head_and_tail() {
+        let short = "abc".repeat(100);
+        assert_eq!(truncate_for_audit(&short), short);
+
+        let long = "x".repeat(AUDIT_OUTPUT_CHARS + 5000);
+        let truncated = truncate_for_audit(&long);
+        assert!(truncated.contains("审计输出已截断"));
+        assert!(truncated.chars().count() < long.chars().count());
+        // 头尾各半保留
+        assert!(truncated.starts_with(&"x".repeat(AUDIT_OUTPUT_CHARS / 2)));
+        assert!(truncated.ends_with(&"x".repeat(AUDIT_OUTPUT_CHARS / 2)));
+    }
 }

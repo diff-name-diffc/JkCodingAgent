@@ -55,7 +55,10 @@ impl ReadyQueue {
     /// 注意 runner 当前数据流下 initial_status 只可能含 succeeded/pending
     /// （create_resume_run 仅复制 succeeded 行，其余节点重写 pending 重跑）；
     /// failed/cancelled/skipped 分支为防御性保留（见 cascade_initial_terminal）。
-    pub(crate) fn new(definition: &GraphDefinition, initial_status: &HashMap<String, String>) -> Self {
+    pub(crate) fn new(
+        definition: &GraphDefinition,
+        initial_status: &HashMap<String, String>,
+    ) -> Self {
         let mut status = HashMap::new();
         for node in &definition.nodes {
             let id = node.id.trim().to_string();
@@ -83,7 +86,11 @@ impl ReadyQueue {
             dependencies.insert(id, deps);
         }
         Self {
-            node_ids: definition.nodes.iter().map(|n| n.id.trim().to_string()).collect(),
+            node_ids: definition
+                .nodes
+                .iter()
+                .map(|n| n.id.trim().to_string())
+                .collect(),
             status,
             retry_count: HashMap::new(),
             dependencies,
@@ -112,9 +119,7 @@ impl ReadyQueue {
             .filter(|id| {
                 matches!(
                     self.status.get(*id),
-                    Some(NodeState::Failed)
-                        | Some(NodeState::Cancelled)
-                        | Some(NodeState::Skipped)
+                    Some(NodeState::Failed) | Some(NodeState::Cancelled) | Some(NodeState::Skipped)
                 )
             })
             .cloned()
@@ -200,7 +205,8 @@ impl ReadyQueue {
         }
         match kind {
             FinishKind::Succeeded => {
-                self.status.insert(node_id.to_string(), NodeState::Succeeded);
+                self.status
+                    .insert(node_id.to_string(), NodeState::Succeeded);
                 Vec::new()
             }
             FinishKind::FailedFinal => {
@@ -278,7 +284,10 @@ impl ReadyQueue {
     }
 
     pub(crate) fn is_settled(&self, node_id: &str) -> bool {
-        self.status.get(node_id).map(NodeState::settled).unwrap_or(true)
+        self.status
+            .get(node_id)
+            .map(NodeState::settled)
+            .unwrap_or(true)
     }
 
     /// 是否还有未结算节点。驱动层据此判断收尾与防御性清理。
@@ -488,7 +497,10 @@ mod tests {
         assert!(queue.on_finished("a", FinishKind::Succeeded).is_empty());
         assert!(queue.failed_nodes().is_empty());
         assert!(queue.skipped_nodes().is_empty());
-        assert!(!queue.has_unsettled(), "a 应保持 Cancelled，b 保持 Cancelled");
+        assert!(
+            !queue.has_unsettled(),
+            "a 应保持 Cancelled，b 保持 Cancelled"
+        );
     }
 
     #[test]
@@ -534,7 +546,11 @@ mod tests {
         queue.claim("a");
         assert!(!queue.record_retry("a"), "重试上限为一次");
         assert_eq!(queue.retry_count("a"), 1, "拒绝时不消耗预算");
-        assert_eq!(queue.status.get("a"), Some(&NodeState::Running), "拒绝后不复活为 Pending");
+        assert_eq!(
+            queue.status.get("a"),
+            Some(&NodeState::Running),
+            "拒绝后不复活为 Pending"
+        );
         let skipped = queue.on_finished("a", FinishKind::FailedFinal);
         assert!(skipped.is_empty());
         assert_eq!(queue.failed_nodes(), vec!["a"]);

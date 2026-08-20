@@ -4,8 +4,13 @@ import type {
   DispatcherMessageUsageStats,
   DispatcherToolArtifactRef,
   DispatcherToolResultMode,
+  DispatcherToolRunRecord,
 } from "../types";
-import type { ToolActivityItem } from "./dispatcher-chat/tool-activity";
+import {
+  mergeToolRunRecords,
+  toolRunStatusToCallStatus,
+  type ToolActivityItem,
+} from "./dispatcher-chat/tool-activity";
 
 interface OutboundToolCall {
   id?: string;
@@ -96,6 +101,7 @@ export function buildDispatcherDisplayItems(
         upsertToolActivity(turn.tools, {
           id,
           name: toolCall.name || "tool",
+          workspaceId: message.workspaceId,
           input: prettyPrintToolPayload(toolCall.arguments),
           status: "running",
         });
@@ -136,6 +142,7 @@ export function buildDispatcherDisplayItems(
       upsertToolActivity(turn.tools, {
         id,
         name: message.toolName || "tool",
+        workspaceId: message.workspaceId,
         output,
         errorText,
         durationMs:
@@ -172,7 +179,7 @@ export function buildDispatcherDisplayItems(
 
 export function startLiveToolActivity(
   tools: ToolActivityItem[],
-  payload: { toolCallId: string; name: string; arguments: string },
+  payload: { toolCallId: string; name: string; arguments: string; workspaceId?: string },
 ): ToolActivityItem[] {
   const nextTools = [...tools];
   // G9-07：后端保证 toolCallId 必填（Planned→Started→Finished 贯穿同一 id），
@@ -180,6 +187,7 @@ export function startLiveToolActivity(
   upsertToolActivity(nextTools, {
     id: payload.toolCallId,
     name: payload.name,
+    workspaceId: payload.workspaceId,
     input: prettyPrintToolPayload(payload.arguments),
     status: "running",
     startedAtMs: Date.now(),
@@ -189,12 +197,13 @@ export function startLiveToolActivity(
 
 export function planLiveToolActivity(
   tools: ToolActivityItem[],
-  payload: { toolCallId: string; name: string; arguments: string },
+  payload: { toolCallId: string; name: string; arguments: string; workspaceId?: string },
 ): ToolActivityItem[] {
   const nextTools = [...tools];
   upsertToolActivity(nextTools, {
     id: payload.toolCallId,
     name: payload.name,
+    workspaceId: payload.workspaceId,
     input: prettyPrintToolPayload(payload.arguments),
     status: "running",
     startedAtMs: Date.now(),
@@ -211,6 +220,7 @@ export function finishLiveToolActivity(
     displayText: string;
     resultMode: DispatcherToolResultMode;
     detailRefs: DispatcherToolArtifactRef[];
+    workspaceId?: string;
   },
 ): ToolActivityItem[] {
   const nextTools = [...tools];
@@ -221,6 +231,7 @@ export function finishLiveToolActivity(
     const errorText = getToolErrorText(payload.displayText);
     nextTools[matchIndex] = {
       ...current,
+      workspaceId: current.workspaceId ?? payload.workspaceId,
       output: payload.displayText,
       errorText,
       durationMs: current.startedAtMs == null ? undefined : Date.now() - current.startedAtMs,
@@ -236,12 +247,84 @@ export function finishLiveToolActivity(
   nextTools.push({
     id: payload.toolCallId,
     name: payload.name,
+    workspaceId: payload.workspaceId,
     output: payload.displayText,
     errorText,
     detailRefs: payload.detailRefs,
     resultMode: payload.resultMode,
     status: errorText ? "error" : "success",
   });
+  return nextTools;
+}
+
+/**
+ * 将运行台账事件归并到对应的外层模型工具调用。
+ * 子运行只进入该卡片的 toolRuns，不会生成新的聊天消息或顶层工具卡片。
+ */
+export function updateLiveToolRunActivity(
+  tools: ToolActivityItem[],
+  run: DispatcherToolRunRecord,
+): ToolActivityItem[] {
+  const isRootRun = !run.parentRunId;
+  const matchIndex = isRootRun
+    ? tools.findIndex(
+        (tool) =>
+          tool.id === run.toolCallId ||
+          tool.runId === run.id ||
+          tool.toolRuns?.some((current) => current.id === run.id),
+      )
+    : tools.findIndex(
+        (tool) =>
+          tool.runId === run.parentRunId ||
+          tool.toolRuns?.some((current) => current.id === run.parentRunId),
+      );
+
+  if (matchIndex < 0) {
+    if (!isRootRun) return tools;
+    const status = toolRunStatusToCallStatus(run.status);
+    return [
+      ...tools,
+      {
+        id: run.toolCallId,
+        name: run.toolName,
+        workspaceId: run.workspaceId,
+        runId: run.id,
+        toolRuns: [run],
+        input: prettyPrintToolPayload(run.effectiveArgumentsJson || run.argumentsJson),
+        errorText: run.errorMessage ?? undefined,
+        durationMs: status === "running" ? undefined : run.durationMs,
+        status,
+      },
+    ];
+  }
+
+  const nextTools = [...tools];
+  const current = nextTools[matchIndex];
+  const toolRuns = mergeToolRunRecords(current.toolRuns ?? [], [run]);
+  if (!isRootRun) {
+    nextTools[matchIndex] = {
+      ...current,
+      workspaceId: current.workspaceId ?? run.workspaceId,
+      toolRuns,
+    };
+    return nextTools;
+  }
+
+  const status = toolRunStatusToCallStatus(run.status);
+  const startedAtMs = run.startedAt ? Date.parse(run.startedAt) : Number.NaN;
+  nextTools[matchIndex] = {
+    ...current,
+    name: run.toolName,
+    workspaceId: run.workspaceId,
+    runId: run.id,
+    toolRuns,
+    input: current.input ?? prettyPrintToolPayload(run.effectiveArgumentsJson || run.argumentsJson),
+    status,
+    durationMs: status === "running" ? current.durationMs : run.durationMs,
+    errorText: run.errorMessage ?? current.errorText,
+    resultMode: run.resultMode ?? current.resultMode,
+    startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : current.startedAtMs,
+  };
   return nextTools;
 }
 
@@ -284,9 +367,7 @@ export function appendAssistantTextSegment(
  * of discarding it. tool-summary segments are left untouched so ongoing tool
  * summaries keep accumulating.
  */
-export function demoteActiveTextSegments(
-  segments: AssistantTurnSegment[],
-): AssistantTurnSegment[] {
+export function demoteActiveTextSegments(segments: AssistantTurnSegment[]): AssistantTurnSegment[] {
   return segments.map((segment) =>
     segment.kind === "assistant-text" && !segment.superseded
       ? { ...segment, superseded: true }
@@ -381,6 +462,12 @@ function upsertToolActivity(tools: ToolActivityItem[], incoming: ToolActivityIte
     durationMs: incoming.durationMs ?? tools[index].durationMs,
     detailRefs: incoming.detailRefs ?? tools[index].detailRefs,
     resultMode: incoming.resultMode ?? tools[index].resultMode,
+    workspaceId: incoming.workspaceId ?? tools[index].workspaceId,
+    runId: incoming.runId ?? tools[index].runId,
+    toolRuns:
+      incoming.toolRuns == null
+        ? tools[index].toolRuns
+        : mergeToolRunRecords(tools[index].toolRuns ?? [], incoming.toolRuns),
     startedAtMs: tools[index].startedAtMs ?? incoming.startedAtMs,
   };
 }

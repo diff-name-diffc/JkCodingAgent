@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::context::ToolContext;
 use super::registry::DynamicToolProvider;
+use super::result::ToolResult;
 use super::spec::ToolSpec;
 use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
 use crate::agent::ssh_review::{review_shell_command, CommandReviewPayload, CommandReviewTarget};
@@ -53,7 +54,7 @@ impl DynamicToolProvider for McpToolBridge {
             .collect()
     }
 
-    async fn execute(&self, name: &str, args: &Value, context: &ToolContext) -> Option<String> {
+    async fn execute(&self, name: &str, args: &Value, context: &ToolContext) -> Option<ToolResult> {
         // 存在性校验与 execute_tool 同源（ensure_recent），避免用过期缓存快照做
         // 预检查导致 TOCTOU 误判（缓存缺失/过期时误报「工具未找到」）。
         let snapshot = match self
@@ -62,32 +63,56 @@ impl DynamicToolProvider for McpToolBridge {
             .await
         {
             Ok(snapshot) => snapshot,
-            Err(error) => return Some(normalize_tool_error(error)),
+            Err(error) => return Some(ToolResult::recoverable_error(error)),
         };
-        if snapshot.tool_by_name(name).is_none() {
+        let Some(tool) = snapshot.tool_by_name(name) else {
             // 不是 MCP 工具：交回注册表统一报「未找到工具」。
             return None;
+        };
+        let current_spec = ToolSpec::mcp(
+            tool.canonical_name.clone(),
+            format!("[MCP/{}] {}", tool.server_name, tool.description),
+            tool.parameters.clone(),
+        );
+        let Some(prepared_hash) = context.current_tool_spec_hash.as_deref() else {
+            return Some(ToolResult::fatal_error(format!(
+                "错误：MCP 工具 `{name}` 缺少准备阶段的 ToolSpec 摘要，已按 fail-closed 拒绝执行。"
+            )));
+        };
+        if prepared_hash != current_spec.fingerprint() {
+            return Some(ToolResult::recoverable_error(format!(
+                "错误：MCP 工具 `{name}` 的目录定义在参数准备后发生变化，已拒绝本次调用；请刷新工具目录并重新规划。"
+            )));
         }
 
         // 参数边界防护：拒绝疑似路径穿越的参数（MCP 工具 schema 不透明且
         // workspace_bound=false，静态拦截 ".." 穿越，其余交给安全审查评估）。
         if let Some(offending) = traversal_risk_arg(args) {
-            return Some(format!(
+            return Some(ToolResult::recoverable_error(format!(
                 "错误：MCP 工具 `{name}` 参数疑似路径穿越，已拒绝执行：{offending}"
-            ));
+            )));
         }
 
         // 安全审查门禁（fail-closed）：MCP 工具统一标注 ReviewRequired，
         // 未配置审查 / 审查异常 / 判定不通过一律不得执行。
         if let Some(blocked) = review_mcp_call(name, args, context).await {
-            return Some(blocked);
+            return Some(ToolResult::recoverable_error(blocked));
         }
 
         Some(
-            self.project_mcp_registry
-                .execute_tool(&context.workspace, name, args)
+            match self
+                .project_mcp_registry
+                .execute_tool_from_snapshot(&snapshot, name, args)
                 .await
-                .unwrap_or_else(normalize_tool_error),
+            {
+                Ok(output) => match serde_json::from_str::<Value>(&output) {
+                    Ok(data) => ToolResult::success_data(data, output.clone(), output),
+                    Err(error) => ToolResult::recoverable_error(format!(
+                        "错误：解析 MCP 工具 `{name}` 的结构化结果失败：{error}"
+                    )),
+                },
+                Err(error) => ToolResult::recoverable_error(normalize_tool_error(error)),
+            },
         )
     }
 }

@@ -159,6 +159,25 @@ impl WorkspaceMcpSnapshot {
 #[derive(Clone, Default)]
 pub struct ProjectMcpRegistry {
     cache: Arc<RwLock<HashMap<String, WorkspaceMcpSnapshot>>>,
+    /// 全局 MCP 注册表的读取入口。注册表在 DispatcherState 之前构造
+    /// （app 启动顺序），DB 打开后通过 attach_db 注入；Clone 共享同一槽位。
+    db: Arc<RwLock<Option<crate::agent::db::DispatcherDb>>>,
+}
+
+impl ProjectMcpRegistry {
+    /// 注入全局 DB（DispatcherState::new 打开数据库后调用一次）。
+    pub fn attach_db(&self, db: crate::agent::db::DispatcherDb) {
+        *self.db.write() = Some(db);
+    }
+
+    fn attached_db(&self) -> Option<crate::agent::db::DispatcherDb> {
+        self.db.read().clone()
+    }
+
+    /// 清空全部工作区缓存（全局注册表变更影响所有工作区）。
+    pub fn invalidate_all(&self) {
+        self.cache.write().clear();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -225,10 +244,34 @@ pub async fn set_project_mcp_server_enabled(
     enabled: bool,
 ) -> Result<ProjectMcpStatus, String> {
     let project_path_buf = PathBuf::from(&project_path);
+    let global_fallback = registry.attached_db();
     tokio::task::spawn_blocking({
         let project_path_buf = project_path_buf.clone();
         let server_name = server_name.clone();
-        move || set_project_mcp_server_enabled_sync(&project_path_buf, &server_name, enabled)
+        move || {
+            match set_project_mcp_server_enabled_sync(&project_path_buf, &server_name, enabled) {
+                Ok(()) => Ok(()),
+                // 项目文件没有该 server（来自全局注册表）时，把全局条目
+                // 拷贝进项目文件作为覆盖（copy-on-write），保持「项目覆盖全局」
+                // 的单一优先级规则。
+                Err(error) => {
+                    let Some(db) = global_fallback else {
+                        return Err(error);
+                    };
+                    let global = db
+                        .get_global_mcp_config()
+                        .map_err(|error| error.to_string())?;
+                    let Some(mut server) = global.servers.get(&server_name).cloned() else {
+                        return Err(error);
+                    };
+                    server.enabled = Some(enabled);
+                    let loaded = read_project_mcp_config_sync(&project_path_buf)?;
+                    let mut config = loaded.config?;
+                    config.servers.insert(server_name, server);
+                    write_project_mcp_config_sync(&project_path_buf, &config)
+                }
+            }
+        }
     })
     .await
     .map_err(|error| error.to_string())??;
@@ -237,6 +280,39 @@ pub async fn set_project_mcp_server_enabled(
         .refresh(&project_path)
         .await
         .map(|snapshot| snapshot.status)
+}
+
+/// 读取全局 MCP 注册表（设置中心「MCP 服务器」页数据源）。
+#[tauri::command]
+pub async fn mcp_get_global_config(
+    state: State<'_, crate::agent::DispatcherState>,
+) -> Result<ProjectMcpConfig, String> {
+    let db = state.db().clone();
+    tokio::task::spawn_blocking(move || db.get_global_mcp_config())
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+/// 整列表保存全局 MCP 注册表；成功后清空全部工作区缓存，下一轮
+/// ensure_recent 重新按「全局 ∪ 项目」合并。
+#[tauri::command]
+pub async fn mcp_save_global_config(
+    state: State<'_, crate::agent::DispatcherState>,
+    registry: State<'_, ProjectMcpRegistry>,
+    config: ProjectMcpConfig,
+) -> Result<ProjectMcpConfig, String> {
+    let db = state.db().clone();
+    tokio::task::spawn_blocking(move || db.save_global_mcp_config(&config))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    registry.invalidate_all();
+    let db = state.db().clone();
+    tokio::task::spawn_blocking(move || db.get_global_mcp_config())
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 pub fn ensure_project_mcp_file(project_path: &str) -> Result<(), String> {
@@ -269,9 +345,23 @@ impl ProjectMcpRegistry {
     pub async fn refresh(&self, project_path: &str) -> Result<WorkspaceMcpSnapshot, String> {
         let project_path = PathBuf::from(project_path);
         let cache_key = workspace_cache_key(&project_path);
+        let db = self.attached_db();
         let loaded = tokio::task::spawn_blocking({
             let project_path = project_path.clone();
-            move || read_project_mcp_config_sync(&project_path)
+            move || -> Result<LoadedProjectMcpConfig, String> {
+                let mut loaded = read_project_mcp_config_sync(&project_path)?;
+                // 全局注册表并入工作区配置：同名时项目级覆盖全局。
+                if let Some(db) = db {
+                    let global = db
+                        .get_global_mcp_config()
+                        .map_err(|error| error.to_string())?;
+                    let workspace = loaded.config?;
+                    let mut servers = global.servers;
+                    servers.extend(workspace.servers);
+                    loaded.config = Ok(ProjectMcpConfig { servers });
+                }
+                Ok(loaded)
+            }
         })
         .await
         .map_err(|error| error.to_string())??;
@@ -336,13 +426,14 @@ impl ProjectMcpRegistry {
         Ok(snapshot)
     }
 
-    pub async fn execute_tool(
+    /// 在调用方已经校验过的不可变目录快照上执行，避免再次刷新缓存后把
+    /// 同名但 Schema/server 已变化的工具偷换进当前 invocation。
+    pub(crate) async fn execute_tool_from_snapshot(
         &self,
-        workspace: &Path,
+        snapshot: &WorkspaceMcpSnapshot,
         tool_name: &str,
         arguments: &Value,
     ) -> Result<String, String> {
-        let snapshot = self.ensure_recent(workspace).await?;
         let Some(tool) = snapshot.tool_by_name(tool_name).cloned() else {
             return Err(format!("错误：未找到 MCP 工具 '{tool_name}'"));
         };
@@ -874,15 +965,24 @@ fn sanitize_tool_name(raw: &str) -> String {
 }
 
 fn read_project_mcp_config_sync(project_path: &Path) -> Result<LoadedProjectMcpConfig, String> {
-    ensure_project_mcp_file(project_path.to_string_lossy().as_ref())?;
     let config_path = project_path.join(".jkcodingagent").join("mcp.json");
-    let raw = std::fs::read_to_string(&config_path).map_err(|error| error.to_string())?;
-    let config = serde_json::from_str::<ProjectMcpConfig>(&raw)
-        .map_err(|error| format!("解析 {} 失败：{error}", config_path.display()));
-    Ok(LoadedProjectMcpConfig {
-        config_path,
-        config,
-    })
+    // 只读不建：文件缺失视为空配置（工作区可只用全局注册表的服务器），
+    // 创建发生在 init_project_config 与显式写入时。
+    match std::fs::read_to_string(&config_path) {
+        Ok(raw) => {
+            let config = serde_json::from_str::<ProjectMcpConfig>(&raw)
+                .map_err(|error| format!("解析 {} 失败：{error}", config_path.display()));
+            Ok(LoadedProjectMcpConfig {
+                config_path,
+                config,
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(LoadedProjectMcpConfig {
+            config_path,
+            config: Ok(ProjectMcpConfig::default()),
+        }),
+        Err(error) => Err(format!("读取 {} 失败：{error}", config_path.display())),
+    }
 }
 
 fn write_project_mcp_config_sync(

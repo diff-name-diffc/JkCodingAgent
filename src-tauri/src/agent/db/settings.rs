@@ -16,6 +16,10 @@ pub struct DispatcherModelConfig {
     pub active: bool,
     #[serde(default)]
     pub system_prompt: String,
+    /// 模型库引用：非空时 url/api_key/model 运行期由库条目解析（读取时回填、
+    /// 保存时剥离），消除「库条目更新、用途槽位保留旧凭据」的漂移。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub library_id: String,
 }
 
 fn default_model_config_active() -> bool {
@@ -30,12 +34,78 @@ impl DispatcherModelConfig {
             model: self.model.trim().to_string(),
             active: self.active,
             system_prompt: self.system_prompt.trim().to_string(),
+            library_id: self.library_id.trim().to_string(),
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.url.trim().is_empty() && self.api_key.trim().is_empty() && self.model.trim().is_empty()
+        self.library_id.trim().is_empty()
+            && self.url.trim().is_empty()
+            && self.api_key.trim().is_empty()
+            && self.model.trim().is_empty()
     }
+
+    /// 库引用解析：引用条目从库回填凭据；旧内联条目按 url+model 自动挂接
+    /// 库条目（仅内存标记，下次保存时落盘为引用）。引用指向的条目缺失或
+    /// 停用时清空凭据，由运行入口的完整性校验显式报错。
+    fn resolve_from_library(&mut self, library: &[ModelLibraryEntry]) {
+        if !self.library_id.trim().is_empty() {
+            match library
+                .iter()
+                .find(|entry| entry.id == self.library_id && entry.enabled)
+            {
+                Some(entry) => {
+                    self.url = entry.url.trim().to_string();
+                    self.api_key = entry.api_key.trim().to_string();
+                    self.model = entry.model.trim().to_string();
+                }
+                None => {
+                    self.url.clear();
+                    self.api_key.clear();
+                    self.model.clear();
+                }
+            }
+            return;
+        }
+        if self.url.trim().is_empty() || self.model.trim().is_empty() {
+            return;
+        }
+        if let Some(entry) = library.iter().find(|entry| {
+            entry.enabled
+                && !entry.url.trim().is_empty()
+                && entry.url.trim() == self.url.trim()
+                && entry.model.trim() == self.model.trim()
+        }) {
+            self.library_id = entry.id.clone();
+        }
+    }
+}
+
+fn resolve_model_configs_from_library(
+    configs: Vec<DispatcherModelConfig>,
+    library: &[ModelLibraryEntry],
+) -> Vec<DispatcherModelConfig> {
+    configs
+        .into_iter()
+        .map(|mut config| {
+            config.resolve_from_library(library);
+            config
+        })
+        .collect()
+}
+
+/// 引用条目剥离解析出的凭据：落库只保留 library_id + active + system_prompt。
+fn strip_library_config_credentials(mut config: DispatcherModelConfig) -> DispatcherModelConfig {
+    if !config.library_id.trim().is_empty() {
+        config.url.clear();
+        config.api_key.clear();
+        config.model.clear();
+    }
+    config
+}
+
+fn strip_library_credentials(configs: Vec<DispatcherModelConfig>) -> Vec<DispatcherModelConfig> {
+    configs.into_iter().map(strip_library_config_credentials).collect()
 }
 
 fn normalize_model_configs(configs: Vec<DispatcherModelConfig>) -> Vec<DispatcherModelConfig> {
@@ -142,14 +212,18 @@ impl Default for AhaSettingsV2 {
 #[serde(rename_all = "camelCase")]
 pub struct GraphExecutionConfig {
     /// 高危写检查点：每个 run 首个 coding 节点启动前暂停，等待用户在图面板恢复。
-    #[serde(default)]
+    #[serde(default = "default_pause_before_write")]
     pub pause_before_write: bool,
+}
+
+const fn default_pause_before_write() -> bool {
+    true
 }
 
 impl Default for GraphExecutionConfig {
     fn default() -> Self {
         Self {
-            pause_before_write: false,
+            pause_before_write: default_pause_before_write(),
         }
     }
 }
@@ -209,6 +283,11 @@ impl DispatcherDb {
 
     fn serialize_json(configs: &[DispatcherModelConfig]) -> String {
         serde_json::to_string(configs).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// 落库序列化：引用条目剥离解析出的凭据，DB 只存 library_id 引用。
+    fn stored_json(configs: &[DispatcherModelConfig]) -> String {
+        Self::serialize_json(&strip_library_credentials(configs.to_vec()))
     }
 
     fn parse_review_model_config_json(raw: &str) -> DispatcherModelConfig {
@@ -300,7 +379,56 @@ impl DispatcherDb {
                 },
             })
         }) {
-            Ok(settings) => Ok(settings),
+            Ok(mut settings) => {
+                // 库引用解析：所有用途槽位与审查模型从库回填凭据；旧内联条目
+                // 自动挂接库条目（下次保存落盘为引用）。
+                let library = settings.model_library.clone();
+                settings.shared.vision_model_configs = resolve_model_configs_from_library(
+                    settings.shared.vision_model_configs,
+                    &library,
+                );
+                settings.shared.image_model_configs = resolve_model_configs_from_library(
+                    settings.shared.image_model_configs,
+                    &library,
+                );
+                settings.shared.image_edit_model_configs = resolve_model_configs_from_library(
+                    settings.shared.image_edit_model_configs,
+                    &library,
+                );
+                settings.shared.asr_model_configs = resolve_model_configs_from_library(
+                    settings.shared.asr_model_configs,
+                    &library,
+                );
+                settings.shared.tts_model_configs = resolve_model_configs_from_library(
+                    settings.shared.tts_model_configs,
+                    &library,
+                );
+                settings.shared.embedding_model_configs = resolve_model_configs_from_library(
+                    settings.shared.embedding_model_configs,
+                    &library,
+                );
+                settings.project.chat_model_configs = resolve_model_configs_from_library(
+                    settings.project.chat_model_configs,
+                    &library,
+                );
+                settings.project.summary_model_configs = resolve_model_configs_from_library(
+                    settings.project.summary_model_configs,
+                    &library,
+                );
+                settings.chat.chat_model_configs = resolve_model_configs_from_library(
+                    settings.chat.chat_model_configs,
+                    &library,
+                );
+                settings.chat.summary_model_configs = resolve_model_configs_from_library(
+                    settings.chat.summary_model_configs,
+                    &library,
+                );
+                settings
+                    .review
+                    .model_config
+                    .resolve_from_library(&library);
+                Ok(settings)
+            }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(AhaSettingsV2::default()),
             Err(e) => Err(e).context("load dispatcher settings v2"),
         }
@@ -363,25 +491,27 @@ impl DispatcherDb {
         let auto_approve_int = if settings.auto_approve_dispatch { 1 } else { 0 };
         let context_debug_int = if settings.context_debug { 1 } else { 0 };
 
-        let shared_vision = Self::serialize_json(&shared.vision_model_configs);
-        let shared_image = Self::serialize_json(&shared.image_model_configs);
-        let shared_image_edit = Self::serialize_json(&shared.image_edit_model_configs);
-        let shared_asr = Self::serialize_json(&shared.asr_model_configs);
-        let shared_tts = Self::serialize_json(&shared.tts_model_configs);
-        let shared_embedding = Self::serialize_json(&shared.embedding_model_configs);
+        let shared_vision = Self::stored_json(&shared.vision_model_configs);
+        let shared_image = Self::stored_json(&shared.image_model_configs);
+        let shared_image_edit = Self::stored_json(&shared.image_edit_model_configs);
+        let shared_asr = Self::stored_json(&shared.asr_model_configs);
+        let shared_tts = Self::stored_json(&shared.tts_model_configs);
+        let shared_embedding = Self::stored_json(&shared.embedding_model_configs);
 
-        let project_chat = Self::serialize_json(&project.chat_model_configs);
-        let project_summary = Self::serialize_json(&project.summary_model_configs);
+        let project_chat = Self::stored_json(&project.chat_model_configs);
+        let project_summary = Self::stored_json(&project.summary_model_configs);
         let project_tools =
             serde_json::to_string(&project.allowed_tools).unwrap_or_else(|_| "[]".to_string());
 
-        let chat_agent_chat = Self::serialize_json(&chat.chat_model_configs);
-        let chat_agent_summary = Self::serialize_json(&chat.summary_model_configs);
+        let chat_agent_chat = Self::stored_json(&chat.chat_model_configs);
+        let chat_agent_summary = Self::stored_json(&chat.summary_model_configs);
         let chat_agent_tools =
             serde_json::to_string(&chat.allowed_tools).unwrap_or_else(|_| "[]".to_string());
 
-        let review_model =
-            serde_json::to_string(&review.model_config).unwrap_or_else(|_| "{}".to_string());
+        let review_model = serde_json::to_string(&strip_library_config_credentials(
+            review.model_config.clone(),
+        ))
+        .unwrap_or_else(|_| "{}".to_string());
         let review_prompt = review.system_prompt.clone();
         let model_library =
             serde_json::to_string(&settings.model_library).unwrap_or_else(|_| "[]".to_string());
@@ -467,5 +597,121 @@ impl DispatcherDb {
             model_library: settings.model_library.clone(),
             graph: settings.graph,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_db() -> DispatcherDb {
+        let path = std::env::temp_dir().join(format!(
+            "aha-settings-{}-{}.sqlite3",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        DispatcherDb::new(path).unwrap()
+    }
+
+    fn library_entry(id: &str, enabled: bool) -> ModelLibraryEntry {
+        ModelLibraryEntry {
+            id: id.to_string(),
+            category: "text".to_string(),
+            url: "https://api.example.com/v1".to_string(),
+            api_key: "sk-lib".to_string(),
+            model: "lib-model".to_string(),
+            alias: "库条目".to_string(),
+            enabled,
+        }
+    }
+
+    #[test]
+    fn reference_entries_strip_credentials_on_store_and_resolve_on_load() {
+        let db = test_db();
+        let mut settings = AhaSettingsV2::default();
+        settings.model_library = vec![library_entry("e1", true)];
+        settings.project.chat_model_configs = vec![DispatcherModelConfig {
+            library_id: "e1".to_string(),
+            active: true,
+            ..Default::default()
+        }];
+        settings.review.model_config = DispatcherModelConfig {
+            library_id: "e1".to_string(),
+            ..Default::default()
+        };
+        db.save_settings_v2(&settings).unwrap();
+
+        // 落库形态：引用条目不含凭据。
+        let conn = db.conn().unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT project_chat_model_configs_json FROM dispatcher_settings_v2 WHERE id='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(raw.contains("\"libraryId\":\"e1\""));
+        assert!(!raw.contains("sk-lib"));
+        drop(conn);
+
+        // 读取形态：凭据由库回填，运行期消费方无感知。
+        let loaded = db.get_settings_v2().unwrap();
+        let chat = &loaded.project.chat_model_configs[0];
+        assert_eq!(chat.library_id, "e1");
+        assert_eq!(chat.api_key, "sk-lib");
+        assert_eq!(chat.model, "lib-model");
+        assert_eq!(loaded.review.model_config.api_key, "sk-lib");
+        assert!(loaded.review.is_configured());
+    }
+
+    #[test]
+    fn legacy_inline_entries_auto_link_to_library_on_load() {
+        let db = test_db();
+        let mut settings = AhaSettingsV2::default();
+        settings.model_library = vec![library_entry("e1", true)];
+        // 旧内联条目：与库条目 url+model 完全一致。
+        settings.shared.vision_model_configs = vec![DispatcherModelConfig {
+            url: "https://api.example.com/v1".to_string(),
+            api_key: "sk-old".to_string(),
+            model: "lib-model".to_string(),
+            active: true,
+            ..Default::default()
+        }];
+        db.save_settings_v2(&settings).unwrap();
+
+        let loaded = db.get_settings_v2().unwrap();
+        assert_eq!(loaded.shared.vision_model_configs[0].library_id, "e1");
+
+        // 再次保存后落盘为引用（凭据剥离，以库为准）。
+        db.save_settings_v2(&loaded).unwrap();
+        let conn = db.conn().unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT shared_vision_model_configs_json FROM dispatcher_settings_v2 WHERE id='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(raw.contains("\"libraryId\":\"e1\""));
+        assert!(!raw.contains("sk-old"));
+        drop(conn);
+    }
+
+    #[test]
+    fn reference_to_disabled_entry_resolves_empty() {
+        let db = test_db();
+        let mut settings = AhaSettingsV2::default();
+        settings.model_library = vec![library_entry("e1", false)];
+        settings.chat.chat_model_configs = vec![DispatcherModelConfig {
+            library_id: "e1".to_string(),
+            active: true,
+            ..Default::default()
+        }];
+        db.save_settings_v2(&settings).unwrap();
+
+        let loaded = db.get_settings_v2().unwrap();
+        let entry = &loaded.chat.chat_model_configs[0];
+        assert_eq!(entry.library_id, "e1");
+        assert!(entry.url.is_empty() && entry.api_key.is_empty() && entry.model.is_empty());
     }
 }

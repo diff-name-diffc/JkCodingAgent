@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 use super::super::context::ToolContext;
 use super::super::registry::AgentTool;
+use super::super::ToolResult;
 
 pub(super) fn graph_plan_report_tool() -> Box<dyn AgentTool> {
     Box::new(GraphPlanReportTool)
@@ -44,10 +45,12 @@ impl AgentTool for GraphPlanReportTool {
         })
     }
 
-    async fn execute(&self, _args: &Value, _context: &ToolContext) -> String {
+    async fn execute(&self, _args: &Value, _context: &ToolContext) -> ToolResult {
         // fail-closed：真正的报告生成由编排器拦截完成。若未走拦截而直接进入工具
         // execute（如误注册/重构删除拦截），不允许返回假成功回执，立即以「错误：」
         // 暴露误用。
-        "错误：graph_plan_report 仅支持在编排器拦截环境下运行，当前上下文不可用。".to_string()
+        ToolResult::recoverable_error(
+            "错误：graph_plan_report 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+        )
     }
 }

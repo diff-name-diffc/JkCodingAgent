@@ -5,27 +5,19 @@ use std::time::SystemTime;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::DispatcherState;
 use crate::shared::error::{CommandResult, IntoCommandResult};
 
 type StorageResult<T> = std::result::Result<T, StorageError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
-    #[error("找不到用户主目录")]
-    HomeDirMissing,
     #[error("{action} 失败（{path}）：{source}")]
     Io {
         action: &'static str,
         path: PathBuf,
         #[source]
         source: std::io::Error,
-    },
-    #[error("{action} 失败（{path}）：{source}")]
-    Json {
-        action: &'static str,
-        path: PathBuf,
-        #[source]
-        source: serde_json::Error,
     },
 }
 
@@ -34,17 +26,6 @@ fn io_error(
     path: impl Into<PathBuf>,
 ) -> impl FnOnce(std::io::Error) -> StorageError {
     move |source| StorageError::Io {
-        action,
-        path: path.into(),
-        source,
-    }
-}
-
-fn json_error(
-    action: &'static str,
-    path: impl Into<PathBuf>,
-) -> impl FnOnce(serde_json::Error) -> StorageError {
-    move |source| StorageError::Json {
         action,
         path: path.into(),
         source,
@@ -61,57 +42,6 @@ pub struct Project {
     pub branch: Option<String>,
     #[serde(rename = "lastOpenedAt")]
     pub last_opened_at: i64,
-}
-
-// ── Path helpers ─────────────────────────────────────────────────────────────
-
-fn app_data_dir() -> StorageResult<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or(StorageError::HomeDirMissing)?;
-    Ok(home.join(".jkcodingagent"))
-}
-
-fn projects_path() -> StorageResult<PathBuf> {
-    Ok(app_data_dir()?.join("projects.json"))
-}
-
-fn ensure_app_data_dirs() -> StorageResult<()> {
-    let dir = app_data_dir()?;
-    fs::create_dir_all(&dir).map_err(io_error("创建应用数据目录", dir))
-}
-
-// ── Tauri commands ────────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub fn load_projects() -> CommandResult<Vec<Project>> {
-    load_projects_impl()
-        .context("加载项目列表失败")
-        .into_command_result()
-}
-
-fn load_projects_impl() -> StorageResult<Vec<Project>> {
-    let path = projects_path()?;
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-    let raw = fs::read_to_string(&path).map_err(io_error("读取项目列表", path.clone()))?;
-    serde_json::from_str(&raw).map_err(json_error("解析项目列表", path))
-}
-
-#[tauri::command]
-pub fn save_projects(projects: Vec<Project>) -> CommandResult<()> {
-    save_projects_impl(projects)
-        .context("保存项目列表失败")
-        .into_command_result()
-}
-
-fn save_projects_impl(projects: Vec<Project>) -> StorageResult<()> {
-    ensure_app_data_dirs()?;
-    let path = projects_path()?;
-    let raw = serde_json::to_string_pretty(&projects)
-        .map_err(json_error("序列化项目列表", path.clone()))?;
-    atomic_write(&projects_path()?, &raw)
 }
 
 // ── Atomic write (write to tmp then rename) ───────────────────────────────────
@@ -131,4 +61,47 @@ pub fn atomic_write(path: &Path, content: &str) -> StorageResult<()> {
     let tmp = path.with_file_name(format!(".{file_name}.{uid}.tmp"));
     fs::write(&tmp, content).map_err(io_error("写入临时文件", tmp.clone()))?;
     fs::rename(&tmp, path).map_err(io_error("替换目标文件", path))
+}
+
+// ── Tauri commands（projects 表为唯一权威源，v31 起替代 projects.json）────────
+
+#[tauri::command]
+pub fn load_projects(state: tauri::State<'_, DispatcherState>) -> CommandResult<Vec<Project>> {
+    state
+        .db()
+        .list_projects()
+        .context("加载项目列表失败")
+        .into_command_result()
+}
+
+#[tauri::command]
+pub fn save_projects(
+    state: tauri::State<'_, DispatcherState>,
+    projects: Vec<Project>,
+) -> CommandResult<()> {
+    state
+        .db()
+        .save_projects_all(&projects)
+        .context("保存项目列表失败")
+        .into_command_result()
+}
+
+/// 删除项目：级联清理该项目全部会话（DB 记录 + 聊天图片文件 + 工具产物）
+/// 与项目仓库内应用自有的运行期数据目录（browser-profile / local_env）。
+/// config.toml / mcp.json 可能随仓库共享，保留不删。
+#[tauri::command]
+pub async fn project_delete(
+    state: tauri::State<'_, DispatcherState>,
+    project_id: String,
+) -> CommandResult<()> {
+    let db = state.db().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let plan = db.delete_project(&project_id)?;
+        crate::agent::db::projects::cleanup_project_files(&plan);
+        anyhow::Ok(())
+    })
+    .await
+    .context("删除项目任务失败")
+    .and_then(|inner| inner.context("删除项目失败"));
+    result.into_command_result()
 }

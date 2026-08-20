@@ -139,7 +139,10 @@ mod tests {
                 guards
             }));
         }
-        let all: Vec<_> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
+        let all: Vec<_> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
         // 只有最后登记的一代可以胜出；无论线程间 begin 顺序如何交错，
         // 恰好一个 finish 返回 true（分配与登记同锁，不存在两个"最新代"）。
         let winners = all.into_iter().filter(|guard| guard.clone_finish()).count();

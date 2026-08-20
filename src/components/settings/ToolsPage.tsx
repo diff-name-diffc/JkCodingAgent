@@ -30,7 +30,10 @@ export function ToolsPage({ projectPath }: { projectPath?: string }) {
       </Tabs>
 
       {tab === "project" ? (
-        <Section title="项目智能体工具" description="项目会话中允许智能体调用的工具。">
+        <Section
+          title="项目运行时能力"
+          description="项目智能体通过受限运行时可代理的只读能力；答复、提交执行图等控制工具始终可用。"
+        >
           <ToolsTab
             context="project"
             projectPath={projectPath}

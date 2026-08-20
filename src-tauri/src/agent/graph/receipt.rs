@@ -253,7 +253,12 @@ fn parse_usage(raw: &str) -> (u64, u64) {
         0
     };
     let prompt = pick(&["prompt_tokens", "input_tokens", "input", "promptTokens"]);
-    let completion = pick(&["completion_tokens", "output_tokens", "output", "completionTokens"]);
+    let completion = pick(&[
+        "completion_tokens",
+        "output_tokens",
+        "output",
+        "completionTokens",
+    ]);
     (prompt, completion)
 }
 
@@ -298,8 +303,18 @@ mod tests {
     #[test]
     fn aggregate_skips_cached_nodes() {
         let runs = vec![
-            record("n1", "succeeded", "finalizing", r#"{"prompt_tokens":10,"completion_tokens":5}"#),
-            record("n2", "succeeded", NODE_PHASE_CACHED, r#"{"prompt_tokens":100,"completion_tokens":50}"#),
+            record(
+                "n1",
+                "succeeded",
+                "finalizing",
+                r#"{"prompt_tokens":10,"completion_tokens":5}"#,
+            ),
+            record(
+                "n2",
+                "succeeded",
+                NODE_PHASE_CACHED,
+                r#"{"prompt_tokens":100,"completion_tokens":50}"#,
+            ),
             record("n3", "failed", "finalizing", "{}"),
         ];
         let verdict = VerdictOutcome {
@@ -318,8 +333,18 @@ mod tests {
         // 节点在 LLM 调用产生 token 后才失败时，已记录的 usage 不得丢弃，
         // 否则回执与 turn 级用量被低估（只跳过 cached，不再排除非 succeeded）。
         let runs = vec![
-            record("n1", "succeeded", "finalizing", r#"{"prompt_tokens":10,"completion_tokens":5}"#),
-            record("n2", "failed", "finalizing", r#"{"prompt_tokens":7,"completion_tokens":3}"#),
+            record(
+                "n1",
+                "succeeded",
+                "finalizing",
+                r#"{"prompt_tokens":10,"completion_tokens":5}"#,
+            ),
+            record(
+                "n2",
+                "failed",
+                "finalizing",
+                r#"{"prompt_tokens":7,"completion_tokens":3}"#,
+            ),
             record("n3", "cancelled", "finalizing", r#"{"input":2,"output":1}"#),
         ];
         let verdict = VerdictOutcome {
@@ -354,7 +379,10 @@ mod tests {
             sanitize_for_markdown("第一行\n第二行\t缩进  内容"),
             "第一行 第二行 缩进 内容"
         );
-        assert_eq!(sanitize_for_markdown("带 `反引号` 的```围栏"), "带 ｀反引号｀ 的｀｀｀围栏");
+        assert_eq!(
+            sanitize_for_markdown("带 `反引号` 的```围栏"),
+            "带 ｀反引号｀ 的｀｀｀围栏"
+        );
         assert_eq!(sanitize_for_markdown("  前后空白  "), "前后空白");
     }
 
@@ -402,10 +430,7 @@ mod tests {
         failed_record.error_text = Some("编译失败\n```\nerror[E0308]\n```\n见 src/a.rs".into());
         let runs = vec![failed_record];
         let mut state = Map::new();
-        state.insert(
-            "analysis".into(),
-            Value::String("多行\nstate `值`".into()),
-        );
+        state.insert("analysis".into(), Value::String("多行\nstate `值`".into()));
         let verdict = VerdictOutcome {
             status: VERDICT_FAIL.into(),
             reason: "节点失败\n结论".into(),
@@ -463,7 +488,14 @@ mod tests {
             reason: "产出满足需求".into(),
             usage: None,
         };
-        let content = build_receipt_markdown(&plan, &run, &runs, &Map::new(), &verdict, &aggregate_usage(&runs, &verdict, 0));
+        let content = build_receipt_markdown(
+            &plan,
+            &run,
+            &runs,
+            &Map::new(),
+            &verdict,
+            &aggregate_usage(&runs, &verdict, 0),
+        );
         assert!(content.contains("测试图"));
         assert!(content.contains("验收通过"));
         assert!(content.contains("产出满足需求"));

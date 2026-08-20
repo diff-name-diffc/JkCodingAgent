@@ -304,14 +304,24 @@ mod tests {
         };
 
         let record = db
-            .upsert_session_token_usage("session-a", "model-x", DispatcherSessionTokenUsageSource::Primary, &usage)
+            .upsert_session_token_usage(
+                "session-a",
+                "model-x",
+                DispatcherSessionTokenUsageSource::Primary,
+                &usage,
+            )
             .expect("first upsert");
         assert_eq!(record.prompt_tokens, 100);
         assert_eq!(record.completion_tokens, 40);
         assert_eq!(record.total_tokens, 140, "total 必须等于 prompt+completion");
 
         let record = db
-            .upsert_session_token_usage("session-a", "model-x", DispatcherSessionTokenUsageSource::Primary, &usage)
+            .upsert_session_token_usage(
+                "session-a",
+                "model-x",
+                DispatcherSessionTokenUsageSource::Primary,
+                &usage,
+            )
             .expect("second upsert");
         assert_eq!(record.prompt_tokens, 200);
         assert_eq!(record.completion_tokens, 80);

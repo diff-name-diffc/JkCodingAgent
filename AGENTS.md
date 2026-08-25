@@ -78,7 +78,8 @@ App
 |------|------|
 | `agent/` | dispatcher 智能体核心：`run_loop/`（运行循环）、`llm.rs`（模型调用）、`tools/`（工具注册表 + builtin 工具）、`summary.rs`（工具输出分类/摘要）、`sub_agent/`（子智能体）、`graph/`（图编排：定义/校验/执行引擎/命令）、`db/`（SQLite schema 与读写）、`commands.rs`（Tauri 命令）、`config.rs`（智能体配置 + `~/.jkcodingagent` 初始化） |
 | `task_runtime/` | `pty.rs`（PTY 创建/读写）、`session.rs`（会话/输出兜底） |
-| `project/` | `storage.rs`、`config.rs`（项目配置）、`analytics.rs`、`mcp.rs`（MCP 集成） |
+| `project/` | `storage.rs`、`config.rs`（项目配置）、`analytics.rs` |
+| `mcp/` | MCP 子系统：`McpScope{Global, Project}` 显式作用域模型——`Global`（`mcp_servers` 全局注册表，所有聊天共享单一快照）与 `Project`（全局 ∪ 项目 `.jkcodingagent/mcp.json`，同名项目覆盖）；`registry.rs`（作用域缓存/合并/工具执行）、`transport.rs`（stdio/streamable_http/unix_socket_http + 诊断）、`project_file.rs`（项目文件读写）、`commands.rs`（Tauri 命令，项目命令前置路径校验） |
 | `scm/git.rs` | Git 集成：状态、分支、日志、差异、暂存、提交、推送、拉取 |
 | `workspace/` | `fs.rs`（文件读写/列举）、`rope.rs`（大文件切片） |
 | `platform/` | `app_settings.rs`、`notification.rs`、`usage.rs` |
@@ -232,7 +233,7 @@ impl AgentTool for MyTool {
 
 ### 组件规模
 
-- **单个组件文件不应超过 400 行。** 当前仍超标的大文件（按现状持续拆分）：`task_runtime/session.rs`（~1500）、`agent/commands.rs`（~1480）、`project/mcp.rs`（~1250）、`browser.rs`（~1240）、`file-viewer/LargeFileViewer.tsx`（~1120）、`components/ProjectPage.tsx`（~680）等。新增功能若落在这些文件，优先拆分再扩展。
+- **单个组件文件不应超过 400 行。** 当前仍超标的大文件（按现状持续拆分）：`task_runtime/session.rs`（~1500）、`agent/commands.rs`（~1480）、`browser.rs`（~1240）、`file-viewer/LargeFileViewer.tsx`（~1120）、`components/ProjectPage.tsx`（~680）等。新增功能若落在这些文件，优先拆分再扩展。
 
 ---
 

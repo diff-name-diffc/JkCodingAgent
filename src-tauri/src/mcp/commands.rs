@@ -1,6 +1,6 @@
 //! MCP 相关 Tauri 命令：项目状态刷新/启停、全局注册表读写。
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use tauri::State;
 
@@ -9,15 +9,16 @@ use super::project_file::{
     write_project_mcp_config_sync,
 };
 use super::registry::McpRegistry;
-use super::{McpConfig, McpStatus};
+use super::{McpConfig, McpScope, McpStatus};
 
 #[tauri::command]
 pub async fn refresh_project_mcp_status(
     registry: State<'_, McpRegistry>,
     project_path: String,
 ) -> Result<McpStatus, String> {
+    let scope = McpScope::project(Path::new(&project_path))?;
     registry
-        .refresh(&project_path)
+        .refresh(&scope)
         .await
         .map(|snapshot| snapshot.status)
 }
@@ -29,8 +30,12 @@ pub async fn set_project_mcp_server_enabled(
     server_name: String,
     enabled: bool,
 ) -> Result<McpStatus, String> {
-    let project_path_buf = PathBuf::from(&project_path);
-    let global_fallback = registry.attached_db();
+    let scope = McpScope::project(Path::new(&project_path))?;
+    let McpScope::Project(project_path_buf) = &scope else {
+        unreachable!("McpScope::project 只会构造 Project 作用域")
+    };
+    let project_path_buf = project_path_buf.clone();
+    let global_db = registry.db().clone();
     tokio::task::spawn_blocking({
         let project_path_buf = project_path_buf.clone();
         let server_name = server_name.clone();
@@ -41,10 +46,7 @@ pub async fn set_project_mcp_server_enabled(
                 // 拷贝进项目文件作为覆盖（copy-on-write），保持「项目覆盖全局」
                 // 的单一优先级规则。
                 Err(error) => {
-                    let Some(db) = global_fallback else {
-                        return Err(error);
-                    };
-                    let global = db
+                    let global = global_db
                         .get_global_mcp_config()
                         .map_err(|error| error.to_string())?;
                     let Some(mut server) = global.servers.get(&server_name).cloned() else {
@@ -63,7 +65,7 @@ pub async fn set_project_mcp_server_enabled(
     .map_err(|error| error.to_string())??;
 
     registry
-        .refresh(&project_path)
+        .refresh(&scope)
         .await
         .map(|snapshot| snapshot.status)
 }

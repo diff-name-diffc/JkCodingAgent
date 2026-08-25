@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant as StdInstant};
@@ -183,6 +182,7 @@ fn context() -> ToolContext {
     ToolContext {
         workspace_id: "ws".to_string(),
         workspace: std::env::current_dir().expect("current dir"),
+        mcp_scope: crate::mcp::McpScope::Global,
         session_title: "test".to_string(),
         user_task: None,
         ssh_review: None,
@@ -213,7 +213,6 @@ async fn real_broker_executes_echo_chain_and_exposes_stable_sequence() {
     let context = context();
     let broker = CapabilityBroker::new(
         &registry,
-        Path::new(&context.workspace),
         CapabilitySet::new(["echo".to_string()]),
         &context,
     );

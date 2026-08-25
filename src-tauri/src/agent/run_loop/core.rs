@@ -79,7 +79,9 @@ pub(crate) trait RunLoopAgent: Sync {
 
     fn max_tool_iterations(&self) -> usize;
 
-    fn tool_surface_for_loop(&self, workspace_id: &str, workspace: &Path) -> ToolSurface;
+    /// 构建本轮模型可见的工具面。入参为本轮已构建的工具上下文——
+    /// MCP 动态工具按其 `mcp_scope` 枚举，而不是按沙箱路径推断。
+    fn tool_surface_for_loop(&self, tool_context: &ToolContext) -> ToolSurface;
 
     fn build_iteration_messages(
         &self,
@@ -238,7 +240,7 @@ where
     A: RunLoopAgent,
 {
     let tool_context = agent.build_loop_tool_context(&ctx).await;
-    let mut tool_surface = agent.tool_surface_for_loop(ctx.workspace_id, ctx.workspace);
+    let mut tool_surface = agent.tool_surface_for_loop(&tool_context);
     let mut agent_loop =
         AgentLoop::new(ctx.db, ctx.workspace_id, ctx.initial_system_prompt.clone()).await?;
 
@@ -249,7 +251,7 @@ where
         }
 
         if iteration_index > 0 {
-            tool_surface = agent.tool_surface_for_loop(ctx.workspace_id, ctx.workspace);
+            tool_surface = agent.tool_surface_for_loop(&tool_context);
         }
 
         let messages =

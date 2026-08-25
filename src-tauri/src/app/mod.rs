@@ -12,18 +12,13 @@ fn build_task_manager() -> TaskManager {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let project_mcp_registry = mcp::McpRegistry::default();
-    let dispatcher_mcp_registry = project_mcp_registry.clone();
-
     tauri::Builder::default()
         .setup(move |app| {
             // G11-02：DispatcherState 构造移出主线程同步路径——DB 打开/迁移、
             // 中断运行恢复、子智能体配置加载等阻塞 I/O 全部在 spawn_blocking
             // 中进行，这里只等待异步构造结果。失败时给出可读错误对话框并退出，
             // 而不是裸 panic 导致无法启动且无任何提示。
-            let dispatcher_state = tauri::async_runtime::block_on(DispatcherState::new(
-                dispatcher_mcp_registry.clone(),
-            ));
+            let dispatcher_state = tauri::async_runtime::block_on(DispatcherState::new());
             let dispatcher_state = match dispatcher_state {
                 Ok(state) => state,
                 Err(error) => {
@@ -39,6 +34,9 @@ pub fn run() {
             // SSH 管理器由 DispatcherState 内部基于共享 DB 连接池创建，
             // 这里把同一实例注册给 Tauri 命令层（Clone 共享底层 Arc 与连接池）。
             app.manage(dispatcher_state.ssh_manager());
+            // MCP 注册表由 DispatcherState 内部基于共享 DB 构造，
+            // 这里把同一实例注册给 Tauri 命令层（Clone 共享底层缓存与连接池）。
+            app.manage(dispatcher_state.mcp_registry());
             // RAG 配置权威源同样在全局库：注入读取入口（store 在 builder 链注册）。
             app.state::<rag::RagConfigStore>()
                 .attach_db(dispatcher_state.db().clone());
@@ -67,7 +65,6 @@ pub fn run() {
         .manage(build_task_manager())
         .manage(browser::BrowserManager::default())
         .manage(python_runner::PythonRunnerState::default())
-        .manage(project_mcp_registry)
         .manage(workspace::RopeManager::new())
         .manage(rag::RagManager::default())
         .manage(rag::RagConfigStore::default())

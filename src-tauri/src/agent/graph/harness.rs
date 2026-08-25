@@ -12,6 +12,7 @@ use super::types::{
 use crate::agent::db::settings::ModelLibraryEntry;
 use crate::agent::db::AhaSettingsV2;
 use crate::agent::tools::{ToolRegistry, ToolSafety, ToolSpec};
+use crate::mcp::McpScope;
 
 const EXCLUDED_AHA_TOOLS: &[&str] = &[
     "read_file",
@@ -93,6 +94,7 @@ pub(crate) struct ResolvedNodeHarness {
 
 pub(crate) async fn build_harness_catalog(
     workspace: &Path,
+    mcp_scope: &McpScope,
     settings: &AhaSettingsV2,
     registry: &ToolRegistry,
 ) -> GraphHarnessCatalog {
@@ -139,7 +141,7 @@ pub(crate) async fn build_harness_catalog(
 
     // Aha 工具的安全元数据直接来自注册表 spec：readonly 取 access.readonly，
     // review_required 按 spec.safety 重建（非 Safe 一律需审查）。
-    let mut tools = aha_specs(registry, workspace)
+    let mut tools = aha_specs(registry, mcp_scope)
         .into_iter()
         .map(|spec| GraphHarnessTool {
             source: "aha".to_string(),
@@ -179,7 +181,7 @@ pub(crate) fn resolve_node_harness(
     node: &GraphNode,
     settings: &AhaSettingsV2,
     registry: &ToolRegistry,
-    workspace: &Path,
+    mcp_scope: &McpScope,
 ) -> Result<ResolvedNodeHarness> {
     let entry = settings
         .model_library
@@ -197,13 +199,13 @@ pub(crate) fn resolve_node_harness(
     }
     reject_pi_extensions(node)?;
 
-    let available = aha_specs(registry, workspace);
+    let available = aha_specs(registry, mcp_scope);
     let mut host_tools = Vec::new();
     let mut runtime_names = HashSet::new();
 
     for (runtime_name, capability_name) in base_tool_aliases(node.base_tool_group) {
         let spec = registry
-            .spec_by_name(workspace, capability_name, false)
+            .spec_by_name(mcp_scope, capability_name, false)
             .with_context(|| {
                 format!(
                     "节点 '{}' 所需的基础宿主能力 '{}' 未注册",
@@ -338,9 +340,9 @@ fn is_complete_graph_model(entry: &ModelLibraryEntry) -> bool {
         && !entry.url.trim().is_empty()
 }
 
-fn aha_specs(registry: &ToolRegistry, workspace: &Path) -> Vec<ToolSpec> {
+fn aha_specs(registry: &ToolRegistry, scope: &McpScope) -> Vec<ToolSpec> {
     registry
-        .specs_for_workspace(workspace, Option::<std::iter::Empty<&str>>::None, true)
+        .specs_for_scope(scope, Option::<std::iter::Empty<&str>>::None, true)
         .into_iter()
         .filter(|spec| !EXCLUDED_AHA_TOOLS.contains(&spec.name.as_str()))
         .filter(|spec| {

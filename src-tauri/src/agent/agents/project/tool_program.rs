@@ -36,7 +36,7 @@ impl OrchestratorAgent {
                 return None;
             }
             self.tools
-                .spec_by_name(&tool_context.workspace, name, false)
+                .spec_by_name(&tool_context.mcp_scope, name, false)
                 .map(|spec| CapabilityPolicy {
                     supports_parallel_readonly: spec.supports_parallel_readonly(),
                 })
@@ -75,7 +75,6 @@ impl OrchestratorAgent {
 
         let broker = CapabilityBroker::new(
             &self.tools,
-            &tool_context.workspace,
             runtime_capabilities.clone(),
             tool_context,
         )

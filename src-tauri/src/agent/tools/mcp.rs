@@ -10,24 +10,20 @@ use super::result::ToolResult;
 use super::spec::ToolSpec;
 use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
 use crate::agent::ssh_review::{review_shell_command, CommandReviewPayload, CommandReviewTarget};
-use crate::mcp::{tool_definitions_from_snapshot, McpRegistry};
+use crate::mcp::{tool_definitions_from_snapshot, McpRegistry, McpScope};
 
-pub(super) fn mcp_tool_bridge(
-    project_mcp_registry: McpRegistry,
-) -> Arc<dyn DynamicToolProvider> {
-    Arc::new(McpToolBridge {
-        project_mcp_registry,
-    })
+pub(super) fn mcp_tool_bridge(mcp_registry: McpRegistry) -> Arc<dyn DynamicToolProvider> {
+    Arc::new(McpToolBridge { mcp_registry })
 }
 
 struct McpToolBridge {
-    project_mcp_registry: McpRegistry,
+    mcp_registry: McpRegistry,
 }
 
 #[async_trait]
 impl DynamicToolProvider for McpToolBridge {
-    fn specs_for_workspace(&self, workspace: &Path) -> Vec<ToolSpec> {
-        let snapshot = self.project_mcp_registry.cached_for_workspace(workspace);
+    fn specs_for_scope(&self, scope: &McpScope) -> Vec<ToolSpec> {
+        let snapshot = self.mcp_registry.cached_for_scope(scope);
         tool_definitions_from_snapshot(snapshot.as_ref())
             .into_iter()
             .map(|tool| {
@@ -40,8 +36,8 @@ impl DynamicToolProvider for McpToolBridge {
             .collect()
     }
 
-    fn definitions_for_workspace(&self, workspace: &Path) -> Vec<ToolDefinition> {
-        self.specs_for_workspace(workspace)
+    fn definitions_for_scope(&self, scope: &McpScope) -> Vec<ToolDefinition> {
+        self.specs_for_scope(scope)
             .into_iter()
             .map(|spec| ToolDefinition {
                 kind: "function".to_string(),
@@ -57,11 +53,7 @@ impl DynamicToolProvider for McpToolBridge {
     async fn execute(&self, name: &str, args: &Value, context: &ToolContext) -> Option<ToolResult> {
         // 存在性校验与 execute_tool 同源（ensure_recent），避免用过期缓存快照做
         // 预检查导致 TOCTOU 误判（缓存缺失/过期时误报「工具未找到」）。
-        let snapshot = match self
-            .project_mcp_registry
-            .ensure_recent(&context.workspace)
-            .await
-        {
+        let snapshot = match self.mcp_registry.ensure_recent(&context.mcp_scope).await {
             Ok(snapshot) => snapshot,
             Err(error) => return Some(ToolResult::recoverable_error(error)),
         };
@@ -101,7 +93,7 @@ impl DynamicToolProvider for McpToolBridge {
 
         Some(
             match self
-                .project_mcp_registry
+                .mcp_registry
                 .execute_tool_from_snapshot(&snapshot, name, args)
                 .await
             {

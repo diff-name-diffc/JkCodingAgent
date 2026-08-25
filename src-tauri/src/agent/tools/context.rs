@@ -9,6 +9,7 @@ use tokio::sync::watch;
 use crate::agent::db::settings::SshReviewConfig;
 use crate::agent::llm::OpenAiCompatProvider;
 use crate::agent::tools::registry::ToolRegistry;
+use crate::mcp::McpScope;
 
 #[derive(Clone)]
 pub struct ToolContext {
@@ -16,7 +17,12 @@ pub struct ToolContext {
     /// 工作区根目录。路径边界输入之一：执行入口（`CapabilityBroker::invoke`）
     /// 会统一调用 `normalize_paths` 将其 canonicalize，下游所有路径比较
     /// （resolve_path / restrict_to_workspace）只与规范化后的路径进行。
+    /// 注意：本字段只承担文件沙箱职责；MCP 工具可见面由 `mcp_scope` 决定。
     pub workspace: PathBuf,
+    /// MCP 配置作用域：决定动态（MCP）工具的枚举与执行走哪份合并配置。
+    /// 普通聊天恒为 `McpScope::Global`（所有会话共享）；项目运行（编排器、
+    /// 图节点）为 `McpScope::Project(项目根)`。子智能体克隆父上下文继承。
+    pub mcp_scope: McpScope,
     pub session_title: String,
     /// 当前用户任务（最新一条用户消息文本），供 SSH 安全审查等场景使用。
     pub user_task: Option<String>,
@@ -108,6 +114,7 @@ impl std::fmt::Debug for ToolContext {
         f.debug_struct("ToolContext")
             .field("workspace_id", &self.workspace_id)
             .field("workspace", &self.workspace)
+            .field("mcp_scope", &self.mcp_scope)
             .field("session_title", &self.session_title)
             .field("user_task", &self.user_task)
             .field(
@@ -165,6 +172,7 @@ mod tests {
         ToolContext {
             workspace_id: "ws".to_string(),
             workspace,
+            mcp_scope: crate::mcp::McpScope::Global,
             session_title: "t".to_string(),
             user_task: None,
             ssh_review: None,

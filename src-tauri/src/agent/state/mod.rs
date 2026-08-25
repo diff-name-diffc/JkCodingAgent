@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use super::db::{AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, Dispatcher
 use super::sub_agent::db::ToolInfo;
 use super::sub_agent::SubAgentManager;
 use super::tools::ToolRegistry;
-use crate::mcp::McpRegistry;
+use crate::mcp::{McpRegistry, McpScope};
 use crate::ssh_tool::SshSessionManager;
 
 mod generation;
@@ -47,14 +47,14 @@ pub struct DispatcherState {
 /// 跨轮次共享的基础服务集合。单独抽出便于构造时一次性初始化。
 struct AgentServices {
     config: DispatcherAgentConfig,
-    project_mcp_registry: McpRegistry,
+    mcp_registry: McpRegistry,
     ssh_manager: SshSessionManager,
     db: DispatcherDb,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
 }
 
 impl DispatcherState {
-    pub async fn new(project_mcp_registry: McpRegistry) -> Result<Self> {
+    pub async fn new() -> Result<Self> {
         let config = tokio::task::spawn_blocking(DispatcherAgentConfig::load)
             .await
             .context("等待智能体配置初始化任务失败")?
@@ -87,14 +87,14 @@ impl DispatcherState {
         // 连接池，配置 / 主机密钥 / 审计全部读写全局库。
         let ssh_manager = SshSessionManager::new(db.pool());
 
-        // MCP 全局注册表同样以全局库为权威源：注入读取入口，
+        // MCP 全局注册表以全局库为唯一权威源：构造期强制持有 DB，
         // refresh 时按「全局 ∪ 项目文件（同名覆盖）」合并。
-        project_mcp_registry.attach_db(db.clone());
+        let mcp_registry = McpRegistry::new(db.clone());
 
         // G11-07：初始工具目录即包含子智能体工具
         //（修复旧实现缺失 call_sub_agent / list_sub_agents 的问题）。
         let mut initial_tool_registry =
-            ToolRegistry::default_tools(project_mcp_registry.clone(), ssh_manager.clone());
+            ToolRegistry::default_tools(mcp_registry.clone(), ssh_manager.clone());
         if let Some(manager) = &sub_agent_manager {
             register_sub_agent_tools(manager, &mut initial_tool_registry);
         }
@@ -103,7 +103,7 @@ impl DispatcherState {
         Ok(Self {
             services: AgentServices {
                 config,
-                project_mcp_registry,
+                mcp_registry,
                 ssh_manager,
                 db,
                 sub_agent_manager,
@@ -128,8 +128,8 @@ impl DispatcherState {
         self.services.config.clone()
     }
 
-    pub(crate) fn project_mcp_registry(&self) -> McpRegistry {
-        self.services.project_mcp_registry.clone()
+    pub(crate) fn mcp_registry(&self) -> McpRegistry {
+        self.services.mcp_registry.clone()
     }
 
     pub(crate) fn ssh_manager(&self) -> SshSessionManager {
@@ -144,7 +144,7 @@ impl DispatcherState {
     /// 而工具枚举为纯内存操作、成本可忽略，读取即重建从机制上消除缓存陈旧。
     pub fn registered_tool_names(&self) -> Option<Vec<(String, String)>> {
         let registry = ToolRegistry::plain_chat_tools(
-            self.services.project_mcp_registry.clone(),
+            self.services.mcp_registry.clone(),
             self.services.ssh_manager.clone(),
         );
         let names = registry.tool_names_and_descriptions();
@@ -184,7 +184,7 @@ impl DispatcherState {
     ) -> std::result::Result<PlainChatAgent, String> {
         let agent = PlainChatAgent::new(
             self.services.config.clone(),
-            self.services.project_mcp_registry.clone(),
+            self.services.mcp_registry.clone(),
             self.services.ssh_manager.clone(),
             self.services.sub_agent_manager.clone(),
         );
@@ -215,31 +215,26 @@ impl DispatcherState {
         context: AgentContext,
         project_path: Option<String>,
     ) -> std::result::Result<Vec<ToolInfo>, String> {
-        let (workspace, chat_mode) = match context {
+        let (scope, chat_mode) = match context {
             AgentContext::Project => {
                 let Some(project_path) = project_path.filter(|path| !path.trim().is_empty()) else {
                     // 无项目路径：仅静态工具（含子智能体工具）。
-                    // 动态工具依赖工作区上下文，显式不包含（见 tool_catalog 说明）。
+                    // 动态工具依赖作用域上下文，显式不包含（见 tool_catalog 说明）。
                     return self.enumerate_tools(None, false, false).await;
                 };
-                // G11-03：先 canonicalize + 工作区包含校验，拒绝越权路径，
-                // 防止对任意目录调用 ensure_recent（会创建/改写文件）。
-                (self.validate_project_workspace(&project_path).await?, false)
+                // G11-03：先 canonicalize + 工作区包含校验，拒绝越权路径。
+                // 校验后的路径已 canonical，直接构造项目作用域。
+                let canonical = self.validate_project_workspace(&project_path).await?;
+                (McpScope::Project(canonical), false)
             }
-            AgentContext::Chat => {
-                let workspace = plain_chat_workspace(&self.services.config)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                (workspace, true)
-            }
+            // 聊天上下文没有项目：MCP 一律来自全局注册表，
+            // 所有聊天会话共享同一份快照。
+            AgentContext::Chat => (McpScope::Global, true),
         };
 
-        self.services
-            .project_mcp_registry
-            .ensure_recent(&workspace)
-            .await?;
+        self.services.mcp_registry.ensure_recent(&scope).await?;
 
-        self.enumerate_tools(Some(workspace), chat_mode, true).await
+        self.enumerate_tools(Some(scope), chat_mode, true).await
     }
 
     /// 构建注册表并枚举工具信息。G11-06：整个同步枚举过程（注册表构建、
@@ -247,11 +242,11 @@ impl DispatcherState {
     /// 不占用 async 执行器线程。
     async fn enumerate_tools(
         &self,
-        workspace: Option<PathBuf>,
+        scope: Option<McpScope>,
         chat_mode: bool,
         include_dynamic: bool,
     ) -> std::result::Result<Vec<ToolInfo>, String> {
-        let mcp_registry = self.services.project_mcp_registry.clone();
+        let mcp_registry = self.services.mcp_registry.clone();
         let ssh_manager = self.services.ssh_manager.clone();
         let sub_agent_manager = self.services.sub_agent_manager.clone();
         tokio::task::spawn_blocking(move || {
@@ -267,7 +262,7 @@ impl DispatcherState {
             }
             let mut tools = tool_infos_from_registry(
                 &registry,
-                workspace.as_deref(),
+                scope.as_ref(),
                 chat_mode && include_dynamic,
             );
             if !chat_mode {
@@ -376,18 +371,3 @@ fn register_sub_agent_tools(manager: &Arc<SubAgentManager>, registry: &mut ToolR
     )));
 }
 
-async fn plain_chat_workspace(config: &DispatcherAgentConfig) -> Result<PathBuf> {
-    let workspace = config.root_dir.join("plain-chat-browser");
-    let workspace_for_init = workspace.clone();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        let config_dir = workspace_for_init.join(".jkcodingagent");
-        std::fs::create_dir_all(&config_dir)
-            .with_context(|| format!("create {}", config_dir.display()))?;
-        // 聊天工作区不再维护 mcp.json：聊天 MCP 一律来自全局注册表
-        // （v32 起存 SQLite，项目级 mcp.json 仅对项目工作区生效）。
-        Ok(())
-    })
-    .await
-    .map_err(|error| anyhow!("create plain chat workspace task failed: {error}"))??;
-    Ok(workspace)
-}

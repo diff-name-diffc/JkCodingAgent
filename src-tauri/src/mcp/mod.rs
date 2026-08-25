@@ -13,6 +13,8 @@ pub(crate) mod registry;
 pub(crate) mod transport;
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,51 @@ use serde_json::Value;
 
 pub(crate) use project_file::ensure_project_mcp_file;
 pub(crate) use registry::McpRegistry;
+
+/// MCP 配置作用域：决定合并哪几层配置、缓存键与工具可见面。
+///
+/// - `Global`：仅全局注册表（`mcp_servers` 表）。所有聊天会话共享同一份，
+///   与项目无关，跟应用生命周期相同；
+/// - `Project`：全局注册表 ∪ `<项目>/.jkcodingagent/mcp.json`，同名项目覆盖全局。
+///   路径在构造时 canonicalize（`McpScope::project`），保证同一项目单一缓存键。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum McpScope {
+    Global,
+    Project(PathBuf),
+}
+
+impl McpScope {
+    /// 构造项目作用域：路径不存在/不可解析时大声失败。
+    pub fn project(path: &Path) -> Result<McpScope, String> {
+        let canonical = path.canonicalize().map_err(|error| {
+            format!("错误：项目路径不可用（{}）：{error}", path.display())
+        })?;
+        Ok(McpScope::Project(canonical))
+    }
+
+    pub fn kind(&self) -> McpScopeKind {
+        match self {
+            McpScope::Global => McpScopeKind::Global,
+            McpScope::Project(_) => McpScopeKind::Project,
+        }
+    }
+}
+
+impl fmt::Display for McpScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            McpScope::Global => write!(f, "global"),
+            McpScope::Project(path) => write!(f, "project:{}", path.display()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpScopeKind {
+    Global,
+    Project,
+}
 
 /// MCP 服务器配置（全局注册表与项目级 mcp.json 共用同一形状）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -108,8 +155,13 @@ pub struct McpServerStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpStatus {
-    pub project_path: String,
-    pub config_path: String,
+    pub scope: McpScopeKind,
+    /// 项目作用域为项目根路径；全局作用域为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
+    /// 项目作用域为项目级 mcp.json 路径；全局配置存于应用数据库，为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
     pub aggregate: McpAggregateStatus,
     pub checked_at: i64,
     pub server_count: usize,

@@ -43,7 +43,7 @@ use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::DispatcherDb;
 use crate::agent::state::GraphRunHandle;
 use crate::agent::tools::{ToolContext, ToolRegistry};
-use crate::mcp::McpRegistry;
+use crate::mcp::{McpRegistry, McpScope};
 use crate::ssh_tool::SshSessionManager;
 
 static EVENT_SEQUENCE: AtomicI64 = AtomicI64::new(0);
@@ -51,7 +51,7 @@ static EVENT_SEQUENCE: AtomicI64 = AtomicI64::new(0);
 pub(crate) struct GraphRunServices {
     pub db: DispatcherDb,
     pub agent_config: DispatcherAgentConfig,
-    pub project_mcp_registry: McpRegistry,
+    pub mcp_registry: McpRegistry,
     pub ssh_manager: SshSessionManager,
 }
 
@@ -197,9 +197,12 @@ async fn run_graph(
     // 事件与 DB 记录全程使用同一套 id（ReadyQueue/validate 均以 trim id 为准）。
     definition.normalize_ids();
     let workspace_root = resolve_workspace_root(&services.db, &workspace_id).await?;
+    // resolve_workspace_root 已 canonicalize 且失败即错，直接构造项目作用域：
+    // 图执行全程使用同一份合并配置快照。
+    let mcp_scope = McpScope::Project(workspace_root.clone());
     services
-        .project_mcp_registry
-        .ensure_recent(&workspace_root)
+        .mcp_registry
+        .ensure_recent(&mcp_scope)
         .await
         .map_err(anyhow::Error::msg)
         .context("刷新 MCP 工具目录失败")?;
@@ -210,10 +213,11 @@ async fn run_graph(
     .await
     .context("读取设置任务失败")??;
     let tool_registry = Arc::new(ToolRegistry::default_tools(
-        services.project_mcp_registry.clone(),
+        services.mcp_registry.clone(),
         services.ssh_manager.clone(),
     ));
-    let catalog = build_harness_catalog(&workspace_root, &settings, &tool_registry).await;
+    let catalog =
+        build_harness_catalog(&workspace_root, &mcp_scope, &settings, &tool_registry).await;
     // 种子键：plan 当前 state 里的键（普通图为空；修复图/续跑携带继承或既有键）。
     // 解析失败必须显式报错而非静默退化为空集：空种子键会让 validate 把依赖
     // 继承键的节点误报为 missing-input（错误指向图定义而非真正的 state 损坏），
@@ -252,7 +256,7 @@ async fn run_graph(
     for node in &definition.nodes {
         harnesses.insert(
             node.id.trim().to_string(),
-            resolve_node_harness(node, &settings, &tool_registry, &workspace_root)?,
+            resolve_node_harness(node, &settings, &tool_registry, &mcp_scope)?,
         );
     }
 
@@ -289,6 +293,7 @@ async fn run_graph(
     let base_tool_context = ToolContext {
         workspace_id: workspace_id.clone(),
         workspace: workspace_root.clone(),
+        mcp_scope,
         session_title,
         user_task: Some(user_requirement.clone()),
         ssh_review: settings

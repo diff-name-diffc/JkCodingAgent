@@ -272,7 +272,6 @@ async fn execute_pi_node_process(
                                 watch::channel(*cancel_rx.borrow());
                             let broker = CapabilityBroker::new(
                                 &ctx.tool_registry,
-                                &ctx.tool_context.workspace,
                                 capabilities,
                                 &ctx.tool_context,
                             )

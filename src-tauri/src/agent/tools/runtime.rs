@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::Result;
 use tauri::ipc::Channel;
 use tokio::sync::watch;
@@ -10,6 +8,7 @@ use crate::agent::db::{DispatcherDb, FinishToolRun, NewToolRun, ToolRunTraceCont
 use crate::agent::llm::RequestedToolCall;
 use crate::agent::run_loop::AgentEvent;
 use crate::agent::tools::{ToolContext, ToolResult};
+use crate::mcp::McpScope;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ToolRunFinishUpdate<'a> {
@@ -27,13 +26,12 @@ pub struct ToolRuntime;
 impl ToolRuntime {
     pub async fn execute_tool_with_cancellation(
         registry: &ToolRegistry,
-        workspace: &Path,
         capabilities: &CapabilitySet,
         tool_call: &RequestedToolCall,
         context: &ToolContext,
         cancel_rx: watch::Receiver<bool>,
     ) -> ToolResult {
-        CapabilityBroker::new(registry, workspace, capabilities.clone(), context)
+        CapabilityBroker::new(registry, capabilities.clone(), context)
             .with_cancellation(cancel_rx)
             .invoke(CapabilityInvocation::model(
                 tool_call.id.clone(),
@@ -47,7 +45,7 @@ impl ToolRuntime {
         db: &DispatcherDb,
         registry: &ToolRegistry,
         workspace_id: &str,
-        workspace: &Path,
+        scope: &McpScope,
         on_event: &Channel<AgentEvent>,
         tool_call: &RequestedToolCall,
     ) -> Result<String> {
@@ -55,7 +53,7 @@ impl ToolRuntime {
             db,
             registry,
             workspace_id,
-            workspace,
+            scope,
             on_event,
             tool_call,
             ToolRunTraceContext::default(),
@@ -67,12 +65,12 @@ impl ToolRuntime {
         db: &DispatcherDb,
         registry: &ToolRegistry,
         workspace_id: &str,
-        workspace: &Path,
+        scope: &McpScope,
         on_event: &Channel<AgentEvent>,
         tool_call: &RequestedToolCall,
         trace: ToolRunTraceContext,
     ) -> Result<String> {
-        let registered_spec = registry.spec_by_name(workspace, &tool_call.name, true);
+        let registered_spec = registry.spec_by_name(scope, &tool_call.name, true);
         let registered = registered_spec.is_some();
         let spec = registered_spec.unwrap_or_else(|| {
             super::ToolSpec::new(
@@ -82,7 +80,7 @@ impl ToolRuntime {
             )
         });
         let effective_args = registry
-            .prepare_input(workspace, &tool_call.name, &tool_call.arguments, true)
+            .prepare_input(scope, &tool_call.name, &tool_call.arguments, true)
             .map(|input| input.effective_arguments)
             // 非法调用同样必须先进入台账。此时保留原始参数（内置工具仍补可确定
             // default）供审计，真正执行会在 Broker 的唯一 prepare_input 入口失败。

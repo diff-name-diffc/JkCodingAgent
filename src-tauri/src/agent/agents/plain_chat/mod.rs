@@ -35,7 +35,7 @@ use crate::agent::tools::{
     CapabilitySet, ToolAction, ToolContext, ToolRegistry, ToolResult, ToolRunFinishUpdate,
     ToolRuntime, ToolSurface,
 };
-use crate::mcp::{ensure_project_mcp_file, McpRegistry};
+use crate::mcp::{McpRegistry, McpScope};
 use crate::shared::truncate_for_display;
 use crate::ssh_tool::SshSessionManager;
 
@@ -55,7 +55,7 @@ pub struct PlainChatAgent {
     /// 见 `is_tool_allowed_by_config` 的说明。
     allowed_tools: Mutex<Vec<String>>,
     category_context: Mutex<Option<(String, String)>>,
-    project_mcp_registry: McpRegistry,
+    mcp_registry: McpRegistry,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
     /// 本 run 会话已启用的子智能体快照。run 入口（`build_run_prompt`）异步
     /// 拉取一次（spawn_blocking）后，同一 run 内的同步路径（系统提示重建、
@@ -79,7 +79,7 @@ enum ExecutedToolFinalize {
 impl PlainChatAgent {
     pub fn new(
         config: DispatcherAgentConfig,
-        project_mcp_registry: McpRegistry,
+        mcp_registry: McpRegistry,
         ssh_manager: SshSessionManager,
         sub_agent_manager: Option<Arc<SubAgentManager>>,
     ) -> Self {
@@ -92,7 +92,7 @@ impl PlainChatAgent {
         );
 
         let mut registry =
-            ToolRegistry::plain_chat_tools(project_mcp_registry.clone(), ssh_manager.clone());
+            ToolRegistry::plain_chat_tools(mcp_registry.clone(), ssh_manager.clone());
         if let Some(manager) = &sub_agent_manager {
             registry.add_tool(Box::new(crate::agent::sub_agent::SubAgentTool::new(
                 Arc::clone(manager),
@@ -116,7 +116,7 @@ impl PlainChatAgent {
             tools: Arc::new(registry),
             allowed_tools: Mutex::new(Vec::new()),
             category_context: Mutex::new(None),
-            project_mcp_registry,
+            mcp_registry,
             sub_agent_manager,
             sub_agent_exposure: Mutex::new(None),
         }
@@ -280,7 +280,7 @@ impl PlainChatAgent {
     ) -> Result<Vec<ChatMessage>> {
         let mut llm_messages = Vec::new();
         let readonly_end =
-            common::readonly_tool_run_end(&self.tools, &tool_context.workspace, tool_calls, 0);
+            common::readonly_tool_run_end(&self.tools, &tool_context.mcp_scope, tool_calls, 0);
 
         if readonly_end >= 2 {
             let readonly_run = &tool_calls[..readonly_end];
@@ -331,7 +331,6 @@ impl PlainChatAgent {
                         };
                         ToolRuntime::execute_tool_with_cancellation(
                             &self.tools,
-                            &tool_context.workspace,
                             direct_capabilities,
                             tool_call,
                             tool_context,
@@ -359,7 +358,7 @@ impl PlainChatAgent {
                         db,
                         on_event,
                         workspace_id,
-                        &tool_context.workspace,
+                        &tool_context.mcp_scope,
                         &tool_call,
                         result,
                         &run_id,
@@ -433,7 +432,7 @@ impl PlainChatAgent {
                         db,
                         on_event,
                         workspace_id,
-                        &tool_context.workspace,
+                        &tool_context.mcp_scope,
                         tool_call,
                         result,
                         &run_id,
@@ -488,7 +487,7 @@ impl PlainChatAgent {
                         db,
                         on_event,
                         workspace_id,
-                        &tool_context.workspace,
+                        &tool_context.mcp_scope,
                         tool_call,
                         result,
                         &run_id,
@@ -523,7 +522,7 @@ impl PlainChatAgent {
         db: &DispatcherDb,
         on_event: &Channel<AgentEvent>,
         workspace_id: &str,
-        workspace: &Path,
+        mcp_scope: &McpScope,
         tool_call: &RequestedToolCall,
         result: ToolResult,
         run_id: &str,
@@ -566,7 +565,7 @@ impl PlainChatAgent {
             on_event,
             tool_call,
             &self.tools,
-            workspace,
+            mcp_scope,
             &result_text,
             summary_provider,
             summary_model,
@@ -658,7 +657,7 @@ impl PlainChatAgent {
             db,
             &self.tools,
             workspace_id,
-            &tool_context.workspace,
+            &tool_context.mcp_scope,
             on_event,
             tool_call,
         )
@@ -714,7 +713,6 @@ impl PlainChatAgent {
             with_usage_paused(usage_tracker, workspace_id, on_event, || async {
                 ToolRuntime::execute_tool_with_cancellation(
                     &self.tools,
-                    &tool_context.workspace,
                     direct_capabilities,
                     tool_call,
                     tool_context,
@@ -726,7 +724,6 @@ impl PlainChatAgent {
         } else {
             ToolRuntime::execute_tool_with_cancellation(
                 &self.tools,
-                &tool_context.workspace,
                 direct_capabilities,
                 tool_call,
                 tool_context,
@@ -736,28 +733,28 @@ impl PlainChatAgent {
         }
     }
 
-    /// 每个会话独立的工作区（G9-04）：`root_dir/plain-chat-browser/<会话子目录>`。
+    /// 每个会话独立的文件沙箱（G9-04）：`root_dir/plain-chat-browser/<会话子目录>`。
     ///
     /// 旧实现让所有聊天会话共享固定目录，`restrict_to_workspace: true` 反而把
     /// 并发会话的文件类工具都限定在同一目录内互相覆盖；按会话（workspace_id）
-    /// 建子目录后各会话的文件结果与 MCP 状态互不干扰。
-    async fn browser_workspace(&self, workspace_id: &str) -> Result<PathBuf> {
+    /// 建子目录后各会话的文件结果互不干扰。该目录只是文件沙箱——聊天的
+    /// MCP 配置一律来自全局注册表（`McpScope::Global`），不在这里落任何配置。
+    async fn session_workspace(&self, workspace_id: &str) -> Result<PathBuf> {
         let workspace = self
             .config
             .root_dir
             .join("plain-chat-browser")
             .join(session_workspace_dir_name(workspace_id));
-        let config_dir = workspace.join(".jkcodingagent");
-        let workspace_for_init = workspace.clone();
-        tokio::task::spawn_blocking(move || {
-            fs::create_dir_all(&config_dir)
-                .with_context(|| format!("create {}", config_dir.display()))?;
-            ensure_project_mcp_file(&workspace_for_init.to_string_lossy())
-                .map_err(anyhow::Error::msg)
+        tokio::task::spawn_blocking({
+            let workspace = workspace.clone();
+            move || {
+                fs::create_dir_all(&workspace)
+                    .with_context(|| format!("create {}", workspace.display()))
+            }
         })
         .await
         .map_err(|error| {
-            anyhow::anyhow!("create plain chat browser workspace panicked: {error}")
+            anyhow::anyhow!("create plain chat session workspace panicked: {error}")
         })??;
         Ok(workspace)
     }
@@ -801,6 +798,8 @@ impl PlainChatAgent {
         ToolContext {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
+            // 普通聊天没有项目语境：MCP 一律走全局注册表，所有会话共享。
+            mcp_scope: McpScope::Global,
             session_title,
             user_task,
             ssh_review,
@@ -919,10 +918,10 @@ impl PlainChatAgent {
         !self.cached_enabled_sub_agents(workspace_id).is_empty()
     }
 
-    fn build_tool_definitions(&self, workspace_id: &str, workspace: &Path) -> Vec<ToolDefinition> {
+    fn build_tool_definitions(&self, workspace_id: &str, scope: &McpScope) -> Vec<ToolDefinition> {
         let configured = self.allowed_tools.lock().clone();
-        let mut defs = self.tools.definitions_for_workspace(
-            workspace,
+        let mut defs = self.tools.definitions_for_scope(
+            scope,
             Option::<std::iter::Empty<&str>>::None,
             true,
         );
@@ -951,8 +950,11 @@ impl RunLoopAgent for PlainChatAgent {
         self.config.max_tool_iterations
     }
 
-    fn tool_surface_for_loop(&self, workspace_id: &str, workspace: &Path) -> ToolSurface {
-        ToolSurface::direct(self.build_tool_definitions(workspace_id, workspace))
+    fn tool_surface_for_loop(&self, tool_context: &ToolContext) -> ToolSurface {
+        ToolSurface::direct(self.build_tool_definitions(
+            &tool_context.workspace_id,
+            &tool_context.mcp_scope,
+        ))
     }
 
     fn build_iteration_messages(
@@ -1039,7 +1041,7 @@ impl RunLoopAgent for PlainChatAgent {
                 empty_plain_chat_response_error(
                     response,
                     &ctx.provider,
-                    self.build_tool_definitions(ctx.workspace_id, ctx.workspace)
+                    self.build_tool_definitions(ctx.workspace_id, &McpScope::Global)
                         .len(),
                 )
             );
@@ -1213,9 +1215,11 @@ fn session_workspace_dir_name(workspace_id: &str) -> String {
 #[async_trait]
 impl AgentRunAdapter for PlainChatAgent {
     async fn prepare_run_workspace(&self, request: &AgentRunRequest<'_>) -> Result<PathBuf> {
-        let workspace = self.browser_workspace(request.workspace_id).await?;
-        self.project_mcp_registry
-            .ensure_recent(&workspace)
+        let workspace = self.session_workspace(request.workspace_id).await?;
+        // 聊天 MCP 一律来自全局注册表：所有会话共享同一份快照，
+        // 不再按会话目录各存一份相同内容。
+        self.mcp_registry
+            .ensure_recent(&McpScope::Global)
             .await
             .map_err(anyhow::Error::msg)
             .context("刷新聊天 MCP 状态失败")?;

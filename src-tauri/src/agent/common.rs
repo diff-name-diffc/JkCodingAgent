@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,6 +19,7 @@ use super::llm::{
 };
 use super::run_loop::AgentEvent;
 use super::tools::{ToolRegistry, ToolResultPolicy};
+use crate::mcp::McpScope;
 
 // ─── Usage Tracking ────────────────────────────────────────────────────────────
 
@@ -503,7 +503,7 @@ pub async fn persist_tool_result_with_compression<FUsage>(
     on_event: &Channel<AgentEvent>,
     tool_call: &RequestedToolCall,
     registry: &ToolRegistry,
-    workspace: &Path,
+    scope: &McpScope,
     result: &str,
     summary_provider: &OpenAiCompatProvider,
     summary_model: &str,
@@ -518,7 +518,7 @@ where
     // otherwise an omitted default could behave differently after the tool returns.
     let effective_arguments = registry.effective_args(&tool_call.name, &tool_call.arguments);
     let result_policy = registry
-        .spec_by_name(workspace, &tool_call.name, true)
+        .spec_by_name(scope, &tool_call.name, true)
         .map(|spec| spec.result_policy)
         .unwrap_or_else(|| ToolResultPolicy::new(false));
     // G9-14：序列化失败不再静默降级为 `{}`——错误上抛，由运行循环以 Failed 收口，
@@ -900,15 +900,15 @@ fn build_tool_artifact(tool_name: &str, raw_output: &str) -> ToolArtifactDraft {
 
 pub fn is_parallel_readonly_tool_call(
     registry: &ToolRegistry,
-    workspace: &std::path::Path,
+    scope: &McpScope,
     tool_call: &RequestedToolCall,
 ) -> bool {
-    registry.is_parallel_readonly(workspace, &tool_call.name, true)
+    registry.is_parallel_readonly(scope, &tool_call.name, true)
 }
 
 pub fn readonly_tool_run_end(
     registry: &ToolRegistry,
-    workspace: &std::path::Path,
+    scope: &McpScope,
     tool_calls: &[RequestedToolCall],
     start: usize,
 ) -> usize {
@@ -917,7 +917,7 @@ pub fn readonly_tool_run_end(
         .enumerate()
         .skip(start)
         .find_map(|(index, tool_call)| {
-            (!is_parallel_readonly_tool_call(registry, workspace, tool_call)).then_some(index)
+            (!is_parallel_readonly_tool_call(registry, scope, tool_call)).then_some(index)
         })
         .unwrap_or(tool_calls.len())
 }

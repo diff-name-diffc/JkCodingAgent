@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::Duration;
 use std::{io, mem};
 
@@ -98,7 +97,6 @@ pub struct BrokerAudit<'a> {
 /// ToolProgram、普通 Agent、子智能体和图宿主都只能经该入口触达注册表。
 pub struct CapabilityBroker<'a> {
     registry: &'a ToolRegistry,
-    workspace: &'a Path,
     capabilities: CapabilitySet,
     context: &'a ToolContext,
     include_dynamic: bool,
@@ -109,13 +107,11 @@ pub struct CapabilityBroker<'a> {
 impl<'a> CapabilityBroker<'a> {
     pub fn new(
         registry: &'a ToolRegistry,
-        workspace: &'a Path,
         capabilities: CapabilitySet,
         context: &'a ToolContext,
     ) -> Self {
         Self {
             registry,
-            workspace,
             capabilities,
             context,
             include_dynamic: true,
@@ -150,10 +146,11 @@ impl<'a> CapabilityBroker<'a> {
             );
         }
 
-        let Some(spec) =
-            self.registry
-                .spec_by_name(self.workspace, &invocation.name, self.include_dynamic)
-        else {
+        let Some(spec) = self.registry.spec_by_name(
+            &self.context.mcp_scope,
+            &invocation.name,
+            self.include_dynamic,
+        ) else {
             return with_broker_metadata(
                 ToolResult::recoverable_error(format!(
                     "错误：未找到工具 '{}'，能力目录可能已过期。",
@@ -189,7 +186,7 @@ impl<'a> CapabilityBroker<'a> {
         }
 
         let input = match self.registry.prepare_input(
-            self.workspace,
+            &self.context.mcp_scope,
             &invocation.name,
             &invocation.arguments,
             self.include_dynamic,
@@ -328,7 +325,7 @@ impl<'a> CapabilityBroker<'a> {
                     intent: self.context.session_title.clone(),
                     task: self.context.user_task.clone().unwrap_or_default(),
                     target: CommandReviewTarget::AgentTool {
-                        workspace_path: self.workspace.display().to_string(),
+                        workspace_path: self.context.workspace.display().to_string(),
                         tool_name: invocation.name.clone(),
                         provider: spec.provider.clone(),
                         policy_summary: format!(
@@ -393,7 +390,7 @@ impl<'a> CapabilityBroker<'a> {
                 })?;
             if !self
                 .capabilities
-                .permits_workspace_write(self.workspace, path)
+                .permits_workspace_write(&self.context.workspace, path)
             {
                 return Err(ToolResult::recoverable_error(format!(
                     "错误：工具 '{}' 请求写入 '{}'，不在当前节点 expectedFiles 授权范围内。",
@@ -442,7 +439,7 @@ impl<'a> CapabilityBroker<'a> {
             audit.db,
             self.registry,
             audit.workspace_id,
-            self.workspace,
+            &self.context.mcp_scope,
             audit.on_event,
             &tool_call,
             ToolRunTraceContext {
@@ -853,7 +850,6 @@ fn serialized_json_size<T: Serialize + ?Sized>(value: &T) -> io::Result<usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::time::Duration;
 
     use async_trait::async_trait;
@@ -969,6 +965,7 @@ mod tests {
         ToolContext {
             workspace_id: "ws".to_string(),
             workspace: std::env::current_dir().expect("current dir"),
+            mcp_scope: crate::mcp::McpScope::Global,
             session_title: "test".to_string(),
             user_task: None,
             ssh_review: None,
@@ -999,7 +996,6 @@ mod tests {
         let context = context();
         let broker = CapabilityBroker::new(
             &registry,
-            Path::new(&context.workspace),
             CapabilitySet::default(),
             &context,
         );
@@ -1021,7 +1017,6 @@ mod tests {
         let context = context();
         let broker = CapabilityBroker::new(
             &registry,
-            Path::new(&context.workspace),
             CapabilitySet::new(["echo".to_string()]),
             &context,
         );
@@ -1052,7 +1047,6 @@ mod tests {
         let context = context();
         let broker = CapabilityBroker::new(
             &registry,
-            Path::new(&context.workspace),
             CapabilitySet::new(["echo".to_string()]),
             &context,
         );
@@ -1083,7 +1077,6 @@ mod tests {
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let broker = CapabilityBroker::new(
             &registry,
-            Path::new(&context.workspace),
             CapabilitySet::new(["wait_for_cancel".to_string()]),
             &context,
         )
@@ -1111,7 +1104,6 @@ mod tests {
         let context = context();
         let broker = CapabilityBroker::new(
             &registry,
-            Path::new(&context.workspace),
             CapabilitySet::default(),
             &context,
         );
@@ -1153,7 +1145,6 @@ mod tests {
         let context = context();
         let broker = CapabilityBroker::new(
             &registry,
-            Path::new(&context.workspace),
             CapabilitySet::new(["write_file".to_string()])
                 .restrict_writes_to(["src/allowed.rs".to_string()]),
             &context,

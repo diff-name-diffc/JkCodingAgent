@@ -21,7 +21,7 @@ fn manager_from(state: &DispatcherState) -> anyhow::Result<Arc<SubAgentManager>>
 /// 保存校验必须使用同一 execution profile；不能取全局并集，否则会出现配置
 /// 可保存但运行时静默缺工具。MCP 与嵌套子智能体工具均不在该 profile 中。
 fn known_static_tool_names(state: &DispatcherState) -> HashSet<String> {
-    let mcp = state.project_mcp_registry();
+    let mcp = state.mcp_registry();
     let ssh = state.ssh_manager();
     ToolRegistry::plain_chat_tools(mcp, ssh)
         .tool_names_and_descriptions()

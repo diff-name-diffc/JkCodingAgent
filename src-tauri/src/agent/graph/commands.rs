@@ -166,7 +166,7 @@ pub async fn graph_run_start(
     let services = GraphRunServices {
         db: state.db().clone(),
         agent_config: state.agent_config(),
-        project_mcp_registry: state.project_mcp_registry(),
+        mcp_registry: state.mcp_registry(),
         ssh_manager: state.ssh_manager(),
     };
     let run_plan_id = plan_id.clone();
@@ -307,10 +307,10 @@ pub(crate) async fn catalog_for_workspace(
             .ok_or_else(|| "无法定位图计划所属项目".to_string())?
             .path
     };
-    state
-        .project_mcp_registry()
-        .ensure_recent(std::path::Path::new(&workspace))
-        .await?;
+    // projects 表中的路径可能带符号链接/相对成分：统一经 McpScope::project
+    // canonicalize，保证与图执行共用同一缓存键（修复旧实现键漂移）。
+    let mcp_scope = crate::mcp::McpScope::project(std::path::Path::new(&workspace))?;
+    state.mcp_registry().ensure_recent(&mcp_scope).await?;
     let settings = tokio::task::spawn_blocking({
         let db = state.db().clone();
         move || db.get_settings_v2()
@@ -318,6 +318,6 @@ pub(crate) async fn catalog_for_workspace(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
-    let registry = ToolRegistry::default_tools(state.project_mcp_registry(), state.ssh_manager());
-    Ok(build_harness_catalog(std::path::Path::new(&workspace), &settings, &registry).await)
+    let registry = ToolRegistry::default_tools(state.mcp_registry(), state.ssh_manager());
+    Ok(build_harness_catalog(std::path::Path::new(&workspace), &mcp_scope, &settings, &registry).await)
 }

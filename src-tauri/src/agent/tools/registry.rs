@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -11,6 +10,7 @@ use super::result::ToolResult;
 use super::spec::ToolSpec;
 use super::ToolInput;
 use crate::agent::llm::ToolDefinition;
+use crate::mcp::McpScope;
 
 #[async_trait]
 pub trait AgentTool: Send + Sync {
@@ -25,9 +25,9 @@ pub trait AgentTool: Send + Sync {
 
 #[async_trait]
 pub(crate) trait DynamicToolProvider: Send + Sync {
-    fn definitions_for_workspace(&self, workspace: &Path) -> Vec<ToolDefinition>;
-    fn specs_for_workspace(&self, workspace: &Path) -> Vec<ToolSpec> {
-        self.definitions_for_workspace(workspace)
+    fn definitions_for_scope(&self, scope: &McpScope) -> Vec<ToolDefinition>;
+    fn specs_for_scope(&self, scope: &McpScope) -> Vec<ToolSpec> {
+        self.definitions_for_scope(scope)
             .into_iter()
             .map(|definition| {
                 ToolSpec::mcp(
@@ -112,24 +112,24 @@ impl ToolRegistry {
             .collect()
     }
 
-    pub fn definitions_for_workspace<'a, I>(
+    pub fn definitions_for_scope<'a, I>(
         &self,
-        workspace: &Path,
+        scope: &McpScope,
         allowed: Option<I>,
         include_dynamic: bool,
     ) -> Vec<ToolDefinition>
     where
         I: IntoIterator<Item = &'a str>,
     {
-        self.specs_for_workspace(workspace, allowed, include_dynamic)
+        self.specs_for_scope(scope, allowed, include_dynamic)
             .into_iter()
             .map(|spec| spec.to_definition())
             .collect()
     }
 
-    pub fn specs_for_workspace<'a, I>(
+    pub fn specs_for_scope<'a, I>(
         &self,
-        workspace: &Path,
+        scope: &McpScope,
         allowed: Option<I>,
         include_dynamic: bool,
     ) -> Vec<ToolSpec>
@@ -153,7 +153,7 @@ impl ToolRegistry {
             if let Some(provider) = &self.dynamic_provider {
                 specs.extend(
                     provider
-                        .specs_for_workspace(workspace)
+                        .specs_for_scope(scope)
                         .into_iter()
                         // 与内置工具重名的动态工具在执行期会被 find_by_name 优先命中
                         // 内置实现而静默遮蔽，定义层面同样去重，避免向 LLM 暴露
@@ -175,7 +175,7 @@ impl ToolRegistry {
 
     pub fn spec_by_name(
         &self,
-        workspace: &Path,
+        scope: &McpScope,
         name: &str,
         include_dynamic: bool,
     ) -> Option<ToolSpec> {
@@ -185,7 +185,7 @@ impl ToolRegistry {
         if include_dynamic {
             if let Some(provider) = &self.dynamic_provider {
                 return provider
-                    .specs_for_workspace(workspace)
+                    .specs_for_scope(scope)
                     .into_iter()
                     .find(|spec| spec.name == name);
             }
@@ -195,11 +195,11 @@ impl ToolRegistry {
 
     pub fn is_parallel_readonly(
         &self,
-        workspace: &Path,
+        scope: &McpScope,
         name: &str,
         include_dynamic: bool,
     ) -> bool {
-        self.spec_by_name(workspace, name, include_dynamic)
+        self.spec_by_name(scope, name, include_dynamic)
             .is_some_and(|spec| spec.supports_parallel_readonly())
     }
 
@@ -238,12 +238,12 @@ impl ToolRegistry {
     /// effective_arguments，绝不能自行绕过校验执行原始参数。
     pub(super) fn prepare_input(
         &self,
-        workspace: &Path,
+        scope: &McpScope,
         tool_name: &str,
         args: &Value,
         include_dynamic: bool,
     ) -> Result<ToolInput, ToolResult> {
-        let Some(spec) = self.spec_by_name(workspace, tool_name, include_dynamic) else {
+        let Some(spec) = self.spec_by_name(scope, tool_name, include_dynamic) else {
             return Err(ToolResult::recoverable_error(format!(
                 "错误：未找到工具 '{tool_name}'"
             )));
@@ -342,11 +342,11 @@ impl ToolRegistry {
     /// 因而真实数据面工具仍只能由 Broker 执行。
     pub(crate) fn prepare_control_arguments(
         &self,
-        workspace: &Path,
+        scope: &McpScope,
         tool_name: &str,
         args: &Value,
     ) -> Result<Value, ToolResult> {
-        self.prepare_input(workspace, tool_name, args, false)
+        self.prepare_input(scope, tool_name, args, false)
             .map(|input| input.effective_arguments)
     }
 
@@ -401,13 +401,14 @@ fn apply_schema_defaults(schema: &Value, instance: &mut Value) {
 mod tests {
     use async_trait::async_trait;
     use serde_json::{json, Value};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use super::{AgentTool, DynamicToolProvider, ToolRegistry};
     use crate::agent::llm::ToolDefinition;
     use crate::agent::tools::spec::ToolSpec;
     use crate::agent::tools::{ToolContext, ToolResult};
+    use crate::mcp::McpScope;
 
     struct TestTool {
         name: &'static str,
@@ -472,11 +473,11 @@ mod tests {
 
     #[async_trait]
     impl DynamicToolProvider for TestDynamicProvider {
-        fn definitions_for_workspace(&self, _workspace: &Path) -> Vec<ToolDefinition> {
+        fn definitions_for_scope(&self, _scope: &McpScope) -> Vec<ToolDefinition> {
             self.specs.iter().map(ToolSpec::to_definition).collect()
         }
 
-        fn specs_for_workspace(&self, _workspace: &Path) -> Vec<ToolSpec> {
+        fn specs_for_scope(&self, _scope: &McpScope) -> Vec<ToolSpec> {
             self.specs.clone()
         }
 
@@ -497,6 +498,7 @@ mod tests {
         ToolContext {
             workspace_id: "ws-test".to_string(),
             workspace: PathBuf::from("/tmp"),
+            mcp_scope: McpScope::Global,
             session_title: "test".to_string(),
             user_task: None,
             ssh_review: None,
@@ -534,8 +536,8 @@ mod tests {
     fn spec_lookup_drives_parallel_readonly_policy() {
         let registry = ToolRegistry::new(vec![Box::new(TestTool { name: "read_file" })]);
 
-        assert!(registry.is_parallel_readonly(Path::new("."), "read_file", false));
-        assert!(!registry.is_parallel_readonly(Path::new("."), "missing", false));
+        assert!(registry.is_parallel_readonly(&McpScope::Global, "read_file", false));
+        assert!(!registry.is_parallel_readonly(&McpScope::Global, "missing", false));
     }
 
     #[test]
@@ -587,7 +589,7 @@ mod tests {
 
         let error = registry
             .prepare_input(
-                Path::new("."),
+                &McpScope::Global,
                 "read_file",
                 &json!({ "flag": "not-a-boolean" }),
                 false,
@@ -626,7 +628,7 @@ mod tests {
 
         for (tool_name, arguments) in cases {
             let result = registry
-                .prepare_input(Path::new("."), tool_name, &arguments, false)
+                .prepare_input(&McpScope::Global, tool_name, &arguments, false)
                 .expect_err("oversized runtime fanout must fail schema validation");
             assert_eq!(result.metadata["code"], "invalid_arguments", "{tool_name}");
         }
@@ -650,7 +652,7 @@ mod tests {
             }));
 
         let input = registry
-            .prepare_input(Path::new("."), "mcp__demo__tool", &json!({}), true)
+            .prepare_input(&McpScope::Global, "mcp__demo__tool", &json!({}), true)
             .unwrap();
 
         assert_eq!(input.effective_arguments["flag"], true);
@@ -669,27 +671,85 @@ mod tests {
 
         // 白名单未包含动态工具时不得泄露给 LLM。
         let filtered =
-            registry.specs_for_workspace(Path::new("."), Some(["read_file"].into_iter()), true);
+            registry.specs_for_scope(&McpScope::Global, Some(["read_file"].into_iter()), true);
         assert_eq!(
             filtered.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             vec!["read_file"]
         );
 
         // 白名单显式包含时放行。
-        let included = registry.specs_for_workspace(
-            Path::new("."),
+        let included = registry.specs_for_scope(
+            &McpScope::Global,
             Some(["read_file", "mcp__demo__tool"].into_iter()),
             true,
         );
         assert_eq!(included.len(), 2);
 
         // 无白名单时全部放行。
-        let all = registry.specs_for_workspace(
-            Path::new("."),
+        let all = registry.specs_for_scope(
+            &McpScope::Global,
             Option::<std::iter::Empty<&str>>::None,
             true,
         );
         assert_eq!(all.len(), 2);
+    }
+
+    /// 动态（MCP）工具按作用域枚举：项目专属服务器只在项目作用域可见，
+    /// 全局作用域（聊天）不可见——替代旧实现「按工作区路径推断」。
+    struct ScopeSensitiveProvider {
+        project_only: ToolSpec,
+    }
+
+    #[async_trait]
+    impl DynamicToolProvider for ScopeSensitiveProvider {
+        fn definitions_for_scope(&self, scope: &McpScope) -> Vec<ToolDefinition> {
+            self.specs_for_scope(scope)
+                .iter()
+                .map(ToolSpec::to_definition)
+                .collect()
+        }
+
+        fn specs_for_scope(&self, scope: &McpScope) -> Vec<ToolSpec> {
+            match scope {
+                McpScope::Project(_) => vec![self.project_only.clone()],
+                McpScope::Global => Vec::new(),
+            }
+        }
+
+        async fn execute(
+            &self,
+            _name: &str,
+            _args: &Value,
+            _context: &ToolContext,
+        ) -> Option<ToolResult> {
+            None
+        }
+    }
+
+    #[test]
+    fn dynamic_specs_follow_scope_not_path() {
+        let registry =
+            ToolRegistry::new(Vec::new()).with_dynamic_provider(Arc::new(ScopeSensitiveProvider {
+                project_only: ToolSpec::mcp(
+                    "mcp__proj__tool".to_string(),
+                    "项目专属工具".to_string(),
+                    json!({ "type": "object", "properties": {} }),
+                ),
+            }));
+
+        let project = McpScope::Project(std::env::temp_dir());
+        assert!(registry
+            .spec_by_name(&project, "mcp__proj__tool", true)
+            .is_some());
+        assert!(registry
+            .spec_by_name(&McpScope::Global, "mcp__proj__tool", true)
+            .is_none());
+        assert_eq!(
+            registry
+                .specs_for_scope(&project, Option::<std::iter::Empty<&str>>::None, true)
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -703,8 +763,8 @@ mod tests {
                 )],
             }));
 
-        let specs = registry.specs_for_workspace(
-            Path::new("."),
+        let specs = registry.specs_for_scope(
+            &McpScope::Global,
             Option::<std::iter::Empty<&str>>::None,
             true,
         );
@@ -718,7 +778,7 @@ mod tests {
         let context = test_context();
 
         let input = registry
-            .prepare_input(&context.workspace, "echo", &json!({}), false)
+            .prepare_input(&context.mcp_scope, "echo", &json!({}), false)
             .unwrap();
         let result = registry.execute_input(input, &context).await;
 
@@ -736,7 +796,7 @@ mod tests {
         let context = test_context();
 
         let result = registry
-            .prepare_input(&context.workspace, "missing_tool", &json!({}), false)
+            .prepare_input(&context.mcp_scope, "missing_tool", &json!({}), false)
             .unwrap_err();
 
         assert_eq!(

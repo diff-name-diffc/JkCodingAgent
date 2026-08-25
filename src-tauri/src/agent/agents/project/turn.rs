@@ -112,9 +112,9 @@ impl RunLoopAgent for OrchestratorAgent {
 
     /// 模型只看到运行时入口与控制面工具；真实只读能力通过独立 grant 注入
     /// ToolProgram。项目工具设置只收窄该 grant，不会隐藏协议收口工具。
-    fn tool_surface_for_loop(&self, _workspace_id: &str, workspace: &Path) -> ToolSurface {
-        let mut definitions = self.tools.definitions_for_workspace(
-            workspace,
+    fn tool_surface_for_loop(&self, tool_context: &ToolContext) -> ToolSurface {
+        let mut definitions = self.tools.definitions_for_scope(
+            &tool_context.mcp_scope,
             Option::<std::iter::Empty<&str>>::None,
             false,
         );

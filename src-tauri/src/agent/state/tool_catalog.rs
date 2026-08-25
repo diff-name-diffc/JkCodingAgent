@@ -1,8 +1,8 @@
 use parking_lot::Mutex;
-use std::path::Path;
 
 use crate::agent::sub_agent::db::ToolInfo;
 use crate::agent::tools::ToolRegistry;
+use crate::mcp::McpScope;
 
 /// 已注册工具名/描述的缓存（工具目录）。
 /// 避免 UI 每次查询工具列表时都要重新构建完整 ToolRegistry。
@@ -39,26 +39,26 @@ impl ToolCatalog {
 /// 防止未来任何底层实现引入文件/网络/DB 访问时卡死异步执行器。
 pub(super) fn tool_infos_from_registry(
     registry: &ToolRegistry,
-    workspace: Option<&Path>,
+    scope: Option<&McpScope>,
     include_dynamic: bool,
 ) -> Vec<ToolInfo> {
-    let definitions = match workspace {
-        Some(workspace) => registry.definitions_for_workspace(
-            workspace,
+    let definitions = match scope {
+        Some(scope) => registry.definitions_for_scope(
+            scope,
             Option::<std::iter::Empty<&str>>::None,
             include_dynamic,
         ),
         None => {
-            // G11-05：「无工作区」的显式语义——动态（MCP）工具依赖工作区级
-            // 缓存快照才能枚举，没有工作区时只返回静态工具。这是契约而非
-            // 静默降级：调用方在无工作区时请求动态工具会收到一次性警告。
+            // G11-05：「无作用域」的显式语义——动态（MCP）工具依赖作用域
+            // 快照才能枚举，没有作用域时只返回静态工具。这是契约而非
+            // 静默降级：调用方在无作用域时请求动态工具会收到一次性警告。
             if include_dynamic {
                 eprintln!(
-                    "tool_infos_from_registry: 无工作区上下文，动态（MCP）工具无法枚举，仅返回静态工具"
+                    "tool_infos_from_registry: 无 MCP 作用域，动态工具无法枚举，仅返回静态工具"
                 );
             }
-            registry.definitions_for_workspace(
-                Path::new("."),
+            registry.definitions_for_scope(
+                &McpScope::Global,
                 Option::<std::iter::Empty<&str>>::None,
                 false,
             )
@@ -84,7 +84,7 @@ pub(super) fn tool_infos_from_registry(
                 if last.description != tool.description {
                     eprintln!(
                         "工具目录：检测到同名工具 '{}' 且描述不一致，保留先登记的一条（丢弃描述：{}）",
-                        tool.name, tool.description
+                        tool.name, last.description
                     );
                 } else {
                     eprintln!("工具目录：检测到重复工具 '{}'，已去重", tool.name);

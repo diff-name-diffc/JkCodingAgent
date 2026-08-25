@@ -14,6 +14,7 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 
 use super::config::SubAgentConfig;
+use crate::agent::common;
 use crate::agent::llm::{
     ChatMessage, FunctionCall, LlmUsage, OpenAiCompatProvider, OutboundToolCall, RequestedToolCall,
     ToolDefinition,
@@ -246,8 +247,8 @@ impl SubAgentRuntime {
         }
         let allowed_tool_names: HashSet<String> = config.allowed_tools.iter().cloned().collect();
 
-        let tool_definitions = tool_registry.definitions_for_workspace(
-            &tool_context.workspace,
+        let tool_definitions = tool_registry.definitions_for_scope(
+            &tool_context.mcp_scope,
             Some(allowed_tool_names.iter().map(String::as_str)),
             false,
         );
@@ -533,9 +534,9 @@ impl SubAgentRuntime {
             let mut tc_index = 0usize;
 
             while tc_index < tool_calls.len() {
-                let readonly_end = readonly_tool_run_end(
+                let readonly_end = common::readonly_tool_run_end(
                     &self.tool_registry,
-                    &self.tool_context.workspace,
+                    &self.tool_context.mcp_scope,
                     &tool_calls,
                     tc_index,
                 );
@@ -776,7 +777,6 @@ impl SubAgentRuntime {
 
         let result = ToolRuntime::execute_tool_with_cancellation(
             &self.tool_registry,
-            &self.tool_context.workspace,
             &self.capabilities,
             tc,
             &self.tool_context,
@@ -973,21 +973,6 @@ fn trim_trace_events_to_limit(events: &mut Vec<Value>, timestamp_ms: i64) {
     }
 }
 
-fn readonly_tool_run_end(
-    registry: &ToolRegistry,
-    workspace: &std::path::Path,
-    tool_calls: &[RequestedToolCall],
-    start: usize,
-) -> usize {
-    tool_calls
-        .iter()
-        .enumerate()
-        .skip(start)
-        .find_map(|(index, tool_call)| {
-            (!registry.is_parallel_readonly(workspace, &tool_call.name, true)).then_some(index)
-        })
-        .unwrap_or(tool_calls.len())
-}
 
 /// 构造 tool 角色消息（工具结果 / 重试收口提示 / 未执行说明共用）。
 fn tool_result_message(tc: &RequestedToolCall, content: String) -> ChatMessage {

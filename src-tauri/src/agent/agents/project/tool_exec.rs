@@ -1,4 +1,3 @@
-use std::path::Path;
 
 use anyhow::Result;
 use tauri::ipc::Channel;
@@ -39,8 +38,8 @@ impl OrchestratorAgent {
     /// 再按模型顺序逐个执行——相邻只读工具合并为并行组，其余严格串行。
     /// `submit_graph` 不在本地执行，而是拦截为「校验 → 落库 → 广播」的协议动作。
     ///
-    /// workspace 单一来源（审查项 G8-23）：统一使用 `tool_context.workspace`
-    /// （执行入口已 canonicalize），不再接受平行的 workspace 参数，
+    /// 作用域单一来源（审查项 G8-23）：统一使用 `tool_context.mcp_scope`
+    /// （沙箱路径另走 `tool_context.workspace`），不再接受平行参数，
     /// 避免只读分组判定与实际执行/落库基于不同路径而漂移。
     pub(super) async fn execute_tool_calls(
         &self,
@@ -62,7 +61,7 @@ impl OrchestratorAgent {
                 crate::agent::tools::MAX_TOOL_CALLS_PER_BATCH
             );
         }
-        let workspace = tool_context.workspace.as_path();
+        let mcp_scope = &tool_context.mcp_scope;
         // Persist the assistant tool-call message before executing tools. The LLM protocol expects
         // later tool results to answer a concrete assistant tool_call_id, so this write is part of
         // protocol correctness rather than UI bookkeeping.
@@ -126,7 +125,7 @@ impl OrchestratorAgent {
                 },
             );
             let run_id = self
-                .create_and_start_tool_run(db, workspace_id, workspace, on_event, &tool_call)
+                .create_and_start_tool_run(db, workspace_id, mcp_scope, on_event, &tool_call)
                 .await?;
 
             // 控制面协议不能借“宿主拦截”绕过模型可见能力和权威 JSON Schema。
@@ -139,7 +138,7 @@ impl OrchestratorAgent {
                 )))
             } else {
                 self.tools.prepare_control_arguments(
-                    workspace,
+                    mcp_scope,
                     &tool_call.name,
                     &tool_call.arguments,
                 )
@@ -211,7 +210,6 @@ impl OrchestratorAgent {
                         (
                             ToolRuntime::execute_tool_with_cancellation(
                                 &self.tools,
-                                workspace,
                                 direct_capabilities,
                                 &tool_call,
                                 tool_context,
@@ -230,7 +228,7 @@ impl OrchestratorAgent {
                 .persist_project_tool_result(
                     db,
                     workspace_id,
-                    workspace,
+                    mcp_scope,
                     on_event,
                     &tool_call,
                     result,
@@ -288,7 +286,7 @@ impl OrchestratorAgent {
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
-        workspace: &std::path::Path,
+        mcp_scope: &crate::mcp::McpScope,
         on_event: &Channel<AgentEvent>,
         tool_call: &RequestedToolCall,
         result: ToolResult,
@@ -364,7 +362,7 @@ impl OrchestratorAgent {
             on_event,
             tool_call,
             &self.tools,
-            workspace,
+            mcp_scope,
             &result_text,
             &summary_provider,
             &summary_model,
@@ -475,7 +473,7 @@ impl OrchestratorAgent {
         &self,
         db: &DispatcherDb,
         workspace_id: &str,
-        workspace: &Path,
+        mcp_scope: &crate::mcp::McpScope,
         on_event: &Channel<AgentEvent>,
         tool_call: &RequestedToolCall,
     ) -> Result<String> {
@@ -483,7 +481,7 @@ impl OrchestratorAgent {
             db,
             &self.tools,
             workspace_id,
-            workspace,
+            mcp_scope,
             on_event,
             tool_call,
         )

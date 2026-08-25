@@ -49,6 +49,9 @@ impl OrchestratorAgent {
         ToolContext {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
+            // 项目编排器运行在受管项目工作区（turn.rs 已 canonicalize 校验）：
+            // MCP 走「全局 ∪ 项目」合并作用域。
+            mcp_scope: crate::mcp::McpScope::Project(workspace.to_path_buf()),
             session_title,
             user_task,
             ssh_review: None,

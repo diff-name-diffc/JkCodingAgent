@@ -9458,6 +9458,61 @@
     background: var(--bg-card);
   }
 
+  /* 服务器卡片内的逐字段 textarea 不需要基类的 300px 最小高度，
+     由 rows 决定高度；JSON 编辑器另有 .ai-set-json-editor 专属尺寸。 */
+  .ai-set-server-card .ai-settings-textarea {
+    min-height: 0;
+    flex: none;
+    resize: vertical;
+  }
+
+  .ai-set-segment {
+    display: inline-flex;
+    flex-shrink: 0;
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    overflow: hidden;
+  }
+
+  .ai-set-segment-button {
+    display: inline-flex;
+    min-height: 28px;
+    align-items: center;
+    border: none;
+    padding: 4px 12px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    transition:
+      background var(--motion-fast) var(--motion-ease),
+      color var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-set-segment-button + .ai-set-segment-button {
+    border-left: 1px solid var(--border-medium);
+  }
+
+  .ai-set-segment-button:hover:not(.is-active) {
+    color: var(--text-primary);
+  }
+
+  .ai-set-segment-button.is-active {
+    background: var(--bg-input);
+    color: var(--text-primary);
+  }
+
+  .ai-set-json-editor {
+    min-height: 320px;
+    flex: none;
+    resize: vertical;
+    font-size: 12.5px;
+    line-height: 1.55;
+    tab-size: 2;
+  }
+
   .ai-set-server-title-btn {
     display: inline-flex;
     min-width: 0;

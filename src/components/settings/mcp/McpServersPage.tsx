@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, Plug, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { McpConfig, McpServerConfig } from "../../../types";
@@ -85,9 +86,58 @@ function nextServerName(entries: McpEntry[]): string {
   return name;
 }
 
+type EditorMode = "form" | "json";
+
+interface ParsedConfigText {
+  config: McpConfig | null;
+  error: string | null;
+}
+
+/**
+ * 解析用户编辑的配置 JSON。顶层必须是对象；`mcpServers` 缺失视为空注册表，
+ * 兼容后端别名键 `servers`（与项目级 mcp.json 同形状）。字段级形状交给
+ * 后端 serde 校验——客户端只做结构防护，避免把非法文本送进保存流程。
+ */
+function parseConfigText(text: string): ParsedConfigText {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return {
+      config: null,
+      error: `JSON 解析失败：${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { config: null, error: "配置顶层必须是一个 JSON 对象" };
+  }
+  const root = parsed as Record<string, unknown>;
+  const servers = root.mcpServers ?? root.servers;
+  if (
+    servers !== undefined &&
+    (typeof servers !== "object" || servers === null || Array.isArray(servers))
+  ) {
+    return { config: null, error: "mcpServers 必须是一个 JSON 对象（服务器名 → 服务器配置）" };
+  }
+  for (const [name, server] of Object.entries((servers as Record<string, unknown>) ?? {})) {
+    if (typeof server !== "object" || server === null || Array.isArray(server)) {
+      return { config: null, error: `服务器「${name}」的配置必须是一个 JSON 对象` };
+    }
+  }
+  return {
+    config: { mcpServers: (servers as Record<string, McpServerConfig>) ?? {} },
+    error: null,
+  };
+}
+
+function serializeConfig(config: McpConfig): string {
+  return `${JSON.stringify(config, null, 2)}\n`;
+}
+
 /**
  * 设置弹窗的「MCP 服务器」页：全局 MCP 注册表编辑器。
  * 全局服务器对所有项目与聊天生效；项目可在自身 mcp.json 中定义同名服务器覆盖。
+ * 支持表单与 JSON 两种编辑模式，共享同一份条目状态与自动保存管线。
  */
 export function McpServersPage() {
   const [entries, setEntries] = useState<McpEntry[]>([]);
@@ -96,20 +146,25 @@ export function McpServersPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [pendingDeleteIndex, setPendingDeleteIndex] = useState<number | null>(null);
+  const [mode, setMode] = useState<EditorMode>("form");
+  const [jsonText, setJsonText] = useState("");
+  const [jsonError, setJsonError] = useState<string | null>(null);
 
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savingRef = useRef(false);
 
-  const loadConfig = useCallback(async () => {
+  const loadConfig = useCallback(async (): Promise<McpConfig | null> => {
     setLoading(true);
     setLoadError(null);
     try {
       const config = await invoke<McpConfig>("mcp_global_config_get");
       setEntries(toEntries(config));
+      return config;
     } catch (err) {
       setLoadError(String(err));
+      return null;
     } finally {
       setLoading(false);
     }
@@ -186,29 +241,108 @@ export function McpServersPage() {
 
   const pendingDelete = pendingDeleteIndex !== null ? entries[pendingDeleteIndex] : undefined;
 
+  /** 表单 → JSON：先把未落盘的表单编辑保存出去，再序列化当前条目。 */
+  function switchToJson() {
+    if (mode === "json") return;
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    void saveNow();
+    setJsonText(serializeConfig(toConfig(entriesRef.current)));
+    setJsonError(null);
+    setMode("json");
+  }
+
+  /** JSON → 表单：JSON 无效时留在原模式并报错，避免带着歧义状态切换。 */
+  function switchToForm() {
+    if (mode === "form") return;
+    const parsed = parseConfigText(jsonText);
+    if (!parsed.config) {
+      setJsonError(parsed.error);
+      return;
+    }
+    setEntries(toEntries(parsed.config));
+    setJsonError(null);
+    setMode("form");
+    scheduleSave();
+  }
+
+  function handleJsonChange(text: string) {
+    setJsonText(text);
+    const parsed = parseConfigText(text);
+    if (parsed.config) {
+      setJsonError(null);
+      setEntries(toEntries(parsed.config));
+      scheduleSave();
+    } else {
+      // 无效 JSON 不进条目、不触发保存：上一份有效配置仍然生效。
+      setJsonError(parsed.error);
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+  }
+
+  /** Tab 插入两个空格而不是移动焦点，方便在编辑器内调整缩进。 */
+  function handleJsonKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    const target = event.currentTarget;
+    target.setRangeText("  ", target.selectionStart, target.selectionEnd, "end");
+    handleJsonChange(target.value);
+  }
+
+  async function refreshForMode() {
+    const config = await loadConfig();
+    if (config && mode === "json") {
+      setJsonText(serializeConfig(config));
+      setJsonError(null);
+    }
+  }
+
   return (
     <div className="ai-set-page">
       <Section
         id="mcp-servers"
         title="MCP 服务器"
-        description="全局 MCP 注册表：这里的服务器对所有聊天会话与项目生效，配置保存在应用数据库，跟应用生命周期相同。项目可在自身 .jkcodingagent/mcp.json 中定义同名服务器覆盖全局条目。全局服务器没有项目语境，cwd 必须使用绝对路径。字段失焦或开关切换后自动保存。"
+        description="全局 MCP 注册表：这里的服务器对所有聊天会话与项目生效，配置保存在应用数据库，跟应用生命周期相同。项目可在自身 .jkcodingagent/mcp.json 中定义同名服务器覆盖全局条目。全局服务器没有项目语境，cwd 必须使用绝对路径。表单模式逐条编辑，JSON 模式直接编辑整份配置，均自动保存。"
       >
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-2">
+            <div className="ai-set-segment">
+              <button
+                type="button"
+                className={cn("ai-set-segment-button", mode === "form" && "is-active")}
+                onClick={switchToForm}
+              >
+                表单
+              </button>
+              <button
+                type="button"
+                className={cn("ai-set-segment-button", mode === "json" && "is-active")}
+                onClick={switchToJson}
+              >
+                JSON
+              </button>
+            </div>
             <div className="flex-1" />
             <button
               type="button"
               className="ai-set-ghost-button"
-              onClick={loadConfig}
+              onClick={() => void refreshForMode()}
               disabled={loading}
             >
               <RefreshCw size={16} strokeWidth={1.5} />
               刷新
             </button>
-            <button type="button" className="ai-set-ghost-button" onClick={addServer}>
-              <Plus size={16} strokeWidth={1.5} />
-              添加服务器
-            </button>
+            {mode === "form" && (
+              <button type="button" className="ai-set-ghost-button" onClick={addServer}>
+                <Plus size={16} strokeWidth={1.5} />
+                添加服务器
+              </button>
+            )}
           </div>
 
           {loadError && <p className="ai-set-field-error">{loadError}</p>}
@@ -216,6 +350,24 @@ export function McpServersPage() {
 
           {loading ? (
             <div className="ai-settings-empty">加载中...</div>
+          ) : mode === "json" ? (
+            <div className="flex flex-col gap-2">
+              <textarea
+                className="ai-settings-textarea ai-set-json-editor font-mono"
+                value={jsonText}
+                spellCheck={false}
+                placeholder={'{\n  "mcpServers": {\n    "my-server": {\n      "transport": "stdio",\n      "command": "npx",\n      "args": ["-y", "some-mcp-server"]\n    }\n  }\n}'}
+                onChange={(event) => handleJsonChange(event.target.value)}
+                onKeyDown={handleJsonKeyDown}
+              />
+              {jsonError ? (
+                <p className="ai-set-field-error">{jsonError}</p>
+              ) : (
+                <p className="ai-settings-hint">
+                  形状与项目级 .jkcodingagent/mcp.json 相同；JSON 有效时自动保存，无效时不会保存（上一份有效配置仍然生效）。
+                </p>
+              )}
+            </div>
           ) : entries.length === 0 ? (
             <EmptyState
               icon={Plug}

@@ -89,12 +89,14 @@ pub enum AgentEvent {
     /// `persist_tool_result_with_compression` 的摘要生成改造成流式时接入。
     /// 约束：启用时 `result_mode` 取值必须与最终 `ToolFinished` 完全一致，
     /// 否则前端会收到互相矛盾的流式事件。
+    #[allow(dead_code)]
     ToolSummaryStarted {
         tool_call_id: String,
         name: String,
         result_mode: String,
     },
     /// 预留事件：工具结果流式摘要增量。启用条件与约束同 `ToolSummaryStarted`。
+    #[allow(dead_code)]
     ToolSummaryDelta {
         tool_call_id: String,
         name: String,

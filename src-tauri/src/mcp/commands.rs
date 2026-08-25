@@ -30,11 +30,22 @@ pub async fn mcp_project_status(
 
 /// 刷新并返回全局作用域的 MCP 状态（所有聊天会话共享）。
 #[tauri::command]
-pub async fn mcp_global_status(
+pub async fn mcp_global_status(registry: State<'_, McpRegistry>) -> Result<McpStatus, String> {
+    registry
+        .refresh(&McpScope::Global)
+        .await
+        .map(|snapshot| snapshot.status)
+}
+
+/// 返回全局作用域的 MCP 状态，复用聊天 run 的新鲜窗口：缓存在
+/// `MCP_REFRESH_MAX_AGE` 内直接返回，过期才全量重检。供设置页工具清单
+/// 等展示面取数，避免每次打开页面都拉起全部服务器进程。
+#[tauri::command]
+pub async fn mcp_global_status_recent(
     registry: State<'_, McpRegistry>,
 ) -> Result<McpStatus, String> {
     registry
-        .refresh(&McpScope::Global)
+        .ensure_recent(&McpScope::Global)
         .await
         .map(|snapshot| snapshot.status)
 }
@@ -59,22 +70,20 @@ pub async fn mcp_project_set_server_enabled(
     tokio::task::spawn_blocking({
         let project_root = project_root.clone();
         let server_name = server_name.clone();
-        move || {
-            match set_project_mcp_server_enabled_sync(&project_root, &server_name, enabled) {
-                Ok(()) => Ok(()),
-                Err(error) => {
-                    let global = global_db
-                        .get_global_mcp_config()
-                        .map_err(|error| error.to_string())?;
-                    let Some(mut server) = global.servers.get(&server_name).cloned() else {
-                        return Err(error);
-                    };
-                    server.enabled = Some(enabled);
-                    let loaded = read_project_mcp_config_sync(&project_root)?;
-                    let mut config = loaded.config?;
-                    config.servers.insert(server_name, server);
-                    write_project_mcp_config_sync(&project_root, &config)
-                }
+        move || match set_project_mcp_server_enabled_sync(&project_root, &server_name, enabled) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let global = global_db
+                    .get_global_mcp_config()
+                    .map_err(|error| error.to_string())?;
+                let Some(mut server) = global.servers.get(&server_name).cloned() else {
+                    return Err(error);
+                };
+                server.enabled = Some(enabled);
+                let loaded = read_project_mcp_config_sync(&project_root)?;
+                let mut config = loaded.config?;
+                config.servers.insert(server_name, server);
+                write_project_mcp_config_sync(&project_root, &config)
             }
         }
     })
@@ -89,9 +98,7 @@ pub async fn mcp_project_set_server_enabled(
 
 /// 读取全局 MCP 注册表（设置中心「MCP 服务器」页数据源）。
 #[tauri::command]
-pub async fn mcp_global_config_get(
-    state: State<'_, DispatcherState>,
-) -> Result<McpConfig, String> {
+pub async fn mcp_global_config_get(state: State<'_, DispatcherState>) -> Result<McpConfig, String> {
     let db = state.db().clone();
     tokio::task::spawn_blocking(move || db.get_global_mcp_config())
         .await

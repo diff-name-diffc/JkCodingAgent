@@ -35,11 +35,20 @@ use crate::agent::tools::{
     CapabilitySet, ToolAction, ToolContext, ToolRegistry, ToolResult, ToolRunFinishUpdate,
     ToolRuntime, ToolSurface,
 };
-use crate::mcp::{tool_definitions_from_snapshot, McpRegistry, McpScope};
+use crate::mcp::{tool_definitions_from_snapshot, McpRegistry, McpScope, ResolvedMcpTool};
 use crate::shared::truncate_for_display;
 use crate::ssh_tool::SshSessionManager;
 
 const SUB_AGENT_TOOL_NAMES: [&str; 2] = ["list_sub_agents", "call_sub_agent"];
+
+/// MCP 工具名契约（见 `mcp/registry.rs` 的 `resolve_mcp_tool`）：canonical 名
+/// 恒为 `mcp__<server>__<tool>`；内置工具名不会以该前缀开头，因此可以用前缀
+/// 在允许列表过滤时区分两类工具。
+const MCP_TOOL_NAME_PREFIX: &str = "mcp__";
+
+fn is_mcp_tool_name(name: &str) -> bool {
+    name.starts_with(MCP_TOOL_NAME_PREFIX)
+}
 
 pub struct PlainChatAgent {
     config: DispatcherAgentConfig,
@@ -51,8 +60,13 @@ pub struct PlainChatAgent {
     summary_api_base: Mutex<String>,
     app_handle: Option<AppHandle>,
     tools: Arc<ToolRegistry>,
-    /// 工具允许列表。契约：**空列表 = 全部放行**（显式 fail-open 默认），
-    /// 见 `is_tool_allowed_by_config` 的说明。
+    /// 工具允许列表。混合契约：
+    /// - 内置工具：**空列表 = 全部放行**（显式 fail-open 默认），
+    ///   见 `is_tool_allowed_by_config` 的说明；
+    /// - MCP 工具（`mcp__` 前缀名）：一律显式名单制——只有名字被明确写入
+    ///   本列表才对该会话可见，空列表即无任何 MCP 工具。
+    ///   定义层与系统提示词层共享该过滤（见 `retain_allowed_definitions` /
+    ///   `allowed_mcp_tools_by_config`），模型被告知可调用的工具恒等于实际授权集。
     allowed_tools: Mutex<Vec<String>>,
     category_context: Mutex<Option<(String, String)>>,
     mcp_registry: McpRegistry,
@@ -868,14 +882,11 @@ impl PlainChatAgent {
                 );
             }
         }
-        // MCP 工具按全局作用域快照动态注入（run 入口 prepare_run_workspace 已预热
-        // 缓存）；快照缺失时按空列表降级，不虚构工具。列出显式清单是为了让模型
-        // 明确知道自己已接入哪些第三方工具，避免凭提示词臆断「没有 MCP」。
-        let mcp_tools = tool_definitions_from_snapshot(
-            self.mcp_registry
-                .cached_for_scope(&McpScope::Global)
-                .as_ref(),
-        );
+        // MCP 清单与工具定义层共享同一允许列表过滤
+        // （`allowed_mcp_tools_for_current_config`）：模型被告知可调用的
+        // MCP 工具恒等于实际授权集，未配置的分类不会收到本段；快照缺失
+        // （run 入口 prepare_run_workspace 负责预热）时同样按空列表降级。
+        let mcp_tools = self.allowed_mcp_tools_for_current_config();
         if !mcp_tools.is_empty() {
             prompt.push_str("\n\n## 当前可用 MCP 工具\n\n");
             prompt.push_str("已接入全局 MCP 注册表中的第三方工具，需要时可直接按工具名调用：\n\n");
@@ -934,25 +945,38 @@ impl PlainChatAgent {
         !self.cached_enabled_sub_agents(workspace_id).is_empty()
     }
 
+    /// 当前允许列表下可用的 MCP 工具（全局作用域快照 ∩ 显式名单）。
+    /// 与 `build_tool_definitions` 共享 `allowed_mcp_tools_by_config` 的
+    /// 过滤契约：允许列表为空 = 无任何 MCP 工具。
+    fn allowed_mcp_tools_for_current_config(&self) -> Vec<ResolvedMcpTool> {
+        let configured = self.allowed_tools.lock().clone();
+        let snapshot_tools = tool_definitions_from_snapshot(
+            self.mcp_registry
+                .cached_for_scope(&McpScope::Global)
+                .as_ref(),
+        );
+        allowed_mcp_tools_by_config(snapshot_tools, &configured)
+    }
+
     fn build_tool_definitions(&self, workspace_id: &str, scope: &McpScope) -> Vec<ToolDefinition> {
         let configured = self.allowed_tools.lock().clone();
-        let mut defs = self.tools.definitions_for_scope(
-            scope,
-            Option::<std::iter::Empty<&str>>::None,
-            true,
-        );
+        let defs =
+            self.tools
+                .definitions_for_scope(scope, Option::<std::iter::Empty<&str>>::None, true);
 
-        // 与 is_tool_allowed_by_config 同契约：configured 为空 = 全部放行，
-        // 非空才按允许列表（含启用子智能体时的子智能体工具）收敛内置工具；
-        // 动态（MCP）工具不受允许列表约束（注册表层治理），始终保留。
-        if !configured.is_empty() {
-            let allowed = effective_allowed_tools_for_chat_category(
-                configured,
+        // 混合契约（见 `retain_allowed_definitions`）：内置工具维持
+        // 「空列表 = 全部放行」，非空时按允许列表（含启用子智能体时的
+        // 子智能体工具豁免）收敛；MCP 工具一律显式名单制，只有被明确
+        // 配置的分类/设置才能看到它们。
+        let builtin_allowed = if configured.is_empty() {
+            None
+        } else {
+            Some(effective_allowed_tools_for_chat_category(
+                configured.clone(),
                 self.session_has_enabled_sub_agents(workspace_id),
-            );
-            defs.retain(|def| allowed.contains(&def.function.name));
-        }
-        defs
+            ))
+        };
+        retain_allowed_definitions(defs, builtin_allowed.as_ref(), &configured)
     }
 }
 
@@ -968,10 +992,9 @@ impl RunLoopAgent for PlainChatAgent {
     }
 
     fn tool_surface_for_loop(&self, tool_context: &ToolContext) -> ToolSurface {
-        ToolSurface::direct(self.build_tool_definitions(
-            &tool_context.workspace_id,
-            &tool_context.mcp_scope,
-        ))
+        ToolSurface::direct(
+            self.build_tool_definitions(&tool_context.workspace_id, &tool_context.mcp_scope),
+        )
     }
 
     fn build_iteration_messages(
@@ -1170,19 +1193,71 @@ impl RunLoopAgent for PlainChatAgent {
     }
 }
 
-/// 判断工具是否被用户配置的允许列表放行。
+/// 判断工具是否被用户配置的允许列表放行（仅用于内置工具名；MCP 工具走
+/// `retain_allowed_definitions` 的显式名单分支）。
 ///
 /// 契约（G9-03，显式声明）：**空列表 = 全部放行**（fail-open 默认）。理由：
 /// 1) 普通聊天的工具注册表本身是精选集（plain_chat_tools + 可选子智能体工具），
 ///    并非全量工具面；2) 设置页与分类配置以「空」表达「不限制」，若改为
 ///    fail-closed，默认/未配置用户将直接失去全部工具且 UI 无「全部」表达方式。
+///
 /// 可执行工具的安全由命令审查门禁（SSH/local_zsh fail-closed 审查）与工作区
 /// 限制兜底，而非依赖此处默认拒绝。
 ///
-/// 允许列表只约束内置工具：动态（MCP）工具名随服务器配置生成，静态列表
-/// 无法表达，其启停在 MCP 注册表层治理（注册表层已让白名单不拦截动态工具）。
+/// MCP 工具名（`mcp__` 前缀）同样受允许列表约束，但语义相反——必须显式
+/// 配置才放行（见 `retain_allowed_definitions`）；服务器级启停仍由
+/// MCP 注册表层（设置中心全局页与项目 mcp.json）治理。
 fn is_tool_allowed_by_config(configured: &[String], tool_name: &str) -> bool {
     configured.is_empty() || configured.iter().any(|name| name == tool_name)
+}
+
+/// 按允许列表过滤发给模型的工具定义（混合契约）：
+/// - 名字以 `mcp__` 开头的定义：**无论允许列表是否为空**，仅当名字显式
+///   出现在 `configured` 中才保留（MCP 显式名单制）；
+/// - 内置定义：`builtin_allowed` 为 `None` = 全部放行（配置为空的
+///   fail-open 默认），`Some(list)` = 精确匹配（列表已含子智能体豁免）。
+///
+/// 系统提示词的 MCP 清单由 `allowed_mcp_tools_by_config` 用同一名单过滤，
+/// 两处结构性地保持一致。
+fn retain_allowed_definitions(
+    defs: Vec<ToolDefinition>,
+    builtin_allowed: Option<&HashSet<String>>,
+    configured: &[String],
+) -> Vec<ToolDefinition> {
+    let mcp_allowed: HashSet<&str> = configured
+        .iter()
+        .filter(|name| is_mcp_tool_name(name))
+        .map(String::as_str)
+        .collect();
+    defs.into_iter()
+        .filter(|def| {
+            if is_mcp_tool_name(&def.function.name) {
+                mcp_allowed.contains(def.function.name.as_str())
+            } else {
+                builtin_allowed.is_none_or(|allowed| allowed.contains(&def.function.name))
+            }
+        })
+        .collect()
+}
+
+/// 按允许列表过滤快照中的 MCP 工具：允许列表为空 = 无任何 MCP 工具；
+/// 非空 = 取 `canonical_name` 在列表中显式出现的交集。
+fn allowed_mcp_tools_by_config(
+    tools: Vec<ResolvedMcpTool>,
+    configured: &[String],
+) -> Vec<ResolvedMcpTool> {
+    if configured.is_empty() {
+        return Vec::new();
+    }
+    let allowed: HashSet<&str> = configured
+        .iter()
+        .filter(|name| is_mcp_tool_name(name))
+        .map(String::as_str)
+        .collect();
+    tools
+        .into_iter()
+        .filter(|tool| allowed.contains(tool.canonical_name.as_str()))
+        .collect()
 }
 
 fn effective_allowed_tools_for_chat_category(
@@ -1295,7 +1370,9 @@ mod tests {
 
     #[test]
     fn empty_allowlist_explicitly_allows_every_tool() {
-        // G9-03 显式契约：空列表 = 全部放行（fail-open 默认）
+        // G9-03 显式契约：空列表 = 全部放行（fail-open 默认）。
+        // 注意：该契约只覆盖内置工具；MCP 工具的「空列表 = 无 MCP」
+        // 由定义层 `retain_allowed_definitions` 单独处理。
         assert!(is_tool_allowed_by_config(&[], "local_zsh"));
         assert!(is_tool_allowed_by_config(&[], "call_sub_agent"));
         assert!(!is_tool_allowed_by_config(
@@ -1306,6 +1383,106 @@ mod tests {
             &["local_zsh".to_string()],
             "local_zsh"
         ));
+    }
+
+    fn tool_def(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            kind: "function".to_string(),
+            function: crate::agent::llm::ToolFunctionDefinition {
+                name: name.to_string(),
+                description: format!("{name} desc"),
+                parameters: serde_json::json!({}),
+            },
+        }
+    }
+
+    fn mcp_tool(canonical_name: &str) -> ResolvedMcpTool {
+        ResolvedMcpTool {
+            canonical_name: canonical_name.to_string(),
+            original_name: "tool".to_string(),
+            server_name: "srv".to_string(),
+            description: format!("{canonical_name} desc"),
+            parameters: serde_json::json!({}),
+            task_support: crate::mcp::McpToolTaskSupport::Optional,
+        }
+    }
+
+    fn definition_names(defs: &[ToolDefinition]) -> Vec<&str> {
+        defs.iter().map(|def| def.function.name.as_str()).collect()
+    }
+
+    #[test]
+    fn empty_allowlist_keeps_builtin_definitions_and_drops_all_mcp() {
+        let defs = vec![
+            tool_def("local_zsh"),
+            tool_def("browser_read_text"),
+            tool_def("mcp__any_file_server__list_files"),
+        ];
+
+        let filtered = retain_allowed_definitions(defs, None, &[]);
+
+        assert_eq!(
+            definition_names(&filtered),
+            vec!["local_zsh", "browser_read_text"]
+        );
+    }
+
+    #[test]
+    fn mcp_definitions_require_explicit_allowlist_entry() {
+        let defs = vec![
+            tool_def("local_zsh"),
+            tool_def("browser_read_text"),
+            tool_def("mcp__srv__a"),
+            tool_def("mcp__srv__b"),
+        ];
+        let configured = vec!["browser_read_text".to_string(), "mcp__srv__a".to_string()];
+        let builtin_allowed = effective_allowed_tools_for_chat_category(configured.clone(), false);
+
+        let filtered = retain_allowed_definitions(defs, Some(&builtin_allowed), &configured);
+
+        assert_eq!(
+            definition_names(&filtered),
+            vec!["browser_read_text", "mcp__srv__a"]
+        );
+    }
+
+    #[test]
+    fn sub_agent_tool_exemption_coexists_with_mcp_gating() {
+        let defs = vec![
+            tool_def("browser_read_text"),
+            tool_def("list_sub_agents"),
+            tool_def("call_sub_agent"),
+            tool_def("mcp__srv__a"),
+        ];
+        let configured = vec!["browser_read_text".to_string()];
+        let builtin_allowed = effective_allowed_tools_for_chat_category(configured.clone(), true);
+        assert!(builtin_allowed.contains("call_sub_agent"));
+
+        let filtered = retain_allowed_definitions(defs, Some(&builtin_allowed), &configured);
+
+        // 子智能体豁免只作用于内置分支：未显式配置的 MCP 定义仍被剔除。
+        assert_eq!(
+            definition_names(&filtered),
+            vec!["browser_read_text", "list_sub_agents", "call_sub_agent"]
+        );
+    }
+
+    #[test]
+    fn mcp_snapshot_tools_filtered_by_category_allowlist() {
+        let tools = vec![mcp_tool("mcp__srv__a"), mcp_tool("mcp__srv__b")];
+        let configured = vec!["local_zsh".to_string(), "mcp__srv__b".to_string()];
+
+        let allowed = allowed_mcp_tools_by_config(tools, &configured);
+
+        assert_eq!(allowed.len(), 1);
+        assert_eq!(allowed[0].canonical_name, "mcp__srv__b");
+    }
+
+    #[test]
+    fn empty_allowlist_yields_no_mcp_tools_even_with_healthy_snapshot() {
+        let tools = vec![mcp_tool("mcp__srv__a"), mcp_tool("mcp__srv__b")];
+
+        assert!(allowed_mcp_tools_by_config(tools, &[]).is_empty());
     }
 
     #[test]

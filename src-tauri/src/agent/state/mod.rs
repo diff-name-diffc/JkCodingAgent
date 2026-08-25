@@ -215,8 +215,10 @@ impl DispatcherState {
         context: AgentContext,
     ) -> std::result::Result<Vec<ToolInfo>, String> {
         // 工具清单服务于设置/分类的允许列表配置，只枚举内置工具：
-        // 动态（MCP）工具名随服务器配置动态生成，静态允许列表无法表达，
-        // 其启停治理在 MCP 注册表层（设置中心全局页与项目启停开关）。
+        // 动态（MCP）工具清单由 `mcp_global_status_recent` 单独提供
+        // （前端按「普通工具 / MCP 工具」两个折叠区分别渲染）。MCP 工具
+        // 同样按分类允许列表显式名单制门禁（见 PlainChatAgent 的定义层过滤），
+        // 服务器级启停则在 MCP 注册表层（设置中心全局页与项目启停开关）。
         let chat_mode = matches!(context, AgentContext::Chat);
         self.enumerate_tools(chat_mode).await
     }
@@ -344,4 +346,3 @@ fn register_sub_agent_tools(manager: &Arc<SubAgentManager>, registry: &mut ToolR
         Arc::clone(manager),
     )));
 }
-

@@ -3643,6 +3643,72 @@
     gap: 6px;
   }
 
+  .ai-aha-tool-section-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    padding: 4px 2px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .ai-aha-tool-section-header:hover {
+    color: var(--accent);
+  }
+
+  .ai-aha-tool-section-count {
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+
+  .ai-aha-tool-section-hint {
+    margin-left: auto;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 400;
+  }
+
+  .ai-aha-mcp-server-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    padding: 0 2px;
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .ai-aha-mcp-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+
+  .ai-aha-mcp-stale-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 1px solid rgb(var(--warning-rgb) / 0.4);
+    border-radius: 8px;
+    background: var(--sf-surface);
+  }
+
+  .ai-aha-mcp-stale-name {
+    min-width: 0;
+    flex: 1;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
   .ai-aha-tool-row {
     display: grid;
     grid-template-columns: 16px minmax(0, 1fr);

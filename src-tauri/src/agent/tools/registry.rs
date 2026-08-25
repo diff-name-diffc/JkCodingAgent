@@ -160,9 +160,11 @@ impl ToolRegistry {
                         // 两份同名定义造成调用歧义。
                         .filter(|spec| !self.name_index.contains_key(&spec.name)),
                 );
-                // 动态（MCP）工具不受 allowed 白名单约束：其名称随服务器配置
-                // 动态生成，静态白名单无法表达；启停治理在 MCP 注册表层
-                // （设置中心全局开关 / 项目启停开关），白名单只约束内置工具。
+                // 动态（MCP）工具在本层不受 allowed 白名单约束：白名单只约束
+                // 内置工具。聊天场景对 MCP 工具的分类门禁在消费端完成
+                // （PlainChatAgent 的 retain_allowed_definitions，显式名单制）；
+                // 服务器级启停在 MCP 注册表层治理（设置中心全局开关 /
+                // 项目启停开关）。
             }
         }
         specs

@@ -59,12 +59,16 @@ function toolKey(serverName: string, toolName: string): string {
  *   （全局条目 copy-on-write 进项目 `.jkcodingagent/mcp.json`）；
  * - `global`：所有聊天会话共享的全局注册表状态，只读展示，
  *   配置编辑入口在设置中心「MCP 服务器」页。
+ *
+ * 聊天页传入 `categoryName` 时为「分类限定视图」：调用方已把 `status`
+ * 裁剪成该分类显式配置的 MCP 工具，弹窗只负责标注这一视图范围。
  */
 export function McpStatusDialog({
   scope,
   status,
   checking,
   updatingServer = null,
+  categoryName = null,
   onRefresh,
   onToggleServerEnabled,
   onOpenSettings,
@@ -74,6 +78,7 @@ export function McpStatusDialog({
   status: McpStatus | null;
   checking: boolean;
   updatingServer?: string | null;
+  categoryName?: string | null;
   onRefresh: () => void;
   onToggleServerEnabled?: (serverName: string, enabled: boolean) => void;
   onOpenSettings?: () => void;
@@ -113,9 +118,11 @@ export function McpStatusDialog({
           <div>
             <div className="ai-mcp-title">{isGlobal ? "全局 MCP 状态" : "项目级 MCP 状态"}</div>
             <div className="ai-mcp-subtitle">
-              {isGlobal
-                ? "全局注册表对所有聊天与项目生效；服务器配置在设置中心「MCP 服务器」页管理"
-                : "这里只支持启用或禁用 MCP server；其余配置仍通过 `.jkcodingagent/mcp.json` 管理"}
+              {categoryName
+                ? `聊天分类视图：仅展示分类「${categoryName}」已配置的 MCP 工具；增减请到设置中心「工具」页`
+                : isGlobal
+                  ? "全局注册表对所有聊天与项目生效；服务器配置在设置中心「MCP 服务器」页管理"
+                  : "这里只支持启用或禁用 MCP server；其余配置仍通过 `.jkcodingagent/mcp.json` 管理"}
             </div>
           </div>
           <div className="ai-mcp-header-actions">
@@ -156,6 +163,14 @@ export function McpStatusDialog({
                     <span className="ai-mcp-meta-value">{status.configPath ?? "—"}</span>
                   </div>
                 </>
+              )}
+              {categoryName && (
+                <div className="ai-mcp-meta-row">
+                  <span className="ai-mcp-meta-label">视图范围</span>
+                  <span className="ai-mcp-meta-value">
+                    聊天分类「{categoryName}」已配置的 MCP 工具
+                  </span>
+                </div>
               )}
               <div className="ai-mcp-meta-row">
                 <span className="ai-mcp-meta-label">最近检查</span>

@@ -3,6 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { BrowserStatus } from "../types";
 import { useDockedBrowserPanel } from "../hooks/useDockedBrowserPanel";
+import { useChatSessionsQuery } from "../hooks/use-chat-queries";
+import { extractMcpToolNames, trimMcpStatusToTools } from "../lib/mcp-category-tools";
+import { useAhaSettingsStore } from "./settings/use-aha-settings";
 import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
 import { ChatPageV2 } from "./chat-page-v2";
 import { useGlobalMcpStatus } from "../hooks/use-mcp-status";
@@ -29,12 +32,44 @@ export function HomeChatPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState("providers");
   const [showMcpStatus, setShowMcpStatus] = useState(false);
-  // 全局 MCP 状态：所有聊天会话共享同一份配置与快照。
+  // 全局 MCP 状态快照：所有聊天会话共享；聊天界面实际只展示当前会话
+  // 所属分类显式配置的子集（见下方 chatMcpStatus 派生）。
   const {
     status: mcpStatus,
     checking: mcpChecking,
     refresh: refreshMcpStatus,
   } = useGlobalMcpStatus(true);
+  // 分类级工具门禁（镜像后端 build_plain_chat_agent 的叠加语义）：
+  // 会话挂分类 → 用分类配置的 allowedTools；无分类 → 回退设置级
+  // settings.chat.allowedTools。仅其中的 mcp__ 名字决定 MCP 可见性。
+  const { settings, chatCategoryConfigs } = useAhaSettingsStore();
+  const sessionsQuery = useChatSessionsQuery(undefined, true);
+  const activeSessionCategory = useMemo(() => {
+    const sessions = sessionsQuery.data ?? [];
+    return sessions.find((session) => session.id === activeSessionId)?.category ?? "";
+  }, [sessionsQuery.data, activeSessionId]);
+  const { configuredMcpNames, activeCategoryName } = useMemo(() => {
+    let allowedTools: string[] = settings?.chat.allowedTools ?? [];
+    let categoryName: string | null = null;
+    if (activeSessionCategory) {
+      const config = chatCategoryConfigs.find(
+        (item) => item.categoryId === activeSessionCategory,
+      );
+      if (config) {
+        allowedTools = config.allowedTools;
+        categoryName = config.categoryName;
+      }
+    }
+    return {
+      configuredMcpNames: extractMcpToolNames(allowedTools),
+      activeCategoryName: categoryName,
+    };
+  }, [settings, chatCategoryConfigs, activeSessionCategory]);
+  const mcpConfigured = configuredMcpNames.size > 0;
+  const chatMcpStatus = useMemo(
+    () => trimMcpStatusToTools(mcpStatus, configuredMcpNames),
+    [mcpStatus, configuredMcpNames],
+  );
   const [showBrowserPanel, setShowBrowserPanel] = useState(false);
   const [dockedBrowsers, setDockedBrowsers] = useState<
     Map<string, { sessionId: string; url: string | null; state: string }>
@@ -130,9 +165,9 @@ export function HomeChatPage() {
         <ChatPageV2
           sessionId={activeSessionId}
           onSessionChange={setActiveSessionId}
-          mcpStatus={mcpStatus}
+          mcpStatus={mcpConfigured ? chatMcpStatus : null}
           mcpChecking={mcpChecking}
-          onOpenMcpStatus={() => setShowMcpStatus(true)}
+          onOpenMcpStatus={mcpConfigured ? () => setShowMcpStatus(true) : undefined}
           onOpenSettings={() => {
             setSettingsInitialTab("providers");
             setShowSettings(true);
@@ -158,12 +193,13 @@ export function HomeChatPage() {
         </div>
       )}
 
-      {showMcpStatus && (
+      {showMcpStatus && mcpConfigured && (
         <Suspense fallback={null}>
           <McpStatusDialog
             scope="global"
-            status={mcpStatus}
+            status={chatMcpStatus}
             checking={mcpChecking}
+            categoryName={activeCategoryName}
             onRefresh={() => {
               refreshMcpStatus().catch(console.error);
             }}

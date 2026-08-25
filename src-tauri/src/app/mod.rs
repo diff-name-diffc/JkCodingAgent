@@ -143,6 +143,7 @@ pub fn run() {
             project::config::init_project_config,
             mcp::commands::mcp_project_status,
             mcp::commands::mcp_global_status,
+            mcp::commands::mcp_global_status_recent,
             mcp::commands::mcp_project_set_server_enabled,
             mcp::commands::mcp_global_config_get,
             mcp::commands::mcp_global_config_save,

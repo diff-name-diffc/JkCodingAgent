@@ -2,7 +2,6 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde_json::Value;
 
-use super::config::DispatcherAgentConfig;
 use super::db::content::{segments_to_plain_text, try_parse_segments_json, ContentSegment};
 use super::db::{
     AgentContext, AhaSettingsV2, ChatCategory, ChatCategoryAgentConfig, ChatSessionRecord,
@@ -443,7 +442,6 @@ fn resolve_summary_provider(
     db: &DispatcherDb,
     context: AgentContext,
 ) -> Result<(OpenAiCompatProvider, String)> {
-    let config = DispatcherAgentConfig::load()?;
     let settings_v2 = db.get_settings_v2()?;
     let context_config = match context {
         AgentContext::Project => &settings_v2.project,
@@ -460,23 +458,39 @@ fn resolve_summary_provider(
         return Err(anyhow!("未配置 {:?} 摘要模型名称", context));
     }
 
+    // 凭据回退：摘要槽位 api_key 或 url 任一缺失时，整组回退到同一 context 的
+    // 主对话模型槽位（chat_model_configs 的 active 条目，已由模型库回填凭据）。
+    // 不做逐字段回退：「摘要的 key + 对话的 url」会把 A 厂商的凭据发往 B 厂商
+    // 端点，产生晦涩的鉴权失败。
+    let chat_fallback = context_config
+        .chat_model_configs
+        .iter()
+        .find(|item| item.active)
+        .or_else(|| context_config.chat_model_configs.first());
+    let summary_complete = !summary.api_key.trim().is_empty() && !summary.url.trim().is_empty();
+    let (api_key, url) = if summary_complete {
+        (summary.api_key.trim().to_string(), summary.url.trim().to_string())
+    } else {
+        (
+            chat_fallback
+                .map(|item| item.api_key.trim().to_string())
+                .unwrap_or_default(),
+            chat_fallback
+                .map(|item| item.url.trim().to_string())
+                .unwrap_or_default(),
+        )
+    };
+
     Ok((
         OpenAiCompatProvider::new(
-            if summary.api_key.trim().is_empty() {
-                config.api_key.clone()
-            } else {
-                summary.api_key.trim().to_string()
-            },
-            if summary.url.trim().is_empty() {
-                config.api_base.clone()
-            } else {
-                summary.url.trim().to_string()
-            },
+            api_key,
+            url,
             summary_model.to_string(),
             // 关键字摘要输出 JSON 数组（最多 15 项）需要较大预算；也兼容仍会思考的摘要
             // 模型（思考 token 计入上限）。非思考模型输出完即停，此处仅作上限保护。
             2048,
-            config.temperature,
+            // 摘要是低创造性任务，固定低温度（沿用历史 config.temperature 默认 0.1）。
+            0.1,
         ),
         summary_model.to_string(),
     ))

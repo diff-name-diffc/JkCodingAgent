@@ -64,8 +64,6 @@ pub async fn graph_plan_update(
 
     let mut definition: GraphDefinition = serde_json::from_str(&definition_json)
         .map_err(|error| format!("错误：definition_json 不是合法的图定义：{error}"))?;
-    // 存量 v2 草稿编辑保存时一并升级，升级结果随本次保存持久化。
-    definition.upgrade_legacy();
     definition.normalize_ids();
 
     let catalog = catalog_for_workspace(&state, &plan.workspace_id).await?;
@@ -304,10 +302,10 @@ pub(crate) async fn catalog_for_workspace(
         let db = state.db().clone();
         let lookup = project_id.clone();
         tokio::task::spawn_blocking(move || db.find_project(&lookup).ok().flatten())
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "无法定位图计划所属项目".to_string())?
-        .path
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "无法定位图计划所属项目".to_string())?
+            .path
     };
     state
         .project_mcp_registry()

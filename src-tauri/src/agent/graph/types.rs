@@ -168,18 +168,6 @@ pub struct GraphDefinition {
 }
 
 impl GraphDefinition {
-    /// 存量持久化定义的一次性升级：低于当前版本的历史版本（v2/v1/…）统一
-    /// 升到当前版本。各历史版本的新增字段（expectedFiles/exportPolicy/
-    /// inheritsFrom 等）均有 serde default，能完整反序列化的旧 JSON 字段必然
-    /// 齐全，这里只需补版本号；升级后的定义由 validate 正常放行（可重跑/续跑/
-    /// 编辑）。高于当前版本的定义不动，由 validate 报错（避免静默降级）。
-    /// 在 run_graph 与 graph_plan_update 入口调用，落库路径会把升级结果持久化。
-    pub(crate) fn upgrade_legacy(&mut self) {
-        if self.version < GRAPH_DEFINITION_VERSION {
-            self.version = GRAPH_DEFINITION_VERSION;
-        }
-    }
-
     /// 统一 trim 节点 id、依赖引用、outputKey、injectStateKeys 以及共享 state
     /// 定义侧 key（state_keys）的首尾空白。校验/调度/持久化各处都以 trim 后的
     /// id 为准（见 ReadyQueue 与 validate），在解析入口统一规整可避免「原始 id
@@ -539,34 +527,6 @@ mod tests {
         assert_eq!(node.export_policy, ExportPolicy::Summary);
         assert!(node.expected_files.is_empty());
         assert!(definition.inherits_from.is_none());
-    }
-
-    #[test]
-    fn upgrade_legacy_promotes_any_older_version_and_keeps_newer() {
-        let mut definition: GraphDefinition = serde_json::from_str(
-            r#"{"version":1,"title":"测试","nodes":[{"id":"n1","title":"实现","modelRef":"m1","baseToolGroup":"read_only","task":"调研","outputKey":"result"}]}"#,
-        )
-        .unwrap();
-        definition.upgrade_legacy();
-        assert_eq!(
-            definition.version, GRAPH_DEFINITION_VERSION,
-            "v1 等历史版本统一升级"
-        );
-
-        definition.version = 2;
-        definition.upgrade_legacy();
-        assert_eq!(
-            definition.version, GRAPH_DEFINITION_VERSION,
-            "v2 升级路径不回归"
-        );
-
-        definition.version = GRAPH_DEFINITION_VERSION + 1;
-        definition.upgrade_legacy();
-        assert_eq!(
-            definition.version,
-            GRAPH_DEFINITION_VERSION + 1,
-            "更高版本不静默降级，交由 validate 报错"
-        );
     }
 
     #[test]

@@ -24,9 +24,7 @@ pub enum AppSettingsError {
     },
 }
 
-fn db_error(
-    action: &'static str,
-) -> impl FnOnce(anyhow::Error) -> AppSettingsError {
+fn db_error(action: &'static str) -> impl FnOnce(anyhow::Error) -> AppSettingsError {
     move |source| AppSettingsError::Db { action, source }
 }
 
@@ -182,9 +180,7 @@ fn load_settings(
         .db()
         .get_app_config_json(crate::agent::db::app_config::APP_SETTINGS_KEY)
     {
-        Ok(Some(raw)) => {
-            serde_json::from_str(&raw).map_err(json_error("解析应用设置"))
-        }
+        Ok(Some(raw)) => serde_json::from_str(&raw).map_err(json_error("解析应用设置")),
         Ok(None) => Ok(AppSettings::default()),
         Err(error) => Err(db_error("读取应用设置")(error)),
     }
@@ -204,8 +200,7 @@ fn save_app_settings_impl(
     state: tauri::State<'_, crate::agent::DispatcherState>,
     settings: AppSettings,
 ) -> AppSettingsResult<()> {
-    let raw =
-        serde_json::to_string(&settings).map_err(json_error("序列化应用设置"))?;
+    let raw = serde_json::to_string(&settings).map_err(json_error("序列化应用设置"))?;
     state
         .db()
         .set_app_config_json(crate::agent::db::app_config::APP_SETTINGS_KEY, &raw)

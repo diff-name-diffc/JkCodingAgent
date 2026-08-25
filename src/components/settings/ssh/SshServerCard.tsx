@@ -100,7 +100,9 @@ export function SshServerCard({
                 transition: "transform var(--motion-fast) var(--motion-ease)",
               }}
             />
-            <span className="ai-set-server-title">{server.id || "未命名服务器"}</span>
+            <span className="ai-set-server-title">
+              {server.name.trim() || server.id || "未命名服务器"}
+            </span>
             <span className="ai-set-server-summary">{serverSummary(server)}</span>
           </button>
         </div>
@@ -168,12 +170,18 @@ export function SshServerCard({
           </label>
 
           <div className="ai-set-form-grid">
-            <Field label="Server ID" error={fieldError("id")}>
+            <Field
+              label="名称"
+              tip="服务器的显示名称，支持中文，仅用于界面展示；内部标识（id）由系统自动生成，无需填写。"
+              error={fieldError("name")}
+            >
               <CommitInput
-                value={server.id}
-                placeholder="prod-web-1"
+                value={server.name}
+                placeholder="生产 Web 节点"
+                // 与后端 NAME_MAX_LEN 一致：超长会导致整批配置保存被拒。
+                maxLength={64}
                 onCommit={(next) =>
-                  onUpdate((draft) => ({ ...draft, id: next.trim().toLowerCase() }), fid("id"))
+                  onUpdate((draft) => ({ ...draft, name: next }), fid("name"))
                 }
               />
             </Field>

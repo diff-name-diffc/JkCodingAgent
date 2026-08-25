@@ -52,7 +52,7 @@ anyhow = "1"
 thiserror = "2"
 ropey = "1"
 sha2 = "0.11"
-ssh2 = "0.9"
+russh = "0.62"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 rmcp = { version = "1.8.0", default-features = false, features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-client-unix-socket"] }
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }

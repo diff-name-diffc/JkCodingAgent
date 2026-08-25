@@ -63,7 +63,7 @@ pub fn atomic_write(path: &Path, content: &str) -> StorageResult<()> {
     fs::rename(&tmp, path).map_err(io_error("替换目标文件", path))
 }
 
-// ── Tauri commands（projects 表为唯一权威源，v31 起替代 projects.json）────────
+// ── Tauri commands（projects 表为唯一权威源）────────────────────────────────
 
 #[tauri::command]
 pub fn load_projects(state: tauri::State<'_, DispatcherState>) -> CommandResult<Vec<Project>> {
@@ -86,6 +86,14 @@ pub fn save_projects(
         .into_command_result()
 }
 
+/// `project_delete` 的返回值：随删除结果带出被级联删除的会话 id，
+/// 供前端清理模块级内存 store 中这些会话的残留状态。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDeleteResult {
+    pub deleted_session_ids: Vec<String>,
+}
+
 /// 删除项目：级联清理该项目全部会话（DB 记录 + 聊天图片文件 + 工具产物）
 /// 与项目仓库内应用自有的运行期数据目录（browser-profile / local_env）。
 /// config.toml / mcp.json 可能随仓库共享，保留不删。
@@ -93,12 +101,14 @@ pub fn save_projects(
 pub async fn project_delete(
     state: tauri::State<'_, DispatcherState>,
     project_id: String,
-) -> CommandResult<()> {
+) -> CommandResult<ProjectDeleteResult> {
     let db = state.db().clone();
     let result = tokio::task::spawn_blocking(move || {
         let plan = db.delete_project(&project_id)?;
         crate::agent::db::projects::cleanup_project_files(&plan);
-        anyhow::Ok(())
+        anyhow::Ok(ProjectDeleteResult {
+            deleted_session_ids: plan.deleted_session_ids,
+        })
     })
     .await
     .context("删除项目任务失败")

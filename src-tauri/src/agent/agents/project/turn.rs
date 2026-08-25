@@ -35,11 +35,10 @@ impl AgentRunAdapter for OrchestratorAgent {
         // 路径作为工作区，先解析符号链接再做包含性判断，防止前端可控路径被用于
         // 任意目录创建/读取。DB 读取放在 spawn_blocking，不阻塞执行器。
         let db = self.db.clone();
-        let workspace = tokio::task::spawn_blocking(move || {
-            validate_project_workspace(&db, &workspace_path)
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("错误：工作区校验任务失败：{error}"))??;
+        let workspace =
+            tokio::task::spawn_blocking(move || validate_project_workspace(&db, &workspace_path))
+                .await
+                .map_err(|error| anyhow::anyhow!("错误：工作区校验任务失败：{error}"))??;
         let workspace_for_create = workspace.clone();
         tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&workspace_for_create)

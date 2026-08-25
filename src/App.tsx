@@ -1,9 +1,12 @@
 import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { open as openDialog, confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import type { Project } from "./types";
+import type { Project, ProjectDeleteResult } from "./types";
 import { WelcomePage } from "./components/WelcomePage";
 import { useToast } from "./components/Toast";
+import { cleanupDispatcherSession } from "./components/dispatcherSessionStore";
+import { cleanupSubAgentEvents } from "./components/subAgentEventStore";
+import { cleanupGraphPlansForSession } from "./components/graph/graph-store";
 import { normalizeThemePreference, persistThemePreference } from "./lib/theme";
 import "./App.css";
 
@@ -74,9 +77,14 @@ function App() {
     if (!selected) return;
     const path = selected as string;
     const name = path.split("/").pop() || path;
-    const project: Project = { id: crypto.randomUUID(), name, path, lastOpenedAt: Date.now() };
+    // 已注册的目录复用原项目 id：移除项目必须走带级联清理的删除流程
+    // （后端 save_projects 会拒绝缺失现存 id 的载荷），换新 id 会让旧会话失联。
+    const existing = projects.find((p) => p.path === path);
+    const project: Project = existing
+      ? { ...existing, name, lastOpenedAt: Date.now() }
+      : { id: crypto.randomUUID(), name, path, lastOpenedAt: Date.now() };
     setProjects((prev) => {
-      const next = [project, ...prev.filter((p) => p.path !== path)];
+      const next = [project, ...prev.filter((p) => p.id !== project.id && p.path !== path)];
       persistProjects(next, showToast);
       return next;
     });
@@ -135,7 +143,14 @@ function App() {
     );
     if (!ok) return;
     try {
-      await invoke("project_delete", { projectId });
+      const result = await invoke<ProjectDeleteResult>("project_delete", { projectId });
+      // 清理模块级内存 store 中被删会话的残留状态（实时会话状态 / 子智能体
+      // 事件 / 图计划快照），这些 store 按 sessionId 累积，不随视图卸载清掉。
+      for (const sessionId of result.deletedSessionIds) {
+        cleanupDispatcherSession(sessionId);
+        cleanupSubAgentEvents(sessionId);
+        cleanupGraphPlansForSession(sessionId);
+      }
     } catch (e) {
       showToast(`删除项目失败：${String(e)}`, "error");
       return;

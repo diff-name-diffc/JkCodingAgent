@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -44,60 +43,6 @@ const DEFAULT_SOUL: &str = r#"# JKBot 项目编排器
 - 默认使用简体中文，结论直接、工程化。
 "#;
 
-const LEGACY_DEFAULT_SOUL: &str = r#"# JKBot 调度代理
-
-你是桌面客户端中的编程任务调度代理，负责把用户的编码需求高效推进到可交付结果。
-你的工作是拆解、调查、定位、补齐上下文、识别风险、整理执行说明，并把实现任务委派给 Claude 或 Codex。
-
-工作原则：
-- 先调查再判断，先定位再委派，不臆测。
-- 以当前交付目标为中心，只做必要推进。
-- 优先保证正确性、完成度和执行效率。
-- 除非只是极小范围的验证性修改，否则不要亲自承担主要实现。
-
-推荐流程：
-1. 用工具了解需求、代码现状、调用链、影响面、约束与验证方式。
-   探索默认链路是：glob 缩小文件范围 → grep 精确匹配内容 → read_file 加载确认；证据不足时继续下一轮收缩。
-   对互相独立的只读探索，优先在同一轮返回多个工具调用；需要查多个目录、文件、glob 模式或 grep 模式时，使用 `paths` / `patterns` 数组参数减少轮次。
-2. 整理成可直接开工的自包含任务说明。
-3. 根据任务特点选择合适的执行代理发起委派。
-4. 子任务返回后继续协调，决定补充指令、收口、退出或继续调查。
-
-委派策略：
-- `dispatch_claude`：适合新功能、快速迭代、探索性调试和需要边实现边收敛的任务。
-- `dispatch_codex`：适合重构、结构治理、跨文件一致性修改和高风险收口任务。
-
-任务说明要求：
-- 交代清楚目标、背景、相关文件或符号、限制条件、验证方式和交付预期。
-- 风险、兼容性要求和未决假设必须显式写明。
-- 描述要具体，让执行代理接手后能直接开工。
-
-协作要求：
-- 风险操作先说明影响，再请求确认。
-- 默认使用简体中文输出。
-- 结论直接清晰，偏工程执行。
-- 如果两个执行代理可以并行推进不同子问题，可以在同一轮同时调用多个 `dispatch_*`。
-- 但同一 session 中，同一 agent 同时最多只允许一个活跃或待启动子进程。
-"#;
-
-const LEGACY_DEFAULT_SOUL_V1: &str = r#"# JKBot Dispatcher
-
-You are JKBot, a dispatcher coding agent embedded in a desktop client.
-You talk with the user, clarify intent when necessary, make concise plans, and use tools to inspect or modify the active workspace.
-When the user requests complex coding tasks, delegate them to a specialist terminal agent.
-Choose `dispatch_claude` for faster exploration, greenfield features, algorithm experiments, and broad solution search.
-Choose `dispatch_codex` for slower but more careful refactoring, structural cleanup, and regression-sensitive edits.
-Respond in Simplified Chinese unless the user explicitly asks for another language.
-
-Engineering rules:
-- Prefer simple, direct implementations.
-- Read relevant files before editing.
-- Keep changes scoped to the user's request.
-- Do not invent results. Use tools when local facts are needed.
-- For risky operations, explain the impact and ask for confirmation.
-- For substantial coding tasks, delegate to Claude or Codex instead of doing everything inline.
-"#;
-
 const DEFAULT_USER: &str = r#"# 用户偏好
 
 用户是程序员，偏好高信息密度、面向实现的协作方式。
@@ -106,11 +51,6 @@ const DEFAULT_USER: &str = r#"# 用户偏好
 - 调查阶段重证据，执行阶段重交付和验证。
 - 如果需要委派子任务，任务说明必须具体到可直接开工。
 - 默认用中文；只有用户明确要求时再切换语言。
-"#;
-
-const LEGACY_DEFAULT_USER: &str = r#"# User Preferences
-
-The user is an experienced developer. Be concise, factual, and implementation-oriented.
 "#;
 
 #[derive(Debug, Clone)]
@@ -130,31 +70,30 @@ pub struct DispatcherAgentConfig {
     pub context_debug: bool,
 }
 
-/// 模型 env 回退开关：默认关闭。设置中心（dispatcher_settings_v2 表）是模型
+/// 模型 env 回退开关：默认关闭。设置中心（dispatcher_settings 表）是模型
 /// 配置的唯一权威源；仅当显式设置 `AHA_ALLOW_ENV_PROVIDER=1`（开发场景）
 /// 时才允许从环境变量解析模型凭据，消除「DB + env 双权威源」的漂移面。
 fn env_provider_allowed() -> bool {
     std::env::var("AHA_ALLOW_ENV_PROVIDER").is_ok_and(|value| value == "1")
 }
 
+/// 纯路径解析：返回 `~/.jkcodingagent`，不建目录、不写文件。
+/// 仅供只需要资源根路径的调用方使用（如 python_runner 的运行目录），
+/// 避免为此引入 `DispatcherAgentConfig::load()` 的目录初始化副作用。
+pub fn resolve_home_dir() -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("failed to resolve home directory"))?;
+    Ok(home.join(".jkcodingagent"))
+}
+
 impl DispatcherAgentConfig {
     pub fn load() -> Result<Self> {
-        let home = dirs::home_dir().ok_or_else(|| anyhow!("failed to resolve home directory"))?;
-        let root_dir = home.join(".jkcodingagent");
+        let root_dir = resolve_home_dir()?;
 
         fs::create_dir_all(root_dir.join("memory")).context("create ~/.jkcodingagent/memory")?;
         fs::create_dir_all(root_dir.join("skills")).context("create ~/.jkcodingagent/skills")?;
 
-        sync_bundled_prompt_file(
-            root_dir.join("SOUL.md"),
-            DEFAULT_SOUL,
-            &[LEGACY_DEFAULT_SOUL, LEGACY_DEFAULT_SOUL_V1],
-        )?;
-        sync_bundled_prompt_file(
-            root_dir.join("USER.md"),
-            DEFAULT_USER,
-            &[LEGACY_DEFAULT_USER],
-        )?;
+        write_if_missing(root_dir.join("SOUL.md"), DEFAULT_SOUL)?;
+        write_if_missing(root_dir.join("USER.md"), DEFAULT_USER)?;
         write_if_missing(root_dir.join("memory").join("MEMORY.md"), "# 记忆\n\n")?;
 
         let (api_key, api_base, model, summary_model, vision_model) = if env_provider_allowed() {
@@ -173,7 +112,13 @@ impl DispatcherAgentConfig {
                 std::env::var("VISION_MODEL_NAME").unwrap_or_default(),
             )
         } else {
-            (String::new(), String::new(), String::new(), String::new(), String::new())
+            (
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            )
         };
 
         Ok(Self {
@@ -217,9 +162,7 @@ pub fn validate_provider_completeness(api_key: &str, api_base: &str, model: &str
 /// 原子写：先写同目录临时文件，再 rename 原子替换（G9-16）。
 ///
 /// `fs::write` 直接截断覆盖是非原子的：进程在写入中途崩溃（或磁盘错误）会留下
-/// 截断/损坏的 SOUL.md / USER.md，而损坏内容既不等于内置版本也不等于任何 legacy
-/// 变体，`sync_bundled_prompt_file` 会把它当成「用户自定义内容」永久保留，
-/// 系统无法自愈。同一文件系统下 rename 是原子的：目标文件要么是旧内容、
+/// 截断/损坏的文件。同一文件系统下 rename 是原子的：目标文件要么是旧内容、
 /// 要么是完整新内容。
 fn atomic_write(path: &Path, content: &str) -> Result<()> {
     let tmp_path = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
@@ -242,24 +185,6 @@ fn write_if_missing(path: PathBuf, content: &str) -> Result<()> {
     atomic_write(&path, content).with_context(|| format!("write {}", path.display()))
 }
 
-fn sync_bundled_prompt_file(path: PathBuf, content: &str, legacy_variants: &[&str]) -> Result<()> {
-    match fs::read_to_string(&path) {
-        Ok(existing) => {
-            let can_overwrite =
-                existing == content || legacy_variants.iter().any(|legacy| existing == *legacy);
-            if can_overwrite && existing != content {
-                atomic_write(&path, content)
-                    .with_context(|| format!("write {}", path.display()))?;
-            }
-            Ok(())
-        }
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            atomic_write(&path, content).with_context(|| format!("write {}", path.display()))
-        }
-        Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,46 +194,15 @@ mod tests {
     }
 
     #[test]
-    fn upgrades_only_exact_bundled_prompt_variants() {
-        for legacy in [LEGACY_DEFAULT_SOUL, LEGACY_DEFAULT_SOUL_V1] {
-            let path = test_path();
-            fs::write(&path, legacy).unwrap();
-            sync_bundled_prompt_file(
-                path.clone(),
-                DEFAULT_SOUL,
-                &[LEGACY_DEFAULT_SOUL, LEGACY_DEFAULT_SOUL_V1],
-            )
-            .unwrap();
-            assert_eq!(fs::read_to_string(&path).unwrap(), DEFAULT_SOUL);
-            fs::remove_file(path).unwrap();
-        }
-    }
-
-    #[test]
-    fn preserves_custom_prompt_even_with_legacy_heading() {
-        let path = test_path();
-        let custom = "# JKBot Dispatcher\n\n用户自定义内容\n";
-        fs::write(&path, custom).unwrap();
-        sync_bundled_prompt_file(
-            path.clone(),
-            DEFAULT_SOUL,
-            &[LEGACY_DEFAULT_SOUL, LEGACY_DEFAULT_SOUL_V1],
-        )
-        .unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), custom);
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn creates_missing_prompt_and_preserves_unrelated_custom_prompt() {
+    fn creates_missing_prompt_and_preserves_existing_file() {
         let missing = test_path();
-        sync_bundled_prompt_file(missing.clone(), DEFAULT_SOUL, &[]).unwrap();
+        write_if_missing(missing.clone(), DEFAULT_SOUL).unwrap();
         assert_eq!(fs::read_to_string(&missing).unwrap(), DEFAULT_SOUL);
         fs::remove_file(missing).unwrap();
 
         let custom = test_path();
         fs::write(&custom, "# My Agent\n\ncustom\n").unwrap();
-        sync_bundled_prompt_file(custom.clone(), DEFAULT_SOUL, &[]).unwrap();
+        write_if_missing(custom.clone(), DEFAULT_SOUL).unwrap();
         assert_eq!(
             fs::read_to_string(&custom).unwrap(),
             "# My Agent\n\ncustom\n"

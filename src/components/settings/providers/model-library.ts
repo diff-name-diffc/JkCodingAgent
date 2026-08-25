@@ -83,42 +83,6 @@ export function entryLabel(entry: ModelLibraryEntry): string {
   return entry.alias?.trim() || entry.model.trim() || "未命名模型";
 }
 
-// ── 首次迁移播种 ──────────────────────────────────────────────────────────────
-
-/** 是否有任何用途已配置模型（决定是否需要从旧配置播种模型库）。 */
-export function hasAnyPurposeConfigs(settings: AhaSettingsV2): boolean {
-  return PURPOSE_DEFS.some((def) =>
-    getPurposeConfigs(settings, def.kind).some((config) => config.url.trim() || config.model.trim()),
-  );
-}
-
-/**
- * 首次迁移：把现有各用途配置按分类去重（url+apiKey+model）转成库条目。
- * 旧用途配置保持原样，绑定关系不受影响。
- */
-export function seedModelLibrary(settings: AhaSettingsV2): ModelLibraryEntry[] {
-  const seen = new Map<string, ModelLibraryEntry>();
-  for (const def of PURPOSE_DEFS) {
-    const category = purposeCategory(def.kind);
-    for (const config of getPurposeConfigs(settings, def.kind)) {
-      const url = config.url.trim();
-      const model = config.model.trim();
-      if (!url && !model) continue;
-      const key = `${category}::${url}::${config.apiKey.trim()}::${model}`;
-      if (seen.has(key)) continue;
-      seen.set(key, {
-        id: crypto.randomUUID(),
-        category,
-        url,
-        apiKey: config.apiKey.trim(),
-        model,
-        enabled: true,
-      });
-    }
-  }
-  return [...seen.values()];
-}
-
 // ── 条目 CRUD（返回新 settings，不落盘） ──────────────────────────────────────
 
 export function upsertLibraryEntry(
@@ -156,37 +120,27 @@ export function removeLibraryEntry(settings: AhaSettingsV2, id: string): AhaSett
 
 // ── 引用统计 ──────────────────────────────────────────────────────────────────
 
+/** 用途绑定与库条目的匹配：一律按 libraryId 引用（凭据由后端从库解析）。 */
 function configMatchesEntry(
-  config: { url: string; apiKey: string; model: string; libraryId?: string },
+  config: { libraryId?: string },
   entry: ModelLibraryEntry,
 ): boolean {
-  // 引用绑定优先按 libraryId 匹配（凭据由后端解析，url/apiKey 可能是回填值）。
-  if (config.libraryId?.trim()) {
-    return config.libraryId.trim() === entry.id;
-  }
-  return (
-    config.url.trim() === entry.url.trim() &&
-    config.apiKey.trim() === entry.apiKey.trim() &&
-    config.model.trim() === entry.model.trim()
-  );
+  const libraryId = config.libraryId?.trim();
+  return Boolean(libraryId) && libraryId === entry.id;
 }
 
 /**
- * 在模型库中查找与某用途绑定配置匹配的启用条目：引用绑定按 libraryId
- * 匹配，旧内联绑定按 url/apiKey/model 匹配。设置页与聊天输入框的模型下拉
- * 用它确定「当前生效」的库条目，保证两处一致。
+ * 在模型库中查找与某用途绑定配置匹配的启用条目（按 libraryId 引用匹配）。
+ * 设置页与聊天输入框的模型下拉用它确定「当前生效」的库条目，保证两处一致。
  */
 export function findEnabledEntryForConfig(
   library: ModelLibraryEntry[],
-  config: { url: string; apiKey: string; model: string; libraryId?: string } | null | undefined,
+  config: { libraryId?: string } | null | undefined,
 ): ModelLibraryEntry | undefined {
   if (!config) return undefined;
   const libraryId = config.libraryId?.trim();
-  if (libraryId) {
-    return library.find((entry) => entry.enabled !== false && libraryId === entry.id);
-  }
-  if (!config.url.trim()) return undefined;
-  return library.find((entry) => entry.enabled !== false && configMatchesEntry(config, entry));
+  if (!libraryId) return undefined;
+  return library.find((entry) => entry.enabled !== false && libraryId === entry.id);
 }
 
 /** 引用该条目的用途标题列表（删除确认时展示）。 */

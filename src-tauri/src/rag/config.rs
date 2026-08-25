@@ -236,9 +236,7 @@ impl RagKbConfig {
     /// 从全局库加载（app_config 表 `rag` 键）；未配置时返回默认值。
     pub fn load_from_db(db: &crate::agent::db::DispatcherDb) -> Result<Self> {
         match db.get_app_config_json(crate::agent::db::app_config::RAG_KEY) {
-            Ok(Some(raw)) => {
-                serde_json::from_str(&raw).context("parse rag config from app_config")
-            }
+            Ok(Some(raw)) => serde_json::from_str(&raw).context("parse rag config from app_config"),
             Ok(None) => Ok(Self::default()),
             Err(error) => Err(error.context("load rag config from app_config")),
         }

@@ -230,6 +230,25 @@ export function ChatPageV2({
     };
   }, []);
 
+  // 清空输入草稿（输入框 / 附图 / 编辑态）：会话切换、新建、删除、清空消息时
+  // 统一调用，避免草稿从一个会话带到另一个会话。
+  const clearDraft = useCallback(() => {
+    setInput("");
+    setAttachedImages([]);
+    setEditingMessageId(null);
+  }, []);
+
+  // 会话切换时清空草稿（input / attachedImages / editingMessageId）。
+  // 聊天模式经 handleActiveSessionChange 已显式重置；项目模式（embedded）切换
+  // 会话只改上层 activeSessionId，不经过该回调，需要这里统一兜底。
+  // ref 以挂载时的值初始化，首次挂载不清空，仅响应后续变化。
+  const previousSessionIdRef = useRef(activeSessionId);
+  useEffect(() => {
+    if (previousSessionIdRef.current === activeSessionId) return;
+    previousSessionIdRef.current = activeSessionId;
+    clearDraft();
+  }, [activeSessionId, clearDraft]);
+
   // ── Message history: initial load + live pub/sub ────────────────────────
   useEffect(() => {
     if (!activeSessionId) {
@@ -481,20 +500,16 @@ export function ChatPageV2({
 
   const handleCancelEdit = useCallback(() => {
     if (isSubmittingEdit) return;
-    setEditingMessageId(null);
-    setInput("");
-    setAttachedImages([]);
-  }, [isSubmittingEdit]);
+    clearDraft();
+  }, [clearDraft, isSubmittingEdit]);
 
   const handleNewConversation = useCallback(() => {
     if (!embedded) {
       setActiveSessionId(null);
     }
-    setInput("");
-    setAttachedImages([]);
-    setEditingMessageId(null);
+    clearDraft();
     setMessages([]);
-  }, [embedded, setActiveSessionId]);
+  }, [clearDraft, embedded, setActiveSessionId]);
 
   // 在指定分类下新建会话：真正落库一个空会话并激活它。
   // 侧边栏每个分类行内的 + 按钮走这里，可指定分类；
@@ -508,15 +523,13 @@ export function ChatPageV2({
           category: categoryId,
         });
         setActiveSessionId(session.id);
-        setInput("");
-        setAttachedImages([]);
-        setEditingMessageId(null);
+        clearDraft();
         setMessages([]);
       } catch (err) {
         console.error("在分类下创建会话失败:", err);
       }
     },
-    [createChatSession, embedded, isPlainChat, setActiveSessionId],
+    [clearDraft, createChatSession, embedded, isPlainChat, setActiveSessionId],
   );
 
   const handleDeleteSession = useCallback(
@@ -536,9 +549,7 @@ export function ChatPageV2({
             (session) => session.id !== sessionIdToDelete,
           );
           setActiveSessionId(nextSession?.id ?? null);
-          setInput("");
-          setAttachedImages([]);
-          setEditingMessageId(null);
+          clearDraft();
           setMessages([]);
         }
       } catch (err) {
@@ -547,6 +558,7 @@ export function ChatPageV2({
     },
     [
       activeSessionId,
+      clearDraft,
       deleteChatSession,
       embedded,
       isPlainChat,
@@ -558,21 +570,17 @@ export function ChatPageV2({
   const handleActiveSessionChange = useCallback(
     (id: string | null) => {
       setActiveSessionId(id);
-      setInput("");
-      setAttachedImages([]);
-      setEditingMessageId(null);
+      clearDraft();
     },
-    [setActiveSessionId],
+    [clearDraft, setActiveSessionId],
   );
 
   const handleClearMessages = useCallback(async () => {
     if (!activeSessionId) return;
     await invoke("dispatcher_clear_messages", { workspaceId: activeSessionId });
-    setEditingMessageId(null);
-    setInput("");
-    setAttachedImages([]);
+    clearDraft();
     setMessages([]);
-  }, [activeSessionId]);
+  }, [activeSessionId, clearDraft]);
 
   const handleCreateCategory = useCallback(
     (name: string, config?: { systemPrompt?: string; allowedTools?: string[] }) => {

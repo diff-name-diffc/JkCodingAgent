@@ -36,7 +36,7 @@ impl AgentTool for SshListServersTool {
     }
 
     fn description(&self) -> &'static str {
-        "列出已启用的 SSH 服务器（全局配置，所有项目共享）。只返回 server_id、描述和标签，不暴露 IP、端口、账号或密码。"
+        "列出已启用的 SSH 服务器（全局配置，所有项目共享）。只返回 server_id、名称、描述和标签，不暴露 IP、端口、账号或密码。"
     }
 
     fn parameters(&self) -> Value {

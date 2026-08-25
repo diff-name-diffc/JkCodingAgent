@@ -232,8 +232,9 @@ pub(super) fn resolve_path(context: &ToolContext, raw_path: &str) -> Result<Path
 ///
 /// - `~/.jkcodingagent/jkbot.sqlite3`（含 -wal/-shm）：全局配置库。SSH 服务器
 ///   凭据 / 主机密钥 / 模型 apiKey 均存于此，二进制读出即泄漏明文；
-/// - `~/.jkcodingagent/ssh-tools/`：旧版按项目分键的 SSH 凭据仓库（迁移残留兜底）；
-/// - `<任意目录>/.jkcodingagent/local_env/ssh/`：旧版项目内 SSH 凭据（迁移残留兜底）；
+/// - `~/.jkcodingagent/ssh-tools/` 与 `<任意目录>/.jkcodingagent/local_env/ssh/`：
+///   旧版按项目分键存放的 SSH 明文凭据仓库。现行实现已不再写入这些路径，但
+///   旧机器上可能残留，一律拒绝读取兜底；
 /// - `<任意目录>/.jkcodingagent/mcp.json`：MCP server 配置（可能内嵌密钥环境变量）。
 ///
 /// 注意不能扩大到整个 `.jkcodingagent`：`local_env/zsh/` 是 local_zsh 工具声明的
@@ -241,12 +242,10 @@ pub(super) fn resolve_path(context: &ToolContext, raw_path: &str) -> Result<Path
 fn is_protected_agent_path(candidate: &Path) -> bool {
     if let Some(home) = dirs::home_dir() {
         let root = home.join(".jkcodingagent");
-        if candidate.starts_with(root.join("ssh-tools")) {
-            return true;
-        }
         if candidate.starts_with(root.join("jkbot.sqlite3"))
             || candidate.starts_with(root.join("jkbot.sqlite3-wal"))
             || candidate.starts_with(root.join("jkbot.sqlite3-shm"))
+            || candidate.starts_with(root.join("ssh-tools"))
         {
             return true;
         }
@@ -257,22 +256,22 @@ fn is_protected_agent_path(candidate: &Path) -> bool {
             continue;
         }
         let rest = &components[index + 1..];
-        if has_path_prefix(rest, &["local_env", "ssh"]) {
-            return true;
-        }
-        if rest.first() == Some(&std::ffi::OsStr::new("mcp.json")) {
+        if rest.first() == Some(&std::ffi::OsStr::new("mcp.json"))
+            || has_path_prefix(rest, &["local_env", "ssh"])
+        {
             return true;
         }
     }
     false
 }
 
+/// `rest` 是否以 `prefix` 给定的路径组件序列开头（含恰好等于前缀本身）。
 fn has_path_prefix(rest: &[&std::ffi::OsStr], prefix: &[&str]) -> bool {
     rest.len() >= prefix.len()
-        && rest
+        && prefix
             .iter()
-            .zip(prefix)
-            .all(|(actual, expected)| *actual == std::ffi::OsStr::new(expected))
+            .zip(rest)
+            .all(|(name, component)| *component == std::ffi::OsStr::new(name))
 }
 
 fn protected_path_error(raw_path: &str) -> String {
@@ -585,21 +584,27 @@ mod tests {
 
     #[test]
     fn protected_agent_paths_are_denied() {
-        // 全局 SSH 仓库（即使经由 extra_allowed_dirs 白名单也要拦下）
+        // 全局配置库（即使经由 extra_allowed_dirs 白名单也要拦下）
         let home = dirs::home_dir().expect("home");
         assert!(is_protected_agent_path(
-            &home.join(".jkcodingagent/ssh-tools/proj-abc123/ssh-tools.json")
+            &home.join(".jkcodingagent/jkbot.sqlite3")
         ));
-        // 工作区内的旧版 SSH 凭据与 MCP 配置
+        assert!(is_protected_agent_path(
+            &home.join(".jkcodingagent/jkbot.sqlite3-wal")
+        ));
+        // 旧版 SSH 明文凭据仓库（全局与按项目两处）
+        assert!(is_protected_agent_path(
+            &home.join(".jkcodingagent/ssh-tools/keys.json")
+        ));
         assert!(is_protected_agent_path(Path::new(
-            "/tmp/ws/.jkcodingagent/local_env/ssh/ssh-tools.json"
+            "/tmp/ws/.jkcodingagent/local_env/ssh"
         )));
+        assert!(is_protected_agent_path(Path::new(
+            "/tmp/ws/.jkcodingagent/local_env/ssh/id_rsa"
+        )));
+        // 工作区内的 MCP 配置
         assert!(is_protected_agent_path(Path::new(
             "/tmp/ws/.jkcodingagent/mcp.json"
-        )));
-        // deeper nesting under the ssh dir
-        assert!(is_protected_agent_path(Path::new(
-            "/tmp/ws/.jkcodingagent/local_env/ssh/audit.json"
         )));
     }
 

@@ -6,6 +6,11 @@ export interface Project {
   lastOpenedAt: number;
 }
 
+/** `project_delete` 命令返回值：被级联删除的会话 id，供前端清理内存 store 残留状态。 */
+export interface ProjectDeleteResult {
+  deletedSessionIds: string[];
+}
+
 export type ProjectMcpAggregateStatus =
   "not_configured" | "healthy" | "degraded" | "invalid_config";
 
@@ -64,6 +69,8 @@ export interface ProjectMcpConfig {
 
 export interface SshServerConfig {
   id: string;
+  /** 显示名称（支持中文等任意字符），仅用于界面展示；留空时界面回退展示 id。 */
+  name: string;
   enabled: boolean;
   host: string;
   port: number;
@@ -382,7 +389,6 @@ export interface AhaSettingsV2 {
   shared: AhaSharedModels;
   project: AhaContextConfig;
   chat: AhaContextConfig;
-  autoApproveDispatch: boolean;
   contextDebug: boolean;
   review: SshReviewConfig;
   modelLibrary: ModelLibraryEntry[];
@@ -1030,8 +1036,10 @@ export interface RagKbConfig {
 /** rag_save_kb_config 的返回值。 */
 export interface RagKbSaveResult {
   saved: boolean;
-  /** sidecar 运行中时为 true，表示配置已热推送到 Python 进程内存。 */
+  /** sidecar 运行中且热推送成功时为 true，表示配置已生效到 Python 进程内存。 */
   reloaded: boolean;
+  /** 热推送失败时的错误信息；sidecar 未运行时为 null（配置重启应用后生效）。 */
+  reloadError: string | null;
 }
 
 /** rag_status 的返回值。 */

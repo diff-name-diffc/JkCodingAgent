@@ -63,11 +63,58 @@ const starts: Record<string, number> = {};
 const subscribers = new Set<Subscriber>();
 let listenerRegistered = false;
 
+/** 内存上限：最多保留最近 N 个会话的子智能体数据，超出时按 LRU 淘汰。 */
+const MAX_TRACKED_SESSIONS = 50;
+
+/** 静默丢弃某会话的全部子智能体数据（store + starts），不触发通知。 */
+function dropSessionData(sessionId: string): void {
+  delete store[sessionId];
+  const prefix = `${sessionId}:`;
+  for (const key of Object.keys(starts)) {
+    if (key.startsWith(prefix)) delete starts[key];
+  }
+}
+
+/** 删除会话（或会话所属项目被删除）时调用，清理该会话的子智能体事件缓存。 */
+export function cleanupSubAgentEvents(sessionId: string): void {
+  if (!store[sessionId]) return;
+  dropSessionData(sessionId);
+  notify();
+}
+
+function ensureSessionMap(sessionId: string): SessionMap {
+  const existing = store[sessionId];
+  if (existing) {
+    touchSession(sessionId);
+    return existing;
+  }
+  store[sessionId] = {};
+  const keys = Object.keys(store);
+  if (keys.length > MAX_TRACKED_SESSIONS) {
+    dropSessionData(keys[0]);
+  }
+  return store[sessionId];
+}
+
+/**
+ * LRU 刷新：把会话键移到对象末尾（对象键按插入序）。写路径经
+ * ensureSessionMap 刷新；读路径（面板正在展示的会话）也必须刷新，
+ * 否则「已完成、不再产生事件但正被查看」的会话会停留在最早位置，
+ * 优先被淘汰、视图数据凭空消失。只移动已存在的键，不凭空创建。
+ */
+function touchSession(sessionId: string): void {
+  const existing = store[sessionId];
+  if (!existing) return;
+  delete store[sessionId];
+  store[sessionId] = existing;
+}
+
 function keyFor(sessionId: string, toolCallId: string): string {
   return `${sessionId}:${toolCallId}`;
 }
 
 function snapshotForSession(sessionId: string): SessionMap {
+  touchSession(sessionId);
   return store[sessionId] ?? {};
 }
 
@@ -111,10 +158,7 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
     const agentId = data.agentId ?? "unknown";
     const now = payload.timestampMs || Date.now();
 
-    if (!store[sessionId]) {
-      store[sessionId] = {};
-    }
-    const sessionMap = store[sessionId];
+    const sessionMap = ensureSessionMap(sessionId);
     const existing = sessionMap[toolCallId];
     const storeKey = keyFor(sessionId, toolCallId);
 
@@ -291,6 +335,7 @@ export function getSubAgentSession(
   sessionId: string,
   toolCallId: string,
 ): SubAgentSession | null {
+  touchSession(sessionId);
   return store[sessionId]?.[toolCallId] ?? null;
 }
 
@@ -299,8 +344,8 @@ export function hydrateSubAgentTrace(
   toolCallId: string,
   events: SubAgentEvent[],
 ): SubAgentSession | null {
-  if (!store[sessionId]) store[sessionId] = {};
-  delete store[sessionId][toolCallId];
+  const sessionMap = ensureSessionMap(sessionId);
+  delete sessionMap[toolCallId];
   delete starts[keyFor(sessionId, toolCallId)];
   for (const event of events) {
     applySubAgentEvent({ sessionId, toolCallId, timestampMs: Date.now(), ...event }, false);

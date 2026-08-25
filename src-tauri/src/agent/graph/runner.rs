@@ -193,10 +193,7 @@ async fn run_graph(
     let workspace_id = plan.workspace_id.clone();
     let mut definition: GraphDefinition =
         serde_json::from_str(&plan.definition_json).context("解析图定义失败")?;
-    // 存量 v2 计划一次性升级到 v3（新字段均有 serde default），否则下方
-    // validate_graph 会以版本号拒绝历史计划重跑/续跑。
-    definition.upgrade_legacy();
-    // 存量定义可能残留带空白的节点 id：入口统一规整，保证调度器、持久化、
+    // 定义可能残留带空白的节点 id：入口统一规整，保证调度器、持久化、
     // 事件与 DB 记录全程使用同一套 id（ReadyQueue/validate 均以 trim id 为准）。
     definition.normalize_ids();
     let workspace_root = resolve_workspace_root(&services.db, &workspace_id).await?;

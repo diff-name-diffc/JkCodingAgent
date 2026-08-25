@@ -9410,6 +9410,19 @@
     animation: ai-fade-in 120ms ease-out;
   }
 
+  /* 宽内容变体（如带列表的导入对话框）。 */
+  .ai-set-confirm.is-wide {
+    width: min(480px, calc(100vw - 32px));
+  }
+
+  /* 设置内容区加载中占位。 */
+  .ai-set-loading {
+    padding: 24px 8px;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    text-align: center;
+  }
+
   .ai-set-confirm-icon {
     color: rgb(var(--danger-rgb));
   }

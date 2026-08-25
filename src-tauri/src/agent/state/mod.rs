@@ -159,10 +159,8 @@ impl DispatcherState {
     /// G11-01 / G7-06：DB 读取放入阻塞线程池执行；失败以 Result 透传可读错误，
     /// 不再 expect panic 导致 async 命令崩溃。
     pub(crate) async fn build_run_agent(&self) -> std::result::Result<OrchestratorAgent, String> {
-        let mut agent = OrchestratorAgent::new(
-            self.services.config.clone(),
-            self.services.db.clone(),
-        );
+        let mut agent =
+            OrchestratorAgent::new(self.services.config.clone(), self.services.db.clone());
 
         let db = self.services.db.clone();
         let settings = tokio::task::spawn_blocking(move || db.get_settings_v2())

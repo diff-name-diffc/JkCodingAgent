@@ -657,32 +657,4 @@ mod tests {
             .expect_err("invalid trace json must fail");
         assert!(error.to_string().contains("validate sub-agent trace"));
     }
-
-    #[test]
-    fn schema_v19_migrates_to_sub_agent_trace_table() {
-        let path = std::env::temp_dir().join(format!(
-            "jkcodingagent-subagent-trace-migration-{}.sqlite3",
-            uuid::Uuid::new_v4(),
-        ));
-        let conn = rusqlite::Connection::open(&path).expect("open v19 db");
-        conn.execute_batch("PRAGMA user_version = 19;")
-            .expect("mark v19");
-        drop(conn);
-
-        let dispatcher = DispatcherDb::new(path).expect("migrate v19 db");
-        let conn = dispatcher.conn().expect("migrated conn");
-        let version: i32 = conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .expect("read schema version");
-        let table_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sub_agent_run_traces'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("check trace table");
-        // 直接引用 schema.rs 的 SCHEMA_VERSION，迁移后应达到当前版本。
-        assert_eq!(version, crate::agent::db::schema::SCHEMA_VERSION);
-        assert_eq!(table_count, 1);
-    }
 }

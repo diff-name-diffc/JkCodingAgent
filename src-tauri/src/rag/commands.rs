@@ -100,6 +100,10 @@ pub fn rag_get_kb_config(config_store: State<'_, RagConfigStore>) -> CommandResu
 }
 
 /// 保存知识库配置：写全局库 + 更新内存 + 若 sidecar 在运行则推送 reload。
+///
+/// 返回 `{ saved, reloaded, reloadError }`：DB 落库成功后 reload 失败不再使
+/// 整个命令报错（避免前端误判为未保存），而是以 `reloaded: false` +
+/// `reloadError` 告知热更新结果；sidecar 未运行时 `reloadError` 为 null。
 #[tauri::command]
 pub async fn rag_save_kb_config(
     state: State<'_, crate::agent::DispatcherState>,
@@ -128,15 +132,21 @@ async fn rag_save_kb_config_impl(
         .context("save RAG config")?;
     // 2. 更新内存快照
     config_store.replace(config.clone());
-    // 3. 若 sidecar 在运行，热推送
+    // 3. 若 sidecar 在运行，热推送；失败不使整体保存失败（DB 已落库），
+    // 由返回值的 reloaded / reloadError 区分，重启应用后生效。
+    let mut reloaded = false;
+    let mut reload_error: Option<String> = None;
     if let Some(handle) = manager.current() {
-        handle
-            .transport
-            .reload_config(&config)
-            .await
-            .context("reload RAG sidecar config")?;
+        match handle.transport.reload_config(&config).await {
+            Ok(_) => reloaded = true,
+            Err(error) => reload_error = Some(format!("{error:#}")),
+        }
     }
-    Ok(serde_json::json!({ "saved": true, "reloaded": manager.is_running() }))
+    Ok(serde_json::json!({
+        "saved": true,
+        "reloaded": reloaded,
+        "reloadError": reload_error,
+    }))
 }
 
 /// 保存当前草稿配置，并交给 sidecar 测试 Qdrant。
@@ -287,10 +297,7 @@ fn save_rag_config(
     config_store: &State<'_, RagConfigStore>,
     config: &RagKbConfig,
 ) -> anyhow::Result<()> {
-    let db = app
-        .state::<crate::agent::DispatcherState>()
-        .db()
-        .clone();
+    let db = app.state::<crate::agent::DispatcherState>().db().clone();
     config.save_to_db(&db).context("保存 RAG 配置")?;
     config_store.replace(config.clone());
     Ok(())

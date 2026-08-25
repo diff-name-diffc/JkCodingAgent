@@ -1,13 +1,12 @@
 //! 受管项目注册表：projects 表的读写与项目级联删除。
 //!
-//! 项目注册表是应用生命周期配置的一部分（全局权威源），历史上存放在
-//! `~/.jkcodingagent/projects.json`，v31 迁移将其导入 SQLite；会话等运行数据
-//! 以 `project_id` 关联本表，项目删除时在同一事务内级联清理。
+//! 项目注册表是应用生命周期配置的一部分（全局权威源，存 SQLite）；
+//! 会话等运行数据以 `project_id` 关联本表，项目删除时在同一事务内级联清理。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::content::{delete_chat_image_resources, remove_chat_image_files};
 use super::DispatcherDb;
@@ -22,7 +21,7 @@ const PROJECTS_DDL: &str = "CREATE TABLE IF NOT EXISTS projects (
     sort_order INTEGER NOT NULL DEFAULT 0
 )";
 
-/// 建表（幂等）。基线 DDL 与 v31 迁移共用，保持同文。
+/// 建表（幂等）。schema.rs 基线建库时调用，DDL 单一出处。
 pub(crate) fn ensure_projects_table_tx(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(PROJECTS_DDL)
         .context("create projects table")
@@ -38,61 +37,10 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     })
 }
 
-/// v31 迁移：把 `root_dir/projects.json` 一次性导入 projects 表。
-/// 表非空时短路（幂等），文件不存在/解析失败按空列表处理，不阻断升级。
-/// 逐字段宽容解析（缺 id/path 的条目跳过，其余字段取默认值），
-/// 兼容测试夹具与历史极简格式。返回导入的条数；调用方在事务提交
-/// 成功后再删除旧文件。
-pub(crate) fn import_legacy_projects_json(tx: &Transaction<'_>, root_dir: &Path) -> Result<usize> {
-    let existing: i64 = tx
-        .query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))
-        .context("count projects")?;
-    if existing > 0 {
-        return Ok(0);
-    }
-    let Ok(raw) = std::fs::read_to_string(root_dir.join("projects.json")) else {
-        return Ok(0);
-    };
-    let Ok(values) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) else {
-        return Ok(0);
-    };
-    let mut imported = 0usize;
-    for (sort_order, value) in values.iter().enumerate() {
-        let str_field = |key: &str| {
-            value
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .to_string()
-        };
-        let id = str_field("id");
-        let path = str_field("path");
-        if id.trim().is_empty() || path.trim().is_empty() {
-            continue;
-        }
-        let name = {
-            let name = str_field("name");
-            if name.trim().is_empty() { path.clone() } else { name }
-        };
-        let branch = value.get("branch").and_then(serde_json::Value::as_str);
-        let last_opened_at = value
-            .get("lastOpenedAt")
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(0);
-        let changed = tx
-            .execute(
-                "INSERT OR IGNORE INTO projects (id, name, path, branch, last_opened_at, sort_order)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, name, path, branch, last_opened_at, sort_order as i64],
-            )
-            .with_context(|| format!("import project {id}"))?;
-        imported += changed;
-    }
-    Ok(imported)
-}
-
 /// 项目删除后需要清理的文件资源（提交成功后 best-effort 执行）。
 pub(crate) struct ProjectCleanupPlan {
+    /// 被级联删除的会话 id 列表（供前端清理内存 store 中的会话残留状态）。
+    pub deleted_session_ids: Vec<String>,
     /// 聊天图片实际文件路径（DB 行已在事务内删除）。
     pub image_paths: Vec<PathBuf>,
     /// 项目仓库内应用自有的运行期数据目录（browser-profile / local_env）。
@@ -127,9 +75,31 @@ impl DispatcherDb {
 
     /// 整列表同步保存：前端仍按「重写整个列表」的语义调用，事务内
     /// 先清空再按顺序插入，保持列表顺序（sort_order）稳定。
+    ///
+    /// 防误用保护：载荷不允许缺失任何现存项目 id——「移除项目」必须走带级联
+    /// 清理的 `delete_project`，否则该项目下的会话/图片等关联数据会成为孤儿。
+    /// 事务用 IMMEDIATE：一上来就持有写锁，「读现存 id 校验 → DELETE 重写」
+    /// 全程不会有其它写者插入提交，消除 DEFERRED 快照下的并发窗口。
     pub fn save_projects_all(&self, projects: &[Project]) -> Result<()> {
         let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing_ids = tx
+            .prepare("SELECT id FROM projects")
+            .context("load existing project ids")?
+            .query_map([], |row| row.get::<_, String>(0))
+            .context("load existing project ids")?
+            .collect::<std::result::Result<std::collections::HashSet<String>, _>>()
+            .context("load existing project ids")?;
+        let payload_ids: std::collections::HashSet<&str> =
+            projects.iter().map(|project| project.id.as_str()).collect();
+        if let Some(missing) = existing_ids
+            .iter()
+            .find(|id| !payload_ids.contains(id.as_str()))
+        {
+            anyhow::bail!(
+                "不允许通过 save_projects 移除项目（会绕过级联清理），请使用 project_delete：缺失项目 {missing}"
+            );
+        }
         tx.execute("DELETE FROM projects", [])
             .context("clear projects")?;
         for (sort_order, project) in projects.iter().enumerate() {
@@ -152,7 +122,7 @@ impl DispatcherDb {
 
     /// 删除项目及其全部关联数据：遍历该项目所有会话，在一个事务内执行与会话
     /// 删除相同的级联清理（`delete_project_session` 的表集合），并删除项目行。
-    /// 返回提交后需要 best-effort 清理的文件资源清单。
+    /// 返回被删会话 id 列表与提交后需要 best-effort 清理的文件资源清单。
     pub fn delete_project(&self, project_id: &str) -> Result<ProjectCleanupPlan> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
@@ -235,6 +205,7 @@ impl DispatcherDb {
         workspace_dirs.push(jk_dir.join("local_env"));
 
         Ok(ProjectCleanupPlan {
+            deleted_session_ids: workspace_ids,
             image_paths,
             workspace_dirs,
         })
@@ -284,50 +255,47 @@ mod tests {
     }
 
     #[test]
-    fn migrates_legacy_projects_json_on_first_init() {
-        let (db, root) = test_db();
-        // DispatcherDb::new 已完成 v31 迁移，但初始没有 projects.json → 空表。
-        assert!(db.list_projects().unwrap().is_empty());
-
-        // 模拟旧用户：写入 projects.json 后用新库文件重跑迁移。
-        drop(db);
-        std::fs::remove_file(root.join("jkbot.sqlite3")).unwrap();
-        let legacy = r#"[
-            {"id":"p1","name":"A","path":"/tmp/a","branch":"main","lastOpenedAt":111},
-            {"id":"p2","name":"B","path":"/tmp/b","branch":null,"lastOpenedAt":222}
-        ]"#;
-        std::fs::write(root.join("projects.json"), legacy).unwrap();
-        let db = DispatcherDb::new(root.join("jkbot.sqlite3")).unwrap();
+    fn save_projects_all_replaces_whole_list_and_keeps_order() {
+        let (db, _root) = test_db();
+        db.save_projects_all(&[sample_project("a", "/tmp/a"), sample_project("b", "/tmp/b")])
+            .unwrap();
+        // 允许重排与新增，但不允许缺失现存 id（见下条测试）。
+        db.save_projects_all(&[
+            sample_project("b", "/tmp/b"),
+            sample_project("a", "/tmp/a"),
+            sample_project("c", "/tmp/c"),
+        ])
+        .unwrap();
         let projects = db.list_projects().unwrap();
-        assert_eq!(projects.len(), 2);
-        assert_eq!(projects[0].id, "p1");
-        assert_eq!(projects[1].branch, None);
-        assert_eq!(projects[1].last_opened_at, 222);
-        // 提交成功后旧文件被清理。
-        assert!(!root.join("projects.json").exists());
+        let ids: Vec<&str> = projects.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, vec!["b", "a", "c"]);
     }
 
     #[test]
-    fn save_projects_all_replaces_whole_list_and_keeps_order() {
+    fn save_projects_all_rejects_removal_and_rolls_back() {
         let (db, _root) = test_db();
-        db.save_projects_all(&[
-            sample_project("a", "/tmp/a"),
-            sample_project("b", "/tmp/b"),
-        ])
-        .unwrap();
-        db.save_projects_all(&[sample_project("b", "/tmp/b"), sample_project("c", "/tmp/c")])
+        db.save_projects_all(&[sample_project("a", "/tmp/a"), sample_project("b", "/tmp/b")])
             .unwrap();
+
+        // 载荷缺失现存 id：视为误用「移除项目」，整事务回滚并报错引导 project_delete。
+        let error = db
+            .save_projects_all(&[sample_project("b", "/tmp/b")])
+            .unwrap_err();
+        assert!(error.to_string().contains("project_delete"));
+
         let projects = db.list_projects().unwrap();
         let ids: Vec<&str> = projects.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids, vec!["b", "c"]);
-        assert!(db.find_project("a").unwrap().is_none());
+        assert_eq!(ids, vec!["a", "b"], "事务回滚后原列表保持不变");
     }
 
     #[test]
     fn delete_project_cascades_sessions_and_keeps_other_projects() {
         let (db, _root) = test_db();
-        db.save_projects_all(&[sample_project("p1", "/tmp/p1"), sample_project("p2", "/tmp/p2")])
-            .unwrap();
+        db.save_projects_all(&[
+            sample_project("p1", "/tmp/p1"),
+            sample_project("p2", "/tmp/p2"),
+        ])
+        .unwrap();
 
         let conn = db.conn().unwrap();
         for (session, project) in [("s1", "p1"), ("s2", "p1"), ("s3", "p2")] {
@@ -353,6 +321,9 @@ mod tests {
         drop(conn);
 
         let plan = db.delete_project("p1").unwrap();
+        let mut deleted_ids = plan.deleted_session_ids.clone();
+        deleted_ids.sort();
+        assert_eq!(deleted_ids, vec!["s1", "s2"], "返回值带出被删会话 id");
         cleanup_project_files(&plan);
 
         let conn = db.conn().unwrap();

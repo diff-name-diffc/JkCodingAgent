@@ -64,7 +64,9 @@ fn default_browser_viewport_height() -> u32 {
 }
 
 /// 读取全局浏览器配置；未配置时返回默认值。
-pub fn read_global_browser_config(db: &crate::agent::db::DispatcherDb) -> Result<BrowserConfig, String> {
+pub fn read_global_browser_config(
+    db: &crate::agent::db::DispatcherDb,
+) -> Result<BrowserConfig, String> {
     match db.get_app_config_json(crate::agent::db::app_config::BROWSER_KEY) {
         Ok(Some(raw)) => serde_json::from_str::<BrowserConfig>(&raw)
             .map_err(|error| format!("解析全局浏览器配置失败：{error}")),

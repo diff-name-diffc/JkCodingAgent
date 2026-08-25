@@ -56,10 +56,6 @@ export const useUIStore = create<UIState>()(
         sidebarCollapsed: s.sidebarCollapsed,
         sidebarWidth: s.sidebarWidth,
       }),
-      // Clean up legacy theme keys left over from the removed theme switcher.
-      onRehydrateStorage: () => () => {
-        localStorage.removeItem("jkcodingagent:theme");
-      },
     },
   ),
 );

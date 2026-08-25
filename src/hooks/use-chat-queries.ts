@@ -1,26 +1,22 @@
-import { useEffect } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import type {
   AhaSettingsV2,
   ChatCategory,
   ChatSession,
-  DispatcherSession,
   ModelLibraryEntry,
-  SessionKeyword,
-  SessionSearchResult,
   SessionPage,
+  SessionSearchResult,
 } from "../types";
-import {
-  withDispatcherSessionRunning,
-  withDispatcherSessionsRunning,
-} from "../components/dispatcherSessionStore";
+import { withDispatcherSessionsRunning } from "../components/dispatcherSessionStore";
 import { bindPurpose } from "../components/settings/providers/provider-registry";
 import {
-  hasAnyPurposeConfigs,
-  seedModelLibrary,
-} from "../components/settings/providers/model-library";
+  SESSION_QUERY_KEYS,
+  useSessionListEventMerge,
+} from "./use-session-queries";
+
+// 搜索 hook 已迁移到共享数据层 use-session-queries.ts，这里保留再导出以稳定既有调用点。
+export { useSessionSearchQuery } from "./use-session-queries";
 
 /**
  * TanStack Query hooks for the Chat UI.
@@ -32,10 +28,11 @@ import {
  */
 
 const QUERY_KEYS = {
-  sessions: (category?: string) => ["chat", "sessions", category ?? "all"] as const,
+  sessions: (category?: string) =>
+    category === undefined
+      ? SESSION_QUERY_KEYS.chatList
+      : (["chat", "sessions", category] as const),
   categorySessions: (category: string) => ["chat", "sessions", "category", category] as const,
-  sessionSearch: (query: string, kind: string, projectId?: string | null) =>
-    ["sessions", "search", kind, projectId ?? "all", query] as const,
   categories: ["chat", "categories"] as const,
   messages: (sessionId: string) => ["chat", "messages", sessionId] as const,
   models: ["chat", "models"] as const,
@@ -43,71 +40,12 @@ const QUERY_KEYS = {
 
 // ── Sessions ──────────────────────────────────────────────────────────────
 
-function sortChatSessionsByUpdatedAt(sessions: ChatSession[]) {
-  return [...sessions].sort((left, right) => {
-    const leftTime = Date.parse(left.updatedAt);
-    const rightTime = Date.parse(right.updatedAt);
-    return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
-  });
-}
-
+/**
+ * 订阅会话更新事件并合并进聊天列表缓存。
+ * 实现已收敛到共享的 useSessionListEventMerge（chat scope）。
+ */
 export function useChatSessionUpdates(enabled = true) {
-  const qc = useQueryClient();
-
-  useEffect(() => {
-    if (!enabled) return;
-
-    const unlistenSession = listen<DispatcherSession>("dispatcher-session-updated", (event) => {
-      const payload = event.payload;
-      if (payload.kind !== "chat") return;
-
-      const updatedSession = withDispatcherSessionRunning<ChatSession>({
-        id: payload.id,
-        title: payload.title,
-        category: payload.category,
-        createdAt: payload.createdAt,
-        updatedAt: payload.updatedAt,
-        keywords: payload.keywords ?? [],
-      });
-
-      qc.setQueryData<ChatSession[]>(QUERY_KEYS.sessions(), (sessions) => {
-        if (!sessions) return sessions;
-        const exists = sessions.some((session) => session.id === updatedSession.id);
-        const next = exists
-          ? sessions.map((session) =>
-              session.id === updatedSession.id
-                ? {
-                    ...updatedSession,
-                    keywords: payload.keywords ?? session.keywords,
-                  }
-                : session,
-            )
-          : [updatedSession, ...sessions];
-        return sortChatSessionsByUpdatedAt(next);
-      });
-      void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
-      void qc.invalidateQueries({ queryKey: ["sessions", "search"] });
-    });
-    const unlistenKeywords = listen<{
-      sessionId: string;
-      keywords: SessionKeyword[];
-    }>("session-keywords-updated", (event) => {
-      const { sessionId, keywords } = event.payload;
-      const values = keywords.map((keyword) => keyword.keyword);
-      qc.setQueryData<ChatSession[]>(QUERY_KEYS.sessions(), (sessions) =>
-        sessions?.map((session) =>
-          session.id === sessionId ? { ...session, keywords: values } : session,
-        ),
-      );
-      void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
-      void qc.invalidateQueries({ queryKey: ["sessions", "search"] });
-    });
-
-    return () => {
-      unlistenSession.then((stopListening) => stopListening()).catch(() => {});
-      unlistenKeywords.then((stopListening) => stopListening()).catch(() => {});
-    };
-  }, [enabled, qc]);
+  useSessionListEventMerge({ kind: "chat" }, enabled);
 }
 
 export function useChatSessionsQuery(category?: string, enabled = true) {
@@ -186,33 +124,6 @@ export function useDeleteChatSession() {
       void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
       void qc.invalidateQueries({ queryKey: QUERY_KEYS.categories });
     },
-  });
-}
-
-export function useSessionSearchQuery({
-  query,
-  kind,
-  projectId = null,
-  limit = 20,
-  enabled = true,
-}: {
-  query: string;
-  kind: "chat" | "project";
-  projectId?: string | null;
-  limit?: number;
-  enabled?: boolean;
-}) {
-  const trimmed = query.trim();
-  return useQuery({
-    queryKey: QUERY_KEYS.sessionSearch(trimmed, kind, projectId),
-    queryFn: () =>
-      invoke<SessionSearchResult[]>("session_search_keywords", {
-        query: trimmed,
-        limit,
-        kind,
-        projectId,
-      }),
-    enabled: enabled && trimmed.length > 0,
   });
 }
 
@@ -307,12 +218,7 @@ export function useChatModelsQuery() {
       // 聊天输入框的可选模型与设置页「聊天主模型」共用统一数据源：分类模型库
       // （AhaSettingsV2.modelLibrary 的 text 分类）。这里返回整份设置，由组件
       // 用 entriesForCategory 取选项、用 getPurposeBinding 取当前生效绑定。
-      const loaded = await invoke<AhaSettingsV2>("aha_get_settings_v2");
-      // 与设置页一致：旧用户已有用途配置但模型库为空时，按分类播种（仅内存，
-      // 选择落盘由 useBindChatModel / 设置页负责），避免下拉为空。
-      const needsSeed =
-        (loaded.modelLibrary ?? []).length === 0 && hasAnyPurposeConfigs(loaded);
-      return needsSeed ? { ...loaded, modelLibrary: seedModelLibrary(loaded) } : loaded;
+      return invoke<AhaSettingsV2>("aha_get_settings_v2");
     },
   });
 }

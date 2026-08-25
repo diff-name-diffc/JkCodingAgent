@@ -54,6 +54,8 @@ export function GeneralPage({ reportDirty }: { reportDirty: (dirty: boolean) => 
     setError(null);
     setSaved(false);
     try {
+      // 主题权威源是后端 app_config，先落库成功后再写本地缓存/DOM（persistThemePreference），
+      // 避免 invoke 失败时 DB 与 localStorage 不一致。
       await invoke("save_app_settings", { settings });
       persistThemePreference(settings.theme);
       savedThemeRef.current = settings.theme;
@@ -61,6 +63,10 @@ export function GeneralPage({ reportDirty }: { reportDirty: (dirty: boolean) => 
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
+      // 保存失败：本地缓存未写入，回滚点击时的即时预览——DOM 与选中状态
+      // 都回到已保存主题，避免「高亮未保存项却显示旧主题」的分叉。
+      applyThemePreference(original.theme);
+      setSettings(original);
       setError(String(e));
     } finally {
       setSaving(false);

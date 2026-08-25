@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Plus, RefreshCw, RotateCcw, Server } from "lucide-react";
+import { Download, Plus, RefreshCw, RotateCcw, Server } from "lucide-react";
 import type { SshAuditLog, SshServerConfig, SshToolsConfig } from "../../../types";
 import { SshAuditRecordList } from "../../app-settings/aha/SshAuditRecordList";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -14,12 +14,14 @@ import {
   recordSshTest,
   type ProviderTestRecord,
 } from "../providers/provider-prefs";
+import { SshImportDialog } from "./SshImportDialog";
 import { SshServerCard } from "./SshServerCard";
 
 const AUTOSAVE_DELAY_MS = 400;
 
 const EMPTY_SERVER: SshServerConfig = {
   id: "",
+  name: "",
   enabled: true,
   host: "",
   port: 22,
@@ -62,6 +64,9 @@ export function SshServersPage() {
   );
   const [expandedAudit, setExpandedAudit] = useState<string | null>(null);
   const [pendingDeleteIndex, setPendingDeleteIndex] = useState<number | null>(null);
+  // 导入本机 ~/.ssh/config：非空时展示选择对话框。
+  const [importEntries, setImportEntries] = useState<SshServerConfig[] | null>(null);
+  const [importing, setImporting] = useState(false);
   // 每台服务器默认折叠，仅在用户展开或新增时展开其详细配置。
   const [expandedServers, setExpandedServers] = useState<Set<number>>(new Set());
 
@@ -178,6 +183,66 @@ export function SshServersPage() {
     setTestRecords((prev) => ({ ...prev, [serverId]: record }));
   }
 
+  async function openImport() {
+    setImporting(true);
+    try {
+      const entries = await invoke<SshServerConfig[]>("ssh_tool_import_ssh_config");
+      if (entries.length === 0) {
+        toast.success("~/.ssh/config 中没有可导入的主机条目");
+      } else {
+        setImportEntries(entries);
+      }
+    } catch (err) {
+      toast.error(`读取本机 SSH 配置失败：${String(err)}`);
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function confirmImport(selected: SshServerConfig[]) {
+    if (selected.length === 0) {
+      setImportEntries(null);
+      return;
+    }
+    const startIndex = config.servers.length;
+    setConfig((prev) => {
+      // 与现有服务器及批次内部做 id 去重（导入条目之间已在后端去重）。
+      const used = new Set(prev.servers.map((server) => server.id));
+      const appended = selected.map((entry) => {
+        const base = entry.id || nextServerId([...prev.servers]);
+        const id = uniqueImportServerId(base, used);
+        used.add(id);
+        return { ...entry, id };
+      });
+      return { servers: [...prev.servers, ...appended] };
+    });
+    // 新导入的条目自动展开，方便补充密码等未导入的凭据。
+    setExpandedServers((prev) => {
+      const next = new Set(prev);
+      for (let offset = 0; offset < selected.length; offset += 1) {
+        next.add(startIndex + offset);
+      }
+      return next;
+    });
+    setImportEntries(null);
+    // 后端校验是全有或全无：缺凭据的条目保存必失败，还会连累整批配置。
+    // 存在不完整条目时不立即触发保存（等用户补全凭据后的编辑再触发），
+    // 并明确提示需要补全，避免用户只看到笼统的保存失败。
+    const incompleteCount = selected.filter(
+      (entry) =>
+        (entry.authMethod === "password" && entry.password.trim() === "") ||
+        (entry.authMethod === "key" && entry.privateKeyPath.trim() === ""),
+    ).length;
+    if (incompleteCount > 0) {
+      toast.success(
+        `已导入 ${selected.length} 台服务器，其中 ${incompleteCount} 台需补全密码或密钥路径后才能保存`,
+      );
+    } else {
+      scheduleSave();
+      toast.success(`已导入 ${selected.length} 台服务器`);
+    }
+  }
+
   const pendingDeleteServer =
     pendingDeleteIndex !== null ? config.servers[pendingDeleteIndex] : undefined;
   const reviewModel = settings?.review?.modelConfig;
@@ -269,6 +334,16 @@ export function SshServersPage() {
               <RefreshCw size={16} strokeWidth={1.5} />
               刷新
             </button>
+            <button
+              type="button"
+              className="ai-set-ghost-button"
+              onClick={openImport}
+              disabled={importing}
+              title="从 ~/.ssh/config 解析 Host 条目并导入"
+            >
+              <Download size={16} strokeWidth={1.5} />
+              {importing ? "读取中..." : "导入本机配置"}
+            </button>
             <button type="button" className="ai-set-ghost-button" onClick={addServer}>
               <Plus size={16} strokeWidth={1.5} />
               添加服务器
@@ -326,6 +401,15 @@ export function SshServersPage() {
         </div>
       </Section>
 
+      {importEntries && (
+        <SshImportDialog
+          entries={importEntries}
+          existing={config.servers}
+          onConfirm={confirmImport}
+          onCancel={() => setImportEntries(null)}
+        />
+      )}
+
       <ConfirmDialog
         open={pendingDeleteIndex !== null}
         title="删除 SSH 服务器"
@@ -377,4 +461,20 @@ function nextServerId(servers: SshServerConfig[]) {
     id = `server-${index}`;
   }
   return id;
+}
+
+// 与后端 ssh_tool 的 ID_MAX_LEN 保持一致：满长 id 冲突时追加 `-N` 后缀须先
+// 为后缀预留空间，否则超长 id 会在保存时被后端校验整批拒绝。
+const SSH_SERVER_ID_MAX_LEN = 64;
+
+function uniqueImportServerId(base: string, used: Set<string>): string {
+  if (!used.has(base)) return base;
+  let suffix = 2;
+  for (;;) {
+    const suffixText = `-${suffix}`;
+    const truncated = base.slice(0, SSH_SERVER_ID_MAX_LEN - suffixText.length);
+    const candidate = `${truncated}${suffixText}`;
+    if (!used.has(candidate)) return candidate;
+    suffix += 1;
+  }
 }

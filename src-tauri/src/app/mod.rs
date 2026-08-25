@@ -152,6 +152,7 @@ pub fn run() {
             ssh_tool::ssh_tool_load_audit,
             ssh_tool::ssh_tool_save_config,
             ssh_tool::ssh_tool_test_server_config,
+            ssh_tool::config_import::ssh_tool_import_ssh_config,
             project::storage::load_projects,
             project::storage::save_projects,
             project::storage::project_delete,

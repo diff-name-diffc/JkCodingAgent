@@ -1,26 +1,20 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
 import { Search, ChevronLeft, PanelLeftClose, Plus, Trash2, LoaderCircle } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import {
-  cleanupDispatcherSession,
-  withDispatcherSessionRunning,
-  withDispatcherSessionsRunning,
-} from "./dispatcherSessionStore";
-import type {
-  Project,
-  ProjectSession,
-  SessionKeyword,
-  SessionPage,
-  SessionSearchResult,
-} from "../types";
+import { cleanupDispatcherSession } from "./dispatcherSessionStore";
+import type { Project } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
 import { BranchBar } from "./task-panel/BranchBar";
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
-
-const PROJECT_PAGE_SIZE = 30;
+import {
+  flattenSessionPages,
+  useCreateProjectSession,
+  useDeleteProjectSession,
+  useProjectSessionsQuery,
+  useSessionListEventMerge,
+  useSessionSearchQuery,
+} from "../hooks/use-session-queries";
 
 function formatTime(timestampStr: string) {
   try {
@@ -31,13 +25,57 @@ function formatTime(timestampStr: string) {
   }
 }
 
-function sortSessionsByUpdatedAt(sessions: ProjectSession[]) {
-  return [...sessions].sort((left, right) => {
-    const leftTime = Date.parse(left.updatedAt);
-    const rightTime = Date.parse(right.updatedAt);
-    return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
-  });
-}
+/**
+ * 会话行：memo 隔离，避免高频会话更新事件（dispatcher-session-updated）
+ * 触发整表重渲染；依赖 props 均为稳定回调与标量。
+ */
+const SessionRow = memo(function SessionRow({
+  id,
+  title,
+  updatedAt,
+  isActive,
+  isRunning,
+  onSelect,
+  onDelete,
+}: {
+  id: string;
+  title: string;
+  updatedAt: string;
+  isActive: boolean;
+  isRunning: boolean;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <div
+      className={isActive ? "ai-project-session-row is-active" : "ai-project-session-row"}
+      onClick={() => onSelect(id)}
+    >
+      <div className="ai-project-session-row-main">
+        <div className="ai-project-session-row-title">
+          <span>{title}</span>
+          {isRunning && (
+            <LoaderCircle size={13} className="spin ai-project-session-running" />
+          )}
+        </div>
+        <div className="ai-project-session-row-sub">{formatTime(updatedAt)}</div>
+      </div>
+      <div className="ai-project-session-actions-inline">
+        <button
+          className="ai-project-session-delete"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(id);
+          }}
+          title="删除会话"
+          aria-label="删除会话"
+        >
+          <Trash2 size={13} color="var(--text-muted)" />
+        </button>
+      </div>
+    </div>
+  );
+});
 
 export function SessionPanel({
   project,
@@ -53,214 +91,130 @@ export function SessionPanel({
   onCollapse: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<SessionSearchResult[] | null>(null);
-  const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [keywordsRevision, setKeywordsRevision] = useState(0);
-  const [sessions, setSessions] = useState<ProjectSession[]>([]);
-  const [hasMore, setHasMore] = useState(false);
-  const [, setTotal] = useState(0);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const creatingSessionRef = useRef(false);
   const activeSessionIdRef = useRef(activeSessionId);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const searchRequestRef = useRef(0);
+  const initialSyncProjectRef = useRef<string | null>(null);
   activeSessionIdRef.current = activeSessionId;
 
+  // 数据层：与聊天侧共用的会话列表 / 事件合并 / 搜索 hook（project scope）
+  useSessionListEventMerge({ kind: "project", projectId: project.id });
+  const sessionsQuery = useProjectSessionsQuery(project.id);
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = sessionsQuery;
+  const sessions = useMemo(() => flattenSessionPages(sessionsQuery.data), [sessionsQuery.data]);
+  const { mutateAsync: createProjectSession } = useCreateProjectSession();
+  const { mutateAsync: deleteProjectSession } = useDeleteProjectSession();
+  const searchQuery = useSessionSearchQuery({
+    query: debouncedQuery,
+    kind: "project",
+    projectId: project.id,
+  });
+
+  // 搜索防抖（260ms，与聊天侧一致）；搜索结果缓存由共享数据层失效逻辑驱动刷新
   useEffect(() => {
-    const unlistenSession = listen<ProjectSession>("dispatcher-session-updated", (event) => {
-      const updatedSession = withDispatcherSessionRunning(event.payload);
-      if (!updatedSession.projectId || updatedSession.projectId !== project.id) return;
+    const timer = window.setTimeout(() => setDebouncedQuery(query), 260);
+    return () => window.clearTimeout(timer);
+  }, [query]);
 
-      setSessions((prev) => {
-        const existingSession = prev.find((session) => session.id === updatedSession.id);
-        const normalizedSession = {
-          ...updatedSession,
-          keywords: updatedSession.keywords ?? existingSession?.keywords ?? [],
-        };
-        const next = existingSession
-          ? prev.map((session) =>
-              session.id === normalizedSession.id ? normalizedSession : session,
-            )
-          : [normalizedSession, ...prev];
-        return sortSessionsByUpdatedAt(next);
-      });
-    });
-    const unlistenKeywords = listen<{
-      sessionId: string;
-      keywords: SessionKeyword[];
-    }>("session-keywords-updated", (event) => {
-      const { sessionId, keywords } = event.payload;
-      const values = keywords.map((keyword) => keyword.keyword);
-      setSessions((prev) =>
-        prev.map((session) =>
-          session.id === sessionId ? { ...session, keywords: values } : session,
-        ),
-      );
-      setKeywordsRevision((revision) => revision + 1);
-    });
-
-    return () => {
-      unlistenSession.then((fn) => fn()).catch(() => {});
-      unlistenKeywords.then((fn) => fn()).catch(() => {});
-    };
-  }, [project.id]);
-
-  const handleNewSession = useCallback(async () => {
-    if (creatingSessionRef.current) return;
+  const handleNewSession = useCallback(async (): Promise<boolean> => {
+    if (creatingSessionRef.current) return false;
     creatingSessionRef.current = true;
     try {
-      const newSession = withDispatcherSessionRunning(await invoke<ProjectSession>("project_create_session", {
+      const newSession = await createProjectSession({
         projectId: project.id,
         title: "新会话",
-      }));
-      setSessions((prev) =>
-        prev.some((session) => session.id === newSession.id) ? prev : [newSession, ...prev],
-      );
+      });
       onSelectSession(newSession.id);
+      return true;
     } catch (err) {
       console.error("创建会话失败:", err);
+      return false;
     } finally {
       creatingSessionRef.current = false;
     }
-  }, [onSelectSession, project.id]);
+  }, [createProjectSession, onSelectSession, project.id]);
 
-  const loadMore = useCallback(async () => {
-    if (!hasMore || loadingMore) return;
-    setLoadingMore(true);
-    try {
-      const page = await invoke<SessionPage<ProjectSession>>("project_list_sessions", {
-        projectId: project.id,
-        offset: sessions.length,
-        pageSize: PROJECT_PAGE_SIZE,
-      });
-      setSessions((prev) => {
-        const existing = new Set(prev.map((s) => s.id));
-        const newItems = withDispatcherSessionsRunning(page.items.filter((s) => !existing.has(s.id)));
-        return sortSessionsByUpdatedAt([...prev, ...newItems]);
-      });
-      setTotal(page.total);
-      setHasMore(page.hasMore);
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [hasMore, loadingMore, project.id, sessions.length]);
-
+  // 首屏同步：列表加载完成后校正选中项；空列表自动新建（每个项目仅执行一次）
   useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      try {
-        const page = await invoke<SessionPage<ProjectSession>>("project_list_sessions", {
-          projectId: project.id,
-          offset: 0,
-          pageSize: PROJECT_PAGE_SIZE,
-        });
-        if (cancelled) return;
-        const items = withDispatcherSessionsRunning(page.items);
-        setSessions(items);
-        setTotal(page.total);
-        setHasMore(page.hasMore);
-        const currentSessionId = activeSessionIdRef.current;
-        if (items.length > 0) {
-          if (!currentSessionId || !items.some((session) => session.id === currentSessionId)) {
-            onSelectSession(items[0].id);
-          }
-        } else {
-          await handleNewSession();
-        }
-      } catch (err) {
-        console.error("加载会话失败:", err);
+    if (!sessionsQuery.isSuccess) return;
+    if (initialSyncProjectRef.current === project.id) return;
+    initialSyncProjectRef.current = project.id;
+    const currentSessionId = activeSessionIdRef.current;
+    if (sessions.length > 0) {
+      if (!currentSessionId || !sessions.some((session) => session.id === currentSessionId)) {
+        onSelectSession(sessions[0].id);
       }
+    } else {
+      // 创建失败时复位标记，允许列表下次变化时重试，
+      // 避免面板永久停留在「没有找到会话」空态。
+      void handleNewSession().then((ok) => {
+        if (!ok) initialSyncProjectRef.current = null;
+      });
     }
-
-    load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [handleNewSession, onSelectSession, project.id]);
+  }, [sessionsQuery.isSuccess, sessions, project.id, onSelectSession, handleNewSession]);
 
   useEffect(() => {
     if (!sentinelRef.current) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore && !loadingMore) {
-          loadMore();
+        if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage) {
+          void fetchNextPage();
         }
       },
       { rootMargin: "200px" },
     );
     observer.observe(sentinelRef.current);
     return () => observer.disconnect();
-  }, [hasMore, loadingMore, loadMore]);
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   const sessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
   const dispatcherRunningSessionIds = useDispatcherSessionRunningSet(sessionIds);
 
-  useEffect(() => {
-    const trimmed = query.trim();
-    const requestId = ++searchRequestRef.current;
-    if (!trimmed) {
-      setSearchResults(null);
-      setSearching(false);
-      setSearchError(null);
-      return;
-    }
-    setSearchResults(null);
-    setSearching(true);
-    setSearchError(null);
-    const timer = window.setTimeout(() => {
-      invoke<SessionSearchResult[]>("session_search_keywords", {
-        query: trimmed,
-        limit: 20,
-        kind: "project",
-        projectId: project.id,
-      })
-        .then((results) => {
-          if (searchRequestRef.current !== requestId) return;
-          setSearchResults(results);
-        })
-        .catch((error: unknown) => {
-          if (searchRequestRef.current !== requestId) return;
-          console.error("搜索会话失败:", error);
-          setSearchError(String(error));
-        })
-        .finally(() => {
-          if (searchRequestRef.current === requestId) setSearching(false);
-        });
-    }, 260);
-    return () => window.clearTimeout(timer);
-  }, [keywordsRevision, project.id, query]);
+  // 删除回调用 ref 读取最新列表/选中态，保持引用稳定供 memo 行跳过重渲染。
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const handleDeleteSession = useCallback(
+    async (id: string) => {
+      const ok = await confirm("确定永久删除这个会话吗？", {
+        title: "删除会话",
+        kind: "warning",
+      });
+      if (!ok) return;
 
-  async function handleDeleteSession(id: string) {
-    const ok = await confirm("确定永久删除这个会话吗？", {
-      title: "删除会话",
-      kind: "warning",
-    });
-    if (!ok) return;
-
-    try {
-      await invoke("project_delete_session", { sessionId: id });
-      cleanupDispatcherSession(id);
-      const remaining = sessions.filter((session) => session.id !== id);
-      setSessions(remaining);
-      setSearchResults((results) =>
-        results?.filter((result) => result.sessionId !== id) ?? null,
-      );
-      setTotal((prev) => Math.max(0, prev - 1));
-      if (activeSessionId === id) {
-        onSelectSession(remaining[0]?.id ?? null);
+      try {
+        await deleteProjectSession({ sessionId: id, projectId: project.id });
+        cleanupDispatcherSession(id);
+        const remaining = sessionsRef.current.filter((session) => session.id !== id);
+        if (activeSessionIdRef.current === id) {
+          onSelectSession(remaining[0]?.id ?? null);
+        }
+        if (remaining.length === 0) {
+          await handleNewSession();
+        }
+      } catch (err) {
+        console.error("删除会话失败:", err);
       }
-      if (remaining.length === 0) {
-        await handleNewSession();
-      }
-    } catch (err) {
-      console.error("删除会话失败:", err);
-    }
-  }
+    },
+    [deleteProjectSession, project.id, onSelectSession, handleNewSession],
+  );
 
-  const hasSearchQuery = query.trim().length > 0;
+  const handleSelect = useCallback(
+    (id: string) => onSelectSession(id),
+    [onSelectSession],
+  );
+
+  const trimmedQuery = query.trim();
+  const hasSearchQuery = trimmedQuery.length > 0;
+  const searchPending = hasSearchQuery && trimmedQuery !== debouncedQuery.trim();
+  // 有结果可展示时不切到「正在搜索」：防抖窗口与后台重查期间保留旧结果
+  // （useSessionSearchQuery 的 placeholderData），消除逐键闪烁。
+  const searchResults = hasSearchQuery ? (searchQuery.data ?? null) : null;
+  const searching = hasSearchQuery && !searchResults && (searchPending || searchQuery.isFetching);
+  const searchError =
+    hasSearchQuery && !searchPending && !searchResults && searchQuery.error
+      ? String(searchQuery.error)
+      : null;
 
   return (
     <div className="ai-project-session-panel ai-migrated-project">
@@ -315,80 +269,37 @@ export function SessionPanel({
           ) : searchResults?.length === 0 ? (
             <div className="ai-project-session-empty">没有找到匹配的会话</div>
           ) : (
-            searchResults?.map((r) => {
-              const isRunning =
-                dispatcherRunningSessionIds.has(r.sessionId);
-              return (
-                <div
-                  key={r.sessionId}
-                  className={activeSessionId === r.sessionId ? "ai-project-session-row is-active" : "ai-project-session-row"}
-                  onClick={() => onSelectSession(r.sessionId)}
-                >
-                  <div className="ai-project-session-row-main">
-                    <div className="ai-project-session-row-title">
-                      <span>{r.sessionTitle}</span>
-                      {isRunning && (
-                        <LoaderCircle size={13} className="spin ai-project-session-running" />
-                      )}
-                    </div>
-                    <div className="ai-project-session-row-sub">{formatTime(r.updatedAt)}</div>
-                  </div>
-                  <div className="ai-project-session-actions-inline">
-                    <button
-                      className="ai-project-session-delete"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteSession(r.sessionId);
-                      }}
-                      title="删除会话"
-                      aria-label="删除会话"
-                    >
-                      <Trash2 size={13} color="var(--text-muted)" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })
+            searchResults?.map((r) => (
+              <SessionRow
+                key={r.sessionId}
+                id={r.sessionId}
+                title={r.sessionTitle}
+                updatedAt={r.updatedAt}
+                isActive={activeSessionId === r.sessionId}
+                isRunning={dispatcherRunningSessionIds.has(r.sessionId)}
+                onSelect={handleSelect}
+                onDelete={handleDeleteSession}
+              />
+            ))
           )
         ) : (
           <>
             {sessions.length === 0 && <div className="ai-project-session-empty">没有找到会话</div>}
-            {sessions.map((session) => {
-              const isRunning =
-                Boolean(session.isRunning) ||
-                dispatcherRunningSessionIds.has(session.id);
-              return (
-                <div
-                  key={session.id}
-                  className={activeSessionId === session.id ? "ai-project-session-row is-active" : "ai-project-session-row"}
-                  onClick={() => onSelectSession(session.id)}
-                >
-                  <div className="ai-project-session-row-main">
-                    <div className="ai-project-session-row-title">
-                      <span>{session.title}</span>
-                      {isRunning && (
-                        <LoaderCircle size={13} className="spin ai-project-session-running" />
-                      )}
-                    </div>
-                    <div className="ai-project-session-row-sub">{formatTime(session.updatedAt)}</div>
-                  </div>
-                  <div className="ai-project-session-actions-inline">
-                    <button
-                      className="ai-project-session-delete"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteSession(session.id);
-                      }}
-                      title="删除会话"
-                      aria-label="删除会话"
-                    >
-                      <Trash2 size={13} color="var(--text-muted)" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-            {hasMore && (
+            {sessions.map((session) => (
+              <SessionRow
+                key={session.id}
+                id={session.id}
+                title={session.title}
+                updatedAt={session.updatedAt}
+                isActive={activeSessionId === session.id}
+                isRunning={
+                  Boolean(session.isRunning) || dispatcherRunningSessionIds.has(session.id)
+                }
+                onSelect={handleSelect}
+                onDelete={handleDeleteSession}
+              />
+            ))}
+            {hasNextPage && (
               <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />
             )}
           </>

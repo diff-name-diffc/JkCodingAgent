@@ -6,10 +6,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../../ui/select";
-import type { ModelCategory } from "../../../types";
+import type { DispatcherModelConfig, ModelCategory } from "../../../types";
 import {
   bindPurpose,
   getPurposeBinding,
+  getPurposeConfigs,
   modelCapabilityTags,
   type PurposeDef,
 } from "./provider-registry";
@@ -21,8 +22,9 @@ import {
 } from "./model-library";
 
 const UNBOUND = "__unbound__";
-/** 当前绑定不在模型库中（条目已删除/停用或旧配置）时的兜底选项值。 */
-const EXTERNAL = "__external__";
+const STALE = "__stale__";
+/** 手动配置（url 非空、无库引用）：后端按有效配置保留，只展示、不作为可清除的残留项。 */
+const MANUAL = "__manual__";
 
 /**
  * 模型用途绑定下拉：选项来自「模型服务」页按分类配置的模型库条目。
@@ -46,28 +48,49 @@ export function PurposeSelect({
   const boundEntry = settings
     ? findEnabledEntryForConfig(settings.modelLibrary ?? [], binding)
     : undefined;
-  // 绑定指向已停用或已删除的库条目、或尚未迁移的旧配置时，仍展示该选项让用户看到现状。
-  const bindingExternal = Boolean(binding?.url.trim()) && !boundEntry;
-  const bindingValue = boundEntry ? boundEntry.id : bindingExternal ? EXTERNAL : UNBOUND;
+
+  // 用途槽位的原始配置。残留判定必须看原始配置：读取时后端会清空失效引用的
+  // 凭据，而 getPurposeBinding 要求 url 非空，失效引用无法通过 binding 观察到。
+  const rawConfig: DispatcherModelConfig | undefined = settings
+    ? def.kind === "review"
+      ? settings.review?.modelConfig
+      : getPurposeConfigs(settings, def.kind).find((config) => config.active)
+    : undefined;
+
+  // 残留绑定：指向已停用/已删除的库条目（凭据已被后端清空），可清除。
+  const staleConfig = !boundEntry && rawConfig?.libraryId ? rawConfig : undefined;
+  // 手动配置：url 非空且无库引用。后端 resolve_from_library 对无引用配置原样
+  // 保留、运行时可正常使用——不能当成残留清除，仅惰性展示现状。
+  const manualConfig =
+    !boundEntry && !rawConfig?.libraryId && rawConfig?.url.trim() ? rawConfig : undefined;
+
+  const bindingValue = boundEntry
+    ? boundEntry.id
+    : staleConfig
+      ? STALE
+      : manualConfig
+        ? MANUAL
+        : UNBOUND;
 
   const fieldId = `purpose:${def.kind}`;
   const fieldError = store.saveError?.fieldId === fieldId ? store.saveError.message : null;
 
   function handleChange(value: string) {
-    if (value === UNBOUND) {
+    if (value === UNBOUND || value === STALE) {
+      // 选中「未配置」或残留绑定项都执行解绑：后者借此值变化清除幽灵绑定。
       store.updateSettings(
         (prev) => bindPurpose(prev, def.kind, { url: "", apiKey: "", model: "" }),
         fieldId,
       );
       return;
     }
-    if (value === EXTERNAL) return;
+    if (value === MANUAL) return; // 惰性展示项：选中不产生变更
     const entry = entries.find((item) => item.id === value);
     if (!entry) return;
     store.updateSettings((prev) => bindPurpose(prev, def.kind, entry), fieldId);
   }
 
-  if (entries.length === 0 && !bindingExternal) {
+  if (entries.length === 0 && !staleConfig && !manualConfig) {
     return (
       <div className="ai-set-purpose-empty">
         <span>该分类还没有可用的模型。</span>
@@ -82,6 +105,11 @@ export function PurposeSelect({
     );
   }
 
+  const staleLabel = staleConfig
+    ? staleConfig.model || staleConfig.url || staleConfig.libraryId || ""
+    : "";
+  const manualLabel = manualConfig ? manualConfig.model || manualConfig.url : "";
+
   return (
     <div className="ai-set-purpose-select">
       <Select value={bindingValue} onValueChange={handleChange}>
@@ -90,9 +118,20 @@ export function PurposeSelect({
         </SelectTrigger>
         <SelectContent>
           <SelectItem value={UNBOUND}>未配置</SelectItem>
-          {bindingExternal && binding && (
-            <SelectItem value={EXTERNAL}>
-              {binding.model || binding.url}（模型已停用或不在模型库中）
+          {staleConfig && (
+            <SelectItem value={STALE}>
+              <span className="ai-set-purpose-option">
+                <span className="ai-set-purpose-option-name">
+                  {staleLabel}（条目已停用或不在模型库中，改选「未配置」或其它模型可清除）
+                </span>
+              </span>
+            </SelectItem>
+          )}
+          {manualConfig && (
+            <SelectItem value={MANUAL}>
+              <span className="ai-set-purpose-option">
+                <span className="ai-set-purpose-option-name">{manualLabel}（手动配置）</span>
+              </span>
             </SelectItem>
           )}
           {entries.map((entry) => (

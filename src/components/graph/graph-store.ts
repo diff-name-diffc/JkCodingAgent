@@ -43,10 +43,34 @@ const EMPTY_SNAPSHOT: GraphPlanSnapshot = {
 };
 
 const snapshots = new Map<string, GraphPlanSnapshot>();
+/** planId → workspaceId（sessionId）映射，供按会话清理快照。 */
+const planWorkspaces = new Map<string, string>();
 const subscribers = new Set<Subscriber>();
 let listenerRegistered = false;
 let version = 0;
 let notifyTimer: number | null = null;
+
+/** 内存上限：最多保留最近 N 个计划的快照，超出时淘汰最旧计划。 */
+const MAX_TRACKED_PLANS = 50;
+
+/**
+ * 已清理会话的墓碑：删除会话后，Tauri IPC 队列里可能仍积压着该会话的
+ * 图事件（高频 nodeOutputDelta / graph-plan-updated），晚到的事件会经
+ * ensureSnapshot 重建快照，让清理失效。记录近期被清理的会话 id，
+ * 晚到事件直接丢弃。集合封顶，先进先出。
+ */
+const cleanedSessionIds: string[] = [];
+const MAX_CLEANED_SESSIONS = 128;
+
+function rememberCleanedSession(sessionId: string): void {
+  if (cleanedSessionIds.includes(sessionId)) return;
+  cleanedSessionIds.push(sessionId);
+  if (cleanedSessionIds.length > MAX_CLEANED_SESSIONS) cleanedSessionIds.shift();
+}
+
+function isCleanedSession(sessionId: string): boolean {
+  return cleanedSessionIds.includes(sessionId);
+}
 
 /** 串行执行异步任务；单次失败不会污染后续队列。 */
 export function createSerialTaskQueue() {
@@ -61,13 +85,52 @@ export function createSerialTaskQueue() {
   };
 }
 
+/**
+ * 淘汰目标按插入序优先取已终结的计划：running / paused 的计划仍在接收事件
+ * 或正被查看，淘汰它们会丢失已累积的流式输出且视图不会自动回源。
+ */
+function evictOldestPlan(currentPlanId: string): void {
+  let target: string | undefined;
+  for (const [key, snapshot] of snapshots) {
+    if (key === currentPlanId) continue;
+    if (!snapshot.paused && snapshot.plan?.status !== "running") {
+      target = key;
+      break;
+    }
+  }
+  target ??= [...snapshots.keys()].find((key) => key !== currentPlanId);
+  if (target !== undefined) {
+    snapshots.delete(target);
+    planWorkspaces.delete(target);
+  }
+}
+
 function ensureSnapshot(planId: string): GraphPlanSnapshot {
   let snapshot = snapshots.get(planId);
   if (!snapshot) {
     snapshot = { plan: null, liveOutputs: {}, liveActivities: {}, lastEvent: null, paused: false, pausedNodeId: null };
     snapshots.set(planId, snapshot);
+    if (snapshots.size > MAX_TRACKED_PLANS) {
+      evictOldestPlan(planId);
+    }
   }
   return snapshot;
+}
+
+/**
+ * 删除会话（或会话所属项目被删除）时调用，清理该会话全部图计划的内存快照。
+ */
+export function cleanupGraphPlansForSession(sessionId: string): void {
+  rememberCleanedSession(sessionId);
+  let removed = false;
+  for (const [planId, snapshot] of snapshots) {
+    if (planWorkspaces.get(planId) === sessionId || snapshot.plan?.workspaceId === sessionId) {
+      snapshots.delete(planId);
+      planWorkspaces.delete(planId);
+      removed = true;
+    }
+  }
+  if (removed) notify();
 }
 
 function notify(): void {
@@ -239,6 +302,9 @@ export function reduceGraphRunEvent(
 }
 
 function applyGraphRunEvent(payload: GraphRunEventPayload): void {
+  // 会话已删除：丢弃积压的晚到事件，避免重建刚被清理的快照。
+  if (isCleanedSession(payload.workspaceId)) return;
+  planWorkspaces.set(payload.planId, payload.workspaceId);
   const effect = reduceGraphRunEvent(ensureSnapshot(payload.planId), payload);
   if (effect.hydrate) void hydrateGraphPlan(payload.planId);
   if (effect.notification === "throttled") notifyThrottled();
@@ -250,7 +316,10 @@ export async function hydrateGraphPlan(planId: string): Promise<GraphPlanRecord 
   const snapshot = ensureSnapshot(planId);
   try {
     const plan = await invoke<GraphPlanRecord>("graph_plan_get", { planId });
+    // 拉取期间会话被删除：不再回填，保持清理结果。
+    if (isCleanedSession(plan.workspaceId)) return null;
     snapshot.plan = plan;
+    planWorkspaces.set(planId, plan.workspaceId);
     // 权威记录里已终结的节点，清掉对应实时输出缓冲。
     for (const run of plan.nodeRuns) {
       if (run.status !== "running" && run.status !== "pending") {
@@ -270,6 +339,8 @@ function registerGlobalListener(): void {
   listenerRegistered = true;
 
   listen<GraphPlanUpdatedPayload>("graph-plan-updated", (event) => {
+    if (isCleanedSession(event.payload.workspaceId)) return;
+    planWorkspaces.set(event.payload.planId, event.payload.workspaceId);
     void hydrateGraphPlan(event.payload.planId);
   });
   listen<GraphRunEventPayload>("graph-run-event", (event) => {

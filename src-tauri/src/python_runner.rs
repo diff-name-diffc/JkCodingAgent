@@ -16,11 +16,12 @@ use tokio::sync::watch;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
-use crate::agent::config::DispatcherAgentConfig;
+use crate::agent::config::resolve_home_dir;
 use crate::agent::db::{DispatcherDb, PythonCodeRunRecord};
 use crate::agent::llm::{
     ChatMessage, OpenAiCompatProvider, OutboundToolCall, ToolDefinition, ToolFunctionDefinition,
 };
+use crate::agent::DispatcherState;
 use crate::shared::truncate_for_display;
 
 const RUN_TIMEOUT_SECS: u64 = 60;
@@ -71,12 +72,12 @@ struct RunPaths {
 
 #[tauri::command]
 pub async fn python_runner_list_results(
+    state: State<'_, DispatcherState>,
     workspace_id: String,
     message_id: Option<String>,
 ) -> Result<Vec<PythonCodeRunRecord>, String> {
+    let db = state.db().clone();
     tokio::task::spawn_blocking(move || {
-        let config = DispatcherAgentConfig::load().map_err(|error| error.to_string())?;
-        let db = DispatcherDb::new(config.db_path).map_err(|error| error.to_string())?;
         db.list_python_code_runs(&workspace_id, message_id.as_deref())
             .map_err(|error| error.to_string())
     })
@@ -86,13 +87,13 @@ pub async fn python_runner_list_results(
 
 #[tauri::command]
 pub async fn python_runner_clear_result(
+    state: State<'_, DispatcherState>,
     workspace_id: String,
     message_id: String,
     code_block_index: u32,
 ) -> Result<(), String> {
+    let db = state.db().clone();
     tokio::task::spawn_blocking(move || {
-        let config = DispatcherAgentConfig::load().map_err(|error| error.to_string())?;
-        let db = DispatcherDb::new(config.db_path).map_err(|error| error.to_string())?;
         db.clear_python_code_run(&workspace_id, &message_id, code_block_index)
             .map_err(|error| error.to_string())
     })
@@ -116,13 +117,14 @@ pub async fn python_runner_stop(
 pub async fn python_runner_start(
     app: AppHandle,
     state: State<'_, PythonRunnerState>,
+    dispatcher_state: State<'_, DispatcherState>,
     workspace_id: String,
     message_id: String,
     code_block_index: u32,
     code: String,
 ) -> Result<PythonCodeRunRecord, String> {
-    let config = DispatcherAgentConfig::load().map_err(|error| error.to_string())?;
-    let db = DispatcherDb::new(config.db_path.clone()).map_err(|error| error.to_string())?;
+    let db = dispatcher_state.db().clone();
+    let root_dir = resolve_home_dir().map_err(|error| error.to_string())?;
     let run_id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     let record = PythonCodeRunRecord {
@@ -142,8 +144,14 @@ pub async fn python_runner_start(
         created_at: now.clone(),
         updated_at: now,
     };
-    db.upsert_python_code_run(&record)
-        .map_err(|error| error.to_string())?;
+    {
+        let db = db.clone();
+        let record = record.clone();
+        tokio::task::spawn_blocking(move || db.upsert_python_code_run(&record))
+            .await
+            .map_err(|error| format!("spawn_blocking 失败: {error}"))?
+            .map_err(|error| error.to_string())?;
+    }
 
     let (stop_tx, stop_rx) = watch::channel(false);
     state.active_runs.lock().insert(run_id.clone(), stop_tx);
@@ -160,7 +168,7 @@ pub async fn python_runner_start(
     let task_record = record.clone();
     tokio::spawn(async move {
         let final_record =
-            run_python_agent(config, task_record, stop_rx, app_for_task.clone()).await;
+            run_python_agent(db, root_dir, task_record, stop_rx, app_for_task.clone()).await;
         state_for_task.lock().remove(&run_id);
         if let Err(error) = final_record {
             eprintln!("python runner failed: {error:#}");
@@ -171,13 +179,13 @@ pub async fn python_runner_start(
 }
 
 async fn run_python_agent(
-    config: DispatcherAgentConfig,
+    db: DispatcherDb,
+    root_dir: PathBuf,
     mut record: PythonCodeRunRecord,
     stop_rx: watch::Receiver<bool>,
     app: AppHandle,
 ) -> Result<()> {
-    let db = DispatcherDb::new(config.db_path.clone())?;
-    let result = run_python_agent_inner(&config, &mut record, stop_rx.clone(), &app).await;
+    let result = run_python_agent_inner(&db, &root_dir, &mut record, stop_rx.clone(), &app).await;
     match result {
         Ok(()) => {}
         Err(error) => {
@@ -188,7 +196,7 @@ async fn run_python_agent(
             };
             record.error_reason = Some(error.to_string());
             record.updated_at = Utc::now().to_rfc3339();
-            db.upsert_python_code_run(&record)?;
+            upsert_run_record(&db, &record).await?;
             emit_run_event(
                 &app,
                 &record,
@@ -205,17 +213,32 @@ async fn run_python_agent(
 }
 
 async fn run_python_agent_inner(
-    config: &DispatcherAgentConfig,
+    db: &DispatcherDb,
+    root_dir: &Path,
     record: &mut PythonCodeRunRecord,
     mut stop_rx: watch::Receiver<bool>,
     app: &AppHandle,
 ) -> Result<()> {
-    let db = DispatcherDb::new(config.db_path.clone())?;
-    let provider = resolve_summary_provider(config)?;
-    let message_context = db
-        .get_visible_message_content(&record.workspace_id, &record.message_id)?
-        .unwrap_or_else(|| record.code.clone());
-    let paths = prepare_paths(config, &record.run_id)?;
+    // DB 读取与目录创建是同步阻塞操作，统一放进 spawn_blocking，
+    // 不在 tokio 任务线程上直接执行（项目规范：重操作不阻塞异步运行时）。
+    let (provider, message_context, paths) = {
+        let db = db.clone();
+        let root_dir = root_dir.to_path_buf();
+        let workspace_id = record.workspace_id.clone();
+        let message_id = record.message_id.clone();
+        let run_id = record.run_id.clone();
+        let code = record.code.clone();
+        tokio::task::spawn_blocking(move || -> Result<_> {
+            let provider = resolve_summary_provider(&db)?;
+            let message_context = db
+                .get_visible_message_content(&workspace_id, &message_id)?
+                .unwrap_or(code);
+            let paths = prepare_paths(&root_dir, &run_id)?;
+            Ok((provider, message_context, paths))
+        })
+        .await
+        .map_err(|error| anyhow!("spawn_blocking 失败: {error}"))??
+    };
     ensure_uv_available(&mut stop_rx).await?;
     ensure_venv(&paths, &mut stop_rx).await?;
     tokio::fs::write(&paths.main_py, &record.code)
@@ -231,15 +254,16 @@ async fn run_python_agent_inner(
     let first = run_python_file_streaming(&paths, &mut stop_rx, app, &event_ctx).await?;
     apply_python_output(record, &first);
     persist_and_emit(
-        &db,
+        db,
         app,
         record,
         "output",
         json!({ "stdout": record.stdout.clone(), "stderr": record.stderr.clone() }),
-    )?;
+    )
+    .await?;
 
     if first.cancelled {
-        mark_stopped(&db, app, record)?;
+        mark_stopped(db, app, record).await?;
         return Ok(());
     }
 
@@ -249,7 +273,7 @@ async fn run_python_agent_inner(
         record.explanation_markdown = explain_result(&provider, record, None).await?;
         record.status = "done".to_string();
         record.updated_at = Utc::now().to_rfc3339();
-        db.upsert_python_code_run(record)?;
+        upsert_run_record(db, record).await?;
         emit_run_event(app, record, "final", json!({ "record": record.clone() }));
         return Ok(());
     }
@@ -270,7 +294,7 @@ async fn run_python_agent_inner(
 
     for _ in 0..MAX_AGENT_ITERATIONS {
         if cancellation_requested(&stop_rx) {
-            mark_stopped(&db, app, record)?;
+            mark_stopped(db, app, record).await?;
             return Ok(());
         }
 
@@ -292,7 +316,7 @@ async fn run_python_agent_inner(
             }
             record.error_reason = Some(first_non_empty(&record.stderr, "代码执行失败"));
             record.updated_at = Utc::now().to_rfc3339();
-            db.upsert_python_code_run(record)?;
+            upsert_run_record(db, record).await?;
             emit_run_event(app, record, "final", json!({ "record": record.clone() }));
             return Ok(());
         }
@@ -351,7 +375,7 @@ async fn run_python_agent_inner(
             record.installed_packages_json = serde_json::to_string(&installed_packages)?;
             record.tool_events_json = serde_json::to_string(&tool_events)?;
             record.updated_at = Utc::now().to_rfc3339();
-            db.upsert_python_code_run(record)?;
+            upsert_run_record(db, record).await?;
             emit_run_event(
                 app,
                 record,
@@ -370,13 +394,13 @@ async fn run_python_agent_inner(
             });
 
             if record.status == "stopped" {
-                mark_stopped(&db, app, record)?;
+                mark_stopped(db, app, record).await?;
                 return Ok(());
             }
             if record.status == "done" {
                 record.explanation_markdown = explain_result(&provider, record, None).await?;
                 record.updated_at = Utc::now().to_rfc3339();
-                db.upsert_python_code_run(record)?;
+                upsert_run_record(db, record).await?;
                 emit_run_event(app, record, "final", json!({ "record": record.clone() }));
                 return Ok(());
             }
@@ -392,7 +416,7 @@ async fn run_python_agent_inner(
     )
     .await?;
     record.updated_at = Utc::now().to_rfc3339();
-    db.upsert_python_code_run(record)?;
+    upsert_run_record(db, record).await?;
     emit_run_event(app, record, "final", json!({ "record": record.clone() }));
     Ok(())
 }
@@ -456,8 +480,7 @@ async fn execute_python_tool(
     }
 }
 
-fn resolve_summary_provider(config: &DispatcherAgentConfig) -> Result<OpenAiCompatProvider> {
-    let db = DispatcherDb::new(config.db_path.clone())?;
+fn resolve_summary_provider(db: &DispatcherDb) -> Result<OpenAiCompatProvider> {
     let settings = db.get_settings_v2()?;
     let model_config = settings
         .project
@@ -477,13 +500,13 @@ fn resolve_summary_provider(config: &DispatcherAgentConfig) -> Result<OpenAiComp
         model_config.api_key,
         model_config.url,
         model_config.model,
-        config.max_tokens.min(4096),
+        4096,
         0.1,
     ))
 }
 
-fn prepare_paths(config: &DispatcherAgentConfig, run_id: &str) -> Result<RunPaths> {
-    let root = config.root_dir.join("python-runner");
+fn prepare_paths(root_dir: &Path, run_id: &str) -> Result<RunPaths> {
+    let root = root_dir.join("python-runner");
     let venv = root.join("venv");
     let run_dir = root.join("runs").join(run_id);
     std::fs::create_dir_all(&run_dir).with_context(|| format!("create {}", run_dir.display()))?;
@@ -909,30 +932,38 @@ fn append_line(target: &mut String, line: &str) {
     target.push_str(line);
 }
 
-fn mark_stopped(
+/// 同步 DB upsert 放进 spawn_blocking 执行，避免阻塞异步任务线程。
+async fn upsert_run_record(db: &DispatcherDb, record: &PythonCodeRunRecord) -> Result<()> {
+    let db = db.clone();
+    let record = record.clone();
+    tokio::task::spawn_blocking(move || db.upsert_python_code_run(&record))
+        .await
+        .map_err(|error| anyhow!("spawn_blocking 失败: {error}"))?
+}
+
+async fn mark_stopped(
     db: &DispatcherDb,
     app: &AppHandle,
     record: &mut PythonCodeRunRecord,
 ) -> Result<()> {
     record.status = "stopped".to_string();
     record.updated_at = Utc::now().to_rfc3339();
-    db.upsert_python_code_run(record)?;
+    upsert_run_record(db, record).await?;
     emit_run_event(app, record, "stopped", json!({ "record": record.clone() }));
     Ok(())
 }
 
-fn persist_and_emit(
+async fn persist_and_emit(
     db: &DispatcherDb,
     app: &AppHandle,
     record: &PythonCodeRunRecord,
     event: &str,
     data: Value,
 ) -> Result<()> {
-    db.upsert_python_code_run(record)?;
+    upsert_run_record(db, record).await?;
     emit_run_event(app, record, event, data);
     Ok(())
 }
-
 fn emit_run_event(app: &AppHandle, record: &PythonCodeRunRecord, event: &str, data: Value) {
     let _ = app.emit(
         "python-run-event",

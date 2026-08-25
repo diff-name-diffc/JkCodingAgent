@@ -253,7 +253,7 @@ export function ChatShell({
         });
         if (requestId !== traceRequestRef.current) return;
         if (!trace) {
-          setTraceError("该任务执行时未记录轨迹，旧版本任务无法补录。");
+          setTraceError("该任务执行时未记录轨迹。");
           return;
         }
         const parsed: unknown = JSON.parse(trace.eventsJson);

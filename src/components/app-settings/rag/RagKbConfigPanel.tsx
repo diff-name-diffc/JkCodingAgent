@@ -240,7 +240,9 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
       setOriginal(nextConfig);
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2000);
-      if (result.reloaded) {
+      if (result.reloadError) {
+        showToast("配置已保存，但知识库服务热更新失败，重启应用后生效", "warning");
+      } else if (result.reloaded) {
         showToast("配置已保存并热更新到运行中的服务", "warning");
       }
       return result;

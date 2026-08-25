@@ -75,7 +75,6 @@ export function AppSettingsDialog({
   projectPath,
 }: {
   onClose: () => void;
-  /** 兼容旧的 `aha` 导航 key，新 key 见 SettingsNavKey。 */
   initialTab?: string;
   projectId?: string;
   projectPath?: string;
@@ -181,28 +180,34 @@ export function AppSettingsDialog({
             </div>
 
             <div className="ai-settings-panel-host chat-scroll">
-              {activeNav === "general" && <GeneralPage reportDirty={reportDirty("general")} />}
-              {activeNav === "providers" && (
-                <ProvidersPage
-                  key={providersCategory ?? "default"}
-                  initialCategory={providersCategory ?? undefined}
-                />
-              )}
-              {activeNav === "purposes" && (
-                <PurposesPage
-                  onNavigateProviders={(category) => {
-                    setProvidersCategory(category);
-                    setActiveNav("providers");
-                  }}
-                />
-              )}
-              {activeNav === "tools" && <ToolsPage projectPath={projectPath} />}
-              {activeNav === "graph" && <GraphPage />}
-              {activeNav === "subAgents" && <SubAgentsPage />}
-              {activeNav === "mcp" && <McpServersPage />}
-              {activeNav === "ssh" && <SshServersPage />}
-              {activeNav === "rag" && (
-                <RagKbConfigPanel projectId={projectId} projectPath={projectPath} />
+              {store.loading ? (
+                <div className="ai-set-loading">正在加载设置…</div>
+              ) : (
+                <>
+                  {activeNav === "general" && <GeneralPage reportDirty={reportDirty("general")} />}
+                  {activeNav === "providers" && (
+                    <ProvidersPage
+                      key={providersCategory ?? "default"}
+                      initialCategory={providersCategory ?? undefined}
+                    />
+                  )}
+                  {activeNav === "purposes" && (
+                    <PurposesPage
+                      onNavigateProviders={(category) => {
+                        setProvidersCategory(category);
+                        setActiveNav("providers");
+                      }}
+                    />
+                  )}
+                  {activeNav === "tools" && <ToolsPage projectPath={projectPath} />}
+                  {activeNav === "graph" && <GraphPage />}
+                  {activeNav === "subAgents" && <SubAgentsPage />}
+                  {activeNav === "mcp" && <McpServersPage />}
+                  {activeNav === "ssh" && <SshServersPage />}
+                  {activeNav === "rag" && (
+                    <RagKbConfigPanel projectId={projectId} projectPath={projectPath} />
+                  )}
+                </>
               )}
             </div>
           </section>

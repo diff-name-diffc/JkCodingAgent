@@ -83,7 +83,7 @@ App
 | `workspace/` | `fs.rs`（文件读写/列举）、`rope.rs`（大文件切片） |
 | `platform/` | `app_settings.rs`、`notification.rs`、`usage.rs` |
 | `rag/` | RAG sidecar 传输与管理 |
-| `ssh_tool/` | SSH 命令执行 + AI 安全审查门禁 |
+| `ssh_tool/` | SSH 命令执行 + AI 安全审查门禁。传输层为 russh（纯 Rust 异步，无 libssh2/OpenSSL 依赖）；连接池按 `server_id+session_id` 复用 russh `Handle`，并发命令各走独立 channel（协议级隔离，无逐命令互斥锁）；主机密钥 TOFU 指纹为 key blob 的 SHA-256 hex |
 | `browser.rs` | 内嵌浏览器宿主 |
 | `chat_images.rs` | 聊天图片存储 |
 | `python_runner.rs` | Python 运行器 |
@@ -104,9 +104,16 @@ App
 **持久化：SQLite（rusqlite）**
 - 数据库文件：`~/.jkcodingagent/jkbot.sqlite3`
 - 资源目录：`~/.jkcodingagent/`（含 `memory/`、`skills/`、`local_env/zsh/`、`chat-images/` 等）
-- **应用配置的权威源是全局库**（分层原则：应用生命周期配置一律全局一份；只有随项目变化之物放项目目录）：SSH 服务器/主机密钥/审计（`ssh_servers` 等表）、受管项目注册表（`projects` 表，v31 起替代 projects.json）、MCP 全局注册表（`mcp_servers` 表，与项目级 `mcp.json` 并存、同名项目覆盖）、应用级键值配置（`app_config` 表：theme/全局浏览器选项/RAG 配置）。
-- 主要表：`dispatcher_settings_v2`、`ssh_servers`/`ssh_host_keys`/`ssh_audit_log`、`projects`、`mcp_servers`、`app_config`、`sub_agents`、`dispatcher_sessions`、`dispatcher_messages`、`dispatcher_session_token_usage`、`dispatcher_tool_artifacts`、`chat_images`、`graph_plans`、`graph_node_runs`、分类、关键字索引、python 运行记录等（schema 见 `agent/db/schema.rs`）
-- 模型配置：`dispatcher_settings_v2.model_library` 为唯一权威；用途槽位以 `libraryId` 引用库条目（保存剥离凭据、读取回填），旧内联条目读取时自动挂接。环境变量回退（DASHSCOPE_*/MODEL_NAME 等）默认关闭，仅 `AHA_ALLOW_ENV_PROVIDER=1` 显式开启。
+- **应用配置的权威源是全局库**（分层原则：应用生命周期配置一律全局一份；只有随项目变化之物放项目目录）：SSH 服务器/主机密钥/审计（`ssh_servers` 等表）、受管项目注册表（`projects` 表）、MCP 全局注册表（`mcp_servers` 表，与项目级 `mcp.json` 并存、同名项目覆盖）、应用级键值配置（`app_config` 表：theme/全局浏览器选项/RAG 配置）。
+- 主要表：`dispatcher_settings`、`ssh_servers`/`ssh_host_keys`/`ssh_audit_log`、`projects`、`mcp_servers`、`app_config`、`sub_agents`、`dispatcher_sessions`、`dispatcher_messages`、`dispatcher_session_token_usage`、`dispatcher_tool_artifacts`、`chat_images`、`graph_plans`、`graph_node_runs`、分类、关键字索引、python 运行记录等（schema 见 `agent/db/schema.rs`）
+- 模型配置：`dispatcher_settings.model_library` 为唯一权威；用途槽位以 `libraryId` 引用库条目（保存剥离凭据、读取回填）。环境变量回退（DASHSCOPE_*/MODEL_NAME 等）默认关闭，仅 `AHA_ALLOW_ENV_PROVIDER=1` 显式开启。
+
+**存储 schema 版本策略（桌面应用基线 + 前向迁移）**
+
+- 当前为 **v1 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）：应用开发阶段无存量用户，历史 v0→v33 迁移链已按产品决策清除；`init()` 只有「全新建库到当前形态」与「同版本直开」两条路径，低于基线的旧开发库直接报错并引导运行 `scripts/reset-dev-data.sh`。
+- 后续每次 schema 变更必须同时做两件事：① 更新 `schema.rs` 的基线 DDL（新装库直接得到新形态）；② 递增 `SCHEMA_VERSION` 并在 `init()` 迁移挂载点追加 `if current_version < N` 的事务块（DDL/回填与 `user_version` 推进同事务、幂等可重试）。**禁止改写或删除历史迁移块**——它们是已发布版本用户升级的唯一路径。
+- 破坏性迁移（DROP/清空数据）前必须做整库快照备份（参考 `VACUUM INTO` 方案），并保留「备份失败留痕」的兜底。
+- 领域模块自管的表（sub_agent / ssh / projects / mcp_servers / app_config）的 DDL 放在各领域的 `ensure_*_tx` 助手中，由 `create_baseline` 统一调用，保持单一出处。
 
 > 修改数据结构时，**必须同步更新 `types.ts`（TS）与对应的 Rust 结构体/SQL schema**——否则新字段在序列化时会被静默丢弃。
 
@@ -119,7 +126,7 @@ App
 **设置中心结构（2025 重构后）：** 外壳 `components/AppSettingsDialog.tsx`（左侧栏单层导航 + 内容区两层结构），页面与共享组件在 `components/settings/`：
 - `use-aha-settings.ts` — Aha 设置的统一 store + 失焦/变更自动保存管线（debounce 400ms 整体调用 `aha_save_settings_v2`），通过 React Context 提供给各设置页。
 - `providers/` — 「模型服务」与「模型用途」页。「模型服务」页（`ProvidersPage.tsx` + `ModelEntryCard.tsx`）按模型调用方式分标签（对话/视觉/图片生成/图片编辑/语音识别/语音合成/向量）维护**分类模型库**（`AhaSettingsV2.modelLibrary`，每条目独立持有 url/apiKey/model/别名/启停用，纯函数层在 `model-library.ts`）；「模型用途」页（`PurposesPage.tsx` + `PurposeSelect.tsx`）的下拉选项来自对应分类的库条目，选中后由 `provider-registry.ts` 的 `bindPurpose` 写入携带 `libraryId` 的引用绑定——落库只保留引用（后端剥离 url/apiKey/model），读取时由库条目回填凭据，库更新后用途自动跟随。最近测试结果等无存储字段的 UI 偏好存 localStorage（`provider-prefs.ts`）。旧用户首次打开设置时按分类从已有用途配置播种模型库（`use-aha-settings.ts` + `seedModelLibrary`）。
-- `ssh/` — SSH 服务器页（状态点 + 自动保存 + 删除二次确认）。
+- `ssh/` — SSH 服务器页（状态点 + 自动保存 + 删除二次确认）。服务器 `id` 为机器标识（系统自动生成，不展示/不可编辑），界面展示 `name`（支持中文）；`SshImportDialog` 支持从本机 `~/.ssh/config` 解析导入 Host 条目（后端 `ssh_tool_import_ssh_config`，纯解析不落库，凭据不导入）。
 - 共享组件：`ConfirmDialog`（删除二次确认）、`TestButton`（测试三态：spinner / ✓ms / 错误展开）、`ApiKeyInput`（字段级明文切换）、`StatusBadge`、`EmptyState`、`FieldLabel`（术语 tooltip）、`Section`、`toast.ts` + `Toaster`。
 - 设置中心样式类统一 `.ai-set-*` 前缀（`styles/tailwind.css` 的 `@layer components` 末尾）。
 
@@ -225,7 +232,7 @@ impl AgentTool for MyTool {
 
 ### 组件规模
 
-- **单个组件文件不应超过 400 行。** 当前仍超标的大文件（按现状持续拆分）：`task_runtime/session.rs`（~1500）、`agent/db/schema.rs`（~1500）、`agent/commands.rs`（~1480）、`project/mcp.rs`（~1250）、`browser.rs`（~1240）、`file-viewer/LargeFileViewer.tsx`（~1120）、`components/ProjectPage.tsx`（~680）等。新增功能若落在这些文件，优先拆分再扩展。
+- **单个组件文件不应超过 400 行。** 当前仍超标的大文件（按现状持续拆分）：`task_runtime/session.rs`（~1500）、`agent/commands.rs`（~1480）、`project/mcp.rs`（~1250）、`browser.rs`（~1240）、`file-viewer/LargeFileViewer.tsx`（~1120）、`components/ProjectPage.tsx`（~680）等。新增功能若落在这些文件，优先拆分再扩展。
 
 ---
 
@@ -235,7 +242,7 @@ impl AgentTool for MyTool {
 - **不要引入第二套全局状态库**——UI 状态用 Zustand，异步数据用 React Query。
 - **交互式 UI 原语优先用组件库而非原生元素**——下拉、对话框、提示框等用 Radix（已装 `@radix-ui/*`）或 `components/ui/`，而非 `<select>`/`<dialog>` 或自行实现。图标用 `lucide-react`。
 - **`read_file_content` 不要读取超过 2 MB 的文件**（Rust 侧强制）。
-- **不要在未考虑迁移方案的情况下修改存储 schema**（`~/.jkcodingagent/jkbot.sqlite3`）——字段/表变更会导致现有用户数据损坏。
+- **修改存储 schema 必须遵循「基线 + 前向迁移」规范**（见上文「存储 schema 版本策略」）：更新基线 DDL、递增 `SCHEMA_VERSION`、追加事务化迁移块，三者缺一不可。开发阶段重置本地数据用 `scripts/reset-dev-data.sh`，不要手删 `~/.jkcodingagent/jkbot.sqlite3`（会留下 WAL/迁移残留）。
 - **不要阻塞 Tauri 主线程**——重型操作一律 `spawn_blocking`。
 
 ---

@@ -108,7 +108,7 @@ export function ToolsTab({
     <section className="ai-aha-section">
       <div className="ai-aha-section-title">工具配置</div>
       <div className="ai-aha-section-description">
-        选择当前智能体可使用的工具。未选择时使用默认工具集；MCP 工具会按当前上下文自动发现。
+        选择当前智能体可使用的内置工具。未选择时使用默认工具集；MCP 动态工具不在此列，其启停在「MCP 服务器」页管理，配置后始终注入聊天。
       </div>
 
       <div className="ai-aha-action-row">

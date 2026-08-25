@@ -1194,8 +1194,11 @@ pub async fn aha_list_agent_tools(
     context: String,
     project_path: Option<String>,
 ) -> Result<Vec<ToolInfo>, String> {
+    // project_path 保留以兼容前端既有调用；内置工具枚举与工作区无关，
+    // MCP 动态工具不进工具清单（启停治理在 MCP 注册表层）。
+    let _ = project_path;
     let ctx = AgentContext::from_wire(&context).map_err(|e| e.to_string())?;
-    state.list_agent_tools(ctx, project_path).await
+    state.list_agent_tools(ctx).await
 }
 
 #[tauri::command]

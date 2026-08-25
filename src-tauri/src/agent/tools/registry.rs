@@ -158,16 +158,11 @@ impl ToolRegistry {
                         // 与内置工具重名的动态工具在执行期会被 find_by_name 优先命中
                         // 内置实现而静默遮蔽，定义层面同样去重，避免向 LLM 暴露
                         // 两份同名定义造成调用歧义。
-                        .filter(|spec| !self.name_index.contains_key(&spec.name))
-                        // allowed 白名单对动态（MCP 等）工具同样生效，
-                        // 防止动态工具绕过白名单进入 LLM 可见工具集。
-                        .filter(|spec| {
-                            allowed
-                                .as_ref()
-                                .map(|names| names.contains(spec.name.as_str()))
-                                .unwrap_or(true)
-                        }),
+                        .filter(|spec| !self.name_index.contains_key(&spec.name)),
                 );
+                // 动态（MCP）工具不受 allowed 白名单约束：其名称随服务器配置
+                // 动态生成，静态白名单无法表达；启停治理在 MCP 注册表层
+                // （设置中心全局开关 / 项目启停开关），白名单只约束内置工具。
             }
         }
         specs
@@ -658,8 +653,10 @@ mod tests {
         assert_eq!(input.effective_arguments["flag"], true);
     }
 
+    /// allowed 白名单只约束内置（静态）工具：动态（MCP）工具名称随服务器
+    /// 配置动态生成，静态白名单无法表达，其启停治理在 MCP 注册表层。
     #[test]
-    fn allowed_whitelist_applies_to_dynamic_specs() {
+    fn allowed_whitelist_governs_only_builtin_specs() {
         let registry = ToolRegistry::new(vec![Box::new(TestTool { name: "read_file" })])
             .with_dynamic_provider(Arc::new(TestDynamicProvider {
                 specs: vec![ToolSpec::mcp(
@@ -669,21 +666,27 @@ mod tests {
                 )],
             }));
 
-        // 白名单未包含动态工具时不得泄露给 LLM。
+        // 白名单未包含动态工具时，动态工具仍然放行（白名单管不到）。
         let filtered =
             registry.specs_for_scope(&McpScope::Global, Some(["read_file"].into_iter()), true);
         assert_eq!(
             filtered.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
-            vec!["read_file"]
+            vec!["read_file", "mcp__demo__tool"]
         );
 
-        // 白名单显式包含时放行。
-        let included = registry.specs_for_scope(
+        // 白名单收窄内置工具：未列出的内置工具被过滤，动态工具不受影响。
+        let builtin_excluded = registry.specs_for_scope(
             &McpScope::Global,
-            Some(["read_file", "mcp__demo__tool"].into_iter()),
+            Some(["mcp__demo__tool"].into_iter()),
             true,
         );
-        assert_eq!(included.len(), 2);
+        assert_eq!(
+            builtin_excluded
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["mcp__demo__tool"]
+        );
 
         // 无白名单时全部放行。
         let all = registry.specs_for_scope(

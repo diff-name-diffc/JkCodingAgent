@@ -8,7 +8,7 @@ use super::db::{AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, Dispatcher
 use super::sub_agent::db::ToolInfo;
 use super::sub_agent::SubAgentManager;
 use super::tools::ToolRegistry;
-use crate::mcp::{McpRegistry, McpScope};
+use crate::mcp::McpRegistry;
 use crate::ssh_tool::SshSessionManager;
 
 mod generation;
@@ -213,39 +213,17 @@ impl DispatcherState {
     pub(crate) async fn list_agent_tools(
         &self,
         context: AgentContext,
-        project_path: Option<String>,
     ) -> std::result::Result<Vec<ToolInfo>, String> {
-        let (scope, chat_mode) = match context {
-            AgentContext::Project => {
-                let Some(project_path) = project_path.filter(|path| !path.trim().is_empty()) else {
-                    // 无项目路径：仅静态工具（含子智能体工具）。
-                    // 动态工具依赖作用域上下文，显式不包含（见 tool_catalog 说明）。
-                    return self.enumerate_tools(None, false, false).await;
-                };
-                // G11-03：先 canonicalize + 工作区包含校验，拒绝越权路径。
-                // 校验后的路径已 canonical，直接构造项目作用域。
-                let canonical = self.validate_project_workspace(&project_path).await?;
-                (McpScope::Project(canonical), false)
-            }
-            // 聊天上下文没有项目：MCP 一律来自全局注册表，
-            // 所有聊天会话共享同一份快照。
-            AgentContext::Chat => (McpScope::Global, true),
-        };
-
-        self.services.mcp_registry.ensure_recent(&scope).await?;
-
-        self.enumerate_tools(Some(scope), chat_mode, true).await
+        // 工具清单服务于设置/分类的允许列表配置，只枚举内置工具：
+        // 动态（MCP）工具名随服务器配置动态生成，静态允许列表无法表达，
+        // 其启停治理在 MCP 注册表层（设置中心全局页与项目启停开关）。
+        let chat_mode = matches!(context, AgentContext::Chat);
+        self.enumerate_tools(chat_mode).await
     }
 
-    /// 构建注册表并枚举工具信息。G11-06：整个同步枚举过程（注册表构建、
-    /// MCP 缓存快照查找、schema 构建、排序去重）放入阻塞线程池，
-    /// 不占用 async 执行器线程。
-    async fn enumerate_tools(
-        &self,
-        scope: Option<McpScope>,
-        chat_mode: bool,
-        include_dynamic: bool,
-    ) -> std::result::Result<Vec<ToolInfo>, String> {
+    /// 构建注册表并枚举内置工具信息。G11-06：整个同步枚举过程（注册表构建、
+    /// schema 构建、排序去重）放入阻塞线程池，不占用 async 执行器线程。
+    async fn enumerate_tools(&self, chat_mode: bool) -> std::result::Result<Vec<ToolInfo>, String> {
         let mcp_registry = self.services.mcp_registry.clone();
         let ssh_manager = self.services.ssh_manager.clone();
         let sub_agent_manager = self.services.sub_agent_manager.clone();
@@ -260,11 +238,7 @@ impl DispatcherState {
                     register_sub_agent_tools(&manager, &mut registry);
                 }
             }
-            let mut tools = tool_infos_from_registry(
-                &registry,
-                scope.as_ref(),
-                chat_mode && include_dynamic,
-            );
+            let mut tools = tool_infos_from_registry(&registry, None, false);
             if !chat_mode {
                 tools.retain(|tool| {
                     crate::agent::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES

@@ -35,7 +35,7 @@ use crate::agent::tools::{
     CapabilitySet, ToolAction, ToolContext, ToolRegistry, ToolResult, ToolRunFinishUpdate,
     ToolRuntime, ToolSurface,
 };
-use crate::mcp::{McpRegistry, McpScope};
+use crate::mcp::{tool_definitions_from_snapshot, McpRegistry, McpScope};
 use crate::shared::truncate_for_display;
 use crate::ssh_tool::SshSessionManager;
 
@@ -868,6 +868,22 @@ impl PlainChatAgent {
                 );
             }
         }
+        // MCP 工具按全局作用域快照动态注入（run 入口 prepare_run_workspace 已预热
+        // 缓存）；快照缺失时按空列表降级，不虚构工具。列出显式清单是为了让模型
+        // 明确知道自己已接入哪些第三方工具，避免凭提示词臆断「没有 MCP」。
+        let mcp_tools = tool_definitions_from_snapshot(
+            self.mcp_registry
+                .cached_for_scope(&McpScope::Global)
+                .as_ref(),
+        );
+        if !mcp_tools.is_empty() {
+            prompt.push_str("\n\n## 当前可用 MCP 工具\n\n");
+            prompt.push_str("已接入全局 MCP 注册表中的第三方工具，需要时可直接按工具名调用：\n\n");
+            for tool in &mcp_tools {
+                let description: String = tool.description.trim().chars().take(120).collect();
+                prompt.push_str(&format!("- `{}`：{}\n", tool.canonical_name, description));
+            }
+        }
         prompt
     }
 
@@ -927,7 +943,8 @@ impl PlainChatAgent {
         );
 
         // 与 is_tool_allowed_by_config 同契约：configured 为空 = 全部放行，
-        // 非空才按允许列表（含启用子智能体时的子智能体工具）收敛。
+        // 非空才按允许列表（含启用子智能体时的子智能体工具）收敛内置工具；
+        // 动态（MCP）工具不受允许列表约束（注册表层治理），始终保留。
         if !configured.is_empty() {
             let allowed = effective_allowed_tools_for_chat_category(
                 configured,
@@ -1161,6 +1178,9 @@ impl RunLoopAgent for PlainChatAgent {
 ///    fail-closed，默认/未配置用户将直接失去全部工具且 UI 无「全部」表达方式。
 /// 可执行工具的安全由命令审查门禁（SSH/local_zsh fail-closed 审查）与工作区
 /// 限制兜底，而非依赖此处默认拒绝。
+///
+/// 允许列表只约束内置工具：动态（MCP）工具名随服务器配置生成，静态列表
+/// 无法表达，其启停在 MCP 注册表层治理（注册表层已让白名单不拦截动态工具）。
 fn is_tool_allowed_by_config(configured: &[String], tool_name: &str) -> bool {
     configured.is_empty() || configured.iter().any(|name| name == tool_name)
 }

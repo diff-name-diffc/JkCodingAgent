@@ -2,7 +2,6 @@ import type {
   AnyContentSegment,
   DispatcherMessage,
   DispatcherMessageUsageStats,
-  ProjectMcpStatus,
   TextSegment,
 } from "../../types";
 
@@ -38,22 +37,6 @@ export function formatTokenCountK(totalTokens: number): string {
   if (!Number.isFinite(totalTokens) || totalTokens <= 0) return "0.0k";
   const value = totalTokens / 1000;
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)}k`;
-}
-
-export function getMcpIndicatorState(
-  mcpStatus: ProjectMcpStatus | null,
-  mcpChecking: boolean,
-): { color: string; label: string } {
-  if (mcpChecking) {
-    return { color: "var(--warning)", label: "检查中" };
-  }
-  if (!mcpStatus || mcpStatus.aggregate === "not_configured") {
-    return { color: "var(--text-hint)", label: "未配置" };
-  }
-  if (mcpStatus.aggregate === "healthy") {
-    return { color: "var(--success)", label: "正常" };
-  }
-  return { color: "var(--danger)", label: "异常" };
 }
 
 export function mergeDispatcherMessages(

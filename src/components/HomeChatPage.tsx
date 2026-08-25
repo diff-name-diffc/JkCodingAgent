@@ -5,9 +5,13 @@ import type { BrowserStatus } from "../types";
 import { useDockedBrowserPanel } from "../hooks/useDockedBrowserPanel";
 import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
 import { ChatPageV2 } from "./chat-page-v2";
+import { useGlobalMcpStatus } from "../hooks/use-mcp-status";
 
 const AppSettingsDialog = lazy(() =>
   import("./AppSettingsDialog").then((module) => ({ default: module.AppSettingsDialog })),
+);
+const McpStatusDialog = lazy(() =>
+  import("./McpStatusDialog").then((module) => ({ default: module.McpStatusDialog })),
 );
 const BrowserPanel = lazy(() =>
   import("./BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
@@ -23,6 +27,14 @@ function ChatPaneFallback({ label = "加载中..." }: { label?: string }) {
 export function HomeChatPage() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState("providers");
+  const [showMcpStatus, setShowMcpStatus] = useState(false);
+  // 全局 MCP 状态：所有聊天会话共享同一份配置与快照。
+  const {
+    status: mcpStatus,
+    checking: mcpChecking,
+    refresh: refreshMcpStatus,
+  } = useGlobalMcpStatus(true);
   const [showBrowserPanel, setShowBrowserPanel] = useState(false);
   const [dockedBrowsers, setDockedBrowsers] = useState<
     Map<string, { sessionId: string; url: string | null; state: string }>
@@ -118,7 +130,13 @@ export function HomeChatPage() {
         <ChatPageV2
           sessionId={activeSessionId}
           onSessionChange={setActiveSessionId}
-          onOpenSettings={() => setShowSettings(true)}
+          mcpStatus={mcpStatus}
+          mcpChecking={mcpChecking}
+          onOpenMcpStatus={() => setShowMcpStatus(true)}
+          onOpenSettings={() => {
+            setSettingsInitialTab("providers");
+            setShowSettings(true);
+          }}
         />
       </MarkdownLinkProvider>
 
@@ -140,10 +158,29 @@ export function HomeChatPage() {
         </div>
       )}
 
+      {showMcpStatus && (
+        <Suspense fallback={null}>
+          <McpStatusDialog
+            scope="global"
+            status={mcpStatus}
+            checking={mcpChecking}
+            onRefresh={() => {
+              refreshMcpStatus().catch(console.error);
+            }}
+            onOpenSettings={() => {
+              setShowMcpStatus(false);
+              setSettingsInitialTab("mcp");
+              setShowSettings(true);
+            }}
+            onClose={() => setShowMcpStatus(false)}
+          />
+        </Suspense>
+      )}
+
       {showSettings && (
         <Suspense fallback={null}>
           <AppSettingsDialog
-            initialTab="providers"
+            initialTab={settingsInitialTab}
             onClose={() => setShowSettings(false)}
           />
         </Suspense>

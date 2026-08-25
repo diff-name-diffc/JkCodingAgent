@@ -1,17 +1,13 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, RefreshCw, X } from "lucide-react";
-import type {
-  ProjectMcpStatus,
-  ProjectMcpServerState,
-  ProjectMcpToolTaskSupport,
-} from "../types";
+import type { McpScopeKind, McpStatus, McpServerState, McpToolTaskSupport } from "../types";
 
 function formatTimestamp(timestamp: number): string {
   if (!timestamp) return "未检查";
   return new Date(timestamp).toLocaleString();
 }
 
-function serverStateLabel(state: ProjectMcpServerState): string {
+function serverStateLabel(state: McpServerState): string {
   switch (state) {
     case "disabled":
       return "已禁用";
@@ -26,7 +22,7 @@ function serverStateLabel(state: ProjectMcpServerState): string {
   }
 }
 
-function taskSupportLabel(taskSupport: ProjectMcpToolTaskSupport): string {
+function taskSupportLabel(taskSupport: McpToolTaskSupport): string {
   switch (taskSupport) {
     case "required":
       return "task 必需";
@@ -38,7 +34,7 @@ function taskSupportLabel(taskSupport: ProjectMcpToolTaskSupport): string {
   }
 }
 
-function stateColor(state: ProjectMcpServerState): string {
+function stateColor(state: McpServerState): string {
   switch (state) {
     case "disabled":
       return "var(--text-hint)";
@@ -57,25 +53,36 @@ function toolKey(serverName: string, toolName: string): string {
   return `${serverName}::${toolName}`;
 }
 
+/**
+ * MCP 状态弹窗，按作用域渲染：
+ * - `project`：展示合并后状态（全局 ∪ 项目文件），支持启停服务器
+ *   （全局条目 copy-on-write 进项目 `.jkcodingagent/mcp.json`）；
+ * - `global`：所有聊天会话共享的全局注册表状态，只读展示，
+ *   配置编辑入口在设置中心「MCP 服务器」页。
+ */
 export function McpStatusDialog({
-  projectPath,
+  scope,
   status,
   checking,
-  updatingServer,
+  updatingServer = null,
   onRefresh,
   onToggleServerEnabled,
+  onOpenSettings,
   onClose,
 }: {
-  projectPath: string;
-  status: ProjectMcpStatus | null;
+  scope: McpScopeKind;
+  status: McpStatus | null;
   checking: boolean;
-  updatingServer: string | null;
+  updatingServer?: string | null;
   onRefresh: () => void;
-  onToggleServerEnabled: (serverName: string, enabled: boolean) => void;
+  onToggleServerEnabled?: (serverName: string, enabled: boolean) => void;
+  onOpenSettings?: () => void;
   onClose: () => void;
 }) {
   const [expandedServers, setExpandedServers] = useState<Record<string, boolean>>({});
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
+
+  const isGlobal = scope === "global";
 
   useEffect(() => {
     if (!status) return;
@@ -104,12 +111,19 @@ export function McpStatusDialog({
       <div className="ai-mcp-dialog ai-migrated-mcp-dialog" onClick={(event) => event.stopPropagation()}>
         <div className="ai-mcp-header">
           <div>
-            <div className="ai-mcp-title">项目级 MCP 状态</div>
+            <div className="ai-mcp-title">{isGlobal ? "全局 MCP 状态" : "项目级 MCP 状态"}</div>
             <div className="ai-mcp-subtitle">
-              这里只支持启用或禁用 MCP server；其余配置仍通过 `.jkcodingagent/mcp.json` 管理
+              {isGlobal
+                ? "全局注册表对所有聊天与项目生效；服务器配置在设置中心「MCP 服务器」页管理"
+                : "这里只支持启用或禁用 MCP server；其余配置仍通过 `.jkcodingagent/mcp.json` 管理"}
             </div>
           </div>
           <div className="ai-mcp-header-actions">
+            {isGlobal && onOpenSettings && (
+              <button className="ai-mcp-header-button" onClick={onOpenSettings}>
+                前往设置
+              </button>
+            )}
             <button className="ai-mcp-header-button" onClick={onRefresh} disabled={checking}>
               <RefreshCw
                 size={14}
@@ -126,14 +140,23 @@ export function McpStatusDialog({
         {status ? (
           <div className="ai-mcp-body chat-scroll">
             <div className="ai-mcp-meta-card">
-              <div className="ai-mcp-meta-row">
-                <span className="ai-mcp-meta-label">工作区</span>
-                <span className="ai-mcp-meta-value">{projectPath}</span>
-              </div>
-              <div className="ai-mcp-meta-row">
-                <span className="ai-mcp-meta-label">配置文件</span>
-                <span className="ai-mcp-meta-value">{status.configPath}</span>
-              </div>
+              {isGlobal ? (
+                <div className="ai-mcp-meta-row">
+                  <span className="ai-mcp-meta-label">配置来源</span>
+                  <span className="ai-mcp-meta-value">全局注册表（应用数据库）</span>
+                </div>
+              ) : (
+                <>
+                  <div className="ai-mcp-meta-row">
+                    <span className="ai-mcp-meta-label">工作区</span>
+                    <span className="ai-mcp-meta-value">{status.projectPath ?? "—"}</span>
+                  </div>
+                  <div className="ai-mcp-meta-row">
+                    <span className="ai-mcp-meta-label">配置文件</span>
+                    <span className="ai-mcp-meta-value">{status.configPath ?? "—"}</span>
+                  </div>
+                </>
+              )}
               <div className="ai-mcp-meta-row">
                 <span className="ai-mcp-meta-label">最近检查</span>
                 <span className="ai-mcp-meta-value">{formatTimestamp(status.checkedAt)}</span>
@@ -152,8 +175,9 @@ export function McpStatusDialog({
 
             {status.servers.length === 0 ? (
               <div className="ai-mcp-empty">
-                当前没有配置任何 MCP server。请直接编辑 `.jkcodingagent/mcp.json`
-                后重新进入项目或点“重新检查”。
+                {isGlobal
+                  ? "还没有配置任何全局 MCP server。请前往设置中心「MCP 服务器」页添加。"
+                  : "当前没有配置任何 MCP server。请直接编辑 `.jkcodingagent/mcp.json` 后重新进入项目或点“重新检查”。"}
               </div>
             ) : (
               <div className="ai-mcp-server-list">
@@ -203,25 +227,27 @@ export function McpStatusDialog({
                             {server.summary}
                           </span>
 
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={server.enabled}
-                            aria-label={`${server.name} ${server.enabled ? "已启用" : "已禁用"}`}
-                            disabled={busy || checking}
-                            className={server.enabled ? "ai-mcp-switch is-on" : "ai-mcp-switch"}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onToggleServerEnabled(server.name, !server.enabled);
-                            }}
-                          >
-                            <span className="ai-mcp-switch-label">
-                              {busy ? "保存中" : server.enabled ? "启用" : "禁用"}
-                            </span>
-                            <span
-                              className="ai-mcp-switch-thumb"
-                            />
-                          </button>
+                          {!isGlobal && onToggleServerEnabled && (
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={server.enabled}
+                              aria-label={`${server.name} ${server.enabled ? "已启用" : "已禁用"}`}
+                              disabled={busy || checking}
+                              className={server.enabled ? "ai-mcp-switch is-on" : "ai-mcp-switch"}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onToggleServerEnabled(server.name, !server.enabled);
+                              }}
+                            >
+                              <span className="ai-mcp-switch-label">
+                                {busy ? "保存中" : server.enabled ? "启用" : "禁用"}
+                              </span>
+                              <span
+                                className="ai-mcp-switch-thumb"
+                              />
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -231,7 +257,7 @@ export function McpStatusDialog({
 
                           {!server.enabled ? (
                             <div className="ai-mcp-hint">
-                              当前 server 已禁用，不参与状态校验，也不会向调度智能体注入工具。
+                              当前 server 已禁用，不参与状态校验，也不会向智能体注入工具。
                             </div>
                           ) : server.tools.length === 0 ? (
                             <div className="ai-mcp-hint">

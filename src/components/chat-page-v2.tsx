@@ -19,7 +19,7 @@ import type {
   PythonCodeRunRecord,
   PythonCodeRunTarget,
   PythonRunEvent,
-  ProjectMcpStatus,
+  McpStatus,
 } from "../types";
 import {
   useChatCategoriesQuery,
@@ -36,10 +36,8 @@ import {
 import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTokenUsage";
 import { useLiveSessionState } from "./dispatcher-chat/useLiveSessionState";
 import { useDispatcherActions } from "./dispatcher-chat/useDispatcherActions";
-import {
-  mergeDispatcherMessages,
-  getMcpIndicatorState,
-} from "./dispatcher-chat/dispatcherChatUtils";
+import { mergeDispatcherMessages } from "./dispatcher-chat/dispatcherChatUtils";
+import { getMcpIndicatorState } from "../hooks/use-mcp-status";
 import { cleanupDispatcherSession, subscribeDispatcherMessages } from "./dispatcherSessionStore";
 import { ChatShell } from "./chat/chat-shell";
 import type { ComposerMode } from "./chat/prompt-input";
@@ -77,7 +75,7 @@ export interface ChatPageV2Props {
   onSessionChange?: (sessionId: string | null) => void;
   conversationKind?: "project" | "chat";
   projectPath?: string;
-  mcpStatus?: ProjectMcpStatus | null;
+  mcpStatus?: McpStatus | null;
   mcpChecking?: boolean;
   onOpenSettings: () => void;
   onOpenMcpStatus?: () => void;
@@ -741,6 +739,9 @@ export function ChatPageV2({
       title={activeSessionTitle}
       isLoading={liveState.isLoading || liveState.hasPendingRun}
       hasMessages={messages.length > 0}
+      mcpStatus={mcpStatus}
+      mcpChecking={mcpChecking}
+      onOpenMcpStatus={onOpenMcpStatus}
       onClearMessages={handleClearMessages}
       onOpenSettings={onOpenSettings}
     />
@@ -874,21 +875,36 @@ function PlainChatHeader({
   title,
   isLoading,
   hasMessages,
+  mcpStatus,
+  mcpChecking,
+  onOpenMcpStatus,
   onClearMessages,
   onOpenSettings,
 }: {
   title: string | null;
   isLoading: boolean;
   hasMessages: boolean;
+  mcpStatus: McpStatus | null;
+  mcpChecking: boolean;
+  onOpenMcpStatus?: () => void;
   onClearMessages: () => void;
   onOpenSettings: () => void;
 }) {
+  const mcpIndicator = getMcpIndicatorState(mcpStatus, mcpChecking);
+
   return (
     <div className="flex min-h-12 items-center gap-3 px-5">
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate text-[15px] font-semibold">{title?.trim() || "新对话"}</span>
         {isLoading && <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />}
       </div>
+      {onOpenMcpStatus && (
+        <Button variant="outline" size="sm" onClick={onOpenMcpStatus} title="查看全局 MCP 状态">
+          <span className="h-2 w-2 rounded-full" style={{ background: mcpIndicator.color }} />
+          MCP
+          <span className="font-normal text-muted-foreground">{mcpIndicator.label}</span>
+        </Button>
+      )}
       {hasMessages && (
         <Button variant="ghost" size="sm" onClick={onClearMessages}>
           清空
@@ -915,7 +931,7 @@ function ProjectChatHeader({
 }: {
   isLoading: boolean;
   hasMessages: boolean;
-  mcpStatus: ProjectMcpStatus | null;
+  mcpStatus: McpStatus | null;
   mcpChecking: boolean;
   graphAvailable: boolean;
   onOpenGraphPanel: () => void;

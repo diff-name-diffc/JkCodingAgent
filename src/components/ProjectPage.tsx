@@ -3,7 +3,6 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Project,
-  ProjectMcpStatus,
   BrowserStatus,
 } from "../types";
 import { SessionPanel } from "./SessionPanel";
@@ -13,6 +12,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
 import { ChatPageV2 } from "./chat-page-v2";
 import { useProjectPanels } from "../hooks/useProjectPanels";
+import { useProjectMcpStatus } from "../hooks/use-mcp-status";
 import {
   ProjectMainArea,
   ProjectRightPanelHost,
@@ -126,9 +126,13 @@ export function ProjectPage({
   const [showShellTerminal, setShowShellTerminal] = useState(false);
   const [showDispatcherSettings, setShowDispatcherSettings] = useState(false);
   const [showMcpStatus, setShowMcpStatus] = useState(false);
-  const [mcpStatus, setMcpStatus] = useState<ProjectMcpStatus | null>(null);
-  const [mcpChecking, setMcpChecking] = useState(false);
-  const [mcpUpdatingServer, setMcpUpdatingServer] = useState<string | null>(null);
+  const {
+    status: mcpStatus,
+    checking: mcpChecking,
+    updatingServer: mcpUpdatingServer,
+    refresh: refreshMcpStatus,
+    setServerEnabled: toggleMcpServerEnabled,
+  } = useProjectMcpStatus(project.path, visible);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
   const [showSessionWorkbench, setShowSessionWorkbench] = useState(true);
@@ -191,44 +195,6 @@ export function ProjectPage({
     }, 600);
     return () => window.clearTimeout(timer);
   }, [visible]);
-
-  const refreshMcpStatus = useCallback(async () => {
-    setMcpChecking(true);
-    try {
-      const nextStatus = await invoke<ProjectMcpStatus>("refresh_project_mcp_status", {
-        projectPath: project.path,
-      });
-      setMcpStatus(nextStatus);
-    } catch (error) {
-      console.error("refresh_project_mcp_status 失败:", error);
-    } finally {
-      setMcpChecking(false);
-    }
-  }, [project.path]);
-
-  const handleToggleMcpServerEnabled = useCallback(
-    async (serverName: string, enabled: boolean) => {
-      setMcpUpdatingServer(serverName);
-      try {
-        const nextStatus = await invoke<ProjectMcpStatus>("set_project_mcp_server_enabled", {
-          projectPath: project.path,
-          serverName,
-          enabled,
-        });
-        setMcpStatus(nextStatus);
-      } catch (error) {
-        console.error("set_project_mcp_server_enabled 失败:", error);
-      } finally {
-        setMcpUpdatingServer((current) => (current === serverName ? null : current));
-      }
-    },
-    [project.path],
-  );
-
-  useEffect(() => {
-    if (!visible) return;
-    refreshMcpStatus().catch(console.error);
-  }, [refreshMcpStatus, visible]);
 
   useEffect(() => {
     if (!visible) return;
@@ -641,7 +607,7 @@ export function ProjectPage({
       {showMcpStatus && (
         <Suspense fallback={null}>
           <McpStatusDialog
-            projectPath={project.path}
+            scope="project"
             status={mcpStatus}
             checking={mcpChecking}
             updatingServer={mcpUpdatingServer}
@@ -649,7 +615,7 @@ export function ProjectPage({
               refreshMcpStatus().catch(console.error);
             }}
             onToggleServerEnabled={(serverName, enabled) => {
-              handleToggleMcpServerEnabled(serverName, enabled).catch(console.error);
+              toggleMcpServerEnabled(serverName, enabled).catch(console.error);
             }}
             onClose={() => setShowMcpStatus(false)}
           />

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, Plug, Plus, RefreshCw, Trash2 } from "lucide-react";
-import type { ProjectMcpConfig, ProjectMcpServerConfig } from "../../../types";
+import type { McpConfig, McpServerConfig } from "../../../types";
 import { cn } from "../../../lib/cn";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { EmptyState } from "../EmptyState";
@@ -21,10 +21,10 @@ const TRANSPORT_LABELS: Record<TransportKind, string> = {
 
 interface McpEntry {
   name: string;
-  server: ProjectMcpServerConfig;
+  server: McpServerConfig;
 }
 
-const EMPTY_SERVER: ProjectMcpServerConfig = {
+const EMPTY_SERVER: McpServerConfig = {
   enabled: true,
   transport: "stdio",
   command: "",
@@ -34,7 +34,7 @@ const EMPTY_SERVER: ProjectMcpServerConfig = {
 };
 
 /** 条目列表 ↔ mcpServers Record 的双向转换（保持插入顺序）。 */
-function toEntries(config: ProjectMcpConfig): McpEntry[] {
+function toEntries(config: McpConfig): McpEntry[] {
   return Object.entries(config.mcpServers ?? {}).map(([name, server]) => ({
     name,
     server: {
@@ -46,8 +46,8 @@ function toEntries(config: ProjectMcpConfig): McpEntry[] {
   }));
 }
 
-function toConfig(entries: McpEntry[]): ProjectMcpConfig {
-  const mcpServers: Record<string, ProjectMcpServerConfig> = {};
+function toConfig(entries: McpEntry[]): McpConfig {
+  const mcpServers: Record<string, McpServerConfig> = {};
   for (const { name, server } of entries) {
     const key = name.trim();
     if (!key) continue;
@@ -106,7 +106,7 @@ export function McpServersPage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const config = await invoke<ProjectMcpConfig>("mcp_get_global_config");
+      const config = await invoke<McpConfig>("mcp_global_config_get");
       setEntries(toEntries(config));
     } catch (err) {
       setLoadError(String(err));
@@ -126,7 +126,7 @@ export function McpServersPage() {
     if (savingRef.current) return;
     savingRef.current = true;
     try {
-      const saved = await invoke<ProjectMcpConfig>("mcp_save_global_config", {
+      const saved = await invoke<McpConfig>("mcp_global_config_save", {
         config: toConfig(entriesRef.current),
       });
       setEntries(toEntries(saved));
@@ -191,7 +191,7 @@ export function McpServersPage() {
       <Section
         id="mcp-servers"
         title="MCP 服务器"
-        description="全局 MCP 注册表：这里的服务器对所有项目与聊天会话生效，配置保存在应用数据库。项目可在自身 .jkcodingagent/mcp.json 中定义同名服务器覆盖全局条目。字段失焦或开关切换后自动保存。"
+        description="全局 MCP 注册表：这里的服务器对所有聊天会话与项目生效，配置保存在应用数据库，跟应用生命周期相同。项目可在自身 .jkcodingagent/mcp.json 中定义同名服务器覆盖全局条目。全局服务器没有项目语境，cwd 必须使用绝对路径。字段失焦或开关切换后自动保存。"
       >
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -279,7 +279,7 @@ function McpServerCard({
 }) {
   const { name, server } = entry;
   const transport = (server.transport ?? "stdio") as TransportKind;
-  const updateServer = (updater: (server: ProjectMcpServerConfig) => ProjectMcpServerConfig) =>
+  const updateServer = (updater: (server: McpServerConfig) => McpServerConfig) =>
     onUpdate((prev) => ({ ...prev, server: updater(prev.server) }));
 
   return (
@@ -396,7 +396,7 @@ function McpServerCard({
                 />
               </div>
               <div className="ai-set-field">
-                <FieldLabel label="工作目录（可选）" />
+                <FieldLabel label="工作目录（可选）" tip="全局服务器必须使用绝对路径；相对路径仅项目级 mcp.json 可用。" />
                 <input
                   className="ai-settings-input font-mono"
                   value={server.cwd ?? ""}

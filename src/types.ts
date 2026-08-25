@@ -11,46 +11,52 @@ export interface ProjectDeleteResult {
   deletedSessionIds: string[];
 }
 
-export type ProjectMcpAggregateStatus =
+/** MCP 配置作用域：全局（所有聊天共享）或项目（全局 ∪ 项目 mcp.json）。 */
+export type McpScopeKind = "global" | "project";
+
+export type McpAggregateStatus =
   "not_configured" | "healthy" | "degraded" | "invalid_config";
 
-export type ProjectMcpServerState =
+export type McpServerState =
   "disabled" | "healthy" | "invalid_config" | "spawn_failed" | "connection_failed";
 
-export type ProjectMcpToolTaskSupport = "forbidden" | "optional" | "required";
+export type McpToolTaskSupport = "forbidden" | "optional" | "required";
 
-export interface ProjectMcpToolStatus {
+export interface McpToolStatus {
   name: string;
   exposedName: string;
   description: string;
-  taskSupport: ProjectMcpToolTaskSupport;
+  taskSupport: McpToolTaskSupport;
 }
 
-export interface ProjectMcpServerStatus {
+export interface McpServerStatus {
   name: string;
   transport: string;
   enabled: boolean;
-  state: ProjectMcpServerState;
+  state: McpServerState;
   summary: string;
   error?: string;
   toolCount: number;
-  tools: ProjectMcpToolStatus[];
+  tools: McpToolStatus[];
 }
 
-export interface ProjectMcpStatus {
-  projectPath: string;
-  configPath: string;
-  aggregate: ProjectMcpAggregateStatus;
+export interface McpStatus {
+  scope: McpScopeKind;
+  /** 项目作用域为项目根路径；全局作用域无。 */
+  projectPath?: string;
+  /** 项目作用域为项目级 mcp.json 路径；全局配置存于应用数据库，无。 */
+  configPath?: string;
+  aggregate: McpAggregateStatus;
   checkedAt: number;
   serverCount: number;
   enabledServerCount: number;
   healthyServerCount: number;
-  servers: ProjectMcpServerStatus[];
+  servers: McpServerStatus[];
   configError?: string;
 }
 
 /** MCP 服务器配置（全局注册表与项目级 mcp.json 共用同一形状）。 */
-export interface ProjectMcpServerConfig {
+export interface McpServerConfig {
   enabled?: boolean;
   transport?: string;
   command?: string;
@@ -63,8 +69,8 @@ export interface ProjectMcpServerConfig {
   startupTimeoutSeconds?: number;
 }
 
-export interface ProjectMcpConfig {
-  mcpServers: Record<string, ProjectMcpServerConfig>;
+export interface McpConfig {
+  mcpServers: Record<string, McpServerConfig>;
 }
 
 export interface SshServerConfig {

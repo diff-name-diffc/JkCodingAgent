@@ -35,7 +35,7 @@ use crate::agent::tools::{
     CapabilitySet, ToolAction, ToolContext, ToolRegistry, ToolResult, ToolRunFinishUpdate,
     ToolRuntime, ToolSurface,
 };
-use crate::project::mcp::{ensure_project_mcp_file, ProjectMcpRegistry};
+use crate::mcp::{ensure_project_mcp_file, McpRegistry};
 use crate::shared::truncate_for_display;
 use crate::ssh_tool::SshSessionManager;
 
@@ -55,7 +55,7 @@ pub struct PlainChatAgent {
     /// 见 `is_tool_allowed_by_config` 的说明。
     allowed_tools: Mutex<Vec<String>>,
     category_context: Mutex<Option<(String, String)>>,
-    project_mcp_registry: ProjectMcpRegistry,
+    project_mcp_registry: McpRegistry,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
     /// 本 run 会话已启用的子智能体快照。run 入口（`build_run_prompt`）异步
     /// 拉取一次（spawn_blocking）后，同一 run 内的同步路径（系统提示重建、
@@ -79,7 +79,7 @@ enum ExecutedToolFinalize {
 impl PlainChatAgent {
     pub fn new(
         config: DispatcherAgentConfig,
-        project_mcp_registry: ProjectMcpRegistry,
+        project_mcp_registry: McpRegistry,
         ssh_manager: SshSessionManager,
         sub_agent_manager: Option<Arc<SubAgentManager>>,
     ) -> Self {

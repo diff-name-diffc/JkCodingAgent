@@ -8,7 +8,7 @@ use super::db::{AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, Dispatcher
 use super::sub_agent::db::ToolInfo;
 use super::sub_agent::SubAgentManager;
 use super::tools::ToolRegistry;
-use crate::project::mcp::ProjectMcpRegistry;
+use crate::mcp::McpRegistry;
 use crate::ssh_tool::SshSessionManager;
 
 mod generation;
@@ -47,14 +47,14 @@ pub struct DispatcherState {
 /// 跨轮次共享的基础服务集合。单独抽出便于构造时一次性初始化。
 struct AgentServices {
     config: DispatcherAgentConfig,
-    project_mcp_registry: ProjectMcpRegistry,
+    project_mcp_registry: McpRegistry,
     ssh_manager: SshSessionManager,
     db: DispatcherDb,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
 }
 
 impl DispatcherState {
-    pub async fn new(project_mcp_registry: ProjectMcpRegistry) -> Result<Self> {
+    pub async fn new(project_mcp_registry: McpRegistry) -> Result<Self> {
         let config = tokio::task::spawn_blocking(DispatcherAgentConfig::load)
             .await
             .context("等待智能体配置初始化任务失败")?
@@ -128,7 +128,7 @@ impl DispatcherState {
         self.services.config.clone()
     }
 
-    pub(crate) fn project_mcp_registry(&self) -> ProjectMcpRegistry {
+    pub(crate) fn project_mcp_registry(&self) -> McpRegistry {
         self.services.project_mcp_registry.clone()
     }
 

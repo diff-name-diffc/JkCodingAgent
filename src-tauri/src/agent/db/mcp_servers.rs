@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Transaction};
 
 use super::DispatcherDb;
-use crate::project::mcp::{ProjectMcpConfig, ProjectMcpServerConfig};
+use crate::mcp::{McpConfig, McpServerConfig};
 
 const MCP_SERVERS_DDL: &str = "CREATE TABLE IF NOT EXISTS mcp_servers (
     name TEXT PRIMARY KEY,
@@ -24,7 +24,7 @@ pub(crate) fn ensure_mcp_servers_table_tx(tx: &Transaction<'_>) -> Result<()> {
 
 impl DispatcherDb {
     /// 全局 MCP 配置（与项目级 mcp.json 同构，enabled 落到每个 server 上）。
-    pub fn get_global_mcp_config(&self) -> Result<ProjectMcpConfig> {
+    pub fn get_global_mcp_config(&self) -> Result<McpConfig> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare("SELECT name, enabled, config_json FROM mcp_servers ORDER BY sort_order, name")
@@ -41,16 +41,16 @@ impl DispatcherDb {
             .collect::<std::result::Result<Vec<_>, _>>()
             .context("load mcp servers")?;
         for (name, enabled, raw) in rows {
-            let mut server: ProjectMcpServerConfig = serde_json::from_str(&raw)
+            let mut server: McpServerConfig = serde_json::from_str(&raw)
                 .with_context(|| format!("parse mcp server {name} config"))?;
             server.enabled = Some(enabled != 0);
             servers.insert(name, server);
         }
-        Ok(ProjectMcpConfig { servers })
+        Ok(McpConfig { servers })
     }
 
     /// 整列表同步保存（先清空再按顺序插入），与前端「重写整个列表」语义一致。
-    pub fn save_global_mcp_config(&self, config: &ProjectMcpConfig) -> Result<()> {
+    pub fn save_global_mcp_config(&self, config: &McpConfig) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM mcp_servers", [])
@@ -89,10 +89,10 @@ mod tests {
     #[test]
     fn save_global_config_roundtrips_and_replaces() {
         let (db, _root) = test_db();
-        let mut config = ProjectMcpConfig::default();
+        let mut config = McpConfig::default();
         config.servers.insert(
             "a".to_string(),
-            ProjectMcpServerConfig {
+            McpServerConfig {
                 command: Some("node".to_string()),
                 args: vec!["a.js".to_string()],
                 ..Default::default()
@@ -100,10 +100,10 @@ mod tests {
         );
         db.save_global_mcp_config(&config).unwrap();
 
-        let mut next = ProjectMcpConfig::default();
+        let mut next = McpConfig::default();
         next.servers.insert(
             "b".to_string(),
-            ProjectMcpServerConfig {
+            McpServerConfig {
                 url: Some("http://x/mcp".to_string()),
                 enabled: Some(false),
                 ..Default::default()

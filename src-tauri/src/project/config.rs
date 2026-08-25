@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use super::mcp::ensure_project_mcp_file;
+use crate::mcp::ensure_project_mcp_file;
 use super::storage::StorageError;
 use crate::shared::error::{CommandResult, IntoCommandResult};
 use anyhow::Context;

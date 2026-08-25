@@ -1,7 +1,7 @@
 use crate::agent::DispatcherState;
 use crate::{
-    agent, browser, chat_images, platform, project, python_runner, rag, scm, shared::TaskManager,
-    ssh_tool, task_runtime, workspace,
+    agent, browser, chat_images, mcp, platform, project, python_runner, rag, scm,
+    shared::TaskManager, ssh_tool, task_runtime, workspace,
 };
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -12,7 +12,7 @@ fn build_task_manager() -> TaskManager {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let project_mcp_registry = project::mcp::ProjectMcpRegistry::default();
+    let project_mcp_registry = mcp::McpRegistry::default();
     let dispatcher_mcp_registry = project_mcp_registry.clone();
 
     tauri::Builder::default()
@@ -144,10 +144,10 @@ pub fn run() {
             scm::git::git_pull,
             scm::git::git_remote_counts,
             project::config::init_project_config,
-            project::mcp::refresh_project_mcp_status,
-            project::mcp::set_project_mcp_server_enabled,
-            project::mcp::mcp_get_global_config,
-            project::mcp::mcp_save_global_config,
+            mcp::commands::refresh_project_mcp_status,
+            mcp::commands::set_project_mcp_server_enabled,
+            mcp::commands::mcp_get_global_config,
+            mcp::commands::mcp_save_global_config,
             ssh_tool::ssh_tool_load_config,
             ssh_tool::ssh_tool_load_audit,
             ssh_tool::ssh_tool_save_config,

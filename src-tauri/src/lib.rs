@@ -2,6 +2,7 @@ mod agent;
 mod app;
 mod browser;
 mod chat_images;
+mod mcp;
 mod platform;
 mod project;
 mod python_runner;

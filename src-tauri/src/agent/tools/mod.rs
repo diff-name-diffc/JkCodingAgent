@@ -26,12 +26,12 @@ pub const ORCHESTRATOR_RUNTIME_TOOL_NAMES: [&str; 4] = ["read_file", "list_dir",
 pub(crate) const MAX_TOOL_CALLS_PER_BATCH: usize = 32;
 pub(crate) const MAX_PARALLEL_TOOL_CALLS: usize = 4;
 
-use crate::project::mcp::ProjectMcpRegistry;
+use crate::mcp::McpRegistry;
 use crate::ssh_tool::SshSessionManager;
 
 impl ToolRegistry {
     pub fn default_tools(
-        project_mcp_registry: ProjectMcpRegistry,
+        project_mcp_registry: McpRegistry,
         ssh_manager: SshSessionManager,
     ) -> Self {
         let mut tools = builtin::builtin_tools(ssh_manager);
@@ -40,7 +40,7 @@ impl ToolRegistry {
     }
 
     pub fn plain_chat_tools(
-        project_mcp_registry: ProjectMcpRegistry,
+        project_mcp_registry: McpRegistry,
         ssh_manager: SshSessionManager,
     ) -> Self {
         let mut tools = builtin::plain_chat_tools(ssh_manager);

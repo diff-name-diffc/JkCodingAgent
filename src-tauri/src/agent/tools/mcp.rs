@@ -10,10 +10,10 @@ use super::result::ToolResult;
 use super::spec::ToolSpec;
 use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
 use crate::agent::ssh_review::{review_shell_command, CommandReviewPayload, CommandReviewTarget};
-use crate::project::mcp::{tool_definitions_from_snapshot, ProjectMcpRegistry};
+use crate::mcp::{tool_definitions_from_snapshot, McpRegistry};
 
 pub(super) fn mcp_tool_bridge(
-    project_mcp_registry: ProjectMcpRegistry,
+    project_mcp_registry: McpRegistry,
 ) -> Arc<dyn DynamicToolProvider> {
     Arc::new(McpToolBridge {
         project_mcp_registry,
@@ -21,7 +21,7 @@ pub(super) fn mcp_tool_bridge(
 }
 
 struct McpToolBridge {
-    project_mcp_registry: ProjectMcpRegistry,
+    project_mcp_registry: McpRegistry,
 }
 
 #[async_trait]

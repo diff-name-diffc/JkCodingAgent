@@ -43,7 +43,7 @@ use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::DispatcherDb;
 use crate::agent::state::GraphRunHandle;
 use crate::agent::tools::{ToolContext, ToolRegistry};
-use crate::project::mcp::ProjectMcpRegistry;
+use crate::mcp::McpRegistry;
 use crate::ssh_tool::SshSessionManager;
 
 static EVENT_SEQUENCE: AtomicI64 = AtomicI64::new(0);
@@ -51,7 +51,7 @@ static EVENT_SEQUENCE: AtomicI64 = AtomicI64::new(0);
 pub(crate) struct GraphRunServices {
     pub db: DispatcherDb,
     pub agent_config: DispatcherAgentConfig,
-    pub project_mcp_registry: ProjectMcpRegistry,
+    pub project_mcp_registry: McpRegistry,
     pub ssh_manager: SshSessionManager,
 }
 

@@ -51,20 +51,28 @@ impl DispatcherDb {
 
     /// 整列表同步保存（先清空再按顺序插入），与前端「重写整个列表」语义一致。
     pub fn save_global_mcp_config(&self, config: &McpConfig) -> Result<()> {
+        // 序列化在事务外先行完成：任何条目无法序列化都整体失败，
+        // 绝不把 `{}` 静默写进注册表（大声失败）。
+        let mut rows = Vec::with_capacity(config.servers.len());
+        for (sort_order, (name, server)) in config.servers.iter().enumerate() {
+            let config_json = serde_json::to_string(server)
+                .with_context(|| format!("serialize mcp server {name}"))?;
+            rows.push((
+                name.clone(),
+                server.enabled.unwrap_or(true),
+                config_json,
+                sort_order,
+            ));
+        }
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM mcp_servers", [])
             .context("clear mcp_servers")?;
-        for (sort_order, (name, server)) in config.servers.iter().enumerate() {
+        for (name, enabled, config_json, sort_order) in rows {
             tx.execute(
                 "INSERT INTO mcp_servers (name, enabled, config_json, sort_order)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    name,
-                    server.enabled.unwrap_or(true) as i64,
-                    serde_json::to_string(server).unwrap_or_else(|_| "{}".to_string()),
-                    sort_order as i64
-                ],
+                params![name, enabled as i64, config_json, sort_order as i64],
             )
             .with_context(|| format!("insert mcp server {name}"))?;
         }
@@ -115,5 +123,22 @@ mod tests {
         assert_eq!(loaded.servers.len(), 1);
         assert!(loaded.servers.contains_key("b"));
         assert_eq!(loaded.servers["b"].enabled, Some(false));
+    }
+
+    #[test]
+    fn corrupt_config_json_fails_loudly_on_read() {
+        let (db, _root) = test_db();
+        db.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO mcp_servers (name, enabled, config_json, sort_order)
+                 VALUES ('broken', 1, '{not json', 0)",
+                [],
+            )
+            .unwrap();
+
+        let error = db.get_global_mcp_config().unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("broken"), "错误应指明服务器名：{message}");
     }
 }

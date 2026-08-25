@@ -254,3 +254,27 @@ pub fn tool_definitions_from_snapshot(snapshot: Option<&McpSnapshot>) -> Vec<Res
     tools.sort_by(|left, right| left.canonical_name.cmp(&right.canonical_name));
     tools
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_scope_canonicalizes_to_a_single_cache_key() {
+        // macOS 的 temp_dir 本身经符号链接（/tmp → /private/tmp）：
+        // 不同写法必须归一到同一作用域键。
+        let temp = std::env::temp_dir().canonicalize().unwrap();
+        let via_dot = temp.join(".");
+        let scope = McpScope::project(&via_dot).unwrap();
+        assert_eq!(scope, McpScope::Project(temp));
+        assert!(matches!(scope.kind(), McpScopeKind::Project));
+        assert!(McpScope::Global != scope);
+    }
+
+    #[test]
+    fn project_scope_fails_loudly_for_missing_path() {
+        let missing = PathBuf::from("/definitely/not/existing/mcp-scope-test");
+        let error = McpScope::project(&missing).unwrap_err();
+        assert!(error.contains("项目路径不可用"));
+    }
+}

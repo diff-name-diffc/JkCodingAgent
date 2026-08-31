@@ -73,19 +73,15 @@ impl OrchestratorAgent {
             }))
         };
 
-        let broker = CapabilityBroker::new(
-            &self.tools,
-            runtime_capabilities.clone(),
-            tool_context,
-        )
-        .include_dynamic(false)
-        .with_cancellation(program_cancel_rx)
-        .with_audit(BrokerAudit {
-            db,
-            workspace_id,
-            on_event,
-            parent_run_id,
-        });
+        let broker = CapabilityBroker::new(&self.tools, runtime_capabilities.clone(), tool_context)
+            .include_dynamic(false)
+            .with_cancellation(program_cancel_rx)
+            .with_audit(BrokerAudit {
+                db,
+                workspace_id,
+                on_event,
+                parent_run_id,
+            });
 
         let result = execute_program_with_cancellation(
             &program,

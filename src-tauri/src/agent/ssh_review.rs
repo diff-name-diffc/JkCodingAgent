@@ -12,7 +12,6 @@ use crate::agent::db::settings::{SshReviewConfig, DEFAULT_REVIEW_SYSTEM_PROMPT};
 use crate::agent::llm::{ChatMessage, OpenAiCompatProvider};
 
 const REVIEW_TIMEOUT_SECS: u64 = 30;
-const REVIEW_MAX_TOKENS: u32 = 256;
 /// 待审查命令送入 prompt 的最大字符数（防止超长命令撑爆审查请求）。
 /// 执行侧命令上限（ssh_tool::validate_command）为 8192 字符，低于该值，
 /// 因此命令总是完整送审。
@@ -120,13 +119,18 @@ pub async fn review_shell_command(
         return Err("审查模型未配置 model".to_string());
     }
 
+    // 审查请求完全不携带 max_tokens：显式小上限会压低模型自身的输出预算
+    // （推理模型的思考 token 还会与可见输出共享该预算）；同时关闭思考，
+    // 避免思考链耗尽预算导致结论为空（同 graph/verifier 的做法）。
     let provider = OpenAiCompatProvider::new(
         config.model_config.api_key.clone(),
         config.model_config.url.clone(),
         config.model_config.model.clone(),
-        REVIEW_MAX_TOKENS,
+        0,
         0.0,
-    );
+    )
+    .without_max_tokens()
+    .with_thinking(false);
 
     let system_prompt = {
         let trimmed = config.system_prompt.trim();
@@ -162,7 +166,22 @@ pub async fn review_shell_command(
 
     let content = response.content.trim();
     if content.is_empty() {
-        return Err(format!("审查模型 `{model_name}` 返回空内容"));
+        // 空内容按 finish_reason 与思考通道细分，便于定位审查链路问题
+        // （截断判定优先：思考链与可见输出共享预算，耗尽时 content 可能为空）。
+        return Err(match response.finish_reason.as_deref() {
+            Some("length") => format!(
+                "审查模型 `{model_name}` 返回空内容：输出被截断（finish_reason=length），思考链可能耗尽输出预算"
+            ),
+            _ if !response.thinking_content.trim().is_empty() => format!(
+                "审查模型 `{model_name}` 仅输出思考内容（约 {} 字符）而可见内容为空（finish_reason={}）",
+                response.thinking_content.chars().count(),
+                response.finish_reason.as_deref().unwrap_or("未知"),
+            ),
+            _ => format!(
+                "审查模型 `{model_name}` 返回空内容（finish_reason={}）",
+                response.finish_reason.as_deref().unwrap_or("未知"),
+            ),
+        });
     }
 
     parse_verdict(content)

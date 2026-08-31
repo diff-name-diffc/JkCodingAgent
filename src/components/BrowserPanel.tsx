@@ -353,7 +353,7 @@ export function BrowserPanel({
 
   return (
     <aside
-      className="ai-browser-panel ai-migrated-browser-panel"
+      className="ai-browser-panel"
       style={{ width }}
     >
       <div className="ai-browser-header">

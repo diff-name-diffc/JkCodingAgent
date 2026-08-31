@@ -24,12 +24,10 @@ function mcpStateColor(state: McpServerState): string {
 
 export function ToolsTab({
   context,
-  projectPath,
   allowedTools,
   onChange,
 }: {
   context: AgentContext;
-  projectPath?: string;
   allowedTools: string[];
   onChange: (next: string[]) => void;
 }) {
@@ -61,7 +59,6 @@ export function ToolsTab({
     try {
       const tools = await invoke<AgentToolInfo[]>("aha_list_agent_tools", {
         context,
-        projectPath: context === "project" ? projectPath ?? null : null,
       });
       setAvailableTools(tools);
     } catch (error) {
@@ -69,15 +66,15 @@ export function ToolsTab({
     } finally {
       setLoadingTools(false);
     }
-  }, [context, projectPath]);
+  }, [context]);
 
-  // MCP 清单走新鲜窗口命令：聊天 run 已预热缓存时直接复用，
+  // MCP 清单默认走新鲜窗口：聊天 run 已预热缓存时直接复用，
   // 避免每次打开设置页都拉起全部服务器进程。
   const loadMcpStatus = useCallback(async () => {
     setLoadingMcp(true);
     setMcpError(null);
     try {
-      setMcpStatus(await invoke<McpStatus>("mcp_global_status_recent"));
+      setMcpStatus(await invoke<McpStatus>("mcp_global_status"));
     } catch (error) {
       setMcpError(String(error));
     } finally {

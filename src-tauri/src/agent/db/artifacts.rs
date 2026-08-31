@@ -96,18 +96,18 @@ fn bounded_raw_artifact_preview(raw_output: &str) -> String {
 
     let mut preview = String::new();
     let mut preview_chars = 0usize;
-    let mut included_lines = 0usize;
     let mut shortened = false;
-    for line in raw_output
+    for (included_lines, line) in raw_output
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
+        .enumerate()
     {
         if included_lines == MAX_PREVIEW_LINES {
             shortened = true;
             break;
         }
-        let separator = (included_lines > 0).then_some(" / ").unwrap_or_default();
+        let separator = if included_lines > 0 { " / " } else { "" };
         for ch in separator.chars().chain(line.chars()) {
             if preview_chars == MAX_PREVIEW_CHARS {
                 shortened = true;
@@ -116,7 +116,6 @@ fn bounded_raw_artifact_preview(raw_output: &str) -> String {
             preview.push(ch);
             preview_chars += 1;
         }
-        included_lines += 1;
         if shortened {
             break;
         }

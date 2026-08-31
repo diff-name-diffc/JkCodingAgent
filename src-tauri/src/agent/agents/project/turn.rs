@@ -299,6 +299,7 @@ impl RunLoopAgent for OrchestratorAgent {
 /// 1. 路径必须为绝对路径且不含 `..` 组件；
 /// 2. 解析符号链接（对最深的已存在祖先目录 canonicalize 后拼回缺失尾部）；
 /// 3. 解析后的路径必须命中受管项目列表（全局 projects 表）。
+///
 /// 校验通过时返回解析后的路径，供后续建目录与工具路径边界统一使用。
 fn validate_project_workspace(
     db: &crate::agent::db::DispatcherDb,

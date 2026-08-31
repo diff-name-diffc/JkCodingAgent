@@ -12,8 +12,8 @@ export interface TreeNode extends FsEntry {
   iconName?: string;
 }
 
-export const SYSTEM_CONFIG_GROUP_LABEL = "系统配置";
-export const SYSTEM_CONFIG_GROUP_ICON_NAME = ".config";
+const SYSTEM_CONFIG_GROUP_LABEL = "系统配置";
+const SYSTEM_CONFIG_GROUP_ICON_NAME = ".config";
 
 const SYSTEM_CONFIG_GROUP_PATH_PREFIX = "__nezha_system_config__:";
 

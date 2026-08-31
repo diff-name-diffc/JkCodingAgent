@@ -169,12 +169,12 @@ pub struct GraphDefinition {
 
 impl GraphDefinition {
     /// 统一 trim 节点 id、依赖引用、outputKey、injectStateKeys 以及共享 state
-    /// 定义侧 key（state_keys）的首尾空白。校验/调度/持久化各处都以 trim 后的
-    /// id 为准（见 ReadyQueue 与 validate），在解析入口统一规整可避免「原始 id
-    /// 与 trim id 混用」导致的状态机错位。injectStateKeys/outputKey 与
-    /// state_keys.key 同属一个命名空间：只 trim 引用侧不 trim 定义侧，带空白
-    /// 的定义键会匹配不上注入引用，造成运行期注入/写回错位。
-    /// GraphInherits 的 planId/runId 参与精确匹配查询，一并归一化。
+    /// 定义侧 key（state_keys）的首尾空白。图定义的所有入口（submit_graph 解析、
+    /// graph_plan_update、run_graph 加载）都调用本方法统一规整，规整后的定义
+    /// 原样落库；调度器、持久化、事件全程直接使用规整后的 id，不再各自 trim。
+    /// injectStateKeys/outputKey 与 state_keys.key 同属一个命名空间：只 trim
+    /// 引用侧不 trim 定义侧，带空白的定义键会匹配不上注入引用，造成运行期
+    /// 注入/写回错位。GraphInherits 的 planId/runId 参与精确匹配查询，一并归一化。
     pub(crate) fn normalize_ids(&mut self) {
         for key in &mut self.state_keys {
             key.key = key.key.trim().to_string();
@@ -196,7 +196,7 @@ impl GraphDefinition {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphRunSummary {
     pub id: String,
@@ -206,27 +206,16 @@ pub struct GraphRunSummary {
     /// PLAN_CANCELLED（graph_runs 与 graph_plans 共用同一状态词表）。
     pub status: String,
     /// full | resume（RUN_MODE_FULL / RUN_MODE_RESUME）。
-    #[serde(default = "default_run_mode")]
     pub mode: String,
     /// pass | partial | fail | unknown。统一以 VERDICT_UNKNOWN 表示「尚未/未能验收」，
     /// 不再使用空串（读取层会把历史空串归一为 unknown，见 store::map_run）。
-    #[serde(default = "default_verdict_status")]
     pub verdict_status: String,
-    #[serde(default)]
     pub verdict_reason: String,
     pub started_at: i64,
     pub finished_at: Option<i64>,
 }
 
-fn default_run_mode() -> String {
-    RUN_MODE_FULL.to_string()
-}
-
-fn default_verdict_status() -> String {
-    VERDICT_UNKNOWN.to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphPlanRecord {
     pub id: String,
@@ -239,22 +228,17 @@ pub struct GraphPlanRecord {
     pub status: String,
     pub state_json: String,
     /// 提交时刻的用户需求快照：节点输入与终局验收都以它为准，避免运行前消息漂移。
-    #[serde(default)]
     pub requirement: String,
-    #[serde(default)]
     pub inherits_plan_id: Option<String>,
-    #[serde(default)]
     pub inherits_run_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub latest_run_id: Option<String>,
-    #[serde(default)]
     pub runs: Vec<GraphRunSummary>,
-    #[serde(default)]
     pub node_runs: Vec<GraphNodeRunRecord>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphNodeRunRecord {
     pub run_id: String,
@@ -279,11 +263,9 @@ pub struct GraphNodeRunRecord {
     pub finished_at: Option<i64>,
     pub duration_ms: Option<i64>,
     pub usage_json: String,
-    #[serde(default)]
     pub affected_files: Vec<String>,
     pub tool_call_count: i64,
     /// 已消耗的失败重试次数（重试时输入注入上次失败原因）。
-    #[serde(default)]
     pub retry_count: i32,
 }
 
@@ -315,7 +297,7 @@ impl GraphNodeRunRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentActivity {
     pub id: String,
@@ -331,7 +313,7 @@ pub struct AgentActivity {
     pub finished_at: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphRunDetail {
     pub run: GraphRunSummary,

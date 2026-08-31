@@ -3,9 +3,9 @@
 //! 只读解析、不落库：草稿由设置页确认合并后随整体保存入库（凭据不导入）。
 //! 从 `mod.rs` 拆出，收敛与连接执行无关的纯解析函数。
 
-use super::{
-    SshAuthMethod, SshServerConfig, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT_SECS, ID_MAX_LEN,
-};
+use super::types::{DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT_SECS};
+use super::validation::ID_MAX_LEN;
+use super::{SshAuthMethod, SshServerConfig};
 
 #[tauri::command]
 pub async fn ssh_tool_import_ssh_config() -> Result<Vec<SshServerConfig>, String> {
@@ -235,7 +235,7 @@ fn unique_server_id(base: &str, used: &mut std::collections::HashSet<String>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ssh_tool::validate_server_id;
+    use crate::ssh_tool::validation::validate_server_id;
 
     #[test]
     fn parse_ssh_config_extracts_host_blocks() {
@@ -354,8 +354,14 @@ Host web
         assert_eq!(unique_server_id(&max_base, &mut used), max_base);
         // 已满长的 base 去重后追加后缀，仍须通过保存侧校验。
         let second = unique_server_id(&max_base, &mut used);
-        assert!(second.chars().count() <= ID_MAX_LEN, "去重 id 超长：{second}");
-        assert!(validate_server_id(&second).is_ok(), "去重 id 非法：{second}");
+        assert!(
+            second.chars().count() <= ID_MAX_LEN,
+            "去重 id 超长：{second}"
+        );
+        assert!(
+            validate_server_id(&second).is_ok(),
+            "去重 id 非法：{second}"
+        );
     }
 
     #[test]

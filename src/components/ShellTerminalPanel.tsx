@@ -191,7 +191,7 @@ export function ShellTerminalPanel({
 
   return (
     <div
-      className="ai-shell-terminal-panel ai-migrated-shell-terminal"
+      className="ai-shell-terminal-panel"
       style={{ height, background: isDark ? DARK_THEME.background : LIGHT_THEME.background }}
     >
       {/* Drag handle */}

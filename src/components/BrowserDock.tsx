@@ -9,8 +9,8 @@ export interface DockedBrowser {
 
 interface Props {
   sessions: DockedBrowser[];
-  onRestore: (sessionId: string) => void;
-  onClose: (sessionId: string) => void;
+  onRestore: (sessionId: string) => void | Promise<void>;
+  onClose: (sessionId: string) => void | Promise<void>;
 }
 
 function shortLabel(url: string | null, sessionId: string): string {
@@ -37,15 +37,12 @@ function dockedIconColor(sessionId: string): string {
 export function BrowserDock({ sessions, onRestore, onClose }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
-  const handleRestore = useCallback(
-    (sessionId: string) => onRestore(sessionId),
-    [onRestore],
-  );
+  const handleRestore = useCallback((sessionId: string) => void onRestore(sessionId), [onRestore]);
 
   const handleClose = useCallback(
     (e: React.MouseEvent, sessionId: string) => {
       e.stopPropagation();
-      onClose(sessionId);
+      void onClose(sessionId);
     },
     [onClose],
   );
@@ -53,7 +50,7 @@ export function BrowserDock({ sessions, onRestore, onClose }: Props) {
   if (sessions.length === 0) return null;
 
   return (
-    <div className="ai-browser-dock ai-migrated-browser-dock">
+    <div className="ai-browser-dock">
       {sessions.map((session) => {
         const isHovered = hoveredId === session.sessionId;
         const label = shortLabel(session.url, session.sessionId);

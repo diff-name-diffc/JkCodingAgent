@@ -1,8 +1,9 @@
 //! 数据库 schema 初始化与版本管理（PRAGMA user_version 方案）。
 //!
-//! 当前处于 **v1 基线**：应用尚无存量用户，历史 v0→v33 迁移链已按产品决策
-//! 清除，`init()` 只保留两条路径——全新库一次性建到当前形态；同版本库直接
-//! 复用。低于基线的旧开发库一律拒绝打开（提示运行 `scripts/reset-dev-data.sh`）。
+//! 当前基线为 **v3**（历史 v0→v33 迁移链已按产品决策清除）。`init()` 的
+//! 路径：同版本库直接复用；低于基线但存在迁移块的版本逐级前向迁移
+//! （当前为 v1→v2、v2→v3）；再早的旧开发库一律拒绝打开（提示运行
+//! `scripts/reset-dev-data.sh`）；user_version=0 且无表则按基线全新建库。
 //!
 //! ## 后续 schema 变更规范（详见 AGENTS.md「存储 schema 迁移」）
 //!
@@ -19,9 +20,13 @@ use super::DispatcherDb;
 
 /// 当前 schema 版本号（PRAGMA user_version）。
 ///
-/// v1 为开发阶段重置后的基线；每次 schema 变更递增本常量并同步基线 DDL
-/// 与迁移块。pub(crate)：跨模块的迁移测试直接引用本常量，避免硬编码漂移。
-pub(crate) const SCHEMA_VERSION: i32 = 1;
+/// v3：dispatcher_settings 新增 `theme` 列，外观主题偏好并入
+/// `AhaSettingsV2`（原存 app_config 的 `app_settings` 键，迁移时搬移）。
+/// v2：chat_images 的 message_id 改为可空（工具生成图先登记后关联消息）、
+/// 删除从未写入的 vector_embedding_json / text_description 两列。
+/// v1 开发库经 `migrate_v1_to_v2` 前向迁移；更早的旧开发库仍报错引导
+/// `scripts/reset-dev-data.sh`。
+pub(crate) const SCHEMA_VERSION: i32 = 3;
 
 impl DispatcherDb {
     pub(super) fn init(&self) -> Result<()> {
@@ -77,11 +82,160 @@ impl DispatcherDb {
             return Ok(());
         }
 
-        // 0 < current_version < SCHEMA_VERSION：未来的升级迁移块从这一分支挂载。
+        // 0 < current_version < SCHEMA_VERSION：前向迁移块按版本递增挂载。
+        if current_version < 2 {
+            self.migrate_v1_to_v2(&mut conn)?;
+        }
+        if current_version < 3 {
+            self.migrate_v2_to_v3(&mut conn)?;
+            return Ok(());
+        }
+
         anyhow::bail!(
             "数据库版本({current_version})低于当前基线版本({SCHEMA_VERSION})且尚无对应迁移路径；\
              开发阶段请运行 scripts/reset-dev-data.sh 重置开发数据。"
         )
+    }
+
+    /// v1 → v2：chat_images 的 message_id 改为可空（工具生成图先登记后
+    /// 关联消息）、删除从未写入的 vector_embedding_json / text_description。
+    ///
+    /// 事务内重建表 + `user_version` 推进，失败整体回滚、幂等可重试；
+    /// 数据经 INSERT SELECT 全量保留。破坏性 DDL（DROP TABLE）前按规范
+    /// 先做整库快照备份（VACUUM INTO，不能在事务内执行）；备份失败只留痕
+    /// 不阻断——迁移本身不丢数据。
+    fn migrate_v1_to_v2(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v2-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!(
+                "v1→v2 迁移前整库快照失败（迁移经 INSERT SELECT 保留全部数据，继续）：{error}"
+            );
+        }
+
+        let tx = conn
+            .transaction()
+            .context("begin v1→v2 migration transaction")?;
+        tx.execute_batch(
+            "CREATE TABLE chat_images_v2 (
+                id TEXT PRIMARY KEY,
+                image_id TEXT NOT NULL UNIQUE,
+                workspace_id TEXT NOT NULL,
+                message_id TEXT,
+                segment_index INTEGER NOT NULL DEFAULT 0,
+                path TEXT NOT NULL,
+                alt TEXT,
+                width INTEGER,
+                height INTEGER,
+                mime_type TEXT,
+                source TEXT,
+                generation_prompt TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (message_id) REFERENCES dispatcher_messages(id) ON DELETE CASCADE
+            );
+            INSERT INTO chat_images_v2 (
+                id, image_id, workspace_id, message_id, segment_index, path, alt,
+                width, height, mime_type, source, generation_prompt, created_at
+            )
+            SELECT id, image_id, workspace_id, message_id, segment_index, path, alt,
+                   width, height, mime_type, source, generation_prompt, created_at
+            FROM chat_images;
+            DROP TABLE chat_images;
+            ALTER TABLE chat_images_v2 RENAME TO chat_images;
+            CREATE INDEX IF NOT EXISTS idx_chat_images_workspace
+            ON chat_images(workspace_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_chat_images_message
+            ON chat_images(message_id);",
+        )
+        .context("migrate chat_images to v2 shape")?;
+        tx.pragma_update(None, "user_version", 2)
+            .context("advance user_version to 2")?;
+        tx.commit().context("commit v1→v2 migration")
+    }
+
+    /// v2 → v3：dispatcher_settings 新增 `theme` 列，并把旧存于
+    /// app_config `app_settings` 键的外观主题搬进 `AhaSettingsV2.theme`，
+    /// 设置统一走单一命令面（aha_get/save_settings_v2）。
+    ///
+    /// 事务内 ADD COLUMN + 主题回填 + 删除旧键 + `user_version` 推进，
+    /// 失败整体回滚、幂等可重试。迁移会删除 app_config 行（数据已搬移），
+    /// 按规范先做整库快照备份（VACUUM INTO，不能在事务内执行）；
+    /// 备份失败只留痕不阻断——迁移本身保留全部用户数据。
+    fn migrate_v2_to_v3(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v3-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!(
+                "v2→v3 迁移前整库快照失败（迁移仅搬移主题数据、不丢失用户数据，继续）：{error}"
+            );
+        }
+
+        let tx = conn
+            .transaction()
+            .context("begin v2→v3 migration transaction")?;
+        tx.execute_batch(
+            "ALTER TABLE dispatcher_settings
+             ADD COLUMN theme TEXT NOT NULL DEFAULT 'system';",
+        )
+        .context("add dispatcher_settings.theme column")?;
+
+        // 旧主题搬移：app_config `app_settings` 键形如 {"theme":"dark"}。
+        // 仅接受合法偏好值；dispatcher_settings 行可能尚不存在（用户只改过
+        // 主题、未触发过智能体设置保存），用 upsert 兜底建默认行。
+        let legacy: Option<String> = tx
+            .query_row(
+                "SELECT value_json FROM app_config WHERE key = 'app_settings'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("read legacy app_settings key")?;
+        if let Some(raw) = legacy {
+            let theme = serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("theme")?
+                        .as_str()
+                        .map(str::trim)
+                        .map(str::to_string)
+                })
+                .filter(|value| matches!(value.as_str(), "system" | "light" | "dark"));
+            if let Some(theme) = theme {
+                tx.execute(
+                    "INSERT INTO dispatcher_settings (id, theme) VALUES ('default', ?1)
+                     ON CONFLICT(id) DO UPDATE SET theme = ?1",
+                    params![theme],
+                )
+                .context("carry legacy theme into dispatcher_settings")?;
+            }
+            tx.execute("DELETE FROM app_config WHERE key = 'app_settings'", [])
+                .context("drop legacy app_settings key")?;
+        }
+
+        tx.pragma_update(None, "user_version", 3)
+            .context("advance user_version to 3")?;
+        tx.commit().context("commit v2→v3 migration")
     }
 }
 
@@ -157,8 +311,8 @@ CREATE TABLE IF NOT EXISTS chat_images (
     id TEXT PRIMARY KEY,
     image_id TEXT NOT NULL UNIQUE,
     workspace_id TEXT NOT NULL,
-    message_id TEXT NOT NULL,
-    segment_index INTEGER NOT NULL,
+    message_id TEXT,
+    segment_index INTEGER NOT NULL DEFAULT 0,
     path TEXT NOT NULL,
     alt TEXT,
     width INTEGER,
@@ -166,8 +320,6 @@ CREATE TABLE IF NOT EXISTS chat_images (
     mime_type TEXT,
     source TEXT,
     generation_prompt TEXT,
-    vector_embedding_json TEXT,
-    text_description TEXT,
     created_at TEXT NOT NULL,
     FOREIGN KEY (message_id) REFERENCES dispatcher_messages(id) ON DELETE CASCADE
 );
@@ -252,7 +404,8 @@ CREATE TABLE IF NOT EXISTS dispatcher_settings (
     review_model_config_json TEXT NOT NULL DEFAULT '',
     review_system_prompt TEXT NOT NULL DEFAULT '',
     model_library_json TEXT NOT NULL DEFAULT '[]',
-    graph_execution_config_json TEXT NOT NULL DEFAULT '{}'
+    graph_execution_config_json TEXT NOT NULL DEFAULT '{}',
+    theme TEXT NOT NULL DEFAULT 'system'
 );
 
 CREATE TABLE IF NOT EXISTS dispatcher_session_token_usage (
@@ -721,6 +874,268 @@ mod tests {
             "错误信息应引导运行重置脚本：{message}"
         );
         cleanup_db_files(&path);
+    }
+
+    /// v1 库（旧形态 chat_images：message_id NOT NULL + 两个未用列）打开时
+    /// 沿迁移链前向迁移到当前基线：chat_images 数据全量保留、message_id
+    /// 可空、快照备份生成、重复打开幂等；随后 v2→v3 继续为
+    /// dispatcher_settings 补 theme 列，并把旧 app_config 中的主题搬移进来。
+    #[test]
+    fn v1_database_migrates_through_chain_to_baseline() {
+        let path = temp_db_path("v1-to-baseline");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            // 与 v1 基线等价的最小表组：迁移链触及 chat_images /
+            // dispatcher_settings / app_config，其余表形态由基线路径负责，
+            // 这里只需要 FK 目标表存在。
+            conn.execute_batch(
+                "CREATE TABLE dispatcher_messages (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE chat_images (
+                    id TEXT PRIMARY KEY,
+                    image_id TEXT NOT NULL UNIQUE,
+                    workspace_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    segment_index INTEGER NOT NULL,
+                    path TEXT NOT NULL,
+                    alt TEXT,
+                    width INTEGER,
+                    height INTEGER,
+                    mime_type TEXT,
+                    source TEXT,
+                    generation_prompt TEXT,
+                    vector_embedding_json TEXT,
+                    text_description TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (message_id) REFERENCES dispatcher_messages(id) ON DELETE CASCADE
+                );
+                CREATE TABLE dispatcher_settings (
+                    id TEXT PRIMARY KEY DEFAULT 'default',
+                    shared_vision_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_image_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_image_edit_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_asr_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_tts_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_embedding_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    project_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    project_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    project_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+                    chat_agent_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    chat_agent_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    chat_agent_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+                    context_debug INTEGER NOT NULL DEFAULT 0,
+                    review_model_config_json TEXT NOT NULL DEFAULT '',
+                    review_system_prompt TEXT NOT NULL DEFAULT '',
+                    model_library_json TEXT NOT NULL DEFAULT '[]',
+                    graph_execution_config_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE TABLE app_config (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL
+                );
+                INSERT INTO dispatcher_messages VALUES ('msg-1', 'ws-1', '2026-01-01T00:00:00Z');
+                INSERT INTO chat_images (
+                    id, image_id, workspace_id, message_id, segment_index, path,
+                    vector_embedding_json, text_description, created_at
+                ) VALUES (
+                    'row-1', 'image-1', 'ws-1', 'msg-1', 0, '/tmp/a.png',
+                    NULL, '旧描述', '2026-01-01T00:00:01Z'
+                );
+                INSERT INTO app_config VALUES ('app_settings', '{\"theme\":\"dark\"}');
+                PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, super::SCHEMA_VERSION);
+
+            // 数据保留，未用列已随表重建消失。
+            let (image_id, message_id, legacy_column): (String, Option<String>, i64) = conn
+                .query_row(
+                    "SELECT image_id, message_id,
+                            (SELECT COUNT(*) FROM pragma_table_info('chat_images')
+                             WHERE name IN ('vector_embedding_json', 'text_description'))
+                     FROM chat_images",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(image_id, "image-1");
+            assert_eq!(message_id.as_deref(), Some("msg-1"));
+            assert_eq!(legacy_column, 0, "未用列应随 v2 迁移移除");
+
+            // v2→v3：旧主题搬移进 dispatcher_settings.theme，旧键删除。
+            let theme: String = conn
+                .query_row(
+                    "SELECT theme FROM dispatcher_settings WHERE id = 'default'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(theme, "dark", "旧 app_config 主题应搬移进设置");
+            let legacy_rows: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM app_config WHERE key = 'app_settings'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(legacy_rows, 0, "旧 app_settings 键应随迁移删除");
+        }
+        // Drop db（连接池）后重开验证幂等，并清理迁移快照。
+        drop(db);
+        let _ = DispatcherDb::new(path.clone());
+        cleanup_db_files(&path);
+        let dir = path.parent().unwrap();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("v1-to-baseline-")
+                && (name.contains("pre-v2-backup") || name.contains("pre-v3-backup"))
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// v2 库打开时迁移到 v3：dispatcher_settings 补 theme 列。旧
+    /// app_config `app_settings` 键存在时主题搬移进既有行；不存在时落
+    /// 默认值 `system`。
+    #[test]
+    fn v2_database_migrates_theme_into_settings() {
+        let path = temp_db_path("v2-to-v3");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE dispatcher_settings (
+                    id TEXT PRIMARY KEY DEFAULT 'default',
+                    shared_vision_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_image_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_image_edit_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_asr_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_tts_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    shared_embedding_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    project_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    project_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    project_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+                    chat_agent_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    chat_agent_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+                    chat_agent_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+                    context_debug INTEGER NOT NULL DEFAULT 0,
+                    review_model_config_json TEXT NOT NULL DEFAULT '',
+                    review_system_prompt TEXT NOT NULL DEFAULT '',
+                    model_library_json TEXT NOT NULL DEFAULT '[]',
+                    graph_execution_config_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE TABLE app_config (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL
+                );
+                INSERT INTO dispatcher_settings (id, context_debug) VALUES ('default', 1);
+                INSERT INTO app_config VALUES ('app_settings', '{\"theme\":\"light\"}');
+                PRAGMA user_version = 2;",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 3);
+
+            // 既有行保留原值，只追加 theme；旧键删除。
+            let (theme, context_debug): (String, i64) = conn
+                .query_row(
+                    "SELECT theme, context_debug FROM dispatcher_settings WHERE id = 'default'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(theme, "light", "旧主题应搬移进既有设置行");
+            assert_eq!(context_debug, 1, "迁移不应改动其它列");
+            let legacy_rows: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM app_config WHERE key = 'app_settings'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(legacy_rows, 0);
+        }
+        drop(db);
+        cleanup_db_files(&path);
+        let dir = path.parent().unwrap();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("v2-to-v3-") && name.contains("pre-v3-backup") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// v2 库没有旧主题键（全新安装后从未写过 app_settings）时，迁移补列
+    /// 落默认值 `system`，不创建多余行。
+    #[test]
+    fn v2_database_without_legacy_theme_defaults_system() {
+        let path = temp_db_path("v2-to-v3-no-legacy");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE dispatcher_settings (
+                    id TEXT PRIMARY KEY DEFAULT 'default',
+                    context_debug INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE app_config (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL
+                );
+                PRAGMA user_version = 2;",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        let conn = db.conn().unwrap();
+        let theme_default: String = conn
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('dispatcher_settings')
+                 WHERE name = 'theme'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("theme 列应存在");
+        assert_eq!(theme_default, "'system'", "新增列默认值应为 system");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dispatcher_settings", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0, "无旧主题时迁移不应创建设置行");
+        drop(conn);
+        drop(db);
+        cleanup_db_files(&path);
+        let dir = path.parent().unwrap();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("v2-to-v3-no-legacy-") && name.contains("pre-v3-backup") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 
     /// 全新库一次建到基线形态：版本号、内置种子（聊天分类/场景配置/浏览器

@@ -1,10 +1,10 @@
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import type { Components } from "react-markdown";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
@@ -12,6 +12,7 @@ import type { PythonCodeRunRecord } from "../../types";
 import { normalizeLatexMathDelimiters, normalizeMathCodeFences } from "../../lib/normalize-math";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { MarkdownImage } from "./MarkdownImage";
+import { chatSafeSchema, chatUrlTransform } from "./sanitize-schema";
 import { useMarkdownLinkHandler } from "./MarkdownLinkContext";
 
 /** Fast, non-crypto hash for stable code block identification. */
@@ -25,69 +26,6 @@ function stableHash(text: string): string {
 }
 
 const StreamingContext = createContext(false);
-
-const safeSchema = {
-  ...defaultSchema,
-  tagNames: [
-    ...(defaultSchema.tagNames || []),
-    "video",
-    "audio",
-    "source",
-    "details",
-    "summary",
-  ],
-  attributes: {
-    ...defaultSchema.attributes,
-    "*": [...(defaultSchema.attributes?.["*"] || []), "className", "style"],
-    video: ["src", "controls", "width", "height", "muted", "autoplay", "loop"],
-    audio: ["src", "controls"],
-    source: ["src", "type"],
-    details: ["open"],
-    img: [
-      "src",
-      "alt",
-      "width",
-      "height",
-      "loading",
-      ...(defaultSchema.attributes?.img || []),
-    ],
-    a: ["href", "target", "rel", ...(defaultSchema.attributes?.a || [])],
-    code: ["className"],
-    span: ["className", "style", ...(defaultSchema.attributes?.span || [])],
-    div: ["className", "style"],
-    td: ["align", "className"],
-    th: ["align", "className"],
-  },
-  protocols: {
-    ...(defaultSchema.protocols || {}),
-    // Allow the internal chat-image:// protocol, local data URIs, and Tauri
-    // asset:// URLs on <img src> and <a href>. Without this, rehype-sanitize
-    // strips the src attribute for any non-http(s) image reference.
-    src: [
-      ...((defaultSchema.protocols && defaultSchema.protocols.src) || ["http", "https"]),
-      "chat-image",
-      "data",
-      "asset",
-    ],
-    href: [
-      ...((defaultSchema.protocols && defaultSchema.protocols.href) || ["http", "https"]),
-      "asset",
-    ],
-  },
-};
-
-function customUrlTransform(url: string) {
-  if (
-    url.startsWith("data:image/") ||
-    url.startsWith("asset://") ||
-    url.startsWith("http://asset.localhost/") ||
-    url.startsWith("chat-image://") ||
-    url.startsWith("/")
-  ) {
-    return url;
-  }
-  return defaultUrlTransform(url);
-}
 
 function isBrowserUrl(url: string | undefined): url is string {
   if (!url) return false;
@@ -302,9 +240,9 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       <StreamingContext.Provider value={streaming}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeRaw, [rehypeSanitize, safeSchema], rehypeKatex]}
+        rehypePlugins={[rehypeRaw, [rehypeSanitize, chatSafeSchema], rehypeKatex]}
         components={markdownComponents}
-        urlTransform={customUrlTransform}
+        urlTransform={chatUrlTransform}
       >
         {normalizedContent}
       </ReactMarkdown>

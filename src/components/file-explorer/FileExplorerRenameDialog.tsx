@@ -94,7 +94,7 @@ export function FileExplorerRenameDialog({
 
   return (
     <div
-      className="ai-dialog-overlay ai-file-rename-overlay"
+      className="ai-dialog-overlay"
       onClick={() => {
         if (!saving) {
           onClose();

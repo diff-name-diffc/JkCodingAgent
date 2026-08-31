@@ -176,7 +176,7 @@ export function NotificationBell() {
           className="ai-notification-overlay"
           onClick={handleOverlayClick}
         >
-          <div className="ai-notification-dialog ai-migrated-notification-dialog">
+          <div className="ai-notification-dialog">
             <div className="ai-notification-header">
               <span className="ai-notification-title">
                 通知

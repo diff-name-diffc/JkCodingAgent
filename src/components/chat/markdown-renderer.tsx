@@ -11,6 +11,8 @@ import {
 import { createCodePlugin } from "@streamdown/code";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import "streamdown/styles.css";
 import "katex/dist/katex.min.css";
 import type { PythonCodeRunRecord } from "../../types";
@@ -18,6 +20,7 @@ import { cn } from "../../lib/cn";
 import { TEAL_DARK_THEME, TEAL_LIGHT_THEME } from "../../utils/shiki";
 import { normalizeLatexMathDelimiters, normalizeMathCodeFences } from "../../lib/normalize-math";
 import { MarkdownImage } from "../markdown/MarkdownImage";
+import { chatSafeSchema } from "../markdown/sanitize-schema";
 import { useMarkdownLinkHandler } from "../markdown/MarkdownLinkContext";
 import { useKatexCopy } from "./katex-copy";
 
@@ -115,9 +118,9 @@ function normalizeSingleLineMathBlocks(content: string) {
 
 /**
  * Positional index of every fenced code block in the message, keyed by code
- * hash (first occurrence wins — matches the legacy lookup behaviour where
- * identical blocks share a run record). The index must stay compatible with
- * the python_runs table PK (workspace_id, message_id, code_block_index).
+ * hash (first occurrence wins — identical blocks share a run record). The
+ * index must stay compatible with the python_runs table PK
+ * (workspace_id, message_id, code_block_index).
  */
 function indexCodeBlocks(content: string): Map<string, number> {
   const indexByHash = new Map<string, number>();
@@ -237,7 +240,6 @@ function PythonCodeRenderer({ code, isIncomplete, language }: CustomRendererProp
         {showRunButton && (
           <button
             type="button"
-            className="ai-code-run-btn"
             onClick={() => onRunPython?.({ messageId: messageId!, codeBlockIndex, code, codeHash })}
             title="运行 Python 代码"
           >
@@ -246,7 +248,7 @@ function PythonCodeRenderer({ code, isIncomplete, language }: CustomRendererProp
           </button>
         )}
         {isRunning && (
-          <button type="button" className="ai-code-run-btn" disabled title="正在执行…">
+          <button type="button" disabled title="正在执行…">
             <Play size={13} />
             Running…
           </button>
@@ -278,7 +280,7 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
   );
 }
 
-// Module-level constants so the memoized <Streamdown> never receives fresh
+// 模块级常量 so the memoized <Streamdown> never receives fresh
 // prop identities on re-render.
 const codePlugin = createCodePlugin({
   // 双主题一次输出：streamdown 经 `dark:` 变体随 <html>.dark 纯 CSS 切换。
@@ -293,6 +295,22 @@ const streamdownPlugins = {
   mermaid,
   renderers: [{ language: ["python", "py"], component: PythonCodeRenderer }],
 };
+// streamdown 的 rehypePlugins prop 会整体替换默认插件链（raw → sanitize →
+// harden）。自定义链必须自带 rehypeRaw（缺失时 streamdown 会把 raw HTML
+// 降级为纯文本），sanitize 使用与 react-markdown 管线共享的 chatSafeSchema
+// ——默认 schema 的 src 白名单只有 http/https，会静默剥掉 chat-image:// 的
+// <img src>（Agent 生成图因此在聊天气泡里渲染不出来）。不引入 rehype-harden：
+// streamdown 默认 harden 配置为全放行（allowedProtocols:["*"] 等效空操作），
+// sanitize 才是真正的闸门。
+// ⚠️ 升级 streamdown 时必须复核其默认插件组成（raw/sanitize/harden 顺序与
+// schema 默认值），确认此假设仍然成立。
+type StreamdownRehypePlugins = NonNullable<
+  React.ComponentProps<typeof Streamdown>["rehypePlugins"]
+>;
+const streamdownRehypePlugins = [
+  rehypeRaw,
+  [rehypeSanitize, chatSafeSchema],
+] as unknown as StreamdownRehypePlugins;
 const streamdownComponents: Components = {
   img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
   a: MarkdownLink as NonNullable<Components["a"]>,
@@ -340,6 +358,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
           isAnimating={streaming}
           caret={streaming ? "block" : undefined}
           plugins={streamdownPlugins}
+          rehypePlugins={streamdownRehypePlugins}
           components={streamdownComponents}
           shikiTheme={shikiTheme}
           controls={streamdownControls}

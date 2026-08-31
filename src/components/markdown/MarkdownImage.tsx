@@ -1,12 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { X } from "lucide-react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 const CHAT_IMAGE_PROTOCOL = "chat-image://";
-
-function isChatImageUri(src: string): boolean {
-  return src.startsWith(CHAT_IMAGE_PROTOCOL);
-}
 
 function isLocalImagePath(src: string): boolean {
   return src.startsWith("/") || src.startsWith("file://");
@@ -17,95 +13,45 @@ interface MarkdownImageProps {
   alt?: string;
 }
 
+/**
+ * 聊天图片的唯一渲染出口。`chat-image://{image_id}` 经 Tauri 自定义
+ * `chat-image` scheme（convertFileSrc 已按平台转换为
+ * `chat-image://localhost/{id}` / `http://chat-image.localhost/{id}`）同步
+ * 直出 <img src>——不再走 invoke resolve 两阶段渲染。本地路径分支仅为
+ * 兼容旧消息 markdown 里的绝对路径引用（asset 协议）。
+ */
 export function MarkdownImage({ src, alt }: MarkdownImageProps) {
   const [isEnlarged, setIsEnlarged] = useState(false);
-  const [resolvedSrc, setResolvedSrc] = useState<string>("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const latestSrcRef = useRef<string | undefined>(undefined);
+  const [failed, setFailed] = useState(false);
 
-  useEffect(() => {
-    if (!src) {
-      setResolvedSrc("");
-      setLoading(false);
-      setError(null);
-      return;
-    }
-
-    latestSrcRef.current = src;
-    let cancelled = false;
-
-    if (isChatImageUri(src)) {
-      setLoading(true);
-      setError(null);
-      invoke<{ imageId: string; path: string; mimeType: string }>("resolve_chat_image", {
-        imageId: src.slice(CHAT_IMAGE_PROTOCOL.length),
-      })
-        .then((result) => {
-          if (cancelled) return;
-          if (latestSrcRef.current !== src) return;
-          setResolvedSrc(convertFileSrc(result.path));
-          setLoading(false);
-        })
-        .catch((err) => {
-          if (cancelled) return;
-          if (latestSrcRef.current !== src) return;
-          console.error("resolve_chat_image failed:", err);
-          setError("无法加载图片");
-          setLoading(false);
-        });
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    if (!isLocalImagePath(src)) {
-      setResolvedSrc(src);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
+  let resolvedSrc = "";
+  if (src?.startsWith(CHAT_IMAGE_PROTOCOL)) {
+    resolvedSrc = convertFileSrc(src.slice(CHAT_IMAGE_PROTOCOL.length), "chat-image");
+  } else if (src && isLocalImagePath(src)) {
+    let path = src.startsWith("file://") ? src.slice("file://".length) : src;
+    // Markdown parsers may percent-encode non-ASCII chars in src;
+    // decode first so convertFileSrc doesn't double-encode them.
     try {
-      let path = src.startsWith("file://") ? src.slice(7) : src;
-      // Markdown parsers may percent-encode non-ASCII chars in src;
-      // decode first so convertFileSrc doesn't double-encode them.
-      try {
-        path = decodeURIComponent(path);
-      } catch {
-        // not encoded, use as-is
-      }
-      const assetUrl = convertFileSrc(path);
-      setResolvedSrc(assetUrl);
-      setLoading(false);
+      path = decodeURIComponent(path);
     } catch {
-      setError("无法加载图片");
-      setLoading(false);
+      // not encoded, use as-is
     }
-  }, [src]);
-
-  if (loading) {
-    return (
-      <div className="markdown-image-thumbnail-wrap">
-        <div className="markdown-image-loading">加载中...</div>
-      </div>
-    );
+    resolvedSrc = convertFileSrc(path);
+  } else if (src) {
+    resolvedSrc = src;
   }
 
-  if (error) {
+  if (!resolvedSrc) return null;
+
+  if (failed) {
     return (
       <div className="markdown-image-thumbnail-wrap">
-        <div className="markdown-image-error" title={error}>
+        <div className="markdown-image-error" title={src}>
           图片加载失败
         </div>
       </div>
     );
   }
-
-  if (!resolvedSrc) return null;
 
   return (
     <>
@@ -114,7 +60,12 @@ export function MarkdownImage({ src, alt }: MarkdownImageProps) {
         onClick={() => setIsEnlarged(true)}
         title="点击放大"
       >
-        <img src={resolvedSrc} alt={alt} className="markdown-image-thumbnail" />
+        <img
+          src={resolvedSrc}
+          alt={alt}
+          className="markdown-image-thumbnail"
+          onError={() => setFailed(true)}
+        />
       </div>
 
       {isEnlarged && (

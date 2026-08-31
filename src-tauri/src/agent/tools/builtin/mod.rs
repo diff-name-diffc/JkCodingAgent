@@ -1,5 +1,7 @@
+mod analyze_image;
 mod browser;
 mod common;
+mod fetch_image;
 mod filesystem;
 mod graph_plan_report;
 mod image_edit;
@@ -26,6 +28,8 @@ pub(super) fn builtin_tools(ssh_manager: SshSessionManager) -> Vec<Box<dyn Agent
         shell::message_tool(),
         image_generation::generate_image_tool(),
         image_edit::edit_image_tool(),
+        analyze_image::analyze_image_tool(),
+        fetch_image::fetch_image_tool(),
     ];
     tools.extend(browser::browser_tools());
     tools.extend(ssh::ssh_tools(ssh_manager));
@@ -34,6 +38,7 @@ pub(super) fn builtin_tools(ssh_manager: SshSessionManager) -> Vec<Box<dyn Agent
 
 /// 编排器（项目 Agent）固定工具集：只读探索 + message 答复 + submit_graph 收口
 /// + graph_plan_report 运行报告（反思闭环）。
+///
 /// 天然无写文件/执行命令能力；协议壳工具不进通用目录。
 pub(super) fn orchestrator_tools() -> Vec<Box<dyn AgentTool>> {
     vec![
@@ -53,6 +58,8 @@ pub(super) fn plain_chat_tools(ssh_manager: SshSessionManager) -> Vec<Box<dyn Ag
         local_zsh::local_zsh_tool(),
         image_generation::generate_image_tool(),
         image_edit::edit_image_tool(),
+        analyze_image::analyze_image_tool(),
+        fetch_image::fetch_image_tool(),
     ];
     tools.extend(browser::browser_tools());
     tools.extend(ssh::ssh_tools(ssh_manager));

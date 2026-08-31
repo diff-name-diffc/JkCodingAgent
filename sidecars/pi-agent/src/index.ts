@@ -256,6 +256,11 @@ async function start(request: StartRequest) {
     await session.prompt(request.prompt);
     await session.waitForIdle();
     send(request, "completed", { output, usage: session.getSessionStats().tokens });
+  } catch (error) {
+    send(request, "failed", {
+      error: error instanceof Error ? error.message : String(error),
+      usage: session.getSessionStats().tokens,
+    });
   } finally {
     // 兜底采样放在 finally 而非成功路径：prompt 抛错走 failed 分支时同样上报
     // 最终上下文占用，避免前端读数停留在过期值（宿主侧 failed 分支不补发）。

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { open as openDialog, confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import type { Project, ProjectDeleteResult } from "./types";
+import type { AhaSettingsV2, Project, ProjectDeleteResult } from "./types";
 import { WelcomePage } from "./components/WelcomePage";
 import { useToast } from "./components/Toast";
 import { cleanupDispatcherSession } from "./components/dispatcherSessionStore";
@@ -45,11 +45,12 @@ function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [mountedProjectIds, setMountedProjectIds] = useState<string[]>([]);
 
-  // 主题的权威来源是后端全局库（app_config 表）；main.tsx 的 initializeTheme()
-  // 只用 localStorage 缓存做首帧渲染，这里启动后立刻以后端值校准（缓存缺失
+  // 主题的权威来源是后端全局库（dispatcher_settings 的 theme 字段，经
+  // aha_get_settings_v2 读取）；main.tsx 的 initializeTheme() 只用
+  // localStorage 缓存做首帧渲染，这里启动后立刻以后端值校准（缓存缺失
   // 或过期时会错误落回 system，导致设置了亮色却显示暗色）。
   useEffect(() => {
-    invoke<{ theme?: string }>("load_app_settings")
+    invoke<AhaSettingsV2>("aha_get_settings_v2")
       .then((settings) => {
         persistThemePreference(normalizeThemePreference(settings.theme));
       })

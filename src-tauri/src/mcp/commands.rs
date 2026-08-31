@@ -28,26 +28,23 @@ pub async fn mcp_project_status(
         .map(|snapshot| snapshot.status)
 }
 
-/// 刷新并返回全局作用域的 MCP 状态（所有聊天会话共享）。
+/// 返回全局作用域的 MCP 状态（所有聊天会话共享）。
+///
+/// 默认复用聊天 run 的新鲜窗口：缓存在 `MCP_REFRESH_MAX_AGE` 内直接返回，
+/// 过期才全量重检，供设置页工具清单等展示面取数，避免每次打开页面都拉起
+/// 全部服务器进程；传 `force_refresh = true` 强制全量刷新（聊天页头部
+/// 指示灯等需要真实探活的场景）。
 #[tauri::command]
-pub async fn mcp_global_status(registry: State<'_, McpRegistry>) -> Result<McpStatus, String> {
-    registry
-        .refresh(&McpScope::Global)
-        .await
-        .map(|snapshot| snapshot.status)
-}
-
-/// 返回全局作用域的 MCP 状态，复用聊天 run 的新鲜窗口：缓存在
-/// `MCP_REFRESH_MAX_AGE` 内直接返回，过期才全量重检。供设置页工具清单
-/// 等展示面取数，避免每次打开页面都拉起全部服务器进程。
-#[tauri::command]
-pub async fn mcp_global_status_recent(
+pub async fn mcp_global_status(
     registry: State<'_, McpRegistry>,
+    force_refresh: Option<bool>,
 ) -> Result<McpStatus, String> {
-    registry
-        .ensure_recent(&McpScope::Global)
-        .await
-        .map(|snapshot| snapshot.status)
+    let snapshot = if force_refresh.unwrap_or(false) {
+        registry.refresh(&McpScope::Global).await?
+    } else {
+        registry.ensure_recent(&McpScope::Global).await?
+    };
+    Ok(snapshot.status)
 }
 
 /// 启用/禁用项目作用域内的服务器。项目文件没有该条目（来自全局注册表）

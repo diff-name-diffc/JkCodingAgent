@@ -1,12 +1,12 @@
 import * as React from "react";
 import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ImageSegment, ModelLibraryEntry } from "../../types";
 import { cn } from "../../lib/cn";
 import { isImeComposing } from "../../utils";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
+import { MarkdownImage } from "../markdown/MarkdownImage";
 import { ModelSelector } from "./model-selector";
 
 /**
@@ -144,11 +144,12 @@ export function PromptInput({
                 key={image.id}
                 className="group relative h-16 w-16 overflow-hidden rounded-md border border-border"
               >
-                <img
-                  src={convertFileSrc(image.path)}
-                  alt={image.alt || "附件图片"}
-                  className="h-full w-full object-cover"
-                />
+                <div className="h-full w-full [&_.markdown-image-thumbnail]:h-16 [&_.markdown-image-thumbnail]:w-16 [&_.markdown-image-thumbnail]:object-cover">
+                  <MarkdownImage
+                    src={`chat-image://${image.imageId}`}
+                    alt={image.alt || "附件图片"}
+                  />
+                </div>
                 <button
                   type="button"
                   aria-label="移除图片"

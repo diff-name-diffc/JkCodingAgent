@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::Path;
 
-use crate::mcp::ensure_project_mcp_file;
 use super::storage::StorageError;
+use crate::mcp::ensure_project_mcp_file;
 use crate::shared::error::{CommandResult, IntoCommandResult};
 use anyhow::Context;
 
@@ -87,7 +87,7 @@ fn init_project_config_impl(project_path: &str) -> ConfigResult<ProjectConfig> {
     let config_path = config_dir.join("config.toml");
 
     fs::create_dir_all(&config_dir).map_err(io_error("创建项目配置目录", config_dir.clone()))?;
-    ensure_project_mcp_file(&project_path).map_err(ConfigError::Mcp)?;
+    ensure_project_mcp_file(project_path).map_err(ConfigError::Mcp)?;
 
     if !config_path.exists() {
         fs::write(&config_path, DEFAULT_CONFIG)

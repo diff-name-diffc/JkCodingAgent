@@ -32,7 +32,7 @@ const folder = (
   category: "folder",
 });
 
-export const FILE_ICON_SPECS: Record<string, FileIconSpec> = {
+const FILE_ICON_SPECS: Record<string, FileIconSpec> = {
   default: file("default", "TXT", "#64748B", "#CBD5E1", "lines", "document"),
   text: file("text", "TXT", "#475569", "#CBD5E1", "lines", "document"),
   markdown: file("markdown", "MD", "#2563EB", "#93C5FD", "markdown", "document"),

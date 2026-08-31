@@ -57,7 +57,7 @@ export function EmptyChatState({
           hidden: {},
           show: { transition: { staggerChildren: 0.04, delayChildren: 0.1 } },
         }}
-        className="ai-prompt-grid mt-9 grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2"
+        className="mt-9 grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2"
       >
         {prompts.map((prompt) => (
           <motion.button

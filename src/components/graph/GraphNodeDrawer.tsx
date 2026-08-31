@@ -194,7 +194,7 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   return (
     <motion.aside initial={{ x: 460, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 460, opacity: 0 }} transition={{ duration: 0.2 }} className="ai-graph-drawer">
       <div className="ai-graph-drawer-header">
-        <span className="ai-graph-drawer-agent ai-graph-drawer-agent--pi"><BrainCircuit className="h-3.5 w-3.5" />PI Agent</span>
+        <span className="ai-graph-drawer-agent"><BrainCircuit className="h-3.5 w-3.5" />PI Agent</span>
         <span className={cn("ai-graph-chip", `ai-graph-chip--node-${status}`)}>{statusMeta.label}</span>
         {nodeRun?.durationMs != null && <span className="ai-graph-drawer-duration"><Clock3 className="h-3 w-3" />{formatGraphDuration(nodeRun.durationMs)}</span>}
         {contextUsage && (
@@ -455,7 +455,7 @@ const ToolCallCard = memo(function ToolCallCard({ entry }: { entry: ToolCallEntr
       {open && (
         <div className="ai-graph-tool-card-body">
           {entry.inputFormatted ? (
-            <div className="ai-graph-tool-block">
+            <div>
               <div className="ai-graph-tool-block-label">输入参数 <span className="ai-graph-drawer-hint">{formatCharCount(entry.inputChars)} 字符</span></div>
               <pre className="ai-graph-tool-pre">{inputBlock.text}</pre>
               {inputBlock.omitted > 0 && <div className="ai-graph-tool-truncated">已截断后 {formatCharCount(inputBlock.omitted)} 字符（保留开头）</div>}
@@ -464,7 +464,7 @@ const ToolCallCard = memo(function ToolCallCard({ entry }: { entry: ToolCallEntr
             <div className="ai-graph-tool-block-empty">无输入参数</div>
           )}
           {entry.outputFormatted ? (
-            <div className="ai-graph-tool-block">
+            <div>
               <div className="ai-graph-tool-block-label">输出结果 <span className="ai-graph-drawer-hint">{formatCharCount(entry.outputChars)} 字符</span></div>
               <pre className="ai-graph-tool-pre">{outputBlock.text}</pre>
               {outputBlock.omitted > 0 && <div className="ai-graph-tool-truncated">已截断前 {formatCharCount(outputBlock.omitted)} 字符（保留尾部）</div>}

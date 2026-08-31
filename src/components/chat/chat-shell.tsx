@@ -36,23 +36,22 @@ import {
 } from "../subAgentEventStore";
 
 /**
- * ChatShell — the orchestrator for the refactored Chat surface.
+ * ChatShell — the orchestrator for the Chat surface.
  *
  * Responsibilities:
  *   - Wire AppLayout + Sidebar + MessageList + PromptInput together.
- *   - Read live streaming state from the existing dispatcherSessionStore
- *     singleton (unchanged pipeline).
+ *   - Read live streaming state from the dispatcherSessionStore singleton.
  *   - Load chat models via TanStack Query.
  *   - Forward send / stop / resume + messages to the parent adapter, which
- *     uses the existing useDispatcherActions hook + subscribeDispatcherMessages
+ *     uses the useDispatcherActions hook + subscribeDispatcherMessages
  *     so the Tauri Channel streaming pipeline is reused verbatim.
  *
  * Why messages come from the adapter: the streaming pipeline pushes finalized
  * messages through subscribeDispatcherMessages (a frontend singleton pub/sub),
  * not a Tauri event. The adapter owns that subscription and passes the merged
- * array down, so streaming + history stay perfectly in sync with the legacy
- * surface. Models, by contrast, are a simple request/response and go through
- * TanStack Query directly.
+ * array down, so streaming + history stay perfectly in sync. Models, by
+ * contrast, are a simple request/response and go through TanStack Query
+ * directly.
  */
 export interface ChatShellProps {
   /** The active conversation id (also used as the dispatcher workspaceId). */
@@ -192,7 +191,7 @@ export function ChatShell({
     ? (subAgentSessions[selectedSubAgentToolCallId] ?? null)
     : null;
 
-  // 会话关键词展示在聊天界面顶部（替代旧版会话列表内的关键词行）。
+  // 会话关键词展示在聊天界面顶部。
   const activeSessionKeywords = React.useMemo(() => {
     if (!sessionId) return [] as string[];
     return sessions.find((session) => session.id === sessionId)?.keywords ?? [];

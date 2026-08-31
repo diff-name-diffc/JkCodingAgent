@@ -6,7 +6,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::content::{delete_chat_image_resources, remove_chat_image_files};
+use super::content::{delete_chat_image_resources, remove_chat_image_dir};
 use super::util::now;
 use super::DispatcherDb;
 
@@ -69,17 +69,9 @@ pub enum AgentContext {
 impl AgentContext {
     pub fn from_wire(value: &str) -> Result<Self> {
         match value.trim() {
-            "project" | "" => Ok(Self::Project),
+            "project" => Ok(Self::Project),
             "chat" => Ok(Self::Chat),
             other => anyhow::bail!("invalid agent context: {other}"),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Project => "project",
-            Self::Chat => "chat",
         }
     }
 }
@@ -400,7 +392,7 @@ impl DispatcherDb {
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
         )?;
-        let image_paths = delete_chat_image_resources(&tx, session_id)?;
+        let image_dir = delete_chat_image_resources(&tx, session_id)?;
         tx.execute(
             "DELETE FROM session_keywords WHERE session_id = ?1",
             params![session_id],
@@ -420,8 +412,10 @@ impl DispatcherDb {
         tx.commit()?;
         // 数据库删除已提交，图片文件清理失败不应把删除误报为失败（否则调用方
         // 按 Err 重试时记录已不存在，孤儿文件将永远无法清理）。改为 best-effort。
-        if let Err(error) = remove_chat_image_files(&image_paths) {
-            eprintln!("remove chat image files failed (chat session {session_id}): {error:#}");
+        if let Some(dir) = image_dir {
+            if let Err(error) = remove_chat_image_dir(&dir) {
+                eprintln!("remove chat image dir failed (chat session {session_id}): {error:#}");
+            }
         }
         Ok(())
     }
@@ -602,7 +596,7 @@ impl DispatcherDb {
             "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
             params![session_id],
         )?;
-        let image_paths = delete_chat_image_resources(&tx, session_id)?;
+        let image_dir = delete_chat_image_resources(&tx, session_id)?;
         tx.execute(
             "DELETE FROM session_keywords WHERE session_id = ?1",
             params![session_id],
@@ -622,8 +616,10 @@ impl DispatcherDb {
         tx.commit()?;
         // 数据库删除已提交，图片文件清理失败不应把删除误报为失败（否则调用方
         // 按 Err 重试时记录已不存在，孤儿文件将永远无法清理）。改为 best-effort。
-        if let Err(error) = remove_chat_image_files(&image_paths) {
-            eprintln!("remove chat image files failed (project session {session_id}): {error:#}");
+        if let Some(dir) = image_dir {
+            if let Err(error) = remove_chat_image_dir(&dir) {
+                eprintln!("remove chat image dir failed (project session {session_id}): {error:#}");
+            }
         }
         Ok(())
     }

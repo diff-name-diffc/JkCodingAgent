@@ -217,7 +217,7 @@ export function SessionPanel({
       : null;
 
   return (
-    <div className="ai-project-session-panel ai-migrated-project">
+    <div className="ai-project-session-panel">
       {/* Project header */}
       <div className="ai-project-session-header">
         <button className="ai-project-session-icon-btn" onClick={onBack} title="返回项目页">

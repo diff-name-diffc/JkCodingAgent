@@ -210,7 +210,7 @@ export function GitHistory({ projectPath, onCommitSelect, onFileClick, width = 2
   };
 
   return (
-    <div className="ai-git-history ai-migrated-git-history" style={{ width }}>
+    <div className="ai-git-history" style={{ width }}>
       {/* Header */}
       <div className="ai-git-history-header">
         <div className="ai-git-history-title-row">

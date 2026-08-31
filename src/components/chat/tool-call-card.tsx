@@ -23,7 +23,7 @@ const STATUS_META: Record<
   error: { label: "失败", badge: "destructive" },
 };
 
-export interface ToolCallCardProps {
+interface ToolCallCardProps {
   item: ToolActivityItem;
   defaultExpanded?: boolean;
   className?: string;
@@ -32,7 +32,7 @@ export interface ToolCallCardProps {
   detail?: React.ReactNode;
 }
 
-export function ToolCallCard({
+function ToolCallCard({
   item,
   defaultExpanded = false,
   className,
@@ -98,7 +98,11 @@ export function ToolCallCard({
               <ToolRunTrace item={item} active={expanded} />
               {item.input != null && <DataSection label="Input" value={item.input} />}
               {item.output != null && item.output !== item.errorText && (
-                <DataSection label="Output" value={item.output} collapsible />
+                <DataSection
+                  label={isCompressedResult(item.resultMode) ? "Output · Agent Input" : "Output"}
+                  value={item.output}
+                  collapsible
+                />
               )}
               {item.errorText && (
                 <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5 font-mono text-[11px] leading-relaxed text-destructive">
@@ -158,7 +162,7 @@ function DataSection({
   value,
   collapsible = false,
 }: {
-  label: "Input" | "Output";
+  label: "Input" | "Output" | "Output · Agent Input";
   value: unknown;
   collapsible?: boolean;
 }) {
@@ -186,6 +190,15 @@ function DataSection({
         </button>
       )}
     </section>
+  );
+}
+
+function isCompressedResult(resultMode: ToolActivityItem["resultMode"]): boolean {
+  return (
+    resultMode === "summary" ||
+    resultMode === "conservative_summary" ||
+    resultMode === "intent_compressed" ||
+    resultMode === "structured_fallback"
   );
 }
 
@@ -252,7 +265,7 @@ export function ToolCallList({
   if (items.length === 0) return null;
 
   return (
-    <div className={cn("ai-tool-call-list", className)}>
+    <div className={className}>
       {aggregated && (
         <button
           type="button"
@@ -287,7 +300,7 @@ export function ToolCallList({
           >
             <div className="space-y-0">
               {items.map((item, index) => (
-                <div key={item.id} className="ai-tool-call-timeline-item flex items-stretch gap-2">
+                <div key={item.id} className="flex items-stretch gap-2">
                   <div className="relative w-6 shrink-0" aria-hidden>
                     {index < items.length - 1 && <span className="ai-tool-call-line" />}
                     <TimelineNode status={item.status} />

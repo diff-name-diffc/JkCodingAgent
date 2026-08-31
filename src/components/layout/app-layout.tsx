@@ -119,7 +119,7 @@ export function AppLayout({
         <main className="ai-chat-main relative flex min-w-0 flex-1 flex-col">
           {/* Chat surface: a centered reading column within a full-height flex. */}
           {chatHeader && (
-            <div className="ai-chat-header sticky top-0 z-10 border-b border-border/60 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+            <div className="sticky top-0 z-10 border-b border-border/60 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
               {chatHeader}
             </div>
           )}

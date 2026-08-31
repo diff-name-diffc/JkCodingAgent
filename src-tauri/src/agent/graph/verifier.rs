@@ -188,6 +188,7 @@ fn unknown_with_facts(cause: &str, facts: &str) -> VerdictOutcome {
 /// 解析验收模型输出，两级契约：
 /// 1) 严格：首行即验收关键词（容忍 markdown 加粗/列表/标题等常见修饰）；
 /// 2) 兜底：模型先输出前导文字时，全文扫描第一个以关键词开头的行作为结论行。
+///
 /// 理由 = 结论行内关键词之后的剩余部分 + 结论行之后的全部文本（截 300 字）。
 ///
 /// 首行严格性的额外约束：关键词后紧跟无结论标记（：/。等）的解释性散文
@@ -267,7 +268,7 @@ fn classify_verdict_line(line: &str) -> Option<(&'static str, String)> {
 fn classify_verdict_line_detailed(line: &str) -> Option<(&'static str, String, bool)> {
     let stripped = line
         .trim()
-        .trim_start_matches(|c: char| matches!(c, '#' | '*' | '>' | '-' | '`'))
+        .trim_start_matches(['#', '*', '>', '-', '`'])
         .trim();
     let upper = stripped.to_ascii_uppercase();
     let (status, keyword_len) = VERDICT_KEYWORDS.iter().find_map(|(keyword, status)| {
@@ -289,7 +290,7 @@ fn classify_verdict_line_detailed(line: &str) -> Option<(&'static str, String, b
     );
     let rest = raw_rest
         .trim()
-        .trim_start_matches(|c: char| matches!(c, ':' | '：' | '.' | '。' | '、' | ',' | '，'))
+        .trim_start_matches([':', '：', '.', '。', '、', ',', '，'])
         .trim()
         .to_string();
     Some((status, rest, has_marker))

@@ -61,7 +61,7 @@ impl ReadyQueue {
     ) -> Self {
         let mut status = HashMap::new();
         for node in &definition.nodes {
-            let id = node.id.trim().to_string();
+            let id = node.id.clone();
             let state = match initial_status.get(&id).map(String::as_str) {
                 Some(NODE_SUCCEEDED) => NodeState::Succeeded,
                 Some(NODE_FAILED) => NodeState::Failed,
@@ -74,23 +74,15 @@ impl ReadyQueue {
         let mut dependencies: HashMap<String, Vec<String>> = HashMap::new();
         let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
         for node in &definition.nodes {
-            let id = node.id.trim().to_string();
-            let deps = node
-                .depends_on
-                .iter()
-                .map(|dep| dep.trim().to_string())
-                .collect::<Vec<_>>();
+            let id = node.id.clone();
+            let deps = node.depends_on.clone();
             for dep in &deps {
                 dependents.entry(dep.clone()).or_default().push(id.clone());
             }
             dependencies.insert(id, deps);
         }
         Self {
-            node_ids: definition
-                .nodes
-                .iter()
-                .map(|n| n.id.trim().to_string())
-                .collect(),
+            node_ids: definition.nodes.iter().map(|n| n.id.clone()).collect(),
             status,
             retry_count: HashMap::new(),
             dependencies,

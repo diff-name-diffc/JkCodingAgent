@@ -4,7 +4,7 @@ import { Pencil, Plus, Trash2, Check, X } from "lucide-react";
 import type { SubAgentConfig, SubAgentRecord } from "../../../types";
 import { SubAgentEditorDialog } from "./SubAgentEditorDialog";
 
-export function toBackendConfig(config: SubAgentConfig): string {
+function toBackendConfig(config: SubAgentConfig): string {
   return JSON.stringify({
     agent_id: config.agentId,
     agent_name: config.agentName,
@@ -28,7 +28,7 @@ export function toBackendConfig(config: SubAgentConfig): string {
   });
 }
 
-export function fromBackendConfig(record: SubAgentRecord): SubAgentConfig | null {
+function fromBackendConfig(record: SubAgentRecord): SubAgentConfig | null {
   try {
     const raw = JSON.parse(record.configJson);
     return {
@@ -147,7 +147,7 @@ export function SubAgentManagePanel() {
   const hasBrowserAgent = agents.some((a) => a.id === "browser-agent");
 
   return (
-    <div className="ai-subagent-panel ai-migrated-subagent-panel">
+    <div className="ai-subagent-panel">
       <div className="ai-subagent-header">
         <span className="ai-subagent-title">子智能体管理</span>
         <button type="button" className="ai-aha-ghost-button" onClick={handleNew}>

@@ -122,7 +122,7 @@ function AuditInfoBlock({
   return (
     <div className={`ai-ssh-info-block is-${tone}`}>
       <div className="ai-ssh-info-title">{title}</div>
-      <div className="ai-ssh-info-body">{children}</div>
+      <div>{children}</div>
     </div>
   );
 }

@@ -4,7 +4,7 @@ import type {
   DispatcherToolArtifactRef,
   PythonCodeRunRecord,
 } from "../../types";
-import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcherChatView";
+import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcher-chat/assistant-segments";
 import { buildDispatcherDisplayItems } from "../dispatcherChatView";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { AssistantMessage } from "./assistant-message";
@@ -92,10 +92,10 @@ export const MessageItem = React.memo(function MessageItem({
   );
 });
 
-/** Build display items from raw DispatcherMessage[] using the existing view-model layer. */
+/** Build display items from raw DispatcherMessage[] using the shared view-model layer. */
 export function buildItems(messages: DispatcherMessage[]): MessageDisplayItem[] {
-  // Defer to the existing, well-tested builder so segment-grouping, tool
-  // upserting, and superseded-text logic stay identical to the legacy surface.
+  // 复用统一的历史投影构建器：分段归组、工具卡片 upsert 与
+  // superseded 正文降级逻辑全部集中在 buildDispatcherDisplayItems。
   const raw = buildDispatcherDisplayItems(messages);
   let prevKind: "user" | "assistant" | null = null;
   let sourceUserMessage: DispatcherMessage | undefined;

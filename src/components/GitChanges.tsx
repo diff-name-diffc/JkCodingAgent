@@ -132,7 +132,7 @@ export function GitChanges({
   };
 
   return (
-    <div className="ai-git-changes ai-migrated-git-changes" style={{ width }}>
+    <div className="ai-git-changes" style={{ width }}>
       {/* Header */}
       <div className="ai-git-header">
         <span className="ai-git-title">变更</span>

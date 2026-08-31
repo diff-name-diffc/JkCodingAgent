@@ -1,36 +1,10 @@
+//! 平台环境支持：用户 login shell 的环境变量 / PATH 解析。
+//!
+//! 应用级设置（外观主题等）已并入 `AhaSettingsV2`（见
+//! `agent/db/settings.rs`），统一经 `aha_get/save_settings_v2` 命令存取。
+
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-
-use anyhow::Context;
-use serde::{Deserialize, Serialize};
-
-use crate::shared::error::{CommandResult, IntoCommandResult};
-
-type AppSettingsResult<T> = std::result::Result<T, AppSettingsError>;
-
-#[derive(Debug, thiserror::Error)]
-pub enum AppSettingsError {
-    #[error("{action} 失败：{source}")]
-    Db {
-        action: &'static str,
-        #[source]
-        source: anyhow::Error,
-    },
-    #[error("{action} 失败：{source}")]
-    Json {
-        action: &'static str,
-        #[source]
-        source: serde_json::Error,
-    },
-}
-
-fn db_error(action: &'static str) -> impl FnOnce(anyhow::Error) -> AppSettingsError {
-    move |source| AppSettingsError::Db { action, source }
-}
-
-fn json_error(action: &'static str) -> impl FnOnce(serde_json::Error) -> AppSettingsError {
-    move |source| AppSettingsError::Json { action, source }
-}
 
 static LOGIN_SHELL_ENV: OnceLock<Vec<(String, String)>> = OnceLock::new();
 static LOGIN_SHELL_PATH: OnceLock<String> = OnceLock::new();
@@ -133,76 +107,13 @@ fn build_fallback_path() -> String {
 }
 
 fn build_fallback_env() -> Vec<(String, String)> {
-    let mut env = std::env::vars()
+    let mut env: Vec<(String, String)> = std::env::vars()
         .filter(|(key, _)| !matches!(key.as_str(), "PWD" | "OLDPWD" | "SHLVL" | "_"))
-        .collect::<Vec<_>>();
+        .collect();
     if let Some((_, path)) = env.iter_mut().find(|(key, _)| key == "PATH") {
         *path = build_fallback_path();
     } else {
         env.push(("PATH".to_string(), build_fallback_path()));
     }
     env
-}
-
-fn default_theme() -> String {
-    "system".to_string()
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AppSettings {
-    #[serde(default = "default_theme")]
-    pub theme: String,
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            theme: default_theme(),
-        }
-    }
-}
-
-/// 应用设置存全局库 app_config 表（键 `app_settings`）；v33 迁移已把
-/// 旧 settings.json 导入并删除，这里不再读写任何文件。
-#[tauri::command]
-pub fn load_app_settings(
-    state: tauri::State<'_, crate::agent::DispatcherState>,
-) -> CommandResult<AppSettings> {
-    load_settings(state)
-        .context("加载应用设置失败")
-        .into_command_result()
-}
-
-fn load_settings(
-    state: tauri::State<'_, crate::agent::DispatcherState>,
-) -> AppSettingsResult<AppSettings> {
-    match state
-        .db()
-        .get_app_config_json(crate::agent::db::app_config::APP_SETTINGS_KEY)
-    {
-        Ok(Some(raw)) => serde_json::from_str(&raw).map_err(json_error("解析应用设置")),
-        Ok(None) => Ok(AppSettings::default()),
-        Err(error) => Err(db_error("读取应用设置")(error)),
-    }
-}
-
-#[tauri::command]
-pub fn save_app_settings(
-    state: tauri::State<'_, crate::agent::DispatcherState>,
-    settings: AppSettings,
-) -> CommandResult<()> {
-    save_app_settings_impl(state, settings)
-        .context("保存应用设置失败")
-        .into_command_result()
-}
-
-fn save_app_settings_impl(
-    state: tauri::State<'_, crate::agent::DispatcherState>,
-    settings: AppSettings,
-) -> AppSettingsResult<()> {
-    let raw = serde_json::to_string(&settings).map_err(json_error("序列化应用设置"))?;
-    state
-        .db()
-        .set_app_config_json(crate::agent::db::app_config::APP_SETTINGS_KEY, &raw)
-        .map_err(db_error("保存应用设置"))
 }

@@ -55,7 +55,6 @@ export function ChatNewCategoryDialog({
     try {
       const tools = await invoke<AgentToolInfo[]>("aha_list_agent_tools", {
         context: "chat",
-        projectPath: null,
       });
       setAvailableTools(tools);
     } catch (error) {

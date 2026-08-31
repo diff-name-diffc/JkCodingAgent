@@ -8,12 +8,12 @@ function isThemePreference(value: string | null): value is ThemePreference {
   return value === "system" || value === "light" || value === "dark";
 }
 
-export function getStoredThemePreference(): ThemePreference {
+function getStoredThemePreference(): ThemePreference {
   const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
   return isThemePreference(stored) ? stored : "system";
 }
 
-/** 后端全局库（app_config 表）中的 theme 是自由字符串，收敛为合法值，非法时回退 system。 */
+/** 后端主题偏好（AhaSettingsV2.theme）收敛为合法值，非法时回退 system。 */
 export function normalizeThemePreference(value: unknown): ThemePreference {
   return value === "light" || value === "dark" || value === "system" ? value : "system";
 }

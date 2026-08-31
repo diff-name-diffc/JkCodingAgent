@@ -189,7 +189,7 @@ function withSetiPresentationAttributes(svg: string, fillColor: string): string 
 const SVG_CACHE_MAX_ENTRIES = 512;
 const svgMarkupCache = new Map<string, string>();
 
-export function resolveSetiIconName(presentation: FilePresentation): string {
+function resolveSetiIconName(presentation: FilePresentation): string {
   if (presentation.isDir) {
     return FALLBACK_FOLDER_ICON_NAMES[presentation.iconKey] ?? "folder";
   }

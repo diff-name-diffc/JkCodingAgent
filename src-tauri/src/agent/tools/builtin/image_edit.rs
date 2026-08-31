@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use tauri::Manager;
 
 use super::common::{bounded_dimension_arg, resolve_path, string_arg};
 use crate::agent::tools::context::ToolContext;
@@ -31,7 +32,6 @@ impl AgentTool for EditImageTool {
             "properties": {
                 "image_path": { "type": "string", "description": "要编辑的图片引用。支持：chat-image://uuid（对话中图片引用）、本地绝对路径、相对工作区路径" },
                 "prompt": { "type": "string", "description": "编辑描述文本，详细描述要进行的修改" },
-                "image_name": { "type": "string", "description": "输出图片文件名（可选，不含扩展名）。用于生成可读的文件名" },
                 "width": { "type": "integer", "description": "输出图片宽度（可选，支持范围 256-4096）" },
                 "height": { "type": "integer", "description": "输出图片高度（可选，支持范围 256-4096）" }
             },
@@ -96,7 +96,6 @@ async fn execute_image_edit(args: &Value, context: &ToolContext) -> String {
         return format!("错误：图片文件不存在：{}", image_path.display());
     }
 
-    let image_name = string_arg(args, "image_name");
     // width/height 做范围校验（256-4096）而非 u64→u32 静默截断，与 generate_image 一致。
     let width = match bounded_dimension_arg(args, "width") {
         Ok(value) => value,
@@ -125,13 +124,18 @@ async fn execute_image_edit(args: &Value, context: &ToolContext) -> String {
         return "错误：图片路径包含非 UTF-8 字符，无法处理".to_string();
     };
 
+    let Some(app) = context.app_handle.clone() else {
+        return "错误：应用句柄不可用，无法保存编辑图片".to_string();
+    };
+    let db = app.state::<crate::agent::DispatcherState>().db().clone();
+
     match edit_image(
         image_path_str,
         prompt,
-        image_name,
         width,
         height,
-        context.session_title.clone(),
+        db,
+        context.workspace_id.clone(),
         api_key,
         base_url,
         default_model,

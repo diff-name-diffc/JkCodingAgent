@@ -144,6 +144,38 @@ pub struct AhaSharedModels {
     pub embedding_model_configs: Vec<DispatcherModelConfig>,
 }
 
+/// 图片生成/编辑工具的运行期凭据（active 条目；库引用已在 get_settings_v2
+/// 读取路径解析为完整凭据）。edit_model 仅补充编辑用途的模型名——生成与
+/// 编辑共用 image_model_configs 的网关与密钥（见 builtin/image_edit.rs）。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ImageModelCredentials {
+    pub url: String,
+    pub api_key: String,
+    pub model: String,
+    pub edit_model: String,
+}
+
+impl AhaSharedModels {
+    pub(crate) fn image_model_credentials(&self) -> ImageModelCredentials {
+        fn active(configs: &[DispatcherModelConfig]) -> Option<&DispatcherModelConfig> {
+            configs
+                .iter()
+                .find(|config| config.active)
+                .or_else(|| configs.first())
+        }
+        let mut credentials = ImageModelCredentials::default();
+        if let Some(config) = active(&self.image_model_configs) {
+            credentials.url = config.url.trim().to_string();
+            credentials.api_key = config.api_key.trim().to_string();
+            credentials.model = config.model.trim().to_string();
+        }
+        if let Some(config) = active(&self.image_edit_model_configs) {
+            credentials.edit_model = config.model.trim().to_string();
+        }
+        credentials
+    }
+}
+
 /// 分类模型库条目：按模型调用方式（text/vision/image/...）分类，
 /// 每个条目独立持有 url/apiKey/model，供「模型用途」页按分类引用。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -167,7 +199,7 @@ fn default_library_entry_enabled() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AhaSettingsV2 {
     pub shared: AhaSharedModels,
@@ -180,19 +212,22 @@ pub struct AhaSettingsV2 {
     pub model_library: Vec<ModelLibraryEntry>,
     #[serde(default)]
     pub graph: GraphExecutionConfig,
+    /// 外观主题偏好（system / light / dark）。应用级偏好，随设置统一存取；
+    /// 前端 `lib/theme.ts` 据此切换根节点 `.dark` 类。
+    #[serde(default = "default_theme_preference")]
+    pub theme: String,
 }
 
-impl Default for AhaSettingsV2 {
-    fn default() -> Self {
-        Self {
-            shared: AhaSharedModels::default(),
-            project: AhaContextConfig::default(),
-            chat: AhaContextConfig::default(),
-            context_debug: false,
-            review: SshReviewConfig::default(),
-            model_library: Vec::new(),
-            graph: GraphExecutionConfig::default(),
-        }
+fn default_theme_preference() -> String {
+    "system".to_string()
+}
+
+/// 主题偏好规范化：仅接受 system / light / dark，其余回落 system
+/// （与前端 `normalizeThemePreference` 语义一致）。
+fn normalize_theme_preference(raw: &str) -> String {
+    match raw.trim() {
+        value @ ("system" | "light" | "dark") => value.to_string(),
+        _ => default_theme_preference(),
     }
 }
 
@@ -304,7 +339,8 @@ impl DispatcherDb {
             review_model_config_json,
             review_system_prompt,
             model_library_json,
-            graph_execution_config_json
+            graph_execution_config_json,
+            theme
         FROM dispatcher_settings WHERE id = 'default'";
 
         match conn.query_row(sql, [], |row| {
@@ -364,6 +400,9 @@ impl DispatcherDb {
                     let raw: String = row.get(16).unwrap_or_default();
                     serde_json::from_str::<GraphExecutionConfig>(&raw).unwrap_or_default()
                 },
+                theme: row
+                    .get::<_, String>(17)
+                    .unwrap_or_else(|_| default_theme_preference()),
             })
         }) {
             Ok(mut settings) => {
@@ -417,7 +456,8 @@ impl DispatcherDb {
         // 保存前统一规范化，确保与读取端（get_settings_v2）语义对称：
         // - 全部模型配置列表经 normalize_model_configs（trim、过滤空条目、active 唯一化）；
         // - 聊天对话模型配置按既有约定清除 system_prompt 后再规范化；
-        // - 审查模型 trim，空提示词回落默认文案（与读取端一致）。
+        // - 审查模型 trim，空提示词回落默认文案（与读取端一致）；
+        // - 主题偏好收敛为 system/light/dark，非法值回落 system。
         // 落盘的就是规范化结果，函数直接返回它，写后读回不再漂移。
         let shared = AhaSharedModels {
             vision_model_configs: normalize_model_configs(
@@ -493,6 +533,7 @@ impl DispatcherDb {
             serde_json::to_string(&settings.model_library).unwrap_or_else(|_| "[]".to_string());
         let graph_config =
             serde_json::to_string(&settings.graph).unwrap_or_else(|_| "{}".to_string());
+        let theme = normalize_theme_preference(&settings.theme);
 
         let sql = "INSERT INTO dispatcher_settings (
             id,
@@ -512,9 +553,10 @@ impl DispatcherDb {
             review_model_config_json,
             review_system_prompt,
             model_library_json,
-            graph_execution_config_json
+            graph_execution_config_json,
+            theme
         ) VALUES (
-            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
         )
         ON CONFLICT(id) DO UPDATE SET
             shared_vision_model_configs_json = ?1,
@@ -533,7 +575,8 @@ impl DispatcherDb {
             review_model_config_json = ?14,
             review_system_prompt = ?15,
             model_library_json = ?16,
-            graph_execution_config_json = ?17";
+            graph_execution_config_json = ?17,
+            theme = ?18";
 
         conn.execute(
             sql,
@@ -555,6 +598,7 @@ impl DispatcherDb {
                 &review_prompt,
                 &model_library,
                 &graph_config,
+                &theme,
             ],
         )
         .context("save dispatcher settings")?;
@@ -568,6 +612,7 @@ impl DispatcherDb {
             review,
             model_library: settings.model_library.clone(),
             graph: settings.graph,
+            theme,
         })
     }
 }
@@ -600,8 +645,10 @@ mod tests {
     #[test]
     fn reference_entries_strip_credentials_on_store_and_resolve_on_load() {
         let db = test_db();
-        let mut settings = AhaSettingsV2::default();
-        settings.model_library = vec![library_entry("e1", true)];
+        let mut settings = AhaSettingsV2 {
+            model_library: vec![library_entry("e1", true)],
+            ..Default::default()
+        };
         settings.project.chat_model_configs = vec![DispatcherModelConfig {
             library_id: "e1".to_string(),
             active: true,
@@ -639,8 +686,10 @@ mod tests {
     #[test]
     fn reference_to_disabled_entry_resolves_empty() {
         let db = test_db();
-        let mut settings = AhaSettingsV2::default();
-        settings.model_library = vec![library_entry("e1", false)];
+        let mut settings = AhaSettingsV2 {
+            model_library: vec![library_entry("e1", false)],
+            ..Default::default()
+        };
         settings.chat.chat_model_configs = vec![DispatcherModelConfig {
             library_id: "e1".to_string(),
             active: true,

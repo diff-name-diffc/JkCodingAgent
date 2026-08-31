@@ -1,4 +1,4 @@
-export const AVATAR_COLORS: [string, string][] = [
+const AVATAR_COLORS: [string, string][] = [
   ["#3B82F6", "#1D4ED8"],
   ["#6366F1", "#4338CA"],
   ["#8B5CF6", "#6D28D9"],

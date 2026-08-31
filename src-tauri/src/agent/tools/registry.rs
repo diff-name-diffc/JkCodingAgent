@@ -99,10 +99,11 @@ impl ToolRegistry {
         self.tools.push(tool);
     }
 
-    fn find_by_name(&self, name: &str) -> Option<&Box<dyn AgentTool>> {
+    fn find_by_name(&self, name: &str) -> Option<&dyn AgentTool> {
         self.name_index
             .get(name)
             .and_then(|&idx| self.tools.get(idx))
+            .map(Box::as_ref)
     }
 
     pub fn tool_names_and_descriptions(&self) -> Vec<(String, String)> {
@@ -239,11 +240,11 @@ impl ToolRegistry {
         tool_name: &str,
         args: &Value,
         include_dynamic: bool,
-    ) -> Result<ToolInput, ToolResult> {
+    ) -> Result<ToolInput, Box<ToolResult>> {
         let Some(spec) = self.spec_by_name(scope, tool_name, include_dynamic) else {
-            return Err(ToolResult::recoverable_error(format!(
+            return Err(Box::new(ToolResult::recoverable_error(format!(
                 "错误：未找到工具 '{tool_name}'"
-            )));
+            ))));
         };
 
         let mut effective_arguments = args.clone();
@@ -273,7 +274,7 @@ impl ToolRegistry {
                                 "code": "invalid_tool_schema",
                                 "toolName": tool_name,
                             });
-                            return Err(result);
+                            return Err(Box::new(result));
                         }
                     };
                     self.dynamic_validators
@@ -322,7 +323,7 @@ impl ToolRegistry {
                 "toolName": tool_name,
                 "errors": errors,
             });
-            return Err(result);
+            return Err(Box::new(result));
         }
 
         Ok(ToolInput {
@@ -342,7 +343,7 @@ impl ToolRegistry {
         scope: &McpScope,
         tool_name: &str,
         args: &Value,
-    ) -> Result<Value, ToolResult> {
+    ) -> Result<Value, Box<ToolResult>> {
         self.prepare_input(scope, tool_name, args, false)
             .map(|input| input.effective_arguments)
     }
@@ -505,6 +506,7 @@ mod tests {
             app_handle: None,
             llm_provider: None,
             vision_model: String::new(),
+            vision_provider: None,
             image_model_url: String::new(),
             image_model_api_key: String::new(),
             image_model: String::new(),

@@ -1,9 +1,8 @@
 //! 消息内容段落（ContentSegment）及其渲染、路径安全校验，以及图片文件的
 //! 资源清理。资源清理函数被会话删除/清空逻辑调用（见 sessions / messages 模块）。
 
-use std::collections::HashSet;
 use std::io::ErrorKind;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rusqlite::params;
@@ -24,7 +23,6 @@ pub enum ContentSegment {
     Image {
         id: String,
         image_id: String,
-        path: String,
         alt: Option<String>,
         width: Option<u32>,
         height: Option<u32>,
@@ -87,53 +85,6 @@ pub(crate) fn try_parse_segments_json(segments_json: &str) -> Result<Vec<Content
     serde_json::from_str(segments_json).context("parse dispatcher message segments")
 }
 
-pub(super) fn safe_absolute_image_path(path: &str) -> Result<PathBuf> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("chat image path is empty");
-    }
-
-    let path = Path::new(trimmed);
-    if !path.is_absolute() {
-        anyhow::bail!("chat image path must be absolute: {trimmed}");
-    }
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        anyhow::bail!("chat image path must not contain parent traversal: {trimmed}");
-    }
-
-    let normalized = lexical_normalize_path(path);
-    let base = crate::chat_images::chat_images_dir().map_err(anyhow::Error::msg)?;
-    // 解析符号链接后再校验前缀：chat-images 目录内若存在指向外部的符号链接
-    // （如 base/link -> /outside），仅词法校验会让后续 remove_file 沿链接删除
-    // 目录外文件，构成目录穿越/任意文件删除。
-    let normalized_base = std::fs::canonicalize(&base)
-        .with_context(|| format!("canonicalize chat images dir {}", base.display()))?;
-    let canonical = match std::fs::canonicalize(&normalized) {
-        Ok(canonical) => canonical,
-        // 文件尚不存在（或已被删除）时，解析其父目录再拼接文件名。
-        Err(_) => {
-            let parent = normalized.parent().unwrap_or(&normalized);
-            let canonical_parent = std::fs::canonicalize(parent)
-                .with_context(|| format!("canonicalize chat image parent {}", parent.display()))?;
-            match normalized.file_name() {
-                Some(file_name) => canonical_parent.join(file_name),
-                None => canonical_parent,
-            }
-        }
-    };
-    if !canonical.starts_with(&normalized_base) {
-        anyhow::bail!(
-            "chat image path must be inside app-managed chat images directory: {}",
-            canonical.display()
-        );
-    }
-
-    Ok(canonical)
-}
-
 pub(super) fn insert_chat_images(
     tx: &rusqlite::Transaction<'_>,
     workspace_id: &str,
@@ -144,7 +95,6 @@ pub(super) fn insert_chat_images(
     for (index, segment) in segments.iter().enumerate() {
         let ContentSegment::Image {
             image_id,
-            path,
             alt,
             width,
             height,
@@ -157,13 +107,24 @@ pub(super) fn insert_chat_images(
             continue;
         };
 
-        let safe_path = safe_absolute_image_path(path)?;
+        // 段内寻址只有 chat-image://{image_id}，文件系统路径是 chat_images 的
+        // 内部索引细节：由 image_id 反查得出，不再信任消息载荷里的路径。
+        // 文件缺失时跳过登记并留痕——这类请求会被发送前校验拦截。
+        let safe_path = match crate::chat_images::resolve_chat_image_id(image_id) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("skip chat image registration ({image_id}): {error}");
+                continue;
+            }
+        };
         tx.execute(
             "INSERT INTO chat_images (
                 id, image_id, workspace_id, message_id, segment_index, path, alt, width, height, mime_type, source, generation_prompt, created_at
              )
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(image_id) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                message_id = excluded.message_id,
                 segment_index = excluded.segment_index,
                 path = excluded.path,
                 alt = excluded.alt,
@@ -172,9 +133,7 @@ pub(super) fn insert_chat_images(
                 mime_type = excluded.mime_type,
                 source = excluded.source,
                 generation_prompt = excluded.generation_prompt,
-                created_at = excluded.created_at
-              WHERE chat_images.workspace_id = excluded.workspace_id
-                AND chat_images.message_id = excluded.message_id",
+                created_at = excluded.created_at",
             params![
                 Uuid::new_v4().to_string(),
                 image_id,
@@ -200,82 +159,111 @@ pub(super) fn insert_chat_images(
 pub(super) fn delete_chat_image_resources(
     tx: &rusqlite::Transaction<'_>,
     workspace_id: &str,
-) -> Result<Vec<PathBuf>> {
-    let mut paths: HashSet<String> = HashSet::new();
-    {
-        let mut stmt = tx
-            .prepare("SELECT path FROM chat_images WHERE workspace_id = ?1")
-            .context("load chat image paths")?;
-        let indexed_paths = stmt
-            .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .context("collect chat image paths")?;
-        paths.extend(indexed_paths);
-    }
-    {
-        let mut stmt = tx
-            .prepare("SELECT segments_json FROM dispatcher_messages WHERE workspace_id = ?1")
-            .context("load dispatcher message segments for image cleanup")?;
-        let segments_json = stmt
-            .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .context("collect dispatcher message segments for image cleanup")?;
-        for json in segments_json {
-            for segment in parse_segments_json(&json) {
-                if let ContentSegment::Image { path, .. } = segment {
-                    paths.insert(path);
-                }
-            }
-        }
-    }
-
-    // 坏路径（如 DB 残留的非法记录）不应阻断整个清理流程：跳过并留痕，
-    // 保证 DB 记录删除与其余文件清理尽量完整执行。
-    let safe_paths = paths
-        .into_iter()
-        .filter_map(|path| match safe_absolute_image_path(&path) {
-            Ok(safe_path) => Some(safe_path),
-            Err(error) => {
-                eprintln!("skip invalid chat image path {path:?}: {error:#}");
-                None
-            }
-        })
-        .collect();
-
+) -> Result<Option<PathBuf>> {
     tx.execute(
         "DELETE FROM chat_images WHERE workspace_id = ?1",
         params![workspace_id],
     )
     .context("delete chat image records")?;
 
-    Ok(safe_paths)
+    // 图片按会话目录布局：整目录回收（含登记失败 best-effort 落盘的文件
+    // 与暂存未发送的附件）。目录名非法（非 uuid 形态 workspace_id）时跳过
+    // 并留痕，不阻断清理。
+    match crate::chat_images::workspace_image_dir(workspace_id) {
+        Ok(dir) => Ok(Some(dir)),
+        Err(error) => {
+            eprintln!("skip chat image dir cleanup ({workspace_id}): {error}");
+            Ok(None)
+        }
+    }
 }
 
-pub(super) fn remove_chat_image_files(paths: &[PathBuf]) -> Result<()> {
-    for safe_path in paths {
-        match std::fs::remove_file(safe_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("remove chat image {}", safe_path.display()));
-            }
+/// 删除会话图片目录（事务提交后 best-effort 执行；NotFound 容忍）。
+pub(super) fn remove_chat_image_dir(dir: &Path) -> Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            Err(error).with_context(|| format!("remove chat image dir {}", dir.display()))
+        }
+    }
+}
+
+impl super::DispatcherDb {
+    /// 按 image_id 查索引行中的落盘路径（无行返回 None）。索引是图片文件
+    /// 的唯一登记簿，`resolve_chat_image_by_id` 以此实现 O(1) 解析。
+    pub(crate) fn chat_image_path(&self, image_id: &str) -> Result<Option<PathBuf>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT path FROM chat_images WHERE image_id = ?1")
+            .context("prepare chat image path lookup")?;
+        let mut rows = stmt
+            .query(params![image_id])
+            .context("query chat image path")?;
+        match rows.next().context("advance chat image path cursor")? {
+            Some(row) => Ok(Some(PathBuf::from(row.get::<_, String>(0)?))),
+            None => Ok(None),
         }
     }
 
-    Ok(())
-}
-
-fn lexical_normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
+    /// 发送前校验：segments 中每个 Image 段引用的文件必须存在。缺失时返回
+    /// 列出全部失效引用的错误（regenerate/edit 重发的引用可能已被手动清理，
+    /// 半残消息入库只会让后续 LLM 请求反复触发缺图降级）。含磁盘 I/O，
+    /// 调用方须在阻塞线程执行。
+    pub(crate) fn validate_chat_image_segments(&self, segments: &[ContentSegment]) -> Result<()> {
+        let mut missing: Vec<String> = Vec::new();
+        for segment in segments {
+            let ContentSegment::Image { image_id, .. } = segment else {
+                continue;
+            };
+            let resolved = crate::chat_images::resolve_chat_image_by_id(Some(self), image_id);
+            if !matches!(&resolved, Ok(path) if path.is_file()) {
+                missing.push(format!("chat-image://{image_id}"));
             }
-            _ => normalized.push(component.as_os_str()),
         }
+        if !missing.is_empty() {
+            anyhow::bail!("图片已失效，请重新粘贴上传：{}", missing.join("、"));
+        }
+        Ok(())
     }
-    normalized
+
+    /// 保存即登记（统一入口见 `crate::chat_images::save_image`）：写入一行
+    /// message_id 为 NULL 的索引记录，消息落库时由 `insert_chat_images`
+    /// 重新绑定到具体消息。含同步 SQLite I/O，调用方须在阻塞线程执行。
+    pub(crate) fn register_chat_image(
+        &self,
+        registration: &crate::chat_images::ChatImageRegistration,
+        path: &Path,
+    ) -> Result<()> {
+        self.conn()?
+            .execute(
+                "INSERT INTO chat_images (
+                    id, image_id, workspace_id, message_id, segment_index, path,
+                    width, height, mime_type, source, generation_prompt, created_at
+                 )
+                 VALUES (?1, ?2, ?3, NULL, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(image_id) DO UPDATE SET
+                    workspace_id = excluded.workspace_id,
+                    path = excluded.path,
+                    width = excluded.width,
+                    height = excluded.height,
+                    mime_type = excluded.mime_type,
+                    source = excluded.source,
+                    generation_prompt = excluded.generation_prompt",
+                params![
+                    Uuid::new_v4().to_string(),
+                    registration.image_id,
+                    registration.workspace_id,
+                    path.to_string_lossy(),
+                    registration.width.map(i64::from),
+                    registration.height.map(i64::from),
+                    registration.mime_type,
+                    registration.source,
+                    registration.generation_prompt,
+                    chrono::Utc::now().to_rfc3339(),
+                ],
+            )
+            .context("register chat image")?;
+        Ok(())
+    }
 }

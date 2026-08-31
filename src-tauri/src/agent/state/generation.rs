@@ -87,6 +87,14 @@ impl Drop for GenerationGuard {
 }
 
 #[cfg(test)]
+impl GenerationGuard {
+    /// 测试辅助：不消费守卫地探测胜负（Drop 仍会正常结算）。
+    fn clone_finish(&self) -> bool {
+        self.gate.finish_latest(&self.key, self.generation)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::GenerationGate;
 
@@ -147,13 +155,5 @@ mod tests {
         // 恰好一个 finish 返回 true（分配与登记同锁，不存在两个"最新代"）。
         let winners = all.into_iter().filter(|guard| guard.clone_finish()).count();
         assert_eq!(winners, 1);
-    }
-}
-
-#[cfg(test)]
-impl GenerationGuard {
-    /// 测试辅助：不消费守卫地探测胜负（Drop 仍会正常结算）。
-    fn clone_finish(&self) -> bool {
-        self.gate.finish_latest(&self.key, self.generation)
     }
 }

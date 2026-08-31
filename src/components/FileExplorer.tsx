@@ -264,7 +264,7 @@ export function FileExplorer({
   ]);
 
   return (
-    <div className="ai-file-explorer ai-migrated-file-explorer" style={{ width }}>
+    <div className="ai-file-explorer" style={{ width }}>
       <div className="ai-file-explorer-header">
         <span className="ai-file-explorer-title">Files</span>
         <button

@@ -14,11 +14,14 @@ JKCodingAgent 是一款面向 AI 智能体的现代桌面应用：以「会话�
 pnpm dev            # 启动 Vite 开发服务器（端口 1420）
 pnpm build          # tsc 类型检查 + Vite 打包
 pnpm lint           # 运行 ESLint（--max-warnings 0）
+pnpm test           # Vitest（前端纯函数/归一化）+ PI sidecar Node 测试
+pnpm contract:check # Tauri 命令双向契约检查（后端注册 ↔ 前端调用）
+pnpm styles:report  # .ai-* 类定义/引用双向 fail-closed 报告
 pnpm tauri dev      # 启动完整桌面应用（自动启动开发服务器）
 pnpm tauri build    # 构建生产环境桌面二进制包
 ```
 
-> ⚠️ **测试待重建。** 旧的 Vitest 测试套件已在重构中移除，`pnpm test` 暂不可用。新增功能时应同步补回单元测试（优先纯函数：路径处理、token 统计、segments 解析等）。
+> 新增功能应同步补单元测试（优先纯函数：路径处理、token 统计、segments 解析、分组/归一化等）；Vitest 用例放在被测模块旁的 `*.test.ts(x)`。
 
 Rust 后端位于 `src-tauri/`，修改后需重启 `tauri dev`。
 
@@ -105,13 +108,13 @@ App
 **持久化：SQLite（rusqlite）**
 - 数据库文件：`~/.jkcodingagent/jkbot.sqlite3`
 - 资源目录：`~/.jkcodingagent/`（含 `memory/`、`skills/`、`local_env/zsh/`、`chat-images/` 等）
-- **应用配置的权威源是全局库**（分层原则：应用生命周期配置一律全局一份；只有随项目变化之物放项目目录）：SSH 服务器/主机密钥/审计（`ssh_servers` 等表）、受管项目注册表（`projects` 表）、MCP 全局注册表（`mcp_servers` 表，与项目级 `mcp.json` 并存、同名项目覆盖）、应用级键值配置（`app_config` 表：theme/全局浏览器选项/RAG 配置）。
+- **应用配置的权威源是全局库**（分层原则：应用生命周期配置一律全局一份；只有随项目变化之物放项目目录）：SSH 服务器/主机密钥/审计（`ssh_servers` 等表）、受管项目注册表（`projects` 表）、MCP 全局注册表（`mcp_servers` 表，与项目级 `mcp.json` 并存、同名项目覆盖）、应用级键值配置（`app_config` 表：全局浏览器选项/RAG 配置）。外观主题偏好（system/light/dark）为 `dispatcher_settings.theme`，随 `AhaSettingsV2` 统一经 `aha_get_settings_v2` / `aha_save_settings_v2` 存取。
 - 主要表：`dispatcher_settings`、`ssh_servers`/`ssh_host_keys`/`ssh_audit_log`、`projects`、`mcp_servers`、`app_config`、`sub_agents`、`dispatcher_sessions`、`dispatcher_messages`、`dispatcher_session_token_usage`、`dispatcher_tool_artifacts`、`chat_images`、`graph_plans`、`graph_node_runs`、分类、关键字索引、python 运行记录等（schema 见 `agent/db/schema.rs`）
 - 模型配置：`dispatcher_settings.model_library` 为唯一权威；用途槽位以 `libraryId` 引用库条目（保存剥离凭据、读取回填）。环境变量回退（DASHSCOPE_*/MODEL_NAME 等）默认关闭，仅 `AHA_ALLOW_ENV_PROVIDER=1` 显式开启。
 
 **存储 schema 版本策略（桌面应用基线 + 前向迁移）**
 
-- 当前为 **v1 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）：应用开发阶段无存量用户，历史 v0→v33 迁移链已按产品决策清除；`init()` 只有「全新建库到当前形态」与「同版本直开」两条路径，低于基线的旧开发库直接报错并引导运行 `scripts/reset-dev-data.sh`。
+- 当前为 **v3 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）：应用开发阶段无存量用户，历史 v0→v33 迁移链已按产品决策清除；`init()` 路径为「全新建库到当前形态」「同版本直开」与「存在迁移块的低版本逐级前向迁移」（v1→v2：chat_images 的 message_id 改可空并删除两个未用列，事务内重建表 + 数据全量保留；v2→v3：dispatcher_settings 新增 `theme` 列，并把旧 `app_config` 中 `app_settings` 键的主题偏好搬移进 `AhaSettingsV2.theme`；两者均在迁移前 `VACUUM INTO` 整库快照）。更早的旧开发库直接报错并引导运行 `scripts/reset-dev-data.sh`。
 - 后续每次 schema 变更必须同时做两件事：① 更新 `schema.rs` 的基线 DDL（新装库直接得到新形态）；② 递增 `SCHEMA_VERSION` 并在 `init()` 迁移挂载点追加 `if current_version < N` 的事务块（DDL/回填与 `user_version` 推进同事务、幂等可重试）。**禁止改写或删除历史迁移块**——它们是已发布版本用户升级的唯一路径。
 - 破坏性迁移（DROP/清空数据）前必须做整库快照备份（参考 `VACUUM INTO` 方案），并保留「备份失败留痕」的兜底。
 - 领域模块自管的表（sub_agent / ssh / projects / mcp_servers / app_config）的 DDL 放在各领域的 `ensure_*_tx` 助手中，由 `create_baseline` 统一调用，保持单一出处。
@@ -122,11 +125,12 @@ App
 
 ## 项目配置
 
-应用级与项目级配置、智能体系统提示词/工具集、SSH/RAG/子智能体设置统一在 `AppSettingsDialog` 中编辑，存全局库。项目目录下仅保留随仓库共享的配置（`.jkcodingagent/config.toml` 的 `[git].commit_prompt`）与项目级 MCP（`.jkcodingagent/mcp.json`，同名覆盖全局注册表）。聊天图片保存至 `~/.jkcodingagent/chat-images/{session-title-slug}/`，路径写入 `chat_images` 表供智能体读取。
+应用级与项目级配置、智能体系统提示词/工具集、SSH/RAG/子智能体设置统一在 `AppSettingsDialog` 中编辑，存全局库。项目目录下仅保留随仓库共享的配置（`.jkcodingagent/config.toml` 的 `[git].commit_prompt`）与项目级 MCP（`.jkcodingagent/mcp.json`，同名覆盖全局注册表）。聊天图片统一走 `chat-image://{image_id}` 协议：唯一保存入口 `chat_images::save_image` 落盘 `~/.jkcodingagent/chat-images/{workspace_id}/{image_id}.{ext}` 并登记 `chat_images` 表（用户粘贴、generate_image/edit_image 产物与 fetch_image 下载的 URL 图片共用）；前端 `<img>` 经自定义 `chat-image` URI scheme 直出（`convertFileSrc(id, "chat-image")`），asset 协议仅兜底旧消息里的绝对路径 markdown。LLM 侧：`attach_turn_tool_images`（`agent/llm.rs`）在每次请求前把本轮 assistant/tool 消息文本里引用的 `chat-image://` 附加为当前用户消息的视觉输入（上限 3 张、跨迭代去重），主模型直看工具产图并自动触发 vision 槽位切换。
 
 **设置中心结构（2025 重构后）：** 外壳 `components/AppSettingsDialog.tsx`（左侧栏单层导航 + 内容区两层结构），页面与共享组件在 `components/settings/`：
 - `use-aha-settings.ts` — Aha 设置的统一 store + 失焦/变更自动保存管线（debounce 400ms 整体调用 `aha_save_settings_v2`），通过 React Context 提供给各设置页。
-- `providers/` — 「模型服务」与「模型用途」页。「模型服务」页（`ProvidersPage.tsx` + `ModelEntryCard.tsx`）按模型调用方式分标签（对话/视觉/图片生成/图片编辑/语音识别/语音合成/向量）维护**分类模型库**（`AhaSettingsV2.modelLibrary`，每条目独立持有 url/apiKey/model/别名/启停用，纯函数层在 `model-library.ts`）；「模型用途」页（`PurposesPage.tsx` + `PurposeSelect.tsx`）的下拉选项来自对应分类的库条目，选中后由 `provider-registry.ts` 的 `bindPurpose` 写入携带 `libraryId` 的引用绑定——落库只保留引用（后端剥离 url/apiKey/model），读取时由库条目回填凭据，库更新后用途自动跟随。最近测试结果等无存储字段的 UI 偏好存 localStorage（`provider-prefs.ts`）。旧用户首次打开设置时按分类从已有用途配置播种模型库（`use-aha-settings.ts` + `seedModelLibrary`）。
+- `GeneralPage.tsx` — 「通用」页：外观主题（跟随系统/浅色/深色），即点即生效（立即预览 + 自动保存），存 `AhaSettingsV2.theme`。
+- `providers/` — 「模型服务」与「模型用途」页。「模型服务」页（`ProvidersPage.tsx` + `ModelEntryCard.tsx`）按模型调用方式分标签（对话/视觉/图片生成/图片编辑/语音识别/语音合成/向量）维护**分类模型库**（`AhaSettingsV2.modelLibrary`，每条目独立持有 url/apiKey/model/别名/启停用，纯函数层在 `model-library.ts`）；「模型用途」页（`PurposesPage.tsx` + `PurposeSelect.tsx`）的下拉选项来自对应分类的库条目，选中后由 `provider-registry.ts` 的 `bindPurpose` 写入携带 `libraryId` 的引用绑定——落库只保留引用（后端剥离 url/apiKey/model），读取时由库条目回填凭据，库更新后用途自动跟随。最近测试结果等无存储字段的 UI 偏好存 localStorage（`provider-prefs.ts`）。
 - `ssh/` — SSH 服务器页（状态点 + 自动保存 + 删除二次确认）。服务器 `id` 为机器标识（系统自动生成，不展示/不可编辑），界面展示 `name`（支持中文）；`SshImportDialog` 支持从本机 `~/.ssh/config` 解析导入 Host 条目（后端 `ssh_tool_import_ssh_config`，纯解析不落库，凭据不导入）。
 - 共享组件：`ConfirmDialog`（删除二次确认）、`TestButton`（测试三态：spinner / ✓ms / 错误展开）、`ApiKeyInput`（字段级明文切换）、`StatusBadge`、`EmptyState`、`FieldLabel`（术语 tooltip）、`Section`、`toast.ts` + `Toaster`。
 - 设置中心样式类统一 `.ai-set-*` 前缀（`styles/tailwind.css` 的 `@layer components` 末尾）。
@@ -141,7 +145,7 @@ App
   1. **shadcn 基础组件**（`components/ui/`）——按钮、输入框、卡片、下拉等优先直接复用。
   2. **Tailwind 工具类**——布局、间距、排版等用 `className="flex gap-2 …"`，合并走 `cn()`。
   3. **`.ai-*` 组件类**（集中在 `styles/tailwind.css` 的 `@layer components`）——可复用的业务级视觉单元（如 `.ai-project-session-row`、`.ai-home-shell`）。
-- **设计令牌是 `App.css` 中的 CSS 自定义属性**（`--bg-*`、`--text-*`、`--border-*`、`--accent` 等），Tailwind 颜色在 `tailwind.config.js` 中 alias 到这些变量。应用仅提供亮色主题，不设主题切换。新增颜色优先扩展现有令牌，不要硬编码色值。
+- **设计令牌是 `App.css` 中的 CSS 自定义属性**（`--bg-*`、`--text-*`、`--border-*`、`--accent` 等），Tailwind 颜色在 `tailwind.config.js` 中 alias 到这些变量。应用支持亮色/暗色主题切换（偏好 system/light/dark，暗色令牌由 `App.css` 的 `.dark` 块承载，前端 `lib/theme.ts` 据此切换根节点 `.dark` 类并经 `AhaSettingsV2.theme` 持久化）。新增颜色必须同时维护亮/暗两套令牌值，不要硬编码色值。
 - **`preflight` 已禁用**——不要依赖 Tailwind 的全局 reset；基线样式由 `App.css` 提供。
 - 组件局部、真正一次性的样式可用行内 `style={{}}`；但**不要**新建独立业务 `.css` 文件，也**不要**重新引入 CSS-in-JS 对象模块（旧的 `styles/*.ts` 已全部移除）。
 - 新增可复用视觉单元时，在 `tailwind.css` 的 `@layer components` 内追加 `.ai-*` 类，并保持与现有命名一致。
@@ -233,7 +237,7 @@ impl AgentTool for MyTool {
 
 ### 组件规模
 
-- **单个组件文件不应超过 400 行。** 当前仍超标的大文件（按现状持续拆分）：`task_runtime/session.rs`（~1500）、`agent/commands.rs`（~1480）、`browser.rs`（~1240）、`file-viewer/LargeFileViewer.tsx`（~1120）、`components/ProjectPage.tsx`（~680）等。新增功能若落在这些文件，优先拆分再扩展。
+- **单个生产文件不应超过 500 行**（前端组件建议 ≤400 行）。超限文件按「变化原因与状态所有权」拆分（入口薄壳 + 领域子模块 + 独立测试模块），不机械按行切片；拆分历史与在账清单见 `docs/architecture-audit-2026-08-25.md`。新增功能若落在超限文件，优先拆分再扩展。
 
 ---
 
@@ -252,7 +256,7 @@ impl AgentTool for MyTool {
 
 **删除会话或清空消息时，必须同步清理其绑定的所有关联资源**——不得仅依赖数据库级联。
 
-1. **图片文件**：`chat_images` 表记录通过外键 `ON DELETE CASCADE` 随 `dispatcher_messages` 删除，但 `~/.jkcodingagent/chat-images/{session-title-slug}/` 下的**实际文件不会被自动删除**。删除/清空会话前，必须先按 `workspace_id` 查询全部图片路径并删除文件，再删数据库记录。
+1. **图片文件**：图片按会话目录 `~/.jkcodingagent/chat-images/{workspace_id}/` 布局，删除/清空会话时随 `chat_images` 表记录一起整目录回收（`delete_chat_image_resources` + `remove_chat_image_dir`）。注意：`truncate_messages_from`（regenerate/edit 前置）**有意不删图片文件**——重发复用同一批 image_id；发送前有 `chat_images_validate` 存在性校验兜底。
 2. **工具产物文件**：`dispatcher_tool_artifacts` 指向的产物文件同样需显式清理。
 3. **项目删除**：`project_delete` 命令（`project/storage.rs`）在同一事务内遍历该项目全部会话执行与 `delete_project_session` 相同的级联清理，并删除项目行；提交后 best-effort 清理聊天图片文件与项目仓库内应用自有目录（`.jkcodingagent/browser-profile/`、`.jkcodingagent/local_env/`）。config.toml / mcp.json 可能随仓库共享给团队，保留不删。
 4. **通用约定**：任何与会话绑定的文件资源（图片、附件、缓存），在会话删除/清空时必须同步清理文件系统，不能只清 DB。

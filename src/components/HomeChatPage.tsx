@@ -1,8 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import type { BrowserStatus } from "../types";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import { useDockedBrowserPanel } from "../hooks/useDockedBrowserPanel";
+import { useBrowserSessionDock } from "../hooks/useBrowserSessionDock";
 import { useChatSessionsQuery } from "../hooks/use-chat-queries";
 import { extractMcpToolNames, trimMcpStatusToTools } from "../lib/mcp-category-tools";
 import { useAhaSettingsStore } from "./settings/use-aha-settings";
@@ -52,9 +50,7 @@ export function HomeChatPage() {
     let allowedTools: string[] = settings?.chat.allowedTools ?? [];
     let categoryName: string | null = null;
     if (activeSessionCategory) {
-      const config = chatCategoryConfigs.find(
-        (item) => item.categoryId === activeSessionCategory,
-      );
+      const config = chatCategoryConfigs.find((item) => item.categoryId === activeSessionCategory);
       if (config) {
         allowedTools = config.allowedTools;
         categoryName = config.categoryName;
@@ -71,93 +67,21 @@ export function HomeChatPage() {
     [mcpStatus, configuredMcpNames],
   );
   const [showBrowserPanel, setShowBrowserPanel] = useState(false);
-  const [dockedBrowsers, setDockedBrowsers] = useState<
-    Map<string, { sessionId: string; url: string | null; state: string }>
-  >(new Map());
   const browserPanel = useDockedBrowserPanel("nezha.chat.browserPanelWidth");
-  const activeSessionIdRef = useRef(activeSessionId);
-  activeSessionIdRef.current = activeSessionId;
-
-  useEffect(() => {
-    const unlisten = listen<BrowserStatus>("browser-status", (event) => {
-      const { sessionId, state, url } = event.payload;
-      if (state === "minimized" || state === "page_closed") {
-        setDockedBrowsers((prev) => {
-          const next = new Map(prev);
-          next.set(sessionId, { sessionId, url: url ?? null, state });
-          return next;
-        });
-        if (sessionId === activeSessionIdRef.current) {
-          setShowBrowserPanel(false);
-        }
-      } else if (state === "closed") {
-        setDockedBrowsers((prev) => {
-          if (!prev.has(sessionId)) return prev;
-          const next = new Map(prev);
-          next.delete(sessionId);
-          return next;
-        });
-      } else if (sessionId === activeSessionIdRef.current && state !== "page_closed") {
-        setShowBrowserPanel(true);
-      }
-    });
-
-    return () => {
-      unlisten.then((fn) => fn()).catch(() => {});
-    };
-  }, []);
-
-  const handleMinimizeBrowser = useCallback(async () => {
-    if (!activeSessionId) return;
-    await invoke("browser_minimize", { sessionId: activeSessionId });
-    setShowBrowserPanel(false);
-  }, [activeSessionId]);
-
-  const handleRestoreBrowser = useCallback((sessionId: string) => {
-    invoke("browser_restore", { sessionId })
-      .then(() => {
-        setActiveSessionId(sessionId);
-        setShowBrowserPanel(true);
-      })
-      .catch(console.error);
-  }, []);
-
-  const handleCloseDockedBrowser = useCallback((sessionId: string) => {
-    invoke("browser_stop", { sessionId })
-      .then(() => {
-        setDockedBrowsers((prev) => {
-          const next = new Map(prev);
-          next.delete(sessionId);
-          return next;
-        });
-      })
-      .catch(console.error);
-  }, []);
-
-  const handleReopenBrowser = useCallback(async () => {
-    if (!activeSessionId) return;
-    await invoke("browser_reopen", { sessionId: activeSessionId });
-    setShowBrowserPanel(true);
-  }, [activeSessionId]);
-
-  const handleOpenMarkdownLink = useCallback(
-    async (url: string) => {
-      if (!activeSessionId) return;
-      setShowBrowserPanel(true);
-      try {
-        await invoke("browser_navigate", {
-          sessionId: activeSessionId,
-          url,
-          projectPath: null,
-        });
-      } catch (error) {
-        console.error("CloakBrowser 打开链接失败:", error);
-      }
-    },
-    [activeSessionId],
-  );
-
-  const dockedSessions = useMemo(() => Array.from(dockedBrowsers.values()), [dockedBrowsers]);
+  const {
+    dockedSessions,
+    minimize: handleMinimizeBrowser,
+    restore: handleRestoreBrowser,
+    closeDocked: handleCloseDockedBrowser,
+    reopen: handleReopenBrowser,
+    openUrl: handleOpenMarkdownLink,
+  } = useBrowserSessionDock({
+    activeSessionId,
+    projectPath: null,
+    onOpen: useCallback(() => setShowBrowserPanel(true), []),
+    onMinimized: useCallback(() => setShowBrowserPanel(false), []),
+    onRestoreSession: setActiveSessionId,
+  });
 
   return (
     <div className="ai-home-chat nezha-chat-home">

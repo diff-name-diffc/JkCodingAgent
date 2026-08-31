@@ -38,9 +38,9 @@ pub enum McpScope {
 impl McpScope {
     /// 构造项目作用域：路径不存在/不可解析时大声失败。
     pub fn project(path: &Path) -> Result<McpScope, String> {
-        let canonical = path.canonicalize().map_err(|error| {
-            format!("错误：项目路径不可用（{}）：{error}", path.display())
-        })?;
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("错误：项目路径不可用（{}）：{error}", path.display()))?;
         Ok(McpScope::Project(canonical))
     }
 

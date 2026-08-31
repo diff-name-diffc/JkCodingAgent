@@ -242,7 +242,7 @@ mod tests {
     }
 
     fn report_with_state(state_json: &str) -> String {
-        let runs = vec![node_run("n1", "run-1", "succeeded")];
+        let runs = [node_run("n1", "run-1", "succeeded")];
         let refs = runs.iter().collect::<Vec<_>>();
         build_report(
             "测试图",
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn mismatch_flag_adds_warning() {
-        let runs = vec![node_run("n1", "run-1", "succeeded")];
+        let runs = [node_run("n1", "run-1", "succeeded")];
         let refs = runs.iter().collect::<Vec<_>>();
         let report = build_report(
             "测试图",

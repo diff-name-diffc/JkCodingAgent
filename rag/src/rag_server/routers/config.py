@@ -1,7 +1,7 @@
 """配置热更新路由。
 
 设计背景：
-  知识库配置的权威源在 Rust 宿主（~/.jkcodingagent/rag/config.json）。
+  知识库配置的权威源在 Rust 宿主的全局 SQLite app_config 表（键 ``rag``）。
   当用户在前端修改 Qdrant 连接或 embedding 模型后，宿主写盘并调用
   POST /config/reload 把新配置推送到本进程，本进程整体替换内存单例。
 

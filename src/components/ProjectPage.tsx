@@ -1,30 +1,23 @@
-import { lazy, Suspense, useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
-import type {
-  Project,
-  BrowserStatus,
-} from "../types";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import type { Project } from "../types";
 import { SessionPanel } from "./SessionPanel";
 import { ProjectRail } from "./ProjectRail";
 import { RightToolbar } from "./RightToolbar";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
-import { ChatPageV2 } from "./chat-page-v2";
 import { useProjectPanels } from "../hooks/useProjectPanels";
+import { useBrowserSessionDock } from "../hooks/useBrowserSessionDock";
 import { useProjectMcpStatus } from "../hooks/use-mcp-status";
 import {
   ProjectMainArea,
   ProjectRightPanelHost,
-  ProjectWorkbench,
   ProjectWorkspaceLayout,
 } from "./project/ProjectWorkspaceLayout";
+import { ProjectLazyPaneFallback } from "./project/ProjectLazyPaneFallback";
+import { ProjectOverlays } from "./project/ProjectOverlays";
+import { ProjectWorkbenchContent } from "./project/ProjectWorkbenchContent";
 
 const FileExplorer = lazy(() =>
   import("./FileExplorer").then((module) => ({ default: module.FileExplorer })),
-);
-const FileViewer = lazy(() =>
-  import("./FileViewer").then((module) => ({ default: module.FileViewer })),
 );
 const GitChanges = lazy(() =>
   import("./GitChanges").then((module) => ({ default: module.GitChanges })),
@@ -32,44 +25,12 @@ const GitChanges = lazy(() =>
 const GitHistory = lazy(() =>
   import("./GitHistory").then((module) => ({ default: module.GitHistory })),
 );
-const GitDiffViewer = lazy(() =>
-  import("./GitDiffViewer").then((module) => ({ default: module.GitDiffViewer })),
-);
 const ShellTerminalPanel = lazy(() =>
   import("./ShellTerminalPanel").then((module) => ({ default: module.ShellTerminalPanel })),
 );
 const BrowserPanel = lazy(() =>
   import("./BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
 );
-const McpStatusDialog = lazy(() =>
-  import("./McpStatusDialog").then((module) => ({ default: module.McpStatusDialog })),
-);
-const AppSettingsDialog = lazy(() =>
-  import("./AppSettingsDialog").then((module) => ({ default: module.AppSettingsDialog })),
-);
-const BrowserDock = lazy(() =>
-  import("./BrowserDock").then((module) => ({ default: module.BrowserDock })),
-);
-
-function LazyPaneFallback({ label = "加载中..." }: { label?: string }) {
-  return (
-    <div
-      style={{
-        flex: 1,
-        minWidth: 0,
-        minHeight: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: "var(--text-muted)",
-        fontSize: 13,
-        background: "var(--bg-panel)",
-      }}
-    >
-      {label}
-    </div>
-  );
-}
 
 export function ProjectPage({
   project,
@@ -92,36 +53,25 @@ export function ProjectPage({
   onCloseProject?: (project: Project) => void;
   onOpen: () => void;
 }) {
+  const panels = useProjectPanels();
   const {
     rightPanel,
-    editorWorkbenchVisible,
     openFiles,
-    activeFileTabId,
-    openDiff,
     rightPanelWidth,
     browserPanelExpanded,
     terminalHeight,
-    setOpenDiff,
     handleTogglePanel,
     handleFileSelect,
-    handleFileTabSelect,
-    handleFileTabClose,
-    handleCloseOtherFileTabs,
-    handleCloseTabsToRight,
-    handleCloseAllFileTabs,
     handleFileTreeRename,
     handleFileTreeDelete,
     handleDiffFileSelect,
     handleCommitSelect,
     handleCommitFileClick,
-    hideEditorWorkbench,
-    showEditorWorkbench,
-    clearFileAndDiff,
     handleRightResizeStart,
     handleToggleBrowserPanelExpanded,
     handleTerminalResizeStart,
     handleOpenPanel,
-  } = useProjectPanels();
+  } = panels;
 
   const [showShellTerminal, setShowShellTerminal] = useState(false);
   const [showDispatcherSettings, setShowDispatcherSettings] = useState(false);
@@ -134,57 +84,13 @@ export function ProjectPage({
     setServerEnabled: toggleMcpServerEnabled,
   } = useProjectMcpStatus(project.path, visible);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
-  const [showSessionWorkbench, setShowSessionWorkbench] = useState(true);
   const [sessionSidebarCollapsed, setSessionSidebarCollapsed] = useState(false);
-  const workspaceSplitRef = useRef<HTMLDivElement>(null);
-  const activeSessionIdRef = useRef(activeSessionId);
-  activeSessionIdRef.current = activeSessionId;
-  const hasEditorWorkbenchContent = openDiff !== null || openFiles.length > 0;
-  const showSessionPane = showSessionWorkbench;
-  const showEditorPane = editorWorkbenchVisible && hasEditorWorkbenchContent;
-  const workbenchColumnCount = Number(showSessionPane) + Number(showEditorPane);
+  const [sessionWorkbenchVisible, setSessionWorkbenchVisible] = useState(true);
 
   const handleSelectSession = useCallback((sessionId: string | null) => {
+    if (sessionId) setSessionWorkbenchVisible(true);
     setActiveSessionId(sessionId);
-    if (sessionId) {
-      setShowSessionWorkbench(true);
-    }
   }, []);
-
-  const handleEditorPaneResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const container = workspaceSplitRef.current;
-    if (!container) return;
-
-    const rect = container.getBoundingClientRect();
-    const updateRatio = (clientX: number) => {
-      const nextRatio = (rect.right - clientX) / rect.width;
-      setEditorPaneRatio(Math.max(0.28, Math.min(0.72, nextRatio)));
-    };
-
-    const onMouseMove = (event: MouseEvent) => {
-      updateRatio(event.clientX);
-    };
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    updateRatio(e.clientX);
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, []);
-
-  useEffect(() => {
-    if (!hasEditorWorkbenchContent) {
-      setShowSessionWorkbench(true);
-    }
-  }, [hasEditorWorkbenchContent]);
 
   // Files 面板是 lazy 块（含 seti 图标 eager 资源），首次打开才求值会卡顿；
   // 挂载后的空闲窗口预取，让首次点击命中缓存。
@@ -196,109 +102,25 @@ export function ProjectPage({
     return () => window.clearTimeout(timer);
   }, [visible]);
 
-  useEffect(() => {
-    if (!visible) return;
-    const unsub = listen<BrowserStatus>("browser-status", (event) => {
-      const { sessionId, state } = event.payload;
-      if (
-        sessionId === activeSessionIdRef.current &&
-        state !== "closed" &&
-        state !== "page_closed"
-      ) {
-        handleOpenPanel("browser");
-      }
-    });
-    return () => {
-      unsub.then((fn) => fn()).catch(() => {});
-    };
-  }, [handleOpenPanel, visible]);
-
-  const [dockedBrowsers, setDockedBrowsers] = useState<
-    Map<string, { sessionId: string; url: string | null; state: string }>
-  >(new Map());
-
-  useEffect(() => {
-    const unsubs = [
-      listen<BrowserStatus>("browser-status", (event) => {
-        const { sessionId, state, url } = event.payload;
-        if (state === "minimized" || state === "page_closed") {
-          setDockedBrowsers((prev) => {
-            const next = new Map(prev);
-            next.set(sessionId, { sessionId, url: url ?? null, state });
-            return next;
-          });
-        } else if (state !== "closed") {
-          setDockedBrowsers((prev) => {
-            if (!prev.has(sessionId)) return prev;
-            const next = new Map(prev);
-            next.delete(sessionId);
-            return next;
-          });
-        }
-      }),
-    ];
-    return () => {
-      unsubs.forEach((u) => u.then((fn) => fn()).catch(() => {}));
-    };
-  }, []);
-
-  const handleMinimizeBrowser = useCallback(async () => {
-    if (!activeSessionId) return;
-    await invoke("browser_minimize", { sessionId: activeSessionId });
-    handleTogglePanel("browser");
-  }, [activeSessionId, handleTogglePanel]);
-
-  const handleRestoreBrowser = useCallback(
-    (sessionId: string) => {
-      invoke("browser_restore", { sessionId })
-        .then(() => {
-          handleOpenPanel("browser");
-          setActiveSessionId((prev) => (prev === sessionId ? prev : sessionId));
-        })
-        .catch(console.error);
-    },
-    [handleOpenPanel],
-  );
-
-  const handleCloseDockedBrowser = useCallback((sessionId: string) => {
-    invoke("browser_stop", { sessionId })
-      .then(() => {
-        setDockedBrowsers((prev) => {
-          const next = new Map(prev);
-          next.delete(sessionId);
-          return next;
-        });
-      })
-      .catch(console.error);
-  }, []);
-
-  const handleReopenBrowser = useCallback(async () => {
-    if (!activeSessionId) return;
-    await invoke("browser_reopen", { sessionId: activeSessionId });
-    handleOpenPanel("browser");
-  }, [activeSessionId, handleOpenPanel]);
-
-  const dockedSessions = useMemo(
-    () => Array.from(dockedBrowsers.values()),
-    [dockedBrowsers],
-  );
-
-  const handleOpenMarkdownLink = useCallback(
-    async (url: string) => {
-      if (!activeSessionId) return;
-      handleOpenPanel("browser");
-      try {
-        await invoke("browser_navigate", {
-          sessionId: activeSessionId,
-          url,
-          projectPath: project.path,
-        });
-      } catch (error) {
-        console.error("CloakBrowser 打开链接失败:", error);
-      }
-    },
-    [activeSessionId, handleOpenPanel, project.path],
-  );
+  const openBrowserPanel = useCallback(() => handleOpenPanel("browser"), [handleOpenPanel]);
+  const minimizeBrowserPanel = useCallback(() => {
+    if (rightPanel === "browser") handleTogglePanel("browser");
+  }, [handleTogglePanel, rightPanel]);
+  const {
+    dockedSessions,
+    minimize: handleMinimizeBrowser,
+    restore: handleRestoreBrowser,
+    closeDocked: handleCloseDockedBrowser,
+    reopen: handleReopenBrowser,
+    openUrl: handleOpenMarkdownLink,
+  } = useBrowserSessionDock({
+    activeSessionId,
+    projectPath: project.path,
+    onOpen: openBrowserPanel,
+    onMinimized: minimizeBrowserPanel,
+    onRestoreSession: handleSelectSession,
+    enabled: visible,
+  });
 
   const railNode = (
     <ProjectRail
@@ -323,174 +145,19 @@ export function ProjectPage({
     />
   ) : undefined;
 
-  const sessionPaneNode = (
-    <ErrorBoundary
-      label="会话区"
-      fallback={(error, reset) => (
-        <div className="ai-error-boundary">
-          <div className="ai-error-boundary-icon">⚠</div>
-          <div className="ai-error-boundary-title">会话区渲染出错</div>
-          <div className="ai-error-boundary-message">{error.message || "未知错误"}</div>
-          <div className="ai-error-boundary-actions">
-            <button onClick={reset} className="ai-error-boundary-btn">
-              重试
-            </button>
-          </div>
-        </div>
-      )}
-    >
-      <Suspense fallback={<LazyPaneFallback label="会话加载中..." />}>
-        {activeSessionId ? (
-          <MarkdownLinkProvider onOpenUrl={handleOpenMarkdownLink}>
-            <ChatPageV2
-              sessionId={activeSessionId}
-              onSessionChange={handleSelectSession}
-              conversationKind="project"
-              projectPath={project.path}
-              mcpStatus={mcpStatus}
-              mcpChecking={mcpChecking}
-              onOpenMcpStatus={() => setShowMcpStatus(true)}
-              onOpenSettings={() => setShowDispatcherSettings(true)}
-              onClosePanel={() => setShowSessionWorkbench(false)}
-              embedded
-            />
-          </MarkdownLinkProvider>
-        ) : (
-          <div
-            style={{
-              flex: 1,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "var(--text-muted)",
-            }}
-          >
-            正在创建会话...
-          </div>
-        )}
-      </Suspense>
-    </ErrorBoundary>
-  );
-
-  const editorPaneNode = (
-    <ErrorBoundary
-      label="编辑区"
-      fallback={(error, reset) => (
-        <div className="ai-error-boundary">
-          <div className="ai-error-boundary-icon">⚠</div>
-          <div className="ai-error-boundary-title">编辑区渲染出错</div>
-          <div className="ai-error-boundary-message">{error.message || "未知错误"}</div>
-          <div className="ai-error-boundary-actions">
-            <button onClick={reset} className="ai-error-boundary-btn">
-              重试
-            </button>
-            <button
-              onClick={() => {
-                clearFileAndDiff();
-                reset();
-              }}
-              className="ai-error-boundary-btn"
-            >
-              关闭编辑区
-            </button>
-          </div>
-        </div>
-      )}
-    >
-      <Suspense fallback={<LazyPaneFallback label="编辑器加载中..." />}>
-        {openDiff ? (
-          openDiff.kind === "file" ? (
-            <GitDiffViewer
-              projectPath={project.path}
-              mode="file"
-              filePath={openDiff.filePath}
-              staged={openDiff.staged}
-              title={openDiff.label}
-              onClose={() => setOpenDiff(null)}
-            />
-          ) : openDiff.kind === "commit-file" ? (
-            <GitDiffViewer
-              projectPath={project.path}
-              mode="commit-file"
-              commitHash={openDiff.hash}
-              filePath={openDiff.filePath}
-              title={openDiff.label}
-              onClose={() => setOpenDiff(null)}
-            />
-          ) : (
-            <GitDiffViewer
-              projectPath={project.path}
-              mode="commit"
-              commitHash={openDiff.hash}
-              title={openDiff.message}
-              onClose={() => setOpenDiff(null)}
-            />
-          )
-        ) : (
-          <FileViewer
-            tabs={openFiles}
-            activeTabId={activeFileTabId}
-            projectPath={project.path}
-            onSelectTab={handleFileTabSelect}
-            onCloseTab={handleFileTabClose}
-            onCloseOtherTabs={handleCloseOtherFileTabs}
-            onCloseTabsToRight={handleCloseTabsToRight}
-            onCloseAllTabs={handleCloseAllFileTabs}
-            onHide={hideEditorWorkbench}
-          />
-        )}
-      </Suspense>
-    </ErrorBoundary>
-  );
-
-  const emptyWorkbenchNode = (
-    <div
-      style={{
-        minWidth: 0,
-        minHeight: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: "var(--text-muted)",
-        background:
-          "linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 72%, transparent), var(--bg-panel))",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: 10,
-          textAlign: "center",
-        }}
-      >
-        <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>
-          当前没有打开的会话面板或文件预览
-        </div>
-        <button type="button" className="ai-error-boundary-btn" onClick={() => setShowSessionWorkbench(true)}>
-          打开会话面板
-        </button>
-        {hasEditorWorkbenchContent && !showEditorPane && (
-          <button type="button" className="ai-error-boundary-btn" onClick={showEditorWorkbench}>
-            恢复文件编辑器
-          </button>
-        )}
-      </div>
-    </div>
-  );
-
   const workbenchNode = (
-    <ProjectWorkbench
-      workspaceSplitRef={workspaceSplitRef}
-      columnCount={workbenchColumnCount}
-      editorPaneRatio={editorPaneRatio}
-      showSessionPane={showSessionPane}
-      sessionPane={sessionPaneNode}
-      showEditorPane={showEditorPane}
-      editorPane={editorPaneNode}
-      emptyPane={emptyWorkbenchNode}
-      onEditorPaneResizeStart={handleEditorPaneResizeStart}
+    <ProjectWorkbenchContent
+      project={project}
+      activeSessionId={activeSessionId}
+      mcpStatus={mcpStatus}
+      mcpChecking={mcpChecking}
+      panels={panels}
+      sessionWorkbenchVisible={sessionWorkbenchVisible}
+      onSessionWorkbenchVisibleChange={setSessionWorkbenchVisible}
+      onSelectSession={handleSelectSession}
+      onOpenMarkdownLink={handleOpenMarkdownLink}
+      onOpenMcpStatus={() => setShowMcpStatus(true)}
+      onOpenSettings={() => setShowDispatcherSettings(true)}
     />
   );
 
@@ -525,7 +192,7 @@ export function ProjectPage({
     <ProjectRightPanelHost onResizeStart={handleRightResizeStart}>
       {rightPanel === "files" && (
         <ErrorBoundary label="文件浏览器">
-          <Suspense fallback={<LazyPaneFallback label="文件列表加载中..." />}>
+          <Suspense fallback={<ProjectLazyPaneFallback label="文件列表加载中..." />}>
             <FileExplorer
               projectPath={project.path}
               projectName={project.name}
@@ -541,7 +208,7 @@ export function ProjectPage({
       )}
       {rightPanel === "git-changes" && (
         <ErrorBoundary label="Git 变更">
-          <Suspense fallback={<LazyPaneFallback label="Git 变更加载中..." />}>
+          <Suspense fallback={<ProjectLazyPaneFallback label="Git 变更加载中..." />}>
             <GitChanges
               projectPath={project.path}
               onFileSelect={handleDiffFileSelect}
@@ -552,7 +219,7 @@ export function ProjectPage({
       )}
       {rightPanel === "git-history" && (
         <ErrorBoundary label="Git 历史">
-          <Suspense fallback={<LazyPaneFallback label="Git 历史加载中..." />}>
+          <Suspense fallback={<ProjectLazyPaneFallback label="Git 历史加载中..." />}>
             <GitHistory
               projectPath={project.path}
               onCommitSelect={handleCommitSelect}
@@ -564,7 +231,7 @@ export function ProjectPage({
       )}
       {rightPanel === "browser" && (
         <ErrorBoundary label="CloakBrowser">
-          <Suspense fallback={<LazyPaneFallback label="浏览器加载中..." />}>
+          <Suspense fallback={<ProjectLazyPaneFallback label="浏览器加载中..." />}>
             <BrowserPanel
               sessionId={activeSessionId}
               projectPath={project.path}
@@ -592,46 +259,25 @@ export function ProjectPage({
   );
 
   const overlayNode = (
-    <>
-      {showDispatcherSettings && (
-        <Suspense fallback={null}>
-          <AppSettingsDialog
-            initialTab="providers"
-            projectId={project.id}
-            projectPath={project.path}
-            onClose={() => setShowDispatcherSettings(false)}
-          />
-        </Suspense>
-      )}
-
-      {showMcpStatus && (
-        <Suspense fallback={null}>
-          <McpStatusDialog
-            scope="project"
-            status={mcpStatus}
-            checking={mcpChecking}
-            updatingServer={mcpUpdatingServer}
-            onRefresh={() => {
-              refreshMcpStatus().catch(console.error);
-            }}
-            onToggleServerEnabled={(serverName, enabled) => {
-              toggleMcpServerEnabled(serverName, enabled).catch(console.error);
-            }}
-            onClose={() => setShowMcpStatus(false)}
-          />
-        </Suspense>
-      )}
-
-      {dockedSessions.length > 0 && (
-        <Suspense fallback={null}>
-          <BrowserDock
-            sessions={dockedSessions}
-            onRestore={handleRestoreBrowser}
-            onClose={handleCloseDockedBrowser}
-          />
-        </Suspense>
-      )}
-    </>
+    <ProjectOverlays
+      project={project}
+      showSettings={showDispatcherSettings}
+      showMcpStatus={showMcpStatus}
+      mcpStatus={mcpStatus}
+      mcpChecking={mcpChecking}
+      mcpUpdatingServer={mcpUpdatingServer}
+      dockedSessions={dockedSessions}
+      onCloseSettings={() => setShowDispatcherSettings(false)}
+      onCloseMcpStatus={() => setShowMcpStatus(false)}
+      onRefreshMcpStatus={() => {
+        refreshMcpStatus().catch(console.error);
+      }}
+      onToggleMcpServer={(serverName, enabled) => {
+        toggleMcpServerEnabled(serverName, enabled).catch(console.error);
+      }}
+      onRestoreBrowser={handleRestoreBrowser}
+      onCloseBrowser={handleCloseDockedBrowser}
+    />
   );
 
   return (

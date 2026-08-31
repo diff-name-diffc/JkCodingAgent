@@ -15,9 +15,6 @@ import {
   useSessionListEventMerge,
 } from "./use-session-queries";
 
-// 搜索 hook 已迁移到共享数据层 use-session-queries.ts，这里保留再导出以稳定既有调用点。
-export { useSessionSearchQuery } from "./use-session-queries";
-
 /**
  * TanStack Query hooks for the Chat UI.
  *

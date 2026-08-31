@@ -112,6 +112,9 @@ pub enum AgentEvent {
         name: String,
         arguments: String,
         display_text: String,
+        /// 实际回灌给调用方 Agent 的工具结果。压缩模式下它通常比
+        /// `display_text` 更详细；前端必须展示这份内容，确保可审计。
+        context_payload: String,
         result_mode: String,
         detail_refs: Vec<DispatcherToolArtifactRef>,
     },

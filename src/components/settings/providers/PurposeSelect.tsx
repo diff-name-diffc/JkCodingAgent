@@ -111,7 +111,7 @@ export function PurposeSelect({
   const manualLabel = manualConfig ? manualConfig.model || manualConfig.url : "";
 
   return (
-    <div className="ai-set-purpose-select">
+    <div>
       <Select value={bindingValue} onValueChange={handleChange}>
         <SelectTrigger aria-label={def.title}>
           <SelectValue placeholder="未配置" />

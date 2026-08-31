@@ -1,75 +1,41 @@
-import {
-  lazy,
-  Suspense,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { confirm } from "@tauri-apps/plugin-dialog";
-import type {
-  AnyContentSegment,
-  DispatcherMessage,
-  GraphPlanRecord,
-  GraphPlanUpdatedPayload,
-  ImageSegment,
-  PythonCodeRunRecord,
-  PythonCodeRunTarget,
-  PythonRunEvent,
-  McpStatus,
-} from "../types";
-import {
-  useChatCategoriesQuery,
-  useCreateChatCategory,
-  useCreateChatSession,
-  useDeleteChatCategory,
-  useDeleteChatSession,
-  useSetChatSessionCategory,
-  useChatSessionUpdates,
-  useChatSessionsQuery,
-  useSessionSearchQuery,
-  useUpdateChatCategory,
-} from "../hooks/use-chat-queries";
+import type { DispatcherMessage, ImageSegment, McpStatus } from "../types";
+import { useToast } from "./Toast";
 import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTokenUsage";
 import { useLiveSessionState } from "./dispatcher-chat/useLiveSessionState";
 import { useDispatcherActions } from "./dispatcher-chat/useDispatcherActions";
-import { mergeDispatcherMessages } from "./dispatcher-chat/dispatcherChatUtils";
-import { getMcpIndicatorState } from "../hooks/use-mcp-status";
-import { cleanupDispatcherSession, subscribeDispatcherMessages } from "./dispatcherSessionStore";
 import { ChatShell } from "./chat/chat-shell";
 import type { ComposerMode } from "./chat/prompt-input";
-import { PythonRunDrawer } from "./dispatcher-chat/PythonRunDrawer";
-import { hydrateGraphPlan } from "./graph/graph-store";
-import { useUIStore } from "../stores/ui-store";
-import { Button } from "./ui/button";
-import { Waypoints, X } from "lucide-react";
+import { PlainChatHeader, ProjectChatHeader } from "./chat-page-v2/ChatPageHeaders";
+import { getUserMessagePayload } from "./chat-page-v2/message-utils";
+import { useGraphPanelController } from "./chat-page-v2/useGraphPanelController";
+import { usePythonRunController } from "./chat-page-v2/usePythonRunController";
+import { useChatSessionController } from "./chat-page-v2/useChatSessionController";
+import { useChatMessages } from "./chat-page-v2/useChatMessages";
+import { ChatPageOverlays } from "./chat-page-v2/ChatPageOverlays";
 
-// 执行图面板（含 @xyflow/react + dagre）按需加载，避免膨胀聊天主 chunk。
-const GraphPanel = lazy(() =>
-  import("./graph/GraphPanel").then((module) => ({ default: module.GraphPanel })),
-);
+/** 读取文件为裸 base64（去掉 data URL 前缀）；读取失败返回 null。 */
+function readFileAsBase64(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      resolve(typeof result === "string" ? (result.split(",")[1] ?? null) : null);
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
 
-/**
- * ChatPageV2 — the integration adapter between the new ChatShell UI and the
- * existing streaming pipeline.
- *
- * It owns:
- *   - message history (initial invoke + subscribeDispatcherMessages pub/sub,
- *     merged with mergeDispatcherMessages)
- *   - the composer state (input, attached images)
- *   - the useDispatcherActions hook (Tauri Channel streaming, reused verbatim)
- *   - stop / resume invokes
- *
- * Everything is passed down to <ChatShell /> as plain props. The new UI never
- * touches the streaming channel directly — the existing, battle-tested hook
- * does, unchanged.
- *
- * This is the single chat surface used by HomeChatPage and the ProjectPage
- * embedded chat pane.
- */
+/** 截断消息前的图片存在性校验（regenerate / 编辑重发共用）：文件缺失时
+ * 后端返回带 chat-image:// 引用清单的错误，直接抛出，调用方 toast 透传。 */
+async function validateImagesBeforeTruncate(images: ImageSegment[]): Promise<void> {
+  if (images.length === 0) return;
+  await invoke("chat_images_validate", { segmentsJson: JSON.stringify(images) });
+}
+
+/** HomeChatPage 与 ProjectPage 共用的聊天领域组合入口。 */
 export interface ChatPageV2Props {
   sessionId?: string | null;
   onSessionChange?: (sessionId: string | null) => void;
@@ -110,28 +76,27 @@ export function ChatPageV2({
   const [attachedImages, setAttachedImages] = useState<ImageSegment[]>([]);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
-  const [messages, setMessages] = useState<DispatcherMessage[]>([]);
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const { showToast } = useToast();
+  const { messages, setMessages } = useChatMessages(activeSessionId, setEditingMessageId);
   const [isStopping, setIsStopping] = useState(false);
-  const [pythonDrawerOpen, setPythonDrawerOpen] = useState(false);
-  const [pythonRunTarget, setPythonRunTarget] = useState<PythonCodeRunTarget | null>(null);
-  const [pythonRunRecords, setPythonRunRecords] = useState<Record<string, PythonCodeRunRecord>>({});
 
   const isPlainChat = conversationKind === "chat";
-  useChatSessionUpdates(isPlainChat && !embedded);
-  const sessionsQuery = useChatSessionsQuery(undefined, isPlainChat && !embedded);
-  const categoriesQuery = useChatCategoriesQuery(isPlainChat && !embedded);
-  const createCategory = useCreateChatCategory();
-  const { mutateAsync: createChatSession } = useCreateChatSession();
-  const updateCategory = useUpdateChatCategory();
-  const deleteCategory = useDeleteChatCategory();
-  const { mutateAsync: deleteChatSession } = useDeleteChatSession();
-  const setSessionCategory = useSetChatSessionCategory();
-  const sessionSearchQuery = useSessionSearchQuery({
-    query: debouncedSearch,
-    kind: "chat",
-    enabled: isPlainChat && !embedded,
+  const clearDraft = useCallback(() => {
+    setInput("");
+    setAttachedImages([]);
+    setEditingMessageId(null);
+  }, []);
+  const resetConversation = useCallback(() => {
+    clearDraft();
+    setMessages([]);
+  }, [clearDraft, setMessages]);
+  const chatSessions = useChatSessionController({
+    activeSessionId,
+    isPlainChat,
+    embedded,
+    setActiveSessionId,
+    resetConversation,
+    onSessionChange,
   });
 
   // ── Streaming pipeline (reused unchanged) ───────────────────────────────
@@ -142,13 +107,14 @@ export function ChatPageV2({
 
   const currentSessionIdRef = useRef<string | null>(activeSessionId);
   currentSessionIdRef.current = activeSessionId;
+  const pythonRuns = usePythonRunController(activeSessionId, currentSessionIdRef);
+  const graphPanel = useGraphPanelController(activeSessionId, isPlainChat, currentSessionIdRef);
   const shouldStickToBottomRef = useRef(true);
 
   const scrollMessageListToBottom = useCallback(() => {
-    // The new MessageList owns its own scroll via useAutoScroll; the existing
-    // pipeline calls this on send. We delegate by dispatching a custom event
-    // the anchor could listen to — but since useAutoScroll already follows
-    // new content while pinned, a no-op here is safe. Kept for API compat.
+    // 发送时强制回到底部：useAutoScroll 在用户上滚阅读时会停止跟随，
+    // 发送新消息应把视图拉回最新内容（此时 shouldStickToBottomRef 已被置真）。
+    // MessageList 的滚动容器是 [role="log"]，直接滚动该元素即可。
     if (shouldStickToBottomRef.current) {
       const el = document.querySelector('[role="log"]');
       if (el) el.scrollTop = el.scrollHeight;
@@ -168,74 +134,6 @@ export function ChatPageV2({
     setAttachedImages,
   });
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedSearch(search), 260);
-    return () => window.clearTimeout(timer);
-  }, [search]);
-
-  useEffect(() => {
-    if (!activeSessionId) {
-      setPythonRunTarget(null);
-      setPythonRunRecords({});
-      return;
-    }
-
-    let cancelled = false;
-    invoke<PythonCodeRunRecord[]>("python_runner_list_results", { workspaceId: activeSessionId })
-      .then((records) => {
-        if (!cancelled) {
-          setPythonRunRecords(indexPythonRuns(records));
-        }
-      })
-      .catch(console.error);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSessionId]);
-
-  useEffect(() => {
-    const unlisten = listen<PythonRunEvent>("python-run-event", (event) => {
-      const payload = event.payload;
-      if (payload.workspaceId !== currentSessionIdRef.current) return;
-      const record = payload.data.record;
-      if (record) {
-        setPythonRunRecords((prev) => ({
-          ...prev,
-          [pythonRunKey(record.messageId, record.codeHash)]: record,
-        }));
-        return;
-      }
-
-      if (payload.event !== "output") return;
-      setPythonRunRecords((prev) => {
-        const entry = Object.entries(prev).find(([, existing]) => existing.runId === payload.runId);
-        if (!entry) return prev;
-        const [key, existing] = entry;
-        return {
-          ...prev,
-          [key]: {
-            ...existing,
-            stdout: existing.stdout + (payload.data.stdout ?? ""),
-            stderr: existing.stderr + (payload.data.stderr ?? ""),
-          },
-        };
-      });
-    });
-
-    return () => {
-      unlisten.then((fn) => fn()).catch(() => {});
-    };
-  }, []);
-
-  // 清空输入草稿（输入框 / 附图 / 编辑态）：会话切换、新建、删除、清空消息时
-  // 统一调用，避免草稿从一个会话带到另一个会话。
-  const clearDraft = useCallback(() => {
-    setInput("");
-    setAttachedImages([]);
-    setEditingMessageId(null);
-  }, []);
-
   // 会话切换时清空草稿（input / attachedImages / editingMessageId）。
   // 聊天模式经 handleActiveSessionChange 已显式重置；项目模式（embedded）切换
   // 会话只改上层 activeSessionId，不经过该回调，需要这里统一兜底。
@@ -247,92 +145,9 @@ export function ChatPageV2({
     clearDraft();
   }, [activeSessionId, clearDraft]);
 
-  // ── Message history: initial load + live pub/sub ────────────────────────
-  useEffect(() => {
-    if (!activeSessionId) {
-      setMessages([]);
-      setEditingMessageId(null);
-      return;
-    }
-    setEditingMessageId(null);
-    let cancelled = false;
-    setMessages([]);
-    void (async () => {
-      try {
-        const initial = await invoke<DispatcherMessage[]>("dispatcher_list_messages", {
-          workspaceId: activeSessionId,
-        });
-        // Backend serializes segments as `segmentsJson` (string), not `segments`.
-        // Normalize here so every downstream consumer (UserMessage, buildItems,
-        // ...) sees a real array — same hydration the live pub/sub path uses.
-        if (!cancelled) setMessages(mergeDispatcherMessages([], initial));
-      } catch (err) {
-        console.error("加载会话消息失败:", err);
-      }
-    })();
-
-    const unsubscribe = subscribeDispatcherMessages(activeSessionId, (incoming) => {
-      setMessages((prev) => mergeDispatcherMessages(prev, incoming));
-    });
-
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [activeSessionId]);
-
-  // 图执行回执等「非活跃 run」路径会直接向会话写入消息并广播会话更新；
-  // 这里匹配当前会话时重载消息，保证回执即时可见。
-  // 与当前状态合并而非整体替换：run 进行中该事件也会触发（标题生成、会话创建等），
-  // 整体替换会丢弃快照之后经 pub/sub 到达、尚未入库的流式增量消息；
-  // 按 id 合并既保留未入库消息，也能去重追加新写入的消息。
-  useEffect(() => {
-    if (!activeSessionId) return;
-    const unlisten = listen<{ id: string }>("dispatcher-session-updated", (event) => {
-      if (event.payload.id !== activeSessionId) return;
-      void invoke<DispatcherMessage[]>("dispatcher_list_messages", {
-        workspaceId: activeSessionId,
-      })
-        .then((fresh) => setMessages((prev) => mergeDispatcherMessages(prev, fresh)))
-        .catch((err) => console.error("刷新会话消息失败:", err));
-    });
-    return () => {
-      void unlisten.then((stop) => stop());
-    };
-  }, [activeSessionId]);
-
   // ── Composer mode (send / stop) ─────────────────────────────────────────
   const isRunning = Boolean(liveState.hasPendingRun || liveState.isLoading || isStopping);
   const composerMode: ComposerMode = isRunning ? "stop" : "send";
-
-  // 聊天模式下，若还没有活跃会话，发送时懒创建一个。
-  // 重构后 Sidebar/ChatPageV2 不再像旧 ChatSessionSidebar 那样在初始化时
-  // 自动建会话，因此首次进入或点「新建对话」后 activeSessionId 为 null，
-  // 这里补回懒创建，避免发送按钮被静默拦截（按钮看起来可点却无反应）。
-  // pendingSessionIdRef 防止连点发送时重复创建会话。
-  const pendingSessionIdRef = useRef<Promise<string | null> | null>(null);
-  const ensurePlainChatSession = useCallback(async (): Promise<string | null> => {
-    if (activeSessionId) return activeSessionId;
-    if (!isPlainChat) return null;
-    if (pendingSessionIdRef.current) return pendingSessionIdRef.current;
-    const pending = (async () => {
-      try {
-        const session = await createChatSession({
-          title: "新对话",
-          category: "tech",
-        });
-        setActiveSessionId(session.id);
-        return session.id;
-      } catch (err) {
-        console.error("创建聊天会话失败:", err);
-        return null;
-      } finally {
-        pendingSessionIdRef.current = null;
-      }
-    })();
-    pendingSessionIdRef.current = pending;
-    return pending;
-  }, [activeSessionId, createChatSession, isPlainChat, setActiveSessionId]);
 
   const handleSend = useCallback(() => {
     const text = input.trim();
@@ -340,7 +155,7 @@ export function ChatPageV2({
     void (async () => {
       // 项目模式总会话 id 非空（ProjectPage 仅在 activeSessionId 存在时渲染本组件）；
       // 聊天模式可能为 null，懒创建后再发送。
-      const targetSessionId = activeSessionId ?? (await ensurePlainChatSession());
+      const targetSessionId = activeSessionId ?? (await chatSessions.ensureSession());
       if (!targetSessionId) return;
 
       if (editingMessageId) {
@@ -351,6 +166,8 @@ export function ChatPageV2({
         }
         setIsSubmittingEdit(true);
         try {
+          // 先验后截断：图片失效时错误透传给用户，避免截断后发送失败丢消息。
+          await validateImagesBeforeTruncate(attachedImages);
           await invoke("dispatcher_truncate_messages_from", {
             workspaceId: targetSessionId,
             messageId: editingMessageId,
@@ -360,6 +177,7 @@ export function ChatPageV2({
           await actions.sendUserMessage(text, attachedImages, targetSessionId);
         } catch (err) {
           console.error("编辑并重新发送失败:", err);
+          showToast(String(err), "error");
         } finally {
           setIsSubmittingEdit(false);
         }
@@ -373,36 +191,33 @@ export function ChatPageV2({
     activeSessionId,
     attachedImages,
     editingMessageId,
-    ensurePlainChatSession,
+    chatSessions,
     input,
     isSubmittingEdit,
     messages,
+    setMessages,
+    showToast,
   ]);
 
-  const activeSessionTitle = useMemo(() => {
-    if (!activeSessionId) return null;
-    return (
-      (sessionsQuery.data ?? []).find((session) => session.id === activeSessionId)?.title ?? null
-    );
-  }, [activeSessionId, sessionsQuery.data]);
-
-  // 暂存图片附件：FileReader 转 base64 → 后端落盘到 chat-images 目录 →
-  // push ImageSegment。粘贴截图与回形针选图共用这一条管线。
+  // 暂存图片附件：FileReader 转 base64 → 后端统一落盘到
+  // chat-images/{workspace_id}/ → push ImageSegment（只携带 imageId）。
+  // 粘贴截图与回形针选图共用这一条管线；粘贴即确保会话存在（目录按会话 id 布局）。
   const handleAttachImages = useCallback(
     (files: File[]) => {
-      const sessionTitle = activeSessionTitle?.trim() || "untitled";
-      for (const file of files) {
-        const reader = new FileReader();
-        reader.onload = async () => {
-          const result = reader.result;
-          if (typeof result !== "string") return;
-          const base64 = result.split(",")[1];
-          if (!base64) return;
+      void (async () => {
+        const workspaceId = activeSessionId ?? (await chatSessions.ensureSession());
+        if (!workspaceId) {
+          showToast("图片保存失败：无法创建会话", "error");
+          return;
+        }
+        for (const file of files) {
+          const base64 = await readFileAsBase64(file);
+          if (!base64) continue;
           try {
-            const saved = await invoke<{ imageId: string; path: string; mimeType: string }>(
+            const saved = await invoke<{ imageId: string; mimeType: string }>(
               "save_chat_image",
               {
-                sessionTitle,
+                workspaceId,
                 imageDataBase64: base64,
                 mimeType: file.type || "image/png",
               },
@@ -413,19 +228,18 @@ export function ChatPageV2({
                 id: crypto.randomUUID(),
                 type: "image",
                 imageId: saved.imageId,
-                path: saved.path,
                 source: "user_paste",
                 mimeType: saved.mimeType,
               },
             ]);
           } catch (err) {
             console.error("保存图片失败:", err);
+            showToast(`图片保存失败：${String(err)}`, "error");
           }
-        };
-        reader.readAsDataURL(file);
-      }
+        }
+      })();
     },
-    [activeSessionTitle],
+    [activeSessionId, chatSessions, showToast],
   );
 
   const handleRemoveAttachment = useCallback((id: string) => {
@@ -460,6 +274,8 @@ export function ChatPageV2({
       void (async () => {
         setIsSubmittingEdit(true);
         try {
+          // 先验后截断：图片失效时错误透传给用户，避免截断后发送失败丢消息。
+          await validateImagesBeforeTruncate(images);
           await invoke("dispatcher_truncate_messages_from", {
             workspaceId: activeSessionId,
             messageId: message.id,
@@ -468,12 +284,21 @@ export function ChatPageV2({
           await actions.sendUserMessage(text, images, activeSessionId);
         } catch (err) {
           console.error("重新生成失败:", err);
+          showToast(String(err), "error");
         } finally {
           setIsSubmittingEdit(false);
         }
       })();
     },
-    [actions, activeSessionId, isRunning, isSubmittingEdit, messages],
+    [
+      actions,
+      activeSessionId,
+      isRunning,
+      isSubmittingEdit,
+      messages,
+      setMessages,
+      showToast,
+    ],
   );
 
   const handleEditMessage = useCallback(
@@ -501,223 +326,12 @@ export function ChatPageV2({
     clearDraft();
   }, [clearDraft, isSubmittingEdit]);
 
-  const handleNewConversation = useCallback(() => {
-    if (!embedded) {
-      setActiveSessionId(null);
-    }
-    clearDraft();
-    setMessages([]);
-  }, [clearDraft, embedded, setActiveSessionId]);
-
-  // 在指定分类下新建会话：真正落库一个空会话并激活它。
-  // 侧边栏每个分类行内的 + 按钮走这里，可指定分类；
-  // 顶部「新建对话」按钮已移除，因为它无法指定分类。
-  const handleNewSessionInCategory = useCallback(
-    async (categoryId: string) => {
-      if (!isPlainChat || embedded) return;
-      try {
-        const session = await createChatSession({
-          title: "新对话",
-          category: categoryId,
-        });
-        setActiveSessionId(session.id);
-        clearDraft();
-        setMessages([]);
-      } catch (err) {
-        console.error("在分类下创建会话失败:", err);
-      }
-    },
-    [clearDraft, createChatSession, embedded, isPlainChat, setActiveSessionId],
-  );
-
-  const handleDeleteSession = useCallback(
-    async (sessionIdToDelete: string) => {
-      if (!isPlainChat || embedded) return;
-      const confirmed = await confirm("确定永久删除这个会话吗？相关消息和文件也会一并删除。", {
-        title: "删除会话",
-        kind: "warning",
-      });
-      if (!confirmed) return;
-
-      try {
-        await deleteChatSession(sessionIdToDelete);
-        cleanupDispatcherSession(sessionIdToDelete);
-        if (sessionIdToDelete === activeSessionId) {
-          const nextSession = (sessionsQuery.data ?? []).find(
-            (session) => session.id !== sessionIdToDelete,
-          );
-          setActiveSessionId(nextSession?.id ?? null);
-          clearDraft();
-          setMessages([]);
-        }
-      } catch (err) {
-        console.error("删除聊天会话失败:", err);
-      }
-    },
-    [
-      activeSessionId,
-      clearDraft,
-      deleteChatSession,
-      embedded,
-      isPlainChat,
-      sessionsQuery.data,
-      setActiveSessionId,
-    ],
-  );
-
-  const handleActiveSessionChange = useCallback(
-    (id: string | null) => {
-      setActiveSessionId(id);
-      clearDraft();
-    },
-    [clearDraft, setActiveSessionId],
-  );
-
   const handleClearMessages = useCallback(async () => {
     if (!activeSessionId) return;
     await invoke("dispatcher_clear_messages", { workspaceId: activeSessionId });
     clearDraft();
     setMessages([]);
-  }, [activeSessionId, clearDraft]);
-
-  const handleCreateCategory = useCallback(
-    (name: string, config?: { systemPrompt?: string; allowedTools?: string[] }) => {
-      if (!isPlainChat || embedded) return;
-      createCategory.mutate({
-        name,
-        systemPrompt: config?.systemPrompt,
-        allowedTools: config?.allowedTools,
-      });
-    },
-    [createCategory, embedded, isPlainChat],
-  );
-
-  const handleRenameCategory = useCallback(
-    (categoryId: string, name: string) => {
-      if (!isPlainChat || embedded) return;
-      updateCategory.mutate({ categoryId, name });
-    },
-    [embedded, isPlainChat, updateCategory],
-  );
-
-  const handleDeleteCategory = useCallback(
-    (categoryId: string) => {
-      if (!isPlainChat || embedded) return;
-      deleteCategory.mutate(categoryId);
-    },
-    [deleteCategory, embedded, isPlainChat],
-  );
-
-  const handleMoveSessionToCategory = useCallback(
-    (workspaceId: string, categoryId: string) => {
-      if (!isPlainChat || embedded) return;
-      setSessionCategory.mutate({ workspaceId, categoryId });
-      if (workspaceId === activeSessionId) {
-        onSessionChange?.(workspaceId);
-      }
-    },
-    [activeSessionId, embedded, isPlainChat, onSessionChange, setSessionCategory],
-  );
-
-  // ── 图编排面板 ──────────────────────────────────────────────────────────
-  const graphPanelPlanId = useUIStore((state) => state.graphPanelPlanId);
-  const setGraphPanelPlanId = useUIStore((state) => state.setGraphPanelPlanId);
-  const [latestGraphPlanId, setLatestGraphPlanId] = useState<string | null>(null);
-
-  // 项目模式头部「执行图」入口：会话切换时查最近一次计划；
-  // submit_graph 成功与计划状态流转时的 graph-plan-updated 广播同步刷新入口。
-  useEffect(() => {
-    if (isPlainChat || !activeSessionId) {
-      setLatestGraphPlanId(null);
-      return;
-    }
-    let cancelled = false;
-    invoke<GraphPlanRecord | null>("graph_plan_latest_for_session", {
-      workspaceId: activeSessionId,
-    })
-      .then((plan) => {
-        if (!cancelled) setLatestGraphPlanId(plan?.id ?? null);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setLatestGraphPlanId(null);
-          console.error("查询最近图计划失败:", err);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSessionId, isPlainChat]);
-
-  useEffect(() => {
-    if (isPlainChat) return;
-    const unlisten = listen<GraphPlanUpdatedPayload>("graph-plan-updated", (event) => {
-      if (event.payload.workspaceId === currentSessionIdRef.current) {
-        setLatestGraphPlanId(event.payload.planId);
-      }
-    });
-    return () => {
-      unlisten.then((fn) => fn()).catch(() => {});
-    };
-  }, [isPlainChat]);
-
-  const handleOpenGraphPanel = useCallback(() => {
-    if (!latestGraphPlanId) return;
-    void hydrateGraphPlan(latestGraphPlanId);
-    setGraphPanelPlanId(latestGraphPlanId);
-  }, [latestGraphPlanId, setGraphPanelPlanId]);
-
-  const handleRunPython = useCallback(
-    async (target: PythonCodeRunTarget) => {
-      if (!activeSessionId) return;
-      setPythonRunTarget(target);
-      setPythonDrawerOpen(true);
-      try {
-        const started = await invoke<PythonCodeRunRecord>("python_runner_start", {
-          workspaceId: activeSessionId,
-          messageId: target.messageId,
-          codeBlockIndex: target.codeBlockIndex,
-          code: target.code,
-        });
-        setPythonRunRecords((prev) => ({
-          ...prev,
-          [pythonRunKey(started.messageId, started.codeHash)]: started,
-        }));
-      } catch (error) {
-        console.error("启动 Python 执行失败:", error);
-      }
-    },
-    [activeSessionId],
-  );
-
-  const handleStopPythonRun = useCallback(async (runId: string) => {
-    try {
-      await invoke("python_runner_stop", { runId });
-    } catch (error) {
-      console.error("停止 Python 执行失败:", error);
-    }
-  }, []);
-
-  const handleClearPythonRun = useCallback(
-    async (target: PythonCodeRunTarget) => {
-      if (!activeSessionId) return;
-      try {
-        await invoke("python_runner_clear_result", {
-          workspaceId: activeSessionId,
-          messageId: target.messageId,
-          codeBlockIndex: target.codeBlockIndex,
-        });
-        setPythonRunRecords((prev) => {
-          const next = { ...prev };
-          delete next[pythonRunKey(target.messageId, target.codeHash)];
-          return next;
-        });
-      } catch (error) {
-        console.error("清空 Python 执行结果失败:", error);
-      }
-    },
-    [activeSessionId],
-  );
+  }, [activeSessionId, clearDraft, setMessages]);
 
   // 聊天模式（主页）也提供顶部栏：会话标题 + 运行状态 + 清空/设置，
   // 让宽屏下的消息区有视觉锚点；embedded（项目内嵌面板）下保持紧凑不加栏。
@@ -727,8 +341,8 @@ export function ChatPageV2({
       hasMessages={messages.length > 0}
       mcpStatus={mcpStatus}
       mcpChecking={mcpChecking}
-      graphAvailable={latestGraphPlanId !== null}
-      onOpenGraphPanel={handleOpenGraphPanel}
+      graphAvailable={graphPanel.latestPlanId !== null}
+      onOpenGraphPanel={graphPanel.open}
       onOpenMcpStatus={onOpenMcpStatus}
       onClearMessages={handleClearMessages}
       onOpenSettings={onOpenSettings}
@@ -736,7 +350,7 @@ export function ChatPageV2({
     />
   ) : embedded ? undefined : (
     <PlainChatHeader
-      title={activeSessionTitle}
+      title={chatSessions.activeTitle}
       isLoading={liveState.isLoading || liveState.hasPendingRun}
       hasMessages={messages.length > 0}
       mcpStatus={mcpStatus}
@@ -747,55 +361,30 @@ export function ChatPageV2({
     />
   );
 
-  const selectedPythonRun = pythonRunTarget
-    ? (pythonRunRecords[pythonRunKey(pythonRunTarget.messageId, pythonRunTarget.codeHash)] ?? null)
-    : null;
-  const selectedPythonRunning = selectedPythonRun?.status === "running";
-  const trimmedSearch = debouncedSearch.trim();
-  const displayedSessions =
-    trimmedSearch.length > 0
-      ? (sessionSearchQuery.data ?? []).map((result) => ({
-          id: result.sessionId,
-          title: result.sessionTitle,
-          category: result.category,
-          createdAt: result.updatedAt,
-          updatedAt: result.updatedAt,
-          keywords: result.keywords,
-        }))
-      : (sessionsQuery.data ?? []);
-  const sessionsLoading =
-    trimmedSearch.length > 0
-      ? sessionSearchQuery.isLoading
-      : sessionsQuery.isLoading || categoriesQuery.isLoading;
-  const sessionsError =
-    trimmedSearch.length > 0 && sessionSearchQuery.error
-      ? String(sessionSearchQuery.error)
-      : undefined;
-
   return (
     <div className="flex h-full w-full min-w-0 overflow-hidden">
       <div className="min-w-0 flex-1">
         <ChatShell
           sessionId={activeSessionId}
           messages={messages}
-          sessions={displayedSessions}
-          categories={categoriesQuery.data ?? []}
-          sessionsLoading={sessionsLoading}
-          sessionsError={sessionsError}
-          searchActive={trimmedSearch.length > 0}
-          onActiveSessionChange={handleActiveSessionChange}
-          onNewConversation={handleNewConversation}
-          onNewSessionInCategory={isPlainChat && !embedded ? handleNewSessionInCategory : undefined}
-          onDeleteSession={isPlainChat && !embedded ? handleDeleteSession : undefined}
-          searchValue={search}
-          onSearchChange={setSearch}
-          onOpenSettings={onOpenSettings}
-          onCreateCategory={isPlainChat && !embedded ? handleCreateCategory : undefined}
-          onRenameCategory={isPlainChat && !embedded ? handleRenameCategory : undefined}
-          onDeleteCategory={isPlainChat && !embedded ? handleDeleteCategory : undefined}
-          onMoveSessionToCategory={
-            isPlainChat && !embedded ? handleMoveSessionToCategory : undefined
+          sessions={chatSessions.sessions}
+          categories={chatSessions.categories}
+          sessionsLoading={chatSessions.sessionsLoading}
+          sessionsError={chatSessions.sessionsError}
+          searchActive={chatSessions.searchActive}
+          onActiveSessionChange={chatSessions.selectSession}
+          onNewConversation={chatSessions.newConversation}
+          onNewSessionInCategory={
+            isPlainChat && !embedded ? chatSessions.newSessionInCategory : undefined
           }
+          onDeleteSession={isPlainChat && !embedded ? chatSessions.deleteChatSession : undefined}
+          searchValue={chatSessions.search}
+          onSearchChange={chatSessions.setSearch}
+          onOpenSettings={onOpenSettings}
+          onCreateCategory={isPlainChat && !embedded ? chatSessions.createChatCategory : undefined}
+          onRenameCategory={isPlainChat && !embedded ? chatSessions.renameChatCategory : undefined}
+          onDeleteCategory={isPlainChat && !embedded ? chatSessions.deleteChatCategory : undefined}
+          onMoveSessionToCategory={isPlainChat && !embedded ? chatSessions.moveSession : undefined}
           input={input}
           onInputChange={setInput}
           composerMode={composerMode}
@@ -809,173 +398,24 @@ export function ChatPageV2({
           editingMessageId={editingMessageId}
           onCancelEdit={handleCancelEdit}
           composerDisabled={isSubmittingEdit}
-          pythonRunRecords={pythonRunRecords}
-          onRunPython={handleRunPython}
+          pythonRunRecords={pythonRuns.records}
+          onRunPython={pythonRuns.run}
           embedded={embedded}
           projectHeader={chatHeader}
         />
       </div>
-      {pythonDrawerOpen && (
-        <PythonRunDrawer
-          target={pythonRunTarget}
-          record={selectedPythonRun}
-          running={selectedPythonRunning}
-          onClose={() => setPythonDrawerOpen(false)}
-          onRun={handleRunPython}
-          onStop={handleStopPythonRun}
-          onClear={handleClearPythonRun}
-        />
-      )}
-      {graphPanelPlanId && (
-        <Suspense fallback={null}>
-          <GraphPanel planId={graphPanelPlanId} onClose={() => setGraphPanelPlanId(null)} />
-        </Suspense>
-      )}
-    </div>
-  );
-}
-
-function getUserMessagePayload(message: DispatcherMessage): {
-  text: string;
-  images: ImageSegment[];
-} {
-  const segments = message.segments ?? [];
-  const text =
-    segments
-      .filter(isTextSegment)
-      .map((segment) => segment.text)
-      .join("\n\n")
-      .trim() || message.content.trim();
-  const images = segments.filter(isImageSegment);
-  return { text, images };
-}
-
-function isTextSegment(
-  segment: AnyContentSegment,
-): segment is Extract<AnyContentSegment, { type: "text" }> {
-  return segment.type === "text";
-}
-
-function isImageSegment(segment: AnyContentSegment): segment is ImageSegment {
-  return segment.type === "image";
-}
-
-function pythonRunKey(messageId: string, codeHash: string) {
-  return `${messageId}:${codeHash}`;
-}
-
-function indexPythonRuns(records: PythonCodeRunRecord[]) {
-  return records.reduce<Record<string, PythonCodeRunRecord>>((acc, record) => {
-    acc[pythonRunKey(record.messageId, record.codeHash)] = record;
-    return acc;
-  }, {});
-}
-
-function PlainChatHeader({
-  title,
-  isLoading,
-  hasMessages,
-  mcpStatus,
-  mcpChecking,
-  onOpenMcpStatus,
-  onClearMessages,
-  onOpenSettings,
-}: {
-  title: string | null;
-  isLoading: boolean;
-  hasMessages: boolean;
-  mcpStatus: McpStatus | null;
-  mcpChecking: boolean;
-  onOpenMcpStatus?: () => void;
-  onClearMessages: () => void;
-  onOpenSettings: () => void;
-}) {
-  const mcpIndicator = getMcpIndicatorState(mcpStatus, mcpChecking);
-
-  return (
-    <div className="flex min-h-12 items-center gap-3 px-5">
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate text-[15px] font-semibold">{title?.trim() || "新对话"}</span>
-        {isLoading && <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />}
-      </div>
-      {onOpenMcpStatus && (
-        <Button variant="outline" size="sm" onClick={onOpenMcpStatus} title="查看全局 MCP 状态">
-          <span className="h-2 w-2 rounded-full" style={{ background: mcpIndicator.color }} />
-          MCP
-          <span className="font-normal text-muted-foreground">{mcpIndicator.label}</span>
-        </Button>
-      )}
-      {hasMessages && (
-        <Button variant="ghost" size="sm" onClick={onClearMessages}>
-          清空
-        </Button>
-      )}
-      <Button variant="ghost" size="sm" onClick={onOpenSettings}>
-        设置
-      </Button>
-    </div>
-  );
-}
-
-function ProjectChatHeader({
-  isLoading,
-  hasMessages,
-  mcpStatus,
-  mcpChecking,
-  graphAvailable,
-  onOpenGraphPanel,
-  onOpenMcpStatus,
-  onClearMessages,
-  onOpenSettings,
-  onClosePanel,
-}: {
-  isLoading: boolean;
-  hasMessages: boolean;
-  mcpStatus: McpStatus | null;
-  mcpChecking: boolean;
-  graphAvailable: boolean;
-  onOpenGraphPanel: () => void;
-  onOpenMcpStatus?: () => void;
-  onClearMessages: () => void;
-  onOpenSettings: () => void;
-  onClosePanel?: () => void;
-}) {
-  const mcpIndicator = getMcpIndicatorState(mcpStatus, mcpChecking);
-
-  return (
-    <div className="flex min-h-12 items-center gap-2 px-4">
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="text-[15px] font-semibold">调度智能体</span>
-        {isLoading && <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />}
-      </div>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onOpenGraphPanel}
-        disabled={!graphAvailable}
-        title={graphAvailable ? "查看最近的执行图" : "当前会话还没有执行图"}
-      >
-        <Waypoints size={13} strokeWidth={2} />
-        执行图
-      </Button>
-      <Button variant="outline" size="sm" onClick={onOpenMcpStatus} title="查看 MCP 状态">
-        <span className="h-2 w-2 rounded-full" style={{ background: mcpIndicator.color }} />
-        MCP
-        <span className="font-normal text-muted-foreground">{mcpIndicator.label}</span>
-      </Button>
-      {hasMessages && (
-        <Button variant="ghost" size="sm" onClick={onClearMessages}>
-          清空
-        </Button>
-      )}
-      <Button variant="ghost" size="sm" onClick={onOpenSettings}>
-        设置
-      </Button>
-      {onClosePanel && (
-        <Button variant="ghost" size="icon-sm" aria-label="关闭会话面板" onClick={onClosePanel}>
-          <X size={14} strokeWidth={2} />
-        </Button>
-      )}
+      <ChatPageOverlays
+        graphPlanId={graphPanel.planId}
+        pythonDrawerOpen={pythonRuns.drawerOpen}
+        pythonTarget={pythonRuns.target}
+        pythonRecord={pythonRuns.selectedRecord}
+        pythonRunning={pythonRuns.selectedRunning}
+        onCloseGraph={graphPanel.close}
+        onClosePython={() => pythonRuns.setDrawerOpen(false)}
+        onRunPython={pythonRuns.run}
+        onStopPython={pythonRuns.stop}
+        onClearPython={pythonRuns.clear}
+      />
     </div>
   );
 }

@@ -24,7 +24,7 @@ export function ProjectWorkspaceLayout({
 }: ProjectWorkspaceLayoutProps) {
   return (
     <div
-      className="ai-project-shell ai-migrated-project"
+      className="ai-project-shell"
       style={{
         ...rootStyle,
         position: "absolute",

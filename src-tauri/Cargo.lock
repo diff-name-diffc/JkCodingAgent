@@ -2588,6 +2588,7 @@ dependencies = [
  "notify",
  "once_cell",
  "parking_lot",
+ "percent-encoding",
  "portable-pty",
  "r2d2",
  "r2d2_sqlite",

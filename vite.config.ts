@@ -41,11 +41,6 @@ export default defineConfig(async () => ({
               minSize: 20 * 1024,
             },
             {
-              name: "three-vendor",
-              test: (id) => isNodeModule(id, "three"),
-              minSize: 20 * 1024,
-            },
-            {
               name: "xterm-vendor",
               test: (id) => isNodeModule(id, "@xterm"),
               minSize: 20 * 1024,

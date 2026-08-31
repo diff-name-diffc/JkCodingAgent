@@ -1,11 +1,5 @@
-import type {
-  DispatcherMessage,
-  DispatcherMessageUsageStats,
-} from "../types";
-import type {
-  AssistantThinkingBlock,
-  AssistantTurnSegment,
-} from "./dispatcherChatView";
+import type { DispatcherMessageWire, DispatcherMessageUsageStats } from "../types";
+import type { AssistantThinkingBlock, AssistantTurnSegment } from "./dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "./dispatcher-chat/tool-activity";
 
 export interface DispatcherLiveSessionState {
@@ -47,7 +41,7 @@ const dispatcherLiveSessionSubscribers = new Map<
 const dispatcherRunningSubscribers = new Map<string, Set<(isRunning: boolean) => void>>();
 const dispatcherMessageSubscribers = new Map<
   string,
-  Set<(messages: DispatcherMessage[]) => void>
+  Set<(messages: DispatcherMessageWire[]) => void>
 >();
 
 function isLiveSessionRunning(state: DispatcherLiveSessionState | undefined): boolean {
@@ -123,14 +117,14 @@ export function subscribeDispatcherLiveSession(
   };
 }
 
-export function notifyDispatcherMessages(sessionId: string, messages: DispatcherMessage[]) {
+export function notifyDispatcherMessages(sessionId: string, messages: DispatcherMessageWire[]) {
   if (messages.length === 0) return;
   dispatcherMessageSubscribers.get(sessionId)?.forEach((subscriber) => subscriber(messages));
 }
 
 export function subscribeDispatcherMessages(
   sessionId: string,
-  subscriber: (messages: DispatcherMessage[]) => void,
+  subscriber: (messages: DispatcherMessageWire[]) => void,
 ) {
   const subscribers = dispatcherMessageSubscribers.get(sessionId) ?? new Set();
   subscribers.add(subscriber);
@@ -154,7 +148,10 @@ export function cleanupDispatcherSession(sessionId: string) {
 }
 
 export function getDispatcherSessionRunning(sessionId: string): boolean {
-  return dispatcherSessionRunningStates.get(sessionId) ?? isLiveSessionRunning(dispatcherLiveSessionStates.get(sessionId));
+  return (
+    dispatcherSessionRunningStates.get(sessionId) ??
+    isLiveSessionRunning(dispatcherLiveSessionStates.get(sessionId))
+  );
 }
 
 export function withDispatcherSessionRunning<T extends { id: string; isRunning?: boolean }>(

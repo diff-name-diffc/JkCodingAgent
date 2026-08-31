@@ -3,18 +3,20 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   DispatcherAgentEvent,
   DispatcherAgentTurn,
-  DispatcherMessage,
+  DispatcherMessageWire,
   ImageSegment,
 } from "../../types";
 import {
   appendAssistantTextSegment,
   appendToolSummarySegment,
   demoteActiveTextSegments,
+} from "./assistant-segments";
+import {
   planLiveToolActivity,
   startLiveToolActivity,
   finishLiveToolActivity,
   updateLiveToolRunActivity,
-} from "../dispatcherChatView";
+} from "./live-tool-activity";
 import {
   clearDispatcherActiveRunId,
   createIdleLiveSessionState,
@@ -203,7 +205,7 @@ export function useDispatcherActions({
             // 不再随事件下发全量消息；此处改调 dispatcher_list_messages 拉全量，
             // 经 mergeDispatcherMessages 按 id 合并刷新（与 dispatcher-session-updated
             // 的重载路径一致）。messageCount 仅用于日志对账。
-            void invoke<DispatcherMessage[]>("dispatcher_list_messages", {
+            void invoke<DispatcherMessageWire[]>("dispatcher_list_messages", {
               workspaceId: targetSessionId,
             })
               .then((fresh) => {

@@ -1,7 +1,7 @@
 """知识库运行时配置。
 
 设计原则（来自需求约定）：
-  - 配置的权威存储位于 Rust 宿主（~/.jkcodingagent/rag/config.json）
+  - 配置的权威存储位于 Rust 宿主的全局 SQLite app_config 表（键 ``rag``）
   - 宿主启动 sidecar 时，通过环境变量注入初始配置
   - 配置变更时，宿主通过 HTTP POST /config/reload 热更新内存状态
   - 本进程不读写磁盘配置文件，避免双写不一致

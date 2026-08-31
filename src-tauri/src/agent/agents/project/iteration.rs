@@ -46,6 +46,42 @@ impl OrchestratorAgent {
             }
         };
         let ms = self.models.lock().snapshot();
+        // 与普通聊天对齐：授权本会话的图片目录（chat-images/{workspace_id}），
+        // 项目 Agent 的文件工具因此可以直接读取用户粘贴/工具生成的图片；
+        // 其他会话图片与全局设置目录仍不可见。
+        let chat_image_dir = match crate::chat_images::workspace_image_dir(workspace_id) {
+            Ok(dir) => vec![dir],
+            Err(error) => {
+                helpers::log_warning(&format!(
+                    "[orchestrator] 构造会话图片目录失败，按空白名单收紧（workspace_id={workspace_id}）：{error}"
+                ));
+                Vec::new()
+            }
+        };
+        // 图片模型凭据（generate_image / edit_image 工具）：同步 SQLite 读取
+        // 经 spawn_blocking，失败按空凭据降级（工具侧有可读的未配置报错）。
+        let credentials_db = db.clone();
+        let image_credentials = match tokio::task::spawn_blocking(move || {
+            credentials_db
+                .get_settings_v2()
+                .map(|s| s.shared.image_model_credentials())
+        })
+        .await
+        {
+            Ok(Ok(credentials)) => credentials,
+            Ok(Err(error)) => {
+                helpers::log_warning(&format!(
+                    "[orchestrator] 读取图片模型凭据失败，按未配置降级（workspace_id={workspace_id}）：{error:#}"
+                ));
+                Default::default()
+            }
+            Err(error) => {
+                helpers::log_warning(&format!(
+                    "[orchestrator] 读取图片模型凭据任务失败，按未配置降级：{error}"
+                ));
+                Default::default()
+            }
+        };
         ToolContext {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
@@ -59,14 +95,15 @@ impl OrchestratorAgent {
             restrict_to_workspace: self.config.restrict_to_workspace,
             // memory/skills 已由提示词加载器读取；工具本身只允许项目工作区，
             // 不能把含设置、数据库与模型密钥的全局配置目录暴露给模型。
-            extra_allowed_dirs: Vec::new(),
+            extra_allowed_dirs: chat_image_dir,
             app_handle: self.app_handle.clone(),
             llm_provider: Some(provider.clone()),
             vision_model: ms.vision_model,
-            image_model_url: String::new(),
-            image_model_api_key: String::new(),
-            image_model: String::new(),
-            image_edit_model: String::new(),
+            vision_provider: ms.vision_provider,
+            image_model_url: image_credentials.url,
+            image_model_api_key: image_credentials.api_key,
+            image_model: image_credentials.model,
+            image_edit_model: image_credentials.edit_model,
             sub_agent_tool_registry: None,
             current_sub_agent_id: None,
             current_sub_agent_name: None,

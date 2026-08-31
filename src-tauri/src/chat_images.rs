@@ -3,6 +3,7 @@ use image::{GenericImageView, ImageFormat, ImageReader};
 use serde::Serialize;
 use std::io::Cursor;
 use std::path::PathBuf;
+use tauri::Manager;
 
 use crate::shared::error::{CommandResult, IntoCommandResult};
 use anyhow::Context;
@@ -28,6 +29,10 @@ pub enum ChatImageError {
         #[source]
         source: std::io::Error,
     },
+    #[error("不支持的图片 mime 类型：{0}")]
+    UnsupportedMime(String),
+    #[error("非法的会话标识：{0}")]
+    InvalidWorkspaceId(String),
     #[error("后台图片任务失败：{0}")]
     Join(#[from] tokio::task::JoinError),
 }
@@ -56,15 +61,20 @@ pub(crate) fn chat_images_dir() -> ChatImageResult<PathBuf> {
 }
 
 /// Resolve a `chat-image://<image_id>` URI or a raw image_id string to its
-/// absolute filesystem path by scanning `~/.jkcodingagent/chat-images/`.
+/// absolute filesystem path.
 ///
-/// The lookup is O(N) over the number of stored chat images, which is bounded
-/// and therefore acceptable. Newly saved/generated images always use
-/// `{image_id}.{ext}` as filename, making this resolution deterministic.
+/// Resolution order: ① chat_images DB 索引行（O(1)，仅传入 db 时）；
+/// ② `~/.jkcodingagent/chat-images/` 全目录扫描（兜底，覆盖登记失败
+/// best-effort 落盘的文件）。文件名恒为 `{image_id}.{ext}`，扫描按
+/// file_stem 精确匹配。
 ///
-/// This is shared across Tauri commands and agent tool internals so that
-/// `image_edit` can accept both absolute paths and `chat-image://` URIs.
-pub(crate) fn resolve_chat_image_id(image_id: &str) -> ChatImageResult<PathBuf> {
+/// This is shared across the `chat-image` URI scheme handler, LLM request
+/// building and agent tool internals so that every consumer resolves image
+/// references the same way.
+pub(crate) fn resolve_chat_image_by_id(
+    db: Option<&crate::agent::db::DispatcherDb>,
+    image_id: &str,
+) -> ChatImageResult<PathBuf> {
     let id = image_id
         .strip_prefix(CHAT_IMAGE_PROTOCOL)
         .unwrap_or(image_id)
@@ -74,16 +84,25 @@ pub(crate) fn resolve_chat_image_id(image_id: &str) -> ChatImageResult<PathBuf> 
         return Err(ChatImageError::EmptyImageId);
     }
 
+    if let Some(db) = db {
+        match db.chat_image_path(id) {
+            Ok(Some(path)) => return Ok(path),
+            Ok(None) => {}
+            Err(error) => eprintln!("查询 chat_images 索引失败（{id}），回退扫描：{error:#}"),
+        }
+    }
+
     let base = chat_images_dir()?;
     if !base.exists() {
         return Err(ChatImageError::ImagesDirMissing(base));
     }
 
-    let scan_dir = base.clone();
-    let id_owned = id.to_string();
-    // We use spawn_blocking only from async contexts; here we keep this helper
-    // synchronous so that callers inside `spawn_blocking` can use it directly.
-    scan_chat_images_dir(&scan_dir, &id_owned)
+    scan_chat_images_dir(&base, id)
+}
+
+/// 无 DB 句柄时的解析入口（工具内部 / LLM 请求构造）。
+pub(crate) fn resolve_chat_image_id(image_id: &str) -> ChatImageResult<PathBuf> {
+    resolve_chat_image_by_id(None, image_id)
 }
 
 fn scan_chat_images_dir(base: &std::path::Path, image_id: &str) -> ChatImageResult<PathBuf> {
@@ -147,16 +166,34 @@ pub(crate) fn is_chat_image_path(path: &std::path::Path) -> bool {
     }
 }
 
-/// Return the canonical app data directory: `~/.jkcodingagent`.
-pub(crate) fn app_data_dir() -> ChatImageResult<PathBuf> {
-    dirs::home_dir()
-        .ok_or(ChatImageError::HomeDirMissing)
-        .map(|home| home.join(".jkcodingagent"))
-}
-
 pub(crate) const COMPRESS_THRESHOLD: usize = 1_500_000;
 pub(crate) const MAX_COMPRESS_DIM: u32 = 2048;
 const COMPRESS_QUALITY: u8 = 92;
+
+/// 统一的 mime → 扩展名映射（严格）。这是全应用唯一的 mime↔ext 出处：
+/// 未知 mime 返回 Err，而不是静默落成 .png 坏文件（历史上 svg/bmp 字节流
+/// 会被存成打不开的 .png）。
+pub(crate) fn ext_for_mime(mime: &str) -> ChatImageResult<&'static str> {
+    match mime.trim().to_lowercase().as_str() {
+        "image/png" => Ok("png"),
+        "image/jpeg" => Ok("jpg"),
+        "image/webp" => Ok("webp"),
+        "image/gif" => Ok("gif"),
+        other => Err(ChatImageError::UnsupportedMime(other.to_string())),
+    }
+}
+
+/// 统一的扩展名 → mime 映射（不含 bmp/svg：LLM 内联与 scheme 服务均只支持
+/// png/jpg/webp/gif 四类，保持与 `ext_for_mime` 严格对齐）。
+pub(crate) fn mime_for_ext(ext: &str) -> Option<&'static str> {
+    match ext.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
 
 /// Low-loss image compression shared across modules.
 ///
@@ -213,153 +250,299 @@ pub(crate) fn compress_image_bytes(raw: &[u8], max_dim: u32) -> Vec<u8> {
     }
 }
 
+/// 会话图片目录：`~/.jkcodingagent/chat-images/{workspace_id}`。
+/// workspace_id 即 dispatcher 会话 id（uuid 形态），不可变且与 chat_images
+/// 索引一致——目录与会话同生命周期，标题改名永不迁移。
+pub(crate) fn workspace_image_dir(workspace_id: &str) -> ChatImageResult<PathBuf> {
+    if !is_valid_workspace_id(workspace_id) {
+        return Err(ChatImageError::InvalidWorkspaceId(workspace_id.to_string()));
+    }
+    Ok(chat_images_dir()?.join(workspace_id))
+}
+
+/// workspace_id 字符集白名单：该 id 直接拼进目录路径，是目录穿越的唯一
+/// 闸门（`[0-9A-Za-z_-]{1,64}`，与 uuid / slug 化 id 形态兼容）。
+pub(crate) fn is_valid_workspace_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// 统一保存参数：用户粘贴上传与 generate_image / edit_image 工具产物共用。
+pub(crate) struct SaveChatImageParams<'a> {
+    pub workspace_id: &'a str,
+    pub bytes: Vec<u8>,
+    pub mime_type: &'a str,
+    /// 登记来源："user_paste" | "tool_generate"。
+    pub source: &'a str,
+    pub generation_prompt: Option<&'a str>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SavedChatImage {
+    pub image_id: String,
+    pub path: PathBuf,
+    pub mime_type: String,
+}
+
+/// 唯一的聊天图片落盘入口：超阈值低损压缩、严格 mime 映射，写入
+/// `chat-images/{workspace_id}/{image_id}.{ext}`，并最佳努力登记 chat_images
+/// 索引行（message_id 为 NULL，消息落库时由 insert_chat_images 绑定）。
+/// 登记失败只留痕不回滚——文件是事实源，索引可由消息路径补齐。
+pub(crate) async fn save_image(
+    db: &crate::agent::db::DispatcherDb,
+    params: SaveChatImageParams<'_>,
+) -> ChatImageResult<SavedChatImage> {
+    let image_id = uuid::Uuid::new_v4().to_string();
+    let (ext, image_bytes) = if params.bytes.len() >= COMPRESS_THRESHOLD {
+        let compressed = compress_image_bytes(&params.bytes, MAX_COMPRESS_DIM);
+        if compressed.len() < params.bytes.len() {
+            ("jpg", compressed)
+        } else {
+            (ext_for_mime(params.mime_type)?, params.bytes)
+        }
+    } else {
+        (ext_for_mime(params.mime_type)?, params.bytes)
+    };
+    let saved_mime = mime_for_ext(ext)
+        .expect("ext_for_mime 与 mime_for_ext 保持对齐")
+        .to_string();
+
+    let dir = workspace_image_dir(params.workspace_id)?;
+    let file_path = dir.join(format!("{}.{}", image_id, ext));
+    let register = ChatImageRegistration {
+        image_id: image_id.clone(),
+        workspace_id: params.workspace_id.to_string(),
+        width: params.width,
+        height: params.height,
+        mime_type: saved_mime.clone(),
+        source: params.source.to_string(),
+        generation_prompt: params.generation_prompt.map(str::to_string),
+    };
+    let db = db.clone();
+    let saved_path = file_path.clone();
+    tokio::task::spawn_blocking(move || -> ChatImageResult<()> {
+        std::fs::create_dir_all(&dir).map_err(io_error("创建会话图片目录", dir.clone()))?;
+        std::fs::write(&file_path, &image_bytes)
+            .map_err(io_error("写入聊天图片", file_path.clone()))?;
+        if let Err(error) = db.register_chat_image(&register, &file_path) {
+            eprintln!("登记聊天图片失败（{}）：{error:#}", register.image_id);
+        }
+        Ok(())
+    })
+    .await??;
+
+    Ok(SavedChatImage {
+        image_id,
+        path: saved_path,
+        mime_type: saved_mime,
+    })
+}
+
+/// 保存即登记的一行索引（见 save_image）。
+pub(crate) struct ChatImageRegistration {
+    pub image_id: String,
+    pub workspace_id: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub mime_type: String,
+    pub source: String,
+    pub generation_prompt: Option<String>,
+}
+
 /// Result of saving a chat image.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveChatImageResult {
     pub image_id: String,
-    pub path: String,
     /// Actual mime type of the saved file (may differ from original when compression occurred)
     pub mime_type: String,
 }
 
-/// Save a chat image pasted/attached from the frontend.
-/// Images exceeding COMPRESS_THRESHOLD are low-loss compressed (JPEG quality 92,
-/// resized to fit MAX_COMPRESS_DIM on the longest side) before being stored.
-/// Images are stored under `~/.jkcodingagent/chat-images/{session-title-slug}/`.
+/// Save a chat image pasted/attached from the frontend. Thin wrapper over the
+/// unified `save_image` entry point (compression + strict mime mapping +
+/// `chat-images/{workspace_id}/` layout + index registration).
 #[tauri::command]
 pub async fn save_chat_image(
-    session_title: String,
+    workspace_id: String,
     image_data_base64: String,
     mime_type: String,
+    state: tauri::State<'_, crate::agent::DispatcherState>,
 ) -> CommandResult<SaveChatImageResult> {
-    save_chat_image_impl(session_title, image_data_base64, mime_type)
-        .await
-        .context("保存聊天图片失败")
-        .into_command_result()
+    save_chat_image_impl(
+        state.db().clone(),
+        workspace_id,
+        image_data_base64,
+        mime_type,
+    )
+    .await
+    .context("保存聊天图片失败")
+    .into_command_result()
 }
 
 async fn save_chat_image_impl(
-    session_title: String,
+    db: crate::agent::db::DispatcherDb,
+    workspace_id: String,
     image_data_base64: String,
     mime_type: String,
 ) -> ChatImageResult<SaveChatImageResult> {
     use base64::Engine;
 
-    let image_id = uuid::Uuid::new_v4().to_string();
-    let raw_bytes = base64::engine::general_purpose::STANDARD
+    let bytes = base64::engine::general_purpose::STANDARD
         .decode(&image_data_base64)
         .map_err(|e| ChatImageError::Decode(e.to_string()))?;
-
-    let ext_for = |mime: &str| match mime {
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        _ => "png",
-    };
-
-    let (ext, image_bytes) = if raw_bytes.len() >= COMPRESS_THRESHOLD {
-        let compressed = compress_image_bytes(&raw_bytes, MAX_COMPRESS_DIM);
-        if compressed.len() < raw_bytes.len() {
-            ("jpg", compressed)
-        } else {
-            (ext_for(&mime_type), raw_bytes)
-        }
-    } else {
-        (ext_for(&mime_type), raw_bytes)
-    };
-
-    let saved_mime_type = match ext {
-        "jpg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        _ => "image/png",
-    }
-    .to_string();
-
-    let slug = slugify(&session_title);
-    let (id_clone, bytes) = (image_id.clone(), image_bytes);
-    let mime_for_result = saved_mime_type.clone();
-    tokio::task::spawn_blocking(move || -> ChatImageResult<SaveChatImageResult> {
-        let images_dir = chat_images_dir()?.join(&slug);
-        std::fs::create_dir_all(&images_dir)
-            .map_err(io_error("创建聊天图片目录", images_dir.clone()))?;
-        let file_path = images_dir.join(format!("{}.{}", id_clone, ext));
-        std::fs::write(&file_path, &bytes).map_err(io_error("写入聊天图片", file_path.clone()))?;
-        Ok(SaveChatImageResult {
-            image_id: id_clone,
-            path: file_path.to_string_lossy().to_string(),
-            mime_type: mime_for_result,
-        })
+    let saved = save_image(
+        &db,
+        SaveChatImageParams {
+            workspace_id: &workspace_id,
+            bytes,
+            mime_type: &mime_type,
+            source: "user_paste",
+            generation_prompt: None,
+            width: None,
+            height: None,
+        },
+    )
+    .await?;
+    Ok(SaveChatImageResult {
+        image_id: saved.image_id,
+        mime_type: saved.mime_type,
     })
-    .await?
 }
 
-fn slugify(s: &str) -> String {
-    let slug: String = s
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "untitled".to_string()
-    } else {
-        slug
-    }
-}
-
-/// Result of resolving a chat image by its identifier.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResolveChatImageResult {
-    pub image_id: String,
-    pub path: String,
-    pub mime_type: String,
-}
-
-/// Resolve a `chat-image://<image_id>` URI (or raw image_id) to the image's
-/// absolute filesystem path. This enables the frontend to render images
-/// referenced in markdown content without exposing raw filesystem paths to
-/// the user.
+/// 发送带图消息前的存在性校验（regenerate/edit 在截断消息前调用，避免
+/// 截断后发送失败丢消息）。Image 段引用的文件缺失时返回带引用清单的错误。
 #[tauri::command]
-pub async fn resolve_chat_image(image_id: String) -> CommandResult<ResolveChatImageResult> {
-    resolve_chat_image_impl(image_id)
+pub async fn chat_images_validate(
+    segments_json: String,
+    state: tauri::State<'_, crate::agent::DispatcherState>,
+) -> CommandResult<()> {
+    state
+        .db()
+        .validate_chat_image_segments_async(&segments_json)
         .await
-        .context("解析聊天图片失败")
+        .context("校验聊天图片失败")
         .into_command_result()
 }
 
-async fn resolve_chat_image_impl(image_id: String) -> ChatImageResult<ResolveChatImageResult> {
-    let id = image_id
-        .strip_prefix(CHAT_IMAGE_PROTOCOL)
-        .unwrap_or(&image_id)
-        .trim()
-        .to_string();
+/// image_id 的 URI 形态校验（`[0-9A-Za-z-]{8,64}`）。它是 `chat-image` scheme
+/// handler 唯一的安全闸门：来自 WebView 的任意请求路径都会流经这里，
+/// 字符集白名单确保不可能构造出目录穿越或任意文件读取。
+fn is_valid_image_reference(id: &str) -> bool {
+    (8..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
 
-    let id_clone = id.clone();
-    let file_path = tokio::task::spawn_blocking(move || resolve_chat_image_id(&id_clone)).await??;
+fn respond_image_not_found(responder: tauri::UriSchemeResponder) {
+    let response = tauri::http::Response::builder()
+        .status(tauri::http::StatusCode::NOT_FOUND)
+        .body(Vec::new());
+    match response {
+        Ok(response) => responder.respond(response),
+        Err(_) => responder.respond(
+            tauri::http::Response::builder()
+                .status(tauri::http::StatusCode::NOT_FOUND)
+                .body(Vec::new())
+                .expect("static 404 response builds"),
+        ),
+    }
+}
 
-    let mime_type = file_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|ext| match ext.to_lowercase().as_str() {
-            "jpg" | "jpeg" => "image/jpeg",
-            "webp" => "image/webp",
-            "gif" => "image/gif",
-            "bmp" => "image/bmp",
-            _ => "image/png",
+/// `chat-image` 自定义协议处理器：`<img src>` 直接引用
+/// `chat-image://{image_id}`（经 convertFileSrc 按平台转换为
+/// `chat-image://localhost/{id}` 或 `http://chat-image.localhost/{id}`），
+/// 由这里查索引、读盘并以正确的 Content-Type 返回——前端不再需要
+/// invoke resolve 两阶段渲染。
+///
+/// 安全与性能约定：
+/// - id 字符集白名单（见 is_valid_image_reference）+ 只按 file_stem 匹配，
+///   双保险防目录穿越；
+/// - image_id 不可变，因此下发 `Cache-Control: immutable`，历史滚动零重复
+///   读盘；
+/// - handler 内严禁阻塞（会卡 WebView 全部网络）：解析与读盘全部经
+///   spawn_blocking，DB 连接即取即放后再读盘。
+pub(crate) fn handle_chat_image_scheme(
+    ctx: tauri::UriSchemeContext<'_, tauri::Wry>,
+    request: tauri::http::Request<Vec<u8>>,
+    responder: tauri::UriSchemeResponder,
+) {
+    use percent_encoding::percent_decode_str;
+
+    let uri = request.uri().clone();
+    // 兼容三种形态：macOS `chat-image://localhost/{id}`、`chat-image://{id}`
+    // （host 承载 id、path 为空）与 Windows/Linux `http://chat-image.localhost/{id}`。
+    let raw_id = uri.path().trim_start_matches('/').to_string();
+    let raw_id = if raw_id.is_empty() {
+        uri.host().unwrap_or_default().to_string()
+    } else {
+        raw_id
+    };
+    let image_id = percent_decode_str(&raw_id).decode_utf8_lossy().to_string();
+
+    if !is_valid_image_reference(&image_id) {
+        respond_image_not_found(responder);
+        return;
+    }
+
+    let app = ctx.app_handle().clone();
+    tauri::async_runtime::spawn(async move {
+        let db = app.state::<crate::agent::DispatcherState>().db().clone();
+        let served = tokio::task::spawn_blocking(move || -> Option<(Vec<u8>, &'static str)> {
+            let path = resolve_chat_image_by_id(Some(&db), &image_id).ok()?;
+            let ext = path.extension()?.to_str()?;
+            let mime = mime_for_ext(ext)?;
+            let bytes = std::fs::read(&path).ok()?;
+            Some((bytes, mime))
         })
-        .unwrap_or("image/png")
-        .to_string();
+        .await
+        .ok()
+        .flatten();
 
-    Ok(ResolveChatImageResult {
-        image_id: id,
-        path: file_path.to_string_lossy().to_string(),
-        mime_type,
-    })
+        match served {
+            Some((bytes, mime)) => {
+                let response = tauri::http::Response::builder()
+                    .header("Content-Type", mime)
+                    .header("Cache-Control", "private, max-age=31536000, immutable")
+                    .body(bytes);
+                match response {
+                    Ok(response) => responder.respond(response),
+                    Err(_) => respond_image_not_found(responder),
+                }
+            }
+            None => respond_image_not_found(responder),
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ext_for_mime_is_strict() {
+        assert_eq!(ext_for_mime("image/png").unwrap(), "png");
+        assert_eq!(ext_for_mime("image/jpeg").unwrap(), "jpg");
+        assert_eq!(ext_for_mime("image/webp").unwrap(), "webp");
+        assert_eq!(ext_for_mime("IMAGE/GIF").unwrap(), "gif");
+        assert!(ext_for_mime("image/svg+xml").is_err());
+        assert!(ext_for_mime("image/bmp").is_err());
+        assert!(ext_for_mime("application/octet-stream").is_err());
+        assert!(ext_for_mime("").is_err());
+    }
+
+    #[test]
+    fn mime_for_ext_round_trips_supported_formats() {
+        for mime in ["image/png", "image/jpeg", "image/webp", "image/gif"] {
+            let ext = ext_for_mime(mime).expect("supported mime");
+            assert_eq!(mime_for_ext(ext), Some(mime));
+        }
+        assert_eq!(mime_for_ext("jpg"), Some("image/jpeg"));
+        assert_eq!(mime_for_ext("jpeg"), Some("image/jpeg"));
+        assert_eq!(mime_for_ext("bmp"), None);
+        assert_eq!(mime_for_ext("svg"), None);
+        assert_eq!(mime_for_ext(""), None);
+    }
 }

@@ -5,7 +5,7 @@ import type { McpAggregateStatus, McpStatus } from "../types";
  * canonical 名恒为 `mcp__<server>__<tool>`，内置工具名不会以该前缀开头，
  * 因此允许列表（内置与 MCP 共用同一数组）可按前缀区分两类工具。
  */
-export const MCP_TOOL_NAME_PREFIX = "mcp__";
+const MCP_TOOL_NAME_PREFIX = "mcp__";
 
 export function isMcpToolName(name: string): boolean {
   return name.startsWith(MCP_TOOL_NAME_PREFIX);

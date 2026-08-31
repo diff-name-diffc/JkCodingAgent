@@ -77,7 +77,7 @@ function BranchDialog({
 
   return (
     <div
-      className="ai-dialog-overlay ai-branch-dialog-overlay"
+      className="ai-dialog-overlay"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -304,7 +304,7 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
       >
         <Popover.Trigger asChild>
           <button
-            className={pickerOpen ? "ai-branch-bar ai-migrated-branch-bar is-open" : "ai-branch-bar ai-migrated-branch-bar"}
+            className={pickerOpen ? "ai-branch-bar is-open" : "ai-branch-bar"}
             title="切换分支"
             type="button"
           >

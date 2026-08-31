@@ -299,15 +299,42 @@ struct ToolPolicyRow {
     self_managed_timeout: bool,
 }
 
+struct ToolPolicyOptions {
+    default_compress: bool,
+    parallel_readonly: bool,
+    self_managed_timeout: bool,
+}
+
+impl ToolPolicyOptions {
+    const SERIAL: Self = Self {
+        default_compress: false,
+        parallel_readonly: false,
+        self_managed_timeout: false,
+    };
+    const PARALLEL_READONLY: Self = Self {
+        default_compress: false,
+        parallel_readonly: true,
+        self_managed_timeout: false,
+    };
+    const SELF_MANAGED: Self = Self {
+        default_compress: false,
+        parallel_readonly: false,
+        self_managed_timeout: true,
+    };
+    const COMPRESSED_SELF_MANAGED: Self = Self {
+        default_compress: true,
+        parallel_readonly: false,
+        self_managed_timeout: true,
+    };
+}
+
 const fn policy_row(
     name: &'static str,
     category: ToolCategory,
     access: ToolAccess,
     safety: ToolSafety,
     timeout_secs: u64,
-    default_compress: bool,
-    parallel_readonly: bool,
-    self_managed_timeout: bool,
+    options: ToolPolicyOptions,
 ) -> ToolPolicyRow {
     ToolPolicyRow {
         name,
@@ -315,9 +342,9 @@ const fn policy_row(
         access,
         safety,
         timeout_secs,
-        default_compress,
-        parallel_readonly,
-        self_managed_timeout,
+        default_compress: options.default_compress,
+        parallel_readonly: options.parallel_readonly,
+        self_managed_timeout: options.self_managed_timeout,
     }
 }
 
@@ -337,9 +364,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::READONLY_WORKSPACE,
         ToolSafety::Safe,
         30,
-        false,
-        true,
-        false,
+        ToolPolicyOptions::PARALLEL_READONLY,
     ),
     policy_row(
         "write_file",
@@ -347,9 +372,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::MUTATES_WORKSPACE,
         ToolSafety::Safe,
         30,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     policy_row(
         "edit_file",
@@ -357,9 +380,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::MUTATES_WORKSPACE,
         ToolSafety::Safe,
         30,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     policy_row(
         "list_dir",
@@ -367,9 +388,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::READONLY_WORKSPACE,
         ToolSafety::Safe,
         30,
-        false,
-        true,
-        false,
+        ToolPolicyOptions::PARALLEL_READONLY,
     ),
     // ── 搜索 ──
     policy_row(
@@ -378,9 +397,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::READONLY_WORKSPACE,
         ToolSafety::Safe,
         60,
-        false,
-        true,
-        false,
+        ToolPolicyOptions::PARALLEL_READONLY,
     ),
     policy_row(
         "grep",
@@ -388,9 +405,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::READONLY_WORKSPACE,
         ToolSafety::Safe,
         60,
-        false,
-        true,
-        false,
+        ToolPolicyOptions::PARALLEL_READONLY,
     ),
     // ── 命令执行（能力边界按最坏情况声明，强制审查）──
     policy_row(
@@ -399,9 +414,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::FULL_EFFECTS,
         ToolSafety::ReviewRequired,
         60,
-        true,
-        false,
-        true,
+        ToolPolicyOptions::COMPRESSED_SELF_MANAGED,
     ),
     policy_row(
         "local_zsh",
@@ -409,9 +422,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::FULL_EFFECTS,
         ToolSafety::ReviewRequired,
         60,
-        true,
-        false,
-        true,
+        ToolPolicyOptions::COMPRESSED_SELF_MANAGED,
     ),
     // message 是面向用户的最终消息通知工具（映射为 ToolAction::FinalMessage），
     // 并非 shell 命令，不归入 Shell 类。
@@ -421,9 +432,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
         60,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     // ── 浏览器（共享会话：统一 requires_network、禁止并行）──
     policy_row(
@@ -432,9 +441,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
         30,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     policy_row(
         "browser_click",
@@ -442,9 +449,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
         30,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     policy_row(
         "browser_type",
@@ -452,9 +457,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
         30,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     policy_row(
         "browser_press",
@@ -462,9 +465,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
         30,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     policy_row(
         "browser_wait_for",
@@ -472,9 +473,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
         30,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     policy_row(
         "browser_close",
@@ -482,9 +481,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
         30,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     // 只读读取类同样驱动浏览器会话：requires_network=true、不参与并行。
     policy_row(
@@ -499,9 +496,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         },
         ToolSafety::Safe,
         30,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     policy_row(
         "browser_visual_analyze",
@@ -515,9 +510,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         },
         ToolSafety::Safe,
         30,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     // ── 图像生成 ──
     policy_row(
@@ -526,9 +519,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
         60,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     policy_row(
         "edit_image",
@@ -536,9 +527,44 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
         60,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
+    ),
+    // ── 图像分析 ──
+    // 只读外部网络工具：读取本地/远端图片并调用视觉模型，不变更任何外部
+    // 状态。单次调用内部按图片顺序逐张请求视觉模型，最坏 8 张 × 单张
+    // 180s LLM 超时远超任何合理统一超时，因此超时自管（工具内逐张
+    // tokio timeout + cancel_rx 检查，同 ssh_exec 的自管模式）。
+    policy_row(
+        "analyze_image",
+        ToolCategory::Image,
+        ToolAccess {
+            readonly: true,
+            workspace_bound: false,
+            requires_network: true,
+            mutates_filesystem: false,
+            mutates_external_state: false,
+        },
+        ToolSafety::Safe,
+        1500,
+        ToolPolicyOptions::SELF_MANAGED,
+    ),
+    // ── 图片下载 ──
+    // fetch_image 按给定 URL 下载图片入库：网络侧只读，落盘走应用自管的
+    // 聊天图片库；下载内容在工具内做魔数校验（仅 png/jpg/webp/gif 二进制，
+    // HTML/SVG/文本等非图片响应直接拒绝），无需 AI 审查。
+    policy_row(
+        "fetch_image",
+        ToolCategory::Image,
+        ToolAccess {
+            readonly: true,
+            workspace_bound: false,
+            requires_network: true,
+            mutates_filesystem: false,
+            mutates_external_state: false,
+        },
+        ToolSafety::Safe,
+        60,
+        ToolPolicyOptions::SERIAL,
     ),
     // ── SSH ──
     // ssh_list_servers 只做本地配置的只读投影（不含凭据），安全声明为只读；
@@ -550,9 +576,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::READONLY_UNBOUND,
         ToolSafety::Safe,
         60,
-        false,
-        true,
-        false,
+        ToolPolicyOptions::PARALLEL_READONLY,
     ),
     policy_row(
         "ssh_exec",
@@ -560,9 +584,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
         300,
-        true,
-        false,
-        true,
+        ToolPolicyOptions::COMPRESSED_SELF_MANAGED,
     ),
     // ── 子智能体 ──
     policy_row(
@@ -571,9 +593,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
         600,
-        false,
-        false,
-        true,
+        ToolPolicyOptions::SELF_MANAGED,
     ),
     policy_row(
         "list_sub_agents",
@@ -581,9 +601,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::READONLY_UNBOUND,
         ToolSafety::Safe,
         60,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     policy_row(
         "notify_user_progress",
@@ -591,9 +609,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
         60,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     // ── 图编排协议壳 ──
     // 外层运行时本身不代表子调用的权限；每个子调用仍由 CapabilityBroker 按
@@ -604,9 +620,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
         120,
-        false,
-        false,
-        true,
+        ToolPolicyOptions::SELF_MANAGED,
     ),
     policy_row(
         "submit_graph",
@@ -614,9 +628,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
         60,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
     policy_row(
         "graph_plan_report",
@@ -624,9 +636,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
         60,
-        false,
-        false,
-        false,
+        ToolPolicyOptions::SERIAL,
     ),
 ];
 
@@ -865,6 +875,39 @@ mod tests {
         assert!(!spec.access.mutates_filesystem);
         assert!(!spec.access.mutates_external_state);
         assert_eq!(spec.safety, ToolSafety::Safe);
+    }
+
+    #[test]
+    fn analyze_image_is_declared_as_safe_self_managed_network_reader() {
+        let spec = spec_for("analyze_image");
+
+        assert_eq!(spec.category, ToolCategory::Image);
+        assert!(spec.access.readonly);
+        assert!(spec.access.requires_network);
+        assert!(!spec.access.mutates_filesystem);
+        assert!(!spec.access.mutates_external_state);
+        assert_eq!(spec.safety, ToolSafety::Safe);
+        assert!(!spec.execution.parallelizable);
+        // 多图逐张视觉调用，超时由工具自管
+        assert!(!spec.execution.unified_timeout);
+    }
+
+    #[test]
+    fn fetch_image_is_safe_and_skips_broker_review() {
+        let spec = spec_for("fetch_image");
+
+        assert_eq!(spec.category, ToolCategory::Image);
+        assert_eq!(spec.safety, ToolSafety::Safe);
+        // 网络侧只读：下载内容经工具内魔数校验后才入库，无需 AI 审查
+        assert!(spec.access.readonly);
+        assert!(spec.access.requires_network);
+        assert!(!spec.access.mutates_filesystem);
+        assert!(!spec.access.mutates_external_state);
+        assert!(!spec.review_self_managed);
+        // 与 fail-closed 兜底一致：串行 + 统一超时 + 默认不压缩
+        assert!(!spec.execution.parallelizable);
+        assert!(spec.execution.unified_timeout);
+        assert!(!spec.result_policy.default_compress);
     }
 
     #[test]

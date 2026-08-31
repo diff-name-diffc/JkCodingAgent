@@ -6,7 +6,6 @@ use chrono::Utc;
 use rusqlite::types::Type;
 
 use super::artifacts::DispatcherToolArtifactRef;
-use super::content::{parse_segments_json, segments_to_plain_text};
 use super::messages::{DispatcherMessageRecord, DispatcherMessageUsageStats};
 
 pub(super) const MAX_LLM_DIALOGUES: usize = 5;
@@ -28,9 +27,9 @@ pub(super) fn default_context_window_capacity(_model: &str) -> u64 {
 pub(super) fn map_dispatcher_message_record(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<DispatcherMessageRecord> {
-    // 按列名读取，SELECT 列序调整不会静默错位。
+    // 按列名读取，SELECT 列序调整不会静默错位。正文文本不落库、不随记录携带，
+    // 消费方经 `DispatcherMessageRecord::plain_text` 从 segments_json 派生。
     let segments_json: String = row.get("segments_json")?;
-    let content = segments_to_plain_text(&parse_segments_json(&segments_json));
     // 负值等脏数据容错为 0，避免单条坏行导致整个会话消息列表加载失败。
     let thinking_elapsed_ms = row
         .get::<_, Option<i64>>("thinking_elapsed_ms")?
@@ -40,7 +39,6 @@ pub(super) fn map_dispatcher_message_record(
         id: row.get("id")?,
         workspace_id: row.get("workspace_id")?,
         role: row.get("role")?,
-        content,
         segments_json,
         thinking_content: row.get("thinking_content")?,
         thinking_elapsed_ms,

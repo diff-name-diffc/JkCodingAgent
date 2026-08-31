@@ -38,7 +38,7 @@ export const PythonRunDrawer = memo(function PythonRunDrawer({
   const canRun = Boolean(target) && !running;
 
   return (
-    <aside className="ai-python-run-drawer ai-migrated-python-runner" style={{ width }}>
+    <aside className="ai-python-run-drawer" style={{ width }}>
       <div className="ai-python-run-header">
         <div className="ai-python-run-title-wrap">
           <span className="ai-python-run-kicker">Python Runner</span>

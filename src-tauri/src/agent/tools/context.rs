@@ -40,6 +40,12 @@ pub struct ToolContext {
     /// 内含 API Key，Debug 输出已脱敏。
     pub llm_provider: Option<OpenAiCompatProvider>,
     pub vision_model: String,
+    /// 视觉用途模型的完整凭据（含 API Key，Debug 输出已脱敏）；
+    /// None 表示未配置视觉模型。与 `vision_model`（仅模型名）不同，该字段
+    /// 携带视觉用途槽位自己的网关与密钥（可能独立于聊天网关），
+    /// 视觉分析类工具（如 analyze_image）应优先使用本字段；
+    /// 检测 None 时必须返回明确的「错误：视觉模型未配置…」可恢复错误。
+    pub vision_provider: Option<OpenAiCompatProvider>,
     pub image_model_url: String,
     /// 敏感凭据：仅在此字段明文持有。Debug 输出已脱敏；
     /// 新增日志、错误消息或序列化输出时严禁携带该值。
@@ -136,6 +142,13 @@ impl std::fmt::Debug for ToolContext {
                     .map(|_| "<redacted: contains api key>"),
             )
             .field("vision_model", &self.vision_model)
+            .field(
+                "vision_provider",
+                &self
+                    .vision_provider
+                    .as_ref()
+                    .map(|_| "<redacted: contains api key>"),
+            )
             .field("image_model_url", &self.image_model_url)
             .field("image_model_api_key", &"<redacted>")
             .field("image_model", &self.image_model)
@@ -182,6 +195,7 @@ mod tests {
             app_handle: None,
             llm_provider: None,
             vision_model: String::new(),
+            vision_provider: None,
             image_model_url: String::new(),
             image_model_api_key: String::new(),
             image_model: String::new(),

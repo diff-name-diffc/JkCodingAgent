@@ -44,7 +44,6 @@ export function SidebarFooterActions({
               </div>
               <div className="ai-sidebar-footer-action">
                 <button
-                  className="ai-sidebar-footer-button"
                   title="应用设置"
                   onClick={() => setShowAppSettings(true)}
                 >

@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use tauri::Manager;
 
 use super::common::{bounded_dimension_arg, string_arg, u64_arg};
 use crate::agent::tools::context::ToolContext;
@@ -85,9 +86,15 @@ async fn execute_image_generation(args: &Value, context: &ToolContext) -> String
         return "错误：图片生成 API Key 未配置，请先在设置中配置".to_string();
     }
 
+    let Some(app) = context.app_handle.clone() else {
+        return "错误：应用句柄不可用，无法保存生成图片".to_string();
+    };
+    let db = app.state::<crate::agent::DispatcherState>().db().clone();
+
     match generate_image(
         input,
-        context.session_title.clone(),
+        db,
+        context.workspace_id.clone(),
         api_key,
         base_url,
         default_model,

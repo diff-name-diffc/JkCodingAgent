@@ -8,7 +8,7 @@ import { ChatCategoryToolsTab } from "../app-settings/aha/chat-category-tools";
 type ToolsPageTab = "project" | "chat";
 
 /** 「工具」页：项目智能体可用工具 + 聊天分类工具配置，页内 Tab 切换（变更走自动保存管线）。 */
-export function ToolsPage({ projectPath }: { projectPath?: string }) {
+export function ToolsPage() {
   const store = useAhaSettings();
   const [tab, setTab] = useState<ToolsPageTab>("chat");
 
@@ -36,7 +36,6 @@ export function ToolsPage({ projectPath }: { projectPath?: string }) {
         >
           <ToolsTab
             context="project"
-            projectPath={projectPath}
             allowedTools={store.settings.project.allowedTools}
             onChange={(next) =>
               store.updateSettings((prev) => ({

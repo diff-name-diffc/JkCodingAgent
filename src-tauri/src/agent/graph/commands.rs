@@ -319,5 +319,11 @@ pub(crate) async fn catalog_for_workspace(
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
     let registry = ToolRegistry::default_tools(state.mcp_registry(), state.ssh_manager());
-    Ok(build_harness_catalog(std::path::Path::new(&workspace), &mcp_scope, &settings, &registry).await)
+    Ok(build_harness_catalog(
+        std::path::Path::new(&workspace),
+        &mcp_scope,
+        &settings,
+        &registry,
+    )
+    .await)
 }

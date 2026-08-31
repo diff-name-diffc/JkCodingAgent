@@ -1,7 +1,7 @@
 //! RAG 知识库配置——权威存储位于 Rust 宿主侧。
 //!
 //! 设计约定（见 AGENTS.md 与 rag/README.md）：
-//! - 配置存全局库 app_config 表（键 `rag`）；v33 前为 ~/.jkcodingagent/rag/config.json
+//! - 配置存全局库 app_config 表（键 `rag`）；早期开发版的文件存储已退出当前基线
 //! - 本模块是配置的唯一写入方；Python sidecar 只接收、不回写
 //! - 启动 sidecar 时通过环境变量注入；变更时通过 HTTP /config/reload 推送
 //!

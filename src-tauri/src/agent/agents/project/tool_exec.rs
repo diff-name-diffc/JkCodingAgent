@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 use tauri::ipc::Channel;
 use tokio::sync::watch;
@@ -19,7 +18,7 @@ use crate::agent::tools::{
 use super::graph_submit::SubmitGraphInterception;
 use super::helpers::{
     self, build_tool_retry_context, emit, extract_message_content, is_retryable_tool_error,
-    record_run_token_usage,
+    record_run_token_usage, RunUsageContext,
 };
 use super::OrchestratorAgent;
 
@@ -132,10 +131,10 @@ impl OrchestratorAgent {
             // 先按本轮 direct grant 授权，再走与 Broker 同源的 default+校验路径；
             // 只有合法的 effective arguments 才能触发落图/报告等副作用。
             let prepared_arguments = if !direct_capabilities.contains(&tool_call.name) {
-                Err(ToolResult::recoverable_error(format!(
+                Err(Box::new(ToolResult::recoverable_error(format!(
                     "错误：禁止调用工具 '{}'；该控制面能力未授予本轮模型。",
                     tool_call.name
-                )))
+                ))))
             } else {
                 self.tools.prepare_control_arguments(
                     mcp_scope,
@@ -146,7 +145,7 @@ impl OrchestratorAgent {
 
             // 控制面/运行时协议由编排器拦截；壳工具自身永不直接执行。
             let (result, graph_action) = match prepared_arguments {
-                Err(result) => (result, None),
+                Err(result) => (*result, None),
                 Ok(arguments) => {
                     tool_call.arguments = arguments;
                     if tool_call.name == "run_tool_program" {
@@ -368,14 +367,16 @@ impl OrchestratorAgent {
             &summary_model,
             |usage| {
                 record_run_token_usage(
-                    db,
-                    workspace_id,
+                    RunUsageContext {
+                        db,
+                        workspace_id,
+                        tracker: usage_tracker,
+                        on_event,
+                        pending_persists: usage_persist_handles,
+                    },
                     &summary_model,
                     DispatcherSessionTokenUsageSource::Summary,
                     usage,
-                    usage_tracker,
-                    on_event,
-                    usage_persist_handles,
                 );
             },
         )
@@ -541,6 +542,7 @@ impl OrchestratorAgent {
                 name: tool_call.name.clone(),
                 arguments: arguments_json,
                 display_text: display_text.to_string(),
+                context_payload: display_text.to_string(),
                 result_mode: "raw".to_string(),
                 detail_refs: Vec::new(),
             },
@@ -582,6 +584,7 @@ impl OrchestratorAgent {
                 name: tool_call.name.clone(),
                 arguments: arguments_json,
                 display_text: display_text.to_string(),
+                context_payload: context_payload.clone(),
                 result_mode: "raw".to_string(),
                 detail_refs: Vec::new(),
             },

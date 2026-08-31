@@ -156,28 +156,32 @@ pub(crate) fn record_session_token_usage(
 /// 口径联动（审查项 G8-03）：持久化句柄在工具执行收口处统一 await，
 /// 前端运行统计与 DB 会话用量来自同一批请求；持久化失败会留下持久化警告，
 /// 两处状态出现偏差时可诊断。
+pub(crate) struct RunUsageContext<'a> {
+    pub db: &'a DispatcherDb,
+    pub workspace_id: &'a str,
+    pub tracker: &'a mut UsageTracker,
+    pub on_event: &'a Channel<AgentEvent>,
+    pub pending_persists: &'a mut Vec<JoinHandle<()>>,
+}
+
 pub(crate) fn record_run_token_usage(
-    db: &DispatcherDb,
-    workspace_id: &str,
+    context: RunUsageContext<'_>,
     model: &str,
     source_kind: DispatcherSessionTokenUsageSource,
     usage: &LlmUsage,
-    tracker: &mut UsageTracker,
-    on_event: &Channel<AgentEvent>,
-    pending_persists: &mut Vec<JoinHandle<()>>,
 ) {
-    pending_persists.push(record_session_token_usage(
-        db,
-        workspace_id,
+    context.pending_persists.push(record_session_token_usage(
+        context.db,
+        context.workspace_id,
         model,
         source_kind,
         usage,
     ));
-    let stats = tracker.record(usage);
+    let stats = context.tracker.record(usage);
     emit(
-        on_event,
+        context.on_event,
         AgentEvent::RunUsageUpdated {
-            workspace_id: workspace_id.to_string(),
+            workspace_id: context.workspace_id.to_string(),
             stats,
         },
     );

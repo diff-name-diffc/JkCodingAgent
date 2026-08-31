@@ -100,7 +100,7 @@ export function WelcomePage({
   }, [projects, query]);
 
   return (
-    <div className="ai-home-shell ai-migrated-home">
+    <div className="ai-home-shell">
       <div className="ai-home-layout">
         <div className="ai-home-nav">
           <div className="ai-home-brand" aria-label="JKCodingAgent">

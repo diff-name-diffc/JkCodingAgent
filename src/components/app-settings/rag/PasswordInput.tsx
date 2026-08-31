@@ -11,12 +11,7 @@ interface PasswordInputProps {
 /**
  * 带 Eye/EyeOff 显隐切换的 API Key 密码框。
  */
-export function PasswordInput({
-  value,
-  onChange,
-  placeholder,
-  disabled,
-}: PasswordInputProps) {
+export function PasswordInput({ value, onChange, placeholder, disabled }: PasswordInputProps) {
   const [show, setShow] = useState(false);
   return (
     <div className="ai-rag-password">

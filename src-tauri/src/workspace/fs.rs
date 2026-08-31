@@ -179,7 +179,7 @@ pub async fn read_dir_entries(path: String, project_path: String) -> CommandResu
 }
 
 async fn read_dir_entries_impl(path: &str, project_path: &str) -> FsResult<Vec<FsEntry>> {
-    validate_path_within(&path, &project_path)?;
+    validate_path_within(path, project_path)?;
     let path = path.to_string();
     let result = tauri::async_runtime::spawn_blocking(move || -> FsResult<Vec<FsEntry>> {
         let entries = std::fs::read_dir(&path).map_err(io_error("读取目录", &path))?;
@@ -215,7 +215,7 @@ async fn read_dir_entries_impl(path: &str, project_path: &str) -> FsResult<Vec<F
         Ok(result)
     })
     .await?;
-    Ok(result?)
+    result
 }
 
 #[tauri::command]
@@ -227,7 +227,7 @@ pub async fn read_file_content(path: String, project_path: String) -> CommandRes
 }
 
 async fn read_file_content_impl(path: &str, project_path: &str) -> FsResult<String> {
-    let validated_path = validate_path_within(&path, &project_path)?;
+    let validated_path = validate_path_within(path, project_path)?;
 
     tauri::async_runtime::spawn_blocking(move || -> FsResult<String> {
         use std::io::Read;
@@ -262,7 +262,7 @@ pub async fn read_image_preview(
 }
 
 async fn read_image_preview_impl(path: &str, project_path: &str) -> FsResult<ImagePreviewData> {
-    let validated_path = validate_path_within(&path, &project_path)?;
+    let validated_path = validate_path_within(path, project_path)?;
 
     tauri::async_runtime::spawn_blocking(move || -> FsResult<ImagePreviewData> {
         use std::io::Read;
@@ -312,7 +312,7 @@ pub async fn write_file_content(
 }
 
 async fn write_file_content_impl(path: &str, content: String, project_path: &str) -> FsResult<()> {
-    let validated_path = validate_path_within(&path, &project_path)?;
+    let validated_path = validate_path_within(path, project_path)?;
 
     tauri::async_runtime::spawn_blocking(move || -> FsResult<()> {
         std::fs::write(&validated_path, content).map_err(io_error("写入文件", &validated_path))
@@ -342,9 +342,9 @@ async fn move_fs_entry_impl(
     destination_path: &str,
     project_path: &str,
 ) -> FsResult<()> {
-    let validated_source = validate_path_within(&source_path, &project_path)?;
-    ensure_not_project_root(&validated_source, &project_path)?;
-    let validated_destination = validate_new_path_within(&destination_path, &project_path)?;
+    let validated_source = validate_path_within(source_path, project_path)?;
+    ensure_not_project_root(&validated_source, project_path)?;
+    let validated_destination = validate_new_path_within(destination_path, project_path)?;
 
     tauri::async_runtime::spawn_blocking(move || -> FsResult<()> {
         if validated_source == validated_destination {
@@ -378,8 +378,8 @@ pub async fn delete_fs_entry(path: String, project_path: String) -> CommandResul
 }
 
 async fn delete_fs_entry_impl(path: &str, project_path: &str) -> FsResult<()> {
-    let validated_path = validate_path_within(&path, &project_path)?;
-    ensure_not_project_root(&validated_path, &project_path)?;
+    let validated_path = validate_path_within(path, project_path)?;
+    ensure_not_project_root(&validated_path, project_path)?;
 
     tauri::async_runtime::spawn_blocking(move || -> FsResult<()> {
         let metadata = std::fs::symlink_metadata(&validated_path)
@@ -414,7 +414,7 @@ pub async fn get_file_meta(path: String, project_path: String) -> CommandResult<
 }
 
 async fn get_file_meta_impl(path: &str, project_path: &str) -> FsResult<FileMeta> {
-    let validated_path = validate_path_within(&path, &project_path)?;
+    let validated_path = validate_path_within(path, project_path)?;
 
     tauri::async_runtime::spawn_blocking(move || -> FsResult<FileMeta> {
         use std::io::Read;

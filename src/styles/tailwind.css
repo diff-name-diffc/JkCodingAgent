@@ -1,7 +1,6 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-@source "../../node_modules/streamdown/dist/index.js";
 
 /*
  * Tailwind layer for the refactored Chat UI.
@@ -17,38 +16,8 @@
 
 /* Chat-specific component utilities — kept minimal on purpose. */
 @layer components {
-  .ai-shell {
-    position: relative;
-    isolation: isolate;
-    color: var(--text-primary);
-    background: var(--sf-shell-bg);
-  }
 
-  .ai-shell::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    background:
-      linear-gradient(var(--sf-grid-line) 1px, transparent 1px),
-      linear-gradient(90deg, var(--sf-grid-line) 1px, transparent 1px);
-    background-size: 44px 44px;
-    mask-image: radial-gradient(circle at 48% 40%, black, transparent 72%);
-    opacity: var(--sf-grid-mask-opacity);
-  }
 
-  .ai-shell > * {
-    position: relative;
-    z-index: 1;
-  }
-
-  .ai-panel {
-    border: 1px solid var(--sf-accent-border);
-    border-radius: 8px;
-    background: var(--sf-surface-grad);
-    box-shadow: var(--sf-shadow-panel);
-  }
 
   .ai-toolbar {
     display: flex;
@@ -107,7 +76,6 @@
   /* overlay 作为 shell 直接子节点渲染时（如 ProjectWorkspaceLayout 的 overlays 槽位），
      会被 `.ai-*-shell > *` 的 `position: relative` 顶掉 fixed 而缩成布局项，
      这里用更高优先级恢复全屏定位。 */
-  .ai-shell > .ai-dialog-overlay,
   .ai-home-shell > .ai-dialog-overlay,
   .ai-project-shell > .ai-dialog-overlay {
     position: fixed;
@@ -1006,214 +974,6 @@
     border: 1px solid rgba(255, 255, 255, 0.2);
     border-radius: inherit;
     opacity: 0.7;
-  }
-
-  .ai-analytics-pane {
-    gap: 18px;
-    padding: 24px;
-    overflow: auto;
-  }
-
-  .ai-analytics-hero {
-    display: grid;
-    grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
-    gap: 12px;
-  }
-
-  .ai-analytics-card {
-    padding: 16px;
-  }
-
-  .ai-analytics-title {
-    color: var(--text-primary);
-    font-size: 14px;
-    font-weight: 850;
-  }
-
-  .ai-heatmap-row {
-    display: grid;
-    grid-template-columns: repeat(7, minmax(38px, 1fr));
-    gap: 8px;
-    margin-top: 14px;
-  }
-
-  .ai-heatmap-day {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .ai-heatmap-cell {
-    width: 100%;
-    max-width: 48px;
-    aspect-ratio: 1;
-    border: 1px solid rgb(var(--accent-rgb) / 0.14);
-    border-radius: 8px;
-    box-shadow: inset 0 0 18px rgba(255, 255, 255, 0.04);
-  }
-
-  .ai-heatmap-cell.is-today {
-    box-shadow:
-      0 0 0 2px rgb(var(--accent-rgb) / 0.72),
-      0 0 26px rgb(var(--accent-rgb) / 0.16);
-  }
-
-  .ai-heatmap-label {
-    color: var(--text-hint);
-    font-size: 11px;
-    line-height: 1;
-  }
-
-  .ai-heatmap-label.is-active {
-    color: var(--text-secondary);
-    font-weight: 800;
-  }
-
-  .ai-heatmap-legend {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 12px;
-    color: var(--text-hint);
-    font-size: 11px;
-  }
-
-  .ai-heatmap-legend-swatch {
-    width: 14px;
-    height: 14px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.14);
-    border-radius: 4px;
-  }
-
-  .ai-stat-grid {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 10px;
-  }
-
-  .ai-stat-card {
-    min-width: 0;
-    padding: 15px;
-  }
-
-  .ai-stat-value {
-    overflow: hidden;
-    color: var(--text-primary);
-    font-size: 24px;
-    font-weight: 900;
-    line-height: 1;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .ai-stat-label {
-    margin-top: 8px;
-    color: var(--text-muted);
-    font-size: 12px;
-    font-weight: 650;
-  }
-
-  .ai-analytics-row {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-  }
-
-  .ai-agent-bars {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    margin-top: 14px;
-  }
-
-  .ai-agent-meta {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    color: var(--text-secondary);
-    font-size: 12px;
-  }
-
-  .ai-agent-meta span:last-child {
-    color: var(--text-muted);
-  }
-
-  .ai-agent-track {
-    height: 8px;
-    overflow: hidden;
-    border: 1px solid rgb(var(--accent-rgb) / 0.12);
-    border-radius: 999px;
-    background: var(--sf-surface-sunken);
-    margin-top: 7px;
-  }
-
-  .ai-agent-fill {
-    height: 100%;
-    border-radius: inherit;
-    box-shadow: 0 0 18px currentColor;
-  }
-
-  .ai-project-rank-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-top: 14px;
-  }
-
-  .ai-project-rank-row {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-height: 34px;
-    overflow: hidden;
-    border: 1px solid rgb(var(--accent-rgb) / 0.1);
-    border-radius: 8px;
-    padding: 0 10px;
-    background: var(--sf-surface-sunken);
-  }
-
-  .ai-project-rank-fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    border-radius: inherit;
-    background: rgb(var(--accent-rgb) / 0.1);
-    pointer-events: none;
-  }
-
-  .ai-project-rank-index,
-  .ai-project-rank-name,
-  .ai-project-rank-count {
-    position: relative;
-    z-index: 1;
-  }
-
-  .ai-project-rank-index {
-    width: 16px;
-    flex-shrink: 0;
-    color: var(--text-hint);
-    font-size: 11px;
-    font-weight: 800;
-  }
-
-  .ai-project-rank-name {
-    min-width: 0;
-    flex: 1;
-    overflow: hidden;
-    color: var(--text-secondary);
-    font-size: 12px;
-    font-weight: 700;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .ai-project-rank-count {
-    color: var(--text-primary);
-    font-size: 12px;
-    font-weight: 850;
-    font-variant-numeric: tabular-nums;
   }
 
   .ai-project-shell {
@@ -2125,31 +1885,8 @@
     color: var(--text-primary);
   }
 
-  .ai-git-tabs {
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 12px 5px;
-  }
 
-  .ai-git-tab {
-    border: 1px solid rgb(var(--accent-rgb) / 0.1);
-    border-radius: 999px;
-    padding: 3px 10px;
-    background: var(--sf-surface);
-    color: var(--text-muted);
-    font-size: 12px;
-    font-weight: 750;
-    cursor: pointer;
-  }
 
-  .ai-git-tab:hover,
-  .ai-git-tab.is-active {
-    border-color: rgb(var(--accent-rgb) / 0.34);
-    background: rgb(var(--accent-rgb) / 0.12);
-    color: var(--text-primary);
-  }
 
   .ai-git-error {
     margin: 0 12px 6px;
@@ -2873,34 +2610,18 @@
     font-weight: 600;
   }
 
-  .ai-settings-nav-item svg,
-  .ai-settings-glyph,
-  .ai-settings-logo {
+  .ai-settings-nav-item svg {
     width: 15px;
     height: 15px;
     flex-shrink: 0;
   }
 
-  .ai-settings-nav-item svg,
-  .ai-settings-glyph {
+  .ai-settings-nav-item svg {
     color: currentColor;
   }
 
-  .ai-settings-logo {
-    object-fit: contain;
-  }
 
-  .ai-settings-logo.is-muted {
-    opacity: 0.72;
-  }
 
-  .ai-settings-glyph {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 13px;
-    line-height: 1;
-  }
 
   .ai-settings-nav-label {
     min-width: 0;
@@ -2981,36 +2702,10 @@
     background: var(--bg-elevated);
   }
 
-  .ai-settings-body {
-    display: flex;
-    min-height: 0;
-    flex: 1;
-    flex-direction: column;
-    overflow: auto;
-    padding: 22px 26px 16px;
-  }
 
-  .ai-settings-general {
-    gap: 0;
-  }
 
-  .ai-settings-agent-config {
-    gap: 12px;
-  }
 
-  .ai-settings-section-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 14px;
-  }
 
-  .ai-settings-section-title {
-    color: var(--text-primary);
-    font-size: 13.5px;
-    font-weight: 600;
-  }
 
   .ai-settings-title-stack {
     display: flex;
@@ -3079,36 +2774,8 @@
     text-overflow: ellipsis;
   }
 
-  .ai-settings-tool-button {
-    display: inline-flex;
-    min-height: 30px;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 5px;
-    border: 1px solid var(--border-medium);
-    border-radius: var(--radius-md);
-    padding: 5px 10px;
-    background: var(--bg-card);
-    color: var(--text-secondary);
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 500;
-    transition:
-      border-color var(--motion-fast) var(--motion-ease),
-      background var(--motion-fast) var(--motion-ease),
-      color var(--motion-fast) var(--motion-ease);
-  }
 
-  .ai-settings-tool-button:hover:not(:disabled) {
-    border-color: var(--border-strong);
-    background: var(--bg-hover);
-    color: var(--text-primary);
-  }
 
-  .ai-settings-tool-button:disabled {
-    cursor: default;
-    opacity: 0.62;
-  }
 
   .ai-settings-footer {
     display: flex;
@@ -3119,26 +2786,6 @@
     gap: 8px;
     border-top: 1px solid var(--border-dim);
     padding: 10px 18px;
-  }
-
-  .ai-settings-saved {
-    display: inline-flex;
-    margin-right: auto;
-    align-items: center;
-    gap: 4px;
-    color: var(--success);
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .ai-settings-error {
-    border: 1px solid rgb(var(--danger-rgb) / 0.24);
-    border-radius: var(--radius-md);
-    padding: 8px 10px;
-    background: rgb(var(--danger-rgb) / 0.07);
-    color: var(--danger);
-    font-size: 12px;
-    line-height: 1.45;
   }
 
   .ai-settings-empty {
@@ -3156,50 +2803,10 @@
     margin: 22px 26px;
   }
 
-  .ai-settings-version-card {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    border: 1px solid var(--border-dim);
-    border-radius: var(--radius-lg);
-    padding: 14px;
-    background: var(--bg-card);
-  }
 
-  .ai-settings-version-card .ai-settings-section-head {
-    margin-bottom: 0;
-  }
 
-  .ai-settings-file-row {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 8px;
-  }
 
-  .ai-settings-path-pill {
-    min-width: 0;
-    overflow: hidden;
-    border: 1px solid var(--border-dim);
-    border-radius: var(--radius-md);
-    padding: 5px 9px;
-    background: var(--bg-card);
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    font-size: 11.5px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
-  .ai-settings-code-view {
-    min-height: 0;
-    flex: 1;
-    overflow: auto;
-    border: 1px solid var(--border-dim);
-    border-radius: var(--radius-md);
-    background: var(--bg-input);
-    font-size: 12.5px;
-  }
 
   .ai-settings-panel-host > [style] {
     background: transparent !important;
@@ -3213,35 +2820,9 @@
     font-family: var(--font-ui);
   }
 
-  .ai-aha-panel {
-    display: flex;
-    min-height: 0;
-    flex: 1;
-    flex-direction: column;
-    overflow: hidden;
-    background: transparent;
-  }
 
-  .ai-aha-tabs,
-  .ai-aha-subtabs {
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    overflow-x: auto;
-  }
 
-  .ai-aha-tabs {
-    gap: 18px;
-    border-bottom: 1px solid var(--border-dim);
-    padding: 10px 22px 0;
-  }
 
-  .ai-aha-subtabs {
-    gap: 5px;
-    border-bottom: 1px solid var(--border-dim);
-    padding: 8px 22px;
-    background: var(--bg-panel);
-  }
 
   .ai-aha-tab {
     position: relative;
@@ -3289,41 +2870,11 @@
     background: var(--accent);
   }
 
-  .ai-aha-subtab {
-    height: 28px;
-    border: 0;
-    border-radius: var(--radius-full);
-    padding: 0 12px;
-    font-size: 11.5px;
-    font-weight: 500;
-  }
 
-  .ai-aha-subtab::after {
-    display: none;
-  }
 
-  .ai-aha-subtab:hover {
-    background: var(--bg-hover);
-  }
 
-  .ai-aha-subtab.is-active,
-  .ai-aha-subtab.is-active:hover {
-    background: var(--bg-selected);
-    color: var(--accent-strong);
-  }
 
-  .ai-aha-body {
-    min-height: 0;
-    flex: 1;
-    overflow-y: auto;
-    padding: 18px 20px 22px;
-  }
 
-  .ai-aha-content {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
 
   .ai-aha-action-row {
     display: flex;
@@ -3369,68 +2920,18 @@
   }
 
   /* 小尺寸行内动作按钮（获取模型 / 删除等） */
-  .ai-aha-inline-button {
-    display: inline-flex;
-    height: 24px;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    padding: 0 6px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--accent);
-    font-family: var(--font-ui);
-    font-size: 11.5px;
-    font-weight: 700;
-    cursor: pointer;
-    transition:
-      background 0.15s ease,
-      color 0.15s ease;
-  }
 
-  .ai-aha-inline-button:hover:not(:disabled) {
-    background: rgb(var(--accent-rgb) / 0.1);
-    color: var(--text-primary);
-  }
 
-  .ai-aha-inline-button:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-  }
 
-  .ai-aha-inline-button.is-danger {
-    color: var(--danger, var(--danger));
-  }
 
-  .ai-aha-footer {
-    min-height: 50px;
-  }
 
-  .ai-aha-feedback {
-    max-width: min(560px, 70%);
-    overflow-wrap: anywhere;
-    font-size: 12px;
-    line-height: 1.45;
-  }
 
-  .ai-aha-feedback.is-error {
-    margin-right: auto;
-    border: 1px solid rgb(var(--danger-rgb) / 0.24);
-    border-radius: 8px;
-    padding: 7px 10px;
-    background: rgb(var(--danger-rgb) / 0.08);
-    color: var(--danger);
-  }
 
   .ai-aha-section.is-last {
     border-bottom: none;
     padding-bottom: 0;
   }
 
-  .ai-aha-feedback.is-success {
-    color: var(--success);
-  }
 
   /* ── 表单字段栈：label + control + hint（替代旧 s.aha* 内联样式） ── */
   .ai-aha-field {
@@ -3440,17 +2941,7 @@
     min-width: 0;
   }
 
-  .ai-aha-field-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
-  }
 
-  .ai-aha-field-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
 
   .ai-aha-hint {
     font-size: 11px;
@@ -3462,179 +2953,27 @@
     color: var(--danger, var(--danger));
   }
 
-  .ai-aha-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 11px;
-  }
 
   /* ── Provider 卡片 ── */
-  .ai-aha-provider {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 12px 14px;
-    border: 1px solid var(--border-dim);
-    border-radius: var(--radius-lg);
-    background: var(--bg-card);
-    transition:
-      background var(--motion-fast) var(--motion-ease),
-      border-color var(--motion-fast) var(--motion-ease);
-  }
 
-  .ai-aha-provider.is-active {
-    border-color: var(--border-accent);
-    background: var(--accent-subtle);
-  }
 
-  .ai-aha-provider-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
 
-  .ai-aha-provider-title-button {
-    min-width: 0;
-    flex: 1;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    border: none;
-    background: transparent;
-    color: var(--text-primary);
-    padding: 0;
-    cursor: pointer;
-  }
 
-  .ai-aha-provider-title-wrap {
-    min-width: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-  }
 
-  .ai-aha-provider-title {
-    flex-shrink: 0;
-    font-size: 12.5px;
-    font-weight: 600;
-  }
 
-  .ai-aha-provider-summary {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    font-size: 11.5px;
-  }
 
-  .ai-aha-provider-actions {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    flex-shrink: 0;
-  }
 
-  .ai-aha-active-badge,
-  .ai-aha-inactive-badge {
-    height: 26px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    padding: 0 8px;
-    border-radius: 7px;
-    font-size: 11px;
-    font-weight: 600;
-    cursor: pointer;
-  }
 
-  .ai-aha-active-badge {
-    border: 1px solid rgb(var(--accent-rgb) / 0.5);
-    background: rgb(var(--accent-rgb) / 0.12);
-    color: var(--accent);
-  }
 
-  .ai-aha-inactive-badge {
-    border: 1px solid rgb(var(--accent-rgb) / 0.18);
-    background: transparent;
-    color: var(--text-muted);
-  }
 
-  .ai-aha-empty-provider {
-    padding: 12px 0;
-    border-top: 1px solid rgb(var(--accent-rgb) / 0.12);
-    color: var(--text-hint);
-    font-size: 12px;
-  }
 
   /* ── 模型下拉选择 ── */
-  .ai-aha-dropdown-wrap {
-    position: relative;
-  }
 
-  .ai-aha-dropdown-toggle {
-    position: absolute;
-    right: 1px;
-    top: 1px;
-    bottom: 1px;
-    width: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: none;
-    background: transparent;
-    color: var(--text-secondary);
-    cursor: pointer;
-    z-index: 10;
-  }
 
-  .ai-aha-dropdown {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    margin-top: 4px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.18);
-    border-radius: 8px;
-    background: var(--sf-surface);
-    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.32);
-    max-height: 180px;
-    overflow-y: auto;
-    z-index: 100;
-    padding: 4px;
-  }
 
-  .ai-aha-dropdown-empty {
-    padding: 8px 12px;
-    font-size: 12px;
-    color: var(--text-hint);
-  }
 
-  .ai-aha-dropdown-item {
-    display: block;
-    width: 100%;
-    text-align: left;
-    border: none;
-    border-radius: 5px;
-    padding: 8px 12px;
-    background: transparent;
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    cursor: pointer;
-  }
 
-  .ai-aha-dropdown-item:hover {
-    background: rgb(var(--accent-rgb) / 0.1);
-  }
 
-  .ai-aha-dropdown-item.is-current {
-    color: var(--accent);
-    background: rgb(var(--accent-rgb) / 0.14);
-  }
 
   /* ── 工具 / 子智能体选择列表 ── */
   .ai-aha-tool-list {
@@ -3765,50 +3104,12 @@
   }
 
   /* 可折叠区块标题（chevron + 标签 + 计数） */
-  .ai-aha-collapsible {
-    min-width: 0;
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    border: none;
-    background: transparent;
-    color: inherit;
-    padding: 0;
-    text-align: left;
-    cursor: pointer;
-  }
 
-  .ai-aha-collapsible.is-static {
-    cursor: default;
-  }
 
-  .ai-aha-collapsible-chevron {
-    flex-shrink: 0;
-    transition: transform 0.15s ease;
-  }
 
-  .ai-aha-collapsible-count {
-    margin-left: 8px;
-    font-weight: 400;
-    color: var(--text-hint);
-  }
 
   /* 行为开关 */
-  .ai-aha-toggle-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--text-primary);
-    font-size: 12.5px;
-  }
 
-  .ai-aha-toggle-checkbox {
-    width: 14px;
-    height: 14px;
-    accent-color: var(--accent);
-    cursor: pointer;
-  }
 
   /* 分类选择芯片 */
   .ai-aha-category-chips {
@@ -5255,12 +4556,6 @@
     color: var(--danger);
   }
 
-  .ai-terminal-view {
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    cursor: text;
-  }
 
   .ai-shell-terminal-panel {
     display: flex;
@@ -5986,30 +5281,9 @@
     color: var(--danger);
   }
 
-  .ai-ssh-panel {
-    padding-top: 18px;
-  }
 
-  .ai-ssh-mono {
-    font-family: var(--font-mono);
-  }
 
-  .ai-ssh-workspace {
-    overflow: hidden;
-    border: 1px solid rgb(var(--accent-rgb) / 0.12);
-    border-radius: 8px;
-    padding: 7px 9px;
-    background: var(--sf-surface);
-    color: var(--text-hint);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
-  .ai-ssh-server-list {
-    display: grid;
-    gap: 10px;
-  }
 
   .ai-ssh-count-pill {
     flex-shrink: 0;
@@ -6022,62 +5296,13 @@
     font-weight: 600;
   }
 
-  .ai-ssh-footer {
-    min-height: 50px;
-  }
 
-  .ai-ssh-server-head-left {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-    flex: 1;
-  }
 
-  .ai-ssh-server-checkbox {
-    flex-shrink: 0;
-    width: 14px;
-    height: 14px;
-    accent-color: var(--accent);
-    cursor: pointer;
-  }
 
-  .ai-ssh-form-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-  }
 
-  .ai-ssh-auth-row {
-    display: flex;
-    gap: 8px;
-  }
 
-  .ai-ssh-keyfile-row {
-    display: flex;
-    align-items: stretch;
-    gap: 8px;
-  }
 
-  .ai-ssh-keyfile-row .ai-settings-input {
-    flex: 1;
-    min-width: 0;
-  }
 
-  .ai-ssh-prompt-textarea {
-    min-height: 150px;
-    resize: vertical;
-    font-family: var(--font-ui);
-  }
-
-  .ai-ssh-review-summary {
-    overflow: hidden;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
   .ai-aha-ghost-button.is-danger {
     color: var(--danger, var(--danger));
@@ -6090,9 +5315,6 @@
     color: var(--danger);
   }
 
-  .ai-aha-toggle-row.is-indent {
-    margin-left: 22px;
-  }
 
   .ai-aha-category-chip:disabled {
     opacity: 0.5;
@@ -6924,24 +6146,8 @@
     border-color: rgb(var(--danger-rgb) / 0.4);
   }
 
-  .ai-project-status-dot {
-    position: absolute;
-    bottom: -1px;
-    right: -1px;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    border: 2px solid var(--bg-sidebar);
-    box-sizing: border-box;
-  }
 
-  .ai-project-status-attention {
-    color: var(--warning);
-  }
 
-  .ai-project-status-running {
-    color: var(--success);
-  }
 
   .ai-project-rail-control {
     width: 32px;
@@ -7067,16 +6273,6 @@
     color: var(--accent);
   }
 
-  .ai-project-drawer-status-dot {
-    position: absolute;
-    bottom: -1px;
-    right: -1px;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    border: 2px solid var(--bg-panel);
-    box-sizing: border-box;
-  }
 
   .ai-project-session-panel {
     width: 288px !important;
@@ -7372,219 +6568,33 @@
     color: var(--accent-strong);
   }
 
-  .ai-project-right-toolbar-divider {
-    width: 20px;
-    height: 1px;
-    margin: 4px 0;
-    background: var(--border-dim);
-  }
 
   .ai-project-right-toolbar-spacer {
     flex: 1;
   }
 
-  .ai-subprocess-dock {
-    display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
-    position: relative;
-    border-top: 1px solid rgb(var(--accent-rgb) / 0.16) !important;
-    background: linear-gradient(180deg, var(--sf-surface-sunken), var(--sf-surface-sunken));
-    box-shadow: var(--sf-shadow-elevated);
-  }
 
-  .ai-subprocess-resize {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 4px;
-    cursor: row-resize;
-    z-index: 10;
-    background: linear-gradient(90deg, transparent, rgb(var(--accent-rgb) / 0.32), transparent);
-  }
 
-  .ai-subprocess-tabbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 8px;
-    height: 32px;
-    flex-shrink: 0;
-    overflow-x: auto;
-    border-bottom: 1px solid rgb(var(--accent-rgb) / 0.12) !important;
-    background: var(--sf-surface) !important;
-  }
 
-  .ai-subprocess-tabbar-label {
-    flex-shrink: 0;
-    padding-right: 8px;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    color: var(--text-muted) !important;
-    border-right: 1px solid rgb(var(--accent-rgb) / 0.14) !important;
-  }
 
-  .ai-subprocess-tablist {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    overflow: hidden;
-  }
 
-  .ai-subprocess-tab {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 8px;
-    border-radius: 8px !important;
-    font-size: 11px;
-    white-space: nowrap;
-    flex-shrink: 0;
-    color: var(--text-secondary);
-    cursor: pointer;
-    transition: background 0.1s;
-    border: 1px solid transparent;
-  }
 
-  .ai-subprocess-tab:hover,
-  .ai-subprocess-tab.is-active {
-    border-color: rgb(var(--accent-rgb) / 0.28);
-    background: rgb(var(--accent-rgb) / 0.1) !important;
-    color: var(--text-primary);
-  }
 
-  .ai-subprocess-tab.is-active {
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-  }
 
-  .ai-subprocess-tab-icon {
-    font-size: 10px;
-  }
 
-  .ai-subprocess-tab-label {
-    max-width: 200px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
 
-  .ai-subprocess-pulse {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    background: var(--success);
-    animation: pulse 1.5s ease-in-out infinite;
-  }
 
-  .ai-subprocess-pending-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    background: var(--warning);
-  }
 
-  .ai-subprocess-agent-badge,
-  .ai-subprocess-status {
-    border: 1px solid rgb(var(--accent-rgb) / 0.14) !important;
-    border-radius: 999px !important;
-    background: var(--sf-surface-sunken) !important;
-  }
 
-  .ai-subprocess-agent-badge {
-    flex-shrink: 0;
-    padding: 1px 6px;
-    border: 1px solid var(--border-primary);
-    border-radius: 999px;
-    background: var(--bg-card);
-    color: var(--text-tertiary);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-  }
 
-  .ai-subprocess-status {
-    flex-shrink: 0;
-    font-size: 9px;
-    font-weight: 600;
-    padding: 1px 4px;
-    border-radius: 3px;
-  }
 
-  .ai-subprocess-tab-close {
-    width: 14px;
-    height: 14px;
-    margin-left: 2px;
-    flex-shrink: 0;
-    padding: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: none;
-    background: transparent;
-    color: var(--text-tertiary);
-    font-size: 12px;
-    cursor: pointer;
-    border-radius: 999px !important;
-  }
 
-  .ai-subprocess-tab-close:hover {
-    background: rgb(var(--danger-rgb) / 0.12) !important;
-    color: var(--danger) !important;
-  }
 
-  .ai-subprocess-content {
-    flex: 1;
-    overflow: hidden;
-    position: relative;
-  }
 
-  .ai-subprocess-placeholder {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    font-size: 13px;
-    opacity: 0.6;
-    color: var(--text-secondary);
-  }
 
-  .ai-subprocess-terminal-stage {
-    width: 100%;
-    height: 100%;
-    position: relative;
-  }
 
-  .ai-subprocess-terminal-layer {
-    position: absolute;
-    inset: 0;
-  }
 
-  .ai-subprocess-terminal-wrap {
-    width: 100%;
-    height: 100%;
-    position: relative;
-  }
 
-  .ai-subprocess-status-overlay {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    max-width: min(520px, calc(100% - 16px));
-    padding: 6px 10px;
-    border-radius: 8px;
-    font-size: 12px;
-    line-height: 1.45;
-    pointer-events: none;
-    color: var(--text-primary);
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
-    border: 1px solid rgb(var(--accent-rgb) / 0.18) !important;
-    background: var(--sf-surface) !important;
-  }
 
   /* ── Python Runner Drawer ─────────────────────────────────────────────── */
 
@@ -7784,18 +6794,8 @@
   }
 
   @media (max-width: 900px) {
-    .ai-home-projects,
-    .ai-analytics-pane {
+    .ai-home-projects {
       padding: 16px;
-    }
-
-    .ai-analytics-hero,
-    .ai-analytics-row {
-      grid-template-columns: 1fr;
-    }
-
-    .ai-stat-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
 
@@ -7818,9 +6818,6 @@
       grid-template-columns: 1fr;
     }
 
-    .ai-stat-grid {
-      grid-template-columns: 1fr;
-    }
   }
 
   .ai-sidebar-footer-actions {
@@ -8618,9 +7615,6 @@
     line-height: 1.7;
   }
 
-  .ai-empty-hint {
-    color: var(--text-hint);
-  }
 
   .ai-prompt-card {
     align-items: flex-start;
@@ -9759,19 +8753,6 @@
     color: var(--text-muted);
   }
 
-  .ai-set-page-footer {
-    position: sticky;
-    bottom: -24px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 12px;
-    margin: auto -26px -24px;
-    padding: 12px 26px 20px;
-    border-top: 1px solid var(--border-dim);
-    background: var(--bg-elevated);
-  }
-
   .ai-set-field-row {
     display: flex;
     align-items: center;
@@ -9969,48 +8950,10 @@
     padding-top: 16px;
   }
 
-  .ai-set-provider-models {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
 
-  .ai-set-provider-models-empty {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 12px;
-    border: 1px dashed var(--border-medium);
-    border-radius: var(--radius-md);
-    font-size: 12px;
-    color: var(--text-hint);
-  }
 
-  .ai-set-model-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: 24px;
-    padding: 0 6px 0 10px;
-    border: 1px solid var(--border-dim);
-    border-radius: 999px;
-    background: var(--bg-subtle);
-    font-family: var(--font-mono);
-    font-size: 11.5px;
-    color: var(--text-secondary);
-  }
 
-  .ai-set-model-chip-remove {
-    display: inline-flex;
-    padding: 2px;
-    border-radius: 999px;
-    color: var(--text-hint);
-  }
 
-  .ai-set-model-chip-remove:hover {
-    background: rgb(var(--danger-rgb) / 0.12);
-    color: rgb(var(--danger-rgb));
-  }
 
   .ai-set-provider-letter {
     display: inline-flex;
@@ -10238,11 +9181,6 @@
     white-space: nowrap;
   }
 
-  .ai-set-agent-config {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
 
   /* 旧面板（子智能体管理）自带内部滚动与 flex 高度假设，嵌入滚动的 .ai-set-page
      时取消其内部滚动，统一随页面滚动，避免 flex:1 + min-height:0 塌缩 */
@@ -10973,12 +9911,6 @@
     color: var(--text-hint);
   }
 
-  .ai-graph-drawer-text {
-    margin: 0;
-    font-size: 12.5px;
-    line-height: 1.6;
-    color: var(--text-secondary);
-  }
 
   .ai-graph-drawer-pre {
     max-height: 260px;
@@ -11013,25 +9945,8 @@
   }
 
   /* 依赖关系 chip（可点击跳转，带状态点） */
-  .ai-graph-drawer-deps-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-  }
 
-  .ai-graph-drawer-deps-row + .ai-graph-drawer-deps-row {
-    margin-top: 6px;
-  }
 
-  .ai-graph-drawer-deps-kind {
-    display: inline-flex;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 3px;
-    padding-top: 3px;
-    font-size: 11px;
-    color: var(--text-muted);
-  }
 
   .ai-graph-drawer-deps-chips {
     display: flex;
@@ -11066,62 +9981,15 @@
     color: var(--text-primary);
   }
 
-  .ai-graph-dep-dot {
-    width: 6px;
-    height: 6px;
-    flex-shrink: 0;
-    border-radius: 999px;
-    background: var(--border-strong);
-  }
 
-  .ai-graph-dep-dot--running {
-    background: var(--accent);
-  }
 
-  .ai-graph-dep-dot--succeeded {
-    background: var(--success);
-  }
 
-  .ai-graph-dep-dot--failed {
-    background: var(--danger);
-  }
 
-  .ai-graph-dep-dot--skipped {
-    background: var(--warning);
-  }
 
   /* 影响文件列表 */
-  .ai-graph-drawer-files {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
 
-  .ai-graph-drawer-file {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    border-radius: 5px;
-    padding: 3px 6px;
-    color: var(--text-secondary);
-  }
 
-  .ai-graph-drawer-file:hover {
-    background: var(--bg-subtle);
-    color: var(--text-primary);
-  }
 
-  .ai-graph-drawer-file-path {
-    overflow: hidden;
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
   /* 抽屉底部操作区（整图级停止/重试） */
   .ai-graph-drawer-footer {

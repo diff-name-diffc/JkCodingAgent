@@ -23,9 +23,7 @@ export interface UserMessageProps {
 }
 
 export function UserMessage({ message, onEdit, className }: UserMessageProps) {
-  // `segments` may be undefined when a message slipped past normalization
-  // (e.g. legacy rows without segmentsJson, or an unnormalized load path).
-  // Guard here so a malformed row never crashes the whole message list.
+  // 防御性守卫：归一化保证 segments 必然存在，?? [] 只是兜底防脏载荷打崩列表。
   const segments = message.segments ?? [];
   const text = message.content?.trim() ?? "";
   const images = segments.filter((s) => s.type === "image");

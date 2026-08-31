@@ -73,10 +73,10 @@ fn make_client() -> Result<reqwest::Client, reqwest::Error> {
 pub async fn edit_image(
     image_path: &str,
     prompt: String,
-    image_name: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
-    session_title: String,
+    db: crate::agent::db::DispatcherDb,
+    workspace_id: String,
     api_key: &str,
     base_url: &str,
     default_model: &str,
@@ -103,7 +103,11 @@ pub async fn edit_image(
         image_bytes
     };
 
-    let mime_type = infer_mime_type(image_path);
+    let input_ext = std::path::Path::new(image_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    let mime_type = crate::chat_images::mime_for_ext(input_ext).unwrap_or("image/png");
     let base64_image =
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &payload_bytes);
     let data_uri = format!("data:{};base64,{}", mime_type, base64_image);
@@ -169,40 +173,30 @@ pub async fn edit_image(
     let edited_image_bytes = image_response.bytes().await?;
 
     let (w, h) = extract_dimensions(&response_json);
-    save_and_return(
+    let saved = persist_generated_image(
+        db,
+        workspace_id,
         edited_image_bytes.to_vec(),
-        session_title,
-        ImageGenerationInput {
-            prompt: prompt.clone(),
-            image_name,
-            width: Some(w),
-            height: Some(h),
-            style: None,
-            negative_prompt: None,
-            model: Some(default_model.to_string()),
-            seed: None,
-        },
-        default_model,
-        w,
-        h,
+        &prompt,
+        Some(w),
+        Some(h),
     )
-    .await
-}
+    .await?;
 
-fn infer_mime_type(path: &str) -> String {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("png")
-        .to_lowercase();
-    match ext.as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "bmp" => "image/bmp",
-        _ => "image/png",
-    }
-    .to_string()
+    Ok(ImageGenerationOutput {
+        image_id: saved.image_id,
+        path: saved.path.to_string_lossy().to_string(),
+        width: w,
+        height: h,
+        mime_type: saved.mime_type,
+        generation_prompt: prompt,
+        generation_params: json!({
+            "model": default_model,
+            "width": width,
+            "height": height
+        }),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })
 }
 
 /// 调用 DashScope API 生成图片，保存到本地并返回结果。
@@ -232,7 +226,8 @@ fn infer_mime_type(path: &str) -> String {
 /// ```
 pub async fn generate_image(
     input: ImageGenerationInput,
-    session_title: String,
+    db: crate::agent::db::DispatcherDb,
+    workspace_id: String,
     api_key: &str,
     base_url: &str,
     default_model: &str,
@@ -311,15 +306,35 @@ pub async fn generate_image(
     let image_bytes = image_response.bytes().await?;
 
     let (width, height) = extract_dimensions(&response_json);
-    save_and_return(
+    let generation_params = json!({
+        "width": input.width,
+        "height": input.height,
+        "style": input.style,
+        "negative_prompt": input.negative_prompt,
+        "model": model,
+        "seed": input.seed
+    });
+    let prompt = input.prompt;
+    let saved = persist_generated_image(
+        db,
+        workspace_id,
         image_bytes.to_vec(),
-        session_title,
-        input,
-        &model,
+        &prompt,
+        Some(width),
+        Some(height),
+    )
+    .await?;
+
+    Ok(ImageGenerationOutput {
+        image_id: saved.image_id,
+        path: saved.path.to_string_lossy().to_string(),
         width,
         height,
-    )
-    .await
+        mime_type: saved.mime_type,
+        generation_prompt: prompt,
+        generation_params,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })
 }
 
 /// 规范化图片生成 API 基础地址，确保包含 `/api/v1` 前缀。
@@ -339,81 +354,28 @@ fn extract_dimensions(node: &serde_json::Value) -> (u32, u32) {
     (width, height)
 }
 
-/// 保存图片到本地并返回 ImageGenerationOutput。
-async fn save_and_return(
+/// 落盘并登记生成图（统一入口 chat_images::save_image，与用户上传共用
+/// 压缩/mime 映射/目录布局/索引登记；source = tool_generate）。
+async fn persist_generated_image(
+    db: crate::agent::db::DispatcherDb,
+    workspace_id: String,
     image_bytes: Vec<u8>,
-    session_title: String,
-    input: ImageGenerationInput,
-    model: &str,
-    width: u32,
-    height: u32,
-) -> anyhow::Result<ImageGenerationOutput> {
-    let image_id = uuid::Uuid::new_v4().to_string();
-    let ext = "png";
-    // Always use `image_id.{ext}` as the on-disk filename so that the image
-    // can be deterministically resolved later by `resolve_chat_image_id` given
-    // only a `chat-image://<image_id>` URI.
-    let file_name = format!("{}.{}", image_id, ext);
-
-    let slug = slugify(&session_title);
-    let model_owned = model.to_string();
-    let input_clone = input;
-    let width_clone = width;
-    let height_clone = height;
-    let bytes_to_write = image_bytes;
-
-    let saved_path = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-        let app_dir = crate::chat_images::app_data_dir().map_err(|e| anyhow::anyhow!("{}", e))?;
-        let images_dir = app_dir.join("chat-images").join(&slug);
-        std::fs::create_dir_all(&images_dir)?;
-        let file_path = images_dir.join(&file_name);
-        std::fs::write(&file_path, &bytes_to_write)?;
-        Ok(file_path.to_string_lossy().to_string())
-    })
+    prompt: &str,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> anyhow::Result<crate::chat_images::SavedChatImage> {
+    crate::chat_images::save_image(
+        &db,
+        crate::chat_images::SaveChatImageParams {
+            workspace_id: &workspace_id,
+            bytes: image_bytes,
+            mime_type: "image/png",
+            source: "tool_generate",
+            generation_prompt: Some(prompt),
+            width,
+            height,
+        },
+    )
     .await
-    .context("任务调度失败")??;
-
-    Ok(ImageGenerationOutput {
-        image_id,
-        path: saved_path,
-        width: width_clone,
-        height: height_clone,
-        mime_type: "image/png".to_string(),
-        generation_prompt: input_clone.prompt,
-        generation_params: json!({
-            "width": input_clone.width,
-            "height": input_clone.height,
-            "style": input_clone.style,
-            "negative_prompt": input_clone.negative_prompt,
-            "model": model_owned,
-            "seed": input_clone.seed
-        }),
-        created_at: chrono::Utc::now().to_rfc3339(),
-    })
-}
-
-fn slugify(s: &str) -> String {
-    let s = s.trim();
-    if s.is_empty() {
-        return "untitled".to_string();
-    }
-    let slug: String = s
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == ' ' {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "untitled".to_string()
-    } else {
-        slug
-    }
+    .map_err(|e| anyhow::anyhow!("{e}"))
 }

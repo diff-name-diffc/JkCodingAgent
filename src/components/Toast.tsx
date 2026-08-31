@@ -57,7 +57,7 @@ function ToastContainer({
 }) {
   if (toasts.length === 0) return null;
   return (
-    <div className="ai-toast-stack ai-migrated-toast-stack">
+    <div className="ai-toast-stack">
       {toasts.map((t) => (
         <div
           key={t.id}

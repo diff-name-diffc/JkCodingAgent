@@ -42,7 +42,7 @@ export function FileViewer({
   const canCloseTabsToRight = activeTabIndex !== -1 && activeTabIndex < tabs.length - 1;
 
   return (
-    <div className="ai-file-viewer ai-migrated-file-viewer">
+    <div className="ai-file-viewer">
       <div className="ai-file-viewer-header">
         <div className="ai-file-viewer-tab-strip file-viewer-tab-strip chat-scroll">
           {tabs.map((tab) => {

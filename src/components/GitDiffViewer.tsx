@@ -163,24 +163,22 @@ export function GitDiffViewer({
 
     const load = async () => {
       try {
-        let result: string;
-        if (mode === "commit" && commitHash) {
-          result = await invoke<string>("git_show_diff", { projectPath, commitHash });
-        } else if (mode === "commit-file" && commitHash && filePath !== undefined) {
-          result = await invoke<string>("git_show_file_diff", {
-            projectPath,
-            commitHash,
-            filePath,
-          });
-        } else if (mode === "file" && filePath !== undefined) {
-          result = await invoke<string>("git_file_diff", {
-            projectPath,
-            filePath,
-            staged: staged ?? false,
-          });
-        } else {
-          result = "";
+        // 参数组合不满足所选模式时不发请求（与历史行为一致：显示空态）。
+        const canLoad =
+          (mode === "commit" && !!commitHash) ||
+          (mode === "commit-file" && !!commitHash && filePath !== undefined) ||
+          (mode === "file" && filePath !== undefined);
+        if (!canLoad) {
+          setDiff("");
+          return;
         }
+        const result = await invoke<string>("git_diff", {
+          projectPath,
+          mode,
+          commitHash: commitHash ?? null,
+          filePath: filePath ?? null,
+          staged: staged ?? false,
+        });
         setDiff(result);
       } catch (e) {
         setError(String(e));
@@ -195,7 +193,7 @@ export function GitDiffViewer({
   const parsedFiles = useMemo(() => parseDiff(diff), [diff]);
 
   return (
-    <div className="ai-git-diff-shell ai-migrated-git-diff">
+    <div className="ai-git-diff-shell">
       {/* Header */}
       <div className="ai-git-diff-header">
         {filePath ? <FileGlyph path={filePath} size={20} /> : <FileCode size={14} color="var(--text-muted)" />}

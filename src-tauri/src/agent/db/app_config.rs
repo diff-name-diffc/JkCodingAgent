@@ -1,14 +1,14 @@
 //! 应用级键值配置：app_config 表（key → value_json）。
 //!
-//! 承载不属于智能体领域但同属应用生命周期配置的条目：外观设置
-//! （app_settings）、全局浏览器选项（browser）、RAG 知识库配置（rag）。
+//! 承载不属于智能体领域但同属应用生命周期配置的条目：全局浏览器选项
+//! （browser）、RAG 知识库配置（rag）。外观主题已并入 `AhaSettingsV2`
+//! （dispatcher_settings.theme），不再占用本表。
 
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension, Transaction};
 
 use super::DispatcherDb;
 
-pub(crate) const APP_SETTINGS_KEY: &str = "app_settings";
 pub(crate) const BROWSER_KEY: &str = "browser";
 pub(crate) const RAG_KEY: &str = "rag";
 
@@ -64,14 +64,13 @@ mod tests {
     #[test]
     fn roundtrips_json_values() {
         let (db, _root) = test_db();
-        assert!(db.get_app_config_json(APP_SETTINGS_KEY).unwrap().is_none());
-        db.set_app_config_json(APP_SETTINGS_KEY, r#"{"theme":"dark"}"#)
-            .unwrap();
-        db.set_app_config_json(APP_SETTINGS_KEY, r#"{"theme":"light"}"#)
-            .unwrap();
+        const KEY: &str = "roundtrip-test";
+        assert!(db.get_app_config_json(KEY).unwrap().is_none());
+        db.set_app_config_json(KEY, r#"{"flag":true}"#).unwrap();
+        db.set_app_config_json(KEY, r#"{"flag":false}"#).unwrap();
         assert_eq!(
-            db.get_app_config_json(APP_SETTINGS_KEY).unwrap().as_deref(),
-            Some(r#"{"theme":"light"}"#)
+            db.get_app_config_json(KEY).unwrap().as_deref(),
+            Some(r#"{"flag":false}"#)
         );
     }
 }

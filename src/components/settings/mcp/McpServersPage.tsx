@@ -452,7 +452,7 @@ function McpServerCard({
             />
             <span className="truncate font-mono text-[13px]">{name || "（未命名）"}</span>
           </button>
-          <span className="ai-set-chip">{TRANSPORT_LABELS[transport] ?? transport}</span>
+          <span>{TRANSPORT_LABELS[transport] ?? transport}</span>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
           <button

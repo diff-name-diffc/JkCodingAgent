@@ -19,7 +19,7 @@ export function ChatCategoryContextMenu({
     <ContextMenu.Root>
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
-        <ContextMenu.Content className="ai-context-menu ai-category-context-menu">
+        <ContextMenu.Content className="ai-context-menu">
           <ContextMenu.Item
             onSelect={onRename}
             className="ai-context-menu-item"

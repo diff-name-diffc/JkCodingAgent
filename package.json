@@ -24,13 +24,14 @@
     "pi-sidecar:build": "pnpm --dir sidecars/pi-agent build",
     "pi-sidecar:check": "pnpm --dir sidecars/pi-agent check",
     "test": "vitest run && pnpm --dir sidecars/pi-agent test",
+    "contract:check": "node scripts/check-tauri-command-contract.mjs",
+    "styles:report": "node scripts/report-ai-class-references.mjs",
     "lint": "eslint src --max-warnings 0",
     "lint:fix": "eslint src --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\""
   },
   "dependencies": {
-    "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-avatar": "^1.1.3",
@@ -53,7 +54,6 @@
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@xterm/addon-fit": "^0.11.0",
-    "@xterm/addon-serialize": "^0.14.0",
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
@@ -79,7 +79,6 @@
     "streamdown": "^2.5.0",
     "tailwind-merge": "^2.6.0",
     "tailwindcss": "^3.4.17",
-    "three": "^0.185.0",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
@@ -88,7 +87,6 @@
     "@types/dagre": "^0.7.54",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@types/three": "^0.185.0",
     "@vitejs/plugin-react": "^6.0.3",
     "autoprefixer": "^10.4.20",
     "eslint": "^10.6.0",

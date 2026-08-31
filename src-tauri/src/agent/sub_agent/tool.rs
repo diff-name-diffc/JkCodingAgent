@@ -8,38 +8,6 @@ use super::manager::SubAgentManager;
 use super::runtime::{record_trace_event, SubAgentEvent, SubAgentEventPayload, SubAgentRuntime};
 use crate::agent::tools::{AgentTool, ToolContext, ToolResult};
 
-pub const SUB_AGENT_FAILURE_PREFIX: &str = "__SUB_AGENT_FAILURE__:";
-
-/// 旧版失败文本协议，仅保留给历史结果解析与兼容测试。
-/// 新执行链直接使用 `ToolResult::fatal_error` 的类型化状态。
-#[cfg(test)]
-pub fn sub_agent_failure(message: impl AsRef<str>) -> String {
-    format!("{}{}", SUB_AGENT_FAILURE_PREFIX, message.as_ref())
-}
-
-/// 解析旧版失败文本协议；新结果应优先读取 `ToolResult.status`。
-pub fn sub_agent_failure_message(result: &str) -> Option<&str> {
-    result.strip_prefix(SUB_AGENT_FAILURE_PREFIX)
-}
-
-/// 成功结果透传前的哨兵前缀碰撞检测（G13-03）。
-///
-/// 父循环（tools/result.rs 的 `from_text`，判定前会先 trim）以
-/// `SUB_AGENT_FAILURE_PREFIX` 开头判定子智能体失败，并升级为整个父循环的
-/// 致命错误。若子智能体的正常产出恰好以该保留前缀开头（例如任务本身要求
-/// 输出该前缀），直接透传会被误判。命中时对结果做显式包装转义：包装文案
-/// 不以哨兵前缀（也不以「错误：」）开头，保证父循环按成功路径处理，
-/// 同时保留原始结果全文。哨兵前缀协议本身保持不变。
-fn sanitize_sub_agent_success_result(result: String) -> String {
-    if result.trim_start().starts_with(SUB_AGENT_FAILURE_PREFIX) {
-        format!(
-            "子智能体返回结果（原始文本以保留的失败哨兵前缀开头，已转义为普通文本）：\n{result}"
-        )
-    } else {
-        result
-    }
-}
-
 pub struct NotifyUserProgressTool;
 
 pub fn notify_user_progress_tool() -> Box<dyn AgentTool> {
@@ -269,10 +237,7 @@ impl AgentTool for SubAgentTool {
                     }
                 }
                 match outcome {
-                    // 成功结果透传前做哨兵前缀碰撞检测（G13-03）。
-                    Ok(result) => {
-                        ToolResult::success_text(sanitize_sub_agent_success_result(result))
-                    }
+                    Ok(result) => ToolResult::success_text(result),
                     Err(error) => {
                         ToolResult::fatal_error(format!("错误：子智能体执行失败：{error}"))
                     }
@@ -355,38 +320,5 @@ impl AgentTool for ListSubAgentsTool {
             })).collect::<Vec<_>>()
         });
         ToolResult::success_data(data, output.clone(), output)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        sanitize_sub_agent_success_result, sub_agent_failure_message, SUB_AGENT_FAILURE_PREFIX,
-    };
-
-    #[test]
-    fn sanitize_success_result_passes_through_normal_text() {
-        let result = "正常的子智能体结果".to_string();
-        assert_eq!(sanitize_sub_agent_success_result(result.clone()), result);
-    }
-
-    #[test]
-    fn sanitize_success_result_escapes_sentinel_prefix_collision() {
-        // 碰撞：正常产出恰好以哨兵前缀开头，必须转义，
-        // 否则父循环会把它误判为子智能体失败并升级为致命错误。
-        let colliding = format!("{SUB_AGENT_FAILURE_PREFIX}这是任务要求输出的前缀");
-        let sanitized = sanitize_sub_agent_success_result(colliding.clone());
-        assert!(!sanitized.trim_start().starts_with(SUB_AGENT_FAILURE_PREFIX));
-        assert!(sub_agent_failure_message(&sanitized).is_none());
-        // 原始结果全文保留。
-        assert!(sanitized.contains(&colliding));
-    }
-
-    #[test]
-    fn sanitize_success_result_handles_leading_whitespace_collision() {
-        // 父循环判定前会 trim，因此前导空白的碰撞同样需要转义。
-        let colliding = format!("  \n{SUB_AGENT_FAILURE_PREFIX}内容");
-        let sanitized = sanitize_sub_agent_success_result(colliding);
-        assert!(!sanitized.trim_start().starts_with(SUB_AGENT_FAILURE_PREFIX));
     }
 }

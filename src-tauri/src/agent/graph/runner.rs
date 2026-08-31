@@ -38,7 +38,7 @@ use super::types::{
 };
 use super::validate::validate_graph;
 use super::verifier;
-use crate::agent::agents::project::resolve_project_chat_provider;
+use crate::agent::agents::project::{resolve_project_chat_provider, resolve_vision_provider};
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::DispatcherDb;
 use crate::agent::state::GraphRunHandle;
@@ -193,8 +193,8 @@ async fn run_graph(
     let workspace_id = plan.workspace_id.clone();
     let mut definition: GraphDefinition =
         serde_json::from_str(&plan.definition_json).context("解析图定义失败")?;
-    // 定义可能残留带空白的节点 id：入口统一规整，保证调度器、持久化、
-    // 事件与 DB 记录全程使用同一套 id（ReadyQueue/validate 均以 trim id 为准）。
+    // 落库的定义理论上都已经过入口规整（见 normalize_ids 文档）；这里再规整
+    // 一次作为加载边界兜底，保证调度器、持久化、事件与 DB 记录全程使用同一套 id。
     definition.normalize_ids();
     let workspace_root = resolve_workspace_root(&services.db, &workspace_id).await?;
     // resolve_workspace_root 已 canonicalize 且失败即错，直接构造项目作用域：
@@ -233,14 +233,13 @@ async fn run_graph(
     validate_graph(&definition, &catalog, &seeded_keys).map_err(anyhow::Error::msg)?;
 
     // resume 时 DB 已含复制的 cached succeeded 行：只对缺失节点写 pending。
-    // key 统一 trim：兼容规整前落库的历史节点记录（node_id 可能带空白）。
     let existing_runs = store.list_node_runs_async(&run.id).await?;
     let initial_status = existing_runs
         .iter()
-        .map(|record| (record.node_id.trim().to_string(), record.status.clone()))
+        .map(|record| (record.node_id.clone(), record.status.clone()))
         .collect::<HashMap<_, _>>();
     for node in &definition.nodes {
-        if !initial_status.contains_key(node.id.trim()) {
+        if !initial_status.contains_key(&node.id) {
             store
                 .save_node_run_async(&GraphNodeRunRecord::pending(&run.id, &plan_id, node))
                 .await?;
@@ -250,12 +249,12 @@ async fn run_graph(
     let node_by_id = definition
         .nodes
         .iter()
-        .map(|node| (node.id.trim().to_string(), node.clone()))
+        .map(|node| (node.id.clone(), node.clone()))
         .collect::<HashMap<_, _>>();
     let mut harnesses = HashMap::new();
     for node in &definition.nodes {
         harnesses.insert(
-            node.id.trim().to_string(),
+            node.id.clone(),
             resolve_node_harness(node, &settings, &tool_registry, &mcp_scope)?,
         );
     }
@@ -274,6 +273,18 @@ async fn run_graph(
     );
 
     let provider = resolve_project_chat_provider(&services.agent_config, &settings);
+    // 视觉用途凭据（可能独立于聊天网关）：供图节点运行期工具（如
+    // analyze_image）直接调用视觉模型；未配置时为 None，工具报「视觉模型未配置」。
+    let vision_provider = resolve_vision_provider(
+        &settings.shared.vision_model_configs,
+        &provider,
+        services.agent_config.max_tokens,
+        services.agent_config.temperature,
+    );
+    let vision_model = vision_provider
+        .as_ref()
+        .map(|p| p.model().to_string())
+        .unwrap_or_default();
     let session_title = services
         .db
         .get_session_title_async(&workspace_id)
@@ -290,6 +301,7 @@ async fn run_graph(
             .flatten()
             .unwrap_or_default();
     }
+    let image_credentials = settings.shared.image_model_credentials();
     let base_tool_context = ToolContext {
         workspace_id: workspace_id.clone(),
         workspace: workspace_root.clone(),
@@ -300,17 +312,19 @@ async fn run_graph(
             .review
             .is_configured()
             .then_some(settings.review.clone()),
+        // 图片生成/编辑工具凭据（generate_image / edit_image 节点可用）。
+        image_model_url: image_credentials.url.clone(),
+        image_model_api_key: image_credentials.api_key.clone(),
+        image_model: image_credentials.model.clone(),
+        image_edit_model: image_credentials.edit_model.clone(),
         exec_timeout_secs: 60,
         restrict_to_workspace: true,
         // PI 文本资源由宿主加载；图节点的 read/exec 能力严格限定在项目工作区。
         extra_allowed_dirs: Vec::new(),
         app_handle: Some(app.clone()),
         llm_provider: Some(provider),
-        vision_model: String::new(),
-        image_model_url: String::new(),
-        image_model_api_key: String::new(),
-        image_model: String::new(),
-        image_edit_model: String::new(),
+        vision_model,
+        vision_provider,
         sub_agent_tool_registry: None,
         current_sub_agent_id: None,
         current_sub_agent_name: None,
@@ -325,12 +339,7 @@ async fn run_graph(
     let mut outputs: HashMap<String, String> = existing_runs
         .iter()
         .filter(|record| record.status == NODE_SUCCEEDED)
-        .map(|record| {
-            (
-                record.node_id.trim().to_string(),
-                record.output_text.clone(),
-            )
-        })
+        .map(|record| (record.node_id.clone(), record.output_text.clone()))
         .collect();
 
     let mut queue = ReadyQueue::new(&definition, &initial_status);
@@ -554,7 +563,7 @@ async fn run_graph(
                     task_error = Some(error.context("持久化图共享状态失败"));
                     continue 'main;
                 }
-                outputs.insert(result.node_id.trim().to_string(), output);
+                outputs.insert(result.node_id.clone(), output);
                 last_errors.remove(&result.node_id);
                 queue.on_finished(&result.node_id, FinishKind::Succeeded);
             }
@@ -711,11 +720,13 @@ async fn run_graph(
         app,
         &services.db,
         &workspace_id,
-        &plan,
-        &run,
-        &node_runs,
-        &state,
-        &verdict,
+        receipt::ReceiptData {
+            plan: &plan,
+            run: &run,
+            node_runs: &node_runs,
+            state: &state,
+            verdict: &verdict,
+        },
     )
     .await;
 

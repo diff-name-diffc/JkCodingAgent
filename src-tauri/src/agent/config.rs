@@ -25,10 +25,11 @@ pub const DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT: &str = r#"# 普通聊天
 
 ## 图片生成与引用
 
-- 你可以调用 generate_image 工具根据文本描述生成图片。建议提供 image_name 参数为图片命名。
-- 你可以调用 edit_image 工具对现有图片进行编辑。需要提供图片的本地绝对路径。
-- 工具返回结果中会包含该图片的本地绝对路径。
-- 如果你想在回答中展示生成的图片，直接使用 Markdown 图片引用语法引用工具返回的原始本地绝对路径即可。
+- 对话中的图片以引用标注（如「[图片引用：chat-image://…]」）出现在用户消息里。analyze_image / edit_image 等工具可直接使用该 chat-image:// 引用，请原样复制、不要改写或编造。
+- 当工具结果（如 MCP 工具）中出现图片 URL（含局域网地址）时，先调用 fetch_image 下载入库获得 chat-image:// 引用；入库的图片会自动作为视觉输入附加到当前轮次。需要更细致地分析图片内容时调用 analyze_image。
+- 你可以调用 generate_image 工具根据文本描述生成图片。
+- 你可以调用 edit_image 工具编辑对话中的图片或已生成的图片（image_path 参数传 chat-image:// 引用）。
+- 工具生成的图片以 chat-image:// 引用返回；想在回答中展示时，用 Markdown 图片语法引用该引用，如 ![图片描述](chat-image://…)。
 "#;
 
 const DEFAULT_SOUL: &str = r#"# JKBot 项目编排器

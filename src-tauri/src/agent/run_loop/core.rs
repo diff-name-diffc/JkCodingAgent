@@ -160,6 +160,14 @@ where
         let workspace = agent.prepare_run_workspace(&request).await?;
         let provider = agent.provider_snapshot();
 
+        // 发送前校验：Image 段引用的文件必须存在——regenerate/edit 重发的
+        // 引用可能已被手动清理，半残消息入库只会让后续 LLM 请求反复踩坑
+        // （缺图降级占位）。在持久化用户消息之前整单拒绝。
+        request
+            .db
+            .validate_chat_image_segments_async(&request.user_segments_json)
+            .await?;
+
         let user = request
             .db
             .add_visible_message_from_segments_async(

@@ -34,7 +34,7 @@ export function GraphStateInspector({
   ];
 
   return (
-    <section className={cn("ai-graph-state", !open && "ai-graph-state--collapsed")}>
+    <section className="ai-graph-state">
       <button type="button" className="ai-graph-state-header" onClick={onToggle} aria-expanded={open}>
         <span className="ai-graph-state-title">共享状态</span>
         <span className="ai-graph-state-count">{rows.length} 个键</span>

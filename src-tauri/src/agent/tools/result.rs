@@ -3,7 +3,6 @@ use serde_json::{json, Value};
 
 use crate::agent::db::artifacts::MAX_RAW_TOOL_ARTIFACT_BYTES;
 use crate::agent::db::ToolArtifactDraft;
-use crate::agent::sub_agent::tool::SUB_AGENT_FAILURE_PREFIX;
 
 /// 工具错误消息统一前缀（项目规范）：返回给 LLM 的错误结果一律以此开头。
 /// `from_text` 依赖该前缀把错误结果与成功结果区分开，
@@ -41,13 +40,12 @@ impl ToolStatus {
     }
 }
 
-/// 强制错误消息满足前缀约定：已带「错误：」前缀或子智能体失败哨兵前缀的
-/// 原样保留（哨兵前缀是父循环识别致命错误的协议标记，绝不能被覆盖），
-/// 其余一律补齐「错误：」前缀，避免错误被 `from_text` 误判为成功。
+/// 强制错误消息满足前缀约定：已带「错误：」前缀的原样保留，其余一律补齐
+/// 「错误：」前缀，避免错误被 `from_text` 误判为成功。
 fn ensure_error_prefix(message: impl Into<String>) -> String {
     let message = message.into();
     let trimmed = message.trim_start();
-    if trimmed.starts_with(TOOL_ERROR_PREFIX) || trimmed.starts_with(SUB_AGENT_FAILURE_PREFIX) {
+    if trimmed.starts_with(TOOL_ERROR_PREFIX) {
         return trimmed.to_string();
     }
     format!("{TOOL_ERROR_PREFIX}{trimmed}")
@@ -88,16 +86,13 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
-    /// 从工具原始输出文本构造结果：哨兵前缀判定为致命错误，
-    /// 「错误：」前缀判定为可恢复错误，其余视为成功。
+    /// 从工具原始输出文本构造结果：「错误：」前缀判定为可恢复错误，其余视为
+    /// 成功。致命错误一律走类型化的 `fatal_error` 构造器，不做文本推断。
     /// 构造器（`recoverable_error` / `fatal_error`）会强制补齐前缀，
     /// 因此走构造器产出的错误结果在这里一定能被正确分类。
     pub fn from_text(output: impl Into<String>) -> Self {
         let output = output.into();
-        let trimmed = output.trim();
-        if trimmed.starts_with(SUB_AGENT_FAILURE_PREFIX) {
-            Self::fatal_error(output)
-        } else if trimmed.starts_with(TOOL_ERROR_PREFIX) {
+        if output.trim().starts_with(TOOL_ERROR_PREFIX) {
             Self::recoverable_error(output)
         } else {
             Self::success_text(output)
@@ -274,17 +269,12 @@ mod tests {
     use serde_json::json;
 
     use super::{ToolResult, ToolStatus, MAX_RAW_TOOL_ARTIFACT_BYTES, TOOL_ERROR_PREFIX};
-    use crate::agent::sub_agent::tool::{sub_agent_failure, sub_agent_failure_message};
 
     #[test]
     fn from_text_classifies_by_prefix() {
         assert_eq!(
             ToolResult::from_text("错误：读取失败").status,
             ToolStatus::RecoverableError
-        );
-        assert_eq!(
-            ToolResult::from_text(sub_agent_failure("子智能体崩溃")).status,
-            ToolStatus::FatalError
         );
         assert_eq!(
             ToolResult::from_text("正常结果").status,
@@ -325,20 +315,6 @@ mod tests {
         assert_eq!(result.raw_output.as_deref(), Some("src/main.rs"));
         let metadata = result.run_metadata_json().unwrap();
         assert!(!metadata.contains("src/main.rs"));
-    }
-
-    #[test]
-    fn fatal_error_preserves_sub_agent_failure_sentinel() {
-        // 哨兵前缀是父循环识别致命错误的协议标记，构造器不得覆盖它，
-        // 否则 sub_agent_failure_message 的 strip_prefix 会失效。
-        let wrapped = sub_agent_failure("子智能体执行失败");
-        let result = ToolResult::from_text(wrapped.clone());
-
-        assert_eq!(result.status, ToolStatus::FatalError);
-        assert_eq!(
-            sub_agent_failure_message(&result.output_for_llm()),
-            Some("子智能体执行失败")
-        );
     }
 
     #[test]

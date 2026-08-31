@@ -166,7 +166,7 @@ pub(super) fn with_compression_parameters(
         json!({
             "type": "boolean",
             "description": format!(
-                "是否允许对超长工具结果进行语义压缩。只有 compress=true 且原始结果超过 5000 字符时，才会调用摘要模型根据 compress_intent 提取关键信息；compress=false 绝不会进行摘要。未摘要的结果超过内联字符上限时会明确标记并截断（普通工具 2000；读取类工具默认 10000，显式 offset/limit 分页读取 20000），完整原文保留在工具产物中。{tool_specific_guidance}"
+                "是否允许对超长工具结果进行语义压缩。只有 compress=true 且原始结果超过 5000 字符时，才会调用摘要模型根据 compress_intent 提取关键信息；compress=false 绝不会进行摘要。未摘要的结果超过内联字符上限时会明确标记并截断（普通工具 8000；读取类工具默认 10000，显式 offset/limit 分页读取 20000），完整原文保留在工具产物中。{tool_specific_guidance}"
             ),
             "default": default_compress
         }),
@@ -406,7 +406,7 @@ pub(super) fn is_dangerous(command: &str) -> bool {
 /// 按 shell 操作符（`;` `&` `|` 换行）切分命令段，每段返回剥离包装后的 token 序列。
 fn shell_command_segments(command: &str) -> Vec<Vec<String>> {
     command
-        .split(|ch: char| matches!(ch, ';' | '&' | '|' | '\n' | '\r'))
+        .split([';', '&', '|', '\n', '\r'])
         .map(|segment| {
             segment
                 .split_whitespace()

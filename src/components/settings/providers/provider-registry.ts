@@ -86,7 +86,7 @@ function setContextConfigs(
   return { ...context, [field]: configs };
 }
 
-export function setPurposeConfigs(
+function setPurposeConfigs(
   settings: AhaSettingsV2,
   kind: PurposeKind,
   configs: DispatcherModelConfig[],
@@ -160,9 +160,9 @@ export function modelCapabilityTags(model: string): string[] {
   return tags;
 }
 
-// ── 从旧 provider-editor 迁入的工具函数（仍被保存管线使用） ────────────────────
+// ── 聊天对话模型 system_prompt 清除（保存管线使用） ──────────────────────────
 
-export function withoutModelSystemPrompts(
+function withoutModelSystemPrompts(
   providers: DispatcherModelConfig[],
 ): DispatcherModelConfig[] {
   return providers.map((provider) => ({ ...provider, systemPrompt: "" }));

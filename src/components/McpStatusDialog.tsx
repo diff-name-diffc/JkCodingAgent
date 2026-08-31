@@ -113,7 +113,7 @@ export function McpStatusDialog({
 
   return (
     <div className="ai-mcp-overlay" onClick={onClose}>
-      <div className="ai-mcp-dialog ai-migrated-mcp-dialog" onClick={(event) => event.stopPropagation()}>
+      <div className="ai-mcp-dialog" onClick={(event) => event.stopPropagation()}>
         <div className="ai-mcp-header">
           <div>
             <div className="ai-mcp-title">{isGlobal ? "全局 MCP 状态" : "项目级 MCP 状态"}</div>

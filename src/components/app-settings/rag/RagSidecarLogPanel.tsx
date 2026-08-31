@@ -149,8 +149,8 @@ export function RagSidecarLogPanel() {
   const moveMatch = useCallback(
     (direction: 1 | -1) => {
       if (matchRowIndices.length === 0) return;
-      setActiveMatchIndex((current) =>
-        (current + direction + matchRowIndices.length) % matchRowIndices.length,
+      setActiveMatchIndex(
+        (current) => (current + direction + matchRowIndices.length) % matchRowIndices.length,
       );
     },
     [matchRowIndices.length],
@@ -200,7 +200,9 @@ export function RagSidecarLogPanel() {
         >
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           <span className="ai-rag-log-title">Sidecar 日志</span>
-          <span className="ai-rag-log-meta">{logs.length}/{MAX_LOG_LINES} 行</span>
+          <span className="ai-rag-log-meta">
+            {logs.length}/{MAX_LOG_LINES} 行
+          </span>
         </button>
         {!expanded && latestLog && (
           <span className="ai-rag-log-collapsed-line">

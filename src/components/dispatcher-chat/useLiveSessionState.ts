@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { BrowserStatus } from "../../types";
-import { updateLiveBrowserToolActivity } from "../dispatcherChatView";
+import { updateLiveBrowserToolActivity } from "./live-tool-activity";
 import {
   getDispatcherLiveSessionState,
   getOrCreateDispatcherLiveSessionState,

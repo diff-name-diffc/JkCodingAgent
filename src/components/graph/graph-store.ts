@@ -348,7 +348,7 @@ function registerGlobalListener(): void {
   });
 }
 
-export function getGraphPlanSnapshot(planId: string): GraphPlanSnapshot {
+function getGraphPlanSnapshot(planId: string): GraphPlanSnapshot {
   return snapshots.get(planId) ?? EMPTY_SNAPSHOT;
 }
 

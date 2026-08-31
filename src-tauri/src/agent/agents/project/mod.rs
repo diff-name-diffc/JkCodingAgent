@@ -54,6 +54,9 @@ pub(super) struct Models {
 
 pub(super) struct ModelsSnapshot {
     vision_model: String,
+    /// 完整视觉凭据快照：供工具上下文直接调用视觉模型
+    /// （OpenAiCompatProvider 内部 reqwest Client 为 Arc 共享，clone 廉价）。
+    vision_provider: Option<OpenAiCompatProvider>,
 }
 
 impl Models {
@@ -64,6 +67,7 @@ impl Models {
                 .as_ref()
                 .map(|p| p.model().to_string())
                 .unwrap_or_default(),
+            vision_provider: self.vision_provider.clone(),
         }
     }
 }
@@ -270,6 +274,41 @@ pub(crate) fn resolve_project_chat_provider(
     settings: &AhaSettingsV2,
 ) -> OpenAiCompatProvider {
     resolve_chat_provider(config, &settings.project)
+}
+
+/// 按「模型用途」设置解析视觉用途 provider：取 vision_model_configs 中第一个
+/// active（否则第一个）条目，url/apiKey 为空时回退聊天主模型凭据；无有效
+/// 条目（模型名为空）返回 None。与 `apply_settings_v2` 的视觉解析规则一致，
+/// 供图执行等无法访问 Agent 实例锁状态的运行入口复用。
+pub(crate) fn resolve_vision_provider(
+    vision_configs: &[crate::agent::db::DispatcherModelConfig],
+    chat_fallback: &OpenAiCompatProvider,
+    max_tokens: u32,
+    temperature: f32,
+) -> Option<OpenAiCompatProvider> {
+    let active_vision = vision_configs
+        .iter()
+        .find(|c| c.active)
+        .or_else(|| vision_configs.first());
+    active_vision
+        .filter(|v| !v.model.trim().is_empty())
+        .map(|v| {
+            OpenAiCompatProvider::new(
+                if v.api_key.trim().is_empty() {
+                    chat_fallback.api_key().to_string()
+                } else {
+                    v.api_key.trim().to_string()
+                },
+                if v.url.trim().is_empty() {
+                    chat_fallback.api_base().to_string()
+                } else {
+                    v.url.trim().to_string()
+                },
+                v.model.trim().to_string(),
+                max_tokens,
+                temperature,
+            )
+        })
 }
 
 fn resolve_chat_provider(

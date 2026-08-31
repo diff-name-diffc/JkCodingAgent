@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 
-use super::content::{delete_chat_image_resources, remove_chat_image_files};
+use super::content::{delete_chat_image_resources, remove_chat_image_dir};
 use super::DispatcherDb;
 use crate::project::storage::Project;
 
@@ -41,8 +41,8 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
 pub(crate) struct ProjectCleanupPlan {
     /// 被级联删除的会话 id 列表（供前端清理内存 store 中的会话残留状态）。
     pub deleted_session_ids: Vec<String>,
-    /// 聊天图片实际文件路径（DB 行已在事务内删除）。
-    pub image_paths: Vec<PathBuf>,
+    /// 会话图片目录（chat-images/{workspace_id}，DB 行已在事务内删除）。
+    pub image_dirs: Vec<PathBuf>,
     /// 项目仓库内应用自有的运行期数据目录（browser-profile / local_env）。
     pub workspace_dirs: Vec<PathBuf>,
 }
@@ -148,9 +148,11 @@ impl DispatcherDb {
             ids
         };
 
-        let mut image_paths: Vec<PathBuf> = Vec::new();
+        let mut image_dirs: Vec<PathBuf> = Vec::new();
         for workspace_id in &workspace_ids {
-            image_paths.extend(delete_chat_image_resources(&tx, workspace_id)?);
+            if let Some(dir) = delete_chat_image_resources(&tx, workspace_id)? {
+                image_dirs.push(dir);
+            }
             tx.execute(
                 "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
                 params![workspace_id],
@@ -206,16 +208,18 @@ impl DispatcherDb {
 
         Ok(ProjectCleanupPlan {
             deleted_session_ids: workspace_ids,
-            image_paths,
+            image_dirs,
             workspace_dirs,
         })
     }
 }
 
-/// 项目删除提交后的文件清理：图片文件与仓库内运行期目录，失败仅告警。
+/// 项目删除提交后的文件清理：会话图片目录与仓库内运行期目录，失败仅告警。
 pub(crate) fn cleanup_project_files(plan: &ProjectCleanupPlan) {
-    if let Err(error) = remove_chat_image_files(&plan.image_paths) {
-        eprintln!("remove chat image files failed (project delete): {error:#}");
+    for dir in &plan.image_dirs {
+        if let Err(error) = remove_chat_image_dir(dir) {
+            eprintln!("remove chat image dir failed (project delete): {error:#}");
+        }
     }
     for dir in &plan.workspace_dirs {
         if !dir.exists() {

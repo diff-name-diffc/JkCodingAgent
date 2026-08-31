@@ -208,15 +208,13 @@ pub(super) async fn cancel_pending_nodes(
     // 仅取消状态【显式为 pending】的节点：running/终态一律不覆盖。
     // 与旧实现（status != "pending" 即视为已结算）相比，停留在 running 的
     // 异常记录不再被静默放过也不被覆盖，由 fail_interrupted_runs 兜底。
-    // id 两侧都 trim 后比较：兼容历史运行遗留的带空白 node_id（resume 续跑
-    // 的 cached 行可能来自规整前的旧数据），避免已结算节点匹配不上被覆盖。
     let pending = existing
         .iter()
         .filter(|run| run.status == NODE_PENDING)
-        .map(|run| run.node_id.trim().to_string())
+        .map(|run| run.node_id.clone())
         .collect::<HashSet<_>>();
     for node in nodes {
-        if pending.contains(node.id.trim()) {
+        if pending.contains(&node.id) {
             mark_node_cancelled(app, store, plan_id, run_id, workspace_id, node).await
         }
     }

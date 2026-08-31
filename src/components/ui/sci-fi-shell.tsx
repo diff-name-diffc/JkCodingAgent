@@ -1,13 +1,6 @@
 import type React from "react";
 import { cn } from "../../lib/cn";
 
-export function AiPanel({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("ai-panel", className)} {...props} />;
-}
-
 export function AiSectionHeader({
   title,
   caption,

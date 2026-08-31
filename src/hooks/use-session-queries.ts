@@ -53,7 +53,7 @@ type SessionListItem = {
 
 // ── 纯函数：列表合并 ────────────────────────────────────────────────────────
 
-export function sortSessionsByUpdatedAt<T extends { updatedAt: string }>(sessions: T[]): T[] {
+function sortSessionsByUpdatedAt<T extends { updatedAt: string }>(sessions: T[]): T[] {
   return [...sessions].sort((left, right) => {
     const leftTime = Date.parse(left.updatedAt);
     const rightTime = Date.parse(right.updatedAt);

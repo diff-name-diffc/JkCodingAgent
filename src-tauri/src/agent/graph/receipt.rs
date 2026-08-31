@@ -14,17 +14,28 @@ use super::types::{
 use super::verifier::VerdictOutcome;
 use crate::agent::db::{DispatcherDb, DispatcherMessageUsageStats};
 
+pub(crate) struct ReceiptData<'a> {
+    pub plan: &'a GraphPlanRecord,
+    pub run: &'a GraphRunSummary,
+    pub node_runs: &'a [GraphNodeRunRecord],
+    pub state: &'a Map<String, Value>,
+    pub verdict: &'a VerdictOutcome,
+}
+
 /// 生成并投递执行回执。投递失败只记日志，不影响 run 终态。
 pub(crate) async fn deliver_receipt(
     app: &AppHandle,
     db: &DispatcherDb,
     workspace_id: &str,
-    plan: &GraphPlanRecord,
-    run: &GraphRunSummary,
-    node_runs: &[GraphNodeRunRecord],
-    state: &Map<String, Value>,
-    verdict: &VerdictOutcome,
+    data: ReceiptData<'_>,
 ) {
+    let ReceiptData {
+        plan,
+        run,
+        node_runs,
+        state,
+        verdict,
+    } = data;
     // 本地 run 的 finished_at 在 finish_run 落库后仍未回填，用当前时刻兜底：
     // 回执紧随 finish_run 投递，二者相差可忽略。
     let now_ms = std::time::SystemTime::now()

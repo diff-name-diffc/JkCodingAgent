@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Cpu,
@@ -86,25 +86,11 @@ export function AppSettingsDialog({
   const [confirmingClose, setConfirmingClose] = useState(false);
   // 「模型用途」跳转「模型服务」时携带的目标分类（激活对应标签）。
   const [providersCategory, setProvidersCategory] = useState<ModelCategory | null>(null);
-  // 通用页仍使用手动保存，通过 reportDirty 上报未保存状态。
-  const manualDirtyRef = useRef(new Set<string>());
-  const [manualDirty, setManualDirty] = useState(false);
-
-  const reportDirty = useCallback((page: string) => {
-    return (dirty: boolean) => {
-      const set = manualDirtyRef.current;
-      if (dirty) set.add(page);
-      else set.delete(page);
-      setManualDirty(set.size > 0);
-    };
-  }, []);
-
-  const dirty = store.dirty || manualDirty;
 
   const requestClose = useCallback(() => {
-    if (dirty) setConfirmingClose(true);
+    if (store.dirty) setConfirmingClose(true);
     else onClose();
-  }, [dirty, onClose]);
+  }, [store.dirty, onClose]);
 
   // Esc 关闭前检查未保存修改；Radix 内部弹层（Select/Dialog）已处理 Esc 时不重复触发。
   useEffect(() => {
@@ -138,7 +124,7 @@ export function AppSettingsDialog({
   return createPortal(
     <AhaSettingsProvider value={store}>
       <div className="ai-dialog-overlay ai-settings-overlay" onClick={handleOverlayClick}>
-        <div className="ai-settings-shell ai-migrated-settings">
+        <div className="ai-settings-shell">
           <nav className="ai-settings-nav" aria-label="应用设置">
             <div className="ai-settings-nav-title">
               <span>应用设置</span>
@@ -184,7 +170,7 @@ export function AppSettingsDialog({
                 <div className="ai-set-loading">正在加载设置…</div>
               ) : (
                 <>
-                  {activeNav === "general" && <GeneralPage reportDirty={reportDirty("general")} />}
+                  {activeNav === "general" && <GeneralPage />}
                   {activeNav === "providers" && (
                     <ProvidersPage
                       key={providersCategory ?? "default"}
@@ -199,7 +185,7 @@ export function AppSettingsDialog({
                       }}
                     />
                   )}
-                  {activeNav === "tools" && <ToolsPage projectPath={projectPath} />}
+                  {activeNav === "tools" && <ToolsPage />}
                   {activeNav === "graph" && <GraphPage />}
                   {activeNav === "subAgents" && <SubAgentsPage />}
                   {activeNav === "mcp" && <McpServersPage />}
@@ -217,12 +203,8 @@ export function AppSettingsDialog({
         <ConfirmDialog
           open={confirmingClose}
           title="有未保存的修改"
-          description={
-            store.dirty
-              ? "部分修改还在保存中。关闭前将先完成保存。"
-              : "当前页面有尚未保存的修改，关闭后将丢失。"
-          }
-          confirmLabel={store.dirty ? "保存并关闭" : "仍要关闭"}
+          description="部分修改还在保存中。关闭前将先完成保存。"
+          confirmLabel="保存并关闭"
           cancelLabel="继续编辑"
           onConfirm={() => void handleConfirmClose()}
           onCancel={() => setConfirmingClose(false)}

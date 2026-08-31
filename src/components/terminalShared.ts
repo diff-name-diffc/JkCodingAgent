@@ -52,7 +52,7 @@ export const DARK_THEME = {
   brightWhite: "#e7ece9",
 };
 
-export function currentTerminalTheme() {
+function currentTerminalTheme() {
   return isDarkActive() ? DARK_THEME : LIGHT_THEME;
 }
 

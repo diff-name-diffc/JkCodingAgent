@@ -90,7 +90,7 @@ pub(super) fn effective_allowed_tools_for_chat_category(
 /// 1) 不含路径分隔符与 `..`，无法越界（workspace_id 来自前端输入）；
 /// 2) 不同会话 ID 不折叠到同一目录；
 /// 3) 同一会话 ID 跨进程 / 重启始终得到同一目录（哈希确定性，不依赖随机态）。
-pub(super) fn session_workspace_dir_name(workspace_id: &str) -> String {
+pub(crate) fn session_workspace_dir_name(workspace_id: &str) -> String {
     let trimmed = workspace_id.trim();
     let is_plain_safe = !trimmed.is_empty()
         && trimmed.len() <= 64

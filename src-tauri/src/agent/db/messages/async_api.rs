@@ -206,4 +206,16 @@ impl DispatcherDb {
             .await
             .context("get_latest_user_message_content spawn_blocking")?
     }
+
+    pub async fn get_recent_review_dialogue_async(
+        &self,
+        workspace_id: &str,
+        max_messages: usize,
+    ) -> Result<Vec<(String, String)>> {
+        let db = self.clone();
+        let wid = workspace_id.to_string();
+        tokio::task::spawn_blocking(move || db.get_recent_review_dialogue(&wid, max_messages))
+            .await
+            .context("get_recent_review_dialogue spawn_blocking")?
+    }
 }

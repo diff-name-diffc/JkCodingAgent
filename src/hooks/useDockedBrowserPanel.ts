@@ -6,6 +6,13 @@ const BROWSER_PANEL_MIN_WIDTH = 420;
 const BROWSER_PANEL_DEFAULT_RATIO = 0.4;
 const BROWSER_PANEL_MAX_RATIO = 0.75;
 
+/** 停靠在主内容右侧的可拖宽面板的尺寸参数（默认值 = 浏览器面板历史值）。 */
+export interface DockedPanelMetrics {
+  minWidth?: number;
+  defaultRatio?: number;
+  maxRatio?: number;
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -14,30 +21,22 @@ function viewportWidth(): number {
   return typeof window === "undefined" ? 1280 : window.innerWidth;
 }
 
-function browserPanelMaxWidth(): number {
-  return Math.max(BROWSER_PANEL_MIN_WIDTH, Math.floor(viewportWidth() * BROWSER_PANEL_MAX_RATIO));
-}
+export function useDockedBrowserPanel(storageKey: string, metrics: DockedPanelMetrics = {}) {
+  const minWidth = metrics.minWidth ?? BROWSER_PANEL_MIN_WIDTH;
+  const defaultRatio = metrics.defaultRatio ?? BROWSER_PANEL_DEFAULT_RATIO;
+  const maxRatio = metrics.maxRatio ?? BROWSER_PANEL_MAX_RATIO;
 
-function defaultBrowserPanelWidth(): number {
-  return clamp(
-    Math.round(viewportWidth() * BROWSER_PANEL_DEFAULT_RATIO),
-    BROWSER_PANEL_MIN_WIDTH,
-    browserPanelMaxWidth(),
-  );
-}
+  const panelMaxWidth = () => Math.max(minWidth, Math.floor(viewportWidth() * maxRatio));
+  const defaultWidth = () =>
+    clamp(Math.round(viewportWidth() * defaultRatio), minWidth, panelMaxWidth());
+  const loadWidth = () => clamp(load<number>(storageKey, defaultWidth()), minWidth, panelMaxWidth());
 
-function loadBrowserPanelWidth(storageKey: string): number {
-  const stored = load<number>(storageKey, defaultBrowserPanelWidth());
-  return clamp(stored, BROWSER_PANEL_MIN_WIDTH, browserPanelMaxWidth());
-}
-
-export function useDockedBrowserPanel(storageKey: string) {
-  const [width, setWidth] = useState(() => loadBrowserPanelWidth(storageKey));
+  const [width, setWidth] = useState(loadWidth);
   const [expanded, setExpanded] = useState(false);
   const widthRef = useRef(width);
   widthRef.current = width;
 
-  const effectiveWidth = expanded ? browserPanelMaxWidth() : width;
+  const effectiveWidth = expanded ? panelMaxWidth() : width;
 
   const toggleExpanded = useCallback(() => {
     setExpanded((value) => !value);
@@ -53,11 +52,7 @@ export function useDockedBrowserPanel(storageKey: string) {
       let nextWidth = startWidth;
 
       const onMouseMove = (ev: MouseEvent) => {
-        nextWidth = clamp(
-          startWidth + (startX - ev.clientX),
-          BROWSER_PANEL_MIN_WIDTH,
-          browserPanelMaxWidth(),
-        );
+        nextWidth = clamp(startWidth + (startX - ev.clientX), minWidth, panelMaxWidth());
         setWidth(nextWidth);
       };
       const onMouseUp = () => {
@@ -73,7 +68,8 @@ export function useDockedBrowserPanel(storageKey: string) {
       document.addEventListener("mousemove", onMouseMove);
       document.addEventListener("mouseup", onMouseUp);
     },
-    [storageKey],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [storageKey, minWidth, maxRatio],
   );
 
   return {

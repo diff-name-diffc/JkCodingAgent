@@ -18,6 +18,7 @@ use super::types::{AgentEvent, AgentTurn};
 pub(crate) enum RuntimeAgentKind {
     Project,
     PlainChat,
+    Architecture,
 }
 
 pub(crate) struct RunLoopContext<'a> {
@@ -180,12 +181,22 @@ where
         let workspace_id = request.workspace_id;
         emit(on_event, AgentEvent::UserMessage { message: user });
 
-        if !provider.is_configured() {
-            anyhow::bail!("{}", agent.provider_missing_message());
+        // 架构 Agent 主模型即视觉模型，允许本地 OpenAI 兼容端点（Ollama /
+        // LM Studio 等）空 API Key（见 build_architecture_agent 的设计注释）：
+        // 只要求 Base URL 与模型名就绪；云端端点漏配 key 的鉴权失败由首次
+        // 请求显式报出，不在此拦截。
+        if request.kind == RuntimeAgentKind::Architecture {
+            if provider.api_base().trim().is_empty() || provider.model().trim().is_empty() {
+                anyhow::bail!("{}", agent.provider_missing_message());
+            }
+        } else {
+            if !provider.is_configured() {
+                anyhow::bail!("{}", agent.provider_missing_message());
+            }
+            // 完整性校验（G9-15）：API Key / Base URL / 模型名任一缺失都在 run 入口
+            // 显式失败并给出「错误：」提示，避免延迟到 HTTP 请求时才以晦涩错误暴露。
+            validate_provider_completeness(provider.api_key(), provider.api_base(), provider.model())?;
         }
-        // 完整性校验（G9-15）：API Key / Base URL / 模型名任一缺失都在 run 入口
-        // 显式失败并给出「错误：」提示，避免延迟到 HTTP 请求时才以晦涩错误暴露。
-        validate_provider_completeness(provider.api_key(), provider.api_base(), provider.model())?;
 
         let prompt = agent.build_run_prompt(workspace_id, &workspace).await?;
         let reply = run_loop(

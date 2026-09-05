@@ -1,31 +1,14 @@
 import { useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import type {
-  DispatcherAgentEvent,
-  DispatcherAgentTurn,
-  DispatcherMessageWire,
-  ImageSegment,
-} from "../../types";
+import type { DispatcherAgentEvent, DispatcherAgentTurn, ImageSegment } from "../../types";
 import {
-  appendAssistantTextSegment,
-  appendToolSummarySegment,
-  demoteActiveTextSegments,
-} from "./assistant-segments";
-import {
-  planLiveToolActivity,
-  startLiveToolActivity,
-  finishLiveToolActivity,
-  updateLiveToolRunActivity,
-} from "./live-tool-activity";
-import {
-  clearDispatcherActiveRunId,
   createIdleLiveSessionState,
   getDispatcherActiveRunId,
   nextDispatcherActiveRunId,
-  notifyDispatcherMessages,
 } from "../dispatcherSessionStore";
 import type { LiveSessionUpdater } from "./useLiveSessionState";
 import { toErrorMessage, createEmptyUsageStats } from "./dispatcherChatUtils";
+import { createDispatcherEventChannel } from "./event-channel";
 
 export interface UseDispatcherActionsOptions {
   sessionId: string;
@@ -67,172 +50,13 @@ export function useDispatcherActions({
   const runQueuesRef = useRef<Map<string, Promise<void>>>(new Map());
 
   const createEventChannel = useCallback(
-    (targetSessionId: string, runId: number) => {
-      const onEvent = new Channel<DispatcherAgentEvent>();
-      onEvent.onmessage = (event) => {
-        const isActiveRun = getDispatcherActiveRunId(targetSessionId) === runId;
-        switch (event.event) {
-          case "started":
-            break;
-          case "assistantStarted":
-            if (!isActiveRun) return;
-            updateLiveSessionState(targetSessionId, (state) => ({
-              ...state,
-              assistantPlaceholder: "正在分析问题...",
-              liveThinking: null,
-              // Demote the previous reply into a collapsed grey block instead
-              // of discarding it, so the user can still expand and read it.
-              streamingSegments: demoteActiveTextSegments(state.streamingSegments),
-            }));
-            break;
-          case "modelSwitched":
-            if (!isActiveRun) return;
-            updateLiveSessionState(targetSessionId, (state) => ({
-              ...state,
-              assistantPlaceholder: `已检测到图片，自动切换到视觉模型 ${event.data.toModel}。`,
-              streamingSegments: appendAssistantTextSegment(
-                state.streamingSegments,
-                `> ${event.data.reason}，已从 ${event.data.fromModel} 自动切换到视觉模型 ${event.data.toModel}。\n\n`,
-              ),
-            }));
-            break;
-          case "userMessage":
-            if (!isActiveRun || event.data.message.workspaceId !== targetSessionId) return;
-            notifyDispatcherMessages(targetSessionId, [event.data.message]);
-            break;
-          case "assistantDelta":
-            if (!isActiveRun) return;
-            // G9-08：事件携带同一 messageId 内单调递增的 seq，可用于去重/乱序
-            // 校验。Tauri Channel 保证单通道有序投递，此处按到达顺序追加即可，
-            // seq 暂不额外消费。
-            updateLiveSessionState(targetSessionId, (state) => ({
-              ...state,
-              assistantPlaceholder: null,
-              streamingSegments: appendAssistantTextSegment(
-                state.streamingSegments,
-                event.data.delta,
-              ),
-            }));
-            break;
-          case "assistantThinkingDelta":
-            if (!isActiveRun) return;
-            updateLiveSessionState(targetSessionId, (state) => ({
-              ...state,
-              assistantPlaceholder: null,
-              liveThinking: {
-                text: `${state.liveThinking?.text ?? ""}${event.data.delta}`,
-                elapsedMs: event.data.elapsedMs,
-              },
-            }));
-            break;
-          case "assistantMessage":
-            if (!isActiveRun || event.data.message.workspaceId !== targetSessionId) return;
-            updateLiveSessionState(targetSessionId, (state) => ({
-              ...state,
-              assistantPlaceholder: null,
-              liveThinking: null,
-              // Demote the previous reply into a collapsed grey block instead
-              // of discarding it, so the user can still expand and read it.
-              streamingSegments: demoteActiveTextSegments(state.streamingSegments),
-            }));
-            notifyDispatcherMessages(targetSessionId, [event.data.message]);
-            break;
-          case "runUsageUpdated":
-            if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
-            {
-              const now = Date.now();
-              updateLiveSessionState(targetSessionId, (state) => ({
-                ...state,
-                activeUsageStats: event.data.stats,
-                activeUsageStatsReceivedAt: now,
-                usageClockNow: now,
-              }));
-            }
-            void refreshSessionTokenUsage(targetSessionId);
-            break;
-          case "toolPlanned":
-            if (!isActiveRun) return;
-            updateLiveSessionState(targetSessionId, (state) => ({
-              ...state,
-              assistantPlaceholder: "正在规划工具调用...",
-              liveToolCalls: planLiveToolActivity(state.liveToolCalls, {
-                ...event.data,
-                workspaceId: targetSessionId,
-              }),
-            }));
-            break;
-          case "toolStarted":
-            if (!isActiveRun) return;
-            updateLiveSessionState(targetSessionId, (state) => ({
-              ...state,
-              assistantPlaceholder: "正在执行工具...",
-              liveToolCalls: startLiveToolActivity(state.liveToolCalls, {
-                ...event.data,
-                workspaceId: targetSessionId,
-              }),
-            }));
-            break;
-          case "toolSummaryStarted":
-            if (!isActiveRun) return;
-            break;
-          case "toolSummaryDelta":
-            if (!isActiveRun) return;
-            updateLiveSessionState(targetSessionId, (state) => ({
-              ...state,
-              streamingSegments: appendToolSummarySegment(state.streamingSegments, event.data),
-            }));
-            break;
-          case "toolFinished":
-            if (!isActiveRun) return;
-            updateLiveSessionState(targetSessionId, (state) => ({
-              ...state,
-              liveToolCalls: finishLiveToolActivity(state.liveToolCalls, {
-                ...event.data,
-                workspaceId: targetSessionId,
-              }),
-            }));
-            break;
-          case "toolRunUpdated":
-            if (!isActiveRun || event.data.run.workspaceId !== targetSessionId) return;
-            updateLiveSessionState(targetSessionId, (state) => ({
-              ...state,
-              liveToolCalls: updateLiveToolRunActivity(state.liveToolCalls, event.data.run),
-            }));
-            break;
-          case "finished":
-            if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
-            // G7-11：Finished 改为轻量负载（workspaceId + messageCount），
-            // 不再随事件下发全量消息；此处改调 dispatcher_list_messages 拉全量，
-            // 经 mergeDispatcherMessages 按 id 合并刷新（与 dispatcher-session-updated
-            // 的重载路径一致）。messageCount 仅用于日志对账。
-            void invoke<DispatcherMessageWire[]>("dispatcher_list_messages", {
-              workspaceId: targetSessionId,
-            })
-              .then((fresh) => {
-                if (fresh.length !== event.data.messageCount) {
-                  console.warn(
-                    `Finished 对账不一致：后端 ${event.data.messageCount} 条，拉取到 ${fresh.length} 条`,
-                  );
-                }
-                notifyDispatcherMessages(targetSessionId, fresh);
-              })
-              .catch((err) => console.error("Finished 后刷新消息失败:", err));
-            void refreshSessionTokenUsage(targetSessionId);
-            clearDispatcherActiveRunId(targetSessionId);
-            updateLiveSessionState(targetSessionId, () => createIdleLiveSessionState());
-            break;
-          case "failed":
-            if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
-            clearDispatcherActiveRunId(targetSessionId);
-            updateLiveSessionState(targetSessionId, () => ({
-              ...createIdleLiveSessionState(),
-              runError: event.data.message,
-            }));
-            break;
-        }
-      };
-      return onEvent;
-    },
+    (targetSessionId: string, runId: number) =>
+      createDispatcherEventChannel({
+        targetSessionId,
+        runId,
+        updateLiveSessionState,
+        refreshSessionTokenUsage,
+      }),
     [refreshSessionTokenUsage, updateLiveSessionState],
   );
 

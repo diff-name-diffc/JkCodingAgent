@@ -1,4 +1,5 @@
 pub(crate) mod agents;
+pub(crate) mod command_history;
 pub mod commands;
 pub(crate) mod common;
 pub(crate) mod config;

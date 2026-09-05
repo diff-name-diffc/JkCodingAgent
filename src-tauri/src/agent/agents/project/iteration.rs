@@ -45,6 +45,23 @@ impl OrchestratorAgent {
                 None
             }
         };
+        // 安全审查的「对话上下文」：最近若干轮用户/助手对话（截断渲染）。
+        // 读取失败降级为 None（审查仍可依据任务/意图/命令本身判定）。
+        let review_conversation = match db
+            .get_recent_review_dialogue_async(
+                workspace_id,
+                crate::agent::ssh_review::REVIEW_DIALOGUE_FETCH_LIMIT,
+            )
+            .await
+        {
+            Ok(messages) => crate::agent::ssh_review::render_dialogue_for_review(&messages),
+            Err(error) => {
+                helpers::log_warning(&format!(
+                    "[orchestrator] 读取审查对话上下文失败，降级为无对话上下文（workspace_id={workspace_id}）：{error:#}"
+                ));
+                None
+            }
+        };
         let ms = self.models.lock().snapshot();
         // 与普通聊天对齐：授权本会话的图片目录（chat-images/{workspace_id}），
         // 项目 Agent 的文件工具因此可以直接读取用户粘贴/工具生成的图片；
@@ -90,6 +107,8 @@ impl OrchestratorAgent {
             mcp_scope: crate::mcp::McpScope::Project(workspace.to_path_buf()),
             session_title,
             user_task,
+            executor_task: None,
+            review_conversation,
             ssh_review: None,
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: self.config.restrict_to_workspace,

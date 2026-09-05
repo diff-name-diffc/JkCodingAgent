@@ -638,6 +638,19 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         60,
         ToolPolicyOptions::SERIAL,
     ),
+    // ── 架构画布 ──
+    // architecture_run 的真实效应由前端画布解释器托管（同 SUBSYSTEM_MANAGED
+    // 语义）；SERIAL 即 default_compress=false——执行报告里的 `chat-image://`
+    // 截图引用必须原样保留给下一轮 attach_turn_tool_images，绝不走摘要压缩。
+    // 超时 40s > 工具内部 20s 画布等待上限，留出事件/回传余量。
+    policy_row(
+        "architecture_run",
+        ToolCategory::Other,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        40,
+        ToolPolicyOptions::SERIAL,
+    ),
 ];
 
 fn lookup_policy(name: &str) -> Option<&'static ToolPolicyRow> {

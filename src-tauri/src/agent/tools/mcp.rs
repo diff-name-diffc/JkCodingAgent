@@ -9,7 +9,7 @@ use super::registry::DynamicToolProvider;
 use super::result::ToolResult;
 use super::spec::ToolSpec;
 use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
-use crate::agent::ssh_review::{review_shell_command, CommandReviewPayload, CommandReviewTarget};
+use crate::agent::ssh_review::{review_shell_command, CommandReviewTarget};
 use crate::mcp::{tool_definitions_from_snapshot, McpRegistry, McpScope};
 
 pub(super) fn mcp_tool_bridge(mcp_registry: McpRegistry) -> Arc<dyn DynamicToolProvider> {
@@ -118,21 +118,21 @@ async fn review_mcp_call(name: &str, args: &Value, context: &ToolContext) -> Opt
         ));
     };
     let args_json = serde_json::to_string(args).unwrap_or_else(|_| args.to_string());
-    let payload = CommandReviewPayload {
-        intent: context.session_title.clone(),
-        task: context.user_task.clone().unwrap_or_default(),
-        target: CommandReviewTarget::Mcp {
+    let payload = crate::agent::tools::review_context::build_review_payload(
+        context,
+        None,
+        CommandReviewTarget::Mcp {
             workspace_path: context.workspace.display().to_string(),
             tool_name: name.to_string(),
         },
-        command: format!("调用 MCP 工具 `{name}`，参数 JSON：{args_json}"),
-        stdin: None,
-    };
+        format!("调用 MCP 工具 `{name}`，参数 JSON：{args_json}"),
+        None,
+    );
     match review_shell_command(review_config, &payload).await {
         Ok(verdict) if verdict.allowed => None,
-        Ok(verdict) => Some(format!(
-            "错误：MCP 工具 `{name}` 调用被安全审查拦截：{}",
-            verdict.reason
+        Ok(verdict) => Some(crate::agent::ssh_review::with_confirm_guidance(
+            format!("错误：MCP 工具 `{name}` 调用被安全审查拦截：{}", verdict.reason),
+            &verdict.reason,
         )),
         Err(error) => Some(format!(
             "错误：MCP 工具 `{name}` 安全审查异常，已拒绝执行：{error}"

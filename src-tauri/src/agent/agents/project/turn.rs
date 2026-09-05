@@ -289,6 +289,10 @@ impl RunLoopAgent for OrchestratorAgent {
                 "已达到最大工具迭代次数（{}），本轮聊天被终止。请检查模型是否陷入工具调用循环。",
                 self.config.max_tool_iterations
             ),
+            RuntimeAgentKind::Architecture => format!(
+                "已达到最大工具迭代次数（{}），本轮画布操作被终止。请检查模型是否陷入工具调用循环。",
+                self.config.max_tool_iterations
+            ),
         }
     }
 }

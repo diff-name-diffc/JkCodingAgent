@@ -73,7 +73,7 @@ impl SubAgentRuntime {
     /// 收口条件：模型返回无工具调用的最终答复，或超时，或达到最大迭代次数。
     /// 工具错误处理：首次失败允许重试，再次失败则强制要求模型给出最终结论（force_final_response）。
     pub async fn execute(
-        &self,
+        &mut self,
         task: &str,
         app_handle: Option<AppHandle>,
         session_id: &str,
@@ -85,12 +85,16 @@ impl SubAgentRuntime {
     /// 带取消信号的变体：图运行器在迭代边界检查取消标志，
     /// 命中后子智能体在当前迭代结束后退出（不强行打断进行中的单次请求/工具）。
     pub async fn execute_with_cancellation(
-        &self,
+        &mut self,
         task: &str,
         app_handle: Option<AppHandle>,
         session_id: &str,
         cancel_rx: Option<watch::Receiver<bool>>,
     ) -> Result<String> {
+        // 注入子智能体自己的任务到工具上下文：安全审查据此判断「是谁、为什么」
+        // 执行命令。子智能体继承父上下文，若不覆盖，审查只能看到父会话的用户
+        // 任务，与实际执行者的目标脱节。
+        self.tool_context.executor_task = Some(task.to_string());
         let start = Instant::now();
         let overall_timeout = Duration::from_secs(self.config.timeout_secs);
         let llm_request_timeout = Duration::from_secs(SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS);

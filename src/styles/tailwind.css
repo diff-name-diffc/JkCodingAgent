@@ -804,6 +804,280 @@
     background: linear-gradient(180deg, var(--sf-surface), var(--sf-surface-sunken));
   }
 
+  /* 架构设计画布容器：撑满 .ai-home-pane，给内部 .tl-container 的 100% 尺寸提供确定值 */
+  .ai-arch-canvas {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* 架构画布阻断面板（tldraw 生产许可门禁 / 渲染崩溃 / 意外关闭）：
+     铺满 .ai-arch-canvas，替代「画布无声消失」，展示原因与修复指引 */
+  .ai-arch-canvas-blocked {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 24px 32px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-muted);
+    background: var(--sf-surface);
+    overflow-y: auto;
+  }
+
+  .ai-arch-canvas-blocked-icon {
+    font-size: 26px;
+    line-height: 1;
+  }
+
+  .ai-arch-canvas-blocked-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text-secondary);
+  }
+
+  .ai-arch-canvas-blocked-message {
+    max-width: 560px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 1.8;
+    color: var(--text-hint);
+    word-break: break-word;
+  }
+
+  .ai-arch-canvas-blocked-stack {
+    width: 100%;
+    max-width: 560px;
+    max-height: 140px;
+    overflow: auto;
+    padding: 8px 10px;
+    border: 1px solid var(--border-dim);
+    border-radius: 6px;
+    background: var(--sf-surface-sunken);
+    color: var(--text-hint);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    text-align: left;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  /* ── 架构设计：画布 + 助手面板分栏 ─────────────────────────────── */
+
+  .ai-arch-shell {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  .ai-arch-chat-resizer {
+    flex: 0 0 5px;
+    cursor: col-resize;
+    z-index: 10;
+  }
+
+  .ai-arch-chat-aside {
+    flex-shrink: 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--border-dim);
+    background: var(--sf-surface);
+  }
+
+  .ai-arch-chat-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  .ai-arch-chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px 6px;
+    flex-shrink: 0;
+  }
+
+  .ai-arch-chat-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+  }
+
+  .ai-arch-chat-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .ai-arch-model-selector {
+    max-width: 150px;
+  }
+
+  .ai-arch-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    transition: background 0.15s var(--motion-ease), color 0.15s var(--motion-ease);
+    flex-shrink: 0;
+  }
+
+  .ai-arch-icon-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .ai-arch-icon-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .ai-arch-chat-toggles {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 12px 8px;
+    flex-shrink: 0;
+  }
+
+  .ai-arch-perception-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--border-dim);
+    font-size: 11px;
+    color: var(--text-hint);
+    transition: all 0.15s var(--motion-ease);
+  }
+
+  .ai-arch-perception-toggle.is-active {
+    color: var(--accent);
+    border-color: rgb(var(--accent-rgb) / 0.45);
+    background: rgb(var(--accent-rgb) / 0.08);
+  }
+
+  .ai-arch-chat-messages {
+    flex: 1;
+    min-height: 0;
+    padding: 0 12px;
+  }
+
+  .ai-arch-chat-input-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 10px 12px 12px;
+    flex-shrink: 0;
+  }
+
+  .ai-arch-chat-error {
+    margin: 0 12px 8px;
+    padding: 6px 10px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    line-height: 1.5;
+    flex-shrink: 0;
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    color: var(--danger);
+  }
+
+  .ai-arch-chat-input {
+    flex: 1;
+    min-width: 0;
+    resize: none;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-dim);
+    background: var(--bg-subtle);
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 8px 10px;
+    outline: none;
+    transition: border-color 0.15s var(--motion-ease);
+  }
+
+  .ai-arch-chat-input:focus {
+    border-color: rgb(var(--accent-rgb) / 0.55);
+  }
+
+  .ai-arch-chat-input::placeholder {
+    color: var(--text-hint);
+  }
+
+  .ai-arch-send-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border-radius: var(--radius-md);
+    background: var(--accent);
+    color: var(--text-on-accent);
+    transition: opacity 0.15s var(--motion-ease);
+  }
+
+  .ai-arch-send-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .ai-arch-send-btn.is-stop {
+    background: var(--danger);
+  }
+
+  /* 折叠后的窄条：竖排标签 + 展开按钮 */
+  .ai-arch-chat-dock {
+    flex: 0 0 44px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 0;
+    border-left: 1px solid var(--border-dim);
+    background: var(--sf-surface);
+    color: var(--text-muted);
+    transition: background 0.15s var(--motion-ease), color 0.15s var(--motion-ease);
+  }
+
+  .ai-arch-chat-dock:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .ai-arch-chat-dock-label {
+    writing-mode: vertical-rl;
+    font-size: 12px;
+    letter-spacing: 2px;
+    color: var(--text-hint);
+  }
+
   .ai-home-projects {
     gap: 18px;
     padding: 24px;

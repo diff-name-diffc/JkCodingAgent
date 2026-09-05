@@ -40,7 +40,7 @@ const SUB_AGENT_TOOL_NAMES: [&str; 2] = ["list_sub_agents", "call_sub_agent"];
 
 mod adapter;
 mod context;
-mod policy;
+pub(crate) mod policy;
 mod tool_batch;
 
 use adapter::{emit_stop_and_finish, empty_plain_chat_response_error};
@@ -473,6 +473,10 @@ impl RunLoopAgent for PlainChatAgent {
             ),
             RuntimeAgentKind::Project => format!(
                 "已达到最大工具迭代次数（{}），本轮执行被终止。",
+                self.config.max_tool_iterations
+            ),
+            RuntimeAgentKind::Architecture => format!(
+                "已达到最大工具迭代次数（{}），本轮画布操作被终止。",
                 self.config.max_tool_iterations
             ),
         }

@@ -26,6 +26,8 @@ export interface ModelSelectorProps {
   /** 触发按钮展示名；绑定指向库外旧配置时回退展示其模型名。 */
   activeLabel?: string;
   onSelect: (entryId: string) => void;
+  /** 下拉菜单标题，默认「聊天模型」（架构助手等复用方传各自文案）。 */
+  menuLabel?: string;
   className?: string;
   disabled?: boolean;
 }
@@ -35,6 +37,7 @@ export function ModelSelector({
   activeEntryId,
   activeLabel,
   onSelect,
+  menuLabel = "聊天模型",
   className,
   disabled,
 }: ModelSelectorProps) {
@@ -54,7 +57,7 @@ export function ModelSelector({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[220px]">
-        <DropdownMenuLabel>聊天模型</DropdownMenuLabel>
+        <DropdownMenuLabel>{menuLabel}</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {models.length === 0 && (
           <div className="px-2 py-3 text-xs text-muted-foreground">暂无可用模型</div>

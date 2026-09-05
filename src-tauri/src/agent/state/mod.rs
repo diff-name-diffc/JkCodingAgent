@@ -2,9 +2,10 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::agents::{OrchestratorAgent, PlainChatAgent};
+use super::agents::{ArchitectureAgent, OrchestratorAgent, PlainChatAgent};
 use super::config::DispatcherAgentConfig;
 use super::db::{AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb};
+use super::llm::OpenAiCompatProvider;
 use super::sub_agent::db::ToolInfo;
 use super::sub_agent::SubAgentManager;
 use super::tools::ToolRegistry;
@@ -17,7 +18,7 @@ mod tool_catalog;
 
 use generation::GenerationGate;
 pub(crate) use generation::GenerationGuard;
-use run::{ActiveRunHandle, ActiveRunStore, GraphRunRegistry};
+use run::{ActiveRunHandle, ActiveRunStore, ArchRunRegistry, GraphRunRegistry};
 
 pub(crate) use run::GraphRunHandle;
 use tool_catalog::{tool_infos_from_registry, ToolCatalog};
@@ -39,6 +40,7 @@ pub struct DispatcherState {
     services: AgentServices,
     active_runs: ActiveRunStore,
     graph_runs: GraphRunRegistry,
+    arch_runs: ArchRunRegistry,
     title_generations: GenerationGate,
     keywords_generations: GenerationGate,
     tools: ToolCatalog,
@@ -110,6 +112,7 @@ impl DispatcherState {
             },
             active_runs: ActiveRunStore::default(),
             graph_runs: GraphRunRegistry::default(),
+            arch_runs: ArchRunRegistry::default(),
             title_generations: GenerationGate::default(),
             keywords_generations: GenerationGate::default(),
             tools: ToolCatalog::new(initial_tool_names),
@@ -208,6 +211,84 @@ impl DispatcherState {
         }
 
         Ok(agent)
+    }
+
+    /// 构建架构设计视觉 Agent：主模型即视觉模型（面板可选模型库条目，
+    /// 缺省回退设置中视觉用途绑定），不走聊天分类配置。
+    ///
+    /// 模型解析链：前端指定的库条目（须为启用的视觉分类条目且凭据完整）
+    /// → 视觉用途槽位 active 条目（get_settings_v2 已回填库凭据）→ 报错。
+    pub(crate) async fn build_architecture_agent(
+        &self,
+        model_library_id: Option<&str>,
+    ) -> std::result::Result<ArchitectureAgent, String> {
+        let db = self.services.db.clone();
+        let settings = tokio::task::spawn_blocking(move || db.get_settings_v2())
+            .await
+            .map_err(|error| format!("错误：加载架构助手设置任务失败：{error}"))?
+            .map_err(|error| format!("错误：加载架构助手设置失败：{error}"))?;
+
+        // api_key 不参与判定：本地 OpenAI 兼容端点（Ollama / LM Studio 等）
+        // 允许空 key，url 与 model 非空即可构建 provider；云端端点若漏配
+        // key，错误由首次请求的鉴权失败显式报出，不在构建期拦截。
+        let endpoint_ready = |_: &String, url: &String, model: &String| {
+            !url.trim().is_empty() && !model.trim().is_empty()
+        };
+
+        let explicit_entry = model_library_id.and_then(|id| {
+            settings
+                .model_library
+                .iter()
+                .find(|entry| entry.id == id && entry.category == "vision" && entry.enabled)
+        });
+        // 显式指定的条目存在但配置不完整（URL/模型名为空）：记录下来，
+        // 整条解析链失败时给出「配置不完整」的精确错误而非笼统的「未配置」。
+        let explicit_incomplete = explicit_entry
+            .is_some_and(|entry| !endpoint_ready(&entry.api_key, &entry.url, &entry.model));
+
+        let chosen = explicit_entry
+            .map(|entry| {
+                (
+                    entry.api_key.clone(),
+                    entry.url.clone(),
+                    entry.model.clone(),
+                )
+            })
+            .filter(|(api_key, url, model)| endpoint_ready(api_key, url, model))
+            .or_else(|| {
+                settings
+                    .shared
+                    .vision_model_configs
+                    .iter()
+                    .find(|config| config.active)
+                    .or_else(|| settings.shared.vision_model_configs.first())
+                    .map(|config| {
+                        (
+                            config.api_key.clone(),
+                            config.url.clone(),
+                            config.model.clone(),
+                        )
+                    })
+                    .filter(|(api_key, url, model)| endpoint_ready(api_key, url, model))
+            })
+            .ok_or_else(|| {
+                if explicit_incomplete {
+                    "错误：所选视觉模型的 URL 或模型名为空，且没有可用的视觉用途默认模型。请在设置中心「模型服务」补全后重试。"
+                        .to_string()
+                } else {
+                    "错误：未配置视觉模型。请在设置中心「模型服务」添加视觉模型后重试。".to_string()
+                }
+            })?;
+
+        let config = self.services.config.clone();
+        let provider = OpenAiCompatProvider::new(
+            chosen.0,
+            chosen.1,
+            chosen.2,
+            config.max_tokens,
+            config.temperature,
+        );
+        Ok(ArchitectureAgent::new(config, provider))
     }
 
     pub(crate) async fn list_agent_tools(
@@ -325,6 +406,24 @@ impl DispatcherState {
     /// 恢复暂停中（高危写检查点）的图运行。
     pub(crate) fn resume_graph_run(&self, plan_id: &str) -> bool {
         self.graph_runs.resume(plan_id)
+    }
+
+    /// 登记一次架构画布程序执行，返回 (run_id, 报告接收端)。
+    /// 由 architecture_run 工具调用；前端执行完经
+    /// `architecture_run_complete` 命令调 `complete_arch_run` 解除等待。
+    pub(crate) fn begin_arch_run(&self) -> (String, tokio::sync::oneshot::Receiver<String>) {
+        self.arch_runs.begin()
+    }
+
+    /// 前端回传画布程序执行报告。条目不存在（超时清槽/重复回传）或接收端
+    /// 已关闭时返回 false，调用方无需处理（无副作用）。
+    pub(crate) fn complete_arch_run(&self, run_id: &str, report: String) -> bool {
+        self.arch_runs.complete(run_id, report)
+    }
+
+    /// architecture_run 工具超时/取消路径的显式清槽。
+    pub(crate) fn remove_arch_run(&self, run_id: &str) {
+        self.arch_runs.remove(run_id)
     }
 
     /// 开始新一代标题生成，返回代际守卫（G11-13：守卫 Drop 自动结算条目）。

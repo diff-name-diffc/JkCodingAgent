@@ -290,22 +290,28 @@ impl ToolRegistry {
                 .expect("dynamic validator assigned")
         };
 
-        let errors = validator
-            .iter_errors(&effective_arguments)
+        // 先全量收集再截断：total 必须反映真实错误总数——此前在 take(16)
+        // 之后统计，「…共 N 处错误」最多只能报 16。
+        let all_errors: Vec<_> = validator.iter_errors(&effective_arguments).collect();
+        let total = all_errors.len();
+        let errors: Vec<_> = all_errors
+            .into_iter()
             .take(16)
             .map(|error| {
                 let instance_path = error.instance_path().to_string();
                 json!({
                     "path": if instance_path.is_empty() { "/" } else { instance_path.as_str() },
                     "schemaPath": error.schema_path().to_string(),
-                    "message": error.to_string(),
+                    "message": describe_validation_error(&error),
                 })
             })
-            .collect::<Vec<_>>();
+            .collect();
         if !errors.is_empty() {
-            let summary = errors
+            // 摘要最多列 8 处：错误一次报全，模型单轮重试即可修完，
+            // 避免「改一处、报一处」的逐条挤牙膏式重试。
+            let mut summary = errors
                 .iter()
-                .take(3)
+                .take(MAX_SUMMARIZED_ERRORS)
                 .map(|error| {
                     format!(
                         "{}: {}",
@@ -315,6 +321,9 @@ impl ToolRegistry {
                 })
                 .collect::<Vec<_>>()
                 .join("；");
+            if total > MAX_SUMMARIZED_ERRORS {
+                summary.push_str(&format!("；…共 {total} 处错误"));
+            }
             let mut result = ToolResult::recoverable_error(format!(
                 "错误：工具 '{tool_name}' 参数不符合 JSON Schema：{summary}"
             ));
@@ -362,6 +371,55 @@ impl ToolRegistry {
 fn compile_builtin_schema(name: &str, schema: &Value) -> jsonschema::Validator {
     jsonschema::draft202012::new(schema)
         .unwrap_or_else(|error| panic!("invalid JSON Schema for builtin tool '{name}': {error}"))
+}
+
+/// 参数校验错误摘要最多列出的条数（完整明细仍在 metadata.errors）。
+const MAX_SUMMARIZED_ERRORS: usize = 8;
+
+/// 校验错误的人类/模型可读描述。
+///
+/// oneOf/anyOf 的顶层消息（「is not valid under any of the schemas listed in
+/// the 'oneOf' keyword」）对修复毫无指引——判别式联合（如指令的 `_type`）
+/// 通常只有一个分支接近匹配，该分支的子错误（如「Additional properties are
+/// not allowed ('labelPosition' was unexpected)」）才是真正可操作的失败原因。
+/// 这里展开「错误最少的分支」的子错误作为消息，让模型一轮即可定位字段。
+fn describe_validation_error(error: &jsonschema::ValidationError<'_>) -> String {
+    let context = match error.kind() {
+        jsonschema::error::ValidationErrorKind::OneOfNotValid { context }
+        | jsonschema::error::ValidationErrorKind::AnyOf { context } => context,
+        _ => return error.to_string(),
+    };
+    let Some(closest) = context
+        .iter()
+        .filter(|branch| !branch.is_empty())
+        .min_by_key(|branch| (discriminator_penalty(branch), branch.len()))
+    else {
+        return error.to_string();
+    };
+    let detail = closest
+        .iter()
+        .take(3)
+        .map(|sub_error| sub_error.to_string())
+        .collect::<Vec<_>>()
+        .join("; ");
+    if closest.len() > 3 {
+        format!("{detail}; …共 {} 处", closest.len())
+    } else {
+        detail
+    }
+}
+
+/// 分支降权：子错误里带 `_type` 常量失配（判别式对不上）的分支几乎不可能
+/// 是模型想表达的分支——正确分支的该计数恒为 0，`_type` 拼写错误时所有
+/// 分支都会带一条。平局时先比降权再比错误数，避免固定命中声明顺序靠前的
+/// 分支而给出误导性修复指引。
+fn discriminator_penalty(branch: &[jsonschema::ValidationError<'_>]) -> usize {
+    branch
+        .iter()
+        // 分支子错误携带从校验根起的完整路径（如 "/item/_type"），
+        // 故按后缀匹配判别式字段，而非相对路径。
+        .filter(|error| error.instance_path().to_string().ends_with("/_type"))
+        .count()
 }
 
 /// JSON Schema 的 default 是注解，不会由 validator 自动写入实例。
@@ -499,6 +557,8 @@ mod tests {
             mcp_scope: McpScope::Global,
             session_title: "test".to_string(),
             user_task: None,
+            executor_task: None,
+            review_conversation: None,
             ssh_review: None,
             exec_timeout_secs: 60,
             restrict_to_workspace: true,
@@ -604,6 +664,189 @@ mod tests {
         assert!(error.metadata["errors"]
             .as_array()
             .is_some_and(|v| !v.is_empty()));
+    }
+
+    /// oneOf 判别式联合的参数错误必须展开为「最接近分支」的字段级子错误，
+    /// 而不是笼统的 "is not valid under any of the schemas listed in the 'oneOf' keyword"——
+    /// 后者让模型无从修起，曾导致画布程序反复重试。
+    #[test]
+    fn prepare_input_expands_oneof_errors_to_closest_branch_details() {
+        struct OneOfTool;
+        #[async_trait]
+        impl AgentTool for OneOfTool {
+            fn name(&self) -> &'static str {
+                "one_of_tool"
+            }
+            fn description(&self) -> &'static str {
+                "oneof test tool"
+            }
+            fn parameters(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "required": ["item"],
+                    "properties": {
+                        "item": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["_type", "name"],
+                                    "properties": {
+                                        "_type": { "const": "alpha" },
+                                        "name": { "type": "string" },
+                                    },
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["_type", "count"],
+                                    "properties": {
+                                        "_type": { "const": "beta" },
+                                        "count": { "type": "integer" },
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                })
+            }
+            async fn execute(&self, _args: &Value, _context: &ToolContext) -> ToolResult {
+                ToolResult::success_text("ok")
+            }
+        }
+
+        let registry = ToolRegistry::new(vec![Box::new(OneOfTool)]);
+        // _type=beta 但多带了 alpha 分支的 name 字段：最接近分支是 beta，
+        // 子错误应精确指出 name 不合法。
+        let error = registry
+            .prepare_input(
+                &McpScope::Global,
+                "one_of_tool",
+                &json!({ "item": { "_type": "beta", "count": 2, "name": "x" } }),
+                false,
+            )
+            .unwrap_err();
+
+        let message = error.display.clone();
+        assert!(
+            !message.contains("not valid under any of the schemas"),
+            "不应再暴露笼统的 oneOf 消息：{message}"
+        );
+        assert!(message.contains("name"), "应展开到具体字段：{message}");
+        let detail = error.metadata["errors"][0]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(detail.contains("name"), "{detail}");
+    }
+
+    /// 分支错误数打平时不得固定命中声明顺序靠前的分支：判别式 `_type`
+    /// 匹配的分支优先——否则声明在前的分支会在平局时抢走错误消息，
+    /// 给出误导性修复指引（拿 alpha 分支的 count 说事，而模型想要 beta）。
+    #[test]
+    fn prepare_input_prefers_discriminator_matching_branch_on_tie() {
+        struct TieTool;
+        #[async_trait]
+        impl AgentTool for TieTool {
+            fn name(&self) -> &'static str {
+                "tie_tool"
+            }
+            fn description(&self) -> &'static str {
+                "tie-break test tool"
+            }
+            fn parameters(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "required": ["item"],
+                    "properties": {
+                        "item": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["_type", "name"],
+                                    "properties": {
+                                        "_type": { "const": "alpha" },
+                                        "name": { "type": "string" },
+                                    },
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["_type", "count", "extra"],
+                                    "properties": {
+                                        "_type": { "const": "beta" },
+                                        "count": { "type": "integer" },
+                                        "extra": { "type": "string" },
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                })
+            }
+            async fn execute(&self, _args: &Value, _context: &ToolContext) -> ToolResult {
+                ToolResult::success_text("ok")
+            }
+        }
+
+        let registry = ToolRegistry::new(vec![Box::new(TieTool)]);
+        // _type=beta：beta 分支（多余 name + 缺 extra）与 alpha 分支（多余
+        // count + _type 失配）各 2 处错误打平，但只有 beta 与判别式一致。
+        let error = registry
+            .prepare_input(
+                &McpScope::Global,
+                "tie_tool",
+                &json!({ "item": { "_type": "beta", "count": 2, "name": "x" } }),
+                false,
+            )
+            .unwrap_err();
+
+        let message = error.display.clone();
+        assert!(
+            message.contains("name") || message.contains("extra"),
+            "应指向 beta 分支的字段问题：{message}"
+        );
+        assert!(
+            !message.contains("count"),
+            "不应误报 alpha 分支才有的 count 问题：{message}"
+        );
+    }
+
+    /// 端到端：模型拿 update_shape 改箭头 labelPosition（历史真实故障）时，
+    /// 错误消息必须直接点出 labelPosition 字段，而不是笼统的 oneOf 文本。
+    #[test]
+    fn architecture_run_reports_labelposition_field_error() {
+        let registry = ToolRegistry::architecture_tools();
+        let error = registry
+            .prepare_input(
+                &McpScope::Global,
+                "architecture_run",
+                &json!({
+                    "program": {
+                        "version": 1,
+                        "instructions": [
+                            {
+                                "_type": "update_shape",
+                                "labelPosition": 0.3,
+                                "target": "shape:jIpSCG3QVzhAw6bjPa2iw"
+                            },
+                        ],
+                    },
+                }),
+                false,
+            )
+            .unwrap_err();
+        assert!(
+            error.display.contains("labelPosition"),
+            "错误应点出具体字段：{}",
+            error.display
+        );
+        assert!(
+            !error.display.contains("not valid under any of the schemas"),
+            "不应保留笼统 oneOf 文本：{}",
+            error.display
+        );
     }
 
     #[test]

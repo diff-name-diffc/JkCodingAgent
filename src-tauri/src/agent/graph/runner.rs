@@ -308,6 +308,10 @@ async fn run_graph(
         mcp_scope,
         session_title,
         user_task: Some(user_requirement.clone()),
+        // 图节点经外部 PI sidecar 执行，不经过进程内审查链路；
+        // 审查上下文字段保留空值即可。
+        executor_task: None,
+        review_conversation: None,
         ssh_review: settings
             .review
             .is_configured()

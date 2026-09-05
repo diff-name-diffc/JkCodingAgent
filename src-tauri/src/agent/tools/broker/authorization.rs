@@ -6,20 +6,19 @@ impl CapabilityBroker<'_> {
         invocation: &CapabilityInvocation,
         spec: &super::super::ToolSpec,
         effective_arguments: &Value,
-    ) -> Result<Value, ToolResult> {
-        let resource_scope = self
-            .authorize_resource_scope(invocation, spec, effective_arguments)
-            .map_err(|result| *result)?;
+    ) -> Result<Value, Box<ToolResult>> {
+        let resource_scope =
+            self.authorize_resource_scope(invocation, spec, effective_arguments)?;
         let mut decision = match spec.safety {
             ToolSafety::Safe => json!({
                 "safety": "safe",
                 "decision": "allow",
             }),
             ToolSafety::Dangerous => {
-                return Err(ToolResult::fatal_error(format!(
+                return Err(Box::new(ToolResult::fatal_error(format!(
                     "错误：工具 '{}' 被策略标记为 dangerous，运行时默认拒绝执行。",
                     invocation.name
-                )))
+                ))))
             }
             ToolSafety::ReviewRequired if spec.review_self_managed => {
                 // 命令类工具（exec / local_zsh / ssh_exec）在内部携带完整目标环境
@@ -34,49 +33,55 @@ impl CapabilityBroker<'_> {
             }
             ToolSafety::ReviewRequired => {
                 let Some(config) = self.context.ssh_review.as_ref() else {
-                    return Err(ToolResult::recoverable_error(format!(
+                    return Err(Box::new(ToolResult::recoverable_error(format!(
                         "错误：工具 '{}' 需要安全审查，但当前执行上下文未配置审查模型，已按 fail-closed 拒绝。",
                         invocation.name
-                    )));
+                    ))));
                 };
                 let arguments = serde_json::to_string(effective_arguments).map_err(|error| {
-                    ToolResult::recoverable_error(format!(
+                    Box::new(ToolResult::recoverable_error(format!(
                         "错误：工具 '{}' 的审查参数无法序列化：{error}",
                         invocation.name
-                    ))
+                    )))
                 })?;
-                let payload = CommandReviewPayload {
-                    intent: self.context.session_title.clone(),
-                    task: self.context.user_task.clone().unwrap_or_default(),
-                    target: CommandReviewTarget::AgentTool {
-                        workspace_path: self.context.workspace.display().to_string(),
-                        tool_name: invocation.name.clone(),
-                        provider: spec.provider.clone(),
-                        policy_summary: format!(
-                            "readonly={}, workspaceBound={}, network={}, mutatesFilesystem={}, mutatesExternalState={}, resourceScope={}",
-                            spec.access.readonly,
-                            spec.access.workspace_bound,
-                            spec.access.requires_network,
-                            spec.access.mutates_filesystem,
-                            spec.access.mutates_external_state,
-                            resource_scope,
-                        ),
-                    },
-                    command: arguments,
-                    stdin: None,
-                };
+                let payload =
+                    crate::agent::tools::review_context::build_review_payload(
+                        self.context,
+                        None,
+                        CommandReviewTarget::AgentTool {
+                            workspace_path: self.context.workspace.display().to_string(),
+                            tool_name: invocation.name.clone(),
+                            provider: spec.provider.clone(),
+                            policy_summary: format!(
+                                "readonly={}, workspaceBound={}, network={}, mutatesFilesystem={}, mutatesExternalState={}, resourceScope={}",
+                                spec.access.readonly,
+                                spec.access.workspace_bound,
+                                spec.access.requires_network,
+                                spec.access.mutates_filesystem,
+                                spec.access.mutates_external_state,
+                                resource_scope,
+                            ),
+                        },
+                        arguments,
+                        None,
+                    );
                 let verdict = review_shell_command(config, &payload)
                     .await
                     .map_err(|error| {
-                        ToolResult::recoverable_error(format!(
+                        Box::new(ToolResult::recoverable_error(format!(
                             "错误：工具 '{}' 安全审查失败，已拒绝执行：{error}",
                             invocation.name
-                        ))
+                        )))
                     })?;
                 if !verdict.allowed {
-                    return Err(ToolResult::recoverable_error(format!(
-                        "错误：工具 '{}' 已被安全审查拦截：{}",
-                        invocation.name, verdict.reason
+                    return Err(Box::new(ToolResult::recoverable_error(
+                        crate::agent::ssh_review::with_confirm_guidance(
+                            format!(
+                                "错误：工具 '{}' 已被安全审查拦截：{}",
+                                invocation.name, verdict.reason
+                            ),
+                            &verdict.reason,
+                        ),
                     )));
                 }
                 json!({

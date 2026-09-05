@@ -106,6 +106,10 @@ pub async fn project_delete(
     let result = tokio::task::spawn_blocking(move || {
         let plan = db.delete_project(&project_id)?;
         crate::agent::db::projects::cleanup_project_files(&plan);
+        // 会话资源清理规范：被删会话的内存状态（命令执行台账）同步回收。
+        for session_id in &plan.deleted_session_ids {
+            crate::agent::command_history::forget_session(session_id);
+        }
         anyhow::Ok(ProjectDeleteResult {
             deleted_session_ids: plan.deleted_session_ids,
         })

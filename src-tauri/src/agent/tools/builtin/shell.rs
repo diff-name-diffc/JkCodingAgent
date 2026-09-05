@@ -8,7 +8,8 @@ use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
 
 use super::common::{is_dangerous, string_arg, with_compression_parameters};
-use crate::agent::ssh_review::{review_shell_command, CommandReviewPayload, CommandReviewTarget};
+use crate::agent::command_history::{self, CommandHistoryStatus};
+use crate::agent::ssh_review::{review_shell_command, with_confirm_guidance, CommandReviewTarget};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 use crate::agent::tools::{ToolAction, ToolResult};
@@ -65,14 +66,47 @@ impl AgentTool for ExecTool {
                 return "错误：缺少必填参数 command".to_string();
             };
             if is_dangerous(&command) {
+                command_history::record(
+                    &context.workspace_id,
+                    "exec",
+                    "工作区",
+                    &command,
+                    CommandHistoryStatus::Blocked,
+                    "命中工具内置危险命令黑名单",
+                );
                 return format!("错误：基于安全策略已拦截命令：{command}");
             }
             // 安全审查门禁（fail-closed）：与 local_zsh/ssh_exec 同链路。
             // 未配置审查、审查异常或判定不通过一律拒绝执行。
             match review_exec_command(args, context, &command).await {
                 Ok(review) if review.allowed => {}
-                Ok(review) => return format!("错误：命令已被安全审查拦截：{}", review.reason),
-                Err(error) => return format!("错误：{error}"),
+                Ok(review) => {
+                    command_history::record(
+                        &context.workspace_id,
+                        "exec",
+                        "工作区",
+                        &command,
+                        CommandHistoryStatus::Blocked,
+                        &review.reason,
+                    );
+                    return with_confirm_guidance(
+                        format!("错误：命令已被安全审查拦截：{}", review.reason),
+                        &review.reason,
+                    );
+                }
+                Err(error) => {
+                    // 与黑名单/review-denied 路径一致：审查异常（含未配置审查）
+                    // 导致的阻断也登记台账。
+                    command_history::record(
+                        &context.workspace_id,
+                        "exec",
+                        "工作区",
+                        &command,
+                        CommandHistoryStatus::Blocked,
+                        &error,
+                    );
+                    return format!("错误：{error}");
+                }
             }
             let timeout_secs = context.exec_timeout_secs.max(1);
 
@@ -130,10 +164,31 @@ impl AgentTool for ExecTool {
                 result.push_str(&format!("\n\n[退出状态：{}]", captured.output.status));
             }
             if result.is_empty() {
-                "[命令已完成，无输出]".to_string()
-            } else {
-                result
+                result.push_str("[命令已完成，无输出]");
             }
+            // 命令台账：供后续命令的安全审查判断来龙去脉（如清理本任务派生的进程）。
+            let history_note = if captured.timed_out {
+                format!("超时终止（{timeout_secs}s）")
+            } else if captured.cancelled {
+                "已取消".to_string()
+            } else {
+                let exit = captured
+                    .output
+                    .status
+                    .code()
+                    .map(|code| format!("exit={code}"))
+                    .unwrap_or_else(|| format!("exit={}", captured.output.status));
+                format!("{exit}；输出：{result}")
+            };
+            command_history::record(
+                &context.workspace_id,
+                "exec",
+                "工作区",
+                &command,
+                CommandHistoryStatus::Executed,
+                &history_note,
+            );
+            result
         }
         .await;
 
@@ -158,19 +213,15 @@ async fn review_exec_command(
             "未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。".to_string(),
         );
     };
-    let intent = string_arg(args, "compress_intent")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| context.session_title.clone());
-    let payload = CommandReviewPayload {
-        intent,
-        task: context.user_task.clone().unwrap_or_default(),
-        target: CommandReviewTarget::WorkspaceShell {
+    let payload = crate::agent::tools::review_context::build_review_payload(
+        context,
+        Some(args),
+        CommandReviewTarget::WorkspaceShell {
             workspace_path: context.workspace.display().to_string(),
         },
-        command: command.to_string(),
-        stdin: None,
-    };
+        command.to_string(),
+        None,
+    );
     review_shell_command(review_config, &payload)
         .await
         .map(|verdict| SshAuditReview {

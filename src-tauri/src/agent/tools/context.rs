@@ -26,6 +26,12 @@ pub struct ToolContext {
     pub session_title: String,
     /// 当前用户任务（最新一条用户消息文本），供 SSH 安全审查等场景使用。
     pub user_task: Option<String>,
+    /// 本轮实际执行者自己的任务指令（如子智能体被派发的 task），供安全审查
+    /// 判定「是谁、为什么执行这条命令」。None 或与 user_task 相同时不送审。
+    pub executor_task: Option<String>,
+    /// 预先渲染的最近对话文本（`ssh_review::render_dialogue_for_review` 产物），
+    /// 作为安全审查的「对话上下文」。None 表示未加载（读取失败降级或无历史）。
+    pub review_conversation: Option<String>,
     /// SSH 命令安全审查 AI 配置；None 表示未配置，跳过审查。
     /// 内含模型 API Key，Debug 输出已脱敏。
     pub ssh_review: Option<SshReviewConfig>,
@@ -123,6 +129,11 @@ impl std::fmt::Debug for ToolContext {
             .field("mcp_scope", &self.mcp_scope)
             .field("session_title", &self.session_title)
             .field("user_task", &self.user_task)
+            .field("executor_task", &self.executor_task)
+            .field(
+                "review_conversation",
+                &self.review_conversation.as_ref().map(|s| s.chars().count()),
+            )
             .field(
                 "ssh_review",
                 &self
@@ -188,6 +199,8 @@ mod tests {
             mcp_scope: crate::mcp::McpScope::Global,
             session_title: "t".to_string(),
             user_task: None,
+            executor_task: None,
+            review_conversation: None,
             ssh_review: None,
             exec_timeout_secs: 60,
             restrict_to_workspace: true,

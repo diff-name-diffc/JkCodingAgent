@@ -15,6 +15,8 @@ use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
 
 use super::common::{string_arg, with_compression_parameters};
+use crate::agent::command_history::{self, CommandHistoryStatus};
+use crate::agent::ssh_review::with_confirm_guidance;
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 use crate::agent::tools::ToolResult;
@@ -103,6 +105,14 @@ impl AgentTool for LocalZshTool {
                 return "错误：command 不能为空".to_string();
             }
             if let Some(reason) = blacklist_reason(&command) {
+                command_history::record(
+                    &context.workspace_id,
+                    "local_zsh",
+                    "本地 zsh",
+                    &command,
+                    CommandHistoryStatus::Blocked,
+                    &format!("命中内置黑名单：{reason}"),
+                );
                 return format!("错误：local_zsh 已拦截命令：{reason}\n命令：{command}");
             }
 
@@ -129,6 +139,15 @@ impl AgentTool for LocalZshTool {
             let review = match review_local_command(args, context, &run_dir, &command).await {
                 Ok(review) => review,
                 Err(error) => {
+                    // 与黑名单/review-denied 路径一致：审查异常导致的阻断也登记台账。
+                    command_history::record(
+                        &session_id,
+                        "local_zsh",
+                        "本地 zsh",
+                        &command,
+                        CommandHistoryStatus::Blocked,
+                        &error,
+                    );
                     let blocked = crate::ssh_tool::SshAuditReview {
                         allowed: false,
                         reason: error.clone(),
@@ -144,7 +163,18 @@ impl AgentTool for LocalZshTool {
                 }
             };
             if !review.allowed {
-                let headline = format!("错误：命令已被安全审查拦截：{}", review.reason);
+                command_history::record(
+                    &session_id,
+                    "local_zsh",
+                    "本地 zsh",
+                    &command,
+                    CommandHistoryStatus::Blocked,
+                    &review.reason,
+                );
+                let headline = with_confirm_guidance(
+                    format!("错误：命令已被安全审查拦截：{}", review.reason),
+                    &review.reason,
+                );
                 return blocked_command_response(&run_dir, &session_id, &command, review, headline)
                     .await;
             }
@@ -197,6 +227,34 @@ impl AgentTool for LocalZshTool {
                 output_truncated,
                 error: None,
             };
+
+            // 命令台账：供后续命令的安全审查判断来龙去脉（如清理本任务派生的进程）。
+            let history_note = if captured.timed_out {
+                format!("超时终止（{timeout_secs}s）")
+            } else if captured.cancelled {
+                "已取消".to_string()
+            } else {
+                let exit = captured
+                    .output
+                    .status
+                    .code()
+                    .map(|code| format!("exit={code}"))
+                    .unwrap_or_else(|| format!("exit={}", captured.output.status));
+                let excerpt = if !stdout.is_empty() {
+                    stdout.as_str()
+                } else {
+                    stderr.as_str()
+                };
+                format!("{exit}；输出：{excerpt}")
+            };
+            command_history::record(
+                &session_id,
+                "local_zsh",
+                "本地 zsh",
+                &command,
+                CommandHistoryStatus::Executed,
+                &history_note,
+            );
 
             let run_dir_for_audit = run_dir.clone();
             let session_id_for_history = session_id.clone();
@@ -344,20 +402,16 @@ async fn review_local_command(
         );
     };
 
-    let intent = string_arg(args, "compress_intent")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| context.session_title.clone());
-    let payload = crate::agent::ssh_review::CommandReviewPayload {
-        intent,
-        task: context.user_task.clone().unwrap_or_default(),
-        target: crate::agent::ssh_review::CommandReviewTarget::LocalZsh {
+    let payload = crate::agent::tools::review_context::build_review_payload(
+        context,
+        Some(args),
+        crate::agent::ssh_review::CommandReviewTarget::LocalZsh {
             workspace_path: context.workspace.display().to_string(),
             run_dir: run_dir.display().to_string(),
         },
-        command: command.to_string(),
-        stdin: None,
-    };
+        command.to_string(),
+        None,
+    );
 
     crate::agent::ssh_review::review_shell_command(review_config, &payload)
         .await

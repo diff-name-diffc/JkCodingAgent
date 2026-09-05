@@ -116,6 +116,8 @@ fn context() -> ToolContext {
         mcp_scope: crate::mcp::McpScope::Global,
         session_title: "test".to_string(),
         user_task: None,
+        executor_task: None,
+        review_conversation: None,
         ssh_review: None,
         exec_timeout_secs: 1,
         restrict_to_workspace: true,

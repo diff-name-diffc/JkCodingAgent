@@ -1,4 +1,5 @@
 mod analyze_image;
+mod architecture_run;
 mod browser;
 mod common;
 mod fetch_image;
@@ -64,4 +65,10 @@ pub(super) fn plain_chat_tools(ssh_manager: SshSessionManager) -> Vec<Box<dyn Ag
     tools.extend(browser::browser_tools());
     tools.extend(ssh::ssh_tools(ssh_manager));
     tools
+}
+
+/// 架构设计视觉 Agent 专用工具集：仅 architecture_run 一个画布操作工具。
+/// 不进 `builtin_tools` / `plain_chat_tools`（同 submit_graph 的专用注册约定）。
+pub(super) fn architecture_tools() -> Vec<Box<dyn AgentTool>> {
+    vec![architecture_run::architecture_run_tool()]
 }

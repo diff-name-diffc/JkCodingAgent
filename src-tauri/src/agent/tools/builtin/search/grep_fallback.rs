@@ -301,7 +301,7 @@ pub(super) fn split_grep_line<'a>(
 ) -> Option<(&'a str, u64, bool, &'a str)> {
     let bytes = line.as_bytes();
     let mut confirmed: Vec<(&'a str, u64, bool, &'a str)> = Vec::new();
-    for sep in [b':', b'-'] {
+    for sep in *b":-" {
         for i in 1..bytes.len() {
             if bytes[i] != sep {
                 continue;

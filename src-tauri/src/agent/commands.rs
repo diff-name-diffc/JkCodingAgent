@@ -39,6 +39,7 @@ mod session_metadata;
 #[cfg(test)]
 use session_metadata::latest_qa_pair;
 use session_metadata::{spawn_session_keywords_update, spawn_session_title_update};
+pub(crate) mod architecture_commands;
 pub(crate) mod category_commands;
 pub(crate) mod message_commands;
 pub(crate) mod model_commands;

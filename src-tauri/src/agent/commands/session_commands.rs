@@ -39,10 +39,16 @@ pub async fn chat_delete_session(
     session_id: String,
 ) -> Result<(), String> {
     let db = state.db().clone();
-    run_dispatcher_db("chat_delete_session", move || {
+    let session_for_cleanup = session_id.clone();
+    let result = run_dispatcher_db("chat_delete_session", move || {
         db.delete_chat_session(&session_id)
     })
-    .await
+    .await;
+    if result.is_ok() {
+        // 会话资源清理规范：会话级内存状态（命令执行台账）同步回收。
+        crate::agent::command_history::forget_session(&session_for_cleanup);
+    }
+    result
 }
 #[tauri::command]
 pub async fn chat_set_session_category_v6(
@@ -97,10 +103,16 @@ pub async fn project_delete_session(
     session_id: String,
 ) -> Result<(), String> {
     let db = state.db().clone();
-    run_dispatcher_db("project_delete_session", move || {
+    let session_for_cleanup = session_id.clone();
+    let result = run_dispatcher_db("project_delete_session", move || {
         db.delete_project_session(&session_id)
     })
-    .await
+    .await;
+    if result.is_ok() {
+        // 会话资源清理规范：会话级内存状态（命令执行台账）同步回收。
+        crate::agent::command_history::forget_session(&session_for_cleanup);
+    }
+    result
 }
 
 #[tauri::command]

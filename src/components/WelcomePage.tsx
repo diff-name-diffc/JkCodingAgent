@@ -8,6 +8,7 @@ import {
   Plus,
   Trash2,
   MessageCircle,
+  Workflow,
 } from "lucide-react";
 import type { Project } from "../types";
 import { shortenPath } from "../utils";
@@ -22,6 +23,12 @@ import appLogo from "../assets/app-logo.png";
 
 const HomeChatPage = lazy(() =>
   import("./HomeChatPage").then((module) => ({ default: module.HomeChatPage })),
+);
+
+const ArchitectureView = lazy(() =>
+  import("./architecture/ArchitectureView").then((module) => ({
+    default: module.ArchitectureView,
+  })),
 );
 
 function WelcomePaneFallback() {
@@ -89,7 +96,7 @@ export function WelcomePage({
   const [query, setQuery] = useState("");
   const [hov, setHov] = useState<string | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
-  const [view, setView] = useState<"projects" | "chat">("chat");
+  const [view, setView] = useState<"projects" | "chat" | "architecture">("chat");
 
   const filtered = useMemo(() => {
     if (!query.trim()) return projects;
@@ -126,6 +133,12 @@ export function WelcomePage({
               active={view === "projects"}
               onClick={() => setView("projects")}
             />
+            <SidebarItem
+              icon={<Workflow size={18} />}
+              label="架构设计"
+              active={view === "architecture"}
+              onClick={() => setView("architecture")}
+            />
           </nav>
 
           <div className="ai-home-nav-footer">
@@ -133,11 +146,19 @@ export function WelcomePage({
           </div>
         </div>
 
-        {view === "chat" ? (
+        {view === "chat" && (
           <Suspense fallback={<WelcomePaneFallback />}>
             <HomeChatPage />
           </Suspense>
-        ) : (
+        )}
+
+        {view === "architecture" && (
+          <Suspense fallback={<WelcomePaneFallback />}>
+            <ArchitectureView />
+          </Suspense>
+        )}
+
+        {view === "projects" && (
           <div className="ai-home-pane ai-home-projects">
             <div className="ai-home-search-row">
               <div className={`ai-field ai-home-search${searchFocused ? " is-focused" : ""}`}>

@@ -171,4 +171,39 @@ impl DispatcherDb {
         .optional()
         .context("load dispatcher visible message content")
     }
+
+    /// 拉取最近的用户/助手对话正文，供安全审查的「对话上下文」使用（时间正序）。
+    ///
+    /// 只取可见且未清上下文的消息；正文为空的行（如纯工具调用消息）在调用侧
+    /// 渲染时过滤。单条截断同样在调用侧完成。
+    pub fn get_recent_review_dialogue(
+        &self,
+        workspace_id: &str,
+        max_messages: usize,
+    ) -> Result<Vec<(String, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT role, segments_json
+             FROM dispatcher_messages
+             WHERE workspace_id = ?1
+               AND visible = 1
+               AND context_cleared = 0
+               AND role IN ('user', 'assistant')
+             ORDER BY rowid DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![workspace_id, max_messages as i64], |row| {
+            let role: String = row.get(0)?;
+            let segments_json: String = row.get(1)?;
+            Ok((
+                role,
+                segments_to_plain_text(&parse_segments_json(&segments_json)),
+            ))
+        })?;
+        let mut messages = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("load recent review dialogue")?;
+        messages.reverse();
+        Ok(messages)
+    }
 }

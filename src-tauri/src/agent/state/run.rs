@@ -1,7 +1,7 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// 每个 workspace 的运行状态。
 ///
@@ -248,9 +248,54 @@ impl GraphRunRegistry {
     }
 }
 
+/// 架构画布程序执行注册表：architecture_run 工具与前端画布执行器之间的
+/// 一次性请求/响应桥。
+///
+/// 工具侧 `begin` 登记 run_id → oneshot 接收端并 emit 事件；前端执行完画布
+/// 程序后经 `architecture_run_complete` 命令调 `complete` 解除等待。工具侧
+/// 超时/取消路径必须调 `remove` 清槽——此后迟到的 `complete` 找不到条目返回
+/// false，无副作用（天然幂等）。
+pub(super) struct ArchRunRegistry {
+    entries: Mutex<HashMap<String, oneshot::Sender<String>>>,
+}
+
+impl Default for ArchRunRegistry {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl ArchRunRegistry {
+    /// 登记一次画布程序执行，返回 (run_id, 报告接收端)。
+    pub(super) fn begin(&self) -> (String, oneshot::Receiver<String>) {
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        let mut entries = self.entries.lock();
+        // 兜底回收：工具 future 被整体丢弃（abort/panic）时无人调 remove，
+        // 借登记之机清掉接收端已关闭的死条目（与 GraphRunRegistry 同思路）。
+        entries.retain(|_, sender| !sender.is_closed());
+        entries.insert(run_id.clone(), tx);
+        (run_id, rx)
+    }
+
+    /// 前端回传执行报告：取出并解除等待。条目不存在（超时已清槽/重复回传）
+    /// 或接收端已关闭（工具侧提前退出）时返回 false。
+    pub(super) fn complete(&self, run_id: &str, report: String) -> bool {
+        let sender = self.entries.lock().remove(run_id);
+        sender.is_some_and(|tx| tx.send(report).is_ok())
+    }
+
+    /// 工具侧超时/取消路径的显式清槽，防止条目泄漏。
+    pub(super) fn remove(&self, run_id: &str) {
+        self.entries.lock().remove(run_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ActiveRunCleanup, ActiveRunStore, GraphRunRegistry};
+    use super::{ActiveRunCleanup, ActiveRunStore, ArchRunRegistry, GraphRunRegistry};
     use std::sync::Arc;
 
     #[test]
@@ -342,5 +387,33 @@ mod tests {
         // cancel 之后 resume 被拒绝（恢复前复查取消状态）。
         assert!(registry.cancel("plan-1"));
         assert!(!registry.resume("plan-1"));
+    }
+
+    #[tokio::test]
+    async fn arch_run_complete_delivers_report_once() {
+        let registry = ArchRunRegistry::default();
+        let (run_id, rx) = registry.begin();
+        assert!(registry.complete(&run_id, "画布程序执行成功".to_string()));
+        assert_eq!(rx.await.unwrap(), "画布程序执行成功");
+        // 重复回传：条目已消费，返回 false 无副作用。
+        assert!(!registry.complete(&run_id, "重复报告".to_string()));
+    }
+
+    #[tokio::test]
+    async fn arch_run_remove_makes_late_complete_noop() {
+        let registry = ArchRunRegistry::default();
+        let (run_id, rx) = registry.begin();
+        registry.remove(&run_id); // 工具侧超时清槽
+        assert!(!registry.complete(&run_id, "迟到的报告".to_string()));
+        // 发送端被移除 → 接收端收到 RecvError，工具侧按可恢复错误处理。
+        assert!(rx.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn arch_run_receiver_dropped_yields_failed_send() {
+        let registry = ArchRunRegistry::default();
+        let (run_id, rx) = registry.begin();
+        drop(rx); // 工具侧提前退出（取消/超时后 rx 被丢弃前未清槽的极端路径）
+        assert!(!registry.complete(&run_id, "报告".to_string()));
     }
 }

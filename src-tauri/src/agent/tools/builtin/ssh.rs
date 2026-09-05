@@ -149,6 +149,15 @@ impl SshExecTool {
             .as_ref()
         {
             None => {
+                // 与 review-denied 路径一致：未配置审查的阻断也登记命令台账。
+                crate::agent::command_history::record(
+                    &context.workspace_id,
+                    "ssh_exec",
+                    &server_id,
+                    &command,
+                    crate::agent::command_history::CommandHistoryStatus::Blocked,
+                    "未配置安全审查，无法评估命令安全性",
+                );
                 let blocked = crate::ssh_tool::SshAuditReview {
                     allowed: false,
                     reason: "未配置安全审查，无法评估命令安全性".to_string(),
@@ -177,32 +186,41 @@ impl SshExecTool {
             Some(review_config) => {
                 match self.manager.server_config_async(server_id.clone()).await {
                     Ok(server) if server.review_enabled => {
-                        let intent = string_arg(args, "compress_intent")
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or_else(|| context.session_title.clone());
-                        let payload = crate::agent::ssh_review::SshReviewPayload {
-                            intent,
-                            task: context.user_task.clone().unwrap_or_default(),
-                            server_info: crate::agent::ssh_review::SshReviewServerInfo {
-                                id: server.id.clone(),
-                                description: server.description.clone(),
-                                host: server.host.clone(),
-                                port: server.port,
-                                username: server.username.clone(),
-                                tags: server.tags.clone(),
-                            },
-                            command: command.clone(),
-                            stdin: stdin.clone(),
-                        };
-                        match crate::agent::ssh_review::review_command(review_config, &payload)
-                            .await
+                        let payload = crate::agent::tools::review_context::build_review_payload(
+                            context,
+                            Some(args),
+                            crate::agent::ssh_review::CommandReviewTarget::Ssh(
+                                crate::agent::ssh_review::SshReviewServerInfo {
+                                    id: server.id.clone(),
+                                    description: server.description.clone(),
+                                    host: server.host.clone(),
+                                    port: server.port,
+                                    username: server.username.clone(),
+                                    tags: server.tags.clone(),
+                                },
+                            ),
+                            command.clone(),
+                            stdin.clone(),
+                        );
+                        match crate::agent::ssh_review::review_shell_command(
+                            review_config, &payload,
+                        )
+                        .await
                         {
                             Ok(verdict) => Some(crate::ssh_tool::SshAuditReview {
                                 allowed: verdict.allowed,
                                 reason: verdict.reason,
                             }),
                             Err(error) => {
+                                // 与 review-denied 路径一致：审查异常导致的阻断也登记台账。
+                                crate::agent::command_history::record(
+                                    &context.workspace_id,
+                                    "ssh_exec",
+                                    &server_id,
+                                    &command,
+                                    crate::agent::command_history::CommandHistoryStatus::Blocked,
+                                    &format!("审查服务异常：{error}"),
+                                );
                                 let blocked = crate::ssh_tool::SshAuditReview {
                                     allowed: false,
                                     reason: format!("审查服务异常：{error}"),
@@ -239,10 +257,19 @@ impl SshExecTool {
             }
         };
 
-        // 判定为不通过：写入「被拦截」审计记录并阻断。
+        // 判定为不通过：写入「被拦截」审计记录并阻断，同时登记命令台账
+        //（供后续命令的安全审查判断来龙去脉）。
         if let Some(ref review) = review_outcome {
             if !review.allowed {
                 let reason = review.reason.clone();
+                crate::agent::command_history::record(
+                    &context.workspace_id,
+                    "ssh_exec",
+                    &server_id,
+                    &command,
+                    crate::agent::command_history::CommandHistoryStatus::Blocked,
+                    &reason,
+                );
                 let record_result = self
                     .manager
                     .record_review_blocked(
@@ -256,14 +283,23 @@ impl SshExecTool {
                     )
                     .await;
                 if let Ok(record) = record_result {
-                    return crate::ssh_tool::render_ssh_audit_record_markdown(&record);
+                    return crate::agent::ssh_review::with_confirm_guidance(
+                        crate::ssh_tool::render_ssh_audit_record_markdown(&record),
+                        &reason,
+                    );
                 }
-                return format!(
-                    "错误：命令已被安全审查拦截：{reason}。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
+                return crate::agent::ssh_review::with_confirm_guidance(
+                    format!(
+                        "错误：命令已被安全审查拦截：{reason}。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
+                    ),
+                    &reason,
                 );
             }
         }
 
+        // 台账登记需要命令与目标标识，而下方 execute 会按值消费它们，先克隆留存。
+        let history_server_id = server_id.clone();
+        let history_command = command.clone();
         match self
             .manager
             .execute(
@@ -279,8 +315,19 @@ impl SshExecTool {
             )
             .await
         {
-            Ok(result) => serde_json::to_string_pretty(&result)
-                .unwrap_or_else(|error| format!("错误：序列化 SSH 执行结果失败：{error}")),
+            Ok(result) => {
+                let rendered = serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|error| format!("错误：序列化 SSH 执行结果失败：{error}"));
+                crate::agent::command_history::record(
+                    &context.workspace_id,
+                    "ssh_exec",
+                    &history_server_id,
+                    &history_command,
+                    crate::agent::command_history::CommandHistoryStatus::Executed,
+                    &rendered,
+                );
+                rendered
+            }
             Err(error) => format!("错误：SSH 命令执行失败：{error}"),
         }
     }

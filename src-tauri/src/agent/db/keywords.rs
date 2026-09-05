@@ -199,6 +199,7 @@ impl DispatcherDb {
              FROM dispatcher_sessions ds
              WHERE ds.kind = ?4
                AND (?5 IS NULL OR ds.project_id = ?5)
+               AND ds.category != ?7
                AND (
                    ds.title LIKE ?3 ESCAPE '\\' COLLATE NOCASE
                    OR EXISTS (
@@ -218,7 +219,8 @@ impl DispatcherDb {
                 contains_pattern,
                 kind_value,
                 project_filter,
-                limit
+                limit,
+                super::sessions::INTERNAL_CHAT_CATEGORY
             ],
             |row| {
                 Ok(SessionSearchResult {

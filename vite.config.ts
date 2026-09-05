@@ -21,9 +21,46 @@ function isMarkdownVendor(id: string) {
   ].some((packageName) => normalizedId.includes(`/node_modules/${packageName}/`));
 }
 
+// tldraw 画布独占依赖（经 lockfile 比对，均不在其余依赖树中）。
+// 故意排除：@radix-ui/*（主包 UI 在用；子串匹配不会命中带 @ 前缀的路径）
+// 与 use-sync-external-store（react-query 在用）。
+const TL_DRAW_VENDOR_PACKAGES = [
+  "tldraw",
+  "@tldraw",
+  "@tiptap",
+  "radix-ui",
+  "idb",
+  "lz-string",
+  "classnames",
+  "rbush",
+  "eventemitter3",
+  "is-plain-object",
+  "fast-equals",
+  "rope-sequence",
+  "orderedmap",
+  "w3c-keyname",
+];
+
+function isTldrawVendor(id: string) {
+  const normalizedId = id.replace(/\\/g, "/");
+  return (
+    TL_DRAW_VENDOR_PACKAGES.some((packageName) => isNodeModule(normalizedId, packageName)) ||
+    // lodash 子包（lodash.uniq/isequal/throttle/isequalwith，@tldraw/utils 独占）
+    // 走前缀匹配——若经 isNodeModule 会被强加尾斜杠（`lodash./`）而永不命中。
+    normalizedId.includes("/node_modules/lodash.") ||
+    normalizedId.includes("/node_modules/prosemirror-")
+  );
+}
+
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
+  optimizeDeps: {
+    // `@tldraw/assets/imports.vite` 内含大量 `./xxx.json?url` 静态导入，
+    // 让 rolldown 依赖预构建报 UNLOADABLE_DEPENDENCY；排除后由 Vite
+    // 原生 ?url 资产管线按需处理（该模块仅被懒加载的架构画布引用）。
+    exclude: ["@tldraw/assets"],
+  },
   build: {
     rolldownOptions: {
       output: {
@@ -43,6 +80,11 @@ export default defineConfig(async () => ({
             {
               name: "xterm-vendor",
               test: (id) => isNodeModule(id, "@xterm"),
+              minSize: 20 * 1024,
+            },
+            {
+              name: "tldraw-vendor",
+              test: isTldrawVendor,
               minSize: 20 * 1024,
             },
           ],

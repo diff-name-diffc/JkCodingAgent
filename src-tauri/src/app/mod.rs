@@ -163,6 +163,8 @@ pub fn run() {
             platform::notification::mark_all_notifications_read,
             agent::commands::run_commands::dispatcher_send_project_agent_message,
             agent::commands::run_commands::dispatcher_send_chat_agent_message,
+            agent::commands::architecture_commands::dispatcher_send_architecture_agent_message,
+            agent::commands::architecture_commands::architecture_run_complete,
             agent::commands::message_commands::dispatcher_list_messages,
             agent::commands::message_commands::dispatcher_get_tool_run_tree,
             agent::commands::message_commands::dispatcher_get_session_token_usage,

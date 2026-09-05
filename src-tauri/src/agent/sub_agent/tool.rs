@@ -193,7 +193,7 @@ impl AgentTool for SubAgentTool {
             Arc::clone(parent_tools),
             context.clone(),
         ) {
-            Ok(runtime) => {
+            Ok(mut runtime) => {
                 let outcome = runtime.execute(task, app_handle, &session_id).await;
                 let trace_json = match runtime.trace_events_json() {
                     Ok(trace) => trace,

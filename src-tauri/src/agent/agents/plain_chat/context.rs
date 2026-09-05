@@ -50,6 +50,24 @@ impl PlainChatAgent {
             .await
             .ok()
             .flatten();
+        // 安全审查的「对话上下文」：最近若干轮用户/助手对话（截断渲染）。
+        // 读取失败降级为 None（审查仍可依据任务/意图/命令本身判定）；
+        // 与 project agent 同口径记日志，避免 DB 故障静默不可诊断。
+        let review_conversation = match db
+            .get_recent_review_dialogue_async(
+                workspace_id,
+                crate::agent::ssh_review::REVIEW_DIALOGUE_FETCH_LIMIT,
+            )
+            .await
+        {
+            Ok(messages) => crate::agent::ssh_review::render_dialogue_for_review(&messages),
+            Err(error) => {
+                eprintln!(
+                    "读取审查对话上下文失败，降级为无对话上下文（workspace_id={workspace_id}）：{error:#}"
+                );
+                None
+            }
+        };
         // 只放行当前会话的图片目录（chat-images/{workspace_id}）：其他会话
         // 图片和全局设置目录均不可见。目录构造失败时按空白名单收紧，
         // 路径规范化失败同样 fail-closed 剔除。
@@ -93,6 +111,8 @@ impl PlainChatAgent {
             mcp_scope: McpScope::Global,
             session_title,
             user_task,
+            executor_task: None,
+            review_conversation,
             ssh_review,
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: true,

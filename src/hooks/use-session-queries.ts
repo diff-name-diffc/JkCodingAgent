@@ -17,6 +17,7 @@ import type {
   SessionPage,
   SessionSearchResult,
 } from "../types";
+import { ARCH_DESIGN_CATEGORY } from "../types/architecture";
 import {
   withDispatcherSessionRunning,
   withDispatcherSessionsRunning,
@@ -196,6 +197,9 @@ export function useSessionListEventMerge(scope: SessionListScope, enabled = true
       const payload = event.payload;
       if (scopeKind === "chat") {
         if (payload.kind !== "chat") return;
+        // 内部分类（架构设计助手）会话不进主聊天列表缓存——它们由专属界面
+        // 按分类自管，且后端默认列表/搜索已做同口径排除。
+        if (payload.category === ARCH_DESIGN_CATEGORY) return;
         // keywords 不做默认值兜底：payload 缺省时由合并逻辑保留缓存中的旧值。
         const updatedSession = withDispatcherSessionRunning({
           id: payload.id,

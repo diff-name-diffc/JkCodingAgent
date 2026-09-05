@@ -6,6 +6,7 @@ mod mcp;
 pub mod program;
 mod registry;
 mod result;
+pub(crate) mod review_context;
 mod runtime;
 mod spec;
 mod surface;
@@ -48,5 +49,11 @@ impl ToolRegistry {
     /// subAgent 类型，只列不可调属于半吊子逻辑。）
     pub fn orchestrator_tools() -> Self {
         Self::new(builtin::orchestrator_tools())
+    }
+
+    /// 架构设计视觉 Agent 专用注册表：仅 architecture_run（画布程序执行），
+    /// 无 MCP 桥与其他工具——画布是该 Agent 唯一的效应面。
+    pub fn architecture_tools() -> Self {
+        Self::new(builtin::architecture_tools())
     }
 }

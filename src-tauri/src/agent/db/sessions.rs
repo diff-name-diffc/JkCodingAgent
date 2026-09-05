@@ -10,6 +10,11 @@ use super::content::{delete_chat_image_resources, remove_chat_image_dir};
 use super::util::now;
 use super::DispatcherDb;
 
+/// 应用内部分类的会话（架构设计助手等）：不混入未指定分类的默认聊天列表
+/// 与会话搜索，由各自的专属界面按分类显式管理。前端持有同一字面量
+/// （`src/types/architecture.ts` 的 `ARCH_DESIGN_CATEGORY`），两侧必须保持一致。
+pub const INTERNAL_CHAT_CATEGORY: &str = "arch-design";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DispatcherSessionRecord {
@@ -211,6 +216,8 @@ impl DispatcherDb {
                     .context("decode chat session cursor")
             })
             .transpose()?;
+        // 内部分类（架构设计助手等）的会话不出现在未指定分类的默认列表中；
+        // 显式按分类查询时仍可列出（其专属界面自行管理）。
         let total: i64 = if let Some(cat) = category {
             conn.query_row(
                 "SELECT COUNT(*) FROM chat_sessions WHERE category = ?1",
@@ -218,7 +225,11 @@ impl DispatcherDb {
                 |row| row.get(0),
             )?
         } else {
-            conn.query_row("SELECT COUNT(*) FROM chat_sessions", [], |row| row.get(0))?
+            conn.query_row(
+                "SELECT COUNT(*) FROM chat_sessions WHERE category != ?1",
+                params![INTERNAL_CHAT_CATEGORY],
+                |row| row.get(0),
+            )?
         };
 
         let (where_clause, bind): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
@@ -238,10 +249,19 @@ impl DispatcherDb {
                     vec![Box::new(cat.to_string())],
                 ),
                 (None, Some(cur)) => (
-                    "WHERE updated_at < ?1 OR (updated_at = ?1 AND id < ?2)".into(),
-                    vec![Box::new(cur.updated_at.clone()), Box::new(cur.id.clone())],
+                    "WHERE category != ?1
+                     AND (updated_at < ?2 OR (updated_at = ?2 AND id < ?3))"
+                        .into(),
+                    vec![
+                        Box::new(INTERNAL_CHAT_CATEGORY.to_string()),
+                        Box::new(cur.updated_at.clone()),
+                        Box::new(cur.id.clone()),
+                    ],
                 ),
-                (None, None) => (String::new(), vec![]),
+                (None, None) => (
+                    "WHERE category != ?1".into(),
+                    vec![Box::new(INTERNAL_CHAT_CATEGORY.to_string())],
+                ),
             };
 
         let sql = format!(
@@ -732,5 +752,29 @@ mod tests {
 
         assert_eq!(session_ids.len(), 41);
         assert_eq!(session_ids.iter().collect::<HashSet<_>>().len(), 41);
+    }
+
+    #[test]
+    fn internal_category_sessions_are_hidden_from_default_listing() {
+        let db = test_db();
+        db.create_chat_session("visible-chat", Some("tech"))
+            .expect("create normal session");
+        db.create_chat_session("arch-session", Some(INTERNAL_CHAT_CATEGORY))
+            .expect("create internal session");
+
+        // 默认列表（无分类过滤）不含内部分类会话，计数同样排除。
+        let default_page = db
+            .list_chat_sessions_paginated(None, None, 20)
+            .expect("list default page");
+        assert_eq!(default_page.total, 1);
+        assert_eq!(default_page.items.len(), 1);
+        assert_eq!(default_page.items[0].title, "visible-chat");
+
+        // 显式按内部分类查询仍可列出（专属界面自行管理）。
+        let arch_page = db
+            .list_chat_sessions_paginated(Some(INTERNAL_CHAT_CATEGORY), None, 20)
+            .expect("list internal category page");
+        assert_eq!(arch_page.total, 1);
+        assert_eq!(arch_page.items[0].title, "arch-session");
     }
 }

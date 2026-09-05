@@ -12,7 +12,7 @@ use super::{
 use crate::agent::db::{DispatcherDb, ToolRunTraceContext};
 use crate::agent::llm::RequestedToolCall;
 use crate::agent::run_loop::AgentEvent;
-use crate::agent::ssh_review::{review_shell_command, CommandReviewPayload, CommandReviewTarget};
+use crate::agent::ssh_review::{review_shell_command, CommandReviewTarget};
 use crate::agent::tools::ToolSafety;
 
 mod audit;
@@ -226,7 +226,7 @@ impl<'a> CapabilityBroker<'a> {
             Ok(decision) => decision,
             Err(result) => {
                 let result = with_policy_metadata(
-                    with_broker_metadata(result, &invocation),
+                    with_broker_metadata(*result, &invocation),
                     json!({
                         "safety": spec.safety,
                         "decision": "deny",

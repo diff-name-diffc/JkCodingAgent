@@ -13,6 +13,9 @@ import appLogo from "../../assets/app-logo.png";
 export interface EmptyChatStateProps {
   onPickPrompt: (prompt: string) => void;
   prompts?: string[];
+  /** 领域化标题/副文案（UI-15 A06）：缺省为通用聊天欢迎语。 */
+  title?: string;
+  copy?: string;
   className?: string;
 }
 
@@ -23,9 +26,14 @@ const DEFAULT_PROMPTS = [
   "给我一个 Tauri + React 项目的目录结构建议",
 ];
 
+const DEFAULT_TITLE = "有什么可以帮你的？";
+const DEFAULT_COPY = "输入任务、粘贴代码、拆解方案 —— 模型会在同一个工作台里推理、执行与回放。";
+
 export function EmptyChatState({
   onPickPrompt,
   prompts = DEFAULT_PROMPTS,
+  title = DEFAULT_TITLE,
+  copy = DEFAULT_COPY,
   className,
 }: EmptyChatStateProps) {
   return (
@@ -43,11 +51,9 @@ export function EmptyChatState({
       >
         <img src={appLogo} alt="Aha" className="ai-empty-logo mb-5 h-14 w-14 rounded-2xl" />
         <h2 className="ai-empty-title text-xl font-semibold tracking-tight text-foreground">
-          有什么可以帮你的？
+          {title}
         </h2>
-        <p className="ai-empty-copy mt-2 max-w-sm text-sm text-muted-foreground">
-          输入任务、粘贴代码、拆解方案 —— 模型会在同一个工作台里推理、执行与回放。
-        </p>
+        <p className="ai-empty-copy mt-2 max-w-sm text-sm text-muted-foreground">{copy}</p>
       </motion.div>
 
       <motion.div

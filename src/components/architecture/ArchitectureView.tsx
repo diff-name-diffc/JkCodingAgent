@@ -9,6 +9,7 @@ import { ErrorBoundary } from "../ErrorBoundary";
 import { applyTldrawColorScheme } from "./architecture-theme";
 import { tldrawAssetUrls } from "./tldraw-assets";
 import { useArchRunListener } from "./arch-run-listener";
+import { useCanvasShapeCount } from "./use-canvas-shape-count";
 import { TLDR_LICENSE_GATE_SELECTOR, type CanvasBlockInfo } from "./canvas-block-info";
 import { useArchitectureChat } from "./chat/useArchitectureChat";
 import { ArchitectureChatPanel } from "./chat/ArchitectureChatPanel";
@@ -227,9 +228,12 @@ export function ArchitectureView() {
   const editorRef = useRef<Editor | null>(null);
   /** 画布阻断原因：供执行监听器（architecture_run 回传）附加诊断上下文。 */
   const blockInfoRef = useRef<CanvasBlockInfo | null>(null);
+  /** editor 挂载/卸载/重建计数：驱动 shape 计数订阅重建（editor 不进渲染 state）。 */
+  const [editorVersion, setEditorVersion] = useState(0);
 
   const handleEditor = useCallback((editor: Editor | null) => {
     editorRef.current = editor;
+    setEditorVersion((version) => version + 1);
   }, []);
   const getEditor = useCallback(() => editorRef.current, []);
   const getBlockInfo = useCallback(() => blockInfoRef.current, []);
@@ -245,10 +249,13 @@ export function ArchitectureView() {
   const chat = useArchitectureChat({ getEditor });
   // 画布执行监听：architecture_run 工具 ↔ 前端解释器往返
   useArchRunListener(getEditor, getBlockInfo);
+  const shapeCount = useCanvasShapeCount(getEditor, editorVersion);
 
+  // 助手默认宽像素锚定 360（设计 §5.6 规格 320–400px）；此前按视口 28% 计算，
+  // 1920px 视口默认会漂到 ~537px，画布不再占主导。
   const { effectiveWidth, handleResizeStart } = useDockedBrowserPanel(ARCH_CHAT_WIDTH_KEY, {
     minWidth: 320,
-    defaultRatio: 0.28,
+    defaultWidthPx: 360,
     maxRatio: 0.6,
   });
 
@@ -279,7 +286,7 @@ export function ArchitectureView() {
               aria-label="调整架构助手面板宽度"
             />
             <aside className="ai-arch-chat-aside" style={{ width: effectiveWidth }}>
-              <ArchitectureChatPanel chat={chat} />
+              <ArchitectureChatPanel chat={chat} canvasShapeCount={shapeCount} />
             </aside>
           </>
         )}

@@ -10,6 +10,9 @@ const BROWSER_PANEL_MAX_RATIO = 0.75;
 export interface DockedPanelMetrics {
   minWidth?: number;
   defaultRatio?: number;
+  /** 像素锚定的默认宽（优先于 defaultRatio）——设计给固定区间时用，
+   * 避免大视口下比例默认值漂移过宽（UI-15 架构助手 320–400px）。 */
+  defaultWidthPx?: number;
   maxRatio?: number;
 }
 
@@ -21,14 +24,26 @@ function viewportWidth(): number {
   return typeof window === "undefined" ? 1280 : window.innerWidth;
 }
 
-export function useDockedBrowserPanel(storageKey: string, metrics: DockedPanelMetrics = {}) {
+/** 面板默认宽（纯函数）：像素锚定值优先，否则按视口比例；统一钳制在
+ * [minWidth, max(minWidth, viewport × maxRatio)]。 */
+export function resolveDockedPanelDefaultWidth(
+  viewport: number,
+  metrics: DockedPanelMetrics,
+): number {
   const minWidth = metrics.minWidth ?? BROWSER_PANEL_MIN_WIDTH;
   const defaultRatio = metrics.defaultRatio ?? BROWSER_PANEL_DEFAULT_RATIO;
   const maxRatio = metrics.maxRatio ?? BROWSER_PANEL_MAX_RATIO;
+  const maxWidth = Math.max(minWidth, Math.floor(viewport * maxRatio));
+  const raw = metrics.defaultWidthPx ?? Math.round(viewport * defaultRatio);
+  return clamp(raw, minWidth, maxWidth);
+}
+
+export function useDockedBrowserPanel(storageKey: string, metrics: DockedPanelMetrics = {}) {
+  const minWidth = metrics.minWidth ?? BROWSER_PANEL_MIN_WIDTH;
+  const maxRatio = metrics.maxRatio ?? BROWSER_PANEL_MAX_RATIO;
 
   const panelMaxWidth = () => Math.max(minWidth, Math.floor(viewportWidth() * maxRatio));
-  const defaultWidth = () =>
-    clamp(Math.round(viewportWidth() * defaultRatio), minWidth, panelMaxWidth());
+  const defaultWidth = () => resolveDockedPanelDefaultWidth(viewportWidth(), metrics);
   const loadWidth = () => clamp(load<number>(storageKey, defaultWidth()), minWidth, panelMaxWidth());
 
   const [width, setWidth] = useState(loadWidth);

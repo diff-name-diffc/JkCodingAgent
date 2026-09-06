@@ -742,6 +742,15 @@
     background: rgb(var(--accent-rgb) / 0.08);
   }
 
+  /* 「本次发送将附带」上下文行（UI-15c）：与感知开关同区，弱化为说明文字。 */
+  .ai-arch-attach-hint {
+    padding: 0 12px 8px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-hint);
+    flex-shrink: 0;
+  }
+
   .ai-arch-chat-messages {
     flex: 1;
     min-height: 0;

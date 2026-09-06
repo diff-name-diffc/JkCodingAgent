@@ -19,7 +19,20 @@ import {
 import { getPurposeBinding } from "../../settings/providers/provider-registry";
 import { ModelSelector } from "../../chat/model-selector";
 import { MessageList } from "../../chat/message-list";
+import { formatAttachmentHint } from "./attachment-context";
 import type { UseArchitectureChatResult } from "./useArchitectureChat";
+
+/** 架构领域空态（UI-15 A06/V08）：起步提示换成绘图任务示例。 */
+const ARCH_EMPTY_STATE = {
+  title: "描述要绘制的架构",
+  copy: "助手能理解当前画布 —— 可要求绘制、解释或改造架构图，改动会直接落到画布上。",
+  prompts: [
+    "绘制一个分层架构图：网关、核心服务、数据与消息队列",
+    "解释当前画布里的架构，指出单点风险",
+    "把画布中的同步调用改造成事件驱动",
+    "评审当前架构的扩展性，给出改进建议",
+  ],
+};
 
 function PerceptionToggle({
   icon,
@@ -46,7 +59,14 @@ function PerceptionToggle({
   );
 }
 
-export function ArchitectureChatPanel({ chat }: { chat: UseArchitectureChatResult }) {
+export function ArchitectureChatPanel({
+  chat,
+  canvasShapeCount,
+}: {
+  chat: UseArchitectureChatResult;
+  /** 当前画布图形数：用于展示「本次发送将附带」的实时上下文（UI-15c）。 */
+  canvasShapeCount: number;
+}) {
   const [input, setInput] = useState("");
   const settingsStore = useAhaSettingsStore();
   const settings = settingsStore.settings;
@@ -61,6 +81,13 @@ export function ArchitectureChatPanel({ chat }: { chat: UseArchitectureChatResul
   const activeEntryId = chat.prefs.modelLibraryId ?? defaultEntry?.id;
   const activeEntry =
     visionEntries.find((entry) => entry.id === activeEntryId) ?? defaultEntry;
+
+  // 「本次发送将附带」上下文（UI-15c）：开关全关时为 null，不渲染提示行。
+  const attachHint = formatAttachmentHint({
+    attachScreenshot: chat.prefs.attachScreenshot,
+    attachSnapshot: chat.prefs.attachSnapshot,
+    shapeCount: canvasShapeCount,
+  });
 
   const handleSend = () => {
     const text = input.trim();
@@ -130,11 +157,18 @@ export function ArchitectureChatPanel({ chat }: { chat: UseArchitectureChatResul
         />
       </div>
 
+      {attachHint && (
+        <div className="ai-arch-attach-hint" aria-live="polite">
+          {attachHint}
+        </div>
+      )}
+
       <MessageList
         sessionId={chat.sessionId}
         messages={chat.messages}
         liveState={chat.liveState}
         onPickPrompt={(prompt) => setInput(prompt)}
+        emptyState={ARCH_EMPTY_STATE}
         className="ai-arch-chat-messages"
       />
 

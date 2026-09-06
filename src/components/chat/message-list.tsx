@@ -42,7 +42,16 @@ export interface MessageListProps {
   onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
   onOpenSubAgent?: (tool: ToolActivityItem) => void;
   onPickPrompt?: (prompt: string) => void;
+  /** 领域化空态文案（UI-15 A06）：不传则用通用聊天欢迎语。 */
+  emptyState?: ChatEmptyStateContent;
   className?: string;
+}
+
+/** EmptyChatState 的领域化覆盖项（全部可选）。 */
+export interface ChatEmptyStateContent {
+  title?: string;
+  copy?: string;
+  prompts?: string[];
 }
 
 export function MessageList({
@@ -57,6 +66,7 @@ export function MessageList({
   onOpenArtifact,
   onOpenSubAgent,
   onPickPrompt,
+  emptyState,
   className,
 }: MessageListProps) {
   // Rebuild display items only when the message array identity changes.
@@ -85,7 +95,15 @@ export function MessageList({
   const isEmpty = items.length === 0 && !hasLiveContent;
 
   if (isEmpty) {
-    return <EmptyChatState onPickPrompt={(p) => onPickPrompt?.(p)} />;
+    return (
+      <EmptyChatState
+        onPickPrompt={(p) => onPickPrompt?.(p)}
+        title={emptyState?.title}
+        copy={emptyState?.copy}
+        prompts={emptyState?.prompts}
+        className={className}
+      />
+    );
   }
 
   return (

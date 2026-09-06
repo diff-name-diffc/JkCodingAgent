@@ -7087,32 +7087,27 @@
 
   .ai-chat-stage {
     background: var(--background);
+    /* 边距按容器宽度比例夹取：宽区 24px、窄区 16px，避免固定边距在窄 pane 里吃掉正文 */
+    padding-inline: clamp(16px, 3%, 24px);
   }
 
-  /* 聊天内容列：宽度随窗口分档（<1280 / 1280–1600 / 1600–1920 / ≥1920），水平居中，
-     宽屏下充分利用空间但保留两侧呼吸边距；窗口缩放跨档时以 width transition 平滑变化 */
+  /* 聊天内容列：受父容器宽度约束（不再按 viewport 分档固定宽），水平居中；
+     960px 为阅读列上限（工具/代码可在同列内展开至此），两侧呼吸边距由
+     stage/footer 的 padding-inline 承担（按容器宽度比例夹取 16–24px）。 */
   .ai-chat-column {
-    width: min(880px, 100% - 48px);
+    width: 100%;
+    max-width: 960px;
+    min-width: 0;
     margin-inline: auto;
-    transition: width var(--motion-slow) var(--motion-ease);
   }
 
-  @media (min-width: 1280px) {
-    .ai-chat-column {
-      width: 1040px;
-    }
-  }
-
-  @media (min-width: 1600px) {
-    .ai-chat-column {
-      width: 1220px;
-    }
-  }
-
-  @media (min-width: 1920px) {
-    .ai-chat-column {
-      width: 1360px;
-    }
+  /* 阅读宽：正文（.chat-prose）与 composer 共享 760px 上限并相互对齐；
+     工具卡在消息层级改造（UI-12）前随正文宽。 */
+  .ai-chat-composer,
+  .chat-prose {
+    width: 100%;
+    max-width: 760px;
+    margin-inline: auto;
   }
 
   /* 表格/代码块宽度随聊天列自适应：不超出正文列，内容过宽时在组件内部横向滚动。 */
@@ -7393,6 +7388,8 @@
 
   .ai-chat-footer {
     background: linear-gradient(180deg, transparent, var(--background) 40%);
+    /* 与 stage 同源的容器比例边距，保证 composer 与正文列左右对齐 */
+    padding-inline: clamp(16px, 3%, 24px);
   }
 
   /* 自定义标题栏：绝对定位的透明拖拽区（data-tauri-drag-region），悬浮在内容之上。
@@ -8246,6 +8243,13 @@
     background: var(--bg-panel);
   }
 
+  /* 嵌入式聊天 pane 的详情覆盖层：浮于阅读列之上而非挤占它（UI-02 过渡策略） */
+  .ai-artifact-overlay {
+    border-left: 1px solid var(--border-dim);
+    background: var(--bg-panel);
+    box-shadow: var(--shadow-lg);
+  }
+
   /* ── Chat utilities ── */
 
   .chat-scroll {
@@ -8268,10 +8272,9 @@
     background: transparent;
   }
 
-  /* 正文列宽由 .ai-chat-column 分档控制，这里只需撑满；
+  /* 正文列宽上限与居中由上方 .ai-chat-composer/.chat-prose 阅读宽规则控制；
      长文本（URL、无空格字符串）在列宽内自适应换行，不产生横向滚动条 */
   .chat-prose {
-    width: 100%;
     min-width: 0;
     overflow-wrap: break-word;
   }

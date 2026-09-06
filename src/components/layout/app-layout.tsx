@@ -13,8 +13,10 @@ import { cn } from "../../lib/cn";
  *   │  / 56px) │   column centered)         │   resizable) │
  *   └──────────┴──────────────────────────┴──────────────┘
  *
- * The sidebar collapses to an icon rail; the artifact panel is opt-in and
- * overlay-style so it never squeezes the chat reading column.
+ * The sidebar collapses to an icon rail. The artifact panel is opt-in: in the
+ * standalone chat view it docks as a 420px in-flow sibling (transitional —
+ * UI-09 moves it into the unified detail slot); in embedded panes it renders
+ * as a right-side overlay so it never squeezes an already narrow chat column.
  *
  * This component owns NO business logic — it only arranges children and reads
  * layout flags from the Zustand UI store. Data lives in <Sidebar /> and
@@ -28,6 +30,12 @@ export interface AppLayoutProps {
   /** Sticky footer (the prompt input). */
   chatFooter?: React.ReactNode;
   artifactPanel?: React.ReactNode;
+  /**
+   * Render the artifact panel as a right-side overlay instead of an in-flow
+   * dock. Used by embedded chat panes where a 420px sibling would starve the
+   * reading column.
+   */
+  artifactOverlay?: boolean;
 }
 
 const SIDEBAR_NARROW = 56;
@@ -41,6 +49,7 @@ export function AppLayout({
   children,
   chatFooter,
   artifactPanel,
+  artifactOverlay = false,
 }: AppLayoutProps) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
   const sidebarWidth = useUIStore((s) => s.sidebarWidth);
@@ -82,7 +91,7 @@ export function AppLayout({
   return (
     <div
       className={cn(
-        "ai-chat-shell flex flex-col overflow-hidden bg-background text-foreground",
+        "ai-chat-shell relative flex flex-col overflow-hidden bg-background text-foreground",
         "h-full w-full",
       )}
     >
@@ -124,36 +133,57 @@ export function AppLayout({
             </div>
           )}
           <div className="ai-chat-stage relative flex min-h-0 flex-1 justify-center">
-            <div className="ai-chat-column flex min-h-0 flex-1 flex-col">
+            <div className="ai-chat-column flex min-h-0 min-w-0 flex-1 flex-col">
               {children}
             </div>
           </div>
           {chatFooter && (
-            // 无 px-4、也不再包一层 .ai-chat-column：footer 内容（PromptInput）
-            // 根节点自带 .ai-chat-column 的列宽档位与居中逻辑；外层再套一层会
-            // 让 `min(…, 100% - 48px)` 基于外层列宽二次收缩，窄窗口下输入框
-            // 反而比消息列窄 48px。外层只提供 sticky 与渐隐背景。
+            // 无 px-4、也不再包一层 .ai-chat-column：footer 的左右边距由
+            // .ai-chat-footer 的容器比例 padding 提供，PromptInput 根节点自带
+            // .ai-chat-column + .ai-chat-composer 的列宽/阅读宽约束；外层再套
+            // 一层列会让 min()/max-width 基于外层列宽二次收缩。外层只提供
+            // sticky 与渐隐背景。
             <div className="ai-chat-footer sticky bottom-0 z-10 pb-3 pt-2">
               {chatFooter}
             </div>
           )}
         </main>
 
+        {!artifactOverlay && (
+          <AnimatePresence initial={false}>
+            {artifactOpen && artifactPanel && (
+              <motion.section
+                key="artifact"
+                initial={{ width: 0, opacity: 0 }}
+                animate={{ width: 420, opacity: 1 }}
+                exit={{ width: 0, opacity: 0 }}
+                transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+                className="ai-artifact-dock relative z-20 h-full shrink-0 overflow-hidden border-l border-border bg-card"
+              >
+                <div className="h-full w-[420px]">{artifactPanel}</div>
+              </motion.section>
+            )}
+          </AnimatePresence>
+        )}
+      </div>
+
+      {artifactOverlay && (
         <AnimatePresence initial={false}>
           {artifactOpen && artifactPanel && (
             <motion.section
-              key="artifact"
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 420, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
-              className="ai-artifact-dock relative z-20 h-full shrink-0 overflow-hidden border-l border-border bg-card"
+              key="artifact-overlay"
+              initial={{ opacity: 0, x: 24 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 24 }}
+              transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+              className="ai-artifact-overlay absolute inset-y-0 right-0 z-30 overflow-hidden"
+              style={{ width: "min(420px, 85%)" }}
             >
-              <div className="h-full w-[420px]">{artifactPanel}</div>
+              {artifactPanel}
             </motion.section>
           )}
         </AnimatePresence>
-      </div>
+      )}
     </div>
   );
 }

@@ -274,6 +274,7 @@ export function ChatShell({
   return (
     <AppLayout
       chatHeader={projectHeader}
+      artifactOverlay={embedded}
       sidebar={
         embedded ? undefined : (
           <Sidebar

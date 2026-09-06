@@ -126,7 +126,7 @@ export function PromptInput({
   const canSend = mode === "send" && hasContent && !disabled;
 
   return (
-    <div className={cn("ai-chat-column", className)}>
+    <div className={cn("ai-chat-column ai-chat-composer", className)}>
       <div className="ai-prompt-terminal rounded-2xl border border-border bg-card p-2">
         {editing && (
           <div className="ai-prompt-editing">
@@ -173,11 +173,11 @@ export function PromptInput({
             disabled={disabled}
             rows={1}
             aria-label="消息输入框"
-            className="ai-prompt-textarea min-h-11 max-h-[204px] resize-none border-0 bg-transparent px-2 py-2 text-[15px] leading-6 shadow-none focus-visible:ring-0"
+            className="ai-prompt-textarea min-h-11 resize-none border-0 bg-transparent px-2 py-2 text-[15px] leading-6 shadow-none focus-visible:ring-0"
           />
         </div>
 
-        <div className="ai-prompt-toolbar flex items-center gap-1 px-1 pt-1">
+        <div className="ai-prompt-toolbar flex min-w-0 flex-wrap items-center gap-1 px-1 pt-1">
           <input
             ref={fileInputRef}
             type="file"

@@ -22,6 +22,7 @@ import { normalizeLatexMathDelimiters, normalizeMathCodeFences } from "../../lib
 import { MarkdownImage } from "../markdown/MarkdownImage";
 import { chatSafeSchema } from "../markdown/sanitize-schema";
 import { useMarkdownLinkHandler } from "../markdown/MarkdownLinkContext";
+import { StatusPill } from "../detail/StatusPill";
 import { useKatexCopy } from "./katex-copy";
 
 /**
@@ -166,22 +167,6 @@ const PythonRunContext = createContext<PythonRunContextValue>({
   codeIndexByHash: new Map(),
 });
 
-function RunStatusBadge({ status }: { status: string }) {
-  if (status === "running") {
-    return <span className="python-inline-badge python-inline-badge--running">⟳ Running</span>;
-  }
-  if (status === "done") {
-    return <span className="python-inline-badge python-inline-badge--done">✓ Done</span>;
-  }
-  if (status === "failed") {
-    return <span className="python-inline-badge python-inline-badge--failed">✗ Failed</span>;
-  }
-  if (status === "stopped") {
-    return <span className="python-inline-badge python-inline-badge--stopped">■ Stopped</span>;
-  }
-  return null;
-}
-
 function InlineRunOutput({ record }: { record: PythonCodeRunRecord }) {
   const stdout = record.stdout?.trim();
   const stderr = record.stderr?.trim();
@@ -236,7 +221,7 @@ function PythonCodeRenderer({ code, isIncomplete, language }: CustomRendererProp
   return (
     <>
       <CodeBlock code={code} language={language} isIncomplete={isIncomplete}>
-        {record && <RunStatusBadge status={record.status} />}
+        {record && <StatusPill domain="python" status={record.status} />}
         {showRunButton && (
           <button
             type="button"

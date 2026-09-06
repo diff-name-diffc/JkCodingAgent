@@ -6274,10 +6274,12 @@
     background: var(--bg-sidebar);
   }
 
+  /* 头部行（UI-20）：kicker + StatusPill + 耗时读数一行排布 */
   .ai-python-run-title-wrap {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
     min-width: 0;
   }
 
@@ -6289,9 +6291,24 @@
     color: var(--text-muted);
   }
 
-  .ai-python-run-title {
-    font-size: 14px;
-    color: var(--text-primary);
+  .ai-python-run-duration {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  /* 来源行：消息定位 + 代码块序号 + 开始时间（统一来源信息） */
+  .ai-python-run-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 14px;
+    border-bottom: 1px solid rgb(var(--accent-rgb) / 0.1);
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
   }
 
   .ai-python-run-notice {
@@ -6333,6 +6350,12 @@
     background: rgb(var(--accent-rgb) / 0.1);
   }
 
+  /* 禁用态令牌化（替代内联 opacity 样式） */
+  .ai-python-run-action:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
   .ai-python-run-body {
     flex: 1;
     min-height: 0;
@@ -6340,17 +6363,11 @@
     padding: 14px;
   }
 
-  .ai-python-run-section {
-    margin-bottom: 16px;
-  }
-
-  .ai-python-run-section-title {
-    margin-bottom: 8px;
-    color: var(--text-muted);
-    font-size: 11px;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
+  /* 内容容器：分区（DetailSection）间距由 gap 承担 */
+  .ai-python-run-content {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
   }
 
   .ai-python-run-code {
@@ -6384,16 +6401,6 @@
     line-height: 1.55;
   }
 
-  .ai-python-run-error {
-    padding: 12px;
-    border-radius: 8px;
-    font-size: 12px;
-    line-height: 1.55;
-    color: var(--danger);
-    border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border-dim));
-    background: color-mix(in srgb, var(--danger) 8%, var(--bg-card));
-  }
-
   .ai-python-run-chip-row {
     display: flex;
     flex-wrap: wrap;
@@ -6406,25 +6413,6 @@
     font-family: var(--font-mono);
     font-size: 11px;
     border: 1px solid rgb(var(--accent-rgb) / 0.14);
-    background: var(--bg-sidebar);
-  }
-
-  .ai-python-run-timeline {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .ai-python-run-timeline-item {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 10px;
-    border-radius: 8px;
-    font-size: 12px;
-    line-height: 1.45;
-    white-space: pre-wrap;
-    border: 1px solid rgb(var(--accent-rgb) / 0.12);
     background: var(--bg-sidebar);
   }
 

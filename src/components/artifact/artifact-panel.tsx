@@ -10,6 +10,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { DetailSection } from "../detail/DetailSection";
 import { OutputBlock } from "../detail/OutputBlock";
+import { renderArtifactContent } from "./artifact-renderers";
 import { SubAgentExecutionCard } from "../SubAgentExecutionView";
 
 /**
@@ -183,6 +184,12 @@ function ToolArtifactContent({
             <span className="ai-detail-meta-label">字符数</span>
             <span className="ai-detail-meta-value">{artifact.charCount}</span>
           </div>
+          {loadedArtifact?.toolName && (
+            <div className="ai-detail-meta-item">
+              <span className="ai-detail-meta-label">来源工具</span>
+              <span className="ai-detail-meta-value">{loadedArtifact.toolName}</span>
+            </div>
+          )}
         </div>
         {artifact.preview && <OutputBlock text={artifact.preview} className="mt-2 max-h-28" />}
       </DetailSection>
@@ -197,17 +204,11 @@ function ToolArtifactContent({
       {error && (
         <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{error}</span>
+          <span>产物加载失败：{error}</span>
         </div>
       )}
 
-      {loadedArtifact && (
-        <OutputBlock
-          text={loadedArtifact.content}
-          emptyHint="产物内容为空"
-          className="min-h-40 rounded-lg border border-border bg-background p-3 text-foreground"
-        />
-      )}
+      {loadedArtifact && renderArtifactContent(loadedArtifact)}
     </div>
   );
 }

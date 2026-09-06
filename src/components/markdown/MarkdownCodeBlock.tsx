@@ -3,6 +3,7 @@ import { Check, Copy, Play } from "lucide-react";
 import type { PythonCodeRunRecord } from "../../types";
 import { highlightCodeToHtml } from "../../utils/shiki";
 import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
+import { StatusPill } from "../detail/StatusPill";
 
 function escapeHtml(value: string) {
   return value
@@ -15,22 +16,6 @@ function escapeHtml(value: string) {
 
 function renderPlainCodeHtml(code: string) {
   return `<pre class="markdown-code-plain"><code>${escapeHtml(code)}</code></pre>`;
-}
-
-function RunStatusBadge({ status }: { status: string }) {
-  if (status === "running") {
-    return <span className="python-inline-badge python-inline-badge--running">⟳ Running</span>;
-  }
-  if (status === "done") {
-    return <span className="python-inline-badge python-inline-badge--done">✓ Done</span>;
-  }
-  if (status === "failed") {
-    return <span className="python-inline-badge python-inline-badge--failed">✗ Failed</span>;
-  }
-  if (status === "stopped") {
-    return <span className="python-inline-badge python-inline-badge--stopped">■ Stopped</span>;
-  }
-  return null;
 }
 
 function InlineRunOutput({ record }: { record: PythonCodeRunRecord }) {
@@ -153,7 +138,7 @@ export function MarkdownCodeBlock({
       <div className="markdown-code-toolbar">
         <span className="markdown-code-language">{resolvedLanguage}</span>
         <div className="markdown-code-actions">
-          {runRecord && <RunStatusBadge status={runRecord.status} />}
+          {runRecord && <StatusPill domain="python" status={runRecord.status} />}
           {showRunButton && (
             <button
               type="button"

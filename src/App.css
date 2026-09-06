@@ -1336,34 +1336,8 @@ button:not(:disabled):active,
     color-mix(in srgb, var(--success) 55%, var(--markdown-code-border-strong))
   );
 }
-.python-inline-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-}
-.python-inline-badge--done {
-  color: var(--success);
-  background: color-mix(in srgb, var(--success) 10%, transparent);
-}
-.python-inline-badge--running {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-.python-inline-badge--failed {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
-}
-.python-inline-badge--stopped {
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
-}
+/* python-inline-badge 族已删除（UI-20）：Python 状态视觉统一走
+   detail/StatusPill（domain="python"，.ai-status-pill 类族） */
 .python-inline-output {
   border-top: 1px solid var(--markdown-code-border);
   background: var(--markdown-code-shell-bg);

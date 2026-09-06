@@ -158,6 +158,17 @@ export function ProjectPage({
   // 浏览器 = 主区标签（UI-18）：开/关标签只影响视图；进程生命周期由
   // 面板头部「关闭浏览器」与 dock 的 browser_stop 承担（隐藏 ≠ 结束）。
   const { activeEditorTab, handleOpenBrowserTab, handleCloseBrowserTab } = panels;
+  // 导航列表 ↔ 主区 diff 对应（UI-17）：变更页按 (path, staged)、历史页按 hash 高亮。
+  const activeDiffTab =
+    activeEditorTab?.kind === "diff" ? activeEditorTab.diff : null;
+  const activeFileDiff =
+    activeDiffTab?.kind === "file"
+      ? { path: activeDiffTab.filePath, staged: activeDiffTab.staged }
+      : null;
+  const activeCommitHash =
+    activeDiffTab?.kind === "commit" || activeDiffTab?.kind === "commit-file"
+      ? activeDiffTab.hash
+      : null;
   const openBrowserPanel = useCallback(
     () => handleOpenBrowserTab(),
     [handleOpenBrowserTab],
@@ -234,7 +245,7 @@ export function ProjectPage({
             <GitChanges
               projectPath={project.path}
               onFileSelect={handleDiffFileSelect}
-              width={contextNavWidth}
+              activeFileDiff={activeFileDiff}
             />
           </Suspense>
         </ErrorBoundary>
@@ -246,7 +257,7 @@ export function ProjectPage({
               projectPath={project.path}
               onCommitSelect={handleCommitSelect}
               onFileClick={handleCommitFileClick}
-              width={contextNavWidth}
+              activeCommitHash={activeCommitHash}
             />
           </Suspense>
         </ErrorBoundary>

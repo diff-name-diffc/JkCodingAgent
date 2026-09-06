@@ -1768,14 +1768,36 @@ button:not(:disabled):active,
   color: var(--text-secondary);
 }
 
-/* ── Meta lines (index, ---, +++) ── */
-.git-diff-meta-line {
-  padding: 0 14px 0 96px;
+/* ── Rename display (old → new + similarity, UI-17) ── */
+.git-diff-rename-old {
+  text-decoration: line-through;
+  text-decoration-color: rgb(128 128 128 / 0.55);
+}
+
+.git-diff-rename-arrow {
+  white-space: pre;
+}
+
+.git-diff-similarity {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid var(--border-dim);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ── Binary placeholder (no textual hunks) ── */
+.git-diff-binary {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid var(--border-dim);
   color: var(--text-hint);
   font-size: 12px;
-  line-height: 20px;
-  min-height: 20px;
-  white-space: pre;
+  font-family: var(--font-ui);
 }
 
 /* ── Empty state when no changes ── */

@@ -151,24 +151,6 @@
     "JetBrains Mono", "Cascadia Code", "IBM Plex Mono", "Sarasa Mono SC", "SFMono-Regular",
     "Consolas", ui-monospace, monospace;
 
-  /* ── Surface semantic tokens：外壳 chrome 表面已全部 alias 到权威令牌
-     （UI-06 阶段 A）；140 处 var(--sf-*) 引用零改动收敛，逐组件清除在阶段 B。 ── */
-  --sf-shell-bg: var(--bg-shell);
-  --sf-surface: var(--bg-sidebar);
-  --sf-surface-elevated: var(--bg-elevated);
-  --sf-surface-sunken: var(--bg-sidebar);
-  --sf-overlay: rgba(15, 26, 30, 0.28);
-  --sf-accent-border: var(--border-accent);
-  --sf-accent-border-strong: var(--accent);
-  --sf-accent-glow: transparent;
-  --sf-accent-hover-bg: var(--accent-subtle);
-  --sf-grid-line: transparent;
-  --sf-grid-mask-opacity: 0;
-  --sf-inset-highlight: transparent;
-  /* 常驻栏无外阴影（02-design §4.1）：alias 为 none，阶段 B 连同引用一起清除 */
-  --sf-shadow-panel: none;
-  --sf-shadow-elevated: none;
-  --sf-glow-cyan: 0 0 0 0 transparent;
 }
 
 .dark {
@@ -240,19 +222,6 @@
   --chat-shadow-soft: 0 6px 18px rgb(0 0 0 / 0.22);
   --chat-user-bubble-bg: #20342e;
   --chat-composer-shadow: var(--composer-shadow);
-  --sf-shell-bg: var(--bg-shell);
-  --sf-surface: var(--bg-sidebar);
-  --sf-surface-elevated: var(--bg-elevated);
-  --sf-surface-sunken: var(--bg-sidebar);
-  --sf-overlay: rgb(0 0 0 / 0.58);
-  --sf-accent-border: var(--border-accent);
-  --sf-accent-border-strong: var(--accent);
-  --sf-accent-glow: transparent;
-  --sf-accent-hover-bg: var(--accent-subtle);
-  --sf-inset-highlight: transparent;
-  --sf-shadow-panel: none;
-  --sf-shadow-elevated: none;
-  --sf-glow-cyan: 0 0 0 0 transparent;
 
   /* markdown / streamdown 面在暗色下的对偶令牌 */
   --markdown-inline-bg: rgb(85 199 173 / 0.14);
@@ -1734,9 +1703,8 @@ button:not(:disabled):active,
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  border-radius: 24px;
-  border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--border-dim));
-  box-shadow: var(--shadow-sm);
+  border-radius: 4px;
+  border: 1px solid var(--border-dim);
 }
 /* @monaco-editor/react renders: <section style="display:flex; position:relative"> */
 .monaco-pane > section,

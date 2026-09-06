@@ -187,6 +187,11 @@ export function useProjectPanels() {
     document.addEventListener("mouseup", onMouseUp);
   }, [browserPanel]);
 
+  /** 键盘/复位等离散调整入口（拖拽走 handleRightResizeStart）。 */
+  const applyRightPanelWidth = useCallback((width: number) => {
+    setRightPanelWidth(Math.max(180, Math.min(600, Math.round(width))));
+  }, []);
+
   const handleTerminalResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startY = e.clientY;
@@ -233,6 +238,7 @@ export function useProjectPanels() {
     showEditorWorkbench,
     clearFileAndDiff,
     handleRightResizeStart,
+    applyRightPanelWidth,
     handleToggleBrowserPanelExpanded: browserPanel.toggleExpanded,
     handleTerminalResizeStart,
     handleOpenPanel,

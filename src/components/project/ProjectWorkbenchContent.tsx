@@ -1,6 +1,7 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef } from "react";
 import type { McpStatus, Project } from "../../types";
 import type { useProjectPanels } from "../../hooks/useProjectPanels";
+import type { WorkspaceBudget } from "./workspace-budget";
 import { ChatPageV2 } from "../chat-page-v2";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { MarkdownLinkProvider } from "../markdown/MarkdownLinkContext";
@@ -30,6 +31,10 @@ interface ProjectWorkbenchContentProps {
   onOpenSettings: () => void;
   /** 工作区是否可见（保活隐藏时为 false），透传给 portal 覆盖层门控。 */
   workspaceVisible: boolean;
+  /** 空间预算（UI-04）：双栏/单栏与像素宽由纯函数模块决定。 */
+  budget: WorkspaceBudget;
+  editorPaneRatio: number;
+  onEditorPaneRatioChange: (ratio: number) => void;
 }
 
 export function ProjectWorkbenchContent({
@@ -45,37 +50,61 @@ export function ProjectWorkbenchContent({
   onOpenMcpStatus,
   onOpenSettings,
   workspaceVisible,
+  budget,
+  editorPaneRatio,
+  onEditorPaneRatioChange,
 }: ProjectWorkbenchContentProps) {
-  const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
   const hasEditorContent = panels.openDiff !== null || panels.openFiles.length > 0;
-  const showEditorPane = panels.editorWorkbenchVisible && hasEditorContent;
-  const columnCount = Number(sessionWorkbenchVisible) + Number(showEditorPane);
+  const editorRequested = panels.editorWorkbenchVisible && hasEditorContent;
+  // 预算降级为单栏时：会话面板优先；用户主动收起会话后编辑区独占。
+  const dual = budget.dualPane && sessionWorkbenchVisible && editorRequested;
+  const showSessionPane = dual || sessionWorkbenchVisible;
+  const showEditorPane = dual || (!sessionWorkbenchVisible && editorRequested);
+  const columnCount = Number(showSessionPane) + Number(showEditorPane);
 
-  const handleEditorPaneResizeStart = useCallback((event: React.MouseEvent) => {
-    event.preventDefault();
-    const container = workspaceSplitRef.current;
-    if (!container) return;
+  const handleEditorPaneResizeStart = useCallback(
+    (event: React.MouseEvent) => {
+      event.preventDefault();
+      const container = workspaceSplitRef.current;
+      if (!container) return;
 
-    const rect = container.getBoundingClientRect();
-    const updateRatio = (clientX: number) => {
-      const nextRatio = (rect.right - clientX) / rect.width;
-      setEditorPaneRatio(Math.max(0.28, Math.min(0.72, nextRatio)));
-    };
-    const onMouseMove = (moveEvent: MouseEvent) => updateRatio(moveEvent.clientX);
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
+      const rect = container.getBoundingClientRect();
+      const updateRatio = (clientX: number) => {
+        // 占比偏好自由写入；像素下限由 resolveWorkspaceBudget 夹取。
+        const nextRatio = (rect.right - clientX) / rect.width;
+        onEditorPaneRatioChange(Math.max(0, Math.min(1, nextRatio)));
+      };
+      const onMouseMove = (moveEvent: MouseEvent) => updateRatio(moveEvent.clientX);
+      const onMouseUp = () => {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
 
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    updateRatio(event.clientX);
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, []);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      updateRatio(event.clientX);
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    },
+    [onEditorPaneRatioChange],
+  );
+
+  const handleEditorPaneResizeKey = useCallback(
+    (event: React.KeyboardEvent) => {
+      const step = event.shiftKey ? 0.1 : 0.02;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        onEditorPaneRatioChange(Math.max(0, Math.min(1, editorPaneRatio + step)));
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        onEditorPaneRatioChange(Math.max(0, Math.min(1, editorPaneRatio - step)));
+      }
+    },
+    [editorPaneRatio, onEditorPaneRatioChange],
+  );
 
   useEffect(() => {
     if (!hasEditorContent) onSessionWorkbenchVisibleChange(true);
@@ -226,13 +255,19 @@ export function ProjectWorkbenchContent({
     <ProjectWorkbench
       workspaceSplitRef={workspaceSplitRef}
       columnCount={columnCount}
-      editorPaneRatio={editorPaneRatio}
-      showSessionPane={sessionWorkbenchVisible}
+      gridTemplateColumns={
+        dual
+          ? `${budget.chatWidth}px ${budget.splitterWidth}px ${budget.editorWidth}px`
+          : "minmax(0, 1fr)"
+      }
+      showSessionPane={showSessionPane}
       sessionPane={sessionPane}
       showEditorPane={showEditorPane}
       editorPane={editorPane}
       emptyPane={emptyPane}
       onEditorPaneResizeStart={handleEditorPaneResizeStart}
+      onEditorPaneResizeKey={handleEditorPaneResizeKey}
+      onEditorPaneResizeDoubleClick={() => onEditorPaneRatioChange(0.5)}
     />
   );
 }

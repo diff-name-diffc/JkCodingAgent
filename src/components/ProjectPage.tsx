@@ -6,6 +6,7 @@ import { RightToolbar } from "./RightToolbar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useProjectPanels } from "../hooks/useProjectPanels";
 import { useBrowserSessionDock } from "../hooks/useBrowserSessionDock";
+import { useWorkspaceBudget } from "../hooks/useWorkspaceBudget";
 import { useProjectMcpStatus } from "../hooks/use-mcp-status";
 import {
   ProjectMainArea,
@@ -31,6 +32,9 @@ const ShellTerminalPanel = lazy(() =>
 const BrowserPanel = lazy(() =>
   import("./BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
 );
+
+/** 会话导航栏偏好宽（UI-08 持久化前的模块常量；设计目标区间 216–320）。 */
+const SESSION_NAV_WIDTH = 288;
 
 export function ProjectPage({
   project,
@@ -86,6 +90,25 @@ export function ProjectPage({
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionSidebarCollapsed, setSessionSidebarCollapsed] = useState(false);
   const [sessionWorkbenchVisible, setSessionWorkbenchVisible] = useState(true);
+  const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
+
+  // 空间预算（UI-04）：偏好为冻结输入，窄窗临时适配只体现在 budget 输出。
+  const hasEditorContent = panels.openDiff !== null || openFiles.length > 0;
+  const budget = useWorkspaceBudget({
+    navOpen: !sessionSidebarCollapsed,
+    navWidthPref: SESSION_NAV_WIDTH,
+    rightPanelOpen: rightPanel !== null,
+    rightPanelWidthPref: rightPanelWidth,
+    terminalOpen: showShellTerminal,
+    terminalHeightPref: terminalHeight,
+    dualPaneRequested: sessionWorkbenchVisible && hasEditorContent,
+    editorRatioPref: editorPaneRatio,
+  });
+  // 浏览器 expanded 是既有的视口比例语义（UI-18 迁移前保留），不走预算夹取。
+  const rightPanelRenderWidth =
+    rightPanel === "browser" && browserPanelExpanded
+      ? rightPanelWidth
+      : budget.rightPanelWidth;
 
   const handleSelectSession = useCallback((sessionId: string | null) => {
     if (sessionId) setSessionWorkbenchVisible(true);
@@ -135,15 +158,16 @@ export function ProjectPage({
     />
   );
 
-  const sessionPanelNode = !sessionSidebarCollapsed ? (
-    <SessionPanel
-      project={project}
-      activeSessionId={activeSessionId}
-      onSelectSession={handleSelectSession}
-      onBack={onBack}
-      onCollapse={() => setSessionSidebarCollapsed(true)}
-    />
-  ) : undefined;
+  const sessionPanelNode =
+    !sessionSidebarCollapsed && budget.navWidth > 0 ? (
+      <SessionPanel
+        project={project}
+        activeSessionId={activeSessionId}
+        onSelectSession={handleSelectSession}
+        onBack={onBack}
+        onCollapse={() => setSessionSidebarCollapsed(true)}
+      />
+    ) : undefined;
 
   const workbenchNode = (
     <ProjectWorkbenchContent
@@ -159,6 +183,9 @@ export function ProjectPage({
       onOpenMcpStatus={() => setShowMcpStatus(true)}
       onOpenSettings={() => setShowDispatcherSettings(true)}
       workspaceVisible={visible}
+      budget={budget}
+      editorPaneRatio={editorPaneRatio}
+      onEditorPaneRatioChange={setEditorPaneRatio}
     />
   );
 
@@ -169,7 +196,7 @@ export function ProjectPage({
         projectId={project.id}
         isActive={visible}
         onClose={() => setShowShellTerminal(false)}
-        height={terminalHeight}
+        height={budget.terminalHeight}
         onResizeStart={handleTerminalResizeStart}
       />
     </Suspense>
@@ -189,8 +216,21 @@ export function ProjectPage({
     />
   );
 
-  const rightPanelNode = rightPanel ? (
-    <ProjectRightPanelHost onResizeStart={handleRightResizeStart}>
+  const rightPanelNode = rightPanel && rightPanelRenderWidth > 0 ? (
+    <ProjectRightPanelHost
+      onResizeStart={handleRightResizeStart}
+      onResizeKey={(event) => {
+        const step = event.shiftKey ? 48 : 16;
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          panels.applyRightPanelWidth(rightPanelWidth + step);
+        } else if (event.key === "ArrowRight") {
+          event.preventDefault();
+          panels.applyRightPanelWidth(rightPanelWidth - step);
+        }
+      }}
+      onResizeDoubleClick={() => panels.applyRightPanelWidth(280)}
+    >
       {rightPanel === "files" && (
         <ErrorBoundary label="文件浏览器">
           <Suspense fallback={<ProjectLazyPaneFallback label="文件列表加载中..." />}>
@@ -202,7 +242,7 @@ export function ProjectPage({
               onFileDelete={handleFileTreeDelete}
               openFilePaths={openFiles.map((tab) => tab.path)}
               active={visible}
-              width={rightPanelWidth}
+              width={rightPanelRenderWidth}
             />
           </Suspense>
         </ErrorBoundary>
@@ -213,7 +253,7 @@ export function ProjectPage({
             <GitChanges
               projectPath={project.path}
               onFileSelect={handleDiffFileSelect}
-              width={rightPanelWidth}
+              width={rightPanelRenderWidth}
             />
           </Suspense>
         </ErrorBoundary>
@@ -225,7 +265,7 @@ export function ProjectPage({
               projectPath={project.path}
               onCommitSelect={handleCommitSelect}
               onFileClick={handleCommitFileClick}
-              width={rightPanelWidth}
+              width={rightPanelRenderWidth}
             />
           </Suspense>
         </ErrorBoundary>
@@ -236,7 +276,7 @@ export function ProjectPage({
             <BrowserPanel
               sessionId={activeSessionId}
               projectPath={project.path}
-              width={rightPanelWidth}
+              width={rightPanelRenderWidth}
               active={visible}
               expanded={browserPanelExpanded}
               onToggleExpanded={handleToggleBrowserPanelExpanded}

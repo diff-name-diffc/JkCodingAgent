@@ -81,25 +81,30 @@ export function ProjectMainArea({
 interface ProjectWorkbenchProps {
   workspaceSplitRef: RefObject<HTMLDivElement | null>;
   columnCount: number;
-  editorPaneRatio: number;
+  /** 由空间预算纯函数算出的 grid 列定义（双栏为像素三列，单栏 1fr）。 */
+  gridTemplateColumns: string;
   showSessionPane: boolean;
   sessionPane?: ReactNode;
   showEditorPane: boolean;
   editorPane?: ReactNode;
   emptyPane?: ReactNode;
   onEditorPaneResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void;
+  onEditorPaneResizeKey?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
+  onEditorPaneResizeDoubleClick?: () => void;
 }
 
 export function ProjectWorkbench({
   workspaceSplitRef,
   columnCount,
-  editorPaneRatio,
+  gridTemplateColumns,
   showSessionPane,
   sessionPane,
   showEditorPane,
   editorPane,
   emptyPane,
   onEditorPaneResizeStart,
+  onEditorPaneResizeKey,
+  onEditorPaneResizeDoubleClick,
 }: ProjectWorkbenchProps) {
   return (
     <div
@@ -109,10 +114,7 @@ export function ProjectWorkbench({
         flex: 1,
         minHeight: 0,
         display: "grid",
-        gridTemplateColumns:
-          columnCount === 2
-            ? `minmax(0, calc(${(1 - editorPaneRatio) * 100}% - 4px)) 8px minmax(0, calc(${editorPaneRatio * 100}% - 4px))`
-            : "minmax(0, 1fr)",
+        gridTemplateColumns,
         overflow: "hidden",
         background: "var(--bg-panel)",
       }}
@@ -122,7 +124,13 @@ export function ProjectWorkbench({
       {columnCount === 2 && (
         <div
           className="ai-splitter ai-project-splitter"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖拽或方向键调整会话与编辑区宽度，双击恢复默认"
+          tabIndex={0}
           onMouseDown={onEditorPaneResizeStart}
+          onKeyDown={onEditorPaneResizeKey}
+          onDoubleClick={onEditorPaneResizeDoubleClick}
           style={{
             width: 8,
             cursor: "col-resize",
@@ -151,18 +159,28 @@ export function ProjectWorkbench({
 
 interface ProjectRightPanelHostProps {
   onResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void;
+  onResizeKey?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
+  onResizeDoubleClick?: () => void;
   children: ReactNode;
 }
 
 export function ProjectRightPanelHost({
   onResizeStart,
+  onResizeKey,
+  onResizeDoubleClick,
   children,
 }: ProjectRightPanelHostProps) {
   return (
     <div className="ai-project-right-panel" style={{ position: "relative", display: "flex", flexShrink: 0 }}>
       <div
         className="ai-splitter ai-project-right-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="拖拽或方向键调整右栏宽度，双击恢复默认"
+        tabIndex={0}
         onMouseDown={onResizeStart}
+        onKeyDown={onResizeKey}
+        onDoubleClick={onResizeDoubleClick}
         style={{
           position: "absolute",
           left: 0,

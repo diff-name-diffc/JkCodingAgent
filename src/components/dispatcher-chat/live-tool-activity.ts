@@ -31,6 +31,8 @@ export function startLiveToolActivity(
     workspaceId: payload.workspaceId,
     input: prettyPrintToolPayload(payload.arguments),
     status: "running",
+    // Started 事件清除 planned 标记（等待 → 执行中）。
+    planned: false,
     startedAtMs: Date.now(),
   });
   return nextTools;
@@ -47,6 +49,8 @@ export function planLiveToolActivity(
     workspaceId: payload.workspaceId,
     input: prettyPrintToolPayload(payload.arguments),
     status: "running",
+    // UI-12：planned 与 started 在事件层区分，展示层「等待」独立表达。
+    planned: true,
     startedAtMs: Date.now(),
   });
   return nextTools;
@@ -80,6 +84,7 @@ export function finishLiveToolActivity(
       detailRefs: payload.detailRefs,
       resultMode: payload.resultMode,
       status: errorText ? "error" : "success",
+      planned: false,
     };
     return nextTools;
   }

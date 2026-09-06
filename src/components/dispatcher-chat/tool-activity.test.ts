@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { DispatcherToolRunRecord } from "../../types";
 import { mergeToolRunRecords, toolRunStatusToCallStatus } from "./tool-activity";
+import {
+  finishLiveToolActivity,
+  planLiveToolActivity,
+  startLiveToolActivity,
+} from "./live-tool-activity";
 
 function run(patch: Partial<DispatcherToolRunRecord>): DispatcherToolRunRecord {
   return {
@@ -77,5 +82,44 @@ describe("toolRunStatusToCallStatus", () => {
     expect(toolRunStatusToCallStatus("succeeded")).toBe("success");
     expect(toolRunStatusToCallStatus("internal_error")).toBe("error");
     expect(toolRunStatusToCallStatus("cancelled")).toBe("error");
+  });
+});
+
+describe("planned 标记全链路（UI-12：等待独立于执行中）", () => {
+  const payload = { toolCallId: "call-1", name: "read_file", arguments: "{}" };
+
+  it("planLive 置 planned=true，startLive 翻转为 false", () => {
+    const planned = planLiveToolActivity([], payload);
+    expect(planned[0].planned).toBe(true);
+    expect(planned[0].status).toBe("running");
+
+    const started = startLiveToolActivity(planned, payload);
+    expect(started[0].planned).toBe(false);
+    expect(started[0].status).toBe("running");
+  });
+
+  it("finishLive 清除 planned 并落终态", () => {
+    const planned = planLiveToolActivity([], payload);
+    const finished = finishLiveToolActivity(planned, {
+      ...payload,
+      displayText: "ok",
+      contextPayload: "文件内容",
+      resultMode: "raw",
+      detailRefs: [],
+    });
+    expect(finished[0].planned).toBe(false);
+    expect(finished[0].status).toBe("success");
+  });
+
+  it("跳过 started 直接 finish（run 切换兜底）不带 planned 标记", () => {
+    const finished = finishLiveToolActivity([], {
+      ...payload,
+      displayText: "boom",
+      contextPayload: "错误：读取失败",
+      resultMode: "raw",
+      detailRefs: [],
+    });
+    expect(finished[0].planned).toBeFalsy();
+    expect(finished[0].status).toBe("error");
   });
 });

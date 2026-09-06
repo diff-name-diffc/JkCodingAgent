@@ -29,6 +29,12 @@ export interface ToolActivityItem extends ToolCallItem {
   toolRuns?: DispatcherToolRunRecord[];
   detailRefs?: DispatcherToolArtifactRef[];
   resultMode?: DispatcherToolResultMode;
+  /**
+   * 已规划、尚未开始执行（UI-12：「等待」独立于「执行中」表达）。
+   * 仅实时管道产生：toolPlanned 置 true，toolStarted/toolFinished 清除；
+   * 历史投影皆为终态，天然不带此标记。
+   */
+  planned?: boolean;
   /** 仅用于计算流式工具调用耗时，不属于 ToolCallCard 的展示契约。 */
   startedAtMs?: number;
 }

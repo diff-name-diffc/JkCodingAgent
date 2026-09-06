@@ -1,4 +1,3 @@
-import * as React from "react";
 import { motion } from "framer-motion";
 import type { DispatcherMessageUsageStats, DispatcherToolArtifactRef } from "../../types";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcher-chat/assistant-segments";
@@ -8,6 +7,7 @@ import { ChatAvatar } from "./chat-avatar";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { MessageActions } from "./message-actions";
 import { ReasoningBlock } from "./reasoning-block";
+import { SupersededBlock } from "./superseded-block";
 import { ToolCallList } from "./tool-call-card";
 import { formatTokenCountK } from "../dispatcher-chat/dispatcherChatUtils";
 
@@ -128,24 +128,5 @@ export function AssistantMessage({
         />
       </div>
     </motion.div>
-  );
-}
-
-function SupersededBlock({ text }: { text: string }) {
-  const [open, setOpen] = React.useState(false);
-  return (
-    <div className="rounded-md border border-dashed border-border/70 bg-muted/30">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full px-3 py-1.5 text-left text-[11px] text-muted-foreground hover:text-foreground"
-      >
-        {open ? "收起中间推理" : "查看中间推理"}
-      </button>
-      {open && (
-        <pre className="chat-scroll max-h-48 overflow-auto px-3 pb-2 font-mono text-[12px] leading-relaxed text-muted-foreground">
-          {text}
-        </pre>
-      )}
-    </div>
   );
 }

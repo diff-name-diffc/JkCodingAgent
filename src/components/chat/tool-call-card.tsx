@@ -1,27 +1,22 @@
 import * as React from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bot, Check, ChevronDown, FileSearch, Loader2, X } from "lucide-react";
+import { Bot, Check, ChevronDown, Clock3, FileSearch, Loader2, X } from "lucide-react";
 import type { ToolActivityItem, ToolCallStatus } from "../dispatcher-chat/tool-activity";
+import {
+  formatToolActivitySummary,
+  summarizeToolActivity,
+} from "../dispatcher-chat/tool-activity-summary";
 import type { DispatcherToolArtifactRef } from "../../types";
 import { cn } from "../../lib/cn";
 import { highlightCodeToHtml } from "../../utils/shiki";
 import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { StatusPill } from "../detail/StatusPill";
 import { GraphPlanCard } from "../graph/GraphPlanCard";
 import { parseGraphPlanId } from "../graph/graph-utils";
 import { ToolRunTrace } from "./tool-run-trace";
 
 const MAX_COLLAPSED_OUTPUT_LINES = 20;
-
-const STATUS_META: Record<
-  ToolCallStatus,
-  { label: string; badge: "default" | "success" | "destructive" }
-> = {
-  running: { label: "执行中", badge: "default" },
-  success: { label: "成功", badge: "success" },
-  error: { label: "失败", badge: "destructive" },
-};
 
 interface ToolCallCardProps {
   item: ToolActivityItem;
@@ -41,7 +36,6 @@ function ToolCallCard({
   detail,
 }: ToolCallCardProps) {
   const [expanded, setExpanded] = React.useState(defaultExpanded);
-  const meta = STATUS_META[item.status];
   // submit_graph 收口工具：从输出文本解析 plan_id，卡片下方内联图计划卡。
   const graphPlanId =
     item.name === "submit_graph" && typeof item.output === "string"
@@ -52,7 +46,7 @@ function ToolCallCard({
     <div
       className={cn(
         "ai-tool-call-card rounded-lg border bg-card/70",
-        item.status === "running" && "ai-tool-call-card--running border-primary/30",
+        item.status === "running" && !item.planned && "ai-tool-call-card--running border-primary/30",
         item.status === "error" && "ai-tool-call-card--error border-destructive/60",
         className,
       )}
@@ -66,9 +60,11 @@ function ToolCallCard({
         <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium text-foreground">
           {item.name}
         </span>
-        <Badge variant={meta.badge} className="shrink-0 px-1.5 py-0 text-[10px]">
-          {meta.label}
-        </Badge>
+        <StatusPill
+          domain="tool"
+          status={item.planned ? "planned" : item.status}
+          className="shrink-0"
+        />
         {item.durationMs != null && (
           <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground">
             {formatDuration(item.durationMs)}
@@ -255,6 +251,7 @@ export function ToolCallList({
   const aggregated = items.length >= 3;
   const [expanded, setExpanded] = React.useState(!aggregated);
   const wasAggregated = React.useRef(aggregated);
+  const summary = React.useMemo(() => summarizeToolActivity(items), [items]);
 
   React.useEffect(() => {
     if (aggregated && !wasAggregated.current) setExpanded(false);
@@ -263,6 +260,27 @@ export function ToolCallList({
   }, [aggregated]);
 
   if (items.length === 0) return null;
+
+  const renderRow = (item: ToolActivityItem, index: number, list: ToolActivityItem[]) => (
+    <div key={item.id} className="flex items-stretch gap-2">
+      <div className="relative w-6 shrink-0" aria-hidden>
+        {index < list.length - 1 && <span className="ai-tool-call-line" />}
+        <TimelineNode status={item.status} planned={item.planned} />
+      </div>
+      <ToolCallCard
+        item={item}
+        className="mb-2 min-w-0 flex-1"
+        onOpenArtifact={onOpenArtifact}
+        onOpenSubAgent={onOpenSubAgent}
+      />
+    </div>
+  );
+
+  // UI-12：聚合收起时，失败/运行中/等待卡固定露出在摘要行下方——
+  // 「折叠不隐藏错误」「失败与待处理状态无需展开即可看见」。
+  const pinnedItems =
+    aggregated && !expanded ? items.filter((item) => item.status !== "success") : [];
+  const allSettled = summary.failed === 0 && summary.running === 0 && summary.planned === 0;
 
   return (
     <div className={className}>
@@ -276,8 +294,18 @@ export function ToolCallList({
           <span aria-hidden className="text-sm">
             ⚙
           </span>
-          <span className="min-w-0 flex-1">
-            已执行 {items.length} 个工具 · 总耗时 {formatTotalDuration(items)}
+          <span className="min-w-0 flex-1 truncate">{formatToolActivitySummary(summary)}</span>
+          <span className="ai-tool-summary-pills flex shrink-0 items-center gap-1">
+            {summary.failed > 0 && (
+              <StatusPill domain="tool" status="error" label={`失败 ${summary.failed}`} />
+            )}
+            {summary.planned > 0 && (
+              <StatusPill domain="tool" status="planned" label={`等待 ${summary.planned}`} />
+            )}
+            {summary.running > 0 && (
+              <StatusPill domain="tool" status="running" label={`执行中 ${summary.running}`} />
+            )}
+            {allSettled && <StatusPill domain="tool" status="success" label="成功" />}
           </span>
           <ChevronDown
             aria-hidden
@@ -289,6 +317,12 @@ export function ToolCallList({
         </button>
       )}
 
+      {pinnedItems.length > 0 && (
+        <div className="ai-tool-call-pinned space-y-0 pt-2">
+          {pinnedItems.map((item, index) => renderRow(item, index, pinnedItems))}
+        </div>
+      )}
+
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div
@@ -298,22 +332,7 @@ export function ToolCallList({
             transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
             className={cn("overflow-hidden", aggregated && "pt-2")}
           >
-            <div className="space-y-0">
-              {items.map((item, index) => (
-                <div key={item.id} className="flex items-stretch gap-2">
-                  <div className="relative w-6 shrink-0" aria-hidden>
-                    {index < items.length - 1 && <span className="ai-tool-call-line" />}
-                    <TimelineNode status={item.status} />
-                  </div>
-                  <ToolCallCard
-                    item={item}
-                    className="mb-2 min-w-0 flex-1"
-                    onOpenArtifact={onOpenArtifact}
-                    onOpenSubAgent={onOpenSubAgent}
-                  />
-                </div>
-              ))}
-            </div>
+            <div className="space-y-0">{items.map((item, index) => renderRow(item, index, items))}</div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -321,11 +340,13 @@ export function ToolCallList({
   );
 }
 
-function TimelineNode({ status }: { status: ToolCallStatus }) {
+function TimelineNode({ status, planned }: { status: ToolCallStatus; planned?: boolean }) {
   const className = "h-3.5 w-3.5";
+  const variant = planned ? "planned" : status;
   return (
-    <span className={cn("ai-tool-call-node", `ai-tool-call-node--${status}`)}>
-      {status === "running" && <Loader2 className={cn(className, "animate-spin")} />}
+    <span className={cn("ai-tool-call-node", `ai-tool-call-node--${variant}`)}>
+      {planned && <Clock3 className={className} />}
+      {!planned && status === "running" && <Loader2 className={cn(className, "animate-spin")} />}
       {status === "success" && <Check className={className} />}
       {status === "error" && <X className={className} />}
     </span>
@@ -345,10 +366,5 @@ function serializeData(value: unknown): string {
 
 function formatDuration(durationMs: number): string {
   if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
-  return `${(durationMs / 1000).toFixed(1)}s`;
-}
-
-function formatTotalDuration(items: ToolActivityItem[]): string {
-  const durationMs = items.reduce((total, item) => total + (item.durationMs ?? 0), 0);
   return `${(durationMs / 1000).toFixed(1)}s`;
 }

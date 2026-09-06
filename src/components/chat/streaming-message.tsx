@@ -7,6 +7,7 @@ import { cn } from "../../lib/cn";
 import { ChatAvatar } from "./chat-avatar";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { ReasoningBlock } from "./reasoning-block";
+import { SupersededBlock } from "./superseded-block";
 import { ToolCallList } from "./tool-call-card";
 
 /**
@@ -80,13 +81,19 @@ export function StreamingMessage({
         )}
 
         <div className="space-y-2">
-          {visibleSegments.map((segment, index) => (
-            <MarkdownRenderer
-              key={index}
-              content={segment.text}
-              streaming={isStreaming && index === visibleSegments.length - 1}
-            />
-          ))}
+          {visibleSegments.map((segment, index) =>
+            // UI-12：实时侧同样把 superseded 段渲染为折叠灰块，
+            // 与 AssistantMessage（历史侧）同轮次视觉一致。
+            segment.superseded ? (
+              <SupersededBlock key={index} text={segment.text} />
+            ) : (
+              <MarkdownRenderer
+                key={index}
+                content={segment.text}
+                streaming={isStreaming && index === visibleSegments.length - 1}
+              />
+            ),
+          )}
         </div>
 
         {!hasContent && placeholder && (

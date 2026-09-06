@@ -23,16 +23,6 @@ export function AiSectionHeader({
   );
 }
 
-export function AiStatusPill({
-  tone = "neutral",
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLSpanElement> & {
-  tone?: "neutral" | "accent" | "success" | "warning" | "danger";
-}) {
-  return <span className={cn("ai-status-pill", `ai-status-pill--${tone}`, className)} {...props} />;
-}
-
 export function AiEmptyState({
   icon,
   title,

@@ -16,8 +16,8 @@ const DYNAMIC_AI_CLASS_VALUES = new Map([
   ["ai-graph-notice-row--", ["running", "succeeded", "failed"]],
   ["ai-graph-tool-card--", ["running", "succeeded", "failed"]],
   ["ai-graph-edge--", ["waiting", "ready", "active", "done", "failed"]],
-  ["ai-status-pill--", ["neutral", "accent", "success", "warning", "danger"]],
-  ["ai-tool-call-node--", ["running", "success", "error"]],
+  ["ai-status-pill--", ["success", "error", "running", "warn", "neutral", "pending"]],
+  ["ai-tool-call-node--", ["running", "success", "error", "planned"]],
 ]);
 const AI_CLASS_SAFELIST = new Set(
   [...DYNAMIC_AI_CLASS_VALUES].flatMap(([prefix, values]) => values.map((value) => `${prefix}${value}`)),

@@ -10,12 +10,11 @@ export function useGraphPanelController(
   isPlainChat: boolean,
   currentSessionIdRef: React.RefObject<string | null>,
 ) {
-  // 执行图面板归属绑定 sessionId（UI-08）：多项目保活挂载不再共享 planId。
-  const graphPanel = useWorkspaceStore((state) => state.graphPanel);
+  // 执行图打开意图绑定 sessionId（UI-08）：多项目保活挂载不再共享 planId。
+  // UI-13 起意图由 useGraphTabSync 消费为主区标签，标签是渲染真值；
+  // 本控制器只保留意图开/关、最近计划入口与截断后的刷新。
   const openGraphPanel = useWorkspaceStore((state) => state.openGraphPanel);
   const closeGraphPanel = useWorkspaceStore((state) => state.closeGraphPanel);
-  const planId =
-    graphPanel && graphPanel.sessionId === activeSessionId ? graphPanel.planId : null;
   const [latestPlanId, setLatestPlanId] = useState<string | null>(null);
   // 截断（regenerate / 编辑重发）会删除被删轮次的图计划，refreshLatestPlan
   // 递增该 tick 触发重新查询，避免「最近计划」入口指向已删除的计划。
@@ -61,7 +60,6 @@ export function useGraphPanelController(
   }, [latestPlanId, activeSessionId, openGraphPanel]);
 
   return {
-    planId,
     latestPlanId,
     open,
     close: useCallback(() => closeGraphPanel(activeSessionId ?? undefined), [closeGraphPanel, activeSessionId]),

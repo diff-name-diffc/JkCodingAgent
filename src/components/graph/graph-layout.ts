@@ -7,12 +7,13 @@ import type { GraphDefinition } from "../../types";
  */
 
 export const GRAPH_NODE_WIDTH = 264;
-export const GRAPH_NODE_HEIGHT = 88;
+/** UI-13 节点卡压缩后：标题单行 + 模型小字 + 摘要两行 + 状态行。 */
+export const GRAPH_NODE_HEIGHT = 104;
 /**
- * 布局估算高度：节点带任务摘要/输出预览行时实际渲染更高，
- * 用它参与 dagre 排版避免层与层之间视觉重叠。
+ * 布局估算高度：与压缩后节点卡的实际渲染高度对齐
+ * （22 padding + 17 标题 + 13 模型 + 29 摘要两行 + 18 状态行 + 15 间距）。
  */
-const GRAPH_NODE_LAYOUT_HEIGHT = 136;
+const GRAPH_NODE_LAYOUT_HEIGHT = 116;
 
 export interface GraphNodePosition {
   x: number;

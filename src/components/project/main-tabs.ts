@@ -79,6 +79,14 @@ export function openGraphTab(
   const id = graphTabId(planId);
   const existing = state.tabs.find((tab) => tab.id === id);
   if (existing) {
+    // 已是激活的同一会话图标签：原样返回，避免意图同步 effect 反复触发无谓渲染。
+    if (
+      state.activeTabId === id &&
+      existing.kind === "graph" &&
+      existing.sessionId === sessionId
+    ) {
+      return state;
+    }
     return {
       tabs: state.tabs.map((tab) => (tab.id === id ? { ...tab, sessionId } : tab)),
       activeTabId: id,

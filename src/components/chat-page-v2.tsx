@@ -52,7 +52,8 @@ export interface ChatPageV2Props {
   onOpenMcpStatus?: () => void;
   onClosePanel?: () => void;
   embedded?: boolean;
-  /** 多项目保活挂载时隐藏工作区为 false；portal 覆盖层据此不渲染。 */
+  /** 多项目保活挂载时隐藏工作区为 false；据此关闭分支轮询等常驻副作用
+   * （执行图已迁主区标签，其保活门控由编辑 pane 的 active 承担，UI-13）。 */
   workspaceVisible?: boolean;
 }
 
@@ -442,13 +443,10 @@ export function ChatPageV2({
         />
       </div>
       <ChatPageOverlays
-        graphPlanId={graphPanel.planId}
-        workspaceVisible={workspaceVisible}
         pythonDrawerOpen={pythonRuns.drawerOpen}
         pythonTarget={pythonRuns.target}
         pythonRecord={pythonRuns.selectedRecord}
         pythonRunning={pythonRuns.selectedRunning}
-        onCloseGraph={graphPanel.close}
         onClosePython={() => pythonRuns.setDrawerOpen(false)}
         onRunPython={pythonRuns.run}
         onStopPython={pythonRuns.stop}

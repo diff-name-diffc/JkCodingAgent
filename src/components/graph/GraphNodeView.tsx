@@ -1,8 +1,9 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { Activity, BrainCircuit, Wrench } from "lucide-react";
+import { Wrench } from "lucide-react";
 import type { GraphKnownNodePhase, GraphNodePhase, GraphNodeStatus } from "../../types";
 import { cn } from "../../lib/cn";
+import { StatusPill } from "../detail/StatusPill";
 import { NODE_STATUS_META, formatGraphDuration } from "./graph-utils";
 
 /** React Flow 自定义节点携带的数据（由 GraphPanel 组装）。 */
@@ -37,16 +38,20 @@ function phaseLabel(phase: GraphNodePhase): string {
 }
 
 /**
- * 图编排画布的自定义节点。
- * 信息层级：任务标题（两行省略，悬浮 title 显示全文）→ 执行 Agent → 状态 + 耗时；
+ * 图编排画布的自定义节点（UI-13 压缩版）。
+ * 信息层级：任务名（一级，单行省略）→ 角色/模型（二级小字）→ 结果摘要
+ * （最多两行，实时输出优先）→ 状态 pill + 工具数 + 耗时。
+ * 完整任务描述与输出在节点抽屉（GraphNodeDrawer），卡面不再平铺。
  * 连接锚点默认隐藏，仅在悬浮/选中时浮现（见 .ai-graph-node-handle 样式）。
  */
 export const GraphNodeView = memo(function GraphNodeView({
   data,
   selected,
 }: NodeProps<GraphFlowNode>) {
-  const statusMeta = NODE_STATUS_META[data.status] ?? NODE_STATUS_META.pending;
   const duration = formatGraphDuration(data.durationMs);
+  const summary = data.outputPreview || data.task;
+  const statusMeta = NODE_STATUS_META[data.status] ?? NODE_STATUS_META.pending;
+  const streamingLabel = `${statusMeta.label} · ${phaseLabel(data.phase)}`;
 
   return (
     <div
@@ -62,24 +67,20 @@ export const GraphNodeView = memo(function GraphNodeView({
         <div className="ai-graph-node-title" title={data.title}>
           {data.title}
         </div>
-        <div className="ai-graph-node-agent-row">
-          <BrainCircuit className="ai-graph-node-agent-icon" aria-hidden />
-          <span className="ai-graph-node-agent">{data.modelLabel || "PI Agent"}</span>
+        <div className="ai-graph-node-agent" title={data.modelLabel || "PI Agent"}>
+          {data.modelLabel || "PI Agent"}
         </div>
-        <div className="ai-graph-node-task" title={data.task}>
-          {data.task}
-        </div>
-        {data.outputPreview && (
-          <div className="ai-graph-node-output" title={data.outputPreview}>
-            {data.outputPreview}
+        {summary && (
+          <div className="ai-graph-node-summary" title={summary}>
+            {summary}
           </div>
         )}
         <div className="ai-graph-node-meta-row">
-          <span className={cn("ai-graph-node-status", `ai-graph-node-status--${data.status}`)}>
-            {statusMeta.label}
-            {data.streaming && ` · ${phaseLabel(data.phase)}`}
-          </span>
-          {data.streaming && <Activity className="h-3 w-3" aria-hidden />}
+          <StatusPill
+            domain="graph-node"
+            status={data.status}
+            label={data.streaming ? streamingLabel : undefined}
+          />
           {data.toolCallCount > 0 && (
             <span className="ai-graph-node-duration">
               <Wrench className="h-3 w-3" />

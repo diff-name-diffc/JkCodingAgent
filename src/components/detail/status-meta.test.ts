@@ -45,7 +45,7 @@ describe("resolveStatusMeta", () => {
     expect(resolveStatusMeta("verdict", "fail").tone).toBe("error");
     expect(resolveStatusMeta("verdict", "unknown")).toEqual({
       tone: "neutral",
-      label: "验收未开始",
+      label: "未能验收",
     });
   });
 

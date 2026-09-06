@@ -63,12 +63,14 @@ const SUBAGENT_STATUS: Record<string, StatusMeta> = {
   failed: { tone: "error", label: "失败" },
 };
 
-/** GraphRunSummary.verdictStatus：运行结果之外的独立验收结论。 */
+/** GraphRunSummary.verdictStatus：运行结果之外的独立验收结论。
+ * unknown 默认「未能验收」（终态但验证器未给出结论）；运行中尚无验收
+ * 对象的场景由调用方以 label 覆盖为「验收未开始」（GraphPanelHeader）。 */
 const VERDICT_STATUS: Record<string, StatusMeta> = {
   pass: { tone: "success", label: "验收通过" },
   partial: { tone: "warn", label: "部分通过" },
   fail: { tone: "error", label: "验收失败" },
-  unknown: { tone: "neutral", label: "验收未开始" },
+  unknown: { tone: "neutral", label: "未能验收" },
 };
 
 const DOMAIN_STATUS: Record<StatusDomain, Record<string, StatusMeta>> = {

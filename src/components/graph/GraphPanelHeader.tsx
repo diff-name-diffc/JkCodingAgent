@@ -1,8 +1,9 @@
 import { useMemo } from "react";
-import { Play, RotateCcw, Square, X } from "lucide-react";
+import { Maximize2, Minimize2, Play, RotateCcw, Square, X } from "lucide-react";
 import type { GraphDefinition, GraphNodeStatus, GraphPlanRecord, GraphPlanStatus } from "../../types";
 import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
+import { StatusPill } from "../detail/StatusPill";
 import { PLAN_STATUS_META, computeGraphLayers } from "./graph-utils";
 
 interface GraphPanelHeaderProps {
@@ -16,6 +17,9 @@ interface GraphPanelHeaderProps {
   onResumeCheckpoint: () => void;
   onCancel: () => void;
   onClose: () => void;
+  /** 扩大/还原占满主区（UI-13：切换布局不触发任务重跑）。 */
+  onExpandMainArea?: () => void;
+  mainAreaExpanded?: boolean;
 }
 
 /**
@@ -35,6 +39,8 @@ export function GraphPanelHeader({
   onResumeCheckpoint,
   onCancel,
   onClose,
+  onExpandMainArea,
+  mainAreaExpanded = false,
 }: GraphPanelHeaderProps) {
   const statusMeta = PLAN_STATUS_META[planStatus];
   const canStart = planStatus === "draft";
@@ -70,19 +76,17 @@ export function GraphPanelHeader({
   }, [definition, statusByNodeId]);
 
   // 最近一次运行的验收结论（runs 按 attemptNo 倒序，取首个）。
-  // 后端已把「尚未/未能验收」统一为 unknown（空串会被读取层归一），
-  // 运行中的运行还没有验收结论，不显示徽章。
+  // 「运行结果」与「验收结果」是两个独立结论（UI-13）：运行中还没有验收
+  // 结论，显示 neutral「验收未开始」（真实字段映射，不虚构）；终态但后端
+  // 归一为 unknown 时是「未能验收」。尚未创建过运行（draft）不显示验收组。
   const latestVerdict = useMemo(() => {
     const run = plan?.runs?.[0];
-    if (!run || run.status === "running" || !run.verdictStatus) return null;
-    const meta: Record<string, { label: string; className: string }> = {
-      pass: { label: "验收通过", className: "ai-graph-chip--node-succeeded" },
-      partial: { label: "部分达成", className: "ai-graph-chip--draft" },
-      fail: { label: "验收未通过", className: "ai-graph-chip--failed" },
-      unknown: { label: "未能验收", className: "ai-graph-chip--cancelled" },
-    };
-    const found = meta[run.verdictStatus];
-    return found ? { ...found, reason: run.verdictReason } : null;
+    if (!run) return null;
+    if (run.status === "running") {
+      return { status: "unknown", label: "验收未开始", reason: null as string | null };
+    }
+    if (!run.verdictStatus) return null;
+    return { status: run.verdictStatus, label: undefined, reason: run.verdictReason ?? null };
   }, [plan]);
 
   return (
@@ -96,10 +100,18 @@ export function GraphPanelHeader({
             </span>
           )}
         </div>
-        <span className={cn("ai-graph-chip", statusMeta.className)}>{statusMeta.label}</span>
+        {/* 两结论独立分区（UI-13）：运行状态与验收结论各带前缀标签，不混为一谈 */}
+        <span className="ai-graph-header-conclusion">
+          <span className="ai-graph-header-pill-label">运行</span>
+          <span className={cn("ai-graph-chip", statusMeta.className)}>{statusMeta.label}</span>
+        </span>
         {latestVerdict && (
-          <span className={cn("ai-graph-chip", latestVerdict.className)} title={latestVerdict.reason}>
-            {latestVerdict.label}
+          <span
+            className="ai-graph-header-conclusion"
+            title={latestVerdict.reason ?? undefined}
+          >
+            <span className="ai-graph-header-pill-label">验收</span>
+            <StatusPill domain="verdict" status={latestVerdict.status} label={latestVerdict.label} />
           </span>
         )}
         {canStart && (
@@ -153,7 +165,22 @@ export function GraphPanelHeader({
             停止
           </Button>
         )}
-        <Button variant="ghost" size="icon-sm" aria-label="关闭执行图面板" onClick={onClose}>
+        {onExpandMainArea && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={mainAreaExpanded ? "还原双栏布局" : "扩大占满主区"}
+            title={mainAreaExpanded ? "还原双栏布局" : "扩大占满主区"}
+            onClick={onExpandMainArea}
+          >
+            {mainAreaExpanded ? (
+              <Minimize2 className="h-4 w-4" />
+            ) : (
+              <Maximize2 className="h-4 w-4" />
+            )}
+          </Button>
+        )}
+        <Button variant="ghost" size="icon-sm" aria-label="关闭执行图标签" onClick={onClose}>
           <X className="h-4 w-4" />
         </Button>
       </div>

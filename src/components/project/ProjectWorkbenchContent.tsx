@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef } from "react";
 import type { McpStatus, Project } from "../../types";
 import type { useProjectPanels } from "../../hooks/useProjectPanels";
+import type { GraphTab } from "../../hooks/useGraphTabSync";
 import type { WorkspaceBudget } from "./workspace-budget";
 import { ChatPageV2 } from "../chat-page-v2";
 import { ErrorBoundary } from "../ErrorBoundary";
@@ -13,6 +14,9 @@ const FileViewer = lazy(() =>
 );
 const GitDiffViewer = lazy(() =>
   import("../GitDiffViewer").then((module) => ({ default: module.GitDiffViewer })),
+);
+const GraphPanel = lazy(() =>
+  import("../graph/GraphPanel").then((module) => ({ default: module.GraphPanel })),
 );
 
 type ProjectPanelController = ReturnType<typeof useProjectPanels>;
@@ -29,12 +33,17 @@ interface ProjectWorkbenchContentProps {
   onOpenMarkdownLink: (url: string) => void | Promise<void>;
   onOpenMcpStatus: () => void;
   onOpenSettings: () => void;
-  /** 工作区是否可见（保活隐藏时为 false），透传给 portal 覆盖层门控。 */
+  /** 工作区是否可见（保活隐藏时为 false）：门控聊天侧常驻副作用与
+   * 主区标签视图（执行图等）的快捷键/自适应响应。 */
   workspaceVisible: boolean;
   /** 空间预算（UI-04）：双栏/单栏与像素宽由纯函数模块决定。 */
   budget: WorkspaceBudget;
   editorPaneRatio: number;
   onEditorPaneRatioChange: (ratio: number) => void;
+  /** 关闭执行图标签（UI-13；由 useGraphTabSync 提供，同步清除打开意图）。 */
+  onCloseGraphTab: (tab: GraphTab) => void;
+  /** 扩大/还原主区（收起/恢复会话 pane），执行图与浏览器标签共用。 */
+  onExpandMainArea: () => void;
 }
 
 export function ProjectWorkbenchContent({
@@ -53,11 +62,16 @@ export function ProjectWorkbenchContent({
   budget,
   editorPaneRatio,
   onEditorPaneRatioChange,
+  onCloseGraphTab,
+  onExpandMainArea,
 }: ProjectWorkbenchContentProps) {
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
   // UI-13：编辑区内容判定收敛到 useProjectPanels 单一派生值（含 file/diff/graph 标签）。
   const hasEditorContent = panels.hasEditorContent;
   const editorRequested = panels.editorWorkbenchVisible && hasEditorContent;
+  // 先取出图标签（JSX 闭包内联合类型收窄不保留）。
+  const activeGraphTab =
+    panels.activeEditorTab?.kind === "graph" ? panels.activeEditorTab : null;
   // 预算降级为单栏时：会话面板优先；用户主动收起会话后编辑区独占。
   const dual = budget.dualPane && sessionWorkbenchVisible && editorRequested;
   const showSessionPane = dual || sessionWorkbenchVisible;
@@ -180,7 +194,16 @@ export function ProjectWorkbenchContent({
       )}
     >
       <Suspense fallback={<ProjectLazyPaneFallback label="编辑器加载中..." />}>
-        {panels.activeEditorTab?.kind === "diff" ? (
+        {activeGraphTab ? (
+          <GraphPanel
+            planId={activeGraphTab.planId}
+            sessionId={activeGraphTab.sessionId}
+            active={workspaceVisible && showEditorPane}
+            onClose={() => onCloseGraphTab(activeGraphTab)}
+            onExpandMainArea={onExpandMainArea}
+            mainAreaExpanded={!sessionWorkbenchVisible}
+          />
+        ) : panels.activeEditorTab?.kind === "diff" ? (
           panels.activeEditorTab.diff.kind === "file" ? (
             <GitDiffViewer
               projectPath={project.path}

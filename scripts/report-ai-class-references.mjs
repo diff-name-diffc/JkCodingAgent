@@ -12,7 +12,6 @@ const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".css"]);
 const DYNAMIC_AI_CLASS_VALUES = new Map([
   ["ai-graph-chip--node-", ["pending", "running", "succeeded", "failed", "skipped", "cancelled"]],
   ["ai-graph-node--", ["pending", "running", "succeeded", "failed", "skipped", "cancelled"]],
-  ["ai-graph-node-status--", ["pending", "running", "succeeded", "failed", "skipped", "cancelled"]],
   ["ai-graph-notice-row--", ["running", "succeeded", "failed"]],
   ["ai-graph-tool-card--", ["running", "succeeded", "failed"]],
   ["ai-graph-edge--", ["waiting", "ready", "active", "done", "failed"]],

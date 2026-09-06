@@ -8,6 +8,7 @@ import { StatusDockBar } from "./shell/StatusDockBar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useProjectPanels } from "../hooks/useProjectPanels";
 import { useBrowserSessionDock } from "../hooks/useBrowserSessionDock";
+import { useGraphTabSync } from "../hooks/useGraphTabSync";
 import { useWorkspaceBudget } from "../hooks/useWorkspaceBudget";
 import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
 import type { WorkspacePrefs } from "./project/workspace-prefs";
@@ -144,6 +145,19 @@ export function ProjectPage({
     setActiveSessionId(sessionId);
   }, []);
 
+  // 执行图意图 → 主区标签同步（UI-13）：store 的 graphPanel 是打开意图，
+  // 标签是渲染真值；关标签时按会话+计划匹配清除意图。
+  const { closeGraphTab } = useGraphTabSync({
+    activeSessionId,
+    editorTabs: panels.editorTabs,
+    onOpenGraphTab: panels.handleOpenGraphTab,
+    onCloseGraphTab: panels.handleCloseGraphTab,
+  });
+  // 扩大/还原主区：收起/恢复会话 pane（执行图与浏览器标签共用，切换不触发重跑）。
+  const handleExpandMainArea = useCallback(() => {
+    setSessionWorkbenchVisible((visible) => !visible);
+  }, []);
+
   // Files 面板是 lazy 块（含 seti 图标 eager 资源），首次打开才求值会卡顿；
   // 挂载后的空闲窗口预取，让首次点击命中缓存。
   useEffect(() => {
@@ -278,6 +292,8 @@ export function ProjectPage({
       budget={budget}
       editorPaneRatio={editorPaneRatio}
       onEditorPaneRatioChange={setEditorPaneRatio}
+      onCloseGraphTab={closeGraphTab}
+      onExpandMainArea={handleExpandMainArea}
     />
   );
 

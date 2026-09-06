@@ -8947,38 +8947,18 @@
     box-shadow: none;
   }
 
-  /* ── 图编排（Graph Orchestrator）────────────────────────────────────── */
+  /* ── 图编排（Graph Orchestrator）──────────────────────────────────────
+     UI-13：执行图迁入主区标签，不再 portal 全屏模态——
+     旧 overlay/portal 两个覆盖层类已随迁移删除（见 03-tasks UI-13 记录）。 */
 
-  .ai-graph-overlay {
-    padding: 28px;
-    /* 图面板是全屏工作区而非模态弹窗：去掉 .ai-dialog-overlay 继承来的
-       暗色蒙版与 backdrop-filter。backdrop-filter 会建立 backdrop root，
-       在 WKWebView 中会拉低其内部变换内容（React Flow 缩放/平移的画布）
-       的栅格化质量，导致启动执行后画布字体发虚。 */
-    background: none;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-
-  /* 执行图 portal 到 body 后的根层级定位（UI-03）：
-     z=200 高于 titlebar(40) 与 .ai-dialog-overlay(100)，低于设置(300) 与
-     确认框(400/401)，满足「不遮挡更高层确认框」；top 让出标题栏拖拽区。 */
-  .ai-graph-portal {
-    top: var(--titlebar-h);
-    z-index: 200;
-  }
-
-  /* 窄窗口下降级外边距，画布优先 */
+  /* 窄窗口下省略摘要，画布优先 */
   @media (max-width: 900px) {
-    .ai-graph-overlay {
-      padding: 12px;
-    }
-
     .ai-graph-panel-summary {
       display: none;
     }
   }
 
+  /* 主区标签中的普通视图（编辑面 0–4px 圆角、无浮层阴影，tokens.md §2） */
   .ai-graph-panel {
     position: relative;
     display: flex;
@@ -8987,9 +8967,8 @@
     height: 100%;
     overflow: hidden;
     border: 1px solid var(--border-medium);
-    border-radius: 12px;
+    border-radius: 4px;
     background: var(--bg-panel);
-    box-shadow: 0 18px 48px rgb(23 32 29 / 0.22);
   }
 
   .ai-graph-panel-header {
@@ -9027,6 +9006,20 @@
     font-size: 12px;
     color: var(--text-muted);
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 运行/验收两结论独立分区（UI-13）：各带前缀小标签，避免并排两 chip 混淆 */
+  .ai-graph-header-conclusion {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .ai-graph-header-pill-label {
+    font-size: 11px;
+    color: var(--text-hint);
     white-space: nowrap;
   }
 
@@ -9272,40 +9265,36 @@
     gap: 5px;
   }
 
-  /* 任务标题：两行省略，悬浮（title 属性）显示完整内容 */
+  /* 任务标题（UI-13 压缩版一级信息）：单行省略，悬浮（title 属性）显示全文 */
   .ai-graph-node-title {
-    display: -webkit-box;
     overflow: hidden;
     font-size: 12.5px;
     font-weight: 600;
     line-height: 1.35;
     color: var(--text-primary);
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    word-break: break-word;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .ai-graph-node-agent-row {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .ai-graph-node-agent-icon {
-    height: 12px;
-    width: 12px;
-    flex-shrink: 0;
-    color: var(--accent);
-  }
-
+  /* 角色/模型：二级小字 */
   .ai-graph-node-agent {
     overflow: hidden;
-    flex: 1;
     font-size: 11px;
     color: var(--text-muted);
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* 结果摘要：最多两行（实时输出优先，回退任务描述；全文在抽屉） */
+  .ai-graph-node-summary {
+    display: -webkit-box;
+    overflow: hidden;
+    font-size: 10px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    word-break: break-word;
   }
 
   .ai-graph-node-meta-row {
@@ -9313,28 +9302,6 @@
     align-items: center;
     gap: 8px;
     font-size: 11px;
-  }
-
-  .ai-graph-node-status {
-    flex-shrink: 0;
-    font-weight: 500;
-    color: var(--text-muted);
-  }
-
-  .ai-graph-node-status--running {
-    color: var(--accent);
-  }
-
-  .ai-graph-node-status--succeeded {
-    color: var(--success);
-  }
-
-  .ai-graph-node-status--failed {
-    color: var(--danger);
-  }
-
-  .ai-graph-node-status--skipped {
-    color: var(--warning);
   }
 
   .ai-graph-node-duration {
@@ -9795,26 +9762,6 @@
     flex: 1;
     font-size: 11px;
     color: var(--text-hint);
-  }
-
-  .ai-graph-node-task,
-  .ai-graph-node-output {
-    display: -webkit-box;
-    overflow: hidden;
-    margin-top: 7px;
-    font-size: 10px;
-    line-height: 1.45;
-    color: var(--text-muted);
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-
-  .ai-graph-node-output {
-    padding: 6px 7px;
-    border-left: 2px solid var(--accent);
-    border-radius: 0 5px 5px 0;
-    background: var(--bg-subtle);
-    color: var(--text-secondary);
   }
 
   .ai-graph-drawer-title-row {

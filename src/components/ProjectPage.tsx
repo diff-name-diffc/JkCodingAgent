@@ -15,7 +15,6 @@ import type { WorkspacePrefs } from "./project/workspace-prefs";
 import { useProjectMcpStatus } from "../hooks/use-mcp-status";
 import {
   ProjectMainArea,
-  ProjectRightPanelHost,
   ProjectWorkspaceLayout,
 } from "./project/ProjectWorkspaceLayout";
 import { ProjectLazyPaneFallback } from "./project/ProjectLazyPaneFallback";
@@ -33,9 +32,6 @@ const GitHistory = lazy(() =>
 );
 const ShellTerminalPanel = lazy(() =>
   import("./ShellTerminalPanel").then((module) => ({ default: module.ShellTerminalPanel })),
-);
-const BrowserPanel = lazy(() =>
-  import("./browser/BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
 );
 
 export function ProjectPage({
@@ -64,22 +60,15 @@ export function ProjectPage({
 }) {
   const panels = useProjectPanels(project.id);
   const {
-    rightPanel,
     openFiles,
-    rightPanelWidth,
-    browserPanelExpanded,
     terminalHeight,
-    handleTogglePanel,
     handleFileSelect,
     handleFileTreeRename,
     handleFileTreeDelete,
     handleDiffFileSelect,
     handleCommitSelect,
     handleCommitFileClick,
-    handleRightResizeStart,
-    handleToggleBrowserPanelExpanded,
     handleTerminalResizeStart,
-    handleOpenPanel,
   } = panels;
 
   const [showShellTerminal, setShowShellTerminal] = useState(false);
@@ -121,24 +110,22 @@ export function ProjectPage({
     [setWorkspacePref],
   );
 
-  // 空间预算（UI-04）：偏好为冻结输入，窄窗临时适配只体现在 budget 输出。
+    // 空间预算（UI-04）：偏好为冻结输入，窄窗临时适配只体现在 budget 输出。
   // 编辑区内容判定收敛到 panels 单一派生值（UI-13）。
   const hasEditorContent = panels.hasEditorContent;
+  // UI-18：右面板已迁入主区标签，预算的 rightPanel 通道恒关（纯函数与
+  // 参数化测试不动——rightPanel 降级能力成为无消费者的通用能力，
+  // 移除评估登记 UI-27）。
   const budget = useWorkspaceBudget({
     navOpen: !sessionSidebarCollapsed,
     navWidthPref: contextNavWidth,
-    rightPanelOpen: rightPanel !== null,
-    rightPanelWidthPref: rightPanelWidth,
+    rightPanelOpen: false,
+    rightPanelWidthPref: 0,
     terminalOpen: showShellTerminal,
     terminalHeightPref: terminalHeight,
     dualPaneRequested: sessionWorkbenchVisible && hasEditorContent,
     editorRatioPref: editorPaneRatio,
   });
-  // 浏览器 expanded 是既有的视口比例语义（UI-18 迁移前保留），不走预算夹取。
-  const rightPanelRenderWidth =
-    rightPanel === "browser" && browserPanelExpanded
-      ? rightPanelWidth
-      : budget.rightPanelWidth;
 
   const handleSelectSession = useCallback((sessionId: string | null) => {
     if (sessionId) setSessionWorkbenchVisible(true);
@@ -168,10 +155,16 @@ export function ProjectPage({
     return () => window.clearTimeout(timer);
   }, [visible]);
 
-  const openBrowserPanel = useCallback(() => handleOpenPanel("browser"), [handleOpenPanel]);
+  // 浏览器 = 主区标签（UI-18）：开/关标签只影响视图；进程生命周期由
+  // 面板头部「关闭浏览器」与 dock 的 browser_stop 承担（隐藏 ≠ 结束）。
+  const { activeEditorTab, handleOpenBrowserTab, handleCloseBrowserTab } = panels;
+  const openBrowserPanel = useCallback(
+    () => handleOpenBrowserTab(),
+    [handleOpenBrowserTab],
+  );
   const minimizeBrowserPanel = useCallback(() => {
-    if (rightPanel === "browser") handleTogglePanel("browser");
-  }, [handleTogglePanel, rightPanel]);
+    if (activeEditorTab?.kind === "browser") handleCloseBrowserTab();
+  }, [activeEditorTab, handleCloseBrowserTab]);
   const {
     dockedSessions,
     minimize: handleMinimizeBrowser,
@@ -294,6 +287,8 @@ export function ProjectPage({
       onEditorPaneRatioChange={setEditorPaneRatio}
       onCloseGraphTab={closeGraphTab}
       onExpandMainArea={handleExpandMainArea}
+      onMinimizeBrowser={handleMinimizeBrowser}
+      onReopenBrowser={handleReopenBrowser}
     />
   );
 
@@ -314,8 +309,12 @@ export function ProjectPage({
     <StatusDockBar
       terminalActive={showShellTerminal}
       onToggleTerminal={() => setShowShellTerminal((value) => !value)}
-      browserActive={rightPanel === "browser"}
-      onToggleBrowser={() => handleTogglePanel("browser")}
+      browserActive={panels.activeEditorTab?.kind === "browser"}
+      onToggleBrowser={() =>
+        panels.activeEditorTab?.kind === "browser"
+          ? panels.handleCloseBrowserTab()
+          : panels.handleOpenBrowserTab()
+      }
       statusText={project.name}
     />
   );
@@ -334,40 +333,6 @@ export function ProjectPage({
       }}
     />
   );
-
-  const rightPanelNode =
-    rightPanel === "browser" && rightPanelRenderWidth > 0 ? (
-      <ProjectRightPanelHost
-        onResizeStart={handleRightResizeStart}
-        onResizeKey={(event) => {
-          const step = event.shiftKey ? 48 : 16;
-          if (event.key === "ArrowLeft") {
-            event.preventDefault();
-            panels.applyRightPanelWidth(rightPanelWidth + step);
-          } else if (event.key === "ArrowRight") {
-            event.preventDefault();
-            panels.applyRightPanelWidth(rightPanelWidth - step);
-          }
-        }}
-        onResizeDoubleClick={() => panels.applyRightPanelWidth(280)}
-      >
-        <ErrorBoundary label="CloakBrowser">
-          <Suspense fallback={<ProjectLazyPaneFallback label="浏览器加载中..." />}>
-            <BrowserPanel
-              sessionId={activeSessionId}
-              projectPath={project.path}
-              width={rightPanelRenderWidth}
-              active={visible}
-              expanded={browserPanelExpanded}
-              onToggleExpanded={handleToggleBrowserPanelExpanded}
-              onClose={() => handleTogglePanel("browser")}
-              onMinimize={handleMinimizeBrowser}
-              onReopen={handleReopenBrowser}
-            />
-          </Suspense>
-        </ErrorBoundary>
-      </ProjectRightPanelHost>
-    ) : undefined;
 
   const overlayNode = (
     <ProjectOverlays
@@ -398,7 +363,6 @@ export function ProjectPage({
       rail={railNode}
       sessionPanel={sessionPanelNode}
       main={mainNode}
-      rightPanel={rightPanelNode}
       overlays={overlayNode}
     />
   );

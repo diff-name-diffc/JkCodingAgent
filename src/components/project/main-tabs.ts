@@ -1,17 +1,26 @@
 /**
- * 主区编辑pane标签纯 reducer（UI-09）：文件标签与 Git diff 统一为同一
- * 标签体系（diff 不再是与文件互斥的独立槽），关闭/回退语义集中在此便于单测。
+ * 主区编辑pane标签纯 reducer（UI-09 建立，UI-13/18 扩展）：文件、Git diff、
+ * 执行图与浏览器预览统一为同一标签体系，关闭/回退语义集中在此便于单测。
  * 组件侧（useProjectPanels）只做状态持有与副作用编排。
  */
-import type { OpenDiff } from "../../hooks/projectPanelsFileState";
 
-export type { OpenDiff };
+/** Git diff 标签判别（文件/提交/提交内文件三种）。 */
+export type OpenDiff =
+  | { kind: "file"; filePath: string; staged: boolean; label: string }
+  | { kind: "commit"; hash: string; message: string }
+  | { kind: "commit-file"; hash: string; filePath: string; label: string };
 
 export type EditorTab =
   | { id: string; kind: "file"; path: string; name: string }
   | { id: string; kind: "diff"; diff: OpenDiff }
   /** 执行图工作视图（UI-13）：id 稳定于 planId——切视图不触发新运行。 */
-  | { id: string; kind: "graph"; planId: string; sessionId: string };
+  | { id: string; kind: "graph"; planId: string; sessionId: string }
+  /** 浏览器预览（UI-18）：工作区单例，内容跟随活动会话（与旧右面板语义一致；
+   * 每会话 id 会在切会话后留下无法渲染的死壳标签）。 */
+  | { id: string; kind: "browser"; title: string };
+
+/** 浏览器标签固定 id（工作区单例）。 */
+export const BROWSER_TAB_ID = "browser";
 
 export interface EditorTabsState {
   tabs: EditorTab[];
@@ -59,6 +68,22 @@ export function openDiffTab(state: EditorTabsState, diff: OpenDiff): EditorTabsS
     ? state.tabs.map((tab) => (tab.id === id ? { ...tab, diff } : tab))
     : [...state.tabs, { id, kind: "diff" as const, diff }];
   return { tabs, activeTabId: id };
+}
+
+/**
+ * 打开/激活浏览器预览标签（UI-18）：工作区单例，幂等激活。
+ * 关标签 = 隐藏面板，不停浏览器进程（进程生命周期由面板内命令与 dock 承担）。
+ */
+export function openBrowserTab(state: EditorTabsState, title = "浏览器"): EditorTabsState {
+  const exists = state.tabs.some((tab) => tab.id === BROWSER_TAB_ID);
+  if (exists) {
+    if (state.activeTabId === BROWSER_TAB_ID) return state;
+    return { ...state, activeTabId: BROWSER_TAB_ID };
+  }
+  return {
+    tabs: [...state.tabs, { id: BROWSER_TAB_ID, kind: "browser" as const, title }],
+    activeTabId: BROWSER_TAB_ID,
+  };
 }
 
 export function selectTab(state: EditorTabsState, tabId: string): EditorTabsState {

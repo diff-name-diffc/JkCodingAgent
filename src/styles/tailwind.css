@@ -1021,10 +1021,6 @@
     background: var(--bg-panel);
   }
 
-  .ai-project-right-panel {
-    background: var(--bg-sidebar);
-  }
-
   .ai-project-workbench-pane {
     min-width: 0;
     min-height: 0;
@@ -5929,13 +5925,12 @@
     border-left-color: var(--border-dim);
   }
 
-  /* 分隔条平面化：常态透明（ pane 边框承担 1px 视觉分隔），hover/拖拽给强调底色 */
-  .ai-project-splitter,
-  .ai-project-right-resizer {
+  /* 分隔条平面化：常态透明（ pane 边框承担 1px 视觉分隔），hover/拖拽给强调底色
+     （右面板 resizer 已随 UI-18 浏览器迁主区删除） */
+  .ai-project-splitter {
     background: transparent;
   }
 
-  .ai-project-right-resizer:hover,
   .ai-project-splitter:hover,
   .ai-project-splitter[data-dragging="true"] {
     background: var(--accent-subtle);

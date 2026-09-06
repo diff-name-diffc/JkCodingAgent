@@ -18,6 +18,9 @@ const GitDiffViewer = lazy(() =>
 const GraphPanel = lazy(() =>
   import("../graph/GraphPanel").then((module) => ({ default: module.GraphPanel })),
 );
+const BrowserPanel = lazy(() =>
+  import("../browser/BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
+);
 
 type ProjectPanelController = ReturnType<typeof useProjectPanels>;
 
@@ -44,6 +47,9 @@ interface ProjectWorkbenchContentProps {
   onCloseGraphTab: (tab: GraphTab) => void;
   /** 扩大/还原主区（收起/恢复会话 pane），执行图与浏览器标签共用。 */
   onExpandMainArea: () => void;
+  /** 浏览器窗口最小化/重开（UI-18：来自 useBrowserSessionDock 的命令层）。 */
+  onMinimizeBrowser?: () => void | Promise<void>;
+  onReopenBrowser?: () => void | Promise<void>;
 }
 
 export function ProjectWorkbenchContent({
@@ -64,6 +70,8 @@ export function ProjectWorkbenchContent({
   onEditorPaneRatioChange,
   onCloseGraphTab,
   onExpandMainArea,
+  onMinimizeBrowser,
+  onReopenBrowser,
 }: ProjectWorkbenchContentProps) {
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
   // UI-13：编辑区内容判定收敛到 useProjectPanels 单一派生值（含 file/diff/graph 标签）。
@@ -202,6 +210,19 @@ export function ProjectWorkbenchContent({
             onClose={() => onCloseGraphTab(activeGraphTab)}
             onExpandMainArea={onExpandMainArea}
             mainAreaExpanded={!sessionWorkbenchVisible}
+          />
+        ) : panels.activeEditorTab?.kind === "browser" ? (
+          /* 浏览器预览标签（UI-18）：内容跟随活动会话；关标签=隐藏面板不停进程；
+             扩大按钮与执行图同语义（收起会话 pane 占满主区）。 */
+          <BrowserPanel
+            sessionId={activeSessionId}
+            projectPath={project.path}
+            active={workspaceVisible && showEditorPane}
+            expanded={!sessionWorkbenchVisible}
+            onToggleExpanded={onExpandMainArea}
+            onClose={panels.handleCloseBrowserTab}
+            onMinimize={onMinimizeBrowser}
+            onReopen={onReopenBrowser}
           />
         ) : panels.activeEditorTab?.kind === "diff" ? (
           panels.activeEditorTab.diff.kind === "file" ? (

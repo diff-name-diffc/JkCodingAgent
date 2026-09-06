@@ -7,20 +7,20 @@ interface ProjectWorkspaceLayoutProps {
   rail: ReactNode;
   sessionPanel?: ReactNode;
   main: ReactNode;
-  rightPanel?: ReactNode;
-  /** 旧右工具栏槽位（UI-07 后由 main 内 StatusDockBar 取代，保留兼容可选）。 */
-  toolbar?: ReactNode;
   overlays?: ReactNode;
 }
 
+/**
+ * 项目工作区外壳（UI-18 收敛后）：rail / 上下文导航 / 主区 / 覆盖层四槽。
+ * 旧右面板槽（浏览器）与旧右工具栏槽（UI-07 废弃）均已移除——浏览器迁入
+ * 主区标签，工具栏由 main 内 StatusDockBar 取代。
+ */
 export function ProjectWorkspaceLayout({
   visible,
   rootStyle,
   rail,
   sessionPanel,
   main,
-  rightPanel,
-  toolbar,
   overlays,
 }: ProjectWorkspaceLayoutProps) {
   return (
@@ -38,8 +38,6 @@ export function ProjectWorkspaceLayout({
       {rail}
       {sessionPanel}
       {main}
-      {rightPanel}
-      {toolbar}
       {overlays}
     </div>
   );
@@ -156,45 +154,6 @@ export function ProjectWorkbench({
       )}
 
       {columnCount === 0 && emptyPane}
-    </div>
-  );
-}
-
-interface ProjectRightPanelHostProps {
-  onResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void;
-  onResizeKey?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
-  onResizeDoubleClick?: () => void;
-  children: ReactNode;
-}
-
-export function ProjectRightPanelHost({
-  onResizeStart,
-  onResizeKey,
-  onResizeDoubleClick,
-  children,
-}: ProjectRightPanelHostProps) {
-  return (
-    <div className="ai-project-right-panel" style={{ position: "relative", display: "flex", flexShrink: 0 }}>
-      <div
-        className="ai-splitter ai-project-right-resizer"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="拖拽或方向键调整右栏宽度，双击恢复默认"
-        tabIndex={0}
-        onMouseDown={onResizeStart}
-        onKeyDown={onResizeKey}
-        onDoubleClick={onResizeDoubleClick}
-        style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: 5,
-          cursor: "col-resize",
-          zIndex: 10,
-        }}
-      />
-      {children}
     </div>
   );
 }

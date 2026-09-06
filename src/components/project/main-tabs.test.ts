@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BROWSER_TAB_ID,
   EMPTY_EDITOR_TABS,
   closeAllTabs,
   closeOtherTabs,
@@ -10,6 +11,7 @@ import {
   fileTabId,
   fileTabs,
   graphTabId,
+  openBrowserTab,
   openDiffTab,
   openFileTab,
   openGraphTab,
@@ -153,5 +155,51 @@ describe("main-tabs 执行图标签（UI-13）", () => {
     const s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
     expect(closeAllTabs()).toEqual(EMPTY_EDITOR_TABS);
     expect(closeTab(s, graphTabId("plan-1"))).toEqual(EMPTY_EDITOR_TABS);
+  });
+});
+
+describe("main-tabs 浏览器标签（UI-18）", () => {
+  it("工作区单例：id 恒为 browser，重复打开幂等激活", () => {
+    const s1 = openBrowserTab(EMPTY_EDITOR_TABS);
+    expect(s1.tabs).toHaveLength(1);
+    expect(s1.tabs[0]).toEqual({ id: BROWSER_TAB_ID, kind: "browser", title: "浏览器" });
+    expect(s1.activeTabId).toBe(BROWSER_TAB_ID);
+    const s2 = openFileTab(s1, "/a.ts", "a.ts");
+    const s3 = openBrowserTab(s2);
+    expect(s3.tabs).toHaveLength(2);
+    expect(s3.activeTabId).toBe(BROWSER_TAB_ID);
+    // 已激活时原样返回（意图同步不触发无谓渲染）
+    expect(openBrowserTab(s3)).toBe(s3);
+  });
+
+  it("与文件/diff/图标签混合：关闭回退与 closeOther 语义一致", () => {
+    let s = openFileTab(EMPTY_EDITOR_TABS, "/a.ts", "a.ts");
+    s = openBrowserTab(s);
+    s = openGraphTab(s, "plan-1", "session-a");
+    const closed = closeTab(s, BROWSER_TAB_ID);
+    expect(closed.tabs.map((t) => t.id)).toEqual([fileTabId("/a.ts"), graphTabId("plan-1")]);
+    // 关闭活动 graph 标签回退右邻——browser 已不在，回退到末位
+    const afterGraphClose = closeTab(s, graphTabId("plan-1"));
+    expect(afterGraphClose.activeTabId).toBe(BROWSER_TAB_ID);
+    expect(closeOtherTabs(s, BROWSER_TAB_ID).tabs).toHaveLength(1);
+    expect(closeTabsToRight(s, BROWSER_TAB_ID).tabs.map((t) => t.id)).toEqual([
+      fileTabId("/a.ts"),
+      BROWSER_TAB_ID,
+    ]);
+  });
+
+  it("文件重命名/删除不触碰浏览器标签", () => {
+    let s = openFileTab(EMPTY_EDITOR_TABS, "/old.ts", "old.ts");
+    s = openBrowserTab(s);
+    const renamed = renameFileTab(s, "/old.ts", "/new.ts", "new.ts");
+    expect(renamed.tabs.some((t) => t.id === BROWSER_TAB_ID)).toBe(true);
+    const deleted = deleteFileTab(renamed, "/new.ts");
+    expect(deleted.tabs.map((t) => t.id)).toEqual([BROWSER_TAB_ID]);
+  });
+
+  it("closeAll 清空浏览器标签", () => {
+    const s = openBrowserTab(EMPTY_EDITOR_TABS);
+    expect(closeAllTabs()).toEqual(EMPTY_EDITOR_TABS);
+    expect(closeTab(s, BROWSER_TAB_ID)).toEqual(EMPTY_EDITOR_TABS);
   });
 });

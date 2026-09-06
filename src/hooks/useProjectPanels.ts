@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from "react";
-import { type RightPanel } from "./projectPanelsFileState";
 import {
+  BROWSER_TAB_ID,
   EMPTY_EDITOR_TABS,
   activeTab,
   closeAllTabs,
@@ -9,6 +9,7 @@ import {
   closeTabsToRight,
   deleteFileTab,
   fileTabs,
+  openBrowserTab,
   openDiffTab,
   openFileTab,
   openGraphTab,
@@ -17,63 +18,40 @@ import {
   type EditorTab,
   type EditorTabsState,
 } from "../components/project/main-tabs";
-import { useDockedBrowserPanel } from "./useDockedBrowserPanel";
 import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
 
 /**
- * 项目面板状态（UI-08 换底座）：右栏宽/终端高度等尺寸偏好改由
- * workspace-store 按工作区持久化；签名保持兼容，消费组件零改动。
+ * 项目面板状态（UI-08 换底座，UI-18 收敛右面板）：终端高度等尺寸偏好由
+ * workspace-store 按工作区持久化。旧右面板（files/git/browser）机制已删除——
+ * 文件与 Git 走上下文导航，浏览器迁入主区标签（工作区单例）。
+ * prefs.rightPanelWidth 成为孤儿偏好，清理登记于 UI-27。
  */
 export function useProjectPanels(workspaceId: string) {
-  const [rightPanel, setRightPanel] = useState<RightPanel>(null);
   const [editorWorkbenchVisible, setEditorWorkbenchVisible] = useState(true);
-  // 文件与 diff 统一标签体系（UI-09）：diff 不再是互斥独立槽。
+  // 文件、diff、执行图与浏览器统一标签体系（UI-09/13/18）。
   const [editorTabs, setEditorTabs] = useState<EditorTabsState>(EMPTY_EDITOR_TABS);
   const openFiles = fileTabs(editorTabs);
   const activeEditorTab = activeTab(editorTabs);
   const openDiff = activeEditorTab?.kind === "diff" ? activeEditorTab.diff : null;
   const activeFileTabId = activeEditorTab?.kind === "file" ? activeEditorTab.id : null;
   /**
-   * 编辑区是否有内容（UI-13 收敛为单一派生值）：任何标签（文件/diff/执行图，
-   * UI-18 起还有浏览器）都算内容——ProjectPage 与 ProjectWorkbenchContent
-   * 不再各自复制表达式。
+   * 编辑区是否有内容（UI-13 收敛为单一派生值）：任何标签（文件/diff/执行图/
+   * 浏览器）都算内容——ProjectPage 与 ProjectWorkbenchContent 不再各自复制表达式。
    */
   const hasEditorContent = editorTabs.tabs.length > 0;
   const prefs = useWorkspaceStore(selectWorkspacePrefs(workspaceId));
   /** 拖拽中的实时值；mouseup 才写回 store，避免高频持久化。 */
-  const [dragRightWidth, setDragRightWidth] = useState<number | null>(null);
   const [dragTerminalHeight, setDragTerminalHeight] = useState<number | null>(null);
-  const dragRightWidthRef = useRef(dragRightWidth);
-  dragRightWidthRef.current = dragRightWidth;
   const dragTerminalHeightRef = useRef(dragTerminalHeight);
   dragTerminalHeightRef.current = dragTerminalHeight;
-  const rightPanelWidth = dragRightWidth ?? prefs.rightPanelWidth;
   const terminalHeight = dragTerminalHeight ?? prefs.terminalHeight;
-  const setRightPanelWidth = useCallback(
-    (width: number) =>
-      useWorkspaceStore.getState().setPrefs(workspaceId, { rightPanelWidth: width }),
-    [workspaceId],
-  );
+  const terminalHeightRef = useRef(terminalHeight);
+  terminalHeightRef.current = terminalHeight;
   const setTerminalHeight = useCallback(
     (height: number) =>
       useWorkspaceStore.getState().setPrefs(workspaceId, { terminalHeight: height }),
     [workspaceId],
   );
-  const browserPanel = useDockedBrowserPanel("nezha.project.browserPanelWidth");
-  const rightPanelRef = useRef(rightPanel);
-  const rightPanelWidthRef = useRef(rightPanelWidth);
-  rightPanelRef.current = rightPanel;
-  rightPanelWidthRef.current = rightPanelWidth;
-  const terminalHeightRef = useRef(terminalHeight);
-  terminalHeightRef.current = terminalHeight;
-
-  const handleTogglePanel = useCallback((panel: Exclude<RightPanel, null>) => {
-    setRightPanel((prev) => (prev === panel ? null : panel));
-  }, []);
-
-  const handleOpenPanel = useCallback((panel: Exclude<RightPanel, null>) => {
-    setRightPanel(panel);
-  }, []);
 
   const handleFileSelect = useCallback((path: string, name: string) => {
     setEditorWorkbenchVisible(true);
@@ -140,6 +118,17 @@ export function useProjectPanels(workspaceId: string) {
     setEditorTabs((prev) => closeTab(prev, tabId));
   }, []);
 
+  /** 打开/激活浏览器预览标签（UI-18，工作区单例）。 */
+  const handleOpenBrowserTab = useCallback(() => {
+    setEditorWorkbenchVisible(true);
+    setEditorTabs((prev) => openBrowserTab(prev));
+  }, []);
+
+  /** 关闭浏览器标签 = 隐藏面板；不停进程（browser_stop 只在面板头部/dock 触发）。 */
+  const handleCloseBrowserTab = useCallback(() => {
+    setEditorTabs((prev) => closeTab(prev, BROWSER_TAB_ID));
+  }, []);
+
   const hideEditorWorkbench = useCallback(() => {
     setEditorWorkbenchVisible(false);
   }, []);
@@ -151,39 +140,6 @@ export function useProjectPanels(workspaceId: string) {
   const clearFileAndDiff = useCallback(() => {
     setEditorTabs(closeAllTabs());
   }, []);
-
-  const handleRightResizeStart = useCallback((e: React.MouseEvent) => {
-    if (rightPanelRef.current === "browser") {
-      browserPanel.handleResizeStart(e);
-      return;
-    }
-
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = rightPanelWidthRef.current;
-    const onMouseMove = (ev: MouseEvent) => {
-      const newWidth = Math.max(180, Math.min(600, startWidth + (startX - ev.clientX)));
-      setDragRightWidth(newWidth);
-    };
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      const latest = dragRightWidthRef.current;
-      setDragRightWidth(null);
-      if (latest != null) setRightPanelWidth(latest);
-    };
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, [browserPanel, setRightPanelWidth]);
-
-  /** 键盘/复位等离散调整入口（拖拽走 handleRightResizeStart）。 */
-  const applyRightPanelWidth = useCallback((width: number) => {
-    setRightPanelWidth(Math.max(180, Math.min(600, Math.round(width))));
-  }, [setRightPanelWidth]);
 
   const handleTerminalResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -209,7 +165,6 @@ export function useProjectPanels(workspaceId: string) {
   }, [setTerminalHeight]);
 
   return {
-    rightPanel,
     editorWorkbenchVisible,
     openFiles,
     activeFileTabId,
@@ -217,11 +172,8 @@ export function useProjectPanels(workspaceId: string) {
     openDiff,
     editorTabs,
     hasEditorContent,
-    rightPanelWidth: rightPanel === "browser" ? browserPanel.effectiveWidth : rightPanelWidth,
-    browserPanelExpanded: browserPanel.expanded,
     terminalHeight,
     handleCloseActiveDiff,
-    handleTogglePanel,
     handleFileSelect,
     handleFileTabSelect,
     handleFileTabClose,
@@ -235,14 +187,12 @@ export function useProjectPanels(workspaceId: string) {
     handleCommitFileClick,
     handleOpenGraphTab,
     handleCloseGraphTab,
+    handleOpenBrowserTab,
+    handleCloseBrowserTab,
     hideEditorWorkbench,
     showEditorWorkbench,
     clearFileAndDiff,
-    handleRightResizeStart,
-    applyRightPanelWidth,
-    handleToggleBrowserPanelExpanded: browserPanel.toggleExpanded,
     handleTerminalResizeStart,
-    handleOpenPanel,
   };
 }
 export type { EditorTab, EditorTabsState };

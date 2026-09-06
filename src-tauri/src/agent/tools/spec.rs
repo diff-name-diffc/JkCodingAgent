@@ -586,6 +586,38 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         300,
         ToolPolicyOptions::COMPRESSED_SELF_MANAGED,
     ),
+    // ── SSH 运维备忘录 ──
+    // 备忘录工具的读写集固定在应用自管的备忘录目录
+    // （~/.jkcodingagent/ssh-memos/）：路径由 validate_server_id 白名单拼接、
+    // 有全文/单段字符硬上限（超限拒绝写盘），没有任意路径选择或任意执行能力，
+    // 因此写侧按 SUBSYSTEM_MANAGED 声明（同 message/submit_graph 的「效果由
+    // 对应子系统托管」语义）——写收窄授权（子智能体/图节点 expectedFiles）
+    // 下 mutates_filesystem 工具会被 fail-closed 拒绝，而备忘录写入不属于
+    // 工作区写集，也不应被工作区授权拦截。
+    policy_row(
+        "ssh_memo_read",
+        ToolCategory::Ssh,
+        ToolAccess::READONLY_UNBOUND,
+        ToolSafety::Safe,
+        30,
+        ToolPolicyOptions::PARALLEL_READONLY,
+    ),
+    policy_row(
+        "ssh_memo_upsert",
+        ToolCategory::Ssh,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        30,
+        ToolPolicyOptions::SERIAL,
+    ),
+    policy_row(
+        "ssh_memo_delete",
+        ToolCategory::Ssh,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        30,
+        ToolPolicyOptions::SERIAL,
+    ),
     // ── 子智能体 ──
     policy_row(
         "call_sub_agent",
@@ -946,6 +978,31 @@ mod tests {
         // 审查由工具内部带服务器上下文自管；超时按每次调用参数自管（≤300s）
         assert!(spec.review_self_managed);
         assert!(!spec.execution.unified_timeout);
+    }
+
+    #[test]
+    fn ssh_memo_tools_are_safe_with_self_managed_write_set() {
+        let read = spec_for("ssh_memo_read");
+        assert_eq!(read.category, ToolCategory::Ssh);
+        assert_eq!(read.safety, ToolSafety::Safe);
+        assert!(read.access.readonly);
+        assert!(read.execution.parallelizable);
+
+        for name in ["ssh_memo_upsert", "ssh_memo_delete"] {
+            let spec = spec_for(name);
+            assert_eq!(spec.category, ToolCategory::Ssh);
+            assert_eq!(spec.safety, ToolSafety::Safe);
+            // 写集固定在应用自管的备忘录目录，由工具自约束（见策略表注释）：
+            // 不得声明 mutates_filesystem，否则会被写收窄授权
+            // （子智能体/图节点 expectedFiles）fail-closed 拒绝。
+            assert!(!spec.access.readonly);
+            assert!(!spec.access.mutates_filesystem);
+            assert!(!spec.access.mutates_external_state);
+            assert!(!spec.access.requires_network);
+            assert!(!spec.access.workspace_bound);
+            assert!(!spec.execution.parallelizable);
+            assert!(!spec.result_policy.default_compress);
+        }
     }
 
     #[test]

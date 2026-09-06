@@ -27,14 +27,15 @@ pub async fn dispatcher_get_tool_run_tree(
 }
 
 #[tauri::command]
-pub fn dispatcher_get_session_token_usage(
+pub async fn dispatcher_get_session_token_usage(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
 ) -> Result<Vec<DispatcherSessionTokenUsageRecord>, String> {
-    state
-        .db()
-        .list_session_token_usage(&workspace_id)
-        .map_err(|error| error.to_string())
+    let db = state.db().clone();
+    run_dispatcher_db("dispatcher_get_session_token_usage", move || {
+        db.list_session_token_usage(&workspace_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -43,10 +44,17 @@ pub async fn dispatcher_clear_messages(
     workspace_id: String,
 ) -> Result<(), String> {
     let db = state.db().clone();
-    run_dispatcher_db("dispatcher_clear_messages", move || {
+    let workspace_for_cleanup = workspace_id.clone();
+    let result = run_dispatcher_db("dispatcher_clear_messages", move || {
         db.clear_messages(&workspace_id)
     })
-    .await
+    .await;
+    if result.is_ok() {
+        // 会话资源清理规范：清空消息与会话删除同级回收内存态命令台账
+        //（与 delete_session / project_delete 的执行对齐）。
+        crate::agent::command_history::forget_session(&workspace_for_cleanup);
+    }
+    result
 }
 
 #[tauri::command]

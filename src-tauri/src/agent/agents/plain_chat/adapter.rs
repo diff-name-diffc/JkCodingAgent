@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::agent::llm::format_empty_response_diagnostics;
+
 use super::*;
 
 #[async_trait]
@@ -51,10 +53,14 @@ pub(super) fn empty_plain_chat_response_error(
         truncate_for_display(raw_response, 4_000, "\n...[LLM 接口响应内容已截断]")
     };
 
+    // 无「错误：」前缀是既有契约：前端负责包装「错误：聊天执行失败：」。
+    // 诊断行（finish_reason/思考链/用量）放在原始响应之前——思考模型的原始
+    // SSE 头部截断全是 reasoning_content 分片，终止原因只能靠诊断行给出。
     format!(
-        "LLM 返回了空响应且没有工具调用，无法继续执行。\n请求摘要：model={}, tools={}\nLLM 接口响应内容：\n{}",
+        "LLM 返回了空响应且没有工具调用，无法继续执行。\n请求摘要：model={}, tools={}\n{}\nLLM 接口响应内容：\n{}",
         provider.model(),
         tool_count,
+        format_empty_response_diagnostics(response),
         response_detail
     )
 }

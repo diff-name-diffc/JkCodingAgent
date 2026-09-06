@@ -238,6 +238,7 @@ async fn generate_session_keywords(
     let usage_db = db.clone();
     let usage_ws = workspace_id.clone();
     let usage_model = summary_model.clone();
+    let usage_capacity = provider.context_window().map(u64::from);
     match summarize_session_keywords(
         &provider,
         &summary_model,
@@ -249,6 +250,7 @@ async fn generate_session_keywords(
                 &usage_model,
                 DispatcherSessionTokenUsageSource::Summary,
                 usage,
+                usage_capacity,
             ) {
                 eprintln!(
                     "failed to persist keywords token usage for workspace {}: {}",
@@ -359,6 +361,7 @@ async fn generate_session_title(
     let usage_db = db.clone();
     let usage_workspace_id = workspace_id.clone();
     let usage_summary_model = summary_model.clone();
+    let usage_capacity = provider.context_window().map(u64::from);
     match summarize_session_title(
         &provider,
         &summary_model,
@@ -371,6 +374,7 @@ async fn generate_session_title(
                 &usage_summary_model,
                 DispatcherSessionTokenUsageSource::Summary,
                 usage,
+                usage_capacity,
             ) {
                 eprintln!(
                     "failed to persist dispatcher title token usage for workspace {} and model {}: {}",
@@ -463,10 +467,13 @@ fn resolve_summary_provider(
             summary_model.to_string(),
             // 关键字摘要输出 JSON 数组（最多 15 项）需要较大预算；也兼容仍会思考的摘要
             // 模型（思考 token 计入上限）。非思考模型输出完即停，此处仅作上限保护。
-            2048,
+            Some(2048),
             // 摘要是低创造性任务，固定低温度（沿用历史 config.temperature 默认 0.1）。
             0.1,
-        ),
+        )
+        // 容量回填自库条目（get_settings_v2 已解析），供 token 用量记录的
+        // context_window_capacity 使用；未配置时消费方回退默认 1M。
+        .with_context_window(summary.context_window),
         summary_model.to_string(),
     ))
 }

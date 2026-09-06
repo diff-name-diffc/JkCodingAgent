@@ -88,10 +88,6 @@ impl SubAgentManager {
         Ok(ids.iter().filter_map(|id| cache.get(id).cloned()).collect())
     }
 
-    pub fn get_global_enabled(&self) -> Result<Vec<SubAgentRecord>> {
-        self.db.get_global_enabled()
-    }
-
     pub fn set_global_enabled(&self, sub_agent_ids: &[String]) -> Result<()> {
         self.db.set_global_enabled(sub_agent_ids)?;
         // 与 create/update/delete/seed_browser_force 保持一致：写库后刷新缓存，

@@ -20,6 +20,13 @@ pub struct DispatcherModelConfig {
     /// 保存时剥离），消除「库条目更新、用途槽位保留旧凭据」的漂移。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub library_id: String,
+    /// 输出预算（请求体 max_tokens）与上下文窗口容量（tokens）：与凭据同规则，
+    /// 运行期由引用库条目回填（读取回填、保存剥离），库条目为唯一权威源。
+    /// max_tokens 为 None 时请求体完全省略该字段，由服务端默认预算接管。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
 }
 
 fn default_model_config_active() -> bool {
@@ -35,6 +42,8 @@ impl DispatcherModelConfig {
             active: self.active,
             system_prompt: self.system_prompt.trim().to_string(),
             library_id: self.library_id.trim().to_string(),
+            max_tokens: self.max_tokens,
+            context_window: self.context_window,
         }
     }
 
@@ -45,8 +54,8 @@ impl DispatcherModelConfig {
             && self.model.trim().is_empty()
     }
 
-    /// 库引用解析：引用条目从库回填凭据；引用指向的条目缺失或停用时清空
-    /// 凭据，由运行入口的完整性校验显式报错。
+    /// 库引用解析：引用条目从库回填凭据与容量；引用指向的条目缺失或停用时
+    /// 一并清空，由运行入口的完整性校验显式报错。
     fn resolve_from_library(&mut self, library: &[ModelLibraryEntry]) {
         if self.library_id.trim().is_empty() {
             return;
@@ -59,11 +68,15 @@ impl DispatcherModelConfig {
                 self.url = entry.url.trim().to_string();
                 self.api_key = entry.api_key.trim().to_string();
                 self.model = entry.model.trim().to_string();
+                self.max_tokens = entry.max_tokens;
+                self.context_window = entry.context_window;
             }
             None => {
                 self.url.clear();
                 self.api_key.clear();
                 self.model.clear();
+                self.max_tokens = None;
+                self.context_window = None;
             }
         }
     }
@@ -82,12 +95,15 @@ fn resolve_model_configs_from_library(
         .collect()
 }
 
-/// 引用条目剥离解析出的凭据：落库只保留 library_id + active + system_prompt。
+/// 引用条目剥离解析出的凭据与容量：落库只保留 library_id + active +
+/// system_prompt（容量与凭据同规则，读取时由库条目回填，防止槽位漂移）。
 fn strip_library_config_credentials(mut config: DispatcherModelConfig) -> DispatcherModelConfig {
     if !config.library_id.trim().is_empty() {
         config.url.clear();
         config.api_key.clear();
         config.model.clear();
+        config.max_tokens = None;
+        config.context_window = None;
     }
     config
 }
@@ -177,7 +193,8 @@ impl AhaSharedModels {
 }
 
 /// 分类模型库条目：按模型调用方式（text/vision/image/...）分类，
-/// 每个条目独立持有 url/apiKey/model，供「模型用途」页按分类引用。
+/// 每个条目独立持有 url/apiKey/model 与容量（maxTokens/contextWindow），
+/// 供「模型用途」页按分类引用——容量与凭据一样以库条目为唯一权威源。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelLibraryEntry {
@@ -193,10 +210,42 @@ pub struct ModelLibraryEntry {
     pub alias: String,
     #[serde(default = "default_library_entry_enabled")]
     pub enabled: bool,
+    /// 输出预算（请求体 max_tokens）。None → 请求体完全省略该字段，由服务端
+    /// 默认预算接管：1M 上下文时代显式小上限（历史硬编码 8192）易与服务端
+    /// 预算互相挤压——推理模型的思考 token 还与可见输出共享该预算。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// 上下文窗口容量（tokens）。None → 消费方回退
+    /// DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS（1M）；驱动会话容量展示、
+    /// 上下文占用告警与子智能体滑窗裁剪阈值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
 }
 
 fn default_library_entry_enabled() -> bool {
     true
+}
+
+/// 容量字段合法区间（与前端 ModelEntryCard 数字输入约束一致）：
+/// 输出预算对齐子智能体 max_output_tokens 的既有校验先例。
+const ENTRY_MAX_TOKENS_RANGE: (u32, u32) = (1024, 1_048_576);
+const ENTRY_CONTEXT_WINDOW_RANGE: (u32, u32) = (1024, 100_000_000);
+
+/// 容量归一化（服务端防线）：越界值视同未配置（None），避免异常输入
+/// 把请求预算或裁剪阈值推到不可用区间。
+fn normalize_capacity(value: Option<u32>, (min, max): (u32, u32)) -> Option<u32> {
+    value.filter(|v| *v >= min && *v <= max)
+}
+
+fn normalized_library_entries(library: &[ModelLibraryEntry]) -> Vec<ModelLibraryEntry> {
+    library
+        .iter()
+        .map(|entry| ModelLibraryEntry {
+            max_tokens: normalize_capacity(entry.max_tokens, ENTRY_MAX_TOKENS_RANGE),
+            context_window: normalize_capacity(entry.context_window, ENTRY_CONTEXT_WINDOW_RANGE),
+            ..entry.clone()
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -394,7 +443,12 @@ impl DispatcherDb {
                 },
                 model_library: {
                     let raw: String = row.get(15).unwrap_or_default();
-                    serde_json::from_str::<Vec<ModelLibraryEntry>>(&raw).unwrap_or_default()
+                    // 读取侧同样做容量归一化（与保存侧对称）：历史/手改库中的
+                    // 越界容量不得流入请求预算与滑窗裁剪阈值。
+                    normalized_library_entries(
+                        &serde_json::from_str::<Vec<ModelLibraryEntry>>(&raw)
+                            .unwrap_or_default(),
+                    )
                 },
                 graph: {
                     let raw: String = row.get(16).unwrap_or_default();
@@ -529,8 +583,10 @@ impl DispatcherDb {
         ))
         .unwrap_or_else(|_| "{}".to_string());
         let review_prompt = review.system_prompt.clone();
-        let model_library =
-            serde_json::to_string(&settings.model_library).unwrap_or_else(|_| "[]".to_string());
+        let model_library = serde_json::to_string(&normalized_library_entries(
+            &settings.model_library,
+        ))
+        .unwrap_or_else(|_| "[]".to_string());
         let graph_config =
             serde_json::to_string(&settings.graph).unwrap_or_else(|_| "{}".to_string());
         let theme = normalize_theme_preference(&settings.theme);
@@ -610,7 +666,7 @@ impl DispatcherDb {
             chat,
             context_debug: settings.context_debug,
             review,
-            model_library: settings.model_library.clone(),
+            model_library: normalized_library_entries(&settings.model_library),
             graph: settings.graph,
             theme,
         })
@@ -639,6 +695,8 @@ mod tests {
             model: "lib-model".to_string(),
             alias: "库条目".to_string(),
             enabled,
+            max_tokens: None,
+            context_window: None,
         }
     }
 
@@ -701,5 +759,67 @@ mod tests {
         let entry = &loaded.chat.chat_model_configs[0];
         assert_eq!(entry.library_id, "e1");
         assert!(entry.url.is_empty() && entry.api_key.is_empty() && entry.model.is_empty());
+        assert!(
+            entry.max_tokens.is_none() && entry.context_window.is_none(),
+            "停用条目的容量必须与凭据一起清空"
+        );
+    }
+
+    #[test]
+    fn capacity_fields_strip_on_store_and_backfill_on_load() {
+        let db = test_db();
+        let mut entry = library_entry("e1", true);
+        entry.max_tokens = Some(65_536);
+        entry.context_window = Some(1_000_000);
+        let mut settings = AhaSettingsV2 {
+            model_library: vec![entry],
+            ..Default::default()
+        };
+        settings.chat.chat_model_configs = vec![DispatcherModelConfig {
+            library_id: "e1".to_string(),
+            active: true,
+            // 槽位携带的陈旧容量：保存必须剥离，读取必须由库条目回填覆盖。
+            max_tokens: Some(999),
+            context_window: Some(999),
+            ..Default::default()
+        }];
+        db.save_settings_v2(&settings).unwrap();
+
+        let conn = db.conn().unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT chat_agent_chat_model_configs_json FROM dispatcher_settings WHERE id='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(raw.contains("\"libraryId\":\"e1\""));
+        assert!(
+            !raw.contains("maxTokens") && !raw.contains("contextWindow"),
+            "引用槽位的容量必须随凭据一起剥离：{raw}"
+        );
+        drop(conn);
+
+        let loaded = db.get_settings_v2().unwrap();
+        let chat = &loaded.chat.chat_model_configs[0];
+        assert_eq!(chat.max_tokens, Some(65_536));
+        assert_eq!(chat.context_window, Some(1_000_000));
+    }
+
+    #[test]
+    fn out_of_range_entry_capacity_is_normalized_to_unset() {
+        let db = test_db();
+        let mut entry = library_entry("e1", true);
+        entry.max_tokens = Some(10); // 低于下限 1024
+        entry.context_window = Some(200_000_000); // 高于上限 100M
+        let settings = AhaSettingsV2 {
+            model_library: vec![entry],
+            ..Default::default()
+        };
+        db.save_settings_v2(&settings).unwrap();
+
+        let loaded = db.get_settings_v2().unwrap();
+        assert_eq!(loaded.model_library[0].max_tokens, None);
+        assert_eq!(loaded.model_library[0].context_window, None);
     }
 }

@@ -6,7 +6,7 @@ use crate::agent::common::{is_tool_error_message, UsageTracker};
 use crate::agent::db::{
     DispatcherDb, DispatcherSessionTokenUsageSource, TOOL_RETRY_CONTEXT_PREFIX,
 };
-use crate::agent::llm::{LlmResponse, LlmUsage, RequestedToolCall};
+use crate::agent::llm::{format_empty_response_diagnostics, LlmResponse, LlmUsage, RequestedToolCall};
 use crate::agent::run_loop::AgentEvent;
 use crate::shared::truncate_for_display;
 
@@ -78,7 +78,10 @@ pub(crate) fn empty_llm_response_error(response: &LlmResponse) -> String {
     };
 
     // 「错误：」前缀是工具/运行错误识别契约（is_tool_error_message 与上层分类依赖它）。
-    format!("错误：LLM 返回了空响应且没有工具调用，无法继续执行。\nLLM 接口响应内容：\n{response_detail}")
+    format!(
+        "错误：LLM 返回了空响应且没有工具调用，无法继续执行。\n{}\nLLM 接口响应内容：\n{response_detail}",
+        format_empty_response_diagnostics(response)
+    )
 }
 
 pub(crate) fn build_tool_retry_context(tool_call: &RequestedToolCall, error: &str) -> String {
@@ -126,6 +129,7 @@ pub(crate) fn record_session_token_usage(
     model: &str,
     source_kind: DispatcherSessionTokenUsageSource,
     usage: &LlmUsage,
+    context_window_capacity: Option<u64>,
 ) -> JoinHandle<()> {
     let db = db.clone();
     let wid = workspace_id.to_string();
@@ -133,14 +137,14 @@ pub(crate) fn record_session_token_usage(
     let u = usage.clone();
     tokio::spawn(async move {
         if db
-            .upsert_session_token_usage_async(&wid, &m, source_kind, &u)
+            .upsert_session_token_usage_async(&wid, &m, source_kind, &u, context_window_capacity)
             .await
             .is_err()
         {
             // 瞬时失败（如其他写者短暂持锁）重试一次；upsert 幂等，重试安全。
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             if let Err(error) = db
-                .upsert_session_token_usage_async(&wid, &m, source_kind, &u)
+                .upsert_session_token_usage_async(&wid, &m, source_kind, &u, context_window_capacity)
                 .await
             {
                 log_warning(&format!(
@@ -162,6 +166,9 @@ pub(crate) struct RunUsageContext<'a> {
     pub tracker: &'a mut UsageTracker,
     pub on_event: &'a Channel<AgentEvent>,
     pub pending_persists: &'a mut Vec<JoinHandle<()>>,
+    /// 本轮所用 provider 的上下文窗口容量（模型库条目经 provider 传入）；
+    /// None → 落库回退默认 1M。
+    pub context_window_capacity: Option<u64>,
 }
 
 pub(crate) fn record_run_token_usage(
@@ -176,6 +183,7 @@ pub(crate) fn record_run_token_usage(
         model,
         source_kind,
         usage,
+        context.context_window_capacity,
     ));
     let stats = context.tracker.record(usage);
     emit(

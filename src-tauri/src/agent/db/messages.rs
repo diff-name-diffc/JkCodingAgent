@@ -18,7 +18,7 @@ use crate::agent::llm::{
 
 use super::artifacts::{DispatcherToolArtifactRef, ToolArtifactDraft};
 use super::content::{
-    content_to_segments_json, delete_chat_image_resources, insert_chat_images, parse_segments_json,
+    content_to_segments_json, insert_chat_images, parse_segments_json,
     remove_chat_image_dir, segments_to_plain_text, try_parse_segments_json, ContentSegment,
 };
 use super::util::{map_dispatcher_message_record, now, MAX_LLM_DIALOGUES};

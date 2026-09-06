@@ -1,7 +1,6 @@
 import { lazy, Suspense, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { MoreHorizontal, Settings } from "lucide-react";
-import { NotificationBell } from "./NotificationBell";
 
 const AppSettingsDialog = lazy(() =>
   import("./AppSettingsDialog").then((module) => ({ default: module.AppSettingsDialog })),
@@ -23,7 +22,7 @@ export function SidebarFooterActions({
           <button
             type="button"
             className="ai-sidebar-footer-menu-trigger"
-            aria-label="打开通知与设置"
+            aria-label="打开应用菜单"
             title="更多"
           >
             <MoreHorizontal size={18} strokeWidth={1.8} />
@@ -38,10 +37,6 @@ export function SidebarFooterActions({
           >
             <div className="ai-sidebar-footer-menu-title">应用菜单</div>
             <div className="ai-sidebar-footer-actions">
-              <div className="ai-sidebar-footer-action">
-                <NotificationBell />
-                <span>通知</span>
-              </div>
               <div className="ai-sidebar-footer-action">
                 <button
                   title="应用设置"

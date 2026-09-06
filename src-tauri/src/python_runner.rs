@@ -152,7 +152,7 @@ fn resolve_summary_provider(db: &DispatcherDb) -> Result<OpenAiCompatProvider> {
         model_config.api_key,
         model_config.url,
         model_config.model,
-        4096,
+        Some(4096),
         0.1,
     ))
 }

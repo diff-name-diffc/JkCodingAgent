@@ -6,6 +6,7 @@ pub(crate) mod keywords;
 pub(crate) mod mcp_servers;
 pub(crate) mod messages;
 pub(crate) mod projects;
+pub(crate) mod purge;
 pub(crate) mod python_runs;
 pub(crate) mod schema;
 pub(crate) mod sessions;
@@ -29,7 +30,8 @@ pub use keywords::{KeywordAction, SessionSearchResult};
 pub use messages::{DispatcherMessageRecord, DispatcherMessageUsageStats};
 pub use python_runs::PythonCodeRunRecord;
 pub use sessions::{
-    AgentContext, ChatSessionRecord, DispatcherSessionKind, ProjectSessionRecord, SessionPage,
+    AgentContext, ChatSessionRecord, DispatcherSessionKind, ProjectSessionRecord, SessionCreatedRecord,
+    SessionPage,
 };
 pub use settings::{AhaContextConfig, AhaSettingsV2, DispatcherModelConfig};
 pub use token_usage::{DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource};

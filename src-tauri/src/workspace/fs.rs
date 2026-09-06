@@ -88,6 +88,10 @@ const IGNORED_FILES: &[&str] = &[".DS_Store"];
 
 const MAX_IMAGE_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
 
+/// 小文件读写路径的尺寸上限：与 `read_file_content` 的 2MB 门控对齐
+///（≥2MB 的大文件走 rope 会话虚拟化编辑，不经本命令）。
+const MAX_WRITE_FILE_BYTES: usize = 2 * 1024 * 1024;
+
 /// Validate that `target` is an absolute path within `allowed_root` (prevents directory traversal).
 fn validate_path_within(target: &str, allowed_root: &str) -> FsResult<std::path::PathBuf> {
     let target = Path::new(target);
@@ -313,9 +317,22 @@ pub async fn write_file_content(
 
 async fn write_file_content_impl(path: &str, content: String, project_path: &str) -> FsResult<()> {
     let validated_path = validate_path_within(path, project_path)?;
+    if content.len() > MAX_WRITE_FILE_BYTES {
+        return Err(FsError::FileTooLarge {
+            mb: content.len() as f64 / (1024.0 * 1024.0),
+        });
+    }
 
+    // 原子写（临时文件 + rename）：编辑器防抖保存中途崩溃/掉电不会留下
+    // 半截文件；与 rope_save / project::storage 的写入策略一致。
     tauri::async_runtime::spawn_blocking(move || -> FsResult<()> {
-        std::fs::write(&validated_path, content).map_err(io_error("写入文件", &validated_path))
+        crate::project::storage::atomic_write(&validated_path, &content).map_err(|error| {
+            FsError::Io {
+                action: "原子写入文件",
+                path: validated_path.clone(),
+                source: std::io::Error::other(error.to_string()),
+            }
+        })
     })
     .await?
 }
@@ -463,7 +480,8 @@ async fn get_file_meta_impl(path: &str, project_path: &str) -> FsResult<FileMeta
             total_bytes += n as u64;
         }
 
-        // Account for last line if file doesn't end with newline
+        // 行数语义对齐 ropey 的 len_lines()：非空文件在换行符计数上 +1，
+        // 空文件为 0 行（前端 FileMeta/rope 视图的行号基准保持一致）。
         if size_bytes > 0 {
             line_count += 1;
         }

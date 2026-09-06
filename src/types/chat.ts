@@ -146,6 +146,10 @@ export interface DispatcherModelConfig {
   systemPrompt?: string;
   /** 模型库条目引用：非空时后端保存剥离 url/apiKey/model、读取时从库回填。 */
   libraryId?: string;
+  /** 输出预算与上下文窗口：与凭据同规则由引用库条目运行期回填（保存剥离）。
+   * maxTokens 缺省时后端请求省略 max_tokens，由服务端默认预算接管。 */
+  maxTokens?: number;
+  contextWindow?: number;
 }
 
 export type AgentContext = "project" | "chat";
@@ -188,7 +192,8 @@ export interface SshReviewConfig {
 /** 模型库分类：按模型调用方式划分，「模型服务」页按此分标签管理。 */
 export type ModelCategory = "text" | "vision" | "image" | "imageEdit" | "asr" | "tts" | "embedding";
 
-/** 分类模型库条目：每个条目独立持有 url/apiKey/model，供「模型用途」页按分类引用。 */
+/** 分类模型库条目：每个条目独立持有 url/apiKey/model 与容量（maxTokens/contextWindow），
+ * 供「模型用途」页按分类引用——容量与凭据一样以库条目为唯一权威源。 */
 export interface ModelLibraryEntry {
   id: string;
   category: ModelCategory;
@@ -199,6 +204,10 @@ export interface ModelLibraryEntry {
   alias?: string;
   /** 停用后不出现在用途下拉的选项中。 */
   enabled: boolean;
+  /** 输出预算（请求体 max_tokens）。留空则请求省略该字段，由服务端默认预算接管。 */
+  maxTokens?: number;
+  /** 上下文窗口容量（tokens）。驱动上下文裁剪阈值与容量展示，留空默认 1M。 */
+  contextWindow?: number;
 }
 
 export interface GraphExecutionConfig {

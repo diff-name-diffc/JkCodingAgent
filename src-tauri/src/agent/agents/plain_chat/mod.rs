@@ -62,6 +62,10 @@ pub struct PlainChatAgent {
     summary_model: Mutex<String>,
     summary_api_key: Mutex<String>,
     summary_api_base: Mutex<String>,
+    /// 摘要槽位容量（模型库条目经槽位回填）：None = 未配置 → 请求省略
+    /// max_tokens / 窗口回退默认 1M。与 summary_model/key/base 同批更新。
+    summary_max_tokens: Mutex<Option<u32>>,
+    summary_context_window: Mutex<Option<u32>>,
     app_handle: Option<AppHandle>,
     tools: Arc<ToolRegistry>,
     /// 工具允许列表。混合契约：
@@ -122,6 +126,8 @@ impl PlainChatAgent {
             summary_model: Mutex::new(crate::agent::config::DEFAULT_SUMMARY_MODEL.to_string()),
             summary_api_key: Mutex::new(String::new()),
             summary_api_base: Mutex::new(String::new()),
+            summary_max_tokens: Mutex::new(None),
+            summary_context_window: Mutex::new(None),
             app_handle: None,
             tools: Arc::new(registry),
             allowed_tools: Mutex::new(Vec::new()),
@@ -181,9 +187,11 @@ impl PlainChatAgent {
                 } else {
                     chat.model.clone()
                 },
-                self.config.max_tokens,
+                // 容量以槽位（库条目回填）为权威；config 仅作 env 开发路径兜底。
+                chat.max_tokens.or(self.config.max_tokens),
                 self.config.temperature,
-            );
+            )
+            .with_context_window(chat.context_window);
         }
         // 视觉模型切换必须使用设置中视觉用途的完整配置（url/apiKey/model，
         // 默认取第一个 active，否则第一个条目），url/apiKey 为空时回退聊天
@@ -205,9 +213,10 @@ impl PlainChatAgent {
                             v.url.trim().to_string()
                         },
                         v.model.trim().to_string(),
-                        self.config.max_tokens,
+                        v.max_tokens.or(self.config.max_tokens),
                         self.config.temperature,
                     )
+                    .with_context_window(v.context_window)
                 });
         if let Some(smc) = active_summary {
             if !smc.model.trim().is_empty() {
@@ -219,6 +228,10 @@ impl PlainChatAgent {
             if !smc.url.trim().is_empty() {
                 *self.summary_api_base.lock() = smc.url.trim().to_string();
             }
+            // 容量无条件覆盖：None=未配置也是有效语义，库条目清空容量后
+            // 不得残留旧值（凭据回退聊天模型时容量不随凭据走）。
+            *self.summary_max_tokens.lock() = smc.max_tokens;
+            *self.summary_context_window.lock() = smc.context_window;
         }
         *self.allowed_tools.lock() = ctx_config.allowed_tools.clone();
         // 基础设置重应用时同步清除分类叠加（G9-03）：分类级配置
@@ -260,9 +273,10 @@ impl PlainChatAgent {
             api_key,
             api_base,
             self.summary_model.lock().clone(),
-            self.config.max_tokens,
+            (*self.summary_max_tokens.lock()).or(self.config.max_tokens),
             self.config.temperature,
         )
+        .with_context_window(*self.summary_context_window.lock())
     }
 }
 

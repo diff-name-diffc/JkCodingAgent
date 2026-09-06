@@ -1,4 +1,5 @@
 use super::*;
+use super::run_commands::run_agent_turn_skeleton;
 
 /// 架构设计视觉 Agent 的消息入口。
 ///
@@ -16,48 +17,37 @@ pub async fn dispatcher_send_architecture_agent_message(
     model_library_id: Option<String>,
     on_event: Channel<AgentEvent>,
 ) -> Result<AgentTurn, String> {
-    let title_segments_json = segments_json.clone();
-    let agent = state
-        .build_architecture_agent(model_library_id.as_deref())
-        .await?
-        .with_app_handle(app.clone());
-    let run_handle = state.begin_run(&workspace_id).map_err(|e| e.to_string())?;
-    let title_guard = state.begin_title_generation(&workspace_id);
-    let result = run_agent_turn(
-        &agent,
-        AgentRunRequest {
-            kind: RuntimeAgentKind::Architecture,
-            db: state.db(),
-            workspace_id: &workspace_id,
-            workspace_path: None,
-            user_segments_json: segments_json,
-            on_event,
-            cancel_rx: run_handle.cancel_receiver(),
-        },
-    )
-    .await
-    .map_err(|error| error.to_string());
-    // G11-09/10：运行槽位清理由句柄 RAII 负责（含 panic/提前 return 路径）。
-    state.finish_run(run_handle);
-    spawn_session_title_update(
+    let agent_app = app.clone();
+    run_agent_turn_skeleton(
         &state,
         &app,
         &workspace_id,
-        &title_segments_json,
-        AgentContext::Chat,
-        title_guard,
-    );
-    result
+        segments_json,
+        on_event,
+        RuntimeAgentKind::Architecture,
+        None,
+        async {
+            state
+                .build_architecture_agent(model_library_id.as_deref())
+                .await
+                .map(|agent| agent.with_app_handle(agent_app))
+        },
+        false,
+    )
+    .await
 }
 
 /// 回传架构画布程序的执行报告。前端画布解释器执行完毕（或画布未就绪）后
 /// 调用，解除 `architecture_run` 工具的等待。报告已被消费返回 true；
-/// 槽位已因超时/取消清槽或重复回传返回 false（无副作用，前端无需处理）。
+/// 槽位已因超时/取消清槽、重复回传或 workspace 不匹配返回 false（无副作用，
+/// 前端无需处理）。workspace 校验与 `dispatcher_get_tool_artifact` 等命令的
+/// 域校验风格对齐。
 #[tauri::command]
 pub async fn architecture_run_complete(
     state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
     run_id: String,
     report: String,
 ) -> Result<bool, String> {
-    Ok(state.complete_arch_run(&run_id, report))
+    Ok(state.complete_arch_run(&run_id, &workspace_id, report))
 }

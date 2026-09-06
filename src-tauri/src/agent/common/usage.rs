@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use tauri::ipc::Channel;
 use tokio::sync::watch;
@@ -234,6 +234,7 @@ pub async fn stream_llm_response(
     // 结果中的 chat-image:// 引用）附加为当前用户消息的视觉输入：
     // messages_contain_images 基于附加后的列表计算，vision 槽位自动切换。
     let effective_messages = attach_turn_tool_images(messages);
+    let has_images = messages_contain_images(&effective_messages);
 
     let mut stream_cancel_rx = cancel_rx;
     let settlement = tokio::select! {
@@ -243,10 +244,10 @@ pub async fn stream_llm_response(
         response = provider.chat_stream_with_thinking(
             &effective_messages,
             tool_definitions,
-            messages_contain_images(&effective_messages),
+            has_images,
             on_delta,
             on_thinking_delta,
-        ) => StreamSettlement::Response(response?)
+        ) => StreamSettlement::Response(response.context("LLM 流式请求失败")?)
     };
 
     // 流结束（正常完成或取消抢占）后 delta 闭包已随 select 分支 drop，
@@ -265,6 +266,7 @@ pub async fn stream_llm_response(
                     model,
                     source_kind,
                     usage,
+                    provider.context_window().map(u64::from),
                     usage_tracker,
                     on_event,
                 );
@@ -275,12 +277,14 @@ pub async fn stream_llm_response(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_usage(
     db: &DispatcherDb,
     workspace_id: &str,
     model: &str,
     source_kind: DispatcherSessionTokenUsageSource,
     usage: &LlmUsage,
+    context_window_capacity: Option<u64>,
     tracker: &mut UsageTracker,
     on_event: &Channel<AgentEvent>,
 ) {
@@ -290,7 +294,7 @@ fn record_usage(
     let u = usage.clone();
     tokio::spawn(async move {
         if let Err(error) = db
-            .upsert_session_token_usage_async(&wid, &m, source_kind, &u)
+            .upsert_session_token_usage_async(&wid, &m, source_kind, &u, context_window_capacity)
             .await
         {
             eprintln!(

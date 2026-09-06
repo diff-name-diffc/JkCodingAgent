@@ -112,12 +112,10 @@ export function BrowserPanel({
   const startBrowser = useCallback(async () => {
     if (!sessionId) return;
     await runBrowserAction(async () => {
-      const next = projectPath
-        ? await invoke<BrowserStatus>("browser_start", {
-            sessionId,
-            projectPath,
-          })
-        : await invoke<BrowserStatus>("browser_start_plain_chat", { sessionId });
+      const next = await invoke<BrowserStatus>("browser_start", {
+        sessionId,
+        projectPath: projectPath || null,
+      });
       setStatus(next);
     }, { refresh: false });
   }, [projectPath, runBrowserAction, sessionId]);
@@ -201,12 +199,10 @@ export function BrowserPanel({
         ...prev.slice(-30),
         `已导入 Chrome Profile：${result.profileName} → ${result.targetPath}`,
       ]);
-      const next = projectPath
-        ? await invoke<BrowserStatus>("browser_start", {
-            sessionId,
-            projectPath,
-          })
-        : await invoke<BrowserStatus>("browser_start_plain_chat", { sessionId });
+      const next = await invoke<BrowserStatus>("browser_start", {
+        sessionId,
+        projectPath: projectPath || null,
+      });
       setStatus(next);
     }, { refresh: false });
   }, [busy, projectPath, runBrowserAction, sessionId]);

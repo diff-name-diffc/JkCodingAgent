@@ -65,6 +65,18 @@ pub struct SshServerSummary {
     pub name: String,
     pub description: String,
     pub tags: Vec<String>,
+    /// 运维备忘录字符数（无备忘录为 0），供智能体判断哪些服务器已有积累。
+    pub memo_chars: usize,
+}
+
+/// 运维备忘录内容载荷（设置页读写命令的返回结构）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshMemoPayload {
+    /// 备忘录原文（Markdown；空字符串表示尚无备忘录）。
+    pub content: String,
+    /// 最近修改时间（RFC3339）；尚无备忘录时为 null。
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

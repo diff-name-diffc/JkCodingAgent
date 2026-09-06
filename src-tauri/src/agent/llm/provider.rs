@@ -22,9 +22,18 @@ pub struct OpenAiCompatProvider {
     api_key: String,
     api_base: String,
     model: String,
-    /// 输出上限。None 时请求体完全省略 max_tokens，由服务端默认预算接管
-    /// （见 `without_max_tokens`）。
+    /// 输出预算。None 时请求体完全省略 max_tokens，由服务端默认预算接管
+    /// ——1M 上下文时代的缺省形态；显式小上限易与服务端预算互相挤压
+    /// （推理模型的思考 token 还会与可见输出共享该预算）。
+    /// 容量的唯一权威源是模型库条目（AhaSettingsV2.modelLibrary 的
+    /// maxTokens，经用途槽位回填）；短结论任务（验收/标题/审查）可显式
+    /// 传小预算作上限保护。
     max_tokens: Option<u32>,
+    /// 上下文窗口容量（tokens）。None 时由消费方回退
+    /// DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS（1M）；驱动会话容量展示、
+    /// 上下文占用告警与子智能体滑窗裁剪阈值。权威源同 max_tokens
+    /// （库条目 contextWindow 字段）。
+    context_window: Option<u32>,
     temperature: f32,
     /// 是否允许模型输出思考链（推理模型）。默认 true 保持既有行为；
     /// 短结论任务（如验收评审、格式分类）应显式关闭，避免思考 token
@@ -37,7 +46,7 @@ impl OpenAiCompatProvider {
         api_key: String,
         api_base: String,
         model: String,
-        max_tokens: u32,
+        max_tokens: Option<u32>,
         temperature: f32,
     ) -> Self {
         Self {
@@ -48,7 +57,8 @@ impl OpenAiCompatProvider {
             api_key,
             api_base,
             model,
-            max_tokens: Some(max_tokens),
+            max_tokens,
+            context_window: None,
             temperature,
             enable_thinking: true,
         }
@@ -84,14 +94,18 @@ impl OpenAiCompatProvider {
         next
     }
 
-    /// 不设输出上限：请求体完全省略 max_tokens 字段，由服务端默认预算接管。
-    /// 适用于模型支持超大输出预算的场景——显式传一个小上限反而会与服务端
-    /// 预算互相挤压（推理模型的思考 token 还会与可见输出共享该预算）。
-    /// 链式用法：`OpenAiCompatProvider::new(..., 0, temperature).without_max_tokens()`。
-    pub fn without_max_tokens(&self) -> Self {
+    /// 覆盖上下文窗口容量（见 `context_window` 字段注释）。链式用法：
+    /// `OpenAiCompatProvider::new(...).with_context_window(Some(1_000_000))`。
+    pub fn with_context_window(&self, context_window: Option<u32>) -> Self {
         let mut next = self.clone();
-        next.max_tokens = None;
+        next.context_window = context_window;
         next
+    }
+
+    /// 上下文窗口容量（tokens）。None 表示库条目未配置，消费方回退
+    /// DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS（1M）。
+    pub fn context_window(&self) -> Option<u32> {
+        self.context_window
     }
 
     pub fn build_request_snapshot(

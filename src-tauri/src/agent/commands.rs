@@ -8,12 +8,14 @@ use super::db::{
     DispatcherDb, DispatcherMessageRecord, DispatcherModelConfig, DispatcherSessionKind,
     DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource,
     DispatcherToolArtifactRecord, DispatcherToolRunRecord, KeywordAction, ProjectSessionRecord,
-    SessionPage, SessionSearchResult,
+    SessionCreatedRecord, SessionPage, SessionSearchResult,
 };
 use super::llm::OpenAiCompatProvider;
 use super::llm::{self, ChatMessage};
 use super::llm::{ChatMessageContentPart, ChatMessageImageSource};
-use super::run_loop::{run_agent_turn, AgentEvent, AgentRunRequest, AgentTurn, RuntimeAgentKind};
+use super::run_loop::{
+    run_agent_turn, AgentEvent, AgentRunAdapter, AgentRunRequest, AgentTurn, RuntimeAgentKind,
+};
 use super::state::{DispatcherState, GenerationGuard};
 use super::sub_agent::db::ToolInfo;
 use super::summary::{

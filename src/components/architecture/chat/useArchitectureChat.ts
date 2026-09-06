@@ -129,7 +129,8 @@ export function useArchitectureChat({
     if (existing) return existing;
     if (sessionPromiseRef.current) return sessionPromiseRef.current;
     const promise = (async () => {
-      const session = await invoke<ChatSession>("chat_create_session", {
+      const session = await invoke<ChatSession>("session_create", {
+        kind: "chat",
         title: "架构对话",
         category: ARCH_DESIGN_CATEGORY,
       });
@@ -320,9 +321,9 @@ export function useArchitectureChat({
     updatePrefs({ sessionId: null });
     if (!previousId) return;
     // 旧架构会话被排除出主列表/搜索且无管理入口：换新时必须级联删除
-    //（chat_delete_session 事务内清 DB 并回收 chat-images 文件），
+    //（session_delete 事务内清 DB 并回收 chat-images 文件），
     // 否则每次「新对话」都遗留不可见、不可删的孤儿会话与截图文件。
-    void invoke<void>("chat_delete_session", { sessionId: previousId }).catch((error) => {
+    void invoke<void>("session_delete", { sessionId: previousId }).catch((error) => {
       console.error("清理旧架构会话失败:", error);
     });
   }, [updatePrefs]);

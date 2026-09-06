@@ -3,7 +3,6 @@ import type React from "react";
 import {
   Search,
   FolderOpen,
-  GitBranch,
   Layers,
   Plus,
   Trash2,
@@ -14,11 +13,7 @@ import type { Project } from "../types";
 import { shortenPath } from "../utils";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { SidebarFooterActions } from "./SidebarFooterActions";
-import {
-  AiEmptyState,
-  AiSectionHeader,
-  AiStatusPill,
-} from "./ui/sci-fi-shell";
+import { AiEmptyState, AiSectionHeader } from "./ui/sci-fi-shell";
 import appLogo from "../assets/app-logo.png";
 
 const HomeChatPage = lazy(() =>
@@ -220,15 +215,6 @@ export function WelcomePage({
                         <div className="ai-project-name">{p.name}</div>
                         <div className="ai-project-meta">{shortenPath(p.path)}</div>
                       </div>
-
-                      {p.branch ? (
-                        <AiStatusPill tone="accent">
-                          <GitBranch size={10} strokeWidth={2} />
-                          {p.branch}
-                        </AiStatusPill>
-                      ) : (
-                        <AiStatusPill>本地</AiStatusPill>
-                      )}
 
                       <button
                         className="ai-project-delete-btn"

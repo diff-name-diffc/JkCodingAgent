@@ -164,16 +164,20 @@ impl RunLoopAgent for OrchestratorAgent {
         let debug_logger =
             ContextDebugLogger::new(self.context_debug_enabled(), PathBuf::from(ctx.workspace));
         let estimated_tokens = agent_loop.estimated_tokens();
-        if estimated_tokens > DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS * 8 / 10 {
+        // 容量取本轮 provider（模型库条目 contextWindow 经槽位回填），
+        // 未配置回退默认 1M——不再使用与模型无关的固定常量。
+        let context_capacity = ctx
+            .provider
+            .context_window()
+            .map(u64::from)
+            .unwrap_or(DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS);
+        if estimated_tokens > context_capacity * 8 / 10 {
             debug_logger.log(
                 "上下文窗口接近上限",
                 vec![
                     ("工作区".to_string(), ctx.workspace_id.to_string()),
                     ("估算tokens".to_string(), estimated_tokens.to_string()),
-                    (
-                        "容量".to_string(),
-                        DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS.to_string(),
-                    ),
+                    ("容量".to_string(), context_capacity.to_string()),
                 ],
                 vec![],
             );

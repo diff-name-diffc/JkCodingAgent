@@ -8,5 +8,5 @@ pub(crate) mod agent_loop;
 pub(crate) mod core;
 pub(crate) mod types;
 
-pub(crate) use core::{run_agent_turn, AgentRunRequest, RuntimeAgentKind};
+pub(crate) use core::{run_agent_turn, AgentRunAdapter, AgentRunRequest, RuntimeAgentKind};
 pub use types::{AgentEvent, AgentTurn};

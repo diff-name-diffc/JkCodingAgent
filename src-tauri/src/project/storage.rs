@@ -39,7 +39,6 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
-    pub branch: Option<String>,
     #[serde(rename = "lastOpenedAt")]
     pub last_opened_at: i64,
 }
@@ -60,6 +59,14 @@ pub fn atomic_write(path: &Path, content: &str) -> StorageResult<()> {
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let tmp = path.with_file_name(format!(".{file_name}.{uid}.tmp"));
     fs::write(&tmp, content).map_err(io_error("写入临时文件", tmp.clone()))?;
+    // 覆盖已有文件时保留其权限位：临时文件按默认权限（受 umask 影响）创建，
+    // rename 直接替换目录项，不恢复会丢失既有文件的可执行位等特殊权限
+    //（旧「打开+截断」写法天然保留 mode）。
+    if let Ok(metadata) = fs::metadata(path) {
+        let permissions = metadata.permissions();
+        fs::set_permissions(&tmp, permissions)
+            .map_err(io_error("恢复文件权限", tmp.clone()))?;
+    }
     fs::rename(&tmp, path).map_err(io_error("替换目标文件", path))
 }
 

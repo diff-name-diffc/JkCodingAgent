@@ -6,7 +6,7 @@
 use anyhow::Context;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 use super::config::{RagConfigStore, RagKbConfig};
 use super::logs::{RagLogEntry, RagLogStore};
@@ -149,72 +149,49 @@ async fn rag_save_kb_config_impl(
     }))
 }
 
-/// 保存当前草稿配置，并交给 sidecar 测试 Qdrant。
+/// 交给 sidecar 测试连接（原 rag_test_qdrant / rag_test_embedding 合并）。
 ///
 /// 约束：配置权威存储在桌面端；测试动作在无状态 sidecar 内完成。
+/// **不做内部落库**——保存责任归调用方（前端测试前先 `rag_save_kb_config`
+/// 持久化，与 `rag_ingest_files` 的责任划分一致）。
 #[tauri::command]
-pub async fn rag_test_qdrant(
+pub async fn rag_test_connection(
     app: AppHandle,
     manager: State<'_, RagManager>,
     config_store: State<'_, RagConfigStore>,
     config: RagKbConfig,
+    target: String,
 ) -> CommandResult<Value> {
-    rag_test_qdrant_impl(app, manager, config_store, config)
+    rag_test_connection_impl(app, manager, config_store, config, target)
         .await
-        .context("测试 RAG Qdrant 配置失败")
+        .context("测试 RAG 连接失败")
         .into_command_result()
 }
 
-async fn rag_test_qdrant_impl(
+async fn rag_test_connection_impl(
     app: AppHandle,
     manager: State<'_, RagManager>,
     config_store: State<'_, RagConfigStore>,
     config: RagKbConfig,
+    target: String,
 ) -> anyhow::Result<Value> {
-    save_rag_config(&app, &config_store, &config)?;
     let handle = manager
         .ensure_started(&app, &config_store)
         .await
         .context("ensure RAG sidecar started")?;
-    handle
-        .transport
-        .test_qdrant(&config)
-        .await
-        .context("POST RAG /test/qdrant")
-}
-
-/// 保存当前草稿配置，并交给 sidecar 测试 Embedding。
-///
-/// 约束：配置权威存储在桌面端；测试动作在无状态 sidecar 内完成。
-#[tauri::command]
-pub async fn rag_test_embedding(
-    app: AppHandle,
-    manager: State<'_, RagManager>,
-    config_store: State<'_, RagConfigStore>,
-    config: RagKbConfig,
-) -> CommandResult<Value> {
-    rag_test_embedding_impl(app, manager, config_store, config)
-        .await
-        .context("测试 RAG Embedding 配置失败")
-        .into_command_result()
-}
-
-async fn rag_test_embedding_impl(
-    app: AppHandle,
-    manager: State<'_, RagManager>,
-    config_store: State<'_, RagConfigStore>,
-    config: RagKbConfig,
-) -> anyhow::Result<Value> {
-    save_rag_config(&app, &config_store, &config)?;
-    let handle = manager
-        .ensure_started(&app, &config_store)
-        .await
-        .context("ensure RAG sidecar started")?;
-    handle
-        .transport
-        .test_embedding(&config)
-        .await
-        .context("POST RAG /test/embedding")
+    match target.as_str() {
+        "qdrant" => handle
+            .transport
+            .test_qdrant(&config)
+            .await
+            .context("POST RAG /test/qdrant"),
+        "embedding" => handle
+            .transport
+            .test_embedding(&config)
+            .await
+            .context("POST RAG /test/embedding"),
+        other => anyhow::bail!("未知的 RAG 测试目标：{other}（可选 qdrant / embedding）"),
+    }
 }
 
 /// 返回当前内存中的 RAG sidecar 滚动日志。
@@ -290,17 +267,6 @@ async fn rag_ingest_job_status_impl(
         .ingest_job_status(&job_id)
         .await
         .with_context(|| format!("GET RAG /ingest/jobs/{job_id}"))
-}
-
-fn save_rag_config(
-    app: &AppHandle,
-    config_store: &State<'_, RagConfigStore>,
-    config: &RagKbConfig,
-) -> anyhow::Result<()> {
-    let db = app.state::<crate::agent::DispatcherState>().db().clone();
-    config.save_to_db(&db).context("保存 RAG 配置")?;
-    config_store.replace(config.clone());
-    Ok(())
 }
 
 async fn validate_ingest_paths(

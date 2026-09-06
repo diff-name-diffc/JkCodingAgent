@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::shared::truncate_for_display;
 
 use super::request::ApiChatMessage;
-use super::{LlmUsage, RequestedToolCall, ToolDefinition};
+use super::{LlmResponse, LlmUsage, RequestedToolCall, ToolDefinition};
 
 pub(super) fn append_valid_utf8(buffer: &mut String, leftover_bytes: &mut Vec<u8>, bytes: &[u8]) {
     leftover_bytes.extend_from_slice(bytes);
@@ -57,6 +57,50 @@ pub(super) fn format_llm_http_error(status: StatusCode, body: &str) -> String {
         truncate_for_display(body, 4_000, "\n...[LLM 错误响应已截断]")
     };
     format!("LLM 请求失败，HTTP {}：{}", status, detail)
+}
+
+/// 空响应（无可见内容且无工具调用）的诊断摘要：finish_reason、思考链长度、
+/// completion_tokens。截断（length/max_tokens，大小写无关）时解释输出预算
+/// 耗尽机制并指向模型库容量配置；非截断但产出了思考链时给出对应说明（不
+/// 误导为预算问题）。供 plain_chat / project / architecture 三处空响应错误
+/// 构造器复用（原始 SSE 头部截断对思考模型无诊断价值——前几千字符全是
+/// reasoning_content 分片，终止原因在流末尾）。
+pub fn format_empty_response_diagnostics(response: &LlmResponse) -> String {
+    let finish_reason = response
+        .finish_reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty());
+    let thinking_chars = response.thinking_content.chars().count();
+    let completion_tokens = response
+        .usage
+        .as_ref()
+        .map(|usage| usage.completion_tokens.to_string())
+        .unwrap_or_else(|| "<未上报>".to_string());
+
+    let mut detail = format!(
+        "诊断：finish_reason={}，思考链={} 字符，completion_tokens={}",
+        finish_reason.unwrap_or("<未提供>"),
+        thinking_chars,
+        completion_tokens,
+    );
+    let truncated = finish_reason.is_some_and(|reason| {
+        reason.eq_ignore_ascii_case("length") || reason.eq_ignore_ascii_case("max_tokens")
+    });
+    if truncated {
+        detail.push_str(
+            "\n说明：输出被 max_tokens 预算截断。推理模型的思考链（reasoning_content）\
+             与可见输出共享该预算，思考过长会导致没有余量输出可见内容或工具调用。\
+             建议：在设置中心「模型服务」为该模型配置更大的输出预算（maxTokens），\
+             或留空交由服务端默认预算接管，或为该用途改绑非思考模型。",
+        );
+    } else if thinking_chars > 0 {
+        detail.push_str(
+            "\n说明：模型在产出思考链后自行停止（非截断），但没有输出可见内容或工具调用。\
+             可为该用途关闭思考或改绑非思考模型后重试。",
+        );
+    }
+    detail
 }
 
 /// 解析 SSE 行的 `data:` 负载。按 SSE 规范 `data:` 后可无空格
@@ -167,7 +211,7 @@ pub(super) struct StreamChatRequest<'a> {
     pub(super) model: &'a str,
     pub(super) messages: &'a [ApiChatMessage],
     /// None 时省略 max_tokens，输出上限交给服务端默认预算接管
-    /// （配合 provider 的 `without_max_tokens` 路径）。
+    /// （provider 的 `max_tokens: None` 路径；容量权威源为模型库条目）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) max_tokens: Option<u32>,
     pub(super) temperature: f32,

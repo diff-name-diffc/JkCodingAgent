@@ -1,6 +1,6 @@
 import { createContext, useContext, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AhaSettingsV2, ChatCategoryAgentConfig } from "../../types";
+import type { AhaSettingsV2, ChatCategoryAgentConfig, SubAgentRecord } from "../../types";
 import { toast } from "./toast";
 import { withoutChatModelSystemPrompts } from "./providers/provider-registry";
 
@@ -127,8 +127,12 @@ function ensureLoaded(): void {
   Promise.all([
     invoke<AhaSettingsV2>("aha_get_settings_v2"),
     invoke<ChatCategoryAgentConfig[]>("aha_get_chat_category_agent_configs"),
-    invoke<Array<{ id: string }>>("sub_agent_get_global_enabled").then((agents) =>
-      agents.map((agent) => agent.id),
+    // 全局启用集合从 sub_agent_list 的 globalEnabled 字段过滤（原
+    // sub_agent_get_global_enabled 命令已折叠）：enabled=1 ∩ 全局成员。
+    invoke<SubAgentRecord[]>("sub_agent_list").then((agents) =>
+      agents
+        .filter((agent) => agent.enabled && agent.globalEnabled)
+        .map((agent) => agent.id),
     ),
   ])
     .then(([loaded, categoryConfigs, enabledIds]) => {

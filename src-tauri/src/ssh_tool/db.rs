@@ -5,6 +5,7 @@
 //! 不再按项目路径分键存储。凭据入库后，Agent 文件工具对数据库文件的访问由
 //! `agent::tools::builtin::common::is_protected_agent_path` 拒绝。
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -70,11 +71,27 @@ impl SshDb {
     }
 
     /// 全量替换服务器列表（设置页保存语义：以提交的列表为准）。
-    pub fn save_servers(&self, servers: &[SshServerConfig]) -> Result<(), String> {
+    ///
+    /// 返回本次被删除的服务器 id 列表，供调用方级联清理绑定资源
+    /// （备忘录文件在提交后 best-effort 清理，见 `save_config_async`）。
+    /// 同事务内顺带清理被删服务器在 `ssh_host_keys` / `ssh_audit_log`
+    /// 中的行（此前整表替换语义会留下孤儿行）。
+    pub fn save_servers(&self, servers: &[SshServerConfig]) -> Result<Vec<String>, String> {
         let mut conn = self.conn()?;
         let tx = conn
             .transaction()
             .map_err(|error| format!("保存 SSH 服务器配置失败：{error}"))?;
+
+        let mut stmt = tx
+            .prepare("SELECT id FROM ssh_servers")
+            .map_err(|error| format!("保存 SSH 服务器配置失败：{error}"))?;
+        let existing: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("保存 SSH 服务器配置失败：{error}"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| format!("保存 SSH 服务器配置失败：{error}"))?;
+        drop(stmt);
+
         tx.execute("DELETE FROM ssh_servers", [])
             .map_err(|error| format!("保存 SSH 服务器配置失败：{error}"))?;
         let now = Utc::now().to_rfc3339();
@@ -87,8 +104,28 @@ impl SshDb {
             )
             .map_err(|error| format!("保存 SSH 服务器配置失败：{error}"))?;
         }
+
+        let kept: HashSet<&str> = servers.iter().map(|server| server.id.as_str()).collect();
+        let removed: Vec<String> = existing
+            .into_iter()
+            .filter(|id| !kept.contains(id.as_str()))
+            .collect();
+        for server_id in &removed {
+            tx.execute(
+                "DELETE FROM ssh_host_keys WHERE server_id = ?1",
+                params![server_id],
+            )
+            .map_err(|error| format!("清理被删服务器的主机密钥记录失败：{error}"))?;
+            tx.execute(
+                "DELETE FROM ssh_audit_log WHERE server_id = ?1",
+                params![server_id],
+            )
+            .map_err(|error| format!("清理被删服务器的审计记录失败：{error}"))?;
+        }
+
         tx.commit()
-            .map_err(|error| format!("保存 SSH 服务器配置失败：{error}"))
+            .map_err(|error| format!("保存 SSH 服务器配置失败：{error}"))?;
+        Ok(removed)
     }
 
     /// 读取指定已启用服务器的完整配置（含 review_enabled 等字段）。
@@ -292,6 +329,47 @@ mod tests {
         let log = ssh_db.list_audit().unwrap();
         assert_eq!(log.records.len(), AUDIT_RECORD_LIMIT);
         assert_eq!(log.records.last().unwrap().command, "cmd-109");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn save_servers_reports_removed_ids_and_cascades_attached_rows() {
+        let root = temp_root();
+        let db = crate::agent::db::DispatcherDb::new(root.join("jkbot.sqlite3")).unwrap();
+        let ssh_db = SshDb::new(db.pool());
+
+        // 首次保存：无旧行，差集为空。
+        let removed = ssh_db
+            .save_servers(&[
+                server("alpha", "10.0.0.1", "root"),
+                server("beta", "10.0.0.2", "ops"),
+            ])
+            .unwrap();
+        assert!(removed.is_empty());
+
+        // 被删服务器 alpha 留有主机密钥与审计行。
+        ssh_db.set_host_key_pin("alpha", "aa:bb").unwrap();
+        ssh_db.set_host_key_pin("beta", "cc:dd").unwrap();
+        ssh_db
+            .append_audit_record(&audit_record("2026-01-01T00:00:00Z", "alpha"))
+            .unwrap();
+        ssh_db
+            .append_audit_record(&audit_record("2026-01-02T00:00:00Z", "beta"))
+            .unwrap();
+
+        // 第二次保存删掉 alpha：返回差集，且附属行同事务清理。
+        let removed = ssh_db.save_servers(&[server("beta", "10.0.0.2", "ops")]).unwrap();
+        assert_eq!(removed, vec!["alpha".to_string()]);
+        assert_eq!(ssh_db.host_key_pin("alpha").unwrap(), None);
+        assert_eq!(ssh_db.host_key_pin("beta").unwrap(), Some("cc:dd".into()));
+        let log = ssh_db.list_audit().unwrap();
+        assert_eq!(log.records.len(), 1);
+        assert_eq!(log.records[0].server_id, "beta");
+
+        // 幂等：重复保存同一列表不再产生差集。
+        let removed = ssh_db.save_servers(&[server("beta", "10.0.0.2", "ops")]).unwrap();
+        assert!(removed.is_empty());
 
         std::fs::remove_dir_all(&root).ok();
     }

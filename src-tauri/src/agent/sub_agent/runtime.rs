@@ -46,11 +46,11 @@ const SUB_AGENT_TRACE_EVENT_LIMIT: usize = 500;
 const TRACE_TRUNCATED_EVENT: &str = "traceTruncated";
 
 /// 上下文裁剪参数（G13-07）：消息历史按「轮次」滑动窗口裁剪——
-/// 保留 system + 首轮 user + 最近若干轮；总字符数超过上限时进一步
-/// 收紧窗口。单条工具结果已有 SUB_AGENT_RESULT_MAX_CHARS 截断，
-/// 两者协同约束上下文总量。
-const SUB_AGENT_CONTEXT_MAX_CHARS: usize = 120_000;
-const SUB_AGENT_CONTEXT_KEEP_ROUNDS: usize = 8;
+/// 保留 system + 首轮 user + 最近若干轮。字符预算不再用固定常量，改由
+/// 统一容量源派生（模型库条目 contextWindow，见 context_budget_chars）；
+/// 轮次上限只是安全兜底（子智能体 max_iterations 默认 60，正常到不了），
+/// 真正的约束是字符预算。单条工具结果另有 SUB_AGENT_RESULT_MAX_CHARS 截断。
+const SUB_AGENT_CONTEXT_KEEP_ROUNDS: usize = 200;
 
 /// 子智能体独立执行运行时。
 ///
@@ -167,10 +167,11 @@ impl SubAgentRuntime {
             };
 
             // G13-07：请求前对消息历史做滑动窗口裁剪，防止上下文随迭代无界增长。
+            // 字符预算由统一容量源派生（provider 的 contextWindow）。
             // 返回 None 表示无需裁剪，避免对已很大的历史做全量 clone。
             if let Some(trimmed) = trim_context_messages(
                 &messages,
-                SUB_AGENT_CONTEXT_MAX_CHARS,
+                context_budget_chars(self.provider.context_window()),
                 SUB_AGENT_CONTEXT_KEEP_ROUNDS,
             ) {
                 messages = trimmed;

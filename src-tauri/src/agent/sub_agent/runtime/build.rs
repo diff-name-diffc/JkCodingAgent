@@ -38,7 +38,7 @@ impl SubAgentRuntime {
                 api_key.to_string(),
                 api_base.to_string(),
                 model_name.to_string(),
-                config.max_output_tokens,
+                Some(config.max_output_tokens),
                 config.temperature as f32,
             )
         };

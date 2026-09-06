@@ -235,13 +235,19 @@ pub async fn graph_run_cancel(
     let cancelled = state.cancel_graph_run(&plan_id);
     if !cancelled {
         // 运行槽位不存在但状态卡在 running（如应用重启后的残留）：直接复位为 cancelled。
+        // 复位是自愈兜底而非取消主路径：失败不再静默吞掉（留痕可观测），
+        // 但也不把整条取消命令报错——取消本身对活动 run 已无更多可做。
         let store = GraphStore::new(state.db());
         if let Ok(Some(plan)) = store.get_plan_async(&plan_id).await {
             if plan.status == PLAN_RUNNING {
-                let _ = store
+                if let Err(error) = store
                     .update_plan_status_async(&plan_id, super::types::PLAN_CANCELLED)
-                    .await;
-                emit_plan_updated(&app, &plan_id, &plan.workspace_id);
+                    .await
+                {
+                    eprintln!("[graph] 残留 running 计划复位失败（{plan_id}）：{error:#}");
+                } else {
+                    emit_plan_updated(&app, &plan_id, &plan.workspace_id);
+                }
             }
         }
     }

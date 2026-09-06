@@ -1,6 +1,6 @@
 use super::*;
 
-// ── v6: Chat Sessions (paginated) ─────────────────────────────
+// ── Chat Sessions (paginated) ─────────────────────────────
 
 #[tauri::command]
 pub async fn chat_list_sessions(
@@ -17,53 +17,64 @@ pub async fn chat_list_sessions(
     .await
 }
 
+/// 统一建会话入口（原 chat_create_session + project_create_session 合并）。
+/// kind=chat 时 category 缺省由 DB 层统一为 "tech"；kind=project 时必须
+/// 传 project_id。返回载荷按 kind 序列化为对应子表记录形态。
 #[tauri::command]
-pub async fn chat_create_session(
+pub async fn session_create(
     state: tauri::State<'_, DispatcherState>,
     app: AppHandle,
+    kind: DispatcherSessionKind,
     title: String,
     category: Option<String>,
-) -> Result<ChatSessionRecord, String> {
+    project_id: Option<String>,
+) -> Result<SessionCreatedRecord, String> {
     let db = state.db().clone();
-    let session = run_dispatcher_db("chat_create_session", move || {
-        db.create_chat_session(&title, category.as_deref())
+    let session = run_dispatcher_db("session_create", move || {
+        db.create_session(
+            kind,
+            &title,
+            category.as_deref(),
+            project_id.as_deref(),
+        )
     })
     .await?;
     let _ = app.emit("dispatcher-session-updated", session.clone());
     Ok(session)
 }
 
+/// 统一删会话入口（原 chat_delete_session + project_delete_session 合并）：
+/// 查统一表 kind 分流子表删除，级联清理走共享 purge helper。
 #[tauri::command]
-pub async fn chat_delete_session(
+pub async fn session_delete(
     state: tauri::State<'_, DispatcherState>,
     session_id: String,
 ) -> Result<(), String> {
     let db = state.db().clone();
     let session_for_cleanup = session_id.clone();
-    let result = run_dispatcher_db("chat_delete_session", move || {
-        db.delete_chat_session(&session_id)
-    })
-    .await;
+    let result =
+        run_dispatcher_db("session_delete", move || db.delete_session(&session_id)).await;
     if result.is_ok() {
         // 会话资源清理规范：会话级内存状态（命令执行台账）同步回收。
         crate::agent::command_history::forget_session(&session_for_cleanup);
     }
     result
 }
+
 #[tauri::command]
-pub async fn chat_set_session_category_v6(
+pub async fn chat_set_session_category(
     state: tauri::State<'_, DispatcherState>,
     session_id: String,
     category_id: String,
 ) -> Result<(), String> {
     let db = state.db().clone();
-    run_dispatcher_db("chat_set_session_category_v6", move || {
+    run_dispatcher_db("chat_set_session_category", move || {
         db.set_chat_session_category(&session_id, &category_id)
     })
     .await
 }
 
-// ── v6: Project Sessions (paginated) ──────────────────────────
+// ── Project Sessions (paginated) ──────────────────────────
 
 #[tauri::command]
 pub async fn project_list_sessions(
@@ -79,40 +90,6 @@ pub async fn project_list_sessions(
         db.list_project_sessions_paginated(&project_id, off, size)
     })
     .await
-}
-
-#[tauri::command]
-pub async fn project_create_session(
-    state: tauri::State<'_, DispatcherState>,
-    app: AppHandle,
-    project_id: String,
-    title: String,
-) -> Result<ProjectSessionRecord, String> {
-    let db = state.db().clone();
-    let session = run_dispatcher_db("project_create_session", move || {
-        db.create_project_session(&project_id, &title)
-    })
-    .await?;
-    let _ = app.emit("dispatcher-session-updated", session.clone());
-    Ok(session)
-}
-
-#[tauri::command]
-pub async fn project_delete_session(
-    state: tauri::State<'_, DispatcherState>,
-    session_id: String,
-) -> Result<(), String> {
-    let db = state.db().clone();
-    let session_for_cleanup = session_id.clone();
-    let result = run_dispatcher_db("project_delete_session", move || {
-        db.delete_project_session(&session_id)
-    })
-    .await;
-    if result.is_ok() {
-        // 会话资源清理规范：会话级内存状态（命令执行台账）同步回收。
-        crate::agent::command_history::forget_session(&session_for_cleanup);
-    }
-    result
 }
 
 #[tauri::command]

@@ -14,37 +14,43 @@ use super::registry::McpRegistry;
 use super::{McpConfig, McpScope, McpStatus};
 use crate::agent::DispatcherState;
 
-/// 刷新并返回项目作用域的 MCP 状态（全局 ∪ 项目文件合并后的视图）。
+/// 刷新并返回 MCP 状态（原 mcp_project_status + mcp_global_status 合并）。
+///
+/// 作用域由参数分流：
+/// - 传 `project_path`：项目作用域（全局 ∪ 项目文件合并视图）。路径先经
+///   `validate_project_workspace` 校验（canonicalize + 受管项目包含校验），
+///   拒绝越权路径；项目页低频打开且开关后需真实状态，**无条件全量探活**。
+/// - 不传：全局作用域（所有聊天会话共享）。默认复用聊天 run 的新鲜窗口：
+///   缓存在 `MCP_REFRESH_MAX_AGE` 内直接返回，过期才全量重检，供设置页
+///   工具清单等展示面取数，避免每次打开页面都拉起全部服务器进程；
+///   `force_refresh = true` 强制全量刷新（聊天页头部指示灯等需要真实
+///   探活的场景）。
 #[tauri::command]
-pub async fn mcp_project_status(
+pub async fn mcp_status(
     state: State<'_, DispatcherState>,
     registry: State<'_, McpRegistry>,
-    project_path: String,
-) -> Result<McpStatus, String> {
-    let scope = validated_project_scope(&state, &project_path).await?;
-    registry
-        .refresh(&scope)
-        .await
-        .map(|snapshot| snapshot.status)
-}
-
-/// 返回全局作用域的 MCP 状态（所有聊天会话共享）。
-///
-/// 默认复用聊天 run 的新鲜窗口：缓存在 `MCP_REFRESH_MAX_AGE` 内直接返回，
-/// 过期才全量重检，供设置页工具清单等展示面取数，避免每次打开页面都拉起
-/// 全部服务器进程；传 `force_refresh = true` 强制全量刷新（聊天页头部
-/// 指示灯等需要真实探活的场景）。
-#[tauri::command]
-pub async fn mcp_global_status(
-    registry: State<'_, McpRegistry>,
+    project_path: Option<String>,
     force_refresh: Option<bool>,
 ) -> Result<McpStatus, String> {
-    let snapshot = if force_refresh.unwrap_or(false) {
-        registry.refresh(&McpScope::Global).await?
-    } else {
-        registry.ensure_recent(&McpScope::Global).await?
-    };
-    Ok(snapshot.status)
+    match project_path.as_deref().map(str::trim) {
+        // 项目作用域：路径走 validate_project_workspace 校验后无条件全量探活。
+        Some("") => Err("错误：project_path 不能为空字符串；不传则返回全局作用域".to_string()),
+        Some(project_path) => {
+            let scope = validated_project_scope(&state, project_path).await?;
+            registry
+                .refresh(&scope)
+                .await
+                .map(|snapshot| snapshot.status)
+        }
+        None => {
+            let snapshot = if force_refresh.unwrap_or(false) {
+                registry.refresh(&McpScope::Global).await?
+            } else {
+                registry.ensure_recent(&McpScope::Global).await?
+            };
+            Ok(snapshot.status)
+        }
+    }
 }
 
 /// 启用/禁用项目作用域内的服务器。项目文件没有该条目（来自全局注册表）

@@ -12,6 +12,7 @@ mod run_tool_program;
 mod search;
 mod shell;
 mod ssh;
+mod ssh_memo;
 mod submit_graph;
 
 use super::registry::AgentTool;
@@ -33,6 +34,7 @@ pub(super) fn builtin_tools(ssh_manager: SshSessionManager) -> Vec<Box<dyn Agent
         fetch_image::fetch_image_tool(),
     ];
     tools.extend(browser::browser_tools());
+    tools.extend(ssh_memo::ssh_memo_tools(ssh_manager.clone()));
     tools.extend(ssh::ssh_tools(ssh_manager));
     tools
 }
@@ -63,6 +65,7 @@ pub(super) fn plain_chat_tools(ssh_manager: SshSessionManager) -> Vec<Box<dyn Ag
         fetch_image::fetch_image_tool(),
     ];
     tools.extend(browser::browser_tools());
+    tools.extend(ssh_memo::ssh_memo_tools(ssh_manager.clone()));
     tools.extend(ssh::ssh_tools(ssh_manager));
     tools
 }

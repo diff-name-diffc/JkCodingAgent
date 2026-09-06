@@ -49,6 +49,10 @@ pub(super) struct Models {
     summary_model: String,
     summary_api_key: String,
     summary_api_base: String,
+    /// 摘要槽位容量（模型库条目经槽位回填）：None = 未配置 → 请求省略
+    /// max_tokens / 窗口回退默认 1M。与 summary_model/key/base 同批更新。
+    summary_max_tokens: Option<u32>,
+    summary_context_window: Option<u32>,
     vision_provider: Option<OpenAiCompatProvider>,
 }
 
@@ -116,6 +120,8 @@ impl OrchestratorAgent {
                 summary_model: helpers::normalize_summary_model(&config.summary_model),
                 summary_api_key: String::new(),
                 summary_api_base: String::new(),
+                summary_max_tokens: None,
+                summary_context_window: None,
             }),
             app_handle: None,
             tools: Arc::new(ToolRegistry::orchestrator_tools()),
@@ -171,9 +177,11 @@ impl OrchestratorAgent {
                         v.url.trim().to_string()
                     },
                     v.model.trim().to_string(),
-                    self.config.max_tokens,
+                    // 容量以槽位（库条目回填）为权威；config 仅作 env 开发路径兜底。
+                    v.max_tokens.or(self.config.max_tokens),
                     self.config.temperature,
                 )
+                .with_context_window(v.context_window)
             });
 
         let mut models = self.models.lock();
@@ -186,6 +194,10 @@ impl OrchestratorAgent {
             // 空凭据由 summary_provider() 回退到聊天主模型凭据。
             models.summary_api_key = smc.api_key.trim().to_string();
             models.summary_api_base = smc.url.trim().to_string();
+            // 容量无条件覆盖：None=未配置也是有效语义，库条目清空容量后
+            // 不得残留旧值（凭据回退聊天模型时容量不随凭据走）。
+            models.summary_max_tokens = smc.max_tokens;
+            models.summary_context_window = smc.context_window;
         }
         // 视觉仅在设置给出有效条目（非空模型名）时覆盖；无有效条目保留现有
         // 配置（含构造期的 env 兜底），避免误清空（审查项 G8-10）。
@@ -230,9 +242,10 @@ impl OrchestratorAgent {
             api_key,
             api_base,
             models.summary_model.clone(),
-            self.config.max_tokens,
+            models.summary_max_tokens.or(self.config.max_tokens),
             self.config.temperature,
         )
+        .with_context_window(models.summary_context_window)
     }
 
     /// 图片消息切视觉模型：消息中含图片时必须使用视觉用途 provider。
@@ -277,13 +290,15 @@ pub(crate) fn resolve_project_chat_provider(
 }
 
 /// 按「模型用途」设置解析视觉用途 provider：取 vision_model_configs 中第一个
-/// active（否则第一个）条目，url/apiKey 为空时回退聊天主模型凭据；无有效
-/// 条目（模型名为空）返回 None。与 `apply_settings_v2` 的视觉解析规则一致，
-/// 供图执行等无法访问 Agent 实例锁状态的运行入口复用。
+/// active（否则第一个）条目，url/apiKey 为空时回退聊天主模型凭据，容量
+/// （maxTokens/contextWindow）取槽位（库条目回填），max_tokens 为空时回退
+/// `config_fallback_max_tokens`（env 开发路径兜底，与 `apply_settings_v2`
+/// 的视觉解析规则一致）；无有效条目（模型名为空）返回 None。供图执行等
+/// 无法访问 Agent 实例锁状态的运行入口复用。
 pub(crate) fn resolve_vision_provider(
     vision_configs: &[crate::agent::db::DispatcherModelConfig],
     chat_fallback: &OpenAiCompatProvider,
-    max_tokens: u32,
+    config_fallback_max_tokens: Option<u32>,
     temperature: f32,
 ) -> Option<OpenAiCompatProvider> {
     let active_vision = vision_configs
@@ -305,9 +320,10 @@ pub(crate) fn resolve_vision_provider(
                     v.url.trim().to_string()
                 },
                 v.model.trim().to_string(),
-                max_tokens,
+                v.max_tokens.or(config_fallback_max_tokens),
                 temperature,
             )
+            .with_context_window(v.context_window)
         })
 }
 
@@ -338,9 +354,11 @@ fn resolve_chat_provider(
             } else {
                 chat.model.clone()
             },
-            config.max_tokens,
+            // 容量以槽位（库条目回填）为权威；config 仅作 env 开发路径兜底。
+            chat.max_tokens.or(config.max_tokens),
             config.temperature,
-        ),
+        )
+        .with_context_window(chat.context_window),
         None => OpenAiCompatProvider::new(
             config.api_key.clone(),
             config.api_base.clone(),

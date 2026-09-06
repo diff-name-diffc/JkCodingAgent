@@ -1,35 +1,12 @@
-use parking_lot::Mutex;
+//! 工具目录的共享枚举助手。
+//!
+//! G11-07 后工具清单为「读取即重建」：`DispatcherState::registered_tool_names`
+//! 每次读取都重建注册表，无缓存结构（原 ToolCatalog 是直写式死缓存——唯一
+//! 读者是写入者自身，已删除）。
 
 use crate::agent::sub_agent::db::ToolInfo;
 use crate::agent::tools::ToolRegistry;
 use crate::mcp::McpScope;
-
-/// 已注册工具名/描述的缓存（工具目录）。
-/// 避免 UI 每次查询工具列表时都要重新构建完整 ToolRegistry。
-///
-/// G11-07：缓存只是「最近一次已知状态」的快照——读取端
-/// （`DispatcherState::registered_tool_names`）每次读取都会重建并调用
-/// `refresh` 原子替换，子智能体配置变化不会受缓存陈旧影响。
-pub(super) struct ToolCatalog {
-    registered: Mutex<Option<Vec<(String, String)>>>,
-}
-
-impl ToolCatalog {
-    pub(super) fn new(initial_tools: Vec<(String, String)>) -> Self {
-        Self {
-            registered: Mutex::new(Some(initial_tools)),
-        }
-    }
-
-    /// 重建缓存：原子替换全部内容（G11-07 的刷新/失效入口）。
-    pub(super) fn refresh(&self, tools: Vec<(String, String)>) {
-        *self.registered.lock() = Some(tools);
-    }
-
-    pub(super) fn registered_tool_names(&self) -> Option<Vec<(String, String)>> {
-        self.registered.lock().clone()
-    }
-}
 
 /// 枚举对 UI/LLM 可见的工具列表。
 ///

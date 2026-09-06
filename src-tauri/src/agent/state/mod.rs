@@ -21,7 +21,7 @@ pub(crate) use generation::GenerationGuard;
 use run::{ActiveRunHandle, ActiveRunStore, ArchRunRegistry, GraphRunRegistry};
 
 pub(crate) use run::GraphRunHandle;
-use tool_catalog::{tool_infos_from_registry, ToolCatalog};
+use tool_catalog::tool_infos_from_registry;
 
 /// 应用级状态聚合器，由 Tauri `.manage()` 托管，是整个调度智能体的长寿宿主。
 ///
@@ -43,7 +43,6 @@ pub struct DispatcherState {
     arch_runs: ArchRunRegistry,
     title_generations: GenerationGate,
     keywords_generations: GenerationGate,
-    tools: ToolCatalog,
 }
 
 /// 跨轮次共享的基础服务集合。单独抽出便于构造时一次性初始化。
@@ -93,15 +92,6 @@ impl DispatcherState {
         // refresh 时按「全局 ∪ 项目文件（同名覆盖）」合并。
         let mcp_registry = McpRegistry::new(db.clone());
 
-        // G11-07：初始工具目录即包含子智能体工具
-        //（修复旧实现缺失 call_sub_agent / list_sub_agents 的问题）。
-        let mut initial_tool_registry =
-            ToolRegistry::default_tools(mcp_registry.clone(), ssh_manager.clone());
-        if let Some(manager) = &sub_agent_manager {
-            register_sub_agent_tools(manager, &mut initial_tool_registry);
-        }
-        let initial_tool_names = initial_tool_registry.tool_names_and_descriptions();
-
         Ok(Self {
             services: AgentServices {
                 config,
@@ -115,7 +105,6 @@ impl DispatcherState {
             arch_runs: ArchRunRegistry::default(),
             title_generations: GenerationGate::default(),
             keywords_generations: GenerationGate::default(),
-            tools: ToolCatalog::new(initial_tool_names),
         })
     }
 
@@ -142,17 +131,16 @@ impl DispatcherState {
     /// 子智能体工具选择清单。它必须与 SubAgentRuntime 实际继承的普通聊天
     /// execution profile 一致；项目编排器工具和嵌套子智能体工具都不能混入。
     ///
-    /// G11-07：每次读取重建并 refresh 缓存——子智能体配置变更点在
-    /// sub_agent/commands.rs（本模块边界外，无法在变更后主动触发刷新），
-    /// 而工具枚举为纯内存操作、成本可忽略，读取即重建从机制上消除缓存陈旧。
-    pub fn registered_tool_names(&self) -> Option<Vec<(String, String)>> {
+    /// G11-07：每次读取重建——子智能体配置变更点在 sub_agent/commands.rs
+    /// （本模块边界外，无法在变更后主动触发刷新），而工具枚举为纯内存操作、
+    /// 成本可忽略，读取即重建从机制上消除缓存陈旧。原 ToolCatalog「缓存」
+    /// 的唯一读者是写入者自身（直写式死缓存），已删除。
+    pub fn registered_tool_names(&self) -> Vec<(String, String)> {
         let registry = ToolRegistry::plain_chat_tools(
             self.services.mcp_registry.clone(),
             self.services.ssh_manager.clone(),
         );
-        let names = registry.tool_names_and_descriptions();
-        self.tools.refresh(names);
-        self.tools.registered_tool_names()
+        registry.tool_names_and_descriptions()
     }
 
     /// 每轮构建一个新的 OrchestratorAgent（短命对象）并从 DB 实时应用设置。
@@ -246,15 +234,19 @@ impl DispatcherState {
         let explicit_incomplete = explicit_entry
             .is_some_and(|entry| !endpoint_ready(&entry.api_key, &entry.url, &entry.model));
 
+        // 元组携带容量：(api_key, url, model, max_tokens, context_window)——
+        // 显式库条目路径读条目容量字段，视觉槽位路径读回填后的槽位容量。
         let chosen = explicit_entry
             .map(|entry| {
                 (
                     entry.api_key.clone(),
                     entry.url.clone(),
                     entry.model.clone(),
+                    entry.max_tokens,
+                    entry.context_window,
                 )
             })
-            .filter(|(api_key, url, model)| endpoint_ready(api_key, url, model))
+            .filter(|(api_key, url, model, _, _)| endpoint_ready(api_key, url, model))
             .or_else(|| {
                 settings
                     .shared
@@ -267,9 +259,11 @@ impl DispatcherState {
                             config.api_key.clone(),
                             config.url.clone(),
                             config.model.clone(),
+                            config.max_tokens,
+                            config.context_window,
                         )
                     })
-                    .filter(|(api_key, url, model)| endpoint_ready(api_key, url, model))
+                    .filter(|(api_key, url, model, _, _)| endpoint_ready(api_key, url, model))
             })
             .ok_or_else(|| {
                 if explicit_incomplete {
@@ -285,9 +279,10 @@ impl DispatcherState {
             chosen.0,
             chosen.1,
             chosen.2,
-            config.max_tokens,
+            chosen.3.or(config.max_tokens),
             config.temperature,
-        );
+        )
+        .with_context_window(chosen.4);
         Ok(ArchitectureAgent::new(config, provider))
     }
 
@@ -411,14 +406,23 @@ impl DispatcherState {
     /// 登记一次架构画布程序执行，返回 (run_id, 报告接收端)。
     /// 由 architecture_run 工具调用；前端执行完经
     /// `architecture_run_complete` 命令调 `complete_arch_run` 解除等待。
-    pub(crate) fn begin_arch_run(&self) -> (String, tokio::sync::oneshot::Receiver<String>) {
-        self.arch_runs.begin()
+    /// workspace_id 用于回传侧的域校验（错会话回传按未消费处理）。
+    pub(crate) fn begin_arch_run(
+        &self,
+        workspace_id: &str,
+    ) -> (String, tokio::sync::oneshot::Receiver<String>) {
+        self.arch_runs.begin(workspace_id)
     }
 
-    /// 前端回传画布程序执行报告。条目不存在（超时清槽/重复回传）或接收端
-    /// 已关闭时返回 false，调用方无需处理（无副作用）。
-    pub(crate) fn complete_arch_run(&self, run_id: &str, report: String) -> bool {
-        self.arch_runs.complete(run_id, report)
+    /// 前端回传画布程序执行报告。条目不存在（超时清槽/重复回传）、workspace
+    /// 不匹配或接收端已关闭时返回 false，调用方无需处理（无副作用）。
+    pub(crate) fn complete_arch_run(
+        &self,
+        run_id: &str,
+        workspace_id: &str,
+        report: String,
+    ) -> bool {
+        self.arch_runs.complete(run_id, workspace_id, report)
     }
 
     /// architecture_run 工具超时/取消路径的显式清槽。

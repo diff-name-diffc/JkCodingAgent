@@ -31,10 +31,10 @@ export function useProjectMcpStatus(projectPath: string, enabled: boolean) {
   const refresh = useCallback(async () => {
     setChecking(true);
     try {
-      const nextStatus = await invoke<McpStatus>("mcp_project_status", { projectPath });
+      const nextStatus = await invoke<McpStatus>("mcp_status", { projectPath });
       setStatus(nextStatus);
     } catch (error) {
-      console.error("mcp_project_status 失败:", error);
+      console.error("mcp_status（项目作用域）失败:", error);
     } finally {
       setChecking(false);
     }
@@ -80,10 +80,13 @@ export function useGlobalMcpStatus(enabled: boolean) {
     setChecking(true);
     try {
       // 聊天页头部指示灯需要真实探活：强制全量刷新，不复用新鲜窗口缓存。
-      const nextStatus = await invoke<McpStatus>("mcp_global_status", { forceRefresh: true });
+      const nextStatus = await invoke<McpStatus>("mcp_status", {
+        projectPath: null,
+        forceRefresh: true,
+      });
       setStatus(nextStatus);
     } catch (error) {
-      console.error("mcp_global_status 失败:", error);
+      console.error("mcp_status（全局作用域）失败:", error);
     } finally {
       setChecking(false);
     }

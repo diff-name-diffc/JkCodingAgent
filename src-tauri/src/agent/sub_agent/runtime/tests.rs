@@ -161,3 +161,13 @@ fn trim_context_always_keeps_at_least_one_round() {
     ];
     assert!(trim_context_messages(&messages, 120_000, 8).is_none());
 }
+
+#[test]
+fn context_budget_derives_from_unified_capacity_source() {
+    // 未配置窗口 → 默认 1M tokens × 4 字符/token × 半窗 = 2M 字符
+    assert_eq!(context_budget_chars(None), 2_000_000);
+    assert_eq!(context_budget_chars(Some(1_000_000)), 2_000_000);
+    // 自定义窗口等比派生（库条目 contextWindow 是唯一权威源）
+    assert_eq!(context_budget_chars(Some(32_768)), 65_536);
+    assert_eq!(context_budget_chars(Some(1024)), 2048);
+}

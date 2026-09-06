@@ -6,7 +6,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::content::{delete_chat_image_resources, remove_chat_image_dir};
+use super::content::remove_chat_image_dir;
 use super::util::now;
 use super::DispatcherDb;
 
@@ -102,6 +102,16 @@ impl DispatcherSessionKind {
             Self::Chat => "chat",
         }
     }
+}
+
+/// `create_session` 的返回载荷：按 kind 序列化为对应的子表记录形态
+/// （chat → ChatSessionRecord / project → ProjectSessionRecord），
+/// 前端两类消费方的既有类型不需要调整。
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum SessionCreatedRecord {
+    Chat(ChatSessionRecord),
+    Project(ProjectSessionRecord),
 }
 
 impl DispatcherDb {
@@ -326,6 +336,31 @@ impl DispatcherDb {
         })
     }
 
+    /// 统一建会话入口（原 chat_create / project_create 两条命令合并后的
+    /// DB 侧分流）。kind=chat 时 category 缺省由本层统一为 "tech"（消除
+    /// 前后端双写默认值）；kind=project 时必须提供 project_id。
+    pub fn create_session(
+        &self,
+        kind: DispatcherSessionKind,
+        title: &str,
+        category: Option<&str>,
+        project_id: Option<&str>,
+    ) -> Result<SessionCreatedRecord> {
+        match kind {
+            DispatcherSessionKind::Chat => Ok(SessionCreatedRecord::Chat(
+                self.create_chat_session(title, category)?,
+            )),
+            DispatcherSessionKind::Project => {
+                let project_id = project_id.ok_or_else(|| {
+                    anyhow::anyhow!("project kind 会话必须提供 project_id")
+                })?;
+                Ok(SessionCreatedRecord::Project(
+                    self.create_project_session(project_id, title)?,
+                ))
+            }
+        }
+    }
+
     pub fn create_chat_session(
         &self,
         title: &str,
@@ -370,10 +405,13 @@ impl DispatcherDb {
         Ok(record)
     }
 
-    pub fn delete_chat_session(&self, session_id: &str) -> Result<()> {
+    /// 统一删会话入口（原 delete_chat_session / delete_project_session 两条
+    /// 逐行镜像的命令合并）：查统一表 kind 分流子表删除，级联资源清单走
+    /// `purge_session_resources_tx` 单一出处。kind 异常值显式中止（保留原
+    /// 「禁跨类误删」的数据完整性守卫：子表与统一表同事务成对删除）。
+    pub fn delete_session(&self, session_id: &str) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
-        // 先校验会话类型，防止误删另一类型会话并在统一表/子表留下孤儿记录。
         let kind: String = tx
             .query_row(
                 "SELECT kind FROM dispatcher_sessions WHERE id = ?1",
@@ -382,59 +420,36 @@ impl DispatcherDb {
             )
             .optional()
             .context("load dispatcher session kind")?
-            .ok_or_else(|| anyhow::anyhow!("chat session not found: {session_id}"))?;
-        if kind != "chat" {
-            anyhow::bail!("session {session_id} is not a chat session");
+            .ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
+        let image_dir = super::purge::purge_session_resources_tx(&tx, session_id)?;
+        match kind.as_str() {
+            "chat" => {
+                tx.execute(
+                    "DELETE FROM chat_sessions WHERE id = ?1",
+                    params![session_id],
+                )
+                .context("delete chat session row")?;
+            }
+            "project" => {
+                tx.execute(
+                    "DELETE FROM project_sessions WHERE id = ?1",
+                    params![session_id],
+                )
+                .context("delete project session row")?;
+            }
+            other => anyhow::bail!("未知会话类型 {other}（session {session_id}），中止删除"),
         }
-        tx.execute(
-            "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM dispatcher_tool_runs WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM sub_agent_run_traces WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        // 图编排产物（graph_plans / graph_node_runs）随会话删除同步清理。
-        tx.execute(
-            "DELETE FROM graph_node_runs
-             WHERE plan_id IN (SELECT id FROM graph_plans WHERE workspace_id = ?1)",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM graph_plans WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        let image_dir = delete_chat_image_resources(&tx, session_id)?;
-        tx.execute(
-            "DELETE FROM session_keywords WHERE session_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM chat_sessions WHERE id = ?1",
-            params![session_id],
-        )?;
         tx.execute(
             "DELETE FROM dispatcher_sessions WHERE id = ?1",
             params![session_id],
-        )?;
-        tx.commit()?;
+        )
+        .context("delete dispatcher session row")?;
+        tx.commit().context("commit delete session")?;
         // 数据库删除已提交，图片文件清理失败不应把删除误报为失败（否则调用方
         // 按 Err 重试时记录已不存在，孤儿文件将永远无法清理）。改为 best-effort。
         if let Some(dir) = image_dir {
             if let Err(error) = remove_chat_image_dir(&dir) {
-                eprintln!("remove chat image dir failed (chat session {session_id}): {error:#}");
+                eprintln!("remove chat image dir failed (session {session_id}): {error:#}");
             }
         }
         Ok(())
@@ -572,76 +587,6 @@ impl DispatcherDb {
         .context("insert project session into dispatcher_sessions")?;
         tx.commit().context("commit create project session")?;
         Ok(record)
-    }
-
-    pub fn delete_project_session(&self, session_id: &str) -> Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
-        // 先校验会话类型，防止误删另一类型会话并在统一表/子表留下孤儿记录。
-        let kind: String = tx
-            .query_row(
-                "SELECT kind FROM dispatcher_sessions WHERE id = ?1",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .context("load dispatcher session kind")?
-            .ok_or_else(|| anyhow::anyhow!("project session not found: {session_id}"))?;
-        if kind != "project" {
-            anyhow::bail!("session {session_id} is not a project session");
-        }
-        tx.execute(
-            "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM dispatcher_tool_runs WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM sub_agent_run_traces WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        // 图编排产物（graph_plans / graph_node_runs）随会话删除同步清理。
-        tx.execute(
-            "DELETE FROM graph_node_runs
-             WHERE plan_id IN (SELECT id FROM graph_plans WHERE workspace_id = ?1)",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM graph_plans WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        let image_dir = delete_chat_image_resources(&tx, session_id)?;
-        tx.execute(
-            "DELETE FROM session_keywords WHERE session_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM project_sessions WHERE id = ?1",
-            params![session_id],
-        )?;
-        tx.execute(
-            "DELETE FROM dispatcher_sessions WHERE id = ?1",
-            params![session_id],
-        )?;
-        tx.commit()?;
-        // 数据库删除已提交，图片文件清理失败不应把删除误报为失败（否则调用方
-        // 按 Err 重试时记录已不存在，孤儿文件将永远无法清理）。改为 best-effort。
-        if let Some(dir) = image_dir {
-            if let Err(error) = remove_chat_image_dir(&dir) {
-                eprintln!("remove chat image dir failed (project session {session_id}): {error:#}");
-            }
-        }
-        Ok(())
     }
 
     #[allow(dead_code)]

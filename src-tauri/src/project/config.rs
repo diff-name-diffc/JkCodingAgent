@@ -75,11 +75,19 @@ impl Default for ProjectConfig {
 /// Creates `.jkcodingagent/config.toml` in the project directory if it doesn't already exist.
 /// Also ensures `.jkcodingagent/mcp.json` exists.
 /// Returns the parsed config. 旧文件中的 [agent] / [browser] 段会被忽略（反序列化跳过未知字段）。
+///
+/// 每次打开/切换项目都会调用：create_dir_all + 原子写 + 读回解析全部是
+/// 阻塞 fs 操作，走 spawn_blocking，不占 Tauri 主线程/async 执行器。
 #[tauri::command]
-pub fn init_project_config(project_path: String) -> CommandResult<ProjectConfig> {
-    init_project_config_impl(&project_path)
-        .with_context(|| format!("初始化项目配置失败（{}）", project_path))
-        .into_command_result()
+pub async fn init_project_config(project_path: String) -> CommandResult<ProjectConfig> {
+    tauri::async_runtime::spawn_blocking(move || {
+        init_project_config_impl(&project_path)
+            .with_context(|| format!("初始化项目配置失败（{project_path}）"))
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("初始化项目配置任务失败：{error}"))
+    .and_then(|result| result)
+    .into_command_result()
 }
 
 fn init_project_config_impl(project_path: &str) -> ConfigResult<ProjectConfig> {

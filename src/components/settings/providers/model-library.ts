@@ -26,16 +26,23 @@ export type ModelCategoryDef = {
   testKind: string;
   /** 「获取模型」对该分类无意义（非 OpenAI 兼容 /v1/models）时隐藏。 */
   isModelListFetchable: boolean;
+  /** 容量字段（输出预算 / 上下文窗口）仅对走聊天补全的文本/视觉类目有意义。 */
+  hasCapacityFields: boolean;
 };
 
+/** 容量字段合法区间（与后端 settings.rs 的 normalize_capacity 常量一致）：
+ * 输出预算对齐子智能体 maxOutputTokens 的既有校验先例。 */
+export const ENTRY_MAX_TOKENS_RANGE = { min: 1024, max: 1_048_576 } as const;
+export const ENTRY_CONTEXT_WINDOW_RANGE = { min: 1024, max: 100_000_000 } as const;
+
 export const CATEGORY_DEFS: ModelCategoryDef[] = [
-  { category: "text", label: "对话模型", description: "项目/聊天主模型、摘要模型与 SSH 审查等文本对话模型。", testKind: "chat", isModelListFetchable: true },
-  { category: "vision", label: "视觉模型", description: "用户上传图片时使用的多模态模型。", testKind: "vision", isModelListFetchable: true },
-  { category: "image", label: "图片生成", description: "generate_image 工具使用的图片生成模型。", testKind: "image", isModelListFetchable: true },
-  { category: "imageEdit", label: "图片编辑", description: "edit_image 工具使用的图片编辑模型。", testKind: "imageEdit", isModelListFetchable: true },
-  { category: "asr", label: "语音识别", description: "实时语音识别配置，URL 为 WebSocket 地址。", testKind: "asr", isModelListFetchable: false },
-  { category: "tts", label: "语音合成", description: "预留的文本转语音模型配置。", testKind: "tts", isModelListFetchable: false },
-  { category: "embedding", label: "向量模型", description: "预留的向量模型配置。", testKind: "embedding", isModelListFetchable: true },
+  { category: "text", label: "对话模型", description: "项目/聊天主模型、摘要模型与 SSH 审查等文本对话模型。", testKind: "chat", isModelListFetchable: true, hasCapacityFields: true },
+  { category: "vision", label: "视觉模型", description: "用户上传图片时使用的多模态模型。", testKind: "vision", isModelListFetchable: true, hasCapacityFields: true },
+  { category: "image", label: "图片生成", description: "generate_image 工具使用的图片生成模型。", testKind: "image", isModelListFetchable: true, hasCapacityFields: false },
+  { category: "imageEdit", label: "图片编辑", description: "edit_image 工具使用的图片编辑模型。", testKind: "imageEdit", isModelListFetchable: true, hasCapacityFields: false },
+  { category: "asr", label: "语音识别", description: "实时语音识别配置，URL 为 WebSocket 地址。", testKind: "asr", isModelListFetchable: false, hasCapacityFields: false },
+  { category: "tts", label: "语音合成", description: "预留的文本转语音模型配置。", testKind: "tts", isModelListFetchable: false, hasCapacityFields: false },
+  { category: "embedding", label: "向量模型", description: "预留的向量模型配置。", testKind: "embedding", isModelListFetchable: true, hasCapacityFields: false },
 ];
 
 export function categoryDef(category: ModelCategory): ModelCategoryDef {

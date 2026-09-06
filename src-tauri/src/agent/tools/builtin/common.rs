@@ -235,6 +235,9 @@ pub(super) fn resolve_path(context: &ToolContext, raw_path: &str) -> Result<Path
 /// - `~/.jkcodingagent/ssh-tools/` 与 `<任意目录>/.jkcodingagent/local_env/ssh/`：
 ///   旧版按项目分键存放的 SSH 明文凭据仓库。现行实现已不再写入这些路径，但
 ///   旧机器上可能残留，一律拒绝读取兜底；
+/// - `~/.jkcodingagent/ssh-memos/`：SSH 运维备忘录（含服务器部署路径、操作
+///   方式等敏感运维信息）。直连读写会绕过 memo 模块的字符上限与段落纪律，
+///   必须经 ssh_memo_* 工具访问；
 /// - `<任意目录>/.jkcodingagent/mcp.json`：MCP server 配置（可能内嵌密钥环境变量）。
 ///
 /// 注意不能扩大到整个 `.jkcodingagent`：`local_env/zsh/` 是 local_zsh 工具声明的
@@ -246,6 +249,7 @@ fn is_protected_agent_path(candidate: &Path) -> bool {
             || candidate.starts_with(root.join("jkbot.sqlite3-wal"))
             || candidate.starts_with(root.join("jkbot.sqlite3-shm"))
             || candidate.starts_with(root.join("ssh-tools"))
+            || candidate.starts_with(root.join("ssh-memos"))
         {
             return true;
         }
@@ -595,6 +599,10 @@ mod tests {
         // 旧版 SSH 明文凭据仓库（全局与按项目两处）
         assert!(is_protected_agent_path(
             &home.join(".jkcodingagent/ssh-tools/keys.json")
+        ));
+        // SSH 运维备忘录（须经理 ssh_memo_* 工具的纪律约束访问）
+        assert!(is_protected_agent_path(
+            &home.join(".jkcodingagent/ssh-memos/prod-web.md")
         ));
         assert!(is_protected_agent_path(Path::new(
             "/tmp/ws/.jkcodingagent/local_env/ssh"

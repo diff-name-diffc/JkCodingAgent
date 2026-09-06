@@ -33,7 +33,7 @@ fn stream_chat_request_skips_none_fields_and_keeps_some_fields() {
     assert!(value.get("tools").is_none());
     assert_eq!(value["max_tokens"], serde_json::json!(16));
 
-    // without_max_tokens 路径：max_tokens=None 时请求体完全省略该字段
+    // max_tokens=None 路径（库条目未配置容量）：请求体完全省略该字段
     let unbounded = StreamChatRequest {
         model: "test-model",
         messages: &[],
@@ -109,6 +109,72 @@ fn retry_heuristic_covers_enable_thinking_and_stream_options_rejections() {
         true,
         true
     ));
+}
+
+// ─── 空响应诊断格式化 ─────────────────────────────────────────────────────────
+
+fn empty_response_fixture(
+    finish_reason: Option<&str>,
+    thinking: &str,
+    completion_tokens: Option<u64>,
+) -> LlmResponse {
+    LlmResponse {
+        status_code: 200,
+        content: String::new(),
+        thinking_content: thinking.to_string(),
+        thinking_elapsed_ms: 0,
+        tool_calls: Vec::new(),
+        raw_response: String::new(),
+        usage: completion_tokens.map(|tokens| LlmUsage {
+            prompt_tokens: 10,
+            completion_tokens: tokens,
+            total_tokens: 10 + tokens,
+            prompt_tokens_details: None,
+        }),
+        finish_reason: finish_reason.map(str::to_string),
+    }
+}
+
+#[test]
+fn empty_response_diagnostics_explain_thinking_budget_exhaustion() {
+    let detail = format_empty_response_diagnostics(&empty_response_fixture(
+        Some("length"),
+        &"思".repeat(120),
+        Some(8192),
+    ));
+    assert!(detail.contains("finish_reason=length"), "{detail}");
+    assert!(detail.contains("思考链=120 字符"), "{detail}");
+    assert!(detail.contains("completion_tokens=8192"), "{detail}");
+    assert!(detail.contains("截断"), "{detail}");
+    assert!(detail.contains("maxTokens"), "{detail}");
+
+    // 截断判定大小写无关：部分服务返回 Length / MAX_TOKENS 变体。
+    let detail = format_empty_response_diagnostics(&empty_response_fixture(
+        Some("Length"),
+        &"思".repeat(120),
+        Some(8192),
+    ));
+    assert!(detail.contains("maxTokens"), "{detail}");
+}
+
+#[test]
+fn empty_response_diagnostics_without_finish_reason_or_thinking_stay_factual() {
+    let detail = format_empty_response_diagnostics(&empty_response_fixture(None, "", None));
+    assert!(detail.contains("finish_reason=<未提供>"), "{detail}");
+    assert!(detail.contains("completion_tokens=<未上报>"), "{detail}");
+    // 无思考也无截断：没有预算问题的证据，不应附加推测性解释
+    assert!(!detail.contains("截断"), "{detail}");
+}
+
+#[test]
+fn empty_response_diagnostics_counts_cjk_thinking_by_chars() {
+    // 10 个汉字 = 10 字符（而非 30 字节）
+    let detail =
+        format_empty_response_diagnostics(&empty_response_fixture(Some("stop"), "一二三四五六七八九十", None));
+    assert!(detail.contains("思考链=10 字符"), "{detail}");
+    // stop 终止但产出了思考：非截断，不误导为预算耗尽，改给「自行停止」说明
+    assert!(!detail.contains("maxTokens"), "{detail}");
+    assert!(detail.contains("自行停止"), "{detail}");
 }
 
 fn data_url_image_message(content: &str, parts: Vec<ChatMessageContentPart>) -> ChatMessage {

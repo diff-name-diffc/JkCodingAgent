@@ -13,6 +13,9 @@ export function useGraphPanelController(
   const planId = useUIStore((state) => state.graphPanelPlanId);
   const setPlanId = useUIStore((state) => state.setGraphPanelPlanId);
   const [latestPlanId, setLatestPlanId] = useState<string | null>(null);
+  // 截断（regenerate / 编辑重发）会删除被删轮次的图计划，refreshLatestPlan
+  // 递增该 tick 触发重新查询，避免「最近计划」入口指向已删除的计划。
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     if (isPlainChat || !activeSessionId) {
@@ -35,7 +38,7 @@ export function useGraphPanelController(
     return () => {
       cancelled = true;
     };
-  }, [activeSessionId, isPlainChat]);
+  }, [activeSessionId, isPlainChat, refreshTick]);
 
   useEffect(() => {
     if (isPlainChat) return;
@@ -58,5 +61,6 @@ export function useGraphPanelController(
     latestPlanId,
     open,
     close: useCallback(() => setPlanId(null), [setPlanId]),
+    refreshLatestPlan: useCallback(() => setRefreshTick((tick) => tick + 1), []),
   };
 }

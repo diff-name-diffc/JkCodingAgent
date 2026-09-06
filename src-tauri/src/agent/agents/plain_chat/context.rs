@@ -188,6 +188,17 @@ impl PlainChatAgent {
                 prompt.push_str(&format!("- `{}`：{}\n", tool.canonical_name, description));
             }
         }
+        // SSH 运维备忘录纪律：仅在备忘录工具实际可用时注入（允许列表
+        // 非空的分类需显式包含该工具，与工具定义层同一契约）。
+        if self.tool_allowed_by_config("ssh_memo_read") {
+            prompt.push_str(
+                "\n\n## SSH 运维备忘录\n\n\
+- 每台 SSH 服务器有一份运维备忘录，用 ssh_memo_read / ssh_memo_upsert / ssh_memo_delete 读取与更新。\n\
+- 对不熟悉的服务器执行运维操作前，先调用 ssh_memo_read 获取部署路径、特殊命令方式与已知问题，避免重复试错。\n\
+- 运维中真实遇到并解决的问题、新发现的部署/服务路径、非通用命令与操作方式等长期有效信息，才更新备忘录：先读后写，把新信息与现有内容合并去重后，用 ssh_memo_upsert 整段重写。\n\
+- 克制记录：只写对后续运维必要的信息，不写密码/密钥/令牌等凭据，不写临时调试输出与过程性日志；重复或过时条目主动合并、删除，防止备忘录无限增长；写入被上限拒绝时先精简旧内容再重试。",
+            );
+        }
         prompt
     }
 

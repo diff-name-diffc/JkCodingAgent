@@ -319,9 +319,11 @@ export function useCreateProjectSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (args: { projectId: string; title?: string }) =>
-      invoke<ProjectSession>("project_create_session", {
+      invoke<ProjectSession>("session_create", {
+        kind: "project",
         projectId: args.projectId,
         title: args.title ?? "新会话",
+        category: null,
       }),
     onSuccess: (createdSession, args) => {
       const session = withDispatcherSessionRunning(createdSession);
@@ -349,7 +351,7 @@ export function useDeleteProjectSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (args: { sessionId: string; projectId: string }) =>
-      invoke<void>("project_delete_session", { sessionId: args.sessionId }),
+      invoke<void>("session_delete", { sessionId: args.sessionId }),
     onSuccess: (_data, args) => {
       qc.setQueryData<SessionPages<ProjectSession>>(
         SESSION_QUERY_KEYS.projectList(args.projectId),

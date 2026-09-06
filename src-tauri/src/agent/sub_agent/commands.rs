@@ -158,16 +158,12 @@ pub async fn sub_agent_seed_browser(state: State<'_, DispatcherState>) -> Comman
 pub async fn sub_agent_list_tools(
     state: State<'_, DispatcherState>,
 ) -> CommandResult<Vec<ToolInfo>> {
-    let result = state
+    let tools = state
         .registered_tool_names()
-        .map(|names| {
-            names
-                .into_iter()
-                .map(|(name, description)| ToolInfo { name, description })
-                .collect()
-        })
-        .ok_or_else(|| anyhow!("错误：工具信息未初始化"));
-    result.into_command_result()
+        .into_iter()
+        .map(|(name, description)| ToolInfo { name, description })
+        .collect();
+    Ok(tools)
 }
 
 #[tauri::command]
@@ -196,24 +192,6 @@ pub async fn sub_agent_set_global_enabled(
         })
         .await
         .context("等待保存全局启用子智能体任务失败")
-        .and_then(|inner| inner),
-        Err(error) => Err(error),
-    };
-    result.into_command_result()
-}
-
-#[tauri::command]
-pub async fn sub_agent_get_global_enabled(
-    state: State<'_, DispatcherState>,
-) -> CommandResult<Vec<SubAgentRecord>> {
-    let result = match manager_from(&state) {
-        Ok(manager) => tokio::task::spawn_blocking(move || {
-            manager
-                .get_global_enabled()
-                .context("查询全局启用子智能体失败")
-        })
-        .await
-        .context("等待查询全局启用子智能体任务失败")
         .and_then(|inner| inner),
         Err(error) => Err(error),
     };

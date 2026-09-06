@@ -1,4 +1,5 @@
 pub mod db;
+pub(crate) mod memo;
 
 mod audit;
 mod command_exec;
@@ -27,8 +28,8 @@ pub use command_exec::MAX_STDIN_CHARS;
 use connection::{connect, SshClientHandler};
 pub use db::{SharedPool, SshDb};
 pub use types::{
-    SshAuditLog, SshAuditRecord, SshAuditReview, SshAuthMethod, SshExecResult, SshServerConfig,
-    SshServerSummary, SshToolsConfig,
+    SshAuditLog, SshAuditRecord, SshAuditReview, SshAuthMethod, SshExecResult, SshMemoPayload,
+    SshServerConfig, SshServerSummary, SshToolsConfig,
 };
 use validation::{
     validate_command, validate_config, validate_session_id, MAX_OUTPUT_BYTES, MAX_TIMEOUT_SECS,
@@ -117,23 +118,40 @@ impl SshSessionManager {
 
     /// 保存全局服务器列表：校验 → 全量替换入库 → 丢弃全部复用连接
     /// （凭据可能已变更，旧连接不可继续使用）。
+    ///
+    /// 被删服务器的备忘录文件在提交后 best-effort 清理（文件删除失败不
+    /// 影响保存结果，仅留痕——DB 行已随事务提交，重试也救不回孤儿文件，
+    /// 同 `project_delete` 的「事务内删行、提交后清文件」模式）。
     pub async fn save_config_async(
         &self,
         config: SshToolsConfig,
     ) -> Result<SshToolsConfig, String> {
         let ssh_db = self.db.clone();
-        let cleaned = tokio::task::spawn_blocking(move || {
+        let (cleaned, removed) = tokio::task::spawn_blocking(move || {
             let cleaned = validate_config(config)?;
-            ssh_db.save_servers(&cleaned.servers)?;
-            Ok::<_, String>(cleaned)
+            let removed = ssh_db.save_servers(&cleaned.servers)?;
+            Ok::<_, String>((cleaned, removed))
         })
         .await
         .map_err(|error| error.to_string())??;
         self.drop_all();
+        if !removed.is_empty() {
+            let _ = tokio::task::spawn_blocking(move || {
+                for server_id in &removed {
+                    if let Err(error) = memo::delete_memo_file(server_id) {
+                        eprintln!(
+                            "[ssh-tool] 清理已删除服务器 {server_id} 的运维备忘录失败：{error}"
+                        );
+                    }
+                }
+            })
+            .await;
+        }
         Ok(cleaned)
     }
 
     /// 列出已启用的 SSH server（不含凭据等敏感字段）。
+    /// 每台附 `memo_chars`（运维备忘录字符数），供智能体判断已有积累。
     pub async fn list_servers_async(&self) -> Result<Vec<SshServerSummary>, String> {
         let ssh_db = self.db.clone();
         tokio::task::spawn_blocking(move || {
@@ -142,13 +160,34 @@ impl SshSessionManager {
                 .servers
                 .into_iter()
                 .filter(|server| server.enabled)
-                .map(|server| SshServerSummary {
-                    id: server.id,
-                    name: server.name,
-                    description: server.description,
-                    tags: server.tags,
+                .map(|server| {
+                    let memo_chars = memo::memo_char_count(&server.id);
+                    SshServerSummary {
+                        id: server.id,
+                        name: server.name,
+                        description: server.description,
+                        tags: server.tags,
+                        memo_chars,
+                    }
                 })
                 .collect())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    /// 按 id 读取服务器完整配置（**不限 enabled**）。备忘录等附属资源的
+    /// 读写不要求服务器处于启用状态——禁用中的服务器积累的环境知识仍可
+    /// 读写；不存在返回 `Ok(None)`。
+    pub async fn find_server_any_async(
+        &self,
+        server_id: &str,
+    ) -> Result<Option<SshServerConfig>, String> {
+        let ssh_db = self.db.clone();
+        let id = server_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let config = ssh_db.load_config()?;
+            Ok::<_, String>(config.servers.into_iter().find(|server| server.id == id))
         })
         .await
         .map_err(|error| error.to_string())?

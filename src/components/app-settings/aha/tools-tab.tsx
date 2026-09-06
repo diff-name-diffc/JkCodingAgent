@@ -74,7 +74,8 @@ export function ToolsTab({
     setLoadingMcp(true);
     setMcpError(null);
     try {
-      setMcpStatus(await invoke<McpStatus>("mcp_global_status"));
+      // 不传 projectPath / forceRefresh：全局作用域 + 新鲜窗口缓存。
+      setMcpStatus(await invoke<McpStatus>("mcp_status"));
     } catch (error) {
       setMcpError(String(error));
     } finally {

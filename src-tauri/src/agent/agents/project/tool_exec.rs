@@ -355,6 +355,7 @@ impl OrchestratorAgent {
         // 普通工具可能返回超大 payload。喂回模型前先压缩，原始结果保留为产物。
         let summary_model = self.summary_model();
         let summary_provider = self.summary_provider(request_provider);
+        let summary_capacity = summary_provider.context_window().map(u64::from);
         let tool_message = common::persist_tool_result_with_compression(
             db,
             workspace_id,
@@ -373,6 +374,7 @@ impl OrchestratorAgent {
                         tracker: usage_tracker,
                         on_event,
                         pending_persists: usage_persist_handles,
+                        context_window_capacity: summary_capacity,
                     },
                     &summary_model,
                     DispatcherSessionTokenUsageSource::Summary,

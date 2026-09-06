@@ -85,9 +85,9 @@ App
 | `mcp/` | MCP 子系统：`McpScope{Global, Project}` 显式作用域模型——`Global`（`mcp_servers` 全局注册表，所有聊天共享单一快照）与 `Project`（全局 ∪ 项目 `.jkcodingagent/mcp.json`，同名项目覆盖）；`registry.rs`（作用域缓存/合并/工具执行）、`transport.rs`（stdio/streamable_http/unix_socket_http + 诊断）、`project_file.rs`（项目文件读写）、`commands.rs`（Tauri 命令，项目命令前置路径校验） |
 | `scm/git.rs` | Git 集成：状态、分支、日志、差异、暂存、提交、推送、拉取 |
 | `workspace/` | `fs.rs`（文件读写/列举）、`rope.rs`（大文件切片） |
-| `platform/` | `app_settings.rs`、`notification.rs`、`usage.rs` |
+| `platform/` | `app_settings.rs`、`usage.rs` |
 | `rag/` | RAG sidecar 传输与管理 |
-| `ssh_tool/` | SSH 命令执行 + AI 安全审查门禁。传输层为 russh（纯 Rust 异步，无 libssh2/OpenSSL 依赖）；连接池按 `server_id+session_id` 复用 russh `Handle`，并发命令各走独立 channel（协议级隔离，无逐命令互斥锁）；主机密钥 TOFU 指纹为 key blob 的 SHA-256 hex |
+| `ssh_tool/` | SSH 命令执行 + AI 安全审查门禁。传输层为 russh（纯 Rust 异步，无 libssh2/OpenSSL 依赖）；连接池按 `server_id+session_id` 复用 russh `Handle`，并发命令各走独立 channel（协议级隔离，无逐命令互斥锁）；主机密钥 TOFU 指纹为 key blob 的 SHA-256 hex。`memo.rs` 为每台服务器维护运维备忘录文件（`~/.jkcodingagent/ssh-memos/{server_id}.md`，段落式 Markdown，全文 8000 / 单段 4000 字符硬上限，超限拒绝写入），供 `ssh_memo_read` / `ssh_memo_upsert` / `ssh_memo_delete` 工具与设置页读写；服务器删除时随 `save_servers` 级联清理（同事务清主机密钥/审计行 + 提交后删备忘录文件） |
 | `browser.rs` | 内嵌浏览器宿主 |
 | `chat_images.rs` | 聊天图片存储 |
 | `python_runner.rs` | Python 运行器 |
@@ -110,7 +110,7 @@ App
 - 资源目录：`~/.jkcodingagent/`（含 `memory/`、`skills/`、`local_env/zsh/`、`chat-images/` 等）
 - **应用配置的权威源是全局库**（分层原则：应用生命周期配置一律全局一份；只有随项目变化之物放项目目录）：SSH 服务器/主机密钥/审计（`ssh_servers` 等表）、受管项目注册表（`projects` 表）、MCP 全局注册表（`mcp_servers` 表，与项目级 `mcp.json` 并存、同名项目覆盖）、应用级键值配置（`app_config` 表：全局浏览器选项/RAG 配置）。外观主题偏好（system/light/dark）为 `dispatcher_settings.theme`，随 `AhaSettingsV2` 统一经 `aha_get_settings_v2` / `aha_save_settings_v2` 存取。
 - 主要表：`dispatcher_settings`、`ssh_servers`/`ssh_host_keys`/`ssh_audit_log`、`projects`、`mcp_servers`、`app_config`、`sub_agents`、`dispatcher_sessions`、`dispatcher_messages`、`dispatcher_session_token_usage`、`dispatcher_tool_artifacts`、`chat_images`、`graph_plans`、`graph_node_runs`、分类、关键字索引、python 运行记录等（schema 见 `agent/db/schema.rs`）
-- 模型配置：`dispatcher_settings.model_library` 为唯一权威；用途槽位以 `libraryId` 引用库条目（保存剥离凭据、读取回填）。环境变量回退（DASHSCOPE_*/MODEL_NAME 等）默认关闭，仅 `AHA_ALLOW_ENV_PROVIDER=1` 显式开启。
+- 模型配置：`dispatcher_settings.model_library` 为唯一权威；用途槽位以 `libraryId` 引用库条目（保存剥离凭据**与容量**、读取回填）。**容量参数同样以库条目为统一数据源**：`maxTokens`（输出预算，未配置 → 请求体省略 max_tokens、由服务端默认预算接管，历史硬编码 8192 已删除）与 `contextWindow`（上下文窗口 tokens，未配置 → 回退 `DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS` = 1M；驱动会话容量展示、上下文占用告警与子智能体滑窗裁剪阈值——字符预算 = 窗口 × 4 字符/token × 1/2，见 `sub_agent/runtime/context.rs` 的 `context_budget_chars`）。环境变量回退（DASHSCOPE_*/MODEL_NAME 等）默认关闭，仅 `AHA_ALLOW_ENV_PROVIDER=1` 显式开启。
 
 **存储 schema 版本策略（桌面应用基线 + 前向迁移）**
 
@@ -130,7 +130,7 @@ App
 **设置中心结构（2025 重构后）：** 外壳 `components/AppSettingsDialog.tsx`（左侧栏单层导航 + 内容区两层结构），页面与共享组件在 `components/settings/`：
 - `use-aha-settings.ts` — Aha 设置的统一 store + 失焦/变更自动保存管线（debounce 400ms 整体调用 `aha_save_settings_v2`），通过 React Context 提供给各设置页。
 - `GeneralPage.tsx` — 「通用」页：外观主题（跟随系统/浅色/深色），即点即生效（立即预览 + 自动保存），存 `AhaSettingsV2.theme`。
-- `providers/` — 「模型服务」与「模型用途」页。「模型服务」页（`ProvidersPage.tsx` + `ModelEntryCard.tsx`）按模型调用方式分标签（对话/视觉/图片生成/图片编辑/语音识别/语音合成/向量）维护**分类模型库**（`AhaSettingsV2.modelLibrary`，每条目独立持有 url/apiKey/model/别名/启停用，纯函数层在 `model-library.ts`）；「模型用途」页（`PurposesPage.tsx` + `PurposeSelect.tsx`）的下拉选项来自对应分类的库条目，选中后由 `provider-registry.ts` 的 `bindPurpose` 写入携带 `libraryId` 的引用绑定——落库只保留引用（后端剥离 url/apiKey/model），读取时由库条目回填凭据，库更新后用途自动跟随。最近测试结果等无存储字段的 UI 偏好存 localStorage（`provider-prefs.ts`）。
+- `providers/` — 「模型服务」与「模型用途」页。「模型服务」页（`ProvidersPage.tsx` + `ModelEntryCard.tsx`）按模型调用方式分标签（对话/视觉/图片生成/图片编辑/语音识别/语音合成/向量）维护**分类模型库**（`AhaSettingsV2.modelLibrary`，每条目独立持有 url/apiKey/model/别名/启停用，对话/视觉类目另有容量字段 maxTokens/contextWindow——数字输入失焦提交、留空即缺省，纯函数层在 `model-library.ts`）；「模型用途」页（`PurposesPage.tsx` + `PurposeSelect.tsx`）的下拉选项来自对应分类的库条目，选中后由 `provider-registry.ts` 的 `bindPurpose` 写入携带 `libraryId` 的引用绑定——落库只保留引用（后端剥离 url/apiKey/model 与容量），读取时由库条目回填凭据与容量，库更新后用途自动跟随。最近测试结果等无存储字段的 UI 偏好存 localStorage（`provider-prefs.ts`）。
 - `ssh/` — SSH 服务器页（状态点 + 自动保存 + 删除二次确认）。服务器 `id` 为机器标识（系统自动生成，不展示/不可编辑），界面展示 `name`（支持中文）；`SshImportDialog` 支持从本机 `~/.ssh/config` 解析导入 Host 条目（后端 `ssh_tool_import_ssh_config`，纯解析不落库，凭据不导入）。
 - 共享组件：`ConfirmDialog`（删除二次确认）、`TestButton`（测试三态：spinner / ✓ms / 错误展开）、`ApiKeyInput`（字段级明文切换）、`StatusBadge`、`EmptyState`、`FieldLabel`（术语 tooltip）、`Section`、`toast.ts` + `Toaster`。
 - 设置中心样式类统一 `.ai-set-*` 前缀（`styles/tailwind.css` 的 `@layer components` 末尾）。
@@ -260,3 +260,4 @@ impl AgentTool for MyTool {
 2. **工具产物文件**：`dispatcher_tool_artifacts` 指向的产物文件同样需显式清理。
 3. **项目删除**：`project_delete` 命令（`project/storage.rs`）在同一事务内遍历该项目全部会话执行与 `delete_project_session` 相同的级联清理，并删除项目行；提交后 best-effort 清理聊天图片文件与项目仓库内应用自有目录（`.jkcodingagent/browser-profile/`、`.jkcodingagent/local_env/`）。config.toml / mcp.json 可能随仓库共享给团队，保留不删。
 4. **通用约定**：任何与会话绑定的文件资源（图片、附件、缓存），在会话删除/清空时必须同步清理文件系统，不能只清 DB。
+5. **消息截断（regenerate / 编辑重发）**：`truncate_messages_from` 除删除消息、工具产物与工具运行外，还须回收被删轮次的副作用——子智能体 trace（`sub_agent_run_traces`，按被删工具运行的 `tool_call_id` 精确匹配）与图编排产物（`graph_plans` 按计划创建时间 ≥ 目标消息时刻截断，`graph_runs`/`graph_node_runs`/`graph_node_activities` 随外键级联）；`python_code_runs`/`chat_images` 行由消息外键级联。有意保留：token 用量（真实消耗记录，回退会让用量分析失真）、会话关键字（聚合权重无消息关联，重发后自然覆盖）、图片文件（重发复用 image_id）。

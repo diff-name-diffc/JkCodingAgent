@@ -10,8 +10,14 @@ import { TestButton } from "../TestButton";
 import { toast } from "../toast";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip";
 import { isImeComposing } from "../../../utils";
+import { parseBoundedNumberInput } from "../../app-settings/rag/rag-config";
 import type { ModelLibraryEntry } from "../../../types";
-import { entryLabel, type ModelCategoryDef } from "./model-library";
+import {
+  entryLabel,
+  ENTRY_CONTEXT_WINDOW_RANGE,
+  ENTRY_MAX_TOKENS_RANGE,
+  type ModelCategoryDef,
+} from "./model-library";
 import { ProviderIcon } from "./ProviderIcon";
 
 /**
@@ -46,6 +52,13 @@ export function ModelEntryCard({
   const [model, setModel] = useState(entry.model);
   const [url, setUrl] = useState(entry.url);
   const [apiKey, setApiKey] = useState(entry.apiKey);
+  // 容量草稿用字符串承载（允许中间态为空/非法），失焦时解析提交。
+  const [maxTokensDraft, setMaxTokensDraft] = useState(
+    entry.maxTokens != null ? String(entry.maxTokens) : "",
+  );
+  const [contextWindowDraft, setContextWindowDraft] = useState(
+    entry.contextWindow != null ? String(entry.contextWindow) : "",
+  );
   const [editingAlias, setEditingAlias] = useState(false);
   const [aliasDraft, setAliasDraft] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -68,6 +81,45 @@ export function ModelEntryCard({
     const next = value.trim();
     if (next === entry[field]) return;
     onPatch({ [field]: next });
+  }
+
+  /** 容量字段失焦提交：空 → 清除（undefined，后端序列化时整个键被丢弃）；
+   * 越界/非法 → 还原草稿为已存值并提示，不提交。badInput=true 表示浏览器把
+   * 非法键入（如 "abc"）规整成了空值——那是非法输入而非用户清空，同样还原，
+   * 避免静默清掉已配置值。 */
+  function commitCapacityField(
+    field: "maxTokens" | "contextWindow",
+    draft: string,
+    range: { min: number; max: number },
+    label: string,
+    resetDraft: (value: string) => void,
+    badInput: boolean,
+  ) {
+    const current = entry[field];
+    const trimmed = draft.trim();
+    if (trimmed === "" && badInput) {
+      toast.error(`${label}需为 ${range.min}–${range.max} 之间的数值`);
+      resetDraft(current != null ? String(current) : "");
+      return;
+    }
+    if (trimmed === "") {
+      resetDraft("");
+      if (current !== undefined) {
+        onPatch(field === "maxTokens" ? { maxTokens: undefined } : { contextWindow: undefined });
+      }
+      return;
+    }
+    const parsed = parseBoundedNumberInput(trimmed, range.min, range.max);
+    if (parsed === null) {
+      toast.error(`${label}需为 ${range.min}–${range.max} 之间的数值`);
+      resetDraft(current != null ? String(current) : "");
+      return;
+    }
+    const next = Math.floor(parsed);
+    resetDraft(String(next));
+    if (next !== current) {
+      onPatch(field === "maxTokens" ? { maxTokens: next } : { contextWindow: next });
+    }
   }
 
   function commitAlias() {
@@ -294,6 +346,62 @@ export function ModelEntryCard({
               onBlur={() => commitField("apiKey", apiKey)}
             />
           </div>
+          {def.hasCapacityFields && (
+            <>
+              <div className="ai-set-field">
+                <FieldLabel
+                  label="输出预算（maxTokens）"
+                  tip="单次请求可见输出与思考链共享的 token 上限。留空则请求省略 max_tokens、由服务端默认预算接管（推荐）；思考模型配过小预算时思考链会耗尽预算导致空响应。"
+                />
+                <input
+                  className="ai-settings-input"
+                  type="number"
+                  min={ENTRY_MAX_TOKENS_RANGE.min}
+                  max={ENTRY_MAX_TOKENS_RANGE.max}
+                  value={maxTokensDraft}
+                  onChange={(e) => setMaxTokensDraft(e.target.value)}
+                  onBlur={(e) =>
+                    commitCapacityField(
+                      "maxTokens",
+                      maxTokensDraft,
+                      ENTRY_MAX_TOKENS_RANGE,
+                      "输出预算",
+                      setMaxTokensDraft,
+                      e.currentTarget.validity.badInput,
+                    )
+                  }
+                  placeholder="留空 = 服务端默认预算"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="ai-set-field">
+                <FieldLabel
+                  label="上下文窗口（contextWindow）"
+                  tip="模型上下文窗口的 token 总容量，驱动上下文裁剪阈值与容量展示；留空默认 1,000,000。"
+                />
+                <input
+                  className="ai-settings-input"
+                  type="number"
+                  min={ENTRY_CONTEXT_WINDOW_RANGE.min}
+                  max={ENTRY_CONTEXT_WINDOW_RANGE.max}
+                  value={contextWindowDraft}
+                  onChange={(e) => setContextWindowDraft(e.target.value)}
+                  onBlur={(e) =>
+                    commitCapacityField(
+                      "contextWindow",
+                      contextWindowDraft,
+                      ENTRY_CONTEXT_WINDOW_RANGE,
+                      "上下文窗口",
+                      setContextWindowDraft,
+                      e.currentTarget.validity.badInput,
+                    )
+                  }
+                  placeholder="留空 = 默认 1,000,000"
+                  spellCheck={false}
+                />
+              </div>
+            </>
+          )}
           {fieldError && <div className="ai-set-field-error">{fieldError}</div>}
 
           <TestButton

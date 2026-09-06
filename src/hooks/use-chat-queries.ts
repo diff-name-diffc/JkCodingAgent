@@ -89,9 +89,11 @@ export function useCreateChatSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (args: { title: string; category?: string }) =>
-      invoke<ChatSession>("chat_create_session", {
+      invoke<ChatSession>("session_create", {
+        kind: "chat",
         title: args.title,
-        category: args.category ?? "tech",
+        // category 缺省由后端统一为 "tech"（避免前后端双写默认值）。
+        category: args.category ?? null,
       }),
     onSuccess: (createdSession) => {
       qc.setQueryData<ChatSession[]>(QUERY_KEYS.sessions(), (sessions = []) => [
@@ -107,8 +109,7 @@ export function useCreateChatSession() {
 export function useDeleteChatSession() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (sessionId: string) =>
-      invoke<void>("chat_delete_session", { sessionId }),
+    mutationFn: (sessionId: string) => invoke<void>("session_delete", { sessionId }),
     onSuccess: (_data, sessionId) => {
       qc.setQueryData<ChatSession[]>(QUERY_KEYS.sessions(), (sessions) =>
         sessions?.filter((session) => session.id !== sessionId),
@@ -195,7 +196,7 @@ export function useSetChatSessionCategory() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (args: { workspaceId: string; categoryId: string }) =>
-      invoke<void>("chat_set_session_category_v6", {
+      invoke<void>("chat_set_session_category", {
         sessionId: args.workspaceId,
         categoryId: args.categoryId,
       }),

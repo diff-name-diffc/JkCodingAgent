@@ -2,7 +2,6 @@ export interface Project {
   id: string;
   name: string;
   path: string;
-  branch?: string;
   lastOpenedAt: number;
 }
 
@@ -122,6 +121,14 @@ export interface SshAuditLog {
   records: SshAuditRecord[];
 }
 
+/** 运维备忘录载荷（`ssh_tool_get_memo` / `ssh_tool_save_memo` 的返回）。 */
+export interface SshMemoPayload {
+  /** 备忘录原文（Markdown）；空字符串表示尚无备忘录。 */
+  content: string;
+  /** 最近修改时间（RFC3339）；尚无备忘录时为 null。 */
+  updatedAt: string | null;
+}
+
 export interface BrowserStatus {
   sessionId: string;
   state:
@@ -152,20 +159,3 @@ export interface BrowserLogEvent {
   message: string;
 }
 
-// ── Notifications ────────────────────────────────────────────────────────────
-
-export interface NotificationItem {
-  id: string;
-  notifType: "update" | "announcement" | "warning" | string;
-  level: "info" | "warning" | "error" | string;
-  title: string;
-  body: string;
-  url: string | null;
-  createdAt: string;
-  isRead: boolean;
-}
-
-export interface NotificationResult {
-  notifications: NotificationItem[];
-  unreadCount: number;
-}

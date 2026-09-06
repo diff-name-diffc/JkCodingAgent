@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 
-use super::content::{delete_chat_image_resources, remove_chat_image_dir};
+use super::content::remove_chat_image_dir;
 use super::DispatcherDb;
 use crate::project::storage::Project;
 
@@ -16,7 +16,6 @@ const PROJECTS_DDL: &str = "CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     path TEXT NOT NULL UNIQUE,
-    branch TEXT,
     last_opened_at INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0
 )";
@@ -32,8 +31,7 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         id: row.get(0)?,
         name: row.get(1)?,
         path: row.get(2)?,
-        branch: row.get(3)?,
-        last_opened_at: row.get(4)?,
+        last_opened_at: row.get(3)?,
     })
 }
 
@@ -52,7 +50,7 @@ impl DispatcherDb {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, path, branch, last_opened_at FROM projects ORDER BY sort_order, rowid",
+                "SELECT id, name, path, last_opened_at FROM projects ORDER BY sort_order, rowid",
             )
             .context("prepare list projects")?;
         let projects = stmt
@@ -65,7 +63,7 @@ impl DispatcherDb {
     pub fn find_project(&self, project_id: &str) -> Result<Option<Project>> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT id, name, path, branch, last_opened_at FROM projects WHERE id = ?1",
+            "SELECT id, name, path, last_opened_at FROM projects WHERE id = ?1",
             params![project_id],
             row_to_project,
         )
@@ -104,13 +102,12 @@ impl DispatcherDb {
             .context("clear projects")?;
         for (sort_order, project) in projects.iter().enumerate() {
             tx.execute(
-                "INSERT INTO projects (id, name, path, branch, last_opened_at, sort_order)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO projects (id, name, path, last_opened_at, sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     project.id,
                     project.name,
                     project.path,
-                    project.branch,
                     project.last_opened_at,
                     sort_order as i64
                 ],
@@ -121,7 +118,7 @@ impl DispatcherDb {
     }
 
     /// 删除项目及其全部关联数据：遍历该项目所有会话，在一个事务内执行与会话
-    /// 删除相同的级联清理（`delete_project_session` 的表集合），并删除项目行。
+    /// 删除相同的级联清理（`purge_session_resources_tx` 的表集合），并删除项目行。
     /// 返回被删会话 id 列表与提交后需要 best-effort 清理的文件资源清单。
     pub fn delete_project(&self, project_id: &str) -> Result<ProjectCleanupPlan> {
         let mut conn = self.conn()?;
@@ -129,7 +126,7 @@ impl DispatcherDb {
 
         let project = tx
             .query_row(
-                "SELECT id, name, path, branch, last_opened_at FROM projects WHERE id = ?1",
+                "SELECT id, name, path, last_opened_at FROM projects WHERE id = ?1",
                 params![project_id],
                 row_to_project,
             )
@@ -150,42 +147,10 @@ impl DispatcherDb {
 
         let mut image_dirs: Vec<PathBuf> = Vec::new();
         for workspace_id in &workspace_ids {
-            if let Some(dir) = delete_chat_image_resources(&tx, workspace_id)? {
+            // 级联清单与会话删除共享单一出处（db/purge.rs）。
+            if let Some(dir) = super::purge::purge_session_resources_tx(&tx, workspace_id)? {
                 image_dirs.push(dir);
             }
-            tx.execute(
-                "DELETE FROM dispatcher_tool_artifacts WHERE workspace_id = ?1",
-                params![workspace_id],
-            )?;
-            tx.execute(
-                "DELETE FROM dispatcher_tool_runs WHERE workspace_id = ?1",
-                params![workspace_id],
-            )?;
-            tx.execute(
-                "DELETE FROM sub_agent_run_traces WHERE workspace_id = ?1",
-                params![workspace_id],
-            )?;
-            tx.execute(
-                "DELETE FROM graph_node_runs
-                 WHERE plan_id IN (SELECT id FROM graph_plans WHERE workspace_id = ?1)",
-                params![workspace_id],
-            )?;
-            tx.execute(
-                "DELETE FROM graph_plans WHERE workspace_id = ?1",
-                params![workspace_id],
-            )?;
-            tx.execute(
-                "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
-                params![workspace_id],
-            )?;
-            tx.execute(
-                "DELETE FROM session_keywords WHERE session_id = ?1",
-                params![workspace_id],
-            )?;
-            tx.execute(
-                "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
-                params![workspace_id],
-            )?;
             tx.execute(
                 "DELETE FROM project_sessions WHERE id = ?1",
                 params![workspace_id],
@@ -253,7 +218,6 @@ mod tests {
             id: id.to_string(),
             name: format!("项目 {id}"),
             path: path.to_string(),
-            branch: Some("main".to_string()),
             last_opened_at: 1_700_000_000,
         }
     }

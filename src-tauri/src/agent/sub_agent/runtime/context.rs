@@ -27,6 +27,20 @@ pub(super) fn chat_message_chars(message: &ChatMessage) -> usize {
     chars
 }
 
+/// 上下文裁剪字符预算：由统一容量源派生——模型库条目的 contextWindow
+/// （经 provider 传入），未配置回退默认 1M 窗口。换算取「窗口 tokens ×
+/// 4 字符/token（项目既定估算启发式，见 db 层 estimate_context_tokens）
+/// × 1/2」：窗口的一半留给系统提示、可见输出与单轮工具结果。
+/// 1M 窗口 → 2M 字符预算（历史固定值 120k 字符 ≈ 30k tokens，对 1M
+/// 上下文的模型过于激进）。
+pub(super) fn context_budget_chars(context_window: Option<u32>) -> usize {
+    const CHARS_PER_TOKEN: u64 = 4;
+    let window_tokens = context_window
+        .map(u64::from)
+        .unwrap_or(crate::agent::db::DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS);
+    (window_tokens * CHARS_PER_TOKEN / 2) as usize
+}
+
 /// G13-07：消息历史滑动窗口裁剪（纯函数）。
 ///
 /// 保留头部两条消息（system + 首轮 user）与最近若干轮完整对话；

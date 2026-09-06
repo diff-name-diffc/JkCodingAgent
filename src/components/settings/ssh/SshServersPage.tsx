@@ -83,12 +83,11 @@ export function SshServersPage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const [loadedConfig, loadedAudit] = await Promise.all([
-        invoke<SshToolsConfig>("ssh_tool_load_config"),
-        invoke<SshAuditLog>("ssh_tool_load_audit"),
-      ]);
-      setConfig(loadedConfig);
-      setAudit(loadedAudit);
+      const snapshot = await invoke<{ servers: SshToolsConfig["servers"]; audit: SshAuditLog }>(
+        "ssh_tool_load_settings",
+      );
+      setConfig({ servers: snapshot.servers });
+      setAudit(snapshot.audit);
     } catch (err) {
       setLoadError(String(err));
     } finally {

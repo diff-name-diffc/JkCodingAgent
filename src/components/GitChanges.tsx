@@ -66,11 +66,11 @@ export function GitChanges({
   const handleStageToggle = async (c: GitFileChange, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      if (c.staged) {
-        await invoke("git_unstage", { projectPath, filePath: c.path });
-      } else {
-        await invoke("git_stage", { projectPath, filePath: c.path });
-      }
+      await safeInvoke<void>("git_stage", {
+        projectPath,
+        files: [c.path],
+        unstage: c.staged,
+      });
       refresh();
     } catch (err) {
       setError(String(err));
@@ -80,7 +80,7 @@ export function GitChanges({
   const handleStageAll = async () => {
     try {
       setError(null);
-      await invoke("git_stage_all", { projectPath });
+      await safeInvoke<void>("git_stage", { projectPath });
       refresh();
     } catch (err) {
       setError(String(err));
@@ -90,7 +90,7 @@ export function GitChanges({
   const handleUnstageAll = async () => {
     try {
       setError(null);
-      await invoke("git_unstage_all", { projectPath });
+      await safeInvoke<void>("git_stage", { projectPath, unstage: true });
       refresh();
     } catch (err) {
       setError(String(err));

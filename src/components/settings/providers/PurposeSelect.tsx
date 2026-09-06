@@ -138,7 +138,7 @@ export function PurposeSelect({
             <SelectItem key={entry.id} value={entry.id}>
               <span className="ai-set-purpose-option">
                 <span className="ai-set-purpose-option-name">{entryLabel(entry)}</span>
-                {modelCapabilityTags(entry.model).map((tag) => (
+                {modelCapabilityTags(entry.model, entry.contextWindow).map((tag) => (
                   <span key={tag} className="ai-set-capability-badge">
                     {tag}
                   </span>

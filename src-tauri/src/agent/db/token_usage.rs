@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::llm::LlmUsage;
 
-use super::util::{default_context_window_capacity, now};
+use super::util::{now, DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS};
 use super::DispatcherDb;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
@@ -38,6 +38,7 @@ impl DispatcherDb {
         model: &str,
         source_kind: DispatcherSessionTokenUsageSource,
         usage: &LlmUsage,
+        context_window_capacity: Option<u64>,
     ) -> Result<DispatcherSessionTokenUsageRecord> {
         let updated_at = now();
         // 口径统一（G7-08）：total 一律按 prompt + completion 重算，不再采信
@@ -59,7 +60,10 @@ impl DispatcherDb {
             total_tokens,
             cached_tokens,
             context_window_tokens: usage.prompt_tokens,
-            context_window_capacity: default_context_window_capacity(model),
+            // 容量权威源为模型库条目（contextWindow，经 provider 传入）；
+            // 未配置时回退默认 1M。
+            context_window_capacity: context_window_capacity
+                .unwrap_or(DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS),
             updated_at,
         };
         // source_kind 由枚举构造，as_sql_value 只会产生 "primary"/"summary"，
@@ -140,13 +144,14 @@ impl DispatcherDb {
         model: &str,
         source_kind: DispatcherSessionTokenUsageSource,
         usage: &LlmUsage,
+        context_window_capacity: Option<u64>,
     ) -> Result<DispatcherSessionTokenUsageRecord> {
         let db = self.clone();
         let wid = workspace_id.to_string();
         let model = model.to_string();
         let usage = usage.clone();
         tokio::task::spawn_blocking(move || {
-            db.upsert_session_token_usage(&wid, &model, source_kind, &usage)
+            db.upsert_session_token_usage(&wid, &model, source_kind, &usage, context_window_capacity)
         })
         .await
         .context("upsert_session_token_usage spawn_blocking")?
@@ -309,11 +314,16 @@ mod tests {
                 "model-x",
                 DispatcherSessionTokenUsageSource::Primary,
                 &usage,
+                Some(200_000),
             )
             .expect("first upsert");
         assert_eq!(record.prompt_tokens, 100);
         assert_eq!(record.completion_tokens, 40);
         assert_eq!(record.total_tokens, 140, "total 必须等于 prompt+completion");
+        assert_eq!(
+            record.context_window_capacity, 200_000,
+            "容量必须采用 provider 传入的库条目配置值"
+        );
 
         let record = db
             .upsert_session_token_usage(
@@ -321,10 +331,16 @@ mod tests {
                 "model-x",
                 DispatcherSessionTokenUsageSource::Primary,
                 &usage,
+                None,
             )
             .expect("second upsert");
         assert_eq!(record.prompt_tokens, 200);
         assert_eq!(record.completion_tokens, 80);
+        assert_eq!(
+            record.context_window_capacity,
+            DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS,
+            "未配置容量必须回退默认 1M"
+        );
         assert_eq!(
             record.total_tokens, 280,
             "累计后的 total 必须等于累计 prompt+completion 之和"

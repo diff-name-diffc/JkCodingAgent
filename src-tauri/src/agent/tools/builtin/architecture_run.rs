@@ -77,7 +77,7 @@ impl AgentTool for ArchitectureRunTool {
             return ToolResult::recoverable_error("错误：应用句柄不可用，无法操作画布。");
         };
         let state = app_handle.state::<DispatcherState>();
-        let (run_id, report_rx) = state.begin_arch_run();
+        let (run_id, report_rx) = state.begin_arch_run(&context.workspace_id);
         let payload = ArchRunRequestPayload {
             run_id: &run_id,
             workspace_id: &context.workspace_id,

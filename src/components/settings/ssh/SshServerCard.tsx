@@ -1,20 +1,28 @@
-import { useEffect, useState } from "react";
-import type { InputHTMLAttributes, ReactNode } from "react";
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, FolderOpen, ShieldCheck, Trash2 } from "lucide-react";
+import { ChevronDown, FolderOpen, NotebookPen, ShieldCheck, Trash2 } from "lucide-react";
 import type { SshServerConfig } from "../../../types";
 import { cn } from "../../../lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip";
-import { ApiKeyInput } from "../ApiKeyInput";
 import { FieldLabel } from "../FieldLabel";
 import { TestButton } from "../TestButton";
 import type { ProviderTestRecord } from "../providers/provider-prefs";
+import { SshMemoDialog } from "./SshMemoDialog";
+import {
+  CommitInput,
+  CommitNumberInput,
+  CommitSecret,
+  Field,
+  serverSummary,
+  StatusDot,
+} from "./SshServerCardParts";
 
 /**
- * 单台 SSH 服务器的折叠卡片：头部为启用开关 + 状态点 + 标题 + 测试/删除，
+ * 单台 SSH 服务器的折叠卡片：头部为启用开关 + 状态点 + 标题 + 备忘录/测试/删除，
  * 展开后是连接与认证表单。文本字段失焦（值有变化时）才通过 onUpdate 提交，
  * 由父组件统一 debounce 自动保存；开关类字段变更即提交。
+ * 私有展示组件（字段框、状态点等）拆在 `SshServerCardParts.tsx`。
  */
 export function SshServerCard({
   server,
@@ -46,6 +54,7 @@ export function SshServerCard({
   // 「信任新指纹并重测」恢复入口（服务器重建等合法变更场景）。
   const [hostKeyMismatch, setHostKeyMismatch] = useState(false);
   const [resettingHostKey, setResettingHostKey] = useState(false);
+  const [memoOpen, setMemoOpen] = useState(false);
 
   function runTest(resetHostKey: boolean) {
     return invoke<string>("ssh_tool_test_server_config", {
@@ -126,6 +135,22 @@ export function SshServerCard({
               </TooltipContent>
             </Tooltip>
           )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="ai-set-ghost-button"
+                disabled={!server.id.trim()}
+                onClick={() => setMemoOpen(true)}
+              >
+                <NotebookPen size={16} strokeWidth={1.5} />
+                备忘录
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              运维备忘录：智能体运维这台服务器时读取与更新，记录部署路径、特殊命令方式、已知问题与解法。
+            </TooltipContent>
+          </Tooltip>
           <TestButton
             disabled={!server.id.trim()}
             onTest={() =>
@@ -359,136 +384,14 @@ export function SshServerCard({
           </Field>
         </div>
       )}
+
+      {memoOpen && (
+        <SshMemoDialog
+          serverId={server.id}
+          serverLabel={server.name.trim() || server.id}
+          onClose={() => setMemoOpen(false)}
+        />
+      )}
     </div>
   );
-}
-
-/** 最近测试状态点：绿=通过 / 红=失败 / 灰=未测试，hover 显示最后测试时间。 */
-function StatusDot({ record }: { record?: ProviderTestRecord }) {
-  const status = !record ? "untested" : record.status === "ok" ? "ok" : "failed";
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className={cn("ai-set-status-dot", `is-${status}`)} />
-      </TooltipTrigger>
-      <TooltipContent side="top">
-        {record
-          ? `最后测试：${formatTimestamp(record.at)}（${record.status === "ok" ? "连接成功" : "连接失败"}）`
-          : "尚未测试"}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-function Field({
-  label,
-  tip,
-  error,
-  children,
-}: {
-  label: string;
-  tip?: string;
-  error?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="ai-set-field">
-      <FieldLabel label={label} tip={tip} />
-      {children}
-      {error && <p className="ai-set-field-error">{error}</p>}
-    </div>
-  );
-}
-
-/** 失焦提交文本框：本地草稿编辑，blur 时值有变化才回调。 */
-function CommitInput({
-  value,
-  onCommit,
-  ...rest
-}: {
-  value: string;
-  onCommit: (next: string) => void;
-} & Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "onBlur" | "type">) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
-  return (
-    <input
-      className="ai-settings-input"
-      value={draft}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={() => {
-        if (draft !== value) onCommit(draft);
-      }}
-      {...rest}
-    />
-  );
-}
-
-/** 失焦提交数字框：解析失败时回退到 fallback。 */
-function CommitNumberInput({
-  value,
-  fallback,
-  onCommit,
-  ...rest
-}: {
-  value: number;
-  fallback: number;
-  onCommit: (next: number) => void;
-} & Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "onBlur" | "type">) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
-  return (
-    <input
-      className="ai-settings-input"
-      type="number"
-      value={draft}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={() => {
-        const parsed = Number(draft) || fallback;
-        if (parsed !== value) onCommit(parsed);
-        else setDraft(String(value));
-      }}
-      {...rest}
-    />
-  );
-}
-
-/** 失焦提交的密码/口令输入（带明文切换）。 */
-function CommitSecret({
-  value,
-  placeholder,
-  onCommit,
-}: {
-  value: string;
-  placeholder?: string;
-  onCommit: (next: string) => void;
-}) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
-  return (
-    <ApiKeyInput
-      value={draft}
-      placeholder={placeholder}
-      onChange={setDraft}
-      onBlur={() => {
-        if (draft !== value) onCommit(draft);
-      }}
-    />
-  );
-}
-
-/// 折叠时在服务器标题右侧展示的连接摘要，便于在不展开的情况下辨识目标主机。
-function serverSummary(server: SshServerConfig): string {
-  if (server.host.trim()) {
-    const auth = server.username.trim() ? `${server.username}@` : "";
-    const port = server.port && server.port !== 22 ? `:${server.port}` : "";
-    return `${auth}${server.host}${port}`;
-  }
-  return server.description.trim() || "未配置";
-}
-
-function formatTimestamp(at: number): string {
-  const date = new Date(at);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }

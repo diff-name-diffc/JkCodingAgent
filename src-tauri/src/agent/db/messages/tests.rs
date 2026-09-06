@@ -216,3 +216,198 @@ fn image_reference_note_is_only_added_for_user_role() {
         2
     );
 }
+
+// ── truncate_messages_from（regenerate / 编辑重发共用截断）─────────────
+
+#[test]
+fn truncate_messages_from_cleans_traces_and_graph_plans() {
+    let db = test_db();
+    let session = db
+        .create_chat_session("truncate", Some("tech"))
+        .expect("create session");
+    let conn = db.conn().expect("db conn");
+
+    let segments_json = |text: &str| super::super::content::content_to_segments_json(text);
+    let m1 = db
+        .add_visible_message_from_segments(&session.id, "user", segments_json("第一轮提问"))
+        .expect("add m1");
+    let m2 = db
+        .add_visible_message_from_segments(&session.id, "assistant", segments_json("第一轮回答"))
+        .expect("add m2");
+    let m3 = db
+        .add_visible_message_from_segments(&session.id, "user", segments_json("被编辑的用户消息"))
+        .expect("add m3");
+    let m4 = db
+        .add_visible_message_from_segments(&session.id, "assistant", segments_json("将被删除的回答"))
+        .expect("add m4");
+    let target_ms = chrono::DateTime::parse_from_rfc3339(&m3.created_at)
+        .expect("parse m3 created_at")
+        .timestamp_millis();
+
+    // 工具运行：call-kept 绑定截断点之前的 m2（应保留）；call-gone 绑定被删的
+    // m4；call-pending 为 message_id NULL 的运行中记录（created_at >= 目标时刻）。
+    let insert_run = |id: &str, call_id: &str, message_id: Option<&str>, created_at: &str| {
+        conn.execute(
+            "INSERT INTO dispatcher_tool_runs (
+                 id, workspace_id, tool_call_id, tool_name, provider, category, status,
+                 message_id, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, 'run_sub_agent', 'builtin', 'agent', 'completed', ?4, ?5, ?5)",
+            params![id, session.id, call_id, message_id, created_at],
+        )
+        .expect("insert tool run");
+    };
+    insert_run("run-kept", "call-kept", Some(&m2.id), &m2.created_at);
+    insert_run("run-gone", "call-gone", Some(&m4.id), &m4.created_at);
+    insert_run("run-pending", "call-pending", None, &m3.created_at);
+
+    let insert_trace = |call_id: &str| {
+        conn.execute(
+            "INSERT INTO sub_agent_run_traces (
+                 workspace_id, tool_call_id, agent_id, status, events_json, created_at, updated_at
+             ) VALUES (?1, ?2, 'browser-agent', 'completed', '[]', ?3, ?3)",
+            params![session.id, call_id, m2.created_at],
+        )
+        .expect("insert sub-agent trace");
+    };
+    insert_trace("call-kept");
+    insert_trace("call-gone");
+    insert_trace("call-pending");
+
+    // 图编排：新计划创建于目标消息之后（应随截断删除，级联 run/node_run/activity）；
+    // 旧计划早于目标消息一小时（应保留）。
+    let insert_plan = |id: &str, created_at_ms: i64| {
+        conn.execute(
+            "INSERT INTO graph_plans (
+                 id, workspace_id, title, definition_json, created_at, updated_at
+             ) VALUES (?1, ?2, 'plan', '{}', ?3, ?3)",
+            params![id, session.id, created_at_ms],
+        )
+        .expect("insert graph plan");
+    };
+    insert_plan("plan-old", target_ms - 3_600_000);
+    insert_plan("plan-new", target_ms + 1_000);
+    conn.execute(
+        "INSERT INTO graph_runs (id, plan_id, attempt_no, status, started_at)
+         VALUES ('run-1', 'plan-new', 1, 'succeeded', ?1)",
+        params![target_ms],
+    )
+    .expect("insert graph run");
+    conn.execute(
+        "INSERT INTO graph_node_runs (
+             run_id, plan_id, node_id, model_ref, model_label, model_category, base_tool_group
+         ) VALUES ('run-1', 'plan-new', 'node-1', 'ref', 'label', 'chat', 'coder')",
+        [],
+    )
+    .expect("insert graph node run");
+    conn.execute(
+        "INSERT INTO graph_node_activities (id, run_id, node_id, sequence, kind, status, started_at)
+         VALUES ('act-1', 'run-1', 'node-1', 0, 'log', 'completed', ?1)",
+        params![target_ms],
+    )
+    .expect("insert graph node activity");
+
+    // python 运行记录绑定被删消息，应随外键级联消失。
+    conn.execute(
+        "INSERT INTO python_code_runs (
+             run_id, workspace_id, message_id, code_block_index, code_hash, code, status,
+             created_at, updated_at
+         ) VALUES ('py-1', ?1, ?2, 0, 'hash', 'print(1)', 'completed', ?3, ?3)",
+        params![session.id, m4.id, m4.created_at],
+    )
+    .expect("insert python run");
+
+    // token 用量为真实消耗记录，截断不回退。
+    conn.execute(
+        "INSERT INTO dispatcher_session_token_usage (workspace_id, model, updated_at)
+         VALUES (?1, 'test-model', ?2)",
+        params![session.id, m2.created_at],
+    )
+    .expect("insert token usage");
+
+    let removed = db
+        .truncate_messages_from(&session.id, &m3.id)
+        .expect("truncate");
+    assert_eq!(removed, 2);
+
+    let count = |sql: &str, id: &str| -> i64 {
+        conn.query_row(sql, params![id], |row| row.get(0))
+            .expect("count query")
+    };
+    // 消息：目标及之后删除，之前保留。
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM dispatcher_messages WHERE workspace_id = ?1",
+            &session.id
+        ),
+        2
+    );
+    assert!(conn
+        .query_row(
+            "SELECT COUNT(*) FROM dispatcher_messages WHERE id = ?1",
+            params![m1.id],
+            |row| row.get::<_, i64>(0)
+        )
+        .expect("m1 kept")
+        == 1);
+    // 工具运行与产物：截断范围内的删除，范围外的保留。
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM dispatcher_tool_runs WHERE workspace_id = ?1",
+            &session.id
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM dispatcher_tool_runs WHERE tool_call_id = 'call-kept' AND workspace_id = ?1",
+            &session.id
+        ),
+        1
+    );
+    // 子智能体 trace：按被删 tool_call_id 精确回收，call-kept 不受牵连。
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM sub_agent_run_traces WHERE workspace_id = ?1",
+            &session.id
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM sub_agent_run_traces WHERE tool_call_id = 'call-kept' AND workspace_id = ?1",
+            &session.id
+        ),
+        1
+    );
+    // 图编排：新计划连同 run/node_run/activity 级联删除，旧计划保留。
+    assert_eq!(
+        count("SELECT COUNT(*) FROM graph_plans WHERE workspace_id = ?1", &session.id),
+        1
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM graph_plans WHERE id = 'plan-old' AND workspace_id = ?1", &session.id),
+        1
+    );
+    assert_eq!(count("SELECT COUNT(*) FROM graph_runs WHERE plan_id = ?1", "plan-new"), 0);
+    assert_eq!(
+        count("SELECT COUNT(*) FROM graph_node_runs WHERE plan_id = ?1", "plan-new"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM graph_node_activities WHERE run_id = ?1", "run-1"),
+        0
+    );
+    // python 运行记录随消息外键级联删除。
+    assert_eq!(
+        count("SELECT COUNT(*) FROM python_code_runs WHERE workspace_id = ?1", &session.id),
+        0
+    );
+    // token 用量有意保留（真实消耗记录）。
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
+            &session.id
+        ),
+        1
+    );
+}

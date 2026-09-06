@@ -80,52 +80,59 @@ async fn git_create_branch_impl(
     .await
 }
 
+/// 暂存/取消暂存（原 stage / unstage / stage_all / unstage_all 四条命令合并）。
+///
+/// - `files = None`：全量操作（`add -A` / `restore --staged .`）；
+/// - `files = Some([...])`：按 pathspec 操作（`add -- <files>` /
+///   `restore --staged -- <files>`）；
+/// - `unstage = true`：取消暂存，否则暂存。
+///
+/// 与 `git_diff` 的 mode 三合一同一合并型：完全对称的单行 git 调用族收敛为
+/// 参数变体。
 #[tauri::command]
-pub async fn git_stage(project_path: String, file_path: String) -> CommandResult<()> {
-    git_stage_impl(project_path.clone(), file_path.clone())
+pub async fn git_stage(
+    project_path: String,
+    files: Option<Vec<String>>,
+    unstage: Option<bool>,
+) -> CommandResult<()> {
+    let unstage = unstage.unwrap_or(false);
+    let scope = match &files {
+        None => "全部变更".to_string(),
+        Some(files) => files.join("、"),
+    };
+    let action = if unstage { "取消暂存" } else { "暂存" };
+    let context = format!("{action} Git 变更失败（{project_path}: {scope}）");
+    git_stage_impl(project_path, files, unstage)
         .await
-        .with_context(|| format!("暂存 Git 文件失败（{}: {}）", project_path, file_path))
+        .with_context(|| context)
         .into_command_result()
 }
 
-async fn git_stage_impl(project_path: String, file_path: String) -> GitResult<()> {
-    run_git_check(&project_path, &["add", "--", &file_path]).await
-}
-
-#[tauri::command]
-pub async fn git_unstage(project_path: String, file_path: String) -> CommandResult<()> {
-    git_unstage_impl(project_path.clone(), file_path.clone())
-        .await
-        .with_context(|| format!("取消暂存 Git 文件失败（{}: {}）", project_path, file_path))
-        .into_command_result()
-}
-
-async fn git_unstage_impl(project_path: String, file_path: String) -> GitResult<()> {
-    run_git_check(&project_path, &["restore", "--staged", "--", &file_path]).await
-}
-
-#[tauri::command]
-pub async fn git_stage_all(project_path: String) -> CommandResult<()> {
-    git_stage_all_impl(project_path.clone())
-        .await
-        .with_context(|| format!("暂存全部 Git 变更失败（{}）", project_path))
-        .into_command_result()
-}
-
-async fn git_stage_all_impl(project_path: String) -> GitResult<()> {
-    run_git_check(&project_path, &["add", "-A"]).await
-}
-
-#[tauri::command]
-pub async fn git_unstage_all(project_path: String) -> CommandResult<()> {
-    git_unstage_all_impl(project_path.clone())
-        .await
-        .with_context(|| format!("取消暂存全部 Git 变更失败（{}）", project_path))
-        .into_command_result()
-}
-
-async fn git_unstage_all_impl(project_path: String) -> GitResult<()> {
-    run_git_check(&project_path, &["restore", "--staged", "."]).await
+async fn git_stage_impl(
+    project_path: String,
+    files: Option<Vec<String>>,
+    unstage: bool,
+) -> GitResult<()> {
+    // None 与空列表都视为全量：前端「全部暂存/取消」入口不传文件清单。
+    let files = files.filter(|files| !files.is_empty());
+    match (unstage, files) {
+        (false, None) => run_git_check(&project_path, &["add", "-A"]).await,
+        (false, Some(files)) => {
+            let mut args = vec!["add".to_string(), "--".to_string()];
+            args.extend(files);
+            run_git_check(&project_path, &args).await
+        }
+        (true, None) => run_git_check(&project_path, &["restore", "--staged", "."]).await,
+        (true, Some(files)) => {
+            let mut args = vec![
+                "restore".to_string(),
+                "--staged".to_string(),
+                "--".to_string(),
+            ];
+            args.extend(files);
+            run_git_check(&project_path, &args).await
+        }
+    }
 }
 
 #[tauri::command]

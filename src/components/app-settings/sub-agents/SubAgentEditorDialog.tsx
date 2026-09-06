@@ -1,9 +1,31 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { X } from "lucide-react";
-import type { SubAgentConfig, SubAgentToolInfo } from "../../../types";
+import type {
+  ModelCategory,
+  SubAgentConfig,
+  SubAgentToolInfo,
+} from "../../../types";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../ui/select";
+import { useAhaSettings } from "../../settings/use-aha-settings";
+import { entryLabel } from "../../settings/providers/model-library";
+import {
+  findMatchedLibraryEntry,
+  pickableCategoryOptions,
+  pickableEntries,
+} from "./sub-agent-model-picker";
 
 type EditorTab = "basic" | "tools" | "runtime";
+
+const MAX_ITERATIONS = 200;
+const MIN_OUTPUT_TOKENS = 1024;
+const MAX_OUTPUT_TOKENS = 1048576;
 
 interface Props {
   config: SubAgentConfig | null;
@@ -40,6 +62,14 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
   const [activeTab, setActiveTab] = useState<EditorTab>("basic");
   const [availableTools, setAvailableTools] = useState<SubAgentToolInfo[]>([]);
   const [error, setError] = useState("");
+  const { settings } = useAhaSettings();
+  const modelLibrary = settings?.modelLibrary ?? [];
+  // 模型选择器第一步（分类）：初值取当前配置命中的库条目分类，无命中则「对话模型」。
+  const [pickerCategory, setPickerCategory] = useState<ModelCategory>(
+    () =>
+      findMatchedLibraryEntry(modelLibrary, (config ?? DEFAULT_CONFIG).modelConfig)
+        ?.category ?? "text",
+  );
 
   useEffect(() => {
     invoke<SubAgentToolInfo[]>("sub_agent_list_tools")
@@ -48,6 +78,30 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
   }, []);
 
   const selectedTools = new Set(draft.allowedTools);
+
+  const categoryEntries = pickableEntries(modelLibrary, pickerCategory);
+  const matchedEntry = findMatchedLibraryEntry(modelLibrary, draft.modelConfig);
+  const modelSelectValue =
+    matchedEntry && matchedEntry.category === pickerCategory ? matchedEntry.id : "";
+
+  function handlePickCategory(value: string) {
+    setPickerCategory(value as ModelCategory);
+  }
+
+  function handlePickModel(entryId: string) {
+    const picked = categoryEntries.find((entry) => entry.id === entryId);
+    if (!picked) return;
+    setDraft((d) => ({
+      ...d,
+      modelConfig: {
+        ...d.modelConfig,
+        inheritFromParent: false,
+        apiBase: picked.url,
+        apiKey: picked.apiKey,
+        modelName: picked.model,
+      },
+    }));
+  }
 
   function toggleTool(name: string) {
     setDraft((d) => ({
@@ -98,13 +152,16 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
       setActiveTab("tools");
       return;
     }
-    if (draft.maxIterations < 1 || draft.maxIterations > 100) {
-      setError("最大迭代轮次必须在 1-100 之间");
+    if (draft.maxIterations < 1 || draft.maxIterations > MAX_ITERATIONS) {
+      setError(`最大迭代轮次必须在 1-${MAX_ITERATIONS} 之间`);
       setActiveTab("runtime");
       return;
     }
-    if (draft.maxOutputTokens < 1024 || draft.maxOutputTokens > 262144) {
-      setError("最大输出 Token 必须在 1024-262144 之间");
+    if (
+      draft.maxOutputTokens < MIN_OUTPUT_TOKENS ||
+      draft.maxOutputTokens > MAX_OUTPUT_TOKENS
+    ) {
+      setError(`最大输出 Token 必须在 ${MIN_OUTPUT_TOKENS}-${MAX_OUTPUT_TOKENS} 之间`);
       setActiveTab("runtime");
       return;
     }
@@ -302,6 +359,55 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                   {!draft.modelConfig.inheritFromParent && (
                     <>
                       <div className="ai-settings-field-stack">
+                        <label className="ai-settings-field-label">选择已配置的模型</label>
+                        <div className="ai-subagent-model-picker">
+                          <Select value={pickerCategory} onValueChange={handlePickCategory}>
+                            <SelectTrigger aria-label="模型分类">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {pickableCategoryOptions().map((option) => (
+                                <SelectItem key={option.category} value={option.category}>
+                                  {option.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {categoryEntries.length === 0 ? (
+                            <span className="ai-settings-hint">
+                              该分类暂无已配置的启用模型，请前往「模型服务」添加，或在下方手动填写。
+                            </span>
+                          ) : (
+                            <Select value={modelSelectValue} onValueChange={handlePickModel}>
+                              <SelectTrigger aria-label="模型">
+                                <SelectValue placeholder="选择模型…" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {categoryEntries.map((entry) => (
+                                  <SelectItem key={entry.id} value={entry.id}>
+                                    <span className="ai-subagent-model-option">
+                                      <span className="ai-subagent-model-option-name">
+                                        {entryLabel(entry)}
+                                      </span>
+                                      {entry.alias?.trim() &&
+                                      entry.model.trim() &&
+                                      entry.alias.trim() !== entry.model.trim() ? (
+                                        <span className="ai-subagent-model-option-model">
+                                          {entry.model}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                        </div>
+                        <span className="ai-settings-hint">
+                          选中后自动回填下方 API Base / API Key / 模型名称，可再手动微调。
+                        </span>
+                      </div>
+                      <div className="ai-settings-field-stack">
                         <label className="ai-settings-field-label">API Base</label>
                         <input
                           className="ai-settings-input"
@@ -349,12 +455,14 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
 
                 <div className="ai-subagent-runtime-grid">
                   <div className="ai-settings-field-stack">
-                    <label className="ai-settings-field-label">最大迭代轮次 (1-100)</label>
+                    <label className="ai-settings-field-label">
+                      最大迭代轮次 (1-{MAX_ITERATIONS})
+                    </label>
                     <input
                       className="ai-settings-input"
                       type="number"
                       min={1}
-                      max={100}
+                      max={MAX_ITERATIONS}
                       value={draft.maxIterations}
                       onChange={(e) =>
                         setDraft((d) => ({ ...d, maxIterations: Number(e.target.value) }))
@@ -362,12 +470,14 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                     />
                   </div>
                   <div className="ai-settings-field-stack">
-                    <label className="ai-settings-field-label">最大输出 Token (1024-262144)</label>
+                    <label className="ai-settings-field-label">
+                      最大输出 Token ({MIN_OUTPUT_TOKENS}-{MAX_OUTPUT_TOKENS})
+                    </label>
                     <input
                       className="ai-settings-input"
                       type="number"
-                      min={1024}
-                      max={262144}
+                      min={MIN_OUTPUT_TOKENS}
+                      max={MAX_OUTPUT_TOKENS}
                       value={draft.maxOutputTokens}
                       onChange={(e) =>
                         setDraft((d) => ({ ...d, maxOutputTokens: Number(e.target.value) }))

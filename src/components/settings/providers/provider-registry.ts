@@ -148,15 +148,23 @@ export function bindPurpose(
   ]);
 }
 
-// ── 模型能力标签（尽力而为的静态启发式） ──────────────────────────────────────
+// ── 模型能力标签（真实配置优先，静态启发式兜底） ─────────────────────────────
 
 const VISION_PATTERN = /(vision|vl|gpt-4o|gpt-5|claude|gemini|qwen-vl|4v|llava|minicpm-v)/i;
 const LONG_CONTEXT_PATTERN = /(128k|200k|256k|512k|1m|long|kimi|claude|gemini|qwen-long)/i;
+/** 条目配置了真实 contextWindow 时「长上下文」徽标的判定阈值（tokens）。 */
+const LONG_CONTEXT_WINDOW_TOKENS = 200_000;
 
-export function modelCapabilityTags(model: string): string[] {
+export function modelCapabilityTags(model: string, contextWindow?: number): string[] {
   const tags: string[] = [];
   if (VISION_PATTERN.test(model)) tags.push("视觉");
-  if (LONG_CONTEXT_PATTERN.test(model)) tags.push("长上下文");
+  // 库条目的真实 contextWindow 配置优先于模型名正则启发式（数据 > 猜测）；
+  // 未配置该字段的条目仍回退正则。
+  const longContext =
+    contextWindow != null
+      ? contextWindow >= LONG_CONTEXT_WINDOW_TOKENS
+      : LONG_CONTEXT_PATTERN.test(model);
+  if (longContext) tags.push("长上下文");
   return tags;
 }
 

@@ -63,7 +63,11 @@ pub struct DispatcherAgentConfig {
     pub model: String,
     pub summary_model: String,
     pub vision_model: String,
-    pub max_tokens: u32,
+    /// 输出预算兜底。None（默认）→ 请求体省略 max_tokens，由服务端默认
+    /// 预算接管。容量的唯一权威源是模型库条目（AhaSettingsV2.modelLibrary
+    /// 的 maxTokens，经用途槽位回填进 provider）；本字段仅覆盖 env 开发
+    /// 回退与无设置初始构建路径，不再提供硬编码缺省值（历史 8192 已删除）。
+    pub max_tokens: Option<u32>,
     pub temperature: f32,
     pub max_tool_iterations: usize,
     pub exec_timeout_secs: u64,
@@ -130,7 +134,7 @@ impl DispatcherAgentConfig {
             model,
             summary_model,
             vision_model,
-            max_tokens: 8192,
+            max_tokens: None,
             temperature: 0.1,
             max_tool_iterations: 200,
             exec_timeout_secs: 60,

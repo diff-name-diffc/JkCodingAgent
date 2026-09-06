@@ -115,17 +115,16 @@ pub async fn review_shell_command(
         return Err("审查模型未配置 model".to_string());
     }
 
-    // 审查请求完全不携带 max_tokens：显式小上限会压低模型自身的输出预算
-    // （推理模型的思考 token 还会与可见输出共享该预算）；同时关闭思考，
-    // 避免思考链耗尽预算导致结论为空（同 graph/verifier 的做法）。
+    // 审查请求完全不携带 max_tokens（None → 请求体省略该字段）：显式小上限
+    // 会压低模型自身的输出预算（推理模型的思考 token 还会与可见输出共享该
+    // 预算）；同时关闭思考，避免思考链耗尽预算导致结论为空（同 graph/verifier）。
     let provider = OpenAiCompatProvider::new(
         config.model_config.api_key.clone(),
         config.model_config.url.clone(),
         config.model_config.model.clone(),
-        0,
+        None,
         0.0,
     )
-    .without_max_tokens()
     .with_thinking(false);
 
     let system_prompt = {

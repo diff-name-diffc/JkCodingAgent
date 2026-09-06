@@ -20,7 +20,10 @@ use crate::agent::common::{
 };
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
-use crate::agent::llm::{ChatMessage, LlmResponse, OpenAiCompatProvider, ToolDefinition};
+use crate::agent::llm::{
+    format_empty_response_diagnostics, ChatMessage, LlmResponse, OpenAiCompatProvider,
+    ToolDefinition,
+};
 use crate::agent::run_loop::agent_loop::AgentLoop;
 use crate::agent::run_loop::core::{
     RunLoopAgent, RunLoopContext, RunLoopIteration, RunLoopToolOutcome, RuntimeAgentKind,
@@ -167,8 +170,9 @@ impl RunLoopAgent for ArchitectureAgent {
         let content = response.content.trim().to_string();
         if content.is_empty() {
             anyhow::bail!(
-                "视觉模型返回空响应且没有工具调用，无法继续执行。（model={}）",
-                ctx.provider.model()
+                "视觉模型返回空响应且没有工具调用，无法继续执行。（model={}）\n{}",
+                ctx.provider.model(),
+                format_empty_response_diagnostics(response)
             );
         }
         let usage_stats = ctx.usage_tracker.snapshot();

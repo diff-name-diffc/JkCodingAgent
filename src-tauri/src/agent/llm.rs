@@ -7,7 +7,7 @@ mod provider;
 mod request;
 
 pub use models::fetch_models;
-pub use protocol::StreamOptions;
+pub use protocol::{format_empty_response_diagnostics, StreamOptions};
 pub use provider::OpenAiCompatProvider;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,7 +137,8 @@ pub struct LlmRequestHeadersSnapshot {
 pub struct LlmRequestBodySnapshot {
     pub model: String,
     pub messages: Vec<ChatMessage>,
-    /// None 表示请求体省略 max_tokens（见 provider 的 `without_max_tokens`）。
+    /// None 表示请求体省略 max_tokens（容量权威源为模型库条目的 maxTokens，
+    /// 未配置即省略、由服务端默认预算接管）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     pub temperature: f32,

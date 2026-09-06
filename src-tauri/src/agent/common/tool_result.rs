@@ -27,6 +27,8 @@ pub const TOOL_RESULT_INLINE_MAX_CHARS_PAGED: usize = 20_000;
 /// 其余工具维持 8000。
 /// 注意：effective_args 会注入 schema default，列入此处的工具其 offset/limit
 /// 参数不得声明 default，否则无法区分显式分页与默认读取。
+/// ssh_memo_read 无 offset/limit 参数（备忘录全文有 8000 字符硬上限，
+/// 加头部后恰落在 READ 档内），恒走默认 READ 档。
 const INLINE_READ_TOOLS: &[&str] = &[
     "read_file",
     "browser_read_text",
@@ -34,6 +36,7 @@ const INLINE_READ_TOOLS: &[&str] = &[
     "glob",
     "list_dir",
     "graph_plan_report",
+    "ssh_memo_read",
 ];
 
 /// 按工具与入参决定本次调用的内联字符上限。

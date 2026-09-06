@@ -109,6 +109,8 @@ export function ChatPageV2({
   currentSessionIdRef.current = activeSessionId;
   const pythonRuns = usePythonRunController(activeSessionId, currentSessionIdRef);
   const graphPanel = useGraphPanelController(activeSessionId, isPlainChat, currentSessionIdRef);
+  // 稳定引用：截断（regenerate / 编辑重发）后关闭旧画布并刷新「最近计划」入口。
+  const { close: closeGraphPanel, refreshLatestPlan } = graphPanel;
   const shouldStickToBottomRef = useRef(true);
 
   const scrollMessageListToBottom = useCallback(() => {
@@ -174,6 +176,9 @@ export function ChatPageV2({
           });
           setMessages((prev) => prev.slice(0, editIndex));
           setEditingMessageId(null);
+          // 截断已连带删除被删轮次的图计划：关闭旧画布并刷新「最近计划」入口。
+          closeGraphPanel();
+          refreshLatestPlan();
           await actions.sendUserMessage(text, attachedImages, targetSessionId);
         } catch (err) {
           console.error("编辑并重新发送失败:", err);
@@ -192,9 +197,11 @@ export function ChatPageV2({
     attachedImages,
     editingMessageId,
     chatSessions,
+    closeGraphPanel,
     input,
     isSubmittingEdit,
     messages,
+    refreshLatestPlan,
     setMessages,
     showToast,
   ]);
@@ -281,6 +288,9 @@ export function ChatPageV2({
             messageId: message.id,
           });
           setMessages((prev) => prev.slice(0, messageIndex));
+          // 截断已连带删除被删轮次的图计划：关闭旧画布并刷新「最近计划」入口。
+          closeGraphPanel();
+          refreshLatestPlan();
           await actions.sendUserMessage(text, images, activeSessionId);
         } catch (err) {
           console.error("重新生成失败:", err);
@@ -293,9 +303,11 @@ export function ChatPageV2({
     [
       actions,
       activeSessionId,
+      closeGraphPanel,
       isRunning,
       isSubmittingEdit,
       messages,
+      refreshLatestPlan,
       setMessages,
       showToast,
     ],

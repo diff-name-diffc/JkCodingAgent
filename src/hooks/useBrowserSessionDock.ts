@@ -80,12 +80,18 @@ export function useBrowserSessionDock({
 
   const minimize = useCallback(async () => {
     if (!activeSessionId) return;
-    await runBrowserCommand("browser_minimize", { sessionId: activeSessionId });
+    await runBrowserCommand("browser_window_action", {
+      sessionId: activeSessionId,
+      action: "minimize",
+    });
   }, [activeSessionId]);
 
   const restore = useCallback(
     async (sessionId: string) => {
-      if (!(await runBrowserCommand("browser_restore", { sessionId }))) return;
+      if (
+        !(await runBrowserCommand("browser_window_action", { sessionId, action: "restore" }))
+      )
+        return;
       onRestoreSession(sessionId);
       onOpen();
     },
@@ -104,7 +110,13 @@ export function useBrowserSessionDock({
 
   const reopen = useCallback(async () => {
     if (!activeSessionId) return;
-    if (!(await runBrowserCommand("browser_reopen", { sessionId: activeSessionId }))) return;
+    if (
+      !(await runBrowserCommand("browser_window_action", {
+        sessionId: activeSessionId,
+        action: "reopen",
+      }))
+    )
+      return;
     onOpen();
   }, [activeSessionId, onOpen]);
 

@@ -66,7 +66,7 @@ export function useArchRunListener(
         }
         if (disposed) return;
         try {
-          await invoke<boolean>("architecture_run_complete", { runId, report });
+          await invoke<boolean>("architecture_run_complete", { workspaceId, runId, report });
         } catch (error) {
           console.error("回传架构画布执行报告失败:", error);
         }

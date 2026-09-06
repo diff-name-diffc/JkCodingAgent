@@ -154,10 +154,10 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
       setSaveError(null);
       try {
         await persistConfig(config);
-        const result = await invoke<RagVectorTestResult>(
-          target === "qdrant" ? "rag_test_qdrant" : "rag_test_embedding",
-          { config },
-        );
+        const result = await invoke<RagVectorTestResult>("rag_test_connection", {
+          config,
+          target,
+        });
         if (!isMounted()) return;
         setFeedback({ status: "success", message: result.message ?? "连接正常" });
         void waitWhileMounted(3000).then((mounted) => {

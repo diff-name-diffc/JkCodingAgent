@@ -30,14 +30,3 @@ pub async fn aha_list_agent_tools(
     let ctx = AgentContext::from_wire(&context).map_err(|e| e.to_string())?;
     state.list_agent_tools(ctx).await
 }
-
-#[tauri::command]
-pub async fn dispatcher_stop_run(
-    state: tauri::State<'_, DispatcherState>,
-    browser_manager: tauri::State<'_, BrowserManager>,
-    workspace_id: String,
-) -> Result<bool, String> {
-    let stopped = state.stop_run(&workspace_id);
-    let _ = browser_manager.stop(&workspace_id).await;
-    Ok(stopped)
-}

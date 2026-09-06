@@ -80,7 +80,8 @@ pub(crate) fn build_summary_provider(
     );
     // 验收是短结论分类任务：低温 + 关思考。推理模型的思考 token 与可见输出
     // 共享 max_tokens 预算，若带着思考调用，思考链可能耗尽预算导致结论为空。
-    OpenAiCompatProvider::new(api_key, api_base, model, VERIFY_MAX_TOKENS, 0.0).with_thinking(false)
+    OpenAiCompatProvider::new(api_key, api_base, model, Some(VERIFY_MAX_TOKENS), 0.0)
+        .with_thinking(false)
 }
 
 /// 执行验收。永不失败：任何异常回退 unknown + 事实罗列。
@@ -589,7 +590,7 @@ mod tests {
             model: "main".into(),
             summary_model: "summary-model".into(),
             vision_model: String::new(),
-            max_tokens: 4096,
+            max_tokens: Some(4096),
             temperature: 0.7,
             max_tool_iterations: 10,
             exec_timeout_secs: 60,

@@ -17,6 +17,11 @@ pub struct SubAgentRecord {
     pub description: String,
     pub config_json: String,
     pub enabled: bool,
+    /// 是否在全局启用集合（`global_sub_agents` 成员）。保真 `enabled=1 ∩
+    /// 全局成员` 的交集语义由消费方按两字段过滤（原
+    /// `sub_agent_get_global_enabled` 命令折叠进 `sub_agent_list`）。
+    #[serde(default)]
+    pub global_enabled: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -138,6 +143,7 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubAgentRecord> {
         description: row.get(2)?,
         config_json: row.get(3)?,
         enabled: row.get::<_, i32>(4)? != 0,
+        global_enabled: row.get::<_, i32>(7)? != 0,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
     })
@@ -162,8 +168,12 @@ impl SubAgentDb {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, description, config_json, enabled, created_at, updated_at
-                 FROM sub_agents ORDER BY created_at",
+                "SELECT sa.id, sa.name, sa.description, sa.config_json, sa.enabled,
+                        sa.created_at, sa.updated_at,
+                        gsa.sub_agent_id IS NOT NULL
+                 FROM sub_agents sa
+                 LEFT JOIN global_sub_agents gsa ON sa.id = gsa.sub_agent_id
+                 ORDER BY sa.created_at",
             )
             .context("prepare list sub_agents")?;
 
@@ -181,8 +191,12 @@ impl SubAgentDb {
     pub fn get(&self, id: &str) -> Result<Option<SubAgentRecord>> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT id, name, description, config_json, enabled, created_at, updated_at
-             FROM sub_agents WHERE id = ?1",
+            "SELECT sa.id, sa.name, sa.description, sa.config_json, sa.enabled,
+                    sa.created_at, sa.updated_at,
+                    gsa.sub_agent_id IS NOT NULL
+             FROM sub_agents sa
+             LEFT JOIN global_sub_agents gsa ON sa.id = gsa.sub_agent_id
+             WHERE sa.id = ?1",
             params![id],
             row_to_record,
         )
@@ -227,6 +241,8 @@ impl SubAgentDb {
             description: config.description.clone(),
             config_json,
             enabled: config.enabled,
+            // 新建时尚未加入全局启用集合；是否全局启用由用户在设置里勾选。
+            global_enabled: false,
             created_at,
             updated_at,
         })
@@ -296,29 +312,6 @@ impl SubAgentDb {
         }
         tx.commit().context("commit set_global_enabled tx")?;
         Ok(())
-    }
-
-    pub fn get_global_enabled(&self) -> Result<Vec<SubAgentRecord>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT sa.id, sa.name, sa.description, sa.config_json, sa.enabled, sa.created_at, sa.updated_at
-                 FROM sub_agents sa
-                 INNER JOIN global_sub_agents gsa ON sa.id = gsa.sub_agent_id
-                 WHERE sa.enabled = 1
-                 ORDER BY sa.created_at",
-            )
-            .context("prepare get global sub_agents")?;
-
-        let rows = stmt
-            .query_map([], row_to_record)
-            .context("query global sub_agents")?;
-
-        let mut records = Vec::new();
-        for row in rows {
-            records.push(row?);
-        }
-        Ok(records)
     }
 
     pub fn save_run_trace(
@@ -632,7 +625,7 @@ mod tests {
             )
             .expect("save trace before delete");
         dispatcher
-            .delete_chat_session(&session.id)
+            .delete_session(&session.id)
             .expect("delete trace session");
         assert!(sub_agent
             .get_run_trace(&session.id, "tool-call-3")

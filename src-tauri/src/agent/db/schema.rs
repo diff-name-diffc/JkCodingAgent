@@ -26,7 +26,9 @@ use super::DispatcherDb;
 /// 删除从未写入的 vector_embedding_json / text_description 两列。
 /// v1 开发库经 `migrate_v1_to_v2` 前向迁移；更早的旧开发库仍报错引导
 /// `scripts/reset-dev-data.sh`。
-pub(crate) const SCHEMA_VERSION: i32 = 3;
+/// v4：删除 projects 表的死列 `branch`（前端从未写入、唯一消费点恒渲染
+/// 兜底文案，详见 docs/tauri-commands.md D 域分析）。
+pub(crate) const SCHEMA_VERSION: i32 = 4;
 
 impl DispatcherDb {
     pub(super) fn init(&self) -> Result<()> {
@@ -88,6 +90,9 @@ impl DispatcherDb {
         }
         if current_version < 3 {
             self.migrate_v2_to_v3(&mut conn)?;
+        }
+        if current_version < 4 {
+            self.migrate_v3_to_v4(&mut conn)?;
             return Ok(());
         }
 
@@ -236,6 +241,51 @@ impl DispatcherDb {
         tx.pragma_update(None, "user_version", 3)
             .context("advance user_version to 3")?;
         tx.commit().context("commit v2→v3 migration")
+    }
+
+    /// v3 → v4：删除 projects 表的死列 `branch`——前端任何路径都不写入
+    /// （仅测试写过），唯一消费点 WelcomePage 的分支 pill 因此恒显示兜底
+    /// 文案「本地」。列删除属破坏性 DDL，按规范先做整库快照备份
+    /// （VACUUM INTO，不能在事务内执行）；备份失败只留痕不阻断——
+    /// 被删列本就无有效数据。`DROP COLUMN` 要求 SQLite ≥ 3.35，
+    /// rusqlite bundled 版本满足。
+    fn migrate_v3_to_v4(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v4-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!(
+                "v3→v4 迁移前整库快照失败（被删列 branch 为死数据，继续）：{error}"
+            );
+        }
+
+        let tx = conn
+            .transaction()
+            .context("begin v3→v4 migration transaction")?;
+        // 幂等容错：列不存在（极简/异常库形态）时跳过 DROP，仅推进版本号。
+        let branch_column_exists: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'branch'",
+                [],
+                |row| row.get(0),
+            )
+            .context("inspect projects.branch column")?;
+        if branch_column_exists > 0 {
+            tx.execute_batch("ALTER TABLE projects DROP COLUMN branch;")
+                .context("drop projects.branch dead column")?;
+        }
+        tx.pragma_update(None, "user_version", 4)
+            .context("advance user_version to 4")?;
+        tx.commit().context("commit v3→v4 migration")
     }
 }
 
@@ -771,6 +821,9 @@ fn scenario_chat_category_agent_config(
                 "browser_close",
                 "ssh_list_servers",
                 "ssh_exec",
+                "ssh_memo_read",
+                "ssh_memo_upsert",
+                "ssh_memo_delete",
                 "list_sub_agents",
                 "call_sub_agent",
             ],
@@ -782,6 +835,7 @@ fn scenario_chat_category_agent_config(
 - 事实优先，必要时用浏览器查看官方文档或公开资料；不要编造 API、参数或版本信息。
 - 本地验证优先使用 local_zsh，并保持命令小步、可复现、可审计。
 - 远程命令必须先确认目标服务器；涉及写入、删除、部署、重启等操作前必须说明影响并等待用户确认。
+- 对不熟悉的服务器，先读运维备忘录（ssh_memo_read）获取部署路径、特殊命令方式与已知问题；解决新问题或发现新路径/特殊命令后，克制地更新备忘录（先读后写、整段重写，不记录凭据）。
 - 对复杂任务先拆解，再给出可执行步骤；回答默认简体中文，保持工程化、直接、少废话。
 "#,
         }),
@@ -946,6 +1000,16 @@ mod tests {
                     NULL, '旧描述', '2026-01-01T00:00:01Z'
                 );
                 INSERT INTO app_config VALUES ('app_settings', '{\"theme\":\"dark\"}');
+                CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    path TEXT NOT NULL UNIQUE,
+                    branch TEXT,
+                    last_opened_at INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO projects (id, name, path, branch, last_opened_at)
+                VALUES ('p-1', '项目一', '/tmp/p1', 'main', 1);
                 PRAGMA user_version = 1;",
             )
             .unwrap();
@@ -958,6 +1022,24 @@ mod tests {
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(version, super::SCHEMA_VERSION);
+
+            // v3→v4：projects 死列 branch 已删，行数据保留。
+            let branch_columns: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'branch'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(branch_columns, 0, "branch 死列应随迁移删除");
+            let (project_id, project_name): (String, String) = conn
+                .query_row(
+                    "SELECT id, name FROM projects WHERE id = 'p-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!((project_id.as_str(), project_name.as_str()), ("p-1", "项目一"));
 
             // 数据保留，未用列已随表重建消失。
             let (image_id, message_id, legacy_column): (String, Option<String>, i64) = conn
@@ -1001,16 +1083,76 @@ mod tests {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if name.contains("v1-to-baseline-")
-                && (name.contains("pre-v2-backup") || name.contains("pre-v3-backup"))
+                && (name.contains("pre-v2-backup")
+                    || name.contains("pre-v3-backup")
+                    || name.contains("pre-v4-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
     }
 
-    /// v2 库打开时迁移到 v3：dispatcher_settings 补 theme 列。旧
-    /// app_config `app_settings` 键存在时主题搬移进既有行；不存在时落
-    /// 默认值 `system`。
+    /// v3 库打开时迁移到 v4：projects 死列 `branch` 删除、行数据全量保留、
+    /// 快照备份生成、重复打开幂等。
+    #[test]
+    fn v3_database_drops_projects_branch_dead_column() {
+        let path = temp_db_path("v3-to-v4");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    path TEXT NOT NULL UNIQUE,
+                    branch TEXT,
+                    last_opened_at INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO projects (id, name, path, branch, last_opened_at)
+                VALUES ('p-1', '项目一', '/tmp/p1', 'main', 1);
+                PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, super::SCHEMA_VERSION);
+
+            let branch_columns: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'branch'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(branch_columns, 0, "branch 死列应随迁移删除");
+            let project_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(project_count, 1, "projects 行数据应全量保留");
+        }
+        // 重开幂等：已是 v4 的库直接打开，不再触发任何迁移。
+        drop(db);
+        let _ = DispatcherDb::new(path.clone());
+        cleanup_db_files(&path);
+        let dir = path.parent().unwrap();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("v3-to-v4-") && name.contains("pre-v4-backup") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// v2 库打开时沿链迁移：v2→v3 dispatcher_settings 补 theme 列（旧
+    /// app_config `app_settings` 键存在时主题搬移进既有行），再 v3→v4 删除
+    /// projects.branch 死列。fixture 含 projects 表以覆盖 DROP 路径。
     #[test]
     fn v2_database_migrates_theme_into_settings() {
         let path = temp_db_path("v2-to-v3");
@@ -1043,6 +1185,14 @@ mod tests {
                 );
                 INSERT INTO dispatcher_settings (id, context_debug) VALUES ('default', 1);
                 INSERT INTO app_config VALUES ('app_settings', '{\"theme\":\"light\"}');
+                CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    path TEXT NOT NULL UNIQUE,
+                    branch TEXT,
+                    last_opened_at INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                );
                 PRAGMA user_version = 2;",
             )
             .unwrap();
@@ -1054,7 +1204,7 @@ mod tests {
             let version: i32 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 3);
+            assert_eq!(version, super::SCHEMA_VERSION);
 
             // 既有行保留原值，只追加 theme；旧键删除。
             let (theme, context_debug): (String, i64) = conn
@@ -1081,7 +1231,9 @@ mod tests {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.contains("v2-to-v3-") && name.contains("pre-v3-backup") {
+            if name.contains("v2-to-v3-")
+                && (name.contains("pre-v3-backup") || name.contains("pre-v4-backup"))
+            {
                 let _ = std::fs::remove_file(entry.path());
             }
         }

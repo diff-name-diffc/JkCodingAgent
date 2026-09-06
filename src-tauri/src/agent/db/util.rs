@@ -10,15 +10,13 @@ use super::messages::{DispatcherMessageRecord, DispatcherMessageUsageStats};
 
 pub(super) const MAX_LLM_DIALOGUES: usize = 5;
 pub(super) const MAX_DIALOGUE_QUERY_LIMIT: usize = 50;
+/// 上下文窗口容量兜底值（tokens）：模型库条目未配置 contextWindow 时使用。
+/// 容量的唯一权威源是库条目（经 provider 传入各消费点），本常量仅是缺省。
 pub(crate) const DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS: u64 = 1_000_000;
 pub(crate) const TOOL_RETRY_CONTEXT_PREFIX: &str = "[工具调用失败，已交回模型修正重试]";
 
 pub(super) fn now() -> String {
     Utc::now().to_rfc3339()
-}
-
-pub(super) fn default_context_window_capacity(_model: &str) -> u64 {
-    DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS
 }
 
 // ── 行映射器 ──────────────────────────────────────────────────

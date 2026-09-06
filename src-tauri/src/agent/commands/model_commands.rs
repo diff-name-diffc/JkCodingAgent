@@ -43,7 +43,7 @@ async fn test_chat_compatible_model(
 ) -> Result<String> {
     test_required_model_config(label, &config)?;
     let model_name = config.model.trim().to_string();
-    let provider = OpenAiCompatProvider::new(config.api_key, config.url, config.model, 64, 0.0);
+    let provider = OpenAiCompatProvider::new(config.api_key, config.url, config.model, Some(64), 0.0);
     let messages = build_test_messages(enable_multimodal);
     let response = provider
         .chat_stream(&messages, &[], enable_multimodal, |_| {})

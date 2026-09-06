@@ -28,6 +28,8 @@ export interface SubAgentRecord {
   description: string;
   configJson: string;
   enabled: boolean;
+  /** 是否在全局启用集合（global_sub_agents 成员）；「全局可用」= enabled && globalEnabled。 */
+  globalEnabled: boolean;
   createdAt: number;
   updatedAt: number;
 }

@@ -13,8 +13,11 @@ export function usePythonRunController(
   const [records, setRecords] = useState<Record<string, PythonCodeRunRecord>>({});
 
   useEffect(() => {
+    // 切会话重置抽屉与目标（UI-08 串台修复）：避免 A 会话的代码块与 B 会话
+    // 的运行记录拼在同一抽屉里；records 随后按新会话重新拉取。
+    setDrawerOpen(false);
+    setTarget(null);
     if (!activeSessionId) {
-      setTarget(null);
       setRecords({});
       return;
     }

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import type { GraphPlanRecord, GraphPlanUpdatedPayload } from "../../types";
-import { useUIStore } from "../../stores/ui-store";
+import { useWorkspaceStore } from "../../stores/workspace-store";
 import { hydrateGraphPlan } from "../graph/graph-store";
 
 export function useGraphPanelController(
@@ -10,8 +10,12 @@ export function useGraphPanelController(
   isPlainChat: boolean,
   currentSessionIdRef: React.RefObject<string | null>,
 ) {
-  const planId = useUIStore((state) => state.graphPanelPlanId);
-  const setPlanId = useUIStore((state) => state.setGraphPanelPlanId);
+  // 执行图面板归属绑定 sessionId（UI-08）：多项目保活挂载不再共享 planId。
+  const graphPanel = useWorkspaceStore((state) => state.graphPanel);
+  const openGraphPanel = useWorkspaceStore((state) => state.openGraphPanel);
+  const closeGraphPanel = useWorkspaceStore((state) => state.closeGraphPanel);
+  const planId =
+    graphPanel && graphPanel.sessionId === activeSessionId ? graphPanel.planId : null;
   const [latestPlanId, setLatestPlanId] = useState<string | null>(null);
   // 截断（regenerate / 编辑重发）会删除被删轮次的图计划，refreshLatestPlan
   // 递增该 tick 触发重新查询，避免「最近计划」入口指向已删除的计划。
@@ -51,16 +55,16 @@ export function useGraphPanelController(
   }, [currentSessionIdRef, isPlainChat]);
 
   const open = useCallback(() => {
-    if (!latestPlanId) return;
+    if (!latestPlanId || !activeSessionId) return;
     void hydrateGraphPlan(latestPlanId);
-    setPlanId(latestPlanId);
-  }, [latestPlanId, setPlanId]);
+    openGraphPanel(activeSessionId, latestPlanId);
+  }, [latestPlanId, activeSessionId, openGraphPanel]);
 
   return {
     planId,
     latestPlanId,
     open,
-    close: useCallback(() => setPlanId(null), [setPlanId]),
+    close: useCallback(() => closeGraphPanel(activeSessionId ?? undefined), [closeGraphPanel, activeSessionId]),
     refreshLatestPlan: useCallback(() => setRefreshTick((tick) => tick + 1), []),
   };
 }

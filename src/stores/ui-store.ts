@@ -8,7 +8,8 @@ import { persist } from "zustand/middleware";
  *   - layout flags (sidebar / artifact panel)
  *   - command-palette open state
  *
- * The app ships a single light theme, so there is no theme state here.
+ * 主题偏好不在这里：权威源是后端 AhaSettingsV2.theme（lib/theme.ts 校准）。
+ * 工作区布局偏好与执行图归属已迁至 workspace-store（UI-08）。
  */
 export interface UIState {
   sidebarCollapsed: boolean;
@@ -16,8 +17,6 @@ export interface UIState {
   sidebarWidth: number;
   artifactPanelOpen: boolean;
   commandPaletteOpen: boolean;
-  /** 当前打开的图编排面板对应的 planId（null = 关闭）。不持久化。 */
-  graphPanelPlanId: string | null;
 
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
@@ -27,7 +26,6 @@ export interface UIState {
   setCommandPaletteOpen: (open: boolean) => void;
   toggleCommandPalette: () => void;
 
-  setGraphPanelPlanId: (planId: string | null) => void;
 }
 
 export const useUIStore = create<UIState>()(
@@ -37,7 +35,6 @@ export const useUIStore = create<UIState>()(
       sidebarWidth: 264,
       artifactPanelOpen: false,
       commandPaletteOpen: false,
-      graphPanelPlanId: null,
 
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setSidebarWidth: (width) => set({ sidebarWidth: width }),
@@ -48,7 +45,6 @@ export const useUIStore = create<UIState>()(
       toggleCommandPalette: () =>
         set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
 
-      setGraphPanelPlanId: (planId) => set({ graphPanelPlanId: planId }),
     }),
     {
       name: "jkcodingagent:ui",

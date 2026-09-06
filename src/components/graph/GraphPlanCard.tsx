@@ -1,7 +1,9 @@
 import { memo } from "react";
 import { Workflow } from "lucide-react";
 import { cn } from "../../lib/cn";
-import { useUIStore } from "../../stores/ui-store";
+import { useWorkspaceStore } from "../../stores/workspace-store";
+import { useSessionScope } from "../chat/session-scope";
+import { hydrateGraphPlan } from "./graph-store";
 import { Button } from "../ui/button";
 import { useGraphPlan } from "./graph-store";
 import {
@@ -24,7 +26,8 @@ export const GraphPlanCard = memo(function GraphPlanCard({
   className,
 }: GraphPlanCardProps) {
   const snapshot = useGraphPlan(planId);
-  const setGraphPanelPlanId = useUIStore((state) => state.setGraphPanelPlanId);
+  const sessionId = useSessionScope();
+  const openGraphPanel = useWorkspaceStore((state) => state.openGraphPanel);
 
   const plan = snapshot.plan;
   const definition = parseGraphDefinition(plan);
@@ -57,7 +60,12 @@ export const GraphPlanCard = memo(function GraphPlanCard({
             variant="outline"
             size="sm"
             className="h-7"
-            onClick={() => setGraphPanelPlanId(planId)}
+            onClick={() => {
+              if (!sessionId) return;
+              // 与 useGraphPanelController.open 同入口语义：先 hydrate 再打开。
+              void hydrateGraphPlan(planId);
+              openGraphPanel(sessionId, planId);
+            }}
           >
             查看执行图
           </Button>

@@ -9,6 +9,8 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { useProjectPanels } from "../hooks/useProjectPanels";
 import { useBrowserSessionDock } from "../hooks/useBrowserSessionDock";
 import { useWorkspaceBudget } from "../hooks/useWorkspaceBudget";
+import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
+import type { WorkspacePrefs } from "./project/workspace-prefs";
 import { useProjectMcpStatus } from "../hooks/use-mcp-status";
 import {
   ProjectMainArea,
@@ -59,7 +61,7 @@ export function ProjectPage({
   onCloseProject?: (project: Project) => void;
   onOpen: () => void;
 }) {
-  const panels = useProjectPanels();
+  const panels = useProjectPanels(project.id);
   const {
     rightPanel,
     openFiles,
@@ -90,11 +92,33 @@ export function ProjectPage({
     setServerEnabled: toggleMcpServerEnabled,
   } = useProjectMcpStatus(project.path, visible);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [sessionSidebarCollapsed, setSessionSidebarCollapsed] = useState(false);
   const [sessionWorkbenchVisible, setSessionWorkbenchVisible] = useState(true);
-  const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
-  const [contextTab, setContextTab] = useState<ContextNavTab>("sessions");
-  const [contextNavWidth, setContextNavWidth] = useState(248);
+  // 布局偏好按工作区持久化（UI-08）；setter 经 store 校验后落盘。
+  const workspacePrefs = useWorkspaceStore(selectWorkspacePrefs(project.id));
+  const sessionSidebarCollapsed = workspacePrefs.sessionSidebarCollapsed;
+  const editorPaneRatio = workspacePrefs.editorPaneRatio;
+  const contextTab = workspacePrefs.contextTab;
+  const contextNavWidth = workspacePrefs.contextNavWidth;
+  const setWorkspacePref = useCallback(
+    (patch: Partial<WorkspacePrefs>) => useWorkspaceStore.getState().setPrefs(project.id, patch),
+    [project.id],
+  );
+  const setSessionSidebarCollapsed = useCallback(
+    (value: boolean) => setWorkspacePref({ sessionSidebarCollapsed: value }),
+    [setWorkspacePref],
+  );
+  const setEditorPaneRatio = useCallback(
+    (value: number) => setWorkspacePref({ editorPaneRatio: value }),
+    [setWorkspacePref],
+  );
+  const setContextTab = useCallback(
+    (value: ContextNavTab) => setWorkspacePref({ contextTab: value }),
+    [setWorkspacePref],
+  );
+  const setContextNavWidth = useCallback(
+    (value: number) => setWorkspacePref({ contextNavWidth: value }),
+    [setWorkspacePref],
+  );
 
   // 空间预算（UI-04）：偏好为冻结输入，窄窗临时适配只体现在 budget 输出。
   const hasEditorContent = panels.openDiff !== null || openFiles.length > 0;

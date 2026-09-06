@@ -28,6 +28,7 @@ import { SessionKeywordBar } from "./session-keyword-bar";
 import { PromptInput, type ComposerMode } from "./prompt-input";
 import { ArtifactPanel } from "../artifact/artifact-panel";
 import { CommandPalette } from "./command-palette";
+import { SessionScopeContext } from "./session-scope";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import {
   getSubAgentSession,
@@ -272,6 +273,7 @@ export function ChatShell({
   );
 
   return (
+    <SessionScopeContext.Provider value={sessionId}>
     <AppLayout
       chatHeader={projectHeader}
       artifactOverlay={embedded}
@@ -357,6 +359,7 @@ export function ChatShell({
         onOpenSettings={onOpenSettings}
       />
     </AppLayout>
+    </SessionScopeContext.Provider>
   );
 }
 

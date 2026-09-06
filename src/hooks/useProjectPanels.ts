@@ -9,8 +9,13 @@ import {
   type RightPanel,
 } from "./projectPanelsFileState";
 import { useDockedBrowserPanel } from "./useDockedBrowserPanel";
+import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
 
-export function useProjectPanels() {
+/**
+ * 项目面板状态（UI-08 换底座）：右栏宽/终端高度等尺寸偏好改由
+ * workspace-store 按工作区持久化；签名保持兼容，消费组件零改动。
+ */
+export function useProjectPanels(workspaceId: string) {
   const [rightPanel, setRightPanel] = useState<RightPanel>(null);
   const [editorWorkbenchVisible, setEditorWorkbenchVisible] = useState(true);
   const [openFilesState, setOpenFilesState] = useState<{
@@ -21,8 +26,26 @@ export function useProjectPanels() {
     activeTabId: null,
   });
   const [openDiff, setOpenDiff] = useState<OpenDiff | null>(null);
-  const [rightPanelWidth, setRightPanelWidth] = useState(280);
-  const [terminalHeight, setTerminalHeight] = useState(240);
+  const prefs = useWorkspaceStore(selectWorkspacePrefs(workspaceId));
+  /** 拖拽中的实时值；mouseup 才写回 store，避免高频持久化。 */
+  const [dragRightWidth, setDragRightWidth] = useState<number | null>(null);
+  const [dragTerminalHeight, setDragTerminalHeight] = useState<number | null>(null);
+  const dragRightWidthRef = useRef(dragRightWidth);
+  dragRightWidthRef.current = dragRightWidth;
+  const dragTerminalHeightRef = useRef(dragTerminalHeight);
+  dragTerminalHeightRef.current = dragTerminalHeight;
+  const rightPanelWidth = dragRightWidth ?? prefs.rightPanelWidth;
+  const terminalHeight = dragTerminalHeight ?? prefs.terminalHeight;
+  const setRightPanelWidth = useCallback(
+    (width: number) =>
+      useWorkspaceStore.getState().setPrefs(workspaceId, { rightPanelWidth: width }),
+    [workspaceId],
+  );
+  const setTerminalHeight = useCallback(
+    (height: number) =>
+      useWorkspaceStore.getState().setPrefs(workspaceId, { terminalHeight: height }),
+    [workspaceId],
+  );
   const browserPanel = useDockedBrowserPanel("nezha.project.browserPanelWidth");
   const rightPanelRef = useRef(rightPanel);
   const rightPanelWidthRef = useRef(rightPanelWidth);
@@ -173,24 +196,27 @@ export function useProjectPanels() {
     const startWidth = rightPanelWidthRef.current;
     const onMouseMove = (ev: MouseEvent) => {
       const newWidth = Math.max(180, Math.min(600, startWidth + (startX - ev.clientX)));
-      setRightPanelWidth(newWidth);
+      setDragRightWidth(newWidth);
     };
     const onMouseUp = () => {
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      const latest = dragRightWidthRef.current;
+      setDragRightWidth(null);
+      if (latest != null) setRightPanelWidth(latest);
     };
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
-  }, [browserPanel]);
+  }, [browserPanel, setRightPanelWidth]);
 
   /** 键盘/复位等离散调整入口（拖拽走 handleRightResizeStart）。 */
   const applyRightPanelWidth = useCallback((width: number) => {
     setRightPanelWidth(Math.max(180, Math.min(600, Math.round(width))));
-  }, []);
+  }, [setRightPanelWidth]);
 
   const handleTerminalResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -198,19 +224,22 @@ export function useProjectPanels() {
     const startHeight = terminalHeightRef.current;
     const onMouseMove = (ev: MouseEvent) => {
       const newHeight = Math.max(100, Math.min(600, startHeight + (startY - ev.clientY)));
-      setTerminalHeight(newHeight);
+      setDragTerminalHeight(newHeight);
     };
     const onMouseUp = () => {
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      const latestHeight = dragTerminalHeightRef.current;
+      setDragTerminalHeight(null);
+      if (latestHeight != null) setTerminalHeight(latestHeight);
     };
     document.body.style.cursor = "row-resize";
     document.body.style.userSelect = "none";
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
-  }, []);
+  }, [setTerminalHeight]);
 
   return {
     rightPanel,

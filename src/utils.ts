@@ -30,7 +30,12 @@ export function load<T>(key: string, fallback: T): T {
   }
 }
 export function save<T>(key: string, val: T) {
-  localStorage.setItem(key, JSON.stringify(val));
+  // 隐私模式/配额满时 localStorage 会抛错：偏好写入失败不应中断交互。
+  try {
+    localStorage.setItem(key, JSON.stringify(val));
+  } catch (error) {
+    console.warn("写入 localStorage 失败:", key, error);
+  }
 }
 
 type ImeKeyboardEvent = {

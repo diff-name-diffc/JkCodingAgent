@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState, useMemo } from "react";
 import { Search, FolderOpen, Plus, Trash2 } from "lucide-react";
 import type { Project } from "../types";
-import { shortenPath } from "../utils";
+import { formatRelativeTime, shortenPath } from "../utils";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { AiEmptyState, AiSectionHeader } from "./ui/sci-fi-shell";
 import { AppRail } from "./shell/AppRail";
@@ -58,7 +58,6 @@ export function WelcomePage({
   onDeleteProject: (projectId: string) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [hov, setHov] = useState<string | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
 
   const filtered = useMemo(() => {
@@ -115,53 +114,46 @@ export function WelcomePage({
             </div>
 
             <AiSectionHeader
-              title="项目"
+              title="最近项目"
               caption={
                 query.trim() ? `找到 ${filtered.length} 个结果` : `共 ${projects.length} 个项目`
               }
             />
 
-            <div className="ai-project-grid">
+            <div className="ai-project-recent-list">
               {filtered.length === 0 ? (
                 <WelcomeEmpty hasProjects={projects.length > 0} onOpen={onOpen} />
               ) : (
-                filtered.map((p) => {
-                  return (
-                    <div
-                      key={p.id}
-                      role="button"
-                      tabIndex={0}
-                      className={`ai-list-row ai-project-card${hov === p.id ? " is-active" : ""}`}
-                      onMouseEnter={() => setHov(p.id)}
-                      onMouseLeave={() => setHov(null)}
-                      onClick={() => onProjectClick(p)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          onProjectClick(p);
-                        }
-                      }}
-                    >
-                      <ProjectAvatar name={p.name} size={34} />
-
-                      <div className="ai-project-card-main">
-                        <div className="ai-project-name">{p.name}</div>
-                        <div className="ai-project-meta">{shortenPath(p.path)}</div>
-                      </div>
-
+                <ul role="list" className="ai-project-recent-ul">
+                  {filtered.map((p) => (
+                    <li key={p.id} className="ai-project-recent-item">
                       <button
+                        type="button"
+                        className="ai-project-recent-row"
+                        onClick={() => onProjectClick(p)}
+                        title={`${p.name} · ${p.path}`}
+                      >
+                        <ProjectAvatar name={p.name} size={28} />
+                        <span className="ai-project-recent-main">
+                          <span className="ai-project-name">{p.name}</span>
+                          <span className="ai-project-meta">
+                            {shortenPath(p.path)} ·{" "}
+                            {formatRelativeTime(new Date(p.lastOpenedAt).toISOString())}
+                          </span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
                         className="ai-project-delete-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteProject(p.id);
-                        }}
+                        onClick={() => onDeleteProject(p.id)}
                         title="删除项目"
+                        aria-label={`删除项目 ${p.name}`}
                       >
                         <Trash2 size={14} strokeWidth={1.8} />
                       </button>
-                    </div>
-                  );
-                })
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
           </div>

@@ -8,6 +8,7 @@ import { cleanupDispatcherSession } from "./components/dispatcherSessionStore";
 import { cleanupSubAgentEvents } from "./components/subAgentEventStore";
 import { cleanupGraphPlansForSession } from "./components/graph/graph-store";
 import { normalizeThemePreference, persistThemePreference } from "./lib/theme";
+import { sortProjectsByRecency } from "./lib/project-sort";
 import "./App.css";
 
 const ProjectPage = lazy(() =>
@@ -163,14 +164,9 @@ function App() {
     setActiveProject((prev) => (prev?.id === projectId ? null : prev));
   }
 
-  const sortedProjects = useMemo(
-    () => [...projects].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt),
-    [projects],
-  );
-  const railProjects = useMemo(
-    () => [...projects].sort((a, b) => Number(a.id) - Number(b.id)),
-    [projects],
-  );
+  const sortedProjects = useMemo(() => sortProjectsByRecency(projects), [projects]);
+  // 旧实现用 Number(id) 排序，对 UUID 主键恒为 NaN（UI-10 修复）：统一按最近打开。
+  const railProjects = useMemo(() => sortProjectsByRecency(projects), [projects]);
   const mountedProjects = useMemo(
     () =>
       mountedProjectIds

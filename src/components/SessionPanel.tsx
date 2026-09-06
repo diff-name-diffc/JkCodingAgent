@@ -1,9 +1,16 @@
 import { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
-import { Search, ChevronLeft, PanelLeftClose, Plus, Trash2, LoaderCircle } from "lucide-react";
+import { Search, ChevronLeft, PanelLeftClose, Plus, Trash2, LoaderCircle, MoreHorizontal } from "lucide-react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { cleanupDispatcherSession } from "./dispatcherSessionStore";
 import type { Project } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
+import { formatRelativeTime } from "../utils";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
 import { SidebarFooterActions } from "./SidebarFooterActions";
 import { BranchBar } from "./task-panel/BranchBar";
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
@@ -15,15 +22,6 @@ import {
   useSessionListEventMerge,
   useSessionSearchQuery,
 } from "../hooks/use-session-queries";
-
-function formatTime(timestampStr: string) {
-  try {
-    const d = new Date(timestampStr);
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  } catch {
-    return timestampStr;
-  }
-}
 
 /**
  * 会话行：memo 隔离，避免高频会话更新事件（dispatcher-session-updated）
@@ -46,34 +44,51 @@ const SessionRow = memo(function SessionRow({
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
+  // UI-10：行根改为 button（键盘可达）+ 更多菜单；与聊天侧
+  // SidebarConversationItem 的语义对齐（li>button + DropdownMenu）。
   return (
-    <div
-      className={isActive ? "ai-project-session-row is-active" : "ai-project-session-row"}
-      onClick={() => onSelect(id)}
-    >
-      <div className="ai-project-session-row-main">
-        <div className="ai-project-session-row-title">
-          <span>{title}</span>
-          {isRunning && (
-            <LoaderCircle size={13} className="spin ai-project-session-running" />
-          )}
+    <li className="ai-project-session-item">
+      <button
+        type="button"
+        className={isActive ? "ai-project-session-row is-active" : "ai-project-session-row"}
+        onClick={() => onSelect(id)}
+        aria-current={isActive ? "true" : undefined}
+        title={title}
+      >
+        <div className="ai-project-session-row-main">
+          <div className="ai-project-session-row-title">
+            <span>{title}</span>
+            {isRunning && (
+              <>
+                <LoaderCircle size={13} className="spin ai-project-session-running" />
+                <span className="ai-project-session-running-text">运行中</span>
+              </>
+            )}
+          </div>
+          <div className="ai-project-session-row-sub">{formatRelativeTime(updatedAt)}</div>
         </div>
-        <div className="ai-project-session-row-sub">{formatTime(updatedAt)}</div>
-      </div>
-      <div className="ai-project-session-actions-inline">
-        <button
-          className="ai-project-session-delete"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(id);
-          }}
-          title="删除会话"
-          aria-label="删除会话"
-        >
-          <Trash2 size={13} color="var(--text-muted)" />
-        </button>
-      </div>
-    </div>
+      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="ai-project-session-more"
+            aria-label={`会话 ${title} 的更多操作`}
+          >
+            <MoreHorizontal size={13} />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            onSelect={() => onDelete(id)}
+            className="ai-project-session-delete-item"
+          >
+            <Trash2 size={13} />
+            删除会话
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </li>
   );
 });
 
@@ -274,36 +289,40 @@ export function SessionPanel({
           ) : searchResults?.length === 0 ? (
             <div className="ai-project-session-empty">没有找到匹配的会话</div>
           ) : (
-            searchResults?.map((r) => (
-              <SessionRow
-                key={r.sessionId}
-                id={r.sessionId}
-                title={r.sessionTitle}
-                updatedAt={r.updatedAt}
-                isActive={activeSessionId === r.sessionId}
-                isRunning={dispatcherRunningSessionIds.has(r.sessionId)}
-                onSelect={handleSelect}
-                onDelete={handleDeleteSession}
-              />
-            ))
+            <ul className="ai-project-session-ul" role="list">
+              {searchResults?.map((r) => (
+                <SessionRow
+                  key={r.sessionId}
+                  id={r.sessionId}
+                  title={r.sessionTitle}
+                  updatedAt={r.updatedAt}
+                  isActive={activeSessionId === r.sessionId}
+                  isRunning={dispatcherRunningSessionIds.has(r.sessionId)}
+                  onSelect={handleSelect}
+                  onDelete={handleDeleteSession}
+                />
+              ))}
+            </ul>
           )
         ) : (
           <>
             {sessions.length === 0 && <div className="ai-project-session-empty">没有找到会话</div>}
-            {sessions.map((session) => (
-              <SessionRow
-                key={session.id}
-                id={session.id}
-                title={session.title}
-                updatedAt={session.updatedAt}
-                isActive={activeSessionId === session.id}
-                isRunning={
-                  Boolean(session.isRunning) || dispatcherRunningSessionIds.has(session.id)
-                }
-                onSelect={handleSelect}
-                onDelete={handleDeleteSession}
-              />
-            ))}
+            <ul className="ai-project-session-ul" role="list">
+              {sessions.map((session) => (
+                <SessionRow
+                  key={session.id}
+                  id={session.id}
+                  title={session.title}
+                  updatedAt={session.updatedAt}
+                  isActive={activeSessionId === session.id}
+                  isRunning={
+                    Boolean(session.isRunning) || dispatcherRunningSessionIds.has(session.id)
+                  }
+                  onSelect={handleSelect}
+                  onDelete={handleDeleteSession}
+                />
+              ))}
+            </ul>
             {hasNextPage && (
               <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />
             )}

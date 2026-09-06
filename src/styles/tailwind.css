@@ -29,27 +29,9 @@
     background: var(--bg-sidebar);
   }
 
-  .ai-list-row {
-    position: relative;
-    display: flex;
-    align-items: center;
-    min-width: 0;
-    border: 1px solid var(--border-accent);
-    border-radius: 8px;
-    background: var(--bg-sidebar);
-    color: var(--text-secondary);
-    transition:
-      border-color 0.16s ease,
-      background 0.16s ease,
-      transform 0.16s ease,
-      box-shadow 0.16s ease;
-  }
 
-  .ai-list-row:hover,
-  .ai-list-row.is-active {
-    border-color: var(--accent);
-    background: var(--accent-subtle);
-  }
+
+
 
   .ai-dialog {
     border: 1px solid var(--border-dim);
@@ -963,32 +945,13 @@
     box-shadow: 0 12px 34px rgb(var(--accent-rgb) / 0.16);
   }
 
-  .ai-project-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: 10px;
-    min-height: 0;
-    overflow: auto;
-    padding-right: 4px;
-  }
 
-  .ai-project-card {
-    gap: 12px;
-    min-height: 72px;
-    padding: 12px;
-    cursor: pointer;
-  }
 
-  .ai-project-card-main {
-    flex: 1;
-    min-width: 0;
-  }
 
-  .ai-project-card:focus-visible {
-    border-color: rgb(var(--accent-rgb) / 0.62);
-    box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.14);
-    outline: none;
-  }
+
+
+
+
 
   .ai-project-name {
     overflow: hidden;
@@ -1030,10 +993,7 @@
       background 0.16s ease;
   }
 
-  .ai-project-card:hover .ai-project-delete-btn,
-  .ai-project-card:focus-within .ai-project-delete-btn {
-    opacity: 1;
-  }
+
 
   .ai-project-delete-btn:hover {
     border-color: rgb(var(--danger-rgb) / 0.28);
@@ -6133,58 +6093,14 @@
     color: var(--danger);
   }
 
-  .ai-project-session-actions-inline {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    flex-shrink: 0;
-  }
+
 
   .ai-project-session-running {
     color: var(--accent);
     flex-shrink: 0;
   }
 
-  .ai-project-session-delete {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    border: 1px solid transparent !important;
-    border-radius: 5px;
-    background: transparent !important;
-    color: var(--text-hint);
-    cursor: pointer;
-    opacity: 0;
-    /* 隐藏态禁用命中，防止淡入前误触删除。 */
-    pointer-events: none;
-    transition:
-      opacity 0.12s ease,
-      background 0.12s ease,
-      color 0.12s ease;
-  }
 
-  .ai-project-session-row:hover .ai-project-session-delete,
-  .ai-project-session-delete:focus-visible {
-    opacity: 1;
-    pointer-events: auto;
-  }
-
-  @media (hover: none) {
-    .ai-project-session-delete {
-      opacity: 1;
-      pointer-events: auto;
-    }
-  }
-
-  .ai-project-session-delete:hover {
-    border-color: rgb(var(--danger-rgb) / 0.28) !important;
-    background: rgb(var(--danger-rgb) / 0.1) !important;
-    color: var(--danger);
-    opacity: 1;
-  }
 
   .ai-project-session-empty {
     padding: 24px 16px;
@@ -6476,9 +6392,7 @@
       min-width: 0;
     }
 
-    .ai-project-grid {
-      grid-template-columns: 1fr;
-    }
+
 
   }
 
@@ -10383,5 +10297,113 @@
       transform: translateX(0);
       opacity: 1;
     }
+  }
+
+  /* ── 会话行/最近项目列表（UI-10）──────────────────────────────── */
+
+  .ai-project-session-ul,
+  .ai-project-recent-ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .ai-project-session-item {
+    position: relative;
+  }
+
+  .ai-project-session-item .ai-project-session-row {
+    width: 100%;
+    text-align: left;
+    padding-right: 26px;
+  }
+
+  .ai-project-session-more {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    color: var(--text-hint);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-project-session-item:hover .ai-project-session-more,
+  .ai-project-session-item:focus-within .ai-project-session-more {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .ai-project-session-more:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .ai-project-session-running-text {
+    font-size: 11px;
+    line-height: 16px;
+    color: var(--accent-strong);
+  }
+
+
+
+  .ai-project-recent-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 24px 24px;
+  }
+
+  .ai-project-recent-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .ai-project-recent-row {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 44px;
+    padding: 0 34px 0 8px;
+    border-radius: 8px;
+    text-align: left;
+    transition: background var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-project-recent-row:hover {
+    background: var(--bg-hover);
+  }
+
+  .ai-project-recent-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .ai-project-recent-item .ai-project-delete-btn {
+    position: absolute;
+    right: 8px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-project-recent-item:hover .ai-project-delete-btn,
+  .ai-project-recent-item:focus-within .ai-project-delete-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .ai-project-session-delete-item {
+    color: var(--danger);
   }
 }

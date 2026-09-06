@@ -134,8 +134,6 @@ export function ProjectWorkbench({
           style={{
             width: 8,
             cursor: "col-resize",
-            background:
-              "linear-gradient(180deg, transparent, color-mix(in srgb, var(--accent) 14%, var(--border-dim)), transparent)",
           }}
         />
       )}

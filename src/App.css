@@ -38,6 +38,7 @@
   --bg-subtle: #e9ece6;
   --bg-input: #fbfaf6;
   --bg-elevated: #ffffff;
+  --bg-overlay: rgba(15, 26, 30, 0.28);
   --bg-gradient-surface: linear-gradient(180deg, #fffef9 0%, #f6f5f0 100%);
   --bg-gradient-sidebar: linear-gradient(180deg, #eff1ec 0%, #e7e9e4 100%);
 
@@ -196,6 +197,7 @@
   --bg-subtle: var(--muted);
   --bg-input: #121714;
   --bg-elevated: #222824;
+  --bg-overlay: rgb(0 0 0 / 0.58);
   --bg-gradient-surface: linear-gradient(180deg, #1b211d 0%, #151a17 100%);
   --bg-gradient-sidebar: linear-gradient(180deg, #171c19 0%, #121714 100%);
   --border-dim: #323c35;

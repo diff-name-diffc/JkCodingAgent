@@ -38,11 +38,12 @@
 | S1（1440） | nav 248 展开 + 单栏聊天：`navWidth=248, dualPane=false` |
 | S1-N（1000） | `nav-collapsed` + 单栏：帧中导航缺席即此降级 |
 | S2（1440+） | `dualPane=true`：chat ≥460 / editor ≥520 / splitter 8 |
-| S4 | 执行图为主区标签（UI-13），不占额外水平预算 |
+| S4 | 执行图为主区标签（UI-13 **已兑现**：`a9f7064/4c7381c`，graph 标签走 editorPane 预算宽），不占额外水平预算；浏览器预览标签同构（UI-18 `860bf88`） |
 | S5 | 助手 320–400 为架构空间自有预算（ArchitectureView 现状宽度状态），本轮不改 |
 
 ## 4. 未决项
 
 - 顶栏 38→40 与 rail 56→52 的实际切换在 UI-07 提交时同步改 `DEFAULT_CHROME` 调用参数并重跑测试；
-- 浏览器面板 expanded 的视口比例语义（`useDockedBrowserPanel`）未纳入预算，UI-18 迁移主区预览时并入；
+- ~~浏览器面板 expanded 的视口比例语义（`useDockedBrowserPanel`）未纳入预算~~ **已兑现（UI-18 `860bf88`）**：项目侧浏览器迁入主区标签，宽度由预算 grid 决定，expanded 视口比例语义删除（hook 仅 HomeChatPage 独立聊天仍用）；
+- **新登记（UI-18 后）**：预算 `rightPanelOpen/rightPanelWidthPref` 入参已无真实消费者（ProjectPage 恒传 `false/0`），纯函数与 32 测试保留为通用能力——UI-27 评估移除该降级通道；`prefs.rightPanelWidth` 与 localStorage `nezha.project.browserPanelWidth` 成为孤儿数据，UI-27 一并清理；
 - 多窗口尺寸独立预算不在本轮范围（02-design §7 已登记暂缓）。

@@ -2,7 +2,7 @@
 
 更新日期：2026-09-06。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
 
-**当前：UI-01–10（M0+M1）实施完成一轮**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工截图验收遗留至 UI-29/31）。源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`。
+**当前：UI-01–10（M0+M1）实施完成一轮；M2 批次一（UI-11/12/13/14/18/20）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工截图验收遗留至 UI-29/31）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一实施提交 `4ee7c71..633ec4a`。
 
 ## 1. 跟踪约定
 
@@ -40,16 +40,16 @@
 | UI-08 | P1 / L | 工作区布局状态与偏好迁移 | 04,07 | REVIEW | claude（会话领取） | `289cb3f`；workspace-store 三层+sanitize 测试；多窗口不纳入本轮 |
 | UI-09 | P1 / L | 主区标签、详情槽和抽屉统一 | 02,03,08 | REVIEW | claude（会话领取） | `afb341d`；main-tabs 8 case+Sheet/Dialog+请求守卫；窄屏 Artifact 抽屉遗留 |
 | UI-10 | P1 / M | 最近项目与会话导航精修 | 07,08 | REVIEW | claude（会话领取） | `15e50be`；recency 排序修复+列表语义；50 项目/大会话人工操作遗留 |
-| UI-11 | P1 / M | 任务头部与输入框上下文 | 06,09 | TODO | 待分配 | — |
-| UI-12 | P1 / M | 消息层级与工具活动摘要 | 06,11 | TODO | 待分配 | — |
-| UI-13 | P1 / L | 执行图迁入工作视图 | 09,12 | TODO | 待分配 | — |
-| UI-14 | P1 / M | 子智能体与节点详情统一 | 09,13 | TODO | 待分配 | — |
+| UI-11 | P1 / M | 任务头部与输入框上下文 | 06,09 | REVIEW | claude（会话领取） | `4ee7c71`；标题/项目/分支双行头部+更多菜单+停止态；窄窗走查遗留 |
+| UI-12 | P1 / M | 消息层级与工具活动摘要 | 06,11 | REVIEW | claude（会话领取） | `307dc73`；语义摘要纯函数+StatusPill 双编码+失败 pinned 露出；主题比对遗留 |
+| UI-13 | P1 / L | 执行图迁入工作视图 | 09,12 | REVIEW | claude（会话领取） | `a9f7064/4c7381c`；graph 主区标签+portal 删除+视图记忆；运行态走查遗留 |
+| UI-14 | P1 / M | 子智能体与节点详情统一 | 09,13 | REVIEW | claude（会话领取） | `05bc50f`；概览/活动/输出三段+共享 detail 组件+footer 门禁文案对齐 |
 | UI-15 | P1 / M | 架构画布与助手体验 | 06,08 | TODO | 待分配 | — |
 | UI-16 | P1 / M | 文件树与编辑器视觉整合 | 07,09 | TODO | 待分配 | — |
 | UI-17 | P1 / L | Git 审查布局与提交反馈 | 09,16 | TODO | 待分配 | — |
-| UI-18 | P1 / L | 浏览器预览与会话 dock 迁移 | 09 | TODO | 待分配 | — |
+| UI-18 | P1 / L | 浏览器预览与会话 dock 迁移 | 09 | REVIEW | claude（会话领取） | `4169175/860bf88`；拆分+串帧修复+主区单例标签，右面板机制移除；dock 走查遗留 |
 | UI-19 | P1 / M | 终端 dock 与空间约束 | 08,09 | TODO | 待分配 | — |
-| UI-20 | P1 / M | Python、图片和工具产物详情 | 09,12 | TODO | 待分配 | — |
+| UI-20 | P1 / M | Python、图片和工具产物详情 | 09,12 | REVIEW | claude（会话领取） | `633ec4a`；来源/耗时/状态统一+artifact kind 分派；运行态走查遗留 |
 | UI-21 | P1 / M | 设置布局与自动保存反馈 | 06,07 | TODO | 待分配 | — |
 | UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | TODO | 待分配 | — |
 | UI-23 | P1 / L | 键盘、焦点与输入法整合 | 07,09,11,21 | TODO | 待分配 | — |
@@ -236,6 +236,12 @@
 | 2026-09-06 | B6：UI-08 工作区状态归属 | `289cb3f` |
 | 2026-09-06 | B7：UI-09 主区标签/详情槽/抽屉 | `afb341d` |
 | 2026-09-06 | B8：UI-10 列表精修 | `15e50be` |
+| 2026-09-06 | C1：UI-11 任务头部与输入（双行头部/更多菜单/停止态/分支 pill） | `4ee7c71` |
+| 2026-09-06 | C2：UI-12 消息层级（status-meta/StatusPill+语义摘要+失败 pinned+superseded 共享） | `307dc73` |
+| 2026-09-06 | C3：UI-13 执行图迁主区标签（C3a 状态层 + C3b 内联化，成对回退） | `a9f7064`、`4c7381c` |
+| 2026-09-06 | C4：UI-14 详情统一（共享 detail 组件+抽屉拆分+子智能体三段） | `05bc50f` |
+| 2026-09-06 | C5：UI-18 浏览器迁主区（C5a 拆分+串帧修复 + C5b 单例标签+右面板移除） | `4169175`、`860bf88` |
+| 2026-09-06 | C6：UI-20 Python/产物详情统一（来源/耗时/kind 分派/状态同源） | `633ec4a` |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
 
@@ -361,3 +367,83 @@
 人工走查：零/1/50 项目与大量会话操作遗留 UI-28/31
 风险/回退：单 commit
 阻塞或剩余事项：无
+
+## 10. UI-11–UI-20（M2 批次一）任务记录（第 5 节模板）
+
+任务：UI-11
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：基线 `1e40ebf`；结果 `4ee7c71`
+实现文件与范围：`ChatPageHeaders.tsx`（双行头部重构：任务标题+运行状态双编码/项目名+分支 pill；清空与设置收入 DropdownMenu 更多菜单；删硬编码「调度智能体」）、`hooks/use-project-session-title.ts`（新增：useProjectSessionsQuery 同 key 去重 + dispatcher-session-updated 事件兜底）、`hooks/use-current-git-branch.ts`（新增：mount/path 变化/获焦刷新，刻意不轮询）、`lib/git-branch.ts`(+test 4 case)、`chat-page-v2.tsx`（projectId/projectName props + isStopping 下传）、`chat-shell.tsx`/`prompt-input.tsx`（stopping prop：停止按钮 disabled+Loader2+「正在停止…」）、`ProjectWorkbenchContent.tsx`（传 projectId/projectName）、`styles/tailwind.css`（.ai-chat-header* 类族 8 个，reduced-motion 降级）
+对应问题：A07、设计 §5.2
+测试命令及结果：git-branch 4 case；全量 184 passed（本提交时点）；build/lint/styles:report 全绿
+截图：遗留（tauri 运行态，见 UI-01 阻塞说明；同 UI-29 矩阵）
+人工走查：长中文标题 1000px 窄窗头部不溢出、停止中按钮反馈、更多菜单键盘可达——遗留 UI-28/29
+风险/回退：单 commit 可回退；标题查询在导航收起时由 header 独立挂载触发一次 project_list_sessions（缓存共享，可接受）
+阻塞或剩余事项：分支 pill 依赖项目为 git 仓库；非 git 项目静默不显示（设计即如此）
+验收人/日期：待人工（UI-29/31）
+
+任务：UI-12
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`307dc73`
+实现文件与范围：`detail/status-meta.ts`(+test，六域状态双编码映射，未知回退 neutral 原文)、`detail/StatusPill.tsx`（图标+文字 pill，.ai-status-pill--{tone} 六类）、`dispatcher-chat/tool-activity-summary.ts`(+test 27 case：工具名→动词类别、计数可复算、文案顺序快照)、`tool-activity.ts`（ToolActivityItem 增 planned 可选标记）、`live-tool-activity.ts`（planned 翻转链路：toolPlanned 置位/started、finished 清除）、`tool-call-card.tsx`（摘要行换语义文案+失败/等待/执行中 StatusPill 计数；收起态非成功卡 pinned 渲染在折叠区外；卡片徽章换 StatusPill；planned→Clock3 琥珀节点）、`chat/superseded-block.tsx`（新增共享组件）、`assistant-message.tsx`/`streaming-message.tsx`（实时侧补 superseded 折叠分支——同轮次一致）、删除零消费者旧 AiStatusPill（sci-fi-shell）及旧 .ai-status-pill CSS 族、safelist 更新
+对应问题：设计 §5.2、tokens.md §5 结论 4（只靠彩点收敛）
+测试命令及结果：tool-activity-summary 27 + status-meta 6 + tool-activity planned 链路 3；全量 221 passed；门禁全绿
+截图：遗留（浅/深主题聚合卡比对 UI-29）
+人工走查：聚合收起态失败卡可见、pinned 区高度观感——遗留 UI-28
+风险/回退：单 commit；planned 为可选字段，历史投影无该标记（皆终态），既有断言不受影响
+阻塞或剩余事项：工具类别映射按工具名（顶层 ToolActivityItem 无 category 字段）；后端如未来透传 category 可切换数据源
+验收人/日期：待人工（UI-29/31）
+
+任务：UI-13
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`a9f7064`（C3a 状态层）+ `4c7381c`（C3b 内联化）——**需成对回退**
+实现文件与范围：C3a：`main-tabs.ts`（kind:"graph" 标签，id=graph:{planId}，openGraphTab 幂等/同会话替换，+7 test）、`useProjectPanels.ts`（handleOpen/CloseGraphTab；hasEditorContent 收敛单一派生值并替换 ProjectPage/PWC 两处重复表达式）、`workspace-store.ts`（graphViewBySession 每会话视图记忆，不持久化）；C3b：`hooks/useGraphTabSync.ts`（新增：意图↔标签双向同步，truncate 自动关标签，关标签按会话+计划匹配清意图）、`GraphPanel.tsx`（删 createPortal/overlay 栈登记/焦点陷阱；Escape 只关抽屉且 active 门控；视图记忆读写——拖拽结束/onMoveEnd 才落 store；stateOpen 默认收起；保活切回无记忆时 re-fitView；key=planId 整树重建替代渲染阶段清空补丁）、`GraphPanelHeader.tsx`（运行/验收两结论前缀标签分区；running 无验收→neutral「验收未开始」；扩大/还原占满主区按钮=会话 pane 收起机制）、`GraphNodeView.tsx`（压缩：标题单行/模型二级/摘要两行 line-clamp/StatusPill）、`graph-layout.ts`（节点常量 88/136→104/116）、`ProjectWorkbenchContent.tsx`（editorPane graph 分支 lazy+ErrorBoundary）、`ChatPageOverlays.tsx`（删 GraphPanel portal 分支——独立聊天无执行图已核实）、`useGraphPanelController.ts`（删 planId 暴露，保留意图开/关与 latestPlanId）、CSS 删 .ai-graph-overlay/.ai-graph-portal/节点旧类
+对应问题：A02（终态）、A08、设计 §5.3/§3.3、keyframes S4
+测试命令及结果：main-tabs +7；全量 228 passed；门禁全绿；contract:check 通过（无 Rust 改动）
+截图：遗留
+人工走查：graph 标签打开→切文件→切回视口/选中保留；运行中关标签再开不触发新 run；扩大/还原；保活项目切回 fitView——遗留 UI-28
+风险/回退：C3a+C3b 成对回退（单独 revert C3b 会留下无人渲染的 graph kind）；overlay-stack 保留（当前无 push 方，hasOpenOverlay 让路契约供 UI-23）
+阻塞或剩余事项：无
+验收人/日期：待人工（UI-29/31）
+
+任务：UI-14
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`05bc50f`
+实现文件与范围：`detail/DetailSection.tsx`/`detail/OutputBlock.tsx`/`detail/ActivityTimeline.tsx`（新增共享组件）、`graph/ExecutionTimelineList.tsx`（新增：虚拟化时间线+ToolCallCard+NoticeRow 自抽屉迁出）、`GraphNodeDrawer.tsx`（479→314 行；头部 StatusPill；footer「重新执行」→ completed=完整重跑 / failed,cancelled=从断点继续，与头部门禁同一表达式）、`SubAgentExecutionView.tsx`（重构为概览/活动/输出三段：概览 meta grid 含耗时/模型「未记录」如实占位/速度/迭代/tokens+来源任务可展开+failed 错误 OutputBlock；活动=PhaseIndicator+进度+ActivityTimeline；输出=OutputBlock 可选中；头部 StatusPill）、`artifact-panel.tsx`（元信息 DetailSection+meta grid、全文/预览 OutputBlock）、CSS：新增 .ai-detail-*/.ai-output-block*/.ai-activity-timeline* 类族，删除 .ai-subagent-exec-{stats,stat-chip,timeline*,result*,error*} 与 .ai-graph-chip--node-* 死类
+对应问题：A08、设计 §5.3、风险登记「UI 状态与运行成功语义混淆」
+测试命令及结果：全量 228 passed；门禁全绿
+截图：遗留
+人工走查：实时事件与历史轨迹恢复视觉一致；返回图保留所选节点与视口（依赖 C3b view-memory）——遗留 UI-28
+风险/回退：单 commit；**决策**：draft Harness 编辑器与 flush 兜底保留在抽屉内未拆（key 重建会改变草稿 flush 时序语义，风险大于收益；314 行已达标）；子智能体活动用简单时间线不虚拟化（单任务工具调用十级~百级行数，图节点千级继续虚拟化——量级决策非视觉分裂）
+阻塞或剩余事项：SubAgentSession/轨迹无 model 字段——按规格显示「未记录」，如需真实模型需后端 schema 变更（另立任务）
+验收人/日期：待人工（UI-29/31）
+
+任务：UI-18
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`4169175`（C5a 拆分+串帧修复）+ `860bf88`（C5b 迁主区标签）——C5a 可独立保留，C5b 单独回退即回右面板
+实现文件与范围：C5a：`components/browser/` 七文件（BrowserPanel 组装壳<100 行、useBrowserPanelSession——**sessionId 变化清空画布/日志/错误/状态并重拉（串帧修复）**、useBrowserPanelCommands——busy 单飞锁+全部命令 projectPath 透传权限闸门不变、Header/AddressBar/Stage/LogPane），删除 570 行超限 `components/BrowserPanel.tsx`，两宿主仅改 import；C5b：`main-tabs.ts`（kind:"browser" 工作区单例标签 id="browser"，+4 test）、`useProjectPanels.ts`（删右面板全套机制：rightPanel/toggle/拖拽宽/useDockedBrowserPanel 接线/expanded 视口比例）、`ProjectPage.tsx`（删 rightPanelNode；StatusDockBar 浏览器 toggle=开/关主区标签；dock restore=切会话+开标签、closeDocked 仍 browser_stop；预算入参 rightPanelOpen 恒 false——纯函数与 32 测试不动）、`ProjectWorkbenchContent.tsx`（browser 分支：扩大按钮与会话 pane 收起联动，语义同执行图）、`ProjectWorkspaceLayout.tsx`（删 ProjectRightPanelHost+旧 toolbar 兼容槽）、删除死模块 `projectPanelsFileState.ts`（OpenDiff 迁 main-tabs 权威定义）、CSS 删 .ai-project-right-panel/-resizer
+对应问题：设计 §5.5、UI-07 登记移除条件兑现、space-budget.md 未决项 2 兑现
+测试命令及结果：main-tabs +4；全量 232 passed；门禁全绿；contract:check 通过（零 Rust 改动）
+截图：遗留
+人工走查：切会话画面即清；dock restore 跨会话恢复正确页面；关标签后进程仍活、Square 才停止；窗口缩放坐标映射（实时 rect 逻辑未动）——遗留 UI-28/30
+风险/回退：迁移 commit 内渲染点原子切换（右面板删除与标签渲染同 commit，无双渲染中间态）；**三层语义**：关标签=隐藏（帧续 emit 无人消费即丢，恢复时 refreshStatus+新帧重绘）/头部 Square=browser_stop/dock X=closeDocked(browser_stop)
+阻塞或剩余事项：**决策**：HomeChatPage 独立聊天浏览器保留 flex 兄弟布局（无主区标签体系，迁移成本>收益）；prefs.rightPanelWidth 与 nezha.project.browserPanelWidth 成孤儿数据——UI-27 清理；预算 rightPanel 参数无消费者——UI-27 评估移除
+验收人/日期：待人工（UI-29/31）
+
+任务：UI-20
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`633ec4a`
+实现文件与范围：`dispatcher-chat/python-run-meta.ts`(+test 8 case：耗时终态/running/非法日期 null、来源标签、开始时间)、`PythonRunDrawer.tsx`（头部 StatusPill(python)+live 耗时——1s interval 仅抽屉打开且 running 时挂载；新增来源行 .ai-python-run-meta；Section→DetailSection、执行步骤→ActivityTimeline、错误原因→OutputBlock(tone=error)；stdout/stderr/代码统一 chat-scroll；禁用态内联 opacity→:disabled）、`artifact/artifact-renderers.tsx`（新增 kind 注册表+文本兜底）、`artifact-panel.tsx`（renderArtifactContent 接入；「产物加载失败：」前缀；元信息补来源工具 toolName；空内容显式占位）、`chat/markdown-renderer.tsx`+`markdown/MarkdownCodeBlock.tsx`（两处英文 RunStatusBadge 删除→StatusPill 同源）、App.css 删 .python-inline-badge 族、tailwind.css 增 .ai-python-run-meta/-duration/-content/:disabled 删 -title/-section*/-error/-timeline*
+对应问题：设计 §5.5/§5.4（产物详情）、风险登记「运行资源生命周期」
+测试命令及结果：python-run-meta 8 case；全量 240 passed；门禁全绿
+截图：遗留
+人工走查：运行/停止/失败/已完成四态反馈、大输出滚动、内联徽章与抽屉同色同文案——遗留 UI-28
+风险/回退：单 commit；**决策**：退出码不进 record（无 schema 变更；failed+errorReason 为展示层等价物）；purge/cleanup/truncate/chat-image 资源清理语义零改动（只读边界）
+阻塞或剩余事项：图片缺失反馈由 MarkdownImage 占位+chat_images_validate 先验链路承担（未改，走查确认）
+验收人/日期：待人工（UI-29/31）

@@ -1,0 +1,31 @@
+{
+  "capturedOn": "2026-09-06",
+  "purpose": "UI-01 当前构建（源码基线 04df59a）视觉基线补验；隔离测试数据，无真实私人内容",
+  "sourceCommit": "04df59a",
+  "build": "src-tauri/target/debug/jkcodingagent（cargo 1.98.0 增量构建，vite 8.1.0 dev server :1420）",
+  "isolatedData": "HOME=/tmp/jka-iso（dirs::home_dir 读 HOME 环境变量实现数据隔离）；种子数据：2 个 /tmp 假项目、1 条项目会话、1 条 draft 执行图计划",
+  "theme": ["dark（系统偏好）", "light（dispatcher_settings.theme='light'）"],
+  "window": "1600x1000 pt（环境矩阵尺寸之一）",
+  "captureTool": "screencapture -x -R（屏幕录制权限已授予）",
+  "operationTool": "osascript System Events 键盘注入（key code）；坐标点击不可用（-25208，无辅助功能指针权限）",
+  "binaryCommitVerified": true,
+  "files": [
+    { "file": "01-home-dark-empty.png", "step": "V01 对应：独立聊天首页空态（深色），模型选择显示「未配置模型」错误态" },
+    { "file": "02-home-light-empty.png", "step": "V01 对应：独立聊天首页空态（浅色）" },
+    { "file": "03-projects-grid-light.png", "step": "V02 对应：项目入口（浅色），隔离假项目卡片含相对时间与路径" },
+    { "file": "04-architecture-error-light.png", "step": "V08 补充：架构画布失败态「画布意外关闭」+ 重试入口（浅色）" },
+    { "file": "05-workbench-empty-light.png", "step": "项目工作台空态：会话面板有会话但主区未激活（会话行不可键盘聚焦，见 blocked）" }
+  ],
+  "blocked": [
+    {
+      "items": ["V03 项目聊天+文件栏", "V04 多栏工作台", "V05 执行图遮挡", "V07 Git 变更", "V06 设置（键盘可达但本轮未走完）"],
+      "reason": "SessionPanel 会话行是 clickable div、无键盘角色（A09），无指针自动化权限下无法进入会话工作台；执行图/Git/设置深层状态同理",
+      "releaseCondition": "UI-10/UI-23 会话行键盘语义修复后重跑本走查；或授予辅助功能指针权限",
+      "interimEvidence": "evidence/ 目录安装包截图（03/04/05/07，标注二进制≠源码）+ C 级源码事实链（tailwind.css:7094 分档、app-layout.tsx:142-155、tailwind.css:1276-1279 层叠上下文）"
+    }
+  ],
+  "a01a02Repro": {
+    "A01": "当前构建源码复现确认：composer 根节点 .ai-chat-column 在 viewport≥1280 档要求 1040px+，项目内嵌 pane 可用宽不足即被 chat-page-v2.tsx:377 overflow-hidden 裁切；安装包截图 evidence/03-workbench-files.jpg 为同症状视觉证据",
+    "A02": "当前构建源码复现确认：.ai-project-shell > *（tailwind.css:1276-1279）使 main 成层叠上下文，GraphPanel z-100 被钳制，右栏同 z=1 后继兄弟 DOM 序压上；安装包截图 evidence/05-graph.jpg 为同症状视觉证据"
+  }
+}

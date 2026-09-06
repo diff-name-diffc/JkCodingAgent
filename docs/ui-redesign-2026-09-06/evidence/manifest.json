@@ -1,0 +1,56 @@
+{
+  "capturedOn": "2026-09-06",
+  "application": "/Applications/JKCodingAgent.app",
+  "version": "0.2.1",
+  "binaryCommitVerified": false,
+  "sourceCommit": "04df59a",
+  "theme": "light",
+  "captureTool": "cua native app getScreenshot",
+  "imageDimensions": [
+    1344,
+    768
+  ],
+  "dimensionsMeaning": "Returned image pixels; CSS viewport not independently measured",
+  "files": [
+    {
+      "file": "01-home.jpg",
+      "sha256": "6664caeada52b610137999aacd4ce8f18f03677480c05c1553f5866c524288b8",
+      "bytes": 65772
+    },
+    {
+      "file": "02-projects.jpg",
+      "sha256": "d2f877a51dcea5fc3129982bc4337a44d739f85eeb431eebdb5b86155231dfb5",
+      "bytes": 51198
+    },
+    {
+      "file": "03-workbench-files.jpg",
+      "sha256": "3a30117bd89bd5311812b65b48037806c6f9ec0ef2c17d1fc469998c9a66861a",
+      "bytes": 116256
+    },
+    {
+      "file": "04-workbench-split.jpg",
+      "sha256": "1ea76b5ceeb46a920d13a9de217343a8610ca7c60730fca3b9cf9802d7559bb7",
+      "bytes": 178616
+    },
+    {
+      "file": "05-graph.jpg",
+      "sha256": "21b2edbb7aea3a80790a0614d8d6c39d193a0ca1de9b0439432ee63a45006da5",
+      "bytes": 153877
+    },
+    {
+      "file": "06-settings.jpg",
+      "sha256": "2ecb93da82d193e5658635b8d8a5c41479f43405a1de810118a90b774705c2b6",
+      "bytes": 86173
+    },
+    {
+      "file": "07-git.jpg",
+      "sha256": "615d0ee6cdfb964f803b578bfd6d23f6fedc4c1eb00b2944bd39a77187b3ae27",
+      "bytes": 161558
+    },
+    {
+      "file": "08-architecture.jpg",
+      "sha256": "2f39d739b195c8590e2a375560a77aef39bef5e14c197141879633a71d8241b0",
+      "bytes": 70538
+    }
+  ]
+}

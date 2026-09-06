@@ -2,7 +2,7 @@
 
 更新日期：2026-09-06。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
 
-**当前：调研/设计文档完成，32 项实施与验证任务均未开始。** 不把文档产出或现有能力计入改造完成率。源码基线 `04df59a`；开始实施前重新确认代码变更与安装包差异。
+**当前：UI-01–10（M0+M1）实施完成一轮**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工截图验收遗留至 UI-29/31）。源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`。
 
 ## 1. 跟踪约定
 
@@ -30,16 +30,16 @@
 
 | ID | 优先级/规模 | 任务 | 依赖 | 状态 | 负责人 | 交付/证据 |
 |---|---|---|---|---|---|---|
-| UI-01 | P0 / M | 当前构建视觉基线与缺口补验 | — | TODO | 待分配 | — |
-| UI-02 | P0 / M | 聊天、输入和详情容器宽度修复 | 01 | TODO | 待分配 | — |
-| UI-03 | P0 / S | 执行图覆盖层与焦点止损 | 01 | TODO | 待分配 | — |
-| UI-04 | P0 / M | 工作区空间预算与自适应规则 | 01 | TODO | 待分配 | — |
-| UI-05 | P1 / M | 浅深色关键帧与视觉规格定稿 | 04 | TODO | 待分配 | — |
-| UI-06 | P1 / M | 令牌、基础控件、表面样式统一 | 05 | TODO | 待分配 | — |
-| UI-07 | P1 / L | 统一应用外壳与上下文导航 | 04,06 | TODO | 待分配 | — |
-| UI-08 | P1 / L | 工作区布局状态与偏好迁移 | 04,07 | TODO | 待分配 | — |
-| UI-09 | P1 / L | 主区标签、详情槽和抽屉统一 | 02,03,08 | TODO | 待分配 | — |
-| UI-10 | P1 / M | 最近项目与会话导航精修 | 07,08 | TODO | 待分配 | — |
+| UI-01 | P0 / M | 当前构建视觉基线与缺口补验 | — | BLOCKED | claude（会话领取） | evidence-baseline/ 5 帧 + manifest；V03–V07 走查阻塞登记 |
+| UI-02 | P0 / M | 聊天、输入和详情容器宽度修复 | 01 | REVIEW | claude（会话领取） | `25aa667`；门禁全绿，A01 同尺寸前后截图遗留 |
+| UI-03 | P0 / S | 执行图覆盖层与焦点止损 | 01 | REVIEW | claude（会话领取） | `3d9e59c`；portal+层级栈+焦点还原，遮挡前后截图遗留 |
+| UI-04 | P0 / M | 工作区空间预算与自适应规则 | 01 | REVIEW | claude（会话领取） | `77c57f6`；budget 纯函数 32 case 参数化测试 |
+| UI-05 | P1 / M | 浅深色关键帧与视觉规格定稿 | 04 | DONE | claude（会话领取） | `9bccc43`；design/ 关键帧+tokens+space-budget，评审结论已记录 |
+| UI-06 | P1 / M | 令牌、基础控件、表面样式统一 | 05 | REVIEW | claude（会话领取） | `39e93dd/6eeff1f/24da7ea` 三阶段；对比度实测遗留 UI-29 |
+| UI-07 | P1 / L | 统一应用外壳与上下文导航 | 04,06 | REVIEW | claude（会话领取） | `bb3c0e9/f41134d`；AppRail+ContextNav+StatusDockBar，保活走查遗留 |
+| UI-08 | P1 / L | 工作区布局状态与偏好迁移 | 04,07 | REVIEW | claude（会话领取） | `289cb3f`；workspace-store 三层+sanitize 测试；多窗口不纳入本轮 |
+| UI-09 | P1 / L | 主区标签、详情槽和抽屉统一 | 02,03,08 | REVIEW | claude（会话领取） | `afb341d`；main-tabs 8 case+Sheet/Dialog+请求守卫；窄屏 Artifact 抽屉遗留 |
+| UI-10 | P1 / M | 最近项目与会话导航精修 | 07,08 | REVIEW | claude（会话领取） | `15e50be`；recency 排序修复+列表语义；50 项目/大会话人工操作遗留 |
 | UI-11 | P1 / M | 任务头部与输入框上下文 | 06,09 | TODO | 待分配 | — |
 | UI-12 | P1 / M | 消息层级与工具活动摘要 | 06,11 | TODO | 待分配 | — |
 | UI-13 | P1 / L | 执行图迁入工作视图 | 09,12 | TODO | 待分配 | — |
@@ -227,5 +227,137 @@
 | 日期 | 记录 | 结果 |
 |---|---|---|
 | 2026-09-06 | 阅读现有入口、布局、主题、消息、执行图、设置与运行器容器；原生 UI 捕获八步截图 | 现状与设计文档完成；建立 32 项 TODO，实施完成数 0 |
+| 2026-09-06 | B0：隔离 HOME 数据 + 源码同构建采集基线 5 帧；登记走查阻塞 | `e4d2b82`；UI-01 部分 BLOCKED |
+| 2026-09-06 | B1：UI-02 容器宽度、UI-03 执行图层（两独立 commit） | `25aa667`、`3d9e59c` |
+| 2026-09-06 | B2：UI-04 空间预算纯函数 + 接线 | `77c57f6` |
+| 2026-09-06 | B3：UI-05 关键帧/令牌/预算文档定稿 | `9bccc43` |
+| 2026-09-06 | B4：UI-06 令牌收敛三阶段 | `39e93dd`、`6eeff1f`、`24da7ea` |
+| 2026-09-06 | B5：UI-07 统一外壳接线 + 收尾删旧件 | `bb3c0e9`、`f41134d` |
+| 2026-09-06 | B6：UI-08 工作区状态归属 | `289cb3f` |
+| 2026-09-06 | B7：UI-09 主区标签/详情槽/抽屉 | `afb341d` |
+| 2026-09-06 | B8：UI-10 列表精修 | `15e50be` |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
+
+## 9. UI-01–UI-10 任务记录（第 5 节模板）
+
+任务：UI-01
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：基线 `04df59a`；证据提交 `e4d2b82`
+实现文件与范围：`evidence-baseline/`（01–05 png + manifest.json）
+对应问题：A01/A02 复现标注、八步基线补验
+测试命令及结果：无（证据任务）；`screencapture` 权限探测通过、坐标点击不可用（-25208）
+截图：隔离 HOME（/tmp/jka-iso）+ 源码同构建 debug 二进制，1600×1000，浅/深色 5 帧
+人工走查：V01/V02 等价帧已捕获；V03–V07、设置深层态未走查
+风险/回退：仅文档，可独立回退
+阻塞或剩余事项：**BLOCKED 项**——会话行旧实现不可键盘聚焦（A9）且无指针自动化权限，V03–V07 交互态不可达；解除条件：UI-10/23 键盘语义修复后重跑或授予辅助功能权限。A01/A02 以源码事实链 + 安装包截图佐证复现
+验收人/日期：待人工（UI-29/31）
+
+任务：UI-02
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`25aa667`
+实现文件与范围：`styles/tailwind.css`（.ai-chat-column 容器化、阅读宽 760/960、stage/footer 比例边距）、`layout/app-layout.tsx`（min-w-0、Artifact embedded 覆盖层、谎言注释修正）、`chat/prompt-input.tsx`（工具行 wrap、MAX_HEIGHT 合一）、`chat/chat-shell.tsx`（artifactOverlay 传递）
+对应问题：A01、A04
+测试命令及结果：build/lint/styles:report/vitest 全绿（136→后续批次递增）
+截图：遗留（需 tauri 运行态，见 UI-01 阻塞）
+人工走查：未执行（阻塞同上）
+风险/回退：单 commit 可回退；embedded 覆盖层为过渡策略，终态 UI-09
+阻塞或剩余事项：A01 同尺寸前后对比截图
+
+任务：UI-03
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`3d9e59c`
+实现文件与范围：`graph/GraphPanel.tsx`（createPortal、z=200、焦点陷阱/还原、栈顶 Escape）、`lib/overlay-stack.ts`（新增）、`hooks/use-chat-shortcuts.ts`（让路）、`chat-page-v2*`（visible 门控链）、`styles/tailwind.css`（.ai-graph-portal）
+对应问题：A02
+测试命令及结果：门禁全绿
+截图：遗留
+人工走查：未执行
+风险/回退：portal+门控同 commit，避免隐藏项目浮出回归
+阻塞或剩余事项：遮挡前后对比截图；Radix DismissableLayer 深度整合留 UI-23
+
+任务：UI-04
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`77c57f6`
+实现文件与范围：`project/workspace-budget.ts`(+test 32 case)、`hooks/useWorkspaceBudget.ts`、`ProjectPage.tsx`、`project/ProjectWorkbenchContent.tsx`、`project/ProjectWorkspaceLayout.tsx`（像素 grid、分隔条 a11y）、`hooks/useProjectPanels.ts`（applyRightPanelWidth）
+对应问题：A03、设计 §3
+测试命令及结果：`pnpm vitest run src/components/project/workspace-budget.test.ts` 32 passed；门禁全绿
+截图：N/A（纯函数+接线）
+人工走查：窗口矩阵手工验证遗留 UI-29
+风险/回退：预算为纯函数，接线层单 commit
+阻塞或剩余事项：无
+
+任务：UI-05
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`9bccc43`
+实现文件与范围：`design/keyframes.html`（六场景×浅深×窄窗代表帧，标注区域宽度）、`design/tokens.md`（定稿表+评审结论四条）、`design/space-budget.md`（引用 UI-04 测试锚点）
+对应问题：设计 §4/§3 定稿
+测试命令及结果：文档自洽检查（链接/数值引用）通过
+截图：参考帧非应用截图（页面已显著声明）
+人工走查：视觉评审结论记录于 tokens.md §5；人类复核留 UI-29
+风险/回退：仅文档
+阻塞或剩余事项：无（DONE）
+
+任务：UI-06
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`39e93dd`（A）`6eeff1f`（B）`24da7ea`（C）
+实现文件与范围：`App.css`（权威令牌定稿+sf 族 alias+删空定义+monaco 平面化）、`styles/tailwind.css`（140 处 sf 引用归零、青描边/常驻投影/网格底纹清除、分隔条平面化）、`ui/button.tsx`（密度三档+active 态）、`IconButton.tsx`（包装 ui/Button）
+对应问题：A05、设计 §4
+测试命令及结果：每阶段 styles:report 0 无引用；门禁全绿
+截图：浅深双主题人工比对遗留 UI-29
+人工走查：未执行
+风险/回退：三阶段独立 commit 可分别回退
+阻塞或剩余事项：第三方渲染器（Monaco/Shiki/xterm/ReactFlow/tldraw）对比度实测
+
+任务：UI-07
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`bb3c0e9`（接线）`f41134d`（收尾）
+实现文件与范围：`shell/AppRail.tsx`、`shell/ContextNav.tsx`、`shell/StatusDockBar.tsx`（新增）、`App.tsx`（homeView 提升）、`WelcomePage.tsx`（AppRail 替换 60px nav）、`ProjectPage.tsx`（ContextNav 四页签、右面板收敛浏览器）、`SessionPanel.tsx`（hideChrome）、删除 `RightToolbar.tsx`/`ProjectRail.tsx` 及其 CSS
+对应问题：A07 入口部分、设计 §2/§3.1
+测试命令及结果：门禁全绿
+截图：遗留
+人工走查：保活/关闭≠删除/隐藏不丢状态 人工验证遗留 UI-28/31
+风险/回退：两 commit 先切调用后删旧件
+阻塞或剩余事项：浏览器右面板容器迁移留 UI-18（已登记移除条件）
+
+任务：UI-08
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`289cb3f`
+实现文件与范围：`stores/workspace-store.ts`（新增三层）、`project/workspace-prefs.ts`(+test)、`hooks/useProjectPanels.ts`（换底座+拖拽 mouseup 提交）、`ProjectPage.tsx`（偏好接线）、`chat/session-scope.ts`（新增）、`chat-shell.tsx`/`GraphPlanCard.tsx`/`useGraphPanelController.ts`（执行图归属 sessionId）、`usePythonRunController.ts`（切会话重置）、`utils.ts`（save try/catch）、`stores/ui-store.ts`（移除 graphPanelPlanId）
+对应问题：设计 §7.3、串台风险登记
+测试命令及结果：workspace-prefs 4 case + 全量 172 passed
+截图：N/A
+人工走查：窄窗恢复不覆盖宽屏偏好 手工验证遗留 UI-29
+风险/回退：persist key 新命名，旧 nezha.* 保留待 UI-27 清理
+阻塞或剩余事项：多窗口同步不纳入本轮（已登记）
+
+任务：UI-09
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`afb341d`
+实现文件与范围：`project/main-tabs.ts`(+test 8 case)、`hooks/useProjectPanels.ts`（标签体系）、`project/ProjectWorkbenchContent.tsx`（activeEditorTab 渲染）、`ui/dialog.tsx`/`ui/sheet.tsx`（新增）、`ChatPageOverlays.tsx`+`PythonRunDrawer.tsx`（Sheet 覆盖层化）、`hooks/useSessionRequestGuard.ts`（新增）、`FileViewer.tsx`/`file-viewer/FileTabPane.tsx`（类型）
+对应问题：A04 终态部分、设计 §5.4/§3.3
+测试命令及结果：main-tabs 8 case + 全量 178 passed
+截图：遗留
+人工走查：关闭返回原内容/滚动位置 手工验证遗留 UI-28
+风险/回退：标签 reducer 纯函数单测保护
+阻塞或剩余事项：窄屏 Artifact 走 Sheet 抽屉（当前为 embedded 覆盖层过渡）
+
+任务：UI-10
+负责人：claude（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：`15e50be`
+实现文件与范围：`lib/project-sort.ts`(+test)、`App.tsx`（排序修复）、`WelcomePage.tsx`（最近项目列表）、`SessionPanel.tsx`（button 行+更多菜单+相对时间+运行文字）、`styles/tailwind.css`（列表样式+死样式清除）
+对应问题：A09、A12 部分
+测试命令及结果：project-sort 2 case + 全量 180 passed
+截图：遗留
+人工走查：零/1/50 项目与大量会话操作遗留 UI-28/31
+风险/回退：单 commit
+阻塞或剩余事项：无

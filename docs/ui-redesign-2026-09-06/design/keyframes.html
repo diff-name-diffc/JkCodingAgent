@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UI-05 关键帧设计参考（非应用截图）</title>
+<style>
+  :root {
+    --canvas: #F7F8F7; --nav: #EFF1EF; --panel: #FFFFFF; --elevated: #FFFFFF;
+    --text-1: #202722; --text-2: #536159; --dim: #DCE2DD; --accent: #297C70;
+    --amber: #B45309; --red: #B91C1C; --green: #15803D;
+  }
+  .dark {
+    --canvas: #151817; --nav: #111413; --panel: #191D1B; --elevated: #222824;
+    --text-1: #E6EBE8; --text-2: #ACB8B0; --dim: #323C35; --accent: #55C7AD;
+    --amber: #FBBF24; --red: #F87171; --green: #4ADE80;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px; background: #EDEEEC; color: #202722;
+    font: 13px/20px -apple-system, "PingFang SC", "Noto Sans SC", sans-serif;
+  }
+  h1 { font-size: 18px; line-height: 26px; margin: 0 0 4px; }
+  h2 { font-size: 14px; line-height: 20px; margin: 32px 0 4px; font-weight: 600; }
+  .warn {
+    border: 1px solid #B45309; background: #FFF7E6; color: #7C3A03;
+    padding: 8px 12px; border-radius: 8px; margin: 12px 0 24px; max-width: 860px;
+  }
+  .note { color: #536159; max-width: 860px; margin: 0 0 12px; }
+  .pair { display: flex; gap: 16px; flex-wrap: wrap; }
+  .frame {
+    width: 560px; height: 320px; border: 1px solid var(--dim); border-radius: 8px;
+    overflow: hidden; display: flex; flex-direction: column; background: var(--canvas);
+    color: var(--text-1); position: relative; flex: 0 0 auto;
+  }
+  .frame.narrow { width: 340px; }
+  .cap { font-size: 12px; line-height: 18px; color: #536159; margin: 6px 0 0; }
+  .tb { height: 16px; background: var(--nav); border-bottom: 1px solid var(--dim); flex: 0 0 auto; }
+  .body { flex: 1; display: flex; min-height: 0; }
+  .rail {
+    width: 22px; background: var(--nav); border-right: 1px solid var(--dim);
+    display: flex; flex-direction: column; align-items: center; padding-top: 6px; gap: 6px; flex: 0 0 auto;
+  }
+  .rail i { width: 10px; height: 10px; border-radius: 3px; background: var(--dim); display: block; }
+  .rail i.on { background: var(--accent); }
+  .navp { width: 96px; background: var(--nav); border-right: 1px solid var(--dim); flex: 0 0 auto; padding: 6px; }
+  .navp .t { font-size: 10px; line-height: 14px; color: var(--text-2); margin-bottom: 4px; }
+  .row { height: 14px; border-radius: 4px; background: transparent; margin-bottom: 4px; border: 1px solid transparent; }
+  .row.sel { background: var(--panel); border-color: var(--dim); }
+  .row i { display: block; height: 4px; border-radius: 2px; background: var(--dim); margin: 4px 6px; }
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--canvas); }
+  .head { height: 20px; border-bottom: 1px solid var(--dim); background: var(--panel); flex: 0 0 auto;
+          display: flex; align-items: center; padding: 0 8px; gap: 6px; }
+  .head b { font-size: 10px; font-weight: 600; }
+  .head s { margin-left: auto; width: 24px; height: 6px; border-radius: 3px; background: var(--dim); display: block; text-decoration: none; }
+  .content { flex: 1; min-height: 0; display: flex; }
+  .col { flex: 1; min-width: 0; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .prose { max-width: 78%; display: flex; flex-direction: column; gap: 6px; margin: 0 auto; width: 100%; }
+  .ln { height: 5px; border-radius: 2px; background: var(--dim); }
+  .ln.w60 { width: 60%; } .ln.w80 { width: 80%; } .ln.w40 { width: 40%; }
+  .bubble { align-self: flex-end; background: var(--accent); opacity: .85; border-radius: 6px 6px 2px 6px;
+            padding: 4px 6px; width: 46%; }
+  .bubble .ln { background: var(--panel); opacity: .8; }
+  .tool { border: 1px solid var(--dim); border-radius: 6px; background: var(--panel); padding: 4px 6px;
+          font-size: 9px; line-height: 12px; color: var(--text-2); }
+  .code { background: var(--panel); border: 1px solid var(--dim); border-radius: 4px; padding: 6px; flex: 1; min-height: 0; }
+  .code .ln { margin-bottom: 4px; }
+  .code .ln.acc { background: var(--accent); opacity: .5; }
+  .composer { border-top: 1px solid var(--dim); padding: 6px 8px; background: var(--canvas); flex: 0 0 auto; }
+  .composer .box { border: 1px solid var(--dim); border-radius: 8px; background: var(--panel); height: 26px;
+                   margin: 0 auto; width: 100%; max-width: 78%; position: relative; }
+  .composer .box::after { content: ""; position: absolute; right: 4px; bottom: 4px; width: 12px; height: 12px;
+                          border-radius: 4px; background: var(--accent); }
+  .split { width: 3px; background: var(--dim); flex: 0 0 auto; }
+  .dock { height: 52px; border-top: 1px solid var(--dim); background: var(--panel); flex: 0 0 auto; padding: 4px 8px; }
+  .dock .ln { background: var(--dim); }
+  .status { height: 10px; background: var(--nav); border-top: 1px solid var(--dim); flex: 0 0 auto; }
+  .tabs { display: flex; gap: 4px; padding: 4px 8px 0; background: var(--panel); border-bottom: 1px solid var(--dim); flex: 0 0 auto; }
+  .tab { font-size: 9px; line-height: 14px; padding: 1px 6px; border: 1px solid var(--dim); border-bottom: none;
+         border-radius: 4px 4px 0 0; color: var(--text-2); background: var(--canvas); }
+  .tab.on { background: var(--panel); color: var(--text-1); border-bottom: 1px solid var(--panel); margin-bottom: -1px; }
+  .graph { flex: 1; position: relative; background:
+           radial-gradient(var(--dim) 1px, transparent 1px) 0 0/14px 14px var(--canvas); }
+  .node { position: absolute; width: 74px; height: 26px; border: 1px solid var(--dim); border-radius: 6px;
+          background: var(--panel); padding: 3px 5px; font-size: 8px; line-height: 10px; color: var(--text-2); }
+  .node.run { border-color: var(--accent); color: var(--accent); }
+  .node.fail { border-color: var(--red); color: var(--red); }
+  .edge { position: absolute; height: 1px; background: var(--dim); }
+  .canvas { flex: 1; background:
+            radial-gradient(var(--dim) 1px, transparent 1px) 0 0/16px 16px var(--canvas); position: relative; }
+  .shape { position: absolute; border: 1.5px solid var(--accent); border-radius: 6px; opacity: .8; }
+  .aside { width: 120px; border-left: 1px solid var(--dim); background: var(--panel); padding: 6px; flex: 0 0 auto; }
+  .setnav { width: 88px; background: var(--nav); border-right: 1px solid var(--dim); padding: 6px; flex: 0 0 auto; }
+  .field { border: 1px solid var(--dim); border-radius: 6px; background: var(--panel); height: 16px; margin-bottom: 6px; }
+  .pill { display: inline-block; font-size: 8px; line-height: 12px; padding: 0 5px; border-radius: 6px;
+          background: var(--elevated); border: 1px solid var(--dim); color: var(--text-2); }
+  .pill.ok { color: var(--green); border-color: var(--green); }
+  .pill.warn { color: var(--amber); border-color: var(--amber); }
+  .anno {
+    position: absolute; font-size: 8px; line-height: 10px; color: var(--accent);
+    border: 1px dashed var(--accent); border-radius: 3px; padding: 0 3px; background: var(--canvas);
+  }
+</style>
+</head>
+<body>
+<h1>UI-05 关键帧设计参考</h1>
+<p class="note">关联：<a href="../02-design.md">02-design.md</a> · <a href="tokens.md">tokens.md</a> · <a href="space-budget.md">space-budget.md</a>。令牌取值见 tokens.md 定稿表。</p>
+<div class="warn">⚠ 设计参考帧：由 HTML/CSS 按定稿令牌绘制的布局示意，<b>不是应用截图</b>，不代表已实现的像素级外观。运行时验收以 UI-29 真机截图矩阵为准。</div>
+
+<h2>S1 专注对话（1440 默认 / 1000 窄窗）</h2>
+<div class="pair">
+  <div>
+    <div class="frame">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i class="on"></i><i></i><i></i></div>
+        <div class="navp">
+          <div class="t">项目切换 ▾</div>
+          <div class="t">会话 · 文件 · 变更</div>
+          <div class="row sel"><i></i></div><div class="row"><i></i></div><div class="row"><i></i></div>
+        </div>
+        <div class="main">
+          <div class="head"><b>重构登录模块</b><span class="pill">Demo Alpha · main</span><s></s></div>
+          <div class="content"><div class="col">
+            <div class="prose">
+              <div class="bubble"><div class="ln w80"></div><div class="ln w60"></div></div>
+              <div class="ln"></div><div class="ln w80"></div><div class="ln w60"></div>
+              <div class="tool">读取 3 个文件 · 修改 1 个文件 · 测试通过 <span class="pill ok">成功</span></div>
+              <div class="ln"></div><div class="ln w40"></div>
+            </div>
+          </div></div>
+          <div class="composer"><div class="box"></div></div>
+        </div>
+      </div>
+      <span class="anno" style="left:24px;top:18px">rail 52</span>
+      <span class="anno" style="left:48px;top:18px">nav 248</span>
+      <span class="anno" style="right:8px;bottom:34px">正文 ≤760 / 列 ≤960</span>
+    </div>
+    <p class="cap">S1-L 浅色 · 1440：rail + 上下文导航 + 单列聊天；正文 760 居中，工具摘要一行。</p>
+  </div>
+  <div>
+    <div class="frame dark">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i class="on"></i><i></i><i></i></div>
+        <div class="navp">
+          <div class="t">项目切换 ▾</div>
+          <div class="t">会话 · 文件 · 变更</div>
+          <div class="row sel"><i></i></div><div class="row"><i></i></div><div class="row"><i></i></div>
+        </div>
+        <div class="main">
+          <div class="head"><b>重构登录模块</b><span class="pill">Demo Alpha · main</span><s></s></div>
+          <div class="content"><div class="col">
+            <div class="prose">
+              <div class="bubble"><div class="ln w80"></div><div class="ln w60"></div></div>
+              <div class="ln"></div><div class="ln w80"></div><div class="ln w60"></div>
+              <div class="tool">读取 3 个文件 · 修改 1 个文件 · 测试通过 <span class="pill ok">成功</span></div>
+            </div>
+          </div></div>
+          <div class="composer"><div class="box"></div></div>
+        </div>
+      </div>
+    </div>
+    <p class="cap">S1-D 深色同构：石墨底、青绿强调，正文/次文/分隔对比见 tokens.md。</p>
+  </div>
+  <div>
+    <div class="frame narrow">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i class="on"></i><i></i><i></i></div>
+        <div class="main">
+          <div class="head"><b>重构登录模块</b><s></s></div>
+          <div class="content"><div class="col">
+            <div class="prose" style="max-width:100%">
+              <div class="bubble" style="width:60%"><div class="ln w80"></div></div>
+              <div class="ln"></div><div class="ln w60"></div>
+            </div>
+          </div></div>
+          <div class="composer"><div class="box" style="max-width:100%"></div></div>
+        </div>
+      </div>
+      <span class="anno" style="left:24px;top:18px">nav 收起</span>
+    </div>
+    <p class="cap">S1-N 1000px：导航收起、单主区；会话/文件按需抽屉（预算降级 single-column）。</p>
+  </div>
+</div>
+
+<h2>S2 协作编码（对话 + 代码双区）</h2>
+<div class="pair">
+  <div>
+    <div class="frame">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i></i><i class="on"></i><i></i></div>
+        <div class="navp"><div class="t">会话 · 文件 · 变更</div><div class="row"><i></i></div><div class="row sel"><i></i></div></div>
+        <div class="main">
+          <div class="head"><b>重构登录模块</b><s></s></div>
+          <div class="content">
+            <div class="col" style="flex:0 0 44%">
+              <div class="prose" style="max-width:100%"><div class="ln"></div><div class="ln w80"></div>
+                <div class="tool">修改 auth.ts · +12 −4</div></div>
+            </div>
+            <div class="split"></div>
+            <div class="col">
+              <div class="tabs"><span class="tab on">auth.ts</span><span class="tab">login.test.ts</span></div>
+              <div class="code"><div class="ln"></div><div class="ln acc"></div><div class="ln acc w60"></div><div class="ln w80"></div><div class="ln w40"></div></div>
+            </div>
+          </div>
+          <div class="composer"><div class="box" style="max-width:100%"></div></div>
+        </div>
+      </div>
+      <span class="anno" style="left:46%;top:40px">分隔 1px/命中 8</span>
+    </div>
+    <p class="cap">S2-L：对话 ≥460 / 代码 ≥520；编辑器平面标签条，活动标签下划线识别。</p>
+  </div>
+  <div>
+    <div class="frame dark">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i></i><i class="on"></i><i></i></div>
+        <div class="navp"><div class="t">会话 · 文件 · 变更</div><div class="row"><i></i></div><div class="row sel"><i></i></div></div>
+        <div class="main">
+          <div class="head"><b>重构登录模块</b><s></s></div>
+          <div class="content">
+            <div class="col" style="flex:0 0 44%"><div class="prose" style="max-width:100%"><div class="ln"></div><div class="ln w80"></div><div class="tool">修改 auth.ts · +12 −4</div></div></div>
+            <div class="split"></div>
+            <div class="col"><div class="tabs"><span class="tab on">auth.ts</span><span class="tab">login.test.ts</span></div>
+              <div class="code"><div class="ln"></div><div class="ln acc"></div><div class="ln acc w60"></div><div class="ln w80"></div></div></div>
+          </div>
+          <div class="composer"><div class="box" style="max-width:100%"></div></div>
+        </div>
+      </div>
+    </div>
+    <p class="cap">S2-D 深色：代码面 0–4px 圆角、无发光；diff 增删行用状态色 + 符号双编码。</p>
+  </div>
+</div>
+
+<h2>S3 Git 审查（变更导航 + 中央 diff + 提交区）</h2>
+<div class="pair">
+  <div>
+    <div class="frame">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i></i><i class="on"></i><i></i></div>
+        <div class="navp">
+          <div class="t">变更（4）</div>
+          <div class="row sel"><i></i></div><div class="row"><i></i></div><div class="row"><i></i></div>
+          <div class="t" style="margin-top:6px">已暂存 2 / 未暂存 2</div>
+        </div>
+        <div class="main">
+          <div class="head"><b>auth.ts</b><span class="pill ok">+12</span><span class="pill warn">−4</span><s></s></div>
+          <div class="content">
+            <div class="col"><div class="code"><div class="ln"></div><div class="ln acc"></div><div class="ln w80"></div><div class="ln acc w60"></div><div class="ln w40"></div></div></div>
+          </div>
+          <div class="dock"><div class="tool">提交暂存的 2 个文件</div><div class="ln w40" style="margin-top:4px"></div></div>
+        </div>
+      </div>
+    </div>
+    <p class="cap">S3-L：导航「变更」页签列出暂存/未暂存；提交区明示范围与文件数，失败就地报错。</p>
+  </div>
+  <div>
+    <div class="frame dark">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i></i><i class="on"></i><i></i></div>
+        <div class="navp"><div class="t">变更（4）</div><div class="row sel"><i></i></div><div class="row"><i></i></div><div class="t" style="margin-top:6px">已暂存 2 / 未暂存 2</div></div>
+        <div class="main">
+          <div class="head"><b>auth.ts</b><span class="pill ok">+12</span><span class="pill warn">−4</span><s></s></div>
+          <div class="content"><div class="col"><div class="code"><div class="ln"></div><div class="ln acc"></div><div class="ln w80"></div><div class="ln acc w60"></div></div></div></div>
+          <div class="dock"><div class="tool">提交暂存的 2 个文件</div></div>
+        </div>
+      </div>
+    </div>
+    <p class="cap">S3-D：窄区域 unified diff；足够宽再并排（UI-17 实施）。</p>
+  </div>
+</div>
+
+<h2>S4 执行图（主区标签视图，非全屏模态）</h2>
+<div class="pair">
+  <div>
+    <div class="frame">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i></i><i class="on"></i><i></i></div>
+        <div class="navp"><div class="t">会话 · 文件 · 变更</div><div class="row sel"><i></i></div></div>
+        <div class="main">
+          <div class="tabs"><span class="tab">会话</span><span class="tab on">执行图</span><span class="tab">auth.ts</span></div>
+          <div class="head"><b>登录重构执行图</b><span class="pill ok">运行 2/5</span><span class="pill warn">验收待跑</span><s></s></div>
+          <div class="graph">
+            <div class="node" style="left:24px;top:24px">读取代码<br>成功 · 12s</div>
+            <div class="node run" style="left:150px;top:24px">重构实现<br>运行中</div>
+            <div class="node fail" style="left:150px;top:80px">单测<br>失败 · 8s</div>
+            <div class="node" style="left:280px;top:52px">汇总<br>待上游</div>
+            <div class="edge" style="left:98px;top:36px;width:52px"></div>
+            <div class="edge" style="left:224px;top:36px;width:56px"></div>
+          </div>
+          <div class="status"></div>
+        </div>
+      </div>
+      <span class="anno" style="right:8px;top:44px">运行≠验收 两结论独立</span>
+    </div>
+    <p class="cap">S4-L：执行图为主区活动标签；节点仅任务/状态/耗时/两行摘要；共享状态收进按需检查器（状态条 24px）。</p>
+  </div>
+  <div>
+    <div class="frame dark">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i></i><i class="on"></i><i></i></div>
+        <div class="navp"><div class="t">会话 · 文件 · 变更</div><div class="row sel"><i></i></div></div>
+        <div class="main">
+          <div class="tabs"><span class="tab">会话</span><span class="tab on">执行图</span><span class="tab">auth.ts</span></div>
+          <div class="head"><b>登录重构执行图</b><span class="pill ok">运行 2/5</span><span class="pill warn">验收待跑</span><s></s></div>
+          <div class="graph">
+            <div class="node" style="left:24px;top:24px">读取代码<br>成功 · 12s</div>
+            <div class="node run" style="left:150px;top:24px">重构实现<br>运行中</div>
+            <div class="node fail" style="left:150px;top:80px">单测<br>失败 · 8s</div>
+            <div class="edge" style="left:98px;top:36px;width:52px"></div>
+          </div>
+          <div class="status"></div>
+        </div>
+      </div>
+    </div>
+    <p class="cap">S4-D：当前路径高亮、其余边低对比可辨；大图提供定位失败/运行节点（UI-13）。</p>
+  </div>
+</div>
+
+<h2>S5 架构空间（画布优先 + 助手 320–400）</h2>
+<div class="pair">
+  <div>
+    <div class="frame">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i></i><i></i><i class="on"></i></div>
+        <div class="canvas">
+          <div class="shape" style="left:36px;top:36px;width:120px;height:44px"></div>
+          <div class="shape" style="left:36px;top:104px;width:120px;height:44px"></div>
+          <div class="shape" style="left:200px;top:70px;width:90px;height:44px"></div>
+        </div>
+        <div class="aside">
+          <div class="t" style="font-size:10px;color:var(--text-2)">架构助手</div>
+          <div class="pill">附截图</div> <div class="pill">附快照</div>
+          <div class="ln" style="margin-top:8px"></div><div class="ln w80"></div><div class="ln w60"></div>
+        </div>
+      </div>
+    </div>
+    <p class="cap">S5-L：画布占主面积；助手 320–400px；空态给绘图任务示例；视口/撤销栈保留。</p>
+  </div>
+  <div>
+    <div class="frame dark">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i></i><i></i><i class="on"></i></div>
+        <div class="canvas">
+          <div class="shape" style="left:36px;top:36px;width:120px;height:44px"></div>
+          <div class="shape" style="left:36px;top:104px;width:120px;height:44px"></div>
+          <div class="shape" style="left:200px;top:70px;width:90px;height:44px"></div>
+        </div>
+        <div class="aside"><div class="t" style="font-size:10px;color:var(--text-2)">架构助手</div><div class="pill">附截图</div> <div class="pill">附快照</div><div class="ln" style="margin-top:8px"></div><div class="ln w80"></div></div>
+      </div>
+    </div>
+    <p class="cap">S5-D：画布点阵与形状描边在深色下保持低反光石墨质感。</p>
+  </div>
+</div>
+
+<h2>S6 设置（单组标题 + 头部保存状态）</h2>
+<div class="pair">
+  <div>
+    <div class="frame">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i></i><i></i><i></i></div>
+        <div class="setnav">
+          <div class="t" style="font-size:10px;color:var(--text-2)">通用</div>
+          <div class="row sel"><i></i></div>
+          <div class="t" style="font-size:10px;color:var(--text-2)">模型</div>
+          <div class="row"><i></i></div><div class="row"><i></i></div>
+          <div class="t" style="font-size:10px;color:var(--text-2)">能力连接</div>
+          <div class="row"><i></i></div><div class="row"><i></i></div>
+        </div>
+        <div class="main">
+          <div class="head"><b>模型服务</b><span class="pill ok">已保存</span><s></s></div>
+          <div class="content"><div class="col">
+            <div class="tabs"><span class="tab on">对话</span><span class="tab">视觉</span><span class="tab">图片生成</span><span class="tab">向量</span></div>
+            <div class="field"></div><div class="field"></div><div class="field" style="width:60%"></div>
+          </div></div>
+        </div>
+      </div>
+    </div>
+    <p class="cap">S6-L：左导航小标题分组；内容页单组标题；保存状态固定头部；tabs 窄宽横滚。</p>
+  </div>
+  <div>
+    <div class="frame dark">
+      <div class="tb"></div>
+      <div class="body">
+        <div class="rail"><i></i><i></i><i></i></div>
+        <div class="setnav"><div class="t" style="font-size:10px;color:var(--text-2)">通用</div><div class="row sel"><i></i></div><div class="t" style="font-size:10px;color:var(--text-2)">模型</div><div class="row"><i></i></div><div class="row"><i></i></div></div>
+        <div class="main">
+          <div class="head"><b>模型服务</b><span class="pill warn">保存失败 · 重试</span><s></s></div>
+          <div class="content"><div class="col"><div class="tabs"><span class="tab on">对话</span><span class="tab">视觉</span><span class="tab">图片生成</span></div><div class="field"></div><div class="field"></div></div></div>
+        </div>
+      </div>
+    </div>
+    <p class="cap">S6-D：失败态琥珀提示 + 重试入口，不被「关闭成功」掩盖（UI-21）。</p>
+  </div>
+</div>
+
+<p class="note" style="margin-top:32px">帧内标注（rail 52 / nav 248 / 正文 ≤760 / 列 ≤960 / dock 220 / 状态 24）与降级策略的数值出处见 space-budget.md；色值与排版出处见 tokens.md。</p>
+</body>
+</html>

@@ -2,7 +2,7 @@
 
 更新日期：2026-09-06。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
 
-**当前：UI-01–10（M0+M1）实施完成一轮；M2 批次一（UI-11/12/13/14/18/20）与批次二（UI-16/17「代码工作区→Git 审查」链）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工截图验收遗留至 UI-29/31）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一实施提交 `4ee7c71..633ec4a`；批次二实施提交 `88babe4..9a20640`。M2 剩余：UI-15（架构画布）、UI-19（终端 dock）。
+**当前：UI-01–10（M0+M1）实施完成一轮；M2 批次一（UI-11/12/13/14/18/20）、批次二（UI-16/17「代码工作区→Git 审查」链）与批次三（UI-15/19「工作区资源保活」对）实施完成——M2 全部收口**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工截图验收遗留至 UI-29/31）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一实施提交 `4ee7c71..633ec4a`；批次二实施提交 `88babe4..9a20640`；批次三实施提交 `f4cab0a`、`f4f63a9`。下一步 M3（UI-21 起）。
 
 ## 1. 跟踪约定
 
@@ -44,11 +44,11 @@
 | UI-12 | P1 / M | 消息层级与工具活动摘要 | 06,11 | REVIEW | claude（会话领取） | `307dc73`；语义摘要纯函数+StatusPill 双编码+失败 pinned 露出；主题比对遗留 |
 | UI-13 | P1 / L | 执行图迁入工作视图 | 09,12 | REVIEW | claude（会话领取） | `a9f7064/4c7381c`；graph 主区标签+portal 删除+视图记忆；运行态走查遗留 |
 | UI-14 | P1 / M | 子智能体与节点详情统一 | 09,13 | REVIEW | claude（会话领取） | `05bc50f`；概览/活动/输出三段+共享 detail 组件+footer 门禁文案对齐 |
-| UI-15 | P1 / M | 架构画布与助手体验 | 06,08 | TODO | 待分配 | — |
+| UI-15 | P1 / M | 架构画布与助手体验 | 06,08 | REVIEW | zcode（会话领取） | `f4cab0a`；宽度像素锚定+领域空态+附加上下文；画布保活三项基线已满足登记 |
 | UI-16 | P1 / M | 文件树与编辑器视觉整合 | 07,09 | REVIEW | zcode（会话领取） | `88babe4`；壳归位+平面化+路径行+tab 脏标记；截图遗留 UI-29 |
 | UI-17 | P1 / L | Git 审查布局与提交反馈 | 09,16 | REVIEW | zcode（会话领取） | `8e09fca/9a20640`；解析抽离+重命名/二进制+提交区范围+就地错误+对应高亮；split 模式登记待后续 |
 | UI-18 | P1 / L | 浏览器预览与会话 dock 迁移 | 09 | REVIEW | claude（会话领取） | `4169175/860bf88`；拆分+串帧修复+主区单例标签，右面板机制移除；dock 走查遗留 |
-| UI-19 | P1 / M | 终端 dock 与空间约束 | 08,09 | TODO | 待分配 | — |
+| UI-19 | P1 / M | 终端 dock 与空间约束 | 08,09 | REVIEW | zcode（会话领取） | `f4f63a9`；隐藏保活两态机+结束会话语义+高度常量收敛；PTY 运行态走查遗留 |
 | UI-20 | P1 / M | Python、图片和工具产物详情 | 09,12 | REVIEW | claude（会话领取） | `633ec4a`；来源/耗时/状态统一+artifact kind 分派；运行态走查遗留 |
 | UI-21 | P1 / M | 设置布局与自动保存反馈 | 06,07 | TODO | 待分配 | — |
 | UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | TODO | 待分配 | — |
@@ -244,6 +244,8 @@
 | 2026-09-06 | C6：UI-20 Python/产物详情统一（来源/耗时/kind 分派/状态同源） | `633ec4a` |
 | 2026-09-06 | D1：UI-16 文件编辑工作区（壳归位+编辑器平面化+路径工具行收敛+tab 脏标记） | `88babe4` |
 | 2026-09-06 | D2：UI-17 Git 审查（D2a diff 解析抽离+重命名/二进制呈现+后端 origin_path；D2b 提交区暂存范围+就地错误+导航 diff 对应高亮） | `8e09fca`、`9a20640` |
+| 2026-09-06 | E1：UI-15 架构空间（助手默认宽像素锚定 360 + 领域绘图空态 + 附截图/快照实时上下文提示；画布保活/阻断面板基线已满足登记） | `f4cab0a` |
+| 2026-09-06 | E2：UI-19 终端 dock（mounted/visible 两态机隐藏保活 PTY + 隐藏/结束双语义头部 + 高度常量单一出处；680px 预算与多项目隔离基线已满足登记） | `f4f63a9` |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
 
@@ -476,4 +478,32 @@
 人工走查：可丢弃测试仓库覆盖暂存/取消/重命名/二进制/空变更/提交失败/历史 diff——遗留 UI-28（不在真实工作仓库验证提交）
 风险/回退：D2a+D2b 各自独立可回退（D2a 单独回退时 Viewer 退回内置解析器）；后端仅 DTO 字段+解析函数，无 schema 迁移
 阻塞或剩余事项：**决策**——split（并排）diff 不在本轮（任务卡「UI-01 确认当前 diff 能力后再估算」，当前 unified-only，能力估算登记后续）；历史分页（固定 limit 50）不在本轮；提交后 GitChanges/GitHistory 跨面板缓存同步（页签切换重挂载隐性掩盖）留待统一 git 数据层时处理
+验收人/日期：待人工（UI-29/31）
+
+## 12. UI-15–UI-19（M2 批次三）任务记录（第 5 节模板）
+
+任务：UI-15
+负责人：zcode（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：基线 `9a20640`；结果 `f4cab0a`
+实现文件与范围：`hooks/useDockedBrowserPanel.ts`（DockedPanelMetrics 增 defaultWidthPx 像素锚定 + 纯函数 resolveDockedPanelDefaultWidth 抽出；+test 5 case；浏览器消费方不传新参、行为不变）、`architecture/ArchitectureView.tsx`（默认宽 0.28 视口比→defaultWidthPx 360，落设计 §5.6 的 320–400px；editorVersion 计数驱动 shape 订阅）、`architecture/use-canvas-shape-count.ts`（新增：store.listen{scope:"document"} 订阅当前页图形数，值不变不 setState）、`architecture/chat/attachment-context.ts`（新增纯函数 formatAttachmentHint；+test 8 case）、`architecture/chat/ArchitectureChatPanel.tsx`（canvasShapeCount prop + .ai-arch-attach-hint 提示行 + ARCH_EMPTY_STATE 绘图任务空态）、`chat/empty-chat-state.tsx`（title/copy 可选 props，缺省保持通用文案）、`chat/message-list.tsx`（空态透传 emptyState 与 className——修复空态丢 .ai-arch-chat-messages 类）、`styles/tailwind.css`（.ai-arch-attach-hint）
+对应问题：A06/V08、设计 §5.6
+测试命令及结果：docked-panel 5 + attachment 8 case；全量 276 passed；build/lint/styles:report(916:922)/contract:check(115:112) 全绿
+截图：遗留（tauri 运行态，同 UI-29 矩阵）
+人工走查：切主题/收起助手/拖宽后撤销栈与视口保留、空画布提示与附带提示切换——遗留 UI-28/29
+风险/回退：单 commit 可回退；画布持久化 key、感知发送管线（截图/快照段顺序）、arch-run 监听零改动
+阻塞或剩余事项：**基线已满足（复现证明，未重复实现）**——①切主题不重建 editor：命令式 applyTldrawColorScheme（ArchitectureView.tsx:112-114 / architecture-theme.ts）；②收起助手/拖宽不重建：ArchitectureCanvas memo + 稳定回调，aside 交换不触及画布；③许可/画布崩溃明确失败：CanvasBlockedPanel license/crash/unexpected 三类（canvas-block-info.test.ts 既有 29 case）；④空画布不附截图：collectScreenshotSegment 首行形状数守卫（useArchitectureChat.ts:151），快照同理；无自动模型请求（send 仅显式触发）。**边界登记（不实施）**——主页视图切换（架构↔聊天/项目）整体卸载 ArchitectureView，视口/撤销栈丢失（形状经 IndexedDB 保留）；超出本卡验收清单（仅列切主题/收起/拖宽），常驻 tldraw 实例保活涉及内存与 WelcomePage 结构改造，挂 UI-30 或后续编号评估；tldraw 画布工具部分英文（locale 已 zh-cn，属上游翻译覆盖）遗留
+验收人/日期：待人工（UI-29/31）
+
+任务：UI-19
+负责人：zcode（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：基线 `f4cab0a`；结果 `f4f63a9`
+实现文件与范围：`project/terminal-dock.ts`（新增纯函数两态机 TerminalDockState{mounted,visible} + nextTerminalDockState；+test 6 case）、`ProjectPage.tsx`（showShellTerminal useState→terminalDock 状态机；once-mounted 渲染隐藏不卸载；budget.terminalOpen 接 visible；StatusDockBar toggle 派发动作）、`ShellTerminalPanel.tsx`（props onClose→onHide+onTerminate、新增 visible：根节点 display:none 保活，挂载主 effect 仍只随 [shellId, projectPath] 重建——xterm/scrollback/PTY/事件监听全保活；fit 零尺寸守卫；重激活 effect 门控 isActive&&visible 并加容器零尺寸检查；头部双语义按钮：ChevronDown 隐藏=中性色 / X 结束=危险色，aria-label 齐备）、`project/workspace-budget.ts`（导出 TERMINAL_HEIGHT_LIMITS{100,600}，DEFAULT_CHROME 引用）、`project/workspace-prefs.ts`（sanitize 引用同一常量）、`hooks/useProjectPanels.ts`（拖拽钳制引用同一常量，三处字面量收敛）、`project/ProjectWorkspaceLayout.tsx`（dock 槽注释语义更新）、`styles/tailwind.css`（.ai-shell-terminal-actions 组 + .ai-shell-terminal-hide 中性 hover 变体）
+对应问题：设计 §3.3（隐藏≠结束/关闭按钮文案区分）、§5.5（布局更新不重建 PTY）、§3.1（dock 高度预算）
+测试命令及结果：terminal-dock 6 case；全量 282 passed；build/lint/styles:report(918:924)/contract:check(115:112) 全绿
+截图：遗留（tauri 运行态，同 UI-29 矩阵）
+人工走查：隐藏→恢复 PTY/scrollback 保留、结束会话→再开全新 shell、1000×680 隐藏恢复、多项目终端隔离、resize（50ms debounce + 恢复显示 RO 重触发）——遗留 UI-28/30
+风险/回退：单 commit 可回退；后端 open_shell kill-first/resize_pty/kill_shell 与 64KB 读缓冲、16ms 批量 emit 零改动；rAF drain/SmartWriter/InputBatcher 缓冲管线零改动
+阻塞或剩余事项：**基线已满足（登记）**——多项目不串流：shellId=`shell:${projectId}` 事件过滤 + 每项目独立面板（保活后隐藏面板仍持监听、各自过滤，功能无碍）；1000×680 预算钳制：workspace-budget.test.ts 矮窗用例既有断言（终端≤322、主区≥320）；恢复路径=常驻 24px StatusDockBar。**决策**——terminalOpen 开关态不持久化（避免重启意外自动拉起 shell；高度偏好已按工作区持久化不变）；N 个保活终端=N 个全局监听者为已知小项（各自按 shell_id 过滤），性能口径归 UI-24/30
 验收人/日期：待人工（UI-29/31）

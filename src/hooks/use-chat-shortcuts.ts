@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { hasOpenOverlay } from "../lib/overlay-stack";
 
 interface ShortcutBinding {
   /** Mod means Cmd on macOS, Ctrl elsewhere. */
@@ -52,7 +53,13 @@ export function useChatShortcuts(bindings: {
       { key: "n", mod: true, handler: () => bindings.onNewConversation?.() },
       { key: "b", mod: true, handler: () => bindings.onToggleSidebar?.() },
       { key: "l", mod: true, handler: () => bindings.onFocusPrompt?.() },
-      { key: "Escape", handler: () => bindings.onCloseArtifact?.() },
+      { key: "Escape", preventDefault: false, handler: (event: KeyboardEvent) => {
+        // 自研覆盖层（执行图等）打开时让路：由栈顶覆盖层自己的 Escape 处理，
+        // 避免一次按键同时关掉覆盖层与 Artifact 面板。
+        if (hasOpenOverlay()) return;
+        event.preventDefault();
+        bindings.onCloseArtifact?.();
+      } },
     ].filter((b) => b.key !== undefined) as ShortcutBinding[];
 
     const onKey = (event: KeyboardEvent) => {

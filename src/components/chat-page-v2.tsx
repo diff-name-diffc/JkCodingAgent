@@ -47,6 +47,8 @@ export interface ChatPageV2Props {
   onOpenMcpStatus?: () => void;
   onClosePanel?: () => void;
   embedded?: boolean;
+  /** 多项目保活挂载时隐藏工作区为 false；portal 覆盖层据此不渲染。 */
+  workspaceVisible?: boolean;
 }
 
 export function ChatPageV2({
@@ -60,6 +62,7 @@ export function ChatPageV2({
   onOpenMcpStatus,
   onClosePanel,
   embedded = false,
+  workspaceVisible = true,
 }: ChatPageV2Props) {
   const [uncontrolledSessionId, setUncontrolledSessionId] = useState<string | null>(null);
   const activeSessionId = sessionId !== undefined ? sessionId : uncontrolledSessionId;
@@ -418,6 +421,7 @@ export function ChatPageV2({
       </div>
       <ChatPageOverlays
         graphPlanId={graphPanel.planId}
+        workspaceVisible={workspaceVisible}
         pythonDrawerOpen={pythonRuns.drawerOpen}
         pythonTarget={pythonRuns.target}
         pythonRecord={pythonRuns.selectedRecord}

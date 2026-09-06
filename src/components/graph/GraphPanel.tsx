@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence } from "framer-motion";
 import {
   Background,
@@ -29,8 +30,12 @@ import {
   normalizePlanStatus,
   parseGraphDefinition,
 } from "./graph-utils";
+import { isTopOverlay, popOverlay, pushOverlay } from "../../lib/overlay-stack";
 
 const nodeTypes: NodeTypes = { graphNode: GraphNodeView };
+
+/** 覆盖层栈中的身份标识（Escape 层级协调用）。 */
+const GRAPH_OVERLAY_ID = "graph-panel";
 
 export interface GraphPanelProps {
   planId: string;
@@ -72,10 +77,13 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
   const paused = snapshot.paused;
   const canResumeRun = planStatus === "failed" || planStatus === "cancelled";
 
-  // Esc：先关抽屉，再关面板。
+  // Esc：先关抽屉，再关面板。仅覆盖层栈顶响应且标记 defaultPrevented，
+  // 避免一次按键同时关掉多层（自研覆盖层与底层快捷键的协调见 overlay-stack）。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (!isTopOverlay(GRAPH_OVERLAY_ID)) return;
+      event.preventDefault();
       if (selectedNodeId) {
         setSelectedNodeId(null);
       } else {
@@ -85,6 +93,47 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedNodeId, onClose]);
+
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  // 层级登记 + 焦点止损：打开时入栈并接管焦点，关闭后还原到触发元素。
+  useEffect(() => {
+    const trigger =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    pushOverlay(GRAPH_OVERLAY_ID);
+    panelRef.current?.focus();
+    return () => {
+      popOverlay(GRAPH_OVERLAY_ID);
+      trigger?.focus();
+    };
+  }, []);
+
+  // 焦点陷阱：Tab 循环限制在面板内，避免焦点走进被遮挡的底层界面。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Tab" || !isTopOverlay(GRAPH_OVERLAY_ID)) return;
+      const root = panelRef.current;
+      if (!root) return;
+      const focusables = Array.from(
+        root.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((el) => !el.hasAttribute("disabled"));
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || active === root)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const runByNodeId = useMemo(
     () => new Map((plan?.nodeRuns ?? []).map((run) => [run.nodeId, run])),
@@ -237,9 +286,18 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
     selectedNodeId && definition?.nodes.some((node) => node.id === selectedNodeId),
   );
 
-  return (
-    <div className="ai-dialog-overlay ai-graph-overlay">
-      <div className="ai-graph-panel" role="dialog" aria-label="执行图面板">
+  // portal 到 body：项目页 .ai-project-shell > * 会给祖先创建层叠上下文，
+  // 内联渲染时图面板会被右侧文件栏遮挡（A02）；portal 后 z-index 在根层级生效。
+  return createPortal(
+    <div className="ai-dialog-overlay ai-graph-overlay ai-graph-portal">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="ai-graph-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="执行图面板"
+      >
         <GraphPanelHeader
           plan={plan}
           definition={definition}
@@ -315,6 +373,7 @@ function GraphPanelInner({ planId, onClose }: GraphPanelProps) {
           )}
         </AnimatePresence>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -158,6 +158,7 @@ export function ProjectPage({
       onOpenMarkdownLink={handleOpenMarkdownLink}
       onOpenMcpStatus={() => setShowMcpStatus(true)}
       onOpenSettings={() => setShowDispatcherSettings(true)}
+      workspaceVisible={visible}
     />
   );
 

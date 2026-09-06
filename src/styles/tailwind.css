@@ -9341,6 +9341,14 @@
     -webkit-backdrop-filter: none;
   }
 
+  /* 执行图 portal 到 body 后的根层级定位（UI-03）：
+     z=200 高于 titlebar(40) 与 .ai-dialog-overlay(100)，低于设置(300) 与
+     确认框(400/401)，满足「不遮挡更高层确认框」；top 让出标题栏拖拽区。 */
+  .ai-graph-portal {
+    top: var(--titlebar-h);
+    z-index: 200;
+  }
+
   /* 窄窗口下降级外边距，画布优先 */
   @media (max-width: 900px) {
     .ai-graph-overlay {

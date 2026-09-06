@@ -28,6 +28,8 @@ interface ProjectWorkbenchContentProps {
   onOpenMarkdownLink: (url: string) => void | Promise<void>;
   onOpenMcpStatus: () => void;
   onOpenSettings: () => void;
+  /** 工作区是否可见（保活隐藏时为 false），透传给 portal 覆盖层门控。 */
+  workspaceVisible: boolean;
 }
 
 export function ProjectWorkbenchContent({
@@ -42,6 +44,7 @@ export function ProjectWorkbenchContent({
   onOpenMarkdownLink,
   onOpenMcpStatus,
   onOpenSettings,
+  workspaceVisible,
 }: ProjectWorkbenchContentProps) {
   const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
@@ -108,6 +111,7 @@ export function ProjectWorkbenchContent({
               onOpenSettings={onOpenSettings}
               onClosePanel={() => onSessionWorkbenchVisibleChange(false)}
               embedded
+              workspaceVisible={workspaceVisible}
             />
           </MarkdownLinkProvider>
         ) : (

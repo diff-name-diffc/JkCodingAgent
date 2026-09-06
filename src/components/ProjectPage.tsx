@@ -1,7 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import type { Project } from "../types";
 import { SessionPanel } from "./SessionPanel";
-import { ProjectRail } from "./ProjectRail";
+import { PanelLeftOpen } from "lucide-react";
+import { AppRail } from "./shell/AppRail";
+import { ContextNav, type ContextNavTab } from "./shell/ContextNav";
 import { RightToolbar } from "./RightToolbar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useProjectPanels } from "../hooks/useProjectPanels";
@@ -33,15 +35,13 @@ const BrowserPanel = lazy(() =>
   import("./BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
 );
 
-/** 会话导航栏偏好宽（UI-08 持久化前的模块常量；设计目标区间 216–320）。 */
-const SESSION_NAV_WIDTH = 288;
-
 export function ProjectPage({
   project,
   visible = true,
   allProjects = [],
   openProjects,
   onBack,
+  onNavigateHome,
   onSwitchProject,
   onCloseProject,
   onOpen,
@@ -53,6 +53,8 @@ export function ProjectPage({
    * 是「仅展示已打开的窗口」，不在组件内回退 allProjects，避免两套语义。 */
   openProjects: Project[];
   onBack: () => void;
+  /** 全局 rail 入口：定向返回欢迎页的聊天/项目/架构空间（UI-07）。 */
+  onNavigateHome?: (space: "chat" | "projects" | "architecture") => void;
   onSwitchProject: (project: Project) => void;
   onCloseProject?: (project: Project) => void;
   onOpen: () => void;
@@ -91,12 +93,14 @@ export function ProjectPage({
   const [sessionSidebarCollapsed, setSessionSidebarCollapsed] = useState(false);
   const [sessionWorkbenchVisible, setSessionWorkbenchVisible] = useState(true);
   const [editorPaneRatio, setEditorPaneRatio] = useState(0.5);
+  const [contextTab, setContextTab] = useState<ContextNavTab>("sessions");
+  const [contextNavWidth, setContextNavWidth] = useState(248);
 
   // 空间预算（UI-04）：偏好为冻结输入，窄窗临时适配只体现在 budget 输出。
   const hasEditorContent = panels.openDiff !== null || openFiles.length > 0;
   const budget = useWorkspaceBudget({
     navOpen: !sessionSidebarCollapsed,
-    navWidthPref: SESSION_NAV_WIDTH,
+    navWidthPref: contextNavWidth,
     rightPanelOpen: rightPanel !== null,
     rightPanelWidthPref: rightPanelWidth,
     terminalOpen: showShellTerminal,
@@ -146,28 +150,91 @@ export function ProjectPage({
   });
 
   const railNode = (
-    <ProjectRail
-      projects={openProjects}
-      allProjects={allProjects}
-      activeProjectId={project.id}
-      sessionSidebarCollapsed={sessionSidebarCollapsed}
-      onExpandSessionSidebar={() => setSessionSidebarCollapsed(false)}
-      onSwitch={onSwitchProject}
-      onCloseProject={onCloseProject}
-      onOpen={onOpen}
+    <AppRail
+      space="project"
+      onNavigateHome={onNavigateHome}
+      projectId={project.id}
+      projectPath={project.path}
     />
   );
 
   const sessionPanelNode =
     !sessionSidebarCollapsed && budget.navWidth > 0 ? (
-      <SessionPanel
-        project={project}
-        activeSessionId={activeSessionId}
-        onSelectSession={handleSelectSession}
-        onBack={onBack}
-        onCollapse={() => setSessionSidebarCollapsed(true)}
-      />
-    ) : undefined;
+    <ContextNav
+      project={project}
+      openProjects={openProjects}
+      allProjects={allProjects}
+      activeTab={contextTab}
+      onTabChange={setContextTab}
+      width={contextNavWidth}
+      onWidthCommit={setContextNavWidth}
+      onSwitchProject={onSwitchProject}
+      onCloseProject={(target) => onCloseProject?.(target)}
+      onOpenProject={onOpen}
+      onCollapse={() => setSessionSidebarCollapsed(true)}
+      sessionContent={
+        <SessionPanel
+          project={project}
+          activeSessionId={activeSessionId}
+          onSelectSession={handleSelectSession}
+          onBack={onBack}
+          onCollapse={() => setSessionSidebarCollapsed(true)}
+          hideChrome
+        />
+      }
+      filesContent={
+        <ErrorBoundary label="文件浏览器">
+          <Suspense fallback={<ProjectLazyPaneFallback label="文件列表加载中..." />}>
+            <FileExplorer
+              projectPath={project.path}
+              projectName={project.name}
+              onFileSelect={handleFileSelect}
+              onFileRename={handleFileTreeRename}
+              onFileDelete={handleFileTreeDelete}
+              openFilePaths={openFiles.map((tab) => tab.path)}
+              active={visible}
+              width={contextNavWidth}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      }
+      changesContent={
+        <ErrorBoundary label="Git 变更">
+          <Suspense fallback={<ProjectLazyPaneFallback label="Git 变更加载中..." />}>
+            <GitChanges
+              projectPath={project.path}
+              onFileSelect={handleDiffFileSelect}
+              width={contextNavWidth}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      }
+      historyContent={
+        <ErrorBoundary label="Git 历史">
+          <Suspense fallback={<ProjectLazyPaneFallback label="Git 历史加载中..." />}>
+            <GitHistory
+              projectPath={project.path}
+              onCommitSelect={handleCommitSelect}
+              onFileClick={handleCommitFileClick}
+              width={contextNavWidth}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      }
+    />
+    ) : (
+      <div className="ai-context-nav-collapsed">
+        <button
+          type="button"
+          className="ai-context-nav-collapse"
+          aria-label="展开导航"
+          title="展开导航"
+          onClick={() => setSessionSidebarCollapsed(false)}
+        >
+          <PanelLeftOpen size={14} strokeWidth={2} />
+        </button>
+      </div>
+    );
 
   const workbenchNode = (
     <ProjectWorkbenchContent
@@ -216,61 +283,22 @@ export function ProjectPage({
     />
   );
 
-  const rightPanelNode = rightPanel && rightPanelRenderWidth > 0 ? (
-    <ProjectRightPanelHost
-      onResizeStart={handleRightResizeStart}
-      onResizeKey={(event) => {
-        const step = event.shiftKey ? 48 : 16;
-        if (event.key === "ArrowLeft") {
-          event.preventDefault();
-          panels.applyRightPanelWidth(rightPanelWidth + step);
-        } else if (event.key === "ArrowRight") {
-          event.preventDefault();
-          panels.applyRightPanelWidth(rightPanelWidth - step);
-        }
-      }}
-      onResizeDoubleClick={() => panels.applyRightPanelWidth(280)}
-    >
-      {rightPanel === "files" && (
-        <ErrorBoundary label="文件浏览器">
-          <Suspense fallback={<ProjectLazyPaneFallback label="文件列表加载中..." />}>
-            <FileExplorer
-              projectPath={project.path}
-              projectName={project.name}
-              onFileSelect={handleFileSelect}
-              onFileRename={handleFileTreeRename}
-              onFileDelete={handleFileTreeDelete}
-              openFilePaths={openFiles.map((tab) => tab.path)}
-              active={visible}
-              width={rightPanelRenderWidth}
-            />
-          </Suspense>
-        </ErrorBoundary>
-      )}
-      {rightPanel === "git-changes" && (
-        <ErrorBoundary label="Git 变更">
-          <Suspense fallback={<ProjectLazyPaneFallback label="Git 变更加载中..." />}>
-            <GitChanges
-              projectPath={project.path}
-              onFileSelect={handleDiffFileSelect}
-              width={rightPanelRenderWidth}
-            />
-          </Suspense>
-        </ErrorBoundary>
-      )}
-      {rightPanel === "git-history" && (
-        <ErrorBoundary label="Git 历史">
-          <Suspense fallback={<ProjectLazyPaneFallback label="Git 历史加载中..." />}>
-            <GitHistory
-              projectPath={project.path}
-              onCommitSelect={handleCommitSelect}
-              onFileClick={handleCommitFileClick}
-              width={rightPanelRenderWidth}
-            />
-          </Suspense>
-        </ErrorBoundary>
-      )}
-      {rightPanel === "browser" && (
+  const rightPanelNode =
+    rightPanel === "browser" && rightPanelRenderWidth > 0 ? (
+      <ProjectRightPanelHost
+        onResizeStart={handleRightResizeStart}
+        onResizeKey={(event) => {
+          const step = event.shiftKey ? 48 : 16;
+          if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            panels.applyRightPanelWidth(rightPanelWidth + step);
+          } else if (event.key === "ArrowRight") {
+            event.preventDefault();
+            panels.applyRightPanelWidth(rightPanelWidth - step);
+          }
+        }}
+        onResizeDoubleClick={() => panels.applyRightPanelWidth(280)}
+      >
         <ErrorBoundary label="CloakBrowser">
           <Suspense fallback={<ProjectLazyPaneFallback label="浏览器加载中..." />}>
             <BrowserPanel
@@ -286,9 +314,8 @@ export function ProjectPage({
             />
           </Suspense>
         </ErrorBoundary>
-      )}
-    </ProjectRightPanelHost>
-  ) : undefined;
+      </ProjectRightPanelHost>
+    ) : undefined;
 
   const toolbarNode = (
     <RightToolbar

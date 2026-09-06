@@ -44,6 +44,8 @@ function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [mountedProjectIds, setMountedProjectIds] = useState<string[]>([]);
+  /** 欢迎页当前视图（UI-07 提升到 App：项目工作台可定向返回任一空间）。 */
+  const [homeView, setHomeView] = useState<"projects" | "chat" | "architecture">("chat");
 
   // 主题的权威来源是后端全局库（dispatcher_settings 的 theme 字段，经
   // aha_get_settings_v2 读取）；main.tsx 的 initializeTheme() 只用
@@ -211,6 +213,10 @@ function App() {
                 allProjects={railProjects}
                 openProjects={mountedProjects}
                 onBack={handleBack}
+                onNavigateHome={(space) => {
+                  setHomeView(space);
+                  handleBack();
+                }}
                 onSwitchProject={handleProjectClick}
                 onCloseProject={handleCloseProject}
                 onOpen={handleOpen}
@@ -228,6 +234,8 @@ function App() {
           >
             <WelcomePage
               projects={sortedProjects}
+              view={homeView}
+              onViewChange={setHomeView}
               onOpen={handleOpen}
               onProjectClick={handleProjectClick}
               onDeleteProject={handleDeleteProject}

@@ -83,12 +83,15 @@ export function SessionPanel({
   onSelectSession,
   onBack,
   onCollapse,
+  hideChrome = false,
 }: {
   project: Project;
   activeSessionId: string | null;
   onSelectSession: (id: string | null) => void;
   onBack: () => void;
   onCollapse: () => void;
+  /** 嵌入 ContextNav 时隐藏自带头部/底部（外壳 chrome 由导航统一提供，UI-07）。 */
+  hideChrome?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -218,8 +221,9 @@ export function SessionPanel({
 
   return (
     <div className="ai-project-session-panel">
-      {/* Project header */}
-      <div className="ai-project-session-header">
+      {/* Project header（嵌入导航时由 ContextNav 提供外壳） */}
+      {!hideChrome && (
+        <div className="ai-project-session-header">
         <button className="ai-project-session-icon-btn" onClick={onBack} title="返回项目页">
           <ChevronLeft size={15} strokeWidth={2} />
         </button>
@@ -228,7 +232,8 @@ export function SessionPanel({
         <button className="ai-project-session-icon-btn" onClick={onCollapse} title="折叠会话列表">
           <PanelLeftClose size={15} strokeWidth={2} />
         </button>
-      </div>
+        </div>
+      )}
 
       {/* New Session row (primary action) */}
       <div className="ai-project-session-actions">
@@ -306,12 +311,14 @@ export function SessionPanel({
         )}
       </div>
 
-      <div className="ai-project-session-footer">
-        <SidebarFooterActions
-          projectId={project.id}
-          projectPath={project.path}
-        />
-      </div>
+      {!hideChrome && (
+        <div className="ai-project-session-footer">
+          <SidebarFooterActions
+            projectId={project.id}
+            projectPath={project.path}
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -1,20 +1,10 @@
 import { lazy, Suspense, useState, useMemo } from "react";
-import type React from "react";
-import {
-  Search,
-  FolderOpen,
-  Layers,
-  Plus,
-  Trash2,
-  MessageCircle,
-  Workflow,
-} from "lucide-react";
+import { Search, FolderOpen, Plus, Trash2 } from "lucide-react";
 import type { Project } from "../types";
 import { shortenPath } from "../utils";
 import { ProjectAvatar } from "./ProjectAvatar";
-import { SidebarFooterActions } from "./SidebarFooterActions";
 import { AiEmptyState, AiSectionHeader } from "./ui/sci-fi-shell";
-import appLogo from "../assets/app-logo.png";
+import { AppRail } from "./shell/AppRail";
 
 const HomeChatPage = lazy(() =>
   import("./HomeChatPage").then((module) => ({ default: module.HomeChatPage })),
@@ -31,31 +21,6 @@ function WelcomePaneFallback() {
     <div className="ai-home-pane ai-empty-state">
       加载中...
     </div>
-  );
-}
-
-function SidebarItem({
-  icon,
-  label,
-  active,
-  onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  active?: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={`ai-home-nav-item${active ? " is-active" : ""}`}
-      onClick={onClick}
-      aria-label={label}
-      aria-current={active ? "page" : undefined}
-    >
-      <span className="ai-home-nav-icon">{icon}</span>
-      <span className="ai-home-nav-label">{label}</span>
-    </button>
   );
 }
 
@@ -79,11 +44,15 @@ function WelcomeEmpty({ hasProjects, onOpen }: { hasProjects: boolean; onOpen: (
 
 export function WelcomePage({
   projects,
+  view,
+  onViewChange,
   onOpen,
   onProjectClick,
   onDeleteProject,
 }: {
   projects: Project[];
+  view: "projects" | "chat" | "architecture";
+  onViewChange: (view: "projects" | "chat" | "architecture") => void;
   onOpen: () => void;
   onProjectClick: (p: Project) => void;
   onDeleteProject: (projectId: string) => void;
@@ -91,7 +60,6 @@ export function WelcomePage({
   const [query, setQuery] = useState("");
   const [hov, setHov] = useState<string | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
-  const [view, setView] = useState<"projects" | "chat" | "architecture">("chat");
 
   const filtered = useMemo(() => {
     if (!query.trim()) return projects;
@@ -104,42 +72,7 @@ export function WelcomePage({
   return (
     <div className="ai-home-shell">
       <div className="ai-home-layout">
-        <div className="ai-home-nav">
-          <div className="ai-home-brand" aria-label="JKCodingAgent">
-            <div className="ai-home-brand-icon">
-              <img
-                src={appLogo}
-                alt="JKCodingAgent"
-              />
-            </div>
-            <span className="ai-home-brand-title">JKCodingAgent</span>
-          </div>
-
-          <nav className="ai-home-nav-list" aria-label="主导航">
-            <SidebarItem
-              icon={<MessageCircle size={18} />}
-              label="聊天"
-              active={view === "chat"}
-              onClick={() => setView("chat")}
-            />
-            <SidebarItem
-              icon={<Layers size={18} />}
-              label="项目"
-              active={view === "projects"}
-              onClick={() => setView("projects")}
-            />
-            <SidebarItem
-              icon={<Workflow size={18} />}
-              label="架构设计"
-              active={view === "architecture"}
-              onClick={() => setView("architecture")}
-            />
-          </nav>
-
-          <div className="ai-home-nav-footer">
-            <SidebarFooterActions />
-          </div>
-        </div>
+        <AppRail space={view} onSpaceChange={onViewChange} />
 
         {view === "chat" && (
           <Suspense fallback={<WelcomePaneFallback />}>

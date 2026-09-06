@@ -1,8 +1,13 @@
 import type { ReactNode } from "react";
 import { IconButton } from "./IconButton";
-import { Folder, GitBranch, History, Terminal, MonitorDot } from "lucide-react";
+import { Terminal, MonitorDot } from "lucide-react";
 import type { RightPanel } from "../hooks/projectPanelsFileState";
 
+/**
+ * 过渡态（UI-07 commit 1）：文件/变更/历史入口已移入 ContextNav 页签，
+ * 本工具栏仅保留浏览器（右面板，UI-18 迁移前）与终端；
+ * commit 2 由 StatusDockBar 取代后整体删除。
+ */
 export function RightToolbar({
   activePanel,
   onToggle,
@@ -18,12 +23,7 @@ export function RightToolbar({
     key: Exclude<RightPanel, null>;
     icon: ReactNode;
     title: string;
-  }> = [
-    { key: "files", icon: <Folder size={17} />, title: "文件浏览器" },
-    { key: "git-changes", icon: <GitBranch size={17} />, title: "Git 变更" },
-    { key: "git-history", icon: <History size={17} />, title: "Git 历史" },
-    { key: "browser", icon: <MonitorDot size={17} />, title: "CloakBrowser" },
-  ];
+  }> = [{ key: "browser", icon: <MonitorDot size={17} />, title: "CloakBrowser" }];
 
   return (
     <div className="ai-project-right-toolbar">

@@ -9,7 +9,6 @@ interface PythonRunDrawerProps {
   target: PythonCodeRunTarget | null;
   record: PythonCodeRunRecord | null;
   running: boolean;
-  width?: number;
   onClose: () => void;
   onRun: (target: PythonCodeRunTarget) => void;
   onStop: (runId: string) => void;
@@ -20,7 +19,6 @@ export const PythonRunDrawer = memo(function PythonRunDrawer({
   target,
   record,
   running,
-  width = 420,
   onClose,
   onRun,
   onStop,
@@ -38,7 +36,7 @@ export const PythonRunDrawer = memo(function PythonRunDrawer({
   const canRun = Boolean(target) && !running;
 
   return (
-    <aside className="ai-python-run-drawer" style={{ width }}>
+    <div className="ai-python-run-body">
       <div className="ai-python-run-header">
         <div className="ai-python-run-title-wrap">
           <span className="ai-python-run-kicker">Python Runner</span>
@@ -142,7 +140,7 @@ export const PythonRunDrawer = memo(function PythonRunDrawer({
           <div className="ai-python-run-empty">点击 Python 代码块右上角 Run 查看执行结果。</div>
         )}
       </div>
-    </aside>
+    </div>
   );
 });
 

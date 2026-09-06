@@ -21,6 +21,7 @@ import {
 } from "../settings/providers/model-library";
 import { useLiveSessionStateReadonly } from "../dispatcher-chat/useLiveSessionState";
 import { useChatShortcuts } from "../../hooks/use-chat-shortcuts";
+import { useSessionRequestGuard } from "../../hooks/useSessionRequestGuard";
 import { AppLayout } from "../layout/app-layout";
 import { Sidebar } from "../layout/sidebar";
 import { MessageList } from "./message-list";
@@ -157,12 +158,8 @@ export function ChatShell({
   );
   const [traceLoading, setTraceLoading] = React.useState(false);
   const [traceError, setTraceError] = React.useState<string | null>(null);
-  const traceRequestRef = React.useRef(0);
-
-  // 会话切换时让进行中的轨迹请求失效（requestId 比对见 handleOpenSubAgent）。
-  React.useEffect(() => {
-    traceRequestRef.current += 1;
-  }, [sessionId]);
+  // 会话切换时让进行中的轨迹请求失效（requestId 范式见 useSessionRequestGuard）。
+  const traceGuard = useSessionRequestGuard(sessionId);
 
   React.useEffect(() => {
     setSelectedArtifact(null);
@@ -220,20 +217,20 @@ export function ChatShell({
 
   const handleOpenArtifact = React.useCallback(
     (artifact: DispatcherToolArtifactRef) => {
-      traceRequestRef.current += 1;
+      traceGuard.begin(); // 使进行中的轨迹请求失效
       setSelectedArtifact(artifact);
       setSelectedSubAgentToolCallId(null);
       setTraceLoading(false);
       setTraceError(null);
       setArtifactPanelOpen(true);
     },
-    [setArtifactPanelOpen],
+    [setArtifactPanelOpen, traceGuard],
   );
 
   const handleOpenSubAgent = React.useCallback(
     async (tool: ToolActivityItem) => {
       if (!sessionId) return;
-      const requestId = ++traceRequestRef.current;
+      const requestId = traceGuard.begin();
       setSelectedArtifact(null);
       setSelectedSubAgentToolCallId(tool.id);
       setTraceError(null);
@@ -251,7 +248,7 @@ export function ChatShell({
           workspaceId: sessionId,
           toolCallId: tool.id,
         });
-        if (requestId !== traceRequestRef.current) return;
+        if (traceGuard.isStale(requestId)) return;
         if (!trace) {
           setTraceError("该任务执行时未记录轨迹。");
           return;
@@ -263,13 +260,13 @@ export function ChatShell({
         const hydrated = hydrateSubAgentTrace(sessionId, tool.id, parsed as SubAgentEvent[]);
         if (!hydrated) throw new Error("执行轨迹为空");
       } catch (error) {
-        if (requestId !== traceRequestRef.current) return;
+        if (traceGuard.isStale(requestId)) return;
         setTraceError(error instanceof Error ? error.message : String(error));
       } finally {
-        if (requestId === traceRequestRef.current) setTraceLoading(false);
+        if (!traceGuard.isStale(requestId)) setTraceLoading(false);
       }
     },
-    [sessionId, setArtifactPanelOpen],
+    [sessionId, setArtifactPanelOpen, traceGuard],
   );
 
   return (

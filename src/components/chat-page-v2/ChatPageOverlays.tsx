@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import type { PythonCodeRunRecord, PythonCodeRunTarget } from "../../types";
 import { PythonRunDrawer } from "../dispatcher-chat/PythonRunDrawer";
+import { Sheet, SheetContent } from "../ui/sheet";
 
 const GraphPanel = lazy(() =>
   import("../graph/GraphPanel").then((module) => ({ default: module.GraphPanel })),
@@ -40,17 +41,19 @@ export function ChatPageOverlays({
 }: ChatPageOverlaysProps) {
   return (
     <>
-      {pythonDrawerOpen && (
-        <PythonRunDrawer
-          target={pythonTarget}
-          record={pythonRecord}
-          running={pythonRunning}
-          onClose={onClosePython}
-          onRun={onRunPython}
-          onStop={onStopPython}
-          onClear={onClearPython}
-        />
-      )}
+      <Sheet open={pythonDrawerOpen} onOpenChange={(open) => !open && onClosePython()}>
+        <SheetContent aria-label="Python 运行详情">
+          <PythonRunDrawer
+            target={pythonTarget}
+            record={pythonRecord}
+            running={pythonRunning}
+            onClose={onClosePython}
+            onRun={onRunPython}
+            onStop={onStopPython}
+            onClear={onClearPython}
+          />
+        </SheetContent>
+      </Sheet>
       {graphPlanId && workspaceVisible && (
         <Suspense fallback={null}>
           <GraphPanel planId={graphPlanId} onClose={onCloseGraph} />

@@ -3,7 +3,9 @@ import * as Popover from "@radix-ui/react-popover";
 import { MoreHorizontal, X } from "lucide-react";
 import { FileGlyph, resolveFilePresentation } from "../file-icons";
 import { FileTabPane } from "./file-viewer/FileTabPane";
-import type { OpenFileTab } from "../hooks/useProjectPanels";
+import type { EditorTab } from "../hooks/useProjectPanels";
+
+type OpenFileTab = Extract<EditorTab, { kind: "file" }>;
 
 export function FileViewer({
   tabs,

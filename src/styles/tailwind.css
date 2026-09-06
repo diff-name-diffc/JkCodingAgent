@@ -6268,17 +6268,14 @@
 
   /* ── Python Runner Drawer ─────────────────────────────────────────────── */
 
-  .ai-python-run-drawer {
-    flex-shrink: 0;
-    min-width: 340px;
-    max-width: 48vw;
+  /* Python 运行详情改为 Sheet 覆盖层内容（UI-09）：不再挤占聊天列 */
+  .ai-python-run-body {
     display: flex;
     flex-direction: column;
+    height: 100%;
+    min-width: 0;
     overflow: hidden;
     color: var(--text-primary);
-    border-left: 1px solid rgb(var(--accent-rgb) / 0.16) !important;
-    background: var(--bg-sidebar);
-    box-shadow: -20px 0 50px rgba(0, 0, 0, 0.18);
   }
 
   .ai-python-run-header {
@@ -10314,5 +10311,77 @@
   .ai-status-dock-toggle.is-active {
     background: var(--bg-selected);
     color: var(--accent-strong);
+  }
+
+  /* ── ui/dialog 与 ui/sheet 基础样式（UI-09）────────────────────── */
+
+  .ai-ui-dialog-overlay {
+    background: var(--bg-overlay);
+    backdrop-filter: none;
+  }
+
+  .ai-ui-dialog-content {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 300;
+    width: min(560px, 92vw);
+    max-height: 86vh;
+    overflow: auto;
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-xl);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-md);
+    padding: 16px;
+  }
+
+  .ai-ui-dialog-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    color: var(--text-hint);
+  }
+
+  .ai-ui-dialog-close:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .ai-ui-sheet-overlay {
+    background: var(--bg-overlay);
+    backdrop-filter: none;
+  }
+
+  .ai-ui-sheet-content {
+    position: fixed;
+    top: var(--titlebar-h);
+    right: 0;
+    bottom: 0;
+    z-index: 300;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--border-dim);
+    background: var(--bg-panel);
+    box-shadow: var(--shadow-lg);
+    animation: ai-sheet-in var(--motion-normal) var(--motion-ease);
+  }
+
+  @keyframes ai-sheet-in {
+    from {
+      transform: translateX(24px);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
   }
 }

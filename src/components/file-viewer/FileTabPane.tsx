@@ -13,7 +13,9 @@ import { MonacoEditorPane } from "./MonacoEditorPane";
 import { ImagePreviewPane } from "./ImagePreviewPane";
 import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
 import { FileGlyph, resolveFilePresentation, type FilePresentation } from "../../file-icons";
-import type { OpenFileTab } from "../../hooks/useProjectPanels";
+import type { EditorTab } from "../../hooks/useProjectPanels";
+
+type OpenFileTab = Extract<EditorTab, { kind: "file" }>;
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 

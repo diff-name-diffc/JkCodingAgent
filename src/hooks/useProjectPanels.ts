@@ -1,13 +1,21 @@
 import { useState, useCallback, useRef } from "react";
+import { type RightPanel } from "./projectPanelsFileState";
 import {
-  deleteFromOpenFilesState,
-  deleteOpenDiff,
-  renameOpenDiff,
-  renameOpenFilesState,
-  type OpenDiff,
-  type OpenFileTab,
-  type RightPanel,
-} from "./projectPanelsFileState";
+  EMPTY_EDITOR_TABS,
+  activeTab,
+  closeAllTabs,
+  closeOtherTabs,
+  closeTab,
+  closeTabsToRight,
+  deleteFileTab,
+  fileTabs,
+  openDiffTab,
+  openFileTab,
+  renameFileTab,
+  selectTab,
+  type EditorTab,
+  type EditorTabsState,
+} from "../components/project/main-tabs";
 import { useDockedBrowserPanel } from "./useDockedBrowserPanel";
 import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
 
@@ -18,14 +26,12 @@ import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-sto
 export function useProjectPanels(workspaceId: string) {
   const [rightPanel, setRightPanel] = useState<RightPanel>(null);
   const [editorWorkbenchVisible, setEditorWorkbenchVisible] = useState(true);
-  const [openFilesState, setOpenFilesState] = useState<{
-    tabs: OpenFileTab[];
-    activeTabId: string | null;
-  }>({
-    tabs: [],
-    activeTabId: null,
-  });
-  const [openDiff, setOpenDiff] = useState<OpenDiff | null>(null);
+  // 文件与 diff 统一标签体系（UI-09）：diff 不再是互斥独立槽。
+  const [editorTabs, setEditorTabs] = useState<EditorTabsState>(EMPTY_EDITOR_TABS);
+  const openFiles = fileTabs(editorTabs);
+  const activeEditorTab = activeTab(editorTabs);
+  const openDiff = activeEditorTab?.kind === "diff" ? activeEditorTab.diff : null;
+  const activeFileTabId = activeEditorTab?.kind === "file" ? activeEditorTab.id : null;
   const prefs = useWorkspaceStore(selectWorkspacePrefs(workspaceId));
   /** 拖拽中的实时值；mouseup 才写回 store，避免高频持久化。 */
   const [dragRightWidth, setDragRightWidth] = useState<number | null>(null);
@@ -53,7 +59,6 @@ export function useProjectPanels(workspaceId: string) {
   rightPanelWidthRef.current = rightPanelWidth;
   const terminalHeightRef = useRef(terminalHeight);
   terminalHeightRef.current = terminalHeight;
-  const nextFileTabIdRef = useRef(0);
 
   const handleTogglePanel = useCallback((panel: Exclude<RightPanel, null>) => {
     setRightPanel((prev) => (prev === panel ? null : panel));
@@ -65,108 +70,57 @@ export function useProjectPanels(workspaceId: string) {
 
   const handleFileSelect = useCallback((path: string, name: string) => {
     setEditorWorkbenchVisible(true);
-    setOpenDiff(null);
-    setOpenFilesState((prev) => {
-      const existingTab = prev.tabs.find((tab) => tab.path === path);
-      if (existingTab) {
-        return {
-          tabs: prev.tabs,
-          activeTabId: existingTab.id,
-        };
-      }
-
-      const nextTab: OpenFileTab = {
-        id: `file-tab-${nextFileTabIdRef.current++}`,
-        path,
-        name,
-      };
-
-      return {
-        tabs: [...prev.tabs, nextTab],
-        activeTabId: nextTab.id,
-      };
-    });
+    setEditorTabs((prev) => openFileTab(prev, path, name));
   }, []);
 
   const handleFileTabSelect = useCallback((tabId: string) => {
-    setOpenFilesState((prev) => ({
-      tabs: prev.tabs,
-      activeTabId: prev.tabs.some((tab) => tab.id === tabId) ? tabId : prev.activeTabId,
-    }));
+    setEditorTabs((prev) => selectTab(prev, tabId));
   }, []);
 
   const handleFileTabClose = useCallback((tabId: string) => {
-    setOpenFilesState((prev) => {
-      const closingIndex = prev.tabs.findIndex((tab) => tab.id === tabId);
-      if (closingIndex === -1) return prev;
-
-      const nextTabs = prev.tabs.filter((tab) => tab.id !== tabId);
-      const nextActiveTabId =
-        prev.activeTabId !== tabId
-          ? prev.activeTabId
-          : nextTabs[Math.min(closingIndex, nextTabs.length - 1)]?.id ?? null;
-
-      return {
-        tabs: nextTabs,
-        activeTabId: nextActiveTabId,
-      };
-    });
+    setEditorTabs((prev) => closeTab(prev, tabId));
   }, []);
 
   const handleCloseOtherFileTabs = useCallback((tabId: string) => {
-    setOpenFilesState((prev) => {
-      const activeTab = prev.tabs.find((tab) => tab.id === tabId);
-      if (!activeTab) return prev;
-      return {
-        tabs: [activeTab],
-        activeTabId: activeTab.id,
-      };
-    });
+    setEditorTabs((prev) => closeOtherTabs(prev, tabId));
   }, []);
 
   const handleCloseTabsToRight = useCallback((tabId: string) => {
-    setOpenFilesState((prev) => {
-      const activeIndex = prev.tabs.findIndex((tab) => tab.id === tabId);
-      if (activeIndex === -1) return prev;
-
-      const nextTabs = prev.tabs.slice(0, activeIndex + 1);
-      return {
-        tabs: nextTabs,
-        activeTabId: nextTabs.some((tab) => tab.id === prev.activeTabId) ? prev.activeTabId : tabId,
-      };
-    });
+    setEditorTabs((prev) => closeTabsToRight(prev, tabId));
   }, []);
 
   const handleCloseAllFileTabs = useCallback(() => {
-    setOpenFilesState({
-      tabs: [],
-      activeTabId: null,
-    });
+    setEditorTabs(closeAllTabs());
   }, []);
 
   const handleFileTreeRename = useCallback((currentPath: string, nextPath: string) => {
-    setOpenFilesState((prev) => renameOpenFilesState(prev, currentPath, nextPath));
-    setOpenDiff((prev) => renameOpenDiff(prev, currentPath, nextPath));
+    setEditorTabs((prev) => {
+      const renamed = renameFileTab(prev, currentPath, nextPath, nextPath.split("/").pop() ?? nextPath);
+      return renamed;
+    });
   }, []);
 
   const handleFileTreeDelete = useCallback((deletedPath: string) => {
-    setOpenFilesState((prev) => deleteFromOpenFilesState(prev, deletedPath));
-    setOpenDiff((prev) => deleteOpenDiff(prev, deletedPath));
+    setEditorTabs((prev) => deleteFileTab(prev, deletedPath));
   }, []);
 
   const handleDiffFileSelect = useCallback((filePath: string, staged: boolean, label: string) => {
     setEditorWorkbenchVisible(true);
-    setOpenDiff({ kind: "file", filePath, staged, label });
+    setEditorTabs((prev) => openDiffTab(prev, { kind: "file", filePath, staged, label }));
   }, []);
 
   const handleCommitSelect = useCallback((hash: string, message: string) => {
     setEditorWorkbenchVisible(true);
-    setOpenDiff({ kind: "commit", hash, message });
+    setEditorTabs((prev) => openDiffTab(prev, { kind: "commit", hash, message }));
   }, []);
 
   const handleCommitFileClick = useCallback((hash: string, filePath: string, label: string) => {
     setEditorWorkbenchVisible(true);
-    setOpenDiff({ kind: "commit-file", hash, filePath, label });
+    setEditorTabs((prev) => openDiffTab(prev, { kind: "commit-file", hash, filePath, label }));
+  }, []);
+
+  const handleCloseActiveDiff = useCallback(() => {
+    setEditorTabs((prev) => (prev.activeTabId ? closeTab(prev, prev.activeTabId) : prev));
   }, []);
 
   const hideEditorWorkbench = useCallback(() => {
@@ -178,11 +132,7 @@ export function useProjectPanels(workspaceId: string) {
   }, []);
 
   const clearFileAndDiff = useCallback(() => {
-    setOpenFilesState({
-      tabs: [],
-      activeTabId: null,
-    });
-    setOpenDiff(null);
+    setEditorTabs(closeAllTabs());
   }, []);
 
   const handleRightResizeStart = useCallback((e: React.MouseEvent) => {
@@ -244,13 +194,14 @@ export function useProjectPanels(workspaceId: string) {
   return {
     rightPanel,
     editorWorkbenchVisible,
-    openFiles: openFilesState.tabs,
-    activeFileTabId: openFilesState.activeTabId,
+    openFiles,
+    activeFileTabId,
+    activeEditorTab,
     openDiff,
     rightPanelWidth: rightPanel === "browser" ? browserPanel.effectiveWidth : rightPanelWidth,
     browserPanelExpanded: browserPanel.expanded,
     terminalHeight,
-    setOpenDiff,
+    handleCloseActiveDiff,
     handleTogglePanel,
     handleFileSelect,
     handleFileTabSelect,
@@ -273,4 +224,4 @@ export function useProjectPanels(workspaceId: string) {
     handleOpenPanel,
   };
 }
-export type { OpenFileTab };
+export type { EditorTab, EditorTabsState };

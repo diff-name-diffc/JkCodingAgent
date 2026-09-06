@@ -177,32 +177,32 @@ export function ProjectWorkbenchContent({
       )}
     >
       <Suspense fallback={<ProjectLazyPaneFallback label="编辑器加载中..." />}>
-        {panels.openDiff ? (
-          panels.openDiff.kind === "file" ? (
+        {panels.activeEditorTab?.kind === "diff" ? (
+          panels.activeEditorTab.diff.kind === "file" ? (
             <GitDiffViewer
               projectPath={project.path}
               mode="file"
-              filePath={panels.openDiff.filePath}
-              staged={panels.openDiff.staged}
-              title={panels.openDiff.label}
-              onClose={() => panels.setOpenDiff(null)}
+              filePath={panels.activeEditorTab.diff.filePath}
+              staged={panels.activeEditorTab.diff.staged}
+              title={panels.activeEditorTab.diff.label}
+              onClose={panels.handleCloseActiveDiff}
             />
-          ) : panels.openDiff.kind === "commit-file" ? (
+          ) : panels.activeEditorTab.diff.kind === "commit-file" ? (
             <GitDiffViewer
               projectPath={project.path}
               mode="commit-file"
-              commitHash={panels.openDiff.hash}
-              filePath={panels.openDiff.filePath}
-              title={panels.openDiff.label}
-              onClose={() => panels.setOpenDiff(null)}
+              commitHash={panels.activeEditorTab.diff.hash}
+              filePath={panels.activeEditorTab.diff.filePath}
+              title={panels.activeEditorTab.diff.label}
+              onClose={panels.handleCloseActiveDiff}
             />
           ) : (
             <GitDiffViewer
               projectPath={project.path}
               mode="commit"
-              commitHash={panels.openDiff.hash}
-              title={panels.openDiff.message}
-              onClose={() => panels.setOpenDiff(null)}
+              commitHash={panels.activeEditorTab.diff.hash}
+              title={panels.activeEditorTab.diff.message}
+              onClose={panels.handleCloseActiveDiff}
             />
           )
         ) : (

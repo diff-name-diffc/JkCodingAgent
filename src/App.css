@@ -1,8 +1,8 @@
 /* ── Design Tokens ─────────────────────────────────────────────── */
 :root {
   color-scheme: light;
-  --background: #f6f7f4;
-  --foreground: #1f2328;
+  --background: #f7f8f7;
+  --foreground: #202722;
   --card: #fffefa;
   --muted: #edf0ec;
   --muted-foreground: #5f6670;
@@ -25,32 +25,30 @@
   --brand-teal-soft: #ccfbf1;
 
   --bg-root: #d0d4cd;
-  --bg-shell: #ebece7;
+  --bg-shell: var(--background);
   --bg-titlebar: #e4e6e0;
   /* 窗口顶部拖拽区高度：与 macOS 红绿灯安全区配合，页面内容用它做顶部留白。 */
   --titlebar-h: 38px;
-  /* 页面级背景（聊天主区等通栏页面统一引用此令牌） */
-  --background: #f6f7f4;
-  --bg-sidebar: #eceee9;
+  --bg-sidebar: #eff1ef;
   --bg-sidebar-elevated: #e0e3dd;
-  --bg-panel: #f2f2ec;
+  --bg-panel: #ffffff;
   --bg-card: var(--card);
   --bg-hover: #dee4de;
   --bg-selected: #d0e4dd;
   --bg-subtle: #e9ece6;
   --bg-input: #fbfaf6;
-  --bg-elevated: #fffef9;
+  --bg-elevated: #ffffff;
   --bg-gradient-surface: linear-gradient(180deg, #fffef9 0%, #f6f5f0 100%);
   --bg-gradient-sidebar: linear-gradient(180deg, #eff1ec 0%, #e7e9e4 100%);
 
-  --border-dim: rgba(30, 39, 36, 0.13);
+  --border-dim: #dce2dd;
   --border-medium: var(--border);
   --border-strong: rgba(30, 39, 36, 0.28);
   --border-focus: #297c70;
   --border-accent: rgba(41, 124, 112, 0.4);
 
   --text-primary: var(--foreground);
-  --text-secondary: #3f4a46;
+  --text-secondary: #536159;
   --text-muted: var(--muted-foreground);
   --text-hint: #89928e;
   --text-on-accent: #ffffff;
@@ -78,22 +76,20 @@
   --bg-card-rgb: 255 254 250;
   --bg-subtle-rgb: 237 240 236;
   --bg-input-rgb: 251 250 246;
-  --bg-sidebar-rgb: 236 238 233;
+  --bg-sidebar-rgb: 239 241 239;
   --bg-sidebar-elevated-rgb: 224 227 221;
   --bg-selected-rgb: 208 228 221;
   --bg-hover-rgb: 222 228 222;
-  --text-primary-rgb: 31 35 40;
-  --text-secondary-rgb: 63 74 70;
+  --text-primary-rgb: 32 39 34;
+  --text-secondary-rgb: 83 97 89;
   --text-muted-rgb: 95 102 112;
   --border-medium-rgb: 30 39 36;
   --accent-hover-rgb: 24 85 78;
 
-  --chat-shell-bg: #ebece7;
-  --chat-sidebar-bg: #eceee9;
   --chat-main-rail: #f5f4ef;
   --chat-surface: #f8f7f3;
   --chat-surface-strong: #fcfbf8;
-  --chat-glass-border: rgba(30, 39, 36, 0.12);
+  --chat-glass-border: var(--border-dim);
   --chat-focus-ring: 0 0 0 3px rgba(41, 124, 112, 0.16);
   --chat-shadow: 0 18px 44px rgba(31, 42, 38, 0.1);
   --chat-shadow-soft: 0 6px 18px rgba(31, 42, 38, 0.07);
@@ -154,29 +150,30 @@
     "JetBrains Mono", "Cascadia Code", "IBM Plex Mono", "Sarasa Mono SC", "SFMono-Regular",
     "Consolas", ui-monospace, monospace;
 
-  /* ── Surface semantic tokens (light: clean & airy) ── */
-  --sf-shell-bg: #ebece7;
-  --sf-surface: #f5f4ef;
-  --sf-surface-elevated: #fcfbf7;
-  --sf-surface-sunken: #eceee9;
-  --sf-surface-grad: linear-gradient(180deg, #f9f8f4, #f1f0eb);
+  /* ── Surface semantic tokens：外壳 chrome 表面已全部 alias 到权威令牌
+     （UI-06 阶段 A）；140 处 var(--sf-*) 引用零改动收敛，逐组件清除在阶段 B。 ── */
+  --sf-shell-bg: var(--bg-shell);
+  --sf-surface: var(--bg-sidebar);
+  --sf-surface-elevated: var(--bg-elevated);
+  --sf-surface-sunken: var(--bg-sidebar);
   --sf-overlay: rgba(15, 26, 30, 0.28);
-  --sf-accent-border: rgba(13, 148, 136, 0.22);
-  --sf-accent-border-strong: rgba(13, 148, 136, 0.4);
-  --sf-accent-glow: rgba(13, 148, 136, 0.08);
-  --sf-accent-hover-bg: rgba(13, 148, 136, 0.06);
+  --sf-accent-border: var(--border-accent);
+  --sf-accent-border-strong: var(--accent);
+  --sf-accent-glow: transparent;
+  --sf-accent-hover-bg: var(--accent-subtle);
   --sf-grid-line: transparent;
   --sf-grid-mask-opacity: 0;
-  --sf-inset-highlight: rgba(255, 255, 255, 0.6);
-  --sf-shadow-panel: 0 2px 8px rgba(15, 26, 30, 0.05), 0 1px 3px rgba(15, 26, 30, 0.04);
-  --sf-shadow-elevated: 0 8px 30px rgba(15, 26, 30, 0.08), 0 2px 8px rgba(15, 26, 30, 0.05);
-  --sf-glow-cyan: 0 0 20px rgba(13, 148, 136, 0.08);
+  --sf-inset-highlight: transparent;
+  /* 常驻栏无外阴影（02-design §4.1）：alias 为 none，阶段 B 连同引用一起清除 */
+  --sf-shadow-panel: none;
+  --sf-shadow-elevated: none;
+  --sf-glow-cyan: 0 0 0 0 transparent;
 }
 
 .dark {
   color-scheme: dark;
-  --background: #111513;
-  --foreground: #e7ece9;
+  --background: #151817;
+  --foreground: #e6ebe8;
   --card: #171c19;
   --muted: #202621;
   --muted-foreground: #a2aaa5;
@@ -190,24 +187,24 @@
   --bg-root: #0d100f;
   --bg-shell: var(--background);
   --bg-titlebar: #141916;
-  --bg-sidebar: #141916;
+  --bg-sidebar: #111413;
   --bg-sidebar-elevated: var(--muted);
-  --bg-panel: #151a17;
+  --bg-panel: #191d1b;
   --bg-card: var(--card);
   --bg-hover: #252c28;
   --bg-selected: var(--accent-soft);
   --bg-subtle: var(--muted);
   --bg-input: #121714;
-  --bg-elevated: #1b211d;
+  --bg-elevated: #222824;
   --bg-gradient-surface: linear-gradient(180deg, #1b211d 0%, #151a17 100%);
   --bg-gradient-sidebar: linear-gradient(180deg, #171c19 0%, #121714 100%);
-  --border-dim: rgb(231 236 233 / 0.09);
+  --border-dim: #323c35;
   --border-medium: var(--border);
   --border-strong: #48534c;
   --border-focus: var(--accent);
   --border-accent: rgb(85 199 173 / 0.44);
   --text-primary: var(--foreground);
-  --text-secondary: #c3cbc6;
+  --text-secondary: #acb8b0;
   --text-muted: var(--muted-foreground);
   --text-hint: #7f8983;
   --text-on-accent: var(--accent-foreground);
@@ -223,17 +220,15 @@
   --bg-card-rgb: 23 28 25;
   --bg-subtle-rgb: 32 38 33;
   --bg-input-rgb: 18 23 20;
-  --bg-sidebar-rgb: 20 25 22;
+  --bg-sidebar-rgb: 17 20 19;
   --bg-sidebar-elevated-rgb: 32 38 33;
   --bg-selected-rgb: 24 60 52;
   --bg-hover-rgb: 37 44 40;
-  --text-primary-rgb: 231 236 233;
-  --text-secondary-rgb: 195 203 198;
+  --text-primary-rgb: 230 235 232;
+  --text-secondary-rgb: 172 184 176;
   --text-muted-rgb: 162 170 165;
   --border-medium-rgb: 50 58 53;
   --accent-hover-rgb: 101 208 183;
-  --chat-shell-bg: var(--background);
-  --chat-sidebar-bg: var(--bg-sidebar);
   --chat-main-rail: #121714;
   --chat-surface: #151a17;
   --chat-surface-strong: var(--card);
@@ -243,20 +238,19 @@
   --chat-shadow-soft: 0 6px 18px rgb(0 0 0 / 0.22);
   --chat-user-bubble-bg: #20342e;
   --chat-composer-shadow: var(--composer-shadow);
-  --sf-shell-bg: var(--background);
-  --sf-surface: #151a17;
-  --sf-surface-elevated: #1b211d;
-  --sf-surface-sunken: #121714;
-  --sf-surface-grad: linear-gradient(180deg, #1b211d, #151a17);
+  --sf-shell-bg: var(--bg-shell);
+  --sf-surface: var(--bg-sidebar);
+  --sf-surface-elevated: var(--bg-elevated);
+  --sf-surface-sunken: var(--bg-sidebar);
   --sf-overlay: rgb(0 0 0 / 0.58);
-  --sf-accent-border: rgb(85 199 173 / 0.18);
-  --sf-accent-border-strong: rgb(85 199 173 / 0.38);
-  --sf-accent-glow: rgb(85 199 173 / 0.08);
-  --sf-accent-hover-bg: rgb(85 199 173 / 0.08);
-  --sf-inset-highlight: rgb(255 255 255 / 0.035);
-  --sf-shadow-panel: 0 2px 8px rgb(0 0 0 / 0.22);
-  --sf-shadow-elevated: 0 8px 30px rgb(0 0 0 / 0.3);
-  --sf-glow-cyan: 0 0 20px rgb(85 199 173 / 0.09);
+  --sf-accent-border: var(--border-accent);
+  --sf-accent-border-strong: var(--accent);
+  --sf-accent-glow: transparent;
+  --sf-accent-hover-bg: var(--accent-subtle);
+  --sf-inset-highlight: transparent;
+  --sf-shadow-panel: none;
+  --sf-shadow-elevated: none;
+  --sf-glow-cyan: 0 0 0 0 transparent;
 
   /* markdown / streamdown 面在暗色下的对偶令牌 */
   --markdown-inline-bg: rgb(85 199 173 / 0.14);

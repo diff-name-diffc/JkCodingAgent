@@ -5,19 +5,18 @@ import {
   ChevronRight,
   LoaderCircle,
   XCircle,
-  Check,
   Zap,
   Sparkles,
   Wrench,
   PenLine,
-  AlertTriangle,
-  Clock,
-  Coins,
-  RotateCcw,
 } from "lucide-react";
 import type { SubAgentSession, SubAgentPhase, SubAgentToolCall } from "./subAgentEventStore";
 import { formatTokenGenerationSpeed } from "./dispatcher-chat/dispatcherChatUtils";
 import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
+import { ActivityTimeline, type ActivityRow } from "./detail/ActivityTimeline";
+import { DetailSection } from "./detail/DetailSection";
+import { OutputBlock } from "./detail/OutputBlock";
+import { StatusPill } from "./detail/StatusPill";
 
 // ── Phase Metadata ──────────────────────────────────────────────────────────
 
@@ -115,112 +114,7 @@ function PhaseIndicator({ phase }: { phase: SubAgentPhase }) {
   );
 }
 
-// ── StatsBar ──────────────────────────────────────────────────────────────────
-
-function StatsBar({ session }: { session: SubAgentSession }) {
-  const liveElapsed = useLiveElapsed(session);
-  const isRunning = session.status === "running";
-
-  if (!isRunning && session.status !== "completed" && session.status !== "failed") return null;
-
-  const completionTokens = session.tokenUsage?.completionTokens ?? 0;
-  const speed = formatTokenGenerationSpeed(completionTokens, liveElapsed);
-  const showSpeed = isRunning && completionTokens > 0;
-
-  return (
-    <div className="ai-subagent-exec-stats">
-      {showSpeed && (
-        <span className="ai-subagent-exec-stat-chip">
-          <Zap size={10} />
-          {speed} t/s
-        </span>
-      )}
-      {session.iterations != null && !isRunning && (
-        <span className="ai-subagent-exec-stat-chip">
-          <RotateCcw size={10} />
-          {session.iterations} 轮
-        </span>
-      )}
-      {session.tokenUsage?.totalTokens != null && !isRunning && (
-        <span className="ai-subagent-exec-stat-chip">
-          <Coins size={10} />
-          {session.tokenUsage.totalTokens.toLocaleString()} tokens
-        </span>
-      )}
-      <span className="ai-subagent-exec-stat-chip">
-        <Clock size={10} />
-        {formatElapsed(liveElapsed)}
-      </span>
-    </div>
-  );
-}
-
-// ── ToolCallTimeline ──────────────────────────────────────────────────────────
-
-function ToolCallTimeline({ toolCalls }: { toolCalls: SubAgentToolCall[] }) {
-  if (toolCalls.length === 0) return null;
-
-  return (
-    <div className="ai-subagent-exec-timeline">
-      {toolCalls.map((tc, idx) => {
-        const isLast = idx === toolCalls.length - 1;
-        const isRunning = tc.status === "running";
-        const isFailed = tc.status === "failed";
-
-        const dotClass = isFailed
-          ? "ai-subagent-exec-timeline-dot is-failed"
-          : isRunning
-            ? "ai-subagent-exec-timeline-dot is-running"
-            : "ai-subagent-exec-timeline-dot";
-
-        return (
-          <div key={tc.id} className="ai-subagent-exec-timeline-item">
-            {/* Vertical connecting line (not on last item) */}
-            {!isLast && <span className="ai-subagent-exec-timeline-line" />}
-
-            {/* Dot */}
-            <span className={dotClass} />
-
-            {/* Content */}
-            <div>
-              <span className="ai-subagent-exec-timeline-tool">
-                {tc.toolName}
-                {isRunning && (
-                  <LoaderCircle size={10} className="spin" style={{ marginLeft: 4, verticalAlign: "middle" }} />
-                )}
-              </span>
-              <span className="ai-subagent-exec-timeline-args">
-                {" "}{formatArgsPreview(tc.arguments)}
-              </span>
-              <div className="ai-subagent-exec-timeline-meta">
-                {isRunning ? (
-                  "执行中..."
-                ) : (
-                  <>
-                    {isFailed ? "失败" : "成功"}
-                    {tc.durationMs != null && ` · ${(tc.durationMs / 1000).toFixed(1)}s`}
-                  </>
-                )}
-              </div>
-              {tc.resultPreview && !isRunning && (
-                isCommandAuditPreview(tc) ? (
-                  <div className="ai-subagent-exec-timeline-audit">
-                    <MarkdownRenderer content={tc.resultPreview} variant="chat" />
-                  </div>
-                ) : (
-                  <div className="ai-subagent-exec-timeline-preview">
-                    {tc.resultPreview.slice(0, 120)}
-                    {(tc.resultPreview.length > 120) ? "..." : ""}
-                  </div>
-                )
-              )}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+// ── 活动时间线（共享 ActivityTimeline 映射） ─────────────────────────────────
 
 function isCommandAuditPreview(toolCall: SubAgentToolCall): boolean {
   const preview = toolCall.resultPreview ?? "";
@@ -232,31 +126,45 @@ function isCommandAuditPreview(toolCall: SubAgentToolCall): boolean {
   );
 }
 
-// ── ResultBlock ───────────────────────────────────────────────────────────────
-
-function ResultBlock({ result }: { result: string }) {
-  if (!result.trim()) return null;
-  return (
-    <div>
-      <div className="ai-subagent-exec-result-label">最终结果</div>
-      <pre className="session-selectable ai-subagent-exec-result">{result}</pre>
-    </div>
-  );
-}
-
-// ── ErrorBlock ────────────────────────────────────────────────────────────────
-
-function ErrorBlock({ error }: { error: string }) {
-  if (!error.trim()) return null;
-  return (
-    <div>
-      <div className="ai-subagent-exec-error-label">执行失败</div>
-      <div className="ai-subagent-exec-error">
-        <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
-        <span>{error}</span>
-      </div>
-    </div>
-  );
+function buildActivityRows(toolCalls: SubAgentToolCall[]): ActivityRow[] {
+  return toolCalls.map((tc) => {
+    const isRunning = tc.status === "running";
+    const isFailed = tc.status === "failed";
+    return {
+      id: tc.id,
+      status: isFailed ? "error" : isRunning ? "running" : "success",
+      label: (
+        <>
+          {tc.toolName}
+          {isRunning && (
+            <LoaderCircle size={10} className="spin" style={{ marginLeft: 4, verticalAlign: "middle" }} />
+          )}
+        </>
+      ),
+      meta: isRunning ? (
+        "执行中..."
+      ) : (
+        <>
+          {isFailed ? "失败" : "成功"}
+          {tc.durationMs != null && ` · ${(tc.durationMs / 1000).toFixed(1)}s`}
+        </>
+      ),
+      detail: <span className="ai-activity-timeline-args">{formatArgsPreview(tc.arguments)}</span>,
+      children:
+        tc.resultPreview && !isRunning ? (
+          isCommandAuditPreview(tc) ? (
+            <div className="ai-activity-timeline-audit">
+              <MarkdownRenderer content={tc.resultPreview} variant="chat" />
+            </div>
+          ) : (
+            <div className="ai-activity-timeline-preview">
+              {tc.resultPreview.slice(0, 120)}
+              {tc.resultPreview.length > 120 ? "..." : ""}
+            </div>
+          )
+        ) : undefined,
+    };
+  });
 }
 
 // ── SubAgentExecutionCard (main export) ───────────────────────────────────────
@@ -266,33 +174,34 @@ interface SubAgentExecutionCardProps {
   autoExpand?: boolean;
 }
 
+const TASK_PREVIEW_LIMIT = 200;
+
+/**
+ * 子智能体执行详情（UI-14 统一为「概览 / 活动 / 输出」三段）：
+ * 与节点抽屉、产物详情共享 DetailSection / ActivityTimeline / OutputBlock /
+ * StatusPill 视觉。实时事件与历史轨迹重放走同一渲染路径（数据链不动）。
+ * 概览显示来源任务、模型、耗时与错误——轨迹未记录模型时如实显示「未记录」，
+ * 不用当前配置冒充运行记录。
+ */
 export function SubAgentExecutionCard({ session, autoExpand = true }: SubAgentExecutionCardProps) {
   const [isOpen, setIsOpen] = useState(autoExpand);
+  const [taskExpanded, setTaskExpanded] = useState(false);
   const elapsed = useLiveElapsed(session);
-
-  const statusColor =
-    session.status === "running"
-      ? "var(--accent)"
-      : session.status === "failed"
-        ? "var(--danger, #ef4444)"
-        : "var(--success, #22c55e)";
-
-  const StatusIcon =
-    session.status === "running"
-      ? LoaderCircle
-      : session.status === "failed"
-        ? XCircle
-        : Check;
 
   const phaseLabel = PHASE_LABEL[session.phase];
   const isActive = session.status === "running";
+  const task = session.task ?? "";
+  const taskLong = task.length > TASK_PREVIEW_LIMIT;
+  const taskText = taskLong && !taskExpanded ? `${task.slice(0, TASK_PREVIEW_LIMIT)}...` : task;
+  const completionTokens = session.tokenUsage?.completionTokens ?? 0;
+  const speed = isActive && completionTokens > 0 ? formatTokenGenerationSpeed(completionTokens, elapsed) : null;
 
   return (
     <div className="ai-subagent-exec ai-migrated-tool-activity">
       {/* Header */}
       <button type="button" onClick={() => setIsOpen((prev) => !prev)} className="ai-subagent-exec-header">
         {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        <Bot size={14} style={{ color: statusColor, flexShrink: 0 }} />
+        <Bot size={14} className="ai-subagent-exec-icon" />
         <span className="ai-subagent-exec-name">子智能体：{session.name}</span>
 
         {/* Phase label chip */}
@@ -303,51 +212,95 @@ export function SubAgentExecutionCard({ session, autoExpand = true }: SubAgentEx
           {phaseLabel}
         </span>
 
-        {/* Elapsed */}
         <span className="ai-subagent-exec-elapsed">{formatElapsed(elapsed)}</span>
-
-        {/* Status icon */}
-        <StatusIcon size={12} style={{ color: statusColor }} className={session.status === "running" ? "spin" : ""} />
+        <StatusPill domain="subagent" status={session.status} />
       </button>
 
-      {/* Expanded body */}
+      {/* Expanded body：概览 / 活动 / 输出 */}
       {isOpen && (
         <div className="ai-subagent-exec-body">
-          {/* Phase indicator bar */}
-          <PhaseIndicator phase={session.phase} />
-
-          {/* Task description */}
-          {session.task && (
-            <div className="ai-subagent-exec-task">
-              任务：{session.task.slice(0, 200)}
-              {session.task.length > 200 ? "..." : ""}
+          <DetailSection title="概览">
+            <div className="ai-detail-meta-grid">
+              <div className="ai-detail-meta-item">
+                <span className="ai-detail-meta-label">耗时</span>
+                <span className="ai-detail-meta-value">{formatElapsed(elapsed)}</span>
+              </div>
+              <div className="ai-detail-meta-item">
+                <span className="ai-detail-meta-label">模型</span>
+                <span
+                  className="ai-detail-meta-value ai-detail-meta-value--muted"
+                  title="该任务执行轨迹未记录模型信息"
+                >
+                  未记录
+                </span>
+              </div>
+              {speed && (
+                <div className="ai-detail-meta-item">
+                  <span className="ai-detail-meta-label">速度</span>
+                  <span className="ai-detail-meta-value">{speed} t/s</span>
+                </div>
+              )}
+              {!isActive && session.iterations != null && (
+                <div className="ai-detail-meta-item">
+                  <span className="ai-detail-meta-label">迭代</span>
+                  <span className="ai-detail-meta-value">{session.iterations} 轮</span>
+                </div>
+              )}
+              {!isActive && session.tokenUsage?.totalTokens != null && (
+                <div className="ai-detail-meta-item">
+                  <span className="ai-detail-meta-label">Tokens</span>
+                  <span className="ai-detail-meta-value">
+                    {session.tokenUsage.totalTokens.toLocaleString()}
+                  </span>
+                </div>
+              )}
             </div>
-          )}
+            {task && (
+              <div className="ai-subagent-exec-task">
+                <span className="ai-detail-meta-label">来源任务</span>
+                <div className="ai-subagent-exec-task-text">{taskText}</div>
+                {taskLong && (
+                  <button
+                    type="button"
+                    className="ai-subagent-exec-task-toggle"
+                    onClick={() => setTaskExpanded((value) => !value)}
+                    aria-expanded={taskExpanded}
+                  >
+                    {taskExpanded ? "收起" : "展开全文"}
+                  </button>
+                )}
+              </div>
+            )}
+            {session.status === "failed" && session.finishedError && (
+              <OutputBlock text={session.finishedError} tone="error" emptyHint="无错误信息" />
+            )}
+          </DetailSection>
 
-          {/* Stats bar (completed/failed only) */}
-          <StatsBar session={session} />
+          <DetailSection title="活动">
+            <PhaseIndicator phase={session.phase} />
+            {/* Progress messages (running state only) */}
+            {isActive && session.progressMessages.length > 0 && (
+              <div className="ai-subagent-exec-progress">
+                {session.progressMessages.slice(-5).map((msg) => (
+                  <div key={msg.id} className="ai-subagent-exec-progress-item">{msg.text}</div>
+                ))}
+              </div>
+            )}
+            <ActivityTimeline rows={buildActivityRows(session.toolCalls)} />
+            {session.toolCalls.length === 0 && (
+              <p className="ai-subagent-exec-empty">
+                {isActive ? "尚未开始工具调用…" : "该任务没有记录工具调用。"}
+              </p>
+            )}
+          </DetailSection>
 
-          {/* Tool call timeline */}
-          <ToolCallTimeline toolCalls={session.toolCalls} />
-
-          {/* Progress messages (running state only, when no tool calls active) */}
-          {session.status === "running" && session.progressMessages.length > 0 && (
-            <div className="ai-subagent-exec-progress">
-              {session.progressMessages.slice(-5).map((msg) => (
-                <div key={msg.id} className="ai-subagent-exec-progress-item">{msg.text}</div>
-              ))}
-            </div>
-          )}
-
-          {/* Final result */}
-          {session.status === "completed" && session.finishedResult && (
-            <ResultBlock result={session.finishedResult} />
-          )}
-
-          {/* Error details */}
-          {session.status === "failed" && session.finishedError && (
-            <ErrorBlock error={session.finishedError} />
-          )}
+          <DetailSection title="输出">
+            <OutputBlock
+              text={session.status === "completed" ? (session.finishedResult ?? "") : ""}
+              emptyHint={isActive ? "正在生成结果…" : "无最终结果"}
+              className="session-selectable"
+            />
+          </DetailSection>
         </div>
       )}
     </div>

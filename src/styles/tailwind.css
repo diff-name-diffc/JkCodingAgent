@@ -3994,7 +3994,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 600;
     color: var(--text-primary);
   }
 
@@ -4025,6 +4025,9 @@
   }
 
   .ai-subagent-exec-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
     padding: 0 12px 10px;
     font-size: 11px;
     line-height: 1.6;
@@ -4081,106 +4084,45 @@
     background: var(--success);
   }
 
-  /* Stats bar */
-  .ai-subagent-exec-stats {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 8px;
-  }
-
-  .ai-subagent-exec-stat-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    border-radius: 6px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.14);
-    background: rgb(var(--accent-rgb) / 0.06);
-    color: var(--text-muted);
-    font-size: 10.5px;
-    font-weight: 500;
-  }
-
-  /* Tool call timeline */
-  .ai-subagent-exec-timeline {
-    position: relative;
-    max-height: 200px;
-    margin-bottom: 6px;
-    padding-left: 16px;
-    overflow-y: auto;
-  }
-
-  .ai-subagent-exec-timeline-item {
-    position: relative;
-    padding-bottom: 8px;
-  }
-
-  .ai-subagent-exec-timeline-line {
-    position: absolute;
-    left: -12px;
-    top: 11px;
-    bottom: 0;
-    width: 1px;
-    background: var(--border-dim);
-  }
-
-  .ai-subagent-exec-timeline-dot {
-    position: absolute;
-    left: -16px;
-    top: 3px;
-    box-sizing: border-box;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    border: 2px solid var(--bg-subtle);
-    background: var(--success);
-  }
-
-  .ai-subagent-exec-timeline-dot.is-running {
-    background: var(--accent);
-  }
-
-  .ai-subagent-exec-timeline-dot.is-failed {
-    background: var(--danger);
-  }
-
-  .ai-subagent-exec-timeline-tool {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  .ai-subagent-exec-timeline-meta {
-    margin-top: 1px;
-    font-size: 10.5px;
-    color: var(--text-muted);
-  }
-
-  .ai-subagent-exec-timeline-args {
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    color: var(--text-muted);
-  }
-
-  .ai-subagent-exec-timeline-preview {
-    margin-top: 1px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    color: var(--text-hint);
-  }
-
-  /* Task description & progress */
+  /* Task description & progress（stats/timeline/result/error 旧类已由
+     共享 detail 组件取代，见下方「共享详情组件」区块，UI-14） */
   .ai-subagent-exec-task {
     margin-bottom: 6px;
     font-size: 11px;
     line-height: 1.5;
     color: var(--text-muted);
+  }
+
+  .ai-subagent-exec-task-text {
+    margin-top: 2px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .ai-subagent-exec-task-toggle {
+    margin-top: 2px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--accent);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .ai-subagent-exec-task-toggle:hover {
+    text-decoration: underline;
+  }
+
+  .ai-subagent-exec-icon {
+    flex-shrink: 0;
+    color: var(--accent);
+  }
+
+  .ai-subagent-exec-empty {
+    margin: 4px 0 0;
+    font-size: 11px;
+    color: var(--text-hint);
   }
 
   .ai-subagent-exec-progress {
@@ -4201,27 +4143,110 @@
     color: var(--text-muted);
   }
 
-  /* Result block */
-  .ai-subagent-exec-result-label,
-  .ai-subagent-exec-error-label {
-    margin-bottom: 4px;
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-    text-transform: uppercase;
+  /* ── 共享详情组件（UI-14：detail/DetailSection · OutputBlock · ActivityTimeline）──
+     子智能体、节点抽屉、产物与 Python 详情共用的分区/元信息/输出/时间线视觉。 */
+
+  .ai-detail-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
   }
 
-  .ai-subagent-exec-result-label {
+  .ai-detail-section-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .ai-detail-section-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 0;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .ai-detail-section-chevron {
+    flex-shrink: 0;
+    width: 12px;
+    height: 12px;
     color: var(--text-muted);
   }
 
-  .ai-subagent-exec-result {
+  .ai-detail-section-title {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-detail-section-hint {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-hint);
+  }
+
+  .ai-detail-section-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+  }
+
+  /* 元信息网格：label/value 成对，自动换列 */
+  .ai-detail-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, max-content));
+    gap: 4px 16px;
+  }
+
+  .ai-detail-meta-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    font-size: 11px;
+  }
+
+  .ai-detail-meta-label {
+    flex-shrink: 0;
+    font-weight: 500;
+    color: var(--text-hint);
+  }
+
+  .ai-detail-meta-value {
+    overflow: hidden;
+    color: var(--text-secondary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ai-detail-meta-value--muted {
+    color: var(--text-hint);
+    font-style: italic;
+  }
+
+  /* 输出块：等宽 pre + 细滚动条；错误态红色系 */
+  .ai-output-block {
     max-height: 240px;
     margin: 0;
     padding: 8px 10px;
-    overflow-y: auto;
-    border-radius: 8px;
+    overflow: auto;
     border: 1px solid var(--border-dim);
+    border-radius: 8px;
     background: var(--bg-card);
     color: var(--text-primary);
     font-family: var(--font-mono);
@@ -4231,31 +4256,120 @@
     word-break: break-word;
   }
 
-  /* Error block */
-  .ai-subagent-exec-error-label {
+  .ai-output-block--error {
+    border-color: color-mix(in srgb, var(--danger) 30%, var(--border-dim));
+    background: color-mix(in srgb, var(--danger) 7%, var(--bg-card));
     color: var(--danger);
   }
 
-  .ai-subagent-exec-error {
+  .ai-output-block-empty {
+    padding: 6px 2px;
+    font-size: 11px;
+    color: var(--text-hint);
+  }
+
+  /* 简单活动时间线（十级~百级行数；千级走虚拟化 ExecutionTimelineList） */
+  .ai-activity-timeline {
+    position: relative;
+    max-height: 200px;
+    padding-left: 16px;
+    overflow-y: auto;
+  }
+
+  .ai-activity-timeline-item {
+    position: relative;
+    padding-bottom: 8px;
+  }
+
+  .ai-activity-timeline-content {
+    min-width: 0;
+  }
+
+  .ai-activity-timeline-line {
+    position: absolute;
+    top: 11px;
+    bottom: 0;
+    left: -12px;
+    width: 1px;
+    background: var(--border-dim);
+  }
+
+  .ai-activity-timeline-dot {
+    position: absolute;
+    top: 3px;
+    left: -16px;
+    box-sizing: border-box;
+    width: 8px;
+    height: 8px;
+    border: 2px solid var(--bg-subtle);
+    border-radius: 50%;
+    background: var(--text-hint);
+  }
+
+  .ai-activity-timeline-dot--success {
+    background: var(--success);
+  }
+
+  .ai-activity-timeline-dot--running {
+    background: var(--accent);
+  }
+
+  .ai-activity-timeline-dot--error {
+    background: var(--danger);
+  }
+
+  .ai-activity-timeline-dot--neutral {
+    background: var(--text-hint);
+  }
+
+  .ai-activity-timeline-head {
     display: flex;
-    align-items: flex-start;
+    align-items: baseline;
     gap: 8px;
-    padding: 8px 10px;
-    border-radius: 8px;
-    border: 1px solid rgba(239, 68, 68, 0.25);
-    background: rgba(239, 68, 68, 0.08);
-    color: var(--danger);
+    min-width: 0;
+  }
+
+  .ai-activity-timeline-label {
+    overflow: hidden;
     font-family: var(--font-mono);
     font-size: 11px;
-    line-height: 1.55;
-    word-break: break-word;
+    font-weight: 600;
+    color: var(--text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  /* Command audit preview (inline markdown block within timeline) */
-  .ai-subagent-exec-timeline-audit {
+  .ai-activity-timeline-meta {
+    flex-shrink: 0;
+    font-size: 10.5px;
+    color: var(--text-muted);
+  }
+
+  .ai-activity-timeline-detail {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-muted);
+  }
+
+  .ai-activity-timeline-args {
+    font-family: var(--font-mono);
+  }
+
+  .ai-activity-timeline-preview {
+    margin-top: 1px;
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-hint);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 命令审查记录（拦截结论）内联 markdown 块 */
+  .ai-activity-timeline-audit {
+    max-height: 220px;
     margin-top: 6px;
     padding: 8px 10px;
-    max-height: 220px;
     overflow: auto;
     border-radius: 8px;
     border: 1px solid color-mix(in srgb, var(--danger) 26%, var(--border-dim));
@@ -9147,35 +9261,7 @@
     color: var(--text-muted);
   }
 
-  .ai-graph-chip--node-pending {
-    background: var(--bg-subtle);
-    color: var(--text-muted);
-  }
-
-  .ai-graph-chip--node-running {
-    background: rgb(var(--accent-rgb) / 0.12);
-    color: var(--accent);
-  }
-
-  .ai-graph-chip--node-succeeded {
-    background: rgb(var(--success-rgb) / 0.12);
-    color: var(--success);
-  }
-
-  .ai-graph-chip--node-failed {
-    background: rgb(var(--danger-rgb) / 0.1);
-    color: var(--danger);
-  }
-
-  .ai-graph-chip--node-skipped {
-    background: rgb(var(--warning-rgb) / 0.14);
-    color: var(--warning);
-  }
-
-  .ai-graph-chip--node-cancelled {
-    background: var(--bg-subtle);
-    color: var(--text-muted);
-  }
+  /* 节点状态徽章（原 chip--node-* 六类）已由共享 StatusPill 取代（UI-14） */
 
   /* React Flow 自定义节点 */
   .ai-graph-node {

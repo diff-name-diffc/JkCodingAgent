@@ -8,6 +8,8 @@ import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { DetailSection } from "../detail/DetailSection";
+import { OutputBlock } from "../detail/OutputBlock";
 import { SubAgentExecutionCard } from "../SubAgentExecutionView";
 
 /**
@@ -157,26 +159,33 @@ function ToolArtifactContent({
   loading: boolean;
   error: string | null;
 }) {
+  // UI-14：元信息分区与输出块接入共享详情视觉（DetailSection/OutputBlock）。
   return (
     <div className="space-y-3">
-      <div className="rounded-lg border border-border bg-card/70 p-3">
-        <div className="mb-1 flex items-center gap-2">
-          <FileSearch className="h-4 w-4 text-primary" />
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium text-foreground">
-              {artifact.title}
-            </div>
-            <div className="text-[11px] text-muted-foreground">
-              {artifact.kind} · {artifact.lineCount} 行 · {artifact.charCount} 字符
-            </div>
+      <DetailSection
+        title={
+          <span className="flex min-w-0 items-center gap-2">
+            <FileSearch className="h-4 w-4 shrink-0 text-primary" />
+            <span className="truncate">{artifact.title}</span>
+          </span>
+        }
+      >
+        <div className="ai-detail-meta-grid">
+          <div className="ai-detail-meta-item">
+            <span className="ai-detail-meta-label">类型</span>
+            <span className="ai-detail-meta-value">{artifact.kind}</span>
+          </div>
+          <div className="ai-detail-meta-item">
+            <span className="ai-detail-meta-label">行数</span>
+            <span className="ai-detail-meta-value">{artifact.lineCount}</span>
+          </div>
+          <div className="ai-detail-meta-item">
+            <span className="ai-detail-meta-label">字符数</span>
+            <span className="ai-detail-meta-value">{artifact.charCount}</span>
           </div>
         </div>
-        {artifact.preview && (
-          <pre className="chat-scroll mt-2 max-h-28 overflow-auto rounded-md bg-muted/50 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
-            {artifact.preview}
-          </pre>
-        )}
-      </div>
+        {artifact.preview && <OutputBlock text={artifact.preview} className="mt-2 max-h-28" />}
+      </DetailSection>
 
       {loading && (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
@@ -193,9 +202,11 @@ function ToolArtifactContent({
       )}
 
       {loadedArtifact && (
-        <pre className="chat-scroll min-h-40 overflow-auto rounded-lg border border-border bg-background p-3 font-mono text-[12px] leading-relaxed text-foreground">
-          {loadedArtifact.content}
-        </pre>
+        <OutputBlock
+          text={loadedArtifact.content}
+          emptyHint="产物内容为空"
+          className="min-h-40 rounded-lg border border-border bg-background p-3 text-foreground"
+        />
       )}
     </div>
   );

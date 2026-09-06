@@ -8,7 +8,8 @@ interface ProjectWorkspaceLayoutProps {
   sessionPanel?: ReactNode;
   main: ReactNode;
   rightPanel?: ReactNode;
-  toolbar: ReactNode;
+  /** 旧右工具栏槽位（UI-07 后由 main 内 StatusDockBar 取代，保留兼容可选）。 */
+  toolbar?: ReactNode;
   overlays?: ReactNode;
 }
 
@@ -48,6 +49,8 @@ interface ProjectMainAreaProps {
   workbench: ReactNode;
   subProcessTabs?: ReactNode;
   shellTerminal?: ReactNode;
+  /** 底部 24px 状态/dock 条（UI-07 StatusDockBar）。 */
+  statusDock?: ReactNode;
   mainStyle: CSSProperties;
 }
 
@@ -55,6 +58,7 @@ export function ProjectMainArea({
   workbench,
   subProcessTabs,
   shellTerminal,
+  statusDock,
   mainStyle,
 }: ProjectMainAreaProps) {
   return (
@@ -74,6 +78,7 @@ export function ProjectMainArea({
       </div>
       {subProcessTabs}
       {shellTerminal}
+      {statusDock}
     </div>
   );
 }

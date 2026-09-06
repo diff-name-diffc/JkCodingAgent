@@ -4,7 +4,7 @@ import { SessionPanel } from "./SessionPanel";
 import { PanelLeftOpen } from "lucide-react";
 import { AppRail } from "./shell/AppRail";
 import { ContextNav, type ContextNavTab } from "./shell/ContextNav";
-import { RightToolbar } from "./RightToolbar";
+import { StatusDockBar } from "./shell/StatusDockBar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useProjectPanels } from "../hooks/useProjectPanels";
 import { useBrowserSessionDock } from "../hooks/useBrowserSessionDock";
@@ -269,10 +269,21 @@ export function ProjectPage({
     </Suspense>
   ) : undefined;
 
+  const statusDockNode = (
+    <StatusDockBar
+      terminalActive={showShellTerminal}
+      onToggleTerminal={() => setShowShellTerminal((value) => !value)}
+      browserActive={rightPanel === "browser"}
+      onToggleBrowser={() => handleTogglePanel("browser")}
+      statusText={project.name}
+    />
+  );
+
   const mainNode = (
     <ProjectMainArea
       workbench={workbenchNode}
       shellTerminal={shellTerminalNode}
+      statusDock={statusDockNode}
       mainStyle={{
         flex: 1,
         display: "flex",
@@ -317,15 +328,6 @@ export function ProjectPage({
       </ProjectRightPanelHost>
     ) : undefined;
 
-  const toolbarNode = (
-    <RightToolbar
-      activePanel={rightPanel}
-      onToggle={handleTogglePanel}
-      terminalActive={showShellTerminal}
-      onToggleTerminal={() => setShowShellTerminal((value) => !value)}
-    />
-  );
-
   const overlayNode = (
     <ProjectOverlays
       project={project}
@@ -356,7 +358,6 @@ export function ProjectPage({
       sessionPanel={sessionPanelNode}
       main={mainNode}
       rightPanel={rightPanelNode}
-      toolbar={toolbarNode}
       overlays={overlayNode}
     />
   );

@@ -11,6 +11,7 @@ import {
   fileTabs,
   openDiffTab,
   openFileTab,
+  openGraphTab,
   renameFileTab,
   selectTab,
   type EditorTab,
@@ -32,6 +33,12 @@ export function useProjectPanels(workspaceId: string) {
   const activeEditorTab = activeTab(editorTabs);
   const openDiff = activeEditorTab?.kind === "diff" ? activeEditorTab.diff : null;
   const activeFileTabId = activeEditorTab?.kind === "file" ? activeEditorTab.id : null;
+  /**
+   * 编辑区是否有内容（UI-13 收敛为单一派生值）：任何标签（文件/diff/执行图，
+   * UI-18 起还有浏览器）都算内容——ProjectPage 与 ProjectWorkbenchContent
+   * 不再各自复制表达式。
+   */
+  const hasEditorContent = editorTabs.tabs.length > 0;
   const prefs = useWorkspaceStore(selectWorkspacePrefs(workspaceId));
   /** 拖拽中的实时值；mouseup 才写回 store，避免高频持久化。 */
   const [dragRightWidth, setDragRightWidth] = useState<number | null>(null);
@@ -123,6 +130,16 @@ export function useProjectPanels(workspaceId: string) {
     setEditorTabs((prev) => (prev.activeTabId ? closeTab(prev, prev.activeTabId) : prev));
   }, []);
 
+  /** 打开/激活执行图标签（UI-13）；同 planId 幂等，reducer 保证切视图不新建。 */
+  const handleOpenGraphTab = useCallback((planId: string, sessionId: string) => {
+    setEditorWorkbenchVisible(true);
+    setEditorTabs((prev) => openGraphTab(prev, planId, sessionId));
+  }, []);
+
+  const handleCloseGraphTab = useCallback((tabId: string) => {
+    setEditorTabs((prev) => closeTab(prev, tabId));
+  }, []);
+
   const hideEditorWorkbench = useCallback(() => {
     setEditorWorkbenchVisible(false);
   }, []);
@@ -198,6 +215,8 @@ export function useProjectPanels(workspaceId: string) {
     activeFileTabId,
     activeEditorTab,
     openDiff,
+    editorTabs,
+    hasEditorContent,
     rightPanelWidth: rightPanel === "browser" ? browserPanel.effectiveWidth : rightPanelWidth,
     browserPanelExpanded: browserPanel.expanded,
     terminalHeight,
@@ -214,6 +233,8 @@ export function useProjectPanels(workspaceId: string) {
     handleDiffFileSelect,
     handleCommitSelect,
     handleCommitFileClick,
+    handleOpenGraphTab,
+    handleCloseGraphTab,
     hideEditorWorkbench,
     showEditorWorkbench,
     clearFileAndDiff,

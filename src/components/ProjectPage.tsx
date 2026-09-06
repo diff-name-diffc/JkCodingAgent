@@ -121,7 +121,8 @@ export function ProjectPage({
   );
 
   // 空间预算（UI-04）：偏好为冻结输入，窄窗临时适配只体现在 budget 输出。
-  const hasEditorContent = panels.openDiff !== null || openFiles.length > 0;
+  // 编辑区内容判定收敛到 panels 单一派生值（UI-13）。
+  const hasEditorContent = panels.hasEditorContent;
   const budget = useWorkspaceBudget({
     navOpen: !sessionSidebarCollapsed,
     navWidthPref: contextNavWidth,

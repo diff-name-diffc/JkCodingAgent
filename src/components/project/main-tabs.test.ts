@@ -9,8 +9,10 @@ import {
   diffTabId,
   fileTabId,
   fileTabs,
+  graphTabId,
   openDiffTab,
   openFileTab,
+  openGraphTab,
   renameFileTab,
   selectTab,
   type OpenDiff,
@@ -84,5 +86,72 @@ describe("main-tabs 文件树同步", () => {
     const after = deleteFileTab(s, "/a.ts");
     expect(after.tabs.map((t) => t.id)).toEqual([fileTabId("/b.ts")]);
     expect(after.activeTabId).toBe(fileTabId("/b.ts"));
+  });
+});
+
+describe("main-tabs 执行图标签（UI-13）", () => {
+  it("graphTabId 稳定于 planId，新建即激活", () => {
+    const s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
+    expect(s.tabs).toHaveLength(1);
+    expect(s.tabs[0]).toEqual({
+      id: graphTabId("plan-1"),
+      kind: "graph",
+      planId: "plan-1",
+      sessionId: "session-a",
+    });
+    expect(s.activeTabId).toBe(graphTabId("plan-1"));
+  });
+
+  it("同 planId 重复打开幂等只激活（切视图不新建）", () => {
+    let s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
+    s = openFileTab(s, "/a.ts", "a.ts");
+    s = openGraphTab(s, "plan-1", "session-a");
+    expect(s.tabs).toHaveLength(2);
+    expect(s.activeTabId).toBe(graphTabId("plan-1"));
+  });
+
+  it("同会话换 planId 替换旧图标签，每会话至多一个图视图", () => {
+    let s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
+    s = openGraphTab(s, "plan-2", "session-a");
+    expect(s.tabs.map((t) => t.id)).toEqual([graphTabId("plan-2")]);
+    expect(s.activeTabId).toBe(graphTabId("plan-2"));
+  });
+
+  it("不同会话的图标签互不影响", () => {
+    let s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
+    s = openGraphTab(s, "plan-2", "session-b");
+    expect(s.tabs.map((t) => t.id).sort()).toEqual([
+      graphTabId("plan-1"),
+      graphTabId("plan-2"),
+    ]);
+  });
+
+  it("关闭活动图标签回退右邻；混合关闭语义与文件一致", () => {
+    let s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
+    s = openFileTab(s, "/a.ts", "a.ts");
+    s = openFileTab(s, "/b.ts", "b.ts");
+    s = selectTab(s, graphTabId("plan-1"));
+    const after = closeTab(s, graphTabId("plan-1"));
+    expect(after.activeTabId).toBe(fileTabId("/a.ts"));
+    expect(closeOtherTabs(s, graphTabId("plan-1")).tabs).toHaveLength(1);
+    expect(closeTabsToRight(s, graphTabId("plan-1")).tabs.map((t) => t.id)).toEqual([
+      graphTabId("plan-1"),
+    ]);
+  });
+
+  it("文件重命名/删除不触碰图标签", () => {
+    let s = openFileTab(EMPTY_EDITOR_TABS, "/old.ts", "old.ts");
+    s = openGraphTab(s, "plan-1", "session-a");
+    const renamed = renameFileTab(s, "/old.ts", "/new.ts", "new.ts");
+    expect(renamed.tabs.some((t) => t.kind === "graph" && t.planId === "plan-1")).toBe(true);
+    const deleted = deleteFileTab(renamed, "/new.ts");
+    expect(deleted.tabs.map((t) => t.id)).toEqual([graphTabId("plan-1")]);
+    expect(deleted.activeTabId).toBe(graphTabId("plan-1"));
+  });
+
+  it("closeAll 清空图标签", () => {
+    const s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
+    expect(closeAllTabs()).toEqual(EMPTY_EDITOR_TABS);
+    expect(closeTab(s, graphTabId("plan-1"))).toEqual(EMPTY_EDITOR_TABS);
   });
 });

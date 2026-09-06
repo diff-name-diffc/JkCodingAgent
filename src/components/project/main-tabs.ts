@@ -9,7 +9,9 @@ export type { OpenDiff };
 
 export type EditorTab =
   | { id: string; kind: "file"; path: string; name: string }
-  | { id: string; kind: "diff"; diff: OpenDiff };
+  | { id: string; kind: "diff"; diff: OpenDiff }
+  /** 执行图工作视图（UI-13）：id 稳定于 planId——切视图不触发新运行。 */
+  | { id: string; kind: "graph"; planId: string; sessionId: string };
 
 export interface EditorTabsState {
   tabs: EditorTab[];
@@ -31,6 +33,10 @@ export function diffTabId(diff: OpenDiff): string {
 
 export function sameDiff(a: OpenDiff, b: OpenDiff): boolean {
   return diffTabId(a) === diffTabId(b);
+}
+
+export function graphTabId(planId: string): string {
+  return `graph:${planId}`;
 }
 
 /** 打开/激活文件标签（已存在则仅激活）。 */
@@ -58,6 +64,31 @@ export function openDiffTab(state: EditorTabsState, diff: OpenDiff): EditorTabsS
 export function selectTab(state: EditorTabsState, tabId: string): EditorTabsState {
   if (!state.tabs.some((tab) => tab.id === tabId)) return state;
   return { ...state, activeTabId: tabId };
+}
+
+/**
+ * 打开/激活执行图标签（UI-13）：同 planId 幂等只激活（切视图不触发新运行的
+ * 状态层前提）；同会话换计划时先移除该会话旧图标签——每会话至多一个图视图，
+ * 避免旧计划标签堆积。不同会话的图标签互不影响。
+ */
+export function openGraphTab(
+  state: EditorTabsState,
+  planId: string,
+  sessionId: string,
+): EditorTabsState {
+  const id = graphTabId(planId);
+  const existing = state.tabs.find((tab) => tab.id === id);
+  if (existing) {
+    return {
+      tabs: state.tabs.map((tab) => (tab.id === id ? { ...tab, sessionId } : tab)),
+      activeTabId: id,
+    };
+  }
+  const tabs = [
+    ...state.tabs.filter((tab) => !(tab.kind === "graph" && tab.sessionId === sessionId)),
+    { id, kind: "graph" as const, planId, sessionId },
+  ];
+  return { tabs, activeTabId: id };
 }
 
 /**

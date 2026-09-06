@@ -55,7 +55,8 @@ export function ProjectWorkbenchContent({
   onEditorPaneRatioChange,
 }: ProjectWorkbenchContentProps) {
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
-  const hasEditorContent = panels.openDiff !== null || panels.openFiles.length > 0;
+  // UI-13：编辑区内容判定收敛到 useProjectPanels 单一派生值（含 file/diff/graph 标签）。
+  const hasEditorContent = panels.hasEditorContent;
   const editorRequested = panels.editorWorkbenchVisible && hasEditorContent;
   // 预算降级为单栏时：会话面板优先；用户主动收起会话后编辑区独占。
   const dual = budget.dualPane && sessionWorkbenchVisible && editorRequested;

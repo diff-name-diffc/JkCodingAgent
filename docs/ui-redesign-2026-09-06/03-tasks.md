@@ -2,7 +2,7 @@
 
 更新日期：2026-09-06。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
 
-**当前：UI-01–10（M0+M1）实施完成一轮；M2 批次一（UI-11/12/13/14/18/20）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工截图验收遗留至 UI-29/31）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一实施提交 `4ee7c71..633ec4a`。
+**当前：UI-01–10（M0+M1）实施完成一轮；M2 批次一（UI-11/12/13/14/18/20）与批次二（UI-16/17「代码工作区→Git 审查」链）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工截图验收遗留至 UI-29/31）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一实施提交 `4ee7c71..633ec4a`；批次二实施提交 `88babe4..9a20640`。M2 剩余：UI-15（架构画布）、UI-19（终端 dock）。
 
 ## 1. 跟踪约定
 
@@ -45,8 +45,8 @@
 | UI-13 | P1 / L | 执行图迁入工作视图 | 09,12 | REVIEW | claude（会话领取） | `a9f7064/4c7381c`；graph 主区标签+portal 删除+视图记忆；运行态走查遗留 |
 | UI-14 | P1 / M | 子智能体与节点详情统一 | 09,13 | REVIEW | claude（会话领取） | `05bc50f`；概览/活动/输出三段+共享 detail 组件+footer 门禁文案对齐 |
 | UI-15 | P1 / M | 架构画布与助手体验 | 06,08 | TODO | 待分配 | — |
-| UI-16 | P1 / M | 文件树与编辑器视觉整合 | 07,09 | TODO | 待分配 | — |
-| UI-17 | P1 / L | Git 审查布局与提交反馈 | 09,16 | TODO | 待分配 | — |
+| UI-16 | P1 / M | 文件树与编辑器视觉整合 | 07,09 | REVIEW | zcode（会话领取） | `88babe4`；壳归位+平面化+路径行+tab 脏标记；截图遗留 UI-29 |
+| UI-17 | P1 / L | Git 审查布局与提交反馈 | 09,16 | REVIEW | zcode（会话领取） | `8e09fca/9a20640`；解析抽离+重命名/二进制+提交区范围+就地错误+对应高亮；split 模式登记待后续 |
 | UI-18 | P1 / L | 浏览器预览与会话 dock 迁移 | 09 | REVIEW | claude（会话领取） | `4169175/860bf88`；拆分+串帧修复+主区单例标签，右面板机制移除；dock 走查遗留 |
 | UI-19 | P1 / M | 终端 dock 与空间约束 | 08,09 | TODO | 待分配 | — |
 | UI-20 | P1 / M | Python、图片和工具产物详情 | 09,12 | REVIEW | claude（会话领取） | `633ec4a`；来源/耗时/状态统一+artifact kind 分派；运行态走查遗留 |
@@ -242,6 +242,8 @@
 | 2026-09-06 | C4：UI-14 详情统一（共享 detail 组件+抽屉拆分+子智能体三段） | `05bc50f` |
 | 2026-09-06 | C5：UI-18 浏览器迁主区（C5a 拆分+串帧修复 + C5b 单例标签+右面板移除） | `4169175`、`860bf88` |
 | 2026-09-06 | C6：UI-20 Python/产物详情统一（来源/耗时/kind 分派/状态同源） | `633ec4a` |
+| 2026-09-06 | D1：UI-16 文件编辑工作区（壳归位+编辑器平面化+路径工具行收敛+tab 脏标记） | `88babe4` |
+| 2026-09-06 | D2：UI-17 Git 审查（D2a diff 解析抽离+重命名/二进制呈现+后端 origin_path；D2b 提交区暂存范围+就地错误+导航 diff 对应高亮） | `8e09fca`、`9a20640` |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
 
@@ -446,4 +448,32 @@
 人工走查：运行/停止/失败/已完成四态反馈、大输出滚动、内联徽章与抽屉同色同文案——遗留 UI-28
 风险/回退：单 commit；**决策**：退出码不进 record（无 schema 变更；failed+errorReason 为展示层等价物）；purge/cleanup/truncate/chat-image 资源清理语义零改动（只读边界）
 阻塞或剩余事项：图片缺失反馈由 MarkdownImage 占位+chat_images_validate 先验链路承担（未改，走查确认）
+验收人/日期：待人工（UI-29/31）
+
+## 11. UI-16–UI-17（M2 批次二）任务记录（第 5 节模板）
+
+任务：UI-16
+负责人：zcode（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：基线 `633ec4a`；结果 `88babe4`
+实现文件与范围：`FileExplorer.tsx`（壳归位：删 Files 标题行/项目名行/border-left/width prop，刷新入 30px 工具行）、`file-viewer/FilePaneHeader.tsx`（新增：相对目录路径中间折叠+复制完整路径+保存 pill+预览切换；文件名/语言 pill 不再与标签条重复）、`file-viewer/ImageFilePane.tsx`（新增，共享头部）、`FileTabPane.tsx`（重写：删 PaneShell/PaneCard 卡片套卡片、onDirtyChange 上报、md-preview 头部与「基于 react-markdown 渲染」实现说明删除；464→299 行）、`FileViewer.tsx`（dirtyTabIds 集合+标签琥珀圆点+title 未保存后缀）、`ProjectPage.tsx`（去 projectName/width 透传）、`utils/filePaths.ts`（+collapseMiddlePath/getPathDirectory）、`utils/filePaths.test.ts`（新增 13 case）、`App.css`（monaco-pane 去 24px 圆角/边框与 radial loading；md-preview 拍平 30px 圆角渐变卡；user-select 列表同步）、`styles/tailwind.css`（explorer 头部类族替换为 toolbar、选中行去渐变发光、tab 活动下划线化+去 backdrop blur、pane/card 类族→pane/body、pill 平面化+warning 色调、图片棋盘格 2 层中性化、大文件去网格底纹）
+对应问题：设计 §5.4、UI-06 视觉债在文件域的集中清偿
+测试命令及结果：filePaths 13 case；全量 263 passed（本任务时点 253）；build/lint/styles:report 全绿
+截图：遗留（tauri 运行态，同 UI-29 矩阵）
+人工走查：长路径折叠+复制、图片/大文件/Markdown/未保存圆点、关闭/重命名/删除与标签同步——遗留 UI-28/29
+风险/回退：单 commit 可回退；Monaco automaticLayout/自动保存管线（900ms debounce+队列 flush）与 rope 生命周期零改动
+阻塞或剩余事项：**决策**——关闭脏 tab 不加未保存拦截（自动保存窗口 ≤900ms+错误态圆点常驻，拦截收益小于打断成本）；.file-viewer-code 旧 Shiki 通道残留归 UI-27
+验收人/日期：待人工（UI-29/31）
+
+任务：UI-17
+负责人：zcode（会话领取）
+开始/完成日期：2026-09-06
+基线/结果 commit 或 PR：基线 `88babe4`；结果 `8e09fca`（D2a）+ `9a20640`（D2b）
+实现文件与范围：D2a：`lib/git-diff.ts`（新增：parseUnifiedDiff 结构化 oldPath/newPath/isNew/isDeleted/isBinary/renameFrom/renameTo/similarity，扁平 diff hunk 挂载修正）、`lib/git-diff.test.ts`（新增 10 case）、`GitDiffViewer.tsx`（重命名 old → new+相似度 chip、Binary 占位态、meta 行噪音不渲染）、`src-tauri/scm/git/types.rs`（GitFileChange+origin_path）、`queries.rs`（parse_porcelain_fields 纯函数+4 cargo 单测，porcelain `R old -> new` 旧路径不再丢弃）；D2b：`GitChanges.tsx`（提交区「提交暂存的 N 个文件」+0 暂存禁用守卫、提交/生成错误就地于提交框下（重试+保留文本）、暂存/加载错误列表区就近行、全部暂存/取消改显式文件列表不再 add -A 波及未跟踪区、重命名行 old → new、is-active 高亮、去 width prop；537→362 行，行组件拆至 `git/GitChangesParts.tsx`）、`GitHistory.tsx`（activeCommitHash 高亮、错误上移操作行就近+重试、去 width prop；526→348 行，CommitRow/BranchOption/CommitDetailPanel 拆至 `git/GitHistoryParts.tsx`）、`ProjectPage.tsx`（activeFileDiff/activeCommitHash 派生下传）、CSS：diff shell 平面化（bg-panel/去渐变底纹青 tint）、git-diff-rename-*/similarity/binary 新类、提交按钮去渐变发光、行 hover 去 translateX、ai-git-error 死类清除（被 inline-error 类族替代）
+对应问题：设计 §5.4（审查模式暂存范围/错误就地/空变更不制造成功指标）
+测试命令及结果：git-diff 10 case；全量 263 passed；cargo test 507 passed（+4）；build/lint/styles:report/contract:check(115:112) 全绿
+截图：遗留（同 UI-29 矩阵）
+人工走查：可丢弃测试仓库覆盖暂存/取消/重命名/二进制/空变更/提交失败/历史 diff——遗留 UI-28（不在真实工作仓库验证提交）
+风险/回退：D2a+D2b 各自独立可回退（D2a 单独回退时 Viewer 退回内置解析器）；后端仅 DTO 字段+解析函数，无 schema 迁移
+阻塞或剩余事项：**决策**——split（并排）diff 不在本轮（任务卡「UI-01 确认当前 diff 能力后再估算」，当前 unified-only，能力估算登记后续）；历史分页（固定 limit 50）不在本轮；提交后 GitChanges/GitHistory 跨面板缓存同步（页签切换重挂载隐性掩盖）留待统一 git 数据层时处理
 验收人/日期：待人工（UI-29/31）

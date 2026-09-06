@@ -88,6 +88,8 @@ export interface ChatShellProps {
   composerMode: ComposerMode;
   onSend: () => void;
   onStop: () => void;
+  /** 停止请求进行中（UI-11）：透传给 PromptInput 的停止按钮 loading 态。 */
+  isStopping?: boolean;
   attachments?: ImageSegment[];
   onAttachImages?: (files: File[]) => void;
   onRemoveAttachment?: (id: string) => void;
@@ -132,6 +134,7 @@ export function ChatShell({
   composerMode,
   onSend,
   onStop,
+  isStopping = false,
   attachments,
   onAttachImages,
   onRemoveAttachment,
@@ -303,6 +306,7 @@ export function ChatShell({
           mode={composerMode}
           onSend={onSend}
           onStop={onStop}
+          stopping={isStopping}
           attachments={attachments}
           onAttachImages={onAttachImages}
           onRemoveAttachment={onRemoveAttachment}

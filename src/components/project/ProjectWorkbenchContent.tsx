@@ -134,6 +134,8 @@ export function ProjectWorkbenchContent({
               onSessionChange={onSelectSession}
               conversationKind="project"
               projectPath={project.path}
+              projectId={project.id}
+              projectName={project.name}
               mcpStatus={mcpStatus}
               mcpChecking={mcpChecking}
               onOpenMcpStatus={onOpenMcpStatus}

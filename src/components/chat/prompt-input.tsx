@@ -20,6 +20,8 @@ export interface PromptInputProps {
   mode: ComposerMode;
   onSend: () => void;
   onStop: () => void;
+  /** 停止请求进行中（UI-11）：停止按钮进入不可重入的 loading 态。 */
+  stopping?: boolean;
   /** Images already saved to chat-images and staged for the next send. */
   attachments?: ImageSegment[];
   /** Receive image Files from paste / file picker; parent persists them. */
@@ -72,6 +74,7 @@ export function PromptInput({
   mode,
   onSend,
   onStop,
+  stopping = false,
   attachments = [],
   onAttachImages,
   onRemoveAttachment,
@@ -220,13 +223,18 @@ export function PromptInput({
                   variant="destructive"
                   size="icon"
                   className="ai-composer-action is-stop"
-                  aria-label="停止生成"
+                  aria-label={stopping ? "正在停止" : "停止生成"}
+                  disabled={stopping}
                   onClick={onStop}
                 >
-                  <Square className="h-4 w-4" fill="currentColor" />
+                  {stopping ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Square className="h-4 w-4" fill="currentColor" />
+                  )}
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>停止生成</TooltipContent>
+              <TooltipContent>{stopping ? "正在停止…" : "停止生成"}</TooltipContent>
             </Tooltip>
           ) : (
             <Tooltip>

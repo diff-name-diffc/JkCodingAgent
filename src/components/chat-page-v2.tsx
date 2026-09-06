@@ -14,6 +14,8 @@ import { usePythonRunController } from "./chat-page-v2/usePythonRunController";
 import { useChatSessionController } from "./chat-page-v2/useChatSessionController";
 import { useChatMessages } from "./chat-page-v2/useChatMessages";
 import { ChatPageOverlays } from "./chat-page-v2/ChatPageOverlays";
+import { useCurrentGitBranch } from "../hooks/use-current-git-branch";
+import { useProjectSessionTitle } from "../hooks/use-project-session-title";
 
 /** 读取文件为裸 base64（去掉 data URL 前缀）；读取失败返回 null。 */
 function readFileAsBase64(file: File): Promise<string | null> {
@@ -41,6 +43,9 @@ export interface ChatPageV2Props {
   onSessionChange?: (sessionId: string | null) => void;
   conversationKind?: "project" | "chat";
   projectPath?: string;
+  /** 项目模式头部语境（UI-11）：会话标题查询与项目名展示。 */
+  projectId?: string | null;
+  projectName?: string | null;
   mcpStatus?: McpStatus | null;
   mcpChecking?: boolean;
   onOpenSettings: () => void;
@@ -56,6 +61,8 @@ export function ChatPageV2({
   onSessionChange,
   conversationKind = "chat",
   projectPath = "",
+  projectId = null,
+  projectName = null,
   mcpStatus = null,
   mcpChecking = false,
   onOpenSettings,
@@ -112,6 +119,15 @@ export function ChatPageV2({
   currentSessionIdRef.current = activeSessionId;
   const pythonRuns = usePythonRunController(activeSessionId, currentSessionIdRef);
   const graphPanel = useGraphPanelController(activeSessionId, isPlainChat, currentSessionIdRef);
+  // 头部任务语境（UI-11）：项目模式显示会话标题与当前分支；plain chat 传 null 关闭查询。
+  const projectSessionTitle = useProjectSessionTitle(
+    isPlainChat ? null : projectId,
+    isPlainChat ? null : activeSessionId,
+  );
+  const currentBranch = useCurrentGitBranch(
+    !isPlainChat && projectPath ? projectPath : null,
+    !isPlainChat && workspaceVisible,
+  );
   // 稳定引用：截断（regenerate / 编辑重发）后关闭旧画布并刷新「最近计划」入口。
   const { close: closeGraphPanel, refreshLatestPlan } = graphPanel;
   const shouldStickToBottomRef = useRef(true);
@@ -348,11 +364,15 @@ export function ChatPageV2({
     setMessages([]);
   }, [activeSessionId, clearDraft, setMessages]);
 
-  // 聊天模式（主页）也提供顶部栏：会话标题 + 运行状态 + 清空/设置，
+  // 聊天模式（主页）也提供顶部栏：会话标题 + 运行状态 + 更多菜单，
   // 让宽屏下的消息区有视觉锚点；embedded（项目内嵌面板）下保持紧凑不加栏。
   const chatHeader = !isPlainChat ? (
     <ProjectChatHeader
+      sessionTitle={projectSessionTitle}
+      projectName={projectName}
+      branchName={currentBranch}
       isLoading={liveState.isLoading || liveState.hasPendingRun}
+      isStopping={isStopping}
       hasMessages={messages.length > 0}
       mcpStatus={mcpStatus}
       mcpChecking={mcpChecking}
@@ -367,6 +387,7 @@ export function ChatPageV2({
     <PlainChatHeader
       title={chatSessions.activeTitle}
       isLoading={liveState.isLoading || liveState.hasPendingRun}
+      isStopping={isStopping}
       hasMessages={messages.length > 0}
       mcpStatus={mcpStatus}
       mcpChecking={mcpChecking}
@@ -405,6 +426,7 @@ export function ChatPageV2({
           composerMode={composerMode}
           onSend={handleSend}
           onStop={handleStop}
+          isStopping={isStopping}
           attachments={attachedImages}
           onAttachImages={handleAttachImages}
           onRemoveAttachment={handleRemoveAttachment}

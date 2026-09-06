@@ -40,6 +40,26 @@ export function replacePathPrefix(path: string, currentPrefix: string, nextPrefi
   return path;
 }
 
+/** 路径的目录部分（含结尾分隔符）；根下文件返回空串。 */
+export function getPathDirectory(path: string) {
+  const separatorIndex = findLastSeparatorIndex(path);
+  return separatorIndex === -1 ? "" : path.slice(0, separatorIndex + 1);
+}
+
+/**
+ * 长路径中间折叠：超出 maxChars 时保留头部与尾部、中间以省略号相连。
+ * 头部略短于尾部——路径的可辨识段（文件名、深层目录）通常在尾部。
+ */
+export function collapseMiddlePath(path: string, maxChars: number) {
+  if (path.length <= maxChars || maxChars < 2) {
+    return path;
+  }
+  const budget = maxChars - 1;
+  const headLength = Math.max(1, Math.floor(budget * 0.45));
+  const tailLength = Math.max(1, budget - headLength);
+  return `${path.slice(0, headLength)}…${path.slice(path.length - tailLength)}`;
+}
+
 export function getRelativePathDisplay(rootPath: string, path: string) {
   if (path === rootPath) {
     return ".";

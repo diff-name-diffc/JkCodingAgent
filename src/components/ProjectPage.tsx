@@ -219,13 +219,11 @@ export function ProjectPage({
           <Suspense fallback={<ProjectLazyPaneFallback label="文件列表加载中..." />}>
             <FileExplorer
               projectPath={project.path}
-              projectName={project.name}
               onFileSelect={handleFileSelect}
               onFileRename={handleFileTreeRename}
               onFileDelete={handleFileTreeDelete}
               openFilePaths={openFiles.map((tab) => tab.path)}
               active={visible}
-              width={contextNavWidth}
             />
           </Suspense>
         </ErrorBoundary>

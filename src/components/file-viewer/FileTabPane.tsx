@@ -4,26 +4,20 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertCircle, CheckCircle2, Eye, ImageIcon, PencilLine } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { LargeFileViewer } from "./LargeFileViewer";
 import { MonacoEditorPane } from "./MonacoEditorPane";
-import { ImagePreviewPane } from "./ImagePreviewPane";
+import { ImageFilePane } from "./ImageFilePane";
+import { FilePaneHeader, type FileSaveStatus } from "./FilePaneHeader";
 import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
-import { FileGlyph, resolveFilePresentation, type FilePresentation } from "../../file-icons";
+import { resolveFilePresentation } from "../../file-icons";
 import type { EditorTab } from "../../hooks/useProjectPanels";
 
 type OpenFileTab = Extract<EditorTab, { kind: "file" }>;
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
-
-type ImagePreviewData = {
-  dataUrl: string;
-  mimeType: string;
-  byteLength: number;
-};
 
 type FileMeta = {
   sizeBytes: number;
@@ -33,199 +27,17 @@ type FileMeta = {
 
 const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024;
 
-function FileStatusPill({
-  children,
-  tone = "default",
-}: {
-  children: ReactNode;
-  tone?: "default" | "success" | "error";
-}) {
-  return <span className={`ai-file-status-pill is-${tone}`}>{children}</span>;
-}
-
-function PaneShell({
-  children,
-  compact = false,
-}: {
-  children: ReactNode;
-  compact?: boolean;
-}) {
-  return (
-    <div className={compact ? "ai-file-pane-shell is-compact" : "ai-file-pane-shell"}>
-      {children}
-    </div>
-  );
-}
-
-function PaneCard({ children }: { children: ReactNode }) {
-  return <div className="ai-file-pane-card">{children}</div>;
-}
-
-function ImageFilePane({
-  filePath,
-  fileName,
-  projectPath,
-}: {
-  filePath: string;
-  fileName: string;
-  projectPath: string;
-}) {
-  const [imagePreview, setImagePreview] = useState<ImagePreviewData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setImagePreview(null);
-    setError(null);
-
-    invoke<ImagePreviewData>("read_image_preview", { path: filePath, projectPath })
-      .then((preview) => {
-        if (!cancelled) {
-          setImagePreview(preview);
-          setLoading(false);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(String(err));
-          setLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [filePath, projectPath]);
-
-  return (
-    <PaneShell>
-      <div className="ai-image-pane-header">
-        <div className="ai-image-pane-title-block">
-          <div className="ai-image-pane-eyebrow">
-            <ImageIcon size={13} />
-            图片预览
-          </div>
-          <div className="ai-image-pane-title">
-            {fileName}
-          </div>
-          <div className="ai-image-pane-path">
-            {filePath}
-          </div>
-        </div>
-        <div className="ai-image-pane-meta">
-          {imagePreview && (
-            <FileStatusPill>{`${imagePreview.mimeType} · ${(imagePreview.byteLength / 1024).toFixed(1)} KB`}</FileStatusPill>
-          )}
-        </div>
-      </div>
-
-      <PaneCard>
-        {loading && (
-          <div className="ai-file-pane-state">
-            加载中...
-          </div>
-        )}
-        {error && !loading && (
-          <div className="ai-file-pane-state is-error">
-            <AlertCircle size={28} strokeWidth={1.7} />
-            <div>{error}</div>
-          </div>
-        )}
-        {!loading && !error && imagePreview && (
-          <ImagePreviewPane
-            src={imagePreview.dataUrl}
-            fileName={fileName}
-            mimeType={imagePreview.mimeType}
-            byteLength={imagePreview.byteLength}
-          />
-        )}
-      </PaneCard>
-    </PaneShell>
-  );
-}
-
-function TextFileHeader({
-  presentation,
-  fileName,
-  filePath,
-  language,
-  saveStatus,
-  isMarkdown,
-  previewMode,
-  onTogglePreview,
-}: {
-  presentation: FilePresentation;
-  fileName: string;
-  filePath: string;
-  language: string;
-  saveStatus: SaveStatus;
-  isMarkdown: boolean;
-  previewMode: boolean;
-  onTogglePreview?: () => void;
-}) {
-  const saveLabel =
-    saveStatus === "saving"
-      ? "保存中..."
-      : saveStatus === "saved"
-        ? "已保存"
-        : saveStatus === "error"
-          ? "保存失败"
-          : "实时编辑";
-  const normalizedPath = filePath.replace(/\\/g, "/");
-  const lastSlashIndex = normalizedPath.lastIndexOf("/");
-  const directoryPath = lastSlashIndex >= 0 ? normalizedPath.slice(0, lastSlashIndex + 1) : "";
-  const displayFileName = lastSlashIndex >= 0 ? normalizedPath.slice(lastSlashIndex + 1) : fileName;
-
-  return (
-    <div className="ai-file-pane-header">
-      <div className="ai-file-path-stack">
-        <div className="ai-file-path-line">
-          <span className="ai-file-path-icon">
-            <FileGlyph presentation={presentation} size={22} />
-          </span>
-          {directoryPath ? (
-            <span className="ai-file-path-dir">
-              {directoryPath}
-            </span>
-          ) : null}
-          <strong className="ai-file-path-name">
-            {displayFileName}
-          </strong>
-        </div>
-      </div>
-
-      <div className="ai-file-pane-actions">
-        {isMarkdown && onTogglePreview && (
-          <button
-            type="button"
-            onClick={onTogglePreview}
-            title={previewMode ? "切换到编辑" : "切换到预览"}
-            className={previewMode ? "ai-file-preview-toggle is-active" : "ai-file-preview-toggle"}
-          >
-            {previewMode ? <PencilLine size={14} /> : <Eye size={14} />}
-            {previewMode ? "编辑" : "预览"}
-          </button>
-        )}
-        <FileStatusPill>{language}</FileStatusPill>
-        <FileStatusPill tone={saveStatus === "error" ? "error" : saveStatus === "saved" ? "success" : "default"}>
-          {saveStatus === "saved" && <CheckCircle2 size={13} />}
-          {saveLabel}
-        </FileStatusPill>
-      </div>
-    </div>
-  );
-}
-
 export function FileTabPane({
   active,
   tab,
   projectPath,
+  onDirtyChange,
 }: {
   active: boolean;
   tab: OpenFileTab;
   projectPath: string;
+  /** 未保存状态上报（UI-16）：标签条据此渲染脏标记圆点。 */
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [previewMode, setPreviewMode] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -247,7 +59,14 @@ export function FileTabPane({
   );
   const isImage = presentation.isPreviewableImage;
   const isMarkdown = presentation.isMarkdown;
-  const language = presentation.monacoLanguage;
+
+  const isLargeFile = fileMeta !== null && fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD;
+  /** 脏定义：小文件在防抖保存中/保存失败，大文件有未落盘编辑；saved 短暂回显不算。 */
+  const dirty = isLargeFile ? largeDirty : saveStatus === "saving" || saveStatus === "error";
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
 
   useEffect(() => {
     setPreviewMode(false);
@@ -393,25 +212,21 @@ export function FileTabPane({
     return <ImageFilePane filePath={tab.path} fileName={tab.name} projectPath={projectPath} />;
   }
 
+  const headerSaveStatus: FileSaveStatus = isLargeFile ? (largeDirty ? "unsaved" : "idle") : saveStatus;
+
   return (
-    <PaneShell compact>
-      <TextFileHeader
-        presentation={presentation}
-        fileName={tab.name}
+    <div className="ai-file-pane">
+      <FilePaneHeader
+        projectPath={projectPath}
         filePath={tab.path}
-        language={language}
-        saveStatus={fileMeta && fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD ? (largeDirty ? "saving" : "idle") : saveStatus}
+        saveStatus={headerSaveStatus}
         isMarkdown={isMarkdown}
         previewMode={previewMode}
         onTogglePreview={isMarkdown ? () => setPreviewMode((prev) => !prev) : undefined}
       />
 
-      <PaneCard>
-        {loading && (
-          <div className="ai-file-pane-state">
-            加载中...
-          </div>
-        )}
+      <div className="ai-file-pane-body">
+        {loading && <div className="ai-file-pane-state">加载中...</div>}
 
         {error && !loading && (
           <div className="ai-file-pane-state is-error">
@@ -420,7 +235,7 @@ export function FileTabPane({
           </div>
         )}
 
-        {!loading && !error && fileMeta && fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD && (
+        {!loading && !error && isLargeFile && (
           <LargeFileViewer
             active={active}
             sessionId={tab.id}
@@ -431,18 +246,10 @@ export function FileTabPane({
           />
         )}
 
-        {!loading && !error && content !== null && fileMeta && fileMeta.sizeBytes < LARGE_FILE_THRESHOLD && (
+        {!loading && !error && content !== null && !isLargeFile && (
           isMarkdown && previewMode ? (
             <div className="md-preview-shell">
               <div className="md-preview-card">
-                <div className="md-preview-header">
-                  <div>
-                    <div className="md-preview-eyebrow">Markdown 预览</div>
-                    <div className="md-preview-title">{tab.name}</div>
-                    <div className="md-preview-subtitle">{projectPath}</div>
-                  </div>
-                  <div className="md-preview-meta">基于 react-markdown 渲染</div>
-                </div>
                 <div className="md-preview-body">
                   <MarkdownRenderer content={content} variant="document" />
                 </div>
@@ -453,12 +260,12 @@ export function FileTabPane({
               active={active}
               initialValue={content}
               filePath={tab.path}
-              language={language}
+              language={presentation.monacoLanguage}
               onChange={handleChange}
             />
           )
         )}
-      </PaneCard>
-    </PaneShell>
+      </div>
+    </div>
   );
 }

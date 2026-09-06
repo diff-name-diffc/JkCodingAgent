@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { MoreHorizontal, X } from "lucide-react";
 import { FileGlyph, resolveFilePresentation } from "../file-icons";
@@ -29,6 +29,39 @@ export function FileViewer({
   onHide: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  /** 未保存 tab 集合（UI-16）：由各 pane 经 onDirtyChange 上报。 */
+  const [dirtyTabIds, setDirtyTabIds] = useState<ReadonlySet<string>>(new Set());
+
+  const handleDirtyChange = useCallback((tabId: string, dirty: boolean) => {
+    setDirtyTabIds((prev) => {
+      const alreadyDirty = prev.has(tabId);
+      if (dirty === alreadyDirty) return prev;
+      const next = new Set(prev);
+      if (dirty) {
+        next.add(tabId);
+      } else {
+        next.delete(tabId);
+      }
+      return next;
+    });
+  }, []);
+
+  // 标签关闭后清掉残留的脏记录，避免集合随会话生命周期单调增长。
+  useEffect(() => {
+    const openIds = new Set(tabs.map((tab) => tab.id));
+    setDirtyTabIds((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (openIds.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [tabs]);
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? tabs[tabs.length - 1] ?? null,
@@ -49,6 +82,7 @@ export function FileViewer({
         <div className="ai-file-viewer-tab-strip file-viewer-tab-strip chat-scroll">
           {tabs.map((tab) => {
             const isActive = tab.id === activeTab.id;
+            const isDirty = dirtyTabIds.has(tab.id);
             const presentation = resolveFilePresentation({ name: tab.name, path: tab.path });
 
             return (
@@ -56,13 +90,22 @@ export function FileViewer({
                 key={tab.id}
                 type="button"
                 onClick={() => onSelectTab(tab.id)}
-                title={tab.path}
-                className={isActive ? "ai-file-viewer-tab is-active" : "ai-file-viewer-tab"}
+                title={isDirty ? `${tab.path}（未保存）` : tab.path}
+                className={
+                  isActive
+                    ? isDirty
+                      ? "ai-file-viewer-tab is-active is-dirty"
+                      : "ai-file-viewer-tab is-active"
+                    : isDirty
+                      ? "ai-file-viewer-tab is-dirty"
+                      : "ai-file-viewer-tab"
+                }
               >
                 <FileGlyph presentation={presentation} size={20} />
                 <span className="ai-file-viewer-tab-label">
                   {tab.name}
                 </span>
+                {isDirty && <span className="ai-file-viewer-tab-dirty-dot" aria-label="未保存" />}
                 <span
                   onClick={(event) => {
                     event.stopPropagation();
@@ -161,6 +204,9 @@ export function FileViewer({
                 active={isActive}
                 tab={tab}
                 projectPath={projectPath}
+                onDirtyChange={
+                  (dirty) => handleDirtyChange(tab.id, dirty)
+                }
               />
             </div>
           );

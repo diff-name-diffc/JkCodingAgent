@@ -330,7 +330,7 @@ summary,
 .ai-sidebar-resize-handle,
 .ai-project-session-row,
 .ai-file-explorer-row,
-.ai-file-explorer-header,
+.ai-file-explorer-toolbar,
 .ai-file-viewer-tab,
 .ai-graph-node,
 .ai-context-menu-item,
@@ -1387,76 +1387,15 @@ button:not(:disabled):active,
   height: 100%;
   min-height: 100%;
   overflow: auto;
-  padding: 32px 40px 48px;
-  background:
-    radial-gradient(
-      circle at top left,
-      color-mix(in srgb, var(--accent) 9%, transparent),
-      transparent 28%
-    ),
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--bg-panel) 84%, var(--bg-subtle)),
-      var(--bg-panel)
-    );
+  padding: 24px 32px 48px;
+  background: var(--bg-panel);
 }
 .md-preview-card {
-  max-width: 980px;
+  max-width: 860px;
   margin: 0 auto;
-  border: 1px solid color-mix(in srgb, var(--accent) 9%, var(--border-dim));
-  border-radius: 30px;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--bg-card) 94%, transparent);
-  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.08);
-}
-.md-preview-header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 28px 30px 24px;
-  border-bottom: 1px solid var(--border-dim);
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 55%),
-    color-mix(in srgb, var(--bg-card) 82%, transparent);
-}
-.md-preview-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-.md-preview-title {
-  font-size: 28px;
-  line-height: 1.05;
-  letter-spacing: -0.04em;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-.md-preview-subtitle {
-  margin-top: 8px;
-  font-size: 13px;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-}
-.md-preview-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-card) 76%, transparent);
-  border: 1px solid var(--border-dim);
-  font-size: 12px;
-  color: var(--text-secondary);
 }
 .md-preview-body {
-  padding: 28px 30px 36px;
+  padding: 8px 0 24px;
 }
 .md-preview-body .markdown-surface--document h1:first-child,
 .md-preview-body .markdown-surface--document h2:first-child,
@@ -1677,8 +1616,8 @@ button:not(:disabled):active,
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  border-radius: 4px;
-  border: 1px solid var(--border-dim);
+  border-radius: 0;
+  background: var(--bg-panel);
 }
 /* @monaco-editor/react renders: <section style="display:flex; position:relative"> */
 .monaco-pane > section,
@@ -1697,10 +1636,6 @@ button:not(:disabled):active,
   min-width: 0;
   min-height: 0;
 }
-.monaco-pane .monaco-editor,
-.monaco-pane .overflow-guard {
-  border-radius: 24px;
-}
 .monaco-loading {
   display: flex;
   align-items: center;
@@ -1708,13 +1643,7 @@ button:not(:disabled):active,
   height: 100%;
   color: var(--text-muted);
   font-size: 13px;
-  background:
-    radial-gradient(
-      circle at top left,
-      color-mix(in srgb, var(--accent) 10%, transparent),
-      transparent 32%
-    ),
-    var(--bg-panel);
+  background: var(--bg-panel);
 }
 
 /* ── Git Diff Viewer ───────────────────────────────────────────── */

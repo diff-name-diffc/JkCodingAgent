@@ -5,7 +5,6 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { RotateCcw } from "lucide-react";
 import { useToast } from "./Toast";
-import { FileGlyph } from "../file-icons";
 import { isSystemGroupNode, type TreeNode } from "./file-explorer/tree";
 import {
   FileExplorerRenameDialog,
@@ -27,22 +26,18 @@ function resolveErrorMessage(error: unknown) {
 
 export function FileExplorer({
   projectPath,
-  projectName,
   onFileSelect,
   onFileRename,
   onFileDelete,
   openFilePaths = [],
   active = true,
-  width = 240,
 }: {
   projectPath: string;
-  projectName: string;
   onFileSelect: (path: string, name: string) => void;
   onFileRename?: (currentPath: string, nextPath: string) => void;
   onFileDelete?: (deletedPath: string) => void;
   openFilePaths?: string[];
   active?: boolean;
-  width?: number;
 }) {
   const { showToast } = useToast();
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
@@ -264,22 +259,17 @@ export function FileExplorer({
   ]);
 
   return (
-    <div className="ai-file-explorer" style={{ width }}>
-      <div className="ai-file-explorer-header">
-        <span className="ai-file-explorer-title">Files</span>
+    <div className="ai-file-explorer">
+      <div className="ai-file-explorer-toolbar">
         <button
           type="button"
           onClick={() => void refresh()}
           title="刷新文件树"
+          aria-label="刷新文件树"
           className="ai-file-explorer-refresh"
         >
           <RotateCcw size={13} />
         </button>
-      </div>
-
-      <div className="ai-file-explorer-project">
-        <FileGlyph name={projectName} path={projectPath} isDir size={20} />
-        <span>{projectName}</span>
       </div>
 
       <FileExplorerContextMenu

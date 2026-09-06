@@ -15,7 +15,7 @@ const McpStatusDialog = lazy(() =>
   import("./McpStatusDialog").then((module) => ({ default: module.McpStatusDialog })),
 );
 const BrowserPanel = lazy(() =>
-  import("./BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
+  import("./browser/BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
 );
 const BrowserDock = lazy(() =>
   import("./BrowserDock").then((module) => ({ default: module.BrowserDock })),

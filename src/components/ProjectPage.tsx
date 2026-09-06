@@ -35,7 +35,7 @@ const ShellTerminalPanel = lazy(() =>
   import("./ShellTerminalPanel").then((module) => ({ default: module.ShellTerminalPanel })),
 );
 const BrowserPanel = lazy(() =>
-  import("./BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
+  import("./browser/BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
 );
 
 export function ProjectPage({

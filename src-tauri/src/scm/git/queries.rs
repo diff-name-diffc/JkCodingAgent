@@ -36,20 +36,8 @@ async fn git_status_impl(project_path: String) -> GitResult<Vec<GitFileChange>> 
     let mut changes = Vec::new();
 
     for line in stdout.lines() {
-        if line.len() < 3 {
+        let Some((x, y, origin_path, display_path)) = parse_porcelain_fields(line) else {
             continue;
-        }
-        let x = &line[0..1];
-        let y = &line[1..2];
-        let raw_path = line[3..].to_string();
-        let display_path = if raw_path.contains(" -> ") {
-            raw_path
-                .split(" -> ")
-                .last()
-                .unwrap_or(&raw_path)
-                .to_string()
-        } else {
-            raw_path
         };
 
         if x == "?" && y == "?" {
@@ -57,6 +45,7 @@ async fn git_status_impl(project_path: String) -> GitResult<Vec<GitFileChange>> 
                 path: display_path,
                 status: "?".to_string(),
                 staged: false,
+                origin_path: None,
             });
         } else {
             if x != " " && x != "?" {
@@ -64,6 +53,7 @@ async fn git_status_impl(project_path: String) -> GitResult<Vec<GitFileChange>> 
                     path: display_path.clone(),
                     status: x.to_string(),
                     staged: true,
+                    origin_path: origin_path.clone(),
                 });
             }
             if y != " " && y != "?" {
@@ -71,11 +61,28 @@ async fn git_status_impl(project_path: String) -> GitResult<Vec<GitFileChange>> 
                     path: display_path,
                     status: y.to_string(),
                     staged: false,
+                    origin_path,
                 });
             }
         }
     }
     Ok(changes)
+}
+
+/// porcelain v1 单行解析：返回 (暂存列, 工作区列, 重命名原路径, 现路径)。
+/// 状态列与分隔空格均为 ASCII，字节切片不会落在多字节字符中间。
+fn parse_porcelain_fields(line: &str) -> Option<(&str, &str, Option<String>, String)> {
+    if line.len() < 3 {
+        return None;
+    }
+    let x = &line[0..1];
+    let y = &line[1..2];
+    let raw_path = &line[3..];
+    let (origin_path, display_path) = match raw_path.split_once(" -> ") {
+        Some((origin, next)) => (Some(origin.to_string()), next.to_string()),
+        None => (None, raw_path.to_string()),
+    };
+    Some((x, y, origin_path, display_path))
 }
 
 #[tauri::command]
@@ -388,4 +395,44 @@ async fn git_remote_counts_impl(
         behind,
         branch,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_porcelain_fields;
+
+    #[test]
+    fn parses_plain_status_line() {
+        let (x, y, origin, path) = parse_porcelain_fields("M  src/a.ts").expect("valid line");
+        assert_eq!((x, y), ("M", " "));
+        assert_eq!(origin, None);
+        assert_eq!(path, "src/a.ts");
+    }
+
+    #[test]
+    fn keeps_rename_origin_path() {
+        let (x, y, origin, path) =
+            parse_porcelain_fields("R  old-name.ts -> new-name.ts").expect("valid line");
+        assert_eq!((x, y), ("R", " "));
+        assert_eq!(origin.as_deref(), Some("old-name.ts"));
+        assert_eq!(path, "new-name.ts");
+    }
+
+    #[test]
+    fn parses_untracked_and_worktree_columns() {
+        let (x, y, origin, path) = parse_porcelain_fields("?? draft.txt").expect("valid line");
+        assert_eq!((x, y), ("?", "?"));
+        assert_eq!(origin, None);
+        assert_eq!(path, "draft.txt");
+
+        let (x, y, _, path) = parse_porcelain_fields(" M b.ts").expect("valid line");
+        assert_eq!((x, y), (" ", "M"));
+        assert_eq!(path, "b.ts");
+    }
+
+    #[test]
+    fn skips_short_and_empty_lines() {
+        assert!(parse_porcelain_fields("").is_none());
+        assert!(parse_porcelain_fields("M").is_none());
+    }
 }

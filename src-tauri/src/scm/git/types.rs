@@ -7,6 +7,8 @@ pub(crate) struct GitFileChange {
     pub path: String,
     pub status: String,
     pub staged: bool,
+    /// 重命名条目的原路径（porcelain `R old -> new` 的 old 侧）；非重命名为 None。
+    pub origin_path: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]

@@ -1,7 +1,13 @@
 import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { X, FileCode, FileText, FilePlus2, FileMinus2 } from "lucide-react";
+import { X, FileCode, FileText, FilePlus2, FileMinus2, ArrowRightLeft, Binary } from "lucide-react";
 import { FileGlyph } from "../file-icons";
+import {
+  diffFileDisplayPath,
+  parseUnifiedDiff,
+  type DiffLineInfo,
+  type ParsedDiffFile,
+} from "../lib/git-diff";
 
 interface Props {
   projectPath: string;
@@ -14,131 +20,15 @@ interface Props {
   onClose: () => void;
 }
 
-// ── Unified diff parser ──────────────────────────────────────────────────────
+// ── File status icon (structured meta, UI-17) ────────────────────────────────
 
-interface DiffFile {
-  header: string;      // e.g. "src/components/Foo.tsx"
-  meta: string[];      // index, --- , +++ lines
-  hunks: DiffHunk[];
-}
-
-interface DiffHunk {
-  header: string;       // @@ -1,5 +1,7 @@ optional context
-  lines: DiffLineInfo[];
-}
-
-interface DiffLineInfo {
-  type: "add" | "del" | "ctx";   // + / - / context
-  content: string;                // line text WITHOUT the leading +/-/space
-  oldLn: number | null;
-  newLn: number | null;
-}
-
-function parseDiff(raw: string): DiffFile[] {
-  const lines = raw.split("\n");
-  const files: DiffFile[] = [];
-  let currentFile: DiffFile | null = null;
-  let currentHunk: DiffHunk | null = null;
-  let oldLn = 0;
-  let newLn = 0;
-
-  for (const line of lines) {
-    // ── File header ──
-    if (line.startsWith("diff --git ")) {
-      // Extract file path from "diff --git a/path b/path"
-      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
-      const filePath = match ? match[2] : line.slice(11);
-      currentFile = { header: filePath, meta: [], hunks: [] };
-      currentHunk = null;
-      files.push(currentFile);
-      continue;
-    }
-
-    // ── Meta lines (index, --- , +++) ──
-    if (
-      currentFile &&
-      !currentHunk &&
-      (line.startsWith("index ") ||
-        line.startsWith("--- ") ||
-        line.startsWith("+++ ") ||
-        line.startsWith("old mode ") ||
-        line.startsWith("new mode ") ||
-        line.startsWith("new file ") ||
-        line.startsWith("deleted file ") ||
-        line.startsWith("similarity index ") ||
-        line.startsWith("rename from ") ||
-        line.startsWith("rename to ") ||
-        line.startsWith("Binary files "))
-    ) {
-      currentFile.meta.push(line);
-      continue;
-    }
-
-    // ── Hunk header ──
-    if (line.startsWith("@@")) {
-      const match = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
-      if (match) {
-        oldLn = parseInt(match[1], 10);
-        newLn = parseInt(match[2], 10);
-        currentHunk = {
-          header: line,
-          lines: [],
-        };
-        currentFile?.hunks.push(currentHunk);
-      }
-      continue;
-    }
-
-    // ── Diff content lines ──
-    if (currentHunk) {
-      if (line.startsWith("+")) {
-        currentHunk.lines.push({
-          type: "add",
-          content: line.slice(1),
-          oldLn: null,
-          newLn: newLn++,
-        });
-      } else if (line.startsWith("-")) {
-        currentHunk.lines.push({
-          type: "del",
-          content: line.slice(1),
-          oldLn: oldLn++,
-          newLn: null,
-        });
-      } else if (line.startsWith(" ") || line === "") {
-        // Context line or empty
-        currentHunk.lines.push({
-          type: "ctx",
-          content: line.startsWith(" ") ? line.slice(1) : line,
-          oldLn: oldLn++,
-          newLn: newLn++,
-        });
-      } else if (line.startsWith("\\")) {
-        // "\ No newline at end of file" — skip
-        continue;
-      } else {
-        // Unknown line outside hunk — reset hunk
-        currentHunk = null;
-      }
-    }
-
-    // If we don't have a file yet, create one for flat diffs
-    if (!currentFile && line.trim()) {
-      currentFile = { header: "", meta: [], hunks: [] };
-      files.push(currentFile);
-    }
+function FileStatusIcon({ file }: { file: ParsedDiffFile }) {
+  if (file.isNew) return <FilePlus2 size={13} color="var(--success)" />;
+  if (file.isDeleted) return <FileMinus2 size={13} color="var(--danger)" />;
+  if (file.renameFrom && file.renameTo) {
+    return <ArrowRightLeft size={13} color="var(--text-secondary)" />;
   }
-
-  return files;
-}
-
-// ── File status icon helper ──
-function FileStatusIcon({ meta }: { meta: string[] }) {
-  const isNew = meta.some((m) => m.startsWith("new file"));
-  const isDeleted = meta.some((m) => m.startsWith("deleted file"));
-
-  if (isNew) return <FilePlus2 size={13} color="var(--success)" />;
-  if (isDeleted) return <FileMinus2 size={13} color="var(--danger)" />;
+  if (file.isBinary) return <Binary size={13} color="var(--text-hint)" />;
   return <FileText size={13} color="var(--text-hint)" />;
 }
 
@@ -190,7 +80,7 @@ export function GitDiffViewer({
     load();
   }, [projectPath, mode, commitHash, filePath, staged]);
 
-  const parsedFiles = useMemo(() => parseDiff(diff), [diff]);
+  const parsedFiles = useMemo(() => parseUnifiedDiff(diff), [diff]);
 
   return (
     <div className="ai-git-diff-shell">
@@ -231,36 +121,45 @@ export function GitDiffViewer({
 
 // ── File section ────────────────────────────────────────────────────────────
 
-function DiffFileSection({ file }: { file: DiffFile }) {
+function DiffFileSection({ file }: { file: ParsedDiffFile }) {
+  const isRename = file.renameFrom !== null && file.renameTo !== null;
+  const displayPath = diffFileDisplayPath(file);
+
   return (
     <div>
-      {/* File header — only show if we have a real file header */}
       {file.header && (
         <div className="git-diff-file-header">
-          <FileStatusIcon meta={file.meta} />
-          <FileGlyph path={file.header} size={20} />
-          <span className="git-diff-file-path">{file.header}</span>
+          <FileStatusIcon file={file} />
+          <FileGlyph path={displayPath} size={20} />
+          {isRename ? (
+            <span className="git-diff-file-path" title={`${file.renameFrom} → ${file.renameTo}`}>
+              <span className="git-diff-rename-old">{file.renameFrom}</span>
+              <span className="git-diff-rename-arrow"> → </span>
+              <span className="git-diff-rename-new">{file.renameTo}</span>
+              {file.similarity !== null && (
+                <span className="git-diff-similarity">相似度 {file.similarity}%</span>
+              )}
+            </span>
+          ) : (
+            <span className="git-diff-file-path" title={displayPath}>
+              {displayPath}
+            </span>
+          )}
         </div>
       )}
 
-      {/* Meta lines (index, ---, +++) */}
-      {file.meta
-        .filter((m) => !m.startsWith("--- ") && !m.startsWith("+++ ") && !m.startsWith("index "))
-        .map((m, i) => (
-          <div key={i} className="git-diff-meta-line">
-            {m}
+      {file.isBinary ? (
+        <div className="git-diff-binary">二进制文件，不支持文本差异展示</div>
+      ) : (
+        file.hunks.map((hunk, hi) => (
+          <div key={hi}>
+            <div className="git-diff-hunk-header">{hunk.header}</div>
+            {hunk.lines.map((line, li) => (
+              <DiffLineRow key={li} line={line} />
+            ))}
           </div>
-        ))}
-
-      {/* Hunks */}
-      {file.hunks.map((hunk, hi) => (
-        <div key={hi}>
-          <div className="git-diff-hunk-header">{hunk.header}</div>
-          {hunk.lines.map((line, li) => (
-            <DiffLineRow key={li} line={line} />
-          ))}
-        </div>
-      ))}
+        ))
+      )}
     </div>
   );
 }

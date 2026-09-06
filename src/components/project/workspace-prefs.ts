@@ -1,7 +1,10 @@
 /**
  * 工作区布局偏好（UI-08）：每工作区一份，持久化；非法旧值在读取时校验回退。
- * 数值区间与 workspace-budget.ts 的 chrome 常量保持一致。
+ * 数值区间与 workspace-budget.ts 的 chrome 常量保持一致（终端高度经
+ * TERMINAL_HEIGHT_LIMITS 引用同一出处，UI-19）。
  */
+import { TERMINAL_HEIGHT_LIMITS } from "./workspace-budget";
+
 export type ContextTab = "sessions" | "files" | "changes" | "history";
 
 export interface WorkspacePrefs {
@@ -45,7 +48,12 @@ export function sanitizeWorkspacePrefs(raw: unknown): WorkspacePrefs {
         ? source.sessionSidebarCollapsed
         : DEFAULT_WORKSPACE_PREFS.sessionSidebarCollapsed,
     rightPanelWidth: num(source.rightPanelWidth, DEFAULT_WORKSPACE_PREFS.rightPanelWidth, 180, 600),
-    terminalHeight: num(source.terminalHeight, DEFAULT_WORKSPACE_PREFS.terminalHeight, 100, 600),
+    terminalHeight: num(
+      source.terminalHeight,
+      DEFAULT_WORKSPACE_PREFS.terminalHeight,
+      TERMINAL_HEIGHT_LIMITS.min,
+      TERMINAL_HEIGHT_LIMITS.max,
+    ),
     editorPaneRatio: num(source.editorPaneRatio, DEFAULT_WORKSPACE_PREFS.editorPaneRatio, 0, 1),
   };
 }

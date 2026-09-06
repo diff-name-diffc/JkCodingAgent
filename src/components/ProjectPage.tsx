@@ -12,6 +12,11 @@ import { useGraphTabSync } from "../hooks/useGraphTabSync";
 import { useWorkspaceBudget } from "../hooks/useWorkspaceBudget";
 import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
 import type { WorkspacePrefs } from "./project/workspace-prefs";
+import {
+  TERMINAL_DOCK_CLOSED,
+  nextTerminalDockState,
+  type TerminalDockState,
+} from "./project/terminal-dock";
 import { useProjectMcpStatus } from "../hooks/use-mcp-status";
 import {
   ProjectMainArea,
@@ -71,7 +76,9 @@ export function ProjectPage({
     handleTerminalResizeStart,
   } = panels;
 
-  const [showShellTerminal, setShowShellTerminal] = useState(false);
+  // 终端 dock 两态机（UI-19）：mounted 后保持挂载（xterm/PTY 保活），
+  // visible 只控制显示；仅「结束会话」卸载组件并 kill shell。
+  const [terminalDock, setTerminalDock] = useState<TerminalDockState>(TERMINAL_DOCK_CLOSED);
   const [showDispatcherSettings, setShowDispatcherSettings] = useState(false);
   const [showMcpStatus, setShowMcpStatus] = useState(false);
   const {
@@ -121,7 +128,7 @@ export function ProjectPage({
     navWidthPref: contextNavWidth,
     rightPanelOpen: false,
     rightPanelWidthPref: 0,
-    terminalOpen: showShellTerminal,
+    terminalOpen: terminalDock.visible,
     terminalHeightPref: terminalHeight,
     dualPaneRequested: sessionWorkbenchVisible && hasEditorContent,
     editorRatioPref: editorPaneRatio,
@@ -301,13 +308,16 @@ export function ProjectPage({
     />
   );
 
-  const shellTerminalNode = showShellTerminal ? (
+  // 隐藏 ≠ 结束（UI-19）：mount 后隐藏走 CSS，PTY/xterm 保活；仅 terminate 卸载。
+  const shellTerminalNode = terminalDock.mounted ? (
     <Suspense fallback={null}>
       <ShellTerminalPanel
         projectPath={project.path}
         projectId={project.id}
         isActive={visible}
-        onClose={() => setShowShellTerminal(false)}
+        visible={terminalDock.visible}
+        onHide={() => setTerminalDock((state) => nextTerminalDockState(state, "hide"))}
+        onTerminate={() => setTerminalDock((state) => nextTerminalDockState(state, "terminate"))}
         height={budget.terminalHeight}
         onResizeStart={handleTerminalResizeStart}
       />
@@ -316,8 +326,10 @@ export function ProjectPage({
 
   const statusDockNode = (
     <StatusDockBar
-      terminalActive={showShellTerminal}
-      onToggleTerminal={() => setShowShellTerminal((value) => !value)}
+      terminalActive={terminalDock.visible}
+      onToggleTerminal={() =>
+        setTerminalDock((state) => nextTerminalDockState(state, "toggle"))
+      }
       browserActive={panels.activeEditorTab?.kind === "browser"}
       onToggleBrowser={() =>
         panels.activeEditorTab?.kind === "browser"

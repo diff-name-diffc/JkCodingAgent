@@ -46,6 +46,8 @@ export function ProjectWorkspaceLayout({
 interface ProjectMainAreaProps {
   workbench: ReactNode;
   subProcessTabs?: ReactNode;
+  /** 终端 dock（UI-19）：隐藏 = 组件内 CSS display:none（PTY 保活）；
+   * 仅面板头部「结束会话」卸载组件并 kill shell，槽位本身不承载生命周期。 */
   shellTerminal?: ReactNode;
   /** 底部 24px 状态/dock 条（UI-07 StatusDockBar）。 */
   statusDock?: ReactNode;

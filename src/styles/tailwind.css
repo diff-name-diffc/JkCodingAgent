@@ -4738,7 +4738,15 @@
     font-weight: 600;
   }
 
-  .ai-shell-terminal-close {
+  /* 头部动作组（UI-19）：隐藏（保留会话，中性）与结束会话（危险色）并列。 */
+  .ai-shell-terminal-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .ai-shell-terminal-close,
+  .ai-shell-terminal-hide {
     display: flex;
     align-items: center;
     border: 1px solid transparent;
@@ -4753,6 +4761,12 @@
     border-color: rgb(var(--danger-rgb) / 0.22);
     background: rgb(var(--danger-rgb) / 0.1);
     color: var(--danger);
+  }
+
+  .ai-shell-terminal-hide:hover {
+    border-color: var(--border-dim);
+    background: var(--bg-subtle);
+    color: var(--text-primary);
   }
 
   .ai-shell-terminal-canvas {

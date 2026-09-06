@@ -19,6 +19,7 @@ import {
   type EditorTabsState,
 } from "../components/project/main-tabs";
 import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
+import { TERMINAL_HEIGHT_LIMITS } from "../components/project/workspace-budget";
 
 /**
  * 项目面板状态（UI-08 换底座，UI-18 收敛右面板）：终端高度等尺寸偏好由
@@ -146,7 +147,14 @@ export function useProjectPanels(workspaceId: string) {
     const startY = e.clientY;
     const startHeight = terminalHeightRef.current;
     const onMouseMove = (ev: MouseEvent) => {
-      const newHeight = Math.max(100, Math.min(600, startHeight + (startY - ev.clientY)));
+      // 与 workspace-prefs sanitize / budget chrome 同一出处的钳制（UI-19）。
+      const newHeight = Math.max(
+        TERMINAL_HEIGHT_LIMITS.min,
+        Math.min(
+          TERMINAL_HEIGHT_LIMITS.max,
+          startHeight + (startY - ev.clientY),
+        ),
+      );
       setDragTerminalHeight(newHeight);
     };
     const onMouseUp = () => {

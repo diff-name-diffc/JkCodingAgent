@@ -39,6 +39,12 @@ export interface WorkspaceChromeSizes {
   minEditorWidth: number;
 }
 
+/**
+ * 终端 dock 高度范围（UI-19 单一出处）：workspace-prefs 的 sanitize 与
+ * useProjectPanels 的拖拽钳制共用，避免三处字面量漂移。
+ */
+export const TERMINAL_HEIGHT_LIMITS = { min: 100, max: 600 } as const;
+
 export const DEFAULT_CHROME: WorkspaceChromeSizes = {
   railWidth: 56,
   toolbarWidth: 48,
@@ -48,8 +54,8 @@ export const DEFAULT_CHROME: WorkspaceChromeSizes = {
   rightPanelMin: 180,
   rightPanelMax: 600,
   splitterWidth: 8,
-  terminalMinHeight: 100,
-  terminalMaxHeight: 600,
+  terminalMinHeight: TERMINAL_HEIGHT_LIMITS.min,
+  terminalMaxHeight: TERMINAL_HEIGHT_LIMITS.max,
   minMainHeight: 320,
   minChatWidth: 460,
   minEditorWidth: 520,

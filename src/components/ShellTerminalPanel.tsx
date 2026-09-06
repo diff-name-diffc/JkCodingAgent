@@ -16,7 +16,7 @@ import {
   createResizeScheduler,
 } from "./terminalShared";
 import { useIsDarkTheme } from "../hooks/useIsDarkTheme";
-import { X } from "lucide-react";
+import { ChevronDown, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 
 interface ShellOutputEvent {
@@ -27,8 +27,14 @@ interface ShellOutputEvent {
 interface Props {
   projectPath: string;
   projectId: string;
+  /** 所在项目工作区可见（项目切换保活时为 false）。 */
   isActive?: boolean;
-  onClose: () => void;
+  /** dock 显示（UI-19）：false = CSS 隐藏，组件保持挂载、PTY 保活。 */
+  visible?: boolean;
+  /** 隐藏面板（保留会话）：只收起 dock，不卸载组件、不杀 shell。 */
+  onHide: () => void;
+  /** 结束会话：卸载组件并 kill_shell；再次打开是全新 shell。 */
+  onTerminate: () => void;
   height?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
 }
@@ -39,7 +45,9 @@ export function ShellTerminalPanel({
   projectPath,
   projectId,
   isActive = true,
-  onClose,
+  visible = true,
+  onHide,
+  onTerminate,
   height = 240,
   onResizeStart,
 }: Props) {
@@ -66,6 +74,9 @@ export function ShellTerminalPanel({
     inputBatcherRef.current = inputBatcher;
 
     const fit = () => {
+      // 零尺寸守卫（UI-19）：dock 隐藏（display:none）期间 ResizeObserver
+      // 会上报 0×0，此时不 fit、不 resize_pty；恢复显示时 RO 自然重触发。
+      if (container.clientWidth === 0 || container.clientHeight === 0) return;
       const s = safeFit(fitAddon, term);
       if (s)
         invoke("resize_pty", { taskId: shellId, cols: s.cols, rows: s.rows }).catch(() => {});
@@ -168,19 +179,24 @@ export function ShellTerminalPanel({
       term.dispose();
       invoke("kill_shell", { shellId }).catch(() => {});
     };
+    // 挂载主 effect 只随 shell 身份重建：visible 隐藏/恢复不重跑（PTY 保活）。
   }, [shellId, projectPath]);
 
+  // 重激活（项目切回 / dock 恢复显示）：重新 fit + resize + 刷新 + 聚焦。
   useEffect(() => {
-    if (!isActive) return;
+    if (!isActive || !visible) return;
     window.requestAnimationFrame(() => {
-      if (!fitAddonRef.current || !terminalRef.current) return;
-      const s = safeFit(fitAddonRef.current, terminalRef.current);
+      const box = containerRef.current;
+      const fitAddon = fitAddonRef.current;
+      const term = terminalRef.current;
+      if (!box || box.clientWidth === 0 || box.clientHeight === 0 || !fitAddon || !term) return;
+      const s = safeFit(fitAddon, term);
       if (s)
         invoke("resize_pty", { taskId: shellId, cols: s.cols, rows: s.rows }).catch(() => {});
-      terminalRef.current.refresh(0, terminalRef.current.rows - 1);
-      terminalRef.current.focus();
+      term.refresh(0, term.rows - 1);
+      term.focus();
     });
-  }, [isActive, shellId]);
+  }, [isActive, visible, shellId]);
 
   useEffect(() => {
     const term = terminalRef.current;
@@ -192,7 +208,11 @@ export function ShellTerminalPanel({
   return (
     <div
       className="ai-shell-terminal-panel"
-      style={{ height, background: isDark ? DARK_THEME.background : LIGHT_THEME.background }}
+      style={{
+        height,
+        display: visible ? undefined : "none",
+        background: isDark ? DARK_THEME.background : LIGHT_THEME.background,
+      }}
     >
       {/* Drag handle */}
       {onResizeStart && (
@@ -201,18 +221,29 @@ export function ShellTerminalPanel({
           className="ai-shell-terminal-resize"
         />
       )}
-      {/* Header */}
+      {/* Header：隐藏（保留会话）与结束会话是两个语义（设计 §3.3）。 */}
       <div className="ai-shell-terminal-header">
         <span className="ai-shell-terminal-title">
           终端
         </span>
-        <button
-          onClick={onClose}
-          title="关闭终端"
-          className="ai-shell-terminal-close"
-        >
-          <X size={14} />
-        </button>
+        <div className="ai-shell-terminal-actions">
+          <button
+            onClick={onHide}
+            title="隐藏终端面板（保留会话，可从底部状态栏恢复）"
+            aria-label="隐藏终端面板（保留会话）"
+            className="ai-shell-terminal-hide"
+          >
+            <ChevronDown size={14} />
+          </button>
+          <button
+            onClick={onTerminate}
+            title="结束终端会话（终止 shell 进程）"
+            aria-label="结束终端会话（终止 shell 进程）"
+            className="ai-shell-terminal-close"
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
       {/* Terminal */}
       <div

@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-JKCodingAgent 是一款面向 AI 智能体的现代桌面应用：以「会话（session）」为核心，内置 dispatcher 智能体运行时（多轮工具调用、子智能体、命令审查门禁；项目 Agent 为图编排器——产出执行图 DAG 并调度子智能体 / claude / codex 节点执行）、RAG 知识库、嵌入式 Shell / 浏览器 / Python 运行器、文件浏览器、Git 集成与用量分析，外壳为 Tauri 2。
+JKCodingAgent 是一款面向 AI 智能体的现代桌面应用：以「会话（session）」为核心，内置 dispatcher 智能体运行时（多轮工具调用、子智能体、命令审查门禁；项目 Agent 为图编排器——产出执行图 DAG 并调度子智能体 / claude / codex 节点执行）、RAG 知识库、嵌入式 Shell / 浏览器 / Python 运行器、文件浏览器、Git 集成与用量记录，外壳为 Tauri 2。
 
 **技术栈：** React 19 + TypeScript + Vite（前端） · Tauri 2 + Rust（桌面壳） · **Tailwind CSS + shadcn 风格组件 + CSS 变量主题**（UI） · Zustand + React Query（状态/数据） · xterm.js（终端） · Shiki（语法高亮） · rusqlite（持久化）
 
@@ -46,12 +46,12 @@ Rust 后端位于 `src-tauri/`，修改后需重启 `tauri dev`。
 **主视图结构（简化）：**
 ```
 App
-├── WelcomePage                      — 主页（聊天 / 项目 / 分析 三视图切换）
+├── WelcomePage                      — 主页（聊天 / 项目 / 架构 三视图切换，AppRail 导航）
 │   ├── HomeChatPage                 — 独立聊天工作区（不绑定项目）
 │   ├── 项目网格                      — 打开 / 删除本地仓库
-│   └── AnalyticsDashboard           — token / 工具调用用量图表
+│   └── ArchitectureView             — 架构画布（tldraw）+ 助手聊天
 └── ProjectPage                      — 项目工作区
-    ├── ProjectRail                  — 左侧项目切换栏
+    ├── ContextNav                   — 会话 / 文件 / 变更 / 历史 四页签上下文导航
     ├── SessionPanel                 — 会话列表（搜索 / 新建 / 分页）
     ├── 聊天工作台 (chat-page-v2)      — dispatcher 消息流、工具调用、子智能体、图编排入口
     ├── 图编排 UI (components/graph)    — GraphPlanCard 内联卡片 / GraphPanel 执行图画布 / GraphNodeDrawer 节点详情
@@ -59,7 +59,8 @@ App
     ├── 文件浏览器 (file-explorer)     — FileViewer / LargeFileViewer / 图片预览
     ├── GitChanges / GitHistory       — 变更 / 提交 / 差异
     ├── ShellTerminalPanel            — 嵌入式交互 Shell（xterm.js）
-    ├── BrowserPanel / BrowserDock    — 内嵌浏览器
+    ├── BrowserPanel                  — 内嵌浏览器（主区单例标签）
+    ├── StatusDockBar                 — 底部状态栏（终端 / 浏览器 dock 开关）
     └── AppSettingsDialog             — 应用设置（智能体 / RAG / SSH / 子智能体配置）
 ```
 
@@ -81,11 +82,11 @@ App
 |------|------|
 | `agent/` | dispatcher 智能体核心：`run_loop/`（运行循环）、`llm.rs`（模型调用）、`tools/`（工具注册表 + builtin 工具）、`summary.rs`（工具输出分类/摘要）、`sub_agent/`（子智能体）、`graph/`（图编排：定义/校验/执行引擎/命令）、`db/`（SQLite schema 与读写）、`commands.rs`（Tauri 命令）、`config.rs`（智能体配置 + `~/.jkcodingagent` 初始化） |
 | `task_runtime/` | `pty.rs`（PTY 创建/读写）、`session.rs`（会话/输出兜底） |
-| `project/` | `storage.rs`、`config.rs`（项目配置）、`analytics.rs` |
+| `project/` | `storage.rs`（受管项目/会话存储）、`config.rs`（项目配置）、`mcp.rs`（项目级 MCP） |
 | `mcp/` | MCP 子系统：`McpScope{Global, Project}` 显式作用域模型——`Global`（`mcp_servers` 全局注册表，所有聊天共享单一快照）与 `Project`（全局 ∪ 项目 `.jkcodingagent/mcp.json`，同名项目覆盖）；`registry.rs`（作用域缓存/合并/工具执行）、`transport.rs`（stdio/streamable_http/unix_socket_http + 诊断）、`project_file.rs`（项目文件读写）、`commands.rs`（Tauri 命令，项目命令前置路径校验） |
 | `scm/git.rs` | Git 集成：状态、分支、日志、差异、暂存、提交、推送、拉取 |
 | `workspace/` | `fs.rs`（文件读写/列举）、`rope.rs`（大文件切片） |
-| `platform/` | `app_settings.rs`、`usage.rs` |
+| `platform/` | `app_settings.rs`（应用级键值配置） |
 | `rag/` | RAG sidecar 传输与管理 |
 | `ssh_tool/` | SSH 命令执行 + AI 安全审查门禁。传输层为 russh（纯 Rust 异步，无 libssh2/OpenSSL 依赖）；连接池按 `server_id+session_id` 复用 russh `Handle`，并发命令各走独立 channel（协议级隔离，无逐命令互斥锁）；主机密钥 TOFU 指纹为 key blob 的 SHA-256 hex。`memo.rs` 为每台服务器维护运维备忘录文件（`~/.jkcodingagent/ssh-memos/{server_id}.md`，段落式 Markdown，全文 8000 / 单段 4000 字符硬上限，超限拒绝写入），供 `ssh_memo_read` / `ssh_memo_upsert` / `ssh_memo_delete` 工具与设置页读写；服务器删除时随 `save_servers` 级联清理（同事务清主机密钥/审计行 + 提交后删备忘录文件） |
 | `browser.rs` | 内嵌浏览器宿主 |

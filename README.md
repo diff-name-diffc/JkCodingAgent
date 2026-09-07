@@ -20,7 +20,7 @@ JKCodingAgent is an Agent-First Vibe Coding desktop application built for true p
 - **Session Playback** — Review and replay agent conversation sessions (JSONL)
 - **Git Integration** — Stage, commit, push, pull, and browse diffs without leaving the app
 - **Code Browser** — View and navigate project files with syntax highlighting
-- **Analytics Dashboard** — Track weekly token usage per agent and project
+- **Usage Tracking** — Per-session token usage recorded in message history
 
 ## Installation
 

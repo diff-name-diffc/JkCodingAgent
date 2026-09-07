@@ -57,6 +57,30 @@ export function useDockedBrowserPanel(storageKey: string, metrics: DockedPanelMe
     setExpanded((value) => !value);
   }, []);
 
+  /** 键盘步进/双击复位的即时提交通道（UI-23c）：钳制 + 退出扩大态 + 持久化。 */
+  const commitWidth = useCallback(
+    (next: number) => {
+      const clamped = clamp(next, minWidth, panelMaxWidth());
+      setExpanded(false);
+      setWidth(clamped);
+      save(storageKey, clamped);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [storageKey, minWidth, maxRatio],
+  );
+
+  /** 当前宽度边界（随视口变化，调用时求值）。 */
+  const getWidthBounds = useCallback(
+    () => ({ min: minWidth, max: panelMaxWidth() }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [minWidth, maxRatio],
+  );
+
+  const getDefaultWidth = useCallback(
+    () => resolveDockedPanelDefaultWidth(viewportWidth(), metrics),
+    [metrics],
+  );
+
   const handleResizeStart = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
@@ -89,8 +113,13 @@ export function useDockedBrowserPanel(storageKey: string, metrics: DockedPanelMe
 
   return {
     effectiveWidth,
+    /** 未扩大的用户偏好宽度（键盘步进的基准值，UI-23c）。 */
+    width,
     expanded,
     toggleExpanded,
     handleResizeStart,
+    commitWidth,
+    getWidthBounds,
+    getDefaultWidth,
   };
 }

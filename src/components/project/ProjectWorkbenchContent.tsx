@@ -3,6 +3,7 @@ import type { McpStatus, Project } from "../../types";
 import type { useProjectPanels } from "../../hooks/useProjectPanels";
 import type { GraphTab } from "../../hooks/useGraphTabSync";
 import type { WorkspaceBudget } from "./workspace-budget";
+import { nextSplitterValue, splitterKeyDelta } from "../../lib/splitter-step";
 import { ChatPageV2 } from "../chat-page-v2";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { MarkdownLinkProvider } from "../markdown/MarkdownLinkContext";
@@ -117,14 +118,21 @@ export function ProjectWorkbenchContent({
 
   const handleEditorPaneResizeKey = useCallback(
     (event: React.KeyboardEvent) => {
-      const step = event.shiftKey ? 0.1 : 0.02;
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        onEditorPaneRatioChange(Math.max(0, Math.min(1, editorPaneRatio + step)));
-      } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        onEditorPaneRatioChange(Math.max(0, Math.min(1, editorPaneRatio - step)));
-      }
+      // 语义收敛到 lib/splitter-step（UI-23c）：占比从右缘测量，ArrowLeft=增大
+      // （invert）；小步 0.02 / Shift 大步 0.1，与既有行为一致。
+      const delta = splitterKeyDelta(event.key, "vertical", true);
+      if (delta === null) return;
+      event.preventDefault();
+      onEditorPaneRatioChange(
+        nextSplitterValue({
+          current: editorPaneRatio,
+          delta,
+          mode: "ratio",
+          shift: event.shiftKey,
+          min: 0,
+          max: 1,
+        }),
+      );
     },
     [editorPaneRatio, onEditorPaneRatioChange],
   );
@@ -315,6 +323,7 @@ export function ProjectWorkbenchContent({
       onEditorPaneResizeStart={handleEditorPaneResizeStart}
       onEditorPaneResizeKey={handleEditorPaneResizeKey}
       onEditorPaneResizeDoubleClick={() => onEditorPaneRatioChange(0.5)}
+      editorPaneRatio={editorPaneRatio}
     />
   );
 }

@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { ChevronsDown, PanelLeftClose, Plus, X } from "lucide-react";
 import type { Project } from "../../types";
 import { cn } from "../../lib/cn";
+import { useSplitterKeyboard } from "../../hooks/use-splitter-keyboard";
 import { ProjectAvatar } from "../ProjectAvatar";
 import {
   DropdownMenu,
@@ -99,6 +100,16 @@ export function ContextNav({
   );
 
   const renderedWidth = dragWidth ?? width;
+  // 导航宽度把手键盘化（UI-23c）：ArrowLeft/Right 步进、Shift 大步、双击复位。
+  const splitterKeyboard = useSplitterKeyboard({
+    orientation: "vertical",
+    mode: "px",
+    ariaLabel: "方向键调整导航宽度，双击恢复默认",
+    getValue: () => renderedWidth,
+    getBounds: () => ({ min: NAV_MIN, max: NAV_MAX }),
+    getDefaultValue: () => NAV_DEFAULT,
+    onCommit: onWidthCommit,
+  });
   const closedProjects = allProjects.filter((p) => !openProjects.some((o) => o.id === p.id));
 
   return (
@@ -195,12 +206,9 @@ export function ContextNav({
       </div>
 
       <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="拖拽调整导航宽度，双击恢复默认"
+        {...splitterKeyboard}
         data-dragging={dragWidth != null}
         onPointerDown={startResize}
-        onDoubleClick={() => onWidthCommit(NAV_DEFAULT)}
         className="ai-sidebar-resize-handle"
       />
     </div>

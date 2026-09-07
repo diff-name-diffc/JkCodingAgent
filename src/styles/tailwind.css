@@ -7198,6 +7198,20 @@
     background: rgb(var(--accent-rgb) / 0.55);
   }
 
+  /* 分隔条键盘化（UI-23c）：5 条工作区分隔条统一 focus-visible 高亮——
+     accent 令牌描边，不硬编码色值；细把手用负 offset 保证可见。 */
+  .ai-sidebar-resize-handle:focus-visible,
+  .ai-splitter:focus-visible,
+  .ai-shell-terminal-resize:focus-visible,
+  .ai-home-chat-resizer:focus-visible {
+    outline: 2px solid rgb(var(--accent-rgb) / 0.65);
+    outline-offset: -2px;
+  }
+
+  .ai-sidebar-resize-handle:focus-visible::after {
+    background: rgb(var(--accent-rgb) / 0.55);
+  }
+
   /* Radix ScrollArea 会给 Viewport 子节点包一层 display:table 的 shrink-to-fit
      包裹层，使内部的 max-width:100% 失效，超长标题会把分类操作区（+ 按钮）
      推出可视宽度。还原为块级布局后，宽度由视口决定，标题只截断不撑破。 */

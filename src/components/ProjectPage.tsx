@@ -74,6 +74,7 @@ export function ProjectPage({
     handleCommitSelect,
     handleCommitFileClick,
     handleTerminalResizeStart,
+    commitTerminalHeight,
   } = panels;
 
   // 终端 dock 两态机（UI-19）：mounted 后保持挂载（xterm/PTY 保活），
@@ -320,6 +321,7 @@ export function ProjectPage({
         onTerminate={() => setTerminalDock((state) => nextTerminalDockState(state, "terminate"))}
         height={budget.terminalHeight}
         onResizeStart={handleTerminalResizeStart}
+        onResizeCommit={commitTerminalHeight}
       />
     </Suspense>
   ) : undefined;

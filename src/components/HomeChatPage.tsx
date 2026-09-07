@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import { useDockedBrowserPanel } from "../hooks/useDockedBrowserPanel";
+import { useSplitterKeyboard } from "../hooks/use-splitter-keyboard";
 import { useBrowserSessionDock } from "../hooks/useBrowserSessionDock";
 import { useChatSessionsQuery } from "../hooks/use-chat-queries";
 import { extractMcpToolNames, trimMcpStatusToTools } from "../lib/mcp-category-tools";
@@ -68,6 +69,17 @@ export function HomeChatPage() {
   );
   const [showBrowserPanel, setShowBrowserPanel] = useState(false);
   const browserPanel = useDockedBrowserPanel("nezha.chat.browserPanelWidth");
+  // 浏览器面板宽度把手键盘化（UI-23c）：右停靠面板，ArrowLeft 加宽（invert）。
+  const browserResizerKeyboard = useSplitterKeyboard({
+    orientation: "vertical",
+    mode: "px",
+    invert: true,
+    ariaLabel: "方向键调整浏览器面板宽度，双击恢复默认",
+    getValue: () => browserPanel.width,
+    getBounds: browserPanel.getWidthBounds,
+    getDefaultValue: browserPanel.getDefaultWidth,
+    onCommit: browserPanel.commitWidth,
+  });
   const {
     dockedSessions,
     minimize: handleMinimizeBrowser,
@@ -101,7 +113,11 @@ export function HomeChatPage() {
 
       {showBrowserPanel && (
         <div className="ai-home-chat-browser nezha-brand-surface">
-          <div className="ai-home-chat-resizer" onMouseDown={browserPanel.handleResizeStart} />
+          <div
+            {...browserResizerKeyboard}
+            className="ai-home-chat-resizer"
+            onMouseDown={browserPanel.handleResizeStart}
+          />
           <Suspense fallback={<ChatPaneFallback label="浏览器加载中..." />}>
             <BrowserPanel
               sessionId={activeSessionId}

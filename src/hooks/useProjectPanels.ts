@@ -201,6 +201,8 @@ export function useProjectPanels(workspaceId: string) {
     showEditorWorkbench,
     clearFileAndDiff,
     handleTerminalResizeStart,
+    /** 终端高度即时提交（UI-23c 键盘步进 / 双击复位走此通道；拖拽仍 mouseup 提交）。 */
+    commitTerminalHeight: setTerminalHeight,
   };
 }
 export type { EditorTab, EditorTabsState };

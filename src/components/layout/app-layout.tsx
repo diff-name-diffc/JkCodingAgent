@@ -1,6 +1,7 @@
 import * as React from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useUIStore } from "../../stores/ui-store";
+import { useSplitterKeyboard } from "../../hooks/use-splitter-keyboard";
 import { cn } from "../../lib/cn";
 
 /**
@@ -64,6 +65,16 @@ export function AppLayout({
   const artifactOpen = useUIStore((s) => s.artifactPanelOpen);
   /** 拖拽中的实时宽度；为 null 表示未在拖拽。拖拽结束才写回 store，避免高频持久化。 */
   const [dragWidth, setDragWidth] = React.useState<number | null>(null);
+  // 侧栏宽度把手键盘化（UI-23c）：ArrowLeft/Right 步进、Shift 大步、双击复位。
+  const splitterKeyboard = useSplitterKeyboard({
+    orientation: "vertical",
+    mode: "px",
+    ariaLabel: "方向键调整侧边栏宽度，双击恢复默认",
+    getValue: () => dragWidth ?? sidebarWidth,
+    getBounds: () => ({ min: SIDEBAR_MIN, max: SIDEBAR_MAX }),
+    getDefaultValue: () => SIDEBAR_DEFAULT,
+    onCommit: setSidebarWidth,
+  });
 
   const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -121,12 +132,9 @@ export function AppLayout({
             {sidebar}
             {!collapsed && (
               <div
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="拖拽调整侧边栏宽度，双击恢复默认"
+                {...splitterKeyboard}
                 data-dragging={dragWidth != null}
                 onPointerDown={startSidebarResize}
-                onDoubleClick={() => setSidebarWidth(SIDEBAR_DEFAULT)}
                 className="ai-sidebar-resize-handle"
               />
             )}

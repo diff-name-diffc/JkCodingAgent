@@ -16,6 +16,9 @@ import {
   createResizeScheduler,
 } from "./terminalShared";
 import { useIsDarkTheme } from "../hooks/useIsDarkTheme";
+import { useSplitterKeyboard } from "../hooks/use-splitter-keyboard";
+import { TERMINAL_HEIGHT_LIMITS } from "./project/workspace-budget";
+import { DEFAULT_WORKSPACE_PREFS } from "./project/workspace-prefs";
 import { ChevronDown, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 
@@ -37,6 +40,8 @@ interface Props {
   onTerminate: () => void;
   height?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
+  /** 键盘步进/双击复位的即时提交通道（UI-23c）；拖拽仍走 mouseup 提交。 */
+  onResizeCommit?: (height: number) => void;
 }
 
 const DRAIN_FRAME_BUDGET = 128 * 1024;
@@ -50,9 +55,20 @@ export function ShellTerminalPanel({
   onTerminate,
   height = 240,
   onResizeStart,
+  onResizeCommit,
 }: Props) {
   const shellId = `shell:${projectId}`;
   const isDark = useIsDarkTheme();
+  // 高度把手键盘化（UI-23c）：ArrowUp/Down 步进、Shift 大步、双击复位默认。
+  const resizeKeyboard = useSplitterKeyboard({
+    orientation: "horizontal",
+    mode: "px",
+    ariaLabel: "方向键调整终端高度，双击恢复默认",
+    getValue: () => height,
+    getBounds: () => ({ min: TERMINAL_HEIGHT_LIMITS.min, max: TERMINAL_HEIGHT_LIMITS.max }),
+    getDefaultValue: () => DEFAULT_WORKSPACE_PREFS.terminalHeight,
+    onCommit: (next) => onResizeCommit?.(next),
+  });
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -214,9 +230,10 @@ export function ShellTerminalPanel({
         background: isDark ? DARK_THEME.background : LIGHT_THEME.background,
       }}
     >
-      {/* Drag handle */}
+      {/* Drag handle（UI-23c：role=separator + 键盘步进 + 双击复位） */}
       {onResizeStart && (
         <div
+          {...resizeKeyboard}
           onMouseDown={onResizeStart}
           className="ai-shell-terminal-resize"
         />

@@ -96,6 +96,8 @@ interface ProjectWorkbenchProps {
   onEditorPaneResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void;
   onEditorPaneResizeKey?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
   onEditorPaneResizeDoubleClick?: () => void;
+  /** 编辑区占比（0..1），用于分隔条 aria-valuenow 百分比读数（UI-23c）。 */
+  editorPaneRatio?: number;
 }
 
 export function ProjectWorkbench({
@@ -110,6 +112,7 @@ export function ProjectWorkbench({
   onEditorPaneResizeStart,
   onEditorPaneResizeKey,
   onEditorPaneResizeDoubleClick,
+  editorPaneRatio,
 }: ProjectWorkbenchProps) {
   return (
     <div
@@ -133,6 +136,13 @@ export function ProjectWorkbench({
           aria-orientation="vertical"
           aria-label="拖拽或方向键调整会话与编辑区宽度，双击恢复默认"
           tabIndex={0}
+          aria-valuenow={
+            editorPaneRatio !== undefined
+              ? Math.round(Math.max(0, Math.min(1, editorPaneRatio)) * 100)
+              : undefined
+          }
+          aria-valuemin={0}
+          aria-valuemax={100}
           onMouseDown={onEditorPaneResizeStart}
           onKeyDown={onEditorPaneResizeKey}
           onDoubleClick={onEditorPaneResizeDoubleClick}

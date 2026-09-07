@@ -1,7 +1,6 @@
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { attachSmartCopy } from "./terminalCopyHelper";
@@ -17,15 +16,11 @@ import {
 } from "./terminalShared";
 import { useIsDarkTheme } from "../hooks/useIsDarkTheme";
 import { useSplitterKeyboard } from "../hooks/use-splitter-keyboard";
+import { subscribeShellOutput } from "./shell-output-bus";
 import { TERMINAL_HEIGHT_LIMITS, terminalDragBounds } from "./project/workspace-budget";
 import { DEFAULT_WORKSPACE_PREFS } from "./project/workspace-prefs";
 import { ChevronDown, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
-
-interface ShellOutputEvent {
-  shell_id: string;
-  data: string;
-}
 
 interface Props {
   projectPath: string;
@@ -77,6 +72,8 @@ export function ShellTerminalPanel({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const inputBatcherRef = useRef<ReturnType<typeof createInputBatcher> | null>(null);
+  // open_shell 的 50ms 延迟 id（UI-24 遗留⑧）：卸载时清掉，避免「先 kill_shell 后 open_shell」竞态。
+  const openShellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 卸载兜底：拖拽中途 terminate/切项目时提交 + 摘监听（对齐 24a-4 dragCleanupRef 模式）。
   const dragCleanupRef = useRef<(() => void) | null>(null);
@@ -137,7 +134,8 @@ export function ShellTerminalPanel({
     };
     const resizeScheduler = createResizeScheduler(fit);
 
-    setTimeout(() => {
+    openShellTimerRef.current = setTimeout(() => {
+      openShellTimerRef.current = null;
       resizeScheduler.flush();
       invoke<void>("open_shell", {
         shellId,
@@ -171,8 +169,6 @@ export function ShellTerminalPanel({
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
-    let unlisten: (() => void) | null = null;
-    let cleaned = false;
     const pendingOutputs: string[] = [];
     let pendingHead = 0;
     let rafId = 0;
@@ -202,24 +198,22 @@ export function ShellTerminalPanel({
       }
     };
 
-    listen<ShellOutputEvent>("shell-output", (event) => {
-      if (event.payload.shell_id === shellId && terminalRef.current) {
-        pendingOutputs.push(event.payload.data);
-        if (!rafId) {
-          rafId = requestAnimationFrame(drainPendingOutputs);
-        }
-      }
-    }).then((fn) => {
-      if (cleaned) {
-        fn(); // already unmounted, unlisten immediately
-      } else {
-        unlisten = fn;
+    // 单一全局监听者（UI-24 遗留⑧）：N 个保活终端共享一个 shell-output 订阅，
+    // 由 shell-output-bus 按 shell_id 分发；退订是同步的。
+    const unsubscribeShellOutput = subscribeShellOutput(shellId, (data) => {
+      if (!terminalRef.current) return;
+      pendingOutputs.push(data);
+      if (!rafId) {
+        rafId = requestAnimationFrame(drainPendingOutputs);
       }
     });
 
     return () => {
-      cleaned = true;
-      unlisten?.();
+      if (openShellTimerRef.current) {
+        clearTimeout(openShellTimerRef.current);
+        openShellTimerRef.current = null;
+      }
+      unsubscribeShellOutput();
       disposeSmartCopy();
       inputBatcher.dispose();
       inputBatcherRef.current = null;

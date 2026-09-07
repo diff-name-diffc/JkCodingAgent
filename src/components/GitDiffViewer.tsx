@@ -16,6 +16,7 @@ import { cn } from "../lib/cn";
 import {
   diffFileDisplayPath,
   parseUnifiedDiff,
+  type DiffHunk,
   type DiffLineInfo,
   type ParsedDiffFile,
 } from "../lib/git-diff";
@@ -197,7 +198,7 @@ function DiffFileSection({
           <div key={hi}>
             <div className="git-diff-hunk-header">{hunk.header}</div>
             {viewMode === "split"
-              ? buildSplitRows(hunk).map((row, ri) => <SplitRowView key={ri} row={row} />)
+              ? <SplitHunkRows hunk={hunk} />
               : hunk.lines.map((line, li) => <DiffLineRow key={li} line={line} />)}
           </div>
         ))
@@ -237,6 +238,22 @@ function DiffLineRow({ line }: { line: DiffLineInfo }) {
 
 // ── Split (side-by-side) row ──────────────────────────────────────────────────
 
+/**
+ * 单个 hunk 的 split 行：buildSplitRows 含配对行的词级 diff 计算（O(m·n)），
+ * 以 hunk 身份 memo——parsedFiles 已由上层 useMemo 稳定，viewMode 切换等
+ * 重渲染命中缓存不重算。
+ */
+function SplitHunkRows({ hunk }: { hunk: DiffHunk }) {
+  const rows = useMemo(() => buildSplitRows(hunk), [hunk]);
+  return (
+    <>
+      {rows.map((row, ri) => (
+        <SplitRowView key={ri} row={row} />
+      ))}
+    </>
+  );
+}
+
 function SplitRowView({ row }: { row: SplitRow }) {
   return (
     <div className="git-diff-split-row">
@@ -266,7 +283,22 @@ function SplitSideView({ side }: { side: SplitSide }) {
     <div className={cn("git-diff-split-side", `git-diff-split-side--${side.type}`)}>
       <span className="git-diff-ln">{side.ln ?? ""}</span>
       <span className={signCls}>{signChar}</span>
-      <span className="git-diff-content">{side.content || " "}</span>
+      <span className="git-diff-content">
+        {side.segments
+          ? side.segments.map((seg, si) =>
+              seg.hl ? (
+                <span
+                  key={si}
+                  className={cn("git-diff-word-hl", `git-diff-word-hl--${side.type}`)}
+                >
+                  {seg.text}
+                </span>
+              ) : (
+                seg.text
+              ),
+            )
+          : side.content || " "}
+      </span>
     </div>
   );
 }

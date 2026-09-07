@@ -1676,3 +1676,17 @@ html:not(.dark) .git-diff-split-side--del .git-diff-content {
 html:not(.dark) .git-diff-split-side--ctx .git-diff-content {
   color: var(--text-secondary);
 }
+
+/* ── 行内 word-level 高亮（UI-17 遗留第三批）──
+   配对 del/add 行内的变更词强调：α=0.3 强于行背景（add 0.12 / del 0.10），
+   使变更词「跳出」。走 --success-rgb/--danger-rgb 伴随令牌（浅深双主题均已
+   定义），无硬编码色值、无需 html:not(.dark) 覆盖。 */
+.git-diff-word-hl {
+  border-radius: 2px;
+}
+.git-diff-word-hl--add {
+  background: rgb(var(--success-rgb) / 0.3);
+}
+.git-diff-word-hl--del {
+  background: rgb(var(--danger-rgb) / 0.3);
+}

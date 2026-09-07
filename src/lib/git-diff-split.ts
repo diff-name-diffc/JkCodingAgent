@@ -14,6 +14,7 @@
  */
 
 import type { DiffHunk, DiffLineInfo } from "./git-diff";
+import { diffWords, type WordDiffSegment } from "./word-diff";
 
 export type SplitSideType = "add" | "del" | "ctx" | "empty";
 
@@ -22,6 +23,12 @@ export interface SplitSide {
   ln: number | null;
   content: string;
   type: SplitSideType;
+  /**
+   * 行内 word-level 高亮分段（UI-17 遗留）：仅配对成功的 del/add 侧携带，
+   * ctx/empty/未配对侧与超阈值降级（diffWords 返回 null）不带此字段，
+   * 渲染层回退纯文本。各段 text join 恒等于 content。
+   */
+  segments?: WordDiffSegment[];
 }
 
 export interface SplitRow {
@@ -62,10 +69,17 @@ export function buildSplitRows(hunk: DiffHunk): SplitRow[] {
     for (let i = 0; i < n; i++) {
       const d = delRun[i];
       const a = addRun[i];
-      rows.push({
-        left: d ? delSide(d) : EMPTY_SIDE,
-        right: a ? addSide(a) : EMPTY_SIDE,
-      });
+      const left = d ? delSide(d) : EMPTY_SIDE;
+      const right = a ? addSide(a) : EMPTY_SIDE;
+      // 真配对（del↔add 同位）才算行内词级高亮；未配对侧/占位侧不带 segments。
+      if (d && a) {
+        const wordDiff = diffWords(d.content, a.content);
+        if (wordDiff) {
+          left.segments = wordDiff.oldSegments;
+          right.segments = wordDiff.newSegments;
+        }
+      }
+      rows.push({ left, right });
     }
     delRun = [];
     addRun = [];

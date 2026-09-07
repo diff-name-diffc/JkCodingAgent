@@ -17,6 +17,11 @@ import {
 } from "./sidebar/sidebar-state";
 import { SidebarConversationItem } from "./sidebar/SidebarConversationItem";
 import { SidebarCategoryGroup } from "./sidebar/SidebarCategoryGroup";
+import { moveListFocus } from "../../lib/list-focus";
+
+/** 会话行主按钮（排除「更多」菜单触发器）；↑↓ 导航焦点目标（UI-23d）。 */
+const SIDEBAR_ROW_SELECTOR = ".ai-session-item > button:not(.ai-session-menu-trigger)";
+const LIST_NAV_KEYS = new Set(["ArrowUp", "ArrowDown", "Home", "End"]);
 
 export interface SidebarProps {
   sessions: ChatSession[];
@@ -76,6 +81,25 @@ export function Sidebar({
   const [categoryDialog, setCategoryDialog] = React.useState<
     { mode: "create"; category: null } | { mode: "rename"; category: ChatCategory } | null
   >(null);
+
+  // 列表键盘导航（UI-23d）：搜索框 ArrowDown 进入会话列表；列表内 ↑↓/Home/End
+  // 在会话行间移动焦点。Radix 菜单/分类展开等内层按键以 defaultPrevented 让路。
+  const navRef = React.useRef<HTMLElement | null>(null);
+  const handleSearchKeyDown = React.useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      if (moveListFocus(navRef.current, event.key, { selector: SIDEBAR_ROW_SELECTOR })) {
+        event.preventDefault();
+      }
+    },
+    [],
+  );
+  const handleNavKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.defaultPrevented || !LIST_NAV_KEYS.has(event.key)) return;
+    if (moveListFocus(navRef.current, event.key, { selector: SIDEBAR_ROW_SELECTOR })) {
+      event.preventDefault();
+    }
+  }, []);
 
   const groupedCategories = React.useMemo(
     () => groupSessionsByCategory(sessions, categories),
@@ -171,6 +195,7 @@ export function Sidebar({
           <Input
             value={searchValue}
             onChange={(e) => onSearchChange(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
             placeholder="搜索会话"
             aria-label="搜索会话"
             className="h-9 pl-8 text-sm"
@@ -182,7 +207,7 @@ export function Sidebar({
 
       {/* Conversation list */}
       <ScrollArea className="min-h-0 flex-1">
-        <nav className="px-2 py-2">
+        <nav className="px-2 py-2" ref={navRef} onKeyDown={handleNavKeyDown} aria-label="会话导航">
           {loading && (
             <ul className="space-y-1">
               {Array.from({ length: 6 }).map((_, i) => (

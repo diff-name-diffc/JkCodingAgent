@@ -13,6 +13,7 @@ import {
 } from "./ui/dropdown-menu";
 import { SidebarFooterActions } from "./SidebarFooterActions";
 import { BranchBar } from "./task-panel/BranchBar";
+import { moveListFocus } from "../lib/list-focus";
 import { useDispatcherSessionRunningSet } from "../hooks/useDispatcherSessionRunningSet";
 import {
   flattenSessionPages,
@@ -22,6 +23,10 @@ import {
   useSessionListEventMerge,
   useSessionSearchQuery,
 } from "../hooks/use-session-queries";
+
+/** 列表 ↑↓ 导航的焦点目标（行根 button，排除「更多」菜单触发器）。 */
+const SESSION_ROW_SELECTOR = "button.ai-project-session-row";
+const LIST_NAV_KEYS = new Set(["ArrowUp", "ArrowDown", "Home", "End"]);
 
 /**
  * 会话行：memo 隔离，避免高频会话更新事件（dispatcher-session-updated）
@@ -222,6 +227,23 @@ export function SessionPanel({
     [onSelectSession],
   );
 
+  // 列表键盘导航（UI-23d）：搜索框 ArrowDown 进入列表；列表内 ↑↓/Home/End
+  // 在会话行间移动焦点（li>button 保持天然 tabbable，Enter 打开=既有 onClick）。
+  // Radix「更多」菜单打开时其方向键处理已 preventDefault——按 defaultPrevented 让路。
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const handleSearchKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (moveListFocus(listRef.current, event.key, { selector: SESSION_ROW_SELECTOR })) {
+      event.preventDefault();
+    }
+  }, []);
+  const handleListKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || !LIST_NAV_KEYS.has(event.key)) return;
+    if (moveListFocus(listRef.current, event.key, { selector: SESSION_ROW_SELECTOR })) {
+      event.preventDefault();
+    }
+  }, []);
+
   const trimmedQuery = query.trim();
   const hasSearchQuery = trimmedQuery.length > 0;
   const searchPending = hasSearchQuery && trimmedQuery !== debouncedQuery.trim();
@@ -269,6 +291,7 @@ export function SessionPanel({
           placeholder="搜索会话..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={handleSearchKeyDown}
         />
       </div>
 
@@ -278,7 +301,11 @@ export function SessionPanel({
       <div className="ai-project-session-divider" />
 
       {/* Session list */}
-      <div className="ai-project-session-list chat-scroll">
+      <div
+        className="ai-project-session-list chat-scroll"
+        ref={listRef}
+        onKeyDown={handleListKeyDown}
+      >
         {hasSearchQuery ? (
           searching ? (
             <div className="ai-project-session-empty">正在搜索…</div>
@@ -289,7 +316,7 @@ export function SessionPanel({
           ) : searchResults?.length === 0 ? (
             <div className="ai-project-session-empty">没有找到匹配的会话</div>
           ) : (
-            <ul className="ai-project-session-ul" role="list">
+            <ul className="ai-project-session-ul" role="list" aria-label="会话列表">
               {searchResults?.map((r) => (
                 <SessionRow
                   key={r.sessionId}
@@ -307,7 +334,7 @@ export function SessionPanel({
         ) : (
           <>
             {sessions.length === 0 && <div className="ai-project-session-empty">没有找到会话</div>}
-            <ul className="ai-project-session-ul" role="list">
+            <ul className="ai-project-session-ul" role="list" aria-label="会话列表">
               {sessions.map((session) => (
                 <SessionRow
                   key={session.id}

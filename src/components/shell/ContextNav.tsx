@@ -3,6 +3,7 @@ import { ChevronsDown, PanelLeftClose, Plus, X } from "lucide-react";
 import type { Project } from "../../types";
 import { cn } from "../../lib/cn";
 import { useSplitterKeyboard } from "../../hooks/use-splitter-keyboard";
+import { isRovingKey, nextRovingIndex } from "../../lib/roving-index";
 import { ProjectAvatar } from "../ProjectAvatar";
 import {
   DropdownMenu,
@@ -100,6 +101,30 @@ export function ContextNav({
   );
 
   const renderedWidth = dragWidth ?? width;
+  // tablist 方向键（UI-23d）：roving tabindex + automatic activation——方向键
+  // 移动焦点即切换页签（与点击语义一致，四页签内容均为已渲染列表，无昂贵加载）。
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const activeTabIndex = Math.max(
+    0,
+    TABS.findIndex((tab) => tab.key === activeTab),
+  );
+  const handleTabListKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (!isRovingKey(event.key, "horizontal")) return;
+      event.preventDefault();
+      const next = nextRovingIndex({
+        count: TABS.length,
+        current: activeTabIndex,
+        key: event.key,
+        wrap: true,
+        orientation: "horizontal",
+      });
+      if (next === activeTabIndex) return;
+      onTabChange(TABS[next].key);
+      tabRefs.current[next]?.focus();
+    },
+    [activeTabIndex, onTabChange],
+  );
   // 导航宽度把手键盘化（UI-23c）：ArrowLeft/Right 步进、Shift 大步、双击复位。
   const splitterKeyboard = useSplitterKeyboard({
     orientation: "vertical",
@@ -183,13 +208,24 @@ export function ContextNav({
         )}
       </div>
 
-      <div className="ai-context-nav-tabs" role="tablist" aria-label="导航内容">
-        {TABS.map(({ key, label }) => (
+      <div
+        className="ai-context-nav-tabs"
+        role="tablist"
+        aria-label="导航内容"
+        onKeyDown={handleTabListKeyDown}
+      >
+        {TABS.map(({ key, label }, index) => (
           <button
             key={key}
+            ref={(element) => {
+              tabRefs.current[index] = element;
+            }}
             type="button"
             role="tab"
+            id={`ctxnav-tab-${key}`}
+            aria-controls="ctxnav-panel"
             aria-selected={activeTab === key}
+            tabIndex={activeTab === key ? 0 : -1}
             className={cn("ai-context-nav-tab", activeTab === key && "is-active")}
             onClick={() => onTabChange(key)}
           >
@@ -198,7 +234,12 @@ export function ContextNav({
         ))}
       </div>
 
-      <div className="ai-context-nav-content" role="tabpanel">
+      <div
+        className="ai-context-nav-content"
+        role="tabpanel"
+        id="ctxnav-panel"
+        aria-labelledby={`ctxnav-tab-${activeTab}`}
+      >
         {activeTab === "sessions" && sessionContent}
         {activeTab === "files" && filesContent}
         {activeTab === "changes" && changesContent}

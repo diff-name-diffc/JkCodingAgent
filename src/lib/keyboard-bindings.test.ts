@@ -233,3 +233,72 @@ describe("shouldSkipBinding", () => {
     expect(shouldSkipBinding(keyEvent({ metaKey: true }), MOD_K, false)).toBe(false);
   });
 });
+
+// ── 键位注册表无歧义门禁（UI-23d）──────────────────────────────────────────
+//
+// 镜像 use-chat-shortcuts（Mod+K/N/B/L、Mod+Shift+A、Escape）与 ProjectPage
+// 工作区键位（Mod+1..4、Mod+J）的应用级注册表。新增/删改键位必须同步此清单——
+// 本用例穷举平台×修饰键组合，保证任一按键事件至多命中一个绑定（冲突审查的
+// 自动化门禁）。
+
+const APP_SHORTCUT_REGISTRY: ShortcutModifiers[] = [
+  { key: "k", mod: true },
+  { key: "n", mod: true },
+  { key: "b", mod: true },
+  { key: "l", mod: true },
+  { key: "a", mod: true, shift: true },
+  { key: "Escape", mod: false },
+  { key: "1", mod: true },
+  { key: "2", mod: true },
+  { key: "3", mod: true },
+  { key: "4", mod: true },
+  { key: "j", mod: true },
+];
+
+describe("应用级键位注册表无歧义", () => {
+  const KEYS = ["a", "b", "j", "k", "l", "n", "1", "2", "3", "4", "Escape"];
+
+  it("穷举平台×修饰键组合：任一事件至多命中一个绑定", () => {
+    for (const mac of [true, false]) {
+      for (const key of KEYS) {
+        for (const mod of [false, true]) {
+          for (const shift of [false, true]) {
+            for (const alt of [false, true]) {
+              const event = keyEvent({
+                key,
+                metaKey: mac && mod,
+                ctrlKey: !mac && mod,
+                shiftKey: shift,
+                altKey: alt,
+              });
+              const hits = APP_SHORTCUT_REGISTRY.filter((binding) =>
+                matchesBinding(event, binding, mac),
+              );
+              expect(
+                hits.length,
+                `mac=${mac} key=${key} mod=${mod} shift=${shift} alt=${alt} 命中 ${hits.length} 个绑定`,
+              ).toBeLessThanOrEqual(1);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it("注册表内每个绑定都可达（存在唯一命中的事件）", () => {
+    for (const mac of [true, false]) {
+      for (const binding of APP_SHORTCUT_REGISTRY) {
+        const event = keyEvent({
+          key: binding.key,
+          metaKey: mac && binding.mod === true,
+          ctrlKey: !mac && binding.mod === true,
+          shiftKey: binding.shift === true,
+        });
+        const hits = APP_SHORTCUT_REGISTRY.filter((other) =>
+          matchesBinding(event, other, mac),
+        );
+        expect(hits).toEqual([binding]);
+      }
+    }
+  });
+});

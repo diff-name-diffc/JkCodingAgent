@@ -25,7 +25,8 @@ export const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   editorPaneRatio: 0.5,
 };
 
-const CONTEXT_TABS: ContextTab[] = ["sessions", "files", "changes", "history"];
+/** 上下文导航页签的规范顺序（Mod+1..4 键位映射同一出处，UI-23d）。 */
+export const CONTEXT_TABS: ContextTab[] = ["sessions", "files", "changes", "history"];
 
 function num(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;

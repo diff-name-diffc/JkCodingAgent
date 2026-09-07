@@ -165,6 +165,7 @@ export function ChatShell({
   containerRef,
 }: ChatShellProps) {
   const setArtifactPanelOpen = useUIStore((s) => s.setArtifactPanelOpen);
+  const artifactPanelOpen = useUIStore((s) => s.artifactPanelOpen);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const commandPaletteOpen = useUIStore((s) => s.commandPaletteOpen);
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
@@ -224,6 +225,21 @@ export function ChatShell({
     textarea?.focus();
   }, [shellRef]);
 
+  // Mod+Shift+A（UI-23d）：开/关 Artifact 详情面板；无选中详情时 no-op，
+  // 不制造「打开了空面板」的伪状态。打开瞬间记录触发点，关闭时还原焦点。
+  const artifactRestoreFocusRef = React.useRef<HTMLElement | null>(null);
+  const handleToggleArtifactPanel = React.useCallback(() => {
+    if (artifactPanelOpen) {
+      setArtifactPanelOpen(false);
+      artifactRestoreFocusRef.current?.focus();
+      artifactRestoreFocusRef.current = null;
+      return;
+    }
+    if (!selectedArtifact && !selectedSubAgentToolCallId) return;
+    artifactRestoreFocusRef.current = document.activeElement as HTMLElement | null;
+    setArtifactPanelOpen(true);
+  }, [artifactPanelOpen, selectedArtifact, selectedSubAgentToolCallId, setArtifactPanelOpen]);
+
   // Global shortcuts. Actions stay in the parent adapter; this shell only
   // coordinates UI state and focus. 隐藏工作区（enabled=false）不注册（UI-23a）。
   useChatShortcuts(
@@ -233,6 +249,7 @@ export function ChatShell({
       onToggleSidebar: toggleSidebar,
       onFocusPrompt: focusPrompt,
       onCloseArtifact: () => setArtifactPanelOpen(false),
+      onToggleArtifactPanel: handleToggleArtifactPanel,
     },
     { enabled },
   );

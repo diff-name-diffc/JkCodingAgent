@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import type { Project } from "../types";
 import { SessionPanel } from "./SessionPanel";
 import { PanelLeftOpen } from "lucide-react";
@@ -10,8 +10,10 @@ import { useProjectPanels } from "../hooks/useProjectPanels";
 import { useBrowserSessionDock } from "../hooks/useBrowserSessionDock";
 import { useGraphTabSync } from "../hooks/useGraphTabSync";
 import { useWorkspaceBudget } from "../hooks/useWorkspaceBudget";
+import { useGlobalShortcuts } from "../hooks/use-global-shortcuts";
+import type { ShortcutBinding } from "../lib/keyboard-bindings";
 import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
-import type { WorkspacePrefs } from "./project/workspace-prefs";
+import { CONTEXT_TABS, type WorkspacePrefs } from "./project/workspace-prefs";
 import {
   TERMINAL_DOCK_CLOSED,
   nextTerminalDockState,
@@ -117,6 +119,29 @@ export function ProjectPage({
     (value: number) => setWorkspacePref({ contextNavWidth: value }),
     [setWorkspacePref],
   );
+
+  // 项目工作区全局键位（UI-23d）：Mod+1..4 切上下文导航页签（会话/文件/
+  // 变更/历史，顺序与 CONTEXT_TABS 单一出处）、Mod+J 切终端 dock 显隐
+  // （与 StatusDockBar 同一状态机路径，隐藏≠结束，PTY 保活语义不变）。
+  // 仅可见工作区注册——多项目保活下隐藏实例不响应（UI-23a 门控）。
+  const workspaceShortcuts = useMemo<ShortcutBinding[]>(
+    () => [
+      ...CONTEXT_TABS.map(
+        (tab, index): ShortcutBinding => ({
+          key: String(index + 1),
+          mod: true,
+          handler: () => setWorkspacePref({ contextTab: tab }),
+        }),
+      ),
+      {
+        key: "j",
+        mod: true,
+        handler: () => setTerminalDock((state) => nextTerminalDockState(state, "toggle")),
+      },
+    ],
+    [setWorkspacePref],
+  );
+  useGlobalShortcuts(workspaceShortcuts, { enabled: visible });
 
     // 空间预算（UI-04）：偏好为冻结输入，窄窗临时适配只体现在 budget 输出。
   // 编辑区内容判定收敛到 panels 单一派生值（UI-13）。

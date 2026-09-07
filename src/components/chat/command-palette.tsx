@@ -10,8 +10,11 @@ import type { ChatSession } from "../../types";
 import { cn } from "../../lib/cn";
 import { useOverlayEscape } from "../../hooks/use-overlay-escape";
 import { useFocusTrap } from "../../hooks/use-focus-trap";
+import { moveListFocus } from "../../lib/list-focus";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+
+const LIST_NAV_KEYS = new Set(["ArrowUp", "ArrowDown", "Home", "End"]);
 
 export interface CommandPaletteProps {
   open: boolean;
@@ -37,7 +40,27 @@ export function CommandPalette({
   const [query, setQuery] = React.useState("");
   const inputRef = React.useRef<HTMLInputElement>(null);
   const dialogRef = React.useRef<HTMLDivElement>(null);
+  const listRef = React.useRef<HTMLDivElement>(null);
   const close = React.useCallback(() => onOpenChange(false), [onOpenChange]);
+
+  // 列表键盘导航（UI-23d）：输入框 ArrowDown/ArrowUp 进入列表首/末项；
+  // 列表内 ↑↓/Home/End 在动作与会话项间移动焦点（边界钳制不环绕），
+  // Enter 激活=按钮既有 onClick。
+  const handleInputKeyDown = React.useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      if (moveListFocus(listRef.current, event.key, { selector: "button" })) {
+        event.preventDefault();
+      }
+    },
+    [],
+  );
+  const handleListKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || !LIST_NAV_KEYS.has(event.key)) return;
+    if (moveListFocus(listRef.current, event.key, { selector: "button", wrap: false })) {
+      event.preventDefault();
+    }
+  }, []);
 
   React.useEffect(() => {
     if (!open) return;
@@ -82,6 +105,7 @@ export function CommandPalette({
             ref={inputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={handleInputKeyDown}
             placeholder="搜索会话或输入动作"
             className="h-9 border-0 bg-transparent px-0 focus-visible:ring-0"
           />
@@ -90,7 +114,11 @@ export function CommandPalette({
           </kbd>
         </div>
 
-        <div className="max-h-[60vh] overflow-y-auto p-2">
+        <div
+          className="max-h-[60vh] overflow-y-auto p-2"
+          ref={listRef}
+          onKeyDown={handleListKeyDown}
+        >
           <CommandSection title="动作">
             <CommandButton
               icon={<MessageSquarePlus />}

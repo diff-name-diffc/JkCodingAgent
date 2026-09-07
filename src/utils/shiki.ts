@@ -1,5 +1,6 @@
 import type { ThemeRegistration } from "shiki";
 import { isDarkActive } from "../lib/theme";
+import { shikiCacheKey, shikiHighlightCache } from "./shiki-cache";
 
 interface ShikiHighlighter {
   codeToHtml: (code: string, options: { lang: string; theme: string }) => string;
@@ -184,8 +185,16 @@ export async function highlightCodeToHtml(
   const highlighter = await getHighlighter();
   const resolvedLanguage = await ensureLanguage(language);
 
-  return highlighter.codeToHtml(code, {
+  // UI-24b-2：LRU 缓存高亮产物——窗口化行重挂载/主题不变的重渲染直接命中，
+  // 不重跑 Shiki（大 JSON 重复高亮是纯浪费，且重挂载会闪纯文本）。
+  const cacheKey = shikiCacheKey(code, resolvedLanguage, dark);
+  const cached = shikiHighlightCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const html = highlighter.codeToHtml(code, {
     lang: resolvedLanguage,
     theme: dark ? "teal-dark" : "teal-light",
   });
+  shikiHighlightCache.set(cacheKey, html, code.length);
+  return html;
 }

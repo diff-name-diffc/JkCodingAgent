@@ -9,11 +9,13 @@ import {
 import type { DispatcherToolArtifactRef } from "../../types";
 import { cn } from "../../lib/cn";
 import { highlightCodeToHtml } from "../../utils/shiki";
+import { shikiCacheKey, shikiHighlightCache } from "../../utils/shiki-cache";
 import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
 import { Button } from "../ui/button";
 import { StatusPill } from "../detail/StatusPill";
 import { GraphPlanCard } from "../graph/GraphPlanCard";
 import { parseGraphPlanId } from "../graph/graph-utils";
+import { usePersistedToggle } from "./row-ui-state";
 import { ToolRunTrace } from "./tool-run-trace";
 
 const MAX_COLLAPSED_OUTPUT_LINES = 20;
@@ -35,7 +37,9 @@ function ToolCallCard({
   onOpenSubAgent,
   detail,
 }: ToolCallCardProps) {
-  const [expanded, setExpanded] = React.useState(defaultExpanded);
+  // UI-24b-1：窗口化行卸载后展开态经行级 store 恢复（key 用工具调用 id，
+  // 全局唯一）；无 Provider/key 时退化为普通 useState，语义不变。
+  const [expanded, setExpanded] = usePersistedToggle(`card:${item.id}`, defaultExpanded);
   // submit_graph 收口工具：从输出文本解析 plan_id，卡片下方内联图计划卡。
   const graphPlanId =
     item.name === "submit_graph" && typeof item.output === "string"
@@ -92,12 +96,19 @@ function ToolCallCard({
           >
             <div className="space-y-3 px-3 py-3">
               <ToolRunTrace item={item} active={expanded} />
-              {item.input != null && <DataSection label="输入" value={item.input} />}
+              {item.input != null && (
+                <DataSection
+                  label="输入"
+                  value={item.input}
+                  persistKey={`showall:${item.id}:input`}
+                />
+              )}
               {item.output != null && item.output !== item.errorText && (
                 <DataSection
                   label={isCompressedResult(item.resultMode) ? "输出 · 回传模型" : "输出"}
                   value={item.output}
                   collapsible
+                  persistKey={`showall:${item.id}:output`}
                 />
               )}
               {item.errorText && (
@@ -157,12 +168,15 @@ function DataSection({
   label,
   value,
   collapsible = false,
+  persistKey,
 }: {
   label: "输入" | "输出" | "输出 · 回传模型";
   value: unknown;
   collapsible?: boolean;
+  /** UI-24b-1：窗口化行卸载后「展开全部」态经行级 store 恢复。 */
+  persistKey?: string;
 }) {
-  const [showAll, setShowAll] = React.useState(false);
+  const [showAll, setShowAll] = usePersistedToggle(persistKey, false);
   const content = serializeData(value);
   const lines = content.split("\n");
   const isLong = collapsible && lines.length > MAX_COLLAPSED_OUTPUT_LINES;
@@ -199,14 +213,21 @@ function isCompressedResult(resultMode: ToolActivityItem["resultMode"]): boolean
 }
 
 function JsonCode({ value }: { value: string }) {
-  const [highlighted, setHighlighted] = React.useState<string | null>(null);
   const isDark = useIsDarkTheme();
+  // UI-24b-2：初值同步探测高亮缓存——窗口化行重挂载时命中即直出高亮 HTML，
+  // 不再闪纯文本；miss 时保持旧语义（先纯文本，异步高亮回填）。
+  const [highlighted, setHighlighted] = React.useState<string | null>(
+    () => shikiHighlightCache.get(shikiCacheKey(value, "json", isDark)) ?? null,
+  );
 
   React.useEffect(() => {
     let active = true;
     // 主题切换时先回退纯文本渲染：旧主题的高亮 HTML 携带固定前景/背景色，
-    // 保留到新主题 resolve 为止会出现样式错乱。
-    setHighlighted(null);
+    // 保留到新主题 resolve 为止会出现样式错乱。缓存命中（键含新主题）则
+    // 同步直出，无闪回。
+    const cached = shikiHighlightCache.get(shikiCacheKey(value, "json", isDark));
+    setHighlighted(cached ?? null);
+    if (cached !== undefined) return;
     highlightCodeToHtml(value, "json", isDark)
       .then((html) => {
         if (active) setHighlighted(html);
@@ -238,6 +259,9 @@ function JsonCode({ value }: { value: string }) {
 export interface ToolCallListProps {
   items: ToolActivityItem[];
   className?: string;
+  /** UI-24b-1：所属消息行的稳定 id——提供时组展开态在窗口化行卸载后恢复；
+   *  流式气泡不传（临时态语义不变）。 */
+  rowId?: string;
   onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
   onOpenSubAgent?: (tool: ToolActivityItem) => void;
 }
@@ -245,11 +269,15 @@ export interface ToolCallListProps {
 export function ToolCallList({
   items,
   className,
+  rowId,
   onOpenArtifact,
   onOpenSubAgent,
 }: ToolCallListProps) {
   const aggregated = items.length >= 3;
-  const [expanded, setExpanded] = React.useState(!aggregated);
+  const [expanded, setExpanded] = usePersistedToggle(
+    rowId === undefined ? undefined : `tools:${rowId}`,
+    !aggregated,
+  );
   const wasAggregated = React.useRef(aggregated);
   const summary = React.useMemo(() => summarizeToolActivity(items), [items]);
 
@@ -257,7 +285,7 @@ export function ToolCallList({
     if (aggregated && !wasAggregated.current) setExpanded(false);
     if (!aggregated) setExpanded(true);
     wasAggregated.current = aggregated;
-  }, [aggregated]);
+  }, [aggregated, setExpanded]);
 
   if (items.length === 0) return null;
 

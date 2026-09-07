@@ -1,11 +1,13 @@
-import * as React from "react";
 import { ChevronDown } from "lucide-react";
 import { cn } from "../../lib/cn";
+import { usePersistedToggle } from "./row-ui-state";
 
 export interface ReasoningBlockProps {
   text: string;
   elapsedMs: number;
   isStreaming?: boolean;
+  /** UI-24b-1：窗口化行卸载后思考块展开态经行级 store 恢复；流式气泡不传。 */
+  persistKey?: string;
   className?: string;
 }
 
@@ -13,9 +15,10 @@ export function ReasoningBlock({
   text,
   elapsedMs,
   isStreaming = false,
+  persistKey,
   className,
 }: ReasoningBlockProps) {
-  const [open, setOpen] = React.useState(false);
+  const [open, setOpen] = usePersistedToggle(persistKey, false);
   const elapsed = elapsedMs > 0 ? `${(elapsedMs / 1000).toFixed(1)}s` : null;
 
   return (

@@ -76,6 +76,7 @@ export const MessageItem = React.memo(function MessageItem({
       thinking={item.thinking}
       usageStats={item.usageStats}
       messageId={item.messageId}
+      rowId={item.id}
       showAvatar={item.showAvatar}
       pythonRunRecords={pythonRunRecords}
       onRunPython={onRunPython}

@@ -30,6 +30,8 @@ export interface AssistantMessageProps {
   usageStats?: DispatcherMessageUsageStats;
   /** Message id used to anchor markdown + python run records. */
   messageId?: string;
+  /** UI-24b-1：消息行稳定 id——窗口化行卸载后组/思考块展开态经行级 store 恢复。 */
+  rowId?: string;
   /** 连续 AI 消息分组中仅第一条显示头像（锚点位置保留，仅隐藏）。 */
   showAvatar?: boolean;
   pythonRunRecords?: Record<string, import("../../types").PythonCodeRunRecord>;
@@ -52,6 +54,7 @@ export function AssistantMessage({
   thinking,
   usageStats,
   messageId,
+  rowId,
   showAvatar = true,
   pythonRunRecords,
   onRunPython,
@@ -91,6 +94,7 @@ export function AssistantMessage({
             className="mb-2"
             text={thinking.text}
             elapsedMs={thinking.elapsedMs}
+            persistKey={rowId === undefined ? undefined : `reasoning:${rowId}`}
           />
         )}
 
@@ -99,6 +103,7 @@ export function AssistantMessage({
           <ToolCallList
             items={tools}
             className="mb-2"
+            rowId={rowId}
             onOpenArtifact={onOpenArtifact}
             onOpenSubAgent={onOpenSubAgent}
           />

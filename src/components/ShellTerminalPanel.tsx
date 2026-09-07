@@ -1,5 +1,5 @@
 import type React from "react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
@@ -17,7 +17,7 @@ import {
 } from "./terminalShared";
 import { useIsDarkTheme } from "../hooks/useIsDarkTheme";
 import { useSplitterKeyboard } from "../hooks/use-splitter-keyboard";
-import { TERMINAL_HEIGHT_LIMITS } from "./project/workspace-budget";
+import { TERMINAL_HEIGHT_LIMITS, terminalDragBounds } from "./project/workspace-budget";
 import { DEFAULT_WORKSPACE_PREFS } from "./project/workspace-prefs";
 import { ChevronDown, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
@@ -39,8 +39,7 @@ interface Props {
   /** 结束会话：卸载组件并 kill_shell；再次打开是全新 shell。 */
   onTerminate: () => void;
   height?: number;
-  onResizeStart?: (e: React.MouseEvent) => void;
-  /** 键盘步进/双击复位的即时提交通道（UI-23c）；拖拽仍走 mouseup 提交。 */
+  /** 键盘步进/双击复位的即时提交通道（UI-23c）；拖拽 mouseup 也走此通道提交。 */
   onResizeCommit?: (height: number) => void;
 }
 
@@ -54,17 +53,22 @@ export function ShellTerminalPanel({
   onHide,
   onTerminate,
   height = 240,
-  onResizeStart,
   onResizeCommit,
 }: Props) {
   const shellId = `shell:${projectId}`;
   const isDark = useIsDarkTheme();
+  /** 拖拽中的实时高度（UI-24 遗留⑥）：本地 state，重渲染限本面板子树；
+   *  mouseup 才经 onResizeCommit 一次性写回 store，避免高频持久化 + 全树重渲染。 */
+  const [dragHeight, setDragHeight] = useState<number | null>(null);
+  const dragHeightRef = useRef(dragHeight);
+  dragHeightRef.current = dragHeight;
+  const renderedHeight = dragHeight ?? height;
   // 高度把手键盘化（UI-23c）：ArrowUp/Down 步进、Shift 大步、双击复位默认。
   const resizeKeyboard = useSplitterKeyboard({
     orientation: "horizontal",
     mode: "px",
     ariaLabel: "方向键调整终端高度，双击恢复默认",
-    getValue: () => height,
+    getValue: () => renderedHeight,
     getBounds: () => ({ min: TERMINAL_HEIGHT_LIMITS.min, max: TERMINAL_HEIGHT_LIMITS.max }),
     getDefaultValue: () => DEFAULT_WORKSPACE_PREFS.terminalHeight,
     onCommit: (next) => onResizeCommit?.(next),
@@ -73,6 +77,40 @@ export function ShellTerminalPanel({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const inputBatcherRef = useRef<ReturnType<typeof createInputBatcher> | null>(null);
+
+  // 卸载兜底：拖拽中途 terminate/切项目时提交 + 摘监听（对齐 24a-4 dragCleanupRef 模式）。
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragCleanupRef.current?.(), []);
+
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = renderedHeight;
+    // 与 resolveWorkspaceBudget 同口径的视口钳制（拖拽期窗口尺寸不变，仅 mousedown 读一次）。
+    const bounds = terminalDragBounds(window.innerHeight);
+    const onMouseMove = (ev: MouseEvent) => {
+      const next = Math.max(
+        bounds.min,
+        Math.min(bounds.max, startHeight + (startY - ev.clientY)),
+      );
+      setDragHeight(next);
+    };
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      dragCleanupRef.current = null;
+      const latest = dragHeightRef.current;
+      setDragHeight(null);
+      if (latest != null) onResizeCommit?.(latest);
+    };
+    dragCleanupRef.current = onMouseUp;
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  };
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -225,16 +263,16 @@ export function ShellTerminalPanel({
     <div
       className="ai-shell-terminal-panel"
       style={{
-        height,
+        height: renderedHeight,
         display: visible ? undefined : "none",
         background: isDark ? DARK_THEME.background : LIGHT_THEME.background,
       }}
     >
       {/* Drag handle（UI-23c：role=separator + 键盘步进 + 双击复位） */}
-      {onResizeStart && (
+      {onResizeCommit && (
         <div
           {...resizeKeyboard}
-          onMouseDown={onResizeStart}
+          onMouseDown={handleResizeStart}
           className="ai-shell-terminal-resize"
         />
       )}

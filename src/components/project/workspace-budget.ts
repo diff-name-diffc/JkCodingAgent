@@ -114,6 +114,27 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
+ * 终端高度拖拽的钳制边界（UI-24 遗留⑥）：拖拽逻辑下沉到 ShellTerminalPanel 后，
+ * 面板拿不到视口，在 mousedown 时以 window.innerHeight 调一次得到与
+ * resolveWorkspaceBudget 完全同口径的 {min,max}，避免松手后预算重钳产生跳变。
+ * 视口相关上限 = viewportHeight - titlebarHeight - minMainHeight（与预算垂直段一致）。
+ */
+export function terminalDragBounds(
+  viewportHeight: number,
+  chrome: Partial<WorkspaceChromeSizes> = DEFAULT_CHROME,
+): { min: number; max: number } {
+  const merged: WorkspaceChromeSizes = { ...DEFAULT_CHROME, ...chrome };
+  const maxByMain = Math.max(
+    merged.terminalMinHeight,
+    viewportHeight - merged.titlebarHeight - merged.minMainHeight,
+  );
+  return {
+    min: merged.terminalMinHeight,
+    max: Math.min(merged.terminalMaxHeight, maxByMain),
+  };
+}
+
+/**
  * 计算工作区空间预算。五步降级树：
  *   1 终端高度压缩 → 2 右面板压缩 → 3 右面板临时关闭 → 4 导航临时收起 → 5 双栏转单栏。
  * 任何一步都不修改输入偏好；输出即「本帧应渲染的尺寸」。
@@ -188,15 +209,8 @@ export function resolveWorkspaceBudget(input: WorkspaceBudgetInput): WorkspaceBu
   // ── 垂直预算 ────────────────────────────────────────────
   let terminalHeight = 0;
   if (input.terminalOpen) {
-    const maxByMain = Math.max(
-      chrome.terminalMinHeight,
-      input.viewportHeight - chrome.titlebarHeight - chrome.minMainHeight,
-    );
-    terminalHeight = clamp(
-      input.terminalHeightPref,
-      chrome.terminalMinHeight,
-      Math.min(chrome.terminalMaxHeight, maxByMain),
-    );
+    const bounds = terminalDragBounds(input.viewportHeight, chrome);
+    terminalHeight = clamp(input.terminalHeightPref, bounds.min, bounds.max);
     if (terminalHeight !== input.terminalHeightPref) {
       degradations.push({
         kind: "terminal-height-clamped",

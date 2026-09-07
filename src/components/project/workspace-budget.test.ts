@@ -4,6 +4,7 @@ import {
   editorRatioFromWidths,
   resolveWorkspaceBudget,
   splitDualPaneWidths,
+  terminalDragBounds,
   type WorkspaceBudgetInput,
 } from "./workspace-budget";
 
@@ -195,5 +196,37 @@ describe("splitDualPaneWidths（UI-24a-4 拖拽瞬时宽度）", () => {
     });
     expect(result.editorWidth).toBe(300);
     expect(result.chatWidth).toBe(700);
+  });
+});
+
+describe("terminalDragBounds（UI-24 遗留⑥ 拖拽钳制边界）", () => {
+  it("充足视口：上限收束到 terminalMaxHeight，下限 terminalMinHeight", () => {
+    // 1600 - 38 - 320 = 1242 ≥ 600 → max 由 terminalMaxHeight 决定
+    expect(terminalDragBounds(1600)).toEqual({
+      min: 100,
+      max: 600,
+    });
+  });
+
+  it("矮视口：上限被 minMainHeight 压到视口可用高，仍不低于下限", () => {
+    // 900 - 38(titlebar) - 320(minMain) = 542 → max = 542
+    expect(terminalDragBounds(900, DEFAULT_CHROME).max).toBe(542);
+  });
+
+  it("与 resolveWorkspaceBudget 垂直钳制同口径（无跳变）", () => {
+    const viewportHeight = 680;
+    const bounds = terminalDragBounds(viewportHeight);
+    const budget = resolveWorkspaceBudget(
+      base({ viewportHeight, terminalOpen: true, terminalHeightPref: 600 }),
+    );
+    // 拖拽侧钳到的 max 与预算最终落点一致
+    expect(bounds.max).toBe(budget.terminalHeight);
+    expect(budget.terminalHeight).toBeLessThan(600);
+  });
+
+  it("极小视口：max = min，不产生 min>max 或负值", () => {
+    const bounds = terminalDragBounds(0);
+    expect(bounds.min).toBe(100);
+    expect(bounds.max).toBe(100);
   });
 });

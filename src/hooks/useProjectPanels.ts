@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback } from "react";
 import {
   BROWSER_TAB_ID,
   EMPTY_EDITOR_TABS,
@@ -19,7 +19,6 @@ import {
   type EditorTabsState,
 } from "../components/project/main-tabs";
 import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
-import { TERMINAL_HEIGHT_LIMITS } from "../components/project/workspace-budget";
 
 /**
  * 项目面板状态（UI-08 换底座，UI-18 收敛右面板）：终端高度等尺寸偏好由
@@ -41,13 +40,7 @@ export function useProjectPanels(workspaceId: string) {
    */
   const hasEditorContent = editorTabs.tabs.length > 0;
   const prefs = useWorkspaceStore(selectWorkspacePrefs(workspaceId));
-  /** 拖拽中的实时值；mouseup 才写回 store，避免高频持久化。 */
-  const [dragTerminalHeight, setDragTerminalHeight] = useState<number | null>(null);
-  const dragTerminalHeightRef = useRef(dragTerminalHeight);
-  dragTerminalHeightRef.current = dragTerminalHeight;
-  const terminalHeight = dragTerminalHeight ?? prefs.terminalHeight;
-  const terminalHeightRef = useRef(terminalHeight);
-  terminalHeightRef.current = terminalHeight;
+  const terminalHeight = prefs.terminalHeight;
   const setTerminalHeight = useCallback(
     (height: number) =>
       useWorkspaceStore.getState().setPrefs(workspaceId, { terminalHeight: height }),
@@ -142,36 +135,6 @@ export function useProjectPanels(workspaceId: string) {
     setEditorTabs(closeAllTabs());
   }, []);
 
-  const handleTerminalResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startHeight = terminalHeightRef.current;
-    const onMouseMove = (ev: MouseEvent) => {
-      // 与 workspace-prefs sanitize / budget chrome 同一出处的钳制（UI-19）。
-      const newHeight = Math.max(
-        TERMINAL_HEIGHT_LIMITS.min,
-        Math.min(
-          TERMINAL_HEIGHT_LIMITS.max,
-          startHeight + (startY - ev.clientY),
-        ),
-      );
-      setDragTerminalHeight(newHeight);
-    };
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      const latestHeight = dragTerminalHeightRef.current;
-      setDragTerminalHeight(null);
-      if (latestHeight != null) setTerminalHeight(latestHeight);
-    };
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, [setTerminalHeight]);
-
   return {
     editorWorkbenchVisible,
     openFiles,
@@ -200,8 +163,7 @@ export function useProjectPanels(workspaceId: string) {
     hideEditorWorkbench,
     showEditorWorkbench,
     clearFileAndDiff,
-    handleTerminalResizeStart,
-    /** 终端高度即时提交（UI-23c 键盘步进 / 双击复位走此通道；拖拽仍 mouseup 提交）。 */
+    /** 终端高度即时提交（UI-23c 键盘步进 / 双击复位走此通道；拖拽 mouseup 也走此通道）。 */
     commitTerminalHeight: setTerminalHeight,
   };
 }

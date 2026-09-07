@@ -75,7 +75,6 @@ export function ProjectPage({
     handleDiffFileSelect,
     handleCommitSelect,
     handleCommitFileClick,
-    handleTerminalResizeStart,
     commitTerminalHeight,
   } = panels;
 
@@ -345,7 +344,6 @@ export function ProjectPage({
         onHide={() => setTerminalDock((state) => nextTerminalDockState(state, "hide"))}
         onTerminate={() => setTerminalDock((state) => nextTerminalDockState(state, "terminate"))}
         height={budget.terminalHeight}
-        onResizeStart={handleTerminalResizeStart}
         onResizeCommit={commitTerminalHeight}
       />
     </Suspense>

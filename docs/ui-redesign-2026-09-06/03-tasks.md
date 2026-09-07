@@ -1,8 +1,8 @@
 # 改造任务明细与跟踪清单
 
-更新日期：2026-09-06。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
+更新日期：2026-09-06（M3 批次二更新 2026-09-07）。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
 
-**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）。下一步 M3 余量（UI-23 键盘焦点 / UI-24 长列表性能 / UI-25 空态 / UI-26 术语图标〔已随 21/22 解锁〕/ UI-27 旧规则清理）。
+**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）、M3 批次二（UI-25「各场景空态/加载/错误规格落地」+ UI-26「产品术语与图标视觉统一」，空态与术语链）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）；M3 批次二源码基线 `c73a75f`，实施提交 `6d27277`（UI-25）/`13b93fb`（UI-26）。下一步 M3 余量（UI-23 键盘焦点 / UI-24 长列表性能 / UI-27 旧规则清理）。
 
 ## 1. 跟踪约定
 
@@ -54,8 +54,8 @@
 | UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | REVIEW | claude（会话领取） | `fe1b414/e24462d/444669a`；McpServersPage 拆分(648→305)+连接状态双编码(connection/mcp-server 域)+SSH 徽标去彩点+RAG 未运行不被吞；运行态走查遗留 UI-28/29 |
 | UI-23 | P1 / L | 键盘、焦点与输入法整合 | 07,09,11,21 | TODO | 待分配 | — |
 | UI-24 | P1 / L | 长列表、流式输出和布局性能 | 08,12,19 | TODO | 待分配 | — |
-| UI-25 | P1 / S | 各场景空态/加载/错误规格落地 | 10,12,15,20 | TODO | 待分配 | — |
-| UI-26 | P2 / S | 产品术语与图标视觉统一 | 06,21,22 | TODO | 待分配 | — |
+| UI-25 | P1 / S | 各场景空态/加载/错误规格落地 | 10,12,15,20 | REVIEW | claude（会话领取） | `6d27277`；普通/项目/架构三入口领域空态(纯函数+5 test)+模型未配置深链取代装饰性禁用按钮+加载占位双编码；运行态走查遗留 UI-28/29 |
+| UI-26 | P2 / S | 产品术语与图标视觉统一 | 06,21,22 | REVIEW | claude（会话领取） | `13b93fb`；CloakBrowser→浏览器/Aha→JKCodingAgent 品牌归位+中英混排清理+5 缺名图标按钮补 aria-label；图标全应用统一与后端 Rust 串遗留 UI-29/后续 |
 | UI-27 | P2 / M | 移除旧样式与失效布局说明 | 06,07,09,26 | TODO | 待分配 | — |
 | UI-28 | P1 / L | 核心功能映射回归 | 10–23,25 | TODO | 待分配 | — |
 | UI-29 | P1 / M | 多尺寸双主题视觉与可访问性验收 | 23,25,26,27 | TODO | 待分配 | — |
@@ -252,6 +252,8 @@
 | 2026-09-07 | F4：UI-22a McpServersPage 拆分达标（648→305；纯逻辑抽 mcp-config.ts+20 test，服务器卡抽 McpServerCard.tsx；全局/项目作用域文案基线已满足登记） | `fe1b414` |
 | 2026-09-07 | F5：UI-22b MCP 连接状态双编码（status-meta 新增 connection/mcp-server 域+8 test；getMcpIndicatorState→getMcpConnectionStatus 保留 degraded/invalid_config 区分；头部去内联色点改 McpStatusButton+StatusPill；弹窗服务器去彩点改 StatusPill+中性 summary） | `e24462d` |
 | 2026-09-07 | F6：UI-22c SSH StatusDot 纯色点改 TestStatusBadge（复用 StatusBadge 点+常驻文字）；RAG runtimeProbing 使探活窗口耗尽显示「未运行」不被吞 + deriveRagRuntimeState 纯函数+4 test；rag_status 无失败原因字段登记后续 | `444669a` |
+| 2026-09-07 | G1：UI-25 各场景空态/加载/错误规格（chat-empty-content 纯函数+5 test：普通/项目领域空态分派、架构沿用 UI-15；ModelSelector 无可用模型改「配置模型」深链取代装饰性禁用按钮——主聊天经 ChatShell.onOpenSettings、架构助手就地懒挂 AppSettingsDialog(providers)；ProjectLazyPaneFallback 改 spinner+文案双编码 role=status） | `6d27277` |
+| 2026-09-07 | G2：UI-26 产品术语与图标统一（CloakBrowser→浏览器〔面板标题+导入确认正文〕、Aha→JKCodingAgent/AI 助手〔头像+空态 logo alt〕；Run/Running…/Copy/Copied/Input/Output/Tokens/Host/Port/Username/stdout/stderr/Image preview unavailable 中英混排清理；5 缺名 icon-only 按钮补 aria-label；图标按钮容器 32×32/24×24 基线已满足，lucide size/stroke 全应用三方言统一登记 UI-29、后端 Rust CloakBrowser 错误串登记后续） | `13b93fb` |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
 
@@ -546,4 +548,35 @@
 人工走查：头部 MCP pill 双编码、健康态次级位置/异常可点开弹窗看真实失败服务器与原因；MCP 弹窗服务器状态图标+文字、degraded 与 invalid_config 区分、server.error 就地；SSH 状态徽标常驻文字、连接/主机密钥错误就地；RAG 启动失败不再永停「启动中…」改显「未运行」、服务日志可排查；全局/项目 MCP 作用域文案清晰——遗留 UI-28/29
 风险/回退：三 commit 独立可回退；22a 纯重构（行为零变化）可独立保留；22b/22c 仅状态展示层，审查门禁与配置作用域零改动
 阻塞或剩余事项：**基线已满足（登记）**——全局/项目 MCP 作用域分清：McpServersPage Section 描述已明确全局注册表语义+项目 mcp.json 同名覆盖，McpStatusDialog 已按 isGlobal 分视图。**边界登记**——rag_status 后端仅返回 {running,port} 无失败原因字段：本批用前端探活窗口（runtimeProbing）区分「未运行」不吞错，真实原因由服务日志面板承担；如需 runtime 内联失败原因，另立小后端任务（RagRuntimeStatus DTO 加 error/state，非 schema 迁移）。**决策**——connection.healthy 保留 success（绿）tone：StatusPill 浅底小图标已较旧饱和色点降噪，且 MCP 入口处于头部次级动作位（执行图/更多之间），符合「健康降噪+异常明确入口」，未额外降为中性以免「正常」读作「未知」
+验收人/日期：待人工（UI-28/29/31）
+
+## 14. UI-25–UI-26（M3 批次二）任务记录（第 5 节模板）
+
+任务：UI-25
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `c73a75f`；结果 `6d27277`
+实现文件与范围：`chat/chat-empty-content.ts`（新增纯函数层：ChatEmptyStateContent 类型权威 + PLAIN/PROJECT_CHAT_EMPTY_STATE 常量 + resolveChatEmptyState；+test 5 case）、`chat/message-list.tsx`（ChatEmptyStateContent 由内联 interface 改再导出，权威迁至 chat-empty-content）、`chat/empty-chat-state.tsx`（缺省 title/copy/prompts 单一来源为普通聊天领域空态，删内联通用 DEFAULT_*）、`chat-page-v2.tsx`（resolveChatEmptyState(isPlainChat?plain:project) 派生 + 下传 ChatShell）、`chat/chat-shell.tsx`（新增 emptyState prop 透传 MessageList；onConfigureModel=onOpenSettings 下传 PromptInput）、`chat/model-selector.tsx`（无可用模型：装饰性禁用按钮 → 可点「配置模型」深链，onConfigureModel 改必传；删下拉内「暂无可用模型」死分支）、`chat/prompt-input.tsx`（新增 onConfigureModel 必传 prop 透传 ModelSelector）、`architecture/chat/ArchitectureChatPanel.tsx`（视觉模型未配置就地懒挂 AppSettingsDialog(initialTab=providers) 深链）、`project/ProjectLazyPaneFallback.tsx`（加载占位改 Loader2 spinner + 文案双编码，role=status/aria-live=polite）、`styles/tailwind.css`（.ai-model-selector--empty 虚线琥珀双编码 + hover/icon 变体，用 --warning 令牌 color-mix，亮暗双主题随令牌）
+对应问题：A06（相同通用空态用于不同工作语境）、设计 §5.2/§5.6（起步提示按普通/项目/架构分语境、模型缺失深链到设置）、tokens.md §5 结论 4（加载/状态双编码，不只靠文字或彩点）
+测试命令及结果：chat-empty-content 5 case（plain/project 分派 + 两入口文案互不相同 + 各 4 条非空不重复提示 + 项目文案含「项目/Git/执行图」而普通文案不含「执行图」）；全量 317 passed（312→317）；build/lint/styles:report(924:930,0 无引用)/contract:check(115:112) 全绿；零 Rust 改动
+截图：遗留（tauri 运行态，同 UI-29 矩阵）
+人工走查：普通/项目/架构三入口空态文案各不相同且贴合语境、点击起步提示填入输入框；模型库清空后主聊天与架构助手显示「配置模型」并可点开设置「模型服务」页；懒加载面板 spinner 占位与空态/错误三态可区分——遗留 UI-28/29
+风险/回退：单 commit 可回退；resolveChatEmptyState 返回模块级常量（引用稳定，不引入额外重渲染）；ModelSelector.onConfigureModel 改必传，两处调用方（PromptInput 主聊天 / ArchitectureChatPanel 架构）均已接线，tsc 强制保证无遗漏；架构助手新增懒挂 AppSettingsDialog 仅在「无视觉模型 + 用户点击配置模型」时挂载
+阻塞或剩余事项：**基线已满足（登记，未重复实现）**——① empty/loading/error 区分：Sidebar 已有骨架屏(loading) / 「搜索失败，请重试」(error) / 「没有匹配的会话」vs「暂无会话」(搜索为空 vs 无数据)；项目主区 ErrorBoundary 带「重试」、架构 CanvasBlockedPanel 带「重试」、WelcomePage 项目视图区分「没有匹配的项目」vs「还没有项目」。②普通/项目/架构三入口 empty/loading/error/ready 四态齐备（普通:领域空态+侧栏骨架+runError/ErrorBoundary+消息；项目:领域空态+ProjectLazyPaneFallback/「正在创建会话...」+ErrorBoundary 重试+消息；架构:ARCH_EMPTY_STATE+WelcomePaneFallback+CanvasBlockedPanel/sendError+消息）。**决策**——会话搜索错误未加显式「重试」按钮（React Query 自动重试 + 搜索去抖随输入重跑；显式重试需从 useChatSessionController 透传 refetch，收益小于改动面，登记可选后续）；模型未配置深链统一走「打开设置 providers 页」（HomeChatPage/ProjectOverlays 既有 onOpenSettings 即以 providers 为初始 tab），未把 onOpenSettings 参数化为 onOpenSettings(tab) 以免牵动多处调用方。**边界登记**——后端无「模型未配置」的显式错误码/用途槽位字段供前端精确深链到具体分类（对话/视觉）；当前深链到 providers 页由用户自行定位分类，如需直达具体槽位另立小任务（非 schema 迁移）
+验收人/日期：待人工（UI-28/29/31）
+
+任务：UI-26
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `6d27277`；结果 `13b93fb`
+实现文件与范围：
+品牌/内部名归位：`browser/BrowserPanelHeader.tsx`（面板标题 CloakBrowser→浏览器）、`browser/useBrowserPanelCommands.ts`（导入 Chrome 登录态确认正文 CloakBrowser→内置浏览器）、`chat/chat-avatar.tsx`（助手头像 alt "Aha AI"→"AI 助手"，对照用户头像 alt="你"）、`chat/empty-chat-state.tsx`（空态 logo alt "Aha"→"JKCodingAgent"，与 AppRail aria-label/alt、index.html title 的品牌称谓对齐）
+中英混排清理（用户可见文案）：`chat/markdown-renderer.tsx` + `markdown/MarkdownCodeBlock.tsx`（Run→运行、Running…→运行中…、Copy/Copied→复制/已复制）、`chat/tool-call-card.tsx`（DataSection label Input/Output→输入/输出、Output · Agent Input→输出 · 回传模型；同步收窄 label 联合类型为中文字面量）、`SubAgentExecutionView.tsx`（meta 标签 Tokens→Token 用量，与相邻 耗时/模型/速度/迭代 中文一致）、`file-viewer/ImagePreviewPane.tsx`（Image preview unavailable→图片预览不可用）、`settings/ssh/SshServerCard.tsx`（字段 Host/Port/Username→主机/端口/用户名）、`dispatcher-chat/PythonRunDrawer.tsx` + `app-settings/aha/SshAuditRecordList.tsx`（区块标题 stdout/stderr→标准输出/标准错误，与既有 emptyText「无标准输出」用词一致）
+缺名 icon-only 按钮补 aria-label：`ChatNewCategoryDialog.tsx`（关闭）、`markdown/MarkdownImage.tsx`（关闭放大图片，并补 type="button"）、`task-panel/BranchBar.tsx`（新建分支对话框关闭 + 分支搜索清除 ×2）
+对应问题：A12（Files/CloakBrowser/中英混排/品牌称谓混用）、设计 §4.2 与 tokens.md §3（图标 16 常规/18 导航、图标按钮 32×32 紧凑 ≥24×24）
+测试命令及结果：全量 317 passed（UI-26 为展示层文案/aria-label/alt 改动，无新增纯函数，故无新增测试——符合仓库「优先纯函数单测」口径）；build/lint/styles:report(924:930,0 无引用，计数较 UI-25 不变——无新增/删除 .ai-* 类)/contract:check(115:112) 全绿；零 Rust 改动
+截图：遗留（tauri 运行态，同 UI-29 矩阵）
+人工走查：浏览器面板标题与导入确认显示中文「浏览器」、助手头像与空态 logo 的 alt 读屏为中文/产品名；Python 运行按钮、工具卡输入/输出、SSH 主机/端口/用户名、Python 与 SSH 审计的标准输出/标准错误均为中文；5 处图标按钮读屏有可理解名称——遗留 UI-28/29
+风险/回退：单 commit 可回退；纯文案/aria-label/alt 改动，无逻辑/布局/样式类变更（styles:report 计数不变可佐证）；tool-call-card DataSection label 联合类型同步收窄为中文字面量，tsc 通过保证调用点一致
+阻塞或剩余事项：**基线已满足（登记）**——图标按钮容器尺寸合规：`ui/button.tsx` icon=h-8 w-8(32×32)/icon-sm=h-6 w-6(24×24)、`IconButton` 默认 32；shell 导航 AppRail 18/1.8、StatusDockBar(终端/浏览器)与 ContextNav 紧凑图标均带中文可见文本与 aria-pressed/aria-label。**剩余登记（图标）**——全应用 lucide `size=`/`strokeWidth` 存在「三方言」（导航 18/1.8、设置 16/1.5、聊天/面板/浏览器/Git 11–14/2；strokeWidth 实测 9 种取值、size prop 与 Tailwind h-*/w-* 两机制并存，最小 10 最大 40）：统一到 tokens.md §3 的 16/18 属全应用视觉走查项，盲改有溢出/观感回归风险且无法静态验证，登记 UI-29 携本批 inventory 定位后在运行态逐域收敛。**剩余登记（后端术语）**——后端 Rust 错误/工具结果串中的 CloakBrowser（`browser.rs:134,293`、`browser/process.rs:70,74,84`、`agent/tools/builtin/browser/actions.rs:214,224-225` 等）经 toast/工具卡透出给用户，属后端改动（需 cargo 重建 + 重启 tauri），本批前端-only 不动，登记后续小任务（仅改字符串、非命令契约/schema，contract 计数不受影响）。**决策（保留）**——MCP/SSH/RAG/Qdrant/Embedding/OCR/API Key/Python 与日志级别枚举 Debug/Info/Warning/Error、kbd Esc 为业界通用缩写/专有名词/枚举值，非内部技术名（dispatcher/nezha/aha/cloak/jkbot），保留；SSH 页描述中 `~/.jkcodingagent/jkbot.sqlite3` 为真实库文件路径（必要技术详情，改之则失真），保留
 验收人/日期：待人工（UI-28/29/31）

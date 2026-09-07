@@ -1,19 +1,36 @@
 import { FileText, RotateCw, Upload, X } from "lucide-react";
 import type { RagKbConfigController } from "./useRagKbConfig";
-import { LOG_LEVELS, normalizeLogLevel, ragFileName } from "./rag-config";
+import { deriveRagRuntimeState, LOG_LEVELS, normalizeLogLevel, ragFileName, type RagRuntimeState } from "./rag-config";
 import { RagSidecarLogPanel } from "./RagSidecarLogPanel";
+
+/** 运行态语义 → 状态点配色类（字面量，供 styles:report 双向核对）。 */
+const RAG_DOT_CLASS: Record<RagRuntimeState, string> = {
+  running: "ai-rag-status-dot is-running",
+  starting: "ai-rag-status-dot is-starting",
+  stopped: "ai-rag-status-dot is-stopped",
+};
 
 export function RagRuntimeAndImportSections({ controller }: { controller: RagKbConfigController }) {
   const config = controller.config;
   if (!config) return null;
-  const running = controller.runtimeStatus.running;
+  // UI-22c：区分「已运行 / 启动中（探活窗口内）/ 未运行（窗口耗尽仍未起）」，
+  // 不再把启动失败或未响应永久显示成「启动中…」；真实失败原因见下方服务日志。
+  const runtime = deriveRagRuntimeState({
+    running: controller.runtimeStatus.running,
+    restarting: controller.actionInProgress === "restart",
+    probing: controller.runtimeProbing,
+    port: controller.runtimeStatus.port,
+  });
   return (
     <>
       <div className="ai-rag-runtime-bar">
         <div className="ai-rag-runtime-info">
-          <span className={running ? "ai-rag-status-dot is-running" : "ai-rag-status-dot"} />
-          <span className="ai-rag-status-text">
-            {running ? `已运行 · 端口 ${controller.runtimeStatus.port ?? "-"}` : "启动中…"}
+          <span className={RAG_DOT_CLASS[runtime.state]} />
+          <span
+            className="ai-rag-status-text"
+            title={runtime.state === "running" ? undefined : "RAG 服务未运行时可查看下方「服务日志」排查原因"}
+          >
+            {runtime.text}
           </span>
         </div>
         <div className="ai-aha-action-row">

@@ -40,6 +40,9 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RagRuntimeStatus>({ running: false });
+  // 初始探活窗口是否仍在进行：窗口耗尽仍未运行则如实显示「未运行」，
+  // 不再永久谎报「启动中…」（UI-22c：RAG 启动失败/未响应不被吞）。
+  const [runtimeProbing, setRuntimeProbing] = useState(true);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [qdrantTest, setQdrantTest] = useState<RagTestFeedback | null>(null);
   const [embeddingTest, setEmbeddingTest] = useState<RagTestFeedback | null>(null);
@@ -70,13 +73,20 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
         .then((status) => {
           if (!isMounted()) return;
           setRuntimeStatus(status);
-          if (!status.running && retries > 0) {
+          if (status.running) {
+            setRuntimeProbing(false);
+          } else if (retries > 0) {
             void waitWhileMounted(1500).then((mounted) => {
               if (mounted) pollStatus(retries - 1);
             });
+          } else {
+            // 探活窗口耗尽仍未运行：停止谎报「启动中」，交由 UI 显示「未运行」。
+            setRuntimeProbing(false);
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          if (isMounted()) setRuntimeProbing(false);
+        });
     };
     pollStatus(5);
   }, [isMounted, showToast, waitWhileMounted]);
@@ -238,6 +248,7 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
     saveError,
     dirty: Boolean(config && original && JSON.stringify(config) !== JSON.stringify(original)),
     runtimeStatus,
+    runtimeProbing,
     actionInProgress,
     qdrantTest,
     embeddingTest,

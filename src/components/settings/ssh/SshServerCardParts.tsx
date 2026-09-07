@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import type { InputHTMLAttributes, ReactNode } from "react";
-import { cn } from "../../../lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip";
 import { ApiKeyInput } from "../ApiKeyInput";
 import { FieldLabel } from "../FieldLabel";
+import { StatusBadge } from "../StatusBadge";
 import type { ProviderTestRecord } from "../providers/provider-prefs";
 import type { SshServerConfig } from "../../../types";
 
@@ -13,13 +13,20 @@ import type { SshServerConfig } from "../../../types";
  * 由卡片/页面统一 debounce 自动保存。
  */
 
-/** 最近测试状态点：绿=通过 / 红=失败 / 灰=未测试，hover 显示最后测试时间。 */
-export function StatusDot({ record }: { record?: ProviderTestRecord }) {
+/**
+ * 最近测试状态（UI-22c）：双编码徽标（色点 + 文字「可用/失败/未测试」）取代旧
+ * 「纯色点 + 仅 hover tooltip 文字」——状态无需悬停即可读，收敛 tokens.md §5
+ * 结论 4「不得只靠彩点」。复用设置域既有 StatusBadge，与模型服务测试状态一致；
+ * tooltip 保留最后测试时间作为补充信息。
+ */
+export function TestStatusBadge({ record }: { record?: ProviderTestRecord }) {
   const status = !record ? "untested" : record.status === "ok" ? "ok" : "failed";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn("ai-set-status-dot", `is-${status}`)} />
+        <span>
+          <StatusBadge status={status} />
+        </span>
       </TooltipTrigger>
       <TooltipContent side="top">
         {record

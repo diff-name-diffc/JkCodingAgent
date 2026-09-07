@@ -15,14 +15,14 @@ import {
   CommitSecret,
   Field,
   serverSummary,
-  StatusDot,
+  TestStatusBadge,
 } from "./SshServerCardParts";
 
 /**
- * 单台 SSH 服务器的折叠卡片：头部为启用开关 + 状态点 + 标题 + 备忘录/测试/删除，
+ * 单台 SSH 服务器的折叠卡片：头部为启用开关 + 测试状态徽标 + 标题 + 备忘录/测试/删除，
  * 展开后是连接与认证表单。文本字段失焦（值有变化时）才通过 onUpdate 提交，
  * 由父组件统一 debounce 自动保存；开关类字段变更即提交。
- * 私有展示组件（字段框、状态点等）拆在 `SshServerCardParts.tsx`。
+ * 私有展示组件（字段框、状态徽标等）拆在 `SshServerCardParts.tsx`。
  */
 export function SshServerCard({
   server,
@@ -99,7 +99,7 @@ export function SshServerCard({
               onUpdate((draft) => ({ ...draft, enabled: event.target.checked }), fid("enabled"))
             }
           />
-          <StatusDot record={testRecord} />
+          <TestStatusBadge record={testRecord} />
           <button type="button" className="ai-set-server-title-btn" onClick={onToggleExpand}>
             <ChevronDown
               size={14}

@@ -3281,6 +3281,15 @@
     box-shadow: 0 0 6px rgb(var(--success-rgb) / 0.45);
   }
 
+  /* UI-22c：探活窗口内（启动中）琥珀，窗口耗尽仍未运行（未运行）红——不再吞错 */
+  .ai-rag-status-dot.is-starting {
+    background: var(--warning);
+  }
+
+  .ai-rag-status-dot.is-stopped {
+    background: var(--danger);
+  }
+
   .ai-rag-status-text {
     overflow: hidden;
     color: var(--text-secondary);
@@ -8507,27 +8516,6 @@
     font-size: 11.5px;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  /* 最近测试状态点：绿=通过 / 红=失败 / 灰=未测试 */
-  .ai-set-status-dot {
-    width: 8px;
-    height: 8px;
-    flex-shrink: 0;
-    border-radius: var(--radius-full);
-    background: var(--text-hint);
-  }
-
-  .ai-set-status-dot.is-ok {
-    background: rgb(var(--success-rgb));
-  }
-
-  .ai-set-status-dot.is-failed {
-    background: rgb(var(--danger-rgb));
-  }
-
-  .ai-set-status-dot.is-untested {
-    background: var(--text-hint);
   }
 
   /* 双列表单栅格 */

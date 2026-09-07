@@ -248,7 +248,7 @@ export function SubAgentExecutionCard({ session, autoExpand = true }: SubAgentEx
               )}
               {!isActive && session.tokenUsage?.totalTokens != null && (
                 <div className="ai-detail-meta-item">
-                  <span className="ai-detail-meta-label">Tokens</span>
+                  <span className="ai-detail-meta-label">Token 用量</span>
                   <span className="ai-detail-meta-value">
                     {session.tokenUsage.totalTokens.toLocaleString()}
                   </span>

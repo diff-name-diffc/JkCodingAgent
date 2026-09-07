@@ -219,14 +219,14 @@ export function SshServerCard({
                 }
               />
             </Field>
-            <Field label="Host" error={fieldError("host")}>
+            <Field label="主机" error={fieldError("host")}>
               <CommitInput
                 value={server.host}
                 placeholder="10.0.1.12"
                 onCommit={(next) => onUpdate((draft) => ({ ...draft, host: next }), fid("host"))}
               />
             </Field>
-            <Field label="Port" error={fieldError("port")}>
+            <Field label="端口" error={fieldError("port")}>
               <CommitNumberInput
                 value={server.port}
                 min={1}
@@ -235,7 +235,7 @@ export function SshServerCard({
                 onCommit={(next) => onUpdate((draft) => ({ ...draft, port: next }), fid("port"))}
               />
             </Field>
-            <Field label="Username" error={fieldError("username")}>
+            <Field label="用户名" error={fieldError("username")}>
               <CommitInput
                 value={server.username}
                 onCommit={(next) =>

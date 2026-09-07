@@ -47,7 +47,7 @@ export function EmptyChatState({
         transition={{ duration: 0.25, ease: [0.2, 0.8, 0.2, 1] }}
         className="ai-empty-core flex flex-col items-center text-center"
       >
-        <img src={appLogo} alt="Aha" className="ai-empty-logo mb-5 h-14 w-14 rounded-2xl" />
+        <img src={appLogo} alt="JKCodingAgent" className="ai-empty-logo mb-5 h-14 w-14 rounded-2xl" />
         <h2 className="ai-empty-title text-xl font-semibold tracking-tight text-foreground">
           {title}
         </h2>

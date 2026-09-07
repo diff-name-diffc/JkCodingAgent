@@ -161,7 +161,7 @@ export function useBrowserPanelCommands({
 
     const confirmed = await confirm(
       [
-        "请先完全退出 Google Chrome。继续后会把所选 Chrome Profile 复制到当前项目的浏览器副本中，CloakBrowser 只读写这个副本。",
+        "请先完全退出 Google Chrome。继续后会把所选 Chrome Profile 复制到当前项目的浏览器副本中，内置浏览器只读写这个副本。",
         scanMessage,
       ].join(""),
       {

@@ -70,7 +70,12 @@ export function MarkdownImage({ src, alt }: MarkdownImageProps) {
 
       {isEnlarged && (
         <div className="markdown-image-overlay" onClick={() => setIsEnlarged(false)}>
-          <button className="markdown-image-close-btn" onClick={() => setIsEnlarged(false)}>
+          <button
+            type="button"
+            className="markdown-image-close-btn"
+            onClick={() => setIsEnlarged(false)}
+            aria-label="关闭放大图片"
+          >
             <X size={24} />
           </button>
           <div className="markdown-image-enlarged-container">

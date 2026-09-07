@@ -112,6 +112,7 @@ export function ChatNewCategoryDialog({
           type="button"
           onClick={onClose}
           className="ai-dialog-close"
+          aria-label="关闭"
         >
           <X size={14} />
         </button>

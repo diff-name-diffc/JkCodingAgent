@@ -70,8 +70,8 @@ function SshAuditRecordItem({
           <AuditInfoBlock title="执行结果" tone={executionTone(record)}>
             {executionText(record)}
           </AuditInfoBlock>
-          <OutputBlock title="stdout" value={record.stdout} emptyText="无标准输出" />
-          <OutputBlock title="stderr" value={record.stderr} emptyText="无错误输出" />
+          <OutputBlock title="标准输出" value={record.stdout} emptyText="无标准输出" />
+          <OutputBlock title="标准错误" value={record.stderr} emptyText="无错误输出" />
           {record.error ? (
             <AuditInfoBlock title="错误" tone="danger">
               {record.error}

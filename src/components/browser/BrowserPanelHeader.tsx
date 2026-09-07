@@ -58,7 +58,7 @@ export function BrowserPanelHeader({
   return (
     <div className="ai-browser-header">
       <div className="ai-browser-title-block">
-        <div className="ai-browser-title">CloakBrowser</div>
+        <div className="ai-browser-title">浏览器</div>
         <div className={connected ? "ai-browser-status is-connected" : "ai-browser-status"}>
           {statusText}
         </div>

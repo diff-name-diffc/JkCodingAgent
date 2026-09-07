@@ -24,7 +24,7 @@ export function ImagePreviewPane({
     return (
       <div className="ai-image-preview-state">
         <AlertCircle size={24} strokeWidth={1.5} />
-        <span>Image preview unavailable</span>
+        <span>图片预览不可用</span>
       </div>
     );
   }

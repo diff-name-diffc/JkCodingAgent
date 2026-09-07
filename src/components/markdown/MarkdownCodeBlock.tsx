@@ -29,7 +29,7 @@ function InlineRunOutput({ record }: { record: PythonCodeRunRecord }) {
         <div className="python-inline-output">
           <div className="python-inline-running">
             <span className="python-inline-spinner" />
-            <span>Running…</span>
+            <span>运行中…</span>
           </div>
         </div>
       );
@@ -154,7 +154,7 @@ export function MarkdownCodeBlock({
               title="运行 Python 代码"
             >
               <Play size={13} />
-              Run
+              运行
             </button>
           )}
           {isRunning && (
@@ -165,12 +165,12 @@ export function MarkdownCodeBlock({
               title="正在执行…"
             >
               <Play size={13} />
-              Running…
+              运行中…
             </button>
           )}
           <button type="button" className="markdown-code-copy" onClick={handleCopy}>
             {copied ? <Check size={13} /> : <Copy size={13} />}
-            {copied ? "Copied" : "Copy"}
+            {copied ? "已复制" : "复制"}
           </button>
         </div>
       </div>

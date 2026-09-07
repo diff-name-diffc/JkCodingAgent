@@ -178,7 +178,7 @@ function InlineRunOutput({ record }: { record: PythonCodeRunRecord }) {
         <div className="python-inline-output">
           <div className="python-inline-running">
             <span className="python-inline-spinner" />
-            <span>Running…</span>
+            <span>运行中…</span>
           </div>
         </div>
       );
@@ -229,13 +229,13 @@ function PythonCodeRenderer({ code, isIncomplete, language }: CustomRendererProp
             title="运行 Python 代码"
           >
             <Play size={13} />
-            Run
+            运行
           </button>
         )}
         {isRunning && (
           <button type="button" disabled title="正在执行…">
             <Play size={13} />
-            Running…
+            运行中…
           </button>
         )}
         <CodeBlockCopyButton />

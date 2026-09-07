@@ -136,11 +136,11 @@ export const PythonRunDrawer = memo(function PythonRunDrawer({
               </DetailSection>
             )}
 
-            <DetailSection title="stdout">
+            <DetailSection title="标准输出">
               <pre className="ai-python-run-output chat-scroll">{record?.stdout || "暂无输出"}</pre>
             </DetailSection>
 
-            <DetailSection title="stderr">
+            <DetailSection title="标准错误">
               <pre className="ai-python-run-output chat-scroll">
                 {record?.stderr || "暂无错误输出"}
               </pre>

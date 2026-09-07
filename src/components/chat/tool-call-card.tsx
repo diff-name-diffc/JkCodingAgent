@@ -92,10 +92,10 @@ function ToolCallCard({
           >
             <div className="space-y-3 px-3 py-3">
               <ToolRunTrace item={item} active={expanded} />
-              {item.input != null && <DataSection label="Input" value={item.input} />}
+              {item.input != null && <DataSection label="输入" value={item.input} />}
               {item.output != null && item.output !== item.errorText && (
                 <DataSection
-                  label={isCompressedResult(item.resultMode) ? "Output · Agent Input" : "Output"}
+                  label={isCompressedResult(item.resultMode) ? "输出 · 回传模型" : "输出"}
                   value={item.output}
                   collapsible
                 />
@@ -158,7 +158,7 @@ function DataSection({
   value,
   collapsible = false,
 }: {
-  label: "Input" | "Output" | "Output · Agent Input";
+  label: "输入" | "输出" | "输出 · 回传模型";
   value: unknown;
   collapsible?: boolean;
 }) {

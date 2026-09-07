@@ -14,7 +14,7 @@ interface ChatAvatarProps {
 const AVATARS = {
   assistant: {
     src: assistantAvatar,
-    alt: "Aha AI",
+    alt: "AI 助手",
     fallback: Bot,
   },
   user: {

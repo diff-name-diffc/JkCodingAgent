@@ -88,7 +88,7 @@ function BranchDialog({
             <GitBranch size={16} strokeWidth={2} />
             <span className="ai-dialog-title">新建分支</span>
           </div>
-          <button className="ai-dialog-close" onClick={onClose} type="button">
+          <button className="ai-dialog-close" onClick={onClose} type="button" aria-label="关闭">
             <X size={15} />
           </button>
         </div>
@@ -142,6 +142,7 @@ function BranchDialog({
                       className="branch-popover-clear"
                       onClick={() => setBranchSearch("")}
                       type="button"
+                      aria-label="清除搜索"
                     >
                       <X size={11} />
                     </button>
@@ -332,7 +333,12 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
                 autoFocus
               />
               {search && (
-                <button className="branch-popover-clear" onClick={() => setSearch("")} type="button">
+                <button
+                  className="branch-popover-clear"
+                  onClick={() => setSearch("")}
+                  type="button"
+                  aria-label="清除搜索"
+                >
                   <X size={11} />
                 </button>
               )}

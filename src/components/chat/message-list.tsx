@@ -10,6 +10,10 @@ import { cn } from "../../lib/cn";
 import { EmptyChatState } from "./empty-chat-state";
 import type { ChatEmptyStateContent } from "./chat-empty-content";
 import { MessageItem, buildItems, type MessageDisplayItem } from "./message-item";
+import {
+  computeWindowRange,
+  windowSpacerHeights,
+} from "./message-list-metrics";
 import { StreamingMessage } from "./streaming-message";
 import { ChatScrollAnchor } from "./chat-scroll-anchor";
 import { useCopyOnSelect } from "./use-copy-on-select";
@@ -78,18 +82,81 @@ export function MessageList({
 
   const { containerRef, pinned, scrollToBottom } = useAutoScroll(sessionId);
   const handleCopyOnSelect = useCopyOnSelect();
-  const [scrollTop, setScrollTop] = React.useState(0);
-  const [viewportHeight, setViewportHeight] = React.useState(720);
-  const rowEstimate = 180;
-  const overscan = 8;
-  const useWindowing = items.length > 300;
-  const startIndex = useWindowing ? Math.max(0, Math.floor(scrollTop / rowEstimate) - overscan) : 0;
-  const endIndex = useWindowing
-    ? Math.min(items.length, Math.ceil((scrollTop + viewportHeight) / rowEstimate) + overscan)
-    : items.length;
-  const visibleItems = useWindowing ? items.slice(startIndex, endIndex) : items;
+
+  // 滚动度量（UI-24a-3）：单一 state + rAF 合帧——旧实现每个 scroll 事件
+  // setState×2 无节流；viewportHeight 只在 scroll 事件更新，容器 resize
+  // （切布局/分栏）不产生 scroll 事件，留下过期值。ResizeObserver 补上
+  // resize 通道；保活隐藏/折叠容器的 0 高度回调忽略，防窗口化参数被打成 0。
+  // useAutoScroll 的 containerRef 是回调 ref，本地组合 ref+state 跟踪元素。
+  const scrollElementRef = React.useRef<HTMLDivElement | null>(null);
+  const [scrollElement, setScrollElement] = React.useState<HTMLDivElement | null>(null);
+  const attachContainerRef = React.useCallback(
+    (element: HTMLDivElement | null) => {
+      scrollElementRef.current = element;
+      setScrollElement(element);
+      containerRef(element);
+    },
+    [containerRef],
+  );
+  const [scrollMetrics, setScrollMetrics] = React.useState({ scrollTop: 0, viewportHeight: 720 });
+  const scrollRafRef = React.useRef<number | null>(null);
+  const readScrollMetrics = React.useCallback(() => {
+    scrollRafRef.current = null;
+    const el = scrollElementRef.current;
+    if (!el) return;
+    const viewportHeight = el.clientHeight;
+    if (viewportHeight === 0) return;
+    setScrollMetrics((prev) =>
+      prev.scrollTop === el.scrollTop && prev.viewportHeight === viewportHeight
+        ? prev
+        : { scrollTop: el.scrollTop, viewportHeight },
+    );
+  }, []);
+  const scheduleScrollRead = React.useCallback(() => {
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = window.requestAnimationFrame(readScrollMetrics);
+  }, [readScrollMetrics]);
+  React.useEffect(
+    () => () => {
+      if (scrollRafRef.current !== null) window.cancelAnimationFrame(scrollRafRef.current);
+    },
+    [],
+  );
+
+  // 窗口化本体（估高/阈值）属 UI-24b 改造范围，此处语义与旧实现一致：
+  // >300 条才开窗，固定 180px 估高 ± 8 行 overscan。
+  const { useWindowing, startIndex, endIndex } = computeWindowRange({
+    itemCount: items.length,
+    scrollTop: scrollMetrics.scrollTop,
+    viewportHeight: scrollMetrics.viewportHeight,
+  });
+  // 仅开窗后才需要滚动度量：未开窗时 scroll/resize 不触发任何 setState。
+  const windowingRef = React.useRef(useWindowing);
+  windowingRef.current = useWindowing;
+  const handleScroll = React.useCallback(() => {
+    if (windowingRef.current) scheduleScrollRead();
+  }, [scheduleScrollRead]);
+
+  // 容器尺寸观测：切布局/分栏/窗口缩放后 viewportHeight 保持新鲜；
+  // 挂载时实测初值（720 仅首帧 fallback）。空态分支不渲染滚动容器，
+  // scrollElement 为 null 时自动跳过。
+  React.useLayoutEffect(() => {
+    if (!scrollElement) return;
+    readScrollMetrics();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (windowingRef.current) scheduleScrollRead();
+    });
+    observer.observe(scrollElement);
+    return () => observer.disconnect();
+  }, [scrollElement, readScrollMetrics, scheduleScrollRead]);
 
   const isEmpty = items.length === 0 && !hasLiveContent;
+  const visibleItems = useWindowing ? items.slice(startIndex, endIndex) : items;
+  const spacers = windowSpacerHeights(
+    { useWindowing, startIndex, endIndex },
+    items.length,
+  );
 
   if (isEmpty) {
     return (
@@ -106,21 +173,16 @@ export function MessageList({
   return (
     <div className={cn("relative min-h-0 flex-1", className)}>
       <div
-        ref={containerRef}
+        ref={attachContainerRef}
         className="chat-scroll h-full overflow-y-auto overflow-x-hidden"
         role="log"
         aria-live="polite"
         aria-busy={isStreaming}
         onMouseUp={handleCopyOnSelect}
-        onScroll={(event) => {
-          if (useWindowing) {
-            setScrollTop(event.currentTarget.scrollTop);
-            setViewportHeight(event.currentTarget.clientHeight);
-          }
-        }}
+        onScroll={handleScroll}
       >
         <div className="chat-prose flex flex-col gap-6 py-6">
-          {useWindowing && <div style={{ height: startIndex * rowEstimate }} />}
+          {useWindowing && <div style={{ height: spacers.top }} />}
           {visibleItems.map((item) => (
             <MessageItem
               key={item.id}
@@ -134,9 +196,7 @@ export function MessageList({
               onOpenSubAgent={onOpenSubAgent}
             />
           ))}
-          {useWindowing && (
-            <div style={{ height: Math.max(0, (items.length - endIndex) * rowEstimate) }} />
-          )}
+          {useWindowing && <div style={{ height: spacers.bottom }} />}
 
           {/* Trailing live streaming bubble */}
           {hasLiveContent && liveState && (

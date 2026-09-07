@@ -1,4 +1,4 @@
-import { useRef, useCallback } from "react";
+import { useRef, useCallback, useMemo } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { DispatcherAgentEvent, DispatcherAgentTurn, ImageSegment } from "../../types";
 import {
@@ -173,8 +173,13 @@ export function useDispatcherActions({
     ],
   );
 
-  return {
-    enqueueDispatcherRun,
-    sendUserMessage,
-  };
+  // UI-24a-1：返回对象 memo 化——此前每次渲染返回新字面量，消费方
+  // useCallback(deps 含 actions) 连带换身份，击穿 MessageItem 的 React.memo。
+  return useMemo(
+    () => ({
+      enqueueDispatcherRun,
+      sendUserMessage,
+    }),
+    [enqueueDispatcherRun, sendUserMessage],
+  );
 }

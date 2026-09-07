@@ -122,6 +122,9 @@ export function ChatPageV2({
 
   const currentSessionIdRef = useRef<string | null>(activeSessionId);
   currentSessionIdRef.current = activeSessionId;
+  // 布局根节点 ref（UI-23a）：把输入框聚焦等 DOM 查询限定在本实例子树内——
+  // 多项目保活时页面同时挂载多套聊天 DOM，全局选择器会命中隐藏工作区。
+  const shellContainerRef = useRef<HTMLDivElement>(null);
   const pythonRuns = usePythonRunController(activeSessionId, currentSessionIdRef);
   const graphPanel = useGraphPanelController(activeSessionId, isPlainChat, currentSessionIdRef);
   // 头部任务语境（UI-11）：项目模式显示会话标题与当前分支；plain chat 传 null 关闭查询。
@@ -347,7 +350,8 @@ export function ChatPageV2({
       setInput(text);
       setAttachedImages(images);
       window.requestAnimationFrame(() => {
-        const textarea = document.querySelector<HTMLTextAreaElement>(
+        // 作用域化查询（UI-23a）：见 shellContainerRef 注释。
+        const textarea = shellContainerRef.current?.querySelector<HTMLTextAreaElement>(
           'textarea[aria-label="消息输入框"]',
         );
         textarea?.focus();
@@ -407,6 +411,8 @@ export function ChatPageV2({
       <div className="min-w-0 flex-1">
         <ChatShell
           sessionId={activeSessionId}
+          enabled={workspaceVisible}
+          containerRef={shellContainerRef}
           messages={messages}
           sessions={chatSessions.sessions}
           categories={chatSessions.categories}

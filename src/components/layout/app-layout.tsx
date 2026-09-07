@@ -36,6 +36,12 @@ export interface AppLayoutProps {
    * reading column.
    */
   artifactOverlay?: boolean;
+  /**
+   * 挂到布局根节点的 ref（UI-23a）：调用方据此把「聚焦输入框 / 滚动消息列表」
+   * 等 DOM 查询限定在本 shell 子树内——多项目保活时页面同时存在多套聊天 DOM，
+   * 全局 document.querySelector 会命中隐藏工作区的元素。
+   */
+  containerRef?: React.Ref<HTMLDivElement>;
 }
 
 const SIDEBAR_NARROW = 56;
@@ -50,6 +56,7 @@ export function AppLayout({
   chatFooter,
   artifactPanel,
   artifactOverlay = false,
+  containerRef,
 }: AppLayoutProps) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
   const sidebarWidth = useUIStore((s) => s.sidebarWidth);
@@ -90,6 +97,7 @@ export function AppLayout({
 
   return (
     <div
+      ref={containerRef}
       className={cn(
         "ai-chat-shell relative flex flex-col overflow-hidden bg-background text-foreground",
         "h-full w-full",

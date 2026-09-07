@@ -111,6 +111,16 @@ export interface ChatShellProps {
   projectHeader?: React.ReactNode;
   /** 领域化空态文案（UI-25 A06）：普通聊天 / 项目各自传入，不传则用组件缺省。 */
   emptyState?: ChatEmptyStateContent;
+  /**
+   * UI-23a：多项目保活下隐藏工作区传 false——不注册全局快捷键（消除多实例
+   * 叠加触发）、不渲染命令面板（其 open 态来自全局 store，多份渲染会重叠）。
+   */
+  enabled?: boolean;
+  /**
+   * UI-23a：布局根节点 ref。把「聚焦输入框」等 DOM 查询限定在本 shell 子树内，
+   * 避免保活隐藏实例被全局 querySelector 命中。父级可持有同一 ref 复用。
+   */
+  containerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 export function ChatShell({
@@ -151,6 +161,8 @@ export function ChatShell({
   embedded = false,
   projectHeader,
   emptyState,
+  enabled = true,
+  containerRef,
 }: ChatShellProps) {
   const setArtifactPanelOpen = useUIStore((s) => s.setArtifactPanelOpen);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
@@ -201,22 +213,29 @@ export function ChatShell({
     if (!sessionId) return [] as string[];
     return sessions.find((session) => session.id === sessionId)?.keywords ?? [];
   }, [sessions, sessionId]);
+  const internalShellRef = React.useRef<HTMLDivElement>(null);
+  const shellRef = containerRef ?? internalShellRef;
   const focusPrompt = React.useCallback(() => {
-    const textarea = document.querySelector<HTMLTextAreaElement>(
+    // 作用域化查询（UI-23a）：多项目保活时页面存在多套聊天 DOM，全局
+    // document.querySelector 会聚焦到隐藏工作区的输入框。
+    const textarea = shellRef.current?.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="消息输入框"]',
     );
     textarea?.focus();
-  }, []);
+  }, [shellRef]);
 
   // Global shortcuts. Actions stay in the parent adapter; this shell only
-  // coordinates UI state and focus.
-  useChatShortcuts({
-    onToggleCommandPalette: toggleCommandPalette,
-    onNewConversation,
-    onToggleSidebar: toggleSidebar,
-    onFocusPrompt: focusPrompt,
-    onCloseArtifact: () => setArtifactPanelOpen(false),
-  });
+  // coordinates UI state and focus. 隐藏工作区（enabled=false）不注册（UI-23a）。
+  useChatShortcuts(
+    {
+      onToggleCommandPalette: toggleCommandPalette,
+      onNewConversation,
+      onToggleSidebar: toggleSidebar,
+      onFocusPrompt: focusPrompt,
+      onCloseArtifact: () => setArtifactPanelOpen(false),
+    },
+    { enabled },
+  );
 
   const handleCopyMessage = React.useCallback((text: string) => {
     void navigator.clipboard.writeText(text);
@@ -279,6 +298,7 @@ export function ChatShell({
   return (
     <SessionScopeContext.Provider value={sessionId}>
     <AppLayout
+      containerRef={shellRef}
       chatHeader={projectHeader}
       artifactOverlay={embedded}
       sidebar={
@@ -355,16 +375,18 @@ export function ChatShell({
         onPickPrompt={(prompt) => onInputChange(prompt)}
         emptyState={emptyState}
       />
-      <CommandPalette
-        open={commandPaletteOpen}
-        sessions={sessions}
-        onOpenChange={setCommandPaletteOpen}
-        onNewConversation={onNewConversation}
-        onSelectSession={onActiveSessionChange}
-        onFocusPrompt={focusPrompt}
-        onToggleSidebar={toggleSidebar}
-        onOpenSettings={onOpenSettings}
-      />
+      {enabled && (
+        <CommandPalette
+          open={commandPaletteOpen}
+          sessions={sessions}
+          onOpenChange={setCommandPaletteOpen}
+          onNewConversation={onNewConversation}
+          onSelectSession={onActiveSessionChange}
+          onFocusPrompt={focusPrompt}
+          onToggleSidebar={toggleSidebar}
+          onOpenSettings={onOpenSettings}
+        />
+      )}
     </AppLayout>
     </SessionScopeContext.Provider>
   );

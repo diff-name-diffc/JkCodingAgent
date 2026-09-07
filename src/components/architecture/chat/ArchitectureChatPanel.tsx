@@ -9,6 +9,7 @@
 import { lazy, Suspense, useState } from "react";
 import { Bot, Eye, LayoutList, PanelRightClose, Plus, Send, Square } from "lucide-react";
 import { cn } from "../../../lib/cn";
+import { isModelNotConfiguredError } from "../../../lib/run-error-classify";
 import { isImeComposing } from "../../../utils";
 import { useAhaSettingsStore } from "../../settings/use-aha-settings";
 import {
@@ -181,7 +182,16 @@ export function ArchitectureChatPanel({
 
       {chat.sendError && (
         <div className="ai-arch-chat-error" role="alert">
-          {chat.sendError}
+          <span>{chat.sendError}</span>
+          {isModelNotConfiguredError(chat.sendError) && (
+            <button
+              type="button"
+              className="ai-arch-error-action"
+              onClick={() => setShowSettings(true)}
+            >
+              配置模型
+            </button>
+          )}
         </div>
       )}
 

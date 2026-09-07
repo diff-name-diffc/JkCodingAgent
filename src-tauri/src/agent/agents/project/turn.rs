@@ -54,7 +54,7 @@ impl AgentRunAdapter for OrchestratorAgent {
     }
 
     fn provider_missing_message(&self) -> &'static str {
-        "项目编排 Agent 的 LLM API Key 未配置。请在设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
+        "错误：项目编排 Agent 的 LLM API Key 未配置。请在设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
     }
 
     async fn build_run_prompt(

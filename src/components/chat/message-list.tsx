@@ -8,6 +8,8 @@ import type {
 } from "../../types";
 import type { DispatcherLiveSessionState } from "../dispatcherSessionStore";
 import { cn } from "../../lib/cn";
+import { isModelNotConfiguredError } from "../../lib/run-error-classify";
+import { Button } from "../ui/button";
 import { EmptyChatState } from "./empty-chat-state";
 import type { ChatEmptyStateContent } from "./chat-empty-content";
 import { MessageItem, buildItems, type MessageDisplayItem } from "./message-item";
@@ -57,6 +59,12 @@ export interface MessageListProps {
   onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
   onOpenSubAgent?: (tool: ToolActivityItem) => void;
   onPickPrompt?: (prompt: string) => void;
+  /**
+   * 发送失败为「模型未配置」类错误时的深链回调（UI-25 遗留 c）。命中分类
+   * 且回调存在时，runError 块渲染「配置模型」按钮直达设置对应分类；缺省
+   * 则仅展示错误文案（向后兼容其余 MessageList 调用方，如架构助手另有深链）。
+   */
+  onConfigureModel?: () => void;
   /** 领域化空态文案（UI-15 A06）：不传则用通用聊天欢迎语。 */
   emptyState?: ChatEmptyStateContent;
   className?: string;
@@ -86,6 +94,7 @@ function MessageListInner({
   onOpenArtifact,
   onOpenSubAgent,
   onPickPrompt,
+  onConfigureModel,
   emptyState,
   className,
 }: MessageListProps) {
@@ -219,8 +228,15 @@ function MessageListInner({
           )}
 
           {liveState?.runError && (
-            <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
-              错误：{liveState.runError}
+            <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-destructive">错误：{liveState.runError}</span>
+                {onConfigureModel && isModelNotConfiguredError(liveState.runError) && (
+                  <Button variant="outline" size="sm" onClick={onConfigureModel}>
+                    配置模型
+                  </Button>
+                )}
+              </div>
             </div>
           )}
         </div>

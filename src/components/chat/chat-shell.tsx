@@ -396,6 +396,7 @@ export function ChatShell({
         onOpenArtifact={handleOpenArtifact}
         onOpenSubAgent={handleOpenSubAgent}
         onPickPrompt={(prompt) => onInputChange(prompt)}
+        onConfigureModel={() => onOpenSettings({ providersCategory: "text" })}
         emptyState={emptyState}
       />
       {enabled && (

@@ -49,6 +49,37 @@ describe("resolveStatusMeta", () => {
     });
   });
 
+  it("connection 域（UI-22b）：degraded 与 invalid_config 区分不压平", () => {
+    expect(resolveStatusMeta("connection", "checking")).toEqual({ tone: "running", label: "检查中" });
+    expect(resolveStatusMeta("connection", "not_configured")).toEqual({
+      tone: "neutral",
+      label: "未配置",
+    });
+    expect(resolveStatusMeta("connection", "healthy")).toEqual({ tone: "success", label: "正常" });
+    expect(resolveStatusMeta("connection", "degraded")).toEqual({ tone: "error", label: "异常" });
+    expect(resolveStatusMeta("connection", "invalid_config")).toEqual({
+      tone: "error",
+      label: "配置无效",
+    });
+  });
+
+  it("mcp-server 域（UI-22b）：五态双编码，spawn_failed 为 warn 可重试", () => {
+    expect(resolveStatusMeta("mcp-server", "disabled")).toEqual({ tone: "neutral", label: "已禁用" });
+    expect(resolveStatusMeta("mcp-server", "healthy")).toEqual({ tone: "success", label: "正常" });
+    expect(resolveStatusMeta("mcp-server", "invalid_config")).toEqual({
+      tone: "error",
+      label: "配置无效",
+    });
+    expect(resolveStatusMeta("mcp-server", "spawn_failed")).toEqual({
+      tone: "warn",
+      label: "启动失败",
+    });
+    expect(resolveStatusMeta("mcp-server", "connection_failed")).toEqual({
+      tone: "error",
+      label: "连接失败",
+    });
+  });
+
   it("未知状态回退 neutral + 原文（不虚构成功）", () => {
     expect(resolveStatusMeta("tool", "weird-state")).toEqual({
       tone: "neutral",

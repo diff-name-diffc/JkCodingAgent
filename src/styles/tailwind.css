@@ -5030,14 +5030,6 @@
     color: var(--text-muted);
   }
 
-  .ai-mcp-server-dot {
-    width: 10px;
-    height: 10px;
-    flex: 0 0 auto;
-    border-radius: 999px;
-    margin-top: 5px;
-  }
-
   .ai-mcp-server-info,
   .ai-mcp-tool-main {
     display: flex;
@@ -5060,12 +5052,12 @@
   }
 
   .ai-mcp-server-actions {
+    display: flex;
     align-items: center;
     gap: 10px;
     flex-shrink: 0;
   }
 
-  .ai-mcp-state-badge,
   .ai-mcp-tool-pill {
     display: inline-flex;
     align-items: center;
@@ -5074,10 +5066,11 @@
     white-space: nowrap;
   }
 
-  .ai-mcp-state-badge {
-    padding: 6px 10px;
+  /* UI-22b：服务器 summary 为后端补充说明，中性弱化（状态配色由 StatusPill 承担） */
+  .ai-mcp-server-summary {
+    color: var(--text-muted);
     font-size: 12px;
-    font-weight: 600;
+    white-space: nowrap;
   }
 
   .ai-mcp-switch {
@@ -6802,6 +6795,35 @@
     flex-shrink: 0;
     align-items: center;
     gap: 6px;
+  }
+
+  /* UI-22b：头部 MCP 连接状态入口（MCP 标签 + 双编码 StatusPill，取代旧内联色点） */
+  .ai-chat-header-mcp {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    cursor: pointer;
+    transition:
+      background var(--motion-fast) var(--motion-ease),
+      border-color var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-chat-header-mcp:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+  }
+
+  .ai-chat-header-mcp-label {
+    font-weight: 500;
   }
 
   .ai-chat-shell {

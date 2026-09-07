@@ -1,25 +1,11 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, RefreshCw, X } from "lucide-react";
-import type { McpScopeKind, McpStatus, McpServerState, McpToolTaskSupport } from "../types";
+import type { McpScopeKind, McpStatus, McpToolTaskSupport } from "../types";
+import { StatusPill } from "./detail/StatusPill";
 
 function formatTimestamp(timestamp: number): string {
   if (!timestamp) return "未检查";
   return new Date(timestamp).toLocaleString();
-}
-
-function serverStateLabel(state: McpServerState): string {
-  switch (state) {
-    case "disabled":
-      return "已禁用";
-    case "healthy":
-      return "正常";
-    case "invalid_config":
-      return "配置无效";
-    case "spawn_failed":
-      return "启动失败";
-    case "connection_failed":
-      return "连接失败";
-  }
 }
 
 function taskSupportLabel(taskSupport: McpToolTaskSupport): string {
@@ -31,21 +17,6 @@ function taskSupportLabel(taskSupport: McpToolTaskSupport): string {
     case "forbidden":
     default:
       return "普通调用";
-  }
-}
-
-function stateColor(state: McpServerState): string {
-  switch (state) {
-    case "disabled":
-      return "var(--text-hint)";
-    case "healthy":
-      return "var(--success)";
-    case "invalid_config":
-      return "var(--danger)";
-    case "spawn_failed":
-      return "var(--warning)";
-    case "connection_failed":
-      return "var(--danger)";
   }
 }
 
@@ -199,7 +170,6 @@ export function McpStatusDialog({
                 {status.servers.map((server) => {
                   const expanded = expandedServers[server.name] ?? false;
                   const busy = updatingServer === server.name;
-                  const stateColorValue = stateColor(server.state);
 
                   return (
                     <div key={server.name} className="ai-mcp-server-card">
@@ -217,30 +187,21 @@ export function McpStatusDialog({
                           <span className="ai-mcp-chevron">
                             {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                           </span>
-                          <span
-                            className="ai-mcp-server-dot"
-                            style={{ background: stateColorValue }}
-                          />
                           <span className="ai-mcp-server-info">
                             <span className="ai-mcp-server-title">{server.name}</span>
                             <span className="ai-mcp-server-meta">
-                              {server.transport} · {server.toolCount} 个工具 ·{" "}
-                              {serverStateLabel(server.state)}
+                              {server.transport} · {server.toolCount} 个工具
                             </span>
                           </span>
                         </button>
 
                         <div className="ai-mcp-server-actions">
-                          <span
-                            className="ai-mcp-state-badge"
-                            style={{
-                              color: stateColorValue,
-                              borderColor: `color-mix(in srgb, ${stateColorValue} 20%, transparent)`,
-                              background: `color-mix(in srgb, ${stateColorValue} 8%, transparent)`,
-                            }}
-                          >
-                            {server.summary}
-                          </span>
+                          {/* UI-22b：状态双编码（图标 + 文字），取代旧纯色点；
+                              真实失败原因在展开区 server.error 就地可见。 */}
+                          <StatusPill domain="mcp-server" status={server.state} />
+                          {server.summary && (
+                            <span className="ai-mcp-server-summary">{server.summary}</span>
+                          )}
 
                           {!isGlobal && onToggleServerEnabled && (
                             <button

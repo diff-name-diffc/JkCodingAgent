@@ -2,21 +2,19 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { McpStatus } from "../types";
 
-/** 聊天头部/项目头部共用的 MCP 状态指示灯映射。 */
-export function getMcpIndicatorState(
+/**
+ * MCP 连接聚合状态键（UI-22b）：映射到 status-meta 的 "connection" 域，由
+ * StatusPill 统一渲染图标 + 文字 + 配色，取代旧「内联硬编码色点 + 压平异常」。
+ * 保留后端 aggregate 的 degraded / invalid_config 区分（不再都叫「异常」）；
+ * 真实失败服务器与原因在 MCP 状态弹窗内按服务器展开。
+ */
+export function getMcpConnectionStatus(
   mcpStatus: McpStatus | null,
   mcpChecking: boolean,
-): { color: string; label: string } {
-  if (mcpChecking) {
-    return { color: "var(--warning)", label: "检查中" };
-  }
-  if (!mcpStatus || mcpStatus.aggregate === "not_configured") {
-    return { color: "var(--text-hint)", label: "未配置" };
-  }
-  if (mcpStatus.aggregate === "healthy") {
-    return { color: "var(--success)", label: "正常" };
-  }
-  return { color: "var(--danger)", label: "异常" };
+): string {
+  if (mcpChecking) return "checking";
+  if (!mcpStatus) return "not_configured";
+  return mcpStatus.aggregate;
 }
 
 /**

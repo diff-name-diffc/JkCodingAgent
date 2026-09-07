@@ -16,7 +16,9 @@ export type StatusDomain =
   | "graph-plan"
   | "python"
   | "subagent"
-  | "verdict";
+  | "verdict"
+  | "connection"
+  | "mcp-server";
 
 export interface StatusMeta {
   tone: StatusTone;
@@ -73,6 +75,33 @@ const VERDICT_STATUS: Record<string, StatusMeta> = {
   unknown: { tone: "neutral", label: "未能验收" },
 };
 
+/**
+ * MCP 连接聚合状态（UI-22b）：头部指示灯与弹窗健康度共用。
+ * 不再把 degraded 与 invalid_config 压成单一「异常」——两者 tone 同为 error
+ * 但 label 区分原因，异常详情（真实失败服务器/原因）在弹窗内按服务器展开。
+ * `checking` 为前端取数中态（非后端 aggregate 值）。
+ */
+const CONNECTION_STATUS: Record<string, StatusMeta> = {
+  checking: { tone: "running", label: "检查中" },
+  not_configured: { tone: "neutral", label: "未配置" },
+  healthy: { tone: "success", label: "正常" },
+  degraded: { tone: "error", label: "异常" },
+  invalid_config: { tone: "error", label: "配置无效" },
+};
+
+/**
+ * MCP 单服务器状态（UI-22b）：弹窗内服务器卡双编码（图标 + 文字），
+ * 取代旧「纯色点 + meta 行文字」。tone 对齐旧 stateColor 语义
+ * （spawn_failed=warn 可重试，invalid_config/connection_failed=error）。
+ */
+const MCP_SERVER_STATUS: Record<string, StatusMeta> = {
+  disabled: { tone: "neutral", label: "已禁用" },
+  healthy: { tone: "success", label: "正常" },
+  invalid_config: { tone: "error", label: "配置无效" },
+  spawn_failed: { tone: "warn", label: "启动失败" },
+  connection_failed: { tone: "error", label: "连接失败" },
+};
+
 const DOMAIN_STATUS: Record<StatusDomain, Record<string, StatusMeta>> = {
   tool: TOOL_STATUS,
   "graph-node": GRAPH_NODE_STATUS,
@@ -80,6 +109,8 @@ const DOMAIN_STATUS: Record<StatusDomain, Record<string, StatusMeta>> = {
   python: PYTHON_STATUS,
   subagent: SUBAGENT_STATUS,
   verdict: VERDICT_STATUS,
+  connection: CONNECTION_STATUS,
+  "mcp-server": MCP_SERVER_STATUS,
 };
 
 export function resolveStatusMeta(domain: StatusDomain, status: string): StatusMeta {

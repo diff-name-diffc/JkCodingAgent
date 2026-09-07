@@ -325,7 +325,6 @@ button,
 summary,
 [data-tauri-drag-region],
 .ai-titlebar,
-.ai-toolbar,
 .ai-splitter,
 .ai-sidebar-resize-handle,
 .ai-project-session-row,
@@ -391,87 +390,6 @@ button:not(:disabled):active,
   mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.86), transparent 72%);
   opacity: 0.42;
   z-index: -1;
-}
-
-.chat-session-card:hover,
-.chat-category-header:hover,
-.chat-sidebar-action:hover,
-.dispatcher-header-button:hover,
-.dispatcher-composer-button:hover {
-  background: color-mix(in srgb, var(--accent) 9%, var(--chat-surface-strong));
-  border-color: color-mix(in srgb, var(--accent) 22%, var(--chat-glass-border));
-}
-
-.chat-session-card:hover {
-  transform: translateX(1px);
-}
-
-.chat-session-card.is-active {
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, transparent), transparent 62%),
-    var(--chat-surface-strong);
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--chat-glass-border));
-  box-shadow:
-    inset 3px 0 0 var(--accent),
-    var(--chat-shadow-soft);
-}
-
-.chat-session-card.is-running::after {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--accent);
-  box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 13%, transparent);
-  margin-top: 5px;
-  flex-shrink: 0;
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-.dispatcher-message-list > * {
-  animation: message-in var(--motion-slow) var(--motion-ease) both;
-}
-
-.dispatcher-message-list .markdown-code-block {
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.1);
-}
-
-.dispatcher-composer-shell:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 44%, var(--chat-glass-border));
-  box-shadow: var(--chat-focus-ring), var(--chat-shadow-soft);
-}
-
-.dispatcher-streaming-caret {
-  display: inline-block;
-  width: 7px;
-  height: 1.2em;
-  margin-left: 3px;
-  border-radius: 999px;
-  background: var(--accent);
-  vertical-align: -0.2em;
-  animation: stream-caret 0.9s steps(2, jump-none) infinite;
-}
-
-@keyframes message-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes stream-caret {
-  0%,
-  45% {
-    opacity: 1;
-  }
-  46%,
-  100% {
-    opacity: 0.18;
-  }
 }
 
 /* ── Radix Select ───────────────────────────────────────────────── */
@@ -636,20 +554,6 @@ button:not(:disabled):active,
 }
 
 /* ── Animations ─────────────────────────────────────────────────── */
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-.toast-item {
-  animation: toast-in 0.18s ease;
-}
-
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -657,31 +561,6 @@ button:not(:disabled):active,
 }
 .spin {
   animation: spin 1s linear infinite;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
-}
-
-@keyframes rail-active-breathe {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0px var(--accent-soft);
-    outline-color: var(--accent);
-  }
-  50% {
-    box-shadow: 0 0 0 4px var(--accent-soft);
-    outline-color: var(--accent-strong);
-  }
-}
-.rail-active {
-  animation: rail-active-breathe 2.4s ease-in-out infinite;
 }
 
 /* ── Scrollbar ──────────────────────────────────────────────────── */
@@ -938,25 +817,6 @@ button:not(:disabled):active,
   overflow-wrap: break-word;
   word-break: normal;
   font-family: var(--font-ui);
-}
-
-.dispatcher-message-list {
-  overflow-x: hidden;
-}
-
-.dispatcher-message-list > * {
-  min-width: 0;
-}
-
-.dispatcher-message-list,
-.dispatcher-message-list :where(p, li, pre, code, span, div, table, th, td, blockquote) {
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-.dispatcher-message-list :where(button, button *) {
-  -webkit-user-select: none;
-  user-select: none;
 }
 
 .markdown-surface--chat {
@@ -1401,97 +1261,6 @@ button:not(:disabled):active,
 .md-preview-body .markdown-surface--document h2:first-child,
 .md-preview-body .markdown-surface--document h3:first-child {
   margin-top: 0;
-}
-
-/* ── File Viewer (shiki syntax highlighting) ────────────────────── */
-.file-viewer-code {
-  -webkit-user-select: text;
-  user-select: text;
-  min-height: 100%;
-  min-width: max-content;
-}
-
-.file-viewer-code .shiki {
-  margin: 0;
-  padding: 8px 0;
-  border-radius: 0;
-  font-family: var(--font-mono);
-  tab-size: 2;
-  min-width: 100%;
-  box-sizing: border-box;
-}
-
-/* font-size: 0 collapses the whitespace text nodes between .line spans
-   that <pre> would otherwise render as visible newlines */
-.file-viewer-code .shiki code {
-  display: block;
-  counter-reset: line;
-  min-width: max-content;
-  font-size: 0;
-}
-
-.file-viewer-code .shiki .line {
-  display: block;
-  position: relative;
-  padding: 0 24px 0 56px;
-  min-height: 20px;
-  font-size: 13px;
-  line-height: 20px;
-  font-family: var(--font-mono);
-}
-
-.file-viewer-code .shiki .line::before {
-  counter-increment: line;
-  content: counter(line);
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 40px;
-  height: 20px;
-  text-align: right;
-  padding-right: 10px;
-  color: rgba(128, 128, 128, 0.35);
-  user-select: none;
-  border-right: 1px solid rgba(128, 128, 128, 0.1);
-  font-size: 11px;
-  line-height: 20px;
-  box-sizing: border-box;
-}
-
-.file-viewer-code .shiki .line:hover::before {
-  color: rgba(128, 128, 128, 0.6);
-}
-
-.file-viewer-code .shiki .line:hover {
-  background: rgba(128, 128, 128, 0.05);
-}
-
-/* Makefile target run button */
-.make-run-btn {
-  position: absolute;
-  left: 40px;
-  top: 0;
-  width: 16px;
-  height: 20px;
-  border: none;
-  background: none;
-  cursor: pointer;
-  padding: 0;
-  color: var(--success);
-  font-size: 13px;
-  opacity: 0.75;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  user-select: none;
-  transition:
-    opacity 0.1s,
-    transform 0.1s;
-}
-
-.make-run-btn:hover {
-  opacity: 1;
-  transform: scale(1.2);
 }
 
 /* ── CodeMirror 6 – VS Code style floating search panel ─────────── */

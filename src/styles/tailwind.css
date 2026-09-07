@@ -17,22 +17,6 @@
 /* Chat-specific component utilities — kept minimal on purpose. */
 @layer components {
 
-
-
-  .ai-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-height: 44px;
-    border: 1px solid var(--border-accent);
-    border-radius: 8px;
-    background: var(--bg-sidebar);
-  }
-
-
-
-
-
   .ai-dialog {
     border: 1px solid var(--border-dim);
     border-radius: var(--radius-xl);

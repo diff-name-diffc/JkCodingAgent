@@ -49,7 +49,7 @@ use tokio::sync::{oneshot, watch, Mutex as AsyncMutex};
 use tokio::time::{sleep, timeout};
 
 use super::config::RagConfigStore;
-use super::failure::{RagFailure, RagFailureLog};
+use super::failure::{RagFailure, RagFailureLog, RagStderrRing, STDERR_DRAIN_GRACE};
 use super::logs::{RagLogStore, RagLogStream};
 use super::transport::RagTransport;
 
@@ -441,6 +441,10 @@ async fn spawn_and_handshake_impl(
         .take()
         .ok_or_else(|| anyhow!("rag-server stderr 未捕获"))?;
 
+    // 失败原因 stderr 环（UI-22c 增强）：按代隔离，每次 spawn 新建，
+    // 旧 ring 随其 reader/reaper 任务结束自然 drop，restart 不串代。
+    let stderr_ring = RagStderrRing::default();
+
     // 存活标志 + 退出 watch：reaper/reader 发现进程退出时翻转 alive 并通知 wait_exit。
     let alive = Arc::new(AtomicBool::new(true));
     let alive_for_timeout = Arc::clone(&alive);
@@ -489,10 +493,11 @@ async fn spawn_and_handshake_impl(
         mark_dead(&alive_for_stdout, &exited_tx_for_stdout);
     });
 
-    // stderr reader：仅透传日志；EOF 同样兜底标记死亡。
+    // stderr reader：透传日志 + 喂失败原因环形缓冲；EOF 同样兜底标记死亡。
     let app_for_err = app.clone();
     let alive_for_stderr = Arc::clone(&alive);
     let exited_tx_for_stderr = exited_tx.clone();
+    let ring_for_err = stderr_ring.clone();
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr);
         let mut buf = String::new();
@@ -507,6 +512,7 @@ async fn spawn_and_handshake_impl(
                         RagLogStream::Stderr,
                         line,
                     );
+                    ring_for_err.push(line);
                 }
                 Err(_) => break,
             }
@@ -519,6 +525,7 @@ async fn spawn_and_handshake_impl(
     let alive_for_wait = Arc::clone(&alive);
     let app_for_wait = app.clone();
     let last_error_for_wait = manager.last_error.clone();
+    let ring_for_wait = stderr_ring.clone();
     tokio::spawn(async move {
         match child.wait().await {
             Ok(status) => {
@@ -529,7 +536,9 @@ async fn spawn_and_handshake_impl(
                     .append_system(&app_for_wait, &message);
                 // 运行期退出记录失败原因（UI-22c）：restart 内主动 stop 触发的
                 // 记录会被随后的启动成功清空或启动失败覆盖；前端仅非运行态透出。
-                last_error_for_wait.record(message);
+                // stderr reader 可能滞后于 wait() 返回，宽限窗口后拼尾部快照。
+                sleep(STDERR_DRAIN_GRACE).await;
+                last_error_for_wait.record(ring_for_wait.failure_message(&message));
             }
             Err(error) => {
                 mark_dead(&alive_for_wait, &exited_tx);
@@ -537,12 +546,13 @@ async fn spawn_and_handshake_impl(
                 app_for_wait
                     .state::<RagLogStore>()
                     .append_system(&app_for_wait, &message);
-                last_error_for_wait.record(message);
+                sleep(STDERR_DRAIN_GRACE).await;
+                last_error_for_wait.record(ring_for_wait.failure_message(&message));
             }
         }
     });
 
-    let port = timeout(HANDSHAKE_TIMEOUT, port_rx)
+    let handshake = timeout(HANDSHAKE_TIMEOUT, port_rx)
         .await
         .map_err(|_| {
             // 清理守卫 Drop 时整组 kill 并清除在途登记；这里只标记死亡与记日志。
@@ -551,19 +561,40 @@ async fn spawn_and_handshake_impl(
                 app,
                 format!("等待 RAG sidecar 端口握手超时（{HANDSHAKE_TIMEOUT:?}）"),
             );
-            anyhow!("等待 rag-server 端口握手超时（{HANDSHAKE_TIMEOUT:?}）")
-        })?
-        .map_err(|_| {
+            // 拼 stderr 尾部（空快照 no-op）；超时多为进程 hung，不加宽限。
+            anyhow!(
+                "{}",
+                stderr_ring.failure_message(&format!(
+                    "等待 rag-server 端口握手超时（{HANDSHAKE_TIMEOUT:?}）"
+                ))
+            )
+        })?;
+    let port = match handshake {
+        Ok(port) => port,
+        Err(_) => {
             // 握手通道在收到端口前关闭——子进程已退出（reader/reaper 已标记死亡）。
             // 对已退出的进程组再 kill 无害（ESRCH 被忽略），统一交给清理守卫。
             mark_dead(&alive_for_timeout, &exited_tx_for_timeout);
-            anyhow!("rag-server sidecar 在端口握手前已退出，请查看 RAG sidecar 日志")
-        })?;
+            // 退出前真因（Python traceback 等）常只在 stderr，且 reader 可能
+            // 滞后于通道关闭：drain 宽限窗口后取尾部快照拼进失败串。
+            sleep(STDERR_DRAIN_GRACE).await;
+            return Err(anyhow!(
+                "{}",
+                stderr_ring.failure_message(
+                    "rag-server sidecar 在端口握手前已退出，请查看 RAG sidecar 日志"
+                )
+            ));
+        }
+    };
 
     let transport = RagTransport::new(port).context("构造 sidecar HTTP client")?;
     if let Err(error) = wait_for_health(app, &transport).await {
         mark_dead(&alive_for_timeout, &exited_tx_for_timeout);
-        return Err(error);
+        // 健康检查失败串同样拼 stderr 尾部（进程多还活着，不加宽限）。
+        return Err(anyhow!(
+            "{}",
+            stderr_ring.failure_message(&format!("{error:#}"))
+        ));
     }
 
     let handle = Arc::new(RagHandle {

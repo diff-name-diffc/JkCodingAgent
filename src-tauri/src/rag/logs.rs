@@ -111,7 +111,10 @@ fn infer_log_level(stream: RagLogStream, text: &str) -> RagLogLevel {
     }
 }
 
-fn redact_log_text(input: &str) -> String {
+/// 日志脱敏：凭据 token（sk-* / Authorization: / api_key= 等）替换为掩码。
+/// pub(crate)：`failure::RagStderrRing` 入环前复用同一脱敏（UI-22c 增强），
+/// 保证 stderr 尾部拼进 `rag_status` 失败原因时不泄密。
+pub(crate) fn redact_log_text(input: &str) -> String {
     input
         .split(' ')
         .map(redact_token)

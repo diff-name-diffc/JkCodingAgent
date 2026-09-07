@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Server } from "lucide-react";
 import { useAhaSettings } from "../use-aha-settings";
 import { EmptyState } from "../EmptyState";
@@ -34,6 +34,14 @@ export function ProvidersPage({ initialCategory }: { initialCategory?: ModelCate
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const prefs = useMemo(() => loadProviderPrefs(), [prefsVersion]);
 
+  const tabsListRef = useRef<HTMLDivElement>(null);
+
+  // 分类切换时把选中标签滚入可视区（窄宽横向滚动下保证「选中可见」，UI-21b）。
+  useEffect(() => {
+    const active = tabsListRef.current?.querySelector('[data-state="active"]');
+    active?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }, [activeCategory]);
+
   function changePref(id: string, patch: Parameters<typeof patchProviderPref>[1]) {
     patchProviderPref(id, patch);
     setPrefsVersion((v) => v + 1);
@@ -62,9 +70,9 @@ export function ProvidersPage({ initialCategory }: { initialCategory?: ModelCate
         value={activeCategory}
         onValueChange={(value) => setActiveCategory(value as ModelCategory)}
       >
-        <TabsList className="ai-set-tabs-list">
+        <TabsList ref={tabsListRef} className="ai-set-tabs-list">
           {CATEGORY_DEFS.map((def) => (
-            <TabsTrigger key={def.category} value={def.category}>
+            <TabsTrigger key={def.category} value={def.category} className="ai-set-subtab">
               {def.label}
             </TabsTrigger>
           ))}

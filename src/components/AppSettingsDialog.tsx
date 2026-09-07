@@ -39,17 +39,35 @@ export type SettingsNavKey =
   | "ssh"
   | "rag";
 
-const NAV_ITEMS: Array<{ key: SettingsNavKey; label: string; icon: LucideIcon }> = [
-  { key: "general", label: "通用", icon: Settings2 },
-  { key: "providers", label: "模型服务", icon: Server },
-  { key: "purposes", label: "模型用途", icon: Cpu },
-  { key: "tools", label: "工具", icon: Wrench },
-  { key: "graph", label: "执行图", icon: Workflow },
-  { key: "subAgents", label: "子智能体", icon: Users },
-  { key: "mcp", label: "MCP 服务器", icon: Plug },
-  { key: "ssh", label: "SSH", icon: SquareTerminal },
-  { key: "rag", label: "RAG 知识库", icon: Database },
+type NavItem = { key: SettingsNavKey; label: string; icon: LucideIcon };
+
+/**
+ * 设计 §5.6：通用 / 模型 / 能力连接 三组小标题分组（仅视觉分组，不新增层级菜单）。
+ * 扁平 `NAV_ITEMS` 由分组派生，供 activeItem 查找与 normalizeInitialTab 校验复用。
+ */
+const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
+  { label: "通用", items: [{ key: "general", label: "通用", icon: Settings2 }] },
+  {
+    label: "模型",
+    items: [
+      { key: "providers", label: "模型服务", icon: Server },
+      { key: "purposes", label: "模型用途", icon: Cpu },
+    ],
+  },
+  {
+    label: "能力连接",
+    items: [
+      { key: "tools", label: "工具", icon: Wrench },
+      { key: "graph", label: "执行图", icon: Workflow },
+      { key: "subAgents", label: "子智能体", icon: Users },
+      { key: "mcp", label: "MCP 服务器", icon: Plug },
+      { key: "ssh", label: "SSH", icon: SquareTerminal },
+      { key: "rag", label: "RAG 知识库", icon: Database },
+    ],
+  },
 ];
+
+const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((group) => group.items);
 
 /** 校验调用点传入的导航 key。 */
 function normalizeInitialTab(tab?: string): SettingsNavKey {
@@ -130,24 +148,29 @@ export function AppSettingsDialog({
             <div className="ai-settings-nav-title">
               <span>应用设置</span>
             </div>
-            {NAV_ITEMS.map((item) => {
-              const Icon = item.icon;
-              return (
-                <button
-                  key={item.key}
-                  type="button"
-                  className={
-                    activeNav === item.key
-                      ? "ai-settings-nav-item is-active"
-                      : "ai-settings-nav-item"
-                  }
-                  onClick={() => setActiveNav(item.key)}
-                >
-                  <Icon size={16} strokeWidth={1.5} />
-                  <span className="ai-settings-nav-label">{item.label}</span>
-                </button>
-              );
-            })}
+            {NAV_GROUPS.map((group) => (
+              <div key={group.label} className="ai-settings-nav-group">
+                <div className="ai-settings-nav-group-label">{group.label}</div>
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      className={
+                        activeNav === item.key
+                          ? "ai-settings-nav-item is-active"
+                          : "ai-settings-nav-item"
+                      }
+                      onClick={() => setActiveNav(item.key)}
+                    >
+                      <Icon size={16} strokeWidth={1.5} />
+                      <span className="ai-settings-nav-label">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </nav>
 
           <section className="ai-settings-content">

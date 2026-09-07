@@ -7,7 +7,7 @@ import {
   nextDispatcherActiveRunId,
 } from "../dispatcherSessionStore";
 import type { LiveSessionUpdater } from "./useLiveSessionState";
-import { toErrorMessage, createEmptyUsageStats } from "./dispatcherChatUtils";
+import { toErrorMessage } from "./dispatcherChatUtils";
 import { createDispatcherEventChannel } from "./event-channel";
 
 export interface UseDispatcherActionsOptions {
@@ -70,14 +70,10 @@ export function useDispatcherActions({
         .catch(() => undefined)
         .then(async () => {
           const runId = nextDispatcherActiveRunId(targetSessionId);
-          const now = Date.now();
           updateLiveSessionState(targetSessionId, () => ({
             ...createIdleLiveSessionState(),
             hasPendingRun: true,
             isLoading: true,
-            activeUsageStats: createEmptyUsageStats(),
-            activeUsageStatsReceivedAt: now,
-            usageClockNow: now,
           }));
 
           const onEvent = createEventChannel(targetSessionId, runId);
@@ -90,7 +86,6 @@ export function useDispatcherActions({
                 ...state,
                 hasPendingRun: false,
                 isLoading: false,
-                activeUsageStats: null,
               }));
             }
           }

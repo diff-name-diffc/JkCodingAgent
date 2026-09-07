@@ -55,9 +55,6 @@ export function useLiveSessionState(sessionId: string): UseLiveSessionStateResul
     () => getOrCreateDispatcherLiveSessionState(sessionId),
   );
 
-  const currentSessionIdRef = useRef(sessionId);
-  currentSessionIdRef.current = sessionId;
-
   const pendingNotifyRaf = useRef<number | null>(null);
   const pendingNotifySessions = useRef(new Set<string>());
 
@@ -74,7 +71,9 @@ export function useLiveSessionState(sessionId: string): UseLiveSessionStateResul
       setDispatcherLiveSessionState(targetSessionId, next);
 
       // Batch subscriber notifications via rAF to prevent render storms
-      // during high-frequency streaming (~50 tokens/s).
+      // during high-frequency streaming (~50 tokens/s)。当前会话（本组件）
+      // 也经下方 subscribeDispatcherLiveSession 订阅同一条 rAF 通知路径送达
+      // setLiveState（UI-24 遗留④：删除逐 token 立即 setState，改为按帧合帧）。
       if (!pendingNotifySessions.current.has(targetSessionId)) {
         pendingNotifySessions.current.add(targetSessionId);
         if (pendingNotifyRaf.current === null) {
@@ -90,13 +89,8 @@ export function useLiveSessionState(sessionId: string): UseLiveSessionStateResul
           });
         }
       }
-
-      // Always update current session state immediately for responsiveness
-      if (currentSessionIdRef.current === targetSessionId) {
-        applyLiveSessionState(next);
-      }
     },
-    [applyLiveSessionState],
+    [],
   );
 
   // Subscribe to external store changes + initialize on session change
@@ -126,16 +120,6 @@ export function useLiveSessionState(sessionId: string): UseLiveSessionStateResul
       unlisten.then((fn) => fn()).catch(() => {});
     };
   }, [updateLiveSessionState]);
-
-  // Usage clock timer — ticks every second while stats are active
-  const hasActiveUsageStats = Boolean(liveState.activeUsageStats);
-  useEffect(() => {
-    if (!hasActiveUsageStats) return;
-    const timer = window.setInterval(() => {
-      setLiveState((prev) => ({ ...prev, usageClockNow: Date.now() }));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [hasActiveUsageStats]);
 
   // Clean up pending rAF on unmount
   useEffect(() => {

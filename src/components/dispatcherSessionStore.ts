@@ -1,4 +1,4 @@
-import type { DispatcherMessageWire, DispatcherMessageUsageStats } from "../types";
+import type { DispatcherMessageWire } from "../types";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "./dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "./dispatcher-chat/tool-activity";
 
@@ -10,13 +10,9 @@ export interface DispatcherLiveSessionState {
   liveToolCalls: ToolActivityItem[];
   assistantPlaceholder: string | null;
   runError: string | null;
-  activeUsageStats: DispatcherMessageUsageStats | null;
-  activeUsageStatsReceivedAt: number;
-  usageClockNow: number;
 }
 
 export function createIdleLiveSessionState(): DispatcherLiveSessionState {
-  const now = Date.now();
   return {
     hasPendingRun: false,
     isLoading: false,
@@ -25,9 +21,6 @@ export function createIdleLiveSessionState(): DispatcherLiveSessionState {
     liveToolCalls: [],
     assistantPlaceholder: null,
     runError: null,
-    activeUsageStats: null,
-    activeUsageStatsReceivedAt: now,
-    usageClockNow: now,
   };
 }
 

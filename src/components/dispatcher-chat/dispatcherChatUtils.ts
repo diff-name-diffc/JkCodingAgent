@@ -2,7 +2,6 @@ import type {
   AnyContentSegment,
   DispatcherMessage,
   DispatcherMessageWire,
-  DispatcherMessageUsageStats,
   TextSegment,
 } from "../../types";
 
@@ -10,15 +9,6 @@ import type {
 
 export function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-export function createEmptyUsageStats(): DispatcherMessageUsageStats {
-  return {
-    promptTokens: 0,
-    completionTokens: 0,
-    totalTokens: 0,
-    elapsedMs: 0,
-  };
 }
 
 export function formatTokenGenerationSpeed(completionTokens: number, elapsedMs: number): string {

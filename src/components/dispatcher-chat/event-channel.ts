@@ -106,15 +106,8 @@ export function createDispatcherEventChannel({
         break;
       case "runUsageUpdated":
         if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
-        {
-          const now = Date.now();
-          updateLiveSessionState(targetSessionId, (state) => ({
-            ...state,
-            activeUsageStats: event.data.stats,
-            activeUsageStatsReceivedAt: now,
-            usageClockNow: now,
-          }));
-        }
+        // 仅刷新用量查询缓存（assistant-message 的历史用量投影来源）；
+        // 无 live-state 消费方，不再写死字段（UI-24 遗留④）。
         void refreshSessionTokenUsage(targetSessionId);
         break;
       case "toolPlanned":

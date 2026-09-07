@@ -32,7 +32,7 @@ import {
   createDispatcherEventChannel,
   type DispatcherEventChannelDeps,
 } from "../../dispatcher-chat/event-channel";
-import { toErrorMessage, createEmptyUsageStats } from "../../dispatcher-chat/dispatcherChatUtils";
+import { toErrorMessage } from "../../dispatcher-chat/dispatcherChatUtils";
 import { useChatMessages } from "../../chat-page-v2/useChatMessages";
 import { useLiveSessionStateReadonly } from "../../dispatcher-chat/useLiveSessionState";
 import { collectCanvasSnapshot } from "../canvas-snapshot";
@@ -204,14 +204,10 @@ export function useArchitectureChat({
         .catch(() => undefined)
         .then(async () => {
           const runId = nextDispatcherActiveRunId(targetSessionId);
-          const now = Date.now();
           updateLiveSessionState(targetSessionId, () => ({
             ...createIdleLiveSessionState(),
             hasPendingRun: true,
             isLoading: true,
-            activeUsageStats: createEmptyUsageStats(),
-            activeUsageStatsReceivedAt: now,
-            usageClockNow: now,
           }));
 
           const deps: DispatcherEventChannelDeps = {
@@ -231,7 +227,6 @@ export function useArchitectureChat({
                 ...state,
                 hasPendingRun: false,
                 isLoading: false,
-                activeUsageStats: null,
               }));
             }
           }

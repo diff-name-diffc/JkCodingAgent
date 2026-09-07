@@ -1,4 +1,4 @@
-//! 浏览器智能体工具（CloakBrowser）。
+//! 浏览器智能体工具（内置浏览器自动化）。
 //!
 //! 入口保留工具注册、导航（open_url）、快照读取（read_text）、视觉分析与
 //! sidecar 命令管道；子模块按变化原因划分：
@@ -57,7 +57,7 @@ impl AgentTool for OpenUrlTool {
     }
 
     fn description(&self) -> &'static str {
-        "使用项目级 CloakBrowser 打开 URL。支持浏览器引擎可导航的 URL（包括 http、https、file、data、about 等），会自动启动嵌入式浏览器会话，并在右侧浏览器面板实时展示页面。注意：file:// URL 仅允许打开当前工作区内的本地文件，工作区之外的路径会被拒绝。"
+        "使用项目级浏览器打开 URL。支持浏览器引擎可导航的 URL（包括 http、https、file、data、about 等），会自动启动嵌入式浏览器会话，并在右侧浏览器面板实时展示页面。注意：file:// URL 仅允许打开当前工作区内的本地文件，工作区之外的路径会被拒绝。"
     }
 
     fn parameters(&self) -> Value {
@@ -128,7 +128,7 @@ impl AgentTool for ReadTextTool {
     }
 
     fn description(&self) -> &'static str {
-        "读取 CloakBrowser 当前页面或指定 ref 元素的可访问性树文本快照，输出为「行号|内容」格式；快照会为可交互/可定位节点生成 ref，后续浏览器自动化统一使用这些 ref。快照较长时超过内联上限（默认 10000 字符）会被截断并注明行位置，此时用 offset/limit 按行号接续读取剩余部分（分页读取的内联上限提高到 20000 字符，一次可读约一两百行）；带行范围的调用读取的是最近一次全量快照（不重新请求页面、ref 保持有效），需要刷新页面状态时省略行范围重新读取。"
+        "读取浏览器当前页面或指定 ref 元素的可访问性树文本快照，输出为「行号|内容」格式；快照会为可交互/可定位节点生成 ref，后续浏览器自动化统一使用这些 ref。快照较长时超过内联上限（默认 10000 字符）会被截断并注明行位置，此时用 offset/limit 按行号接续读取剩余部分（分页读取的内联上限提高到 20000 字符，一次可读约一两百行）；带行范围的调用读取的是最近一次全量快照（不重新请求页面、ref 保持有效），需要刷新页面状态时省略行范围重新读取。"
     }
 
     fn parameters(&self) -> Value {
@@ -202,7 +202,7 @@ impl AgentTool for VisualAnalyzeTool {
     }
 
     fn description(&self) -> &'static str {
-        "对 CloakBrowser 当前可视页面进行轻量视觉理解。工具会在内部截图，并调用已配置的视觉模型按指令分析页面；不会把原始截图 data URL 暴露给聊天上下文。"
+        "对浏览器当前可视页面进行轻量视觉理解。工具会在内部截图，并调用已配置的视觉模型按指令分析页面；不会把原始截图 data URL 暴露给聊天上下文。"
     }
 
     fn parameters(&self) -> Value {
@@ -340,7 +340,7 @@ async fn run_browser_command_value(
     params: Value,
 ) -> Result<Value, String> {
     let Some(app) = context.app_handle.clone() else {
-        return Err("浏览器工具缺少 Tauri AppHandle，无法访问 CloakBrowser 管理器".to_string());
+        return Err("浏览器工具缺少 Tauri AppHandle，无法访问浏览器管理器".to_string());
     };
     let manager = app.state::<BrowserManager>();
     manager

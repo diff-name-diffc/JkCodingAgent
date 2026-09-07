@@ -35,7 +35,7 @@ pub(super) fn resolve_driver_path(app: &AppHandle) -> Result<PathBuf, String> {
         Ok(resource_path)
     } else {
         Err(format!(
-            "找不到 CloakBrowser sidecar 脚本：{}",
+            "找不到浏览器 sidecar 脚本：{}",
             resource_path.display()
         ))
     }

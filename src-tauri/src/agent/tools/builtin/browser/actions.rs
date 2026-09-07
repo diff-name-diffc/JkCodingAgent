@@ -124,7 +124,7 @@ impl AgentTool for PressTool {
     }
 
     fn description(&self) -> &'static str {
-        "在 CloakBrowser 当前页面发送键盘按键，例如 Enter、Escape、Meta+L。"
+        "在浏览器当前页面发送键盘按键，例如 Enter、Escape、Meta+L。"
     }
 
     fn parameters(&self) -> Value {
@@ -197,7 +197,7 @@ impl AgentTool for CloseTool {
     }
 
     fn description(&self) -> &'static str {
-        "关闭当前 Dispatcher 会话的 CloakBrowser。"
+        "关闭当前 Dispatcher 会话的浏览器。"
     }
 
     fn parameters(&self) -> Value {
@@ -211,7 +211,7 @@ impl AgentTool for CloseTool {
     async fn execute(&self, _args: &Value, context: &ToolContext) -> ToolResult {
         let Some(app) = context.app_handle.clone() else {
             return ToolResult::recoverable_error(
-                "错误：浏览器工具缺少 Tauri AppHandle，无法访问 CloakBrowser 管理器",
+                "错误：浏览器工具缺少 Tauri AppHandle，无法访问浏览器管理器",
             );
         };
         let manager = app.state::<BrowserManager>();
@@ -221,8 +221,8 @@ impl AgentTool for CloseTool {
                 invalidate_cached_snapshot(&context.workspace_id);
                 ToolResult::success_data(
                     json!({ "closed": true }),
-                    "CloakBrowser 已关闭",
-                    "CloakBrowser 已关闭",
+                    "浏览器已关闭",
+                    "浏览器已关闭",
                 )
             }
             Err(error) => ToolResult::recoverable_error(format!("错误：{error}")),

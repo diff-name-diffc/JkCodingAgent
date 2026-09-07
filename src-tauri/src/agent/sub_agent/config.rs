@@ -190,7 +190,7 @@ impl SubAgentConfig {
             agent_name: "浏览器助手".to_string(),
             description: "处理网页搜索、页面浏览、信息提取和页面自动化任务。适合需要从互联网获取信息的场景，如搜索文档、查询 API、阅读网页内容、填写表单等。".to_string(),
             system_prompt: concat!(
-                "你是一个专业的浏览器自动化助手。你通过 CloakBrowser 工具与网页交互。\n\n",
+                "你是一个专业的浏览器自动化助手。你通过浏览器工具与网页交互。\n\n",
                 "## 工作流程\n",
                 "1. 使用 browser_read_text 获取页面可访问性树快照，获取元素 ref\n",
                 "2. 使用 ref 与具体元素交互（click, type）\n",

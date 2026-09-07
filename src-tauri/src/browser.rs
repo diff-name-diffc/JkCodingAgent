@@ -131,7 +131,7 @@ impl BrowserManager {
         let project_path = PathBuf::from(project_path);
         let options = load_launch_options(&app, &project_path, &session_id)?;
         if !options.config.enabled {
-            return Err("CloakBrowser 已在全局浏览器设置中禁用".to_string());
+            return Err("浏览器已在全局浏览器设置中禁用".to_string());
         }
         let profile_directory = options.profile_directory.clone();
         let user_data_dir = options.user_data_dir;
@@ -290,7 +290,7 @@ impl BrowserManager {
                     .await
                     .get(&session_id)
                     .cloned()
-                    .ok_or_else(|| "CloakBrowser sidecar 启动后未注册会话".to_string())?
+                    .ok_or_else(|| "浏览器 sidecar 启动后未注册会话".to_string())?
             }
         };
         let request_timeout = browser_command_timeout(&params);

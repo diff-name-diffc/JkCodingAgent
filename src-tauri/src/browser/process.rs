@@ -67,11 +67,11 @@ impl BrowserProcess {
 
         if let Err(error) = write_result {
             self.pending.lock().await.remove(&id);
-            return Err(format!("写入 CloakBrowser sidecar 请求失败：{error}"));
+            return Err(format!("写入浏览器 sidecar 请求失败：{error}"));
         }
 
         match timeout(request_timeout, rx).await {
-            Ok(result) => result.map_err(|_| "CloakBrowser sidecar 响应通道已关闭".to_string())?,
+            Ok(result) => result.map_err(|_| "浏览器 sidecar 响应通道已关闭".to_string())?,
             Err(_) => {
                 self.pending.lock().await.remove(&id);
                 let status = self.status();
@@ -81,7 +81,7 @@ impl BrowserProcess {
                     .filter(|message| !message.trim().is_empty())
                     .unwrap_or(&status.state);
                 Err(format!(
-                    "CloakBrowser 工具调用超时（method={method}，等待 {} 秒）。当前浏览器状态：{status_detail}",
+                    "浏览器工具调用超时（method={method}，等待 {} 秒）。当前浏览器状态：{status_detail}",
                     request_timeout.as_secs()
                 ))
             }
@@ -93,7 +93,7 @@ impl BrowserProcess {
         match child.kill().await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
-            Err(error) => Err(format!("关闭 CloakBrowser sidecar 失败：{error}")),
+            Err(error) => Err(format!("关闭浏览器 sidecar 失败：{error}")),
         }
     }
 }
@@ -144,7 +144,7 @@ pub(super) async fn spawn_sidecar(
 
     let mut child = command.spawn().map_err(|error| {
         format!(
-            "启动 CloakBrowser Node sidecar 失败：{error}。已尝试执行：{} {}",
+            "启动浏览器 Node sidecar 失败：{error}。已尝试执行：{} {}",
             node_path.display(),
             driver_path.display()
         )
@@ -152,11 +152,11 @@ pub(super) async fn spawn_sidecar(
     let stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "CloakBrowser sidecar stdin 不可用".to_string())?;
+        .ok_or_else(|| "浏览器 sidecar stdin 不可用".to_string())?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "CloakBrowser sidecar stdout 不可用".to_string())?;
+        .ok_or_else(|| "浏览器 sidecar stdout 不可用".to_string())?;
     let stderr = child.stderr.take();
 
     let process = Arc::new(BrowserProcess {
@@ -169,7 +169,7 @@ pub(super) async fn spawn_sidecar(
             session_id: session_id.to_string(),
             state: "starting".to_string(),
             url: None,
-            message: Some("正在启动 CloakBrowser sidecar".to_string()),
+            message: Some("正在启动浏览器 sidecar".to_string()),
             minimized: false,
             has_headed_window: false,
         }),
@@ -203,7 +203,7 @@ fn spawn_stdout_reader(
                     let error_msg = value
                         .get("error")
                         .and_then(Value::as_str)
-                        .unwrap_or("CloakBrowser sidecar 返回未知错误")
+                        .unwrap_or("浏览器 sidecar 返回未知错误")
                         .to_string();
                     let error_type = value
                         .get("errorType")
@@ -280,14 +280,14 @@ fn spawn_stdout_reader(
             session_id: process.session_id.clone(),
             state: "closed".to_string(),
             url: process.status().url,
-            message: Some("CloakBrowser sidecar 已退出".to_string()),
+            message: Some("浏览器 sidecar 已退出".to_string()),
             minimized: false,
             has_headed_window: false,
         };
         *process.status.lock() = closed.clone();
         let mut pending = process.pending.lock().await;
         for (_, tx) in pending.drain() {
-            let _ = tx.send(Err("CloakBrowser sidecar 已退出".to_string()));
+            let _ = tx.send(Err("浏览器 sidecar 已退出".to_string()));
         }
         drop(pending);
         let _ = app.emit("browser-status", closed);

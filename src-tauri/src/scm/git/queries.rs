@@ -133,11 +133,25 @@ pub async fn git_log(
     limit: u32,
     search: Option<String>,
     branch: Option<String>,
+    skip: Option<u32>,
 ) -> CommandResult<Vec<GitCommit>> {
-    git_log_impl(project_path.clone(), limit, search.clone(), branch.clone())
+    git_log_impl(project_path.clone(), limit, search.clone(), branch.clone(), skip)
         .await
         .with_context(|| format!("读取 Git 日志失败（{}）", project_path))
         .into_command_result()
+}
+
+/// 构建 `git log` 的分页数值参数（`-n <limit>` + 可选 `--skip <n>`）。
+/// 抽为纯函数供单测：skip 为 None 或 0 时不产生 `--skip`（首页语义）。
+fn git_log_paging_args(limit: u32, skip: Option<u32>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-n".into(), limit.to_string()];
+    if let Some(s) = skip {
+        if s > 0 {
+            args.push("--skip".into());
+            args.push(s.to_string());
+        }
+    }
+    args
 }
 
 async fn git_log_impl(
@@ -145,15 +159,11 @@ async fn git_log_impl(
     limit: u32,
     search: Option<String>,
     branch: Option<String>,
+    skip: Option<u32>,
 ) -> GitResult<Vec<GitCommit>> {
-    let limit_str = limit.to_string();
     let format = "COMMIT:%H%nSHORT:%h%nAUTHOR:%an%nDATE:%ar%nSUBJECT:%s%nREFS:%D%nEND_RECORD";
-    let mut args: Vec<String> = vec![
-        "log".into(),
-        format!("--format={}", format),
-        "-n".into(),
-        limit_str,
-    ];
+    let mut args: Vec<String> = vec!["log".into(), format!("--format={}", format)];
+    args.extend(git_log_paging_args(limit, skip));
     if let Some(ref s) = search {
         if !s.is_empty() {
             args.push("--grep".into());
@@ -399,7 +409,7 @@ async fn git_remote_counts_impl(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_porcelain_fields;
+    use super::{git_log_paging_args, parse_porcelain_fields};
 
     #[test]
     fn parses_plain_status_line() {
@@ -434,5 +444,21 @@ mod tests {
     fn skips_short_and_empty_lines() {
         assert!(parse_porcelain_fields("").is_none());
         assert!(parse_porcelain_fields("M").is_none());
+    }
+
+    #[test]
+    fn paging_args_omit_skip_on_first_page() {
+        // skip 为 None：仅 -n limit（首页）。
+        assert_eq!(git_log_paging_args(50, None), vec!["-n", "50"]);
+        // skip 为 0：等同首页，不产生 --skip。
+        assert_eq!(git_log_paging_args(50, Some(0)), vec!["-n", "50"]);
+    }
+
+    #[test]
+    fn paging_args_emit_skip_for_later_pages() {
+        assert_eq!(
+            git_log_paging_args(50, Some(100)),
+            vec!["-n", "50", "--skip", "100"]
+        );
     }
 }

@@ -5761,6 +5761,39 @@
     padding: 3px 6px 8px;
   }
 
+  /* 历史分页「加载更多」按钮（UI-17 遗留）：列表底部中性文字按钮。 */
+  .ai-git-load-more {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    margin-top: 4px;
+    padding: 7px 10px;
+    border: 1px solid var(--border-dim);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-family: var(--font-ui);
+    cursor: pointer;
+    transition:
+      border-color 0.14s ease,
+      background 0.14s ease,
+      color 0.14s ease;
+  }
+
+  .ai-git-load-more:hover:not(:disabled) {
+    border-color: rgb(var(--accent-rgb) / 0.28);
+    background: rgb(var(--accent-rgb) / 0.08);
+    color: var(--text-primary);
+  }
+
+  .ai-git-load-more:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
   .ai-git-commit-row {
     display: flex;
     align-items: flex-start;

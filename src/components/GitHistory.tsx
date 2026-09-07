@@ -24,6 +24,9 @@ interface GitRemoteCounts {
   branch: string;
 }
 
+/** 历史分页每页条数（UI-17 遗留：--skip 位置分页）。 */
+const HISTORY_PAGE_SIZE = 50;
+
 interface Props {
   projectPath: string;
   onCommitSelect: (hash: string, message: string) => void;
@@ -55,6 +58,11 @@ export function GitHistory({
   const [pushing, setPushing] = useState(false);
   const [pulling, setPulling] = useState(false);
   const [branchOpen, setBranchOpen] = useState(false);
+  // 分页（UI-17 遗留）：nextSkip=下一页 --skip 值，hasMore=可能还有更多，
+  // loadingMore=「加载更多」进行中（与首屏 loading 区分，避免整列表闪加载态）。
+  const [nextSkip, setNextSkip] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const branchDropRef = useRef<HTMLDivElement>(null);
 
   const { safeInvoke, isCancelled } = useCancellableInvoke();
@@ -94,9 +102,10 @@ export function GitHistory({
         const [log, remote] = await Promise.all([
           safeInvoke<GitCommit[]>("git_log", {
             projectPath,
-            limit: 50,
+            limit: HISTORY_PAGE_SIZE,
             search: query ?? searchQuery,
             branch: activeBranch || null,
+            skip: 0,
           }),
           safeInvoke<GitRemoteCounts>("git_remote_counts", {
             projectPath,
@@ -105,6 +114,9 @@ export function GitHistory({
         ]);
         if (log === null) return; // Component unmounted
         setCommits(log);
+        // 首页：下一页 --skip = 一页条数；满页才可能有更多。
+        setNextSkip(HISTORY_PAGE_SIZE);
+        setHasMore(log.length === HISTORY_PAGE_SIZE);
         setRemoteCounts((remote as GitRemoteCounts) ?? { ahead: 0, behind: 0, branch: "" });
       } catch (e) {
         if (!isCancelled()) {
@@ -116,6 +128,46 @@ export function GitHistory({
     },
     [projectPath, searchQuery, selectedBranch, safeInvoke, isCancelled],
   );
+
+  // 加载更多：按 --skip 位置分页追加，按 hash 去重（化解刷新后位置漂移导致的
+  // 重复）；满页才置 hasMore，末页（返回不足一页）停止。
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const log = await safeInvoke<GitCommit[]>("git_log", {
+        projectPath,
+        limit: HISTORY_PAGE_SIZE,
+        search: searchQuery,
+        branch: selectedBranch || null,
+        skip: nextSkip,
+      });
+      if (log === null) return; // Component unmounted
+      setCommits((prev) => {
+        const seen = new Set(prev.map((c) => c.hash));
+        const appended = log.filter((c) => !seen.has(c.hash));
+        return appended.length > 0 ? [...prev, ...appended] : prev;
+      });
+      setNextSkip((s) => s + HISTORY_PAGE_SIZE);
+      setHasMore(log.length === HISTORY_PAGE_SIZE);
+    } catch (e) {
+      if (!isCancelled()) {
+        setError({ message: String(e), retry: () => void loadMore() });
+      }
+    } finally {
+      if (!isCancelled()) setLoadingMore(false);
+    }
+  }, [
+    projectPath,
+    searchQuery,
+    selectedBranch,
+    nextSkip,
+    hasMore,
+    loadingMore,
+    safeInvoke,
+    isCancelled,
+  ]);
 
   useEffect(() => {
     setSelectedBranch("");
@@ -325,6 +377,17 @@ export function GitHistory({
             />
           );
         })}
+        {hasMore && (
+          <button
+            type="button"
+            className="ai-git-load-more"
+            onClick={() => void loadMore()}
+            disabled={loadingMore}
+          >
+            {loadingMore ? <Loader2 size={12} className="spin" /> : null}
+            {loadingMore ? "加载中…" : "加载更多"}
+          </button>
+        )}
         {!loading && commits.length === 0 && <div className="ai-git-empty">没有找到提交记录</div>}
       </div>
 

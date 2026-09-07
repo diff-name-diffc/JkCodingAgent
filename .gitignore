@@ -48,3 +48,4 @@ src-tauri/binaries/rag-server*
 src-tauri/binaries/pi-agent-sidecar*
 !src-tauri/binaries/.gitkeep
 /.playwright-mcp/
+/.zvec-grep

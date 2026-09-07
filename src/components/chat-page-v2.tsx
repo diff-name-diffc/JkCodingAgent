@@ -143,9 +143,11 @@ export function ChatPageV2({
   const scrollMessageListToBottom = useCallback(() => {
     // 发送时强制回到底部：useAutoScroll 在用户上滚阅读时会停止跟随，
     // 发送新消息应把视图拉回最新内容（此时 shouldStickToBottomRef 已被置真）。
-    // MessageList 的滚动容器是 [role="log"]，直接滚动该元素即可。
+    // MessageList 的滚动容器是 [role="log"]——作用域化到本实例子树查询
+    // （UI-24a-2）：多项目保活时 DOM 存在多个 [role="log"]（含架构面板复用
+    // 实例），全局 querySelector 会滚动到隐藏项目的列表。
     if (shouldStickToBottomRef.current) {
-      const el = document.querySelector('[role="log"]');
+      const el = shellContainerRef.current?.querySelector('[role="log"]');
       if (el) el.scrollTop = el.scrollHeight;
     }
   }, []);

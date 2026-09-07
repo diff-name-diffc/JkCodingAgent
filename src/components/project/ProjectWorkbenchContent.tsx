@@ -1,8 +1,8 @@
-import { lazy, Suspense, useCallback, useEffect, useRef } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { McpStatus, Project } from "../../types";
 import type { useProjectPanels } from "../../hooks/useProjectPanels";
 import type { GraphTab } from "../../hooks/useGraphTabSync";
-import type { WorkspaceBudget } from "./workspace-budget";
+import { splitDualPaneWidths, type WorkspaceBudget } from "./workspace-budget";
 import { nextSplitterValue, splitterKeyDelta } from "../../lib/splitter-step";
 import { ChatPageV2 } from "../chat-page-v2";
 import { ErrorBoundary } from "../ErrorBoundary";
@@ -86,6 +86,29 @@ export function ProjectWorkbenchContent({
   const showSessionPane = dual || sessionWorkbenchVisible;
   const showEditorPane = dual || (!sessionWorkbenchVisible && editorRequested);
   const columnCount = Number(showSessionPane) + Number(showEditorPane);
+  // 拖拽隔离（UI-24a-4）：拖拽期只更新本组件本地 dragRatio，mouseup 一次性
+  // 写回持久化偏好（详见 handleEditorPaneResizeStart 注释）。
+  const [dragRatio, setDragRatio] = useState<number | null>(null);
+  // 拖拽期双栏宽度本地重算（与 resolveWorkspaceBudget 同一钳制口径）；
+  // 非拖拽期直接用预算输出。
+  const dualWidths =
+    dual && dragRatio !== null
+      ? splitDualPaneWidths(budget.chatWidth, budget.editorWidth, dragRatio)
+      : { chatWidth: budget.chatWidth, editorWidth: budget.editorWidth };
+
+  // 拖拽隔离（UI-24a-4）：对齐 ContextNav 范式——拖拽期只更新本地 dragRatio
+  // （双栏宽度经 splitDualPaneWidths 本地重算），mouseup 一次性写回持久化偏好。
+  // 旧实现每 mousemove 调 onEditorPaneRatioChange → zustand persist 同步写
+  // localStorage + ProjectPage 全树重渲染。
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  // 拖拽中途卸载（切项目/关工作区）：兜底执行 mouseup 语义（提交并摘监听），
+  // 避免 dragRatio 悬挂与 document 监听泄漏。
+  useEffect(
+    () => () => {
+      dragCleanupRef.current?.();
+    },
+    [],
+  );
 
   const handleEditorPaneResizeStart = useCallback(
     (event: React.MouseEvent) => {
@@ -94,22 +117,28 @@ export function ProjectWorkbenchContent({
       if (!container) return;
 
       const rect = container.getBoundingClientRect();
-      const updateRatio = (clientX: number) => {
-        // 占比偏好自由写入；像素下限由 resolveWorkspaceBudget 夹取。
-        const nextRatio = (rect.right - clientX) / rect.width;
-        onEditorPaneRatioChange(Math.max(0, Math.min(1, nextRatio)));
+      // 占比自由取值（0..1）；像素下限由 splitDualPaneWidths / 预算同一口径夹取。
+      const ratioAt = (clientX: number) =>
+        Math.max(0, Math.min(1, (rect.right - clientX) / rect.width));
+      let latest = ratioAt(event.clientX);
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        latest = ratioAt(moveEvent.clientX);
+        setDragRatio(latest);
       };
-      const onMouseMove = (moveEvent: MouseEvent) => updateRatio(moveEvent.clientX);
       const onMouseUp = () => {
+        dragCleanupRef.current = null;
         document.removeEventListener("mousemove", onMouseMove);
         document.removeEventListener("mouseup", onMouseUp);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
+        setDragRatio(null);
+        onEditorPaneRatioChange(latest);
       };
+      dragCleanupRef.current = onMouseUp;
 
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
-      updateRatio(event.clientX);
+      setDragRatio(latest);
       document.addEventListener("mousemove", onMouseMove);
       document.addEventListener("mouseup", onMouseUp);
     },
@@ -312,7 +341,7 @@ export function ProjectWorkbenchContent({
       columnCount={columnCount}
       gridTemplateColumns={
         dual
-          ? `${budget.chatWidth}px ${budget.splitterWidth}px ${budget.editorWidth}px`
+          ? `${dualWidths.chatWidth}px ${budget.splitterWidth}px ${dualWidths.editorWidth}px`
           : "minmax(0, 1fr)"
       }
       showSessionPane={showSessionPane}
@@ -323,7 +352,7 @@ export function ProjectWorkbenchContent({
       onEditorPaneResizeStart={handleEditorPaneResizeStart}
       onEditorPaneResizeKey={handleEditorPaneResizeKey}
       onEditorPaneResizeDoubleClick={() => onEditorPaneRatioChange(0.5)}
-      editorPaneRatio={editorPaneRatio}
+      editorPaneRatio={dragRatio ?? editorPaneRatio}
     />
   );
 }

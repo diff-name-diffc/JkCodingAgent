@@ -239,3 +239,25 @@ export function editorRatioFromWidths(
   if (inner <= 0) return 0.5;
   return clamp(editorWidth / inner, 0, 1);
 }
+
+/**
+ * 拖拽期双栏瞬时宽度（UI-24a-4）：与 resolveWorkspaceBudget 的双栏钳制
+ * 同口径（minEditorWidth ≤ editor ≤ inner - minChatWidth）。拖拽中在
+ * ProjectWorkbenchContent 本地重算（不写持久化偏好、不触发 ProjectPage
+ * 全树重渲染），mouseup 才经 onEditorPaneRatioChange 一次性写回。
+ * 入参为预算输出的双栏宽度（已不含 splitter），inner = chat + editor。
+ */
+export function splitDualPaneWidths(
+  chatWidth: number,
+  editorWidth: number,
+  ratio: number,
+  chrome: Pick<WorkspaceChromeSizes, "minChatWidth" | "minEditorWidth"> = DEFAULT_CHROME,
+): { chatWidth: number; editorWidth: number } {
+  const inner = Math.max(0, chatWidth + editorWidth);
+  const editor = clamp(
+    Math.round(inner * clamp(ratio, 0, 1)),
+    Math.min(chrome.minEditorWidth, inner),
+    Math.max(Math.min(chrome.minEditorWidth, inner), inner - chrome.minChatWidth),
+  );
+  return { chatWidth: inner - editor, editorWidth: editor };
+}

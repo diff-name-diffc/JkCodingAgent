@@ -3,6 +3,7 @@ import {
   DEFAULT_CHROME,
   editorRatioFromWidths,
   resolveWorkspaceBudget,
+  splitDualPaneWidths,
   type WorkspaceBudgetInput,
 } from "./workspace-budget";
 
@@ -152,5 +153,47 @@ describe("editorRatioFromWidths", () => {
   it("由像素反推占比并夹取 0–1", () => {
     expect(editorRatioFromWidths(460, 520, 8)).toBeCloseTo(520 / 988, 5);
     expect(editorRatioFromWidths(0, 0, 0)).toBe(0.5);
+  });
+});
+
+describe("splitDualPaneWidths（UI-24a-4 拖拽瞬时宽度）", () => {
+  it("中间占比：按 inner 分配，和不变", () => {
+    const result = splitDualPaneWidths(700, 700, 0.5);
+    expect(result.editorWidth).toBe(700);
+    expect(result.chatWidth).toBe(700);
+  });
+
+  it("钳制到 minEditorWidth=520（占比过小）", () => {
+    const result = splitDualPaneWidths(700, 700, 0.1);
+    expect(result.editorWidth).toBe(520);
+    expect(result.chatWidth).toBe(1400 - 520);
+  });
+
+  it("钳制到 inner - minChatWidth=460（占比过大）", () => {
+    const result = splitDualPaneWidths(700, 700, 0.95);
+    expect(result.editorWidth).toBe(1400 - 460);
+    expect(result.chatWidth).toBe(460);
+  });
+
+  it("ratio 越界先夹取 0..1；宽度和恒守恒", () => {
+    for (const ratio of [-0.5, 0, 0.3, 0.7, 1, 1.5]) {
+      const result = splitDualPaneWidths(600, 800, ratio);
+      expect(result.chatWidth + result.editorWidth).toBe(1400);
+      expect(result.editorWidth).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("退化 inner=0：不产生负值/NaN", () => {
+    const result = splitDualPaneWidths(0, 0, 0.5);
+    expect(result).toEqual({ chatWidth: 0, editorWidth: 0 });
+  });
+
+  it("自定义 chrome 钳制口径生效", () => {
+    const result = splitDualPaneWidths(500, 500, 0.2, {
+      minChatWidth: 200,
+      minEditorWidth: 300,
+    });
+    expect(result.editorWidth).toBe(300);
+    expect(result.chatWidth).toBe(700);
   });
 });

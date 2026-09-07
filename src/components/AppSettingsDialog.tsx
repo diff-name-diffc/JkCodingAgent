@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useState } from "react";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
   Cpu,
   Database,
@@ -111,21 +111,6 @@ export function AppSettingsDialog({
     else onClose();
   }, [store.dirty, onClose]);
 
-  // Esc 关闭前检查未保存修改；Radix 内部弹层（Select/Dialog）已处理 Esc 时不重复触发。
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape" || event.defaultPrevented || confirmingClose) return;
-      event.preventDefault();
-      requestClose();
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [requestClose, confirmingClose]);
-
-  function handleOverlayClick(e: React.MouseEvent) {
-    if (e.target === e.currentTarget) requestClose();
-  }
-
   async function handleConfirmClose() {
     setConfirmingClose(false);
     if (store.dirty) {
@@ -138,106 +123,128 @@ export function AppSettingsDialog({
   const activeItem = NAV_ITEMS.find((item) => item.key === activeNav)!;
   const ActiveIcon = activeItem.icon;
 
-  // 挂到 body：项目页 `.ai-*-shell > *` 会给祖先创建层叠上下文，
-  // 内联渲染时弹窗会被主内容区遮挡；portal 后 z-index 在根层级生效。
-  return createPortal(
+  // UI-21c：外壳迁移到 Radix Dialog 原语——自带 portal（脱离 `.ai-*-shell > *`
+  // 层叠上下文）、role="dialog"/aria-modal、焦点陷阱与关闭后焦点还原（审计 A10）。
+  // 关闭意图（Esc / 点遮罩 / 关闭按钮）统一经 onOpenChange→requestClose 走脏检查；
+  // `open` 恒为 true，真正卸载由父级 onClose 控制。ConfirmDialog/Toaster 作为
+  // Content 的 React 子节点渲染：Radix 焦点栈据 React 树识别嵌套，内层确认框
+  // 打开时外层陷阱自动让位，Esc 只关最顶层（替代旧 defaultPrevented 协调）。
+  return (
     <AhaSettingsProvider value={store}>
-      <div className="ai-dialog-overlay ai-settings-overlay" onClick={handleOverlayClick}>
-        <div className="ai-settings-shell">
-          <nav className="ai-settings-nav" aria-label="应用设置">
-            <div className="ai-settings-nav-title">
-              <span>应用设置</span>
-            </div>
-            {NAV_GROUPS.map((group) => (
-              <div key={group.label} className="ai-settings-nav-group">
-                <div className="ai-settings-nav-group-label">{group.label}</div>
-                {group.items.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      className={
-                        activeNav === item.key
-                          ? "ai-settings-nav-item is-active"
-                          : "ai-settings-nav-item"
-                      }
-                      onClick={() => setActiveNav(item.key)}
-                    >
-                      <Icon size={16} strokeWidth={1.5} />
-                      <span className="ai-settings-nav-label">{item.label}</span>
-                    </button>
-                  );
-                })}
+      <DialogPrimitive.Root
+        open
+        onOpenChange={(open) => {
+          if (!open) requestClose();
+        }}
+      >
+        <DialogPrimitive.Portal>
+          <DialogPrimitive.Overlay className="ai-dialog-overlay ai-settings-overlay" />
+          <DialogPrimitive.Content
+            className="ai-settings-shell"
+            aria-describedby={undefined}
+            onInteractOutside={(event) => {
+              // 确认框打开时不与外层弹窗交互（点击/焦点）联动，避免误触发关闭。
+              if (confirmingClose) event.preventDefault();
+            }}
+            onEscapeKeyDown={(event) => {
+              if (confirmingClose) event.preventDefault();
+            }}
+          >
+            <DialogPrimitive.Title className="sr-only">应用设置</DialogPrimitive.Title>
+            <nav className="ai-settings-nav" aria-label="应用设置">
+              <div className="ai-settings-nav-title">
+                <span>应用设置</span>
               </div>
-            ))}
-          </nav>
+              {NAV_GROUPS.map((group) => (
+                <div key={group.label} className="ai-settings-nav-group">
+                  <div className="ai-settings-nav-group-label">{group.label}</div>
+                  {group.items.map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        className={
+                          activeNav === item.key
+                            ? "ai-settings-nav-item is-active"
+                            : "ai-settings-nav-item"
+                        }
+                        onClick={() => setActiveNav(item.key)}
+                      >
+                        <Icon size={16} strokeWidth={1.5} />
+                        <span className="ai-settings-nav-label">{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </nav>
 
-          <section className="ai-settings-content">
-            <div className="ai-settings-header">
-              <div className="ai-settings-title-wrap">
-                <ActiveIcon size={16} strokeWidth={1.5} />
-                <span className="ai-settings-content-title">{activeItem.label}</span>
+            <section className="ai-settings-content">
+              <div className="ai-settings-header">
+                <div className="ai-settings-title-wrap">
+                  <ActiveIcon size={16} strokeWidth={1.5} />
+                  <span className="ai-settings-content-title">{activeItem.label}</span>
+                </div>
+                <div className="ai-settings-header-actions">
+                  <SaveStatusIndicator />
+                  <button
+                    className="ai-settings-close"
+                    onClick={requestClose}
+                    title="关闭"
+                    type="button"
+                  >
+                    <X size={16} strokeWidth={2} />
+                  </button>
+                </div>
               </div>
-              <div className="ai-settings-header-actions">
-                <SaveStatusIndicator />
-                <button
-                  className="ai-settings-close"
-                  onClick={requestClose}
-                  title="关闭"
-                  type="button"
-                >
-                  <X size={16} strokeWidth={2} />
-                </button>
+
+              <div className="ai-settings-panel-host chat-scroll">
+                {store.loading ? (
+                  <div className="ai-set-loading">正在加载设置…</div>
+                ) : (
+                  <>
+                    {activeNav === "general" && <GeneralPage />}
+                    {activeNav === "providers" && (
+                      <ProvidersPage
+                        key={providersCategory ?? "default"}
+                        initialCategory={providersCategory ?? undefined}
+                      />
+                    )}
+                    {activeNav === "purposes" && (
+                      <PurposesPage
+                        onNavigateProviders={(category) => {
+                          setProvidersCategory(category);
+                          setActiveNav("providers");
+                        }}
+                      />
+                    )}
+                    {activeNav === "tools" && <ToolsPage />}
+                    {activeNav === "graph" && <GraphPage />}
+                    {activeNav === "subAgents" && <SubAgentsPage />}
+                    {activeNav === "mcp" && <McpServersPage />}
+                    {activeNav === "ssh" && <SshServersPage />}
+                    {activeNav === "rag" && (
+                      <RagKbConfigPanel projectId={projectId} projectPath={projectPath} />
+                    )}
+                  </>
+                )}
               </div>
-            </div>
+            </section>
 
-            <div className="ai-settings-panel-host chat-scroll">
-              {store.loading ? (
-                <div className="ai-set-loading">正在加载设置…</div>
-              ) : (
-                <>
-                  {activeNav === "general" && <GeneralPage />}
-                  {activeNav === "providers" && (
-                    <ProvidersPage
-                      key={providersCategory ?? "default"}
-                      initialCategory={providersCategory ?? undefined}
-                    />
-                  )}
-                  {activeNav === "purposes" && (
-                    <PurposesPage
-                      onNavigateProviders={(category) => {
-                        setProvidersCategory(category);
-                        setActiveNav("providers");
-                      }}
-                    />
-                  )}
-                  {activeNav === "tools" && <ToolsPage />}
-                  {activeNav === "graph" && <GraphPage />}
-                  {activeNav === "subAgents" && <SubAgentsPage />}
-                  {activeNav === "mcp" && <McpServersPage />}
-                  {activeNav === "ssh" && <SshServersPage />}
-                  {activeNav === "rag" && (
-                    <RagKbConfigPanel projectId={projectId} projectPath={projectPath} />
-                  )}
-                </>
-              )}
-            </div>
-          </section>
-        </div>
-
-        <Toaster />
-        <ConfirmDialog
-          open={confirmingClose}
-          title="有未保存的修改"
-          description="部分修改还在保存中。关闭前将先完成保存。"
-          confirmLabel="保存并关闭"
-          cancelLabel="继续编辑"
-          onConfirm={() => void handleConfirmClose()}
-          onCancel={() => setConfirmingClose(false)}
-        />
-      </div>
-    </AhaSettingsProvider>,
-    document.body,
+            <Toaster />
+            <ConfirmDialog
+              open={confirmingClose}
+              title="有未保存的修改"
+              description="部分修改还在保存中。关闭前将先完成保存。"
+              confirmLabel="保存并关闭"
+              cancelLabel="继续编辑"
+              onConfirm={() => void handleConfirmClose()}
+              onCancel={() => setConfirmingClose(false)}
+            />
+          </DialogPrimitive.Content>
+        </DialogPrimitive.Portal>
+      </DialogPrimitive.Root>
+    </AhaSettingsProvider>
   );
 }

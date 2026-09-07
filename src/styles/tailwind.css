@@ -2552,6 +2552,11 @@
   }
 
   .ai-settings-shell {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 301;
     display: grid;
     width: min(960px, calc(100vw - 48px));
     height: min(700px, calc(100vh - 56px));

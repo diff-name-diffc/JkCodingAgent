@@ -1,8 +1,8 @@
 # 改造任务明细与跟踪清单
 
-更新日期：2026-09-07（M3 遗留代码领取：UI-23 跨栈 Mod 让路 + UI-22c rag 失败原因 + UI-25 搜索重试/深链分类）。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
+更新日期：2026-09-07（M3 遗留代码领取第二批：UI-25c 发送失败模型深链 + UI-17 split 并排 diff + UI-17 历史分页）。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
 
-**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）、M3 批次二（UI-25「各场景空态/加载/错误规格落地」+ UI-26「产品术语与图标视觉统一」，空态与术语链）、M3 批次三（UI-23「键盘焦点与输入法整合」全量 + UI-24a「性能低风险切片」+ UI-24b「窗口化动态测量主改造与同链路热点」，键盘与性能链）实施完成；M3 余量（UI-27「旧样式与失效布局说明清理」+ UI-33「后端 CloakBrowser 用户可见串归位」+ UI-24 遗留④⑥）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）；**UI-24 保持 DOING**（24b 代码改造 + 遗留④⑥ 完成，验收「附实际 profile」与 ⑦⑧ 需运行态 DevTools 采样/盘点，不虚报）；UI-24 遗留⑧（shell-output 监听器 N→1 收敛 + open_shell 竞态修复）与防劣化组件规模拆分（arch-apply/SubAgentEditorDialog 超限文件按职责拆分）实施完成；M3 遗留代码领取（UI-23「Radix 弹层跨栈 Mod 键让路」+ UI-22c「rag_status 失败原因内联透出」+ UI-25「搜索错误显式重试」/「配置模型深链直达分类」四项登记遗留）实施完成，见第 17 节。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）；M3 批次二源码基线 `c73a75f`，实施提交 `6d27277`（UI-25）/`13b93fb`（UI-26）；M3 批次三源码基线 `3118a41`，实施提交 `a835fcb`/`7e665b1`/`3d9ec51`/`85db7b3`（UI-23a/b/c/d）与 `21e70da`/`b3b2b8f`/`a9099fd`/`0a05499`（UI-24a-1..4）；UI-24b 切片源码基线 `d2d1f9c`，实施提交 `4b9a637`（24b-1/2 行级 UI 状态存储+Shiki 高亮 LRU 缓存）/`76bec9f`（24b-3 窗口化迁移 react-virtual 动态测量）/`2cfd798`（24b-4 merge 归一化身份缓存）/`ab5c2c5`（键分隔符修正），详见第 15 节。M3 余量源码基线 `3edcd81`，实施提交 `60d0c79`（UI-24⑥）/`a14773e`（UI-24④）/`b81136e`+`10f4a8f`+`a74e0b2`（UI-27）/`c1090ed`（UI-33），详见第 16 节；M3 遗留代码领取源码基线 `5b7414d`，实施提交 `f36e94a`（UI-25a 搜索重试）/`5cbc5d4`（UI-23 Mod 让路）/`6fdee44`（UI-25b 深链分类）/`01a4609`（UI-22c rag 失败原因），详见第 17 节。下一步 M4（UI-28–32 发布验收）与 UI-24 的 profile 验收、遗留⑦⑧。
+**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）、M3 批次二（UI-25「各场景空态/加载/错误规格落地」+ UI-26「产品术语与图标视觉统一」，空态与术语链）、M3 批次三（UI-23「键盘焦点与输入法整合」全量 + UI-24a「性能低风险切片」+ UI-24b「窗口化动态测量主改造与同链路热点」，键盘与性能链）实施完成；M3 余量（UI-27「旧样式与失效布局说明清理」+ UI-33「后端 CloakBrowser 用户可见串归位」+ UI-24 遗留④⑥）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）；**UI-24 保持 DOING**（24b 代码改造 + 遗留④⑥ 完成，验收「附实际 profile」与 ⑦⑧ 需运行态 DevTools 采样/盘点，不虚报）；UI-24 遗留⑧（shell-output 监听器 N→1 收敛 + open_shell 竞态修复）与防劣化组件规模拆分（arch-apply/SubAgentEditorDialog 超限文件按职责拆分）实施完成；M3 遗留代码领取（UI-23「Radix 弹层跨栈 Mod 键让路」+ UI-22c「rag_status 失败原因内联透出」+ UI-25「搜索错误显式重试」/「配置模型深链直达分类」四项登记遗留）实施完成，见第 17 节。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）；M3 批次二源码基线 `c73a75f`，实施提交 `6d27277`（UI-25）/`13b93fb`（UI-26）；M3 批次三源码基线 `3118a41`，实施提交 `a835fcb`/`7e665b1`/`3d9ec51`/`85db7b3`（UI-23a/b/c/d）与 `21e70da`/`b3b2b8f`/`a9099fd`/`0a05499`（UI-24a-1..4）；UI-24b 切片源码基线 `d2d1f9c`，实施提交 `4b9a637`（24b-1/2 行级 UI 状态存储+Shiki 高亮 LRU 缓存）/`76bec9f`（24b-3 窗口化迁移 react-virtual 动态测量）/`2cfd798`（24b-4 merge 归一化身份缓存）/`ab5c2c5`（键分隔符修正），详见第 15 节。M3 余量源码基线 `3edcd81`，实施提交 `60d0c79`（UI-24⑥）/`a14773e`（UI-24④）/`b81136e`+`10f4a8f`+`a74e0b2`（UI-27）/`c1090ed`（UI-33），详见第 16 节；M3 遗留代码领取源码基线 `5b7414d`，实施提交 `f36e94a`（UI-25a 搜索重试）/`5cbc5d4`（UI-23 Mod 让路）/`6fdee44`（UI-25b 深链分类）/`01a4609`（UI-22c rag 失败原因），详见第 17 节。**M3 遗留代码领取第二批**（UI-25c「发送失败『模型未配置』错误深链」+ UI-17「split 并排 diff 模式」/「Git 历史分页」，均为已登记代码级功能遗留，不启用新编号）实施完成，源码基线 `1d571ed`，实施提交 `76ac4d9`（UI-25c 发送失败深链）/`add37e7`（UI-17 split diff）/`fa7f950`（UI-17 历史分页），详见第 18 节。下一步 M4（UI-28–32 发布验收）与 UI-24 的 profile 验收、遗留⑦⑧。
 
 ## 1. 跟踪约定
 
@@ -46,7 +46,7 @@
 | UI-14 | P1 / M | 子智能体与节点详情统一 | 09,13 | REVIEW | claude（会话领取） | `05bc50f`；概览/活动/输出三段+共享 detail 组件+footer 门禁文案对齐 |
 | UI-15 | P1 / M | 架构画布与助手体验 | 06,08 | REVIEW | zcode（会话领取） | `f4cab0a`；宽度像素锚定+领域空态+附加上下文；画布保活三项基线已满足登记 |
 | UI-16 | P1 / M | 文件树与编辑器视觉整合 | 07,09 | REVIEW | zcode（会话领取） | `88babe4`；壳归位+平面化+路径行+tab 脏标记；截图遗留 UI-29 |
-| UI-17 | P1 / L | Git 审查布局与提交反馈 | 09,16 | REVIEW | zcode（会话领取） | `8e09fca/9a20640`；解析抽离+重命名/二进制+提交区范围+就地错误+对应高亮；split 模式登记待后续 |
+| UI-17 | P1 / L | Git 审查布局与提交反馈 | 09,16 | REVIEW | zcode（会话领取） | `8e09fca/9a20640`；解析抽离+重命名/二进制+提交区范围+就地错误+对应高亮；遗留领取 `add37e7`（split 并排 diff 模式）/`fa7f950`（历史分页 --skip 加载更多，见第 18 节）；split 运行态/大 diff 走查遗留 UI-28/29 |
 | UI-18 | P1 / L | 浏览器预览与会话 dock 迁移 | 09 | REVIEW | claude（会话领取） | `4169175/860bf88`；拆分+串帧修复+主区单例标签，右面板机制移除；dock 走查遗留 |
 | UI-19 | P1 / M | 终端 dock 与空间约束 | 08,09 | REVIEW | zcode（会话领取） | `f4f63a9`；隐藏保活两态机+结束会话语义+高度常量收敛；PTY 运行态走查遗留 |
 | UI-20 | P1 / M | Python、图片和工具产物详情 | 09,12 | REVIEW | claude（会话领取） | `633ec4a`；来源/耗时/状态统一+artifact kind 分派；运行态走查遗留 |
@@ -54,7 +54,7 @@
 | UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | REVIEW | claude（会话领取） | `fe1b414/e24462d/444669a`；McpServersPage 拆分(648→305)+连接状态双编码(connection/mcp-server 域)+SSH 徽标去彩点+RAG 未运行不被吞；遗留领取 `01a4609`（rag_status 失败原因 DTO+设置页内联透出，见第 17 节）；运行态走查遗留 UI-28/29 |
 | UI-23 | P1 / L | 键盘、焦点与输入法整合 | 07,09,11,21 | REVIEW | claude（会话领取） | `a835fcb/7e665b1/3d9ec51/85db7b3`；IME/终端/Monaco 防抢键+enabled 门控、Escape 栈裁决+焦点陷阱/还原、5 分隔条键盘化+步进纯函数、Mod+1..4/J/Shift+A 键位+ContextNav ARIA+列表 ↑↓ 导航；遗留领取 `5cbc5d4`（Radix 弹层打开时 Mod 组合键跨栈让路，见第 17 节）；运行态走查遗留 UI-28/29 |
 | UI-24 | P1 / L | 长列表、流式输出和布局性能 | 08,12,19 | DOING | claude（会话领取） | 24a 切片 `21e70da/b3b2b8f/a9099fd/0a05499`：memo 击穿修复+role=log 多实例修复+scroll rAF 合帧/ResizeObserver+编辑器占比拖拽隔离；24b 切片 `4b9a637/76bec9f/2cfd798/ab5c2c5`：窗口化迁移 react-virtual 动态测量+行卸载展开态/高亮缓存恢复+merge 归一化身份缓存；④⑥ 切片 `a14773e`（live-state 逐 token setState 改 rAF 合帧+删 usage 死字段）/`60d0c79`（终端高度拖拽状态下沉面板）；⑧ 切片 `f738041`（shell-output 监听器 N→1 收敛+open_shell 竞态修复）+防劣化 `f43b659/e820630`（arch-apply/SubAgentEditorDialog 超限拆分）；**验收「附实际 profile」仍未满足**（需运行态 DevTools 采样，仓库无性能基建），⑦ 评估结论与剩余监听器收敛待 UI-30 运行态验证 |
-| UI-25 | P1 / S | 各场景空态/加载/错误规格落地 | 10,12,15,20 | REVIEW | claude（会话领取） | `6d27277`；普通/项目/架构三入口领域空态(纯函数+5 test)+模型未配置深链取代装饰性禁用按钮+加载占位双编码；遗留领取 `f36e94a`（搜索错误显式重试）/`6fdee44`（配置模型深链直达分类，见第 17 节）；运行态走查遗留 UI-28/29 |
+| UI-25 | P1 / S | 各场景空态/加载/错误规格落地 | 10,12,15,20 | REVIEW | claude（会话领取） | `6d27277`；普通/项目/架构三入口领域空态(纯函数+5 test)+模型未配置深链取代装饰性禁用按钮+加载占位双编码；遗留领取 `f36e94a`（搜索错误显式重试）/`6fdee44`（配置模型深链直达分类，见第 17 节）/`76ac4d9`（发送失败「模型未配置」错误深链，见第 18 节）；运行态走查遗留 UI-28/29 |
 | UI-26 | P2 / S | 产品术语与图标视觉统一 | 06,21,22 | REVIEW | claude（会话领取） | `13b93fb`；CloakBrowser→浏览器/Aha→JKCodingAgent 品牌归位+中英混排清理+5 缺名图标按钮补 aria-label；图标全应用统一遗留 UI-29、后端 Rust 串遗留 UI-33 |
 | UI-27 | P2 / M | 移除旧样式与失效布局说明 | 06,07,09,26 | REVIEW | claude（会话领取） | `b81136e`（死类/死动画清理，styles:report 924→923）/`10f4a8f`（孤儿 rightPanel 偏好与预算通道移除，降级树五步→三步）/`a74e0b2`（AGENTS.md/README 过时架构与功能宣称更新）；`--info` 无暗色覆盖为品牌色恒定设计登记 UI-29、tailwind 68 处 `!important` 活覆盖保留登记 |
 | UI-28 | P1 / L | 核心功能映射回归 | 10–23,25 | TODO | 待分配 | — |
@@ -277,6 +277,9 @@
 | 2026-09-07 | K2：UI-23 遗留领取——Radix 弹层打开时 Mod 组合键跨栈让路（RADIX_MODAL_OPEN_SELECTOR 常量与 Escape 让路锚点单一出处；shouldSkipBinding 注入式第 ⑤ 步裁决 binding.mod×弹层打开→跳过，裸键路径零变化；use-global-shortcuts 接线 DOM 探测；+4 test） | `5cbc5d4` |
 | 2026-09-07 | K3：UI-25 遗留领取——「配置模型」深链直达模型服务页具体分类（types/chat.ts OpenSettingsOptions 共享参数；onOpenSettings 链路 () => void → (options?) => void；AppSettingsDialog initialProvidersCategory prop 复用既有 key 重挂载机制；主聊天/项目=text、架构助手=vision；无参调用点 TS 兼容零改动） | `6fdee44` |
 | 2026-09-07 | K4：UI-22c 遗留领取——rag_status 内联透出真实失败原因（新模块 rag/failure.rs RagFailureLog 内存态记录+4 test〔manager.rs 超规模红线不再膨胀〕；三采集点：ensure_started/restart Err 一处覆盖全部启动失败串+reaper 运行期退出+register_handle 成功清空；RagRuntimeStatus DTO camelCase+skip_serializing_if，rag_status 保持纯读；前端 deriveRagRuntimeState 仅 stopped 态透出 reason+2 test，设置页复用 .ai-rag-feedback.is-error 渲染原因行零新增 CSS；cargo 511 passed） | `01a4609` |
+| 2026-09-07 | L1：UI-25c 遗留领取——发送失败「模型未配置」错误深链（lib/run-error-classify.ts isModelNotConfiguredError 纯函数子串匹配后端稳定串+7 test；message-list runError 块/chat-shell/架构 sendError 三处命中渲染「配置模型」深链直达对应分类〔主聊天=text、架构=vision〕，复用 6fdee44 onOpenSettings(options) 与 6d27277 懒挂机制；后端 project/turn.rs provider_missing_message 补「错误：」前缀对齐） | `76ac4d9` |
+| 2026-09-07 | L2：UI-17 遗留领取——GitDiffViewer split 并排 diff（lib/git-diff-split.ts buildSplitRows 纯函数按 ctx 边界 zip del/add run、短侧 EMPTY_SIDE 占位+11 test；lib/diff-view-prefs.ts sanitize+可注入 storage load/save+8 test；头部 Columns2/Rows2 切换 aria-pressed；App.css .git-diff-split-* grid 两栏+pre-wrap 换行保对齐，零后端改动） | `add37e7` |
+| 2026-09-07 | L3：UI-17 遗留领取——GitHistory 历史分页（后端 git_log 加 skip:Option<u32>+git_log_paging_args 纯函数+2 cargo test；前端 HISTORY_PAGE_SIZE/nextSkip/hasMore/loadingMore，loadMore --skip 追加按 hash 去重，列表底部「加载更多」按钮；contract 115:112 不变、cargo 513 passed） | `fa7f950` |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
 
@@ -784,3 +787,46 @@
 风险/回退：单 commit 可回退；(options?) 可选参数对无参调用点 TS 兼容（Header/CommandPalette/SidebarFooterActions 零改动）；Dialog 条件挂载使 state 初值每次打开生效，无陈旧分类残留（HomeChatPage MCP 入口显式清空兜底）
 阻塞或剩余事项：发送失败场景的后端「模型未配置」错误码深链（对话中报错→直达对应槽位）仍为可选后续（需后端错误码/用途槽位字段，非 schema 迁移）
 验收人/日期：待人工（UI-28/29）
+
+## 18. M3 遗留代码领取（第二批：UI-25c 发送失败深链 + UI-17 split diff/历史分页）任务记录（第 5 节模板）
+
+> 本节延续第 17 节模式，领取 M2/M3 任务记录中已登记的代码级功能遗留（「登记后续/可选后续」），非新发现问题，不启用新编号；原任务总表状态不变（仍 REVIEW，运行态人工验收遗留 UI-28/29），证据列追加本节 commit。M4（UI-28–32）为运行态发布验收（截图矩阵/DevTools profile/人工走查），本会话无运行态桌面环境，按「不虚报」原则不领取；UI-14 子智能体 model 字段（需 schema v3→v4 迁移）、UI-17 遗留③ GitChanges/GitHistory 缓存同步（依赖 ContextNav keep-alive 架构决策）、UI-27 `!important` 根治（样式链非功能相关）本批评估后不领取，维持既有登记。源码基线 `1d571ed`（与首个实施提交 `76ac4d9` 之间仅隔一条 `.gitignore` chore `3f7c49c`，无源码差异）。
+
+任务：UI-25（遗留领取 c：发送失败「模型未配置」错误深链）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `1d571ed`；结果 `76ac4d9`，单 commit 可回退
+实现文件与范围：新增 `lib/run-error-classify.ts`（`isModelNotConfiguredError(text)` 纯函数：子串匹配后端稳定「模型未配置」串——「模型服务缺少」（config.rs validate_provider_completeness 缺 Key/URL/模型名）/「LLM API Key 未配置」（plain_chat/project adapter）/「未配置视觉模型」（architecture adapter）/「URL 或模型名为空」（build_architecture_agent 显式条目不完整分支）；对 useDispatcherActions 的「聊天/调度执行失败：…」包装串免疫〔子串匹配〕，null/空/普通网络错误返回 false；+7 test）、`message-list.tsx`（MessageListProps 加可选 `onConfigureModel`，runError 块由纯文本改 flex 容器：错误文案〔danger〕+ 命中分类且回调存在时 outline「配置模型」按钮〔中性色不继承 danger〕；缺省不渲染按钮向后兼容其余调用方）、`chat-shell.tsx`（MessageList 传 `onConfigureModel=()=>onOpenSettings({providersCategory:"text"})`，复用 6fdee44 深链机制）、`architecture/chat/ArchitectureChatPanel.tsx`（sendError 块命中复用既有懒挂 AppSettingsDialog(vision) 深链〔setShowSettings(true)〕；`.ai-arch-chat-error` 改 flex 容纳按钮）、`styles/tailwind.css`（新增中性 `.ai-arch-error-action`）、后端 `agents/project/turn.rs`（provider_missing_message 补「错误：」前缀，对齐 plain_chat/architecture adapter 与错误串约定）
+对应问题：第 17 节 UI-25b 记录「发送失败场景的后端『模型未配置』错误码深链仍为可选后续」；审计 V06（异常含真实原因 + 明确行动入口）、设计 §5.6（模型缺失深链到设置）
+测试命令及结果：run-error-classify 7 case；全量 vitest 449→456 passed；build/lint(--max-warnings 0)/styles:report(923→924，新增 .ai-arch-error-action，0 无引用)/contract:check(115:112) 全绿；cargo test 511 passed（后端纯字符串改动不回退）
+截图：N/A（错误深链交互）
+人工走查：清空对话模型库条目 URL/Key → 发送 → runError 显示「错误：模型服务缺少…」+「配置模型」按钮 → 点击直达设置「模型服务」页对话分类；架构助手清空视觉模型条目 → sendError +「配置模型」→ 落视觉分类；普通网络/HTTP 错误不显示按钮——遗留 UI-28/29（后端字符串改动需 cargo 重建 + 重启 tauri）
+风险/回退：单 commit 可回退；调查修正——后端已有稳定显式错误串（run 入口 validate_provider_completeness 预校验 + 各 adapter provider_missing_message），无需新增错误码 DTO/事件字段，前端纯函数分类即可，改动面远小于原登记预估；分类刻意不推断 category（深链发起点自知分类，与 6fdee44 同原则）；子串匹配与后端串同源（同仓库），改后端文案须同步 classify 与 test（已在模块注释标注）
+阻塞或剩余事项：**边界登记**——分类基于后端稳定串子串，若后端未来改文案须同步；tool 级「视觉模型未配置」（analyze_image 等工具结果，非 run 级 runError）不走本深链（工具卡展示，另属范畴）；架构失败时 sendError 与 MessageList runError 可能并存（useArchitectureChat 预存在行为），本批仅在 sendError 块加按钮避免双按钮
+验收人/日期：待人工（UI-28/29）
+
+任务：UI-17（遗留领取：split 并排 diff 模式）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `76ac4d9`；结果 `add37e7`，单 commit 可回退
+实现文件与范围：新增 `lib/git-diff-split.ts`（`buildSplitRows(hunk): SplitRow[]` 纯函数：顺序扫描缓冲连续 del-run/add-run，遇 ctx 或 hunk 结束按位 zip 成行〔左=del 右=add〕、短侧 `EMPTY_SIDE`〔冻结常量〕占位补齐，ctx 双侧同内容各带自身行号；复用 git-diff.ts 的 DiffLineInfo 双侧行号，零后端改动；+11 test：对齐/不等长/纯 add〔新建语义〕/纯 del〔删除语义〕/多组 ctx 分隔/末尾未闭合冲刷/空 hunk/极端 100del+1add）、`lib/diff-view-prefs.ts`（`sanitizeDiffViewMode` 纯校验〔非法/损坏值回退 unified〕+ 可注入 storage 的 load/save〔localStorage 全局 UI 偏好，隐私模式/getItem/setItem 抛错静默降级〕，模式参照 provider-prefs；+8 test）、`GitDiffViewer.tsx`（viewMode state〔初值 loadDiffViewMode〕+ toggleViewMode〔saveDiffViewMode〕；头部关闭按钮左侧加 Columns2/Rows2 切换按钮 aria-pressed/label/title；DiffFileSection 加 viewMode prop 与 split 渲染分支 SplitRowView/SplitSideView〔empty 侧 aria-hidden〕，unified 分支 DiffLineRow 不动）、`App.css`（`.git-diff-split-row` grid 两栏 minmax(0,1fr) + 首列右缘中缝 border；`.git-diff-split-side--add/del/ctx/empty` 沿用 unified add/del/empty 令牌 + 亮色覆盖；内容 `pre-wrap`+`word-break` 换行——非逐行横向滚动，同 grid 行两侧自动等高保行对齐；行号/符号槽复用既有 .git-diff-ln/.git-diff-sign）
+对应问题：第 11 节 UI-17 记录「split（并排）diff 不在本轮，能力估算登记后续」；设计 §5.4「窄区域允许 unified diff，足够宽再提供并排」
+测试命令及结果：git-diff-split 11 + diff-view-prefs 8 case；全量 vitest 456→475 passed；build/lint/styles:report(924 定义不变——split 类为 App.css 的 .git-diff-* 族非 .ai-*，0 无引用)/contract:check(115:112) 全绿；零 Rust 改动
+截图：遗留（split 观感/亮暗双主题/长行换行/极端不等长 hunk 占位——tauri 运行态，同 UI-29 矩阵）
+人工走查：Git 变更/历史打开 diff → 头部切「并排」→ 左右两栏 del/add 对齐、长行换行不产生横向滚动条、empty 占位灰底；切「单栏」回 unified；重开 diff/重启应用记忆上次模式；损坏 localStorage 值回退 unified——遗留 UI-28/29
+风险/回退：单 commit 可回退；split 为纯前端渲染分支，unified 路径与解析层零改动；横滚决策修正——原计划「每侧 overflow-x:auto」经实现评估会产生逐行横向滚动条（数百滚动条），改 pre-wrap 换行方案〔同 grid 行等高保对齐、全内容可见、无滚动条〕，deviation 已在本记录说明；DOM 翻倍与现状 unified 全量渲染同级（500KB 后端截断兜底）
+阻塞或剩余事项：**登记不实施**——行内 word-level 高亮（char-level diff）、split 虚拟化（依赖已在，大 diff 留后续）；默认 unified（提供开关不强制，符合设计「足够宽再提供并排」的可选语义）
+验收人/日期：待人工（UI-28/29）
+
+任务：UI-17（遗留领取：Git 提交历史分页）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `add37e7`；结果 `fa7f950`，单 commit 可回退
+实现文件与范围：后端 `scm/git/queries.rs`（`git_log`/`git_log_impl` 加 `skip: Option<u32>` 参数〔Option 向后兼容，命令名级 contract 115:112 不变〕；抽 `git_log_paging_args(limit, skip)` 纯函数——skip 为 None 或 0 不产生 `--skip`〔首页语义〕，否则插入 `--skip N`；+2 cargo test）、`GitHistory.tsx`（`HISTORY_PAGE_SIZE=50` 常量 + nextSkip/hasMore/loadingMore 三状态；refresh 首页 skip=0 整体替换并置 nextSkip=PAGE_SIZE/hasMore=满页；新增 loadMore 回调——按 `--skip nextSkip` 追加、`setCommits` 按 hash 去重合并〔化解刷新后位置漂移重复〕、满页才续 hasMore、复用既有 error 通道 retry=loadMore；提交列表底部「加载更多」按钮〔Loader2 spin + disabled，仅 hasMore 时渲染〕）、`styles/tailwind.css`（`.ai-git-load-more` 中性文字按钮 + hover/disabled）
+对应问题：第 11 节 UI-17 记录「历史分页（固定 limit 50）不在本轮」
+测试命令及结果：git_log_paging_args 2 cargo case（首页省略 --skip / 后续页 emit --skip）；cargo test 511→513 passed；全量 vitest 475 passed（前端为 invoke/state 接线无新增纯函数测试）；build/lint/styles:report(924→925，新增 .ai-git-load-more，0 无引用)/contract:check(115:112) 全绿
+截图：遗留（长历史「加载更多」追加/去重——tauri 运行态）
+人工走查：>50 提交仓库打开历史 → 底部「加载更多」→ 追加下一页无重复；搜索/切分支 → 分页态重置回首页；提交/拉取后 refresh → offset 归零；末页（不足一页）后按钮消失——遗留 UI-28
+风险/回退：单 commit 可回退；后端 Option 参数向后兼容，git_log 唯一内部调用点已同步；--skip 与 --grep/branch ref 共存（git 原生支持，位置分页作用于过滤后序列）；去重按 hash 化解 pull/refresh 后位置漂移的重复（漂移导致的「跳行」由提交/拉取后 refresh 重置 offset 兜底，纯分页会话内无 refresh 不触发）
+阻塞或剩余事项：**登记不实施**——IntersectionObserver 触底自动加载（显式按钮更可控）、历史列表虚拟化；GitChanges/GitHistory 跨面板缓存同步（统一 git 数据层）仍为第 11 节既有登记，依赖 ContextNav keep-alive 架构决策，本批不动
+验收人/日期：待人工（UI-28）

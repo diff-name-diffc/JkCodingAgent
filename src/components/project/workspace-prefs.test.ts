@@ -17,12 +17,10 @@ describe("sanitizeWorkspacePrefs", () => {
   it("越界值夹取到允许区间", () => {
     const out = sanitizeWorkspacePrefs({
       contextNavWidth: 900,
-      rightPanelWidth: -50,
       terminalHeight: 9999,
       editorPaneRatio: 3,
     });
     expect(out.contextNavWidth).toBe(320);
-    expect(out.rightPanelWidth).toBe(180);
     expect(out.terminalHeight).toBe(600);
     expect(out.editorPaneRatio).toBe(1);
   });

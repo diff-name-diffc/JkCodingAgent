@@ -11,7 +11,6 @@ export interface WorkspacePrefs {
   contextNavWidth: number;
   contextTab: ContextTab;
   sessionSidebarCollapsed: boolean;
-  rightPanelWidth: number;
   terminalHeight: number;
   editorPaneRatio: number;
 }
@@ -20,7 +19,6 @@ export const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   contextNavWidth: 248,
   contextTab: "sessions",
   sessionSidebarCollapsed: false,
-  rightPanelWidth: 280,
   terminalHeight: 240,
   editorPaneRatio: 0.5,
 };
@@ -48,7 +46,6 @@ export function sanitizeWorkspacePrefs(raw: unknown): WorkspacePrefs {
       typeof source.sessionSidebarCollapsed === "boolean"
         ? source.sessionSidebarCollapsed
         : DEFAULT_WORKSPACE_PREFS.sessionSidebarCollapsed,
-    rightPanelWidth: num(source.rightPanelWidth, DEFAULT_WORKSPACE_PREFS.rightPanelWidth, 180, 600),
     terminalHeight: num(
       source.terminalHeight,
       DEFAULT_WORKSPACE_PREFS.terminalHeight,

@@ -23,9 +23,6 @@ export interface WorkspaceChromeSizes {
   /** 上下文导航（会话栏）允许范围。 */
   navMin: number;
   navMax: number;
-  /** 右面板（文件/Git/浏览器）允许范围。 */
-  rightPanelMin: number;
-  rightPanelMax: number;
   /** 中央分屏分隔条宽。 */
   splitterWidth: number;
   /** 终端 dock 高度范围。 */
@@ -51,8 +48,6 @@ export const DEFAULT_CHROME: WorkspaceChromeSizes = {
   titlebarHeight: 38,
   navMin: 216,
   navMax: 320,
-  rightPanelMin: 180,
-  rightPanelMax: 600,
   splitterWidth: 8,
   terminalMinHeight: TERMINAL_HEIGHT_LIMITS.min,
   terminalMaxHeight: TERMINAL_HEIGHT_LIMITS.max,
@@ -68,9 +63,6 @@ export interface WorkspaceBudgetInput {
   /** 用户偏好：导航展开。 */
   navOpen: boolean;
   navWidthPref: number;
-  /** 用户偏好：右面板打开与其宽度。 */
-  rightPanelOpen: boolean;
-  rightPanelWidthPref: number;
   /** 用户偏好：终端 dock 打开与其高度。 */
   terminalOpen: boolean;
   terminalHeightPref: number;
@@ -83,8 +75,6 @@ export interface WorkspaceBudgetInput {
 export type WorkspaceDegradation =
   | { kind: "terminal-height-clamped"; from: number; to: number }
   | { kind: "main-height-below-min"; height: number }
-  | { kind: "right-panel-clamped"; from: number; to: number }
-  | { kind: "right-panel-closed" }
   | { kind: "nav-collapsed" }
   | { kind: "single-column"; reason: string };
 
@@ -93,8 +83,6 @@ export interface WorkspaceBudget {
   toolbarWidth: number;
   /** 临时适配后的导航宽（0 = 收起）。 */
   navWidth: number;
-  /** 临时适配后的右面板宽（0 = 关闭）。 */
-  rightPanelWidth: number;
   /** 临时适配后的终端高度（0 = 关闭）。 */
   terminalHeight: number;
   /** 中央主区可用宽。 */
@@ -135,8 +123,8 @@ export function terminalDragBounds(
 }
 
 /**
- * 计算工作区空间预算。五步降级树：
- *   1 终端高度压缩 → 2 右面板压缩 → 3 右面板临时关闭 → 4 导航临时收起 → 5 双栏转单栏。
+ * 计算工作区空间预算。三步降级树（UI-27 移除已无消费者的右面板通道）：
+ *   1 终端高度压缩 → 2 导航临时收起 → 3 双栏转单栏。
  * 任何一步都不修改输入偏好；输出即「本帧应渲染的尺寸」。
  */
 export function resolveWorkspaceBudget(input: WorkspaceBudgetInput): WorkspaceBudget {
@@ -160,25 +148,7 @@ export function resolveWorkspaceBudget(input: WorkspaceBudgetInput): WorkspaceBu
     }
   }
 
-  // ── 右面板 ──────────────────────────────────────────────
-  let rightPanelWidth = 0;
-  if (input.rightPanelOpen) {
-    const remaining = availableWidth - navWidth;
-    let width = clamp(input.rightPanelWidthPref, chrome.rightPanelMin, chrome.rightPanelMax);
-    if (remaining - width < chrome.minChatWidth) {
-      const clamped = chrome.rightPanelMin;
-      if (remaining - clamped >= chrome.minChatWidth) {
-        degradations.push({ kind: "right-panel-clamped", from: width, to: clamped });
-        width = clamped;
-      } else {
-        degradations.push({ kind: "right-panel-closed" });
-        width = 0;
-      }
-    }
-    rightPanelWidth = width;
-  }
-
-  const mainWidth = Math.max(0, availableWidth - navWidth - rightPanelWidth);
+  const mainWidth = Math.max(0, availableWidth - navWidth);
 
   // ── 双栏 / 单栏 ─────────────────────────────────────────
   let dualPane = false;
@@ -231,7 +201,6 @@ export function resolveWorkspaceBudget(input: WorkspaceBudgetInput): WorkspaceBu
     railWidth: chrome.railWidth,
     toolbarWidth: chrome.toolbarWidth,
     navWidth,
-    rightPanelWidth,
     terminalHeight,
     mainWidth,
     mainHeight,

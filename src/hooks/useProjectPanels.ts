@@ -24,7 +24,6 @@ import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-sto
  * 项目面板状态（UI-08 换底座，UI-18 收敛右面板）：终端高度等尺寸偏好由
  * workspace-store 按工作区持久化。旧右面板（files/git/browser）机制已删除——
  * 文件与 Git 走上下文导航，浏览器迁入主区标签（工作区单例）。
- * prefs.rightPanelWidth 成为孤儿偏好，清理登记于 UI-27。
  */
 export function useProjectPanels(workspaceId: string) {
   const [editorWorkbenchVisible, setEditorWorkbenchVisible] = useState(true);

@@ -145,14 +145,9 @@ export function ProjectPage({
     // 空间预算（UI-04）：偏好为冻结输入，窄窗临时适配只体现在 budget 输出。
   // 编辑区内容判定收敛到 panels 单一派生值（UI-13）。
   const hasEditorContent = panels.hasEditorContent;
-  // UI-18：右面板已迁入主区标签，预算的 rightPanel 通道恒关（纯函数与
-  // 参数化测试不动——rightPanel 降级能力成为无消费者的通用能力，
-  // 移除评估登记 UI-27）。
   const budget = useWorkspaceBudget({
     navOpen: !sessionSidebarCollapsed,
     navWidthPref: contextNavWidth,
-    rightPanelOpen: false,
-    rightPanelWidthPref: 0,
     terminalOpen: terminalDock.visible,
     terminalHeightPref: terminalHeight,
     dualPaneRequested: sessionWorkbenchVisible && hasEditorContent,

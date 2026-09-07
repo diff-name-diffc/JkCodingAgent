@@ -1,8 +1,8 @@
 # 改造任务明细与跟踪清单
 
-更新日期：2026-09-06（M3 批次三 UI-24b 切片更新 2026-09-07）。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
+更新日期：2026-09-07（M3 余量 UI-27 + UI-24 遗留④⑥ + UI-33 更新）。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
 
-**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）、M3 批次二（UI-25「各场景空态/加载/错误规格落地」+ UI-26「产品术语与图标视觉统一」，空态与术语链）、M3 批次三（UI-23「键盘焦点与输入法整合」全量 + UI-24a「性能低风险切片」+ UI-24b「窗口化动态测量主改造与同链路热点」，键盘与性能链）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）；**UI-24 保持 DOING**（24b 代码改造完成，验收「附实际 profile」需运行态 DevTools 采样，不虚报）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）；M3 批次二源码基线 `c73a75f`，实施提交 `6d27277`（UI-25）/`13b93fb`（UI-26）；M3 批次三源码基线 `3118a41`，实施提交 `a835fcb`/`7e665b1`/`3d9ec51`/`85db7b3`（UI-23a/b/c/d）与 `21e70da`/`b3b2b8f`/`a9099fd`/`0a05499`（UI-24a-1..4）；UI-24b 切片源码基线 `d2d1f9c`，实施提交 `4b9a637`（24b-1/2 行级 UI 状态存储+Shiki 高亮 LRU 缓存）/`76bec9f`（24b-3 窗口化迁移 react-virtual 动态测量）/`2cfd798`（24b-4 merge 归一化身份缓存）/`ab5c2c5`（键分隔符修正），详见第 15 节。下一步 M3 余量（UI-27 旧规则清理、UI-24 的 profile 验收与 ④⑥⑦ 遗留项）与 M4。
+**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）、M3 批次二（UI-25「各场景空态/加载/错误规格落地」+ UI-26「产品术语与图标视觉统一」，空态与术语链）、M3 批次三（UI-23「键盘焦点与输入法整合」全量 + UI-24a「性能低风险切片」+ UI-24b「窗口化动态测量主改造与同链路热点」，键盘与性能链）实施完成；M3 余量（UI-27「旧样式与失效布局说明清理」+ UI-33「后端 CloakBrowser 用户可见串归位」+ UI-24 遗留④⑥）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）；**UI-24 保持 DOING**（24b 代码改造 + 遗留④⑥ 完成，验收「附实际 profile」与 ⑦⑧ 需运行态 DevTools 采样/盘点，不虚报）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）；M3 批次二源码基线 `c73a75f`，实施提交 `6d27277`（UI-25）/`13b93fb`（UI-26）；M3 批次三源码基线 `3118a41`，实施提交 `a835fcb`/`7e665b1`/`3d9ec51`/`85db7b3`（UI-23a/b/c/d）与 `21e70da`/`b3b2b8f`/`a9099fd`/`0a05499`（UI-24a-1..4）；UI-24b 切片源码基线 `d2d1f9c`，实施提交 `4b9a637`（24b-1/2 行级 UI 状态存储+Shiki 高亮 LRU 缓存）/`76bec9f`（24b-3 窗口化迁移 react-virtual 动态测量）/`2cfd798`（24b-4 merge 归一化身份缓存）/`ab5c2c5`（键分隔符修正），详见第 15 节。M3 余量源码基线 `3edcd81`，实施提交 `60d0c79`（UI-24⑥）/`a14773e`（UI-24④）/`b81136e`+`10f4a8f`+`a74e0b2`（UI-27）/`c1090ed`（UI-33），详见第 16 节。下一步 M4（UI-28–32 发布验收）与 UI-24 的 profile 验收、遗留⑦⑧。
 
 ## 1. 跟踪约定
 
@@ -53,15 +53,16 @@
 | UI-21 | P1 / M | 设置布局与自动保存反馈 | 06,07 | REVIEW | claude（会话领取） | `23f6613/f968332/ba30612`；保存状态持续可见(头部指示器+去 toast 闪烁)+去重标题+导航三组小标题+分类 tabs 横滚+Radix Dialog 外壳/焦点；运行态焦点走查遗留 UI-23/28/29 |
 | UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | REVIEW | claude（会话领取） | `fe1b414/e24462d/444669a`；McpServersPage 拆分(648→305)+连接状态双编码(connection/mcp-server 域)+SSH 徽标去彩点+RAG 未运行不被吞；运行态走查遗留 UI-28/29 |
 | UI-23 | P1 / L | 键盘、焦点与输入法整合 | 07,09,11,21 | REVIEW | claude（会话领取） | `a835fcb/7e665b1/3d9ec51/85db7b3`；IME/终端/Monaco 防抢键+enabled 门控、Escape 栈裁决+焦点陷阱/还原、5 分隔条键盘化+步进纯函数、Mod+1..4/J/Shift+A 键位+ContextNav ARIA+列表 ↑↓ 导航；运行态走查遗留 UI-28/29 |
-| UI-24 | P1 / L | 长列表、流式输出和布局性能 | 08,12,19 | DOING | claude（会话领取） | 24a 切片 `21e70da/b3b2b8f/a9099fd/0a05499`：memo 击穿修复+role=log 多实例修复+scroll rAF 合帧/ResizeObserver+编辑器占比拖拽隔离；24b 切片 `4b9a637/76bec9f/2cfd798/ab5c2c5`：窗口化迁移 react-virtual 动态测量+行卸载展开态/高亮缓存恢复+merge 归一化身份缓存；**验收「附实际 profile」仍未满足**（需运行态 DevTools 采样，仓库无性能基建），④⑥⑦⑧ 遗留登记 |
+| UI-24 | P1 / L | 长列表、流式输出和布局性能 | 08,12,19 | DOING | claude（会话领取） | 24a 切片 `21e70da/b3b2b8f/a9099fd/0a05499`：memo 击穿修复+role=log 多实例修复+scroll rAF 合帧/ResizeObserver+编辑器占比拖拽隔离；24b 切片 `4b9a637/76bec9f/2cfd798/ab5c2c5`：窗口化迁移 react-virtual 动态测量+行卸载展开态/高亮缓存恢复+merge 归一化身份缓存；④⑥ 切片 `a14773e`（live-state 逐 token setState 改 rAF 合帧+删 usage 死字段）/`60d0c79`（终端高度拖拽状态下沉面板）；**验收「附实际 profile」仍未满足**（需运行态 DevTools 采样，仓库无性能基建），⑦⑧ 遗留登记 |
 | UI-25 | P1 / S | 各场景空态/加载/错误规格落地 | 10,12,15,20 | REVIEW | claude（会话领取） | `6d27277`；普通/项目/架构三入口领域空态(纯函数+5 test)+模型未配置深链取代装饰性禁用按钮+加载占位双编码；运行态走查遗留 UI-28/29 |
-| UI-26 | P2 / S | 产品术语与图标视觉统一 | 06,21,22 | REVIEW | claude（会话领取） | `13b93fb`；CloakBrowser→浏览器/Aha→JKCodingAgent 品牌归位+中英混排清理+5 缺名图标按钮补 aria-label；图标全应用统一与后端 Rust 串遗留 UI-29/后续 |
-| UI-27 | P2 / M | 移除旧样式与失效布局说明 | 06,07,09,26 | TODO | 待分配 | — |
+| UI-26 | P2 / S | 产品术语与图标视觉统一 | 06,21,22 | REVIEW | claude（会话领取） | `13b93fb`；CloakBrowser→浏览器/Aha→JKCodingAgent 品牌归位+中英混排清理+5 缺名图标按钮补 aria-label；图标全应用统一遗留 UI-29、后端 Rust 串遗留 UI-33 |
+| UI-27 | P2 / M | 移除旧样式与失效布局说明 | 06,07,09,26 | REVIEW | claude（会话领取） | `b81136e`（死类/死动画清理，styles:report 924→923）/`10f4a8f`（孤儿 rightPanel 偏好与预算通道移除，降级树五步→三步）/`a74e0b2`（AGENTS.md/README 过时架构与功能宣称更新）；`--info` 无暗色覆盖为品牌色恒定设计登记 UI-29、tailwind 68 处 `!important` 活覆盖保留登记 |
 | UI-28 | P1 / L | 核心功能映射回归 | 10–23,25 | TODO | 待分配 | — |
 | UI-29 | P1 / M | 多尺寸双主题视觉与可访问性验收 | 23,25,26,27 | TODO | 待分配 | — |
 | UI-30 | P1 / M | 性能与多工作区生命周期验收 | 18,19,24 | TODO | 待分配 | — |
 | UI-31 | P1 / M | 开发者任务走查与问题修订 | 28,29,30 | TODO | 待分配 | — |
 | UI-32 | P1 / S | 分批发布、回退与文档收尾 | 27–31 | TODO | 待分配 | — |
+| UI-33 | P2 / S | 后端 CloakBrowser 用户可见串归位 | 26 | REVIEW | claude（会话领取） | `c1090ed`；工具描述/错误/状态消息/子智能体系统提示词 CloakBrowser→浏览器（sidecar/Node 等技术详情保留）；纯字符串改动，cargo 507 passed 不回退、contract:check 115:112 不变 |
 
 ## 4. 实施任务卡
 
@@ -266,6 +267,12 @@
 | 2026-09-07 | I1：UI-24b-1/2 行级 UI 状态存储 + Shiki 高亮 LRU 缓存（row-ui-state：MessageList 实例级 ref-backed store + usePersistedToggle，工具卡组/卡/展开全部/思考块四处展开态行卸载后可恢复，5 test；shiki-cache：lang+theme+code 键 LRU 200 条/超长 64KB 不入缓存，highlightCodeToHtml 命中直返，JsonCode 初值同步探测不再闪纯文本，7 test） | `4b9a637`、`ab5c2c5` |
 | 2026-09-07 | I2：UI-24b-3 消息列表窗口化迁移动态测量（>300 条阈值语义不变，开窗后固定 180px 估高+spacer → @tanstack/react-virtual measureElement 逐行实测，修复审计 A11 跳读/空白根因；行距 pb-6 烘焙进行高；pinned 跟随仍走 DOM 级 useAutoScroll——外层 column 高度=虚拟化总高+流式气泡，ResizeObserver 双通道覆盖；items 身份变化 measure() 清索引键控测量缓存；24a-3 手动 scrollMetrics/rAF 管线整体移除） | `76bec9f` |
 | 2026-09-07 | I3：UI-24b-4 mergeDispatcherMessages 归一化身份缓存（WeakMap 两级键控：wire→产物、产物→自身；重入 merge 时 current 命中零开销，仅新 wire 真正 normalize+JSON.parse；排序/覆盖/短路语义不变，4 test） | `2cfd798` |
+| 2026-09-07 | J1：UI-24⑥ 终端高度拖拽隔离（drag 状态从 useProjectPanels 下沉到 ShellTerminalPanel 本地 state，重渲染限面板子树；新增 terminalDragBounds 纯函数与 resolveWorkspaceBudget 垂直钳制同口径消除松手跳变，4 test；键盘通道零改动；dragCleanupRef 卸载兜底防拖拽中途 terminate 悬挂） | `60d0c79` |
+| 2026-09-07 | J2：UI-24④ live-state 逐 token setState 改 rAF 合帧 + 删 usage 死字段（删除 current-session 立即 setState，流式渲染由每 token 一次降为每帧至多一次，ChatShell readonly rAF 订阅不再被父层击穿；顺带删除零消费者的 activeUsageStats/usageClockNow/activeUsageStatsReceivedAt 死字段与每秒空转时钟、createEmptyUsageStats；runUsageUpdated 仅保留 refreshSessionTokenUsage） | `a14773e` |
+| 2026-09-07 | J3：UI-27 死类/死动画清理（.ai-toolbar、.chat-session-card 家族、.dispatcher-message-list 7 条、.dispatcher-streaming-caret、.file-viewer-code 旧 Shiki 通道、@keyframes toast-in/pulse/rail-active-breathe/message-in/stream-caret、.make-run-btn；styles:report 924→923，0 无引用） | `b81136e` |
+| 2026-09-07 | J4：UI-27 孤儿 rightPanel 移除（prefs.rightPanelWidth 字段+sanitize、budget chrome rightPanelMin/Max 与降级分支 right-panel-clamped/closed、ProjectPage 恒关入参；预算降级树五步→三步，测试按新口径改写，全量 419 passed） | `10f4a8f` |
+| 2026-09-07 | J5：UI-27 过时文档更新（AGENTS.md 主视图删 AnalyticsDashboard/ProjectRail、模块表删 analytics.rs/usage.rs、概述改「用量记录」；README/README_ZH 功能清单改「Usage Tracking/用量记录」；app-layout overlay 注释核实已准确基线已满足） | `a74e0b2` |
+| 2026-09-07 | J6：UI-33 后端 CloakBrowser 用户可见串归位（工具描述/错误/状态消息/子智能体系统提示词 CloakBrowser→浏览器，sidecar/Node 技术详情保留；纯字符串改动，cargo 507 passed、contract:check 115:112 不回退） | `c1090ed` |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
 
@@ -645,3 +652,49 @@
 风险/回退：四 commit 独立可回退（24b-3 依赖 24b-1 Provider，回退顺序登记）；24b-1 无 Provider 场景退化 useState 与迁移前一致；24b-2 缓存 miss 路径与旧实现逐位一致，仅新增命中捷径；24b-3 未开窗（≤300 条）路径渲染结构与 24a 完全一致（flex gap-6 全量渲染），开窗路径为方案替换——spacer 方案删除后无回退共存态，revert 即整体回 24a；24b-4 纯内存缓存无持久化面，WeakMap 无泄漏面
 阻塞或剩余事项：**UI-24 验收「附实际 profile，不能只改算法后宣称更快」仍未满足——状态保持 DOING**。需运行态 DevTools Performance 采样（300/301/1000 条含长代码夹具数据），仓库无性能基建，本会话无运行态桌面环境，不虚报。其余遗留：④useLiveSessionState 每 token 立即 setState（改动影响流式手感，需与 profile 数据协同评估）；⑥终端高度拖拽 ProjectPage 全树重渲染（牵动 UI-19 两态机）；⑦SessionPanel/侧栏会话列表是否虚拟化（以 profile 数据决定）；⑧保活监听者累积盘点（归 UI-30）；「切布局后锚点正确」的按 index 锚点保持逻辑未单独实施——react-virtual 测量修正 + useAutoScroll recompute 闲置钩子可激活，随 profile 走查验证，不足再登记
 验收人/日期：待人工（UI-28/30/31）
+
+## 16. M3 余量（UI-24 遗留④⑥ + UI-27 + UI-33）任务记录（第 5 节模板）
+
+任务：UI-24（遗留④⑥ 切片；profile 验收与⑦⑧仍遗留）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `3edcd81`；结果 `a14773e`（④）/`60d0c79`（⑥），两 commit 独立可回退
+实现文件与范围：
+④ `useLiveSessionState.ts`（删「当前会话立即 setState」路径，流式 token 改由既有 rAF 批量通知统一送达；删 usage 死字段 + 每秒空转时钟）、`dispatcherSessionStore.ts`（类型 + createIdleLiveSessionState 删三死字段）、`useDispatcherActions.ts`/`event-channel.ts`/`useArchitectureChat.ts`（删死字段写入，runUsageUpdated 仅保留 refreshSessionTokenUsage）、`dispatcherChatUtils.ts`（删零引用 createEmptyUsageStats）
+⑥ `workspace-budget.ts`（新增 terminalDragBounds 纯函数，resolveWorkspaceBudget 垂直钳制改调它单一出处；+4 test）、`ShellTerminalPanel.tsx`（dragHeight 本地 state + handleResizeStart + dragCleanupRef 卸载兜底，getValue 改读 dragHeight ?? height，把手门控改 onResizeCommit 存在性）、`useProjectPanels.ts`（删 dragTerminalHeight/handleTerminalResizeStart，terminalHeight 收敛为纯 prefs）、`ProjectPage.tsx`（删 onResizeStart 透传）
+对应问题：审计 A11（遗留④⑥）、UI-24a 记录「④⑥ 需与 profile 数据协同评估」、设计 §6「流式响应→滚动锚点可恢复」
+测试命令及结果：④ 无新增纯函数（改触发时机/删死字段），全量 vitest 420 passed；⑥ terminalDragBounds 4 case；build/lint(--max-warnings 0)/styles:report(0 无引用) 全绿；零 Rust 改动
+截图：遗留（性能验收不适用截图）
+人工走查：⑥ 终端拖拽流畅性/松手持久化/拖拽中途切项目、④ 流式输出手感（逐 token → 按帧批量，60Hz 不可分辨）——遗留 UI-28/30
+风险/回退：两 commit 独立可回退；④ revert 即恢复立即路径（仅性能退化）；⑥ revert 即回到 ProjectPage 全树拖拽重渲染（无功能损失）；⑥ 键盘通道（useSplitterKeyboard 即时提交）零改动，splitter-step 14 case 保护
+阻塞或剩余事项：**UI-24 状态保持 DOING**——「附实际 profile」验收、⑦SessionPanel/侧栏会话列表虚拟化、⑧保活监听者累积盘点（归 UI-30）仍遗留；④ 的结构性拆分（布尔 selector + 写入器分离）留待 profile 数据决定
+验收人/日期：待人工（UI-28/30/31）
+
+任务：UI-27
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `a14773e`；结果 `b81136e`（死类/死动画）/`10f4a8f`（孤儿 rightPanel）/`a74e0b2`（文档），三 commit 独立可回退
+实现文件与范围：
+死类清理 `App.css`（.chat-session-card 家族、.dispatcher-message-list 7 条、.dispatcher-composer-shell/-button、.dispatcher-streaming-caret、.file-viewer-code 旧 Shiki 通道、.make-run-btn、@keyframes toast-in/pulse/rail-active-breathe/message-in/stream-caret、user-select 清单 .ai-toolbar）、`tailwind.css`（.ai-toolbar 定义）
+孤儿 rightPanel `workspace-prefs.ts`（字段+sanitize）、`workspace-budget.ts`（chrome rightPanelMin/Max、input/output 字段、降级分支、五步→三步）、`ProjectPage.tsx`（恒关入参）、`useProjectPanels.ts`（过时注释）、两测试按新口径改写
+文档 `AGENTS.md`（主视图删 AnalyticsDashboard/ProjectRail、模块表 project/analytics.rs 与 platform/usage.rs、概述「用量分析」→「用量记录」）、`README.md`/`README_ZH.md`（功能清单「Analytics Dashboard/分析看板」→「Usage Tracking/用量记录」）
+对应问题：UI-18 记录「rightPanel 无消费者——UI-27 评估移除」、UI-16 记录「.file-viewer-code 旧 Shiki 通道归 UI-27」、UI-08 记录「旧 nezha.* 保留待清理」、风险登记「用量分析旧入口缺失——核实后更新文档」、审计 A05 设计语言叠加
+测试命令及结果：全量 vitest 419 passed（workspace-budget/prefs 测试按新口径改写，删除 3 个 rightPanel 相关 case）；build/lint/styles:report(923 定义，0 无引用)/contract:check(115:112) 全绿
+截图：N/A（纯清理）
+人工走查：亮暗主题视觉无回归——遗留 UI-29
+风险/回退：三 commit 独立可回退；`--info` 无 .dark 覆盖经核实为品牌色跨主题恒定设计（非失配），对比度实测登记 UI-29；tailwind.css 68 处 `!important` 为对抗 App.css 未分层规则的活覆盖（file-explorer-context-menu/file-viewer-tab-menu/ai-project-session-*/ai-sidebar-footer-actions 等），删会改变渲染，本批保留登记；`nezha.chat.*` 两键仍在读（非孤儿），UI-08 记录更正为「仅历史命名」
+阻塞或剩余事项：tailwind.css 68 处 `!important` 活覆盖的根治（App.css 分层迁移）未纳入本轮，登记后续
+验收人/日期：待人工（UI-29）
+
+任务：UI-33
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `a74e0b2`；结果 `c1090ed`
+实现文件与范围：`browser.rs`（2 处错误串）、`browser/process.rs`（10 处错误/状态消息）、`browser/paths.rs`（1 处错误）、`agent/tools/builtin/browser.rs`（4 处工具描述 + 1 处模块注释 + 1 处错误）、`agent/tools/builtin/browser/actions.rs`（2 处工具描述 + 3 处错误/结果串）、`agent/sub_agent/config.rs`（1 处系统提示词）
+对应问题：UI-26 记录「后端 Rust CloakBrowser 错误串登记后续」
+测试命令及结果：cargo check 通过（2 个既有 private_interfaces 警告，与本批无关）、cargo test 507 passed 不回退、contract:check 115:112 不变
+截图：N/A
+人工走查：浏览器工具卡/错误 toast 显示「浏览器」——遗留 UI-28
+风险/回退：单 commit 可回退；纯字符串改动（内部标识符模块名/变量名/进程名不动），sidecar/Node 等技术详情保留
+阻塞或剩余事项：无
+验收人/日期：待人工（UI-28）

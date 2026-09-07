@@ -1,8 +1,8 @@
 # 改造任务明细与跟踪清单
 
-更新日期：2026-09-07（UI-24 遗留⑧ 监听器收敛 + 防劣化组件规模拆分）。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
+更新日期：2026-09-07（M3 遗留代码领取：UI-23 跨栈 Mod 让路 + UI-22c rag 失败原因 + UI-25 搜索重试/深链分类）。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
 
-**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）、M3 批次二（UI-25「各场景空态/加载/错误规格落地」+ UI-26「产品术语与图标视觉统一」，空态与术语链）、M3 批次三（UI-23「键盘焦点与输入法整合」全量 + UI-24a「性能低风险切片」+ UI-24b「窗口化动态测量主改造与同链路热点」，键盘与性能链）实施完成；M3 余量（UI-27「旧样式与失效布局说明清理」+ UI-33「后端 CloakBrowser 用户可见串归位」+ UI-24 遗留④⑥）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）；**UI-24 保持 DOING**（24b 代码改造 + 遗留④⑥ 完成，验收「附实际 profile」与 ⑦⑧ 需运行态 DevTools 采样/盘点，不虚报）；UI-24 遗留⑧（shell-output 监听器 N→1 收敛 + open_shell 竞态修复）与防劣化组件规模拆分（arch-apply/SubAgentEditorDialog 超限文件按职责拆分）实施完成。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）；M3 批次二源码基线 `c73a75f`，实施提交 `6d27277`（UI-25）/`13b93fb`（UI-26）；M3 批次三源码基线 `3118a41`，实施提交 `a835fcb`/`7e665b1`/`3d9ec51`/`85db7b3`（UI-23a/b/c/d）与 `21e70da`/`b3b2b8f`/`a9099fd`/`0a05499`（UI-24a-1..4）；UI-24b 切片源码基线 `d2d1f9c`，实施提交 `4b9a637`（24b-1/2 行级 UI 状态存储+Shiki 高亮 LRU 缓存）/`76bec9f`（24b-3 窗口化迁移 react-virtual 动态测量）/`2cfd798`（24b-4 merge 归一化身份缓存）/`ab5c2c5`（键分隔符修正），详见第 15 节。M3 余量源码基线 `3edcd81`，实施提交 `60d0c79`（UI-24⑥）/`a14773e`（UI-24④）/`b81136e`+`10f4a8f`+`a74e0b2`（UI-27）/`c1090ed`（UI-33），详见第 16 节。下一步 M4（UI-28–32 发布验收）与 UI-24 的 profile 验收、遗留⑦⑧。
+**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）、M3 批次二（UI-25「各场景空态/加载/错误规格落地」+ UI-26「产品术语与图标视觉统一」，空态与术语链）、M3 批次三（UI-23「键盘焦点与输入法整合」全量 + UI-24a「性能低风险切片」+ UI-24b「窗口化动态测量主改造与同链路热点」，键盘与性能链）实施完成；M3 余量（UI-27「旧样式与失效布局说明清理」+ UI-33「后端 CloakBrowser 用户可见串归位」+ UI-24 遗留④⑥）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）；**UI-24 保持 DOING**（24b 代码改造 + 遗留④⑥ 完成，验收「附实际 profile」与 ⑦⑧ 需运行态 DevTools 采样/盘点，不虚报）；UI-24 遗留⑧（shell-output 监听器 N→1 收敛 + open_shell 竞态修复）与防劣化组件规模拆分（arch-apply/SubAgentEditorDialog 超限文件按职责拆分）实施完成；M3 遗留代码领取（UI-23「Radix 弹层跨栈 Mod 键让路」+ UI-22c「rag_status 失败原因内联透出」+ UI-25「搜索错误显式重试」/「配置模型深链直达分类」四项登记遗留）实施完成，见第 17 节。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）；M3 批次二源码基线 `c73a75f`，实施提交 `6d27277`（UI-25）/`13b93fb`（UI-26）；M3 批次三源码基线 `3118a41`，实施提交 `a835fcb`/`7e665b1`/`3d9ec51`/`85db7b3`（UI-23a/b/c/d）与 `21e70da`/`b3b2b8f`/`a9099fd`/`0a05499`（UI-24a-1..4）；UI-24b 切片源码基线 `d2d1f9c`，实施提交 `4b9a637`（24b-1/2 行级 UI 状态存储+Shiki 高亮 LRU 缓存）/`76bec9f`（24b-3 窗口化迁移 react-virtual 动态测量）/`2cfd798`（24b-4 merge 归一化身份缓存）/`ab5c2c5`（键分隔符修正），详见第 15 节。M3 余量源码基线 `3edcd81`，实施提交 `60d0c79`（UI-24⑥）/`a14773e`（UI-24④）/`b81136e`+`10f4a8f`+`a74e0b2`（UI-27）/`c1090ed`（UI-33），详见第 16 节；M3 遗留代码领取源码基线 `5b7414d`，实施提交 `f36e94a`（UI-25a 搜索重试）/`5cbc5d4`（UI-23 Mod 让路）/`6fdee44`（UI-25b 深链分类）/`01a4609`（UI-22c rag 失败原因），详见第 17 节。下一步 M4（UI-28–32 发布验收）与 UI-24 的 profile 验收、遗留⑦⑧。
 
 ## 1. 跟踪约定
 
@@ -51,10 +51,10 @@
 | UI-19 | P1 / M | 终端 dock 与空间约束 | 08,09 | REVIEW | zcode（会话领取） | `f4f63a9`；隐藏保活两态机+结束会话语义+高度常量收敛；PTY 运行态走查遗留 |
 | UI-20 | P1 / M | Python、图片和工具产物详情 | 09,12 | REVIEW | claude（会话领取） | `633ec4a`；来源/耗时/状态统一+artifact kind 分派；运行态走查遗留 |
 | UI-21 | P1 / M | 设置布局与自动保存反馈 | 06,07 | REVIEW | claude（会话领取） | `23f6613/f968332/ba30612`；保存状态持续可见(头部指示器+去 toast 闪烁)+去重标题+导航三组小标题+分类 tabs 横滚+Radix Dialog 外壳/焦点；运行态焦点走查遗留 UI-23/28/29 |
-| UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | REVIEW | claude（会话领取） | `fe1b414/e24462d/444669a`；McpServersPage 拆分(648→305)+连接状态双编码(connection/mcp-server 域)+SSH 徽标去彩点+RAG 未运行不被吞；运行态走查遗留 UI-28/29 |
-| UI-23 | P1 / L | 键盘、焦点与输入法整合 | 07,09,11,21 | REVIEW | claude（会话领取） | `a835fcb/7e665b1/3d9ec51/85db7b3`；IME/终端/Monaco 防抢键+enabled 门控、Escape 栈裁决+焦点陷阱/还原、5 分隔条键盘化+步进纯函数、Mod+1..4/J/Shift+A 键位+ContextNav ARIA+列表 ↑↓ 导航；运行态走查遗留 UI-28/29 |
+| UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | REVIEW | claude（会话领取） | `fe1b414/e24462d/444669a`；McpServersPage 拆分(648→305)+连接状态双编码(connection/mcp-server 域)+SSH 徽标去彩点+RAG 未运行不被吞；遗留领取 `01a4609`（rag_status 失败原因 DTO+设置页内联透出，见第 17 节）；运行态走查遗留 UI-28/29 |
+| UI-23 | P1 / L | 键盘、焦点与输入法整合 | 07,09,11,21 | REVIEW | claude（会话领取） | `a835fcb/7e665b1/3d9ec51/85db7b3`；IME/终端/Monaco 防抢键+enabled 门控、Escape 栈裁决+焦点陷阱/还原、5 分隔条键盘化+步进纯函数、Mod+1..4/J/Shift+A 键位+ContextNav ARIA+列表 ↑↓ 导航；遗留领取 `5cbc5d4`（Radix 弹层打开时 Mod 组合键跨栈让路，见第 17 节）；运行态走查遗留 UI-28/29 |
 | UI-24 | P1 / L | 长列表、流式输出和布局性能 | 08,12,19 | DOING | claude（会话领取） | 24a 切片 `21e70da/b3b2b8f/a9099fd/0a05499`：memo 击穿修复+role=log 多实例修复+scroll rAF 合帧/ResizeObserver+编辑器占比拖拽隔离；24b 切片 `4b9a637/76bec9f/2cfd798/ab5c2c5`：窗口化迁移 react-virtual 动态测量+行卸载展开态/高亮缓存恢复+merge 归一化身份缓存；④⑥ 切片 `a14773e`（live-state 逐 token setState 改 rAF 合帧+删 usage 死字段）/`60d0c79`（终端高度拖拽状态下沉面板）；⑧ 切片 `f738041`（shell-output 监听器 N→1 收敛+open_shell 竞态修复）+防劣化 `f43b659/e820630`（arch-apply/SubAgentEditorDialog 超限拆分）；**验收「附实际 profile」仍未满足**（需运行态 DevTools 采样，仓库无性能基建），⑦ 评估结论与剩余监听器收敛待 UI-30 运行态验证 |
-| UI-25 | P1 / S | 各场景空态/加载/错误规格落地 | 10,12,15,20 | REVIEW | claude（会话领取） | `6d27277`；普通/项目/架构三入口领域空态(纯函数+5 test)+模型未配置深链取代装饰性禁用按钮+加载占位双编码；运行态走查遗留 UI-28/29 |
+| UI-25 | P1 / S | 各场景空态/加载/错误规格落地 | 10,12,15,20 | REVIEW | claude（会话领取） | `6d27277`；普通/项目/架构三入口领域空态(纯函数+5 test)+模型未配置深链取代装饰性禁用按钮+加载占位双编码；遗留领取 `f36e94a`（搜索错误显式重试）/`6fdee44`（配置模型深链直达分类，见第 17 节）；运行态走查遗留 UI-28/29 |
 | UI-26 | P2 / S | 产品术语与图标视觉统一 | 06,21,22 | REVIEW | claude（会话领取） | `13b93fb`；CloakBrowser→浏览器/Aha→JKCodingAgent 品牌归位+中英混排清理+5 缺名图标按钮补 aria-label；图标全应用统一遗留 UI-29、后端 Rust 串遗留 UI-33 |
 | UI-27 | P2 / M | 移除旧样式与失效布局说明 | 06,07,09,26 | REVIEW | claude（会话领取） | `b81136e`（死类/死动画清理，styles:report 924→923）/`10f4a8f`（孤儿 rightPanel 偏好与预算通道移除，降级树五步→三步）/`a74e0b2`（AGENTS.md/README 过时架构与功能宣称更新）；`--info` 无暗色覆盖为品牌色恒定设计登记 UI-29、tailwind 68 处 `!important` 活覆盖保留登记 |
 | UI-28 | P1 / L | 核心功能映射回归 | 10–23,25 | TODO | 待分配 | — |
@@ -273,6 +273,10 @@
 | 2026-09-07 | J4：UI-27 孤儿 rightPanel 移除（prefs.rightPanelWidth 字段+sanitize、budget chrome rightPanelMin/Max 与降级分支 right-panel-clamped/closed、ProjectPage 恒关入参；预算降级树五步→三步，测试按新口径改写，全量 419 passed） | `10f4a8f` |
 | 2026-09-07 | J5：UI-27 过时文档更新（AGENTS.md 主视图删 AnalyticsDashboard/ProjectRail、模块表删 analytics.rs/usage.rs、概述改「用量记录」；README/README_ZH 功能清单改「Usage Tracking/用量记录」；app-layout overlay 注释核实已准确基线已满足） | `a74e0b2` |
 | 2026-09-07 | J6：UI-33 后端 CloakBrowser 用户可见串归位（工具描述/错误/状态消息/子智能体系统提示词 CloakBrowser→浏览器，sidecar/Node 技术详情保留；纯字符串改动，cargo 507 passed、contract:check 115:112 不回退） | `c1090ed` |
+| 2026-09-07 | K1：UI-25 遗留领取——会话搜索错误显式重试（useChatSessionController 按 trimmedSearch 分派 refetch 暴露 retrySessions，chat-page-v2→ChatShell→Sidebar 三层可选 props；侧栏错误块文案+「重试」按钮，onRetry 缺省不渲染向后兼容） | `f36e94a` |
+| 2026-09-07 | K2：UI-23 遗留领取——Radix 弹层打开时 Mod 组合键跨栈让路（RADIX_MODAL_OPEN_SELECTOR 常量与 Escape 让路锚点单一出处；shouldSkipBinding 注入式第 ⑤ 步裁决 binding.mod×弹层打开→跳过，裸键路径零变化；use-global-shortcuts 接线 DOM 探测；+4 test） | `5cbc5d4` |
+| 2026-09-07 | K3：UI-25 遗留领取——「配置模型」深链直达模型服务页具体分类（types/chat.ts OpenSettingsOptions 共享参数；onOpenSettings 链路 () => void → (options?) => void；AppSettingsDialog initialProvidersCategory prop 复用既有 key 重挂载机制；主聊天/项目=text、架构助手=vision；无参调用点 TS 兼容零改动） | `6fdee44` |
+| 2026-09-07 | K4：UI-22c 遗留领取——rag_status 内联透出真实失败原因（新模块 rag/failure.rs RagFailureLog 内存态记录+4 test〔manager.rs 超规模红线不再膨胀〕；三采集点：ensure_started/restart Err 一处覆盖全部启动失败串+reaper 运行期退出+register_handle 成功清空；RagRuntimeStatus DTO camelCase+skip_serializing_if，rag_status 保持纯读；前端 deriveRagRuntimeState 仅 stopped 态透出 reason+2 test，设置页复用 .ai-rag-feedback.is-error 渲染原因行零新增 CSS；cargo 511 passed） | `01a4609` |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
 
@@ -566,7 +570,7 @@
 截图：遗留（tauri 运行态，同 UI-29 矩阵）
 人工走查：头部 MCP pill 双编码、健康态次级位置/异常可点开弹窗看真实失败服务器与原因；MCP 弹窗服务器状态图标+文字、degraded 与 invalid_config 区分、server.error 就地；SSH 状态徽标常驻文字、连接/主机密钥错误就地；RAG 启动失败不再永停「启动中…」改显「未运行」、服务日志可排查；全局/项目 MCP 作用域文案清晰——遗留 UI-28/29
 风险/回退：三 commit 独立可回退；22a 纯重构（行为零变化）可独立保留；22b/22c 仅状态展示层，审查门禁与配置作用域零改动
-阻塞或剩余事项：**基线已满足（登记）**——全局/项目 MCP 作用域分清：McpServersPage Section 描述已明确全局注册表语义+项目 mcp.json 同名覆盖，McpStatusDialog 已按 isGlobal 分视图。**边界登记**——rag_status 后端仅返回 {running,port} 无失败原因字段：本批用前端探活窗口（runtimeProbing）区分「未运行」不吞错，真实原因由服务日志面板承担；如需 runtime 内联失败原因，另立小后端任务（RagRuntimeStatus DTO 加 error/state，非 schema 迁移）。**决策**——connection.healthy 保留 success（绿）tone：StatusPill 浅底小图标已较旧饱和色点降噪，且 MCP 入口处于头部次级动作位（执行图/更多之间），符合「健康降噪+异常明确入口」，未额外降为中性以免「正常」读作「未知」
+阻塞或剩余事项：**基线已满足（登记）**——全局/项目 MCP 作用域分清：McpServersPage Section 描述已明确全局注册表语义+项目 mcp.json 同名覆盖，McpStatusDialog 已按 isGlobal 分视图。**边界登记**——rag_status 后端仅返回 {running,port} 无失败原因字段：本批用前端探活窗口（runtimeProbing）区分「未运行」不吞错，真实原因由服务日志面板承担；如需 runtime 内联失败原因，另立小后端任务（RagRuntimeStatus DTO 加 error/state，非 schema 迁移）。**→ 已实施 `01a4609`（RagRuntimeStatus DTO 加 lastError/lastErrorAt + 设置页 stopped 态内联原因行，见第 17 节）**。**决策**——connection.healthy 保留 success（绿）tone：StatusPill 浅底小图标已较旧饱和色点降噪，且 MCP 入口处于头部次级动作位（执行图/更多之间），符合「健康降噪+异常明确入口」，未额外降为中性以免「正常」读作「未知」
 验收人/日期：待人工（UI-28/29/31）
 
 ## 14. UI-25–UI-26（M3 批次二）任务记录（第 5 节模板）
@@ -581,7 +585,7 @@
 截图：遗留（tauri 运行态，同 UI-29 矩阵）
 人工走查：普通/项目/架构三入口空态文案各不相同且贴合语境、点击起步提示填入输入框；模型库清空后主聊天与架构助手显示「配置模型」并可点开设置「模型服务」页；懒加载面板 spinner 占位与空态/错误三态可区分——遗留 UI-28/29
 风险/回退：单 commit 可回退；resolveChatEmptyState 返回模块级常量（引用稳定，不引入额外重渲染）；ModelSelector.onConfigureModel 改必传，两处调用方（PromptInput 主聊天 / ArchitectureChatPanel 架构）均已接线，tsc 强制保证无遗漏；架构助手新增懒挂 AppSettingsDialog 仅在「无视觉模型 + 用户点击配置模型」时挂载
-阻塞或剩余事项：**基线已满足（登记，未重复实现）**——① empty/loading/error 区分：Sidebar 已有骨架屏(loading) / 「搜索失败，请重试」(error) / 「没有匹配的会话」vs「暂无会话」(搜索为空 vs 无数据)；项目主区 ErrorBoundary 带「重试」、架构 CanvasBlockedPanel 带「重试」、WelcomePage 项目视图区分「没有匹配的项目」vs「还没有项目」。②普通/项目/架构三入口 empty/loading/error/ready 四态齐备（普通:领域空态+侧栏骨架+runError/ErrorBoundary+消息；项目:领域空态+ProjectLazyPaneFallback/「正在创建会话...」+ErrorBoundary 重试+消息；架构:ARCH_EMPTY_STATE+WelcomePaneFallback+CanvasBlockedPanel/sendError+消息）。**决策**——会话搜索错误未加显式「重试」按钮（React Query 自动重试 + 搜索去抖随输入重跑；显式重试需从 useChatSessionController 透传 refetch，收益小于改动面，登记可选后续）；模型未配置深链统一走「打开设置 providers 页」（HomeChatPage/ProjectOverlays 既有 onOpenSettings 即以 providers 为初始 tab），未把 onOpenSettings 参数化为 onOpenSettings(tab) 以免牵动多处调用方。**边界登记**——后端无「模型未配置」的显式错误码/用途槽位字段供前端精确深链到具体分类（对话/视觉）；当前深链到 providers 页由用户自行定位分类，如需直达具体槽位另立小任务（非 schema 迁移）
+阻塞或剩余事项：**基线已满足（登记，未重复实现）**——① empty/loading/error 区分：Sidebar 已有骨架屏(loading) / 「搜索失败，请重试」(error) / 「没有匹配的会话」vs「暂无会话」(搜索为空 vs 无数据)；项目主区 ErrorBoundary 带「重试」、架构 CanvasBlockedPanel 带「重试」、WelcomePage 项目视图区分「没有匹配的项目」vs「还没有项目」。②普通/项目/架构三入口 empty/loading/error/ready 四态齐备（普通:领域空态+侧栏骨架+runError/ErrorBoundary+消息；项目:领域空态+ProjectLazyPaneFallback/「正在创建会话...」+ErrorBoundary 重试+消息；架构:ARCH_EMPTY_STATE+WelcomePaneFallback+CanvasBlockedPanel/sendError+消息）。**决策**——会话搜索错误未加显式「重试」按钮（React Query 自动重试 + 搜索去抖随输入重跑；显式重试需从 useChatSessionController 透传 refetch，收益小于改动面，登记可选后续）**→ 已实施 `f36e94a`（refetch 三层透传 + 侧栏错误块重试按钮，见第 17 节）**；模型未配置深链统一走「打开设置 providers 页」（HomeChatPage/ProjectOverlays 既有 onOpenSettings 即以 providers 为初始 tab），未把 onOpenSettings 参数化为 onOpenSettings(tab) 以免牵动多处调用方。**→ 已实施 `6fdee44`（onOpenSettings(options?) 参数化 + initialProvidersCategory 深链直达对话/视觉分类，见第 17 节）**。**边界登记**——后端无「模型未配置」的显式错误码/用途槽位字段供前端精确深链到具体分类（对话/视觉）；当前深链到 providers 页由用户自行定位分类，如需直达具体槽位另立小任务（非 schema 迁移）。**→ 前端侧已解决（`6fdee44`）：深链发起点自知分类（主聊天=text、架构助手=vision），无需后端错误码；发送失败场景的后端错误码深链仍为可选后续**
 验收人/日期：待人工（UI-28/29/31）
 
 任务：UI-26
@@ -616,7 +620,7 @@
 截图：遗留（tauri 运行态，同 UI-29 矩阵）
 人工走查：①非 Mac 终端内 Ctrl+K/L/N/J 透传 shell；②中文 IME 组合期按键不触发快捷键；③双项目保活下隐藏项目不响应 Mod+K/N/B/L、命令面板不双开；④命令面板开→Esc 只关面板不关 Artifact（双关回归）；⑤McpStatusDialog Esc 可关+焦点还原到触发点；⑥执行图节点抽屉打开时 Esc 只关抽屉；⑦5 条分隔条 Tab 可达、方向键/Shift 大步/双击复位一致、aria-valuenow 读数正确；⑧Mod+1..4/J/Shift+A 按预期且隐藏工作区不响应；⑨会话列表/命令面板 ↑↓ 导航与搜索框入列表——全部遗留 UI-28/29（本批以自动化门禁为准，用户确认不做人工 UI 验收）
 风险/回退：四 commit 独立可回退；23b revert 后 overlay-stack 回到零调用状态（hasOpenOverlay 恒 false）与批次前一致、hook cleanup 保证弹栈无残留；23c 纯增量 ARIA/键盘，鼠标拖拽路径零改动（ProjectWorkbenchContent 为等价替换，语义有既有行为对照）；23d 键位注册表快照测试为冲突审查自动化门禁
-阻塞或剩余事项：**决策**——①「切区/打开详情/关闭返回」以新增全局键位（Mod+1..4/J/Shift+A）+ ARIA 补齐（tablist 方向键/列表 ↑↓/分隔条键盘）双路径满足，不引入 F6 焦点循环（macOS 默认 fn+F6 沟通成本高）；②Mod+J 在非 Mac 终端聚焦时透传 shell（Ctrl+J=LF 控制码），dock 收起改用面板头部隐藏按钮或先移出焦点——设计即如此，文档化；③Katex 右键菜单接焦点陷阱（打开即聚焦菜单按钮），鼠标流程不受影响；④大文件查看器 Escape 所有权动态化：仅选区存在时压栈（无选区时 Esc 归还底层关 Artifact，保持既有语义）。**遗留登记**——WebView2（Windows）浏览器加速键 Ctrl+J/1..4 转发行为需人工验证（UI-28）；BranchBar 分支弹窗（局部 onKeyDown+stopPropagation，调查判定基本无冲突）未接栈，如运行态发现抢键另登记；设置 Dialog（Radix modal）打开时 Mod+K 等仍会触发命令面板（跨栈 Mod 键让路未做——Radix 无 DOM 判定锚点区分 modal 打开态的 Mod 键策略，现状与批次前一致，登记可选后续）
+阻塞或剩余事项：**决策**——①「切区/打开详情/关闭返回」以新增全局键位（Mod+1..4/J/Shift+A）+ ARIA 补齐（tablist 方向键/列表 ↑↓/分隔条键盘）双路径满足，不引入 F6 焦点循环（macOS 默认 fn+F6 沟通成本高）；②Mod+J 在非 Mac 终端聚焦时透传 shell（Ctrl+J=LF 控制码），dock 收起改用面板头部隐藏按钮或先移出焦点——设计即如此，文档化；③Katex 右键菜单接焦点陷阱（打开即聚焦菜单按钮），鼠标流程不受影响；④大文件查看器 Escape 所有权动态化：仅选区存在时压栈（无选区时 Esc 归还底层关 Artifact，保持既有语义）。**遗留登记**——WebView2（Windows）浏览器加速键 Ctrl+J/1..4 转发行为需人工验证（UI-28）；BranchBar 分支弹窗（局部 onKeyDown+stopPropagation，调查判定基本无冲突）未接栈，如运行态发现抢键另登记；设置 Dialog（Radix modal）打开时 Mod+K 等仍会触发命令面板（跨栈 Mod 键让路未做——Radix 无 DOM 判定锚点区分 modal 打开态的 Mod 键策略，现状与批次前一致，登记可选后续）**→ 跨栈 Mod 让路已实施 `5cbc5d4`（调查修正：Radix 有 DOM 判定锚点——Escape 让路已用的 role×data-state 选择器提升为 RADIX_MODAL_OPEN_SELECTOR 常量共享，shouldSkipBinding 注入式第 ⑤ 步裁决，见第 17 节）**
 验收人/日期：待人工（UI-28/29/31）
 
 任务：UI-24（24a 切片；24b 主改造与热点切片见下条记录）
@@ -724,3 +728,59 @@
 风险/回退：两 commit 独立可回退；纯函数机械搬移 + 重导出/命名导出隔离，build 兜底
 阻塞或剩余事项：无（次级超限 `SshServersPage.tsx` 481 行/`chat-page-v2.tsx` 470 行未触及，待自然扩展时按同法拆分）
 验收人/日期：待人工（UI-28）
+
+## 17. M3 遗留代码领取（UI-23 Mod 让路 + UI-22c rag 失败原因 + UI-25 重试/深链）任务记录（第 5 节模板）
+
+> 本节领取的是 M3 各任务记录中已登记的代码级功能遗留（「登记后续/可选后续/另立小任务」），非新发现问题，不启用新编号；原任务总表状态不变（仍 REVIEW，运行态人工验收遗留 UI-28/29），证据列追加本节 commit。M4（UI-28–32）为运行态发布验收（截图矩阵/DevTools profile/人工走查），本会话无运行态桌面环境，按「不虚报」原则不领取；UI-24 遗留⑦⑧与 profile 验收维持既有决策（待 UI-30 运行态数据）。
+
+任务：UI-23（遗留领取：Radix 弹层跨栈 Mod 键让路）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `5b7414d`；结果 `5cbc5d4`，单 commit 可回退
+实现文件与范围：`lib/keyboard-bindings.ts`（新增 `RADIX_MODAL_OPEN_SELECTOR` 常量——dialog/alertdialog/menu/listbox × data-state=open，与 Escape 让路锚点单一出处；`shouldSkipBinding` 追加第 4 个注入式参数 `isRadixModalOpen`（node 环境缺省恒 false）与第 ⑤ 步裁决：`binding.mod` 且弹层打开 → 跳过，裸键路径零变化）、`hooks/use-global-shortcuts.ts`（接线 `document.querySelector` DOM 存在性探测）、`hooks/use-chat-shortcuts.ts`（Escape 路径内联选择器串替换为常量，行为不变）、`keyboard-bindings.test.ts`（+4 case：Cmd/Ctrl 平台一致让路、裸键含 Escape 不受影响、弹层内输入框聚焦同样让路、缺省注入行为不变；注册表无歧义门禁 2 case 不动）
+对应问题：UI-23 记录遗留登记「设置 Dialog（Radix modal）打开时 Mod+K 等仍会触发命令面板（跨栈 Mod 键让路未做，登记可选后续）」；原登记理由「Radix 无 DOM 判定锚点」经调查修正——UI-23b Escape 让路已验证 role×data-state 锚点可用，本批提升为常量共享
+测试命令及结果：keyboard-bindings 28→32 case；全量 vitest 447 passed；build/lint(--max-warnings 0)/styles:report(923:929，0 无引用)/contract:check(115:112) 全绿；零 Rust 改动
+截图：N/A（键盘行为修复）
+人工走查：设置 Dialog/Sheet/下拉/Select 打开时 Mod+K/N/B/L/1..4/J/Shift+A 不触发底层动作、关闭后恢复；非 Mac 终端内 Ctrl 键透传 shell 不受影响；命令面板自身打开时 Mod+K toggle 语义保留——遗留 UI-28/29
+风险/回退：单 commit 可回退；裁决追加为第 ⑤ 步，既有四步优先级与语义不变；Popover（非 modal 但 role=dialog+data-state）同样命中——与 Escape 让路既有副作用范围一致，保守可接受
+阻塞或剩余事项：**决策**——自研覆盖层（command-palette/McpStatusDialog/katex 菜单，无 data-state 锚点）不纳入 Mod 让路：命令面板打开时 Mod+K 的 toggle 语义保留（加入 hasOpenOverlay 会使其变 no-op，属行为变化），如需另立决策；WebView2 加速键转发验证与 BranchBar 弹窗观察两项既有登记不变（UI-28）
+验收人/日期：待人工（UI-28/29）
+
+任务：UI-22（遗留领取：rag_status 内联透出失败原因）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `6fdee44`；结果 `01a4609`，单 commit 可回退
+实现文件与范围：后端——新增 `rag/failure.rs` 独立小模块（`RagFailure{message,at_ms}` + `RagFailureLog`：内部 Arc 的 Clone 共享写入端，record/clear/get 临界区只做内存读写；+4 test；manager.rs 已超 500 行规模红线，新增能力不再膨胀该文件）、`rag/mod.rs`（注册子模块）、`rag/manager.rs`（`last_error: RagFailureLog` 字段；三采集点——①`ensure_started`/`restart` 的 spawn+握手 Err 先 record(`{error:#}`) 再上抛：一处覆盖二进制缺失/spawn 失败/握手超时/握手前退出/健康检查超时全部失败串，含 app 启动自动拉起路径〔该处零改动〕；②wait reaper 运行期退出/等待失败 record；③`register_handle` 成功即 clear）、`rag/commands.rs`（裸 `json!` → `RagRuntimeStatus` DTO：camelCase + skip_serializing_if，`lastError/lastErrorAt`；rag_status 与 rag_restart 成功路径共用；rag_status 保持纯读无副作用〔docs/tauri-commands.md 约束〕）。前端——`types/rag.ts`（RagRuntimeStatus 加 lastError/lastErrorAt）、`app-settings/rag/rag-config.ts`（deriveRagRuntimeState 入参加 lastError、返回值加 reason：仅 stopped 态透出〔trim 后空白视同无原因〕，running/starting 恒 null 防陈旧记录误导；不新增第 4 状态，is-stopped 红点已双编码）、`RagRuntimeAndImportSections.tsx`（状态条下 reason 非空时渲染原因行，复用既有 `.ai-rag-feedback.is-error` 类零新增 CSS；useRagKbConfig 整对象透传零改动）、`docs/tauri-commands.md`（rag_status 返回字段说明更新）
+对应问题：UI-22c 记录边界登记「rag_status 后端仅返回 {running,port} 无失败原因字段……另立小后端任务（RagRuntimeStatus DTO 加 error/state，非 schema 迁移）」；审计 V06（异常含真实原因）
+测试命令及结果：rag/failure.rs 4 case（记录/清空/覆盖/clone 共享）+ rag-config.test 4 处 toEqual 补 reason:null + 新增 2 case（stopped 透出/running 陈旧不透出）；cargo check 通过（2 个既有 private_interfaces 警告与本批无关）、cargo test 507→511 passed；全量 vitest 449 passed；build/lint/styles:report(923:929 不变——零新增类)/contract:check(115:112——字段级变化不在命令名级检查范围) 全绿
+截图：N/A（状态展示增强）
+人工走查：制造启动失败（如移走 sidecar 二进制）→ 探活窗口耗尽后「未运行」下方内联显示真实原因串；启动成功 → 原因行消失；restart 失败 → 原因更新为新失败串；运行期 kill sidecar → 轮询窗口内显示「已退出：…」原因——遗留 UI-28/29（需 cargo 重建 + 重启 tauri）
+风险/回退：单 commit 可回退（DTO 字段为纯增量，前端旧代码读 {running,port} 兼容）；restart 内主动 stop 触发的 reaper 记录会被随后的启动成功清空或启动失败覆盖；极小竞态窗口（reaper 记录晚于 clear 落库）由「前端仅 stopped 态透出」兜底，running 态陈旧记录不可见；last_error 仅内存态，无 schema/持久化面
+阻塞或剩余事项：**不做（登记）**——握手前退出的真因常只在 sidecar stderr，manager 留最近 N 行 stderr 环形片段拼进 message 的增强未纳入（原因行已可读，完整排查仍由服务日志面板承担），如需另立小任务；RagFailureLog 语义为「最近一次失败」非「当前状态的因」，前端 stopped 门控已对齐
+验收人/日期：待人工（UI-28/29）
+
+任务：UI-25（遗留领取 a：会话搜索错误显式重试）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `5b7414d`；结果 `f36e94a`，单 commit 可回退
+实现文件与范围：`chat-page-v2/useChatSessionController.ts`（返回对象增 retrySessions：按 trimmedSearch 分派 sessionSearchQuery/sessionsQuery 的 refetch——useSessionSearchQuery 即标准 useQuery，底层 hook 零改动）、`chat-page-v2.tsx`（onSessionsRetry 下传）、`chat/chat-shell.tsx`（Props 增可选 onSessionsRetry 透传 Sidebar）、`layout/sidebar.tsx`（Props 增可选 onRetry；错误块 `<p>` 改容器+文案+「重试」outline 按钮，onRetry 缺省不渲染向后兼容；danger 色仍限文案——outline 按钮无自带文字色不继承错误色）
+对应问题：UI-25 记录决策登记「会话搜索错误未加显式重试按钮……登记可选后续」
+测试命令及结果：无新增纯函数（refetch 透传管线），全量 vitest 443 passed 不回退；build/lint/styles:report(923:929，.ai-session-search-error 引用保持)/contract:check(115:112) 全绿；零 Rust 改动
+截图：N/A
+人工走查：制造搜索失败（断网/后端错误）→ 错误文案+「重试」按钮可见，点击重跑查询；非搜索态列表错误不显示按钮（sessionsError 仅搜索态产出，与既有语义一致）——遗留 UI-28/29
+风险/回退：单 commit 可回退；三层均为可选 props 纯增量，其余 Sidebar 调用方（无 onRetry）渲染不变
+阻塞或剩余事项：无
+验收人/日期：待人工（UI-28/29）
+
+任务：UI-25（遗留领取 b：「配置模型」深链直达具体分类）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `f36e94a`；结果 `6fdee44`，单 commit 可回退
+实现文件与范围：`types/chat.ts`（新增 OpenSettingsOptions 共享深链参数类型——providersCategory?: ModelCategory，types.ts 经 export * 自动再导出）、`AppSettingsDialog.tsx`（新增 initialProvidersCategory prop 作 providersCategory state 初值，复用 PurposesPage 跳转既有 key 重挂载 + ProvidersPage.initialCategory 机制零额外改动）、`chat/chat-shell.tsx`（onOpenSettings 签名 () => void → (options?: OpenSettingsOptions) => void；ModelSelector 深链改 onOpenSettings({providersCategory:"text"})——chatModelEntries 本就按 text 分类过滤）、`chat-page-v2.tsx`/`project/ProjectWorkbenchContent.tsx`（签名同步纯透传）、`HomeChatPage.tsx`（settingsInitialCategory state + 回调落值 + Dialog 传参；MCP 入口清残留分类）、`ProjectPage.tsx`+`project/ProjectOverlays.tsx`（项目侧同法参数化，settingsProvidersCategory prop 下传）、`architecture/chat/ArchitectureChatPanel.tsx`（就地懒挂写死 initialProvidersCategory="vision"——visionEntries 本就按 vision 过滤）
+对应问题：UI-25 记录决策登记「未把 onOpenSettings 参数化为 onOpenSettings(tab) 以免牵动多处调用方」与边界登记「如需直达具体槽位另立小任务（非 schema 迁移）」
+测试命令及结果：无新增纯函数（props 参数化管线，tsc 强制签名一致），全量 vitest 447 passed 不回退；build/lint/styles:report(923:929)/contract:check(115:112) 全绿；零 Rust 改动
+截图：N/A
+人工走查：主聊天/项目聊天清空对话模型库 → 点「配置模型」→ 设置打开在「模型服务」页且「对话模型」分类标签激活；架构助手清空视觉模型 → 落「视觉模型」标签；Header 下拉/命令面板/侧栏 footer 等无参入口行为不变（默认 general/providers 页）；PurposesPage 内部跳转不受影响——遗留 UI-28/29
+风险/回退：单 commit 可回退；(options?) 可选参数对无参调用点 TS 兼容（Header/CommandPalette/SidebarFooterActions 零改动）；Dialog 条件挂载使 state 初值每次打开生效，无陈旧分类残留（HomeChatPage MCP 入口显式清空兜底）
+阻塞或剩余事项：发送失败场景的后端「模型未配置」错误码深链（对话中报错→直达对应槽位）仍为可选后续（需后端错误码/用途槽位字段，非 schema 迁移）
+验收人/日期：待人工（UI-28/29）

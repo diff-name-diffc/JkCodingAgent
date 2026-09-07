@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAutoScroll } from "../../hooks/use-auto-scroll";
 import type {
   DispatcherMessage,
@@ -11,9 +12,11 @@ import { EmptyChatState } from "./empty-chat-state";
 import type { ChatEmptyStateContent } from "./chat-empty-content";
 import { MessageItem, buildItems, type MessageDisplayItem } from "./message-item";
 import {
-  computeWindowRange,
-  windowSpacerHeights,
+  OVERSCAN_ROWS,
+  ROW_ESTIMATE_PX,
+  shouldUseWindowing,
 } from "./message-list-metrics";
+import { RowUiStateProvider, useRowUiStateStore } from "./row-ui-state";
 import { StreamingMessage } from "./streaming-message";
 import { ChatScrollAnchor } from "./chat-scroll-anchor";
 import { useCopyOnSelect } from "./use-copy-on-select";
@@ -29,6 +32,13 @@ import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
  * Auto-follow logic (see use-auto-scroll.ts):
  *   - When the user is at the bottom, new streaming content pushes the view.
  *   - When the user scrolls up, follow stops; a floating "最新" button appears.
+ *
+ * 窗口化（UI-24b-3）：>300 条时启用 @tanstack/react-virtual 动态测量——
+ * estimateSize 只作首帧初值，每行挂载后经 measureElement（ResizeObserver）
+ * 实测修正，替换 24a 时代「固定 180px 估高 + spacer」的跳读/空白根因
+ * （审计 A11）。行卸载丢失的展开态由 RowUiStateProvider 的行级 store 恢复
+ * （UI-24b-1）；pinned 跟随仍由 DOM 级 useAutoScroll 承担（滚动容器
+ * scrollHeight 含虚拟化总高 div，两套机制无写入冲突）。
  */
 export interface MessageListProps {
   sessionId: string | null;
@@ -55,7 +65,16 @@ export interface MessageListProps {
 /** EmptyChatState 的领域化覆盖项（全部可选）。权威定义在 chat-empty-content。 */
 export type { ChatEmptyStateContent };
 
-export function MessageList({
+export function MessageList(props: MessageListProps) {
+  const rowUiState = useRowUiStateStore();
+  return (
+    <RowUiStateProvider value={rowUiState}>
+      <MessageListInner {...props} />
+    </RowUiStateProvider>
+  );
+}
+
+function MessageListInner({
   sessionId,
   messages,
   liveState,
@@ -83,80 +102,33 @@ export function MessageList({
   const { containerRef, pinned, scrollToBottom } = useAutoScroll(sessionId);
   const handleCopyOnSelect = useCopyOnSelect();
 
-  // 滚动度量（UI-24a-3）：单一 state + rAF 合帧——旧实现每个 scroll 事件
-  // setState×2 无节流；viewportHeight 只在 scroll 事件更新，容器 resize
-  // （切布局/分栏）不产生 scroll 事件，留下过期值。ResizeObserver 补上
-  // resize 通道；保活隐藏/折叠容器的 0 高度回调忽略，防窗口化参数被打成 0。
-  // useAutoScroll 的 containerRef 是回调 ref，本地组合 ref+state 跟踪元素。
+  // useAutoScroll 的 containerRef 是回调 ref；本地组合 ref 供 virtualizer 的
+  // getScrollElement 读取（挂载后由 measure() effect 触发 virtualizer 感知）。
   const scrollElementRef = React.useRef<HTMLDivElement | null>(null);
-  const [scrollElement, setScrollElement] = React.useState<HTMLDivElement | null>(null);
   const attachContainerRef = React.useCallback(
     (element: HTMLDivElement | null) => {
       scrollElementRef.current = element;
-      setScrollElement(element);
       containerRef(element);
     },
     [containerRef],
   );
-  const [scrollMetrics, setScrollMetrics] = React.useState({ scrollTop: 0, viewportHeight: 720 });
-  const scrollRafRef = React.useRef<number | null>(null);
-  const readScrollMetrics = React.useCallback(() => {
-    scrollRafRef.current = null;
-    const el = scrollElementRef.current;
-    if (!el) return;
-    const viewportHeight = el.clientHeight;
-    if (viewportHeight === 0) return;
-    setScrollMetrics((prev) =>
-      prev.scrollTop === el.scrollTop && prev.viewportHeight === viewportHeight
-        ? prev
-        : { scrollTop: el.scrollTop, viewportHeight },
-    );
-  }, []);
-  const scheduleScrollRead = React.useCallback(() => {
-    if (scrollRafRef.current !== null) return;
-    scrollRafRef.current = window.requestAnimationFrame(readScrollMetrics);
-  }, [readScrollMetrics]);
-  React.useEffect(
-    () => () => {
-      if (scrollRafRef.current !== null) window.cancelAnimationFrame(scrollRafRef.current);
-    },
-    [],
-  );
 
-  // 窗口化本体（估高/阈值）属 UI-24b 改造范围，此处语义与旧实现一致：
-  // >300 条才开窗，固定 180px 估高 ± 8 行 overscan。
-  const { useWindowing, startIndex, endIndex } = computeWindowRange({
-    itemCount: items.length,
-    scrollTop: scrollMetrics.scrollTop,
-    viewportHeight: scrollMetrics.viewportHeight,
+  const useWindowing = shouldUseWindowing(items.length);
+  const virtualizer = useVirtualizer({
+    count: useWindowing ? items.length : 0,
+    getScrollElement: () => scrollElementRef.current,
+    estimateSize: () => ROW_ESTIMATE_PX,
+    overscan: OVERSCAN_ROWS,
   });
-  // 仅开窗后才需要滚动度量：未开窗时 scroll/resize 不触发任何 setState。
-  const windowingRef = React.useRef(useWindowing);
-  windowingRef.current = useWindowing;
-  const handleScroll = React.useCallback(() => {
-    if (windowingRef.current) scheduleScrollRead();
-  }, [scheduleScrollRead]);
 
-  // 容器尺寸观测：切布局/分栏/窗口缩放后 viewportHeight 保持新鲜；
-  // 挂载时实测初值（720 仅首帧 fallback）。空态分支不渲染滚动容器，
-  // scrollElement 为 null 时自动跳过。
-  React.useLayoutEffect(() => {
-    if (!scrollElement) return;
-    readScrollMetrics();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (windowingRef.current) scheduleScrollRead();
-    });
-    observer.observe(scrollElement);
-    return () => observer.disconnect();
-  }, [scrollElement, readScrollMetrics, scheduleScrollRead]);
+  // 测量缓存按索引键控：items 数组身份变化（会话切换、截断/regenerate、
+  // finalize 追加）时清空重测，防止旧行高错位到新内容。流式期间 messages
+  // 身份稳定（活内容走 liveState 气泡），不会造成逐 token 清缓存。
+  React.useEffect(() => {
+    virtualizer.measure();
+  }, [items, virtualizer]);
 
   const isEmpty = items.length === 0 && !hasLiveContent;
-  const visibleItems = useWindowing ? items.slice(startIndex, endIndex) : items;
-  const spacers = windowSpacerHeights(
-    { useWindowing, startIndex, endIndex },
-    items.length,
-  );
 
   if (isEmpty) {
     return (
@@ -170,6 +142,39 @@ export function MessageList({
     );
   }
 
+  const renderRow = (item: MessageDisplayItem) => (
+    <MessageItem
+      key={item.id}
+      item={item}
+      pythonRunRecords={pythonRunRecords}
+      onRunPython={onRunPython}
+      onCopyMessage={onCopyMessage}
+      onRegenerateFromMessage={onRegenerateFromMessage}
+      onEditMessage={item.kind === "user" ? onEditMessage : undefined}
+      onOpenArtifact={onOpenArtifact}
+      onOpenSubAgent={onOpenSubAgent}
+    />
+  );
+
+  // 行间距语义对齐非窗口化路径的 gap-6（24px）：窗口化下 gap 不参与绝对
+  // 定位，改为烘焙进行高——每行 pb-6，由 measureElement 一并实测。
+  const virtualRows = useWindowing
+    ? virtualizer.getVirtualItems().map((virtualRow) => {
+        const item = items[virtualRow.index];
+        return (
+          <div
+            key={item.id}
+            ref={virtualizer.measureElement}
+            data-index={virtualRow.index}
+            className="absolute inset-x-0 top-0 pb-6"
+            style={{ transform: `translateY(${virtualRow.start}px)` }}
+          >
+            {renderRow(item)}
+          </div>
+        );
+      })
+    : null;
+
   return (
     <div className={cn("relative min-h-0 flex-1", className)}>
       <div
@@ -179,26 +184,27 @@ export function MessageList({
         aria-live="polite"
         aria-busy={isStreaming}
         onMouseUp={handleCopyOnSelect}
-        onScroll={handleScroll}
       >
-        <div className="chat-prose flex flex-col gap-6 py-6">
-          {useWindowing && <div style={{ height: spacers.top }} />}
-          {visibleItems.map((item) => (
-            <MessageItem
-              key={item.id}
-              item={item}
-              pythonRunRecords={pythonRunRecords}
-              onRunPython={onRunPython}
-              onCopyMessage={onCopyMessage}
-              onRegenerateFromMessage={onRegenerateFromMessage}
-              onEditMessage={item.kind === "user" ? onEditMessage : undefined}
-              onOpenArtifact={onOpenArtifact}
-              onOpenSubAgent={onOpenSubAgent}
-            />
-          ))}
-          {useWindowing && <div style={{ height: spacers.bottom }} />}
+        {/* 外层 column 是 useAutoScroll ResizeObserver 的观察目标
+            （firstElementChild）：窗口化时行高实测修正与流式气泡增长都
+            体现为它的高度变化，pinned 跟随据此触发。 */}
+        <div
+          className={cn(
+            "chat-prose flex flex-col pt-6",
+            !useWindowing && "gap-6",
+            hasLiveContent || liveState?.runError ? "" : "pb-6",
+          )}
+        >
+          {useWindowing ? (
+            <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+              {virtualRows}
+            </div>
+          ) : (
+            items.map(renderRow)
+          )}
 
-          {/* Trailing live streaming bubble */}
+          {/* Trailing live streaming bubble（窗口化时位于总高 div 之后的
+              常规流，行 pb-6 已提供与末行的 24px 间距） */}
           {hasLiveContent && liveState && (
             <StreamingMessage
               segments={liveState.streamingSegments}

@@ -5,6 +5,7 @@ import type {
   DispatcherModelConfig,
   DispatcherToolArtifactRef,
   ImageSegment,
+  OpenSettingsOptions,
   PythonCodeRunRecord,
   ChatSession,
   ChatCategory,
@@ -76,7 +77,8 @@ export interface ChatShellProps {
   onDeleteSession?: (sessionId: string) => void;
   searchValue: string;
   onSearchChange: (value: string) => void;
-  onOpenSettings: () => void;
+  /** 打开设置；可携带深链参数（UI-25：「配置模型」直达具体分类标签）。 */
+  onOpenSettings: (options?: OpenSettingsOptions) => void;
   onCreateCategory?: (
     name: string,
     config?: { systemPrompt?: string; allowedTools?: string[] },
@@ -365,7 +367,7 @@ export function ChatShell({
             const entry = chatModelEntries.find((item) => item.id === entryId);
             if (entry) bindChatModel.mutate(entry);
           }}
-          onConfigureModel={onOpenSettings}
+          onConfigureModel={() => onOpenSettings({ providersCategory: "text" })}
         />
       }
       artifactPanel={

@@ -218,7 +218,11 @@ export function ArchitectureChatPanel({
 
       {showSettings && (
         <Suspense fallback={null}>
-          <AppSettingsDialog initialTab="providers" onClose={() => setShowSettings(false)} />
+          <AppSettingsDialog
+            initialTab="providers"
+            initialProvidersCategory="vision"
+            onClose={() => setShowSettings(false)}
+          />
         </Suspense>
       )}
     </div>

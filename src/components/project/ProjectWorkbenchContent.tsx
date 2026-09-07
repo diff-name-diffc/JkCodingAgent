@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import type { McpStatus, Project } from "../../types";
+import type { McpStatus, OpenSettingsOptions, Project } from "../../types";
 import type { useProjectPanels } from "../../hooks/useProjectPanels";
 import type { GraphTab } from "../../hooks/useGraphTabSync";
 import { splitDualPaneWidths, type WorkspaceBudget } from "./workspace-budget";
@@ -36,7 +36,7 @@ interface ProjectWorkbenchContentProps {
   onSelectSession: (sessionId: string | null) => void;
   onOpenMarkdownLink: (url: string) => void | Promise<void>;
   onOpenMcpStatus: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (options?: OpenSettingsOptions) => void;
   /** 工作区是否可见（保活隐藏时为 false）：门控聊天侧常驻副作用与
    * 主区标签视图（执行图等）的快捷键/自适应响应。 */
   workspaceVisible: boolean;

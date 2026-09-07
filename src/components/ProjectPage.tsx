@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import type { Project } from "../types";
+import type { ModelCategory, Project } from "../types";
 import { SessionPanel } from "./SessionPanel";
 import { PanelLeftOpen } from "lucide-react";
 import { AppRail } from "./shell/AppRail";
@@ -82,6 +82,10 @@ export function ProjectPage({
   // visible 只控制显示；仅「结束会话」卸载组件并 kill shell。
   const [terminalDock, setTerminalDock] = useState<TerminalDockState>(TERMINAL_DOCK_CLOSED);
   const [showDispatcherSettings, setShowDispatcherSettings] = useState(false);
+  // 「配置模型」深链携带的目标分类（UI-25 遗留）；null 走 ProvidersPage 缺省。
+  const [settingsProvidersCategory, setSettingsProvidersCategory] = useState<ModelCategory | null>(
+    null,
+  );
   const [showMcpStatus, setShowMcpStatus] = useState(false);
   const {
     status: mcpStatus,
@@ -316,7 +320,10 @@ export function ProjectPage({
       onSelectSession={handleSelectSession}
       onOpenMarkdownLink={handleOpenMarkdownLink}
       onOpenMcpStatus={() => setShowMcpStatus(true)}
-      onOpenSettings={() => setShowDispatcherSettings(true)}
+      onOpenSettings={(options) => {
+        setSettingsProvidersCategory(options?.providersCategory ?? null);
+        setShowDispatcherSettings(true);
+      }}
       workspaceVisible={visible}
       budget={budget}
       editorPaneRatio={editorPaneRatio}
@@ -379,6 +386,7 @@ export function ProjectPage({
     <ProjectOverlays
       project={project}
       showSettings={showDispatcherSettings}
+      settingsProvidersCategory={settingsProvidersCategory}
       showMcpStatus={showMcpStatus}
       mcpStatus={mcpStatus}
       mcpChecking={mcpChecking}

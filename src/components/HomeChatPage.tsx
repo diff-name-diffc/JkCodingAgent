@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from "react";
+import type { ModelCategory } from "../types";
 import { useDockedBrowserPanel } from "../hooks/useDockedBrowserPanel";
 import { useSplitterKeyboard } from "../hooks/use-splitter-keyboard";
 import { useBrowserSessionDock } from "../hooks/useBrowserSessionDock";
@@ -30,6 +31,8 @@ export function HomeChatPage() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState("providers");
+  // 「配置模型」深链携带的目标分类（UI-25 遗留）；null 走 ProvidersPage 缺省。
+  const [settingsInitialCategory, setSettingsInitialCategory] = useState<ModelCategory | null>(null);
   const [showMcpStatus, setShowMcpStatus] = useState(false);
   // 全局 MCP 状态快照：所有聊天会话共享；聊天界面实际只展示当前会话
   // 所属分类显式配置的子集（见下方 chatMcpStatus 派生）。
@@ -104,8 +107,9 @@ export function HomeChatPage() {
           mcpStatus={mcpConfigured ? chatMcpStatus : null}
           mcpChecking={mcpChecking}
           onOpenMcpStatus={mcpConfigured ? () => setShowMcpStatus(true) : undefined}
-          onOpenSettings={() => {
+          onOpenSettings={(options) => {
             setSettingsInitialTab("providers");
+            setSettingsInitialCategory(options?.providersCategory ?? null);
             setShowSettings(true);
           }}
         />
@@ -146,6 +150,7 @@ export function HomeChatPage() {
             onOpenSettings={() => {
               setShowMcpStatus(false);
               setSettingsInitialTab("mcp");
+              setSettingsInitialCategory(null);
               setShowSettings(true);
             }}
             onClose={() => setShowMcpStatus(false)}
@@ -157,6 +162,7 @@ export function HomeChatPage() {
         <Suspense fallback={null}>
           <AppSettingsDialog
             initialTab={settingsInitialTab}
+            initialProvidersCategory={settingsInitialCategory ?? undefined}
             onClose={() => setShowSettings(false)}
           />
         </Suspense>

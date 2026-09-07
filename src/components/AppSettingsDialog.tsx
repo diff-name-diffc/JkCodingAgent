@@ -90,11 +90,14 @@ function normalizeInitialTab(tab?: string): SettingsNavKey {
 export function AppSettingsDialog({
   onClose,
   initialTab,
+  initialProvidersCategory,
   projectId,
   projectPath,
 }: {
   onClose: () => void;
   initialTab?: string;
+  /** 打开「模型服务」页时的初始分类标签（UI-25 深链：对话/视觉等，缺省 text）。 */
+  initialProvidersCategory?: ModelCategory;
   projectId?: string;
   projectPath?: string;
 }) {
@@ -103,8 +106,11 @@ export function AppSettingsDialog({
     normalizeInitialTab(initialTab),
   );
   const [confirmingClose, setConfirmingClose] = useState(false);
-  // 「模型用途」跳转「模型服务」时携带的目标分类（激活对应标签）。
-  const [providersCategory, setProvidersCategory] = useState<ModelCategory | null>(null);
+  // 「模型用途」跳转「模型服务」时携带的目标分类（激活对应标签）；
+  // 外部深链（配置模型按钮）经 initialProvidersCategory 提供初值（UI-25 遗留）。
+  const [providersCategory, setProvidersCategory] = useState<ModelCategory | null>(
+    initialProvidersCategory ?? null,
+  );
 
   const requestClose = useCallback(() => {
     if (store.dirty) setConfirmingClose(true);

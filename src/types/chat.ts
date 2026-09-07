@@ -192,6 +192,14 @@ export interface SshReviewConfig {
 /** 模型库分类：按模型调用方式划分，「模型服务」页按此分标签管理。 */
 export type ModelCategory = "text" | "vision" | "image" | "imageEdit" | "asr" | "tts" | "embedding";
 
+/**
+ * 打开设置弹窗的深链参数（UI-25 遗留登记）：「配置模型」等入口可携带目标
+ * 分类，落到「模型服务」页对应标签。无参调用打开默认页，签名向后兼容。
+ */
+export interface OpenSettingsOptions {
+  providersCategory?: ModelCategory;
+}
+
 /** 分类模型库条目：每个条目独立持有 url/apiKey/model 与容量（maxTokens/contextWindow），
  * 供「模型用途」页按分类引用——容量与凭据一样以库条目为唯一权威源。 */
 export interface ModelLibraryEntry {

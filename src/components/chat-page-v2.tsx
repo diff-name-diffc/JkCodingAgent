@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { DispatcherMessage, ImageSegment, McpStatus } from "../types";
+import type { DispatcherMessage, ImageSegment, McpStatus, OpenSettingsOptions } from "../types";
 import { useToast } from "./Toast";
 import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTokenUsage";
 import { useLiveSessionState } from "./dispatcher-chat/useLiveSessionState";
@@ -49,7 +49,7 @@ export interface ChatPageV2Props {
   projectName?: string | null;
   mcpStatus?: McpStatus | null;
   mcpChecking?: boolean;
-  onOpenSettings: () => void;
+  onOpenSettings: (options?: OpenSettingsOptions) => void;
   onOpenMcpStatus?: () => void;
   onClosePanel?: () => void;
   embedded?: boolean;

@@ -1,13 +1,30 @@
 import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { X, FileCode, FileText, FilePlus2, FileMinus2, ArrowRightLeft, Binary } from "lucide-react";
+import {
+  X,
+  FileCode,
+  FileText,
+  FilePlus2,
+  FileMinus2,
+  ArrowRightLeft,
+  Binary,
+  Columns2,
+  Rows2,
+} from "lucide-react";
 import { FileGlyph } from "../file-icons";
+import { cn } from "../lib/cn";
 import {
   diffFileDisplayPath,
   parseUnifiedDiff,
   type DiffLineInfo,
   type ParsedDiffFile,
 } from "../lib/git-diff";
+import { buildSplitRows, type SplitRow, type SplitSide } from "../lib/git-diff-split";
+import {
+  loadDiffViewMode,
+  saveDiffViewMode,
+  type DiffViewMode,
+} from "../lib/diff-view-prefs";
 
 interface Props {
   projectPath: string;
@@ -46,6 +63,16 @@ export function GitDiffViewer({
   const [diff, setDiff] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // unified / split 视图模式（UI-17 遗留）：全局 UI 偏好，跨会话持久化。
+  const [viewMode, setViewMode] = useState<DiffViewMode>(() => loadDiffViewMode());
+
+  const toggleViewMode = () => {
+    setViewMode((prev) => {
+      const next: DiffViewMode = prev === "split" ? "unified" : "split";
+      saveDiffViewMode(next);
+      return next;
+    });
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -91,6 +118,15 @@ export function GitDiffViewer({
           {title}
         </span>
         <button
+          onClick={toggleViewMode}
+          className="ai-git-icon-button"
+          aria-label={viewMode === "split" ? "切换到单栏视图" : "切换到并排视图"}
+          aria-pressed={viewMode === "split"}
+          title={viewMode === "split" ? "切换到单栏视图" : "切换到并排视图"}
+        >
+          {viewMode === "split" ? <Rows2 size={14} /> : <Columns2 size={14} />}
+        </button>
+        <button
           onClick={onClose}
           className="ai-git-icon-button"
           aria-label="关闭差异视图"
@@ -110,7 +146,7 @@ export function GitDiffViewer({
         ) : (
           <div className="git-diff-viewer">
             {parsedFiles.map((file, fi) => (
-              <DiffFileSection key={fi} file={file} />
+              <DiffFileSection key={fi} file={file} viewMode={viewMode} />
             ))}
           </div>
         )}
@@ -121,7 +157,13 @@ export function GitDiffViewer({
 
 // ── File section ────────────────────────────────────────────────────────────
 
-function DiffFileSection({ file }: { file: ParsedDiffFile }) {
+function DiffFileSection({
+  file,
+  viewMode,
+}: {
+  file: ParsedDiffFile;
+  viewMode: DiffViewMode;
+}) {
   const isRename = file.renameFrom !== null && file.renameTo !== null;
   const displayPath = diffFileDisplayPath(file);
 
@@ -154,9 +196,9 @@ function DiffFileSection({ file }: { file: ParsedDiffFile }) {
         file.hunks.map((hunk, hi) => (
           <div key={hi}>
             <div className="git-diff-hunk-header">{hunk.header}</div>
-            {hunk.lines.map((line, li) => (
-              <DiffLineRow key={li} line={line} />
-            ))}
+            {viewMode === "split"
+              ? buildSplitRows(hunk).map((row, ri) => <SplitRowView key={ri} row={row} />)
+              : hunk.lines.map((line, li) => <DiffLineRow key={li} line={line} />)}
           </div>
         ))
       )}
@@ -189,6 +231,42 @@ function DiffLineRow({ line }: { line: DiffLineInfo }) {
       <span className="git-diff-ln">{line.newLn ?? ""}</span>
       <span className={signCls}>{signChar}</span>
       <span className="git-diff-content">{line.content || " "}</span>
+    </div>
+  );
+}
+
+// ── Split (side-by-side) row ──────────────────────────────────────────────────
+
+function SplitRowView({ row }: { row: SplitRow }) {
+  return (
+    <div className="git-diff-split-row">
+      <SplitSideView side={row.left} />
+      <SplitSideView side={row.right} />
+    </div>
+  );
+}
+
+function SplitSideView({ side }: { side: SplitSide }) {
+  // empty 占位侧（del/add run 不等长时补齐）：灰底无内容，读屏跳过。
+  if (side.type === "empty") {
+    return (
+      <div className="git-diff-split-side git-diff-split-side--empty" aria-hidden="true" />
+    );
+  }
+
+  const signCls =
+    side.type === "add"
+      ? "git-diff-sign git-diff-sign--add"
+      : side.type === "del"
+        ? "git-diff-sign git-diff-sign--del"
+        : "git-diff-sign";
+  const signChar = side.type === "add" ? "+" : side.type === "del" ? "−" : " ";
+
+  return (
+    <div className={cn("git-diff-split-side", `git-diff-split-side--${side.type}`)}>
+      <span className="git-diff-ln">{side.ln ?? ""}</span>
+      <span className={signCls}>{signChar}</span>
+      <span className="git-diff-content">{side.content || " "}</span>
     </div>
   );
 }

@@ -1604,3 +1604,75 @@ html:not(.dark) .git-diff-sign--add {
 html:not(.dark) .git-diff-sign--del {
   color: #cf222e;
 }
+
+/* ── Split (side-by-side) diff mode (UI-17 遗留) ──
+   每逻辑行 = 一个 grid 行，左右两栏等宽；内容 pre-wrap 换行而非逐行横向
+   滚动——同一 grid 行两侧自动等高，行对齐不受换行影响，也避免每行产生独立
+   横向滚动条。左=旧文件(del/ctx)、右=新文件(add/ctx)，短侧 empty 灰底占位。 */
+.git-diff-split-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.git-diff-split-side {
+  display: flex;
+  min-width: 0;
+  min-height: 20px;
+  line-height: 20px;
+}
+
+.git-diff-split-side:hover {
+  filter: brightness(1.08);
+}
+
+/* 中缝分隔线：左栏右缘作两栏分界。 */
+.git-diff-split-row > .git-diff-split-side:first-child {
+  border-right: 1px solid var(--border-dim);
+}
+
+.git-diff-split-side--add {
+  background: rgba(46, 160, 67, 0.12);
+}
+.git-diff-split-side--del {
+  background: rgba(248, 81, 73, 0.1);
+}
+.git-diff-split-side--empty {
+  background: color-mix(in srgb, var(--text-hint) 7%, transparent);
+}
+.git-diff-split-side--empty:hover {
+  filter: none;
+}
+
+/* split 内容换行；行号/符号槽复用 unified 的 .git-diff-ln/.git-diff-sign。 */
+.git-diff-split-side .git-diff-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding-right: 10px;
+}
+.git-diff-split-side--add .git-diff-content {
+  color: #afd8af;
+}
+.git-diff-split-side--del .git-diff-content {
+  color: #f0a8a4;
+}
+.git-diff-split-side--ctx .git-diff-content {
+  color: var(--text-secondary);
+}
+
+/* ── Split accents (light)：与 unified add/del 亮色同口径 ── */
+html:not(.dark) .git-diff-split-side--add {
+  background: rgba(46, 160, 67, 0.1);
+}
+html:not(.dark) .git-diff-split-side--del {
+  background: rgba(248, 81, 73, 0.08);
+}
+html:not(.dark) .git-diff-split-side--add .git-diff-content {
+  color: #1a7f37;
+}
+html:not(.dark) .git-diff-split-side--del .git-diff-content {
+  color: #cf222e;
+}
+html:not(.dark) .git-diff-split-side--ctx .git-diff-content {
+  color: var(--text-secondary);
+}

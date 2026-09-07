@@ -161,6 +161,12 @@ export function useChatSessionController({
   );
 
   const trimmedSearch = debouncedSearch.trim();
+  // 会话搜索/列表错误显式重试（UI-25 登记遗留）：refetch 身份由 React Query 保证稳定。
+  const refetchSessions = sessionsQuery.refetch;
+  const refetchSearch = sessionSearchQuery.refetch;
+  const retrySessions = useCallback(() => {
+    void (trimmedSearch ? refetchSearch() : refetchSessions());
+  }, [refetchSearch, refetchSessions, trimmedSearch]);
   const sessions = useMemo(
     () =>
       trimmedSearch
@@ -186,6 +192,7 @@ export function useChatSessionController({
       : sessionsQuery.isLoading || categoriesQuery.isLoading,
     sessionsError:
       trimmedSearch && sessionSearchQuery.error ? String(sessionSearchQuery.error) : undefined,
+    retrySessions,
     searchActive: Boolean(trimmedSearch),
     activeTitle:
       (sessionsQuery.data ?? []).find((session) => session.id === activeSessionId)?.title ?? null,

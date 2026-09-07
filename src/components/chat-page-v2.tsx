@@ -420,6 +420,7 @@ export function ChatPageV2({
           categories={chatSessions.categories}
           sessionsLoading={chatSessions.sessionsLoading}
           sessionsError={chatSessions.sessionsError}
+          onSessionsRetry={chatSessions.retrySessions}
           searchActive={chatSessions.searchActive}
           onActiveSessionChange={chatSessions.selectSession}
           onNewConversation={chatSessions.newConversation}

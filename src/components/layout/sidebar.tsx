@@ -42,6 +42,8 @@ export interface SidebarProps {
   footer?: React.ReactNode;
   loading?: boolean;
   error?: string;
+  /** 错误显式重试（UI-25 登记遗留）；缺省时仅展示错误文案不渲染按钮。 */
+  onRetry?: () => void;
   searchActive?: boolean;
 }
 
@@ -70,6 +72,7 @@ export function Sidebar({
   footer,
   loading,
   error,
+  onRetry,
   searchActive = false,
 }: SidebarProps) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
@@ -216,9 +219,16 @@ export function Sidebar({
             </ul>
           )}
           {!loading && error && (
-            <p className="ai-session-search-error px-2 py-8 text-center text-xs" title={error}>
-              搜索失败，请重试
-            </p>
+            <div className="flex flex-col items-center gap-2 px-2 py-8 text-center">
+              <p className="ai-session-search-error text-xs" title={error}>
+                搜索失败，请重试
+              </p>
+              {onRetry && (
+                <Button variant="outline" size="sm" onClick={onRetry}>
+                  重试
+                </Button>
+              )}
+            </div>
           )}
           {!loading && !error && sessions.length === 0 && (
             <p className="px-2 py-8 text-center text-xs text-muted-foreground">

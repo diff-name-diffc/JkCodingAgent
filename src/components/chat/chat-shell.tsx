@@ -66,6 +66,8 @@ export interface ChatShellProps {
   categories?: ChatCategory[];
   sessionsLoading?: boolean;
   sessionsError?: string;
+  /** 会话搜索/列表错误显式重试（UI-25 登记遗留）；缺省时侧栏不渲染重试按钮。 */
+  onSessionsRetry?: () => void;
   searchActive?: boolean;
   onActiveSessionChange: (id: string) => void;
   onNewConversation: () => void;
@@ -130,6 +132,7 @@ export function ChatShell({
   categories = [],
   sessionsLoading,
   sessionsError,
+  onSessionsRetry,
   searchActive = false,
   onActiveSessionChange,
   onNewConversation,
@@ -336,6 +339,7 @@ export function ChatShell({
             onMoveSessionToCategory={onMoveSessionToCategory}
             loading={sessionsLoading}
             error={sessionsError}
+            onRetry={onSessionsRetry}
             searchActive={searchActive}
           />
         )

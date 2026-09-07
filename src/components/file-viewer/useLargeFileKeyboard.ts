@@ -1,7 +1,16 @@
 import { useCallback, useEffect } from "react";
 import { isImeComposing } from "../../utils";
+import {
+  hasOpenOverlay,
+  isTopOverlay,
+  popOverlay,
+  pushOverlay,
+} from "../../lib/overlay-stack";
 import type { SelectionRange } from "./large-file-types";
 import { getCaretOffset, setCaretPosition } from "./useLargeFileViewport";
+
+/** 大文件查看器在覆盖层栈中的 id：选区存在时拥有 Escape（清除选区）。 */
+const LARGE_FILE_OVERLAY_ID = "large-file-viewer";
 
 interface UseLargeFileKeyboardOptions {
   active: boolean;
@@ -167,7 +176,14 @@ export function useLargeFileKeyboard({
 
   useEffect(() => {
     if (!active) return;
+    // UI-23b：选区存在时查看器拥有 Escape（清除选区）——压入覆盖层栈，
+    // 底层快捷键（关 Artifact 等）据此让路；选区清空即弹栈归还 Escape。
+    const ownsEscape = Boolean(selectionRange);
+    if (ownsEscape) pushOverlay(LARGE_FILE_OVERLAY_ID);
     const onKeyDown = (event: KeyboardEvent) => {
+      // 已被更内层处理，或更高层自研覆盖层（命令面板等）打开时让路。
+      if (event.defaultPrevented) return;
+      if (hasOpenOverlay() && !isTopOverlay(LARGE_FILE_OVERLAY_ID)) return;
       const modifier = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
       if (modifier && key === "c" && selectionRange) {
@@ -193,7 +209,10 @@ export function useLargeFileKeyboard({
       }
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      if (ownsEscape) popOverlay(LARGE_FILE_OVERLAY_ID);
+    };
   }, [
     active,
     clearSelection,

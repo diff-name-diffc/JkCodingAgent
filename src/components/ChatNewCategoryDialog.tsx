@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, RefreshCw, X } from "lucide-react";
 import type { AgentToolInfo } from "../types";
+import { useOverlayEscape } from "../hooks/use-overlay-escape";
+import { useFocusTrap } from "../hooks/use-focus-trap";
 
 export interface ChatCategoryCreateConfig {
   systemPrompt?: string;
@@ -36,6 +38,7 @@ export function ChatNewCategoryDialog({
   const [loadingTools, setLoadingTools] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     if (open) {
@@ -44,9 +47,13 @@ export function ChatNewCategoryDialog({
       setCustomTools(false);
       setShowAdvanced(false);
       setSelectedTools([]);
-      setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [open, initialName]);
+
+  // UI-23b：Escape 走覆盖层栈统一裁决；焦点陷阱初始聚焦名称输入框，
+  // 关闭后焦点还原到触发按钮。
+  useOverlayEscape("new-category-dialog", open, onClose);
+  useFocusTrap(open, formRef, { initialFocus: () => inputRef.current });
 
   const loadTools = useCallback(async () => {
     if (!showAgentConfig) return;
@@ -69,15 +76,6 @@ export function ChatNewCategoryDialog({
       loadTools();
     }
   }, [loadTools, open, showAgentConfig]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -104,6 +102,10 @@ export function ChatNewCategoryDialog({
       onClick={onClose}
     >
       <form
+        ref={formRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         onSubmit={handleSubmit}
         onClick={(e) => e.stopPropagation()}
         className={showAgentConfig ? "ai-dialog ai-category-dialog ai-category-dialog-wide" : "ai-dialog ai-category-dialog"}

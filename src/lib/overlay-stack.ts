@@ -23,7 +23,24 @@ export function isTopOverlay(id: string): boolean {
   return stack.length > 0 && stack[stack.length - 1] === id;
 }
 
+/** 当前栈顶覆盖层 id（空栈返回 null）。 */
+export function peekOverlay(): string | null {
+  return stack.length > 0 ? stack[stack.length - 1] : null;
+}
+
 /** 是否有自研覆盖层打开（底层快捷键据此让路）。 */
 export function hasOpenOverlay(): boolean {
   return stack.length > 0;
+}
+
+/**
+ * Escape 统一裁决（UI-23b）：仅当自己是栈顶且事件未被更内层处理时响应。
+ * 纯函数，node 可测；接线方为 use-overlay-escape 与各自研覆盖层。
+ */
+export function shouldHandleEscape(
+  stackTop: string | null,
+  id: string,
+  defaultPrevented: boolean,
+): boolean {
+  return !defaultPrevented && stackTop !== null && stackTop === id;
 }

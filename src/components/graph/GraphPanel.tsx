@@ -32,7 +32,7 @@ import {
   normalizePlanStatus,
   parseGraphDefinition,
 } from "./graph-utils";
-import { hasOpenOverlay } from "../../lib/overlay-stack";
+import { useOverlayEscape } from "../../hooks/use-overlay-escape";
 
 const nodeTypes: NodeTypes = { graphNode: GraphNodeView };
 
@@ -121,20 +121,11 @@ function GraphPanelInner({
   const canResumeRun = planStatus === "failed" || planStatus === "cancelled";
 
   // Escape 只关抽屉（选中节点）；关闭面板走标签关闭语义。
-  // 让路规则：更高层自研覆盖层打开时不响应；Radix 弹层自行处理并以防
-  // defaultPrevented 兜底；隐藏工作区（保活）不注册快捷键。
-  useEffect(() => {
-    if (!active) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      if (hasOpenOverlay()) return;
-      if (!selectedNodeId) return;
-      event.preventDefault();
-      setSelectedNodeId(null);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [active, selectedNodeId, setSelectedNodeId]);
+  // UI-23b：抽屉打开时压入覆盖层栈——统一「栈顶裁决」使底层快捷键
+  // （关 Artifact 等）让路，不再一次按键双关；隐藏工作区（active=false，
+  // 保活）不注册、不占栈。
+  const closeNodeDrawer = useCallback(() => setSelectedNodeId(null), [setSelectedNodeId]);
+  useOverlayEscape("graph-node-drawer", active && Boolean(selectedNodeId), closeNodeDrawer);
 
   // 保活切回 / pane 重显：无手动视口记忆时重新适应画布（有记忆则尊重用户位置）。
   const prevActiveRef = useRef(active);

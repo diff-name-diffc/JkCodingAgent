@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
+import { useOverlayEscape } from "../../hooks/use-overlay-escape";
+import { useFocusTrap } from "../../hooks/use-focus-trap";
 
 /**
  * KaTeX 渲染结果的「智能复制」交互：
@@ -96,40 +98,39 @@ export function useKatexCopy(): {
     }
   }, []);
 
-  // 菜单打开期间：点击外部 / Escape / 滚动 / 缩放窗口时关闭。
+  // 菜单打开期间：点击外部 / 滚动 / 缩放窗口时关闭。
+  // Escape 移交覆盖层栈统一裁决（UI-23b useOverlayEscape），不再自行监听。
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!menu) return;
-    const close = () => setMenu(null);
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
     const onMouseDown = (event: globalThis.MouseEvent) => {
       if (event.target instanceof HTMLElement && event.target.closest(".ai-katex-menu")) {
         return;
       }
-      close();
+      closeMenu();
     };
     window.addEventListener("mousedown", onMouseDown);
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("resize", closeMenu);
     return () => {
       window.removeEventListener("mousedown", onMouseDown);
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("resize", closeMenu);
     };
-  }, [menu]);
+  }, [menu, closeMenu]);
+  useOverlayEscape("katex-copy-menu", Boolean(menu), closeMenu);
+  useFocusTrap(Boolean(menu), menuRef);
 
   const menuElement = menu
     ? createPortal(
-        <div className="ai-katex-menu" role="menu" style={{ left: menu.x, top: menu.y }}>
+        <div ref={menuRef} className="ai-katex-menu" role="menu" style={{ left: menu.x, top: menu.y }}>
           <button
             type="button"
             role="menuitem"
             onClick={() => {
               copyKatexTex(menu);
-              setMenu(null);
+              closeMenu();
             }}
           >
             复制公式源码

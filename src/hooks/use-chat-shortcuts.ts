@@ -50,6 +50,15 @@ export function useChatShortcuts(
         // 自研覆盖层（命令面板/执行图等）打开时让路：由栈顶覆盖层自己的
         // Escape 处理，避免一次按键同时关掉覆盖层与 Artifact 面板。
         if (hasOpenOverlay()) return;
+        // Radix 弹层（设置 Dialog / Sheet 抽屉 / 下拉菜单 / Select）不进自研栈，
+        // 且其 Escape 处理不 preventDefault——按 DOM 存在性让路（UI-23b）。
+        if (
+          document.querySelector(
+            '[role="dialog"][data-state="open"],[role="alertdialog"][data-state="open"],[role="menu"][data-state="open"],[role="listbox"][data-state="open"]',
+          )
+        ) {
+          return;
+        }
         event.preventDefault();
         handlersRef.current.onCloseArtifact?.();
       } },

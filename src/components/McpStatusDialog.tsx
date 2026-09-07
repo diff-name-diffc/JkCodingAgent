@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, RefreshCw, X } from "lucide-react";
 import type { McpScopeKind, McpStatus, McpToolTaskSupport } from "../types";
+import { useOverlayEscape } from "../hooks/use-overlay-escape";
+import { useFocusTrap } from "../hooks/use-focus-trap";
 import { StatusPill } from "./detail/StatusPill";
 
 function formatTimestamp(timestamp: number): string {
@@ -57,6 +59,13 @@ export function McpStatusDialog({
 }) {
   const [expandedServers, setExpandedServers] = useState<Record<string, boolean>>({});
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  // UI-23b：调用方条件渲染本组件（挂载即打开）——Escape 走覆盖层栈统一
+  // 裁决（此前键盘完全关不掉）；焦点陷阱初始聚焦关闭按钮，关闭后还原焦点。
+  useOverlayEscape("mcp-status", true, onClose);
+  useFocusTrap(true, dialogRef, { initialFocus: () => closeButtonRef.current });
 
   const isGlobal = scope === "global";
 
@@ -84,7 +93,14 @@ export function McpStatusDialog({
 
   return (
     <div className="ai-mcp-overlay" onClick={onClose}>
-      <div className="ai-mcp-dialog" onClick={(event) => event.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={isGlobal ? "全局 MCP 状态" : "项目级 MCP 状态"}
+        className="ai-mcp-dialog"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="ai-mcp-header">
           <div>
             <div className="ai-mcp-title">{isGlobal ? "全局 MCP 状态" : "项目级 MCP 状态"}</div>
@@ -109,7 +125,13 @@ export function McpStatusDialog({
               />
               重新检查
             </button>
-            <button className="ai-mcp-icon-button" onClick={onClose} title="关闭">
+            <button
+              ref={closeButtonRef}
+              className="ai-mcp-icon-button"
+              onClick={onClose}
+              aria-label="关闭"
+              title="关闭"
+            >
               <X size={16} />
             </button>
           </div>

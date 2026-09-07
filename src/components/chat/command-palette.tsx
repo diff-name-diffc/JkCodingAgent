@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 import type { ChatSession } from "../../types";
 import { cn } from "../../lib/cn";
+import { useOverlayEscape } from "../../hooks/use-overlay-escape";
+import { useFocusTrap } from "../../hooks/use-focus-trap";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 
@@ -34,24 +36,18 @@ export function CommandPalette({
 }: CommandPaletteProps) {
   const [query, setQuery] = React.useState("");
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  const close = React.useCallback(() => onOpenChange(false), [onOpenChange]);
 
   React.useEffect(() => {
     if (!open) return;
     setQuery("");
-    window.setTimeout(() => inputRef.current?.focus(), 0);
   }, [open]);
 
-  React.useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onOpenChange(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onOpenChange, open]);
+  // UI-23b：Escape 走覆盖层栈统一裁决（只有栈顶层响应，底层快捷键让路，
+  // 消除「一键双关」）；焦点陷阱 + 关闭还原，初始焦点为搜索输入框。
+  useOverlayEscape("command-palette", open, close);
+  useFocusTrap(open, dialogRef, { initialFocus: () => inputRef.current });
 
   if (!open) return null;
 
@@ -74,6 +70,7 @@ export function CommandPalette({
         onClick={() => onOpenChange(false)}
       />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="命令面板"

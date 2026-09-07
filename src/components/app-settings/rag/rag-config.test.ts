@@ -53,6 +53,7 @@ describe("deriveRagRuntimeState（UI-22c）", () => {
     expect(deriveRagRuntimeState({ running: true, restarting: false, probing: false, port: 8200 })).toEqual({
       state: "running",
       text: "已运行 · 端口 8200",
+      reason: null,
     });
     // 端口缺失回退占位符
     expect(deriveRagRuntimeState({ running: true, restarting: false, probing: false }).text).toBe(
@@ -64,6 +65,7 @@ describe("deriveRagRuntimeState（UI-22c）", () => {
     expect(deriveRagRuntimeState({ running: false, restarting: true, probing: false })).toEqual({
       state: "starting",
       text: "重启中…",
+      reason: null,
     });
   });
 
@@ -71,6 +73,7 @@ describe("deriveRagRuntimeState（UI-22c）", () => {
     expect(deriveRagRuntimeState({ running: false, restarting: false, probing: true })).toEqual({
       state: "starting",
       text: "启动中…",
+      reason: null,
     });
   });
 
@@ -78,6 +81,47 @@ describe("deriveRagRuntimeState（UI-22c）", () => {
     expect(deriveRagRuntimeState({ running: false, restarting: false, probing: false })).toEqual({
       state: "stopped",
       text: "未运行",
+      reason: null,
     });
+  });
+
+  it("stopped 且后端记录失败原因 → reason 透出（UI-22c 遗留登记）", () => {
+    expect(
+      deriveRagRuntimeState({
+        running: false,
+        restarting: false,
+        probing: false,
+        lastError: "启动 rag-server sidecar 失败：No such file or directory",
+      }),
+    ).toEqual({
+      state: "stopped",
+      text: "未运行",
+      reason: "启动 rag-server sidecar 失败：No such file or directory",
+    });
+    // 空白串视同无原因
+    expect(
+      deriveRagRuntimeState({ running: false, restarting: false, probing: false, lastError: "   " })
+        .reason,
+    ).toBeNull();
+  });
+
+  it("running/starting 态不透出陈旧 lastError（reason 恒 null）", () => {
+    expect(
+      deriveRagRuntimeState({
+        running: true,
+        restarting: false,
+        probing: false,
+        port: 8200,
+        lastError: "上一次崩溃的旧记录",
+      }).reason,
+    ).toBeNull();
+    expect(
+      deriveRagRuntimeState({
+        running: false,
+        restarting: false,
+        probing: true,
+        lastError: "上一次崩溃的旧记录",
+      }).reason,
+    ).toBeNull();
   });
 });

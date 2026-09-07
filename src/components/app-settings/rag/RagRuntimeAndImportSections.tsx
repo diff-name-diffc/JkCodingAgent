@@ -14,12 +14,14 @@ export function RagRuntimeAndImportSections({ controller }: { controller: RagKbC
   const config = controller.config;
   if (!config) return null;
   // UI-22c：区分「已运行 / 启动中（探活窗口内）/ 未运行（窗口耗尽仍未起）」，
-  // 不再把启动失败或未响应永久显示成「启动中…」；真实失败原因见下方服务日志。
+  // 不再把启动失败或未响应永久显示成「启动中…」；遗留登记补齐——非运行态
+  // 内联透出后端记录的真实失败原因，完整排查仍见下方服务日志。
   const runtime = deriveRagRuntimeState({
     running: controller.runtimeStatus.running,
     restarting: controller.actionInProgress === "restart",
     probing: controller.runtimeProbing,
     port: controller.runtimeStatus.port,
+    lastError: controller.runtimeStatus.lastError,
   });
   return (
     <>
@@ -46,6 +48,11 @@ export function RagRuntimeAndImportSections({ controller }: { controller: RagKbC
           </button>
         </div>
       </div>
+      {runtime.reason && (
+        <span className="ai-rag-feedback is-error" title={runtime.reason}>
+          {runtime.reason}
+        </span>
+      )}
 
       <div className="ai-aha-section">
         <div className="ai-aha-section-header">

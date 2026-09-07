@@ -56,6 +56,10 @@ export interface RagKbSaveResult {
 export interface RagRuntimeStatus {
   running: boolean;
   port?: number | null;
+  /** 最近一次启动失败/运行期退出的原因（UI-22c）；启动成功后清空。 */
+  lastError?: string | null;
+  /** 失败发生时刻（Unix epoch 毫秒）。 */
+  lastErrorAt?: number | null;
 }
 
 export interface RagIngestJobStartResult {

@@ -7,12 +7,14 @@
 //! 子模块：
 //! - `config`：知识库配置的权威存储（全局库 app_config 表 rag 键）
 //! - `manager`：sidecar 进程启停 + 端口握手
+//! - `failure`：最近失败原因记录（rag_status 内联透出）
 //! - `logs`：sidecar stdout/stderr 的内存滚动日志
 //! - `transport`：对 sidecar 的 HTTP 调用
 //! - `commands`：暴露给前端的 Tauri 命令
 
 pub mod commands;
 pub mod config;
+pub mod failure;
 pub mod logs;
 pub mod manager;
 pub mod transport;

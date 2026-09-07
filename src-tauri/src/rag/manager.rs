@@ -49,6 +49,7 @@ use tokio::sync::{oneshot, watch, Mutex as AsyncMutex};
 use tokio::time::{sleep, timeout};
 
 use super::config::RagConfigStore;
+use super::failure::{RagFailure, RagFailureLog};
 use super::logs::{RagLogStore, RagLogStream};
 use super::transport::RagTransport;
 
@@ -194,6 +195,9 @@ pub struct RagManager {
     handle: Mutex<Option<Arc<RagHandle>>>,
     /// fork 点与退出路径的同步守卫（见 `ExitGuard`）。
     exit_guard: Mutex<ExitGuard>,
+    /// 最近失败原因（UI-22c）：Clone 出共享端进 reaper task，语义见
+    /// `rag::failure::RagFailureLog`。
+    last_error: RagFailureLog,
 }
 
 impl Default for RagManager {
@@ -205,6 +209,7 @@ impl Default for RagManager {
                 shutting_down: false,
                 pending_pgid: None,
             }),
+            last_error: RagFailureLog::default(),
         }
     }
 }
@@ -233,7 +238,15 @@ impl RagManager {
             d.kill();
             d.wait_exit().await;
         }
-        let handle = self.spawn_and_handshake(app, config_store).await?;
+        let handle = match self.spawn_and_handshake(app, config_store).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                // 一处覆盖全部启动失败串（二进制缺失/spawn 失败/握手超时/
+                // 握手前退出/健康检查超时），含 app 启动时的自动拉起路径。
+                self.last_error.record(format!("{error:#}"));
+                return Err(error);
+            }
+        };
         // 句柄登记与清除在途登记在同一临界区完成（见 register_handle），
         // 消除退出路径的回收竞态窗口。
         self.register_handle(handle)
@@ -247,7 +260,13 @@ impl RagManager {
     ) -> Result<Arc<RagHandle>> {
         let _guard = self.spawn_lock.lock().await;
         self.stop_locked().await;
-        let handle = self.spawn_and_handshake(app, config_store).await?;
+        let handle = match self.spawn_and_handshake(app, config_store).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.last_error.record(format!("{error:#}"));
+                return Err(error);
+            }
+        };
         self.register_handle(handle)
     }
 
@@ -297,6 +316,11 @@ impl RagManager {
             .as_ref()
             .filter(|h| h.is_alive())
             .map(Arc::clone)
+    }
+
+    /// 读取最近失败记录（供 `rag_status` 序列化，见 `rag::failure`）。
+    pub fn failure(&self) -> Option<RagFailure> {
+        self.last_error.get()
     }
 }
 
@@ -352,6 +376,9 @@ impl RagManager {
         }
         guard.pending_pgid = None;
         *self.handle.lock() = Some(Arc::clone(&handle));
+        drop(guard);
+        // 启动成功清空历史失败记录。
+        self.last_error.clear();
         Ok(handle)
     }
 }
@@ -491,19 +518,26 @@ async fn spawn_and_handshake_impl(
     // 进程退出后（含整组 kill 触发的退出）标记死亡并通知 wait_exit。
     let alive_for_wait = Arc::clone(&alive);
     let app_for_wait = app.clone();
+    let last_error_for_wait = manager.last_error.clone();
     tokio::spawn(async move {
         match child.wait().await {
             Ok(status) => {
                 mark_dead(&alive_for_wait, &exited_tx);
+                let message = format!("RAG sidecar 已退出：{status}");
                 app_for_wait
                     .state::<RagLogStore>()
-                    .append_system(&app_for_wait, format!("RAG sidecar 已退出：{status}"));
+                    .append_system(&app_for_wait, &message);
+                // 运行期退出记录失败原因（UI-22c）：restart 内主动 stop 触发的
+                // 记录会被随后的启动成功清空或启动失败覆盖；前端仅非运行态透出。
+                last_error_for_wait.record(message);
             }
             Err(error) => {
                 mark_dead(&alive_for_wait, &exited_tx);
+                let message = format!("RAG sidecar 等待退出失败：{error}");
                 app_for_wait
                     .state::<RagLogStore>()
-                    .append_system(&app_for_wait, format!("RAG sidecar 等待退出失败：{error}"));
+                    .append_system(&app_for_wait, &message);
+                last_error_for_wait.record(message);
             }
         }
     });

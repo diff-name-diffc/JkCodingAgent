@@ -334,7 +334,7 @@ RAG 为桌面端权威配置 + PyInstaller sidecar（HTTP 传输）；MCP 为「
 | 命令 | 实现位置 | 功能 | 前端调用 | 联动 |
 |---|---|---|---|---|
 | 🟢 `rag_restart` | `rag/commands.rs:57` | 原子重启 sidecar（同把 spawn_lock 内 stop+spawn+握手+健康检查，防两次 invoke 间插队产生孤儿进程） | `useRagKbConfig.ts:134` | `rag_save_kb_config` 热更失败的手动兜底 |
-| 🟢 `rag_status` | `commands.rs:85` | 纯读运行状态（不启动进程） | `useRagKbConfig.ts:69`（挂载轮询） | 应用启动自动 ensure_started 的观察窗口 |
+| 🟢 `rag_status` | `commands.rs:85` | 纯读运行状态（不启动进程）；返回 `RagRuntimeStatus` DTO：`running/port` + `lastError/lastErrorAt`（最近启动失败/运行期退出原因，启动成功即清空，UI-22c 遗留登记补齐） | `useRagKbConfig.ts:69`（挂载轮询） | 应用启动自动 ensure_started 的观察窗口 |
 | 🟢 `rag_get_kb_config` | `commands.rs:94` | 读知识库配置（内存快照优先，回源 DB app_config）。**含 qdrant/embedding api_key 明文回传**（doc 自认不脱敏）——见域内分析安全项 | `useRagKbConfig.ts:52` | 表单 dirty 基准 |
 | 🟢 `rag_save_kb_config` | `commands.rs:107` | 写 DB → 更新内存 → sidecar 在运行则热推送 `/config/reload`（返回 reloadError 区分；reload 失败不连坐保存报错） | `useRagKbConfig.ts:100` | 测试/导入前前端也先 persistConfig |
 | 🟡 `rag_test_qdrant`（可合并，收益最高） | `commands.rs:155` | **内部先 save_rag_config 落库** → 确保运行 → POST /test/qdrant | `useRagKbConfig.ts:157` | 🔧 内部 save 与前端 persistConfig 双重落库（同一次点击写 DB 两遍）；且 save 无热推送，与 rag_save_kb_config 行为分叉 |

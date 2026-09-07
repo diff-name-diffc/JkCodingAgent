@@ -52,6 +52,21 @@ fn io_error(
     }
 }
 
+/// `rag_status` / `rag_restart` 返回 DTO（UI-22c 遗留登记）：内联透出最近
+/// 失败原因，替代「未运行时只能翻服务日志」。camelCase 对齐前端
+/// `types/rag.ts` 的 `RagRuntimeStatus`。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagRuntimeStatus {
+    pub running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_at: Option<i64>,
+}
+
 /// 原子重启 sidecar：在同一把 spawn 锁内完成 stop + spawn，
 /// 避免前端两次 invoke 之间插入其他调用产生竞态或孤儿进程。
 #[tauri::command]
@@ -59,7 +74,7 @@ pub async fn rag_restart(
     app: AppHandle,
     manager: State<'_, RagManager>,
     config_store: State<'_, RagConfigStore>,
-) -> CommandResult<Value> {
+) -> CommandResult<RagRuntimeStatus> {
     rag_restart_impl(app, manager, config_store)
         .await
         .context("重启 RAG sidecar 失败")
@@ -70,24 +85,31 @@ async fn rag_restart_impl(
     app: AppHandle,
     manager: State<'_, RagManager>,
     config_store: State<'_, RagConfigStore>,
-) -> anyhow::Result<Value> {
+) -> anyhow::Result<RagRuntimeStatus> {
     let handle = manager
         .restart(&app, config_store.inner())
         .await
         .context("restart RAG sidecar")?;
-    Ok(serde_json::json!({
-        "running": true,
-        "port": handle.port,
-    }))
+    // 重启成功即无失败原因（manager 已在登记句柄时清空）。
+    Ok(RagRuntimeStatus {
+        running: true,
+        port: Some(handle.port),
+        last_error: None,
+        last_error_at: None,
+    })
 }
 
-/// 查询 sidecar 状态（是否运行、端口）。
+/// 查询 sidecar 状态（是否运行、端口、最近失败原因）。
+/// 纯读命令：不得附带重启/探活等副作用（docs/tauri-commands.md 约束）。
 #[tauri::command]
-pub fn rag_status(manager: State<'_, RagManager>) -> CommandResult<Value> {
-    Ok(serde_json::json!({
-        "running": manager.is_running(),
-        "port": manager.current().map(|h| h.port),
-    }))
+pub fn rag_status(manager: State<'_, RagManager>) -> CommandResult<RagRuntimeStatus> {
+    let failure = manager.failure();
+    Ok(RagRuntimeStatus {
+        running: manager.is_running(),
+        port: manager.current().map(|h| h.port),
+        last_error: failure.as_ref().map(|f| f.message.clone()),
+        last_error_at: failure.map(|f| f.at_ms),
+    })
 }
 
 /// 读取当前知识库配置（不脱敏，调用方需自行注意 UI 展示）。

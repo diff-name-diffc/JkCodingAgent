@@ -1,8 +1,8 @@
 # 改造任务明细与跟踪清单
 
-更新日期：2026-09-07（M3 余量 UI-27 + UI-24 遗留④⑥ + UI-33 更新）。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
+更新日期：2026-09-07（UI-24 遗留⑧ 监听器收敛 + 防劣化组件规模拆分）。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
 
-**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）、M3 批次二（UI-25「各场景空态/加载/错误规格落地」+ UI-26「产品术语与图标视觉统一」，空态与术语链）、M3 批次三（UI-23「键盘焦点与输入法整合」全量 + UI-24a「性能低风险切片」+ UI-24b「窗口化动态测量主改造与同链路热点」，键盘与性能链）实施完成；M3 余量（UI-27「旧样式与失效布局说明清理」+ UI-33「后端 CloakBrowser 用户可见串归位」+ UI-24 遗留④⑥）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）；**UI-24 保持 DOING**（24b 代码改造 + 遗留④⑥ 完成，验收「附实际 profile」与 ⑦⑧ 需运行态 DevTools 采样/盘点，不虚报）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）；M3 批次二源码基线 `c73a75f`，实施提交 `6d27277`（UI-25）/`13b93fb`（UI-26）；M3 批次三源码基线 `3118a41`，实施提交 `a835fcb`/`7e665b1`/`3d9ec51`/`85db7b3`（UI-23a/b/c/d）与 `21e70da`/`b3b2b8f`/`a9099fd`/`0a05499`（UI-24a-1..4）；UI-24b 切片源码基线 `d2d1f9c`，实施提交 `4b9a637`（24b-1/2 行级 UI 状态存储+Shiki 高亮 LRU 缓存）/`76bec9f`（24b-3 窗口化迁移 react-virtual 动态测量）/`2cfd798`（24b-4 merge 归一化身份缓存）/`ab5c2c5`（键分隔符修正），详见第 15 节。M3 余量源码基线 `3edcd81`，实施提交 `60d0c79`（UI-24⑥）/`a14773e`（UI-24④）/`b81136e`+`10f4a8f`+`a74e0b2`（UI-27）/`c1090ed`（UI-33），详见第 16 节。下一步 M4（UI-28–32 发布验收）与 UI-24 的 profile 验收、遗留⑦⑧。
+**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）、M3 批次二（UI-25「各场景空态/加载/错误规格落地」+ UI-26「产品术语与图标视觉统一」，空态与术语链）、M3 批次三（UI-23「键盘焦点与输入法整合」全量 + UI-24a「性能低风险切片」+ UI-24b「窗口化动态测量主改造与同链路热点」，键盘与性能链）实施完成；M3 余量（UI-27「旧样式与失效布局说明清理」+ UI-33「后端 CloakBrowser 用户可见串归位」+ UI-24 遗留④⑥）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）；**UI-24 保持 DOING**（24b 代码改造 + 遗留④⑥ 完成，验收「附实际 profile」与 ⑦⑧ 需运行态 DevTools 采样/盘点，不虚报）；UI-24 遗留⑧（shell-output 监听器 N→1 收敛 + open_shell 竞态修复）与防劣化组件规模拆分（arch-apply/SubAgentEditorDialog 超限文件按职责拆分）实施完成。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）；M3 批次二源码基线 `c73a75f`，实施提交 `6d27277`（UI-25）/`13b93fb`（UI-26）；M3 批次三源码基线 `3118a41`，实施提交 `a835fcb`/`7e665b1`/`3d9ec51`/`85db7b3`（UI-23a/b/c/d）与 `21e70da`/`b3b2b8f`/`a9099fd`/`0a05499`（UI-24a-1..4）；UI-24b 切片源码基线 `d2d1f9c`，实施提交 `4b9a637`（24b-1/2 行级 UI 状态存储+Shiki 高亮 LRU 缓存）/`76bec9f`（24b-3 窗口化迁移 react-virtual 动态测量）/`2cfd798`（24b-4 merge 归一化身份缓存）/`ab5c2c5`（键分隔符修正），详见第 15 节。M3 余量源码基线 `3edcd81`，实施提交 `60d0c79`（UI-24⑥）/`a14773e`（UI-24④）/`b81136e`+`10f4a8f`+`a74e0b2`（UI-27）/`c1090ed`（UI-33），详见第 16 节。下一步 M4（UI-28–32 发布验收）与 UI-24 的 profile 验收、遗留⑦⑧。
 
 ## 1. 跟踪约定
 
@@ -53,7 +53,7 @@
 | UI-21 | P1 / M | 设置布局与自动保存反馈 | 06,07 | REVIEW | claude（会话领取） | `23f6613/f968332/ba30612`；保存状态持续可见(头部指示器+去 toast 闪烁)+去重标题+导航三组小标题+分类 tabs 横滚+Radix Dialog 外壳/焦点；运行态焦点走查遗留 UI-23/28/29 |
 | UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | REVIEW | claude（会话领取） | `fe1b414/e24462d/444669a`；McpServersPage 拆分(648→305)+连接状态双编码(connection/mcp-server 域)+SSH 徽标去彩点+RAG 未运行不被吞；运行态走查遗留 UI-28/29 |
 | UI-23 | P1 / L | 键盘、焦点与输入法整合 | 07,09,11,21 | REVIEW | claude（会话领取） | `a835fcb/7e665b1/3d9ec51/85db7b3`；IME/终端/Monaco 防抢键+enabled 门控、Escape 栈裁决+焦点陷阱/还原、5 分隔条键盘化+步进纯函数、Mod+1..4/J/Shift+A 键位+ContextNav ARIA+列表 ↑↓ 导航；运行态走查遗留 UI-28/29 |
-| UI-24 | P1 / L | 长列表、流式输出和布局性能 | 08,12,19 | DOING | claude（会话领取） | 24a 切片 `21e70da/b3b2b8f/a9099fd/0a05499`：memo 击穿修复+role=log 多实例修复+scroll rAF 合帧/ResizeObserver+编辑器占比拖拽隔离；24b 切片 `4b9a637/76bec9f/2cfd798/ab5c2c5`：窗口化迁移 react-virtual 动态测量+行卸载展开态/高亮缓存恢复+merge 归一化身份缓存；④⑥ 切片 `a14773e`（live-state 逐 token setState 改 rAF 合帧+删 usage 死字段）/`60d0c79`（终端高度拖拽状态下沉面板）；**验收「附实际 profile」仍未满足**（需运行态 DevTools 采样，仓库无性能基建），⑦⑧ 遗留登记 |
+| UI-24 | P1 / L | 长列表、流式输出和布局性能 | 08,12,19 | DOING | claude（会话领取） | 24a 切片 `21e70da/b3b2b8f/a9099fd/0a05499`：memo 击穿修复+role=log 多实例修复+scroll rAF 合帧/ResizeObserver+编辑器占比拖拽隔离；24b 切片 `4b9a637/76bec9f/2cfd798/ab5c2c5`：窗口化迁移 react-virtual 动态测量+行卸载展开态/高亮缓存恢复+merge 归一化身份缓存；④⑥ 切片 `a14773e`（live-state 逐 token setState 改 rAF 合帧+删 usage 死字段）/`60d0c79`（终端高度拖拽状态下沉面板）；⑧ 切片 `f738041`（shell-output 监听器 N→1 收敛+open_shell 竞态修复）+防劣化 `f43b659/e820630`（arch-apply/SubAgentEditorDialog 超限拆分）；**验收「附实际 profile」仍未满足**（需运行态 DevTools 采样，仓库无性能基建），⑦ 评估结论与剩余监听器收敛待 UI-30 运行态验证 |
 | UI-25 | P1 / S | 各场景空态/加载/错误规格落地 | 10,12,15,20 | REVIEW | claude（会话领取） | `6d27277`；普通/项目/架构三入口领域空态(纯函数+5 test)+模型未配置深链取代装饰性禁用按钮+加载占位双编码；运行态走查遗留 UI-28/29 |
 | UI-26 | P2 / S | 产品术语与图标视觉统一 | 06,21,22 | REVIEW | claude（会话领取） | `13b93fb`；CloakBrowser→浏览器/Aha→JKCodingAgent 品牌归位+中英混排清理+5 缺名图标按钮补 aria-label；图标全应用统一遗留 UI-29、后端 Rust 串遗留 UI-33 |
 | UI-27 | P2 / M | 移除旧样式与失效布局说明 | 06,07,09,26 | REVIEW | claude（会话领取） | `b81136e`（死类/死动画清理，styles:report 924→923）/`10f4a8f`（孤儿 rightPanel 偏好与预算通道移除，降级树五步→三步）/`a74e0b2`（AGENTS.md/README 过时架构与功能宣称更新）；`--info` 无暗色覆盖为品牌色恒定设计登记 UI-29、tailwind 68 处 `!important` 活覆盖保留登记 |
@@ -697,4 +697,30 @@
 人工走查：浏览器工具卡/错误 toast 显示「浏览器」——遗留 UI-28
 风险/回退：单 commit 可回退；纯字符串改动（内部标识符模块名/变量名/进程名不动），sidecar/Node 等技术详情保留
 阻塞或剩余事项：无
+验收人/日期：待人工（UI-28）
+
+任务：UI-24（遗留⑧ 切片：shell-output 监听器收敛 + 竞态修复；profile 验收与⑦仍遗留）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `a97e3a2`；结果 `f738041`
+实现文件与范围：新增 `shell-output-bus.ts`（模块级单例：懒注册唯一 `shell-output` 监听者，`Map<shellId, Set<cb>>` 按 shell_id 分发、退订清空删键、快照迭代防回调内退订破坏分发）；`ShellTerminalPanel.tsx` 改 `subscribeShellOutput` 同步订阅（删除 per-terminal `listen` 与 `cleaned`/`unlisten` 异步守卫），open_shell 50ms 延迟 id 存 ref 卸载清掉（消除「挂载 50ms 内卸载 → 先 kill_shell 后 open_shell」竞态）
+对应问题：UI-19 记录「N 个保活终端 = N 个全局监听者（各自按 shell_id 过滤）」、UI-24 遗留⑧、agent 盘点确认的 open_shell 无清理竞态
+测试命令及结果：shell-output-bus 7 case（懒注册/不串台/退订删键/快照迭代）；全量 vitest 443 passed + PI sidecar 11 passed；build/lint/styles:report(923 定义，0 无引用)/contract:check(115:112) 全绿；零 Rust 改动
+截图：N/A（性能/生命周期修复不适用截图）
+人工走查：N 保活终端下 shell 输出仍各自命中、隐藏/恢复不丢输出、快速开关终端无 open_shell/kill_shell 乱序——遗留 UI-28/30
+风险/回退：单 commit 可回退；PTY 缓冲/rAF drain 逻辑原样保留在面板 effect 内，仅换事件来源；单例模式与 subAgentEventStore/graph-store 一致
+阻塞或剩余事项：**⑧ 剩余监听器收敛（盘点结论）**——三处 `dispatcher-session-updated`（use-session-queries/use-project-session-title/useChatMessages）、`browser-status`（useBrowserPanelSession 3 监听/面板 + useBrowserSessionDock + 未过滤的 useLiveSessionState）、`graph-plan-updated`（graph-store 全局单例与 per-shell useGraphPanelController 重复）、`python-run-event`（per-shell）仍各自按实例订阅；跨模块数据流改造收益需 profile 佐证，本批不动代码，待 UI-30 运行态验证后按序收敛。**⑦ 会话列表虚拟化评估结论**——主聊天列表已按 100 条封顶（use-chat-queries pageSize 100），无界边缘仅为项目 SessionPanel（offset 无限分页、PROJECT_PAGE_SIZE 30）与侧栏展开分类组（CHAT_CATEGORY_PAGE_SIZE 20 无限游标）；虚拟化需重做 moveListFocus 的 DOM 遍历键盘导航（Home/End/入列），无 profile 佐证下风险大于收益，登记待 UI-30 数据决定。**「附实际 profile」验收**仍缺（需运行态 DevTools 采样），不虚报
+验收人/日期：待人工（UI-28/30）
+
+任务：UI-24（防劣化切片：超限文件按职责拆分）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `f738041`；结果 `f43b659`（arch-apply）/`e820630`（SubAgentEditorDialog），两 commit 独立可回退
+实现文件与范围：新增 `arch-geometry.ts`（isPageId/finite/styleProps/arrowStyleProps/shapeCenter/absolutePositionInParentSpace/autoPlacePosition/autoPlaceInFrame + AutoPlaceCursor/放置常量，无状态纯函数）与 `arch-geometry.test.ts`；`arch-apply.ts` 522→411 行（迁出 + 重导出 AutoPlaceCursor，唯一消费方 arch-executor 零改动）；新增 `sub-agent-validation.ts`（validateSubAgentDraft 纯函数 + MAX_ITERATIONS/MIN/MAX_OUTPUT_TOKENS 单一出处）与 `sub-agent-validation.test.ts`；`SubAgentEditorDialog.tsx` 537→482 行（handleSave 内联校验改调纯函数）
+对应问题：仓库硬规则「单个生产文件 ≤500 行」、组件规模防劣化
+测试命令及结果：arch-geometry 8 case + sub-agent-validation 9 case；全量 vitest 443 passed；build/lint(--max-warnings 0)/styles:report(923,0 无引用)/contract:check(115:112) 全绿；零 Rust 改动
+截图：N/A（纯重构）
+人工走查：架构程序 apply 各指令行为不变、子智能体编辑器保存校验/焦点页签行为不变——遗留 UI-28
+风险/回退：两 commit 独立可回退；纯函数机械搬移 + 重导出/命名导出隔离，build 兜底
+阻塞或剩余事项：无（次级超限 `SshServersPage.tsx` 481 行/`chat-page-v2.tsx` 470 行未触及，待自然扩展时按同法拆分）
 验收人/日期：待人工（UI-28）

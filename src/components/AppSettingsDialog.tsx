@@ -14,6 +14,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { AhaSettingsProvider, useAhaSettingsStore } from "./settings/use-aha-settings";
+import { SaveStatusIndicator } from "./settings/SaveStatusIndicator";
 import { Toaster } from "./settings/Toaster";
 import { ConfirmDialog } from "./settings/ConfirmDialog";
 import { GeneralPage } from "./settings/GeneralPage";
@@ -155,14 +156,17 @@ export function AppSettingsDialog({
                 <ActiveIcon size={16} strokeWidth={1.5} />
                 <span className="ai-settings-content-title">{activeItem.label}</span>
               </div>
-              <button
-                className="ai-settings-close"
-                onClick={requestClose}
-                title="关闭"
-                type="button"
-              >
-                <X size={16} strokeWidth={2} />
-              </button>
+              <div className="ai-settings-header-actions">
+                <SaveStatusIndicator />
+                <button
+                  className="ai-settings-close"
+                  onClick={requestClose}
+                  title="关闭"
+                  type="button"
+                >
+                  <X size={16} strokeWidth={2} />
+                </button>
+              </div>
             </div>
 
             <div className="ai-settings-panel-host chat-scroll">

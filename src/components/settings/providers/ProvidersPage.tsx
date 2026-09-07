@@ -53,14 +53,10 @@ export function ProvidersPage({ initialCategory }: { initialCategory?: ModelCate
 
   return (
     <div className="ai-set-page">
-      <div className="ai-set-page-head">
-        <div>
-          <h2 className="ai-set-page-title">模型服务</h2>
-          <p className="ai-set-page-description">
-            按模型调用方式分类维护模型（各自独立的地址和密钥），然后在「模型用途」中为各功能选择模型。
-          </p>
-        </div>
-      </div>
+      {/* 标题由设置外壳头部统一承担（UI-21 去重复标题），此处仅保留描述。 */}
+      <p className="ai-set-page-description">
+        按模型调用方式分类维护模型（各自独立的地址和密钥），然后在「模型用途」中为各功能选择模型。
+      </p>
 
       <Tabs
         value={activeCategory}

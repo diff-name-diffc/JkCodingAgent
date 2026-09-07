@@ -201,7 +201,8 @@ async function saveNow(): Promise<boolean> {
       // 保存期间用户又编辑过：保留本地状态，交由 finally 里的补存落库。
       dirtyDuringSave = true;
     }
-    toast.success("已保存");
+    // 成功不再弹 toast：头部 SaveStatusIndicator 持续显示「已保存」（UI-21），
+    // 避免高频自动保存反复闪烁；失败仍走下方 toast.error + 头部「保存失败」。
     return true;
   } catch (error) {
     const message = String(error);

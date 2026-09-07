@@ -21,7 +21,7 @@ const THEME_OPTIONS: Array<{
  * 再经 use-aha-settings 自动保存管线写入 `AhaSettingsV2.theme`。
  */
 export function GeneralPage() {
-  const { settings, updateSettings } = useAhaSettings();
+  const { settings, updateSettings, saveError } = useAhaSettings();
   if (!settings) return null;
   const current = normalizeThemePreference(settings.theme);
 
@@ -48,6 +48,9 @@ export function GeneralPage() {
           ))}
         </div>
         <span className="ai-settings-hint">默认跟随操作系统，可随时手动覆盖。</span>
+        {saveError?.fieldId === "theme" && (
+          <span className="ai-set-field-error">{saveError.message}</span>
+        )}
       </div>
     </div>
   );

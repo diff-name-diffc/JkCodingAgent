@@ -2701,6 +2701,14 @@
     color: var(--text-primary);
   }
 
+  /* UI-21：头部右侧动作组（保存状态指示器 + 关闭） */
+  .ai-settings-header-actions {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 10px;
+  }
+
   .ai-settings-panel-host {
     display: flex;
     min-height: 0;
@@ -8572,19 +8580,6 @@
     overscroll-behavior: contain;
   }
 
-  .ai-set-page-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-  }
-
-  .ai-set-page-title {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
   .ai-set-page-description {
     margin-top: 4px;
     font-size: 12px;
@@ -8639,6 +8634,69 @@
   .ai-set-badge.is-failed {
     background: rgb(var(--danger-rgb) / 0.12);
     color: rgb(var(--danger-rgb));
+  }
+
+  /* ── 设置中心：自动保存状态指示器（UI-21，内容头部持续可见）──────── */
+  .ai-set-save-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .ai-set-save-status.is-saving {
+    background: var(--bg-subtle);
+    color: var(--text-muted);
+  }
+
+  .ai-set-save-status.is-saved {
+    background: rgb(var(--success-rgb) / 0.12);
+    color: rgb(var(--success-rgb));
+  }
+
+  .ai-set-save-status.is-error {
+    background: rgb(var(--danger-rgb) / 0.12);
+    color: rgb(var(--danger-rgb));
+  }
+
+  .ai-set-save-status-label {
+    font-weight: 500;
+  }
+
+  .ai-set-save-spin {
+    animation: ai-spin 1s linear infinite;
+  }
+
+  .ai-set-save-retry {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 2px;
+    padding: 2px 7px;
+    border: 0;
+    border-radius: 999px;
+    background: rgb(var(--danger-rgb) / 0.16);
+    color: rgb(var(--danger-rgb));
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    cursor: pointer;
+    transition: background var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-set-save-retry:hover {
+    background: rgb(var(--danger-rgb) / 0.28);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ai-set-save-spin {
+      animation: none;
+    }
   }
 
   .ai-set-switch {

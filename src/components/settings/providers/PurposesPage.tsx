@@ -56,14 +56,10 @@ export function PurposesPage({
 
   return (
     <div className="ai-set-page">
-      <div className="ai-set-page-head">
-        <div>
-          <h2 className="ai-set-page-title">模型用途</h2>
-          <p className="ai-set-page-description">
-            为每个功能选择要使用的模型。模型在「模型服务」页按分类统一维护。
-          </p>
-        </div>
-      </div>
+      {/* 标题由设置外壳头部统一承担（UI-21 去重复标题），此处仅保留描述。 */}
+      <p className="ai-set-page-description">
+        为每个功能选择要使用的模型。模型在「模型服务」页按分类统一维护。
+      </p>
 
       <nav className="ai-set-anchor-nav" aria-label="页内导航">
         {PURPOSE_GROUPS.map((group) => (

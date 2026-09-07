@@ -61,6 +61,8 @@ export interface SubAgentEvent {
     agentId?: string;
     agentName?: string;
     task?: string;
+    /** Started 事件携带的运行实际模型（UI-14 遗留）；老轨迹缺该字段。 */
+    model?: string;
     toolName?: string;
     arguments?: Record<string, unknown>;
     resultPreview?: string;
@@ -88,6 +90,8 @@ export interface SubAgentRunTrace {
   agentId: string;
   status: "completed" | "failed";
   eventsJson: string;
+  /** 运行实际模型（schema v5 列）；老轨迹为 null，视图「未记录」兜底。 */
+  model?: string | null;
   createdAt: string;
   updatedAt: string;
 }

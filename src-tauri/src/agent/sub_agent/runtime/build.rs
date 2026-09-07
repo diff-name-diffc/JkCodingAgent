@@ -118,6 +118,12 @@ impl SubAgentRuntime {
             .map_err(|error| anyhow::anyhow!("serialize sub-agent trace events: {error}"))
     }
 
+    /// 运行实际解析出的模型名（继承父级或子智能体独立配置的最终值，
+    /// 见 `build`）。轨迹持久化与 Started 事件用它记录真实模型（UI-14 遗留）。
+    pub fn model(&self) -> &str {
+        self.provider.model()
+    }
+
     pub(super) fn emit_event(
         &self,
         app_handle: &Option<AppHandle>,

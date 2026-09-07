@@ -180,7 +180,8 @@ const TASK_PREVIEW_LIMIT = 200;
  * 子智能体执行详情（UI-14 统一为「概览 / 活动 / 输出」三段）：
  * 与节点抽屉、产物详情共享 DetailSection / ActivityTimeline / OutputBlock /
  * StatusPill 视觉。实时事件与历史轨迹重放走同一渲染路径（数据链不动）。
- * 概览显示来源任务、模型、耗时与错误——轨迹未记录模型时如实显示「未记录」，
+ * 概览显示来源任务、模型、耗时与错误——模型来自运行记录（Started 事件 /
+ * trace 表 model 列，UI-14 遗留已补），老轨迹两源皆无时如实显示「未记录」，
  * 不用当前配置冒充运行记录。
  */
 export function SubAgentExecutionCard({ session, autoExpand = true }: SubAgentExecutionCardProps) {
@@ -227,12 +228,21 @@ export function SubAgentExecutionCard({ session, autoExpand = true }: SubAgentEx
               </div>
               <div className="ai-detail-meta-item">
                 <span className="ai-detail-meta-label">模型</span>
-                <span
-                  className="ai-detail-meta-value ai-detail-meta-value--muted"
-                  title="该任务执行轨迹未记录模型信息"
-                >
-                  未记录
-                </span>
+                {session.model ? (
+                  <span
+                    className="ai-detail-meta-value"
+                    title={`运行实际使用的模型：${session.model}`}
+                  >
+                    {session.model}
+                  </span>
+                ) : (
+                  <span
+                    className="ai-detail-meta-value ai-detail-meta-value--muted"
+                    title="该任务执行轨迹未记录模型信息"
+                  >
+                    未记录
+                  </span>
+                )}
               </div>
               {speed && (
                 <div className="ai-detail-meta-item">

@@ -115,7 +115,7 @@ App
 
 **存储 schema 版本策略（桌面应用基线 + 前向迁移）**
 
-- 当前为 **v3 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）：应用开发阶段无存量用户，历史 v0→v33 迁移链已按产品决策清除；`init()` 路径为「全新建库到当前形态」「同版本直开」与「存在迁移块的低版本逐级前向迁移」（v1→v2：chat_images 的 message_id 改可空并删除两个未用列，事务内重建表 + 数据全量保留；v2→v3：dispatcher_settings 新增 `theme` 列，并把旧 `app_config` 中 `app_settings` 键的主题偏好搬移进 `AhaSettingsV2.theme`；两者均在迁移前 `VACUUM INTO` 整库快照）。更早的旧开发库直接报错并引导运行 `scripts/reset-dev-data.sh`。
+- 当前为 **v5 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）：应用开发阶段无存量用户，历史 v0→v33 迁移链已按产品决策清除；`init()` 路径为「全新建库到当前形态」「同版本直开」与「存在迁移块的低版本逐级前向迁移」（v1→v2：chat_images 的 message_id 改可空并删除两个未用列，事务内重建表 + 数据全量保留；v2→v3：dispatcher_settings 新增 `theme` 列，并把旧 `app_config` 中 `app_settings` 键的主题偏好搬移进 `AhaSettingsV2.theme`；v3→v4：删除 projects 表死列 `branch`；v4→v5：sub_agent_run_traces 新增可空 `model` 列〔子智能体轨迹记录真实模型，老行 NULL 前端「未记录」兜底〕；各迁移均在迁移前 `VACUUM INTO` 整库快照）。更早的旧开发库直接报错并引导运行 `scripts/reset-dev-data.sh`。
 - 后续每次 schema 变更必须同时做两件事：① 更新 `schema.rs` 的基线 DDL（新装库直接得到新形态）；② 递增 `SCHEMA_VERSION` 并在 `init()` 迁移挂载点追加 `if current_version < N` 的事务块（DDL/回填与 `user_version` 推进同事务、幂等可重试）。**禁止改写或删除历史迁移块**——它们是已发布版本用户升级的唯一路径。
 - 破坏性迁移（DROP/清空数据）前必须做整库快照备份（参考 `VACUUM INTO` 方案），并保留「备份失败留痕」的兜底。
 - 领域模块自管的表（sub_agent / ssh / projects / mcp_servers / app_config）的 DDL 放在各领域的 `ensure_*_tx` 助手中，由 `create_baseline` 统一调用，保持单一出处。

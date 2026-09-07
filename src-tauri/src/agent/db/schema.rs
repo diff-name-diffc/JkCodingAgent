@@ -1,9 +1,10 @@
 //! 数据库 schema 初始化与版本管理（PRAGMA user_version 方案）。
 //!
-//! 当前基线为 **v3**（历史 v0→v33 迁移链已按产品决策清除）。`init()` 的
+//! 当前基线为 **v5**（历史 v0→v33 迁移链已按产品决策清除）。`init()` 的
 //! 路径：同版本库直接复用；低于基线但存在迁移块的版本逐级前向迁移
-//! （当前为 v1→v2、v2→v3）；再早的旧开发库一律拒绝打开（提示运行
-//! `scripts/reset-dev-data.sh`）；user_version=0 且无表则按基线全新建库。
+//! （当前为 v1→v2、v2→v3、v3→v4、v4→v5）；再早的旧开发库一律拒绝打开
+//! （提示运行 `scripts/reset-dev-data.sh`）；user_version=0 且无表则按
+//! 基线全新建库。
 //!
 //! ## 后续 schema 变更规范（详见 AGENTS.md「存储 schema 迁移」）
 //!
@@ -28,7 +29,9 @@ use super::DispatcherDb;
 /// `scripts/reset-dev-data.sh`。
 /// v4：删除 projects 表的死列 `branch`（前端从未写入、唯一消费点恒渲染
 /// 兜底文案，详见 docs/tauri-commands.md D 域分析）。
-pub(crate) const SCHEMA_VERSION: i32 = 4;
+/// v5：sub_agent_run_traces 新增可空 `model` 列（子智能体运行轨迹记录
+/// 真实模型，UI-14 遗留；老轨迹为 NULL，前端「未记录」兜底）。
+pub(crate) const SCHEMA_VERSION: i32 = 5;
 
 impl DispatcherDb {
     pub(super) fn init(&self) -> Result<()> {
@@ -93,6 +96,9 @@ impl DispatcherDb {
         }
         if current_version < 4 {
             self.migrate_v3_to_v4(&mut conn)?;
+        }
+        if current_version < 5 {
+            self.migrate_v4_to_v5(&mut conn)?;
             return Ok(());
         }
 
@@ -286,6 +292,50 @@ impl DispatcherDb {
         tx.pragma_update(None, "user_version", 4)
             .context("advance user_version to 4")?;
         tx.commit().context("commit v3→v4 migration")
+    }
+
+    /// v4 → v5：sub_agent_run_traces 新增可空 `model` 列——子智能体运行
+    /// 轨迹记录真实模型（UI-14 遗留，展示端「未记录」占位改为真实值）。
+    /// ADD COLUMN 非破坏性、老行 NULL 即「历史轨迹未记录」语义；按规范
+    /// 仍先做整库快照备份（VACUUM INTO，不能在事务内执行），备份失败只
+    /// 留痕不阻断。幂等可重试：缺表先按新基线补建（ensure 助手
+    /// CREATE TABLE IF NOT EXISTS），列已存在则跳过 ADD COLUMN。
+    fn migrate_v4_to_v5(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v5-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!("v4→v5 迁移前整库快照失败（ADD COLUMN 非破坏性，继续）：{error}");
+        }
+
+        let tx = conn
+            .transaction()
+            .context("begin v4→v5 migration transaction")?;
+        // 缺表（极简/异常库形态）先按新基线建表（含 model 列，幂等）。
+        crate::agent::sub_agent::db::ensure_sub_agent_trace_table_tx(&tx)?;
+        let model_column_exists: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sub_agent_run_traces') WHERE name = 'model'",
+                [],
+                |row| row.get(0),
+            )
+            .context("inspect sub_agent_run_traces.model column")?;
+        if model_column_exists == 0 {
+            tx.execute_batch("ALTER TABLE sub_agent_run_traces ADD COLUMN model TEXT;")
+                .context("add sub_agent_run_traces.model column")?;
+        }
+        tx.pragma_update(None, "user_version", 5)
+            .context("advance user_version to 5")?;
+        tx.commit().context("commit v4→v5 migration")
     }
 }
 
@@ -1085,7 +1135,8 @@ mod tests {
             if name.contains("v1-to-baseline-")
                 && (name.contains("pre-v2-backup")
                     || name.contains("pre-v3-backup")
-                    || name.contains("pre-v4-backup"))
+                    || name.contains("pre-v4-backup")
+                    || name.contains("pre-v5-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1144,7 +1195,82 @@ mod tests {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.contains("v3-to-v4-") && name.contains("pre-v4-backup") {
+            if name.contains("v3-to-v4-")
+                && (name.contains("pre-v4-backup") || name.contains("pre-v5-backup"))
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// v4 库打开时迁移到 v5：sub_agent_run_traces 补可空 `model` 列、
+    /// 既有行数据全量保留（model 为 NULL）、快照备份生成、重复打开幂等。
+    #[test]
+    fn v4_database_adds_sub_agent_trace_model_column() {
+        let path = temp_db_path("v4-to-v5");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE dispatcher_sessions (id TEXT PRIMARY KEY);
+                INSERT INTO dispatcher_sessions (id) VALUES ('ws-1');
+                CREATE TABLE sub_agent_run_traces (
+                    workspace_id TEXT NOT NULL,
+                    tool_call_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    events_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (workspace_id, tool_call_id),
+                    FOREIGN KEY (workspace_id) REFERENCES dispatcher_sessions(id) ON DELETE CASCADE
+                );
+                INSERT INTO sub_agent_run_traces (
+                    workspace_id, tool_call_id, agent_id, status,
+                    events_json, created_at, updated_at
+                ) VALUES (
+                    'ws-1', 'tc-1', 'browser-agent', 'completed',
+                    '[]', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+                );
+                PRAGMA user_version = 4;",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, super::SCHEMA_VERSION);
+
+            let model_columns: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('sub_agent_run_traces') WHERE name = 'model'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(model_columns, 1, "model 列应随迁移补齐");
+            let (status, model): (String, Option<String>) = conn
+                .query_row(
+                    "SELECT status, model FROM sub_agent_run_traces WHERE tool_call_id = 'tc-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(status, "completed", "既有行数据应全量保留");
+            assert_eq!(model, None, "老轨迹行 model 应为 NULL（前端「未记录」兜底）");
+        }
+        // 重开幂等：已是 v5 的库直接打开，不再触发任何迁移。
+        drop(db);
+        let _ = DispatcherDb::new(path.clone());
+        cleanup_db_files(&path);
+        let dir = path.parent().unwrap();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("v4-to-v5-") && name.contains("pre-v5-backup") {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -1232,7 +1358,9 @@ mod tests {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if name.contains("v2-to-v3-")
-                && (name.contains("pre-v3-backup") || name.contains("pre-v4-backup"))
+                && (name.contains("pre-v3-backup")
+                    || name.contains("pre-v4-backup")
+                    || name.contains("pre-v5-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1284,7 +1412,11 @@ mod tests {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.contains("v2-to-v3-no-legacy-") && name.contains("pre-v3-backup") {
+            if name.contains("v2-to-v3-no-legacy-")
+                && (name.contains("pre-v3-backup")
+                    || name.contains("pre-v4-backup")
+                    || name.contains("pre-v5-backup"))
+            {
                 let _ = std::fs::remove_file(entry.path());
             }
         }

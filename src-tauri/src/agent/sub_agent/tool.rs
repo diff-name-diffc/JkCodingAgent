@@ -203,6 +203,9 @@ impl AgentTool for SubAgentTool {
                         ));
                     }
                 };
+                // 运行实际模型随轨迹持久化（UI-14 遗留）：回放权威源，
+                // Started 事件被容量裁剪逐出后仍可显示真实模型。
+                let persist_model = runtime.model().to_string();
                 let status = if outcome.is_ok() {
                     "completed"
                 } else {
@@ -220,6 +223,7 @@ impl AgentTool for SubAgentTool {
                         &persist_agent_id,
                         &persist_status,
                         &trace_json,
+                        Some(persist_model.as_str()),
                     )
                 })
                 .await;

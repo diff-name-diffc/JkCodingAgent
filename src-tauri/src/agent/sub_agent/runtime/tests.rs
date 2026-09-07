@@ -62,6 +62,24 @@ fn trace_events_are_capped_with_visible_truncation_marker() {
 }
 
 #[test]
+fn started_event_serializes_real_model_field() {
+    // UI-14 遗留：Started 事件携带运行实际解析出的模型名（实时通道）；
+    // 长任务中 Started 会被容量裁剪逐出，回放权威源是 trace 表的 model 列。
+    let value = serde_json::to_value(SubAgentEvent::Started {
+        agent_id: "browser-agent".to_string(),
+        agent_name: "浏览器助手".to_string(),
+        task: "打开页面".to_string(),
+        model: "gpt-x".to_string(),
+    })
+    .expect("serialize started event");
+    assert_eq!(value["event"], "Started");
+    assert_eq!(value["data"]["agentId"], "browser-agent");
+    assert_eq!(value["data"]["agentName"], "浏览器助手");
+    assert_eq!(value["data"]["task"], "打开页面");
+    assert_eq!(value["data"]["model"], "gpt-x", "Started 应携带真实模型");
+}
+
+#[test]
 fn escalation_requires_a_previous_failed_round_for_the_same_tool() {
     // G13-05：按工具名记录重试资格。
     let mut rounds: HashMap<String, u32> = HashMap::new();

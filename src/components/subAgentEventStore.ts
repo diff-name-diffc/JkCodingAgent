@@ -32,6 +32,12 @@ export interface SubAgentSession {
   agentId: string;
   name: string;
   task: string;
+  /**
+   * 运行实际使用的模型（UI-14 遗留）：实时来自 Started 事件、回放来自
+   * trace 表 model 列（权威覆盖，Started 被容量裁剪逐出后仍可得）。
+   * 老轨迹两源皆无 → undefined，视图显示「未记录」。
+   */
+  model?: string;
   responseText: string;
   progressMessages: SubAgentProgressMessage[];
   events: EventLine[];
@@ -164,6 +170,7 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
 
     let name: string;
     let task: string;
+    let model: string | undefined;
     let status: "running" | "completed" | "failed";
     let elapsed: number;
     let phase: SubAgentPhase;
@@ -177,6 +184,8 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
     if (eventType === "Started") {
       name = data.agentName ?? agentId;
       task = data.task ?? "";
+      // Started 携带运行实际模型（老轨迹事件缺字段 → 保持 undefined）。
+      model = data.model ?? existing?.model;
       status = "running";
       elapsed = 0;
       phase = "initializing";
@@ -186,6 +195,7 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
     } else if (eventType === "Finished") {
       name = existing?.name ?? agentId;
       task = existing?.task ?? "";
+      model = existing?.model;
       status = "completed";
       elapsed = data.elapsedMs ?? 0;
       phase = "completed";
@@ -196,6 +206,7 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
     } else if (eventType === "Failed") {
       name = existing?.name ?? agentId;
       task = existing?.task ?? "";
+      model = existing?.model;
       status = "failed";
       elapsed = now - (starts[storeKey] ?? now);
       phase = "failed";
@@ -204,6 +215,7 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
     } else {
       name = existing?.name ?? agentId;
       task = existing?.task ?? "";
+      model = existing?.model;
       status = existing?.status ?? "running";
       elapsed = now - (starts[storeKey] ?? now);
       toolCalls = existing?.toolCalls ? [...existing.toolCalls] : [];
@@ -287,6 +299,7 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
       agentId,
       name,
       task,
+      model,
       responseText,
       progressMessages,
       events,
@@ -343,12 +356,19 @@ export function hydrateSubAgentTrace(
   sessionId: string,
   toolCallId: string,
   events: SubAgentEvent[],
+  model?: string | null,
 ): SubAgentSession | null {
   const sessionMap = ensureSessionMap(sessionId);
   delete sessionMap[toolCallId];
   delete starts[keyFor(sessionId, toolCallId)];
   for (const event of events) {
     applySubAgentEvent({ sessionId, toolCallId, timestampMs: Date.now(), ...event }, false);
+  }
+  // trace 表 model 列为回放权威源：长任务中 Started 事件会被容量裁剪
+  // 逐出（G1-20），此时事件流拿不到模型，用列值覆盖（UI-14 遗留）。
+  if (model != null) {
+    const session = sessionMap[toolCallId];
+    if (session) session.model = model;
   }
   notify();
   return getSubAgentSession(sessionId, toolCallId);

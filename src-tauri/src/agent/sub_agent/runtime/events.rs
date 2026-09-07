@@ -116,6 +116,9 @@ pub enum SubAgentEvent {
         #[serde(rename = "agentName")]
         agent_name: String,
         task: String,
+        /// 运行实际解析出的模型名（UI-14 遗留）：实时事件流与轨迹回放
+        /// 的模型来源；老轨迹缺该字段，前端按可选处理走「未记录」兜底。
+        model: String,
     },
     ToolStarted {
         #[serde(rename = "agentId")]

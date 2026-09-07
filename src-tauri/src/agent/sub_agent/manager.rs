@@ -103,9 +103,10 @@ impl SubAgentManager {
         agent_id: &str,
         status: &str,
         events_json: &str,
+        model: Option<&str>,
     ) -> Result<SubAgentRunTraceRecord> {
         self.db
-            .save_run_trace(workspace_id, tool_call_id, agent_id, status, events_json)
+            .save_run_trace(workspace_id, tool_call_id, agent_id, status, events_json, model)
     }
 
     pub fn get_run_trace(

@@ -34,6 +34,9 @@ pub struct SubAgentRunTraceRecord {
     pub agent_id: String,
     pub status: String,
     pub events_json: String,
+    /// 运行实际使用的模型（v5 列，UI-14 遗留）：老轨迹为 NULL，
+    /// 前端显示「未记录」兜底。
+    pub model: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -75,6 +78,7 @@ pub fn ensure_sub_agent_trace_table_tx(tx: &rusqlite::Transaction<'_>) -> Result
             agent_id TEXT NOT NULL,
             status TEXT NOT NULL,
             events_json TEXT NOT NULL,
+            model TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (workspace_id, tool_call_id),
@@ -321,6 +325,7 @@ impl SubAgentDb {
         agent_id: &str,
         status: &str,
         events_json: &str,
+        model: Option<&str>,
     ) -> Result<SubAgentRunTraceRecord> {
         if workspace_id.trim().is_empty() || tool_call_id.trim().is_empty() {
             anyhow::bail!("workspace_id 和 tool_call_id 不能为空");
@@ -331,12 +336,13 @@ impl SubAgentDb {
         let timestamp = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO sub_agent_run_traces (
-                workspace_id, tool_call_id, agent_id, status, events_json, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                workspace_id, tool_call_id, agent_id, status, events_json, model, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
              ON CONFLICT(workspace_id, tool_call_id) DO UPDATE SET
                 agent_id = excluded.agent_id,
                 status = excluded.status,
                 events_json = excluded.events_json,
+                model = excluded.model,
                 updated_at = excluded.updated_at",
             params![
                 workspace_id,
@@ -344,6 +350,7 @@ impl SubAgentDb {
                 agent_id,
                 status,
                 events_json,
+                model,
                 timestamp
             ],
         )
@@ -359,7 +366,7 @@ impl SubAgentDb {
     ) -> Result<Option<SubAgentRunTraceRecord>> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT workspace_id, tool_call_id, agent_id, status, events_json, created_at, updated_at
+            "SELECT workspace_id, tool_call_id, agent_id, status, events_json, model, created_at, updated_at
              FROM sub_agent_run_traces
              WHERE workspace_id = ?1 AND tool_call_id = ?2",
             params![workspace_id, tool_call_id],
@@ -370,8 +377,9 @@ impl SubAgentDb {
                     agent_id: row.get(2)?,
                     status: row.get(3)?,
                     events_json: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    model: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                 })
             },
         )
@@ -584,6 +592,7 @@ mod tests {
                 "browser-agent",
                 "completed",
                 r#"[{"event":"Started","data":{"agentId":"browser-agent"}}]"#,
+                Some("test-model-x"),
             )
             .expect("save first trace");
         sub_agent
@@ -593,6 +602,7 @@ mod tests {
                 "browser-agent",
                 "failed",
                 r#"[{"event":"Failed","data":{"agentId":"browser-agent"}}]"#,
+                None,
             )
             .expect("save second trace");
 
@@ -606,6 +616,9 @@ mod tests {
             .expect("second trace exists");
         assert_eq!(first.status, "completed");
         assert_eq!(second.status, "failed");
+        // model 列 roundtrip：Some 存读一致，None 落 NULL（老轨迹语义）。
+        assert_eq!(first.model.as_deref(), Some("test-model-x"));
+        assert_eq!(second.model, None);
 
         dispatcher
             .clear_messages(&session.id)
@@ -622,6 +635,7 @@ mod tests {
                 "browser-agent",
                 "completed",
                 "[]",
+                None,
             )
             .expect("save trace before delete");
         dispatcher
@@ -646,6 +660,7 @@ mod tests {
                 "browser-agent",
                 "failed",
                 "not-json",
+                None,
             )
             .expect_err("invalid trace json must fail");
         assert!(error.to_string().contains("validate sub-agent trace"));

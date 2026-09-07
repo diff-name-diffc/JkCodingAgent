@@ -118,6 +118,7 @@ impl SubAgentRuntime {
                 agent_id: self.config.agent_id.clone(),
                 agent_name: self.config.agent_name.clone(),
                 task: task.to_string(),
+                model: self.provider.model().to_string(),
             },
         );
 

@@ -305,7 +305,12 @@ export function ChatShell({
         if (!Array.isArray(parsed)) {
           throw new Error("执行轨迹数据格式无效");
         }
-        const hydrated = hydrateSubAgentTrace(sessionId, tool.id, parsed as SubAgentEvent[]);
+        const hydrated = hydrateSubAgentTrace(
+          sessionId,
+          tool.id,
+          parsed as SubAgentEvent[],
+          trace.model,
+        );
         if (!hydrated) throw new Error("执行轨迹为空");
       } catch (error) {
         if (traceGuard.isStale(requestId)) return;

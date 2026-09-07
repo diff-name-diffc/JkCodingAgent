@@ -2,7 +2,7 @@
 
 更新日期：2026-09-06。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
 
-**当前：UI-01–10（M0+M1）实施完成一轮；M2 批次一（UI-11/12/13/14/18/20）、批次二（UI-16/17「代码工作区→Git 审查」链）与批次三（UI-15/19「工作区资源保活」对）实施完成——M2 全部收口**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工截图验收遗留至 UI-29/31）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一实施提交 `4ee7c71..633ec4a`；批次二实施提交 `88babe4..9a20640`；批次三实施提交 `f4cab0a`、`f4f63a9`。下一步 M3（UI-21 起）。
+**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）。下一步 M3 余量（UI-23 键盘焦点 / UI-24 长列表性能 / UI-25 空态 / UI-26 术语图标〔已随 21/22 解锁〕/ UI-27 旧规则清理）。
 
 ## 1. 跟踪约定
 
@@ -50,8 +50,8 @@
 | UI-18 | P1 / L | 浏览器预览与会话 dock 迁移 | 09 | REVIEW | claude（会话领取） | `4169175/860bf88`；拆分+串帧修复+主区单例标签，右面板机制移除；dock 走查遗留 |
 | UI-19 | P1 / M | 终端 dock 与空间约束 | 08,09 | REVIEW | zcode（会话领取） | `f4f63a9`；隐藏保活两态机+结束会话语义+高度常量收敛；PTY 运行态走查遗留 |
 | UI-20 | P1 / M | Python、图片和工具产物详情 | 09,12 | REVIEW | claude（会话领取） | `633ec4a`；来源/耗时/状态统一+artifact kind 分派；运行态走查遗留 |
-| UI-21 | P1 / M | 设置布局与自动保存反馈 | 06,07 | TODO | 待分配 | — |
-| UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | TODO | 待分配 | — |
+| UI-21 | P1 / M | 设置布局与自动保存反馈 | 06,07 | REVIEW | claude（会话领取） | `23f6613/f968332/ba30612`；保存状态持续可见(头部指示器+去 toast 闪烁)+去重标题+导航三组小标题+分类 tabs 横滚+Radix Dialog 外壳/焦点；运行态焦点走查遗留 UI-23/28/29 |
+| UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | REVIEW | claude（会话领取） | `fe1b414/e24462d/444669a`；McpServersPage 拆分(648→305)+连接状态双编码(connection/mcp-server 域)+SSH 徽标去彩点+RAG 未运行不被吞；运行态走查遗留 UI-28/29 |
 | UI-23 | P1 / L | 键盘、焦点与输入法整合 | 07,09,11,21 | TODO | 待分配 | — |
 | UI-24 | P1 / L | 长列表、流式输出和布局性能 | 08,12,19 | TODO | 待分配 | — |
 | UI-25 | P1 / S | 各场景空态/加载/错误规格落地 | 10,12,15,20 | TODO | 待分配 | — |
@@ -246,6 +246,12 @@
 | 2026-09-06 | D2：UI-17 Git 审查（D2a diff 解析抽离+重命名/二进制呈现+后端 origin_path；D2b 提交区暂存范围+就地错误+导航 diff 对应高亮） | `8e09fca`、`9a20640` |
 | 2026-09-06 | E1：UI-15 架构空间（助手默认宽像素锚定 360 + 领域绘图空态 + 附截图/快照实时上下文提示；画布保活/阻断面板基线已满足登记） | `f4cab0a` |
 | 2026-09-06 | E2：UI-19 终端 dock（mounted/visible 两态机隐藏保活 PTY + 隐藏/结束双语义头部 + 高度常量单一出处；680px 预算与多项目隔离基线已满足登记） | `f4f63a9` |
+| 2026-09-07 | F1：UI-21a 设置保存状态持续可见（头部 SaveStatusIndicator + 纯函数 deriveSaveStatus+4 test + 去每次 toast.success 闪烁 + ProvidersPage/PurposesPage 去重标题 + GeneralPage theme 内联报错） | `23f6613` |
+| 2026-09-07 | F2：UI-21b 导航三组小标题（通用/模型/能力连接，窄宽横排）+ 模型分类 tabs 由换行改单行横向滚动 + scrollIntoView 选中可见 + subtab active 视觉统一 | `f968332` |
+| 2026-09-07 | F3：UI-21c 设置外壳迁移 Radix Dialog 原语（portal/焦点陷阱/Esc/焦点还原 + ConfirmDialog/Toaster 作 Content 子节点使焦点栈识别嵌套 + sr-only Title + .ai-settings-shell 自居中 z-301） | `ba30612` |
+| 2026-09-07 | F4：UI-22a McpServersPage 拆分达标（648→305；纯逻辑抽 mcp-config.ts+20 test，服务器卡抽 McpServerCard.tsx；全局/项目作用域文案基线已满足登记） | `fe1b414` |
+| 2026-09-07 | F5：UI-22b MCP 连接状态双编码（status-meta 新增 connection/mcp-server 域+8 test；getMcpIndicatorState→getMcpConnectionStatus 保留 degraded/invalid_config 区分；头部去内联色点改 McpStatusButton+StatusPill；弹窗服务器去彩点改 StatusPill+中性 summary） | `e24462d` |
+| 2026-09-07 | F6：UI-22c SSH StatusDot 纯色点改 TestStatusBadge（复用 StatusBadge 点+常驻文字）；RAG runtimeProbing 使探活窗口耗尽显示「未运行」不被吞 + deriveRagRuntimeState 纯函数+4 test；rag_status 无失败原因字段登记后续 | `444669a` |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
 
@@ -507,3 +513,37 @@
 风险/回退：单 commit 可回退；后端 open_shell kill-first/resize_pty/kill_shell 与 64KB 读缓冲、16ms 批量 emit 零改动；rAF drain/SmartWriter/InputBatcher 缓冲管线零改动
 阻塞或剩余事项：**基线已满足（登记）**——多项目不串流：shellId=`shell:${projectId}` 事件过滤 + 每项目独立面板（保活后隐藏面板仍持监听、各自过滤，功能无碍）；1000×680 预算钳制：workspace-budget.test.ts 矮窗用例既有断言（终端≤322、主区≥320）；恢复路径=常驻 24px StatusDockBar。**决策**——terminalOpen 开关态不持久化（避免重启意外自动拉起 shell；高度偏好已按工作区持久化不变）；N 个保活终端=N 个全局监听者为已知小项（各自按 shell_id 过滤），性能口径归 UI-24/30
 验收人/日期：待人工（UI-29/31）
+
+## 13. UI-21–UI-22（M3 批次一）任务记录（第 5 节模板）
+
+任务：UI-21
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `0c406b1`；结果 `23f6613`（21a）+ `f968332`（21b）+ `ba30612`（21c）
+实现文件与范围：
+21a：`settings/save-status.ts`（新增纯函数 deriveSaveStatus：loading>error>saving>saved 优先级；+test 4 case）、`settings/SaveStatusIndicator.tsx`（新增头部持续指示器：保存中…/已保存/保存失败+重试，派生自 store.loading/dirty/saveError，零 store 契约改动）、`AppSettingsDialog.tsx`（内容头部加 .ai-settings-header-actions 容纳指示器+关闭）、`use-aha-settings.ts`（移除每次 toast.success("已保存")，保留 toast.error；debounce 400ms/revision 守卫/三命令 Promise.all 全不动）、`providers/ProvidersPage.tsx`+`PurposesPage.tsx`（删重复 h2.ai-set-page-title 保留描述，外壳标题成唯一标题源）、`GeneralPage.tsx`（theme fieldId 内联报错，此前无消费者）、`styles/tailwind.css`（.ai-set-save-status* 类族 + .ai-settings-header-actions；删孤立 .ai-set-page-head/-title）
+21b：`AppSettingsDialog.tsx`（NAV_ITEMS→NAV_GROUPS 三组通用/模型/能力连接，扁平 NAV_ITEMS 由 flatMap 派生）、`providers/ProvidersPage.tsx`（tabsListRef + activeCategory 变化 scrollIntoView 选中可见 + trigger 加 .ai-set-subtab active 统一）、`styles/tailwind.css`（.ai-settings-nav-group/-group-label + 窄宽横排隐藏组标题；.ai-set-tabs-list flex-wrap:wrap→nowrap+overflow-x:auto+触发器 flex:0 0 auto）
+21c：`AppSettingsDialog.tsx`（createPortal+裸 div 外壳→@radix-ui/react-dialog 原语 Root/Portal/Overlay/Content；onOpenChange→requestClose 脏检查；删 window keydown 监听+handleOverlayClick；ConfirmDialog/Toaster 作 Content React 子节点使 Radix 焦点栈识别嵌套、内层确认框打开时外层陷阱让位；confirmingClose 时 onInteractOutside/onEscapeKeyDown 阻断外层联动；sr-only DialogPrimitive.Title「应用设置」+aria-describedby=undefined）、`styles/tailwind.css`（.ai-settings-shell 补 position:fixed 自居中 + z-301）
+对应问题：A10（设置外壳焦点隔离）、A12（设置重复标题）、设计 §5.6（内容页一组标题/描述、自动保存状态固定内容头部、分类 tabs 窄宽横滚选中可见、外壳适当 Dialog 原语、错误靠近字段可重试、密钥默认掩码）
+测试命令及结果：save-status 4 case；全量 286 passed（21c 时点）；build/lint/styles:report(923:929,0 无引用)/contract:check(115:112) 全绿
+截图：遗留（tauri 运行态，同 UI-29 矩阵）
+人工走查：编辑→头部保存中…→已保存；制造保存失败→头部保存失败+重试可用+不显示已保存+字段内联报错；快速编辑/切页/脏关闭弹「保存并关闭」不丢值；API key 默认掩码；模型服务/模型用途不再双标题；分类 tabs 窄宽横滚选中可见；Radix 外壳焦点陷阱/还原、Esc 先关嵌套 ConfirmDialog/Select、模型下拉可用——遗留 UI-23/28/29
+风险/回退：三 commit 独立可回退（21a/21b 先落地，即使 21c 回退保存反馈/去重/tabs 价值仍在）；21c 最高风险（嵌套弹层/焦点），含回退方案（保留 portal 手动补 role/aria-modal/焦点陷阱）；400ms 自动保存契约、模型库引用与容量来源、密钥掩码零改动
+阻塞或剩余事项：**决策**——「已保存」为持续态（非定时淡出），符合设计「持续可见」；初载未编辑即显示「已保存」（与磁盘同步语义准确）。**边界登记**——SSH 页自有 debounce 保存管线与 MCP/RAG 手动保存反馈未统一到头部指示器（本卡 modify 列表限 use-aha-settings 全局管线；SSH/MCP/RAG 的错误就地反馈已在 UI-22 分别处理，统一头部指示器如需另评估）；Radix 焦点陷阱与内联模型下拉/Select 运行态兼容按嵌套子节点方案实现，实测走查遗留 UI-23/28
+验收人/日期：待人工（UI-23/29/31）
+
+任务：UI-22
+负责人：claude（会话领取）
+开始/完成日期：2026-09-07
+基线/结果 commit 或 PR：基线 `ba30612`；结果 `fe1b414`（22a）+ `e24462d`（22b）+ `444669a`（22c）
+实现文件与范围：
+22a：`settings/mcp/mcp-config.ts`（新增纯逻辑层 toEntries/toConfig/parseLines/parseKeyValueLines/nextServerName/parseConfigText/serializeConfig + 类型常量；+test 20 case）、`settings/mcp/McpServerCard.tsx`（新增服务器条目卡 249 行）、`settings/mcp/McpServersPage.tsx`（648→305，仅留页面状态与保存管线）
+22b：`detail/status-meta.ts`（新增 connection 域〔checking/not_configured/healthy/degraded/invalid_config，保留 degraded 与 invalid_config 区分不压平〕+ mcp-server 域〔disabled/healthy/invalid_config/spawn_failed/connection_failed，对齐旧 stateColor 语义 spawn_failed=warn〕；+test 8 case）、`hooks/use-mcp-status.ts`（getMcpIndicatorState 返回内联 color/label → getMcpConnectionStatus 返回 connection 域状态键）、`chat-page-v2/ChatPageHeaders.tsx`（删两处内联 style 硬编码色点+Tailwind 工具类；抽 McpStatusButton 原生 button+.ai-chat-header-mcp 避开 ui/Button [&_svg]:size-4 放大 pill 图标；MCP 标签+StatusPill）、`McpStatusDialog.tsx`（服务器纯色点+彩色 state-badge → StatusPill(mcp-server)+中性 summary；删本地 serverStateLabel/stateColor；.ai-mcp-server-actions 补 display:flex）、`styles/tailwind.css`（.ai-chat-header-mcp* + .ai-mcp-server-summary；删孤立 .ai-mcp-server-dot/.ai-mcp-state-badge 保留共用 .ai-mcp-tool-pill）
+22c：`settings/ssh/SshServerCardParts.tsx`（StatusDot 纯色点+仅 hover tooltip → TestStatusBadge 复用 settings/StatusBadge 点+常驻文字「可用/失败/未测试」，tooltip 留最后测试时间）、`settings/ssh/SshServerCard.tsx`（import+用法+doc）、`app-settings/rag/useRagKbConfig.ts`（新增 runtimeProbing：pollStatus(5) 探活窗口耗尽仍未运行置 false）、`app-settings/rag/rag-config.ts`（deriveRagRuntimeState 纯函数 running/starting/stopped 语义态+文案；+test 4 case）、`app-settings/rag/RagRuntimeAndImportSections.tsx`（RAG_DOT_CLASS 字面量映射 is-running/is-starting/is-stopped；未运行 title 指向服务日志）、`styles/tailwind.css`（.ai-rag-status-dot.is-starting 琥珀/.is-stopped 红；删孤立 .ai-set-status-dot 类族）
+对应问题：A12（状态/中英混用部分）、设计 §5.6（全局/项目 MCP 作用域明确可见）、tokens.md §5 结论 4（状态色双编码，收敛只靠彩点：SSH 状态点/MCP 服务器点）、审计 V03（健康 MCP 降噪、异常明确入口）、V06（连接状态不混淆、异常含真实原因）
+测试命令及结果：mcp-config 20 + status-meta +8 + rag-config +4 case；全量 312 passed；build/lint/styles:report(923:929,0 无引用)/contract:check(115:112) 全绿；零 Rust 改动
+截图：遗留（tauri 运行态，同 UI-29 矩阵）
+人工走查：头部 MCP pill 双编码、健康态次级位置/异常可点开弹窗看真实失败服务器与原因；MCP 弹窗服务器状态图标+文字、degraded 与 invalid_config 区分、server.error 就地；SSH 状态徽标常驻文字、连接/主机密钥错误就地；RAG 启动失败不再永停「启动中…」改显「未运行」、服务日志可排查；全局/项目 MCP 作用域文案清晰——遗留 UI-28/29
+风险/回退：三 commit 独立可回退；22a 纯重构（行为零变化）可独立保留；22b/22c 仅状态展示层，审查门禁与配置作用域零改动
+阻塞或剩余事项：**基线已满足（登记）**——全局/项目 MCP 作用域分清：McpServersPage Section 描述已明确全局注册表语义+项目 mcp.json 同名覆盖，McpStatusDialog 已按 isGlobal 分视图。**边界登记**——rag_status 后端仅返回 {running,port} 无失败原因字段：本批用前端探活窗口（runtimeProbing）区分「未运行」不吞错，真实原因由服务日志面板承担；如需 runtime 内联失败原因，另立小后端任务（RagRuntimeStatus DTO 加 error/state，非 schema 迁移）。**决策**——connection.healthy 保留 success（绿）tone：StatusPill 浅底小图标已较旧饱和色点降噪，且 MCP 入口处于头部次级动作位（执行图/更多之间），符合「健康降噪+异常明确入口」，未额外降为中性以免「正常」读作「未知」
+验收人/日期：待人工（UI-28/29/31）

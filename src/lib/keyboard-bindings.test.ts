@@ -232,6 +232,52 @@ describe("shouldSkipBinding", () => {
     expect(shouldSkipBinding(keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }), MOD_K, true)).toBe(false);
     expect(shouldSkipBinding(keyEvent({ metaKey: true }), MOD_K, false)).toBe(false);
   });
+
+  // ── ⑤ Radix 弹层跨栈让路（UI-23 遗留登记）─────────────────────────────
+
+  it("Radix 弹层打开时 Mod 组合键跨栈让路（Cmd 与 Ctrl 平台一致）", () => {
+    const modalOpen = () => true;
+    expect(
+      shouldSkipBinding(keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }), MOD_K, true, modalOpen),
+    ).toBe(true);
+    expect(shouldSkipBinding(keyEvent({ ctrlKey: true }), MOD_K, false, modalOpen)).toBe(true);
+    expect(
+      shouldSkipBinding(keyEvent({ key: "1", ctrlKey: true }), { key: "1", mod: true }, false, modalOpen),
+    ).toBe(true);
+    expect(
+      shouldSkipBinding(keyEvent({ key: "j", metaKey: true }), { key: "j", mod: true }, true, modalOpen),
+    ).toBe(true);
+    expect(
+      shouldSkipBinding(
+        keyEvent({ key: "a", metaKey: true, shiftKey: true }),
+        { key: "a", mod: true, shift: true },
+        true,
+        modalOpen,
+      ),
+    ).toBe(true);
+  });
+
+  it("Radix 弹层打开时裸键（含 Escape）不走跨栈让路（由 handler 内既有路径裁决）", () => {
+    const modalOpen = () => true;
+    expect(
+      shouldSkipBinding(keyEvent({ key: "Escape", target: targetStub({ tagName: "DIV" }) }), PLAIN_ESCAPE, true, modalOpen),
+    ).toBe(false);
+  });
+
+  it("Radix 弹层打开且焦点在其内部输入框时 Mod 键同样让路", () => {
+    const input = targetStub({ tagName: "INPUT" });
+    expect(shouldSkipBinding(keyEvent({ metaKey: true, target: input }), MOD_K, true, () => true)).toBe(true);
+  });
+
+  it("弹层关闭时行为与既有裁决一致；缺省注入（node 环境）恒不让路", () => {
+    const modalClosed = () => false;
+    expect(
+      shouldSkipBinding(keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }), MOD_K, true, modalClosed),
+    ).toBe(false);
+    expect(
+      shouldSkipBinding(keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }), MOD_K, true),
+    ).toBe(false);
+  });
 });
 
 // ── 键位注册表无歧义门禁（UI-23d）──────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { hasOpenOverlay } from "../lib/overlay-stack";
-import type { ShortcutBinding } from "../lib/keyboard-bindings";
+import { RADIX_MODAL_OPEN_SELECTOR, type ShortcutBinding } from "../lib/keyboard-bindings";
 import { useGlobalShortcuts } from "./use-global-shortcuts";
 
 export interface ChatShortcutHandlers {
@@ -46,12 +46,9 @@ export function useChatShortcuts(
       // Escape 处理，避免一次按键同时关掉覆盖层与 Artifact 面板。
       if (hasOpenOverlay()) return;
       // Radix 弹层（设置 Dialog / Sheet 抽屉 / 下拉菜单 / Select）不进自研栈，
-      // 且其 Escape 处理不 preventDefault——按 DOM 存在性让路（UI-23b）。
-      if (
-        document.querySelector(
-          '[role="dialog"][data-state="open"],[role="alertdialog"][data-state="open"],[role="menu"][data-state="open"],[role="listbox"][data-state="open"]',
-        )
-      ) {
+      // 且其 Escape 处理不 preventDefault——按 DOM 存在性让路（UI-23b，锚点
+      // 与 Mod 键跨栈让路共用 RADIX_MODAL_OPEN_SELECTOR 单一出处）。
+      if (document.querySelector(RADIX_MODAL_OPEN_SELECTOR)) {
         return;
       }
       event.preventDefault();

@@ -12,7 +12,10 @@
  *          （Mod=Ctrl，Ctrl+K/L/N/J 等是终端控制码，不能被 UI 抢走）；
  *       ③ 焦点在代码编辑器（.monaco-editor）内时，按绑定的 allowInEditor
  *          裁决（默认 true：应用级快捷键在编辑器内仍可触发）；
- *       ④ 输入目标（input/textarea/contentEditable）内不劫持非 Mod 键。
+ *       ④ 输入目标（input/textarea/contentEditable）内不劫持非 Mod 键；
+ *       ⑤ Radix 弹层（设置 Dialog / Sheet / 下拉菜单 / Select）打开时 Mod
+ *          组合键跨栈让路（UI-23 遗留登记）——命令面板/切区不应压在模态弹层
+ *          底下触发；探测函数注入式传入，node 环境缺省恒 false。
  *
  * DOM 只经 `target.closest(selector)` 结构化访问，测试用字面量桩即可。
  */
@@ -63,6 +66,15 @@ export interface ShortcutBinding extends ShortcutModifiers {
 export const TERMINAL_CONTAINER_SELECTOR = ".xterm";
 /** 代码编辑器容器选择器（Monaco 根节点）。 */
 export const CODE_EDITOR_CONTAINER_SELECTOR = ".monaco-editor";
+/**
+ * Radix 打开态弹层的 DOM 锚点（UI-23b Escape 让路与 UI-23 遗留 Mod 让路共用
+ * 单一出处）：Dialog/AlertDialog Content 带 role=dialog/alertdialog + data-state，
+ * DropdownMenu 带 role=menu，Select 带 role=listbox。Popover（非 modal）同样命中
+ * ——与 Escape 让路既有副作用范围一致，保守可接受。自研覆盖层（命令面板等）
+ * 无 data-state 不命中，走 overlay-stack 的 hasOpenOverlay 路径。
+ */
+export const RADIX_MODAL_OPEN_SELECTOR =
+  '[role="dialog"][data-state="open"],[role="alertdialog"][data-state="open"],[role="menu"][data-state="open"],[role="listbox"][data-state="open"]';
 
 /** Mod 键平台映射：macOS（含 iOS）用 Cmd，其余用 Ctrl。navigator 缺失时按非 Mac。 */
 export function isMacPlatform(
@@ -126,12 +138,17 @@ export function isInsideContainer(
 
 /**
  * 统一让路裁决：返回 true 表示该绑定应跳过（把按键还给当前焦点上下文）。
- * 顺序即优先级：IME > 终端 > 编辑器 > 输入目标。
+ * 顺序即优先级：IME > 终端 > 编辑器 > 输入目标 > Radix 弹层跨栈让路。
+ *
+ * `isRadixModalOpen` 为注入式探测（浏览器侧传
+ * `() => document.querySelector(RADIX_MODAL_OPEN_SELECTOR) != null`），
+ * node 测试缺省恒 false 保持既有行为。
  */
 export function shouldSkipBinding(
   event: KeyEventLike,
   binding: ShortcutModifiers,
   mac: boolean,
+  isRadixModalOpen: () => boolean = () => false,
 ): boolean {
   if (isImeKeyEvent(event)) return true;
   const target = event.target as EventTargetLike | null | undefined;
@@ -149,5 +166,9 @@ export function shouldSkipBinding(
   }
   // 输入目标内不劫持裸键（保留既有豁免语义）。
   if (!binding.mod && isTypingTarget(target)) return true;
+  // Radix 弹层打开时 Mod 组合键跨栈让路（UI-23 遗留）：设置 Dialog/Sheet/下拉/
+  // Select 压在工作区上时，Mod+K/1..4/J/Shift+A 不应穿透触发底层动作。裸键
+  // （含 Escape）不走此判定——Escape 由 handler 内 hasOpenOverlay + 同锚点让路。
+  if (binding.mod && isRadixModalOpen()) return true;
   return false;
 }

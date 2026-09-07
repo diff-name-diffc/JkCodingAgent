@@ -45,12 +45,38 @@ export function mergeDispatcherMessages(
   incoming: Array<DispatcherMessage | DispatcherMessageWire>,
 ): DispatcherMessage[] {
   if (incoming.length === 0) return current;
-  const merged = new Map(current.map((m) => [m.id, normalizeDispatcherMessage(m)] as const));
-  for (const m of incoming) merged.set(m.id, normalizeDispatcherMessage(m));
+  const merged = new Map(current.map((m) => [m.id, normalizeCached(m)] as const));
+  for (const m of incoming) merged.set(m.id, normalizeCached(m));
   return [...merged.values()].sort((a, b) => {
     const cmp = a.createdAt.localeCompare(b.createdAt);
     return cmp !== 0 ? cmp : a.id.localeCompare(b.id);
   });
+}
+
+/**
+ * 归一化按对象身份缓存（UI-24b-4）：merge 在每次 finalize / 会话更新事件
+ * 都会以「上一轮结果数组」为 current 重入，旧实现对全量消息重复
+ * normalize（含 wire 载荷的 JSON.parse），1000 条会话下是 O(n) 热点。
+ *
+ * 两级键控：① 原始 wire 对象 → 产物；② 产物对象 → 产物自身（normalize
+ * 幂等：产物不含 segmentsJson、content 由 segments 派生，重算结果深度相等，
+ * 直接复用产物引用可保持下游 memo 稳定）。重入 merge 时 current 携带的是
+ * 上一轮产物 → 命中 ② 零开销；只有新到达的 wire 对象真正走归一化。
+ * 对象被丢弃后缓存随 GC 回收。
+ */
+const normalizeCache = new WeakMap<object, DispatcherMessage>();
+
+function normalizeCached(
+  message: DispatcherMessage | DispatcherMessageWire,
+): DispatcherMessage {
+  const hit = normalizeCache.get(message);
+  if (hit) return hit;
+  const normalized = normalizeDispatcherMessage(message);
+  normalizeCache.set(message, normalized);
+  // 产物自身也登记（重入 merge 的 current 命中路径）；覆盖写产物对象
+  // 为键的条目无副作用——normalize(normalized) 与 normalized 深度相等。
+  normalizeCache.set(normalized, normalized);
+  return normalized;
 }
 
 function normalizeDispatcherMessage(

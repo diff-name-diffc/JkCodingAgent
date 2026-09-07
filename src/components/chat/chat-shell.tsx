@@ -25,6 +25,7 @@ import { useSessionRequestGuard } from "../../hooks/useSessionRequestGuard";
 import { AppLayout } from "../layout/app-layout";
 import { Sidebar } from "../layout/sidebar";
 import { MessageList } from "./message-list";
+import type { ChatEmptyStateContent } from "./chat-empty-content";
 import { SessionKeywordBar } from "./session-keyword-bar";
 import { PromptInput, type ComposerMode } from "./prompt-input";
 import { ArtifactPanel } from "../artifact/artifact-panel";
@@ -108,6 +109,8 @@ export interface ChatShellProps {
   }) => void;
   embedded?: boolean;
   projectHeader?: React.ReactNode;
+  /** 领域化空态文案（UI-25 A06）：普通聊天 / 项目各自传入，不传则用组件缺省。 */
+  emptyState?: ChatEmptyStateContent;
 }
 
 export function ChatShell({
@@ -147,6 +150,7 @@ export function ChatShell({
   onRunPython,
   embedded = false,
   projectHeader,
+  emptyState,
 }: ChatShellProps) {
   const setArtifactPanelOpen = useUIStore((s) => s.setArtifactPanelOpen);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
@@ -320,6 +324,7 @@ export function ChatShell({
             const entry = chatModelEntries.find((item) => item.id === entryId);
             if (entry) bindChatModel.mutate(entry);
           }}
+          onConfigureModel={onOpenSettings}
         />
       }
       artifactPanel={
@@ -348,6 +353,7 @@ export function ChatShell({
         onOpenArtifact={handleOpenArtifact}
         onOpenSubAgent={handleOpenSubAgent}
         onPickPrompt={(prompt) => onInputChange(prompt)}
+        emptyState={emptyState}
       />
       <CommandPalette
         open={commandPaletteOpen}

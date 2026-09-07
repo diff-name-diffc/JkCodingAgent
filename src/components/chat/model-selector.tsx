@@ -30,6 +30,11 @@ export interface ModelSelectorProps {
   menuLabel?: string;
   className?: string;
   disabled?: boolean;
+  /**
+   * 无可用模型时的深链回调（UI-25）：直接打开设置「模型服务」页，取代旧的
+   * 装饰性不可用按钮。必传——确保「未配置模型」始终是一个可操作的入口。
+   */
+  onConfigureModel: () => void;
 }
 
 export function ModelSelector({
@@ -40,14 +45,35 @@ export function ModelSelector({
   menuLabel = "聊天模型",
   className,
   disabled,
+  onConfigureModel,
 }: ModelSelectorProps) {
+  // 无可用模型：不是禁用一个死按钮，而是给出「去配置」的深链入口（UI-25）。
+  if (models.length === 0) {
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onConfigureModel}
+        className={cn(
+          "ai-model-selector ai-model-selector--empty gap-2 px-2.5 text-xs font-medium",
+          className,
+        )}
+        aria-label="尚未配置可用模型，前往设置"
+        title="尚未配置可用模型，点击前往设置"
+      >
+        <Settings2 className="ai-model-selector-icon h-3.5 w-3.5" />
+        <span className="max-w-[140px] truncate">配置模型</span>
+      </Button>
+    );
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
           size="sm"
-          disabled={disabled || models.length === 0}
+          disabled={disabled}
           className={cn("ai-model-selector gap-2 px-2.5 text-xs font-medium", className)}
           aria-label="选择模型"
         >
@@ -59,9 +85,6 @@ export function ModelSelector({
       <DropdownMenuContent align="start" className="min-w-[220px]">
         <DropdownMenuLabel>{menuLabel}</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {models.length === 0 && (
-          <div className="px-2 py-3 text-xs text-muted-foreground">暂无可用模型</div>
-        )}
         {models.map((entry) => (
           <DropdownMenuItem
             key={entry.id}

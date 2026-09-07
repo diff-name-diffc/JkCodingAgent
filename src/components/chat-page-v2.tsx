@@ -6,6 +6,7 @@ import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTok
 import { useLiveSessionState } from "./dispatcher-chat/useLiveSessionState";
 import { useDispatcherActions } from "./dispatcher-chat/useDispatcherActions";
 import { ChatShell } from "./chat/chat-shell";
+import { resolveChatEmptyState } from "./chat/chat-empty-content";
 import type { ComposerMode } from "./chat/prompt-input";
 import { PlainChatHeader, ProjectChatHeader } from "./chat-page-v2/ChatPageHeaders";
 import { getUserMessagePayload } from "./chat-page-v2/message-utils";
@@ -92,6 +93,9 @@ export function ChatPageV2({
   const [isStopping, setIsStopping] = useState(false);
 
   const isPlainChat = conversationKind === "chat";
+  // 领域化空态（UI-25 A06）：普通聊天与项目分别有贴合语境的起步提示，
+  // 不再共用同一套通用空态文案。
+  const chatEmptyState = resolveChatEmptyState(isPlainChat ? "plain" : "project");
   const clearDraft = useCallback(() => {
     setInput("");
     setAttachedImages([]);
@@ -440,6 +444,7 @@ export function ChatPageV2({
           onRunPython={pythonRuns.run}
           embedded={embedded}
           projectHeader={chatHeader}
+          emptyState={chatEmptyState}
         />
       </div>
       <ChatPageOverlays

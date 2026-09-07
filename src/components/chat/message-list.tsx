@@ -8,6 +8,7 @@ import type {
 import type { DispatcherLiveSessionState } from "../dispatcherSessionStore";
 import { cn } from "../../lib/cn";
 import { EmptyChatState } from "./empty-chat-state";
+import type { ChatEmptyStateContent } from "./chat-empty-content";
 import { MessageItem, buildItems, type MessageDisplayItem } from "./message-item";
 import { StreamingMessage } from "./streaming-message";
 import { ChatScrollAnchor } from "./chat-scroll-anchor";
@@ -47,12 +48,8 @@ export interface MessageListProps {
   className?: string;
 }
 
-/** EmptyChatState 的领域化覆盖项（全部可选）。 */
-export interface ChatEmptyStateContent {
-  title?: string;
-  copy?: string;
-  prompts?: string[];
-}
+/** EmptyChatState 的领域化覆盖项（全部可选）。权威定义在 chat-empty-content。 */
+export type { ChatEmptyStateContent };
 
 export function MessageList({
   sessionId,

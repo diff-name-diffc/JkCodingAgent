@@ -7591,6 +7591,24 @@
     transform: rotate(180deg);
   }
 
+  /* 未配置可用模型（UI-25）：虚线 + 琥珀色调，提示「去配置」而非禁用死按钮。 */
+  .ai-model-selector--empty {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+    background: color-mix(in srgb, var(--warning) 8%, transparent);
+    color: var(--warning);
+  }
+
+  .ai-model-selector--empty:hover:not(:disabled) {
+    border-color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
+    color: var(--warning);
+  }
+
+  .ai-model-selector--empty .ai-model-selector-icon {
+    color: var(--warning);
+  }
+
   .ai-composer-action {
     width: 32px;
     height: 32px;

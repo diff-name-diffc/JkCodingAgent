@@ -2,6 +2,7 @@ import { motion } from "framer-motion";
 import { ArrowUpRight } from "lucide-react";
 import { cn } from "../../lib/cn";
 import appLogo from "../../assets/app-logo.png";
+import { PLAIN_CHAT_EMPTY_STATE } from "./chat-empty-content";
 
 /**
  * Empty state for a chat surface with no messages yet.
@@ -9,25 +10,22 @@ import appLogo from "../../assets/app-logo.png";
  * Shows a short welcome + a grid of starter prompts. The prompts are passed
  * in by the parent (so they can be localized / model-aware); clicking one
  * calls `onPickPrompt`, which the parent feeds into the prompt input.
+ *
+ * 缺省文案 = 普通聊天领域空态（UI-25 A06）；项目 / 架构入口各自传入贴合语境的
+ * title/copy/prompts（见 chat-empty-content 与 ArchitectureChatPanel）。
  */
 export interface EmptyChatStateProps {
   onPickPrompt: (prompt: string) => void;
   prompts?: string[];
-  /** 领域化标题/副文案（UI-15 A06）：缺省为通用聊天欢迎语。 */
+  /** 领域化标题/副文案（UI-15 A06）：缺省为普通聊天欢迎语。 */
   title?: string;
   copy?: string;
   className?: string;
 }
 
-const DEFAULT_PROMPTS = [
-  "帮我写一个 Python 脚本，批量重命名当前目录下的图片",
-  "解释一下 React 19 的 use() hook 和 Suspense 的关系",
-  "把这段 SQL 优化一下，并解释为什么更快",
-  "给我一个 Tauri + React 项目的目录结构建议",
-];
-
-const DEFAULT_TITLE = "有什么可以帮你的？";
-const DEFAULT_COPY = "输入任务、粘贴代码、拆解方案 —— 模型会在同一个工作台里推理、执行与回放。";
+const DEFAULT_PROMPTS = PLAIN_CHAT_EMPTY_STATE.prompts;
+const DEFAULT_TITLE = PLAIN_CHAT_EMPTY_STATE.title;
+const DEFAULT_COPY = PLAIN_CHAT_EMPTY_STATE.copy;
 
 export function EmptyChatState({
   onPickPrompt,

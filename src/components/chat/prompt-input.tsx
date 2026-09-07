@@ -31,6 +31,8 @@ export interface PromptInputProps {
   activeEntryId?: string;
   activeLabel?: string;
   onSelectModel?: (entryId: string) => void;
+  /** 无可用模型时的深链（UI-25）：打开设置「模型服务」页，取代装饰性禁用按钮。 */
+  onConfigureModel: () => void;
   placeholder?: string;
   disabled?: boolean;
   editing?: boolean;
@@ -82,6 +84,7 @@ export function PromptInput({
   activeEntryId,
   activeLabel,
   onSelectModel,
+  onConfigureModel,
   placeholder = "输入消息…",
   disabled,
   editing = false,
@@ -211,6 +214,7 @@ export function PromptInput({
               activeEntryId={activeEntryId}
               activeLabel={activeLabel}
               onSelect={onSelectModel}
+              onConfigureModel={onConfigureModel}
             />
           )}
           <div className="flex-1" />

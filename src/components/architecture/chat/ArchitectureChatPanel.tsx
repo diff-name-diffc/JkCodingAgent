@@ -6,7 +6,7 @@
  * 绑定条目；选择仅面板内持久化（不回写全局绑定）。
  */
 
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Bot, Eye, LayoutList, PanelRightClose, Plus, Send, Square } from "lucide-react";
 import { cn } from "../../../lib/cn";
 import { isImeComposing } from "../../../utils";
@@ -21,6 +21,10 @@ import { ModelSelector } from "../../chat/model-selector";
 import { MessageList } from "../../chat/message-list";
 import { formatAttachmentHint } from "./attachment-context";
 import type { UseArchitectureChatResult } from "./useArchitectureChat";
+
+const AppSettingsDialog = lazy(() =>
+  import("../../AppSettingsDialog").then((module) => ({ default: module.AppSettingsDialog })),
+);
 
 /** 架构领域空态（UI-15 A06/V08）：起步提示换成绘图任务示例。 */
 const ARCH_EMPTY_STATE = {
@@ -68,6 +72,8 @@ export function ArchitectureChatPanel({
   canvasShapeCount: number;
 }) {
   const [input, setInput] = useState("");
+  // 视觉模型未配置时的深链（UI-25）：就地打开设置「模型服务」页，不做禁用死按钮。
+  const [showSettings, setShowSettings] = useState(false);
   const settingsStore = useAhaSettingsStore();
   const settings = settingsStore.settings;
 
@@ -120,6 +126,7 @@ export function ArchitectureChatPanel({
             activeLabel={activeEntry ? entryLabel(activeEntry) : undefined}
             menuLabel="视觉模型"
             onSelect={(entryId) => chat.updatePrefs({ modelLibraryId: entryId })}
+            onConfigureModel={() => setShowSettings(true)}
             className="ai-arch-model-selector"
           />
           <button
@@ -208,6 +215,12 @@ export function ArchitectureChatPanel({
           </button>
         )}
       </div>
+
+      {showSettings && (
+        <Suspense fallback={null}>
+          <AppSettingsDialog initialTab="providers" onClose={() => setShowSettings(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }

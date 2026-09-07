@@ -20,12 +20,19 @@ import {
   pickableCategoryOptions,
   pickableEntries,
 } from "./sub-agent-model-picker";
+import {
+  validateSubAgentDraft,
+  MAX_ITERATIONS,
+  MIN_OUTPUT_TOKENS,
+  MAX_OUTPUT_TOKENS,
+  type EditorTab,
+} from "./sub-agent-validation";
 
-type EditorTab = "basic" | "tools" | "runtime";
-
-const MAX_ITERATIONS = 200;
-const MIN_OUTPUT_TOKENS = 1024;
-const MAX_OUTPUT_TOKENS = 1048576;
+const TABS: Array<{ key: EditorTab; label: string }> = [
+  { key: "basic", label: "基本信息" },
+  { key: "tools", label: "工具集配置" },
+  { key: "runtime", label: "运行时参数" },
+];
 
 interface Props {
   config: SubAgentConfig | null;
@@ -50,12 +57,6 @@ const DEFAULT_CONFIG: SubAgentConfig = {
   createdAt: 0,
   updatedAt: 0,
 };
-
-const TABS: Array<{ key: EditorTab; label: string }> = [
-  { key: "basic", label: "基本信息" },
-  { key: "tools", label: "工具集配置" },
-  { key: "runtime", label: "运行时参数" },
-];
 
 export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) {
   const [draft, setDraft] = useState<SubAgentConfig>(config ?? DEFAULT_CONFIG);
@@ -113,66 +114,10 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
   }
 
   function handleSave() {
-    if (!draft.agentId.trim()) {
-      setError("Agent ID 不能为空");
-      return;
-    }
-    if (draft.agentId.length > 64) {
-      setError("Agent ID 长度不能超过 64");
-      return;
-    }
-    if (
-      !/^[a-z0-9][a-z0-9_-]*$/.test(draft.agentId)
-    ) {
-      setError("Agent ID 仅支持小写字母、数字、下划线和短横线，且必须以小写字母或数字开头");
-      return;
-    }
-    if (!draft.agentName.trim()) {
-      setError("显示名称不能为空");
-      return;
-    }
-    if (draft.agentName.length > 64) {
-      setError("显示名称长度不能超过 64");
-      return;
-    }
-    if (!draft.description.trim()) {
-      setError("功能描述不能为空");
-      return;
-    }
-    if (draft.description.length > 512) {
-      setError("功能描述长度不能超过 512");
-      return;
-    }
-    if (!draft.systemPrompt.trim()) {
-      setError("系统指令不能为空");
-      return;
-    }
-    if (draft.allowedTools.length === 0) {
-      setError("至少选择一个工具");
-      setActiveTab("tools");
-      return;
-    }
-    if (draft.maxIterations < 1 || draft.maxIterations > MAX_ITERATIONS) {
-      setError(`最大迭代轮次必须在 1-${MAX_ITERATIONS} 之间`);
-      setActiveTab("runtime");
-      return;
-    }
-    if (
-      draft.maxOutputTokens < MIN_OUTPUT_TOKENS ||
-      draft.maxOutputTokens > MAX_OUTPUT_TOKENS
-    ) {
-      setError(`最大输出 Token 必须在 ${MIN_OUTPUT_TOKENS}-${MAX_OUTPUT_TOKENS} 之间`);
-      setActiveTab("runtime");
-      return;
-    }
-    if (draft.temperature < 0 || draft.temperature > 2) {
-      setError("Temperature 必须在 0-2 之间");
-      setActiveTab("runtime");
-      return;
-    }
-    if (draft.timeoutSecs < 1 || draft.timeoutSecs > 3600) {
-      setError("超时时间必须在 1-3600 秒之间");
-      setActiveTab("runtime");
+    const result = validateSubAgentDraft(draft);
+    if (result.error) {
+      setError(result.error);
+      if (result.focusTab) setActiveTab(result.focusTab);
       return;
     }
     setError("");

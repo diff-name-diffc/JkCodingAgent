@@ -24,6 +24,13 @@ import {
  * (lists, single conversation, mutations).
  */
 
+/**
+ * 聊天模型选择器的查询 key（queryFn 读整份 AhaSettingsV2）。导出供设置保存
+ * 管线在 `aha_save_settings_v2` 成功后失效缓存——否则已打开的聊天视图会一直
+ * 显示保存前的模型库快照（UI-28 走查发现 F1）。
+ */
+export const CHAT_MODELS_QUERY_KEY = ["chat", "models"] as const;
+
 const QUERY_KEYS = {
   sessions: (category?: string) =>
     category === undefined
@@ -32,7 +39,7 @@ const QUERY_KEYS = {
   categorySessions: (category: string) => ["chat", "sessions", "category", category] as const,
   categories: ["chat", "categories"] as const,
   messages: (sessionId: string) => ["chat", "messages", sessionId] as const,
-  models: ["chat", "models"] as const,
+  models: CHAT_MODELS_QUERY_KEY,
 } as const;
 
 // ── Sessions ──────────────────────────────────────────────────────────────
@@ -232,7 +239,7 @@ export function useBindChatModel() {
       return invoke<AhaSettingsV2>("aha_save_settings_v2", { settings: next });
     },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: QUERY_KEYS.models });
+      void qc.invalidateQueries({ queryKey: CHAT_MODELS_QUERY_KEY });
     },
   });
 }

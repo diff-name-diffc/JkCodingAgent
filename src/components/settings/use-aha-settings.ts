@@ -1,6 +1,8 @@
 import { createContext, useContext, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AhaSettingsV2, ChatCategoryAgentConfig, SubAgentRecord } from "../../types";
+import { queryClient } from "../../lib/query-client";
+import { CHAT_MODELS_QUERY_KEY } from "../../hooks/use-chat-queries";
 import { toast } from "./toast";
 import { withoutChatModelSystemPrompts } from "./providers/provider-registry";
 
@@ -186,6 +188,9 @@ async function saveNow(): Promise<boolean> {
       }),
       invoke("sub_agent_set_global_enabled", { subAgentIds: globalEnabledIds }),
     ]);
+    // 设置落库成功后失效派生自 AhaSettingsV2 的 React Query 缓存（聊天模型选择器
+    // 等），让已打开的运行中视图立即看到新配置，无需重启（UI-28 走查发现 F1）。
+    void queryClient.invalidateQueries({ queryKey: CHAT_MODELS_QUERY_KEY });
     if (revision === revisionAtStart) {
       // 保存期间无本地编辑，可用服务端返回值安全回填。
       settings = { ...result, chat: withoutChatModelSystemPrompts(result.chat) };

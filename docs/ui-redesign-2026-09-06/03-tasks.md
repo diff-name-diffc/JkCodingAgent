@@ -290,6 +290,7 @@
 | 2026-09-08 | O1：UI-28 运行态走查启动——computer-use 辅助功能/屏幕录制权限解除 UI-01 遗留「坐标点击不可用」阻塞；验证环境三脚本入库（`scripts/ui-28-seed.sh` 隔离 HOME+git56 提交/非 git 双测试项目、`scripts/ui-28-mock-llm.mjs` OpenAI 兼容 SSE mock〔工具调用/长回复停止/usage 分支〕、`scripts/ui-28-run.sh` 一键启动含 .app 包装壳解 bundle 身份）；流程 1 主链路运行态通过（分类新建会话→发送→流式→0.2k tokens→标题自动更新→错误深链→重启历史恢复+模型选择器恢复）；发现 F1（模型配置后运行中视图「尚未配置可用模型」陈旧不刷新，后端实时读库发送可用，重启恢复，低）登记；ApiKeyInput AX 自动化限制与深链分类预选待复核观察登记；DB 佐证 model_library_json 落库与用途槽位凭据剥离符合引用绑定设计 | 见第 22 节 |
 | 2026-09-08 | P1：F1 缺陷修复（`9e940bd`）——`use-aha-settings.ts` saveNow 成功路径 invalidate `CHAT_MODELS_QUERY_KEY`（use-chat-queries 导出常量单一出处，QUERY_KEYS 与 useBindChatModel 同源）；运行态复验：设置保存后已打开聊天视图模型选择器即时由「尚未配置可用模型，前往设置」变「选择模型」，无需重启；门禁 build/lint/vitest 521/styles:report 926:932/contract 115:112 全绿 | `9e940bd` |
 | 2026-09-08 | P2：UI-28 走查第二批（无产品代码改动；mock 脚本补请求日志）——**流程 1 剩余**编辑重发 ✅（编辑并重新发送→失败轮次截断替换→流式回复+0.2k tokens+操作条）；**流程 6 Git** ✅（变更列表 1M+2U、0 暂存守卫禁用提交、文件级 diff hunk/上下文/新增行、行内 + 暂存不波及未跟踪区、提交区「提交暂存的 1 个文件」、提交成功 git `0ecf7a3` DB/git 双佐证、列表自动刷新）；**流程 2 项目 A→B→A** ✅（proj-b 独立会话列表+非 git 无分支 pill+终端状态独立、最近项目排序最近优先、切回 proj-a 变更页签+diff 视图+终端打开态全恢复）；**流程 5 文件树** ✅（文件树/tab/Monaco 渲染/路径工具行/预览切换、编辑器输入 900ms 自动保存落盘 grep 佐证）；**流程 7 终端** ✅（dock 打开 PTY 就绪、隐藏保活后恢复 scrollback 指纹完整=未重建、双语义头部按钮 AX 可见）；**登记两项自动化限制**——①停止生成按钮流式期间 5 次点击（坐标+AX 元素）未中断（mock 日志佐证 9680ms 完整跑完；判别实验证明 footer Tooltip 包裹按钮对 window 级合成点击无响应，真实鼠标待人工复核）②删除会话 Radix 下拉经 AXPress/AXShowMenu/right-click 均触发 WebView 默认菜单不可达；深链分类预选「待复核」观察结案（AX 报 radio=false 为报告口径，截图证实视觉已预选） | 见第 22 节 |
+| 2026-09-08 | P3：停止分支复验补录——门禁复验全绿后重建环境再试两条新通道均未中断，但取得硬证据：**停止/发送按钮在 AX 树不暴露 AXPress**（perform_action 服务器拒绝，allowed 仅 AXShowMenu/AXScrollToVisible；对照其余语义点击成功的按钮均暴露）→ 精确解释坐标回退失效原因 + 登记 UI-29 无障碍观察项（辅助技术无法经 AX 按压 footer 图标按钮）；键盘 Tab×3+Space 盲激活未达（无弹层打开佐证）；AX bounds 与视觉位置数十像素级不一致。结论维持「待人工鼠标复核」，见第 22 节复验补录 | `9e940bd`/`be002ea` 关联 |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
 
@@ -1025,3 +1026,13 @@
 **流程 12 部分 ⚠️**：删除/清空会话入口（会话行更多操作 Radix 下拉）经 AXPress/AXShowMenu/right-click 三路径均不可达（触发的是 WebView 默认上下文菜单 Reload/Inspect Element）——UI 路径留人工批次；资源回收 DB 佐证手段已备（按会话查 messages/usage/artifacts 行数前后对比）。
 
 **交接提示**：①停止分支复核时建议同时用真实鼠标观察「正在停止…」中间态是否出现（可区分前端未收到点击 vs 后端取消链路失效）；②footer Tooltip 按钮点击问题若人工复现，升级为缺陷登记（新编号）；③flow 8 浏览器目标页 `proj-b/index.html`、flow 6 的 >50 提交历史「加载更多」分支仍待走查。
+
+### 停止分支复验补录（2026-09-08，同会话第二轮）
+
+门禁复验全绿（vitest 521/build/lint/styles:report 926:932/contract 115:112）；重建环境（保留模型配置，F1 修复持久化确认——重启后模型选择器直接显示已配置模型）。停止按钮追加两条验证通道，均未中断流（mock 日志第 3/4 次请求均 ~9.7s 完整），但拿到关键硬证据：
+
+1. **AXPress 语义动作缺失（新增，硬证据）**——对 AX 树中的「停止生成」元素显式请求 `AXPress`，服务器明确拒绝：`allowed: ["AXShowMenu","AXScrollToVisible"]`。对照所有语义点击成功的按钮（主导航/分类新建/radio/添加模型/关闭/下拉选项）均暴露 AXPress。这精确解释了此前 left_click 全部回退 window_event 坐标点击的原因；同时构成 **UI-29 无障碍观察项**——停止/发送按钮（Tooltip 包裹的 footer 图标按钮）的 AX 语义激活通道缺失，辅助技术无法经 AX 通道按压（同结构的「添加图片」却暴露 AXPress，成因待查）。
+2. **键盘盲激活未达**——输入框发送后连续 Tab×3+Space（DOM 顺序：添加图片→选择模型→停止生成），流未中断且无任何弹层打开（排除误激活文件选择/下拉），焦点链未达按钮。
+3. **AX bounds 与视觉位置不一致（数十像素级）**——AX 报告的发送按钮几何与截图视觉位置存在偏移（WebKit 布局坐标陈旧嫌疑），使「按 AX bounds 兜底的坐标点击」落空；按视觉位置的坐标点击亦未生效。
+
+**结论维持**：真实鼠标行为待人工复核；若人工复现失效则升级缺陷编号（重点排查前端 onClick 是否触发与 `dispatcher_stop_run` 取消链路）。

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { Tldraw, type Editor } from "tldraw";
+import { Tldraw, type Editor, type TLUiOverrides } from "tldraw";
 import "tldraw/tldraw.css";
 import { Bot } from "lucide-react";
 import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
@@ -20,6 +20,26 @@ import { ARCH_CHAT_WIDTH_KEY } from "./chat/architecture-chat-prefs";
  * 后续做多文档/后端存储时换掉 persistenceKey，改自建 TLStore + 快照接口。
  */
 export const ARCHITECTURE_PERSISTENCE_KEY = "jkcodingagent.architecture.v1";
+
+/**
+ * tldraw zh-cn 缺失 key 补齐（UI-15/26 遗留领取）。
+ *
+ * 实测 tldraw 5.3.2：内置英文基线（DEFAULT_TRANSLATION）540 key，上游
+ * `@tldraw/assets/translations/zh-cn.json` 覆盖 539，唯一缺失
+ * `comments.link-copied`（评论「复制链接」toast），缺失时回退英文 "Link copied"。
+ * 其余工具面板/样式面板/缩放/撤销重做等关键 key 上游均已译——画布若出现整片
+ * 英文工具名，真因是 zh-cn.json fetch 失败整体回退内置英文（资源加载路径，
+ * 归 tldraw-assets.ts / UI-28 运行态排查），非翻译覆盖缺口。
+ *
+ * overrides 合并顺序：内置 en ← zh-cn.json ← 本 override（最高优先级）。
+ * 模块级常量保证 Tldraw 不因新对象 identity 重渲染（同 memo 隔离口径）。
+ * 升级 tldraw 后若上游补齐该 key，可直接删除本常量与 overrides prop。
+ */
+const TLDRAW_ZH_CN_OVERRIDES: TLUiOverrides = {
+  translations: {
+    "zh-cn": { "comments.link-copied": "链接已复制" },
+  },
+};
 
 /**
  * 画布阻断面板：替代「画布无声消失」。三类原因——
@@ -178,6 +198,7 @@ const ArchitectureCanvas = memo(function ArchitectureCanvas({
             persistenceKey={ARCHITECTURE_PERSISTENCE_KEY}
             assetUrls={tldrawAssetUrls}
             locale="zh-cn"
+            overrides={TLDRAW_ZH_CN_OVERRIDES}
             // 生产许可证（tldraw SDK 商用生产需授权，开发免费）：构建时经
             // VITE_TLDRAW_LICENSE_KEY 注入；未配置时生产包中 editor 会在 ~5 秒后
             // 被许可门禁关闭（由上方 LicenseGate 探测展示原因，不再无声消失）。

@@ -8795,6 +8795,13 @@
     color: var(--text-muted);
   }
 
+  /* manual 源（RAG 配置页）有未保存修改：琥珀中性提示，与「保存中」的
+   * spinner 语义区分（UI-21 遗留领取）。 */
+  .ai-set-save-status.is-unsaved {
+    background: rgb(var(--warning-rgb) / 0.12);
+    color: rgb(var(--warning-rgb));
+  }
+
   .ai-set-save-status.is-saved {
     background: rgb(var(--success-rgb) / 0.12);
     color: rgb(var(--success-rgb));

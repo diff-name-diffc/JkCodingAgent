@@ -37,7 +37,6 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
   const [original, setOriginal] = useState<RagKbConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RagRuntimeStatus>({ running: false });
   // 初始探活窗口是否仍在进行：窗口耗尽仍未运行则如实显示「未运行」，
@@ -110,10 +109,9 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
       const result = await invoke<RagKbSaveResult>("rag_save_kb_config", { config: next });
       if (!isMounted()) return result;
       setOriginal(next);
-      setSaved(true);
-      void waitWhileMounted(2000).then((mounted) => {
-        if (mounted) setSaved(false);
-      });
+      // 成功的持续展示由设置头部 SaveStatusIndicator 统一承担（UI-21 遗留）：
+      // manual 源保存完成后 dirty 归零即「已保存」，不再维护 2 秒即逝的本地
+      // saved 标记（footer 「已保存」chip 随之移除，避免双通道）。
       if (result.reloadError) {
         showToast("配置已保存，但知识库服务热更新失败，重启应用后生效", "warning");
       } else if (result.reloaded) {
@@ -121,13 +119,12 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
       }
       return result;
     },
-    [isMounted, showToast, waitWhileMounted],
+    [isMounted, showToast],
   );
 
   const save = useCallback(async () => {
     if (!config) return;
     setSaving(true);
-    setSaved(false);
     setSaveError(null);
     try {
       await persistConfig(config);
@@ -244,7 +241,6 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
     patchConfig,
     loading,
     saving,
-    saved,
     saveError,
     dirty: Boolean(config && original && JSON.stringify(config) !== JSON.stringify(original)),
     runtimeStatus,

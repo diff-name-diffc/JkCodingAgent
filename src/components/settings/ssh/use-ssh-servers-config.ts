@@ -67,7 +67,8 @@ export function useSshServersConfig() {
         saving: false,
         hasError: false,
       });
-      toast.success("已保存");
+      // 成功不弹 toast：头部 SaveStatusIndicator 持续显示「已保存」（UI-21a
+      // 去闪烁口径，随本批多源统一收回此页的本地 toast）；失败仍 toast.error。
     } catch (err) {
       const message = String(err);
       setSaveError({ fieldId: fieldIdRef.current, message });

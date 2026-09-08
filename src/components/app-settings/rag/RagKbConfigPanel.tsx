@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import { Check } from "lucide-react";
 import { useToast } from "../../Toast";
 import { publishSaveSource, registerSaveSource } from "../../settings/save-sources";
 import { RagProcessingSections } from "./RagProcessingSections";
@@ -59,11 +58,6 @@ export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelPro
       <div className="ai-settings-footer ai-rag-footer">
         {controller.saveError && (
           <span className="ai-rag-feedback is-error">{controller.saveError}</span>
-        )}
-        {controller.saved && (
-          <span className="ai-rag-feedback is-success">
-            <Check size={12} /> 已保存
-          </span>
         )}
         <button
           type="button"

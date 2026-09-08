@@ -1,8 +1,8 @@
 # 改造任务明细与跟踪清单
 
-更新日期：2026-09-08（M3 遗留代码领取第三批：UI-17 split 行内 word-level 高亮 + UI-22c rag 失败原因拼 stderr 尾部 + UI-14 子智能体轨迹真实 model 字段 schema v4→v5）。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
+更新日期：2026-09-08（M3 遗留代码领取第五批：UI-15 主页架构画布保活 + UI-15/26 tldraw zh-cn 缺失 key 补齐 + UI-21 保存反馈多源统一；第四批摘要随本批补登）。关联：[审查](01-audit.md) · [设计规格](02-design.md)。
 
-**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）、M3 批次二（UI-25「各场景空态/加载/错误规格落地」+ UI-26「产品术语与图标视觉统一」，空态与术语链）、M3 批次三（UI-23「键盘焦点与输入法整合」全量 + UI-24a「性能低风险切片」+ UI-24b「窗口化动态测量主改造与同链路热点」，键盘与性能链）实施完成；M3 余量（UI-27「旧样式与失效布局说明清理」+ UI-33「后端 CloakBrowser 用户可见串归位」+ UI-24 遗留④⑥）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）；**UI-24 保持 DOING**（24b 代码改造 + 遗留④⑥ 完成，验收「附实际 profile」与 ⑦⑧ 需运行态 DevTools 采样/盘点，不虚报）；UI-24 遗留⑧（shell-output 监听器 N→1 收敛 + open_shell 竞态修复）与防劣化组件规模拆分（arch-apply/SubAgentEditorDialog 超限文件按职责拆分）实施完成；M3 遗留代码领取（UI-23「Radix 弹层跨栈 Mod 键让路」+ UI-22c「rag_status 失败原因内联透出」+ UI-25「搜索错误显式重试」/「配置模型深链直达分类」四项登记遗留）实施完成，见第 17 节。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）；M3 批次二源码基线 `c73a75f`，实施提交 `6d27277`（UI-25）/`13b93fb`（UI-26）；M3 批次三源码基线 `3118a41`，实施提交 `a835fcb`/`7e665b1`/`3d9ec51`/`85db7b3`（UI-23a/b/c/d）与 `21e70da`/`b3b2b8f`/`a9099fd`/`0a05499`（UI-24a-1..4）；UI-24b 切片源码基线 `d2d1f9c`，实施提交 `4b9a637`（24b-1/2 行级 UI 状态存储+Shiki 高亮 LRU 缓存）/`76bec9f`（24b-3 窗口化迁移 react-virtual 动态测量）/`2cfd798`（24b-4 merge 归一化身份缓存）/`ab5c2c5`（键分隔符修正），详见第 15 节。M3 余量源码基线 `3edcd81`，实施提交 `60d0c79`（UI-24⑥）/`a14773e`（UI-24④）/`b81136e`+`10f4a8f`+`a74e0b2`（UI-27）/`c1090ed`（UI-33），详见第 16 节；M3 遗留代码领取源码基线 `5b7414d`，实施提交 `f36e94a`（UI-25a 搜索重试）/`5cbc5d4`（UI-23 Mod 让路）/`6fdee44`（UI-25b 深链分类）/`01a4609`（UI-22c rag 失败原因），详见第 17 节。**M3 遗留代码领取第二批**（UI-25c「发送失败『模型未配置』错误深链」+ UI-17「split 并排 diff 模式」/「Git 历史分页」，均为已登记代码级功能遗留，不启用新编号）实施完成，源码基线 `1d571ed`，实施提交 `76ac4d9`（UI-25c 发送失败深链）/`add37e7`（UI-17 split diff）/`fa7f950`（UI-17 历史分页），详见第 18 节。**M3 遗留代码领取第三批**（UI-17「split 行内 word-level 高亮」+ UI-22c「rag 失败原因拼 stderr 环形尾部」+ UI-14「子智能体轨迹真实 model 字段 schema v4→v5」，均为已登记代码级功能遗留，不启用新编号；UI-14 在第 18 节以「需 v3→v4」延期的评估随基线实际已为 v4 的登记修正而 supersede）实施完成，源码基线 `78b9019`，实施提交 `62ad732`（UI-17 word-level 高亮）/`70f0ef1`（UI-22c stderr 尾部）/`5ab0cad`（UI-14 model 字段 v4→v5），详见第 19 节。下一步 M4（UI-28–32 发布验收）与 UI-24 的 profile 验收、遗留⑦⑧。
+**当前：UI-01–10（M0+M1）、UI-11–20（M2 全部）实施完成一轮；M3 批次一（UI-21「设置布局与自动保存反馈」+ UI-22「MCP/SSH/RAG 状态及作用域提示」，设置与连接状态链）、M3 批次二（UI-25「各场景空态/加载/错误规格落地」+ UI-26「产品术语与图标视觉统一」，空态与术语链）、M3 批次三（UI-23「键盘焦点与输入法整合」全量 + UI-24a「性能低风险切片」+ UI-24b「窗口化动态测量主改造与同链路热点」，键盘与性能链）实施完成；M3 余量（UI-27「旧样式与失效布局说明清理」+ UI-33「后端 CloakBrowser 用户可见串归位」+ UI-24 遗留④⑥）实施完成**——UI-01 部分 BLOCKED（交互走查不可达，见记录），UI-05 DONE，其余 REVIEW（自动化门禁全绿，人工运行态/截图验收遗留至 UI-23/28/29/31）；**UI-24 保持 DOING**（24b 代码改造 + 遗留④⑥ 完成，验收「附实际 profile」与 ⑦⑧ 需运行态 DevTools 采样/盘点，不虚报）；UI-24 遗留⑧（shell-output 监听器 N→1 收敛 + open_shell 竞态修复）与防劣化组件规模拆分（arch-apply/SubAgentEditorDialog 超限文件按职责拆分）实施完成；M3 遗留代码领取（UI-23「Radix 弹层跨栈 Mod 键让路」+ UI-22c「rag_status 失败原因内联透出」+ UI-25「搜索错误显式重试」/「配置模型深链直达分类」四项登记遗留）实施完成，见第 17 节。M0+M1 源码基线 `04df59a`，实施提交 `e4d2b82..15e50be`；M2 批次一 `4ee7c71..633ec4a`、批次二 `88babe4..9a20640`、批次三 `f4cab0a`/`f4f63a9`；M3 批次一源码基线 `0c406b1`，实施提交 `23f6613`/`f968332`/`ba30612`（UI-21a/b/c）与 `fe1b414`/`e24462d`/`444669a`（UI-22a/b/c）；M3 批次二源码基线 `c73a75f`，实施提交 `6d27277`（UI-25）/`13b93fb`（UI-26）；M3 批次三源码基线 `3118a41`，实施提交 `a835fcb`/`7e665b1`/`3d9ec51`/`85db7b3`（UI-23a/b/c/d）与 `21e70da`/`b3b2b8f`/`a9099fd`/`0a05499`（UI-24a-1..4）；UI-24b 切片源码基线 `d2d1f9c`，实施提交 `4b9a637`（24b-1/2 行级 UI 状态存储+Shiki 高亮 LRU 缓存）/`76bec9f`（24b-3 窗口化迁移 react-virtual 动态测量）/`2cfd798`（24b-4 merge 归一化身份缓存）/`ab5c2c5`（键分隔符修正），详见第 15 节。M3 余量源码基线 `3edcd81`，实施提交 `60d0c79`（UI-24⑥）/`a14773e`（UI-24④）/`b81136e`+`10f4a8f`+`a74e0b2`（UI-27）/`c1090ed`（UI-33），详见第 16 节；M3 遗留代码领取源码基线 `5b7414d`，实施提交 `f36e94a`（UI-25a 搜索重试）/`5cbc5d4`（UI-23 Mod 让路）/`6fdee44`（UI-25b 深链分类）/`01a4609`（UI-22c rag 失败原因），详见第 17 节。**M3 遗留代码领取第二批**（UI-25c「发送失败『模型未配置』错误深链」+ UI-17「split 并排 diff 模式」/「Git 历史分页」，均为已登记代码级功能遗留，不启用新编号）实施完成，源码基线 `1d571ed`，实施提交 `76ac4d9`（UI-25c 发送失败深链）/`add37e7`（UI-17 split diff）/`fa7f950`（UI-17 历史分页），详见第 18 节。**M3 遗留代码领取第三批**（UI-17「split 行内 word-level 高亮」+ UI-22c「rag 失败原因拼 stderr 环形尾部」+ UI-14「子智能体轨迹真实 model 字段 schema v4→v5」，均为已登记代码级功能遗留，不启用新编号；UI-14 在第 18 节以「需 v3→v4」延期的评估随基线实际已为 v4 的登记修正而 supersede）实施完成，源码基线 `78b9019`，实施提交 `62ad732`（UI-17 word-level 高亮）/`70f0ef1`（UI-22c stderr 尾部）/`5ab0cad`（UI-14 model 字段 v4→v5），详见第 19 节。**M3 遗留代码领取第四批**（UI-14「GraphNodeDrawer 显示节点真实运行模型〔登记修正：graph_node_runs 列自基线已存在，无需 schema 迁移〕」+ UI-25「工具级『模型未配置』错误深链直达对应分类」+ UI-09「嵌入式 Artifact 覆盖层迁 Radix Sheet 抽屉」，均为已登记代码级功能遗留，不启用新编号）实施完成，源码基线 `4da32e6`，实施提交 `7bf8ee7`（UI-14 图节点模型显示）/`6aa817b`（UI-25 工具级深链）/`73054e7`（UI-09 Sheet 抽屉），详见第 20 节。**M3 遗留代码领取第五批**（UI-15「主页架构画布保活」+ UI-15/26「tldraw zh-cn 缺失 key 补齐」+ UI-21「SSH/MCP/RAG 保存反馈统一头部指示器」，均为已登记代码级功能遗留，不启用新编号）实施完成，源码基线 `4e48e19`，实施提交 `1cdffd1`（UI-15 画布保活）/`d8d1dbc`（tldraw 翻译补齐）/`2e71b0e`+`70ad449`（UI-21 两切片），详见第 21 节。下一步 M4（UI-28–32 发布验收）与 UI-24 的 profile 验收、遗留⑦⑧。
 
 ## 1. 跟踪约定
 
@@ -44,13 +44,13 @@
 | UI-12 | P1 / M | 消息层级与工具活动摘要 | 06,11 | REVIEW | claude（会话领取） | `307dc73`；语义摘要纯函数+StatusPill 双编码+失败 pinned 露出；主题比对遗留 |
 | UI-13 | P1 / L | 执行图迁入工作视图 | 09,12 | REVIEW | claude（会话领取） | `a9f7064/4c7381c`；graph 主区标签+portal 删除+视图记忆；运行态走查遗留 |
 | UI-14 | P1 / M | 子智能体与节点详情统一 | 09,13 | REVIEW | claude（会话领取） | `05bc50f`；概览/活动/输出三段+共享 detail 组件+footer 门禁文案对齐；遗留领取 `5ab0cad`（子智能体轨迹真实 model 字段 schema v4→v5 双通道，见第 19 节）/`7bf8ee7`（GraphNodeDrawer 真实运行模型显示——登记修正无需 schema 迁移，见第 20 节） |
-| UI-15 | P1 / M | 架构画布与助手体验 | 06,08 | REVIEW | zcode（会话领取） | `f4cab0a`；宽度像素锚定+领域空态+附加上下文；画布保活三项基线已满足登记 |
+| UI-15 | P1 / M | 架构画布与助手体验 | 06,08 | REVIEW | zcode（会话领取） | `f4cab0a`；宽度像素锚定+领域空态+附加上下文；画布保活三项基线已满足登记；遗留领取 `1cdffd1`（主页视图切换画布保活，见第 21 节）/`d8d1dbc`（tldraw zh-cn 缺失 key 补齐+诊断修正，见第 21 节） |
 | UI-16 | P1 / M | 文件树与编辑器视觉整合 | 07,09 | REVIEW | zcode（会话领取） | `88babe4`；壳归位+平面化+路径行+tab 脏标记；截图遗留 UI-29 |
 | UI-17 | P1 / L | Git 审查布局与提交反馈 | 09,16 | REVIEW | zcode（会话领取） | `8e09fca/9a20640`；解析抽离+重命名/二进制+提交区范围+就地错误+对应高亮；遗留领取 `add37e7`（split 并排 diff 模式）/`fa7f950`（历史分页 --skip 加载更多，见第 18 节）/`62ad732`（split 行内 word-level 高亮，见第 19 节）；split 运行态/大 diff 走查遗留 UI-28/29 |
 | UI-18 | P1 / L | 浏览器预览与会话 dock 迁移 | 09 | REVIEW | claude（会话领取） | `4169175/860bf88`；拆分+串帧修复+主区单例标签，右面板机制移除；dock 走查遗留 |
 | UI-19 | P1 / M | 终端 dock 与空间约束 | 08,09 | REVIEW | zcode（会话领取） | `f4f63a9`；隐藏保活两态机+结束会话语义+高度常量收敛；PTY 运行态走查遗留 |
 | UI-20 | P1 / M | Python、图片和工具产物详情 | 09,12 | REVIEW | claude（会话领取） | `633ec4a`；来源/耗时/状态统一+artifact kind 分派；运行态走查遗留 |
-| UI-21 | P1 / M | 设置布局与自动保存反馈 | 06,07 | REVIEW | claude（会话领取） | `23f6613/f968332/ba30612`；保存状态持续可见(头部指示器+去 toast 闪烁)+去重标题+导航三组小标题+分类 tabs 横滚+Radix Dialog 外壳/焦点；运行态焦点走查遗留 UI-23/28/29 |
+| UI-21 | P1 / M | 设置布局与自动保存反馈 | 06,07 | REVIEW | claude（会话领取） | `23f6613/f968332/ba30612`；保存状态持续可见(头部指示器+去 toast 闪烁)+去重标题+导航三组小标题+分类 tabs 横滚+Radix Dialog 外壳/焦点；遗留领取 `2e71b0e`+`70ad449`（SSH/MCP/RAG 保存反馈统一头部指示器+切页 flush 修复，见第 21 节）；运行态焦点走查遗留 UI-23/28/29 |
 | UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | REVIEW | claude（会话领取） | `fe1b414/e24462d/444669a`；McpServersPage 拆分(648→305)+连接状态双编码(connection/mcp-server 域)+SSH 徽标去彩点+RAG 未运行不被吞；遗留领取 `01a4609`（rag_status 失败原因 DTO+设置页内联透出，见第 17 节）/`70f0ef1`（失败原因拼 sidecar stderr 环形尾部，见第 19 节）；运行态走查遗留 UI-28/29 |
 | UI-23 | P1 / L | 键盘、焦点与输入法整合 | 07,09,11,21 | REVIEW | claude（会话领取） | `a835fcb/7e665b1/3d9ec51/85db7b3`；IME/终端/Monaco 防抢键+enabled 门控、Escape 栈裁决+焦点陷阱/还原、5 分隔条键盘化+步进纯函数、Mod+1..4/J/Shift+A 键位+ContextNav ARIA+列表 ↑↓ 导航；遗留领取 `5cbc5d4`（Radix 弹层打开时 Mod 组合键跨栈让路，见第 17 节）；运行态走查遗留 UI-28/29 |
 | UI-24 | P1 / L | 长列表、流式输出和布局性能 | 08,12,19 | DOING | claude（会话领取） | 24a 切片 `21e70da/b3b2b8f/a9099fd/0a05499`：memo 击穿修复+role=log 多实例修复+scroll rAF 合帧/ResizeObserver+编辑器占比拖拽隔离；24b 切片 `4b9a637/76bec9f/2cfd798/ab5c2c5`：窗口化迁移 react-virtual 动态测量+行卸载展开态/高亮缓存恢复+merge 归一化身份缓存；④⑥ 切片 `a14773e`（live-state 逐 token setState 改 rAF 合帧+删 usage 死字段）/`60d0c79`（终端高度拖拽状态下沉面板）；⑧ 切片 `f738041`（shell-output 监听器 N→1 收敛+open_shell 竞态修复）+防劣化 `f43b659/e820630`（arch-apply/SubAgentEditorDialog 超限拆分）；**验收「附实际 profile」仍未满足**（需运行态 DevTools 采样，仓库无性能基建），⑦ 评估结论与剩余监听器收敛待 UI-30 运行态验证 |
@@ -286,6 +286,7 @@
 | 2026-09-08 | N1：UI-14 遗留领取——GraphNodeDrawer 显示节点真实运行模型（登记修正：graph_node_runs 自基线已有 model_ref/model_label/model_category 列且 node_task 运行期写入 harness 实际解析的库条目别名/模型名、DTO 已透传——无需 schema v5→v6；graphNodeModelLabel 纯函数与画布 GraphNodeView 同口径 +5 test；头部徽标硬编码「PI Agent」改真实模型 + title 附分类悬浮） | `7bf8ee7` |
 | 2026-09-08 | N2：UI-25 遗留领取——工具级「模型未配置」错误深链（run-error-classify 扩展 4 条工具级稳定串 + inferModelNotConfiguredCategory 分类推断 vision/image/imageEdit +6 test；tool-call-card errorText 命中渲染「配置模型」按钮；message-list→item→assistant/streaming→tool-call-card 可选 props 穿透；chat-shell ref 稳定回调防 MessageItem memo 击穿；「未配置安全审查」门禁串刻意排除；架构助手单工具注册表不接入；vitest 496→502） | `6aa817b` |
 | 2026-09-08 | N3：UI-09 遗留领取——嵌入式 Artifact 覆盖层迁 Radix Sheet 抽屉（app-layout artifactOverlay 分支换 Sheet+SheetContent 与 Python 抽屉同款：焦点陷阱/Esc/遮罩/焦点还原齐备，chat-shortcuts RADIX_MODAL_OPEN_SELECTOR 让路无一键双关；chat-shell artifactPanel 按 enabled×内容双门控——修复全局 artifactPanelOpen 跨保活 pane 泄漏弹空抽屉 + 会话切换自动收起；删 .ai-artifact-overlay 死类 styles:report 925→924） | `73054e7` |
+| 2026-09-08 | N4：M3 遗留代码领取第五批——UI-15 主页架构画布保活（once-mounted+visibility 叠层两态纯函数+6 test）/ tldraw zh-cn 缺失 key 补齐（overrides.translations 精准补 comments.link-copied，上游 5.3.2 覆盖 539/540 诊断修正）/ UI-21 保存反馈多源统一（save-sources 注册表+6 test；SSH 管线抽 hook 防劣化 481→416；三页接线+切页 flush-then-clear 修复丢编辑；aggregateSaveStatuses+7 test；指示器多源聚合+unsaved 态；SSH 去 toast.success、RAG footer chip 去重）；vitest 502→521 | `1cdffd1`/`d8d1dbc`/`2e71b0e`/`70ad449` |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
 
@@ -532,7 +533,7 @@
 截图：遗留（tauri 运行态，同 UI-29 矩阵）
 人工走查：切主题/收起助手/拖宽后撤销栈与视口保留、空画布提示与附带提示切换——遗留 UI-28/29
 风险/回退：单 commit 可回退；画布持久化 key、感知发送管线（截图/快照段顺序）、arch-run 监听零改动
-阻塞或剩余事项：**基线已满足（复现证明，未重复实现）**——①切主题不重建 editor：命令式 applyTldrawColorScheme（ArchitectureView.tsx:112-114 / architecture-theme.ts）；②收起助手/拖宽不重建：ArchitectureCanvas memo + 稳定回调，aside 交换不触及画布；③许可/画布崩溃明确失败：CanvasBlockedPanel license/crash/unexpected 三类（canvas-block-info.test.ts 既有 29 case）；④空画布不附截图：collectScreenshotSegment 首行形状数守卫（useArchitectureChat.ts:151），快照同理；无自动模型请求（send 仅显式触发）。**边界登记（不实施）**——主页视图切换（架构↔聊天/项目）整体卸载 ArchitectureView，视口/撤销栈丢失（形状经 IndexedDB 保留）；超出本卡验收清单（仅列切主题/收起/拖宽），常驻 tldraw 实例保活涉及内存与 WelcomePage 结构改造，挂 UI-30 或后续编号评估；tldraw 画布工具部分英文（locale 已 zh-cn，属上游翻译覆盖）遗留
+阻塞或剩余事项：**基线已满足（复现证明，未重复实现）**——①切主题不重建 editor：命令式 applyTldrawColorScheme（ArchitectureView.tsx:112-114 / architecture-theme.ts）；②收起助手/拖宽不重建：ArchitectureCanvas memo + 稳定回调，aside 交换不触及画布；③许可/画布崩溃明确失败：CanvasBlockedPanel license/crash/unexpected 三类（canvas-block-info.test.ts 既有 29 case）；④空画布不附截图：collectScreenshotSegment 首行形状数守卫（useArchitectureChat.ts:151），快照同理；无自动模型请求（send 仅显式触发）。**边界登记（不实施）**——主页视图切换（架构↔聊天/项目）整体卸载 ArchitectureView，视口/撤销栈丢失（形状经 IndexedDB 保留）；超出本卡验收清单（仅列切主题/收起/拖宽），常驻 tldraw 实例保活涉及内存与 WelcomePage 结构改造，挂 UI-30 或后续编号评估**→ 已实施 `1cdffd1`（第五批领取，见第 21 节：主页内视图切换保活 visibility 叠层；「打开项目也保活」内存代价更高留 Phase 2 挂 UI-30）**；tldraw 画布工具部分英文（locale 已 zh-cn，属上游翻译覆盖）遗留**→ 已实施 `d8d1dbc`（诊断修正：实测上游 5.3.2 zh-cn 覆盖 539/540 key，唯一缺失 comments.link-copied 已精准补齐；运行态若现整片英文真因为翻译资源 fetch 失败回退，归资源加载路径，见第 21 节）**
 验收人/日期：待人工（UI-29/31）
 
 任务：UI-19
@@ -563,7 +564,7 @@
 截图：遗留（tauri 运行态，同 UI-29 矩阵）
 人工走查：编辑→头部保存中…→已保存；制造保存失败→头部保存失败+重试可用+不显示已保存+字段内联报错；快速编辑/切页/脏关闭弹「保存并关闭」不丢值；API key 默认掩码；模型服务/模型用途不再双标题；分类 tabs 窄宽横滚选中可见；Radix 外壳焦点陷阱/还原、Esc 先关嵌套 ConfirmDialog/Select、模型下拉可用——遗留 UI-23/28/29
 风险/回退：三 commit 独立可回退（21a/21b 先落地，即使 21c 回退保存反馈/去重/tabs 价值仍在）；21c 最高风险（嵌套弹层/焦点），含回退方案（保留 portal 手动补 role/aria-modal/焦点陷阱）；400ms 自动保存契约、模型库引用与容量来源、密钥掩码零改动
-阻塞或剩余事项：**决策**——「已保存」为持续态（非定时淡出），符合设计「持续可见」；初载未编辑即显示「已保存」（与磁盘同步语义准确）。**边界登记**——SSH 页自有 debounce 保存管线与 MCP/RAG 手动保存反馈未统一到头部指示器（本卡 modify 列表限 use-aha-settings 全局管线；SSH/MCP/RAG 的错误就地反馈已在 UI-22 分别处理，统一头部指示器如需另评估）；Radix 焦点陷阱与内联模型下拉/Select 运行态兼容按嵌套子节点方案实现，实测走查遗留 UI-23/28
+阻塞或剩余事项：**决策**——「已保存」为持续态（非定时淡出），符合设计「持续可见」；初载未编辑即显示「已保存」（与磁盘同步语义准确）。**边界登记**——SSH 页自有 debounce 保存管线与 MCP/RAG 手动保存反馈未统一到头部指示器（本卡 modify 列表限 use-aha-settings 全局管线；SSH/MCP/RAG 的错误就地反馈已在 UI-22 分别处理，统一头部指示器如需另评估）**→ 已实施 `2e71b0e`+`70ad449`（第五批领取，见第 21 节：保存源注册表+多源聚合指示器；顺带修复 SSH/MCP 切页丢 400ms 窗口编辑的既有缺陷；登记文本中「MCP 手动保存」经核实为自动保存，已在第 21 节修正）**；Radix 焦点陷阱与内联模型下拉/Select 运行态兼容按嵌套子节点方案实现，实测走查遗留 UI-23/28
 验收人/日期：待人工（UI-23/29/31）
 
 任务：UI-22
@@ -921,4 +922,49 @@
 人工走查：项目会话点开工具产物/子智能体轨迹 → 右侧 Sheet 抽屉（遮罩 + 滑入动效），焦点入抽屉、Tab 循环受限；Esc/点遮罩/关闭按钮均关闭并还原焦点（点击打开时回触发卡片，Mod+Shift+A 打开时回原焦点元素）；抽屉打开时底层编辑 pane 不可交互（模态语义，见风险②）；多项目保活切换隐藏 pane 不弹抽屉；会话切换清空详情内容后面板自动收起；独立聊天（主页）420px in-flow dock 分支行为不变——遗留 UI-28/29
 风险/回退：单 commit 可回退（回退即恢复非模态覆盖层，无功能损失）。**行为变化登记**：① 嵌入式 Artifact 由非模态覆盖层变为模态抽屉——遮罩会阻断抽屉打开期间与编辑 pane 的交互（设计 §5.1「有焦点管理的抽屉」认可；Python 运行详情在同语境已是该语义）；② 全局 `artifactPanelOpen` 跨保活 pane 泄漏（隐藏 pane 也渲染覆盖层，旧实现因容器 display 约束不可见）在 Sheet portal 挂 body 后会被放大为可见空抽屉——本批 enabled×内容双门控即修复（顺带消除会话切换后残留「暂无详情」空壳的旧过渡态）；③ Mod+Shift+A 手动焦点还原与 Radix 原生还原并存（同目标元素，无冲突）
 阻塞或剩余事项：独立聊天 in-flow 420px dock 保留为最终形态（无主区标签体系，dock 即其详情槽；AppLayout 头注释「transitional」措辞已随本批删除）；无新增遗留
+验收人/日期：待人工（UI-28/29）
+
+## 21. M3 遗留代码领取（第五批：UI-15 主页架构画布保活 + tldraw zh-cn 补齐 + UI-21 保存反馈统一）任务记录（第 5 节模板）
+
+> 本节延续第 17–20 节模式，领取 M1–M3 任务记录中已登记的代码级功能遗留（「边界登记/遗留/挂后续评估」），非新发现问题，不启用新编号；原任务总表状态不变（仍 REVIEW，运行态人工验收遗留 UI-28/29），证据列追加本节 commit。M4（UI-28–32）为运行态发布验收（截图矩阵/DevTools profile/人工走查），本会话无运行态桌面环境，按「不虚报」原则不领取；UI-24 遗留⑦与 profile 验收维持既有决策（待 UI-30 运行态数据）。本批评估后**不领取**并维持既有登记：UI-17 split 虚拟化（性能项待 profile 佐证，三次登记不实施）、UI-17 GitChanges/GitHistory 缓存同步（依赖 ContextNav keep-alive 架构决策）、UI-27 tailwind `!important` 根治（样式链非功能相关）、UI-26 图标三方言统一（需运行态走查，归 UI-29）、UI-25 工具级深链收起态直出（pinned 行紧凑有既有决策，无需求证据）。**登记信息修正**：① 第 13 节 UI-21 边界登记中「MCP/RAG 手动保存」的 MCP 部分与代码不符——MCP 页实为与 SSH 同款 400ms debounce 自动保存，仅 RAG 为手动保存，本批实施按实际语义接线；② 第 12 节 UI-15 遗留「tldraw 画布工具部分英文属上游翻译覆盖」的诊断不准确——实测上游 5.3.2 zh-cn 覆盖 539/540 key，见下卡修正。源码基线 `4e48e19`。
+
+任务：UI-15（遗留领取：主页架构画布保活）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-08
+基线/结果 commit 或 PR：基线 `4e48e19`；结果 `1cdffd1`，单 commit 可回退
+实现文件与范围：新增 `src/components/home-view-state.ts`（两态纯函数 `nextHomePaneKeepAlive`：mounted 单调不回退、visible 跟随当前视图、未挂载不产生隐藏空转态；语义注释对齐 terminal-dock/ProjectWorkspaceLayout 保活先例；+6 test）、`src/components/home-view-state.test.ts`、`src/components/WelcomePage.tsx`（三视图改 `.ai-home-panes` 叠层容器：架构 pane 首次切入才挂载——lazy import 语义保留；此后切走仅 `visibility:hidden + pointerEvents:none + zIndex` 隐藏不卸载，tldraw editor 实例/视口 camera/撤销栈/选中态存活；渲染期派生 setState〔React 合法模式〕保证切到架构的首帧即可见无闪烁；chat/projects 视图维持既有条件渲染）、`src/styles/tailwind.css`（`.ai-home-panes` 叠层容器+`.ai-home-pane-layer` absolute 填满层——隐藏走 visibility 而非 display:none，保留布局尺寸使 tldraw `.tl-container` 尺寸链不塌零〔多项目保活同款路线〕，+2 定义）
+对应问题：第 12 节 UI-15 记录边界登记「主页视图切换整体卸载 ArchitectureView，视口/撤销栈丢失……挂 UI-30 或后续编号评估」；设计 §5.6（画布优先、不重建 editor）
+测试命令及结果：home-view-state 6 case（激活挂载/切走保活隐藏/切回恢复/未挂载空转/幂等/单调性）；全量 vitest 502→508 passed；build/lint(--max-warnings 0)/styles:report(926:932，0 无引用)/contract:check(115:112) 全绿；零 Rust 改动
+截图：遗留（视图往返视口/撤销栈保留、隐藏期内存观感——tauri 运行态，同 UI-29 矩阵）
+人工走查：架构视图移动/缩放画布与撤销若干操作 → 切到聊天/项目 → 切回：视口、撤销栈、选中态原样；隐藏期切换主题后切回配色正确；隐藏期架构助手流式输出不引发可见卡顿；AppRail 三视图切换语义不变——遗留 UI-28/29/30
+风险/回退：单 commit 可回退（回退即恢复条件渲染整体卸载，无功能损失）。**语义决策登记**——隐藏期 `useArchRunListener` 仍响应 `architecture_run`（聊天/项目视图中智能体可继续操作画布，收益大于风险；editor 未挂载的回退报告路径既有）；常驻内存代价（单个 tldraw editor+撤销栈）登记 UI-30 运行态采样验证；生产许可门禁时序（隐藏期被 LicenseGate 关闭→切回见阻断面板）由既有 remountKey 重试兜底
+阻塞或剩余事项：**Phase 2 登记（不实施）**——「打开项目也保活」（App.tsx `!activeProject` 边界上移）：项目工作区与 tldraw 同时常驻内存代价更高，待 Phase 1 运行态内存数据后挂 UI-30 决策
+验收人/日期：待人工（UI-28/29/30）
+
+任务：UI-15/26（遗留领取：tldraw zh-cn 缺失 key 补齐 + 登记诊断修正）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-08
+基线/结果 commit 或 PR：基线 `1cdffd1`；结果 `d8d1dbc`，单 commit 可回退
+实现文件与范围：`src/components/architecture/ArchitectureView.tsx`（新增模块级常量 `TLDRAW_ZH_CN_OVERRIDES: TLUiOverrides`——经 `overrides.translations` 精准补 `comments.link-copied: "链接已复制"`；`<Tldraw>` 加 `overrides` prop；常量注释记录实测覆盖数据与升级处置〔上游补齐后可删〕；模块级身份恒定，Tldraw 不因新对象 identity 重渲染——同 ArchitectureCanvas memo 隔离口径）
+对应问题：第 12 节 UI-15 记录遗留「tldraw 画布工具部分英文（locale 已 zh-cn，属上游翻译覆盖）遗留」；UI-26 术语统一（中文化）
+测试命令及结果：纯常量接线无新增纯函数；全量 vitest 508 passed 不回退；build/lint/styles:report(926:932 不变——零新增 .ai-* 类)/contract:check(115:112) 全绿；零 Rust 改动
+截图：N/A（评论「复制链接」toast 中文化）
+人工走查：画布评论面板复制链接 → toast 显示「链接已复制」——遗留 UI-28（需运行态且该功能入口较深）
+风险/回退：单 commit 可回退；override 按 locale+key 合并且优先级最高，与上游翻译冲突时本覆盖胜出（该 key 上游缺失无冲突面）；不自建整份 zh-cn 字典——与上游 539 key 重复且每次升级漂移
+阻塞或剩余事项：**诊断修正登记**——原登记「属上游翻译覆盖」不准确：实测 5.3.2 内置英文基线（DEFAULT_TRANSLATION）540 key，上游 `@tldraw/assets/translations/zh-cn.json` 覆盖 539，唯一缺失即本批补齐的 1 key；工具/样式/缩放/撤销等关键 key 上游均已译。**边界登记**——若运行态画布出现**整片**英文工具名，真因为 zh-cn.json fetch 失败整体回退内置英文（`translations.js fetchTranslation` 资源加载路径，自托管资产经 `getAssetUrlsByImport` 打进本地包，离线应可用），归 UI-28 运行态排查方向，非翻译覆盖问题
+验收人/日期：待人工（UI-28/29）
+
+任务：UI-21（遗留领取：SSH/MCP/RAG 保存反馈统一头部指示器）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-08
+基线/结果 commit 或 PR：基线 `d8d1dbc`；结果 `2e71b0e`（切片 1）+ `70ad449`（切片 2），两 commit 独立可回退（切片 2 结构性依赖切片 1 的注册表——回退切片 1 须先回退切片 2）
+实现文件与范围：
+切片 1（管线接线）：新增 `src/components/settings/save-sources.ts`（模块级保存源注册表，模式参照 use-aha-settings 单例：`registerSaveSource(id, flush)` 挂载注册/卸载注销、`publishSaveSource` 推送 {mode/dirty/saving/hasError} 快照、`subscribeSaveSources`/`getSaveSourcesSnapshot` 供 useSyncExternalStore、`hasDirtySaveSources`/`flushAllSaveSources` 供关闭聚合；同值发布不通知；StrictMode 双挂载同 id 覆盖注册不被旧清理误删〔flush 引用识别〕；+6 test）、新增 `src/components/settings/ssh/use-ssh-servers-config.ts`（SSH 页保存管线自 SshServersPage 抽出——防劣化：页面 481 行逼近 500 红线，新增接线前先按职责拆分，页面 481→416；含 publish 接线与卸载 flush-then-clear）、`src/components/settings/ssh/SshServersPage.tsx`（改用 hook，删除本地管线 state/refs/函数）、`src/components/settings/mcp/McpServersPage.tsx`（saveNow/scheduleSave 接 publish；`flushPending` 收敛表单→JSON 切换与注册表 flush 两处重复模式；卸载 flush-then-clear）、`src/components/app-settings/rag/RagKbConfigPanel.tsx`（manual 源发布——dirty=未保存修改非「保存中」；controller.save 经 ref 转发避免注册闭包过期；卸载不 flush〔切页放弃未保存修改为手动保存模型既有语义〕）、`src/components/AppSettingsDialog.tsx`（requestClose 脏检查聚合 `hasDirtySaveSources`；确认后并行 flush 全局管线与全部 dirty 源；确认框文案涵盖 manual 源「尚未保存或仍在保存中」）
+切片 2（指示器统一）：`src/components/settings/save-status.ts`（新增 `SaveSourceMode`/`SaveSourceStatusInput` 类型与 `aggregateSaveStatuses` 纯函数——全局管线+各源聚合，优先级 loading > error > saving > unsaved > saved；manual 源 dirty 显示 unsaved 不谎报「保存中」；空 sources 与单源派生逐位一致；+7 test）、`src/components/settings/SaveStatusIndicator.tsx`（useSyncExternalStore 订阅注册表消费聚合；修复 SSH 页保存失败时头部仍显示「已保存」；新增 unsaved 态渲染 PencilLine+「未保存」；error 重试路由到全局 flush+全部注册源落盘）、`src/components/settings/ssh/use-ssh-servers-config.ts`（删 `toast.success("已保存")`——UI-21a 去闪烁口径随多源统一收回）、`src/components/app-settings/rag/useRagKbConfig.ts`+`RagKbConfigPanel.tsx`（删 saved state 与 footer「已保存」2 秒 chip——manual 源保存完成 dirty 归零即头部「已保存」，去双通道；footer 保留 saveError 内联与手动保存按钮）、`src/styles/tailwind.css`（`.ai-set-save-status.is-unsaved` 琥珀中性 pill，--warning 令牌双主题自适应）
+对应问题：第 13 节 UI-21 记录边界登记「SSH 页自有 debounce 保存管线与 MCP/RAG 手动保存反馈未统一到头部指示器……如需另评估」；UI-21 原验收「保存失败不显示『已保存』」「快速编辑/切页/关闭不丢值」；顺带修复调研发现的两处既有缺陷（SSH/MCP 卸载只清 timer 丢 400ms 窗口内编辑；SSH 每次自动保存弹 toast.success 闪烁）
+测试命令及结果：save-sources 6 case + aggregateSaveStatuses 7 case；全量 vitest 508→514→521 passed；build/lint(--max-warnings 0)/styles:report(926:932，0 无引用)/contract:check(115:112) 全绿；零 Rust 改动
+截图：遗留（头部指示器在 SSH/MCP/RAG 页的保存中/未保存/失败+重试态——tauri 运行态，同 UI-29 矩阵）
+人工走查：SSH 页编辑主机名 → 头部「保存中…」→「已保存」（无 toast 闪烁）；断后端制造保存失败 → 头部「保存失败+重试」+字段内联错误，重试后恢复；MCP 页同法；RAG 页修改配置 → 头部「未保存」（琥珀）→ 点保存 → 「保存中…」→「已保存」，footer 无重复 chip；SSH/MCP 编辑后 400ms 内切导航页 → 重进修改已落盘；RAG 有未保存修改时关闭弹窗 → 确认框「保存并关闭」——遗留 UI-28/29
+风险/回退：两 commit 独立可回退；切片 1 单独回退即恢复各页独立反馈与丢编辑缺陷（无功能损失）；400ms 自动保存契约、模型库引用与容量来源、密钥掩码零改动。**行为变化登记**——① SSH/MCP 切导航页由「静默丢弃 400ms 窗口内编辑」改为 flush 落盘（缺陷修复，saveNow 经 ref 读最新值，组件销毁后 setState no-op 不影响落库）；② RAG 关闭弹窗时 dirty 经确认框「保存并关闭」落盘（此前静默丢弃，现与全局管线语义对齐且有选择权）；③ SSH 成功保存不再弹 toast（头部持续显示承担，UI-21a 同款决策）
+阻塞或剩余事项：**边界登记**——RAG 页切导航页放弃未保存修改为既有语义（手动保存模型，config state 随组件卸载销毁），仅关闭弹窗有确认框拦截；如需切页保活另立评估（状态上提模块级）；两套 toast 系统（settings/toast.ts vs components/Toast.tsx）并存维持现状——RAG 热更新 warning toast 仍走旧 Context，统一收益小于改动面
 验收人/日期：待人工（UI-28/29）

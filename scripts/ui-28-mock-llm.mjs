@@ -58,6 +58,8 @@ const server = http.createServer(async (req, res) => {
   });
 
   const usage = { prompt_tokens: 128, completion_tokens: 64, total_tokens: 192 };
+  const startedAt = Date.now();
+  console.log(`[mock] 请求进入：userText=${JSON.stringify(userText.slice(0, 20))} tools=${hasTools}`);
 
   try {
     if (last.role === "tool") {
@@ -100,9 +102,13 @@ const server = http.createServer(async (req, res) => {
     }
   } catch {
     // 客户端提前断开（停止按钮）属预期
+    console.log(`[mock] 请求提前断开（客户端 abort）：userText=${JSON.stringify(userText.slice(0, 20))}`);
   } finally {
     res.write("data: [DONE]\n\n");
     res.end();
+    console.log(
+      `[mock] 请求结束：userText=${JSON.stringify(userText.slice(0, 20))} tools=${hasTools} 耗时=${Date.now() - startedAt}ms`,
+    );
   }
 });
 

@@ -19,7 +19,9 @@ WORK_DIR="${WORK_DIR:-/tmp/jka-ui28-run}"
 BIN="$REPO_ROOT/src-tauri/target/debug/jkcodingagent"
 APP="$WORK_DIR/JKCodingAgent.app"
 
-[ -x "$BIN" ] || { echo "缺少 $BIN，先 cargo build"; exit 1; }
+# 注意：echo 内的 ${BIN} 必须加花括号——set -u 下 "$BIN，先" 的全角逗号
+# 会被 bash 当作变量名字符，报 unbound variable 并掩盖缺二进制的真实错误。
+[ -x "$BIN" ] || { echo "缺少 ${BIN}，先在 src-tauri 执行 cargo build"; exit 1; }
 
 # 1) 种子数据（隔离 HOME + 测试项目）
 ISO_HOME="$ISO_HOME" bash "$REPO_ROOT/scripts/ui-28-seed.sh"

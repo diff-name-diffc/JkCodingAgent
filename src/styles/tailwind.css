@@ -8138,13 +8138,6 @@
     background: var(--bg-panel);
   }
 
-  /* 嵌入式聊天 pane 的详情覆盖层：浮于阅读列之上而非挤占它（UI-02 过渡策略） */
-  .ai-artifact-overlay {
-    border-left: 1px solid var(--border-dim);
-    background: var(--bg-panel);
-    box-shadow: var(--shadow-lg);
-  }
-
   /* ── Chat utilities ── */
 
   .chat-scroll {

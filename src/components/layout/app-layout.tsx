@@ -2,6 +2,7 @@ import * as React from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useUIStore } from "../../stores/ui-store";
 import { useSplitterKeyboard } from "../../hooks/use-splitter-keyboard";
+import { Sheet, SheetContent } from "../ui/sheet";
 import { cn } from "../../lib/cn";
 
 /**
@@ -15,9 +16,10 @@ import { cn } from "../../lib/cn";
  *   └──────────┴──────────────────────────┴──────────────┘
  *
  * The sidebar collapses to an icon rail. The artifact panel is opt-in: in the
- * standalone chat view it docks as a 420px in-flow sibling (transitional —
- * UI-09 moves it into the unified detail slot); in embedded panes it renders
- * as a right-side overlay so it never squeezes an already narrow chat column.
+ * standalone chat view it docks as a 420px in-flow sibling; in embedded panes
+ * it renders as a Radix Sheet 右侧抽屉（UI-09 遗留领取：焦点陷阱 / Escape /
+ * 遮罩齐备，替代旧的非模态覆盖层过渡）so it never squeezes an already
+ * narrow chat column.
  *
  * This component owns NO business logic — it only arranges children and reads
  * layout flags from the Zustand UI store. Data lives in <Sidebar /> and
@@ -32,9 +34,9 @@ export interface AppLayoutProps {
   chatFooter?: React.ReactNode;
   artifactPanel?: React.ReactNode;
   /**
-   * Render the artifact panel as a right-side overlay instead of an in-flow
-   * dock. Used by embedded chat panes where a 420px sibling would starve the
-   * reading column.
+   * Render the artifact panel as a right-side Sheet drawer instead of an
+   * in-flow dock. Used by embedded chat panes where a 420px sibling would
+   * starve the reading column.
    */
   artifactOverlay?: boolean;
   /**
@@ -63,6 +65,7 @@ export function AppLayout({
   const sidebarWidth = useUIStore((s) => s.sidebarWidth);
   const setSidebarWidth = useUIStore((s) => s.setSidebarWidth);
   const artifactOpen = useUIStore((s) => s.artifactPanelOpen);
+  const setArtifactPanelOpen = useUIStore((s) => s.setArtifactPanelOpen);
   /** 拖拽中的实时宽度；为 null 表示未在拖拽。拖拽结束才写回 store，避免高频持久化。 */
   const [dragWidth, setDragWidth] = React.useState<number | null>(null);
   // 侧栏宽度把手键盘化（UI-23c）：ArrowLeft/Right 步进、Shift 大步、双击复位。
@@ -183,22 +186,22 @@ export function AppLayout({
         )}
       </div>
 
+      {/* 嵌入式（项目工作区）聊天 pane：Artifact 详情走 Radix Sheet 右侧抽屉
+          （UI-09 遗留领取，替代旧非模态覆盖层过渡）——继承 Dialog 的焦点陷阱、
+          Escape 关闭（chat-shortcuts 按 RADIX_MODAL_OPEN_SELECTOR 让路，无一键
+          双关）与焦点还原。open 以 artifactPanel 存在性门控：chat-shell 在无详情
+          内容或工作区隐藏（保活多项目 enabled=false）时传 undefined——Sheet
+          portal 挂 body、逃逸隐藏容器的 display 约束，缺门控会让全局
+          artifactPanelOpen 在隐藏 pane 上弹出空抽屉。 */}
       {artifactOverlay && (
-        <AnimatePresence initial={false}>
-          {artifactOpen && artifactPanel && (
-            <motion.section
-              key="artifact-overlay"
-              initial={{ opacity: 0, x: 24 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 24 }}
-              transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-              className="ai-artifact-overlay absolute inset-y-0 right-0 z-30 overflow-hidden"
-              style={{ width: "min(420px, 85%)" }}
-            >
-              {artifactPanel}
-            </motion.section>
-          )}
-        </AnimatePresence>
+        <Sheet
+          open={artifactOpen && Boolean(artifactPanel)}
+          onOpenChange={(open) => {
+            if (!open) setArtifactPanelOpen(false);
+          }}
+        >
+          <SheetContent aria-label="详情抽屉">{artifactPanel}</SheetContent>
+        </Sheet>
       )}
     </div>
   );

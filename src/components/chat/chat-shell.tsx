@@ -389,14 +389,20 @@ export function ChatShell({
         />
       }
       artifactPanel={
-        <ArtifactPanel
-          title={selectedSubAgentToolCallId ? "子智能体执行轨迹" : "详情"}
-          workspaceId={sessionId}
-          artifact={selectedArtifact}
-          subAgentSession={selectedSubAgent}
-          traceLoading={traceLoading}
-          traceError={traceError}
-        />
+        // 门控（UI-09 遗留领取）：无详情内容或工作区隐藏（保活多项目）时不
+        // 提供面板——AppLayout 的 Sheet portal 挂 body，隐藏 pane 若继续渲染
+        // 会带着全局 artifactPanelOpen 弹出空抽屉；同时使会话切换清空内容后
+        // 详情面自动收起（旧覆盖层残留「暂无详情」空壳的过渡态一并消除）。
+        enabled && (selectedArtifact || selectedSubAgentToolCallId) ? (
+          <ArtifactPanel
+            title={selectedSubAgentToolCallId ? "子智能体执行轨迹" : "详情"}
+            workspaceId={sessionId}
+            artifact={selectedArtifact}
+            subAgentSession={selectedSubAgent}
+            traceLoading={traceLoading}
+            traceError={traceError}
+          />
+        ) : undefined
       }
     >
       {activeSessionKeywords.length > 0 && (

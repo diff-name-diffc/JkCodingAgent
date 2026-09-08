@@ -38,12 +38,12 @@
 | UI-06 | P1 / M | 令牌、基础控件、表面样式统一 | 05 | REVIEW | claude（会话领取） | `39e93dd/6eeff1f/24da7ea` 三阶段；对比度实测遗留 UI-29 |
 | UI-07 | P1 / L | 统一应用外壳与上下文导航 | 04,06 | REVIEW | claude（会话领取） | `bb3c0e9/f41134d`；AppRail+ContextNav+StatusDockBar，保活走查遗留 |
 | UI-08 | P1 / L | 工作区布局状态与偏好迁移 | 04,07 | REVIEW | claude（会话领取） | `289cb3f`；workspace-store 三层+sanitize 测试；多窗口不纳入本轮 |
-| UI-09 | P1 / L | 主区标签、详情槽和抽屉统一 | 02,03,08 | REVIEW | claude（会话领取） | `afb341d`；main-tabs 8 case+Sheet/Dialog+请求守卫；窄屏 Artifact 抽屉遗留 |
+| UI-09 | P1 / L | 主区标签、详情槽和抽屉统一 | 02,03,08 | REVIEW | claude（会话领取） | `afb341d`；main-tabs 8 case+Sheet/Dialog+请求守卫；遗留领取 `73054e7`（嵌入式 Artifact 迁 Radix Sheet 抽屉 + 保活 pane 泄漏门控，见第 20 节） |
 | UI-10 | P1 / M | 最近项目与会话导航精修 | 07,08 | REVIEW | claude（会话领取） | `15e50be`；recency 排序修复+列表语义；50 项目/大会话人工操作遗留 |
 | UI-11 | P1 / M | 任务头部与输入框上下文 | 06,09 | REVIEW | claude（会话领取） | `4ee7c71`；标题/项目/分支双行头部+更多菜单+停止态；窄窗走查遗留 |
 | UI-12 | P1 / M | 消息层级与工具活动摘要 | 06,11 | REVIEW | claude（会话领取） | `307dc73`；语义摘要纯函数+StatusPill 双编码+失败 pinned 露出；主题比对遗留 |
 | UI-13 | P1 / L | 执行图迁入工作视图 | 09,12 | REVIEW | claude（会话领取） | `a9f7064/4c7381c`；graph 主区标签+portal 删除+视图记忆；运行态走查遗留 |
-| UI-14 | P1 / M | 子智能体与节点详情统一 | 09,13 | REVIEW | claude（会话领取） | `05bc50f`；概览/活动/输出三段+共享 detail 组件+footer 门禁文案对齐；遗留领取 `5ab0cad`（子智能体轨迹真实 model 字段 schema v4→v5 双通道，见第 19 节） |
+| UI-14 | P1 / M | 子智能体与节点详情统一 | 09,13 | REVIEW | claude（会话领取） | `05bc50f`；概览/活动/输出三段+共享 detail 组件+footer 门禁文案对齐；遗留领取 `5ab0cad`（子智能体轨迹真实 model 字段 schema v4→v5 双通道，见第 19 节）/`7bf8ee7`（GraphNodeDrawer 真实运行模型显示——登记修正无需 schema 迁移，见第 20 节） |
 | UI-15 | P1 / M | 架构画布与助手体验 | 06,08 | REVIEW | zcode（会话领取） | `f4cab0a`；宽度像素锚定+领域空态+附加上下文；画布保活三项基线已满足登记 |
 | UI-16 | P1 / M | 文件树与编辑器视觉整合 | 07,09 | REVIEW | zcode（会话领取） | `88babe4`；壳归位+平面化+路径行+tab 脏标记；截图遗留 UI-29 |
 | UI-17 | P1 / L | Git 审查布局与提交反馈 | 09,16 | REVIEW | zcode（会话领取） | `8e09fca/9a20640`；解析抽离+重命名/二进制+提交区范围+就地错误+对应高亮；遗留领取 `add37e7`（split 并排 diff 模式）/`fa7f950`（历史分页 --skip 加载更多，见第 18 节）/`62ad732`（split 行内 word-level 高亮，见第 19 节）；split 运行态/大 diff 走查遗留 UI-28/29 |
@@ -54,7 +54,7 @@
 | UI-22 | P1 / M | MCP/SSH/RAG 状态及作用域提示 | 11,21 | REVIEW | claude（会话领取） | `fe1b414/e24462d/444669a`；McpServersPage 拆分(648→305)+连接状态双编码(connection/mcp-server 域)+SSH 徽标去彩点+RAG 未运行不被吞；遗留领取 `01a4609`（rag_status 失败原因 DTO+设置页内联透出，见第 17 节）/`70f0ef1`（失败原因拼 sidecar stderr 环形尾部，见第 19 节）；运行态走查遗留 UI-28/29 |
 | UI-23 | P1 / L | 键盘、焦点与输入法整合 | 07,09,11,21 | REVIEW | claude（会话领取） | `a835fcb/7e665b1/3d9ec51/85db7b3`；IME/终端/Monaco 防抢键+enabled 门控、Escape 栈裁决+焦点陷阱/还原、5 分隔条键盘化+步进纯函数、Mod+1..4/J/Shift+A 键位+ContextNav ARIA+列表 ↑↓ 导航；遗留领取 `5cbc5d4`（Radix 弹层打开时 Mod 组合键跨栈让路，见第 17 节）；运行态走查遗留 UI-28/29 |
 | UI-24 | P1 / L | 长列表、流式输出和布局性能 | 08,12,19 | DOING | claude（会话领取） | 24a 切片 `21e70da/b3b2b8f/a9099fd/0a05499`：memo 击穿修复+role=log 多实例修复+scroll rAF 合帧/ResizeObserver+编辑器占比拖拽隔离；24b 切片 `4b9a637/76bec9f/2cfd798/ab5c2c5`：窗口化迁移 react-virtual 动态测量+行卸载展开态/高亮缓存恢复+merge 归一化身份缓存；④⑥ 切片 `a14773e`（live-state 逐 token setState 改 rAF 合帧+删 usage 死字段）/`60d0c79`（终端高度拖拽状态下沉面板）；⑧ 切片 `f738041`（shell-output 监听器 N→1 收敛+open_shell 竞态修复）+防劣化 `f43b659/e820630`（arch-apply/SubAgentEditorDialog 超限拆分）；**验收「附实际 profile」仍未满足**（需运行态 DevTools 采样，仓库无性能基建），⑦ 评估结论与剩余监听器收敛待 UI-30 运行态验证 |
-| UI-25 | P1 / S | 各场景空态/加载/错误规格落地 | 10,12,15,20 | REVIEW | claude（会话领取） | `6d27277`；普通/项目/架构三入口领域空态(纯函数+5 test)+模型未配置深链取代装饰性禁用按钮+加载占位双编码；遗留领取 `f36e94a`（搜索错误显式重试）/`6fdee44`（配置模型深链直达分类，见第 17 节）/`76ac4d9`（发送失败「模型未配置」错误深链，见第 18 节）；运行态走查遗留 UI-28/29 |
+| UI-25 | P1 / S | 各场景空态/加载/错误规格落地 | 10,12,15,20 | REVIEW | claude（会话领取） | `6d27277`；普通/项目/架构三入口领域空态(纯函数+5 test)+模型未配置深链取代装饰性禁用按钮+加载占位双编码；遗留领取 `f36e94a`（搜索错误显式重试）/`6fdee44`（配置模型深链直达分类，见第 17 节）/`76ac4d9`（发送失败「模型未配置」错误深链，见第 18 节）/`6aa817b`（工具级「模型未配置」错误深链+分类推断，见第 20 节）；运行态走查遗留 UI-28/29 |
 | UI-26 | P2 / S | 产品术语与图标视觉统一 | 06,21,22 | REVIEW | claude（会话领取） | `13b93fb`；CloakBrowser→浏览器/Aha→JKCodingAgent 品牌归位+中英混排清理+5 缺名图标按钮补 aria-label；图标全应用统一遗留 UI-29、后端 Rust 串遗留 UI-33 |
 | UI-27 | P2 / M | 移除旧样式与失效布局说明 | 06,07,09,26 | REVIEW | claude（会话领取） | `b81136e`（死类/死动画清理，styles:report 924→923）/`10f4a8f`（孤儿 rightPanel 偏好与预算通道移除，降级树五步→三步）/`a74e0b2`（AGENTS.md/README 过时架构与功能宣称更新）；`--info` 无暗色覆盖为品牌色恒定设计登记 UI-29、tailwind 68 处 `!important` 活覆盖保留登记 |
 | UI-28 | P1 / L | 核心功能映射回归 | 10–23,25 | TODO | 待分配 | — |
@@ -283,6 +283,9 @@
 | 2026-09-08 | M1：UI-17 遗留领取——split 并排 diff 行内 word-level 高亮（lib/word-diff.ts 零依赖 token 级 LCS 纯函数：CJK 感知分词+空白降噪+char/cells 双阈值降级+8 test；git-diff-split SplitSide.segments 仅真配对计算+4 test；GitDiffViewer 抽 SplitHunkRows useMemo+segments 分支渲染；App.css .git-diff-word-hl 走 --success/danger-rgb 伴随令牌双主题自适应零硬编码；vitest 475→487） | `62ad732` |
 | 2026-09-08 | M2：UI-22c 遗留领取——RAG sidecar stderr 环形尾部拼入失败原因（failure.rs RagStderrRing：容量 20 行/单行 300 chars/拼接取最近 5 行/总长钳 600，push 锁外脱敏〔redact_log_text 提 pub(crate) 复用〕、按代隔离；拼接单行化「{base}｜stderr 尾部：…」空快照 no-op；manager 接线——reader push/reaper 与「握手前已退出」80ms drain 宽限后拼接，握手超时/健康检查直接拼；前端零改动；cargo 513→521） | `70f0ef1` |
 | 2026-09-08 | M3：UI-14 遗留领取——子智能体轨迹真实 model 字段 schema v4→v5（双通道：Started 事件 model 实时源 + trace 表可空 model 列回放权威源〔G1-20 裁剪逐出 Started 后仍可得〕；migrate_v4_to_v5 快照+幂等 ADD COLUMN+事务 user_version；runtime.model() 访问器→tool.rs 持久化→DTO→store 归一化→视图条件渲染，老轨迹「未记录」兜底保留；AGENTS.md/schema.rs 头注释「v3 基线」陈旧描述校正 v5；cargo 521→523、vitest 487→491） | `5ab0cad` |
+| 2026-09-08 | N1：UI-14 遗留领取——GraphNodeDrawer 显示节点真实运行模型（登记修正：graph_node_runs 自基线已有 model_ref/model_label/model_category 列且 node_task 运行期写入 harness 实际解析的库条目别名/模型名、DTO 已透传——无需 schema v5→v6；graphNodeModelLabel 纯函数与画布 GraphNodeView 同口径 +5 test；头部徽标硬编码「PI Agent」改真实模型 + title 附分类悬浮） | `7bf8ee7` |
+| 2026-09-08 | N2：UI-25 遗留领取——工具级「模型未配置」错误深链（run-error-classify 扩展 4 条工具级稳定串 + inferModelNotConfiguredCategory 分类推断 vision/image/imageEdit +6 test；tool-call-card errorText 命中渲染「配置模型」按钮；message-list→item→assistant/streaming→tool-call-card 可选 props 穿透；chat-shell ref 稳定回调防 MessageItem memo 击穿；「未配置安全审查」门禁串刻意排除；架构助手单工具注册表不接入；vitest 496→502） | `6aa817b` |
+| 2026-09-08 | N3：UI-09 遗留领取——嵌入式 Artifact 覆盖层迁 Radix Sheet 抽屉（app-layout artifactOverlay 分支换 Sheet+SheetContent 与 Python 抽屉同款：焦点陷阱/Esc/遮罩/焦点还原齐备，chat-shortcuts RADIX_MODAL_OPEN_SELECTOR 让路无一键双关；chat-shell artifactPanel 按 enabled×内容双门控——修复全局 artifactPanelOpen 跨保活 pane 泄漏弹空抽屉 + 会话切换自动收起；删 .ai-artifact-overlay 死类 styles:report 925→924） | `73054e7` |
 
 后续每次合并只更新实际完成任务；发现新增问题使用新编号 UI-33 起，保留历史任务记录。
 
@@ -395,7 +398,7 @@
 截图：遗留
 人工走查：关闭返回原内容/滚动位置 手工验证遗留 UI-28
 风险/回退：标签 reducer 纯函数单测保护
-阻塞或剩余事项：窄屏 Artifact 走 Sheet 抽屉（当前为 embedded 覆盖层过渡）
+阻塞或剩余事项：窄屏 Artifact 走 Sheet 抽屉（当前为 embedded 覆盖层过渡）**→ 已实施 `73054e7`（嵌入式 Artifact 迁 Radix Sheet 抽屉：焦点陷阱/Esc/遮罩/焦点还原齐备 + enabled×内容双门控修复全局 artifactPanelOpen 跨保活 pane 泄漏，见第 20 节）**
 
 任务：UI-10
 负责人：claude（会话领取）
@@ -460,7 +463,7 @@
 截图：遗留
 人工走查：实时事件与历史轨迹恢复视觉一致；返回图保留所选节点与视口（依赖 C3b view-memory）——遗留 UI-28
 风险/回退：单 commit；**决策**：draft Harness 编辑器与 flush 兜底保留在抽屉内未拆（key 重建会改变草稿 flush 时序语义，风险大于收益；314 行已达标）；子智能体活动用简单时间线不虚拟化（单任务工具调用十级~百级行数，图节点千级继续虚拟化——量级决策非视觉分裂）
-阻塞或剩余事项：SubAgentSession/轨迹无 model 字段——按规格显示「未记录」，如需真实模型需后端 schema 变更（另立任务）
+阻塞或剩余事项：SubAgentSession/轨迹无 model 字段——按规格显示「未记录」，如需真实模型需后端 schema 变更（另立任务）**→ 已实施：子智能体侧 `5ab0cad`（schema v4→v5 双通道，见第 19 节）；图节点侧 `7bf8ee7`（见第 20 节，登记修正——graph_node_runs 列自基线已存在，纯前端显示接线）**
 验收人/日期：待人工（UI-29/31）
 
 任务：UI-18
@@ -805,7 +808,7 @@
 截图：N/A（错误深链交互）
 人工走查：清空对话模型库条目 URL/Key → 发送 → runError 显示「错误：模型服务缺少…」+「配置模型」按钮 → 点击直达设置「模型服务」页对话分类；架构助手清空视觉模型条目 → sendError +「配置模型」→ 落视觉分类；普通网络/HTTP 错误不显示按钮——遗留 UI-28/29（后端字符串改动需 cargo 重建 + 重启 tauri）
 风险/回退：单 commit 可回退；调查修正——后端已有稳定显式错误串（run 入口 validate_provider_completeness 预校验 + 各 adapter provider_missing_message），无需新增错误码 DTO/事件字段，前端纯函数分类即可，改动面远小于原登记预估；分类刻意不推断 category（深链发起点自知分类，与 6fdee44 同原则）；子串匹配与后端串同源（同仓库），改后端文案须同步 classify 与 test（已在模块注释标注）
-阻塞或剩余事项：**边界登记**——分类基于后端稳定串子串，若后端未来改文案须同步；tool 级「视觉模型未配置」（analyze_image 等工具结果，非 run 级 runError）不走本深链（工具卡展示，另属范畴）；架构失败时 sendError 与 MessageList runError 可能并存（useArchitectureChat 预存在行为），本批仅在 sendError 块加按钮避免双按钮
+阻塞或剩余事项：**边界登记**——分类基于后端稳定串子串，若后端未来改文案须同步；tool 级「视觉模型未配置」（analyze_image 等工具结果，非 run 级 runError）不走本深链（工具卡展示，另属范畴）**→ 已实施 `6aa817b`（工具卡 errorText 命中渲染「配置模型」深链 + 分类推断 vision/image/imageEdit，见第 20 节）**；架构失败时 sendError 与 MessageList runError 可能并存（useArchitectureChat 预存在行为），本批仅在 sendError 块加按钮避免双按钮
 验收人/日期：待人工（UI-28/29）
 
 任务：UI-17（遗留领取：split 并排 diff 模式）
@@ -874,5 +877,48 @@
 截图：遗留（概览 meta grid 模型真实值/「未记录」兜底双态——tauri 运行态）
 人工走查：配置子智能体（继承父级/自定义模型两种）执行任务 → 实时卡片概览「模型」显示运行实际模型名 → 刷新后回放同值；v4 老库启动自动迁移（pre-v5-backup 快照生成）后老轨迹仍显示「未记录」；长任务（事件超容量裁剪）回放仍显示模型（列权威源）——遗留 UI-28/29（需 cargo 重建 + 重启 tauri + 本地库迁移）
 风险/回退：单 commit 可回退，但已迁移 v5 库需 reset-dev-data.sh 或快照恢复（回退说明已注明）；迁移安全——快照 + 幂等 ADD COLUMN + 事务原子 + user_version 同事务 + 不改历史迁移块 + 单步/链式测试覆盖；兼容——model 列可空老行 NULL、Started 新字段老 eventsJson 缺字段，前端两源皆无走「未记录」兜底；v5 库被 v4 代码打开走既有 bail 引导
-阻塞或剩余事项：**登记不实施**——图节点（graph_node_runs）同规格 model 字段（GraphNodeDrawer 概览当前不展示模型行，如需求出现另立小任务，同为 v5 后新增列）；SubAgentSession.model 仅展示不检索（无按模型过滤需求）
+阻塞或剩余事项：**登记不实施**——图节点（graph_node_runs）同规格 model 字段（GraphNodeDrawer 概览当前不展示模型行，如需求出现另立小任务，同为 v5 后新增列）**→ 已领取实施 `7bf8ee7`（第 20 节调查修正：graph_node_runs 的 model_ref/model_label/model_category 列自基线已存在且 node_task 运行期写入实际解析值，无需新增列/schema 迁移，缺口仅为抽屉头部硬编码「PI Agent」，纯前端显示接线）**；SubAgentSession.model 仅展示不检索（无按模型过滤需求）
+验收人/日期：待人工（UI-28/29）
+
+## 20. M3 遗留代码领取（第四批：UI-14 图节点真实模型显示 + UI-25 工具级模型未配置深链 + UI-09 嵌入式 Artifact Sheet 抽屉）任务记录（第 5 节模板）
+
+> 本节延续第 17/18/19 节模式，领取 M1–M3 任务记录中已登记的代码级功能遗留（「遗留登记/边界登记/登记不实施」），非新发现问题，不启用新编号；原任务总表状态不变（仍 REVIEW，运行态人工验收遗留 UI-28/29），证据列追加本节 commit。M4（UI-28–32）为运行态发布验收（截图矩阵/DevTools profile/人工走查），本会话无运行态桌面环境，按「不虚报」原则不领取；UI-24 遗留⑦⑧与 profile 验收维持既有决策（待 UI-30 运行态数据）。本批评估后**不领取**并维持既有登记：UI-17 split 虚拟化（性能项待 profile 佐证，两次登记不实施）、UI-17 GitChanges/GitHistory 缓存同步（依赖 ContextNav keep-alive 架构决策）、UI-27 tailwind `!important` 根治（样式链非功能相关）、UI-26 图标三方言统一（需运行态走查，归 UI-29）、UI-12 工具类别后端透传（「如未来」推测项，现名映射有中性回退）。**登记信息修正**：第 19 节 UI-14 曾登记「图节点（graph_node_runs）同规格 model 字段……同为 v5 后新增列」——本批调查确认 `graph_node_runs` 表自基线即有 `model_ref/model_label/model_category` 列（`node_task.rs` 运行期写入 `resolve_node_harness` 实际解析的库条目别名/模型名，harness 解析失败即运行失败、不存在陈旧标签），前端 `GraphNodeRunRecord` DTO 已透传，**无需 schema v5→v6 迁移**；实际缺口仅为 GraphNodeDrawer 头部徽标硬编码「PI Agent」（画布 GraphNodeView 已显示 modelLabel），以纯前端显示接线领取，supersede「如需求出现另立小任务」的条件登记。另修正 AGENTS.md 引用从未存在的 `docs/architecture-audit-2026-08-25.md`（git 全历史无该文件）为实际台账位置。源码基线 `4da32e6`。
+
+任务：UI-14（遗留领取：GraphNodeDrawer 显示节点真实运行模型）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-08
+基线/结果 commit 或 PR：基线 `4da32e6`；结果 `7bf8ee7`，单 commit 可回退
+实现文件与范围：`graph/graph-utils.ts`（新增 `graphNodeModelLabel(nodeRun, node)` 纯函数：运行记录 modelLabel（harness 运行期解析的别名/模型名）优先 → 未运行/占位记录回退计划 node.modelRef → 皆空回退引擎名 "PI Agent"，与画布 GraphPanel `run?.modelLabel || node.modelRef` + GraphNodeView `|| "PI Agent"` 同口径；+5 test）、`graph/GraphNodeDrawer.tsx`（头部引擎徽标由硬编码「PI Agent」改 `graphNodeModelLabel` 显示，title 悬浮附 `modelLabel · modelCategory`；CSS `.ai-graph-drawer-agent` 既有 ellipsis 截断兜底长模型名）
+对应问题：第 19 节 UI-14 记录「**登记不实施**——图节点（graph_node_runs）同规格 model 字段（GraphNodeDrawer 概览当前不展示模型行）」；第 10 节 UI-14 记录（本批补 → 已实施标记）；设计 §5.3；**登记修正**见节前言——列与 DTO 自基线已存在，无 schema 变更
+测试命令及结果：graph-utils.test 21→26 case（运行值优先/计划回退/空白回退/皆空引擎名/裁剪）；批末全量 vitest 502 passed；build/lint(--max-warnings 0)/styles:report/contract:check(115:112) 全绿；零 Rust/schema/CSS 改动
+截图：遗留（抽屉头部真实模型徽标/「PI Agent」兜底双态——tauri 运行态）
+人工走查：执行含节点的图 → 打开节点详情抽屉 → 头部显示运行实际模型别名/模型名（悬浮见分类）；未运行节点显示计划 modelRef；历史运行切换（Select）随所选 run 的记录显示——遗留 UI-28/29
+风险/回退：单 commit 可回退（回退即恢复硬编码「PI Agent」，无功能损失）；显示口径与画布节点一致，无新增数据面
+阻塞或剩余事项：无新增。第 19 节既有登记「SubAgentSession.model 仅展示不检索」不变；图节点 model 检索/过滤同样无需求不实施
+验收人/日期：待人工（UI-28/29）
+
+任务：UI-25（遗留领取：工具级「模型未配置」错误深链直达对应分类）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-08
+基线/结果 commit 或 PR：基线 `7bf8ee7`；结果 `6aa817b`，单 commit 可回退
+实现文件与范围：`lib/run-error-classify.ts`（MODEL_NOT_CONFIGURED_MARKERS 扩展 4 条工具级稳定串——「视觉模型未配置」/「视觉模型缺少 API Key」（analyze_image）、「图片生成 API Key 未配置」/「图片编辑 API Key 未配置」（generate_image/edit_image builtin 与 image_generator 同串）；新增 `inferModelNotConfiguredCategory` 推断表 → vision/image/imageEdit，含 browser 工具「LLM API Key 未配置，无法调用视觉模型」包装串推断 vision；run 级串不推断分类、维持 76ac4d9「发起点自知分类」原则；「未配置安全审查」门禁串（shell/local_zsh/ssh）刻意排除——修复入口是审查模型槽位而非模型服务分类页；+6 test）、`chat/tool-call-card.tsx`（errorText 命中且回调存在时渲染「配置模型」outline 按钮〔call_sub_agent 按钮同款 h-7〕，点击携 `inferModelNotConfiguredCategory(errorText) ?? undefined`；ToolCallList 透传，pinned/展开两路径经同一 renderRow 覆盖）、`chat/message-list.tsx`（`onConfigureModel` 签名 `()` → `(category?: ModelCategory)`，runError 块显式无参调用回退发起点默认分类语义不变；MessageItem/StreamingMessage 透传）、`chat/message-item.tsx`/`assistant-message.tsx`/`streaming-message.tsx`（可选 props 穿透，onOpenSubAgent 同模式）、`chat/chat-shell.tsx`（ref 存最新 onOpenSettings + 恒定身份 `handleConfigureModel`——HomeChatPage/ProjectPage 上游为内联箭头身份不稳定，直接闭包依赖会随上游重渲染击穿 MessageItem React.memo〔UI-24a 防劣化口径，keyboard-bindings ref 同款模式〕；PromptInput 深链共用同一回调）
+对应问题：第 18 节 UI-25c 记录边界登记「tool 级『视觉模型未配置』（analyze_image 等工具结果，非 run 级 runError）不走本深链（工具卡展示，另属范畴）」；审计 V06（异常含真实原因 + 明确行动入口）
+测试命令及结果：run-error-classify 7→13 case（工具级命中/门禁串排除/三分类推断/run 级 null/未命中 null）；批末全量 vitest 502 passed；build/lint(--max-warnings 0)/styles:report(924 不变——零新增类)/contract:check(115:112) 全绿；零后端改动（工具错误串已存在且稳定，模块注释已标注同源约束）
+截图：遗留（工具卡错误 + 深链按钮——tauri 运行态）
+人工走查：清空视觉模型条目 Key → 让智能体调 analyze_image → 展开失败工具卡 → errorText 下「配置模型」按钮 → 直达设置「模型服务」视觉分类；generate_image/edit_image 同法各落 image/imageEdit 分类；run 级 runError 深链（text）与架构助手 sendError 深链（vision）行为不变——遗留 UI-28/29
+风险/回退：单 commit 可回退；全链可选 props 向后兼容；架构助手 MessageList 不传 onConfigureModel——其注册表 `ToolRegistry::architecture_tools()`（「单工具视觉循环」）无图片/视觉分析工具，无工具级深链需求，sendError 既有深链保留无双按钮；分类推断与后端稳定串同源（同仓库），改后端文案须同步 classify 与 test（模块注释已标注）
+阻塞或剩余事项：**边界登记**——工具级按钮在卡片展开区（errorText 旁）可见，聚合收起态 pinned 失败卡本身不重复渲染按钮（点击展开即得行动入口，保持 pinned 行紧凑）；如需收起态直出深链另立决策
+验收人/日期：待人工（UI-28/29）
+
+任务：UI-09（遗留领取：嵌入式 Artifact 覆盖层迁 Radix Sheet 抽屉）
+负责人：claude（会话领取）
+开始/完成日期：2026-09-08
+基线/结果 commit 或 PR：基线 `6aa817b`；结果 `73054e7`，单 commit 可回退
+实现文件与范围：`layout/app-layout.tsx`（artifactOverlay 分支由非模态 `motion.section` 覆盖层（absolute 右侧、无焦点陷阱/Esc/遮罩）改 `Sheet`+`SheetContent`（Radix Dialog，与 ChatPageOverlays 的 Python 运行详情抽屉同款模式，ui/sheet.tsx 文档串自 UI-09 即列「嵌入式 Artifact」为预期消费方）；`open` 以 `artifactOpen && Boolean(artifactPanel)` 门控、onOpenChange 关闭写回 store；Esc 关闭与 use-chat-shortcuts 既有 RADIX_MODAL_OPEN_SELECTOR 让路协同（无一键双关）；组件头注释与 prop 文档更新、删「transitional」措辞）、`chat/chat-shell.tsx`（`artifactPanel` 仅在 `enabled && (selectedArtifact || selectedSubAgentToolCallId)` 时提供，否则 undefined）、`styles/tailwind.css`（删 `.ai-artifact-overlay` 死类，styles:report 925→924）
+对应问题：第 9 节 UI-09 记录「窄屏 Artifact 走 Sheet 抽屉（当前为 embedded 覆盖层过渡）」；UI-09 任务卡「窄屏抽屉用 Radix」；设计 §5.1「打开节点详情时替换同一个详情槽或使用有焦点管理的抽屉」
+测试命令及结果：无新增纯函数（Radix 原语接线 + 存在性门控，行为面在运行态）；批末全量 vitest 502 passed；build/lint(--max-warnings 0)/styles:report(924 定义/930 引用，0 无引用)/contract:check(115:112) 全绿；零 Rust 改动
+截图：遗留（Sheet 抽屉 + 遮罩观感/亮暗双主题/焦点环——tauri 运行态，同 UI-29 矩阵）
+人工走查：项目会话点开工具产物/子智能体轨迹 → 右侧 Sheet 抽屉（遮罩 + 滑入动效），焦点入抽屉、Tab 循环受限；Esc/点遮罩/关闭按钮均关闭并还原焦点（点击打开时回触发卡片，Mod+Shift+A 打开时回原焦点元素）；抽屉打开时底层编辑 pane 不可交互（模态语义，见风险②）；多项目保活切换隐藏 pane 不弹抽屉；会话切换清空详情内容后面板自动收起；独立聊天（主页）420px in-flow dock 分支行为不变——遗留 UI-28/29
+风险/回退：单 commit 可回退（回退即恢复非模态覆盖层，无功能损失）。**行为变化登记**：① 嵌入式 Artifact 由非模态覆盖层变为模态抽屉——遮罩会阻断抽屉打开期间与编辑 pane 的交互（设计 §5.1「有焦点管理的抽屉」认可；Python 运行详情在同语境已是该语义）；② 全局 `artifactPanelOpen` 跨保活 pane 泄漏（隐藏 pane 也渲染覆盖层，旧实现因容器 display 约束不可见）在 Sheet portal 挂 body 后会被放大为可见空抽屉——本批 enabled×内容双门控即修复（顺带消除会话切换后残留「暂无详情」空壳的旧过渡态）；③ Mod+Shift+A 手动焦点还原与 Radix 原生还原并存（同目标元素，无冲突）
+阻塞或剩余事项：独立聊天 in-flow 420px dock 保留为最终形态（无主区标签体系，dock 即其详情槽；AppLayout 头注释「transitional」措辞已随本批删除）；无新增遗留
 验收人/日期：待人工（UI-28/29）

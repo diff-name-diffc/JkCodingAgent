@@ -501,6 +501,30 @@
     overflow: hidden;
   }
 
+  /* 主页 pane 叠层容器（UI-15 遗留领取：架构画布保活）：占据 AppRail 右侧区域，
+   * 作为架构保活层的定位上下文。当前视图的 chat/projects pane 走正常流填充，
+   * 架构层用 absolute 叠在其上/其下（由 z-index 与 visibility 决定），隐藏时
+   * 不影响在流 pane 的布局。 */
+  .ai-home-panes {
+    position: relative;
+    flex: 1;
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* 架构保活层：absolute 填满 .ai-home-panes；display:flex 让内部 .ai-home-pane
+   * (flex:1) 撑满，从而给 tldraw .tl-container 提供确定尺寸（隐藏用 visibility
+   * 而非 display:none，保留布局尺寸避免画布尺寸塌成 0）。 */
+  .ai-home-pane-layer {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+  }
+
   .ai-home-chat {
     display: flex;
     flex: 1;

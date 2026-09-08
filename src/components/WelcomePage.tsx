@@ -5,6 +5,10 @@ import { formatRelativeTime, shortenPath } from "../utils";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { AiEmptyState, AiSectionHeader } from "./ui/sci-fi-shell";
 import { AppRail } from "./shell/AppRail";
+import {
+  HOME_PANE_UNMOUNTED,
+  nextHomePaneKeepAlive,
+} from "./home-view-state";
 
 const HomeChatPage = lazy(() =>
   import("./HomeChatPage").then((module) => ({ default: module.HomeChatPage })),
@@ -60,6 +64,19 @@ export function WelcomePage({
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
 
+  // 架构 pane 保活（UI-15 遗留领取）：首次切到架构视图才挂载（lazy 语义保留），
+  // 此后切走仅 visibility:hidden 隐藏——tldraw editor 实例、视口 camera、撤销栈
+  // 与选中态存活，切回不重建。渲染期派生 setState（React 合法模式）保证切到
+  // 架构的首帧即可见，无隐藏闪烁；纯函数两态机见 home-view-state.ts。
+  const archActive = view === "architecture";
+  const [archKeepAlive, setArchKeepAlive] = useState(() =>
+    nextHomePaneKeepAlive(HOME_PANE_UNMOUNTED, archActive),
+  );
+  const nextArch = nextHomePaneKeepAlive(archKeepAlive, archActive);
+  if (nextArch.mounted !== archKeepAlive.mounted || nextArch.visible !== archKeepAlive.visible) {
+    setArchKeepAlive(nextArch);
+  }
+
   const filtered = useMemo(() => {
     if (!query.trim()) return projects;
     const q = query.toLowerCase();
@@ -73,20 +90,30 @@ export function WelcomePage({
       <div className="ai-home-layout">
         <AppRail space={view} onSpaceChange={onViewChange} />
 
-        {view === "chat" && (
-          <Suspense fallback={<WelcomePaneFallback />}>
-            <HomeChatPage />
-          </Suspense>
-        )}
+        <div className="ai-home-panes">
+          {archKeepAlive.mounted && (
+            <div
+              className="ai-home-pane-layer"
+              style={{
+                visibility: archKeepAlive.visible ? "visible" : "hidden",
+                pointerEvents: archKeepAlive.visible ? "auto" : "none",
+                zIndex: archKeepAlive.visible ? 1 : 0,
+              }}
+            >
+              <Suspense fallback={<WelcomePaneFallback />}>
+                <ArchitectureView />
+              </Suspense>
+            </div>
+          )}
 
-        {view === "architecture" && (
-          <Suspense fallback={<WelcomePaneFallback />}>
-            <ArchitectureView />
-          </Suspense>
-        )}
+          {view === "chat" && (
+            <Suspense fallback={<WelcomePaneFallback />}>
+              <HomeChatPage />
+            </Suspense>
+          )}
 
-        {view === "projects" && (
-          <div className="ai-home-pane ai-home-projects">
+          {view === "projects" && (
+            <div className="ai-home-pane ai-home-projects">
             <div className="ai-home-search-row">
               <div className={`ai-field ai-home-search${searchFocused ? " is-focused" : ""}`}>
                 <Search
@@ -155,9 +182,10 @@ export function WelcomePage({
                   ))}
                 </ul>
               )}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

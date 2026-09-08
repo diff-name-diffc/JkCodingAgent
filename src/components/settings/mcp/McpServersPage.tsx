@@ -8,6 +8,7 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { EmptyState } from "../EmptyState";
 import { Section } from "../Section";
 import { toast } from "../toast";
+import { publishSaveSource, registerSaveSource } from "../save-sources";
 import { McpServerCard } from "./McpServerCard";
 import {
   AUTOSAVE_DELAY_MS,
@@ -60,24 +61,35 @@ export function McpServersPage() {
     }
   }, []);
 
-  useEffect(() => {
-    loadConfig();
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [loadConfig]);
-
   const saveNow = useCallback(async () => {
     if (savingRef.current) return;
     savingRef.current = true;
+    publishSaveSource("mcp-servers", {
+      mode: "auto",
+      dirty: false,
+      saving: true,
+      hasError: false,
+    });
     try {
       const saved = await invoke<McpConfig>("mcp_global_config_save", {
         config: toConfig(entriesRef.current),
       });
       setEntries(toEntries(saved));
       setSaveError(null);
+      publishSaveSource("mcp-servers", {
+        mode: "auto",
+        dirty: false,
+        saving: false,
+        hasError: false,
+      });
     } catch (err) {
       setSaveError(String(err));
+      publishSaveSource("mcp-servers", {
+        mode: "auto",
+        dirty: false,
+        saving: false,
+        hasError: true,
+      });
       toast.error(`保存失败：${String(err)}`);
     } finally {
       savingRef.current = false;
@@ -86,11 +98,38 @@ export function McpServersPage() {
 
   const scheduleSave = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
+    publishSaveSource("mcp-servers", {
+      mode: "auto",
+      dirty: true,
+      saving: false,
+      hasError: false,
+    });
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
       void saveNow();
     }, AUTOSAVE_DELAY_MS);
   }, [saveNow]);
+
+  /** 立即落盘：清 debounce timer 后保存（注册表 flush / 表单→JSON 切换 / 卸载共用）。 */
+  const flushPending = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    return saveNow();
+  }, [saveNow]);
+
+  useEffect(() => {
+    loadConfig();
+    const unregister = registerSaveSource("mcp-servers", flushPending);
+    return () => {
+      unregister();
+      // flush-then-clear（UI-21 遗留）：卸载（切导航页）前把 debounce 窗口内的
+      // 待保存编辑落盘——saveNow 经 entriesRef 读最新值，组件销毁后的 setState
+      // 为 no-op，不影响落库。此前 cleanup 只 clearTimeout，会丢 400ms 内编辑。
+      if (timerRef.current) void flushPending();
+    };
+  }, [loadConfig, flushPending]);
 
   function updateEntry(index: number, updater: (entry: McpEntry) => McpEntry) {
     setEntries((prev) => prev.map((entry, i) => (i === index ? updater(entry) : entry)));
@@ -134,11 +173,7 @@ export function McpServersPage() {
   /** 表单 → JSON：先把未落盘的表单编辑保存出去，再序列化当前条目。 */
   function switchToJson() {
     if (mode === "json") return;
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    void saveNow();
+    void flushPending();
     setJsonText(serializeConfig(toConfig(entriesRef.current)));
     setJsonError(null);
     setMode("json");

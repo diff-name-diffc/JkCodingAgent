@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Download, Plus, RefreshCw, RotateCcw, Server } from "lucide-react";
-import type { SshAuditLog, SshServerConfig, SshToolsConfig } from "../../../types";
+import type { SshServerConfig } from "../../../types";
 import { SshAuditRecordList } from "../../app-settings/aha/SshAuditRecordList";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { EmptyState } from "../EmptyState";
@@ -16,8 +16,7 @@ import {
 } from "../providers/provider-prefs";
 import { SshImportDialog } from "./SshImportDialog";
 import { SshServerCard } from "./SshServerCard";
-
-const AUTOSAVE_DELAY_MS = 400;
+import { useSshServersConfig } from "./use-ssh-servers-config";
 
 const EMPTY_SERVER: SshServerConfig = {
   id: "",
@@ -53,14 +52,12 @@ const REVIEW_PROMPT_FIELD_ID = "ssh-review.systemPrompt";
 /**
  * 设置弹窗的「SSH 服务器」页：服务器列表（自动保存）、命令审查 AI（引用制）、审计记录。
  * 外层弹窗提供滚动容器、header 与 AhaSettingsProvider，本页不渲染弹窗级元素。
+ * 服务器配置的加载/自动保存/统一保存状态发布在 use-ssh-servers-config（UI-21 遗留）。
  */
 export function SshServersPage() {
   const { settings, updateSettings, saveError: settingsSaveError } = useAhaSettings();
-  const [config, setConfig] = useState<SshToolsConfig>({ servers: [] });
-  const [audit, setAudit] = useState<SshAuditLog>({ records: [] });
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<{ fieldId?: string; message: string } | null>(null);
+  const { config, setConfig, audit, loading, loadError, saveError, scheduleSave, loadConfig } =
+    useSshServersConfig();
   const [testRecords, setTestRecords] = useState<Record<string, ProviderTestRecord>>(() =>
     loadSshTestRecords(),
   );
@@ -71,68 +68,6 @@ export function SshServersPage() {
   const [importing, setImporting] = useState(false);
   // 每台服务器默认折叠，仅在用户展开或新增时展开其详细配置。
   const [expandedServers, setExpandedServers] = useState<Set<number>>(new Set());
-
-  // 自动保存是异步的，通过 ref 读取最新状态，避免闭包捕获过期值。
-  const configRef = useRef(config);
-  configRef.current = config;
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const fieldIdRef = useRef<string | undefined>(undefined);
-  const savingRef = useRef(false);
-
-  const loadConfig = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const snapshot = await invoke<{ servers: SshToolsConfig["servers"]; audit: SshAuditLog }>(
-        "ssh_tool_load_settings",
-      );
-      setConfig({ servers: snapshot.servers });
-      setAudit(snapshot.audit);
-    } catch (err) {
-      setLoadError(String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadConfig();
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [loadConfig]);
-
-  const saveNow = useCallback(async () => {
-    if (savingRef.current) return;
-    savingRef.current = true;
-    try {
-      const savedConfig = await invoke<SshToolsConfig>("ssh_tool_save_config", {
-        config: configRef.current,
-      });
-      setConfig(savedConfig);
-      setSaveError(null);
-      toast.success("已保存");
-    } catch (err) {
-      const message = String(err);
-      setSaveError({ fieldId: fieldIdRef.current, message });
-      toast.error(`保存失败：${message}`);
-    } finally {
-      savingRef.current = false;
-    }
-  }, []);
-
-  const scheduleSave = useCallback(
-    (fieldId?: string) => {
-      fieldIdRef.current = fieldId ?? fieldIdRef.current;
-      setSaveError(null);
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        void saveNow();
-      }, AUTOSAVE_DELAY_MS);
-    },
-    [saveNow],
-  );
 
   function updateServer(
     index: number,

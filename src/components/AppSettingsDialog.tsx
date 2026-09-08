@@ -14,6 +14,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { AhaSettingsProvider, useAhaSettingsStore } from "./settings/use-aha-settings";
+import { flushAllSaveSources, hasDirtySaveSources } from "./settings/save-sources";
 import { SaveStatusIndicator } from "./settings/SaveStatusIndicator";
 import { Toaster } from "./settings/Toaster";
 import { ConfirmDialog } from "./settings/ConfirmDialog";
@@ -112,16 +113,21 @@ export function AppSettingsDialog({
     initialProvidersCategory ?? null,
   );
 
+  // 关闭脏检查聚合全局管线 + 各页注册源（SSH/MCP 自动保存、RAG 手动保存，
+  // UI-21 遗留领取）：任一在保存中/有未保存修改都先经确认框落盘再关闭。
   const requestClose = useCallback(() => {
-    if (store.dirty) setConfirmingClose(true);
+    if (store.dirty || hasDirtySaveSources()) setConfirmingClose(true);
     else onClose();
   }, [store.dirty, onClose]);
 
   async function handleConfirmClose() {
     setConfirmingClose(false);
-    if (store.dirty) {
-      // 自动保存仍在进行时，先落盘再关闭；失败也允许关闭（错误已 toast）。
-      await store.flush();
+    if (store.dirty || hasDirtySaveSources()) {
+      // 保存仍在进行时，先落盘再关闭；失败也允许关闭（错误已 toast/内联呈现）。
+      await Promise.all([
+        store.dirty ? store.flush() : Promise.resolve(true),
+        flushAllSaveSources(),
+      ]);
     }
     onClose();
   }
@@ -242,7 +248,7 @@ export function AppSettingsDialog({
             <ConfirmDialog
               open={confirmingClose}
               title="有未保存的修改"
-              description="部分修改还在保存中。关闭前将先完成保存。"
+              description="部分修改尚未保存或仍在保存中。关闭前将先完成保存。"
               confirmLabel="保存并关闭"
               cancelLabel="继续编辑"
               onConfirm={() => void handleConfirmClose()}

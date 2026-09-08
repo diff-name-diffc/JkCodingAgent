@@ -11,6 +11,14 @@
  */
 export type SaveStatus = "loading" | "saving" | "saved" | "error";
 
+/**
+ * 保存源的模式（UI-21 遗留领取，供 save-sources 注册表使用）：
+ * - auto：debounce 自动保存——dirty 语义为「保存中」（等待中的 timer 或进行中的保存）；
+ * - manual：手动保存（如 RAG 配置页）——dirty 语义为「未保存的修改」，
+ *   指示器显示「未保存」而非谎报「保存中」。
+ */
+export type SaveSourceMode = "auto" | "manual";
+
 export function deriveSaveStatus(input: {
   loading: boolean;
   dirty: boolean;

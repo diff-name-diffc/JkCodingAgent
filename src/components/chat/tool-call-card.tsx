@@ -6,7 +6,11 @@ import {
   formatToolActivitySummary,
   summarizeToolActivity,
 } from "../dispatcher-chat/tool-activity-summary";
-import type { DispatcherToolArtifactRef } from "../../types";
+import type { DispatcherToolArtifactRef, ModelCategory } from "../../types";
+import {
+  inferModelNotConfiguredCategory,
+  isModelNotConfiguredError,
+} from "../../lib/run-error-classify";
 import { cn } from "../../lib/cn";
 import { highlightCodeToHtml } from "../../utils/shiki";
 import { shikiCacheKey, shikiHighlightCache } from "../../utils/shiki-cache";
@@ -26,6 +30,10 @@ interface ToolCallCardProps {
   className?: string;
   onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
   onOpenSubAgent?: (tool: ToolActivityItem) => void;
+  /** UI-25 第四批遗留：工具级「模型未配置」错误的「配置模型」深链。
+   *  category 由错误串推断（inferModelNotConfiguredCategory），推断不出为
+   *  undefined 时由发起点回退默认分类；缺省回调不渲染按钮（向后兼容）。 */
+  onConfigureModel?: (category?: ModelCategory) => void;
   detail?: React.ReactNode;
 }
 
@@ -35,6 +43,7 @@ function ToolCallCard({
   className,
   onOpenArtifact,
   onOpenSubAgent,
+  onConfigureModel,
   detail,
 }: ToolCallCardProps) {
   // UI-24b-1：窗口化行卸载后展开态经行级 store 恢复（key 用工具调用 id，
@@ -116,6 +125,23 @@ function ToolCallCard({
                   {item.errorText}
                 </div>
               )}
+              {item.errorText &&
+                onConfigureModel &&
+                isModelNotConfiguredError(item.errorText) && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7"
+                    onClick={() =>
+                      onConfigureModel(
+                        inferModelNotConfiguredCategory(item.errorText) ?? undefined,
+                      )
+                    }
+                  >
+                    配置模型
+                  </Button>
+                )}
               {item.name === "call_sub_agent" && onOpenSubAgent && (
                 <Button
                   type="button"
@@ -264,6 +290,7 @@ export interface ToolCallListProps {
   rowId?: string;
   onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
   onOpenSubAgent?: (tool: ToolActivityItem) => void;
+  onConfigureModel?: (category?: ModelCategory) => void;
 }
 
 export function ToolCallList({
@@ -272,6 +299,7 @@ export function ToolCallList({
   rowId,
   onOpenArtifact,
   onOpenSubAgent,
+  onConfigureModel,
 }: ToolCallListProps) {
   const aggregated = items.length >= 3;
   const [expanded, setExpanded] = usePersistedToggle(
@@ -300,6 +328,7 @@ export function ToolCallList({
         className="mb-2 min-w-0 flex-1"
         onOpenArtifact={onOpenArtifact}
         onOpenSubAgent={onOpenSubAgent}
+        onConfigureModel={onConfigureModel}
       />
     </div>
   );

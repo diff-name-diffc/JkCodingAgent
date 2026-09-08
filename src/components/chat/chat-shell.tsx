@@ -5,6 +5,7 @@ import type {
   DispatcherModelConfig,
   DispatcherToolArtifactRef,
   ImageSegment,
+  ModelCategory,
   OpenSettingsOptions,
   PythonCodeRunRecord,
   ChatSession,
@@ -263,6 +264,18 @@ export function ChatShell({
     void navigator.clipboard.writeText(text);
   }, []);
 
+  // UI-25 第四批遗留：「配置模型」深链统一回调（run 级 runError 块 + 工具级
+  // errorText 卡片共用）。onOpenSettings 在上游调用方为内联箭头（身份不稳定），
+  // 直接闭包依赖会随上游重渲染击穿 MessageItem 的 React.memo——按既有 ref
+  // 存最新值模式（keyboard-bindings 同款），回调身份恒定。
+  const onOpenSettingsRef = React.useRef(onOpenSettings);
+  React.useEffect(() => {
+    onOpenSettingsRef.current = onOpenSettings;
+  }, [onOpenSettings]);
+  const handleConfigureModel = React.useCallback((category?: ModelCategory) => {
+    onOpenSettingsRef.current({ providersCategory: category ?? "text" });
+  }, []);
+
   const handleOpenArtifact = React.useCallback(
     (artifact: DispatcherToolArtifactRef) => {
       traceGuard.begin(); // 使进行中的轨迹请求失效
@@ -372,7 +385,7 @@ export function ChatShell({
             const entry = chatModelEntries.find((item) => item.id === entryId);
             if (entry) bindChatModel.mutate(entry);
           }}
-          onConfigureModel={() => onOpenSettings({ providersCategory: "text" })}
+          onConfigureModel={handleConfigureModel}
         />
       }
       artifactPanel={
@@ -401,7 +414,7 @@ export function ChatShell({
         onOpenArtifact={handleOpenArtifact}
         onOpenSubAgent={handleOpenSubAgent}
         onPickPrompt={(prompt) => onInputChange(prompt)}
-        onConfigureModel={() => onOpenSettings({ providersCategory: "text" })}
+        onConfigureModel={handleConfigureModel}
         emptyState={emptyState}
       />
       {enabled && (

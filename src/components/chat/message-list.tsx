@@ -4,6 +4,7 @@ import { useAutoScroll } from "../../hooks/use-auto-scroll";
 import type {
   DispatcherMessage,
   DispatcherToolArtifactRef,
+  ModelCategory,
   PythonCodeRunRecord,
 } from "../../types";
 import type { DispatcherLiveSessionState } from "../dispatcherSessionStore";
@@ -60,11 +61,14 @@ export interface MessageListProps {
   onOpenSubAgent?: (tool: ToolActivityItem) => void;
   onPickPrompt?: (prompt: string) => void;
   /**
-   * 发送失败为「模型未配置」类错误时的深链回调（UI-25 遗留 c）。命中分类
-   * 且回调存在时，runError 块渲染「配置模型」按钮直达设置对应分类；缺省
-   * 则仅展示错误文案（向后兼容其余 MessageList 调用方，如架构助手另有深链）。
+   * 「模型未配置」类错误的深链回调（UI-25 遗留 c；第四批扩展到工具级）。
+   * run 级：runError 块命中分类且回调存在时渲染「配置模型」按钮，无参调用
+   * 由发起点回退默认分类（主聊天/项目 = text）。工具级：回调透传至
+   * MessageItem → ToolCallList，工具卡 errorText 命中时按错误串推断分类
+   * 调用（inferModelNotConfiguredCategory）。缺省则两处均仅展示错误文案
+   * （向后兼容其余 MessageList 调用方，如架构助手另有深链）。
    */
-  onConfigureModel?: () => void;
+  onConfigureModel?: (category?: ModelCategory) => void;
   /** 领域化空态文案（UI-15 A06）：不传则用通用聊天欢迎语。 */
   emptyState?: ChatEmptyStateContent;
   className?: string;
@@ -162,6 +166,7 @@ function MessageListInner({
       onEditMessage={item.kind === "user" ? onEditMessage : undefined}
       onOpenArtifact={onOpenArtifact}
       onOpenSubAgent={onOpenSubAgent}
+      onConfigureModel={onConfigureModel}
     />
   );
 
@@ -224,6 +229,7 @@ function MessageListInner({
               showAvatar={items[items.length - 1]?.kind !== "assistant"}
               onOpenArtifact={onOpenArtifact}
               onOpenSubAgent={onOpenSubAgent}
+              onConfigureModel={onConfigureModel}
             />
           )}
 
@@ -232,7 +238,7 @@ function MessageListInner({
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-destructive">错误：{liveState.runError}</span>
                 {onConfigureModel && isModelNotConfiguredError(liveState.runError) && (
-                  <Button variant="outline" size="sm" onClick={onConfigureModel}>
+                  <Button variant="outline" size="sm" onClick={() => onConfigureModel()}>
                     配置模型
                   </Button>
                 )}

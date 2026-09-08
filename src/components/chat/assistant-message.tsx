@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import type { DispatcherMessageUsageStats, DispatcherToolArtifactRef } from "../../types";
+import type { DispatcherMessageUsageStats, DispatcherToolArtifactRef, ModelCategory } from "../../types";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { cn } from "../../lib/cn";
@@ -45,6 +45,8 @@ export interface AssistantMessageProps {
   onRegenerate?: () => void;
   onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
   onOpenSubAgent?: (tool: ToolActivityItem) => void;
+  /** UI-25 第四批遗留：工具级「模型未配置」错误深链（透传至 ToolCallList）。 */
+  onConfigureModel?: (category?: ModelCategory) => void;
   className?: string;
 }
 
@@ -62,6 +64,7 @@ export function AssistantMessage({
   onRegenerate,
   onOpenArtifact,
   onOpenSubAgent,
+  onConfigureModel,
   className,
 }: AssistantMessageProps) {
   const visibleSegments = segments.filter((s) => s.text.trim());
@@ -106,6 +109,7 @@ export function AssistantMessage({
             rowId={rowId}
             onOpenArtifact={onOpenArtifact}
             onOpenSubAgent={onOpenSubAgent}
+            onConfigureModel={onConfigureModel}
           />
         )}
 

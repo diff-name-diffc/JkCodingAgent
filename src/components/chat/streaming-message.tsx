@@ -2,7 +2,7 @@ import { motion } from "framer-motion";
 import { Sparkles } from "lucide-react";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
-import type { DispatcherToolArtifactRef } from "../../types";
+import type { DispatcherToolArtifactRef, ModelCategory } from "../../types";
 import { cn } from "../../lib/cn";
 import { ChatAvatar } from "./chat-avatar";
 import { MarkdownRenderer } from "./markdown-renderer";
@@ -30,6 +30,8 @@ export interface StreamingMessageProps {
   showAvatar?: boolean;
   onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
   onOpenSubAgent?: (tool: ToolActivityItem) => void;
+  /** UI-25 第四批遗留：工具级「模型未配置」错误深链（透传至 ToolCallList）。 */
+  onConfigureModel?: (category?: ModelCategory) => void;
   className?: string;
 }
 
@@ -42,6 +44,7 @@ export function StreamingMessage({
   showAvatar = true,
   onOpenArtifact,
   onOpenSubAgent,
+  onConfigureModel,
   className,
 }: StreamingMessageProps) {
   const visibleSegments = segments.filter((s) => s.text.trim());
@@ -77,6 +80,7 @@ export function StreamingMessage({
             className="mb-2"
             onOpenArtifact={onOpenArtifact}
             onOpenSubAgent={onOpenSubAgent}
+            onConfigureModel={onConfigureModel}
           />
         )}
 

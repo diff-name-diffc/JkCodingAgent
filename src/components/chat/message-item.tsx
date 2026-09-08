@@ -2,6 +2,7 @@ import * as React from "react";
 import type {
   DispatcherMessage,
   DispatcherToolArtifactRef,
+  ModelCategory,
   PythonCodeRunRecord,
 } from "../../types";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcher-chat/assistant-segments";
@@ -45,6 +46,9 @@ export interface MessageItemProps {
   onEditMessage?: (message: DispatcherMessage) => void;
   onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
   onOpenSubAgent?: (tool: ToolActivityItem) => void;
+  /** UI-25 第四批遗留：工具级「模型未配置」错误深链（透传至 AssistantMessage）。
+   *  调用方须保持身份稳定（本组件为 React.memo）。 */
+  onConfigureModel?: (category?: ModelCategory) => void;
   className?: string;
 }
 
@@ -57,6 +61,7 @@ export const MessageItem = React.memo(function MessageItem({
   onEditMessage,
   onOpenArtifact,
   onOpenSubAgent,
+  onConfigureModel,
   className,
 }: MessageItemProps) {
   if (item.kind === "user") {
@@ -88,6 +93,7 @@ export const MessageItem = React.memo(function MessageItem({
       }
       onOpenArtifact={onOpenArtifact}
       onOpenSubAgent={onOpenSubAgent}
+      onConfigureModel={onConfigureModel}
       className={className}
     />
   );

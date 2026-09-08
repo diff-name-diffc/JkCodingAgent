@@ -8,6 +8,7 @@ import {
   formatCharCount,
   formatContextUsage,
   formatToolPayload,
+  graphNodeModelLabel,
   latestContextUsage,
   normalizeToolCallStatus,
 } from "./graph-utils";
@@ -190,5 +191,30 @@ describe("latestContextUsage / formatContextUsage", () => {
 
   it("从未上报时返回 null", () => {
     expect(latestContextUsage([activity({ kind: "tool_call" })])).toBeNull();
+  });
+});
+
+describe("graphNodeModelLabel（UI-14 遗留：节点真实运行模型显示）", () => {
+  it("优先运行记录的 modelLabel（harness 运行期解析的别名/模型名）", () => {
+    expect(
+      graphNodeModelLabel({ modelLabel: "qwen3-coder-plus" }, { modelRef: "m1" }),
+    ).toBe("qwen3-coder-plus");
+  });
+
+  it("无运行记录时回退计划 modelRef（与画布节点同口径）", () => {
+    expect(graphNodeModelLabel(null, { modelRef: "m1" })).toBe("m1");
+  });
+
+  it("运行记录 label 为空白时同样回退计划 modelRef", () => {
+    expect(graphNodeModelLabel({ modelLabel: "  " }, { modelRef: "m1" })).toBe("m1");
+  });
+
+  it("两者皆空回退引擎名 PI Agent", () => {
+    expect(graphNodeModelLabel(null, null)).toBe("PI Agent");
+    expect(graphNodeModelLabel({ modelLabel: "" }, { modelRef: "" })).toBe("PI Agent");
+  });
+
+  it("首尾空白被裁剪", () => {
+    expect(graphNodeModelLabel({ modelLabel: " glm-4.6 " }, null)).toBe("glm-4.6");
   });
 });

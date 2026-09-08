@@ -16,6 +16,7 @@ import {
   formatCharCount,
   formatContextUsage,
   formatGraphDuration,
+  graphNodeModelLabel,
   normalizeNodeStatus,
   parseGraphDefinition,
 } from "./graph-utils";
@@ -110,6 +111,12 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   }, [toolEntries]);
   const status = normalizeNodeStatus(nodeRun?.status ?? "pending");
   const editable = plan?.status === "draft" && Boolean(node && definition);
+  // UI-14 遗留：头部引擎徽标显示节点真实运行模型（运行记录 model_label 为
+  // harness 解析后的库条目别名/模型名），未运行回退计划 modelRef，与画布节点同口径。
+  const modelLabel = graphNodeModelLabel(nodeRun, node);
+  const modelTitle = nodeRun
+    ? [nodeRun.modelLabel, nodeRun.modelCategory].filter(Boolean).join(" · ")
+    : undefined;
 
   async function updateDefinition(mutator: (definition: GraphDefinition) => GraphDefinition): Promise<boolean> {
     if (!definition || !editable) return false;
@@ -199,7 +206,7 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   return (
     <motion.aside initial={{ x: 460, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 460, opacity: 0 }} transition={{ duration: 0.2 }} className="ai-graph-drawer">
       <div className="ai-graph-drawer-header">
-        <span className="ai-graph-drawer-agent"><BrainCircuit className="h-3.5 w-3.5" />PI Agent</span>
+        <span className="ai-graph-drawer-agent" title={modelTitle}><BrainCircuit className="h-3.5 w-3.5" />{modelLabel}</span>
         <StatusPill domain="graph-node" status={status} />
         {nodeRun?.durationMs != null && <span className="ai-graph-drawer-duration"><Clock3 className="h-3 w-3" />{formatGraphDuration(nodeRun.durationMs)}</span>}
         {contextUsage && (

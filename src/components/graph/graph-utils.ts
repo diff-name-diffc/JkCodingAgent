@@ -1,6 +1,8 @@
 import type {
   AgentActivity,
   GraphDefinition,
+  GraphNodeDef,
+  GraphNodeRunRecord,
   GraphNodeStatus,
   GraphPlanRecord,
   GraphPlanStatus,
@@ -376,4 +378,25 @@ export function formatContextUsage(reading: ContextUsageReading): string {
   // contextWindow 缺失或为 0 时只显示百分比，避免「55k/0」这类误导性读数。
   if (reading.contextWindow <= 0) return `${reading.percent.toFixed(1)}%`;
   return `${reading.percent.toFixed(1)}% · ${formatCharCount(reading.tokens)}/${formatCharCount(reading.contextWindow)}`;
+}
+
+/**
+ * 节点详情的模型显示名（UI-14 遗留：图节点真实运行模型）。
+ *
+ * 与画布节点同口径（GraphPanel 的 `run?.modelLabel || node.modelRef`）：
+ * 优先运行期实际解析值——后端 `resolve_node_harness` 在节点执行时按
+ * model_ref 解析模型库条目，`node_task` 把条目别名（无别名时模型名）写入
+ * `graph_node_runs.model_label`，故运行记录的 modelLabel 即真实运行模型；
+ * 未运行（无记录 / 占位记录 label=modelRef）时回退计划值 node.modelRef，
+ * 两者皆空回退执行引擎名 "PI Agent"（与画布 GraphNodeView 兜底一致）。
+ */
+export function graphNodeModelLabel(
+  nodeRun: Pick<GraphNodeRunRecord, "modelLabel"> | null,
+  node: Pick<GraphNodeDef, "modelRef"> | null,
+): string {
+  const runLabel = nodeRun?.modelLabel?.trim();
+  if (runLabel) return runLabel;
+  const planned = node?.modelRef?.trim();
+  if (planned) return planned;
+  return "PI Agent";
 }

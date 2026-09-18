@@ -59,6 +59,10 @@ export interface DispatcherMessage {
   toolCallsJson?: string;
   usageStats?: DispatcherMessageUsageStats | null;
   createdAt: string;
+  /** 前端专用乐观标记：发送即渲染的本地用户消息（后端载荷永不携带）。
+   * 后端权威消息（userMessage 事件 / 全量对账）到达时，merge 层会先
+   * 丢弃全部 pending 消息再合并，避免同一轮消息出现两条。 */
+  pending?: boolean;
 }
 
 /** Rust `DispatcherMessageRecord` 的原始 serde 载荷；进入 UI store 前必须归一化。 */

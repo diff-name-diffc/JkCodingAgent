@@ -7,7 +7,7 @@ import { ContextNav, type ContextNavTab } from "./shell/ContextNav";
 import { StatusDockBar } from "./shell/StatusDockBar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useProjectPanels } from "../hooks/useProjectPanels";
-import { useBrowserSessionDock } from "../hooks/useBrowserSessionDock";
+import { useBrowserSessionLinkNav } from "../hooks/useBrowserSessionDock";
 import { useGraphTabSync } from "../hooks/useGraphTabSync";
 import { useWorkspaceBudget } from "../hooks/useWorkspaceBudget";
 import { useGlobalShortcuts } from "../hooks/use-global-shortcuts";
@@ -187,8 +187,9 @@ export function ProjectPage({
   }, [visible]);
 
   // 浏览器 = 主区标签（UI-18）：开/关标签只影响视图；进程生命周期由
-  // 面板头部「关闭浏览器」与 dock 的 browser_stop 承担（隐藏 ≠ 结束）。
-  const { activeEditorTab, handleOpenBrowserTab, handleCloseBrowserTab } = panels;
+  // 面板头部「关闭浏览器」承担（隐藏 ≠ 结束）。无头化后 Agent 执行不再
+  // 自动弹出浏览器标签，仅用户点击链接时主动打开。
+  const { activeEditorTab, handleOpenBrowserTab } = panels;
   // 导航列表 ↔ 主区 diff 对应（UI-17）：变更页按 (path, staged)、历史页按 hash 高亮。
   const activeDiffTab =
     activeEditorTab?.kind === "diff" ? activeEditorTab.diff : null;
@@ -204,23 +205,10 @@ export function ProjectPage({
     () => handleOpenBrowserTab(),
     [handleOpenBrowserTab],
   );
-  const minimizeBrowserPanel = useCallback(() => {
-    if (activeEditorTab?.kind === "browser") handleCloseBrowserTab();
-  }, [activeEditorTab, handleCloseBrowserTab]);
-  const {
-    dockedSessions,
-    minimize: handleMinimizeBrowser,
-    restore: handleRestoreBrowser,
-    closeDocked: handleCloseDockedBrowser,
-    reopen: handleReopenBrowser,
-    openUrl: handleOpenMarkdownLink,
-  } = useBrowserSessionDock({
+  const { navigateToUrl: handleOpenMarkdownLink } = useBrowserSessionLinkNav({
     activeSessionId,
     projectPath: project.path,
     onOpen: openBrowserPanel,
-    onMinimized: minimizeBrowserPanel,
-    onRestoreSession: handleSelectSession,
-    enabled: visible,
   });
 
   const railNode = (
@@ -330,8 +318,6 @@ export function ProjectPage({
       onEditorPaneRatioChange={setEditorPaneRatio}
       onCloseGraphTab={closeGraphTab}
       onExpandMainArea={handleExpandMainArea}
-      onMinimizeBrowser={handleMinimizeBrowser}
-      onReopenBrowser={handleReopenBrowser}
     />
   );
 
@@ -391,7 +377,6 @@ export function ProjectPage({
       mcpStatus={mcpStatus}
       mcpChecking={mcpChecking}
       mcpUpdatingServer={mcpUpdatingServer}
-      dockedSessions={dockedSessions}
       onCloseSettings={() => setShowDispatcherSettings(false)}
       onCloseMcpStatus={() => setShowMcpStatus(false)}
       onRefreshMcpStatus={() => {
@@ -400,8 +385,6 @@ export function ProjectPage({
       onToggleMcpServer={(serverName, enabled) => {
         toggleMcpServerEnabled(serverName, enabled).catch(console.error);
       }}
-      onRestoreBrowser={handleRestoreBrowser}
-      onCloseBrowser={handleCloseDockedBrowser}
     />
   );
 

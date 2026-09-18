@@ -8,7 +8,9 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::common::{string_arg, with_compression_parameters};
+use super::common::{
+    string_arg, with_compression_parameters, DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
+};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 use crate::agent::tools::ToolResult;
@@ -84,6 +86,7 @@ impl AgentTool for SshMemoReadTool {
                 "required": ["server_id"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "备忘录有 8000 字符硬上限，输出通常不长，默认关闭压缩。",
         )
     }
@@ -135,10 +138,12 @@ impl SshMemoReadTool {
             out.push_str("\n（备忘录暂无段落。）\n");
         }
         for section in &parsed.sections {
-            out.push_str(&format!("\n## {}\n\n{}\n", section.title, section.body));
+            // 段落标题用 `### ` 展示：即使模型把输出整段照抄进 upsert 的
+            // content，`### ` 行也不会被 parse_sections 当作切段边界。
+            out.push_str(&format!("\n### {}\n\n{}\n", section.title, section.body));
         }
         out.push_str(
-            "\n[更新方式：先读后写——把合并去重后的内容用 ssh_memo_upsert 整段重写；整段过时时用 ssh_memo_delete。禁止写入凭据。]",
+            "\n[更新方式：小改动用 ssh_memo_upsert 局部替换（title+old_text+new_text，new_text 留空即删除该片段，old_text 须在该段内唯一）；大改先读后合并去重，用 title+content 整段重写；整段过时用 ssh_memo_delete。段落内容里不要写 `## ` 开头的行（子标题用 `### `）。禁止写入凭据。]",
         );
         out
     }
@@ -151,7 +156,7 @@ impl AgentTool for SshMemoUpsertTool {
     }
 
     fn description(&self) -> &'static str {
-        "创建或重写指定 SSH 服务器运维备忘录的一个段落：按段落标题（title）原位替换整段内容，段落不存在时追加到末尾。这是备忘录唯一的写入方式——务必先调用 ssh_memo_read，把新信息与现有内容合并去重后整段重写，不要盲目追加重复条目。克制记录，只写对后续运维长期有价值的必要信息：部署/服务路径、非通用命令与操作方式、端口与依赖、已知问题与解法；禁止记录密码/密钥/令牌等凭据、临时调试输出和过程性日志。全文上限 8000 字符、单段上限 4000 字符；超限写入会被拒绝，需先合并精简、删除过时条目再重试。"
+        "创建或更新指定 SSH 服务器运维备忘录的一个段落，两种方式二选一。①整段重写：传 title+content——按段落标题原位替换整段（content 完全替换旧内容），段落不存在时追加到末尾；务必先 ssh_memo_read，把新信息与现有内容合并去重后整段重写；content 内禁止 `## ` 开头的行（子标题用 `### ` 或加粗）。②局部替换：传 title+old_text+new_text——在指定段落内把 old_text（须在该段中恰好出现一次，可连同上下文行一起复制以唯一定位）替换为 new_text；new_text 传空字符串即删除该片段，适合修正单行、增删个别条目而无需重写整段；找不到段落或定位不唯一会拒绝并说明原因。硬性上限：全文 ≤ 8000 字符、单段 ≤ 4000 字符，超限写入整体拒绝、不会部分落盘；ssh_memo_read 与每次写入结果都显示当前用量 N/8000——写入前先看用量，接近上限时先合并去重、删除过时条目（局部替换 new_text 留空即可删片段）或用 ssh_memo_delete 删整段，腾出空间后再写。克制记录，只写对后续运维长期有价值的必要信息：部署/服务路径、非通用命令与操作方式、端口与依赖、已知问题与解法；禁止记录密码/密钥/令牌等凭据、临时调试输出和过程性日志。"
     }
 
     fn parameters(&self) -> Value {
@@ -164,14 +169,22 @@ impl AgentTool for SshMemoUpsertTool {
                 },
                 "title": {
                     "type": "string",
-                    "description": "段落标题（无需 ## 前缀，如「部署路径」），不超过 40 个字符。同名标题会整体替换该段落。"
+                    "description": "段落标题（无需 ## 前缀，如「部署路径」），不超过 40 个字符。整段重写时同名标题会整体替换该段落；局部替换模式下用于定位段落。"
                 },
                 "content": {
                     "type": "string",
-                    "description": "该段落的完整新内容（Markdown 正文，不需要再写标题行）。将完全替换段落旧内容；单段上限 4000 字符。"
+                    "description": "整段重写模式：该段落的完整新内容（Markdown 正文，不需要再写标题行），将完全替换段落旧内容；单段上限 4000 字符。与 old_text/new_text 互斥。"
+                },
+                "old_text": {
+                    "type": "string",
+                    "description": "局部替换模式：要在该段落正文中被替换的原文片段（原样复制，须在该段内恰好出现一次；出现多次时连同上下文行一起复制以唯一定位）。与 content 互斥。"
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "局部替换模式：替换后的新文本；传空字符串 \"\" 即删除 old_text 片段。与 content 互斥。"
                 }
             },
-            "required": ["server_id", "title", "content"]
+            "required": ["server_id", "title"]
         })
     }
 
@@ -189,28 +202,76 @@ impl SshMemoUpsertTool {
         let Some(title) = string_arg(args, "title") else {
             return "错误：缺少必填参数 title（段落标题）。".to_string();
         };
-        let Some(content) = string_arg(args, "content") else {
-            return "错误：缺少必填参数 content（段落完整内容）。".to_string();
+        let content = string_arg(args, "content");
+        let old_text = string_arg(args, "old_text");
+        let new_text = string_arg(args, "new_text");
+        // 双模式互斥分发：整段重写（content）或局部替换（old_text[+new_text]）。
+        let mode = match (content.as_deref(), old_text.as_deref(), new_text.as_deref()) {
+            (Some(_), None, None) => UpsertMode::Full,
+            (None, Some(_), maybe_new) => UpsertMode::Partial {
+                new_text: maybe_new.unwrap_or("").to_string(),
+            },
+            (None, None, Some(_)) => {
+                return "错误：参数 new_text 需要与 old_text 一起提供（局部替换）。".to_string();
+            }
+            (Some(_), _, _) => {
+                return "错误：参数 content 与 old_text/new_text 不能同时提供——整段重写只传 content，局部替换只传 old_text+new_text。"
+                    .to_string();
+            }
+            (None, None, None) => {
+                return "错误：缺少写入内容——整段重写需 content，局部替换需 old_text（new_text 可为空字符串表示删除片段）。"
+                    .to_string();
+            }
         };
-        // 下方 spawn_blocking 会按值消费这三个标识，成功消息还需要，先克隆留存。
+        let is_partial = matches!(mode, UpsertMode::Partial { .. });
+        // 下方 spawn_blocking 会按值消费这些标识，成功消息还需要，先克隆留存。
         let message_server_id = server_id.clone();
         let message_title = title.clone();
-        match tokio::task::spawn_blocking(move || {
-            memo::upsert_section(&server_id, &title, &content)
+        let result = tokio::task::spawn_blocking(move || match mode {
+            UpsertMode::Full => memo::upsert_section(&server_id, &title, &content.unwrap()),
+            UpsertMode::Partial { new_text } => {
+                memo::replace_in_section(&server_id, &title, &old_text.unwrap(), &new_text)
+            }
         })
         .await
-        .map_err(|error| error.to_string())
-        {
-            Ok(Ok(outcome)) => format!(
-                "已更新运维备忘录 · {display_name}（{message_server_id}）：段落「{message_title}」{}；全文 {}/{} 字符。",
-                if outcome.replaced { "已替换" } else { "已新增" },
-                outcome.total_chars,
-                memo::MEMO_MAX_CHARS
-            ),
+        .map_err(|error| error.to_string());
+        match result {
+            Ok(Ok(outcome)) => {
+                let inventory = outcome
+                    .sections
+                    .iter()
+                    .map(|(title, chars)| format!("「{title}」{chars} 字符"))
+                    .collect::<Vec<_>>()
+                    .join("、");
+                let action = if is_partial {
+                    "已局部替换"
+                } else if outcome.replaced {
+                    "已替换"
+                } else {
+                    "已新增"
+                };
+                let mut message = format!(
+                    "已更新运维备忘录 · {display_name}（{message_server_id}）：段落「{message_title}」{action}。当前段落——{inventory}；全文 {}/{} 字符。",
+                    outcome.total_chars,
+                    memo::MEMO_MAX_CHARS
+                );
+                if !is_partial && !outcome.replaced && outcome.sections.len() > 1 {
+                    message.push_str("（本次为新增段落；若本意是更新已有段落，请改用其原标题重写。）");
+                }
+                message
+            }
             Ok(Err(error)) => format!("错误：{error}"),
             Err(error) => format!("错误：更新备忘录任务失败：{error}"),
         }
     }
+}
+
+/// upsert 的两种写入模式。
+enum UpsertMode {
+    /// 整段重写（title + content）。
+    Full,
+    /// 局部替换（title + old_text + new_text；new_text 为空即删除片段）。
+    Partial { new_text: String },
 }
 
 #[async_trait]

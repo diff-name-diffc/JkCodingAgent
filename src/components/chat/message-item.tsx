@@ -64,6 +64,18 @@ export const MessageItem = React.memo(function MessageItem({
   onConfigureModel,
   className,
 }: MessageItemProps) {
+  const sourceUserMessage = item.kind === "assistant" ? item.sourceUserMessage : undefined;
+  // 闭包必须在组件内 memo 化：父级 renderRow 在流式期间每帧重建 JSX，
+  // 若在此处内联箭头函数，onRegenerate 引用逐帧变化会击穿本组件的
+  // React.memo，导致整个历史列表随 token 流逐帧重渲染。
+  const handleRegenerate = React.useMemo(
+    () =>
+      sourceUserMessage && onRegenerateFromMessage
+        ? () => onRegenerateFromMessage(sourceUserMessage)
+        : undefined,
+    [sourceUserMessage, onRegenerateFromMessage],
+  );
+
   if (item.kind === "user") {
     return (
       <UserMessage
@@ -73,7 +85,6 @@ export const MessageItem = React.memo(function MessageItem({
       />
     );
   }
-  const sourceUserMessage = item.sourceUserMessage;
   return (
     <AssistantMessage
       segments={item.segments}
@@ -86,11 +97,7 @@ export const MessageItem = React.memo(function MessageItem({
       pythonRunRecords={pythonRunRecords}
       onRunPython={onRunPython}
       onCopy={onCopyMessage}
-      onRegenerate={
-        sourceUserMessage && onRegenerateFromMessage
-          ? () => onRegenerateFromMessage(sourceUserMessage)
-          : undefined
-      }
+      onRegenerate={handleRegenerate}
       onOpenArtifact={onOpenArtifact}
       onOpenSubAgent={onOpenSubAgent}
       onConfigureModel={onConfigureModel}

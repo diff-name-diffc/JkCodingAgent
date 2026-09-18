@@ -3876,8 +3876,11 @@
 
   .ai-subagent-dialog {
     display: flex;
-    width: min(620px, 92vw);
-    max-height: 88vh;
+    /* 该弹窗内联渲染在带 transform 的 .ai-settings-shell 内——fixed 遮罩的包含块
+       是设置窗（高度封顶 700px）而非应用视口，尺寸必须按遮罩（100%）计算；
+       用 vh/vw 会超出父窗被 overflow: hidden 裁掉头尾。 */
+    width: min(620px, 100%);
+    max-height: 100%;
     min-height: 0;
     flex-direction: column;
     overflow: hidden;
@@ -4520,8 +4523,7 @@
     flex: 0 0 auto;
   }
 
-  .ai-browser-icon-button,
-  .ai-browser-reopen-button {
+  .ai-browser-icon-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -4537,8 +4539,7 @@
     height: 28px;
   }
 
-  .ai-browser-icon-button:hover:not(:disabled),
-  .ai-browser-reopen-button:hover:not(:disabled) {
+  .ai-browser-icon-button:hover:not(:disabled) {
     border-color: rgb(var(--accent-rgb) / 0.38);
     background: rgb(var(--accent-rgb) / 0.1);
     color: var(--text-primary);
@@ -4638,21 +4639,6 @@
     cursor: progress;
   }
 
-  .ai-browser-minimized {
-    position: absolute;
-    top: 8px;
-    left: 50%;
-    transform: translateX(-50%);
-    border: 1px solid rgb(var(--accent-rgb) / 0.16);
-    border-radius: 999px;
-    padding: 4px 10px;
-    background: var(--bg-overlay);
-    color: var(--text-primary);
-    font-size: 11px;
-    pointer-events: none;
-    white-space: nowrap;
-  }
-
   .ai-browser-empty {
     display: flex;
     flex: 1;
@@ -4661,10 +4647,6 @@
     justify-content: center;
     gap: 16px;
     padding: 24px;
-  }
-
-  .ai-browser-empty-block {
-    text-align: center;
   }
 
   .ai-browser-empty-title {
@@ -4677,14 +4659,6 @@
   .ai-browser-empty-copy {
     color: var(--text-hint);
     font-size: 12px;
-  }
-
-  .ai-browser-reopen-button {
-    min-height: 30px;
-    gap: 6px;
-    padding: 0 14px;
-    font-size: 12px;
-    font-weight: 600;
   }
 
   .ai-browser-log {
@@ -4703,83 +4677,6 @@
   .ai-browser-log-error {
     color: var(--danger);
   }
-
-  .ai-browser-dock {
-    position: absolute;
-    right: 56px;
-    bottom: 12px;
-    z-index: 40;
-    display: flex;
-    gap: 6px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.16);
-    border-radius: 8px;
-    padding: 5px 7px;
-    background: var(--bg-sidebar);
-    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
-    backdrop-filter: blur(10px);
-  }
-
-  .ai-browser-dock-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.12);
-    border-radius: 8px;
-    padding: 5px 8px;
-    background: var(--bg-sidebar);
-    cursor: pointer;
-    transition:
-      border-color 0.15s ease,
-      background 0.15s ease,
-      box-shadow 0.15s ease;
-  }
-
-  .ai-browser-dock-item.is-hovered,
-  .ai-browser-dock-item:hover {
-    border-color: rgb(var(--accent-rgb) / 0.34);
-    background: rgb(var(--accent-rgb) / 0.1);
-  }
-
-  .ai-browser-dock-icon {
-    display: flex;
-    width: 22px;
-    height: 22px;
-    flex: 0 0 auto;
-    align-items: center;
-    justify-content: center;
-    border: 1.5px solid;
-    border-radius: 999px;
-  }
-
-  .ai-browser-dock-label {
-    max-width: 80px;
-    overflow: hidden;
-    color: var(--text-secondary);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .ai-browser-dock-close {
-    display: flex;
-    width: 18px;
-    height: 18px;
-    flex: 0 0 auto;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid rgb(var(--danger-rgb) / 0.18);
-    border-radius: 999px;
-    padding: 0;
-    background: var(--bg-sidebar);
-    color: var(--text-hint);
-    cursor: pointer;
-  }
-
-  .ai-browser-dock-close:hover {
-    background: rgb(var(--danger-rgb) / 0.12);
-    color: var(--danger);
-  }
-
 
   .ai-shell-terminal-panel {
     display: flex;
@@ -4851,8 +4748,7 @@
     cursor: text;
   }
 
-  .ai-browser-panel button:disabled,
-  .ai-browser-dock button:disabled {
+  .ai-browser-panel button:disabled {
     cursor: not-allowed;
     opacity: 0.48;
   }
@@ -6820,6 +6716,24 @@
     border-radius: 999px;
   }
 
+  /* 会话所属分类徽标：分类决定系统提示词与工具集，标题行最前作视觉
+     前缀；前景/背景/边框为分类色（运行期数据，TSX 内联注入）。 */
+  .ai-chat-header-category-pill {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 4px;
+    max-width: 200px;
+    padding: 0 8px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 18px;
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+    border: 1px solid var(--border-dim);
+    border-radius: 999px;
+  }
+
   /* 运行状态双编码（文字 + 点/图标）；空闲不渲染 */
   .ai-chat-header-runstate {
     display: inline-flex;
@@ -7544,6 +7458,109 @@
     line-height: 1.7;
   }
 
+  /* ── 分类选择空态：未选会话时取代消息区，新会话必须显式选分类 ── */
+
+  .ai-category-picker {
+    overflow-y: auto;
+  }
+
+  .ai-category-picker-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .ai-category-picker-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-lg);
+    background: var(--bg-card);
+    padding: 12px 14px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition:
+      border-color var(--motion-fast) var(--motion-ease),
+      background var(--motion-fast) var(--motion-ease),
+      box-shadow var(--motion-fast) var(--motion-ease),
+      transform var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-category-picker-card:hover {
+    border-color: var(--border-accent);
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-sm);
+    transform: translateY(-1px);
+  }
+
+  /* 加载骨架：与卡片同网格占位 */
+  .ai-category-picker-card.is-loading {
+    height: 62px;
+    cursor: default;
+    pointer-events: none;
+    animation: ai-category-picker-pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes ai-category-picker-pulse {
+    0%,
+    100% {
+      opacity: 0.45;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ai-category-picker-card.is-loading {
+      animation: none;
+    }
+  }
+
+  /* 图标底色/前景为分类色（运行期数据，TSX 内联注入；此处为中性兜底） */
+  .ai-category-picker-card-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+  }
+
+  .ai-category-picker-card-name {
+    display: block;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 18px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-category-picker-card-meta {
+    display: block;
+    margin-top: 1px;
+    font-size: 11px;
+    line-height: 16px;
+    color: var(--text-hint);
+  }
+
+  .ai-category-picker-create {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    transition: color var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-category-picker-create:hover {
+    color: var(--text-primary);
+  }
 
   .ai-prompt-card {
     align-items: flex-start;
@@ -10795,5 +10812,49 @@
 
   .ai-project-session-delete-item {
     color: var(--danger);
+  }
+}
+
+/* ── Streamdown 渲染引擎兼容修复 ──
+   这些规则必须声明在 utilities 层并放在文件末尾：它们覆盖的是 streamdown
+   组件内联携带的 Tailwind 工具类（`-mt-10`、`[&_svg]:w-auto`）。CSS 层叠中
+   utilities 层永远压过 components 层（层优先级高于层内特异度比较），因此
+   不能放进上面的 @layer components 块。 */
+
+@layer utilities {
+  /* 1) mermaid 放大查看空白（WebKit/WKWebView）：
+     streamdown 全屏实例给图表容器加 `[&_svg]:w-auto [&_svg]:h-auto`（CSS
+     width/height:auto）。mermaid 输出的 svg 只有 viewBox + 内联 max-width，
+     在 WebKit 的弹性 content-based 尺寸解析中坍缩为 0×0（Chromium 解析为
+     max-width 宽度），放大遮罩因此整片空白。显式 width:100% 恢复解析
+     （max-width 仍约束上限）；inline 实例的 svg 本就带 width="100%" 属性，
+     行为不变。图表容器同样补 width:100%——inline 时容器是 shrink-to-fit
+     弹性项目，百分比 svg 解析回退到 300px 默认宽度导致图被压小。 */
+  [data-streamdown="mermaid"] [aria-label="Mermaid chart"] {
+    width: 100%;
+  }
+
+  [data-streamdown="mermaid"] [aria-label="Mermaid chart"] > svg {
+    width: 100%;
+  }
+
+  /* 2) 代码块操作栏（复制按钮）错位：
+     streamdown 用 `sticky top-2 z-10 -mt-10` 把操作栏叠到 header 上——40px
+     偏移是其默认形态（h-8 header + gap-2）的假设。应用侧把 header 收敛为
+     36px、root gap 清零后假设失效；且 code-block 的 overflow:hidden 使其
+     成为 sticky 的滚动容器，`top:8px` 的 sticky 锚点把工具条往下压 8px、
+     h-8(32px) 的流内占位又把代码正文推得与 header 底边重叠。这里一并
+     修正：sticky 锚点归零、高度自适应工具条实际高度、负 margin 让工具条
+     精确覆盖 36px header 且不留流内占位（正文紧贴 header 底）。 */
+  .ai-streamdown [data-streamdown="code-block"] > .sticky {
+    top: 0;
+    height: auto;
+    margin-top: -40px;
+    margin-bottom: 0;
+  }
+
+  .ai-streamdown [data-streamdown="code-block"] > .sticky
+    > [data-streamdown="code-block-actions"] {
+    margin-top: -4px;
   }
 }

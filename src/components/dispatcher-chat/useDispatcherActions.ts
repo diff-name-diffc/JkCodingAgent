@@ -2,13 +2,15 @@ import { useRef, useCallback, useMemo } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { DispatcherAgentEvent, DispatcherAgentTurn, ImageSegment } from "../../types";
 import {
+  clearDispatcherActiveRunId,
   createIdleLiveSessionState,
   getDispatcherActiveRunId,
   nextDispatcherActiveRunId,
+  notifyDispatcherMessages,
 } from "../dispatcherSessionStore";
 import type { LiveSessionUpdater } from "./useLiveSessionState";
-import { toErrorMessage } from "./dispatcherChatUtils";
-import { createDispatcherEventChannel } from "./event-channel";
+import { buildOptimisticUserMessage, toErrorMessage } from "./dispatcherChatUtils";
+import { createDispatcherEventChannel, reconcileSessionMessages } from "./event-channel";
 
 export interface UseDispatcherActionsOptions {
   sessionId: string;
@@ -74,6 +76,10 @@ export function useDispatcherActions({
             ...createIdleLiveSessionState(),
             hasPendingRun: true,
             isLoading: true,
+            // 发送即占位：run 入口（设置读取、MCP 刷新、用户消息落库）可能
+            // 耗时数秒，期间流式气泡以 placeholder 形式立即出现；后端
+            // assistantStarted 事件会接续更新文案。
+            assistantPlaceholder: "正在发送…",
           }));
 
           const onEvent = createEventChannel(targetSessionId, runId);
@@ -82,6 +88,10 @@ export function useDispatcherActions({
             await runner(onEvent);
           } finally {
             if (getDispatcherActiveRunId(targetSessionId) === runId) {
+              // 兜底清槽：正常路径 finished/failed 事件已清除（此处 delete 幂等）；
+              // 命令 reject 且无 failed 事件的路径（如 Agent 构建失败）在此
+              // 清除，否则残留的活动 run 槽位会拦下后续消息对账。
+              clearDispatcherActiveRunId(targetSessionId);
               updateLiveSessionState(targetSessionId, (state) => ({
                 ...state,
                 hasPendingRun: false,
@@ -129,6 +139,13 @@ export function useDispatcherActions({
       }
       const segmentsJson = JSON.stringify(segments);
 
+      // 乐观注入：不等后端 userMessage 事件往返，发送瞬间即渲染用户消息。
+      // pending 标记由 mergeDispatcherMessages 在首批权威消息到达时替换
+      // （run 失败则由对账批次丢弃），见 dispatcherChatUtils 的替换规则。
+      notifyDispatcherMessages(targetSessionId, [
+        buildOptimisticUserMessage(targetSessionId, text, images),
+      ]);
+
       try {
         await enqueueDispatcherRun(targetSessionId, async (onEvent) => {
           if (isPlainChat) {
@@ -152,6 +169,9 @@ export function useDispatcherActions({
           ...state,
           runError: `${isPlainChat ? "聊天" : "调度智能体"}执行失败：${toErrorMessage(err)}`,
         }));
+        // 命令层 reject（如 Agent 构建失败）不一定伴随 failed 事件；对账
+        // 兜底把已持久化消息刷进列表并清掉乐观 pending 消息。
+        reconcileSessionMessages(targetSessionId);
       }
     },
     [

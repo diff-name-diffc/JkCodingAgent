@@ -202,6 +202,9 @@ fn tool_summary_intent_goes_to_user_message_with_fidelity_rules() {
     // 保真与意图优先规则在 system 中
     assert!(system.content.contains("尽量原文摘录"));
     assert!(system.content.contains("意图优先"));
+    // 意图分支要求精炼输出，且回写预算收紧（2000 字符，远小于保守分支的 7800）
+    assert!(system.content.contains("重点精炼"));
+    assert!(system.content.contains("总量控制在 2000 字符以内"));
     // 意图、用户问题与原始输出作为数据放在 user 消息中
     assert!(user
         .content
@@ -211,4 +214,19 @@ fn tool_summary_intent_goes_to_user_message_with_fidelity_rules() {
         .contains("<用户原始问题>\n前端视图结构是什么？\n</用户原始问题>"));
     assert!(user.content.contains("工具名：read_file"));
     assert!(user.content.contains("10|fn main() {}"));
+}
+
+#[test]
+fn tool_summary_without_intent_keeps_conservative_budget() {
+    let messages = build_tool_summary_messages(
+        "ssh_exec",
+        "stdout: service started\nexit_code: 0",
+        Some("服务为什么起不来？"),
+        None,
+    );
+    let system = &messages[0];
+
+    // 无意图的保守压缩分支维持大预算（8000 内联上限 - 200）
+    assert!(system.content.contains("总量控制在 7800 字符以内"));
+    assert!(!system.content.contains("重点精炼"));
 }

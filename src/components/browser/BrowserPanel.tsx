@@ -14,8 +14,6 @@ export interface BrowserPanelProps {
   expanded?: boolean;
   onToggleExpanded?: () => void;
   onClose?: () => void;
-  onMinimize?: () => void | Promise<void>;
-  onReopen?: () => void | Promise<void>;
 }
 
 /**
@@ -32,17 +30,9 @@ export function BrowserPanel({
   expanded = false,
   onToggleExpanded,
   onClose,
-  onMinimize,
-  onReopen,
 }: BrowserPanelProps) {
   const session = useBrowserPanelSession(sessionId, active);
-  const commands = useBrowserPanelCommands({
-    sessionId,
-    projectPath,
-    session,
-    onMinimize,
-    onReopen,
-  });
+  const commands = useBrowserPanelCommands({ sessionId, projectPath, session });
 
   const { status, logs, error, canvasRef } = session;
   const { busy } = commands;
@@ -64,13 +54,10 @@ export function BrowserPanel({
         connected={connected}
         busy={busy}
         hasSession={Boolean(sessionId)}
-        status={status}
         canOpenCurrentUrl={canOpenCurrentUrl}
         onGoBack={() => void commands.goBack()}
         onStart={() => void commands.startBrowser()}
         onStop={() => void commands.stopBrowser()}
-        onMinimize={() => void commands.minimizeBrowser()}
-        onReopen={() => void commands.reopenBrowser()}
         onImportProfile={() => void commands.importChromeProfile()}
         onOpenExternal={() => void commands.openCurrentUrl()}
         expanded={expanded}
@@ -91,9 +78,7 @@ export function BrowserPanel({
         hasSession={Boolean(sessionId)}
         connected={connected}
         pageClosed={pageClosed}
-        minimized={Boolean(status?.minimized)}
         onCanvasClick={(event) => void commands.handleCanvasClick(event)}
-        onReopen={() => void commands.reopenBrowser()}
       />
       <BrowserLogPane error={error} logs={logs} />
     </aside>

@@ -6,7 +6,7 @@
  * 模型库条目构建 Agent）；执行往返由 `useArchRunListener` 在画布侧承接。
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { invoke, type Channel } from "@tauri-apps/api/core";
 import type { Editor } from "tldraw";
 import type {
@@ -18,23 +18,27 @@ import type {
 } from "../../../types";
 import { ARCH_DESIGN_CATEGORY } from "../../../types/architecture";
 import {
+  clearDispatcherActiveRunId,
   createIdleLiveSessionState,
   getDispatcherActiveRunId,
-  getDispatcherLiveSessionState,
-  getOrCreateDispatcherLiveSessionState,
+  getDispatcherSessionRunning,
   nextDispatcherActiveRunId,
-  notifyDispatcherLiveSessionSubscribers,
-  setDispatcherLiveSessionState,
-  type DispatcherLiveSessionState,
+  notifyDispatcherMessages,
 } from "../../dispatcherSessionStore";
-import type { LiveSessionUpdater } from "../../dispatcher-chat/useLiveSessionState";
 import {
   createDispatcherEventChannel,
+  reconcileSessionMessages,
   type DispatcherEventChannelDeps,
 } from "../../dispatcher-chat/event-channel";
-import { toErrorMessage } from "../../dispatcher-chat/dispatcherChatUtils";
+import {
+  buildOptimisticUserMessage,
+  toErrorMessage,
+} from "../../dispatcher-chat/dispatcherChatUtils";
 import { useChatMessages } from "../../chat-page-v2/useChatMessages";
-import { useLiveSessionStateReadonly } from "../../dispatcher-chat/useLiveSessionState";
+import {
+  useDispatcherSessionRunning,
+  useLiveSessionUpdater,
+} from "../../dispatcher-chat/useLiveSessionState";
 import { collectCanvasSnapshot } from "../canvas-snapshot";
 import { blobToBase64 } from "../program/arch-executor";
 import {
@@ -50,7 +54,6 @@ export interface UseArchitectureChatOptions {
 export interface UseArchitectureChatResult {
   sessionId: string | null;
   messages: DispatcherMessage[];
-  liveState: DispatcherLiveSessionState | null;
   isRunning: boolean;
   /** 最近一次发送失败的可见错误（覆盖 ensureSession 失败的无会话场景）。 */
   sendError: string | null;
@@ -78,40 +81,10 @@ export function useArchitectureChat({
   const sessionId = prefs.sessionId;
   const noopResetEditing = useCallback(() => {}, []);
   const { messages } = useChatMessages(sessionId, noopResetEditing);
-  const liveState = useLiveSessionStateReadonly(sessionId);
-
-  // ── live state 更新器：直连单例 store + rAF 批量通知（防流式渲染风暴）──
-  const pendingNotifyRef = useRef<{ raf: number | null; sessions: Set<string> }>({
-    raf: null,
-    sessions: new Set(),
-  });
-  useEffect(() => {
-    const pending = pendingNotifyRef.current;
-    return () => {
-      if (pending.raf !== null) {
-        cancelAnimationFrame(pending.raf);
-        pending.raf = null;
-      }
-      pending.sessions.clear();
-    };
-  }, []);
-
-  const updateLiveSessionState: LiveSessionUpdater = useCallback((targetSessionId, updater) => {
-    const next = updater(getOrCreateDispatcherLiveSessionState(targetSessionId));
-    setDispatcherLiveSessionState(targetSessionId, next);
-    const pending = pendingNotifyRef.current;
-    if (pending.sessions.has(targetSessionId)) return;
-    pending.sessions.add(targetSessionId);
-    if (pending.raf !== null) return;
-    pending.raf = requestAnimationFrame(() => {
-      for (const sid of pending.sessions) {
-        const state = getDispatcherLiveSessionState(sid);
-        if (state) notifyDispatcherLiveSessionSubscribers(sid, state);
-      }
-      pending.sessions.clear();
-      pending.raf = null;
-    });
-  }, []);
+  // 面板级只需要 run 边界布尔（token 流每帧通知由 MessageList 内部消化）。
+  const isSessionRunning = useDispatcherSessionRunning(sessionId);
+  // rAF 合帧更新器与主聊天共用（useDispatcherActions 同款），不再手写副本。
+  const updateLiveSessionState = useLiveSessionUpdater();
 
   const updatePrefs = useCallback((patch: Partial<ArchitectureChatPrefs>) => {
     // 副作用（ref 写入 + localStorage 落盘）必须在 setState 更新器之外：
@@ -208,6 +181,8 @@ export function useArchitectureChat({
             ...createIdleLiveSessionState(),
             hasPendingRun: true,
             isLoading: true,
+            // 发送即占位（与主聊天同款）：run 入口准备期间气泡立即可见。
+            assistantPlaceholder: "正在发送…",
           }));
 
           const deps: DispatcherEventChannelDeps = {
@@ -223,6 +198,7 @@ export function useArchitectureChat({
             await runner(onEvent);
           } finally {
             if (getDispatcherActiveRunId(targetSessionId) === runId) {
+              clearDispatcherActiveRunId(targetSessionId);
               updateLiveSessionState(targetSessionId, (state) => ({
                 ...state,
                 hasPendingRun: false,
@@ -252,6 +228,12 @@ export function useArchitectureChat({
       setSendError(null);
       try {
         const targetSessionId = await ensureSession();
+        // 乐观注入紧随会话就绪：截图采集（画布渲染 + 落盘）与 run 入口准备
+        // 耗时期间，用户文本即时上屏。附件段不进乐观消息——权威 userMessage
+        // 事件到达时整体替换，图片随权威消息出现即可。
+        notifyDispatcherMessages(targetSessionId, [
+          buildOptimisticUserMessage(targetSessionId, text, []),
+        ]);
         const currentPrefs = prefsRef.current;
         const editor = getEditorRef.current();
 
@@ -293,6 +275,9 @@ export function useArchitectureChat({
             isLoading: false,
             runError: message,
           }));
+          // 命令 reject 且无 failed 事件时兜底清槽 + 对账（清掉乐观 pending）。
+          clearDispatcherActiveRunId(targetSessionId);
+          reconcileSessionMessages(targetSessionId);
         }
         return false;
       }
@@ -312,6 +297,12 @@ export function useArchitectureChat({
 
   const newConversation = useCallback(() => {
     const previousId = prefsRef.current.sessionId;
+    if (previousId && getDispatcherSessionRunning(previousId)) {
+      // 运行中的旧会话后端会拒绝删除（fail-closed）；若仍发起删除，
+      // fire-and-forget 的失败会留下不可见、不可管理的孤儿会话——前置拦截。
+      setSendError("当前对话仍在生成中，请先停止后再开新对话。");
+      return;
+    }
     // 先同步切换到空会话（立即可发起新对话），旧会话在后台清理。
     updatePrefs({ sessionId: null });
     if (!previousId) return;
@@ -326,8 +317,7 @@ export function useArchitectureChat({
   return {
     sessionId,
     messages,
-    liveState,
-    isRunning: Boolean(liveState && (liveState.hasPendingRun || liveState.isLoading)),
+    isRunning: isSessionRunning,
     sendError,
     prefs,
     updatePrefs,

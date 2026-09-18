@@ -383,6 +383,19 @@ impl DispatcherState {
         self.active_runs.stop(workspace_id)
     }
 
+    /// 会话是否有运行中的 run。会话数据的破坏性变更（删除会话 / 清空 /
+    /// 截断消息）以此 fail-closed 拒绝运行中会话——运行方仍持有该会话的
+    /// 写入路径，放行会导致对已清理 workspace 的幽灵写入。
+    pub(crate) fn session_run_is_active(&self, workspace_id: &str) -> bool {
+        self.active_runs.is_running(workspace_id)
+    }
+
+    /// 当前全部运行中的会话 id（`dispatcher_active_runs` 命令的底座：
+    /// webview 重载后事件通道失联，前端靠它对账「后端仍在跑」的会话）。
+    pub(crate) fn active_run_workspace_ids(&self) -> Vec<String> {
+        self.active_runs.active_run_ids()
+    }
+
     pub(crate) fn begin_graph_run(
         &self,
         plan_id: &str,

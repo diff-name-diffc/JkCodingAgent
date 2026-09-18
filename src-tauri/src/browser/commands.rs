@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use super::{
     import_chrome_profile_blocking, normalize_browser_url, plain_chat_browser_workspace,
@@ -162,28 +162,4 @@ pub async fn browser_get_status(
     session_id: String,
 ) -> Result<BrowserStatus, String> {
     Ok(manager.status(&session_id).await)
-}
-
-/// 浏览器有头窗口的停靠动作分发（原 minimize/restore/reopen 三条命令合并）。
-///
-/// 语义边界（manager 层各自实现，命令层只做分发表）：
-/// - `minimize`：最小化仍存在的有头窗口 → minimized；
-/// - `restore`：恢复**仍存在的**最小化窗口 → 就绪；
-/// - `reopen`：重建被用户关闭（page_closed）的窗口，超时等参数差异由
-///   manager.reopen 自带（15s）。
-#[tauri::command]
-pub async fn browser_window_action(
-    app: AppHandle,
-    manager: tauri::State<'_, BrowserManager>,
-    session_id: String,
-    action: String,
-) -> Result<(), String> {
-    let status = match action.as_str() {
-        "minimize" => manager.minimize(&session_id).await?,
-        "restore" => manager.restore(&session_id).await?,
-        "reopen" => manager.reopen(&session_id).await?,
-        other => return Err(format!("未知的浏览器窗口动作：{other}")),
-    };
-    let _ = app.emit("browser-status", status);
-    Ok(())
 }

@@ -117,6 +117,19 @@ impl DispatcherDb {
         tx.commit().context("commit save projects")
     }
 
+    /// 列出项目全部会话 id（`project_delete` 的运行中守卫用：删除前检查
+    /// 这些会话是否有活动 run，运行中删除会让 run 向已清理 workspace
+    /// 幽灵写入，且项目运行期目录（browser-profile 等）会被连带移除）。
+    pub fn project_session_ids(&self, project_id: &str) -> Result<Vec<String>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT id FROM dispatcher_sessions WHERE project_id = ?1")?;
+        let ids = stmt
+            .query_map(params![project_id], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("collect project session ids")?;
+        Ok(ids)
+    }
+
     /// 删除项目及其全部关联数据：遍历该项目所有会话，在一个事务内执行与会话
     /// 删除相同的级联清理（`purge_session_resources_tx` 的表集合），并删除项目行。
     /// 返回被删会话 id 列表与提交后需要 best-effort 清理的文件资源清单。

@@ -137,14 +137,12 @@ export interface BrowserStatus {
     | "downloading"
     | "launching"
     | "ready"
-    | "minimized"
+    | "busy"
     | "page_closed"
     | "closed"
     | string;
   url?: string | null;
   message?: string | null;
-  minimized?: boolean;
-  hasHeadedWindow?: boolean;
 }
 
 export interface BrowserFrameEvent {

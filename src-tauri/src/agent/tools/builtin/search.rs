@@ -18,7 +18,7 @@ use walkdir::WalkDir;
 use super::common::{
     boolish_arg, is_noise, lexical_normalize, non_empty_string_array_arg, rel,
     render_labeled_sections, resolve_path, string_arg, string_array_arg, string_list_arg,
-    usize_arg, with_compression_parameters,
+    usize_arg, with_compression_parameters, DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
 };
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
@@ -227,6 +227,7 @@ impl AgentTool for GlobTool {
                 ]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "当后续需要精确文件列表时保持关闭保留完整结果；只看分布或概况时可开启并写明 compress_intent。",
         )
     }
@@ -373,6 +374,7 @@ impl AgentTool for GrepTool {
                 ]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "grep 是精确检索工具；compress=false 时不得摘要，超过 10000 字符则带行号信息截断。只在超长结果需要按路径和行号提取多段关键内容时开启 compress=true 并写明 compress_intent。",
         )
     }

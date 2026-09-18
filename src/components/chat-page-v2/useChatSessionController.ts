@@ -1,5 +1,5 @@
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useChatCategoriesQuery,
   useCreateChatCategory,
@@ -12,7 +12,12 @@ import {
   useUpdateChatCategory,
 } from "../../hooks/use-chat-queries";
 import { useSessionSearchQuery } from "../../hooks/use-session-queries";
-import { cleanupDispatcherSession } from "../dispatcherSessionStore";
+import {
+  cleanupDispatcherSession,
+  getDispatcherSessionRunning,
+} from "../dispatcherSessionStore";
+import { useToast } from "../Toast";
+import { resolveActiveChatCategory } from "./active-chat-category";
 
 interface UseChatSessionControllerOptions {
   activeSessionId: string | null;
@@ -32,6 +37,7 @@ export function useChatSessionController({
   onSessionChange,
 }: UseChatSessionControllerOptions) {
   const enabled = isPlainChat && !embedded;
+  const { showToast } = useToast();
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   useChatSessionUpdates(enabled);
@@ -48,32 +54,10 @@ export function useChatSessionController({
     kind: "chat",
     enabled,
   });
-  const pendingSessionRef = useRef<Promise<string | null> | null>(null);
-
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search), 260);
     return () => window.clearTimeout(timer);
   }, [search]);
-
-  const ensureSession = useCallback(async (): Promise<string | null> => {
-    if (activeSessionId) return activeSessionId;
-    if (!isPlainChat) return null;
-    if (pendingSessionRef.current) return pendingSessionRef.current;
-    const pending = createSession({ title: "新对话", category: "tech" })
-      .then((session) => {
-        setActiveSessionId(session.id);
-        return session.id;
-      })
-      .catch((error) => {
-        console.error("创建聊天会话失败:", error);
-        return null;
-      })
-      .finally(() => {
-        pendingSessionRef.current = null;
-      });
-    pendingSessionRef.current = pending;
-    return pending;
-  }, [activeSessionId, createSession, isPlainChat, setActiveSessionId]);
 
   const selectSession = useCallback(
     (sessionId: string | null) => {
@@ -105,6 +89,12 @@ export function useChatSessionController({
   const deleteChatSession = useCallback(
     async (sessionId: string) => {
       if (!enabled) return;
+      // 运行中的会话前置拦截（后端 session_delete 同口径 fail-closed）：
+      // 先给可读提示，避免用户走完确认对话框才收到命令层报错。
+      if (getDispatcherSessionRunning(sessionId)) {
+        showToast("该会话正在运行中，请先停止生成后再删除。", "warning");
+        return;
+      }
       const confirmed = await confirm("确定永久删除这个会话吗？相关消息和文件也会一并删除。", {
         title: "删除会话",
         kind: "warning",
@@ -120,6 +110,7 @@ export function useChatSessionController({
         }
       } catch (error) {
         console.error("删除聊天会话失败:", error);
+        showToast(`删除会话失败：${String(error)}`, "error");
       }
     },
     [
@@ -129,6 +120,7 @@ export function useChatSessionController({
       resetConversation,
       sessionsQuery.data,
       setActiveSessionId,
+      showToast,
     ],
   );
 
@@ -161,6 +153,17 @@ export function useChatSessionController({
   );
 
   const trimmedSearch = debouncedSearch.trim();
+  // 当前会话所属分类（头部徽标 / 分类化空态共用）。用未过搜索过滤的
+  // 列表解析，与 activeTitle 同源；分类记录缺失时为 null。
+  const activeCategory = useMemo(
+    () =>
+      resolveActiveChatCategory(
+        sessionsQuery.data ?? [],
+        categoriesQuery.data ?? [],
+        activeSessionId,
+      ),
+    [activeSessionId, categoriesQuery.data, sessionsQuery.data],
+  );
   // 会话搜索/列表错误显式重试（UI-25 登记遗留）：refetch 身份由 React Query 保证稳定。
   const refetchSessions = sessionsQuery.refetch;
   const refetchSearch = sessionSearchQuery.refetch;
@@ -187,6 +190,8 @@ export function useChatSessionController({
     setSearch,
     sessions,
     categories: categoriesQuery.data ?? [],
+    categoriesLoading: categoriesQuery.isLoading,
+    activeCategory,
     sessionsLoading: trimmedSearch
       ? sessionSearchQuery.isLoading
       : sessionsQuery.isLoading || categoriesQuery.isLoading,
@@ -196,7 +201,6 @@ export function useChatSessionController({
     searchActive: Boolean(trimmedSearch),
     activeTitle:
       (sessionsQuery.data ?? []).find((session) => session.id === activeSessionId)?.title ?? null,
-    ensureSession,
     selectSession,
     newConversation,
     newSessionInCategory,

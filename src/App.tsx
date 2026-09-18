@@ -5,6 +5,7 @@ import type { AhaSettingsV2, Project, ProjectDeleteResult } from "./types";
 import { WelcomePage } from "./components/WelcomePage";
 import { useToast } from "./components/Toast";
 import { cleanupDispatcherSession } from "./components/dispatcherSessionStore";
+import { ensureRunStateReconciliation } from "./components/dispatcher-chat/run-state-reconciliation";
 import { cleanupSubAgentEvents } from "./components/subAgentEventStore";
 import { cleanupGraphPlansForSession } from "./components/graph/graph-store";
 import { normalizeThemePreference, persistThemePreference } from "./lib/theme";
@@ -60,6 +61,13 @@ function App() {
       .catch(() => {
         // 读取失败时保留 initializeTheme() 已应用的缓存主题。
       });
+  }, []);
+
+  // 断连运行对账：run 事件通道随 invoke 生存，webview 重载后先查后端仍在
+  // 跑的会话，补「后台运行中」状态并轮询收尾（详见模块注释）。App 是唯一
+  // 根挂载点，保证重载后必然执行一次。
+  useEffect(() => {
+    ensureRunStateReconciliation();
   }, []);
 
   const mountProject = useCallback((projectId: string) => {

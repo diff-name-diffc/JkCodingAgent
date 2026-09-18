@@ -18,7 +18,10 @@ pub use registry::{AgentTool, ToolRegistry};
 pub(super) use result::ToolInput;
 pub use result::{ToolAction, ToolResult, ToolStatus};
 pub use runtime::{ToolRunFinishUpdate, ToolRuntime};
-pub use spec::{ToolResultPolicy, ToolSafety, ToolSpec};
+pub use spec::{
+    ToolResultPolicy, ToolSafety, ToolSpec, COMMAND_FORCE_COMPRESS_AFTER_CHARS,
+    DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
+};
 pub use surface::ToolSurface;
 
 /// 项目编排器授权给受限运行时的数据面能力。协议/控制面工具不在用户可配置

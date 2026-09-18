@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { DispatcherMessage, ImageSegment, McpStatus, OpenSettingsOptions } from "../types";
 import { useToast } from "./Toast";
 import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTokenUsage";
-import { useLiveSessionState } from "./dispatcher-chat/useLiveSessionState";
+import {
+  useDispatcherSessionRunning,
+  useLiveSessionUpdater,
+} from "./dispatcher-chat/useLiveSessionState";
 import { useDispatcherActions } from "./dispatcher-chat/useDispatcherActions";
 import { ChatShell } from "./chat/chat-shell";
 import { resolveChatEmptyState } from "./chat/chat-empty-content";
+import { CategoryPickerState } from "./chat/category-picker-state";
 import type { ComposerMode } from "./chat/prompt-input";
 import { PlainChatHeader, ProjectChatHeader } from "./chat-page-v2/ChatPageHeaders";
 import { getUserMessagePayload } from "./chat-page-v2/message-utils";
@@ -93,9 +97,6 @@ export function ChatPageV2({
   const [isStopping, setIsStopping] = useState(false);
 
   const isPlainChat = conversationKind === "chat";
-  // 领域化空态（UI-25 A06）：普通聊天与项目分别有贴合语境的起步提示，
-  // 不再共用同一套通用空态文案。
-  const chatEmptyState = resolveChatEmptyState(isPlainChat ? "plain" : "project");
   const clearDraft = useCallback(() => {
     setInput("");
     setAttachedImages([]);
@@ -114,8 +115,29 @@ export function ChatPageV2({
     onSessionChange,
   });
 
+  // 领域化空态（UI-25 A06）：普通聊天与项目分别有贴合语境的起步提示，
+  // 不再共用同一套通用空态文案。普通聊天挂上分类后进一步强化「当前
+  // 分类决定系统提示词与工具」的提示。
+  const activeCategory = isPlainChat ? chatSessions.activeCategory : null;
+  const chatEmptyState = useMemo(() => {
+    const base = resolveChatEmptyState(isPlainChat ? "plain" : "project");
+    if (!isPlainChat || !activeCategory) return base;
+    return {
+      ...base,
+      title: `「${activeCategory.name}」新对话`,
+      copy: `本场对话运行在「${activeCategory.name}」分类下——已启用该分类的系统提示词与工具集，侧边栏与顶部徽标可随时确认所属分类。`,
+    };
+  }, [activeCategory, isPlainChat]);
+  // 普通聊天未选会话：不再默认开新聊天（隐式落 "tech" 分类），改为分类
+  // 选择空态；发送/贴图在无会话时给引导提示。
+  const needsCategoryChoice = isPlainChat && !embedded && !activeSessionId;
+
   // ── Streaming pipeline (reused unchanged) ───────────────────────────────
-  const { liveState, updateLiveSessionState } = useLiveSessionState(activeSessionId ?? "");
+  // 页面层只订阅「运行中」布尔（run 边界变化时才触发重渲染），完整流式
+  // live state 由 MessageList 内部订阅——否则 token 流的每帧合帧通知会把
+  // 整页（会话控制器/头部/输入区）拖进每帧重渲染。
+  const updateLiveSessionState = useLiveSessionUpdater();
+  const isSessionRunning = useDispatcherSessionRunning(activeSessionId);
   const { refresh: refreshSessionTokenUsage } = useDispatcherSessionTokenUsage(
     activeSessionId ?? "",
   );
@@ -174,10 +196,16 @@ export function ChatPageV2({
     if (previousSessionIdRef.current === activeSessionId) return;
     previousSessionIdRef.current = activeSessionId;
     clearDraft();
+    // 组件实例级在途标志随会话切换复位：它们描述的是上一个会话的操作
+    //（编辑重发提交中 / 停止请求中），旧会话的 run 由 store 按会话键控
+    // 继续推进，不能把新会话的输入区泄漏成转圈禁用。旧流程的 finally
+    // 收尾仍会执行，对已复位的值无影响。
+    setIsSubmittingEdit(false);
+    setIsStopping(false);
   }, [activeSessionId, clearDraft]);
 
   // ── Composer mode (send / stop) ─────────────────────────────────────────
-  const isRunning = Boolean(liveState.hasPendingRun || liveState.isLoading || isStopping);
+  const isRunning = isSessionRunning || isStopping;
   const composerMode: ComposerMode = isRunning ? "stop" : "send";
 
   const handleSend = useCallback(() => {
@@ -185,9 +213,12 @@ export function ChatPageV2({
     if ((!text && attachedImages.length === 0) || isSubmittingEdit) return;
     void (async () => {
       // 项目模式总会话 id 非空（ProjectPage 仅在 activeSessionId 存在时渲染本组件）；
-      // 聊天模式可能为 null，懒创建后再发送。
-      const targetSessionId = activeSessionId ?? (await chatSessions.ensureSession());
-      if (!targetSessionId) return;
+      // 聊天模式无会话时不再隐式创建（旧默认 "tech"），引导用户先选分类。
+      if (!activeSessionId) {
+        showToast("请先选择分类开始新对话：点击上方分类卡片，或用左侧分类行的 ＋。", "warning");
+        return;
+      }
+      const targetSessionId = activeSessionId;
 
       if (editingMessageId) {
         const editIndex = messages.findIndex((message) => message.id === editingMessageId);
@@ -225,7 +256,6 @@ export function ChatPageV2({
     activeSessionId,
     attachedImages,
     editingMessageId,
-    chatSessions,
     closeGraphPanel,
     input,
     isSubmittingEdit,
@@ -237,15 +267,16 @@ export function ChatPageV2({
 
   // 暂存图片附件：FileReader 转 base64 → 后端统一落盘到
   // chat-images/{workspace_id}/ → push ImageSegment（只携带 imageId）。
-  // 粘贴截图与回形针选图共用这一条管线；粘贴即确保会话存在（目录按会话 id 布局）。
+  // 粘贴截图与回形针选图共用这一条管线；图片目录按会话 id 布局，无会话
+  // 时不再隐式创建，先引导选择分类。
   const handleAttachImages = useCallback(
     (files: File[]) => {
       void (async () => {
-        const workspaceId = activeSessionId ?? (await chatSessions.ensureSession());
-        if (!workspaceId) {
-          showToast("图片保存失败：无法创建会话", "error");
+        if (!activeSessionId) {
+          showToast("请先选择分类开始新对话，再添加图片。", "warning");
           return;
         }
+        const workspaceId = activeSessionId;
         for (const file of files) {
           const base64 = await readFileAsBase64(file);
           if (!base64) continue;
@@ -275,7 +306,7 @@ export function ChatPageV2({
         }
       })();
     },
-    [activeSessionId, chatSessions, showToast],
+    [activeSessionId, showToast],
   );
 
   const handleRemoveAttachment = useCallback((id: string) => {
@@ -370,10 +401,22 @@ export function ChatPageV2({
 
   const handleClearMessages = useCallback(async () => {
     if (!activeSessionId) return;
-    await invoke("dispatcher_clear_messages", { workspaceId: activeSessionId });
+    // 与后端 fail-closed 守卫同口径：运行中的会话拒绝清空（后端也会拒绝，
+    // 这里让用户免于先看到空结果、刷新后又冒出 run 中途写入的消息）。
+    if (isRunning) {
+      showToast("会话正在运行中，请先停止生成后再清空对话。", "warning");
+      return;
+    }
+    try {
+      await invoke("dispatcher_clear_messages", { workspaceId: activeSessionId });
+    } catch (err) {
+      console.error("清空对话失败:", err);
+      showToast(String(err), "error");
+      return;
+    }
     clearDraft();
     setMessages([]);
-  }, [activeSessionId, clearDraft, setMessages]);
+  }, [activeSessionId, clearDraft, isRunning, setMessages, showToast]);
 
   // 聊天模式（主页）也提供顶部栏：会话标题 + 运行状态 + 更多菜单，
   // 让宽屏下的消息区有视觉锚点；embedded（项目内嵌面板）下保持紧凑不加栏。
@@ -382,7 +425,7 @@ export function ChatPageV2({
       sessionTitle={projectSessionTitle}
       projectName={projectName}
       branchName={currentBranch}
-      isLoading={liveState.isLoading || liveState.hasPendingRun}
+      isLoading={isSessionRunning}
       isStopping={isStopping}
       hasMessages={messages.length > 0}
       mcpStatus={mcpStatus}
@@ -396,8 +439,9 @@ export function ChatPageV2({
     />
   ) : embedded ? undefined : (
     <PlainChatHeader
-      title={chatSessions.activeTitle}
-      isLoading={liveState.isLoading || liveState.hasPendingRun}
+      title={needsCategoryChoice ? "开始新对话" : chatSessions.activeTitle}
+      category={chatSessions.activeCategory}
+      isLoading={isSessionRunning}
       isStopping={isStopping}
       hasMessages={messages.length > 0}
       mcpStatus={mcpStatus}
@@ -454,6 +498,17 @@ export function ChatPageV2({
           embedded={embedded}
           projectHeader={chatHeader}
           emptyState={chatEmptyState}
+          categoryPicker={
+            isPlainChat && !embedded ? (
+              <CategoryPickerState
+                categories={chatSessions.categories}
+                loading={chatSessions.categoriesLoading}
+                onPickCategory={chatSessions.newSessionInCategory}
+                onCreateCategory={chatSessions.createChatCategory}
+              />
+            ) : undefined
+          }
+          composerPlaceholder={needsCategoryChoice ? "先选择分类，开始新对话…" : undefined}
         />
       </div>
       <ChatPageOverlays

@@ -10,8 +10,11 @@ import { QueryProvider } from "./components/providers/query-provider";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initializeTheme } from "./lib/theme";
+import { installClipboardWriteFallback } from "./lib/clipboard-fallback";
 
 initializeTheme();
+// WKWebView 下异步 Clipboard API 可能被拒（详见模块注释），先于任何 UI 安装兜底。
+installClipboardWriteFallback();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

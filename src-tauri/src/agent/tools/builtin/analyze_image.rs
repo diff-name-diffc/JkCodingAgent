@@ -15,7 +15,7 @@ use tokio::time::timeout;
 
 use super::common::{
     non_empty_string_array_arg, render_labeled_sections, resolve_path, string_arg,
-    with_compression_parameters,
+    with_compression_parameters, DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
 };
 use crate::agent::llm::{
     ChatMessage, ChatMessageContentPart, ChatMessageImageSource, OpenAiCompatProvider,
@@ -90,6 +90,7 @@ impl AgentTool for AnalyzeImageTool {
                 "required": ["images", "instruction"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "分析结果默认保留完整内容；批量分析多张图片且只需要要点时可开启压缩并写明 compress_intent。",
         )
     }

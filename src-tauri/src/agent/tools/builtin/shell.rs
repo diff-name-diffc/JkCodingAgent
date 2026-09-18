@@ -7,7 +7,10 @@ use tokio::process::Command;
 use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
 
-use super::common::{is_dangerous, string_arg, with_compression_parameters};
+use super::common::{
+    is_dangerous, string_arg, with_compression_parameters, COMMAND_FORCE_COMPRESS_AFTER_CHARS,
+    DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
+};
 use crate::agent::command_history::{self, CommandHistoryStatus};
 use crate::agent::ssh_review::{review_shell_command, with_confirm_guidance, CommandReviewTarget};
 use crate::agent::tools::context::ToolContext;
@@ -55,6 +58,7 @@ impl AgentTool for ExecTool {
                 "required": ["command"]
             }),
             true,
+            COMMAND_FORCE_COMPRESS_AFTER_CHARS,
             "命令输出噪声通常较大，推荐开启压缩并在 compress_intent 中说明想看什么（例如'确认 pnpm build 是否成功'）；要保留原始报错、测试明细时设 compress=false。",
         )
     }
@@ -376,6 +380,7 @@ impl AgentTool for MessageTool {
                 "required": ["content"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "消息工具一般只返回简短确认信息，默认关闭压缩。",
         )
     }

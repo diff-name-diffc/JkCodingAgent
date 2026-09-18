@@ -72,13 +72,21 @@ const CONTEXT_PAYLOAD_BUDGET_CHARS: usize =
 // 保证预算恒为正：上限调低时在编译期报错，而非静默溢出或产生无意义预算。
 const _: () = assert!(super::super::common::TOOL_RESULT_INLINE_MAX_CHARS > 200);
 
+/// 意图压缩分支的回写负载预算：调用方已声明「只要与意图相关的重点」，
+/// 过长的输出本身就是冗余。预算远小于保守分支，引导模型输出精炼要点；
+/// 确有必要的关键原文摘录（报错行、配置值）优先保留。
+const INTENT_CONTEXT_PAYLOAD_BUDGET_CHARS: usize = 2_000;
+const _: () = assert!(
+    INTENT_CONTEXT_PAYLOAD_BUDGET_CHARS < super::super::common::TOOL_RESULT_INLINE_MAX_CHARS
+);
+
 const LOCATOR_RULE: &str = "定位必须精确、可复查：按「内容摘要：…」+「内容定位：path:start-end」组织成一段或多段，不连续的相关内容拆成多段，一段可列出多个原文定位。路径和行号只能来自原始输出，严禁猜测或伪造；原始输出没有路径或行号时，改用原文中可复查的命令、标题或键名定位，并明确注明「原始输出未提供行号」。";
 
-fn dual_summary_protocol(context_payload_guidance: &str) -> String {
+fn dual_summary_protocol(context_payload_guidance: &str, payload_budget_chars: usize) -> String {
     format!(
         "输出协议：只能使用以下两个标签，不得输出任何其他文字、标题或 Markdown 代码块。\n\
          <DISPLAY_SUMMARY>\n写给前端用户：用 1-3 句话概括本次工具调用的关键发现。\n</DISPLAY_SUMMARY>\n\
-         <CONTEXT_PAYLOAD>\n{context_payload_guidance}总量控制在 {CONTEXT_PAYLOAD_BUDGET_CHARS} 字符以内，超预算时优先保留定位信息与最关键的原文摘录。\n</CONTEXT_PAYLOAD>"
+         <CONTEXT_PAYLOAD>\n{context_payload_guidance}总量控制在 {payload_budget_chars} 字符以内，超预算时优先保留定位信息与最关键的原文摘录。\n</CONTEXT_PAYLOAD>"
     )
 }
 
@@ -100,11 +108,13 @@ pub(super) fn build_tool_summary_messages(
             "你是调度 Agent 的工具结果提取器。调用方模型带着明确的「提取意图」执行了工具，你的任务是从工具原始输出中抽取与该意图直接相关的内容，供调用方决定下一步动作。\n\
              规则：\n\
              - 意图优先：只提取与「提取意图」直接相关的内容，与意图无关的一律丢弃。严禁对全文做泛泛的主题概括，严禁用无关信息填充输出；原文中与意图相关的内容很少时，如实说明，不要用无关内容凑字数。\n\
+             - 重点精炼：输出是直接回答意图的要点，不是原文缩编——先给出结论性答案，再附支撑它的最关键摘录；不要罗列背景信息，不要大段复述原文，宁精勿滥。\n\
              - 相关内容保真：与意图高度相关的代码、配置、命令结果、错误文本必须尽量原文摘录，不得改写含义，不得压缩到丢失细节；只有确认无关的内容才允许省略。{focus}\n\
              - {LOCATOR_RULE}\n\
              {}",
             dual_summary_protocol(
-                "写给调用方模型：一段或多段「内容摘要 + 内容定位」。段内优先原文摘录，保留路径、行号、符号名、配置键、错误文本和数量。"
+                "写给调用方模型：直接回答提取意图——一段或多段「内容摘要 + 内容定位」，只含与意图直接相关的关键事实和最必要的原文摘录（路径、行号、符号名、配置键、错误文本、数量）。",
+                INTENT_CONTEXT_PAYLOAD_BUDGET_CHARS,
             )
         )
     } else {
@@ -117,7 +127,8 @@ pub(super) fn build_tool_summary_messages(
              - {LOCATOR_RULE}\n\
              {}",
             dual_summary_protocol(
-                "写给调用方模型：高信息密度，按「内容摘要 + 内容定位」输出一段或多段，尽量保留原始顺序、关键实体名、符号名、配置键、错误文本、数量和退出状态。"
+                "写给调用方模型：高信息密度，按「内容摘要 + 内容定位」输出一段或多段，尽量保留原始顺序、关键实体名、符号名、配置键、错误文本、数量和退出状态。",
+                CONTEXT_PAYLOAD_BUDGET_CHARS,
             )
         )
     };
@@ -286,7 +297,10 @@ pub fn extract_structured_summary(tool_name: &str, raw_output: &str) -> String {
     ));
 
     match tool_name {
-        "exec" => {
+        // ssh_exec 与 exec 同为命令执行：兜底策略一致——退出状态、
+        // 错误/失败行、头尾行。ssh_exec 的原始输出是含 stdout/stderr/exit_code
+        // 的 JSON 文本，同样的模式匹配仍然适用。
+        "exec" | "ssh_exec" => {
             let lines: Vec<&str> = raw_output.lines().collect();
             if let Some(exit) = lines.iter().rev().find(|l| {
                 let t = l.trim().to_lowercase();

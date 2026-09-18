@@ -151,14 +151,19 @@ pub(crate) trait AgentRunAdapter: RunLoopAgent {
     ) -> Result<RunPromptState>;
 }
 
-/// 唯一的用户消息入口：准备工作区、刷新工具元数据、保存用户消息、校验模型配置、进入公共 run_loop。
+/// 唯一的用户消息入口：保存并广播用户消息、准备工作区、刷新工具元数据、校验模型配置、进入公共 run_loop。
+///
+/// 事件时序约定（前端首屏延迟的关键路径）：`UserMessage` 必须先于
+/// `prepare_run_workspace` 发出——后者包含 MCP 注册表新鲜度刷新（TTL 300s，
+/// 过期时逐服务器 spawn + list_tools，可达数秒）。用户消息的持久化与广播
+/// 不依赖工作区，先发出可以让前端在 MCP 刷新期间就渲染出已发送消息；
+/// 前端另有乐观注入兜底，此顺序保证权威消息尽快到达。
 pub(crate) async fn run_agent_turn<A>(agent: &A, request: AgentRunRequest<'_>) -> Result<AgentTurn>
 where
     A: AgentRunAdapter,
 {
     emit_started(&request.on_event, request.workspace_id);
     let result: Result<AgentTurn> = async {
-        let workspace = agent.prepare_run_workspace(&request).await?;
         let provider = agent.provider_snapshot();
 
         // 发送前校验：Image 段引用的文件必须存在——regenerate/edit 重发的
@@ -180,6 +185,8 @@ where
         let on_event = &request.on_event;
         let workspace_id = request.workspace_id;
         emit(on_event, AgentEvent::UserMessage { message: user });
+
+        let workspace = agent.prepare_run_workspace(&request).await?;
 
         // 架构 Agent 主模型即视觉模型，允许本地 OpenAI 兼容端点（Ollama /
         // LM Studio 等）空 API Key（见 build_architecture_agent 的设计注释）：

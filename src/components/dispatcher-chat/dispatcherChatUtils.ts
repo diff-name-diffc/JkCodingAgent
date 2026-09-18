@@ -2,6 +2,7 @@ import type {
   AnyContentSegment,
   DispatcherMessage,
   DispatcherMessageWire,
+  ImageSegment,
   TextSegment,
 } from "../../types";
 
@@ -35,12 +36,43 @@ export function mergeDispatcherMessages(
   incoming: Array<DispatcherMessage | DispatcherMessageWire>,
 ): DispatcherMessage[] {
   if (incoming.length === 0) return current;
-  const merged = new Map(current.map((m) => [m.id, normalizeCached(m)] as const));
+  // 乐观消息替换规则：任何一批权威消息（后端 userMessage / assistantMessage
+  // 事件、finished / failed / 会话更新后的全量对账）到达时，先丢弃本地 pending
+  // 用户消息再合并。run 串行 + 发送期 composer 锁定保证 pending 至多一条，
+  // 且其对应的权威 user 消息必然先于同轮 assistant 事件到达；run 失败时
+  // 对账批次（不含该消息）同样触发丢弃，pending 不会残留。
+  const hasAuthoritative = incoming.some((m) => m.pending !== true);
+  const base = hasAuthoritative ? current.filter((m) => m.pending !== true) : current;
+  const merged = new Map(base.map((m) => [m.id, normalizeCached(m)] as const));
   for (const m of incoming) merged.set(m.id, normalizeCached(m));
   return [...merged.values()].sort((a, b) => {
     const cmp = a.createdAt.localeCompare(b.createdAt);
     return cmp !== 0 ? cmp : a.id.localeCompare(b.id);
   });
+}
+
+/**
+ * 乐观用户消息：发送瞬间本地构造、立即渲染（pending 标记），不等后端
+ * userMessage 事件往返。segment 顺序与后端发送管线一致：图片在前、文本在后。
+ */
+export function buildOptimisticUserMessage(
+  workspaceId: string,
+  text: string,
+  images: ImageSegment[],
+): DispatcherMessage {
+  const segments: AnyContentSegment[] = [...images];
+  if (text) {
+    segments.push({ id: crypto.randomUUID(), type: "text", text });
+  }
+  return {
+    id: `pending-${crypto.randomUUID()}`,
+    workspaceId,
+    role: "user",
+    segments,
+    content: text,
+    createdAt: new Date().toISOString(),
+    pending: true,
+  };
 }
 
 /**

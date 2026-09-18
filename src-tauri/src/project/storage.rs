@@ -109,6 +109,30 @@ pub async fn project_delete(
     state: tauri::State<'_, DispatcherState>,
     project_id: String,
 ) -> CommandResult<ProjectDeleteResult> {
+    // fail-closed：任一会话仍在运行即拒绝——级联清理会移除会话数据与项目
+    // 运行期目录，运行中的 run 将向已清理 workspace 幽灵写入并失去浏览器
+    // 配置等运行环境。与 session_delete 的守卫同一语义。
+    {
+        let db = state.db().clone();
+        let project_id_for_guard = project_id.clone();
+        let session_ids = tokio::task::spawn_blocking(move || {
+            db.project_session_ids(&project_id_for_guard)
+        })
+        .await
+        .context("查询项目会话任务失败")
+        .and_then(|inner| inner.context("查询项目会话失败"))
+        .into_command_result()?;
+        let active_runs = state.active_run_workspace_ids();
+        if let Some(conflict) = session_ids
+            .iter()
+            .find(|session_id| active_runs.contains(session_id))
+        {
+            return Err(anyhow::anyhow!(
+                "项目存在运行中的会话（{conflict}），请先停止生成后再删除项目"
+            ))
+            .into_command_result();
+        }
+    }
     let db = state.db().clone();
     let result = tokio::task::spawn_blocking(move || {
         let plan = db.delete_project(&project_id)?;

@@ -18,7 +18,8 @@ pub(crate) use message::{serialize_tool_arguments, should_keep_llm_message};
 pub use tool_result::{persist_tool_result_with_compression, TOOL_RESULT_INLINE_MAX_CHARS};
 #[cfg(test)]
 use tool_result::{
-    prepare_tool_result, TOOL_RESULT_INLINE_MAX_CHARS_PAGED, TOOL_RESULT_INLINE_MAX_CHARS_READ,
+    prepare_tool_result, prepare_tool_result_for_registered_tool,
+    TOOL_RESULT_INLINE_MAX_CHARS_PAGED, TOOL_RESULT_INLINE_MAX_CHARS_READ,
 };
 pub use usage::{stream_llm_response, with_usage_paused, LlmStreamOutcome, UsageTracker};
 

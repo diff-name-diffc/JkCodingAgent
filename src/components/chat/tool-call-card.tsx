@@ -21,6 +21,7 @@ import { GraphPlanCard } from "../graph/GraphPlanCard";
 import { parseGraphPlanId } from "../graph/graph-utils";
 import { usePersistedToggle } from "./row-ui-state";
 import { ToolRunTrace } from "./tool-run-trace";
+import { BrowserActivityFeed, BrowserTraceView } from "../browser/BrowserTraceView";
 
 const MAX_COLLAPSED_OUTPUT_LINES = 20;
 
@@ -54,6 +55,9 @@ function ToolCallCard({
     item.name === "submit_graph" && typeof item.output === "string"
       ? parseGraphPlanId(item.output)
       : null;
+  // 浏览器工具（无头化改造）：执行中滚动展示浏览器动态；展开后内嵌实时画面。
+  const isBrowserTool = item.name.startsWith("browser_");
+  const hasBrowserActivity = isBrowserTool && (item.browserActivity?.length ?? 0) > 0;
 
   return (
     <div
@@ -94,6 +98,16 @@ function ToolCallCard({
 
       {graphPlanId && <GraphPlanCard planId={graphPlanId} />}
 
+      {hasBrowserActivity && (
+        <div className="px-3 pb-2">
+          <BrowserActivityFeed
+            lines={item.browserActivity ?? []}
+            expanded={expanded}
+            active={item.status === "running"}
+          />
+        </div>
+      )}
+
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div
@@ -104,6 +118,9 @@ function ToolCallCard({
             className="overflow-hidden border-t border-border/70"
           >
             <div className="space-y-3 px-3 py-3">
+              {isBrowserTool && item.workspaceId && (
+                <BrowserTraceView sessionId={item.workspaceId} />
+              )}
               <ToolRunTrace item={item} active={expanded} />
               {item.input != null && (
                 <DataSection

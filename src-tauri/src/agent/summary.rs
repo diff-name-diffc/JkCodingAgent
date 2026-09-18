@@ -13,7 +13,10 @@ use tool_summary::{
 };
 pub use tool_summary::{extract_structured_summary, summarize_tool_result, SummaryError};
 
-const SUMMARY_TIMEOUT_SECS: u64 = 120;
+/// 工具结果摘要是夹在「工具执行完成 → 主模型下一轮」之间的串行步骤，
+/// 超时必须短：压缩是锦上添花，超时即回退零 LLM 的规则抽取
+/// （`extract_structured_summary`），绝不能让它成为工具调用的主要时延来源。
+const SUMMARY_TIMEOUT_SECS: u64 = 15;
 const SUMMARY_DEBUG_PREVIEW_CHARS: usize = 1_200;
 const SESSION_TITLE_SOURCE_MAX_CHARS: usize = 6_000;
 const SESSION_TITLE_MESSAGE_MAX_CHARS: usize = 1_200;

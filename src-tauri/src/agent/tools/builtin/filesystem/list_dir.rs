@@ -7,7 +7,7 @@ use tokio::task;
 
 use super::super::common::{
     boolish_arg, is_noise, non_empty_string_array_arg, rel, render_labeled_sections, resolve_path,
-    usize_arg, with_compression_parameters,
+    usize_arg, with_compression_parameters, DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
 };
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
@@ -52,6 +52,7 @@ impl AgentTool for ListDirTool {
                 "required": ["paths"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "目录结果最多只有两层，文件名后带总行数。需要精确文件清单和行数时保持关闭；只从超长列表中提取结构概览时可开启并写明 compress_intent。",
         )
     }

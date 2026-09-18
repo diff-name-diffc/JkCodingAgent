@@ -116,6 +116,24 @@ impl ActiveRunStore {
         drop(handle);
     }
 
+    /// 会话是否有运行中的 run。fail-closed 守卫（删除/清空/截断命令拒绝
+    /// 运行中会话）与前端重载对账共用。读取前套用与 begin 相同的兜底回收，
+    /// 避免极端路径残留的死条目（接收端归零）让查询误报运行中。
+    pub(super) fn is_running(&self, workspace_id: &str) -> bool {
+        let mut data = self.data.lock();
+        data.entries
+            .retain(|_, entry| entry.stop_tx.receiver_count() > 0);
+        data.entries.contains_key(workspace_id)
+    }
+
+    /// 当前全部有运行中 run 的 workspace id（无序）。
+    pub(super) fn active_run_ids(&self) -> Vec<String> {
+        let mut data = self.data.lock();
+        data.entries
+            .retain(|_, entry| entry.stop_tx.receiver_count() > 0);
+        data.entries.keys().cloned().collect()
+    }
+
     /// 请求取消当前 run：向 watch channel 发送 true，运行中的 run 轮询到后优雅中止。
     /// 按 workspace 定位"当前"条目是 UI 停止按钮的语义（无需调用方持有代际）。
     pub(super) fn stop(&self, workspace_id: &str) -> bool {
@@ -368,6 +386,30 @@ mod tests {
         let again = store.begin("ws-1").unwrap();
         store.finish(again);
         assert!(store.begin("ws-1").is_ok());
+    }
+
+    #[test]
+    fn is_running_and_active_run_ids_track_entries_per_workspace() {
+        let store = ActiveRunStore::default();
+        assert!(!store.is_running("ws-1"));
+        assert!(store.active_run_ids().is_empty());
+
+        let handle = store.begin("ws-1").unwrap();
+        assert!(store.is_running("ws-1"));
+        assert!(!store.is_running("ws-2"));
+        // 按 workspace 分键：ws-1 运行不阻塞 ws-2 查询/注册。
+        let other = store.begin("ws-2").unwrap();
+        let mut ids = store.active_run_ids();
+        ids.sort();
+        assert_eq!(ids, vec!["ws-1".to_string(), "ws-2".to_string()]);
+
+        drop(other);
+        assert!(!store.is_running("ws-2"));
+        let mut ids = store.active_run_ids();
+        ids.sort();
+        assert_eq!(ids, vec!["ws-1".to_string()]);
+        drop(handle);
+        assert!(store.active_run_ids().is_empty());
     }
 
     #[test]

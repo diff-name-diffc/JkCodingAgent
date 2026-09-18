@@ -14,7 +14,9 @@ use tokio::process::Command;
 use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
 
-use super::common::{string_arg, with_compression_parameters};
+use super::common::{
+    string_arg, with_compression_parameters, COMMAND_FORCE_COMPRESS_AFTER_CHARS,
+};
 use crate::agent::command_history::{self, CommandHistoryStatus};
 use crate::agent::ssh_review::with_confirm_guidance;
 use crate::agent::tools::context::ToolContext;
@@ -90,7 +92,8 @@ impl AgentTool for LocalZshTool {
                 "required": ["command"]
             }),
             false,
-            "local_zsh 会返回命令输出和审计历史摘要；默认保留原文，输出很长时系统仍会压缩。",
+            COMMAND_FORCE_COMPRESS_AFTER_CHARS,
+            "local_zsh 返回命令输出与审计历史；默认保留原文，需要从超长输出中确认特定信息时可开启压缩并写明 compress_intent。",
         )
     }
 

@@ -3,7 +3,10 @@ use std::fs;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::common::{boolish_arg, resolve_path, string_arg, with_compression_parameters};
+use super::common::{
+    boolish_arg, resolve_path, string_arg, with_compression_parameters,
+    DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
+};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 use crate::agent::tools::ToolResult;
@@ -51,6 +54,7 @@ impl AgentTool for WriteFileTool {
                 "required": ["path", "content"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "写入工具通常只返回简短确认信息，默认关闭压缩。",
         )
     }
@@ -119,6 +123,7 @@ impl AgentTool for EditFileTool {
                 "required": ["path", "old_text", "new_text"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "编辑工具通常只返回简短确认信息，默认关闭压缩。",
         )
     }

@@ -79,7 +79,9 @@ pub(super) fn spawn_session_keywords_update(
             .await;
 
             match apply_result {
-                Ok(Ok(())) => {
+                // false = 会话已删除（生成在 run 收尾后异步进行）：不回插、
+                // 不广播，与 update_session_title 的 None 分支同语义。
+                Ok(Ok(true)) => {
                     let list_db = db.clone();
                     let list_ws = workspace_id.clone();
                     if let Ok(Ok(keywords)) =
@@ -95,6 +97,7 @@ pub(super) fn spawn_session_keywords_update(
                         );
                     }
                 }
+                Ok(Ok(false)) => {}
                 Ok(Err(error)) => {
                     eprintln!(
                         "failed to apply keyword actions for {}: {}",

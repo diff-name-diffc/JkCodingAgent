@@ -1,4 +1,4 @@
-import type { DispatcherMessageWire } from "../types";
+import type { DispatcherMessage, DispatcherMessageWire } from "../types";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "./dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "./dispatcher-chat/tool-activity";
 
@@ -34,7 +34,7 @@ const dispatcherLiveSessionSubscribers = new Map<
 const dispatcherRunningSubscribers = new Map<string, Set<(isRunning: boolean) => void>>();
 const dispatcherMessageSubscribers = new Map<
   string,
-  Set<(messages: DispatcherMessageWire[]) => void>
+  Set<(messages: DispatcherMessageBatch) => void>
 >();
 
 function isLiveSessionRunning(state: DispatcherLiveSessionState | undefined): boolean {
@@ -110,14 +110,17 @@ export function subscribeDispatcherLiveSession(
   };
 }
 
-export function notifyDispatcherMessages(sessionId: string, messages: DispatcherMessageWire[]) {
+/** 消息订阅的批次载荷：wire（后端事件/全量对账）或已归一化消息（乐观注入）。 */
+export type DispatcherMessageBatch = Array<DispatcherMessageWire | DispatcherMessage>;
+
+export function notifyDispatcherMessages(sessionId: string, messages: DispatcherMessageBatch) {
   if (messages.length === 0) return;
   dispatcherMessageSubscribers.get(sessionId)?.forEach((subscriber) => subscriber(messages));
 }
 
 export function subscribeDispatcherMessages(
   sessionId: string,
-  subscriber: (messages: DispatcherMessageWire[]) => void,
+  subscriber: (messages: DispatcherMessageBatch) => void,
 ) {
   const subscribers = dispatcherMessageSubscribers.get(sessionId) ?? new Set();
   subscribers.add(subscriber);

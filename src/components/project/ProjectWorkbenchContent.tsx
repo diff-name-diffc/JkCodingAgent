@@ -48,9 +48,6 @@ interface ProjectWorkbenchContentProps {
   onCloseGraphTab: (tab: GraphTab) => void;
   /** 扩大/还原主区（收起/恢复会话 pane），执行图与浏览器标签共用。 */
   onExpandMainArea: () => void;
-  /** 浏览器窗口最小化/重开（UI-18：来自 useBrowserSessionDock 的命令层）。 */
-  onMinimizeBrowser?: () => void | Promise<void>;
-  onReopenBrowser?: () => void | Promise<void>;
 }
 
 export function ProjectWorkbenchContent({
@@ -71,8 +68,6 @@ export function ProjectWorkbenchContent({
   onEditorPaneRatioChange,
   onCloseGraphTab,
   onExpandMainArea,
-  onMinimizeBrowser,
-  onReopenBrowser,
 }: ProjectWorkbenchContentProps) {
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
   // UI-13：编辑区内容判定收敛到 useProjectPanels 单一派生值（含 file/diff/graph 标签）。
@@ -258,8 +253,6 @@ export function ProjectWorkbenchContent({
             expanded={!sessionWorkbenchVisible}
             onToggleExpanded={onExpandMainArea}
             onClose={panels.handleCloseBrowserTab}
-            onMinimize={onMinimizeBrowser}
-            onReopen={onReopenBrowser}
           />
         ) : panels.activeEditorTab?.kind === "diff" ? (
           panels.activeEditorTab.diff.kind === "file" ? (

@@ -22,8 +22,6 @@ interface UseBrowserPanelCommandsOptions {
   sessionId: string | null;
   projectPath?: string;
   session: BrowserPanelSession;
-  onMinimize?: () => void | Promise<void>;
-  onReopen?: () => void | Promise<void>;
 }
 
 /**
@@ -35,8 +33,6 @@ export function useBrowserPanelCommands({
   sessionId,
   projectPath,
   session,
-  onMinimize,
-  onReopen,
 }: UseBrowserPanelCommandsOptions) {
   const { setStatus, setError, appendLog, refreshStatus } = session;
   const [busy, setBusy] = useState(false);
@@ -204,20 +200,6 @@ export function useBrowserPanelCommands({
     }
   }, [session.status?.url, setError]);
 
-  const minimizeBrowser = useCallback(async () => {
-    if (!sessionId || !onMinimize) return;
-    await runBrowserAction(async () => {
-      await onMinimize();
-    });
-  }, [onMinimize, runBrowserAction, sessionId]);
-
-  const reopenBrowser = useCallback(async () => {
-    if (!sessionId || !onReopen) return;
-    await runBrowserAction(async () => {
-      await onReopen();
-    });
-  }, [onReopen, runBrowserAction, sessionId]);
-
   /** 画布点击 → 页面坐标：映射基于实时 rect 与画布后备尺寸，窗口/面板缩放安全。 */
   const handleCanvasClick = useCallback(
     async (event: MouseEvent<HTMLCanvasElement>) => {
@@ -253,8 +235,6 @@ export function useBrowserPanelCommands({
     navigateTo,
     importChromeProfile,
     openCurrentUrl,
-    minimizeBrowser,
-    reopenBrowser,
     handleCanvasClick,
   };
 }

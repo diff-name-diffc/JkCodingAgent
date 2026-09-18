@@ -11,6 +11,14 @@
 //! [`SECTION_MAX_CHARS`] 字符；任何写入先计算写入后的全文长度，超限即拒绝
 //! 落盘并返回各段长度清单，由调用方（Agent/用户）先精简合并再重试。
 //!
+//! 结构防护（针对「更新变累加」的历史 bug）：行首 `## ` 是切段边界，段落
+//! 正文里出现 `## ` 开头的行会把段落碎裂成多个顶层段、留下同名残留——
+//! 因此写入路径 fail-closed 拒绝正文/替换文本中的 `## ` 标题行，整段重写
+//! 时自动剥离照抄 read 输出带进来的首行标题；同名段落只允许存在一个，
+//! 整段重写时把历史重复段收敛为一个。局部替换（[`replace_in_section`]）
+//! 以「段落标题 + 在该段内恰好出现一次的 old_text」定位，new_text 为空
+//! 即删除该片段。
+//!
 //! 并发与原子性（照 `local_zsh/audit.rs` 的模式）：按 server_id 粒度写锁
 //! 串行化同一文件的读-改-写——持锁期间仅做该备忘录文件的 I/O；落盘用
 //! 临时文件 + rename 原子写，避免写一半崩溃留下损坏文件。
@@ -68,12 +76,29 @@ pub(crate) struct ParsedMemo {
 }
 
 /// upsert 写入结果（供工具层组织成功消息）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MemoWriteOutcome {
     /// true=替换了同名已有段落；false=新增段落。
     pub replaced: bool,
     /// 写后全文字符数。
     pub total_chars: usize,
+    /// 写入后的段落清单（标题, 正文字符数）。成功消息向调用方展示，
+    /// 供其自查段落结构与用量、及早发现结构异常。
+    pub sections: Vec<(String, usize)>,
+}
+
+impl MemoWriteOutcome {
+    fn of(rendered: &str, parsed: &ParsedMemo, replaced: bool) -> Self {
+        MemoWriteOutcome {
+            replaced,
+            total_chars: rendered.chars().count(),
+            sections: parsed
+                .sections
+                .iter()
+                .map(|section| (section.title.clone(), section.body.chars().count()))
+                .collect(),
+        }
+    }
 }
 
 // ─── 路径 ───
@@ -134,8 +159,13 @@ pub(crate) fn save_memo_full(server_id: &str, content: &str) -> Result<SshMemoPa
     // 锁的用途就是串行化本文件的读-改-写，持锁期间仅做该备忘录文件的 I/O。
     let lock = memo_lock_for(server_id);
     let _guard = lock.lock();
+    save_memo_full_at(&path, content)
+}
+
+/// [`save_memo_full`] 的路径注入版本（可单测）。
+fn save_memo_full_at(path: &Path, content: &str) -> Result<SshMemoPayload, String> {
     if content.trim().is_empty() {
-        delete_file_at(&path)?;
+        delete_file_at(path)?;
         return Ok(SshMemoPayload {
             content: String::new(),
             updated_at: None,
@@ -148,9 +178,12 @@ pub(crate) fn save_memo_full(server_id: &str, content: &str) -> Result<SshMemoPa
     for section in &parsed.sections {
         validate_memo_title(&section.title).map_err(|error| format!("段落标题校验失败：{error}"))?;
     }
+    // 同名段落只允许一个：局部替换按标题唯一定位，重复标题会让后续维护
+    // （upsert 只碰第一个、局部替换拒绝执行）陷入僵局。
+    reject_duplicate_titles(&parsed)?;
     let rendered = render_memo(&parsed);
     check_limits(&rendered, &parsed)?;
-    atomic_write_at(&path, &rendered)?;
+    atomic_write_at(path, &rendered)?;
     Ok(SshMemoPayload {
         content: rendered,
         updated_at: Some(Utc::now().to_rfc3339()),
@@ -159,32 +192,102 @@ pub(crate) fn save_memo_full(server_id: &str, content: &str) -> Result<SshMemoPa
 
 // ─── 写：段落级更新（Agent 工具语义）───
 
-/// 按段标题原位替换整段（不存在则追加到末尾）。超限拒绝写盘。
+/// 按段标题原位替换整段（不存在则追加到末尾）。历史同名重复段在此
+/// 收敛为一个。超限或正文含 `## ` 标题行即拒绝写盘。
 pub(crate) fn upsert_section(
     server_id: &str,
     title: &str,
-    body: &str,
+    content: &str,
 ) -> Result<MemoWriteOutcome, String> {
     let title = validate_memo_title(title)?;
-    let body = normalize_body(body);
-    if body.chars().count() > SECTION_MAX_CHARS {
-        return Err(format!(
-            "段落「{title}」内容 {} 字符，超过单段上限 {SECTION_MAX_CHARS} 字符；请精简该段后再写入",
-            body.chars().count()
-        ));
-    }
     let path = memo_path(server_id)?;
     let lock = memo_lock_for(server_id);
     let _guard = lock.lock();
-    let mut parsed = parse_sections(&read_content_at(&path)?);
-    let replaced = apply_upsert(&mut parsed, &title, &body);
+    upsert_section_at(&path, &title, content)
+}
+
+/// 段内局部替换：把段落 `title` 正文中恰好出现一次的 `old_text` 替换为
+/// `new_text`（`new_text` 为空即删除该片段），适合修正单行/增删个别条目
+/// 而无需重写整段。定位失败（段落不存在、同名重复、old_text 出现 0 次或
+/// 多次）一律拒绝写盘并给出可行动的指引。
+pub(crate) fn replace_in_section(
+    server_id: &str,
+    title: &str,
+    old_text: &str,
+    new_text: &str,
+) -> Result<MemoWriteOutcome, String> {
+    let title = validate_memo_title(title)?;
+    let path = memo_path(server_id)?;
+    let lock = memo_lock_for(server_id);
+    let _guard = lock.lock();
+    replace_in_section_at(&path, &title, old_text, new_text)
+}
+
+/// [`upsert_section`] 的路径注入版本（可单测）：读-改-写不含锁，锁由
+/// server_id 包装层持有。
+fn upsert_section_at(
+    path: &Path,
+    title: &str,
+    content: &str,
+) -> Result<MemoWriteOutcome, String> {
+    let body = prepare_section_body(title, content)?;
+    let mut parsed = parse_sections(&read_content_at(path)?);
+    let replaced = apply_upsert(&mut parsed, title, &body);
     let rendered = render_memo(&parsed);
     check_limits(&rendered, &parsed)?;
-    atomic_write_at(&path, &rendered)?;
-    Ok(MemoWriteOutcome {
-        replaced,
-        total_chars: rendered.chars().count(),
-    })
+    atomic_write_at(path, &rendered)?;
+    Ok(MemoWriteOutcome::of(&rendered, &parsed, replaced))
+}
+
+/// [`replace_in_section`] 的路径注入版本（可单测）。
+fn replace_in_section_at(
+    path: &Path,
+    title: &str,
+    old_text: &str,
+    new_text: &str,
+) -> Result<MemoWriteOutcome, String> {
+    let old_text = old_text.trim();
+    if old_text.is_empty() {
+        return Err(
+            "old_text 不能为空。局部删除是把 new_text 传空字符串，而不是省略 old_text".to_string(),
+        );
+    }
+    if old_text == new_text.trim() {
+        return Err("old_text 与 new_text 相同，不会产生任何变更；如需保持原样请勿调用".to_string());
+    }
+    reject_heading_lines(new_text, "new_text")?;
+    let mut parsed = parse_sections(&read_content_at(path)?);
+    let same_title = parsed.sections.iter().filter(|s| s.title == title).count();
+    if same_title == 0 {
+        return Err(format!(
+            "备忘录中不存在段落「{title}」，无法局部替换。现有段落：{}。局部替换只能修改已有段落；新内容请用 content 参数整段写入",
+            sections_listing(&parsed)
+        ));
+    }
+    if same_title > 1 {
+        return Err(format!(
+            "段落「{title}」存在 {same_title} 个同名重复段（历史残留），无法唯一定位。请先用 content 参数整段重写该标题，将其收敛为一个段落"
+        ));
+    }
+    let Some(section) = parsed.sections.iter_mut().find(|s| s.title == title) else {
+        return Err(format!("定位段落「{title}」失败"));
+    };
+    let occurrences = section.body.match_indices(old_text).count();
+    match occurrences {
+        0 => Err(format!(
+            "段落「{title}」中没有找到要替换的文本：{old_text:?}。请先 ssh_memo_read 核对原文（注意空格与标点的全角/半角差异）后重试"
+        )),
+        1 => {
+            section.body = section.body.replacen(old_text, new_text, 1).trim().to_string();
+            let rendered = render_memo(&parsed);
+            check_limits(&rendered, &parsed)?;
+            atomic_write_at(path, &rendered)?;
+            Ok(MemoWriteOutcome::of(&rendered, &parsed, true))
+        }
+        n => Err(format!(
+            "要替换的文本在段落「{title}」中出现 {n} 次，无法确定目标。请把 old_text 扩长到能唯一定位（连同上下文行一起复制）后重试"
+        )),
+    }
 }
 
 /// 删除整段。返回 false 表示备忘录中不存在该段（未做任何写入）。
@@ -269,21 +372,28 @@ pub(crate) fn render_memo(parsed: &ParsedMemo) -> String {
     out
 }
 
-/// 原位替换同名段落，不存在则追加到末尾。返回是否替换。
+/// 原位替换同名段落，不存在则追加到末尾；同名的历史重复段在此收敛为
+/// 一个（只保留被替换的首个，其余删除）。返回是否替换。
 pub(crate) fn apply_upsert(parsed: &mut ParsedMemo, title: &str, body: &str) -> bool {
-    if let Some(section) = parsed
-        .sections
-        .iter_mut()
-        .find(|section| section.title == title)
-    {
-        section.body = body.to_string();
-        return true;
-    }
-    parsed.sections.push(MemoSection {
-        title: title.to_string(),
-        body: body.to_string(),
+    let mut replaced = false;
+    parsed.sections.retain_mut(|section| {
+        if section.title == title {
+            if replaced {
+                // 同名只留第一个，防止历史重复段在新写入后继续残留。
+                return false;
+            }
+            section.body = body.to_string();
+            replaced = true;
+        }
+        true
     });
-    false
+    if !replaced {
+        parsed.sections.push(MemoSection {
+            title: title.to_string(),
+            body: body.to_string(),
+        });
+    }
+    replaced
 }
 
 /// 删除同名段落。返回是否删除。
@@ -318,8 +428,10 @@ fn check_limits(rendered: &str, parsed: &ParsedMemo) -> Result<(), String> {
         let section_chars = section.body.chars().count();
         if section_chars > SECTION_MAX_CHARS {
             return Err(format!(
-                "段落「{}」{} 字符，超过单段上限 {SECTION_MAX_CHARS} 字符；请精简该段",
-                section.title, section_chars
+                "段落「{}」{} 字符，超过单段上限 {SECTION_MAX_CHARS} 字符（超出 {} 字符）；请精简该段",
+                section.title,
+                section_chars,
+                section_chars - SECTION_MAX_CHARS
             ));
         }
     }
@@ -331,14 +443,27 @@ fn check_limits(rendered: &str, parsed: &ParsedMemo) -> Result<(), String> {
 }
 
 fn limit_exceeded_message(total: usize, parsed: &ParsedMemo) -> String {
+    let over = total - MEMO_MAX_CHARS;
     let listing = parsed
         .sections
         .iter()
         .map(|section| format!("{}: {}", section.title, section.body.chars().count()))
         .collect::<Vec<_>>()
         .join("；");
+    let largest_hint = parsed
+        .sections
+        .iter()
+        .max_by_key(|section| section.body.chars().count())
+        .map(|section| {
+            format!(
+                "当前最大的段落是「{}」（{} 字符）。",
+                section.title,
+                section.body.chars().count()
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "写入后全文 {total} 字符，超过备忘录上限 {MEMO_MAX_CHARS} 字符，已拒绝写入。当前各段字符数——{listing}。请先合并重复条目、删除过时内容（ssh_memo_read 后整段重写）再重试。"
+        "写入后全文 {total} 字符，超过备忘录上限 {MEMO_MAX_CHARS} 字符（超出 {over} 字符），已拒绝写入。当前各段字符数——{listing}。{largest_hint}处理方式：对最大的段落合并去重、删除过时内容后用 title+content 整段重写更短的版本，或用局部替换（new_text 传空字符串）删除过时片段、ssh_memo_delete 删除过时段落，把全文压到 {MEMO_MAX_CHARS} 字符以内再重试本次写入"
     )
 }
 
@@ -346,6 +471,85 @@ fn limit_exceeded_message(total: usize, parsed: &ParsedMemo) -> String {
 /// 保证 render→parse 往返稳定。
 fn normalize_body(body: &str) -> String {
     body.trim().to_string()
+}
+
+/// 整段重写前的正文结构校验与规范化：剥离照抄 read 输出带进来的首行
+/// 标题（`## 标题` / `### 标题` / 纯标题文本），再拒绝正文中其余 `## `
+/// 标题行（行首 `## ` 是切段边界，混入正文会把段落碎裂），最后做单段
+/// 上限检查。
+fn prepare_section_body(title: &str, content: &str) -> Result<String, String> {
+    let body = normalize_body(strip_copied_title_line(content.trim(), title));
+    reject_heading_lines(&body, "content")?;
+    if body.chars().count() > SECTION_MAX_CHARS {
+        return Err(format!(
+            "段落「{title}」内容 {} 字符，超过单段上限 {SECTION_MAX_CHARS} 字符（超出 {} 字符）；请合并去重、只留必要信息后重写",
+            body.chars().count(),
+            body.chars().count() - SECTION_MAX_CHARS
+        ));
+    }
+    Ok(body)
+}
+
+/// 剥离照抄 read 输出时把段落标题行带进 content 的首行模式：首行剥离
+/// 前导 `#` 并修剪后恰好等于标题文本即视为照抄，返回其余内容。
+fn strip_copied_title_line<'a>(body: &'a str, title: &str) -> &'a str {
+    let Some(first_line) = body.split('\n').next() else {
+        return body;
+    };
+    if first_line.trim_start_matches('#').trim() == title {
+        body[first_line.len()..].trim_start_matches('\n')
+    } else {
+        body
+    }
+}
+
+/// 拒绝文本中出现行首 `## ` 的行——它们是 parse_sections 的切段边界，
+/// 混进段落正文会把段落碎裂成多个顶层段（历史「更新变累加」bug 的根因）。
+/// 子标题应使用 `### ` 或加粗。
+fn reject_heading_lines(text: &str, param_name: &str) -> Result<(), String> {
+    for line in text.lines() {
+        if let Some(heading) = line.strip_prefix("## ") {
+            return Err(format!(
+                "参数 {param_name} 中出现二级标题行「{heading}」：段落正文内不能用 `## ` 开头的行（会破坏段落结构）。子标题请改用 `### ` 或加粗；要开新段落请用新的 title 再次调用 ssh_memo_upsert"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 同名段落只允许一个（局部替换按标题唯一定位）。
+fn reject_duplicate_titles(parsed: &ParsedMemo) -> Result<(), String> {
+    let mut seen: Vec<&str> = Vec::new();
+    for section in &parsed.sections {
+        if seen.contains(&section.title.as_str()) {
+            return Err(format!(
+                "段落标题「{}」重复出现，每个标题只能对应一个段落（ssh_memo_upsert 的局部替换按标题唯一定位）。请合并同名段落后再保存；当前重复段：{}",
+                section.title,
+                parsed
+                    .sections
+                    .iter()
+                    .filter(|s| s.title == section.title)
+                    .map(|s| format!("{}: {} 字符", s.title, s.body.chars().count()))
+                    .collect::<Vec<_>>()
+                    .join("；")
+            ));
+        }
+        seen.push(&section.title);
+    }
+    Ok(())
+}
+
+/// 错误消息用的段落标题清单。
+fn sections_listing(parsed: &ParsedMemo) -> String {
+    if parsed.sections.is_empty() {
+        return "（无段落）".to_string();
+    }
+    parsed
+        .sections
+        .iter()
+        .map(|section| format!("「{}」", section.title))
+        .collect::<Vec<_>>()
+        .join("、")
 }
 
 fn join_trim(lines: &[&str]) -> String {
@@ -530,15 +734,150 @@ mod tests {
         let rendered = render_memo(&parsed);
         let error = check_limits(&rendered, &parsed).unwrap_err();
         assert!(error.contains(&format!("超过备忘录上限 {MEMO_MAX_CHARS}")), "{error}");
-        // 错误消息带各段长度清单，供调用方决定精简哪段。
+        // 错误消息带超出量、各段长度清单与最大段落定位，供调用方决定精简哪段。
+        assert!(error.contains("超出"), "{error}");
         assert!(error.contains("段0: 3000"), "{error}");
         assert!(error.contains("段2: 3000"), "{error}");
+        assert!(error.contains("当前最大的段落"), "{error}");
+        assert!(error.contains("压到"), "{error}");
 
         // 合法内容通过。
         let mut parsed = ParsedMemo::default();
         apply_upsert(&mut parsed, "部署路径", "- /opt/app");
         let rendered = render_memo(&parsed);
         assert!(check_limits(&rendered, &parsed).is_ok());
+    }
+
+    #[test]
+    fn upsert_strips_copied_title_line_and_converges_duplicates() {
+        let root = temp_root();
+        let path = memo_path_in(&root, "srv-upsert").unwrap();
+        // 历史残留形态：同名两段 + 其他段。
+        atomic_write_at(
+            &path,
+            &format!("{}\n\n## A\nx\n\n## A\ny\n\n## B\nz\n", generated_header()),
+        )
+        .unwrap();
+
+        // content 首行照抄了标题（## / ### / 纯文本三种模式均剥离）。
+        for copied in ["## A\nnew body", "### A\nnew body", "A\nnew body"] {
+            let outcome = upsert_section_at(&path, "A", copied).unwrap();
+            assert!(outcome.replaced);
+            let parsed = parse_sections(&read_content_at(&path).unwrap());
+            // 同名收敛为一个，其余段不受影响。
+            assert_eq!(parsed.sections.len(), 2);
+            assert_eq!(parsed.sections[0].title, "A");
+            assert_eq!(parsed.sections[0].body, "new body");
+            assert_eq!(parsed.sections[1].title, "B");
+        }
+        // 成功结果携带段落清单，供调用方自查结构。
+        let outcome = upsert_section_at(&path, "C", "新增段").unwrap();
+        assert!(!outcome.replaced);
+        assert_eq!(outcome.sections.len(), 3);
+        assert_eq!(outcome.sections[2], ("C".to_string(), "新增段".chars().count()));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn upsert_rejects_heading_lines_in_content() {
+        let root = temp_root();
+        let path = memo_path_in(&root, "srv-guard").unwrap();
+        let error = upsert_section_at(&path, "T", "正文\n## 子标题\n更多").unwrap_err();
+        assert!(error.contains("二级标题行"), "{error}");
+        // fail-closed：拒绝时未落盘。
+        assert_eq!(read_content_at(&path).unwrap(), "");
+
+        // `### ` 子标题是合法的：不触发切段边界，放行。
+        upsert_section_at(&path, "T", "正文\n### 子标题\n合法").unwrap();
+        let parsed = parse_sections(&read_content_at(&path).unwrap());
+        assert_eq!(parsed.sections[0].body, "正文\n### 子标题\n合法");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn replace_in_section_partial_update_and_local_delete() {
+        let root = temp_root();
+        let path = memo_path_in(&root, "srv-replace").unwrap();
+        upsert_section_at(&path, "命令", "a\nb\nc").unwrap();
+
+        // 局部更新：唯一命中即替换，其余行不动。
+        let outcome = replace_in_section_at(&path, "命令", "b", "B2").unwrap();
+        assert!(outcome.replaced);
+        let parsed = parse_sections(&read_content_at(&path).unwrap());
+        assert_eq!(parsed.sections[0].body, "a\nB2\nc");
+        assert_eq!(outcome.sections[0].0, "命令");
+
+        // 局部删除：new_text 为空字符串。
+        replace_in_section_at(&path, "命令", "B2", "").unwrap();
+        let parsed = parse_sections(&read_content_at(&path).unwrap());
+        assert_eq!(parsed.sections[0].body, "a\n\nc");
+
+        // 多行片段替换（连上下行一起定位）。
+        replace_in_section_at(&path, "命令", "a\n\nc", "x\ny").unwrap();
+        let parsed = parse_sections(&read_content_at(&path).unwrap());
+        assert_eq!(parsed.sections[0].body, "x\ny");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn replace_in_section_rejects_bad_targets() {
+        let root = temp_root();
+        let path = memo_path_in(&root, "srv-bad").unwrap();
+        upsert_section_at(&path, "重复", "x\nx").unwrap();
+        upsert_section_at(&path, "唯一", "目标").unwrap();
+
+        // 段落不存在：报错并列出现有段落标题。
+        let error = replace_in_section_at(&path, "不存在", "x", "y").unwrap_err();
+        assert!(error.contains("现有段落"), "{error}");
+        assert!(error.contains("「重复」"), "{error}");
+
+        // old_text 出现多次：拒绝并提示扩长定位。
+        let error = replace_in_section_at(&path, "重复", "x", "y").unwrap_err();
+        assert!(error.contains("2 次"), "{error}");
+
+        // old_text 为空。
+        let error = replace_in_section_at(&path, "唯一", "  ", "y").unwrap_err();
+        assert!(error.contains("old_text 不能为空"), "{error}");
+
+        // new_text 含 ## 标题行：结构防护同样生效。
+        let error = replace_in_section_at(&path, "唯一", "目标", "## H\ny").unwrap_err();
+        assert!(error.contains("二级标题行"), "{error}");
+
+        // old_text 与 new_text 相同。
+        let error = replace_in_section_at(&path, "唯一", "目标", "目标").unwrap_err();
+        assert!(error.contains("相同"), "{error}");
+
+        // 同名重复段：无法唯一定位，要求先整段重写收敛。
+        let dup_path = memo_path_in(&root, "srv-dup").unwrap();
+        atomic_write_at(
+            &dup_path,
+            &format!("{}\n\n## A\nx\n\n## A\ny\n", generated_header()),
+        )
+        .unwrap();
+        let error = replace_in_section_at(&dup_path, "A", "x", "z").unwrap_err();
+        assert!(error.contains("同名重复段"), "{error}");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn save_memo_full_rejects_duplicate_titles() {
+        let root = temp_root();
+        let path = memo_path_in(&root, "srv-full").unwrap();
+        let error = save_memo_full_at(
+            &path,
+            &format!("{}\n\n## A\nx\n\n## A\ny\n", generated_header()),
+        )
+        .unwrap_err();
+        assert!(error.contains("重复出现"), "{error}");
+        assert_eq!(read_content_at(&path).unwrap(), "");
+
+        save_memo_full_at(&path, "## A\nx\n\n## B\ny\n").unwrap();
+        let parsed = parse_sections(&read_content_at(&path).unwrap());
+        assert_eq!(parsed.sections.len(), 2);
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

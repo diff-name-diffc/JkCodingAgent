@@ -93,8 +93,8 @@ importers:
         specifier: ^0.7.1
         version: 0.7.1
       cloakbrowser:
-        specifier: ^0.4.4
-        version: 0.4.4(playwright-core@1.61.1)
+        specifier: ^0.5.10
+        version: 0.5.10(playwright-core@1.63.0)
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
@@ -114,8 +114,8 @@ importers:
         specifier: ^0.55.1
         version: 0.55.1
       playwright-core:
-        specifier: ^1.61.1
-        version: 1.61.1
+        specifier: ^1.63.0
+        version: 1.63.0
       react:
         specifier: ^19.2.7
         version: 19.2.7
@@ -3046,8 +3046,8 @@ packages:
   classnames@2.5.1:
     resolution: {integrity: sha512-saHYOzhIQs6wy2sVxTM6bUDsQO4F50V9RQ22qBpEdCW+I+/Wmke2HOl6lS6dTpdxVhb88/I6+Hs+438c3lfUow==}
 
-  cloakbrowser@0.4.4:
-    resolution: {integrity: sha512-QXFwNjoeOh0qKLBypf7WM2b1220v3jqW2cCzW3JMqwC50zYz59Ng+VKfrKP2aPsrp21XRTWfrdVs1uJdw/AKUQ==}
+  cloakbrowser@0.5.10:
+    resolution: {integrity: sha512-Pzfi8WRAuXCk2GUKIpRZrLtQ/EaXfQ2t+N39fVGxxQfowRpyZB7qbsv0dYtmd+wuV/GK2aO1EBCcCV35TFVo2A==}
     engines: {node: '>=20.0.0'}
     hasBin: true
     peerDependencies:
@@ -4225,9 +4225,9 @@ packages:
     resolution: {integrity: sha512-TfySrs/5nm8fQJDcBDuUng3VOUKsd7S+zqvbOTiGXHfxX4wK31ard+hoNuvkicM/2YFzlpDgABOevKSsB4G/FA==}
     engines: {node: '>= 6'}
 
-  playwright-core@1.61.1:
-    resolution: {integrity: sha512-h7Qlt6m4REp25qvIdvbDtVmD4LqVXfpRxhORv9L0jzETM05p4fuPJ3dKyuSXQxDSbXnmS79HAgi9589lGSpLkg==}
-    engines: {node: '>=18'}
+  playwright-core@1.63.0:
+    resolution: {integrity: sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg==}
+    engines: {node: '>=20'}
     hasBin: true
 
   points-on-curve@0.2.0:
@@ -7975,11 +7975,11 @@ snapshots:
 
   classnames@2.5.1: {}
 
-  cloakbrowser@0.4.4(playwright-core@1.61.1):
+  cloakbrowser@0.5.10(playwright-core@1.63.0):
     dependencies:
       tar: 7.5.17
     optionalDependencies:
-      playwright-core: 1.61.1
+      playwright-core: 1.63.0
 
   clsx@2.1.1: {}
 
@@ -9412,7 +9412,7 @@ snapshots:
 
   pirates@4.0.7: {}
 
-  playwright-core@1.61.1: {}
+  playwright-core@1.63.0: {}
 
   points-on-curve@0.2.0: {}
 

@@ -174,7 +174,6 @@ export function ArchitectureChatPanel({
       <MessageList
         sessionId={chat.sessionId}
         messages={chat.messages}
-        liveState={chat.liveState}
         onPickPrompt={(prompt) => setInput(prompt)}
         emptyState={ARCH_EMPTY_STATE}
         className="ai-arch-chat-messages"

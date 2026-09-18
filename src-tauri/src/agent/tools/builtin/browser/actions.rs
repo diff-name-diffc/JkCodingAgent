@@ -10,7 +10,9 @@ use tauri::Manager;
 use super::recovery::handle_browser_error;
 use super::snapshot::invalidate_cached_snapshot;
 use super::{browser_value_result, run_browser_command, run_browser_command_value, timeout_arg};
-use crate::agent::tools::builtin::common::{string_arg, with_compression_parameters};
+use crate::agent::tools::builtin::common::{
+    boolish_arg, string_arg, with_compression_parameters, DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
+};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 use crate::agent::tools::ToolResult;
@@ -29,7 +31,7 @@ impl AgentTool for ClickTool {
     }
 
     fn description(&self) -> &'static str {
-        "点击 Accessibility Tree 快照中的元素 ref。先调用 browser_read_text 获取页面快照，再使用快照中标注的 ref。"
+        "点击 Accessibility Tree 快照中的元素 ref。优先按语义（角色+名称）定位并做可见性/稳定性校验，主文档元素在语义失败时回退坐标点击；iframe 内元素同样支持。先调用 browser_read_text 获取页面快照，再使用快照中标注的 ref。"
     }
 
     fn parameters(&self) -> Value {
@@ -38,11 +40,13 @@ impl AgentTool for ClickTool {
                 "type": "object",
                 "properties": {
                     "ref": { "type": "string", "description": "browser_read_text 返回的元素 ref，例如 r12" },
+                    "humanize": { "type": "boolean", "description": "是否启用反爬拟人化（模拟人类鼠标轨迹与节奏）。默认关闭；仅当页面出现人机验证、行为检测拦截（如点击无效、提示异常流量、验证码）时才开启——开启后本会话内浏览器动作会显著变慢", "default": false },
                     "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 60000", "minimum": 1 }
                 },
                 "required": ["ref"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "点击结果很短，默认关闭压缩。",
         )
     }
@@ -58,6 +62,7 @@ impl AgentTool for ClickTool {
             "click",
             json!({
                 "ref": ref_id,
+                "humanize": boolish_arg(args, "humanize").unwrap_or(false),
                 "timeout": timeout_arg(args)
             }),
         )
@@ -76,7 +81,7 @@ impl AgentTool for TypeTool {
     }
 
     fn description(&self) -> &'static str {
-        "点击指定输入元素并输入文本。"
+        "向指定输入元素输入文本（真实按键序列，追加不清空）。按语义（角色+名称）定位输入框，iframe 内输入框同样支持。"
     }
 
     fn parameters(&self) -> Value {
@@ -86,11 +91,13 @@ impl AgentTool for TypeTool {
                 "properties": {
                     "ref": { "type": "string", "description": "browser_read_text 返回的输入元素 ref，例如 r12" },
                     "text": { "type": "string", "description": "要输入的文本" },
+                    "humanize": { "type": "boolean", "description": "是否启用反爬拟人化（人类打字节奏、随机停顿与误触纠正）。默认关闭；仅当页面出现人机验证、行为检测拦截时才开启——开启后本会话内浏览器动作会显著变慢", "default": false },
                     "timeout": { "type": "integer", "description": "超时时间，单位毫秒，默认 60000", "minimum": 1 }
                 },
                 "required": ["ref", "text"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "输入结果很短，默认关闭压缩。",
         )
     }
@@ -107,7 +114,12 @@ impl AgentTool for TypeTool {
         match run_browser_command_value(
             context,
             "type",
-            json!({ "ref": ref_id, "text": text, "timeout": timeout_arg(args) }),
+            json!({
+                "ref": ref_id,
+                "text": text,
+                "humanize": boolish_arg(args, "humanize").unwrap_or(false),
+                "timeout": timeout_arg(args)
+            }),
         )
         .await
         {
@@ -132,11 +144,13 @@ impl AgentTool for PressTool {
             json!({
                 "type": "object",
                 "properties": {
-                    "key": { "type": "string", "description": "Playwright 按键名称，例如 Enter" }
+                    "key": { "type": "string", "description": "Playwright 按键名称，例如 Enter" },
+                    "humanize": { "type": "boolean", "description": "是否启用反爬拟人化。默认关闭；仅当页面出现人机验证、行为检测拦截时才开启——开启后本会话内浏览器动作会显著变慢", "default": false }
                 },
                 "required": ["key"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "按键结果很短，默认关闭压缩。",
         )
     }
@@ -145,7 +159,15 @@ impl AgentTool for PressTool {
         let Some(key) = string_arg(args, "key") else {
             return ToolResult::recoverable_error("错误：缺少必填参数 key");
         };
-        run_browser_command(context, "press", json!({ "key": key })).await
+        run_browser_command(
+            context,
+            "press",
+            json!({
+                "key": key,
+                "humanize": boolish_arg(args, "humanize").unwrap_or(false)
+            }),
+        )
+        .await
     }
 }
 
@@ -173,6 +195,7 @@ impl AgentTool for WaitForTool {
                 }
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "等待结果很短，默认关闭压缩。",
         )
     }
@@ -204,6 +227,7 @@ impl AgentTool for CloseTool {
         with_compression_parameters(
             json!({ "type": "object", "properties": {} }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "关闭结果很短，默认关闭压缩。",
         )
     }

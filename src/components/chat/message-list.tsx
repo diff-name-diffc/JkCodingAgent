@@ -7,7 +7,7 @@ import type {
   ModelCategory,
   PythonCodeRunRecord,
 } from "../../types";
-import type { DispatcherLiveSessionState } from "../dispatcherSessionStore";
+import { useLiveSessionStateReadonly } from "../dispatcher-chat/useLiveSessionState";
 import { cn } from "../../lib/cn";
 import { isModelNotConfiguredError } from "../../lib/run-error-classify";
 import { Button } from "../ui/button";
@@ -46,7 +46,6 @@ import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 export interface MessageListProps {
   sessionId: string | null;
   messages: DispatcherMessage[];
-  liveState: DispatcherLiveSessionState | null;
   pythonRunRecords?: Record<string, PythonCodeRunRecord>;
   onRunPython?: (target: {
     messageId: string;
@@ -89,7 +88,6 @@ export function MessageList(props: MessageListProps) {
 function MessageListInner({
   sessionId,
   messages,
-  liveState,
   pythonRunRecords,
   onRunPython,
   onCopyMessage,
@@ -102,6 +100,11 @@ function MessageListInner({
   emptyState,
   className,
 }: MessageListProps) {
+  // 流式 live state 在此订阅（而非经 ChatShell 下传）：token 流的每帧
+  // 合帧通知只重渲染本组件（memo 化的历史行不受影响），外壳/侧栏/输入区
+  // 在整个流式期间保持静止。
+  const liveState = useLiveSessionStateReadonly(sessionId);
+
   // Rebuild display items only when the message array identity changes.
   const items: MessageDisplayItem[] = React.useMemo(() => buildItems(messages), [messages]);
 

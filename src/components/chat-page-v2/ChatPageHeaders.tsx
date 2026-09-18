@@ -1,6 +1,8 @@
 import { GitBranch, Loader2, MoreHorizontal, Settings, Trash2, Waypoints, X } from "lucide-react";
 import type { McpStatus } from "../../types";
 import { getMcpConnectionStatus } from "../../hooks/use-mcp-status";
+import { hexWithAlpha } from "../../lib/hex-alpha";
+import { resolveCategoryIcon } from "../../lib/category-icon";
 import { StatusPill } from "../detail/StatusPill";
 import { Button } from "../ui/button";
 import {
@@ -117,8 +119,42 @@ function HeaderMoreMenu({
   );
 }
 
+/** 头部分类徽标的最小形状（chat_categories 记录的子集）。 */
+export interface ChatHeaderCategory {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+}
+
+/**
+ * 当前会话所属分类徽标：分类决定系统提示词与可用工具，是「这场对话
+ * 在用什么能力」的首要提示，放在标题行最前作视觉前缀。分类色为运行期
+ * 数据走内联 tint，非 hex 时回退 CSS 类的中性令牌色。
+ */
+function CategoryBadge({ category }: { category: ChatHeaderCategory }) {
+  const Icon = resolveCategoryIcon(category.icon);
+  const tint = hexWithAlpha(category.color, "14");
+  const border = hexWithAlpha(category.color, "4d");
+  const style =
+    tint && border
+      ? { color: category.color, background: tint, borderColor: border }
+      : undefined;
+  return (
+    <span
+      className="ai-chat-header-category-pill"
+      style={style}
+      title={`当前分类：${category.name} —— 分类决定本会话的系统提示词与可用工具`}
+    >
+      <Icon size={11} strokeWidth={2} aria-hidden="true" />
+      <span className="truncate">{category.name}</span>
+    </span>
+  );
+}
+
 export function PlainChatHeader({
   title,
+  category,
   isLoading,
   isStopping,
   hasMessages,
@@ -127,12 +163,13 @@ export function PlainChatHeader({
   onOpenMcpStatus,
   onClearMessages,
   onOpenSettings,
-}: CommonHeaderProps & { title: string | null }) {
+}: CommonHeaderProps & { title: string | null; category?: ChatHeaderCategory | null }) {
   const displayTitle = title?.trim() || "新对话";
   return (
     <div className="ai-chat-header">
       <div className="ai-chat-header-main">
         <div className="ai-chat-header-title-row">
+          {category && <CategoryBadge category={category} />}
           <span className="ai-chat-header-title" title={displayTitle}>
             {displayTitle}
           </span>

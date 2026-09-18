@@ -24,7 +24,10 @@ use snapshot::{
     READ_TEXT_DEFAULT_LINE_LIMIT,
 };
 
-use super::common::{string_arg, u64_arg, usize_arg, with_compression_parameters};
+use super::common::{
+    string_arg, u64_arg, usize_arg, with_compression_parameters,
+    DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
+};
 use crate::agent::llm::{ChatMessage, ChatMessageContentPart, ChatMessageImageSource};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
@@ -57,7 +60,7 @@ impl AgentTool for OpenUrlTool {
     }
 
     fn description(&self) -> &'static str {
-        "使用项目级浏览器打开 URL。支持浏览器引擎可导航的 URL（包括 http、https、file、data、about 等），会自动启动嵌入式浏览器会话，并在右侧浏览器面板实时展示页面。注意：file:// URL 仅允许打开当前工作区内的本地文件，工作区之外的路径会被拒绝。"
+        "使用项目级无头浏览器打开 URL。支持浏览器引擎可导航的 URL（包括 http、https、file、data、about 等），会自动启动嵌入式浏览器会话；页面执行画面经屏幕帧流回放到前端（用户可在工具执行轨迹中查看，不会弹出窗口）。注意：file:// URL 仅允许打开当前工作区内的本地文件，工作区之外的路径会被拒绝。"
     }
 
     fn parameters(&self) -> Value {
@@ -71,6 +74,7 @@ impl AgentTool for OpenUrlTool {
                 "required": ["url"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "浏览器操作结果通常较短，默认关闭压缩。",
         )
     }
@@ -128,7 +132,7 @@ impl AgentTool for ReadTextTool {
     }
 
     fn description(&self) -> &'static str {
-        "读取浏览器当前页面或指定 ref 元素的可访问性树文本快照，输出为「行号|内容」格式；快照会为可交互/可定位节点生成 ref，后续浏览器自动化统一使用这些 ref。快照较长时超过内联上限（默认 10000 字符）会被截断并注明行位置，此时用 offset/limit 按行号接续读取剩余部分（分页读取的内联上限提高到 20000 字符，一次可读约一两百行）；带行范围的调用读取的是最近一次全量快照（不重新请求页面、ref 保持有效），需要刷新页面状态时省略行范围重新读取。"
+        "读取浏览器当前页面或指定 ref 元素的可访问性树文本快照，输出为「行号|内容」格式；快照会为可交互/可定位节点生成 ref，后续浏览器自动化统一使用这些 ref。主文档与 iframe 内元素（以「iframe [frame=N]」小节嵌入快照）都会生成可点击/可输入的 ref。快照较长时超过内联上限（默认 10000 字符）会被截断并注明行位置，此时用 offset/limit 按行号接续读取剩余部分（分页读取的内联上限提高到 20000 字符，一次可读约一两百行）；带行范围的调用读取的是最近一次全量快照（不重新请求页面、ref 保持有效），需要刷新页面状态时省略行范围重新读取。"
     }
 
     fn parameters(&self) -> Value {
@@ -144,6 +148,7 @@ impl AgentTool for ReadTextTool {
                 }
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "可访问性树快照经常是后续定位和判断依据，默认关闭压缩；只看页面概览时可开启并写明 compress_intent。",
         )
     }
@@ -216,6 +221,7 @@ impl AgentTool for VisualAnalyzeTool {
                 "required": ["instruction"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "视觉分析结果已由轻量模型压缩为文本，默认关闭压缩保留完整结果。",
         )
     }

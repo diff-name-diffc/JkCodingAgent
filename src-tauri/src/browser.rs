@@ -84,10 +84,6 @@ pub struct BrowserStatus {
     pub state: String,
     pub url: Option<String>,
     pub message: Option<String>,
-    #[serde(default)]
-    pub minimized: bool,
-    #[serde(default)]
-    pub has_headed_window: bool,
 }
 
 #[derive(Default)]
@@ -165,8 +161,7 @@ impl BrowserManager {
 
         match start_result {
             Ok(value) => {
-                let status =
-                    status_from_value(&value, false, false).unwrap_or_else(|| process.status());
+                let status = status_from_value(&value).unwrap_or_else(|| process.status());
                 Ok(status)
             }
             Err(error) => {
@@ -199,73 +194,7 @@ impl BrowserManager {
                 state: "closed".to_string(),
                 url: None,
                 message: None,
-                minimized: false,
-                has_headed_window: false,
             })
-    }
-
-    pub async fn minimize(&self, session_id: &str) -> Result<BrowserStatus, String> {
-        let process = self
-            .sessions
-            .lock()
-            .await
-            .get(session_id)
-            .cloned()
-            .ok_or_else(|| format!("未找到会话：{session_id}"))?;
-        process
-            .request_with_timeout("minimize_window", json!({}), Duration::from_secs(10))
-            .await?;
-        {
-            let mut s = process.status.lock();
-            s.minimized = true;
-            s.state = "minimized".to_string();
-        }
-        Ok(process.status())
-    }
-
-    pub async fn restore(&self, session_id: &str) -> Result<BrowserStatus, String> {
-        let process = self
-            .sessions
-            .lock()
-            .await
-            .get(session_id)
-            .cloned()
-            .ok_or_else(|| format!("未找到会话：{session_id}"))?;
-        process
-            .request_with_timeout("restore_window", json!({}), Duration::from_secs(10))
-            .await?;
-        {
-            let mut s = process.status.lock();
-            s.minimized = false;
-            s.state = "ready".to_string();
-        }
-        Ok(process.status())
-    }
-
-    pub async fn reopen(&self, session_id: &str) -> Result<BrowserStatus, String> {
-        let process = self
-            .sessions
-            .lock()
-            .await
-            .get(session_id)
-            .cloned()
-            .ok_or_else(|| format!("未找到会话：{session_id}"))?;
-        let result = process
-            .request_with_timeout("reopen_window", json!({}), Duration::from_secs(15))
-            .await?;
-        let headed = result
-            .get("headed")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        {
-            let mut s = process.status.lock();
-            s.minimized = false;
-            s.state = "ready".to_string();
-            if headed {
-                s.has_headed_window = true;
-            }
-        }
-        Ok(process.status())
     }
 
     pub async fn command(

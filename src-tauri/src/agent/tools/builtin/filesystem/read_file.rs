@@ -10,7 +10,7 @@ use tokio::{
 
 use super::super::common::{
     non_empty_string_array_arg, render_labeled_sections, resolve_path, usize_arg,
-    with_compression_parameters,
+    with_compression_parameters, DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
 };
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
@@ -82,6 +82,7 @@ impl AgentTool for ReadFileTool {
                 "required": ["paths"]
             }),
             false,
+            DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             "分析代码、配置或精确文本时保持关闭保留完整结果；只定位关键符号或需要概览时可开启并写明 compress_intent。",
         )
     }

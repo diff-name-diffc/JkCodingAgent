@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::common::{string_arg, u64_arg, with_compression_parameters};
+use super::common::{
+    string_arg, u64_arg, with_compression_parameters, COMMAND_FORCE_COMPRESS_AFTER_CHARS,
+};
 use crate::agent::tools::context::ToolContext;
 use crate::agent::tools::registry::AgentTool;
 use crate::agent::tools::ToolResult;
@@ -114,8 +116,9 @@ impl AgentTool for SshExecTool {
                 },
                 "required": ["server_id", "session_id", "command"]
             }),
-            true,
-            "SSH 命令结果可能较长，默认开启压缩。compress_intent 应说明要从命令输出中确认什么。",
+            false,
+            COMMAND_FORCE_COMPRESS_AFTER_CHARS,
+            "默认直接返回原始输出：8000 字符内全量内联，超出截断且完整原文保留在工具产物中。报错原文、状态值、配置片段等需要逐字核对的内容应保持 compress=false。仅当预期输出很大（全量日志、大目录清单等）且只需确认特定信息时才设 compress=true，并在 compress_intent 中写明要确认什么。",
         )
     }
 

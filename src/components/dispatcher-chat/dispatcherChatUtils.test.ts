@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DispatcherMessage, DispatcherMessageWire } from "../../types";
-import { mergeDispatcherMessages } from "./dispatcherChatUtils";
+import { buildOptimisticUserMessage, mergeDispatcherMessages } from "./dispatcherChatUtils";
 
 describe("mergeDispatcherMessages", () => {
   it("把 Rust segmentsJson wire DTO 归一化为 UI segments", () => {
@@ -64,5 +64,85 @@ describe("mergeDispatcherMessages — 归一化身份缓存（UI-24b-4）", () =
       ],
     );
     expect(merged.map((m: DispatcherMessage) => m.id)).toEqual(["c", "a", "b"]);
+  });
+});
+
+describe("mergeDispatcherMessages — 乐观 pending 消息替换", () => {
+  const wire = (id: string, at: string): DispatcherMessageWire => ({
+    id,
+    workspaceId: "s1",
+    role: "user",
+    segmentsJson: JSON.stringify([{ id: `seg-${id}`, type: "text", text: "hi" }]),
+    createdAt: at,
+  });
+  // current 侧必须是归一化产物：wire 先经一次 merge 进入。
+  const history = (ids: Array<[string, string]>): DispatcherMessage[] =>
+    mergeDispatcherMessages([], ids.map(([id, at]) => wire(id, at)));
+
+  it("权威消息到达时丢弃 pending（不出现两条同轮用户消息）", () => {
+    const optimistic = buildOptimisticUserMessage("s1", "hi", []);
+    expect(optimistic.pending).toBe(true);
+
+    const withPending = mergeDispatcherMessages(
+      history([["m0", "2026-08-25T00:00:00Z"]]),
+      [optimistic],
+    );
+    expect(withPending).toHaveLength(2);
+
+    const afterAcknowledge = mergeDispatcherMessages(withPending, [
+      wire("m1", "2026-08-25T00:00:01Z"),
+    ]);
+    expect(afterAcknowledge.map((m) => m.id)).toEqual(["m0", "m1"]);
+  });
+
+  it("pending 批次注入不误删既有 pending（注入场景 hasAuthoritative=false）", () => {
+    const optimistic = buildOptimisticUserMessage("s1", "hi", []);
+    const merged = mergeDispatcherMessages([optimistic], [optimistic]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].pending).toBe(true);
+  });
+
+  it("失败对账批次（不含该轮消息）同样清除 pending", () => {
+    const optimistic = buildOptimisticUserMessage("s1", "hi", []);
+    const withPending = mergeDispatcherMessages(
+      history([["m0", "2026-08-25T00:00:00Z"]]),
+      [optimistic],
+    );
+    const afterReconcile = mergeDispatcherMessages(withPending, [
+      wire("m0", "2026-08-25T00:00:00Z"),
+    ]);
+    expect(afterReconcile.map((m) => m.id)).toEqual(["m0"]);
+  });
+});
+
+describe("buildOptimisticUserMessage", () => {
+  it("segment 顺序与发送管线一致：图片在前、文本在后", () => {
+    const message = buildOptimisticUserMessage("s1", "hello", [
+      {
+        id: "img-seg",
+        type: "image",
+        imageId: "img-1",
+        source: "user_paste",
+        mimeType: "image/png",
+      },
+    ]);
+    expect(message.role).toBe("user");
+    expect(message.pending).toBe(true);
+    expect(message.segments.map((segment) => segment.type)).toEqual(["image", "text"]);
+    expect(message.content).toBe("hello");
+  });
+
+  it("空文本纯图片消息：content 为空串、只含图片段", () => {
+    const message = buildOptimisticUserMessage("s1", "", [
+      {
+        id: "img-seg",
+        type: "image",
+        imageId: "img-1",
+        source: "user_paste",
+        mimeType: "image/png",
+      },
+    ]);
+    expect(message.content).toBe("");
+    expect(message.segments).toHaveLength(1);
   });
 });

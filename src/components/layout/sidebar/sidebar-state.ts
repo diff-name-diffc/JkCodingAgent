@@ -1,21 +1,15 @@
 /**
  * 会话侧边栏的纯状态助手：分类分组、展开状态持久化与分类图标映射。
  *
- * 无 React 组件/IPC 依赖（仅图标常量），可独立测试；呈现组件见
+ * 无 React 组件/IPC 依赖，可独立测试；呈现组件见
  * `SidebarConversationItem` / `SidebarCategoryGroup`，组合入口见 `../sidebar.tsx`。
  */
 
-import * as React from "react";
-import {
-  Code2,
-  Folder,
-  GraduationCap,
-  Heart,
-  Inbox,
-  Layers,
-  MessageSquarePlus,
-} from "lucide-react";
 import type { ChatCategory, ChatSession } from "../../../types";
+import { resolveCategoryIcon } from "../../../lib/category-icon";
+
+// 图标映射已抽到 lib/category-icon（聊天头部徽标与分类选择空态共用）。
+export { resolveCategoryIcon };
 
 export const UNCATEGORIZED_CATEGORY = "__uncategorized__";
 export const UNCATEGORIZED_LABEL = "未分类";
@@ -28,21 +22,6 @@ export interface SidebarCategoryGroup {
   icon: string;
   total: number;
   sessions: ChatSession[];
-}
-
-const CATEGORY_ICON_MAP: Record<string, React.ElementType> = {
-  MessageSquare: MessageSquarePlus,
-  Heart,
-  Briefcase: Folder,
-  Code2,
-  GraduationCap,
-  Folder,
-  Inbox,
-  Layers,
-};
-
-export function resolveCategoryIcon(iconName: string): React.ElementType {
-  return CATEGORY_ICON_MAP[iconName] ?? Folder;
 }
 
 export function categoryKey(category: string | null | undefined) {

@@ -83,6 +83,22 @@ pub(super) fn prepare_tool_result(
     )
 }
 
+/// 走真实策略表（`tools/spec.rs`）的测试入口：验证某工具的实际
+/// default_compress / force_compress_after_chars 组合下的压缩判定。
+#[cfg(test)]
+pub(super) fn prepare_tool_result_for_registered_tool(
+    tool_name: &str,
+    args: &serde_json::Value,
+    raw_output: &str,
+) -> PreparedToolResult {
+    let spec = crate::agent::tools::ToolSpec::new(
+        tool_name,
+        "",
+        serde_json::json!({ "type": "object", "properties": {} }),
+    );
+    prepare_tool_result_with_policy(tool_name, args, raw_output, &spec.result_policy)
+}
+
 fn prepare_tool_result_with_policy(
     tool_name: &str,
     args: &serde_json::Value,

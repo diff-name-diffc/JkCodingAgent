@@ -67,10 +67,25 @@ impl DispatcherDb {
             .map_err(|e| anyhow!("list_session_keywords: {}", e))
     }
 
-    pub fn apply_keyword_actions(&self, session_id: &str, actions: &[KeywordAction]) -> Result<()> {
+    /// 应用一轮关键字动作（add/remove/keep/merge）。会话不存在时返回
+    /// `Ok(false)` 且不写任何行——关键字生成在 run 结束后异步 spawn，会话
+    /// 可能在生成期间被删除，不校验会把孤儿关键字行回插给已删会话。
+    pub fn apply_keyword_actions(&self, session_id: &str, actions: &[KeywordAction]) -> Result<bool> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let ts = now();
+
+        let session_exists = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM dispatcher_sessions WHERE id = ?1)",
+                params![session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|exists| exists != 0)
+            .context("check session exists for keyword actions")?;
+        if !session_exists {
+            return Ok(false);
+        }
 
         for action in actions {
             match action.action.as_str() {
@@ -149,7 +164,8 @@ impl DispatcherDb {
             }
         }
 
-        tx.commit().context("commit keyword actions")
+        tx.commit().context("commit keyword actions")?;
+        Ok(true)
     }
 
     pub fn search_sessions(
@@ -445,6 +461,30 @@ mod tests {
         assert_eq!(after.len(), 1, "重复添加不得产生第二行");
         assert_eq!(after[0].weight, 5.5, "重复添加应聚合权重");
         assert_eq!(after[0].created_at, created_at, "created_at 必须保留");
+    }
+
+    #[test]
+    fn keyword_actions_skip_missing_session_without_writing() {
+        let db = test_db();
+        let applied = db
+            .apply_keyword_actions(
+                "no-such-session",
+                &[KeywordAction {
+                    action: "add".to_string(),
+                    keyword: Some("幽灵".to_string()),
+                    from: None,
+                    to: None,
+                    weight: Some(1.0),
+                }],
+            )
+            .expect("对不存在会话应用动作不应报错");
+        assert!(!applied, "会话不存在时返回 false 且不写入");
+        assert!(
+            db.list_session_keywords("no-such-session")
+                .expect("list keywords")
+                .is_empty(),
+            "不得给不存在的会话回插关键字行"
+        );
     }
 
     #[test]

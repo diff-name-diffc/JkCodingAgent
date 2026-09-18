@@ -71,6 +71,7 @@ export function StreamingMessage({
             text={thinking.text}
             elapsedMs={thinking.elapsedMs}
             isStreaming={isStreaming}
+            autoOpen={isStreaming && visibleSegments.length === 0}
           />
         )}
 

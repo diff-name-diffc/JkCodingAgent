@@ -34,6 +34,33 @@ export interface DispatcherEventChannelDeps {
   refreshSessionTokenUsage: (targetSessionId?: string) => Promise<void>;
 }
 
+/**
+ * 运行收尾对账：拉全量消息经 mergeDispatcherMessages 合并刷新。
+ * finished / failed / 发送命令 reject 三条收尾路径共用——failed 与 reject
+ * 路径此前缺失对账，run 中途已持久化的消息（含用户消息）不会出现在列表里，
+ * 乐观注入的 pending 消息也没有权威数据可替换。
+ */
+export function reconcileSessionMessages(
+  targetSessionId: string,
+  expectedCount?: number,
+): void {
+  void invoke<DispatcherMessageWire[]>("dispatcher_list_messages", {
+    workspaceId: targetSessionId,
+  })
+    .then((fresh) => {
+      // 竞态守卫：list_messages 在途期间若已开启新 run，过期全量快照
+      // 不得推给新 run（merge 只增不删，可能把已删消息加回来）。
+      if (getDispatcherActiveRunId(targetSessionId) !== undefined) return;
+      if (expectedCount !== undefined && fresh.length !== expectedCount) {
+        console.warn(
+          `Finished 对账不一致：后端 ${expectedCount} 条，拉取到 ${fresh.length} 条`,
+        );
+      }
+      notifyDispatcherMessages(targetSessionId, fresh);
+    })
+    .catch((err) => console.error("运行收尾对账消息失败:", err));
+}
+
 export function createDispatcherEventChannel({
   targetSessionId,
   runId,
@@ -45,6 +72,8 @@ export function createDispatcherEventChannel({
     const isActiveRun = getDispatcherActiveRunId(targetSessionId) === runId;
     switch (event.event) {
       case "started":
+        // 有意 no-op：run 启动占位（"正在发送…"）由 enqueueDispatcherRun 在
+        // 前端先行设置，此处无需重复更新。
         break;
       case "assistantStarted":
         if (!isActiveRun) return;
@@ -166,24 +195,10 @@ export function createDispatcherEventChannel({
         // G7-11：Finished 为轻量负载（workspaceId + messageCount）；此处改调
         // dispatcher_list_messages 拉全量，经 mergeDispatcherMessages 按 id
         // 合并刷新（与 dispatcher-session-updated 的重载路径一致）。
-        void invoke<DispatcherMessageWire[]>("dispatcher_list_messages", {
-          workspaceId: targetSessionId,
-        })
-          .then((fresh) => {
-            // 竞态守卫：list_messages 在途期间若已开启新 run，过期全量快照
-            // 不得推给新 run（merge 只增不删，可能把已删消息加回来）。
-            if (getDispatcherActiveRunId(targetSessionId) !== undefined) return;
-            if (fresh.length !== event.data.messageCount) {
-              console.warn(
-                `Finished 对账不一致：后端 ${event.data.messageCount} 条，拉取到 ${fresh.length} 条`,
-              );
-            }
-            notifyDispatcherMessages(targetSessionId, fresh);
-          })
-          .catch((err) => console.error("Finished 后刷新消息失败:", err));
         void refreshSessionTokenUsage(targetSessionId);
         clearDispatcherActiveRunId(targetSessionId);
         updateLiveSessionState(targetSessionId, () => createIdleLiveSessionState());
+        reconcileSessionMessages(targetSessionId, event.data.messageCount);
         break;
       case "failed":
         if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
@@ -192,6 +207,9 @@ export function createDispatcherEventChannel({
           ...createIdleLiveSessionState(),
           runError: event.data.message,
         }));
+        // 失败同样对账：run 中途已持久化的消息要落进列表，乐观 pending
+        // 消息要被权威批次替换/丢弃（如发送前置校验失败，消息未持久化）。
+        reconcileSessionMessages(targetSessionId);
         break;
       default: {
         // 穷尽性检查：后端新增事件变体时编译期报错，而非静默忽略。

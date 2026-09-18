@@ -153,9 +153,22 @@ pub(super) fn boolish_arg(args: &Value, key: &str) -> Option<bool> {
     value.as_str().map(|flag| flag.eq_ignore_ascii_case("true"))
 }
 
+/// 压缩阈值常量随 `with_compression_parameters` 一同 re-export，
+/// 调用方在 import 列表里一并取用，避免阈值与文案两处口径漂移。
+pub(super) use crate::agent::tools::{
+    COMMAND_FORCE_COMPRESS_AFTER_CHARS, DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
+};
+
+/// 为工具 schema 注入 `compress` / `compress_intent` 参数。
+///
+/// `force_compress_after_chars` 必须与策略表（`tools/spec.rs`）中该工具的
+/// `force_compress_after_chars` 一致——文案向模型声明的阈值与运行时实际阈值
+/// 出现偏差时，模型无法正确判断何时值得声明压缩（历史教训：文案写 5000、
+/// 实际 1000，导致 SSH 输出几乎每次都被压缩）。
 pub(super) fn with_compression_parameters(
     mut schema: Value,
     default_compress: bool,
+    force_compress_after_chars: usize,
     tool_specific_guidance: &str,
 ) -> Value {
     let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
@@ -166,7 +179,7 @@ pub(super) fn with_compression_parameters(
         json!({
             "type": "boolean",
             "description": format!(
-                "是否允许对超长工具结果进行语义压缩。只有 compress=true 且原始结果超过 5000 字符时，才会调用摘要模型根据 compress_intent 提取关键信息；compress=false 绝不会进行摘要。未摘要的结果超过内联字符上限时会明确标记并截断（普通工具 8000；读取类工具默认 10000，显式 offset/limit 分页读取 20000），完整原文保留在工具产物中。{tool_specific_guidance}"
+                "是否允许对超长工具结果进行语义压缩。只有 compress=true 且原始结果超过 {force_compress_after_chars} 字符时才会调用摘要模型，按 compress_intent 只提取相关重点；低于该阈值时即使声明压缩也直接返回原文，绝不摘要。compress=false 永不摘要。未摘要的结果超过内联字符上限时会明确标记并截断（普通工具 8000；读取类工具默认 10000，显式 offset/limit 分页读取 20000），完整原文保留在工具产物中。{tool_specific_guidance}"
             ),
             "default": default_compress
         }),
@@ -175,7 +188,7 @@ pub(super) fn with_compression_parameters(
         "compress_intent".to_string(),
         json!({
             "type": "string",
-            "description": "当 compress=true 时，用一句话描述期望从超长结果中提取什么信息。摘要会优先返回可用 path:start-end 精确定位的多段内容。例如：'查找 handleToolResult 函数的实现逻辑和调用链'。"
+            "description": "当 compress=true 时，用一句话具体描述要从结果中确认什么；摘要只返回与该意图直接相关的重点，不会复述全文。意图越具体，摘要越精准。例如：'确认部署是否成功及失败时的报错行'。"
         }),
     );
     schema

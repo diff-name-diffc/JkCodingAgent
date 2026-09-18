@@ -4,26 +4,20 @@ import {
   KeyRound,
   Maximize2,
   Minimize2,
-  Monitor,
-  MonitorDown,
   Power,
   Square,
   X,
 } from "lucide-react";
-import type { BrowserStatus } from "../../types";
 
 export interface BrowserPanelHeaderProps {
   statusText: string;
   connected: boolean;
   busy: boolean;
   hasSession: boolean;
-  status: BrowserStatus | null;
   canOpenCurrentUrl: boolean;
   onGoBack: () => void;
   onStart: () => void;
   onStop: () => void;
-  onMinimize: () => void;
-  onReopen: () => void;
   onImportProfile: () => void;
   onOpenExternal: () => void;
   expanded?: boolean;
@@ -42,13 +36,10 @@ export function BrowserPanelHeader({
   connected,
   busy,
   hasSession,
-  status,
   canOpenCurrentUrl,
   onGoBack,
   onStart,
   onStop,
-  onMinimize,
-  onReopen,
   onImportProfile,
   onOpenExternal,
   expanded = false,
@@ -82,27 +73,6 @@ export function BrowserPanelHeader({
         >
           <Power size={14} />
         </button>
-        {status?.hasHeadedWindow && !status?.minimized ? (
-          <button
-            type="button"
-            title="最小化窗口"
-            onClick={onMinimize}
-            disabled={!hasSession || busy || !connected}
-            className="ai-browser-icon-button"
-          >
-            <MonitorDown size={14} />
-          </button>
-        ) : (
-          <button
-            type="button"
-            title={status?.hasHeadedWindow ? "恢复窗口" : "打开独立窗口"}
-            onClick={onReopen}
-            disabled={!hasSession || busy || !connected}
-            className="ai-browser-icon-button"
-          >
-            <Monitor size={14} />
-          </button>
-        )}
         <button
           type="button"
           title="关闭浏览器"

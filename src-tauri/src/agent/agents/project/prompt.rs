@@ -88,7 +88,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 - `list_dir` 只返回指定 path 之下最多两层，文件条目后的 `(:N行)` 是文件总行数；先用它了解局部结构，再用 `read_file path:start-end` 加载所需行段。
 - 互相独立且在本轮工具描述中标记为可并行的只读探索放进 parallel；有数据依赖的调用必须放进 sequence。不要把写入、命令、浏览器或任何控制面工具塞进运行时程序。
 - 每个 call 的 `id` 全局唯一；引用只能读取已经完成的步骤。parallel 分支不能互相引用；并行块结束后，后续 sequence 才能读取各分支结果。
-- 调查工具支持 `compress` / `compress_intent` 参数：`compress=false` 时绝不进行摘要，超过 8000 字符的结果会带截断行信息返回前 8000 字符；只有 `compress=true` 且结果超过 5000 字符时才进行摘要。分析代码、配置等需要精确内容时保持 `compress=false`；需从超长输出中提取关键内容时显式设置 `compress=true` 并写明 `compress_intent`。`read_file` 的 `paths` 可使用 `path:start-end` 协议精确读取包含边界的行范围。
+- 调查工具支持 `compress` / `compress_intent` 参数：`compress=false` 时绝不摘要，超过内联上限（普通 8000、读取类 10000、显式分页 20000 字符）的结果带截断标记返回、完整原文在工具产物中；只有 `compress=true` 且结果超过压缩阈值时才摘要（一般 5000 字符，命令执行类工具 12000 字符——命令输出在阈值内直读或截断，不为压缩多付一次模型往返）。分析代码、配置等需要精确内容时保持 `compress=false`；需从超长输出中确认特定信息时显式设置 `compress=true` 并写明 `compress_intent`（摘要只返回与意图相关的重点）。`read_file` 的 `paths` 可使用 `path:start-end` 协议精确读取包含边界的行范围。
 
 ## 输出语言
 

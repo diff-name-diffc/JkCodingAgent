@@ -88,7 +88,7 @@ App
 | `workspace/` | `fs.rs`（文件读写/列举）、`rope.rs`（大文件切片） |
 | `platform/` | `app_settings.rs`（应用级键值配置） |
 | `rag/` | RAG sidecar 传输与管理 |
-| `ssh_tool/` | SSH 命令执行 + AI 安全审查门禁。传输层为 russh（纯 Rust 异步，无 libssh2/OpenSSL 依赖）；连接池按 `server_id+session_id` 复用 russh `Handle`，并发命令各走独立 channel（协议级隔离，无逐命令互斥锁）；主机密钥 TOFU 指纹为 key blob 的 SHA-256 hex。`memo.rs` 为每台服务器维护运维备忘录文件（`~/.jkcodingagent/ssh-memos/{server_id}.md`，段落式 Markdown，全文 8000 / 单段 4000 字符硬上限，超限拒绝写入），供 `ssh_memo_read` / `ssh_memo_upsert` / `ssh_memo_delete` 工具与设置页读写；服务器删除时随 `save_servers` 级联清理（同事务清主机密钥/审计行 + 提交后删备忘录文件） |
+| `ssh_tool/` | SSH 命令执行 + AI 安全审查门禁。传输层为 russh（纯 Rust 异步，无 libssh2/OpenSSL 依赖）；连接池按 `server_id+session_id` 复用 russh `Handle`，并发命令各走独立 channel（协议级隔离，无逐命令互斥锁）；全新建连对网络类瞬态错误（EHOSTUNREACH / ETIMEDOUT / ECONNRESET 等 errno 集合见 `connection.rs`）间隔 1.5s 自动重试一次，认证/密钥类确定性失败不重试；主机密钥 TOFU 指纹为 key blob 的 SHA-256 hex。`memo.rs` 为每台服务器维护运维备忘录文件（`~/.jkcodingagent/ssh-memos/{server_id}.md`，段落式 Markdown，全文 8000 / 单段 4000 字符硬上限，超限拒绝写入），供 `ssh_memo_read` / `ssh_memo_upsert` / `ssh_memo_delete` 工具与设置页读写；服务器删除时随 `save_servers` 级联清理（同事务清主机密钥/审计行 + 提交后删备忘录文件） |
 | `browser.rs` | 内嵌浏览器宿主 |
 | `chat_images.rs` | 聊天图片存储 |
 | `python_runner.rs` | Python 运行器 |
@@ -200,7 +200,7 @@ impl AgentTool for MyTool {
 
 ### 3. 工具输出压缩（可选）— `src-tauri/src/agent/summary.rs`
 
-工具结果压缩是阈值驱动、无需注册：超过 `FORCED_COMPRESS_THRESHOLD`（1000 字符，`agent/common.rs`）的结果由 `persist_tool_result_with_compression` 自动调用摘要模型压缩（模型也可用 `compress`/`compress_intent` 参数自声明压缩意图）。摘要模型失败时回退到零 LLM 的规则抽取 `extract_structured_summary(tool_name, raw_output)`（`summary.rs`）——新工具如需定制兜底摘要，在该函数的 `match tool_name` 中加一个分支即可。
+工具结果压缩是「显式声明 + 阈值」双条件驱动、无需注册：只有 `compress=true`（schema default 或模型显式传入）**且**原始结果超过该工具的压缩阈值时，`persist_tool_result_with_compression` 才调用摘要模型压缩；低于阈值即使声明了压缩也直接返回原文（压缩是串行 LLM 往返，小结果不值得）。阈值随工具策略声明（`agent/tools/spec.rs`）：默认 `DEFAULT_FORCE_COMPRESS_AFTER_CHARS` = 5000，命令执行类工具（exec / local_zsh / ssh_exec）用 `COMMAND_FORCE_COMPRESS_AFTER_CHARS` = 12000（高于 8000 内联截断线，截断兜不住才摘要）。新增带 `compress` 参数的工具时，`with_compression_parameters` 传入的阈值必须与策略表一致（文案与运行时口径漂移会误导模型）。摘要调用超时 15s，失败或超时回退零 LLM 的规则抽取 `extract_structured_summary(tool_name, raw_output)`（`summary.rs`）——新工具如需定制兜底摘要，在该函数的 `match tool_name` 中加一个分支即可。
 
 ### 4. 添加配置（可选）— `src-tauri/src/agent/config.rs`
 
@@ -256,6 +256,8 @@ impl AgentTool for MyTool {
 ## 会话与项目资源清理规范
 
 **删除会话或清空消息时，必须同步清理其绑定的所有关联资源**——不得仅依赖数据库级联。
+
+**0. 运行中会话的 fail-closed 守卫（先于一切删除/清空/截断）**：`session_delete`、`dispatcher_clear_messages`、`dispatcher_truncate_messages_from`、`project_delete` 在该会话（或项目任一会话）有活动 run 时直接拒绝（`DispatcherState::session_run_is_active`，底座 `ActiveRunStore`）——运行方仍持有消息/用量写入路径，放行会导致对已清理 workspace 的幽灵写入。run 收尾后异步 spawn 的标题/关键字生成同样有存在性校验：`update_session_title` 对不存在行返回 None 不广播；`apply_keyword_actions` 对不存在会话返回 false 不回插。配套 `dispatcher_active_runs` 命令 + 前端 `run-state-reconciliation.ts`：webview 重载后事件通道失联，App 挂载时对账后端仍在跑的会话（补「后台运行中」状态、可停止、轮询至收尾拉全量消息）。新增会话破坏性命令时必须接入同一守卫。
 
 1. **图片文件**：图片按会话目录 `~/.jkcodingagent/chat-images/{workspace_id}/` 布局，删除/清空会话时随 `chat_images` 表记录一起整目录回收（`delete_chat_image_resources` + `remove_chat_image_dir`）。注意：`truncate_messages_from`（regenerate/edit 前置）**有意不删图片文件**——重发复用同一批 image_id；发送前有 `chat_images_validate` 存在性校验兜底。
 2. **工具产物文件**：`dispatcher_tool_artifacts` 指向的产物文件同样需显式清理。

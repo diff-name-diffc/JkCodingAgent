@@ -1,36 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import type { BrowserStatus } from "../types";
-import type { DockedBrowser } from "../components/BrowserDock";
 
-interface BrowserSessionDockOptions {
+interface BrowserLinkNavOptions {
   activeSessionId: string | null;
   projectPath: string | null;
+  /** 用户主动点击链接后的打开面板回调（仅用户手势触发，Agent 执行不再自动弹出）。 */
   onOpen: () => void;
-  onMinimized: () => void;
-  onRestoreSession: (sessionId: string) => void;
-  enabled?: boolean;
-}
-
-function isDockedState(state: string): boolean {
-  return state === "minimized" || state === "page_closed";
-}
-
-export function reduceDockedBrowsers(
-  previous: Map<string, DockedBrowser>,
-  status: BrowserStatus,
-): Map<string, DockedBrowser> {
-  const { sessionId, state, url } = status;
-  if (isDockedState(state)) {
-    const next = new Map(previous);
-    next.set(sessionId, { sessionId, state, url: url ?? null });
-    return next;
-  }
-  if (!previous.has(sessionId)) return previous;
-  const next = new Map(previous);
-  next.delete(sessionId);
-  return next;
 }
 
 async function runBrowserCommand(command: string, args: Record<string, unknown>): Promise<boolean> {
@@ -43,84 +18,20 @@ async function runBrowserCommand(command: string, args: Record<string, unknown>)
   }
 }
 
-export function useBrowserSessionDock({
-  activeSessionId,
-  projectPath,
-  onOpen,
-  onMinimized,
-  onRestoreSession,
-  enabled = true,
-}: BrowserSessionDockOptions) {
-  const [dockedBrowsers, setDockedBrowsers] = useState<Map<string, DockedBrowser>>(new Map());
-  const activeSessionIdRef = useRef(activeSessionId);
-  activeSessionIdRef.current = activeSessionId;
-  const callbacksRef = useRef({ enabled, onOpen, onMinimized });
-  callbacksRef.current = { enabled, onOpen, onMinimized };
-
-  useEffect(() => {
-    const unlisten = listen<BrowserStatus>("browser-status", (event) => {
-      const { sessionId, state } = event.payload;
-
-      setDockedBrowsers((previous) => reduceDockedBrowsers(previous, event.payload));
-
-      if (sessionId !== activeSessionIdRef.current) return;
-      const callbacks = callbacksRef.current;
-      if (!callbacks.enabled) return;
-      if (isDockedState(state)) {
-        callbacks.onMinimized();
-      } else if (state !== "closed") {
-        callbacks.onOpen();
-      }
-    });
-
-    return () => {
-      unlisten.then((dispose) => dispose()).catch(console.error);
-    };
-  }, []);
-
-  const minimize = useCallback(async () => {
+/**
+ * 会话浏览器的链接导航（原 useBrowserSessionDock 瘦身）：
+ * 无头化改造后浏览器执行细节不再自动弹出（也不再有最小化/停靠窗口），
+ * 这里只保留用户主动点击聊天链接 → 会话浏览器内导航 → 打开浏览器标签的路径。
+ */
+export function useBrowserSessionLinkNav({ activeSessionId, projectPath, onOpen }: BrowserLinkNavOptions) {
+  const openUrl = useCallback(async () => {
     if (!activeSessionId) return;
-    await runBrowserCommand("browser_window_action", {
-      sessionId: activeSessionId,
-      action: "minimize",
-    });
-  }, [activeSessionId]);
-
-  const restore = useCallback(
-    async (sessionId: string) => {
-      if (
-        !(await runBrowserCommand("browser_window_action", { sessionId, action: "restore" }))
-      )
-        return;
-      onRestoreSession(sessionId);
-      onOpen();
-    },
-    [onOpen, onRestoreSession],
-  );
-
-  const closeDocked = useCallback(async (sessionId: string) => {
-    if (!(await runBrowserCommand("browser_stop", { sessionId }))) return;
-    setDockedBrowsers((previous) => {
-      if (!previous.has(sessionId)) return previous;
-      const next = new Map(previous);
-      next.delete(sessionId);
-      return next;
-    });
-  }, []);
-
-  const reopen = useCallback(async () => {
-    if (!activeSessionId) return;
-    if (
-      !(await runBrowserCommand("browser_window_action", {
-        sessionId: activeSessionId,
-        action: "reopen",
-      }))
-    )
-      return;
+    // 链接 URL 由调用方经 markdown 链接点击路径先行导航（browser_navigate），
+    // 此处仅负责打开浏览器标签视图；保留命令封装以维持单一调用形态。
     onOpen();
   }, [activeSessionId, onOpen]);
 
-  const openUrl = useCallback(
+  const navigateToUrl = useCallback(
     async (url: string) => {
       if (!activeSessionId) return;
       const succeeded = await runBrowserCommand("browser_navigate", {
@@ -133,7 +44,5 @@ export function useBrowserSessionDock({
     [activeSessionId, onOpen, projectPath],
   );
 
-  const dockedSessions = useMemo(() => Array.from(dockedBrowsers.values()), [dockedBrowsers]);
-
-  return { dockedSessions, minimize, restore, closeDocked, reopen, openUrl };
+  return { openUrl, navigateToUrl };
 }

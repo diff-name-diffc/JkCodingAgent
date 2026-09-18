@@ -37,6 +37,12 @@ export interface ToolActivityItem extends ToolCallItem {
   planned?: boolean;
   /** 仅用于计算流式工具调用耗时，不属于 ToolCallCard 的展示契约。 */
   startedAtMs?: number;
+  /**
+   * 浏览器工具的实时执行时间线（如「正在打开：xxx」「正在点击：button "登录"」）。
+   * 仅实时管道产生（browser-status 事件累积，相邻去重、容量 capped）；
+   * 历史投影不带——回看时以最终 output 为准。
+   */
+  browserActivity?: string[];
 }
 
 export function toolRunStatusToCallStatus(status: string): ToolCallStatus {

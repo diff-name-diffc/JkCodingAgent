@@ -21,7 +21,6 @@ import {
   entryLabel,
   findEnabledEntryForConfig,
 } from "../settings/providers/model-library";
-import { useLiveSessionStateReadonly } from "../dispatcher-chat/useLiveSessionState";
 import { useChatShortcuts } from "../../hooks/use-chat-shortcuts";
 import { useSessionRequestGuard } from "../../hooks/useSessionRequestGuard";
 import { AppLayout } from "../layout/app-layout";
@@ -117,6 +116,13 @@ export interface ChatShellProps {
   /** 领域化空态文案（UI-25 A06）：普通聊天 / 项目各自传入，不传则用组件缺省。 */
   emptyState?: ChatEmptyStateContent;
   /**
+   * 无会话时的分类选择空态（普通聊天）：提供时且 sessionId 为空，取代
+   * 消息区渲染——新会话必须由用户显式选分类创建，不再默认开新聊天。
+   */
+  categoryPicker?: React.ReactNode;
+  /** 输入框占位文案透传（如「先选择分类，开始新对话…」）。 */
+  composerPlaceholder?: string;
+  /**
    * UI-23a：多项目保活下隐藏工作区传 false——不注册全局快捷键（消除多实例
    * 叠加触发）、不渲染命令面板（其 open 态来自全局 store，多份渲染会重叠）。
    */
@@ -167,6 +173,8 @@ export function ChatShell({
   embedded = false,
   projectHeader,
   emptyState,
+  categoryPicker,
+  composerPlaceholder,
   enabled = true,
   containerRef,
 }: ChatShellProps) {
@@ -209,7 +217,6 @@ export function ChatShell({
     chatBinding?.model ||
     chatBinding?.url ||
     undefined;
-  const liveState = useLiveSessionStateReadonly(sessionId);
   const subAgentSessions = useSubAgentSessions(sessionId ?? "");
   const selectedSubAgent = selectedSubAgentToolCallId
     ? (subAgentSessions[selectedSubAgentToolCallId] ?? null)
@@ -378,6 +385,7 @@ export function ChatShell({
           editing={Boolean(editingMessageId)}
           onCancelEdit={onCancelEdit}
           disabled={composerDisabled}
+          placeholder={composerPlaceholder}
           models={chatModelEntries}
           activeEntryId={activeChatEntry?.id}
           activeLabel={activeChatLabel}
@@ -405,24 +413,29 @@ export function ChatShell({
         ) : undefined
       }
     >
-      {activeSessionKeywords.length > 0 && (
-        <SessionKeywordBar keywords={activeSessionKeywords} />
+      {categoryPicker && !sessionId ? (
+        categoryPicker
+      ) : (
+        <>
+          {activeSessionKeywords.length > 0 && (
+            <SessionKeywordBar keywords={activeSessionKeywords} />
+          )}
+          <MessageList
+            sessionId={sessionId}
+            messages={messages}
+            pythonRunRecords={pythonRunRecords}
+            onRunPython={onRunPython}
+            onCopyMessage={handleCopyMessage}
+            onRegenerateFromMessage={onRegenerateFromMessage}
+            onEditMessage={onEditMessage}
+            onOpenArtifact={handleOpenArtifact}
+            onOpenSubAgent={handleOpenSubAgent}
+            onPickPrompt={(prompt) => onInputChange(prompt)}
+            onConfigureModel={handleConfigureModel}
+            emptyState={emptyState}
+          />
+        </>
       )}
-      <MessageList
-        sessionId={sessionId}
-        messages={messages}
-        liveState={liveState}
-        pythonRunRecords={pythonRunRecords}
-        onRunPython={onRunPython}
-        onCopyMessage={handleCopyMessage}
-        onRegenerateFromMessage={onRegenerateFromMessage}
-        onEditMessage={onEditMessage}
-        onOpenArtifact={handleOpenArtifact}
-        onOpenSubAgent={handleOpenSubAgent}
-        onPickPrompt={(prompt) => onInputChange(prompt)}
-        onConfigureModel={handleConfigureModel}
-        emptyState={emptyState}
-      />
       {enabled && (
         <CommandPalette
           open={commandPaletteOpen}

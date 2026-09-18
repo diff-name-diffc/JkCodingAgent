@@ -13,7 +13,7 @@ pub(super) fn current_local_time() -> String {
 /// 配置/内置提示词为底并每轮刷新动态内容（见 plain_chat 的
 /// `build_iteration_messages`）。
 #[derive(Debug, Clone)]
-pub(super) struct PromptBundle {
+pub(crate) struct PromptBundle {
     /// Content of static-only sections (no system time, no runtime state).
     pub static_content: String,
 }

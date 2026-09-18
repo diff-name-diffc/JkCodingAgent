@@ -50,6 +50,11 @@ pub async fn session_delete(
     state: tauri::State<'_, DispatcherState>,
     session_id: String,
 ) -> Result<(), String> {
+    // fail-closed：运行中的会话仍持有消息/用量写入路径，先删库会让 run
+    // 向已清理的 workspace 幽灵写入并在收尾广播已删会话的 updated 事件。
+    if state.session_run_is_active(&session_id) {
+        return Err("会话正在运行中，请先停止生成后再删除".to_string());
+    }
     let db = state.db().clone();
     let session_for_cleanup = session_id.clone();
     let result =

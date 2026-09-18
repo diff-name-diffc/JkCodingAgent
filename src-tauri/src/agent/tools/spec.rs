@@ -4,7 +4,17 @@ use sha2::{Digest, Sha256};
 
 use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
 
-pub const DEFAULT_FORCE_COMPRESS_AFTER_CHARS: usize = 1_000;
+/// 工具结果语义压缩的通用触发阈值：`compress=true` 且原始结果超过该字符数
+/// 才调用摘要模型，不超过则直接返回原文（小结果不付额外 LLM 往返）。
+/// 该值同时是 schema 文案向模型声明的阈值（`with_compression_parameters`），
+/// 两处必须保持一致。
+pub const DEFAULT_FORCE_COMPRESS_AFTER_CHARS: usize = 5_000;
+
+/// 命令执行类工具（exec / local_zsh / ssh_exec）的压缩触发阈值。
+/// 命令输出在 8000 字符内联预算内主模型可直接精读；8k 到该阈值之间走确定性
+/// 截断兜底（完整原文保留在工具产物中），只有超过该阈值且模型显式声明压缩时，
+/// 才值得多付一次串行摘要 LLM 往返。
+pub const COMMAND_FORCE_COMPRESS_AFTER_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -175,6 +185,12 @@ impl ToolResultPolicy {
             persist_raw_artifact: true,
         }
     }
+
+    /// 覆盖压缩触发阈值（命令执行类工具使用更高的 `COMMAND_FORCE_COMPRESS_AFTER_CHARS`）。
+    pub fn with_force_compress_after_chars(mut self, chars: usize) -> Self {
+        self.force_compress_after_chars = chars;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -295,6 +311,7 @@ struct ToolPolicyRow {
     safety: ToolSafety,
     timeout_secs: u64,
     default_compress: bool,
+    force_compress_after_chars: usize,
     parallel_readonly: bool,
     self_managed_timeout: bool,
 }
@@ -303,6 +320,7 @@ struct ToolPolicyOptions {
     default_compress: bool,
     parallel_readonly: bool,
     self_managed_timeout: bool,
+    force_compress_after_chars: usize,
 }
 
 impl ToolPolicyOptions {
@@ -310,21 +328,35 @@ impl ToolPolicyOptions {
         default_compress: false,
         parallel_readonly: false,
         self_managed_timeout: false,
+        force_compress_after_chars: DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
     };
     const PARALLEL_READONLY: Self = Self {
         default_compress: false,
         parallel_readonly: true,
         self_managed_timeout: false,
+        force_compress_after_chars: DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
     };
     const SELF_MANAGED: Self = Self {
         default_compress: false,
         parallel_readonly: false,
         self_managed_timeout: true,
+        force_compress_after_chars: DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
     };
+    /// 命令执行类工具（exec / local_zsh）：默认开启压缩，超时自管，
+    /// 压缩阈值用命令类高阈值（内联截断兜不住的输出才值得摘要）。
     const COMPRESSED_SELF_MANAGED: Self = Self {
         default_compress: true,
         parallel_readonly: false,
         self_managed_timeout: true,
+        force_compress_after_chars: COMMAND_FORCE_COMPRESS_AFTER_CHARS,
+    };
+    /// 命令执行类工具的「默认不压缩」预设（ssh_exec）：命令输出常需逐字核对，
+    /// 压缩须由模型显式声明；声明后也只在超过命令类高阈值时才真正摘要。
+    const UNCOMPRESSED_SELF_MANAGED: Self = Self {
+        default_compress: false,
+        parallel_readonly: false,
+        self_managed_timeout: true,
+        force_compress_after_chars: COMMAND_FORCE_COMPRESS_AFTER_CHARS,
     };
 }
 
@@ -343,6 +375,7 @@ const fn policy_row(
         safety,
         timeout_secs,
         default_compress: options.default_compress,
+        force_compress_after_chars: options.force_compress_after_chars,
         parallel_readonly: options.parallel_readonly,
         self_managed_timeout: options.self_managed_timeout,
     }
@@ -570,6 +603,8 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
     // ssh_list_servers 只做本地配置的只读投影（不含凭据），安全声明为只读；
     // ssh_exec 按命令执行类工具的最坏能力声明，审查在工具内部自管，
     // 超时也由工具按每次调用的 timeout_secs 自管（上限 300s）。
+    // 压缩默认关闭：SSH 输出（报错原文、状态值、配置片段）常需逐字核对，
+    // 8000 字符内联直读；只有模型显式声明且输出超过命令类阈值时才摘要。
     policy_row(
         "ssh_list_servers",
         ToolCategory::Ssh,
@@ -584,7 +619,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
         300,
-        ToolPolicyOptions::COMPRESSED_SELF_MANAGED,
+        ToolPolicyOptions::UNCOMPRESSED_SELF_MANAGED,
     ),
     // ── SSH 运维备忘录 ──
     // 备忘录工具的读写集固定在应用自管的备忘录目录
@@ -712,7 +747,8 @@ impl ToolProfile {
             safety: row.safety,
             review_self_managed: SELF_REVIEWED_TOOLS.contains(&row.name),
             execution,
-            result_policy: ToolResultPolicy::new(row.default_compress),
+            result_policy: ToolResultPolicy::new(row.default_compress)
+                .with_force_compress_after_chars(row.force_compress_after_chars),
         }
     }
 
@@ -875,6 +911,11 @@ mod tests {
             assert!(spec.access.mutates_filesystem);
             assert!(spec.access.mutates_external_state);
             assert!(spec.result_policy.default_compress);
+            // 命令类工具：压缩阈值高于内联截断线，截断兜不住才摘要。
+            assert_eq!(
+                spec.result_policy.force_compress_after_chars,
+                super::COMMAND_FORCE_COMPRESS_AFTER_CHARS
+            );
             assert!(!spec.execution.unified_timeout);
         }
     }
@@ -974,7 +1015,12 @@ mod tests {
         assert_eq!(spec.category, ToolCategory::Ssh);
         assert_eq!(spec.safety, ToolSafety::ReviewRequired);
         assert!(spec.access.mutates_external_state);
-        assert!(spec.result_policy.default_compress);
+        // 压缩默认关闭：由模型显式声明；声明后也只在命令类高阈值之上才摘要。
+        assert!(!spec.result_policy.default_compress);
+        assert_eq!(
+            spec.result_policy.force_compress_after_chars,
+            super::COMMAND_FORCE_COMPRESS_AFTER_CHARS
+        );
         // 审查由工具内部带服务器上下文自管；超时按每次调用参数自管（≤300s）
         assert!(spec.review_self_managed);
         assert!(!spec.execution.unified_timeout);

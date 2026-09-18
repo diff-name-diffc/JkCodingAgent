@@ -170,8 +170,6 @@ pub(super) async fn spawn_sidecar(
             state: "starting".to_string(),
             url: None,
             message: Some("正在启动浏览器 sidecar".to_string()),
-            minimized: false,
-            has_headed_window: false,
         }),
         next_id: AtomicU64::new(1),
     });
@@ -225,18 +223,7 @@ fn spawn_stdout_reader(
 
             match value.get("event").and_then(Value::as_str) {
                 Some("status") => {
-                    let current_minimized = process.status().minimized;
-                    let current_has_headed_window = process.status().has_headed_window;
-                    let event_name = value.get("event").and_then(Value::as_str);
-                    let opened_this_event = event_name == Some("opened")
-                        || value
-                            .get("opened")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false);
-                    let has_headed_window = current_has_headed_window || opened_this_event;
-                    if let Some(status) =
-                        status_from_value(&value, current_minimized, has_headed_window)
-                    {
+                    if let Some(status) = status_from_value(&value) {
                         *process.status.lock() = status.clone();
                         let _ = app.emit("browser-status", status);
                     }
@@ -244,9 +231,7 @@ fn spawn_stdout_reader(
                 Some("page_closed") => {
                     let mut s = process.status();
                     s.state = "page_closed".to_string();
-                    s.minimized = false;
-                    s.has_headed_window = false;
-                    s.message = Some("浏览器窗口已关闭，可在面板中重新打开".to_string());
+                    s.message = Some("浏览器页面已关闭".to_string());
                     *process.status.lock() = s.clone();
                     let _ = app.emit("browser-status", s);
                 }
@@ -281,8 +266,6 @@ fn spawn_stdout_reader(
             state: "closed".to_string(),
             url: process.status().url,
             message: Some("浏览器 sidecar 已退出".to_string()),
-            minimized: false,
-            has_headed_window: false,
         };
         *process.status.lock() = closed.clone();
         let mut pending = process.pending.lock().await;
@@ -313,11 +296,7 @@ fn emit_log(app: &AppHandle, session_id: &str, message: String) {
     );
 }
 
-pub(super) fn status_from_value(
-    value: &Value,
-    current_minimized: bool,
-    current_has_headed_window: bool,
-) -> Option<BrowserStatus> {
+pub(super) fn status_from_value(value: &Value) -> Option<BrowserStatus> {
     let status_value = value.get("status").unwrap_or(value);
     let session_id = status_value
         .get("sessionId")
@@ -329,28 +308,6 @@ pub(super) fn status_from_value(
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
-    let minimized = status_value
-        .get("minimized")
-        .and_then(Value::as_bool)
-        .unwrap_or_else(|| {
-            if state == "minimized" {
-                true
-            } else if state == "closed" || state == "page_closed" {
-                false
-            } else {
-                current_minimized
-            }
-        });
-    let has_headed_window = status_value
-        .get("hasHeadedWindow")
-        .and_then(Value::as_bool)
-        .unwrap_or_else(|| {
-            if state == "closed" || state == "page_closed" {
-                false
-            } else {
-                current_has_headed_window
-            }
-        });
     Some(BrowserStatus {
         session_id,
         state,
@@ -362,7 +319,5 @@ pub(super) fn status_from_value(
             .get("message")
             .and_then(Value::as_str)
             .map(str::to_string),
-        minimized,
-        has_headed_window,
     })
 }

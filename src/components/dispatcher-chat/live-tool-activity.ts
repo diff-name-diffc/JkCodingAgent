@@ -186,14 +186,27 @@ export function updateLiveBrowserToolActivity(
   for (let index = nextTools.length - 1; index >= 0; index -= 1) {
     const tool = nextTools[index];
     if (tool.status === "running" && tool.name.startsWith("browser_")) {
+      // 执行信息滚动累积：output 保留「最新一条」（折叠摘要），browserActivity
+      // 是 capped 时间线（去重相邻重复），供消息区滚动展示当下浏览器动态。
+      const activity = appendBrowserActivity(tool.browserActivity, message);
       nextTools[index] = {
         ...tool,
         output: message,
+        browserActivity: activity,
       };
       return nextTools;
     }
   }
   return tools;
+}
+
+/** 浏览器活动时间线容量：足够回看一轮导航/点击序列，又不至于撑爆流式状态。 */
+export const BROWSER_ACTIVITY_FEED_LIMIT = 50;
+
+function appendBrowserActivity(previous: string[] | undefined, message: string): string[] {
+  const base = previous ?? [];
+  if (base[base.length - 1] === message) return base;
+  return [...base, message].slice(-BROWSER_ACTIVITY_FEED_LIMIT);
 }
 
 export function upsertToolActivity(tools: ToolActivityItem[], incoming: ToolActivityItem) {
@@ -257,7 +270,7 @@ function browserStateLabel(state: string): string {
     case "starting":
       return "正在启动浏览器";
     case "launching":
-      return "正在启动有头浏览器";
+      return "正在启动无头浏览器";
     case "downloading":
       return "正在下载浏览器资源";
     case "busy":

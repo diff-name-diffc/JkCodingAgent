@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import type { ModelCategory } from "../types";
 import { useDockedBrowserPanel } from "../hooks/useDockedBrowserPanel";
 import { useSplitterKeyboard } from "../hooks/use-splitter-keyboard";
-import { useBrowserSessionDock } from "../hooks/useBrowserSessionDock";
+import { useBrowserSessionLinkNav } from "../hooks/useBrowserSessionDock";
 import { useChatSessionsQuery } from "../hooks/use-chat-queries";
 import { extractMcpToolNames, trimMcpStatusToTools } from "../lib/mcp-category-tools";
 import { useAhaSettingsStore } from "./settings/use-aha-settings";
@@ -19,10 +19,6 @@ const McpStatusDialog = lazy(() =>
 const BrowserPanel = lazy(() =>
   import("./browser/BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
 );
-const BrowserDock = lazy(() =>
-  import("./BrowserDock").then((module) => ({ default: module.BrowserDock })),
-);
-
 function ChatPaneFallback({ label = "加载中..." }: { label?: string }) {
   return <div className="ai-home-chat-fallback">{label}</div>;
 }
@@ -83,19 +79,11 @@ export function HomeChatPage() {
     getDefaultValue: browserPanel.getDefaultWidth,
     onCommit: browserPanel.commitWidth,
   });
-  const {
-    dockedSessions,
-    minimize: handleMinimizeBrowser,
-    restore: handleRestoreBrowser,
-    closeDocked: handleCloseDockedBrowser,
-    reopen: handleReopenBrowser,
-    openUrl: handleOpenMarkdownLink,
-  } = useBrowserSessionDock({
+  // 无头化后浏览器面板不再由 Agent 执行自动弹出；仅用户点击链接时打开。
+  const { navigateToUrl: handleOpenMarkdownLink } = useBrowserSessionLinkNav({
     activeSessionId,
     projectPath: null,
     onOpen: useCallback(() => setShowBrowserPanel(true), []),
-    onMinimized: useCallback(() => setShowBrowserPanel(false), []),
-    onRestoreSession: setActiveSessionId,
   });
 
   return (
@@ -130,8 +118,6 @@ export function HomeChatPage() {
               expanded={browserPanel.expanded}
               onToggleExpanded={browserPanel.toggleExpanded}
               onClose={() => setShowBrowserPanel(false)}
-              onMinimize={handleMinimizeBrowser}
-              onReopen={handleReopenBrowser}
             />
           </Suspense>
         </div>
@@ -164,16 +150,6 @@ export function HomeChatPage() {
             initialTab={settingsInitialTab}
             initialProvidersCategory={settingsInitialCategory ?? undefined}
             onClose={() => setShowSettings(false)}
-          />
-        </Suspense>
-      )}
-
-      {dockedSessions.length > 0 && (
-        <Suspense fallback={null}>
-          <BrowserDock
-            sessions={dockedSessions}
-            onRestore={handleRestoreBrowser}
-            onClose={handleCloseDockedBrowser}
           />
         </Suspense>
       )}

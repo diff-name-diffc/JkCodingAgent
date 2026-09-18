@@ -5,6 +5,9 @@ use super::*;
 /// 关键字生成。命令层只剩差异声明（agent 构建 / kind / workspace_path /
 /// 是否生成关键字），Agent 构建（含 `with_app_handle`）由 `agent_future`
 /// 惰性完成——三类 Agent 的构建链互不相同，不宜在骨架内特判。
+// 扁平参数是有意设计：命令层只做差异声明，收敛成 struct 反而要把每个
+// 差异点两写（构造 + 读取），与收敛重复序列的初衷相悖。
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_agent_turn_skeleton<A, F>(
     state: &tauri::State<'_, DispatcherState>,
     app: &AppHandle,
@@ -141,4 +144,17 @@ pub async fn dispatcher_stop_run(
     let stopped = state.stop_run(&workspace_id);
     let _ = browser_manager.stop(&workspace_id).await;
     Ok(stopped)
+}
+
+/// 当前有运行中 run 的全部会话 id（断连对账）。
+///
+/// run 事件走随 invoke 生存的 `Channel`，webview 重载后前端无法重订阅仍在
+/// 运行的会话——表现为主界面无运行态、发消息却被「已在运行中」拒绝。前端
+/// 挂载时查询本命令，对无本地事件通道的运行中会话补「后台运行中」状态
+/// （`dispatcher_stop_run` 不依赖 Channel，停止入口可用）并轮询至收尾对账。
+#[tauri::command]
+pub async fn dispatcher_active_runs(
+    state: tauri::State<'_, DispatcherState>,
+) -> Result<Vec<String>, String> {
+    Ok(state.active_run_workspace_ids())
 }

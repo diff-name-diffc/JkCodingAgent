@@ -1,10 +1,12 @@
 use serde_json::json;
 
 use crate::agent::llm::{ChatMessage, FunctionCall, OutboundToolCall};
+use crate::agent::tools::COMMAND_FORCE_COMPRESS_AFTER_CHARS;
 
 use super::{
-    cancellation_requested, classify_tool_result, prepare_tool_result, should_keep_llm_message,
-    ToolOutcome, TOOL_RESULT_INLINE_MAX_CHARS_PAGED, TOOL_RESULT_INLINE_MAX_CHARS_READ,
+    cancellation_requested, classify_tool_result, prepare_tool_result,
+    prepare_tool_result_for_registered_tool, should_keep_llm_message, ToolOutcome,
+    TOOL_RESULT_INLINE_MAX_CHARS_PAGED, TOOL_RESULT_INLINE_MAX_CHARS_READ,
 };
 
 #[test]
@@ -138,6 +140,48 @@ fn compress_true_summarizes_only_above_five_thousand_characters() {
     assert_eq!(medium_prepared.result_mode, "raw");
     assert!(large_prepared.needs_summary);
     assert_eq!(large_prepared.result_mode, "pending_summary");
+}
+
+#[test]
+fn ssh_exec_declared_compress_below_command_threshold_returns_directly() {
+    // 模型显式声明 compress=true，但输出低于命令类阈值（12000）：
+    // 6000 字符在 8000 内联预算内 → 原样返回，零摘要调用。
+    let within_inline = "x".repeat(6_000);
+    let prepared = prepare_tool_result_for_registered_tool(
+        "ssh_exec",
+        &json!({ "compress": true }),
+        &within_inline,
+    );
+    assert!(!prepared.needs_summary);
+    assert_eq!(prepared.result_mode, "raw");
+
+    // 10000 字符超出内联预算但仍低于命令类阈值 → 确定性截断兜底，仍不摘要。
+    let over_inline = "x".repeat(10_000);
+    let prepared = prepare_tool_result_for_registered_tool(
+        "ssh_exec",
+        &json!({ "compress": true }),
+        &over_inline,
+    );
+    assert!(!prepared.needs_summary);
+    assert_eq!(prepared.result_mode, "truncated");
+
+    // 超过命令类阈值且显式声明压缩 → 才进入摘要。
+    let large = "x".repeat(COMMAND_FORCE_COMPRESS_AFTER_CHARS + 1);
+    let prepared =
+        prepare_tool_result_for_registered_tool("ssh_exec", &json!({ "compress": true }), &large);
+    assert!(prepared.needs_summary);
+    assert_eq!(prepared.result_mode, "pending_summary");
+}
+
+#[test]
+fn ssh_exec_omitting_compress_follows_policy_default_no_summary() {
+    // 模型未传 compress（schema default=false 注入后为 false）：
+    // 即使输出巨大也走截断，不进摘要。
+    let large = "x".repeat(COMMAND_FORCE_COMPRESS_AFTER_CHARS + 5_000);
+    let prepared = prepare_tool_result_for_registered_tool("ssh_exec", &json!({}), &large);
+
+    assert!(!prepared.needs_summary);
+    assert_eq!(prepared.result_mode, "truncated");
 }
 
 #[test]

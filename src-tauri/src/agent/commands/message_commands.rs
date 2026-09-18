@@ -43,6 +43,11 @@ pub async fn dispatcher_clear_messages(
     state: tauri::State<'_, DispatcherState>,
     workspace_id: String,
 ) -> Result<(), String> {
+    // fail-closed：与 session_delete 同理——运行中清空会让 run 继续向
+    // 已清空会话追加消息，产生无用户消息对应的孤儿回复。
+    if state.session_run_is_active(&workspace_id) {
+        return Err("会话正在运行中，请先停止生成后再清空消息".to_string());
+    }
     let db = state.db().clone();
     let workspace_for_cleanup = workspace_id.clone();
     let result = run_dispatcher_db("dispatcher_clear_messages", move || {
@@ -63,6 +68,11 @@ pub async fn dispatcher_truncate_messages_from(
     workspace_id: String,
     message_id: String,
 ) -> Result<u64, String> {
+    // fail-closed：regenerate / 编辑重发的前置截断。前端 isRunning 检查只是
+    // advisory（挡不住刚起跑的竞态），后端在此权威拒绝。
+    if state.session_run_is_active(&workspace_id) {
+        return Err("会话正在运行中，请先停止生成后再重发消息".to_string());
+    }
     let db = state.db().clone();
     run_dispatcher_db("dispatcher_truncate_messages_from", move || {
         db.truncate_messages_from(&workspace_id, &message_id)

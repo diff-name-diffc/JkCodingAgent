@@ -1,4 +1,4 @@
-//! 架构设计视觉 Agent：tldraw 画布的专属聊天智能体。
+//! 架构设计视觉 Agent：Excalidraw 画布的专属聊天智能体。
 //!
 //! 与 `PlainChatAgent` 的关键差异：
 //! - 工具注册表只含 `architecture_run`（画布程序执行），无 MCP / 子智能体 / 通知工具；

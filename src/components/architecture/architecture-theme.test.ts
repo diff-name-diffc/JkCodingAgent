@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { resolveTldrawColorScheme } from "./architecture-theme";
+import { resolveCanvasTheme } from "./architecture-theme";
 
-describe("resolveTldrawColorScheme", () => {
+describe("resolveCanvasTheme", () => {
   it("暗色主题映射为 dark", () => {
-    expect(resolveTldrawColorScheme(true)).toBe("dark");
+    expect(resolveCanvasTheme(true)).toBe("dark");
   });
 
   it("亮色主题映射为 light", () => {
-    expect(resolveTldrawColorScheme(false)).toBe("light");
+    expect(resolveCanvasTheme(false)).toBe("light");
   });
 });

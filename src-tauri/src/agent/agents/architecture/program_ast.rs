@@ -32,7 +32,7 @@ pub enum ArchInstruction {
     Camera(CameraInst),
 }
 
-// ── 样式枚举：kebab-case 序列化与 tldraw 样式取值逐字一致，前端直传 ──
+// ── 样式枚举：kebab-case 序列化与 DSL 契约取值逐字一致，前端映射到 Excalidraw 样式 ──
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
@@ -99,31 +99,14 @@ pub enum ArchAlign {
     End,
 }
 
+/// 几何形状集合与 Excalidraw 原生支持的容器形状一致（可内嵌绑定文本）。
+/// 画布库从 tldraw 换成 Excalidraw 后收敛到此集合，避免模型产出无法渲染的形状。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ArchGeo {
     Rectangle,
     Ellipse,
-    Triangle,
     Diamond,
-    Pentagon,
-    Hexagon,
-    Octagon,
-    Star,
-    Rhombus,
-    // kebab-case 不会在数字前补连字符，需显式指定与 schema/tldraw 一致的取值。
-    #[serde(rename = "rhombus-2")]
-    Rhombus2,
-    Oval,
-    Cloud,
-    Trapezoid,
-    ArrowRight,
-    ArrowLeft,
-    ArrowUp,
-    ArrowDown,
-    XBox,
-    CheckBox,
-    Heart,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

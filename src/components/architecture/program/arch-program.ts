@@ -33,27 +33,11 @@ export type ArchSize = "s" | "m" | "l" | "xl";
 export type ArchDash = "draw" | "solid" | "dashed" | "dotted" | "none";
 export type ArchFont = "draw" | "sans" | "serif" | "mono";
 export type ArchAlign = "start" | "middle" | "end";
-export type ArchGeo =
-  | "rectangle"
-  | "ellipse"
-  | "triangle"
-  | "diamond"
-  | "pentagon"
-  | "hexagon"
-  | "octagon"
-  | "star"
-  | "rhombus"
-  | "rhombus-2"
-  | "oval"
-  | "cloud"
-  | "trapezoid"
-  | "arrow-right"
-  | "arrow-left"
-  | "arrow-up"
-  | "arrow-down"
-  | "x-box"
-  | "check-box"
-  | "heart";
+/**
+ * 几何形状集合与 Excalidraw 原生容器形状一致（rectangle/ellipse/diamond
+ * 支持内嵌绑定文本）。画布库从 tldraw 迁移后收敛，避免产出无法渲染的形状。
+ */
+export type ArchGeo = "rectangle" | "ellipse" | "diamond";
 export type ArchShapeKind = "geo" | "note" | "text" | "frame";
 export type ArchArrowKind = "arc" | "elbow";
 export type ArchArrowhead =
@@ -115,7 +99,7 @@ export interface ArchUpdateShape extends ArchStyleProps {
   h?: number;
 }
 
-/** 仅箭头支持的样式子集（tldraw 箭头无 fill/font/align）。 */
+/** 仅箭头支持的样式子集（箭头无 fill/font/align）。 */
 export interface ArchArrowStyleProps {
   color?: ArchColor;
   labelColor?: ArchColor;

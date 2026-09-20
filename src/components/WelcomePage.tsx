@@ -65,7 +65,7 @@ export function WelcomePage({
   const [searchFocused, setSearchFocused] = useState(false);
 
   // 架构 pane 保活（UI-15 遗留领取）：首次切到架构视图才挂载（lazy 语义保留），
-  // 此后切走仅 visibility:hidden 隐藏——tldraw editor 实例、视口 camera、撤销栈
+  // 此后切走仅 visibility:hidden 隐藏——Excalidraw 实例、视口 camera、撤销栈
   // 与选中态存活，切回不重建。渲染期派生 setState（React 合法模式）保证切到
   // 架构的首帧即可见，无隐藏闪烁；纯函数两态机见 home-view-state.ts。
   const archActive = view === "architecture";

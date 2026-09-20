@@ -89,19 +89,6 @@ mod tests {
     }
 
     #[test]
-    fn geo_rhombus2_matches_schema_spelling() {
-        // kebab-case 不会为数字补连字符：Rhombus2 显式 rename 为 "rhombus-2"
-        //（与 program_schema.rs / tldraw 取值一致），否则模型按 schema 输出
-        // 的 "rhombus-2" 会反序列化失败且错误消息只列出 "rhombus2"。
-        let program = parse(shape_program(json!([
-            { "_type": "create_shape", "ref": "a", "shape": "geo", "geo": "rhombus-2" },
-        ])));
-        assert!(validate_program(&program).is_ok());
-        let serialized = serde_json::to_value(&program).unwrap();
-        assert_eq!(serialized["instructions"][0]["geo"], json!("rhombus-2"));
-    }
-
-    #[test]
     fn rejects_frame_into_but_allows_shape_into() {
         // frame 只能位于页面根：frame + into = 嵌套 frame，与前端防御层同口径。
         let nested = parse(shape_program(json!([
@@ -119,7 +106,7 @@ mod tests {
     fn serialization_never_emits_null_for_absent_optionals() {
         // 模型常把省略字段写成显式 null；serde 将其归一为 None，
         // 序列化必须彻底省略这些键——前端解释器按 `!== undefined` 判定
-        // 可选字段，载荷里出现 null 会直接击穿 tldraw 形状校验。
+        // 可选字段，载荷里出现 null 会击穿前端画布解释器的取值假设。
         let program = parse(shape_program(json!([
             {
                 "_type": "create_shape",

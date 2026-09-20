@@ -2,7 +2,7 @@
  * 双重感知之结构化通道：把画布现状投影为给模型的文本快照。
  *
  * `formatCanvasSnapshot` 为纯投影函数（可注入假数据单测）；
- * `collectCanvasSnapshot` 负责从 tldraw editor 读取原始数据。
+ * `collectCanvasSnapshot` 负责从 Excalidraw 场景（api + 元素数组）读取原始数据。
  *
  * 快照行格式（与后端系统提示词 `prompt.rs` 的感知章节同步维护）：
  * - 形状：`[形状id] 类型 "文本" x=.. y=.. w=.. h=.. [parent=形状id] [locked]`
@@ -11,7 +11,13 @@
  * - 头部：页面/视口/形状数；用户当前选中的形状以「选中: …」标注。
  */
 
-import type { Editor, TLArrowBinding, TLShape } from "tldraw";
+import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
+import type {
+  ExcalidrawArrowElement,
+  ExcalidrawElement,
+  ExcalidrawTextElement,
+} from "@excalidraw/excalidraw/element/types";
+import { ARCH_KIND_KEY } from "./program/exc-factory";
 
 export const MAX_SNAPSHOT_SHAPES = 150;
 const MAX_SNAPSHOT_TEXT_CHARS = 60;
@@ -114,59 +120,65 @@ export function formatCanvasSnapshot(input: SnapshotInput): string {
   return lines.join("\n");
 }
 
-function shapeText(editor: Editor, shape: TLShape): string | undefined {
-  try {
-    return editor.getShapeUtil(shape).getText(shape);
-  } catch {
-    return undefined;
-  }
+/** 元素的快照类型名：note 经 customData 还原语义（渲染上是黄底矩形）。 */
+function snapshotType(el: ExcalidrawElement): string {
+  const archKind = el.customData?.[ARCH_KIND_KEY];
+  if (archKind === "note") return "note";
+  return el.type;
 }
 
-/** tldraw 页面 id 形如 `page:xxx`；形状/绑定 id 形如 `shape:xxx`。 */
-function isPageId(id: string): boolean {
-  return id.startsWith("page:");
+/** 元素文本：容器取绑定文本，frame 取标题名，text 元素取正文。 */
+function elementText(el: ExcalidrawElement, byId: Map<string, ExcalidrawElement>): string | undefined {
+  if (el.type === "text") {
+    // 容器绑定文本不单列（其文本随容器行展示），自由文本取正文。
+    return (el as ExcalidrawTextElement).containerId ? undefined : (el as ExcalidrawTextElement).text;
+  }
+  if (el.type === "frame") return (el as { name?: string }).name ?? undefined;
+  const binding = el.boundElements?.find((b) => b.type === "text");
+  if (!binding) return undefined;
+  const text = byId.get(binding.id);
+  return text?.type === "text" ? (text as ExcalidrawTextElement).text : undefined;
 }
 
-/** 读箭头的两端绑定（binding：fromId=箭头，toId=被指形状，terminal 区分端）。 */
-function arrowEndsFor(editor: Editor, shape: TLShape): { from?: string; to?: string } | undefined {
-  if (shape.type !== "arrow") return undefined;
-  let bindings: TLArrowBinding[];
-  try {
-    bindings = editor.getBindingsFromShape(shape.id, "arrow");
-  } catch {
-    return undefined;
-  }
-  const ends: { from?: string; to?: string } = {};
-  for (const binding of bindings) {
-    if (binding.props.terminal === "start") ends.from = binding.toId;
-    else if (binding.props.terminal === "end") ends.to = binding.toId;
-  }
+/** 读箭头的两端绑定（Excalidraw 单向存储在箭头自身）。 */
+function arrowEndsOf(el: ExcalidrawElement): { from?: string; to?: string } | undefined {
+  if (el.type !== "arrow") return undefined;
+  const arrow = el as ExcalidrawArrowElement;
+  const ends = {
+    from: arrow.startBinding?.elementId,
+    to: arrow.endBinding?.elementId,
+  };
   return ends.from || ends.to ? ends : undefined;
 }
 
-/** 从 editor 收集快照输入并投影为文本；空画布返回空串。 */
-export function collectCanvasSnapshot(editor: Editor): string {
-  const shapes = editor.getCurrentPageShapes();
+/** 从 Excalidraw api 收集快照输入并投影为文本；空画布返回空串。 */
+export function collectCanvasSnapshot(api: ExcalidrawImperativeAPI): string {
+  const elements = api.getSceneElements();
+  // 容器绑定文本是形状的实现细节，不作为独立形状行进入快照。
+  const shapes = elements.filter(
+    (el) => !(el.type === "text" && (el as ExcalidrawTextElement).containerId),
+  );
   if (shapes.length === 0) return "";
 
-  const viewportBox = editor.getViewportPageBounds();
-  // 两阶段收集控制大画布的同步成本：先只取轻量字段（bounds 是阅读序的
-  // 排序依据），截断到上限后才对幸存形状做 getText / bindings 等重提取。
-  // formatCanvasSnapshot 的输入集合与排序依据不变，输出与全量收集一致。
-  const shapeById = new Map<string, TLShape>();
+  const appState = api.getAppState();
+  const zoom = appState.zoom.value || 1;
+  // viewport = (scene + scroll) * zoom → 视口场景矩形原点为 -scroll
+  const viewport = {
+    x: -appState.scrollX,
+    y: -appState.scrollY,
+    w: appState.width / zoom,
+    h: appState.height / zoom,
+  };
+
+  const byId = new Map(elements.map((el) => [el.id, el]));
   const lightInputs: SnapshotShapeInput[] = [];
-  for (const shape of shapes) {
-    const bounds = editor.getShapePageBounds(shape);
-    if (!bounds) continue;
-    shapeById.set(shape.id, shape);
-    const parentId =
-      typeof shape.parentId === "string" && !isPageId(shape.parentId) ? shape.parentId : undefined;
+  for (const el of shapes) {
     lightInputs.push({
-      id: shape.id,
-      type: shape.type,
-      bounds: { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
-      parentId,
-      locked: shape.isLocked || undefined,
+      id: el.id,
+      type: snapshotType(el),
+      bounds: { x: el.x, y: el.y, w: el.width, h: el.height },
+      parentId: el.frameId ?? undefined,
+      locked: el.locked || undefined,
     });
   }
   const listedIds = new Set(
@@ -175,20 +187,15 @@ export function collectCanvasSnapshot(editor: Editor): string {
       .map((input) => input.id),
   );
   const shapeInputs = lightInputs.map((input) => {
-    const shape = listedIds.has(input.id) ? shapeById.get(input.id) : undefined;
-    if (!shape) return input;
-    return { ...input, text: shapeText(editor, shape), arrowEnds: arrowEndsFor(editor, shape) };
+    const el = listedIds.has(input.id) ? byId.get(input.id) : undefined;
+    if (!el) return input;
+    return { ...input, text: elementText(el, byId), arrowEnds: arrowEndsOf(el) };
   });
 
   return formatCanvasSnapshot({
-    pageId: editor.getCurrentPageId(),
+    pageId: "page",
     shapes: shapeInputs,
-    viewport: {
-      x: viewportBox.x,
-      y: viewportBox.y,
-      w: viewportBox.w,
-      h: viewportBox.h,
-    },
-    selectedIds: editor.getSelectedShapeIds(),
+    viewport,
+    selectedIds: Object.keys(appState.selectedElementIds ?? {}),
   });
 }

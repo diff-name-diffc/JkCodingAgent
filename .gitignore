@@ -49,3 +49,6 @@ src-tauri/binaries/pi-agent-sidecar*
 !src-tauri/binaries/.gitkeep
 /.playwright-mcp/
 /.zvec-grep
+
+# Excalidraw 运行时资源（scripts/sync-excalidraw-assets.mjs 自动同步，勿入库）
+public/excalidraw-assets/

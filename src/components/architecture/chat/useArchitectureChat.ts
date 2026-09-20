@@ -8,7 +8,8 @@
 
 import { useCallback, useRef, useState } from "react";
 import { invoke, type Channel } from "@tauri-apps/api/core";
-import type { Editor } from "tldraw";
+import { exportToBlob } from "@excalidraw/excalidraw";
+import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type {
   AnyContentSegment,
   ChatSession,
@@ -40,7 +41,7 @@ import {
   useLiveSessionUpdater,
 } from "../../dispatcher-chat/useLiveSessionState";
 import { collectCanvasSnapshot } from "../canvas-snapshot";
-import { blobToBase64 } from "../program/arch-executor";
+import { blobToBase64, canvasExportOptions } from "../program/arch-executor";
 import {
   loadArchChatPrefs,
   saveArchChatPrefs,
@@ -48,7 +49,7 @@ import {
 } from "./architecture-chat-prefs";
 
 export interface UseArchitectureChatOptions {
-  getEditor: () => Editor | null;
+  getCanvasApi: () => ExcalidrawImperativeAPI | null;
 }
 
 export interface UseArchitectureChatResult {
@@ -65,18 +66,15 @@ export interface UseArchitectureChatResult {
   newConversation: () => void;
 }
 
-/** 全画布截图最长边上限（与执行器区域截图一致）。 */
-const SCREENSHOT_MAX_DIM = 1600;
-
 export function useArchitectureChat({
-  getEditor,
+  getCanvasApi,
 }: UseArchitectureChatOptions): UseArchitectureChatResult {
   const [prefs, setPrefs] = useState<ArchitectureChatPrefs>(loadArchChatPrefs);
   const [sendError, setSendError] = useState<string | null>(null);
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
-  const getEditorRef = useRef(getEditor);
-  getEditorRef.current = getEditor;
+  const getCanvasApiRef = useRef(getCanvasApi);
+  getCanvasApiRef.current = getCanvasApi;
 
   const sessionId = prefs.sessionId;
   const noopResetEditing = useCallback(() => {}, []);
@@ -120,30 +118,14 @@ export function useArchitectureChat({
 
   // ── 感知收集：全画布截图（视觉通道；空画布/失败时跳过）──
   const collectScreenshotSegment = useCallback(
-    async (editor: Editor, targetSessionId: string): Promise<AnyContentSegment | null> => {
-      if (editor.getCurrentPageShapes().length === 0) return null;
+    async (
+      canvasApi: ExcalidrawImperativeAPI,
+      targetSessionId: string,
+    ): Promise<AnyContentSegment | null> => {
+      const elements = canvasApi.getSceneElements();
+      if (elements.length === 0) return null;
       try {
-        let minX = Infinity;
-        let minY = Infinity;
-        let maxX = -Infinity;
-        let maxY = -Infinity;
-        for (const shape of editor.getCurrentPageShapes()) {
-          const bounds = editor.getShapePageBounds(shape);
-          if (!bounds) continue;
-          minX = Math.min(minX, bounds.minX);
-          minY = Math.min(minY, bounds.minY);
-          maxX = Math.max(maxX, bounds.maxX);
-          maxY = Math.max(maxY, bounds.maxY);
-        }
-        const maxDim = Math.max(maxX - minX, maxY - minY);
-        const scale = maxDim > 0 ? Math.min(1, SCREENSHOT_MAX_DIM / maxDim) : 1;
-        const { blob } = await editor.toImage([], {
-          format: "jpeg",
-          quality: 0.8,
-          background: true,
-          pixelRatio: 1,
-          scale,
-        });
+        const blob = await exportToBlob(canvasExportOptions([...elements], canvasApi.getFiles()));
         const imageDataBase64 = await blobToBase64(blob);
         const saved = await invoke<{ imageId: string; mimeType: string }>("save_chat_image", {
           workspaceId: targetSessionId,
@@ -235,16 +217,16 @@ export function useArchitectureChat({
           buildOptimisticUserMessage(targetSessionId, text, []),
         ]);
         const currentPrefs = prefsRef.current;
-        const editor = getEditorRef.current();
+        const canvasApi = getCanvasApiRef.current();
 
         const segments: AnyContentSegment[] = [];
-        if (currentPrefs.attachScreenshot && editor) {
-          const screenshot = await collectScreenshotSegment(editor, targetSessionId);
+        if (currentPrefs.attachScreenshot && canvasApi) {
+          const screenshot = await collectScreenshotSegment(canvasApi, targetSessionId);
           if (screenshot) segments.push(screenshot);
         }
         segments.push({ id: crypto.randomUUID(), type: "text", text });
-        if (currentPrefs.attachSnapshot && editor) {
-          const snapshot = collectCanvasSnapshot(editor);
+        if (currentPrefs.attachSnapshot && canvasApi) {
+          const snapshot = collectCanvasSnapshot(canvasApi);
           if (snapshot) {
             segments.push({ id: crypto.randomUUID(), type: "text", text: snapshot });
           }

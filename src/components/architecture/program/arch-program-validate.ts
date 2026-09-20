@@ -7,7 +7,7 @@
  * Rust 权威校验（`program_validate.rs`）仍是完整契约的权威源；本防御层
  * 只覆盖「事件载荷异常时会造成**静默错误行为**」的子集——形状/布局模式/
  * 对齐/箭头装饰等枚举（非法值会被应用层落入默认分支或把未赋值的 partial
- * 传给 tldraw）、layout 数值（gap/columns/origin）、labelPosition 区间与
+ * 传给画布）、layout 数值（gap/columns/origin）、labelPosition 区间与
  * 宽高下限。两处取值必须同步维护。
  */
 
@@ -40,12 +40,8 @@ const REF_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 
 // ── 枚举白名单（与 arch-program.ts 的联合类型取值一致）──
 const SHAPE_KINDS = new Set(["geo", "note", "text", "frame"]);
-const GEO_KINDS = new Set([
-  "rectangle", "ellipse", "triangle", "diamond", "pentagon", "hexagon",
-  "octagon", "star", "rhombus", "rhombus-2", "oval", "cloud", "trapezoid",
-  "arrow-right", "arrow-left", "arrow-up", "arrow-down", "x-box", "check-box",
-  "heart",
-]);
+// 与 ArchGeo 一致：Excalidraw 原生容器形状（支持内嵌绑定文本）。
+const GEO_KINDS = new Set(["rectangle", "ellipse", "diamond"]);
 const COLOR_VALUES = new Set([
   "black", "grey", "light-violet", "violet", "blue", "light-blue", "yellow",
   "orange", "green", "light-green", "light-red", "red", "white",
@@ -74,7 +70,7 @@ const SHAPE_STYLE_ENUMS: ReadonlyArray<readonly [string, ReadonlySet<string>]> =
   ["align", ALIGN_VALUES],
 ];
 
-/** 箭头样式子集（tldraw 箭头无 fill/font/align）。 */
+/** 箭头样式子集（箭头无 fill/font/align）。 */
 const ARROW_STYLE_ENUMS: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
   ["color", COLOR_VALUES],
   ["labelColor", COLOR_VALUES],

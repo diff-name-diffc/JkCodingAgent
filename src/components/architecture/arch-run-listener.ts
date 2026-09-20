@@ -9,7 +9,7 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { Editor } from "tldraw";
+import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { ArchRunRequestPayload } from "../../types/architecture";
 import { canvasNotReadyReport, type CanvasBlockInfo } from "./canvas-block-info";
 import { runArchProgram } from "./program/arch-executor";
@@ -20,11 +20,11 @@ const EDITOR_WAIT_MS = 2000;
 const EDITOR_WAIT_STEP_MS = 100;
 
 export function useArchRunListener(
-  getEditor: () => Editor | null,
+  getCanvasApi: () => ExcalidrawImperativeAPI | null,
   getBlockInfo?: () => CanvasBlockInfo | null,
 ): void {
-  const getterRef = useRef(getEditor);
-  getterRef.current = getEditor;
+  const getterRef = useRef(getCanvasApi);
+  getterRef.current = getCanvasApi;
   const blockInfoRef = useRef(getBlockInfo);
   blockInfoRef.current = getBlockInfo;
 
@@ -34,31 +34,31 @@ export function useArchRunListener(
       "architecture-run-request",
       async (event) => {
         const { runId, workspaceId, program } = event.payload;
-        // 画布 editor 的挂载与视图切换存在瞬时空窗：先短轮询等待，避免把
+        // 画布 api 的挂载与视图切换存在瞬时空窗：先短轮询等待，避免把
         // 「正在挂载」误判为「视图未打开」而直接放弃执行。
-        let editor = getterRef.current();
+        let canvasApi = getterRef.current();
         for (
           let waited = 0;
-          !editor && waited < EDITOR_WAIT_MS;
+          !canvasApi && waited < EDITOR_WAIT_MS;
           waited += EDITOR_WAIT_STEP_MS
         ) {
           await new Promise((resolve) => setTimeout(resolve, EDITOR_WAIT_STEP_MS));
           if (disposed) return;
-          editor = getterRef.current();
+          canvasApi = getterRef.current();
         }
         let report: string;
-        if (!editor) {
-          // 附带阻断诊断：区分「视图未打开」与「画布被许可门禁/崩溃关闭」，
+        if (!canvasApi) {
+          // 附带阻断诊断：区分「视图未打开」与「画布此前渲染崩溃」，
           // 让 Agent 拿到可行动的失败原因而非笼统的未就绪。
           report = canvasNotReadyReport(blockInfoRef.current?.() ?? null);
         } else {
           try {
-            const outcome = await runArchProgram(editor, workspaceId, program);
+            const outcome = await runArchProgram(canvasApi, workspaceId, program);
             report = outcome.reportText;
           } catch (error) {
             console.error("架构画布程序执行异常:", error);
-            // 手工拼接的异常报告同样受 ≤950 字符硬上限约束（tldraw 抛出的
-            // 错误可能携带形状数据，超长会破坏工具报告契约）。
+            // 手工拼接的异常报告同样受 ≤950 字符硬上限约束（超长会破坏
+            // 工具报告契约）。草稿未提交即天然零副作用，等同整体回滚。
             report = truncateArchReport(
               `错误：画布程序执行异常：${error instanceof Error ? error.message : String(error)}。已整体回滚。`,
             );

@@ -2,10 +2,10 @@
  * 主页架构 pane 的挂载/可见两态机（UI-15 遗留领取，纯函数）。
  *
  * 语义（对齐 project/terminal-dock.ts 与 ProjectWorkspaceLayout 的保活先例）：
- * - mounted：ArchitectureView 已挂载——tldraw editor 实例、视口 camera、
- *   撤销栈与选中态存活（形状另经 IndexedDB persistenceKey 持久化）；
+ * - mounted：ArchitectureView 已挂载——Excalidraw 实例、视口 camera、
+ *   撤销栈与选中态存活（形状另经 localStorage 持久化，见 canvas-persistence.ts）；
  * - visible：pane 在主页显示（隐藏 = visibility:hidden 叠层，不卸载组件；
- *   不用 display:none——tldraw 的 .tl-container 依赖容器确定尺寸，
+ *   不用 display:none——画布依赖容器确定尺寸，
  *   visibility 路线保留布局尺寸，与多项目保活同款）。
  *
  * mounted 单调不回退：主页视图切换没有「终止画布」动作，只有显示/隐藏；

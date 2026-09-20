@@ -213,8 +213,8 @@ describe("validateArchProgram", () => {
   });
 
   it("rejects invalid enum values instead of falling through silently", () => {
-    // 形状类型与 geo 枚举：非法值不得穿透到应用层（未赋值的 partial 会
-    // 直接传给 tldraw createShapes）。
+    // 形状类型与 geo 枚举：非法值不得穿透到应用层（会成为无法渲染的
+    // Excalidraw 元素）。
     expect(
       validateArchProgram({
         version: 1,

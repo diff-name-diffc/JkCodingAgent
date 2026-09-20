@@ -49,7 +49,7 @@ App
 ├── WelcomePage                      — 主页（聊天 / 项目 / 架构 三视图切换，AppRail 导航）
 │   ├── HomeChatPage                 — 独立聊天工作区（不绑定项目）
 │   ├── 项目网格                      — 打开 / 删除本地仓库
-│   └── ArchitectureView             — 架构画布（tldraw）+ 助手聊天
+│   └── ArchitectureView             — 架构画布（Excalidraw）+ 助手聊天
 └── ProjectPage                      — 项目工作区
     ├── ContextNav                   — 会话 / 文件 / 变更 / 历史 四页签上下文导航
     ├── SessionPanel                 — 会话列表（搜索 / 新建 / 分页）

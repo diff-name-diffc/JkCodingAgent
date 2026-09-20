@@ -46,28 +46,8 @@ const SIZE_VALUES: &[&str] = &["s", "m", "l", "xl"];
 const DASH_VALUES: &[&str] = &["draw", "solid", "dashed", "dotted", "none"];
 const FONT_VALUES: &[&str] = &["draw", "sans", "serif", "mono"];
 const ALIGN_VALUES: &[&str] = &["start", "middle", "end"];
-const GEO_VALUES: &[&str] = &[
-    "rectangle",
-    "ellipse",
-    "triangle",
-    "diamond",
-    "pentagon",
-    "hexagon",
-    "octagon",
-    "star",
-    "rhombus",
-    "rhombus-2",
-    "oval",
-    "cloud",
-    "trapezoid",
-    "arrow-right",
-    "arrow-left",
-    "arrow-up",
-    "arrow-down",
-    "x-box",
-    "check-box",
-    "heart",
-];
+// 与 ArchGeo 一致：Excalidraw 原生容器形状（支持内嵌绑定文本）。
+const GEO_VALUES: &[&str] = &["rectangle", "ellipse", "diamond"];
 const ARROWHEAD_VALUES: &[&str] = &[
     "arrow", "triangle", "square", "dot", "pipe", "diamond", "inverted", "bar", "none",
 ];
@@ -84,7 +64,7 @@ fn style_properties() -> Value {
     })
 }
 
-/// 箭头支持的样式子集（tldraw 箭头 props 只有 color/labelColor/size/dash，
+/// 箭头支持的样式子集（DSL 约定箭头只有 color/labelColor/size/dash，
 /// 没有 fill/font/align——与前端 `styleProps` 实际落到箭头的字段一致）。
 fn arrow_style_properties() -> Value {
     json!({
@@ -269,7 +249,7 @@ pub fn architecture_run_parameters_schema() -> Value {
     });
 
     // 各分支的样式属性经 style_properties()/arrow_style_properties() 合并，
-    // 保持单一定义源。箭头只吃样式子集（tldraw 箭头无 fill/font/align）。
+    // 保持单一定义源。箭头只吃样式子集（箭头无 fill/font/align）。
     let with_style = |mut branch: Value| {
         if let Some(properties) = branch.get_mut("properties").and_then(|p| p.as_object_mut()) {
             if let Some(style) = style_properties().as_object() {

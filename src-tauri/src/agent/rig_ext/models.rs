@@ -1,6 +1,6 @@
 //! 模型列表拉取（OpenAI 兼容 `/models` 与 DashScope 分页两种方言）。
 //!
-//! 迁移自旧 `agent/llm/models.rs`：模型库 UI 的「拉取可用模型」用它；
+//! 迁移自旧自实现（已随迁移删除）模型客户端层（原 `llm/models.rs`）：模型库 UI 的「拉取可用模型」用它；
 //! 与 LLM 调用无关（纯 HTTP + JSON 解析），故随适配层保留。
 
 use anyhow::{anyhow, Context, Result};

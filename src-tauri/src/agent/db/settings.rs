@@ -473,8 +473,7 @@ impl DispatcherDb {
                     // 读取侧同样做容量归一化（与保存侧对称）：历史/手改库中的
                     // 越界容量不得流入请求预算与滑窗裁剪阈值。
                     normalized_library_entries(
-                        &serde_json::from_str::<Vec<ModelLibraryEntry>>(&raw)
-                            .unwrap_or_default(),
+                        &serde_json::from_str::<Vec<ModelLibraryEntry>>(&raw).unwrap_or_default(),
                     )
                 },
                 graph: {
@@ -610,10 +609,9 @@ impl DispatcherDb {
         ))
         .unwrap_or_else(|_| "{}".to_string());
         let review_prompt = review.system_prompt.clone();
-        let model_library = serde_json::to_string(&normalized_library_entries(
-            &settings.model_library,
-        ))
-        .unwrap_or_else(|_| "[]".to_string());
+        let model_library =
+            serde_json::to_string(&normalized_library_entries(&settings.model_library))
+                .unwrap_or_else(|_| "[]".to_string());
         let graph_config =
             serde_json::to_string(&settings.graph).unwrap_or_else(|_| "{}".to_string());
         let theme = normalize_theme_preference(&settings.theme);

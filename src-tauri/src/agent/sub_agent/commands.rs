@@ -20,10 +20,7 @@ fn manager_from(state: &DispatcherState) -> anyhow::Result<Arc<SubAgentManager>>
 /// 保存校验必须使用同一 execution profile；不能取全局并集，否则会出现配置
 /// 可保存但运行时静默缺工具。MCP 与嵌套子智能体工具均不在该 profile 中。
 fn known_static_tool_names(state: &DispatcherState) -> HashSet<String> {
-    state
-        .plain_chat_static_tool_names()
-        .into_iter()
-        .collect()
+    state.sub_agent_tool_names().into_iter().collect()
 }
 
 // 说明：以下命令均为 async Tauri 命令，manager 内部是同步 rusqlite I/O，
@@ -155,7 +152,7 @@ pub async fn sub_agent_list_tools(
     state: State<'_, DispatcherState>,
 ) -> CommandResult<Vec<ToolInfo>> {
     let tools = state
-        .registered_tool_names()
+        .sub_agent_tool_names_and_descriptions()
         .into_iter()
         .map(|(name, description)| ToolInfo { name, description })
         .collect();

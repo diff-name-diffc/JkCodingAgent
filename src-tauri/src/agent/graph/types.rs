@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// 执行图定义契约版本。单一事实来源：校验（validate）、编排器工具 schema
-/// （tools/builtin/submit_graph）都引用本常量，避免再次升级时多处漂移。
+/// （`rig_ext/agents/project_submit.rs`）都引用本常量，避免升级时多处漂移。
 pub(crate) const GRAPH_DEFINITION_VERSION: u8 = 4;
 
 // ── 状态词表（集中定义，禁止散落魔法字符串）────────────────────────────

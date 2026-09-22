@@ -2,10 +2,10 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::rig_ext::agents::plain_chat::RigPlainChatAgent;
-use super::rig_ext::agents::project::RigOrchestratorAgent;
 use super::config::DispatcherAgentConfig;
 use super::db::{AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb};
+use super::rig_ext::agents::plain_chat::RigPlainChatAgent;
+use super::rig_ext::agents::project::RigOrchestratorAgent;
 use super::sub_agent::db::ToolInfo;
 use super::sub_agent::SubAgentManager;
 use crate::mcp::McpRegistry;
@@ -23,7 +23,8 @@ pub(crate) use run::GraphRunHandle;
 
 /// 应用级状态聚合器，由 Tauri `.manage()` 托管，是整个调度智能体的长寿宿主。
 ///
-/// 与短命的 `OrchestratorAgent`（每轮 run 重建）相对，DispatcherState 持有跨轮次、
+/// 与短命的 Agent（每轮 run 重新构建：`RigOrchestratorAgent` /
+/// `RigPlainChatAgent` / `RigArchitectureAgent`）相对，DispatcherState 持有跨轮次、
 /// 跨会话共享的资源：DB 连接池、并发控制、工具目录缓存等。
 ///
 /// 职责：
@@ -126,29 +127,10 @@ impl DispatcherState {
         self.services.ssh_manager.clone()
     }
 
-    /// 子智能体工具选择清单。它必须与 SubAgentRuntime 实际继承的普通聊天
-    /// execution profile 一致；项目编排器工具和嵌套子智能体工具都不能混入。
-    ///
-    /// G11-07：每次读取重建——子智能体配置变更点在 sub_agent/commands.rs
-    /// （本模块边界外，无法在变更后主动触发刷新），而工具枚举为纯内存操作、
-    /// 成本可忽略，读取即重建从机制上消除缓存陈旧。原 ToolCatalog「缓存」
-    /// 的唯一读者是写入者自身（直写式死缓存），已删除。
-    /// 普通聊天静态工具名（子智能体保存校验用：必须与运行期 execution
-    /// profile 同源，否则会出现「配置可保存但运行时缺工具」）。
-    pub fn plain_chat_static_tool_names(&self) -> Vec<String> {
-        self.registered_tool_names()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect()
-    }
-
-    /// 子智能体工具选择清单（同步只读：仅静态工具名与描述，MCP 动态工具
-    /// 由 `mcp_global_status` 单独提供）。
-    ///
-    /// 与 `list_agent_tools` 的差异：这里是同步入口，不能触发 MCP 注册表
-    /// 刷新，因此只枚举静态工具面（exec + media + 子智能体工具），
-    /// 与旧 `plain_chat_tools` 注册表的口径一致。
-    pub fn registered_tool_names(&self) -> Vec<(String, String)> {
+    /// 子智能体工具清单（选择列表 + 保存校验）。与 `RigSubAgentRuntime`
+    /// 实际继承的 execution profile 同源：exec + media + `notify_user_progress`，
+    /// 不含嵌套子智能体工具——否则会出现「配置可保存但运行时缺工具」。
+    pub fn sub_agent_tool_names_and_descriptions(&self) -> Vec<(String, String)> {
         let mut agent = RigPlainChatAgent::new(
             self.services.config.clone(),
             self.services.mcp_registry.clone(),
@@ -158,21 +140,31 @@ impl DispatcherState {
         let settings = match self.services.db.get_settings_v2() {
             Ok(settings) => settings,
             Err(error) => {
-                eprintln!("读取设置失败，工具清单按空列表降级：{error}");
+                eprintln!("读取设置失败，子智能体工具清单按空列表降级：{error}");
                 return Vec::new();
             }
         };
         agent.apply_settings_v2(&settings, AgentContext::Chat);
-        agent.static_tool_catalog()
+        agent.sub_agent_tool_catalog()
     }
 
-    /// 每轮构建一个新的 OrchestratorAgent（短命对象）并从 DB 实时应用设置。
+    pub fn sub_agent_tool_names(&self) -> Vec<String> {
+        self.sub_agent_tool_names_and_descriptions()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// 每轮构建一个新的 rig 编排器（短命对象：`RigOrchestratorAgent`）
+    /// 并从 DB 实时应用设置。
     /// 这是"每轮现建现用"模式的核心——保证设置变更在下一轮立即生效，
     /// 而当前轮次内部保持一致。
     ///
     /// G11-01 / G7-06：DB 读取放入阻塞线程池执行；失败以 Result 透传可读错误，
     /// 不再 expect panic 导致 async 命令崩溃。
-    pub(crate) async fn build_run_agent(&self) -> std::result::Result<RigOrchestratorAgent, String> {
+    pub(crate) async fn build_run_agent(
+        &self,
+    ) -> std::result::Result<RigOrchestratorAgent, String> {
         let mut agent =
             RigOrchestratorAgent::new(self.services.config.clone(), self.services.db.clone());
 
@@ -187,7 +179,7 @@ impl DispatcherState {
         Ok(agent)
     }
 
-    /// 构建聊天模式的 PlainChatAgent，并叠加该聊天会话的分类级配置
+    /// 构建聊天模式的 rig 聊天 Agent，并叠加该聊天会话的分类级配置
     /// （每个聊天可独立配置系统提示与工具集）。
     ///
     /// G7-06：本方法原为同步 fn 却在 async 链上直接执行 DB 查询，
@@ -232,10 +224,8 @@ impl DispatcherState {
     pub(crate) async fn build_architecture_agent(
         &self,
         model_library_id: Option<&str>,
-    ) -> std::result::Result<
-        super::rig_ext::agents::architecture_agent::RigArchitectureAgent,
-        String,
-    > {
+    ) -> std::result::Result<super::rig_ext::agents::architecture_agent::RigArchitectureAgent, String>
+    {
         let db = self.services.db.clone();
         let settings = tokio::task::spawn_blocking(move || db.get_settings_v2())
             .await
@@ -316,9 +306,7 @@ impl DispatcherState {
             temperature: f64::from(config.temperature),
             enable_thinking: true,
         };
-        Ok(super::rig_ext::agents::architecture_agent::RigArchitectureAgent::new(
-            config, spec,
-        ))
+        Ok(super::rig_ext::agents::architecture_agent::RigArchitectureAgent::new(config, spec))
     }
 
     pub(crate) async fn list_agent_tools(
@@ -328,7 +316,7 @@ impl DispatcherState {
         // 工具清单服务于设置/分类的允许列表配置，只枚举内置工具：
         // 动态（MCP）工具清单由 `mcp_global_status`（默认复用新鲜窗口缓存）单独提供
         // （前端按「普通工具 / MCP 工具」两个折叠区分别渲染）。MCP 工具
-        // 同样按分类允许列表显式名单制门禁（见 PlainChatAgent 的定义层过滤），
+        // 同样按分类允许列表显式名单制门禁（见聊天 Agent 的定义层过滤），
         // 服务器级启停则在 MCP 注册表层（设置中心全局页与项目启停开关）。
         let chat_mode = matches!(context, AgentContext::Chat);
         self.enumerate_tools(chat_mode).await

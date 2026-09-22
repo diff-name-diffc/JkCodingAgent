@@ -174,7 +174,10 @@ async fn loop_streams_deltas_executes_tool_and_persists_messages() {
         "assistantMessage",
         "finished",
     ] {
-        assert!(tags.iter().any(|tag| tag == expected), "缺少事件 {expected}：{tags:?}");
+        assert!(
+            tags.iter().any(|tag| tag == expected),
+            "缺少事件 {expected}：{tags:?}"
+        );
     }
     // 两轮流式正文增量都到达前端（顺序保持）。
     assert!(events.text_deltas.join("").contains("先查一下"));
@@ -331,10 +334,7 @@ async fn wait_for_usage(
     fixture: &Fixture,
 ) -> Option<crate::agent::db::DispatcherSessionTokenUsageRecord> {
     for _ in 0..40 {
-        if let Ok(rows) = fixture
-            .db
-            .list_session_token_usage(&fixture.workspace_id)
-        {
+        if let Ok(rows) = fixture.db.list_session_token_usage(&fixture.workspace_id) {
             if let Some(row) = rows
                 .into_iter()
                 .find(|row| row.model == "mock-chat" && row.prompt_tokens > 0)
@@ -505,13 +505,12 @@ async fn protocol_action_closes_the_turn_with_a_synthesized_reply() {
     // 只请求模型一次：协议动作直接收口。
     assert_eq!(model.request_count(), 1);
     let text = reply.plain_text();
-    assert!(text.contains("执行图《测试图》已生成并通过校验（2 个节点）"), "{text}");
+    assert!(
+        text.contains("执行图《测试图》已生成并通过校验（2 个节点）"),
+        "{text}"
+    );
     assert!(text.contains("补充说明：\n补充说明文本"), "{text}");
-    assert!(captured
-        .lock()
-        .tags
-        .iter()
-        .any(|tag| tag == "finished"));
+    assert!(captured.lock().tags.iter().any(|tag| tag == "finished"));
 }
 
 #[tokio::test]

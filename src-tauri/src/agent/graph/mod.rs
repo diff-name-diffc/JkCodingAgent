@@ -1,6 +1,7 @@
 //! 图编排（Graph Orchestrator）模块。
 //!
-//! 项目 Agent 的核心产物是执行图（DAG）：编排阶段由 OrchestratorAgent 通过
+//! 项目 Agent 的核心产物是执行图（DAG）：编排阶段由 rig 项目编排 Agent
+//! （`rig_ext::agents::project`）通过
 //! `submit_graph` 工具产出 `GraphDefinition`（v4），经 `validate` 结构+语义校验后落库；
 //! 执行阶段由 `runner` 驱动 `scheduler` 的 ready-queue 状态机调度 `acp_exec`
 //! 节点执行器（每节点一个 claude-agent-acp 子进程；依赖驱动、失败重试一次、

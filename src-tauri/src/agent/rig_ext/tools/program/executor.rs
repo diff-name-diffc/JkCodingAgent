@@ -1,6 +1,6 @@
 //! ToolProgram 执行器：按 AST 编排调用数据面工具。
 //!
-//! 迁移自旧 `agent/tools/program/executor.rs`：「按名调用工具」的接缝由旧
+//! 迁移自旧自实现工具层（已随迁移删除）的工具程序 executor 模块：「按名调用工具」的接缝由旧
 //! `CapabilityBroker`（`CapabilityInvocation` + `ToolResult`/`ToolStatus`）
 //! 改为注入的 `DataPlane`（按名查找 `PortableDynamicTool` 并 `execute`）。
 //! 并发上限、wall-time、drain 收敛、预算守卫与停止信号语义逐条保留；
@@ -106,13 +106,11 @@ pub(crate) async fn execute_program_inner(
             value,
             completed_steps,
         }),
-        Ok(None) => Err(
-            ProgramError::new(
-                ProgramErrorKind::Internal,
-                "ToolProgram 执行结束但没有产生 return 值",
-            )
-            .with_completed_steps(completed_steps),
-        ),
+        Ok(None) => Err(ProgramError::new(
+            ProgramErrorKind::Internal,
+            "ToolProgram 执行结束但没有产生 return 值",
+        )
+        .with_completed_steps(completed_steps)),
         Err(FlowError::Program(error)) => Err(error.with_completed_steps(completed_steps)),
         Err(FlowError::Stopped) => Err(ProgramError::new(
             ProgramErrorKind::Internal,
@@ -314,7 +312,9 @@ impl ExecutionEngine<'_> {
                     completed_steps.push(id.to_string());
                 }
                 drop(permit);
-                return Err(FlowError::Program(self.deadline_error(Some(id), Some(tool))));
+                return Err(FlowError::Program(
+                    self.deadline_error(Some(id), Some(tool)),
+                ));
             }
             Settled::Cancelled => {
                 // 取消与 wall-time 同一收敛纪律：停止调度新调用，在途调用等待
@@ -329,7 +329,9 @@ impl ExecutionEngine<'_> {
                     completed_steps.push(id.to_string());
                 }
                 drop(permit);
-                return Err(FlowError::Program(self.cancelled_error(Some(id), Some(tool))));
+                return Err(FlowError::Program(
+                    self.cancelled_error(Some(id), Some(tool)),
+                ));
             }
         };
         drop(permit);
@@ -355,7 +357,6 @@ impl ExecutionEngine<'_> {
             .map_err(|error| self.fail(error.for_step(id, tool), stop_signals))?;
         Ok(())
     }
-
 }
 
 #[cfg(test)]

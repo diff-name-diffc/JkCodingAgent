@@ -9,13 +9,13 @@
 
 use std::collections::HashSet;
 
+use super::program_ast::{
+    ArchCameraMode, ArchInstruction, ArchLayoutMode, ArchProgram, ArchShapeKind,
+};
 use super::{
     ARCH_MAX_INSTRUCTIONS, ARCH_PROGRAM_VERSION, COORD_LIMIT, GAP_LIMIT, MAX_LABEL_LEN,
     MAX_LAYOUT_TARGETS, MAX_REPARENT_TARGETS, MAX_REPORTED_ERRORS, MAX_SELECT_TARGETS,
     MAX_TARGETS_PER_DELETE, MAX_TEXT_LEN, NUDGE_LIMIT, REPARENT_PAGE_LITERAL, SIZE_LIMIT,
-};
-use super::program_ast::{
-    ArchCameraMode, ArchInstruction, ArchLayoutMode, ArchProgram, ArchShapeKind,
 };
 
 fn check_ref(ref_alias: &str, refs: &mut HashSet<String>, index: usize) -> Result<(), String> {

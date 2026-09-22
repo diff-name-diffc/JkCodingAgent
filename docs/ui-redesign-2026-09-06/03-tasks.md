@@ -615,7 +615,7 @@
 截图：遗留（tauri 运行态，同 UI-29 矩阵）
 人工走查：浏览器面板标题与导入确认显示中文「浏览器」、助手头像与空态 logo 的 alt 读屏为中文/产品名；Python 运行按钮、工具卡输入/输出、SSH 主机/端口/用户名、Python 与 SSH 审计的标准输出/标准错误均为中文；5 处图标按钮读屏有可理解名称——遗留 UI-28/29
 风险/回退：单 commit 可回退；纯文案/aria-label/alt 改动，无逻辑/布局/样式类变更（styles:report 计数不变可佐证）；tool-call-card DataSection label 联合类型同步收窄为中文字面量，tsc 通过保证调用点一致
-阻塞或剩余事项：**基线已满足（登记）**——图标按钮容器尺寸合规：`ui/button.tsx` icon=h-8 w-8(32×32)/icon-sm=h-6 w-6(24×24)、`IconButton` 默认 32；shell 导航 AppRail 18/1.8、StatusDockBar(终端/浏览器)与 ContextNav 紧凑图标均带中文可见文本与 aria-pressed/aria-label。**剩余登记（图标）**——全应用 lucide `size=`/`strokeWidth` 存在「三方言」（导航 18/1.8、设置 16/1.5、聊天/面板/浏览器/Git 11–14/2；strokeWidth 实测 9 种取值、size prop 与 Tailwind h-*/w-* 两机制并存，最小 10 最大 40）：统一到 tokens.md §3 的 16/18 属全应用视觉走查项，盲改有溢出/观感回归风险且无法静态验证，登记 UI-29 携本批 inventory 定位后在运行态逐域收敛。**剩余登记（后端术语）**——后端 Rust 错误/工具结果串中的 CloakBrowser（`browser.rs:134,293`、`browser/process.rs:70,74,84`、`agent/tools/builtin/browser/actions.rs:214,224-225` 等）经 toast/工具卡透出给用户，属后端改动（需 cargo 重建 + 重启 tauri），本批前端-only 不动，登记后续小任务（仅改字符串、非命令契约/schema，contract 计数不受影响）。**决策（保留）**——MCP/SSH/RAG/Qdrant/Embedding/OCR/API Key/Python 与日志级别枚举 Debug/Info/Warning/Error、kbd Esc 为业界通用缩写/专有名词/枚举值，非内部技术名（dispatcher/nezha/aha/cloak/jkbot），保留；SSH 页描述中 `~/.jkcodingagent/jkbot.sqlite3` 为真实库文件路径（必要技术详情，改之则失真），保留
+阻塞或剩余事项：**基线已满足（登记）**——图标按钮容器尺寸合规：`ui/button.tsx` icon=h-8 w-8(32×32)/icon-sm=h-6 w-6(24×24)、`IconButton` 默认 32；shell 导航 AppRail 18/1.8、StatusDockBar(终端/浏览器)与 ContextNav 紧凑图标均带中文可见文本与 aria-pressed/aria-label。**剩余登记（图标）**——全应用 lucide `size=`/`strokeWidth` 存在「三方言」（导航 18/1.8、设置 16/1.5、聊天/面板/浏览器/Git 11–14/2；strokeWidth 实测 9 种取值、size prop 与 Tailwind h-*/w-* 两机制并存，最小 10 最大 40）：统一到 tokens.md §3 的 16/18 属全应用视觉走查项，盲改有溢出/观感回归风险且无法静态验证，登记 UI-29 携本批 inventory 定位后在运行态逐域收敛。**剩余登记（后端术语）**——后端 Rust 错误/工具结果串中的 CloakBrowser（`browser.rs`、`browser/process.rs`、`agent/rig_ext/tools/media/browser/actions.rs` 等）经 toast/工具卡透出给用户，属后端改动（需 cargo 重建 + 重启 tauri），本批前端-only 不动，登记后续小任务（仅改字符串、非命令契约/schema，contract 计数不受影响）。**决策（保留）**——MCP/SSH/RAG/Qdrant/Embedding/OCR/API Key/Python 与日志级别枚举 Debug/Info/Warning/Error、kbd Esc 为业界通用缩写/专有名词/枚举值，非内部技术名（dispatcher/nezha/aha/cloak/jkbot），保留；SSH 页描述中 `~/.jkcodingagent/jkbot.sqlite3` 为真实库文件路径（必要技术详情，改之则失真），保留
 验收人/日期：待人工（UI-28/29/31）
 
 ## 15. UI-23–UI-24a（M3 批次三）任务记录（第 5 节模板）
@@ -708,7 +708,7 @@
 负责人：claude（会话领取）
 开始/完成日期：2026-09-07
 基线/结果 commit 或 PR：基线 `a74e0b2`；结果 `c1090ed`
-实现文件与范围：`browser.rs`（2 处错误串）、`browser/process.rs`（10 处错误/状态消息）、`browser/paths.rs`（1 处错误）、`agent/tools/builtin/browser.rs`（4 处工具描述 + 1 处模块注释 + 1 处错误）、`agent/tools/builtin/browser/actions.rs`（2 处工具描述 + 3 处错误/结果串）、`agent/sub_agent/config.rs`（1 处系统提示词）
+实现文件与范围：`browser.rs`（2 处错误串）、`browser/process.rs`（10 处错误/状态消息）、`browser/paths.rs`（1 处错误）、`agent/rig_ext/tools/media/browser/mod.rs`（4 处工具描述 + 1 处模块注释 + 1 处错误）、`agent/rig_ext/tools/media/browser/actions.rs`（2 处工具描述 + 3 处错误/结果串）、`agent/sub_agent/config.rs`（1 处系统提示词）
 对应问题：UI-26 记录「后端 Rust CloakBrowser 错误串登记后续」
 测试命令及结果：cargo check 通过（2 个既有 private_interfaces 警告，与本批无关）、cargo test 507 passed 不回退、contract:check 115:112 不变
 截图：N/A

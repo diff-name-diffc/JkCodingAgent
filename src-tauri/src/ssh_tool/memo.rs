@@ -4,7 +4,7 @@
 //! 记录对该服务器运维长期有价值的必要信息（部署/服务路径、非通用命令与
 //! 操作方式、已知问题与解法等）。消费方：
 //! - Agent 工具 `ssh_memo_read` / `ssh_memo_upsert` / `ssh_memo_delete`
-//!   （`agent/tools/builtin/ssh_memo.rs`）；
+//!   （`agent/rig_ext/tools/exec/ssh_memo.rs`）；
 //! - 设置页命令 `ssh_tool_get_memo` / `ssh_tool_save_memo`（`commands.rs`）。
 //!
 //! 防无限增长（fail-closed）：全文 ≤ [`MEMO_MAX_CHARS`] 字符、单段 ≤
@@ -114,9 +114,7 @@ pub(crate) fn memo_path(server_id: &str) -> Result<PathBuf, String> {
 /// 纯路径拼接（可单测）：`root/ssh-memos/{server_id}.md`。
 pub(crate) fn memo_path_in(root: &Path, server_id: &str) -> Result<PathBuf, String> {
     validate_server_id(server_id).map_err(|error| format!("非法 server_id：{error}"))?;
-    Ok(root
-        .join(MEMO_DIR_NAME)
-        .join(format!("{server_id}.md")))
+    Ok(root.join(MEMO_DIR_NAME).join(format!("{server_id}.md")))
 }
 
 // ─── 读 ───
@@ -176,7 +174,8 @@ fn save_memo_full_at(path: &Path, content: &str) -> Result<SshMemoPayload, Strin
     // 存入的段落会被 ssh_memo_upsert/delete 的 validate_memo_title 拒绝，
     // 智能体无法定位与维护该段。
     for section in &parsed.sections {
-        validate_memo_title(&section.title).map_err(|error| format!("段落标题校验失败：{error}"))?;
+        validate_memo_title(&section.title)
+            .map_err(|error| format!("段落标题校验失败：{error}"))?;
     }
     // 同名段落只允许一个：局部替换按标题唯一定位，重复标题会让后续维护
     // （upsert 只碰第一个、局部替换拒绝执行）陷入僵局。
@@ -225,11 +224,7 @@ pub(crate) fn replace_in_section(
 
 /// [`upsert_section`] 的路径注入版本（可单测）：读-改-写不含锁，锁由
 /// server_id 包装层持有。
-fn upsert_section_at(
-    path: &Path,
-    title: &str,
-    content: &str,
-) -> Result<MemoWriteOutcome, String> {
+fn upsert_section_at(path: &Path, title: &str, content: &str) -> Result<MemoWriteOutcome, String> {
     let body = prepare_section_body(title, content)?;
     let mut parsed = parse_sections(&read_content_at(path)?);
     let replaced = apply_upsert(&mut parsed, title, &body);
@@ -253,7 +248,9 @@ fn replace_in_section_at(
         );
     }
     if old_text == new_text.trim() {
-        return Err("old_text 与 new_text 相同，不会产生任何变更；如需保持原样请勿调用".to_string());
+        return Err(
+            "old_text 与 new_text 相同，不会产生任何变更；如需保持原样请勿调用".to_string(),
+        );
     }
     reject_heading_lines(new_text, "new_text")?;
     let mut parsed = parse_sections(&read_content_at(path)?);
@@ -684,7 +681,11 @@ mod tests {
         assert!(!apply_upsert(&mut parsed, "部署路径", "- /opt/app"));
         assert!(!apply_upsert(&mut parsed, "特殊命令", "- cmd"));
         // 替换第一段：顺序不变、不产生重复段。
-        assert!(apply_upsert(&mut parsed, "部署路径", "- /srv/app\n- /etc/app.conf"));
+        assert!(apply_upsert(
+            &mut parsed,
+            "部署路径",
+            "- /srv/app\n- /etc/app.conf"
+        ));
         assert_eq!(parsed.sections.len(), 2);
         assert_eq!(parsed.sections[0].title, "部署路径");
         assert_eq!(parsed.sections[0].body, "- /srv/app\n- /etc/app.conf");
@@ -733,7 +734,10 @@ mod tests {
         }
         let rendered = render_memo(&parsed);
         let error = check_limits(&rendered, &parsed).unwrap_err();
-        assert!(error.contains(&format!("超过备忘录上限 {MEMO_MAX_CHARS}")), "{error}");
+        assert!(
+            error.contains(&format!("超过备忘录上限 {MEMO_MAX_CHARS}")),
+            "{error}"
+        );
         // 错误消息带超出量、各段长度清单与最大段落定位，供调用方决定精简哪段。
         assert!(error.contains("超出"), "{error}");
         assert!(error.contains("段0: 3000"), "{error}");
@@ -774,7 +778,10 @@ mod tests {
         let outcome = upsert_section_at(&path, "C", "新增段").unwrap();
         assert!(!outcome.replaced);
         assert_eq!(outcome.sections.len(), 3);
-        assert_eq!(outcome.sections[2], ("C".to_string(), "新增段".chars().count()));
+        assert_eq!(
+            outcome.sections[2],
+            ("C".to_string(), "新增段".chars().count())
+        );
 
         fs::remove_dir_all(&root).ok();
     }

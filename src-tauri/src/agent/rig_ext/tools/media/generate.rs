@@ -41,14 +41,15 @@ async fn execute_image_generation(
     deps: &RigToolDeps,
 ) -> Result<ToolOutput, ToolExecutionError> {
     let Some(prompt) = string_arg(args, "prompt") else {
-        return Err(ToolExecutionError::invalid_args("错误：缺少必填参数 prompt"));
+        return Err(ToolExecutionError::invalid_args(
+            "错误：缺少必填参数 prompt",
+        ));
     };
 
     // width/height 做范围校验（256-4096）而非 u64→u32 静默截断，
     // 非法值直接报「错误：」，避免把超大/零尺寸原样传给外部模型。
     let width = bounded_dimension_arg(args, "width").map_err(ToolExecutionError::invalid_args)?;
-    let height =
-        bounded_dimension_arg(args, "height").map_err(ToolExecutionError::invalid_args)?;
+    let height = bounded_dimension_arg(args, "height").map_err(ToolExecutionError::invalid_args)?;
     let style = string_arg(args, "style");
     let negative_prompt = string_arg(args, "negative_prompt");
     let model = string_arg(args, "model");
@@ -90,7 +91,9 @@ async fn execute_image_generation(
                 output.width, output.height, output.generation_prompt, ref_uri
             )))
         }
-        Err(e) => Err(ToolExecutionError::other(format!("错误：图片生成失败：{e}"))),
+        Err(e) => Err(ToolExecutionError::other(format!(
+            "错误：图片生成失败：{e}"
+        ))),
     }
 }
 
@@ -127,7 +130,9 @@ async fn execute_image_edit(
     };
 
     let Some(prompt) = string_arg(args, "prompt") else {
-        return Err(ToolExecutionError::invalid_args("错误：缺少必填参数 prompt"));
+        return Err(ToolExecutionError::invalid_args(
+            "错误：缺少必填参数 prompt",
+        ));
     };
 
     let image_path = if raw_image_path.starts_with("chat-image://") {
@@ -188,8 +193,7 @@ async fn execute_image_edit(
 
     // width/height 做范围校验（256-4096）而非 u64→u32 静默截断，与 generate_image 一致。
     let width = bounded_dimension_arg(args, "width").map_err(ToolExecutionError::invalid_args)?;
-    let height =
-        bounded_dimension_arg(args, "height").map_err(ToolExecutionError::invalid_args)?;
+    let height = bounded_dimension_arg(args, "height").map_err(ToolExecutionError::invalid_args)?;
 
     let config = &deps.image;
     let default_model = if config.edit_model.trim().is_empty() {
@@ -233,6 +237,8 @@ async fn execute_image_edit(
                 output.width, output.height, output.generation_prompt, ref_uri
             )))
         }
-        Err(e) => Err(ToolExecutionError::other(format!("错误：图片编辑失败：{e}"))),
+        Err(e) => Err(ToolExecutionError::other(format!(
+            "错误：图片编辑失败：{e}"
+        ))),
     }
 }

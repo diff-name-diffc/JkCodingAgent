@@ -12,12 +12,12 @@ use rig::message::Image;
 use rig::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
 use serde_json::{json, Value};
 
+use super::super::super::model::PurposeModelSpec;
 use super::super::common::{
     non_empty_string_array_arg, render_labeled_sections, resolve_path, string_arg,
     with_compression_parameters, DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
 };
 use super::super::deps::RigToolDeps;
-use super::super::super::model::PurposeModelSpec;
 use super::{cancellation_requested, image_media_type_for_mime, vision_complete_image};
 use crate::chat_images::{resolve_chat_image_id_async, CHAT_IMAGE_PROTOCOL};
 
@@ -124,9 +124,7 @@ async fn execute_analyze_image(
     let download_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
         .build()
-        .map_err(|error| {
-            ToolExecutionError::other(format!("错误：创建下载客户端失败：{error}"))
-        })?;
+        .map_err(|error| ToolExecutionError::other(format!("错误：创建下载客户端失败：{error}")))?;
 
     let total = images.len();
     let mut sections: Vec<(String, String)> = Vec::with_capacity(total);
@@ -148,8 +146,7 @@ async fn execute_analyze_image(
             }
         }
 
-        let outcome =
-            analyze_single_image(&spec, &download_client, deps, &instruction, raw).await;
+        let outcome = analyze_single_image(&spec, &download_client, deps, &instruction, raw).await;
         if outcome.ok {
             succeeded += 1;
         }

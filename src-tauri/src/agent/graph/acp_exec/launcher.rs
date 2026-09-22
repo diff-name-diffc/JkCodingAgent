@@ -176,7 +176,10 @@ fn resolve_program(name: &str, diagnostics: &mut Vec<String>) -> Result<PathBuf,
         for dir in std::env::split_paths(&paths) {
             let candidate = dir.join(name);
             if candidate.is_file() {
-                diagnostics.push(format!("ACP 执行器宿主程序（PATH 解析）：{}", candidate.display()));
+                diagnostics.push(format!(
+                    "ACP 执行器宿主程序（PATH 解析）：{}",
+                    candidate.display()
+                ));
                 return Ok(candidate);
             }
         }
@@ -228,7 +231,9 @@ fn child_env_allowlist(settings: &AcpSettings) -> Vec<(String, String)> {
 /// PATH 不继承父进程（防劫持），固定为系统目录。
 fn minimal_inherited_env() -> Vec<(String, String)> {
     #[cfg(unix)]
-    const KEYS: &[&str] = &["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM"];
+    const KEYS: &[&str] = &[
+        "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM",
+    ];
     #[cfg(windows)]
     const KEYS: &[&str] = &[
         "SystemRoot",
@@ -242,7 +247,11 @@ fn minimal_inherited_env() -> Vec<(String, String)> {
     ];
     let mut envs: Vec<(String, String)> = KEYS
         .iter()
-        .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value)))
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| (key.to_string(), value))
+        })
         .collect();
     #[cfg(unix)]
     envs.push((
@@ -273,14 +282,17 @@ mod tests {
         // 托管判定是纯函数：空串与历史 npx 默认值都归一为托管（不触网，
         // 仅校验分支选择逻辑经 resolve_custom 不可达）。
         assert!(settings("").command.is_empty());
-        assert_eq!(settings(LEGACY_NPX_ACP_COMMAND).command, LEGACY_NPX_ACP_COMMAND);
+        assert_eq!(
+            settings(LEGACY_NPX_ACP_COMMAND).command,
+            LEGACY_NPX_ACP_COMMAND
+        );
     }
 
     #[test]
     fn custom_command_rejects_missing_absolute_program() {
         let mut diagnostics = Vec::new();
-        let error = resolve_custom("/nonexistent/path/to/agent --flag", &mut diagnostics)
-            .unwrap_err();
+        let error =
+            resolve_custom("/nonexistent/path/to/agent --flag", &mut diagnostics).unwrap_err();
         assert!(error.contains("不存在"), "{error}");
     }
 
@@ -290,7 +302,10 @@ mod tests {
         let mut diagnostics = Vec::new();
         let path = resolve_program("sh", &mut diagnostics).unwrap();
         assert!(path.is_absolute());
-        assert!(diagnostics.iter().any(|line| line.contains("sh")), "{diagnostics:?}");
+        assert!(
+            diagnostics.iter().any(|line| line.contains("sh")),
+            "{diagnostics:?}"
+        );
     }
 
     #[test]

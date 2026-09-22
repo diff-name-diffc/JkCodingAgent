@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use rig::completion::Message;
 use rig::message::{ToolCall, ToolResult, ToolResultContent, UserContent};
-use rig::tool::{PortableDynamicTool, ToolExecutionError, ToolErrorKind, ToolOutput};
+use rig::tool::{PortableDynamicTool, ToolErrorKind, ToolExecutionError, ToolOutput};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;
@@ -34,13 +34,14 @@ use super::events::{
     record_trace_event, SubAgentEvent, SubAgentEventPayload, SubAgentUsage,
     SUB_AGENT_TRACE_EVENT_LIMIT,
 };
+use super::tools::notify_user_progress_tool;
 use crate::agent::rig_ext::model::{build_completion_request, completions_model, PurposeModelSpec};
 use crate::agent::rig_ext::tools::deps::RigToolDeps;
 use crate::agent::rig_ext::tools::run_record::prepare_arguments;
-use crate::agent::rig_ext::tools::{exec::exec_tools, media::media_tools};
-use crate::agent::sub_agent::config::SubAgentConfig;
 use crate::agent::rig_ext::tools::spec::ToolSpec;
 use crate::agent::rig_ext::tools::MAX_TOOL_CALLS_PER_BATCH;
+use crate::agent::rig_ext::tools::{exec::exec_tools, media::media_tools};
+use crate::agent::sub_agent::config::SubAgentConfig;
 
 /// 返回父循环前的结果截断上限。
 const SUB_AGENT_RESULT_MAX_CHARS: usize = 32_000;
@@ -71,7 +72,6 @@ pub struct RigSubAgentRuntime {
     config: SubAgentConfig,
     spec: PurposeModelSpec,
     surface: Vec<PortableDynamicTool>,
-    deps: RigToolDeps,
     session_id: String,
     parent_tool_call_id: String,
     app_handle: Option<AppHandle>,
@@ -113,8 +113,20 @@ impl RigSubAgentRuntime {
         let (tool_cancel_tx, tool_cancel_rx) = watch::channel(false);
         deps.cancel_rx = Some(tool_cancel_rx);
 
+        // 工具面 = 普通聊天 execution profile（exec + media）+ 子智能体专用的
+        // 进度通知工具（携带子智能体身份与父调用关联，见 `notify_user_progress_tool`）。
+        // 不混入编排器工具与嵌套子智能体工具。
+        let trace_events = Arc::new(Mutex::new(Vec::with_capacity(SUB_AGENT_TRACE_EVENT_LIMIT)));
         let mut surface = exec_tools(&deps);
         surface.extend(media_tools(&deps));
+        surface.push(notify_user_progress_tool(
+            config.agent_id.clone(),
+            config.agent_name.clone(),
+            request.parent_tool_call_id.to_string(),
+            request.app_handle.clone(),
+            Arc::clone(&trace_events),
+            request.session_id.to_string(),
+        ));
 
         let allowed: std::collections::HashSet<&str> =
             config.allowed_tools.iter().map(String::as_str).collect();
@@ -135,11 +147,10 @@ impl RigSubAgentRuntime {
             config: config.clone(),
             spec,
             surface,
-            deps,
             session_id: request.session_id.to_string(),
             parent_tool_call_id: request.parent_tool_call_id.to_string(),
             app_handle: request.app_handle.clone(),
-            trace_events: Arc::new(Mutex::new(Vec::with_capacity(SUB_AGENT_TRACE_EVENT_LIMIT))),
+            trace_events,
             tool_cancel_tx,
             parent_cancel: request.cancel_rx.clone(),
         })
@@ -151,15 +162,14 @@ impl RigSubAgentRuntime {
     }
 
     /// 轨迹缓冲中 `notify_user_progress` 工具写入事件所需的句柄。
-    pub fn trace_events(&self) -> Arc<Mutex<Vec<Value>>> {
-        Arc::clone(&self.trace_events)
-    }
-
     /// 主执行循环：请求模型 → 执行工具 → 判断收口。返回最终答复文本；
     /// 失败返回「错误：」前缀的错误文本（由调用方按委派失败处理）。
     pub async fn execute(&self, task: &str) -> Result<String, String> {
         let model = completions_model(&self.spec).map_err(|error| {
-            format!("错误：子智能体 '{}' 模型初始化失败：{error}", self.config.agent_id)
+            format!(
+                "错误：子智能体 '{}' 模型初始化失败：{error}",
+                self.config.agent_id
+            )
         })?;
         let start = Instant::now();
         let overall_timeout = Duration::from_secs(self.config.timeout_secs);
@@ -401,15 +411,14 @@ impl RigSubAgentRuntime {
         while index < tool_calls.len() {
             let readonly_end = self.readonly_run_end(tool_calls, index);
             let batch_len = readonly_end.saturating_sub(index);
-            let executed: Vec<(&ToolCall, Result<ToolOutput, ToolExecutionError>)> = if batch_len
-                >= 2
-            {
-                self.execute_parallel_readonly(&tool_calls[index..readonly_end], deadline)
-                    .await
-            } else {
-                let call = &tool_calls[index];
-                vec![(call, self.execute_single(call, deadline).await)]
-            };
+            let executed: Vec<(&ToolCall, Result<ToolOutput, ToolExecutionError>)> =
+                if batch_len >= 2 {
+                    self.execute_parallel_readonly(&tool_calls[index..readonly_end], deadline)
+                        .await
+                } else {
+                    let call = &tool_calls[index];
+                    vec![(call, self.execute_single(call, deadline).await)]
+                };
             let next_index = if batch_len >= 2 {
                 readonly_end
             } else {
@@ -621,11 +630,7 @@ impl RigSubAgentRuntime {
         });
     }
 
-    fn emit_tool_finished(
-        &self,
-        call: &ToolCall,
-        result: &Result<ToolOutput, ToolExecutionError>,
-    ) {
+    fn emit_tool_finished(&self, call: &ToolCall, result: &Result<ToolOutput, ToolExecutionError>) {
         let text = match result {
             Ok(output) => tool_output_text(output),
             Err(error) => tool_error_text(error),
@@ -900,6 +905,126 @@ fn split_tagged_thinking(content: &str) -> (String, String) {
 mod tests {
     use super::*;
 
+    /// 夹具：临时库 + 最小工具依赖（只构造不执行）。
+    fn test_deps(temp_dir: &std::path::Path) -> RigToolDeps {
+        let db = crate::agent::db::DispatcherDb::new(temp_dir.join("jkbot.sqlite3"))
+            .expect("open temp db");
+        let mut deps = RigToolDeps {
+            workspace_id: "sub-agent-test".to_string(),
+            workspace: temp_dir.to_path_buf(),
+            mcp_scope: crate::mcp::McpScope::Global,
+            exec_timeout_secs: 30,
+            restrict_to_workspace: true,
+            extra_allowed_dirs: Vec::new(),
+            app_handle: None,
+            db: db.clone(),
+            ssh_manager: crate::ssh_tool::SshSessionManager::new(db.pool()),
+            mcp_registry: crate::mcp::McpRegistry::new(db),
+            sub_agent_manager: None,
+            cancel_rx: None,
+            vision_spec: None,
+            image: crate::agent::rig_ext::tools::deps::ImageToolConfig {
+                url: String::new(),
+                api_key: String::new(),
+                model: String::new(),
+                edit_model: String::new(),
+            },
+            review: crate::agent::rig_ext::review::RigReviewContext::unconfigured(),
+            tool_call_id: crate::agent::rig_ext::tools::deps::ToolCallSlot::default(),
+        };
+        deps.review.executor_task = None;
+        deps
+    }
+
+    fn config(allowed_tools: Vec<&str>) -> crate::agent::sub_agent::config::SubAgentConfig {
+        crate::agent::sub_agent::config::SubAgentConfig {
+            agent_id: "a1".to_string(),
+            agent_name: "测试子智能体".to_string(),
+            description: "测试".to_string(),
+            system_prompt: "你是测试子智能体。".to_string(),
+            user_prompt_template: "任务：{{task}}".to_string(),
+            allowed_tools: allowed_tools.into_iter().map(str::to_string).collect(),
+            model_config: Default::default(),
+            max_iterations: 2,
+            max_output_tokens: 128,
+            temperature: 0.0,
+            timeout_secs: 30,
+            enabled: true,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn surface_offers_progress_tool_and_rejects_nested_sub_agents() {
+        let temp_dir = std::env::temp_dir().join(format!("rig-sub-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let deps = test_deps(&temp_dir);
+        let parent_spec = PurposeModelSpec {
+            api_key: "test".to_string(),
+            api_base: "http://127.0.0.1:1/v1".to_string(),
+            model: "mock".to_string(),
+            max_tokens: None,
+            context_window: None,
+            temperature: 0.0,
+            enable_thinking: true,
+        };
+        let cfg = config(vec!["local_zsh", "notify_user_progress"]);
+        let runtime = RigSubAgentRuntime::build(&RigSubAgentRequest {
+            config: &cfg,
+            parent_spec: &parent_spec,
+            deps: &deps,
+            task: "跑一下",
+            parent_tool_call_id: "call-1",
+            app_handle: None,
+            session_id: "ws-1",
+            cancel_rx: None,
+        })
+        .expect("构建应成功");
+        let mut names = runtime
+            .surface
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        names.sort();
+        // 允许列表精确生效：只有显式列出的两个工具。
+        assert_eq!(names, vec!["local_zsh", "notify_user_progress"]);
+
+        // 嵌套子智能体工具一律拒绝（防递归派生）。
+        let nested = config(vec!["call_sub_agent"]);
+        let error = RigSubAgentRuntime::build(&RigSubAgentRequest {
+            config: &nested,
+            parent_spec: &parent_spec,
+            deps: &deps,
+            task: "跑一下",
+            parent_tool_call_id: "call-1",
+            app_handle: None,
+            session_id: "ws-1",
+            cancel_rx: None,
+        })
+        .err()
+        .expect("嵌套子智能体工具必须被拒绝");
+        assert!(error.contains("不允许递归调用子智能体工具"), "{error}");
+
+        // 不可用工具名（编排器专属）在构建期报错，而不是运行期静默缺失。
+        let unavailable = config(vec!["submit_graph"]);
+        let error = RigSubAgentRuntime::build(&RigSubAgentRequest {
+            config: &unavailable,
+            parent_spec: &parent_spec,
+            deps: &deps,
+            task: "跑一下",
+            parent_tool_call_id: "call-1",
+            app_handle: None,
+            session_id: "ws-1",
+            cancel_rx: None,
+        })
+        .err()
+        .expect("编排器工具对子智能体不可用");
+        assert!(error.contains("不可用的工具"), "{error}");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
     #[test]
     fn truncation_keeps_head_and_tail() {
         let long = "a".repeat(SUB_AGENT_RESULT_MAX_CHARS + 100);
@@ -917,7 +1042,9 @@ mod tests {
             review.chars().count()
         );
         assert_eq!(
-            tool_result_preview("read_file", &"y".repeat(500)).chars().count(),
+            tool_result_preview("read_file", &"y".repeat(500))
+                .chars()
+                .count(),
             203
         );
     }

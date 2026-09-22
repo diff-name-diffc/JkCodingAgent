@@ -269,9 +269,7 @@ impl DispatcherDb {
             "VACUUM INTO ?1",
             params![backup_path.to_string_lossy().to_string()],
         ) {
-            eprintln!(
-                "v3→v4 迁移前整库快照失败（被删列 branch 为死数据，继续）：{error}"
-            );
+            eprintln!("v3→v4 迁移前整库快照失败（被删列 branch 为死数据，继续）：{error}");
         }
 
         let tx = conn
@@ -1089,7 +1087,10 @@ mod tests {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .unwrap();
-            assert_eq!((project_id.as_str(), project_name.as_str()), ("p-1", "项目一"));
+            assert_eq!(
+                (project_id.as_str(), project_name.as_str()),
+                ("p-1", "项目一")
+            );
 
             // 数据保留，未用列已随表重建消失。
             let (image_id, message_id, legacy_column): (String, Option<String>, i64) = conn
@@ -1260,7 +1261,10 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(status, "completed", "既有行数据应全量保留");
-            assert_eq!(model, None, "老轨迹行 model 应为 NULL（前端「未记录」兜底）");
+            assert_eq!(
+                model, None,
+                "老轨迹行 model 应为 NULL（前端「未记录」兜底）"
+            );
         }
         // 重开幂等：已是 v5 的库直接打开，不再触发任何迁移。
         drop(db);

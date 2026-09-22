@@ -1,5 +1,5 @@
 //! SSH 服务器运维备忘录工具：`ssh_memo_read` / `ssh_memo_upsert` / `ssh_memo_delete`。
-//! 移植自旧 `tools/builtin/ssh_memo.rs`；备忘录文件由 `ssh_tool::memo` 管理。
+//! 迁移自旧自实现工具层（已随迁移删除）；备忘录文件由 `ssh_tool::memo` 管理。
 
 use serde_json::{json, Value};
 
@@ -20,7 +20,10 @@ pub(super) fn ssh_memo_tools(manager: SshSessionManager) -> Vec<PortableDynamicT
 
 /// 校验 `server_id` 参数与服务器存在性，返回 (server_id, 展示名)。
 /// 备忘录不要求服务器处于启用状态：禁用中的服务器积累的环境知识仍可读写。
-async fn resolve_server(manager: &SshSessionManager, args: &Value) -> Result<(String, String), String> {
+async fn resolve_server(
+    manager: &SshSessionManager,
+    args: &Value,
+) -> Result<(String, String), String> {
     let Some(server_id) = string_arg(args, "server_id") else {
         return Err("错误：缺少必填参数 server_id；请先调用 ssh_list_servers。".to_string());
     };

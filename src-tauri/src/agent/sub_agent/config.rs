@@ -142,7 +142,9 @@ impl SubAgentConfig {
             ));
         }
         if self.max_iterations < 1 || self.max_iterations > MAX_ITERATIONS {
-            return Err(anyhow!("错误：max_iterations 必须在 1-{MAX_ITERATIONS} 之间"));
+            return Err(anyhow!(
+                "错误：max_iterations 必须在 1-{MAX_ITERATIONS} 之间"
+            ));
         }
         // 主流模型上下文已达 1M 级别，输出上限同步放宽：下限排除截断风险高的
         // 玩具值，上限 1M（MAX_OUTPUT_TOKENS）覆盖当前最大输出窗口。

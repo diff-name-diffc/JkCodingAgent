@@ -196,14 +196,23 @@ fn unknown_tool_call_update_registers_new_call() {
 fn plan_maps_to_plan_activity() {
     let mut mapper = mapper();
     let plan = Plan::new(vec![
-        PlanEntry::new("调研代码", PlanEntryPriority::High, PlanEntryStatus::Completed),
-        PlanEntry::new("实施改造", PlanEntryPriority::Medium, PlanEntryStatus::Pending),
+        PlanEntry::new(
+            "调研代码",
+            PlanEntryPriority::High,
+            PlanEntryStatus::Completed,
+        ),
+        PlanEntry::new(
+            "实施改造",
+            PlanEntryPriority::Medium,
+            PlanEntryStatus::Pending,
+        ),
     ]);
     let plan_activities = activities(mapper.feed(&SessionUpdate::Plan(plan)));
     assert_eq!(plan_activities.len(), 1);
     assert_eq!(plan_activities[0].kind, "plan");
     assert_eq!(plan_activities[0].title, "任务计划");
-    let payload: serde_json::Value = serde_json::from_str(&plan_activities[0].payload_json).unwrap();
+    let payload: serde_json::Value =
+        serde_json::from_str(&plan_activities[0].payload_json).unwrap();
     assert_eq!(payload["entries"].as_array().unwrap().len(), 2);
     assert!(plan_activities[0].content.contains("调研代码"));
 }

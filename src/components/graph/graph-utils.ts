@@ -8,7 +8,7 @@ import type {
   GraphPlanStatus,
 } from "../../types";
 
-/** submit_graph 工具输出文本中的 plan_id 锚点（与后端 graph_submit.rs 文案对齐）。 */
+/** submit_graph 工具输出文本中的 plan_id 锚点（与后端 `agent/rig_ext/agents/project_submit.rs` 文案对齐）。 */
 const PLAN_ID_PATTERN = /plan_id=([A-Za-z0-9_-]+)/;
 
 export function parseGraphPlanId(text: string): string | null {

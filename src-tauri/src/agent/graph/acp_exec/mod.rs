@@ -126,12 +126,7 @@ impl HandlerContext {
         mode: PermissionMode,
         request: &RequestPermissionRequest,
     ) -> RequestPermissionOutcome {
-        let locations = request
-            .tool_call
-            .fields
-            .locations
-            .as_deref()
-            .unwrap_or(&[]);
+        let locations = request.tool_call.fields.locations.as_deref().unwrap_or(&[]);
         // 越界判定：任一声明位置越出工作区即拒绝。无 locations 的调用（如
         // Bash）无法按路径约束，仍走模式默认策略。
         let out_of_workspace = locations
@@ -274,7 +269,9 @@ pub(crate) async fn execute_node(ctx: &NodeExecContext) -> NodeExecOutcome {
             error,
             usage_json: "{}".into(),
         },
-        Ok(Ok(turn)) => settle_stop_reason(turn.stop_reason, output, tool_call_count, affected_files),
+        Ok(Ok(turn)) => {
+            settle_stop_reason(turn.stop_reason, output, tool_call_count, affected_files)
+        }
     }
 }
 

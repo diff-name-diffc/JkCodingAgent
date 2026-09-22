@@ -244,25 +244,20 @@ async fn generate_session_keywords(
     let usage_model = spec.model.clone();
     let usage_model_for_log = spec.model.clone();
     let usage_capacity = spec.context_window;
-    match summarize_session_keywords(
-        &spec,
-        &qa_text,
-        &existing_keywords_json,
-        move |usage| {
-            if let Err(error) = usage_db.upsert_session_token_usage(
-                &usage_ws,
-                &usage_model,
-                DispatcherSessionTokenUsageSource::Summary,
-                usage,
-                usage_capacity,
-            ) {
-                eprintln!(
-                    "failed to persist keywords token usage for workspace {}: {}",
-                    usage_ws, error
-                );
-            }
-        },
-    )
+    match summarize_session_keywords(&spec, &qa_text, &existing_keywords_json, move |usage| {
+        if let Err(error) = usage_db.upsert_session_token_usage(
+            &usage_ws,
+            &usage_model,
+            DispatcherSessionTokenUsageSource::Summary,
+            usage,
+            usage_capacity,
+        ) {
+            eprintln!(
+                "failed to persist keywords token usage for workspace {}: {}",
+                usage_ws, error
+            );
+        }
+    })
     .await
     {
         Ok(raw) => {

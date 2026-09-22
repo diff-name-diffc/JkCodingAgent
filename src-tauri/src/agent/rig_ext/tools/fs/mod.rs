@@ -1,7 +1,7 @@
 //! 文件系统与搜索工具组（T2.1）：read_file / list_dir / glob / grep。
 //! 只读数据面，编排器与 plain chat 共用。
-//! 迁移自旧 `agent/tools/builtin/filesystem*.rs` 与 `agent/tools/builtin/search*`；
-//! 旧 `ToolContext` 的路径沙箱字段收敛为构造期 `FsSandbox`，
+//! 迁移自旧自实现工具层（已随迁移删除）的 filesystem/search 工具；
+//! 旧运行时工具上下文的路径沙箱字段收敛为构造期 `FsSandbox`，
 //! 结构化 `data` 载荷不再随结果返回（runtime 只持久化原始文本产物）。
 
 use std::path::PathBuf;

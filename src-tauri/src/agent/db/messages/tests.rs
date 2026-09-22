@@ -137,32 +137,6 @@ fn chat_image_rows_cascade_with_message_deletion() {
     assert_eq!(remaining, 0);
 }
 
-#[test]
-fn tool_context_payload_is_serialized_and_matches_llm_input() {
-    let db = test_db();
-    let message = db
-        .add_visible_tool_result(
-            "workspace",
-            "给用户看的短摘要",
-            "frame 37: 图号 A-01，标题 总说明\nframe 38: 图号 A-02，标题 系统图",
-            Some("tool-call"),
-            Some("read_dwg"),
-            Some("intent_compressed"),
-            &[],
-        )
-        .expect("add compressed tool result");
-
-    let serialized = serde_json::to_value(&message).expect("serialize dispatcher message");
-    assert_eq!(
-        serialized["contextPayload"],
-        "frame 37: 图号 A-01，标题 总说明\nframe 38: 图号 A-02，标题 系统图"
-    );
-    assert_eq!(
-        message.to_llm_message().expect("tool message kept").content,
-        serialized["contextPayload"].as_str().unwrap()
-    );
-}
-
 fn image_segment(image_id: &str) -> super::super::content::ContentSegment {
     super::super::content::ContentSegment::Image {
         id: uuid::Uuid::new_v4().to_string(),
@@ -238,7 +212,11 @@ fn truncate_messages_from_cleans_traces_and_graph_plans() {
         .add_visible_message_from_segments(&session.id, "user", segments_json("被编辑的用户消息"))
         .expect("add m3");
     let m4 = db
-        .add_visible_message_from_segments(&session.id, "assistant", segments_json("将被删除的回答"))
+        .add_visible_message_from_segments(
+            &session.id,
+            "assistant",
+            segments_json("将被删除的回答"),
+        )
         .expect("add m4");
     let target_ms = chrono::DateTime::parse_from_rfc3339(&m3.created_at)
         .expect("parse m3 created_at")
@@ -341,14 +319,15 @@ fn truncate_messages_from_cleans_traces_and_graph_plans() {
         ),
         2
     );
-    assert!(conn
-        .query_row(
+    assert!(
+        conn.query_row(
             "SELECT COUNT(*) FROM dispatcher_messages WHERE id = ?1",
             params![m1.id],
             |row| row.get::<_, i64>(0)
         )
         .expect("m1 kept")
-        == 1);
+            == 1
+    );
     // 工具运行与产物：截断范围内的删除，范围外的保留。
     assert_eq!(
         count(
@@ -381,25 +360,46 @@ fn truncate_messages_from_cleans_traces_and_graph_plans() {
     );
     // 图编排：新计划连同 run/node_run/activity 级联删除，旧计划保留。
     assert_eq!(
-        count("SELECT COUNT(*) FROM graph_plans WHERE workspace_id = ?1", &session.id),
+        count(
+            "SELECT COUNT(*) FROM graph_plans WHERE workspace_id = ?1",
+            &session.id
+        ),
         1
     );
     assert_eq!(
-        count("SELECT COUNT(*) FROM graph_plans WHERE id = 'plan-old' AND workspace_id = ?1", &session.id),
+        count(
+            "SELECT COUNT(*) FROM graph_plans WHERE id = 'plan-old' AND workspace_id = ?1",
+            &session.id
+        ),
         1
     );
-    assert_eq!(count("SELECT COUNT(*) FROM graph_runs WHERE plan_id = ?1", "plan-new"), 0);
     assert_eq!(
-        count("SELECT COUNT(*) FROM graph_node_runs WHERE plan_id = ?1", "plan-new"),
+        count(
+            "SELECT COUNT(*) FROM graph_runs WHERE plan_id = ?1",
+            "plan-new"
+        ),
         0
     );
     assert_eq!(
-        count("SELECT COUNT(*) FROM graph_node_activities WHERE run_id = ?1", "run-1"),
+        count(
+            "SELECT COUNT(*) FROM graph_node_runs WHERE plan_id = ?1",
+            "plan-new"
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM graph_node_activities WHERE run_id = ?1",
+            "run-1"
+        ),
         0
     );
     // python 运行记录随消息外键级联删除。
     assert_eq!(
-        count("SELECT COUNT(*) FROM python_code_runs WHERE workspace_id = ?1", &session.id),
+        count(
+            "SELECT COUNT(*) FROM python_code_runs WHERE workspace_id = ?1",
+            &session.id
+        ),
         0
     );
     // token 用量有意保留（真实消耗记录）。

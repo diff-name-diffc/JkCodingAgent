@@ -3,7 +3,7 @@
 //! - `architecture_run`：把类型化画布程序交给前端画布解释器执行（绝不 eval）：
 //!   登记 oneshot → emit `architecture-run-request` → 等待
 //!   `architecture_run_complete` 回传报告；超时/取消一律返回可恢复错误文本并
-//!   显式清槽（fail-closed）。迁移自 `tools/builtin/architecture_run.rs`。
+//!   显式清槽（fail-closed）。迁移自 旧自实现工具层（已随迁移删除）的 architecture_run。
 //! - `RigArchitectureAgent`：单工具视觉循环（主模型即视觉模型），会话沙箱
 //!   为 `root_dir/architecture/<会话子目录>`。
 
@@ -17,12 +17,13 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::watch;
 
-use super::super::architecture::{validate_program, ArchProgram};
 use super::super::architecture::program_schema::architecture_run_parameters_schema;
 use super::super::architecture::prompt::ARCHITECTURE_SYSTEM_PROMPT;
+use super::super::architecture::{validate_program, ArchProgram};
 use super::super::plain_chat::render_runtime_workspace;
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord};
+use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::message::chat_history_to_rig;
 use crate::agent::rig_ext::model::{completions_model, PurposeModelSpec};
 use crate::agent::rig_ext::r#loop::{
@@ -31,7 +32,6 @@ use crate::agent::rig_ext::r#loop::{
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
 use crate::agent::rig_ext::tools::deps::ToolCallSlot;
-use crate::agent::rig_ext::events::AgentEvent;
 
 /// 等待画布前端执行与回传的总时限（含截图耗时）。
 const ARCH_RUN_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -184,14 +184,6 @@ impl RigArchitectureAgent {
         !self.spec.api_base.trim().is_empty() && !self.spec.model.trim().is_empty()
     }
 
-    pub fn model_name(&self) -> &str {
-        &self.spec.model
-    }
-
-    pub fn api_base(&self) -> &str {
-        &self.spec.api_base
-    }
-
     /// 会话沙箱：`root_dir/architecture/<会话子目录>`。
     pub async fn session_workspace(&self, workspace_id: &str) -> anyhow::Result<PathBuf> {
         let workspace = self
@@ -239,9 +231,7 @@ impl RigArchitectureAgent {
 
         let workspace = self.session_workspace(workspace_id).await?;
         if !self.is_configured() {
-            anyhow::bail!(
-                "错误：未配置视觉模型。请在设置中心「模型服务」添加视觉模型后重试。"
-            );
+            anyhow::bail!("错误：未配置视觉模型。请在设置中心「模型服务」添加视觉模型后重试。");
         }
 
         // 工具面：单工具（画布操作）。会话图片目录先创建再放行（截图落盘于此）。
@@ -269,7 +259,6 @@ impl RigArchitectureAgent {
             .map_err(|error| anyhow::anyhow!("初始化架构摘要模型失败：{error}"))?;
         let summary = RigSummaryModel {
             model: &summary_model,
-            model_name: &self.spec.model,
             max_tokens: self.spec.max_tokens,
             temperature: self.spec.temperature,
         };

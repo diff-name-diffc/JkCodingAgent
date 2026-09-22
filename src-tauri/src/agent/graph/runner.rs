@@ -30,10 +30,9 @@ use super::receipt;
 use super::scheduler::{FinishKind, ReadyQueue, MAX_PARALLEL_NODES};
 use super::store::GraphStore;
 use super::types::{
-    BaseToolGroup, GraphDefinition, GraphNode, GraphNodeRunRecord,
-    GraphPlanRecord, GraphPlanUpdatedPayload, GraphRunEvent, GraphRunEventPayload, GraphRunSummary,
-    NODE_CANCELLED, NODE_FAILED, NODE_SUCCEEDED, PLAN_CANCELLED, PLAN_COMPLETED, PLAN_FAILED,
-    RUN_MODE_RESUME,
+    BaseToolGroup, GraphDefinition, GraphNode, GraphNodeRunRecord, GraphPlanRecord,
+    GraphPlanUpdatedPayload, GraphRunEvent, GraphRunEventPayload, GraphRunSummary, NODE_CANCELLED,
+    NODE_FAILED, NODE_SUCCEEDED, PLAN_CANCELLED, PLAN_COMPLETED, PLAN_FAILED, RUN_MODE_RESUME,
 };
 use super::validate::validate_graph;
 use super::verifier;
@@ -293,7 +292,12 @@ async fn run_graph(
             let node_id = if !checkpoint_passed && settings.graph.pause_before_write {
                 ready
                     .iter()
-                    .find(|id| node_by_id.get(*id).map(|n| !node_may_write(n)).unwrap_or(false))
+                    .find(|id| {
+                        node_by_id
+                            .get(*id)
+                            .map(|n| !node_may_write(n))
+                            .unwrap_or(false)
+                    })
                     .or_else(|| ready.first())
                     .cloned()
             } else {
@@ -314,10 +318,7 @@ async fn run_graph(
 
             // 高危写检查点：每个 run 只拦一次，就绪节点只剩可能写盘的节点时
             // 暂停等待恢复。
-            if !checkpoint_passed
-                && settings.graph.pause_before_write
-                && node_may_write(&node)
-            {
+            if !checkpoint_passed && settings.graph.pause_before_write && node_may_write(&node) {
                 emit_run_event(
                     app,
                     &plan_id,

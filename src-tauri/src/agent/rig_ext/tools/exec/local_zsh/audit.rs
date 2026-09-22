@@ -1,5 +1,5 @@
 //! local_zsh 审计：audit.json 的读-改-写（按 run_dir 串行化）与结果渲染。
-//! 移植自旧 `tools/builtin/local_zsh/audit.rs`。
+//! 迁移自旧自实现工具层（已随迁移删除）。
 
 use std::collections::HashMap;
 use std::fs;

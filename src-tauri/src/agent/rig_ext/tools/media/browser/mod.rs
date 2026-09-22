@@ -7,7 +7,7 @@
 //! - `recovery`：错误分类与 LLM 感知的自动恢复；
 //! - `file_url`：file:// URL 解析与工作区拘禁（高危安全面）。
 //!
-//! 迁移自旧 `agent/tools/builtin/browser*`；浏览器管理器经
+//! 迁移自旧自实现工具层（已随迁移删除）的 browser 工具；浏览器管理器经
 //! `deps.app_handle` 的 `BrowserManager` state 访问。视觉分析改用
 //! `deps.vision_spec`（旧实现回退「聊天 provider + 视觉模型名」的链路
 //! 随旧 llm 层退役，视觉槽位解析已内置凭据回退，语义等价）。
@@ -30,12 +30,11 @@ use snapshot::{
     READ_TEXT_DEFAULT_LINE_LIMIT,
 };
 
+use super::super::super::model::PurposeModelSpec;
 use super::super::common::{
-    string_arg, u64_arg, usize_arg, with_compression_parameters,
-    DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
+    string_arg, u64_arg, usize_arg, with_compression_parameters, DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
 };
 use super::super::deps::RigToolDeps;
-use super::super::super::model::PurposeModelSpec;
 use super::{data_url_to_image, vision_complete_image};
 use crate::browser::{normalize_browser_url, BrowserManager};
 
@@ -273,8 +272,9 @@ async fn execute_visual_analyze(
             "错误：浏览器截图结果缺少 data URL，无法进行视觉分析",
         ));
     };
-    let image = data_url_to_image(data_url)
-        .map_err(|error| ToolExecutionError::other(format!("错误：浏览器截图 data URL 非法：{error}")))?;
+    let image = data_url_to_image(data_url).map_err(|error| {
+        ToolExecutionError::other(format!("错误：浏览器截图 data URL 非法：{error}"))
+    })?;
 
     let prompt = build_visual_analysis_prompt(&instruction);
     let content = vision_complete_image(

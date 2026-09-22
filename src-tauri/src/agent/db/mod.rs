@@ -26,26 +26,24 @@ use rusqlite::{params, Connection};
 
 // 对外引用的共享常量需显式重新导出（glob `pub use` 会丢弃 pub(crate) 项）。
 pub use artifacts::{DispatcherToolArtifactRecord, DispatcherToolArtifactRef, ToolArtifactDraft};
-pub use contract::{
-    ChatMessage, ChatMessageContentPart, ChatMessageImageSource, FunctionCall, LlmPromptTokensDetails,
-    LlmUsage, OutboundToolCall,
-};
-pub(crate) use contract::MAX_TURN_TOOL_IMAGE_ATTACHMENTS;
 pub use categories::{ChatCategory, ChatCategoryAgentConfig};
+pub(crate) use contract::MAX_TURN_TOOL_IMAGE_ATTACHMENTS;
+pub use contract::{
+    ChatMessage, ChatMessageContentPart, ChatMessageImageSource, FunctionCall,
+    LlmPromptTokensDetails, LlmUsage, OutboundToolCall,
+};
 pub use keywords::{KeywordAction, SessionSearchResult};
 pub use messages::{DispatcherMessageRecord, DispatcherMessageUsageStats};
 pub use python_runs::PythonCodeRunRecord;
 pub use sessions::{
-    AgentContext, ChatSessionRecord, DispatcherSessionKind, ProjectSessionRecord, SessionCreatedRecord,
-    SessionPage,
+    AgentContext, ChatSessionRecord, DispatcherSessionKind, ProjectSessionRecord,
+    SessionCreatedRecord, SessionPage,
 };
-#[allow(unused_imports)]
-pub use settings::{AhaContextConfig, AhaSettingsV2, DispatcherModelConfig};
+pub use settings::{AhaSettingsV2, DispatcherModelConfig};
 pub use token_usage::{DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource};
 pub use tool_runs::{DispatcherToolRunRecord, FinishToolRun, NewToolRun, ToolRunTraceContext};
-use util::MAX_DIALOGUE_QUERY_LIMIT;
-#[allow(unused_imports)]
 pub(crate) use util::DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS;
+use util::MAX_DIALOGUE_QUERY_LIMIT;
 
 #[derive(Debug, Clone)]
 pub struct DispatcherDb {

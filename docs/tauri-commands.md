@@ -91,7 +91,7 @@
 
 | 命令 | 实现位置 | 功能 | 前端调用 | 联动 |
 |---|---|---|---|---|
-| 🟢 `dispatcher_send_project_agent_message` | `agent/commands/run_commands.rs:3` | 项目模式 Agent 入口。校验 `project_path`（canonicalize + 受管项目），构建 OrchestratorAgent 执行一轮，返回 `AgentTurn`；结束后生成标题/关键字并 emit `dispatcher-session-updated` / `session-keywords-updated` | `dispatcher-chat/useDispatcherActions.ts:146` | Channel 事件由 `event-channel.ts` 消费；停止走 `dispatcher_stop_run` |
+| 🟢 `dispatcher_send_project_agent_message` | `agent/commands/run_commands.rs:3` | 项目模式 Agent 入口。校验 `project_path`（canonicalize + 受管项目），构建 rig 编排器（`rig_ext::agents::project`）执行一轮，返回 `AgentTurn`；结束后生成标题/关键字并 emit `dispatcher-session-updated` / `session-keywords-updated` | `dispatcher-chat/useDispatcherActions.ts:146` | Channel 事件由 `event-channel.ts` 消费；停止走 `dispatcher_stop_run` |
 | 🟢 `dispatcher_send_chat_agent_message` | `run_commands.rs:54` | 纯聊天模式入口。无路径参数，Agent 叠加会话所属聊天分类的提示词与工具集（`build_plain_chat_agent`）；其余同 project 版 | `useDispatcherActions.ts:140` | 同上；会话懒创建依赖 `chat_create_session` |
 | 🟢 `dispatcher_send_architecture_agent_message` | `agent/commands/architecture_commands.rs:10` | 架构画布视觉 Agent 入口。按视觉模型库条目构建 Agent；**跳过关键字生成**；运行中 `architecture_run` 工具 emit `architecture-run-request` | `architecture/chat/useArchitectureChat.ts:278` | `useArchRunListener` 执行画布程序 → `architecture_run_complete` 回传 |
 | 🟢 `architecture_run_complete` | `architecture_commands.rs:56` | 画布执行报告回传桥（≤950 字符），解除 `architecture_run` 工具的 oneshot 等待；返回是否被消费 | `architecture/arch-run-listener.ts:69` | 与上者构成「后端登记 → 前端执行 → 回传」闭环 |
@@ -269,7 +269,7 @@ Git 域共享底座 `scm/git/exec.rs`（`run_git` 系列走 `spawn_blocking` + �
 | 🟢 `rope_undo` | `rope.rs:460` | 弹 undo 栈顶整份 Rope 快照恢复（栈深 10，ropey 结构共享） | `useLargeFileEditing.ts:219`（Cmd+Z） | 快照栈语义无法用「再编辑一次」在服务端复现 |
 | 🟢 `rope_redo` | `rope.rs:492` | 逆操作 | 同上（Cmd+Shift+Z，同一调用点三元切换） | 与 undo 合并收益趋零 |
 | 🟢 `save_chat_image` | `chat_images.rs:369` | 全应用唯一图片落盘入口：base64 → id → >1.5MB 压缩 → 写会话目录 + DB 登记 | `chat-page-v2.tsx:225`；`useArchitectureChat.ts:174`；`arch-executor.ts:257` | 产物以 `chat-image://` 经自定义协议直出；工具产图共用 save_image |
-| 🟢 `chat_images_validate` | `chat_images.rs:419` | 发送前校验 segments 引用的图片文件存在性 | `chat-page-v2.tsx:172,285`（先验后截断） | 与 run_loop 内二次校验构成纵深防御 |
+| 🟢 `chat_images_validate` | `chat_images.rs:419` | 发送前校验 segments 引用的图片文件存在性 | `chat-page-v2.tsx:172,285`（先验后截断） | 与 rig 运行循环内二次校验构成纵深防御 |
 | 🔴 `get_notifications`（**整域删除**） | `platform/notification.rs:277` | 读通知——远程拉取被硬编码禁用（`_NOTIFICATIONS_URL=""`，`fetch_remote()` 恒返回空，:270-273），items 恒空 | `NotificationBell.tsx:92`（唯一渲染结果是「暂无通知」空态） | 返回字段 `hasUnreadPopup`/`popup` 前端类型都未声明（死载荷） |
 | 🔴 `mark_notification_read`（**整域删除**） | `notification.rs:342` | 单条标记已读——对恒空缓存做本地 JSON 变更，永远无效 | `NotificationBell.tsx:116` | 域死功能 |
 | 🔴 `mark_all_notifications_read`（**整域删除**） | `notification.rs:363` | 全部标记已读——同上，实际 no-op | `NotificationBell.tsx:134` | 域死功能 |

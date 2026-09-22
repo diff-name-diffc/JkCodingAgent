@@ -1,6 +1,6 @@
-//! sync_directory 工具测试。移植自旧 `tools/builtin/sync_directory_tests.rs`。
+//! sync_directory 工具测试。
 //!
-//! 已随审查门禁移至 runtime 策略层（TODO T3）而删除的旧用例：
+//! 已随审查门禁移至 runtime 策略层而删除的旧用例：
 //! - `missing_review_config_blocks_even_when_server_review_is_disabled_and_audits`
 //! - `configured_review_honors_explicit_server_exemption`
 //! - `registered_for_chat_with_self_managed_review`（旧注册表形态，已不适用）
@@ -12,7 +12,6 @@ use serde_json::json;
 
 struct Fixture {
     root: PathBuf,
-    db_path: PathBuf,
     manager: SshSessionManager,
     ssh_db: SshDb,
     workspace_id: String,
@@ -57,10 +56,9 @@ impl Fixture {
             .unwrap()])
             .unwrap();
         let db_path = root.join("dispatcher.sqlite3");
-        let db = DispatcherDb::new(db_path.clone()).unwrap();
+        let db = DispatcherDb::new(db_path).unwrap();
         Self {
             root,
-            db_path,
             manager: SshSessionManager::new(pool),
             ssh_db,
             workspace_id: uuid::Uuid::new_v4().to_string(),
@@ -79,6 +77,7 @@ impl Fixture {
             self.db.clone(),
             None,
             review_context_with_config(),
+            crate::agent::rig_ext::tools::deps::ToolCallSlot::default(),
         )
     }
 
@@ -176,6 +175,7 @@ async fn session_workspace_and_shell_artifacts_are_valid_sync_sources() {
             fixture.db.clone(),
             None,
             review_context_with_config(),
+            crate::agent::rig_ext::tools::deps::ToolCallSlot::default(),
         );
         let display = run(&tool, args).await;
         // 必须通过路径校验到达连接阶段；连接 127.0.0.1 失败属预期（测试不连真实服务器）。

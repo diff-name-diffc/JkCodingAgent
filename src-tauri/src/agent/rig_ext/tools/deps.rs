@@ -1,6 +1,6 @@
 //! rig 工具的构造期依赖集合。
 //!
-//! 对齐旧 `ToolContext`（`agent/tools/context.rs`）的**构造期**子集：
+//! 对齐旧运行时 `ToolContext`（已随迁移删除）的**构造期**子集：
 //! 旧上下文里逐次调用注入的字段（current_tool_call_id / spec hash /
 //! 子智能体 trace 缓冲等）不进本结构——它们由 runtime 执行策略
 //! （`loop::surface::ToolExecutionPolicy`）在每次调用时承担。
@@ -44,7 +44,7 @@ impl std::fmt::Debug for ImageToolConfig {
 
 /// 逐次调用注入槽：当前工具调用 id。
 ///
-/// 等价于旧 `ToolContext::current_tool_call_id` 的角色——需要与父级调用关联的
+/// 等价于旧运行时 `current_tool_call_id` 的角色——需要与父级调用关联的
 /// 工具（`call_sub_agent` 的子智能体事件/轨迹关联）在构造期拿不到调用 id，
 /// 由执行策略在每次调用前写入、收尾时清除。主 Agent 循环逐次执行工具，
 /// 因此不存在并发写入竞态；并行只读批中的工具不得依赖本槽位。
@@ -70,7 +70,8 @@ impl ToolCallSlot {
 }
 
 #[derive(Clone)]
-pub(crate) struct RigToolDeps {    pub workspace_id: String,
+pub(crate) struct RigToolDeps {
+    pub workspace_id: String,
     /// 工作区根目录（构造方须已完成 canonicalize 规范化，语义对齐旧
     /// `ToolContext::normalize_paths`；plain chat 的虚拟工作区保留原值）。
     pub workspace: PathBuf,
@@ -85,7 +86,7 @@ pub(crate) struct RigToolDeps {    pub workspace_id: String,
     pub mcp_registry: McpRegistry,
     pub sub_agent_manager: Option<Arc<SubAgentManager>>,
     /// run 级协作取消信号：长命令/扫描类工具应主动消费并终止底层
-    /// 子进程或循环（语义同旧 `ToolContext::cancel_rx`）。
+    /// 子进程或循环（语义同旧运行时的 `cancel_rx`）。
     pub cancel_rx: Option<watch::Receiver<bool>>,
     /// 视觉用途槽位规格（analyze_image 用）；None = 未配置，
     /// 工具须返回明确的「错误：视觉模型未配置…」可恢复错误。

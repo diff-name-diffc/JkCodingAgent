@@ -14,9 +14,7 @@ pub(super) async fn run_grep_query(
     let prep = match task::spawn_blocking(move || prepare_grep_search(&path_owned, &sandbox)).await
     {
         Ok(result) => result,
-        Err(error) => {
-            return SearchOutcome::error(format!("错误：grep 搜索准备任务失败：{error}"))
-        }
+        Err(error) => return SearchOutcome::error(format!("错误：grep 搜索准备任务失败：{error}")),
     };
     let GrepSearchPrep {
         workspace,
@@ -95,9 +93,7 @@ pub(super) async fn run_grep_query(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return run_grep_fallback(pattern, &workspace, &target, options, stdout_limit).await;
         }
-        Err(error) => {
-            return SearchOutcome::error(format!("错误：执行 grep 搜索失败：{error}"))
-        }
+        Err(error) => return SearchOutcome::error(format!("错误：执行 grep 搜索失败：{error}")),
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();

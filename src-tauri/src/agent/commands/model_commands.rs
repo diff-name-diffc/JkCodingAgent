@@ -1,7 +1,5 @@
 use super::*;
-use crate::agent::rig_ext::model::{
-    build_completion_request, completions_model, PurposeModelSpec,
-};
+use crate::agent::rig_ext::model::{build_completion_request, completions_model, PurposeModelSpec};
 use rig::completion::CompletionModel;
 
 #[tauri::command]
@@ -101,9 +99,7 @@ async fn test_chat_compatible_model(
 /// exercised — a text-only model misconfigured as the vision model will then
 /// fail here (HTTP 400 / `unknown variant image_url`) instead of silently
 /// passing and crashing `browser_visual_analyze` at runtime.
-fn build_test_messages(
-    enable_multimodal: bool,
-) -> (Option<String>, Vec<rig::completion::Message>) {
+fn build_test_messages(enable_multimodal: bool) -> (Option<String>, Vec<rig::completion::Message>) {
     if !enable_multimodal {
         return (
             Some("只输出 pong。".to_string()),

@@ -1,4 +1,4 @@
-//! ToolProgram 结构化错误（逐字迁移自旧 `agent/tools/program/error.rs`）。
+//! ToolProgram 结构化错误（逐字迁移自旧自实现工具层（已随迁移删除）的工具程序 error 模块）。
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

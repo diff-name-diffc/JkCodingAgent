@@ -1,6 +1,6 @@
-//! 项目编排 Agent（rig 形态）：`OrchestratorAgent` 的替代实现。
+//! 项目编排 Agent（`RigOrchestratorAgent`）。
 //!
-//! 职责不变：用固定只读能力探索项目，核心产物是执行图（DAG）——通过
+//! 用固定只读能力探索项目，核心产物是执行图（DAG）——通过
 //! `submit_graph` 协议工具提交，经校验后落 `graph_plans` 并等待用户确认；
 //! 图执行由 `agent::graph::runner` 承担。模型可见工具仅四个入口
 //! （run_tool_program / message / submit_graph / graph_plan_report），
@@ -21,9 +21,8 @@ use super::project_tools::{
     graph_plan_report_shell, message_shell, submit_graph_shell, ORCHESTRATOR_PROTOCOL_TOOL_NAMES,
 };
 use crate::agent::config::DispatcherAgentConfig;
-use crate::agent::db::{
-    AgentContext, AhaSettingsV2, DispatcherDb, DispatcherMessageRecord,
-};
+use crate::agent::db::{AgentContext, AhaSettingsV2, DispatcherDb, DispatcherMessageRecord};
+use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::message::chat_history_to_rig;
 use crate::agent::rig_ext::model::{
     completions_model, resolve_purpose_specs, PurposeModelSpecs, PurposeSwitchingModel,
@@ -37,7 +36,6 @@ use crate::agent::rig_ext::tool_result::RigSummaryModel;
 use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps, ToolCallSlot};
 use crate::agent::rig_ext::tools::fs::fs_tools;
 use crate::agent::rig_ext::tools::program::program_tool;
-use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES;
 use crate::mcp::McpScope;
 
@@ -65,7 +63,8 @@ pub struct RigOrchestratorAgent {
 
 impl RigOrchestratorAgent {
     pub fn new(config: DispatcherAgentConfig, db: DispatcherDb) -> Self {
-        let specs = resolve_purpose_specs(&AhaSettingsV2::default(), AgentContext::Project, &config);
+        let specs =
+            resolve_purpose_specs(&AhaSettingsV2::default(), AgentContext::Project, &config);
         // env 兜底初值（`CONTEXT_DEBUG`）；run 构建时以设置为准覆盖。
         let context_debug = config.context_debug;
         Self {
@@ -101,10 +100,6 @@ impl RigOrchestratorAgent {
 
     pub fn set_context_debug(&mut self, value: bool) {
         self.context_debug = value;
-    }
-
-    pub fn context_debug_enabled(&self) -> bool {
-        self.context_debug
     }
 
     pub fn is_configured(&self) -> bool {
@@ -215,13 +210,14 @@ impl RigOrchestratorAgent {
             .map_err(|error| anyhow::anyhow!("初始化摘要模型失败：{error}"))?;
         let summary = RigSummaryModel {
             model: &summary_model,
-            model_name: &self.specs.summary.model,
             max_tokens: self.specs.summary.max_tokens,
             temperature: self.specs.summary.temperature,
         };
 
         let extra_dirs = chat_image_dir(workspace_id);
-        let has_local_zsh = definitions.iter().any(|definition| definition.name == "local_zsh");
+        let has_local_zsh = definitions
+            .iter()
+            .any(|definition| definition.name == "local_zsh");
         let base_preamble = format!(
             "{}{}",
             build_iteration_system_prompt(&static_prompt, &definitions),
@@ -317,9 +313,7 @@ impl RigOrchestratorAgent {
 
     /// 数据面能力清单（设置页 `settings.project.allowed_tools` 的枚举对象）：
     /// 与运行期 grant 同源，只构造不执行。
-    pub fn static_runtime_tool_catalog(
-        &self,
-    ) -> Vec<crate::agent::sub_agent::db::ToolInfo> {
+    pub fn static_runtime_tool_catalog(&self) -> Vec<crate::agent::sub_agent::db::ToolInfo> {
         let deps = self.catalog_deps();
         fs_tools(&deps)
             .into_iter()
@@ -399,11 +393,7 @@ impl RigOrchestratorAgent {
         }
     }
 
-    async fn review_context(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-    ) -> RigReviewContext {
+    async fn review_context(&self, db: &DispatcherDb, workspace_id: &str) -> RigReviewContext {
         let session_title = db
             .get_session_title_async(workspace_id)
             .await
@@ -476,9 +466,9 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
                 .await;
                 Some(match report {
                     Ok(text) => RigProtocolResult::text_feedback(text),
-                    Err(error) => {
-                        RigProtocolResult::retryable_error(format!("错误：读取执行图报告失败：{error:#}"))
-                    }
+                    Err(error) => RigProtocolResult::retryable_error(format!(
+                        "错误：读取执行图报告失败：{error:#}"
+                    )),
                 })
             }
             "message" => {

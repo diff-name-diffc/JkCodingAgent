@@ -15,11 +15,7 @@ use serde_json::Value;
 pub(crate) const SUB_AGENT_TRACE_EVENT_LIMIT: usize = 500;
 const TRACE_TRUNCATED_EVENT: &str = "traceTruncated";
 
-pub(crate) fn record_trace_event(
-    trace: &Arc<Mutex<Vec<Value>>>,
-    event: Value,
-    timestamp_ms: i64,
-) {
+pub(crate) fn record_trace_event(trace: &Arc<Mutex<Vec<Value>>>, event: Value, timestamp_ms: i64) {
     let mut event = event;
     if let Some(object) = event.as_object_mut() {
         object.insert("timestampMs".to_string(), Value::from(timestamp_ms));

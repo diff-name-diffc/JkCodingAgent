@@ -1,6 +1,6 @@
 use super::run_commands::run_architecture_turn_skeleton;
-use crate::agent::rig_ext::events::AgentEvent;
 use super::*;
+use crate::agent::rig_ext::events::AgentEvent;
 
 /// 架构设计视觉 Agent 的消息入口。
 ///
@@ -23,7 +23,8 @@ pub async fn dispatcher_send_architecture_agent_message(
         .build_architecture_agent(model_library_id.as_deref())
         .await?
         .with_app_handle(agent_app);
-    run_architecture_turn_skeleton(&state, &app, &workspace_id, segments_json, on_event, agent).await
+    run_architecture_turn_skeleton(&state, &app, &workspace_id, segments_json, on_event, agent)
+        .await
 }
 
 /// 回传架构画布程序的执行报告。前端画布解释器执行完毕（或画布未就绪）后

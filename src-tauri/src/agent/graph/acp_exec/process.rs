@@ -44,7 +44,11 @@ pub(super) fn spawn(plan: &LaunchPlan) -> Result<SpawnedAgent, String> {
     let mut command = std::process::Command::new(&plan.program);
     command.args(&plan.args);
     command.env_clear();
-    command.envs(plan.envs.iter().map(|(key, value)| (key.as_str(), value.as_str())));
+    command.envs(
+        plan.envs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str())),
+    );
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -62,17 +66,8 @@ pub(super) fn spawn(plan: &LaunchPlan) -> Result<SpawnedAgent, String> {
         .stderr(std::process::Stdio::piped());
     let mut child = tokio::process::Command::from(command)
         .spawn()
-        .map_err(|error| {
-            format!(
-                "启动 ACP 执行器失败（{}）：{error}",
-                plan.program.display()
-            )
-        })?;
-    let (stdin, stdout, stderr) = (
-        child.stdin.take(),
-        child.stdout.take(),
-        child.stderr.take(),
-    );
+        .map_err(|error| format!("启动 ACP 执行器失败（{}）：{error}", plan.program.display()))?;
+    let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
     match (stdin, stdout, stderr) {
         (Some(stdin), Some(stdout), Some(stderr)) => Ok(SpawnedAgent {
             guard: ChildGuard(child),

@@ -67,9 +67,8 @@ async fn generate_commit_message_impl(
         ));
     }
 
-    let model = completions_model(&spec).map_err(|error| {
-        GitError::AgentFailed(format!("初始化提交信息模型失败：{error:#}"))
-    })?;
+    let model = completions_model(&spec)
+        .map_err(|error| GitError::AgentFailed(format!("初始化提交信息模型失败：{error:#}")))?;
     // 提交信息是短结论任务：关闭思考链（与旧 `chat_stream(..., false, ...)` 同口径）。
     let request = build_completion_request(
         None,

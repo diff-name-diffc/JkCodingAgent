@@ -26,7 +26,9 @@ async fn resolve_project_path(
                 .await?;
             Ok(validated.to_string_lossy().into_owned())
         }
-        _ => Ok(plain_chat_browser_workspace()?.to_string_lossy().into_owned()),
+        _ => Ok(plain_chat_browser_workspace()?
+            .to_string_lossy()
+            .into_owned()),
     }
 }
 

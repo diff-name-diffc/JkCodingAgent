@@ -75,7 +75,6 @@ export interface DispatcherMessageUsageStats {
   completionTokens: number;
   totalTokens: number;
   elapsedMs: number;
-  paused?: boolean;
 }
 
 export type DispatcherToolResultMode =

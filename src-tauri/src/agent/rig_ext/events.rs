@@ -1,6 +1,6 @@
 //! Agent 运行时的事件与收口契约（前端契约，字段一字不可改）。
 //!
-//! 迁移自旧 `run_loop/types.rs`：这些类型是 `Channel<AgentEvent>` 的线格式与
+//! 迁移自旧自实现（已随迁移删除）运行循环的事件类型（原 `run_loop/types.rs`）：这些类型是 `Channel<AgentEvent>` 的线格式与
 //! `AgentTurn` 的返回形状，前端事件订阅与命令返回都依赖它们；运行骨架已换成
 //! `rig_ext::r#loop`，事件形状保持不变。
 

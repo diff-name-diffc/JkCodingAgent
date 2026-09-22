@@ -5,7 +5,7 @@
 //! - 项目级覆盖：`<repo>/.jkcodingagent/mcp.json`，随仓库走；同名服务器项目覆盖全局。
 //!
 //! 运行时入口是 `registry::McpRegistry`：按作用域缓存服务器健康状态与工具清单，
-//! 工具通过 `agent/tools/mcp.rs` 的桥接进入工具注册表。
+//! 工具经 `agent/rig_ext/tools/mcp.rs` 的桥接进入 rig 工具面。
 
 pub(crate) mod commands;
 pub(crate) mod project_file;

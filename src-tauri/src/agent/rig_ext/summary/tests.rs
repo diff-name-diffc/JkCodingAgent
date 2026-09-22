@@ -10,7 +10,6 @@ use crate::agent::rig_ext::tool_result::summary::{
 // 说明：双标签摘要协议与结构化兜底的实现在 `rig_ext/tool_result/summary.rs`
 // （工具结果压缩就地使用）；本文件保留这些用例以继续覆盖其纯函数行为。
 
-
 #[test]
 fn mixed_language_title_keeps_complete_term() {
     assert_eq!(
@@ -74,8 +73,10 @@ fn tagged_block_falls_back_to_other_start_tag_without_closing_tag() {
 
 #[test]
 fn structured_summary_exit_status_only_matches_explicit_patterns() {
-    let with_exit =
-        extract_structured_summary("ssh_exec", "running tests\nProcess finished with exit code 2");
+    let with_exit = extract_structured_summary(
+        "ssh_exec",
+        "running tests\nProcess finished with exit code 2",
+    );
     assert!(with_exit.contains("退出/状态: Process finished with exit code 2"));
 
     let with_chinese = extract_structured_summary("ssh_exec", "编译结束\n退出状态：0");
@@ -168,4 +169,3 @@ fn dual_summary_fallback_strips_protocol_tags() {
     assert_eq!(display, "正文内容");
     assert_eq!(context, "正文内容");
 }
-

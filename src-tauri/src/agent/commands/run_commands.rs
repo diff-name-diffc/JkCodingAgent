@@ -14,10 +14,7 @@ pub async fn dispatcher_send_project_agent_message(
     let validated_project_path = state.validate_project_workspace(&project_path).await?;
     let project_path = validated_project_path.to_string_lossy().into_owned();
     let agent_app = app.clone();
-    let agent = state
-        .build_run_agent()
-        .await?
-        .with_app_handle(agent_app);
+    let agent = state.build_run_agent().await?.with_app_handle(agent_app);
     run_orchestrator_turn_skeleton(
         &state,
         &app,
@@ -46,14 +43,16 @@ pub(crate) async fn run_orchestrator_turn_skeleton(
     let title_guard = state.begin_title_generation(workspace_id);
     let keywords_guard = state.begin_keywords_generation(workspace_id);
     let result = agent
-        .run_turn(super::super::rig_ext::agents::project::OrchestratorTurnRequest {
-            db: state.db(),
-            workspace_id,
-            project_path: &project_path,
-            user_segments_json: segments_json,
-            on_event,
-            cancel_rx: run_handle.cancel_receiver(),
-        })
+        .run_turn(
+            super::super::rig_ext::agents::project::OrchestratorTurnRequest {
+                db: state.db(),
+                workspace_id,
+                project_path: &project_path,
+                user_segments_json: segments_json,
+                on_event,
+                cancel_rx: run_handle.cancel_receiver(),
+            },
+        )
         .await
         .map(|reply| AgentTurn { reply })
         .map_err(|error| format_anyhow_error(&error));
@@ -66,7 +65,13 @@ pub(crate) async fn run_orchestrator_turn_skeleton(
         AgentContext::Project,
         title_guard,
     );
-    spawn_session_keywords_update(state, app, workspace_id, AgentContext::Project, keywords_guard);
+    spawn_session_keywords_update(
+        state,
+        app,
+        workspace_id,
+        AgentContext::Project,
+        keywords_guard,
+    );
     result
 }
 
@@ -142,13 +147,15 @@ pub(crate) async fn run_architecture_turn_skeleton(
     let run_handle = state.begin_run(workspace_id).map_err(|e| e.to_string())?;
     let title_guard = state.begin_title_generation(workspace_id);
     let result = agent
-        .run_turn(super::super::rig_ext::agents::architecture_agent::ArchitectureTurnRequest {
-            db: state.db(),
-            workspace_id,
-            user_segments_json: segments_json,
-            on_event,
-            cancel_rx: run_handle.cancel_receiver(),
-        })
+        .run_turn(
+            super::super::rig_ext::agents::architecture_agent::ArchitectureTurnRequest {
+                db: state.db(),
+                workspace_id,
+                user_segments_json: segments_json,
+                on_event,
+                cancel_rx: run_handle.cancel_receiver(),
+            },
+        )
         .await
         .map(|reply| AgentTurn { reply })
         .map_err(|error| format_anyhow_error(&error));

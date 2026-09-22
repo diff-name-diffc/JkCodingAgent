@@ -108,9 +108,7 @@ pub(super) async fn run_grep_fallback(
                 "错误：未找到 ripgrep (`rg`) 或系统 grep，无法执行搜索".to_string(),
             );
         }
-        Err(error) => {
-            return SearchOutcome::error(format!("错误：grep 回退搜索失败：{error}"))
-        }
+        Err(error) => return SearchOutcome::error(format!("错误：grep 回退搜索失败：{error}")),
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -353,7 +351,6 @@ pub(super) fn render_grep_fallback_output(
     if matched_files.is_empty() {
         return GrepRendered {
             display: String::new(),
-            total_matches: 0,
             truncated: false,
         };
     }
@@ -374,7 +371,6 @@ pub(super) fn render_grep_fallback_output(
         lines.extend(matched_files.iter().map(|file| file.path.clone()));
         return GrepRendered {
             display: lines.join("\n"),
-            total_matches,
             truncated: truncated_by_file_limit,
         };
     }
@@ -389,7 +385,6 @@ pub(super) fn render_grep_fallback_output(
     }
     GrepRendered {
         display: lines.join("\n"),
-        total_matches,
         truncated: truncated_by_file_limit,
     }
 }

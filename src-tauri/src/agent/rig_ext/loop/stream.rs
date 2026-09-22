@@ -170,7 +170,7 @@ pub(super) fn split_choice(choice: &[AssistantContent]) -> (String, String, Vec<
     (visible.trim().to_string(), thinking, tool_calls)
 }
 
-/// 与旧 `llm/protocol.rs` 的 `split_tagged_thinking` 同一实现（私有不可复用，
+/// 与旧客户端层的 `split_tagged_thinking` 同一实现（私有不可复用，
 /// Phase 5 归一）：把 `<think>…</think>` 块从正文拆到思考链。
 fn split_tagged_thinking(content: &str) -> (String, String) {
     let lower = content.to_ascii_lowercase();

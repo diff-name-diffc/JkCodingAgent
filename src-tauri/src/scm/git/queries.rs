@@ -135,10 +135,16 @@ pub async fn git_log(
     branch: Option<String>,
     skip: Option<u32>,
 ) -> CommandResult<Vec<GitCommit>> {
-    git_log_impl(project_path.clone(), limit, search.clone(), branch.clone(), skip)
-        .await
-        .with_context(|| format!("读取 Git 日志失败（{}）", project_path))
-        .into_command_result()
+    git_log_impl(
+        project_path.clone(),
+        limit,
+        search.clone(),
+        branch.clone(),
+        skip,
+    )
+    .await
+    .with_context(|| format!("读取 Git 日志失败（{}）", project_path))
+    .into_command_result()
 }
 
 /// 构建 `git log` 的分页数值参数（`-n <limit>` + 可选 `--skip <n>`）。

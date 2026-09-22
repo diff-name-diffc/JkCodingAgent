@@ -4,7 +4,7 @@
 //! program_schema,prompt}.rs`：AST 校验与 JSON Schema 是画布契约（与前端
 //! 解释器同源），随架构 Agent 一起迁入 rig 侧；`prompt.rs` 提供系统提示词。
 //!
-//! 与 `tools/program/ast.rs` 同一模式：**Rust 反序列化 + `validate_program`
+//! 与 `rig_ext/tools/program/ast.rs` 同一模式：**Rust 反序列化 + `validate_program`
 //! 才是权威校验**；随工具定义下发的 JSON Schema（见 `program_schema.rs`）
 //! 用于尽早约束模型输出。语义层校验（别名解析、形状存在性、几何计算）
 //! 由前端画布解释器完成。

@@ -1,4 +1,4 @@
-//! 普通聊天 Agent（rig 形态）：`PlainChatAgent` 的替代实现。
+//! 普通聊天 Agent：不绑定项目，按聊天分类配置装配模型槽位与工具面。
 //!
 //! 每轮 run 由命令层现建现用（设置变更下一轮即生效），本结构只负责装配：
 //! 1. 设置 → 用途槽位规格（`resolve_purpose_specs`）→ rig 模型；
@@ -20,22 +20,22 @@ use crate::agent::config::{DispatcherAgentConfig, DEFAULT_PLAIN_CHAT_SYSTEM_PROM
 use crate::agent::db::{
     AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb, DispatcherMessageRecord,
 };
-use crate::agent::rig_ext::r#loop::{
-    run_rig_loop, AppToolExecutionPolicy, AppToolPolicyConfig, RigLoopHooks, RigToolSurface,
-};
+use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::message::chat_history_to_rig;
 use crate::agent::rig_ext::model::{
     completions_model, resolve_purpose_specs, ModelSelectionHandle, PurposeModelSpecs,
     PurposeSwitchingModel,
+};
+use crate::agent::rig_ext::r#loop::{
+    run_rig_loop, AppToolExecutionPolicy, AppToolPolicyConfig, RigLoopHooks, RigToolSurface,
 };
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::sub_agent::{call_sub_agent_tool, list_sub_agents_tool};
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
 use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps, ToolCallSlot};
 use crate::agent::rig_ext::tools::exec::exec_tools;
-use crate::agent::rig_ext::tools::media::media_tools;
 use crate::agent::rig_ext::tools::mcp::mcp_tools;
-use crate::agent::rig_ext::events::AgentEvent;
+use crate::agent::rig_ext::tools::media::media_tools;
 use crate::agent::sub_agent::config::SubAgentConfig;
 use crate::agent::sub_agent::SubAgentManager;
 use crate::mcp::{tool_definitions_from_snapshot, McpRegistry, McpScope, ResolvedMcpTool};
@@ -87,11 +87,7 @@ impl RigPlainChatAgent {
         sub_agent_manager: Option<Arc<SubAgentManager>>,
     ) -> Self {
         Self {
-            specs: resolve_purpose_specs(
-                &AhaSettingsV2::default(),
-                AgentContext::Chat,
-                &config,
-            ),
+            specs: resolve_purpose_specs(&AhaSettingsV2::default(), AgentContext::Chat, &config),
             config,
             mcp_registry,
             ssh_manager,
@@ -112,8 +108,8 @@ impl RigPlainChatAgent {
         self
     }
 
-    /// 应用基础设置（对齐旧 `PlainChatAgent::apply_settings_v2`）：槽位规格、
-    /// 系统提示、允许列表、审查与图像凭据；并清除分类叠加（分类配置随后叠加）。
+    /// 应用基础设置（槽位规格、系统提示、允许列表、审查与图像凭据），
+    /// 并清除分类叠加（分类配置随后叠加）。
     pub fn apply_settings_v2(&mut self, settings: &AhaSettingsV2, context: AgentContext) {
         self.specs = resolve_purpose_specs(settings, context, &self.config);
 
@@ -132,7 +128,10 @@ impl RigPlainChatAgent {
             }
         }
         *self.allowed_tools.lock() = ctx_config.allowed_tools.clone();
-        *self.review_config.lock() = settings.review.is_configured().then(|| settings.review.clone());
+        *self.review_config.lock() = settings
+            .review
+            .is_configured()
+            .then(|| settings.review.clone());
         *self.image_credentials.lock() = settings.shared.image_model_credentials();
         // 基础设置重应用时同步清除分类叠加（对齐旧实现的顺序契约）。
         *self.category_context.lock() = None;
@@ -148,14 +147,6 @@ impl RigPlainChatAgent {
 
     pub fn is_configured(&self) -> bool {
         self.specs.chat.is_configured()
-    }
-
-    pub fn model_name(&self) -> &str {
-        &self.specs.chat.model
-    }
-
-    pub fn api_base(&self) -> &str {
-        &self.specs.chat.api_base
     }
 
     /// 每个会话独立的文件沙箱：`root_dir/plain-chat-browser/<会话子目录>`。
@@ -263,17 +254,15 @@ impl RigPlainChatAgent {
             return Vec::new();
         }
         let snapshot_tools = tool_definitions_from_snapshot(
-            self.mcp_registry.cached_for_scope(&McpScope::Global).as_ref(),
+            self.mcp_registry
+                .cached_for_scope(&McpScope::Global)
+                .as_ref(),
         );
         super::allowed_mcp_tools_by_config(snapshot_tools, &configured)
     }
 
     /// 装配本轮工具面（含按允许列表过滤）。
-    async fn build_surface(
-        &self,
-        deps: &RigToolDeps,
-        workspace_id: &str,
-    ) -> RigToolSurface {
+    async fn build_surface(&self, deps: &RigToolDeps, workspace_id: &str) -> RigToolSurface {
         let mut tools = exec_tools(deps);
         tools.extend(media_tools(deps));
         tools.extend(mcp_tools(deps).await);
@@ -301,7 +290,10 @@ impl RigPlainChatAgent {
     }
 
     /// 执行一轮聊天：落库用户消息 → 装配 → 跑 rig 循环 → 返回收口消息。
-    pub async fn run_turn(&self, request: ChatTurnRequest<'_>) -> anyhow::Result<DispatcherMessageRecord> {
+    pub async fn run_turn(
+        &self,
+        request: ChatTurnRequest<'_>,
+    ) -> anyhow::Result<DispatcherMessageRecord> {
         let db = request.db;
         let workspace_id = request.workspace_id;
         let on_event = request.on_event;
@@ -346,7 +338,9 @@ impl RigPlainChatAgent {
         self.warm_sub_agent_exposure(workspace_id).await;
 
         // 工具依赖（构造期快照：会话沙箱、审查输入、凭据、取消信号）。
-        let deps = self.build_deps(db, workspace_id, &workspace, &request.cancel_rx).await;
+        let deps = self
+            .build_deps(db, workspace_id, &workspace, &request.cancel_rx)
+            .await;
         let surface = self.build_surface(&deps, workspace_id).await;
 
         // 历史：DB 最近若干轮对话（不含 system，逐轮由 preamble 重建）。
@@ -361,7 +355,6 @@ impl RigPlainChatAgent {
             .map_err(|error| anyhow::anyhow!("初始化摘要模型失败：{error}"))?;
         let summary = RigSummaryModel {
             model: &summary_model,
-            model_name: &self.specs.summary.model,
             max_tokens: self.specs.summary.max_tokens,
             temperature: self.specs.summary.temperature,
         };
@@ -501,30 +494,22 @@ impl RigPlainChatAgent {
     }
 
     /// 供事件/诊断：本轮渲染后的基础系统提示（未含运行工作目录块）。
-    pub fn effective_system_prompt(&self, workspace_id: &str) -> String {
-        self.base_system_prompt(workspace_id)
-    }
-
-    /// 静态工具清单（不含 MCP 动态工具，不触发注册表刷新）：同步入口
-    /// `DispatcherState::registered_tool_names` 用。
-    pub fn static_tool_catalog(&self) -> Vec<(String, String)> {
+    /// 子智能体工具清单（子智能体保存校验与选择列表用）：与
+    /// `RigSubAgentRuntime` 实际继承的 execution profile 同源——exec + media
+    /// 加子智能体专用 `notify_user_progress`；**不含**嵌套子智能体工具
+    /// （call_sub_agent / list_sub_agents 不得递归派生）。
+    pub fn sub_agent_tool_catalog(&self) -> Vec<(String, String)> {
         let deps = self.catalog_deps();
         let mut tools = exec_tools(&deps);
         tools.extend(media_tools(&deps));
-        if let Some(manager) = &self.sub_agent_manager {
-            tools.push(call_sub_agent_tool(
-                Arc::clone(manager),
-                deps.clone(),
-                self.specs.chat.clone(),
-                None,
-                "tool-catalog".to_string(),
-                self.tool_call_id.clone(),
-            ));
-            tools.push(list_sub_agents_tool(
-                Arc::clone(manager),
-                "tool-catalog".to_string(),
-            ));
-        }
+        tools.push(crate::agent::rig_ext::sub_agent::notify_user_progress_tool(
+            "tool-catalog".to_string(),
+            "tool-catalog".to_string(),
+            "tool-catalog".to_string(),
+            None,
+            Arc::new(parking_lot::Mutex::new(Vec::new())),
+            "tool-catalog".to_string(),
+        ));
         let mut infos = tools
             .into_iter()
             .map(|tool| {

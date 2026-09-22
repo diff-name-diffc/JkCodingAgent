@@ -3,7 +3,7 @@
 //! 迁移自旧 `agent/sub_agent/tool.rs`：
 //! - `call_sub_agent`：委派子任务；构建失败/执行失败一律按**致命失败**返回
 //!   （`with_code("fatal")`）——父循环不得基于不完整的委派结果继续推理，
-//!   与旧 `ToolResult::fatal_error` 语义一致；轨迹无论成败都持久化。
+//!   与旧工具结果的致命失败语义一致；轨迹无论成败都持久化。
 //! - `list_sub_agents`：枚举本会话可用子智能体（同步 SQLite 读取走
 //!   `spawn_blocking`）。
 //! - `notify_user_progress`：子智能体专用进度通知（写轨迹 + 发
@@ -128,7 +128,11 @@ async fn run_sub_agent_call(
     };
 
     let outcome = runtime.execute(task).await;
-    let status = if outcome.is_ok() { "completed" } else { "failed" };
+    let status = if outcome.is_ok() {
+        "completed"
+    } else {
+        "failed"
+    };
     let trace_json = match runtime.trace_events_json() {
         Ok(trace) => trace,
         Err(error) => return Err(fatal(error)),
@@ -182,9 +186,10 @@ pub fn list_sub_agents_tool(
             Box::pin(async move {
                 // get_enabled_for_session 内部是同步 SQLite 读取：阻塞 I/O
                 // 必须走 spawn_blocking（项目规范）。
-                let joined =
-                    tokio::task::spawn_blocking(move || manager.get_enabled_for_session(&workspace_id))
-                        .await;
+                let joined = tokio::task::spawn_blocking(move || {
+                    manager.get_enabled_for_session(&workspace_id)
+                })
+                .await;
                 let configs = match joined {
                     Ok(Ok(configs)) => configs,
                     Ok(Err(error)) => {
@@ -212,7 +217,9 @@ pub fn list_sub_agents_tool(
                         config.agent_name, config.agent_id, config.description
                     ));
                 }
-                output.push_str("使用 call_sub_agent(agent_id=\"...\", task=\"...\") 来调用子智能体。");
+                output.push_str(
+                    "使用 call_sub_agent(agent_id=\"...\", task=\"...\") 来调用子智能体。",
+                );
                 Ok(ToolOutput::text(output))
             })
         },

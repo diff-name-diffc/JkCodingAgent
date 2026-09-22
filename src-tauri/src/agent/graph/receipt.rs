@@ -243,9 +243,6 @@ fn aggregate_usage(
         completion_tokens: completion,
         total_tokens: prompt + completion,
         elapsed_ms,
-        // 回执是运行收尾时一次性写入的消息，不属于主 agent 的暂停窗口，
-        // per-message 语义上 false 即正确值；前端 turn 聚合也不合并 paused 字段。
-        paused: false,
     }
 }
 
@@ -380,7 +377,6 @@ mod tests {
         // 不能恒为 0（会污染 turn 级 max 聚合的耗时展示）。
         let stats = aggregate_usage(&runs, &verdict, 42_000);
         assert_eq!(stats.elapsed_ms, 42_000);
-        assert!(!stats.paused);
     }
 
     #[test]

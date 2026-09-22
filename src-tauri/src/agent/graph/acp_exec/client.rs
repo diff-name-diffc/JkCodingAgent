@@ -9,8 +9,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_client_protocol::ByteStreams;
-use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, Error, InitializeRequest, NewSessionRequest,
     NewSessionResponse, PromptRequest, RequestPermissionRequest, RequestPermissionResponse,
@@ -18,13 +16,15 @@ use agent_client_protocol::schema::v1::{
     SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason,
     TextContent,
 };
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::ByteStreams;
 use agent_client_protocol::{Agent, ConnectionTo};
 use parking_lot::Mutex;
 use tokio::sync::watch;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use super::launcher::LaunchPlan;
-use super::{HandlerContext, process};
+use super::{process, HandlerContext};
 use crate::agent::graph::harness::{PermissionMode, ResolvedNodeHarness};
 
 /// JSON-RPC 应用层错误码（-32603 internal error 区间），仅用于区分错误来源。
@@ -117,8 +117,7 @@ pub(super) async fn run_prompt_turn(
                 let session_id = session.session_id.clone();
                 *session_slot.lock() = Some(session_id.clone());
                 let mut stage_diagnostics = Vec::new();
-                if let Err(error) = apply_mode(&connection, &session, &session_id, mode_id).await
-                {
+                if let Err(error) = apply_mode(&connection, &session, &session_id, mode_id).await {
                     if read_only {
                         // 只读节点 fail-closed：权限模式未生效时执行器默认模式
                         // 可能放行写操作，直接失败优于带病运行。
@@ -213,7 +212,11 @@ async fn apply_mode(
     if modes.current_mode_id.0.as_ref() == want {
         return Ok(());
     }
-    if !modes.available_modes.iter().any(|mode| mode.id.0.as_ref() == want) {
+    if !modes
+        .available_modes
+        .iter()
+        .any(|mode| mode.id.0.as_ref() == want)
+    {
         return Err(format!(
             "执行器不支持权限模式 '{want}'（可用：{}），当前模式 '{}'",
             modes
@@ -250,7 +253,9 @@ async fn apply_model(
         return;
     }
     let Some(config_options) = &session.config_options else {
-        diagnostics.push(format!("会话未返回配置项列表，无法设置模型 '{keyword}'，沿用默认模型"));
+        diagnostics.push(format!(
+            "会话未返回配置项列表，无法设置模型 '{keyword}'，沿用默认模型"
+        ));
         return;
     };
     let Some(option) = config_options.iter().find(|option| {
@@ -280,7 +285,11 @@ async fn apply_model(
     let Some(target) = values
         .iter()
         .find(|value| value.as_str() == keyword)
-        .or_else(|| values.iter().find(|value| value.to_ascii_lowercase().contains(&lowered)))
+        .or_else(|| {
+            values
+                .iter()
+                .find(|value| value.to_ascii_lowercase().contains(&lowered))
+        })
         .cloned()
     else {
         diagnostics.push(format!(

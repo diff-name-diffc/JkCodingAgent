@@ -8,13 +8,13 @@ pub(crate) mod architecture;
 pub(crate) mod architecture_agent;
 pub(crate) mod plain_chat;
 
-#[cfg(test)]
-mod tests;
 pub(crate) mod project;
 pub(crate) mod project_prompt;
 pub(crate) mod project_report;
 pub(crate) mod project_submit;
 pub(crate) mod project_tools;
+#[cfg(test)]
+mod tests;
 
 use std::collections::HashSet;
 
@@ -85,8 +85,7 @@ pub(crate) fn allowed_mcp_tools_by_config(
 /// 工具名 → 结果策略（压缩阈值等）的统一来源：策略表（`ToolSpec`）为唯一权威，
 /// 避免工具面装配时手写阈值表与策略表漂移。MCP 工具走 `ToolSpec::mcp`
 /// （default_compress=true + 5000），未收录工具名走 fail-closed 兜底。
-pub(crate) fn tool_result_policies_from_specs(
-) -> Vec<(String, RigToolResultPolicy)> {
+pub(crate) fn tool_result_policies_from_specs() -> Vec<(String, RigToolResultPolicy)> {
     // 工具名列表由策略表派生：`ToolSpec::new` 对未收录名字回退 fail-closed，
     // 因此这里只登记策略表中真实存在的名字。
     crate::agent::rig_ext::tools::spec::registered_tool_names()

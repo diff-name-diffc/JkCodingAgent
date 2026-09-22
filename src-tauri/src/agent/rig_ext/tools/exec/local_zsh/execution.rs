@@ -1,5 +1,5 @@
 //! local_zsh 子进程输出捕获：限时读取 stdout/stderr、超时/取消按进程组终止。
-//! 移植自旧 `tools/builtin/local_zsh/execution.rs`。
+//! 迁移自旧自实现工具层（已随迁移删除）。
 
 use std::process::Output;
 

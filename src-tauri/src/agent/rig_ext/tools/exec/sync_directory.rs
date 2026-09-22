@@ -1,5 +1,5 @@
 //! sync_directory 工具：rsync over SSH 目录同步（路径沙箱 + 取消 + 审计）。
-//! 移植自旧 `tools/builtin/sync_directory.rs`；rsync 编排保留在 `ssh_tool::sync`。
+//! 迁移自旧自实现工具层（已随迁移删除）；rsync 编排保留在 `ssh_tool::sync`。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,6 +26,7 @@ pub(super) fn sync_directory_tool(
     db: DispatcherDb,
     cancel_rx: Option<watch::Receiver<bool>>,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
+    tool_call_id: super::super::deps::ToolCallSlot,
 ) -> PortableDynamicTool {
     PortableDynamicTool::new(
         "sync_directory",
@@ -50,6 +51,7 @@ pub(super) fn sync_directory_tool(
             let db = db.clone();
             let cancel_rx = cancel_rx.clone();
             let review_context = review_context.clone();
+            let tool_call_id = tool_call_id.clone();
             Box::pin(async move {
                 let cancelled = cancel_rx.clone();
                 match execute_inner(
@@ -63,6 +65,7 @@ pub(super) fn sync_directory_tool(
                     db,
                     cancel_rx,
                     review_context,
+                    tool_call_id,
                 )
                 .await
                 {
@@ -85,7 +88,7 @@ pub(super) fn sync_directory_tool(
     )
 }
 
-/// 强制错误消息满足「错误：」前缀约定（对齐旧 `ToolResult::recoverable_error`）。
+/// 强制错误消息满足「错误：」前缀约定（对齐旧工具结果契约的 recoverable_error 语义）。
 fn ensure_error_prefix(message: String) -> String {
     let trimmed = message.trim_start();
     if trimmed.starts_with("错误：") {
@@ -95,7 +98,7 @@ fn ensure_error_prefix(message: String) -> String {
     }
 }
 
-/// 同步命令的安全审查（对齐旧 `sync_directory::review`）：未配置审查模型即
+/// 同步命令的安全审查（对齐旧实现的 `sync_directory::review`）：未配置审查模型即
 /// 拒绝（fail-closed）；服务器显式关闭「执行前审查」按配置放行；审查异常按拒绝处理。
 async fn review_sync_command(
     review_context: &crate::agent::rig_ext::review::RigReviewContext,
@@ -163,6 +166,7 @@ async fn execute_inner(
     db: DispatcherDb,
     cancel_rx: Option<watch::Receiver<bool>>,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
+    tool_call_id: super::super::deps::ToolCallSlot,
 ) -> Result<String, SyncFailure> {
     let mut request: SyncDirectory = serde_json::from_value(args.clone())
         .map_err(|e| SyncFailure::Recoverable(format!("错误：同步参数无效：{e}")))?;
@@ -189,7 +193,7 @@ async fn execute_inner(
         .map_err(|e| SyncFailure::Recoverable(format!("错误：{e}")))?;
     let command = request.command_description();
 
-    // 安全审查门禁（fail-closed，对齐旧 `review`）：未配置审查模型即拦截、
+    // 安全审查门禁（fail-closed，对齐旧实现）：未配置审查模型即拦截、
     // 服务器可显式豁免、判定不通过写审计与命令台账并阻断。
     let review = review_sync_command(&review_context, &workspace_id, args, &server, &command).await;
     if !review.allowed {
@@ -235,11 +239,14 @@ async fn execute_inner(
     let progress_workspace_id = workspace_id.clone();
     let progress = Arc::new(move |p: crate::ssh_tool::sync::SyncProgress| {
         if let Some(app) = &app_handle {
-            // TODO(T3)：toolCallId 由 runtime 策略层按次注入，当前恒为 null。
+            // 事件关联 id：执行策略在每次调用前把当前 tool_call_id 写入槽位
+            //（`ToolCallSlot`），前端据此把进度挂到对应工具卡片（类型见
+            // `src/types/ssh-sync.ts`；UI 消费方待接入时直接可用）。
+            let tool_call_id = tool_call_id.get();
             if let Err(error) = app.emit(
                 "ssh-sync-progress",
                 json!({
-                    "workspaceId": progress_workspace_id, "toolCallId": null,
+                    "workspaceId": progress_workspace_id, "toolCallId": tool_call_id,
                     "sshProfile": profile, "progress": p
                 }),
             ) {
@@ -304,16 +311,21 @@ async fn execute_inner(
 }
 
 /// 源目录解析与校验（纯函数，便于单测）：工作区沙箱 + 符号链接复核 +
-/// 拒绝 .git / 应用配置根目录。移植自旧 execute_inner 的 spawn_blocking 段。
+/// 拒绝 .git / 应用配置根目录。移植自旧实现的 spawn_blocking 段。
 fn resolve_sync_source(
     workspace: &std::path::Path,
     restrict_to_workspace: bool,
     extra_allowed_dirs: &[PathBuf],
     raw_source: &str,
 ) -> Result<PathBuf, String> {
-    let path = resolve_path(workspace, restrict_to_workspace, extra_allowed_dirs, raw_source)?
-        .canonicalize()
-        .map_err(|e| format!("解析源目录失败：{e}"))?;
+    let path = resolve_path(
+        workspace,
+        restrict_to_workspace,
+        extra_allowed_dirs,
+        raw_source,
+    )?
+    .canonicalize()
+    .map_err(|e| format!("解析源目录失败：{e}"))?;
     // 即便关闭工作区限制，解析符号链接后也要再次检查敏感路径。
     resolve_path(
         workspace,
@@ -327,9 +339,14 @@ fn resolve_sync_source(
     // 会话沙箱及 local_zsh 产物本就位于 .jkcodingagent 下，
     // 不能仅凭祖先目录名拒绝；敏感子路径由 resolve_path 校验。
     if path.components().any(|c| c.as_os_str() == ".git")
-        || path.file_name().is_some_and(|name| name == ".jkcodingagent")
+        || path
+            .file_name()
+            .is_some_and(|name| name == ".jkcodingagent")
         || (path.file_name().is_some_and(|name| name == "local_env")
-            && path.parent().and_then(|p| p.file_name()).is_some_and(|name| name == ".jkcodingagent"))
+            && path
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|name| name == ".jkcodingagent"))
     {
         return Err(format!(
             "不能同步应用配置根目录或 Git 元数据目录：{}。当前工作区：{}。请指定工作区或 local_zsh 下具体的产物子目录。",

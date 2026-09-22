@@ -70,7 +70,7 @@ fn inline_max_chars(tool_name: &str, args: &serde_json::Value) -> usize {
 /// 默认压缩触发阈值（对齐 `tools/spec.rs` 的 DEFAULT_FORCE_COMPRESS_AFTER_CHARS）。
 pub const DEFAULT_FORCE_COMPRESS_AFTER_CHARS: usize = 5_000;
 
-/// 单个工具的结果策略（rig 工具面的挂载形态，对应旧 `ToolResultPolicy`；
+/// 单个工具的结果策略（rig 工具面的挂载形态，对应旧工具结果策略；
 /// Phase 2 工具迁移时随工具面声明）。
 #[derive(Debug, Clone, Copy)]
 pub struct RigToolResultPolicy {
@@ -86,12 +86,6 @@ impl RigToolResultPolicy {
             force_compress_after_chars: DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             persist_raw_artifact: true,
         }
-    }
-
-    /// 覆盖压缩触发阈值（命令执行类工具使用更高的 12000）。
-    pub fn with_force_compress_after_chars(mut self, chars: usize) -> Self {
-        self.force_compress_after_chars = chars;
-        self
     }
 }
 
@@ -221,7 +215,6 @@ pub(super) fn bound_inline_tool_result(content: String) -> String {
 /// 摘要模型调用配置（压缩用途槽位的运行形态）。
 pub struct RigSummaryModel<'a, M: CompletionModel> {
     pub model: &'a M,
-    pub model_name: &'a str,
     pub max_tokens: Option<u64>,
     pub temperature: f64,
 }
@@ -246,7 +239,8 @@ async fn summarize_with_rig_model<M: CompletionModel>(
     compress_intent: Option<&str>,
 ) -> Result<(RigToolSummary, rig::completion::Usage)> {
     let system = summary::build_summary_system_prompt(tool_name, compress_intent.is_some());
-    let user = summary::build_summary_user_message(tool_name, raw_output, user_question, compress_intent);
+    let user =
+        summary::build_summary_user_message(tool_name, raw_output, user_question, compress_intent);
     let request = super::model::build_completion_request(
         Some(system),
         vec![rig::completion::Message::user(user)],
@@ -305,7 +299,8 @@ pub async fn persist_rig_tool_result<M: CompletionModel>(
     let tool_name = &tool_call.function.name;
     // G9-14：序列化失败不再静默降级为 `{}`——错误上抛，由运行循环以 Failed 收口。
     let arguments_json = serialize_tool_arguments(tool_name, &tool_call.function.arguments)?;
-    let prepared = prepare_rig_tool_result(tool_name, &tool_call.function.arguments, result, policy);
+    let prepared =
+        prepare_rig_tool_result(tool_name, &tool_call.function.arguments, result, policy);
 
     if !prepared.needs_summary {
         let artifacts = policy

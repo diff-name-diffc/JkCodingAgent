@@ -134,9 +134,7 @@ impl DispatcherDb {
         // 由外键 ON DELETE CASCADE 级联回收。解析失败即中止（事务回滚），
         // 不做静默跳过——留痕优于泄漏。
         let target_epoch_ms = chrono::DateTime::parse_from_rfc3339(&target_created_at)
-            .with_context(|| {
-                format!("parse truncated message created_at {target_created_at}")
-            })?
+            .with_context(|| format!("parse truncated message created_at {target_created_at}"))?
             .timestamp_millis();
         tx.execute(
             "DELETE FROM graph_plans WHERE workspace_id = ?1 AND created_at >= ?2",

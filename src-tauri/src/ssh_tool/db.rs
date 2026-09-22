@@ -359,7 +359,9 @@ mod tests {
             .unwrap();
 
         // 第二次保存删掉 alpha：返回差集，且附属行同事务清理。
-        let removed = ssh_db.save_servers(&[server("beta", "10.0.0.2", "ops")]).unwrap();
+        let removed = ssh_db
+            .save_servers(&[server("beta", "10.0.0.2", "ops")])
+            .unwrap();
         assert_eq!(removed, vec!["alpha".to_string()]);
         assert_eq!(ssh_db.host_key_pin("alpha").unwrap(), None);
         assert_eq!(ssh_db.host_key_pin("beta").unwrap(), Some("cc:dd".into()));
@@ -368,7 +370,9 @@ mod tests {
         assert_eq!(log.records[0].server_id, "beta");
 
         // 幂等：重复保存同一列表不再产生差集。
-        let removed = ssh_db.save_servers(&[server("beta", "10.0.0.2", "ops")]).unwrap();
+        let removed = ssh_db
+            .save_servers(&[server("beta", "10.0.0.2", "ops")])
+            .unwrap();
         assert!(removed.is_empty());
 
         std::fs::remove_dir_all(&root).ok();

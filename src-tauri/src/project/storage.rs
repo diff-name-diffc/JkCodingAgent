@@ -64,8 +64,7 @@ pub fn atomic_write(path: &Path, content: &str) -> StorageResult<()> {
     //（旧「打开+截断」写法天然保留 mode）。
     if let Ok(metadata) = fs::metadata(path) {
         let permissions = metadata.permissions();
-        fs::set_permissions(&tmp, permissions)
-            .map_err(io_error("恢复文件权限", tmp.clone()))?;
+        fs::set_permissions(&tmp, permissions).map_err(io_error("恢复文件权限", tmp.clone()))?;
     }
     fs::rename(&tmp, path).map_err(io_error("替换目标文件", path))
 }
@@ -115,13 +114,12 @@ pub async fn project_delete(
     {
         let db = state.db().clone();
         let project_id_for_guard = project_id.clone();
-        let session_ids = tokio::task::spawn_blocking(move || {
-            db.project_session_ids(&project_id_for_guard)
-        })
-        .await
-        .context("查询项目会话任务失败")
-        .and_then(|inner| inner.context("查询项目会话失败"))
-        .into_command_result()?;
+        let session_ids =
+            tokio::task::spawn_blocking(move || db.project_session_ids(&project_id_for_guard))
+                .await
+                .context("查询项目会话任务失败")
+                .and_then(|inner| inner.context("查询项目会话失败"))
+                .into_command_result()?;
         let active_runs = state.active_run_workspace_ids();
         if let Some(conflict) = session_ids
             .iter()

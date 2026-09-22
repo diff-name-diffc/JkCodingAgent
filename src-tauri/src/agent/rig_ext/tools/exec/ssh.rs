@@ -1,5 +1,5 @@
 //! SSH 工具组：`ssh_list_servers` / `ssh_exec`。
-//! 移植自旧 `tools/builtin/ssh.rs`；连接池复用 `crate::ssh_tool::SshSessionManager`。
+//! 迁移自旧自实现工具层（已随迁移删除）；连接池复用 `crate::ssh_tool::SshSessionManager`。
 
 use serde_json::{json, Value};
 
@@ -153,7 +153,9 @@ async fn ssh_exec_text(
     // - 已配置且服务器开启审查：执行前评估命令（含 stdin）安全性。
     // - 审查异常或判定不通过：拦截并写入审计，不执行命令。
     // - 服务器显式关闭「执行前审查」开关：按配置放行（设计内的豁免通道）。
-    let review_outcome: Option<crate::ssh_tool::SshAuditReview> = match review_context.config.as_ref()
+    let review_outcome: Option<crate::ssh_tool::SshAuditReview> = match review_context
+        .config
+        .as_ref()
     {
         None => {
             // 与 review-denied 路径一致：未配置审查的阻断也登记命令台账。
@@ -207,7 +209,8 @@ async fn ssh_exec_text(
                     command.clone(),
                     stdin.clone(),
                 );
-                match crate::agent::ssh_review::review_shell_command(review_config, &payload).await {
+                match crate::agent::ssh_review::review_shell_command(review_config, &payload).await
+                {
                     Ok(verdict) => Some(crate::ssh_tool::SshAuditReview {
                         allowed: verdict.allowed,
                         reason: verdict.reason,

@@ -124,7 +124,11 @@ pub(super) async fn emit_finished(
 
 /// 首轮视觉切换通知（对齐 `select_provider_for_messages`：三项全同不通知）。
 pub(super) fn maybe_emit_model_switched(hooks: &RigLoopHooks, on_event: &Channel<AgentEvent>) {
-    let Some(selection) = hooks.model_selection.as_ref().and_then(|handle| handle.last()) else {
+    let Some(selection) = hooks
+        .model_selection
+        .as_ref()
+        .and_then(|handle| handle.last())
+    else {
         return;
     };
     if selection.used_vision && selection.differs_from_chat {
@@ -168,7 +172,13 @@ pub(super) fn record_rig_usage(
     let model = model.to_string();
     tokio::spawn(async move {
         if let Err(error) = db
-            .upsert_session_token_usage_async(&wid, &model, source_kind, &llm_usage, context_window_capacity)
+            .upsert_session_token_usage_async(
+                &wid,
+                &model,
+                source_kind,
+                &llm_usage,
+                context_window_capacity,
+            )
             .await
         {
             eprintln!(

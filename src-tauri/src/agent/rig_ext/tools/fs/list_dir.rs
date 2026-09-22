@@ -1,4 +1,4 @@
-//! list_dir 工具（rig 形态）。迁移自旧 `tools/builtin/filesystem/list_dir.rs`。
+//! list_dir 工具（rig 形态）。迁移自旧自实现工具层（已随迁移删除）。
 //! 语义不变：最多两层的有界目录列举、噪声目录过滤、文件条目附带精确总行数
 //! （>4MB 跳过统计）、条目数截断标注；全路径失败返回「错误：」可恢复错误。
 //! 偏差：旧的结构化 `data` 载荷（entries/maxDepth/truncated）不再产出。
@@ -6,8 +6,8 @@
 use std::fs;
 use std::io::{self, Read};
 
-use serde_json::{json, Value};
 use rig::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
+use serde_json::{json, Value};
 use tokio::task;
 
 use super::super::common::{
@@ -65,16 +65,19 @@ async fn execute(args: Value, sandbox: FsSandbox) -> Result<ToolOutput, ToolExec
     match task::spawn_blocking(move || {
         let outcomes = paths
             .iter()
-            .map(|path| (path, list_dir_entries(path, recursive, max_entries, &sandbox)))
+            .map(|path| {
+                (
+                    path,
+                    list_dir_entries(path, recursive, max_entries, &sandbox),
+                )
+            })
             .collect::<Vec<_>>();
 
         // 单路径也保留根目录标签，便于 Agent 将相对文件名组装为 read_file 定位。
         let display = render_labeled_sections(
             outcomes
                 .iter()
-                .map(|(path, outcome)| {
-                    (format!("list_dir path={path}"), outcome.display.clone())
-                })
+                .map(|(path, outcome)| (format!("list_dir path={path}"), outcome.display.clone()))
                 .collect(),
         );
         let all_failed =

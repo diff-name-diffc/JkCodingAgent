@@ -182,7 +182,11 @@ fn render_grep_fallback_output_marks_file_limit_truncation() {
         rendered.display
     );
     assert!(rendered.truncated);
-    assert_eq!(rendered.total_matches, 1);
+    assert!(
+        rendered.display.contains("1 处匹配"),
+        "{}",
+        rendered.display
+    );
     assert!(
         !rendered.display.contains("b.rs:1"),
         "超限文件的匹配行应被丢弃"

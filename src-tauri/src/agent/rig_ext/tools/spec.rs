@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
-
-
 
 /// 工具结果语义压缩的通用触发阈值：`compress=true` 且原始结果超过该字符数
 /// 才调用摘要模型，不超过则直接返回原文（小结果不付额外 LLM 往返）。
@@ -253,30 +250,9 @@ impl ToolSpec {
         }
     }
 
-    /// 模型可见工具定义（rig 形态）。
-    pub fn to_definition(&self) -> rig::completion::ToolDefinition {
-        rig::completion::ToolDefinition {
-            name: self.name.clone(),
-            description: self.description.clone(),
-            parameters: self.parameters.clone(),
-        }
-    }
-
+    /// 只读且可并行（子智能体只读批的判定口径）。
     pub fn supports_parallel_readonly(&self) -> bool {
         self.access.readonly && self.execution.parallelizable
-    }
-
-    /// 绑定动态工具目录快照的稳定摘要。执行前会再次计算并比对，目录中
-    /// 同名工具的 server、Schema 或策略发生变化时必须让模型重新规划。
-    pub fn fingerprint(&self) -> String {
-        let digest = Sha256::digest(serde_json::to_vec(self).unwrap_or_default());
-        let mut encoded = String::with_capacity(digest.len() * 2);
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        for byte in digest {
-            encoded.push(HEX[(byte >> 4) as usize] as char);
-            encoded.push(HEX[(byte & 0x0f) as usize] as char);
-        }
-        encoded
     }
 }
 
@@ -790,43 +766,6 @@ mod tests {
             "测试工具",
             json!({ "type": "object", "properties": {} }),
         )
-    }
-
-    #[test]
-    fn converts_spec_to_llm_tool_definition() {
-        let spec = ToolSpec::new(
-            "read_file",
-            "读取文件",
-            json!({ "type": "object", "properties": {} }),
-        );
-
-        let definition = spec.to_definition();
-
-        assert_eq!(definition.name, "read_file");
-        assert_eq!(definition.description, "读取文件");
-        assert_eq!(definition.parameters["type"], "object");
-    }
-
-    #[test]
-    fn fingerprint_changes_with_dynamic_contract() {
-        let first = ToolSpec::mcp(
-            "mcp__server__tool".to_string(),
-            "[MCP/server] tool".to_string(),
-            json!({ "type": "object", "properties": { "value": { "type": "string" } } }),
-        );
-        let changed_schema = ToolSpec::mcp(
-            "mcp__server__tool".to_string(),
-            "[MCP/server] tool".to_string(),
-            json!({ "type": "object", "properties": { "value": { "type": "integer" } } }),
-        );
-        let changed_server = ToolSpec::mcp(
-            "mcp__server__tool".to_string(),
-            "[MCP/other] tool".to_string(),
-            first.parameters.clone(),
-        );
-
-        assert_ne!(first.fingerprint(), changed_schema.fingerprint());
-        assert_ne!(first.fingerprint(), changed_server.fingerprint());
     }
 
     #[test]

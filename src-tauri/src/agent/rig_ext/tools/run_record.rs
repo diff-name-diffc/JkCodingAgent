@@ -1,8 +1,8 @@
 //! 工具调用台账（`dispatcher_tool_runs`）与参数准备。
 //!
-//! 迁移自旧 `agent/tools/runtime.rs`（`create_and_start_tool_run_with_trace` /
-//! `finish_tool_run`）与 `registry.rs` 的参数准备片段（schema 默认值注入 +
-//! Draft 2020-12 校验），但不再经 `ToolRegistry`：策略来源改为工具名
+//! 迁移自旧自实现工具层（已随迁移删除）的 `create_and_start_tool_run_with_trace`
+//! / `finish_tool_run` 与 `prepare_input`（schema 默认值注入 + Draft 2020-12
+//! 校验），但不再经旧注册表：策略来源改为工具名
 //! （`crate::agent::rig_ext::tools::spec::ToolSpec` 策略表），参数校验直接对
 //! `PortableDynamicTool` 的 definition 做。
 
@@ -14,7 +14,7 @@ use crate::agent::db::{DispatcherDb, FinishToolRun, NewToolRun, ToolRunTraceCont
 use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::tools::spec::ToolSpec;
 
-/// 校验错误摘要最多列出的条数（对齐旧 `MAX_SUMMARIZED_ERRORS`）。
+/// 校验错误摘要最多列出的条数（对齐旧实现的同名常量）。
 const MAX_SUMMARIZED_ERRORS: usize = 8;
 
 /// 参数准备失败：模型可见文本（已带「错误：」前缀）+ 稳定错误码。
@@ -76,7 +76,7 @@ pub(crate) fn prepare_arguments(
     })
 }
 
-/// 递归注入 schema 默认值（对齐旧 `apply_schema_defaults`）。
+/// 递归注入 schema 默认值（对齐旧实现的同名助手）。
 fn apply_schema_defaults(schema: &Value, instance: &mut Value) {
     match instance {
         Value::Object(object) => {
@@ -106,7 +106,7 @@ fn apply_schema_defaults(schema: &Value, instance: &mut Value) {
 }
 
 /// 校验错误的人类/模型可读描述：oneOf/anyOf 分支展开到最贴近的一条
-/// （对齐旧 `describe_validation_error`）。
+/// （对齐旧实现的同名助手）。
 fn describe_validation_error(error: &jsonschema::ValidationError<'_>) -> String {
     let context = match error.kind() {
         jsonschema::error::ValidationErrorKind::OneOfNotValid { context }
@@ -195,7 +195,10 @@ pub(crate) async fn start_tool_run(
             trace,
         )
         .await?;
-    emit(context.on_event, AgentEvent::ToolRunUpdated { run: run.clone() });
+    emit(
+        context.on_event,
+        AgentEvent::ToolRunUpdated { run: run.clone() },
+    );
 
     let started = match context.db.mark_tool_run_started_async(&run.id).await {
         Ok(started) => started,
@@ -216,7 +219,10 @@ pub(crate) async fn start_tool_run(
                 )
                 .await
             {
-                emit(context.on_event, AgentEvent::ToolRunUpdated { run: finished });
+                emit(
+                    context.on_event,
+                    AgentEvent::ToolRunUpdated { run: finished },
+                );
             }
             return Err(error);
         }
@@ -227,12 +233,10 @@ pub(crate) async fn start_tool_run(
             run: started.clone(),
         },
     );
-    Ok(RigToolRun {
-        run_id: started.id,
-    })
+    Ok(RigToolRun { run_id: started.id })
 }
 
-/// 台账收尾更新（对齐旧 `finish_tool_run`）：无 message_id 时广播自身；
+/// 台账收尾更新（对齐旧实现的 `finish_tool_run`）：无 message_id 时广播自身；
 /// 有 message_id 时把该消息挂上工具运行树并广播整棵树。
 pub(crate) struct RigToolRunFinish<'a> {
     pub status: &'a str,

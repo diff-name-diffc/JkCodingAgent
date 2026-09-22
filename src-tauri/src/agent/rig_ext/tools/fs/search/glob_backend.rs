@@ -30,16 +30,12 @@ pub(super) fn run_glob_query(
     let relative_pattern = match Path::new(&search_pattern).strip_prefix(&dir_path) {
         Ok(pattern) => pattern,
         Err(_) => {
-            return SearchOutcome::error(
-                "错误：glob 模式无法转换为工作区相对路径".to_string(),
-            )
+            return SearchOutcome::error("错误：glob 模式无法转换为工作区相对路径".to_string())
         }
     };
     let matcher = match Pattern::new(&relative_pattern.to_string_lossy()) {
         Ok(matcher) => matcher,
-        Err(error) => {
-            return SearchOutcome::error(format!("错误：glob 模式无效：{error}"))
-        }
+        Err(error) => return SearchOutcome::error(format!("错误：glob 模式无效：{error}")),
     };
     let max_depth = relative_pattern
         .components()
@@ -62,7 +58,8 @@ pub(super) fn run_glob_query(
         if scanned_entries >= MAX_GLOB_SCAN_ENTRIES {
             scan_truncated = true;
             break;
-        }        match entry {
+        }
+        match entry {
             Ok(entry) => {
                 let path = entry.into_path();
                 let relative = path.strip_prefix(&dir_path).unwrap_or(&path);
@@ -84,9 +81,7 @@ pub(super) fn run_glob_query(
                     newest.push(Reverse(candidate));
                 }
             }
-            Err(error) => {
-                return SearchOutcome::error(format!("错误：glob 搜索失败：{error}"))
-            }
+            Err(error) => return SearchOutcome::error(format!("错误：glob 搜索失败：{error}")),
         }
     }
     let mut matches_with_metadata = newest

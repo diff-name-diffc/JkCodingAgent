@@ -210,8 +210,8 @@ pub(crate) fn my_tool(deps: &RigToolDeps) -> PortableDynamicTool {
 ### 2. 挂进工具面 — 相应组的入口
 
 按工具的可见面加入对应函数返回值：
-- 普通聊天 → `rig_ext/tools/exec.rs`（+ `media.rs`）→ 由 `rig_ext/agents/plain_chat.rs` 的 `build_surface` 汇总；
-- 编排器数据面（read_file/list_dir/glob/grep）→ `rig_ext/tools/fs.rs`，并登记进
+- 普通聊天 → `rig_ext/tools/exec/`（+ `media/`）→ 由 `rig_ext/agents/plain_chat.rs` 的 `build_surface` 汇总；
+- 编排器数据面（read_file/list_dir/glob/grep）→ `rig_ext/tools/fs/`，并登记进
   `rig_ext/tools/mod.rs` 的 `ORCHESTRATOR_RUNTIME_TOOL_NAMES`；
 - 子智能体 → `rig_ext/sub_agent/runner.rs` 的 `build`（继承普通聊天 profile）；
 - 协议壳（submit_graph / graph_plan_report / message）→ `rig_ext/agents/project_tools.rs`，

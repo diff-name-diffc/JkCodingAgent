@@ -1,7 +1,7 @@
 //! 多媒体工具组（T2.3a）：generate_image / edit_image / analyze_image /
 //! fetch_image / browser_*。
 //!
-//! 迁移自旧 `agent/tools/builtin/` 的 image_generation / image_edit /
+//! 迁移自旧自实现工具层（已随迁移删除）的 image_generation / image_edit /
 //! fetch_image / analyze_image / browser（+browser/ 子模块）。差异点：
 //! - 图片生成/编辑的 DashScope 直连 HTTP 逻辑整体迁入 `image_api`
 //!   （旧 `crate::tools::image_generator` 随旧工具层一并退役），产物落盘

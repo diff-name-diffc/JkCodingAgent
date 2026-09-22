@@ -19,9 +19,9 @@ use uuid::Uuid;
 use crate::agent::config::resolve_home_dir;
 use crate::agent::db::{DispatcherDb, PythonCodeRunRecord};
 use crate::agent::rig_ext::model::{build_completion_request, completions_model, PurposeModelSpec};
-use rig::completion::{CompletionModel, Message};
 use crate::agent::DispatcherState;
 use crate::shared::truncate_for_display;
+use rig::completion::{CompletionModel, Message};
 
 const RUN_TIMEOUT_SECS: u64 = 60;
 const INSTALL_TIMEOUT_SECS: u64 = 120;
@@ -188,10 +188,13 @@ async fn explain_result(
         spec.temperature,
         spec.enable_thinking,
     );
-    let response = timeout(Duration::from_secs(EXPLAIN_TIMEOUT_SECS), model.completion(request))
-        .await
-        .map_err(|_| anyhow!("生成 Python 教学解释超时"))?
-        .context("生成 Python 教学解释失败")?;
+    let response = timeout(
+        Duration::from_secs(EXPLAIN_TIMEOUT_SECS),
+        model.completion(request),
+    )
+    .await
+    .map_err(|_| anyhow!("生成 Python 教学解释超时"))?
+    .context("生成 Python 教学解释失败")?;
     Ok(response
         .choice
         .iter()

@@ -1,6 +1,6 @@
 //! 命令安全审查上下文（rig 形态的 `review_context`）。
 //!
-//! 旧实现经 `ToolContext` 取审查输入（`tools/review_context.rs`）；rig 工具
+//! 旧实现经运行时工具上下文（已随迁移删除）取审查输入；rig 工具
 //! 层不再持有 ToolContext，输入改为构造期依赖 `RigReviewContext`（随
 //! `RigToolDeps.review` 传入）。载荷字段与组装规则逐条对齐旧实现：意图取
 //! 本次调用的 `compress_intent`（缺失回退会话标题）、执行者任务仅在存在时
@@ -13,7 +13,7 @@ use crate::agent::db::settings::SshReviewConfig;
 use crate::agent::ssh_review::{CommandReviewPayload, CommandReviewTarget};
 
 /// 命令类工具的安全审查输入。`config = None` 表示未配置审查模型——
-/// 命令类工具据此 fail-closed 拒绝执行（对齐旧 `ToolContext::ssh_review`）。
+/// 命令类工具据此 fail-closed 拒绝执行（对齐旧运行时的 `ssh_review` 字段语义）。
 #[derive(Clone)]
 pub struct RigReviewContext {
     pub config: Option<SshReviewConfig>,

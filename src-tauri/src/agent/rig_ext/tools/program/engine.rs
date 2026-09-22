@@ -11,9 +11,7 @@ use tokio::time::Instant;
 
 use super::super::ast::ProgramNode;
 use super::super::error::{ProgramError, ProgramErrorKind};
-use super::super::support::{
-    cancel_wait, ensure_environment_budget, is_stopped, mark_stopped,
-};
+use super::super::support::{cancel_wait, ensure_environment_budget, is_stopped, mark_stopped};
 use super::super::value::StepEnvironment;
 use super::{ExecutionEngine, FlowError};
 

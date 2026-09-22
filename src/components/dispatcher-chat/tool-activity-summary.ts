@@ -21,7 +21,7 @@ export type ToolVerbCategory =
   | "mcp"
   | "other";
 
-/** 名字→动词类别。全集来自后端工具注册表（agent/tools/spec.rs 策略表）。 */
+/** 名字→动词类别。全集来自后端工具策略表（`agent/rig_ext/tools/spec.rs`）。 */
 const TOOL_VERB_MAP: Record<string, ToolVerbCategory> = {
   read_file: "read",
   list_dir: "read",

@@ -19,10 +19,11 @@ pub(super) struct ImageGenerationInput {
     pub prompt: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
-    #[allow(dead_code)]
+    /// 图片风格（可选）：声明时透传到请求体 `parameters.style`。
     pub style: Option<String>,
     pub negative_prompt: Option<String>,
     pub model: Option<String>,
+    /// 随机种子（可选）：声明时透传到请求体 `parameters.seed`。
     pub seed: Option<u64>,
 }
 
@@ -192,6 +193,28 @@ pub(super) async fn generate_image(
         _ => "1024*1024".to_string(),
     };
 
+    // 可选参数按「声明才发送」透传：未声明时请求体与不带这些键的老请求体
+    // 逐字节一致，避免向服务端发送显式 null。
+    let mut parameters = serde_json::Map::new();
+    parameters.insert("n".to_string(), json!(1));
+    parameters.insert(
+        "negative_prompt".to_string(),
+        json!(input.negative_prompt.as_deref().unwrap_or("")),
+    );
+    parameters.insert("prompt_extend".to_string(), json!(true));
+    parameters.insert("watermark".to_string(), json!(false));
+    parameters.insert("size".to_string(), json!(size));
+    if let Some(seed) = input.seed {
+        parameters.insert("seed".to_string(), json!(seed));
+    }
+    if let Some(style) = input
+        .style
+        .as_deref()
+        .filter(|style| !style.trim().is_empty())
+    {
+        parameters.insert("style".to_string(), json!(style));
+    }
+
     let request_body = json!({
         "model": model,
         "input": {
@@ -204,13 +227,7 @@ pub(super) async fn generate_image(
                 }
             ]
         },
-        "parameters": {
-            "n": 1,
-            "negative_prompt": input.negative_prompt.as_deref().unwrap_or(""),
-            "prompt_extend": true,
-            "watermark": false,
-            "size": size
-        }
+        "parameters": parameters
     });
 
     let client = make_client().context("构建 HTTP 客户端失败")?;

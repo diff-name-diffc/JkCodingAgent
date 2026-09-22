@@ -22,7 +22,8 @@ fn compress_requires_flag_and_threshold() {
     let long_output = "x".repeat(15_000);
 
     // 未声明 compress：即使超阈值也只截断。
-    let prepared = prepare_rig_tool_result("read_file", &serde_json::json!({}), &long_output, &policy);
+    let prepared =
+        prepare_rig_tool_result("read_file", &serde_json::json!({}), &long_output, &policy);
     assert_eq!(prepared.result_mode, "truncated");
     assert!(!prepared.needs_summary);
 
@@ -52,7 +53,8 @@ fn compress_requires_flag_and_threshold() {
 
     // 策略级 default_compress=true 时无需显式声明。
     let policy = RigToolResultPolicy::new(true);
-    let prepared = prepare_rig_tool_result("read_file", &serde_json::json!({}), &long_output, &policy);
+    let prepared =
+        prepare_rig_tool_result("read_file", &serde_json::json!({}), &long_output, &policy);
     assert_eq!(prepared.result_mode, "pending_summary");
 }
 
@@ -76,6 +78,11 @@ fn paged_read_tool_gets_larger_inline_budget() {
     assert_eq!(prepared.context_payload.chars().count(), 15_000);
 
     // 非读取类工具：恒走默认 8000 → 截断。
-    let prepared = prepare_rig_tool_result("local_zsh", &serde_json::json!({"offset": 1}), &output, &policy);
+    let prepared = prepare_rig_tool_result(
+        "local_zsh",
+        &serde_json::json!({"offset": 1}),
+        &output,
+        &policy,
+    );
     assert_eq!(prepared.result_mode, "truncated");
 }

@@ -1,7 +1,7 @@
 //! 编排器协议工具（rig 壳工具）：`submit_graph` / `graph_plan_report` / `message`。
 //!
 //! 三者的定义（name/description/parameters）逐字迁移自旧
-//! `tools/builtin/{submit_graph,graph_plan_report,shell}.rs`；执行回调为
+//! 旧自实现工具层（已随迁移删除）的 submit_graph/graph_plan_report/shell；执行回调为
 //! fail-closed 兜底——真正的动作由 `RigOrchestratorProtocol`（宿主拦截）完成，
 //! 若因接线错误走到回调，以「错误：」暴露误用而不是返回假成功回执。
 
@@ -73,8 +73,12 @@ pub(crate) fn message_shell() -> PortableDynamicTool {
 }
 
 /// 编排器可见的工具名（固定集合，模型只看这四个入口）。
-pub(crate) const ORCHESTRATOR_PROTOCOL_TOOL_NAMES: [&str; 4] =
-    ["run_tool_program", "message", "submit_graph", "graph_plan_report"];
+pub(crate) const ORCHESTRATOR_PROTOCOL_TOOL_NAMES: [&str; 4] = [
+    "run_tool_program",
+    "message",
+    "submit_graph",
+    "graph_plan_report",
+];
 
 fn bounded_identifier(description: &str) -> Value {
     json!({
@@ -227,13 +231,20 @@ mod tests {
 
     #[tokio::test]
     async fn shells_are_fail_closed_without_host_interception() {
-        for tool in [submit_graph_shell(), graph_plan_report_shell(), message_shell()] {
+        for tool in [
+            submit_graph_shell(),
+            graph_plan_report_shell(),
+            message_shell(),
+        ] {
             let error = tool
                 .execute(json!({}))
                 .await
                 .expect_err("壳工具不得在无拦截时返回成功");
             assert!(
-                error.model_feedback().unwrap_or_default().contains("错误："),
+                error
+                    .model_feedback()
+                    .unwrap_or_default()
+                    .contains("错误："),
                 "壳工具错误必须带「错误：」前缀"
             );
         }
@@ -250,7 +261,10 @@ mod tests {
 
     #[test]
     fn shell_descriptions_match_model_contract() {
-        assert!(message_shell().definition().description.contains("最终答复"));
+        assert!(message_shell()
+            .definition()
+            .description
+            .contains("最终答复"));
         assert!(submit_graph_shell()
             .definition()
             .description

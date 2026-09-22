@@ -3,8 +3,7 @@ use tauri::State;
 
 use super::validation::validate_single_server;
 use super::{
-    connect, memo, SshAuditLog, SshMemoPayload, SshServerConfig, SshSessionManager,
-    SshToolsConfig,
+    connect, memo, SshAuditLog, SshMemoPayload, SshServerConfig, SshSessionManager, SshToolsConfig,
 };
 
 /// 设置页一次性载荷（原 ssh_tool_load_config + ssh_tool_load_audit 合并）：
@@ -84,10 +83,7 @@ pub async fn ssh_tool_save_memo(
         .map_err(|error| error.to_string())?
 }
 
-async fn require_server_exists(
-    manager: &SshSessionManager,
-    server_id: &str,
-) -> Result<(), String> {
+async fn require_server_exists(manager: &SshSessionManager, server_id: &str) -> Result<(), String> {
     match manager.find_server_any_async(server_id).await? {
         Some(_) => Ok(()),
         None => Err(format!("未找到 SSH server：{server_id}")),

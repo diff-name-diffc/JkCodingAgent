@@ -70,7 +70,11 @@ impl DispatcherDb {
     /// 应用一轮关键字动作（add/remove/keep/merge）。会话不存在时返回
     /// `Ok(false)` 且不写任何行——关键字生成在 run 结束后异步 spawn，会话
     /// 可能在生成期间被删除，不校验会把孤儿关键字行回插给已删会话。
-    pub fn apply_keyword_actions(&self, session_id: &str, actions: &[KeywordAction]) -> Result<bool> {
+    pub fn apply_keyword_actions(
+        &self,
+        session_id: &str,
+        actions: &[KeywordAction],
+    ) -> Result<bool> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let ts = now();

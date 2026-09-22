@@ -25,13 +25,13 @@ use tokio::sync::watch;
 use super::surface::{ToolCallGuard, ToolCallOutcome, ToolCallTrace, ToolExecutionPolicy};
 use crate::agent::common::cancellation_requested;
 use crate::agent::db::{DispatcherDb, ToolRunTraceContext};
+use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::tools::deps::ToolCallSlot;
 use crate::agent::rig_ext::tools::run_record::{
     finish_tool_run, prepare_arguments, start_tool_run, RigToolRun, RigToolRunContext,
     RigToolRunFinish,
 };
-use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::tools::spec::{ToolSafety, ToolSpec};
 
 /// MCP 动态工具的 canonical 名前缀（见 `mcp/registry.rs`）。
@@ -78,7 +78,11 @@ impl<'a> AppToolExecutionPolicy<'a> {
         if name.starts_with(MCP_TOOL_NAME_PREFIX) {
             let definition = tool.definition();
             return (
-                ToolSpec::mcp(name.to_string(), definition.description, definition.parameters),
+                ToolSpec::mcp(
+                    name.to_string(),
+                    definition.description,
+                    definition.parameters,
+                ),
                 true,
             );
         }
@@ -104,12 +108,9 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy<'_> {
         };
 
         // 1. 台账创建 + started：无效参数同样先进入台账（旧实现口径）。
-        let effective_arguments = prepare_arguments(
-            &spec.name,
-            &spec.parameters,
-            &call.function.arguments,
-        )
-        .unwrap_or_else(|_| call.function.arguments.clone());
+        let effective_arguments =
+            prepare_arguments(&spec.name, &spec.parameters, &call.function.arguments)
+                .unwrap_or_else(|_| call.function.arguments.clone());
         let trace = match start_tool_run(
             run_context,
             &spec,
@@ -125,10 +126,7 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy<'_> {
                 run_id: Some(run.run_id),
             }),
             Err(error) => {
-                eprintln!(
-                    "错误：创建工具运行记录失败（工具 {}）：{error}",
-                    spec.name
-                );
+                eprintln!("错误：创建工具运行记录失败（工具 {}）：{error}", spec.name);
                 None
             }
         };
@@ -300,10 +298,3 @@ impl AppToolExecutionPolicy<'_> {
         Ok(())
     }
 }
-
-/// 无人使用时的空策略（测试/占位路径）：不加门禁、不建台账。
-pub fn no_policy() -> DirectPolicy {
-    DirectPolicy
-}
-
-pub use super::surface::DirectToolExecution as DirectPolicy;

@@ -1,11 +1,8 @@
-//! 消息桥（T1.2）：`DispatcherMessageRecord` → rig `Message`，替代旧链路
-//! `to_llm_message` → `build_api_messages` 的最终形态。
+//! 消息桥：会话历史 → rig `Message`。
 //!
-//! 设计决策：记录解析（segments_json / context_payload / tool_calls_json /
-//! thinking 过滤）复用 `DispatcherMessageRecord::to_llm_message` 这一 DB 侧
-//! 唯一口径（含 `should_keep_llm_message` 上下文过滤），本模块只负责
-//! `ChatMessage` → rig `Message` 的契约转换与图片解析，避免双份解析逻辑漂移。
-//! Phase 5 删除 `llm/` 时把 `to_llm_message` 的解析语义整体迁入本模块。
+//! 入口是 `chat_history_to_rig`——DB 侧 `load_llm_history_async` 已完成记录
+//! 解析（segments_json / context_payload / tool_calls_json / thinking 过滤），
+//! 本模块负责 `ChatMessage` → rig `Message` 的契约转换与图片解析。
 //!
 //! 图片段（`chat-image://{image_id}`）在此读盘转 base64 的
 //! `UserContent::Image`；丢失/超限按旧语义降级为文本占位，绝不中断 run。
@@ -19,12 +16,11 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use rig::completion::Message;
 use rig::message::{
-    AdditionalParams, AssistantContent, DocumentSourceKind, Image, ImageMediaType,
-    ProviderCallId, Reasoning, Text, ToolCall, ToolCallId, ToolFunction, ToolResult,
-    ToolResultContent, UserContent,
+    AdditionalParams, AssistantContent, DocumentSourceKind, Image, ImageMediaType, ProviderCallId,
+    Reasoning, Text, ToolCall, ToolCallId, ToolFunction, ToolResult, ToolResultContent,
+    UserContent,
 };
 
-use crate::agent::db::DispatcherMessageRecord;
 use crate::agent::db::{
     ChatMessage, ChatMessageContentPart, ChatMessageImageSource, MAX_TURN_TOOL_IMAGE_ATTACHMENTS,
 };
@@ -32,22 +28,11 @@ use crate::agent::db::{
 /// `Image.additional_params` 中暂存 image_id 的键（见模块文档）。
 const CHAT_IMAGE_ID_PARAM: &str = "chatImageId";
 
-/// 与旧 `llm/request.rs` 一致的内联图片体积上限（20 MB）。
+/// 与旧客户端层一致的内联图片体积上限（20 MB）。
 const MAX_INLINE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
-/// 会话消息记录批量转换为 rig 消息（被过滤的记录不产出消息）。
-pub async fn records_to_rig_messages(records: &[DispatcherMessageRecord]) -> Vec<Message> {
-    let mut messages = Vec::with_capacity(records.len());
-    for record in records {
-        if let Some(message) = record_to_rig_message(record).await {
-            messages.push(message);
-        }
-    }
-    messages
-}
-
 /// DB 历史（`DispatcherDb::load_llm_history_async` 的产物）→ rig 消息序列。
-/// 供运行时循环以「本轮 run 的历史起点」加载上下文（旧 `AgentLoop::new` 的角色）。
+/// 运行时循环的上下文起点（记录解析与过滤已在 DB 侧完成）。
 pub async fn chat_history_to_rig(history: Vec<ChatMessage>) -> Vec<Message> {
     let mut messages = Vec::with_capacity(history.len());
     for message in history {
@@ -56,14 +41,6 @@ pub async fn chat_history_to_rig(history: Vec<ChatMessage>) -> Vec<Message> {
         }
     }
     messages
-}
-
-/// 单条记录 → rig 消息。返回 None 表示该记录按 LLM 上下文口径被过滤
-/// （纯调度 plumbing 工具结果、process-only assistant 消息等）。
-pub async fn record_to_rig_message(record: &DispatcherMessageRecord) -> Option<Message> {
-    // to_llm_message 是记录解析与上下文过滤的唯一口径（G9-05），此处复用。
-    let chat_message = record.to_llm_message()?;
-    chat_message_to_rig(chat_message).await
 }
 
 /// `ChatMessage` → rig `Message` 的契约转换。
@@ -101,10 +78,7 @@ async fn chat_message_to_rig(message: ChatMessage) -> Option<Message> {
             }
             // 全空 assistant（无正文/思考/工具调用）对模型无信息量，且 rig 请求
             // 校验拒绝空 content 列表——直接丢弃。
-            (!content.is_empty()).then_some(Message::Assistant {
-                id: None,
-                content,
-            })
+            (!content.is_empty()).then_some(Message::Assistant { id: None, content })
         }
         "tool" => {
             let provider = message.tool_call_id.and_then(ProviderCallId::new);
@@ -118,7 +92,7 @@ async fn chat_message_to_rig(message: ChatMessage) -> Option<Message> {
             })
         }
         other => {
-            eprintln!("record_to_rig_message: 未知角色 {other}，消息已跳过");
+            eprintln!("chat_message_to_rig: 未知角色 {other}，消息已跳过");
             None
         }
     }
@@ -171,7 +145,9 @@ async fn user_message_to_rig(message: &ChatMessage) -> Option<Message> {
 
 /// 单个图片源 → rig `Image`（base64 + media_type + image_id 暂存）。
 /// Err 为面向模型的丢失原因文本（调用方包装为占位文本）。
-async fn resolve_image_source(source: &ChatMessageImageSource) -> std::result::Result<Image, String> {
+async fn resolve_image_source(
+    source: &ChatMessageImageSource,
+) -> std::result::Result<Image, String> {
     match source {
         ChatMessageImageSource::DataUrl { data_url } => data_url_to_image(data_url),
         ChatMessageImageSource::ChatImage { image_id } => {
@@ -236,7 +212,10 @@ fn local_image_to_base64(path: &Path) -> Result<(String, ImageMediaType)> {
             MAX_INLINE_IMAGE_BYTES / 1024 / 1024
         );
     }
-    let ext = path.extension().and_then(|value| value.to_str()).unwrap_or_default();
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
     let mime = crate::chat_images::mime_for_ext(ext)
         .ok_or_else(|| anyhow::anyhow!("不支持的图片格式：{}", path.display()))?;
     let media_type = image_media_type_for_mime(mime)
@@ -272,7 +251,7 @@ fn attached_image_id(image: &Image) -> Option<&str> {
 
 /// 把「本轮（最后一条用户消息之后）assistant/tool 消息文本里引用的
 /// `chat-image://{image_id}`」附加为该用户消息的视觉输入。
-/// 语义对齐旧 `llm::attach_turn_tool_images`：上限 3 张、越新的引用优先、
+/// 语义对齐旧客户端的同名能力（`attach_turn_tool_images`）：上限 3 张、越新的引用优先、
 /// 已在用户消息中的图片（粘贴 + 上次附加）去重、跨迭代稳定不累积。
 /// 与旧实现的差异：图片在此立即解析为 base64（旧实现挂引用、请求构造期解析），
 /// 丢失图片按同一占位文案降级。
@@ -368,7 +347,7 @@ fn message_visible_texts(message: &Message) -> Vec<&str> {
 
 /// 从纯文本里按出现顺序抽取 `chat-image://{id}` 引用。id 形态与
 /// `chat-image` scheme handler 的白名单一致（`[0-9A-Za-z-]{8,64}`），
-/// 模型改写/编造的引用天然不匹配。与旧 `llm::extract_chat_image_references`
+/// 模型改写/编造的引用天然不匹配。与旧客户端的 `extract_chat_image_references`
 /// 同一实现（私有函数不可复用，随 Phase 5 合并归一）。
 fn extract_chat_image_references(text: &str) -> Vec<String> {
     const PROTOCOL: &str = "chat-image://";

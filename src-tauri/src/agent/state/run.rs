@@ -171,9 +171,6 @@ struct GraphRunEntry {
 pub(crate) struct GraphRunHandle {
     pub(crate) cancel_rx: watch::Receiver<bool>,
     pub(crate) resume_rx: mpsc::Receiver<()>,
-    /// 本次运行的代际号（begin 单调递增），供调用方做代际校验与诊断。
-    #[allow(dead_code)]
-    pub(crate) epoch: u64,
 }
 
 pub(super) struct GraphRunRegistry {
@@ -182,7 +179,6 @@ pub(super) struct GraphRunRegistry {
 
 struct GraphRegistryData {
     entries: HashMap<String, GraphRunEntry>,
-    next_epoch: u64,
 }
 
 impl Default for GraphRunRegistry {
@@ -190,7 +186,6 @@ impl Default for GraphRunRegistry {
         Self {
             data: Mutex::new(GraphRegistryData {
                 entries: HashMap::new(),
-                next_epoch: 1,
             }),
         }
     }
@@ -206,8 +201,6 @@ impl GraphRunRegistry {
         if data.entries.contains_key(plan_id) {
             return Err("该图正在运行中，请勿重复启动".to_string());
         }
-        let epoch = data.next_epoch;
-        data.next_epoch = data.next_epoch.wrapping_add(1);
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let (resume_tx, resume_rx) = mpsc::channel(1);
         data.entries.insert(
@@ -220,7 +213,6 @@ impl GraphRunRegistry {
         Ok(GraphRunHandle {
             cancel_rx,
             resume_rx,
-            epoch,
         })
     }
 

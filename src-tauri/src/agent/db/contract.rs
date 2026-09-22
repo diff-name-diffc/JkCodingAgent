@@ -6,8 +6,8 @@
 //! 契约，但库中既有数据必须继续以同一形状读写，故保留在此。
 //!
 //! `ChatMessage` 的 LLM 侧用途（构造请求）已由 rig `Message` 取代；现存职责是
-//! 历史回放解析（`DispatcherMessageRecord::to_llm_message` → 由
-//! `rig_ext::message` 转为 rig 消息）。
+//! 历史回放解析（`DispatcherMessageRecord` 记录 → 由 `rig_ext::message`
+//! 转为 rig 消息）。
 
 use serde::{Deserialize, Serialize};
 
@@ -111,4 +111,3 @@ impl LlmUsage {
 /// 本轮工具图片附加上限：每次请求最多内联的最近引用数（防 base64 请求
 /// 膨胀；更早的引用模型仍可用 analyze_image 按需查看）。
 pub(crate) const MAX_TURN_TOOL_IMAGE_ATTACHMENTS: usize = 3;
-

@@ -1,4 +1,4 @@
-//! ToolProgram 静态验证（迁移自旧 `agent/tools/program/validate.rs`）。
+//! ToolProgram 静态验证（迁移自旧自实现工具层（已随迁移删除）的工具程序 validate 模块）。
 //! 能力目录的注入点保持 `CapabilityCatalog` trait：生产环境由 `DataPlane`
 //! 提供（工具存在于数据面即视为已授权；并行能力见 `super::PARALLEL_READONLY_TOOLS`）。
 

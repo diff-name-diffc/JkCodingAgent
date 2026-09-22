@@ -8,10 +8,6 @@ mod events;
 mod runner;
 mod tools;
 
-// 子智能体工具与事件的接入点是 T3.1 的 chat agent 装配；接入后移除 allow。
-#[allow(unused_imports)]
-pub use events::{SubAgentEvent, SubAgentEventPayload, SubAgentUsage};
-#[allow(unused_imports)]
-pub use runner::{RigSubAgentRequest, RigSubAgentRuntime};
-#[allow(unused_imports)]
+// 子智能体内部（runner/tools/events）相互直接引用；对外只导出父 Agent 装配
+// 需要的两个工具构造器。
 pub use tools::{call_sub_agent_tool, list_sub_agents_tool, notify_user_progress_tool};

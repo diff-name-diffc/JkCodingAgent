@@ -23,11 +23,6 @@ impl RigToolSurface {
     }
 
     /// 挂载单个工具的结果策略（覆盖默认值）。
-    pub fn with_policy(mut self, tool_name: impl Into<String>, policy: RigToolResultPolicy) -> Self {
-        self.policies.insert(tool_name.into(), policy);
-        self
-    }
-
     /// 批量挂载结果策略（工具面装配期从策略表派生）。
     pub fn with_policies(
         mut self,
@@ -87,8 +82,8 @@ pub struct ToolCallOutcome<'a> {
 /// 工具执行策略注入点（各 agent 的差异：审查门禁、台账、超时）。
 ///
 /// 三段式：`before_call`（门禁 + 台账开始，可拒绝）→ `execute`（实际执行）
-/// → `after_call`（结果落库后收尾台账）。默认实现 `DirectToolExecution`
-/// 不加任何门禁，三段中只有 `execute` 有行为。
+/// → `after_call`（结果落库后收尾台账）。trait 默认方法不加任何门禁，
+/// 三段中只有 `execute` 有行为；生产策略由 `AppToolExecutionPolicy` 覆盖三段。
 #[async_trait::async_trait]
 pub trait ToolExecutionPolicy: Send + Sync {
     /// 调用前置：门禁（审查/授权/参数准备）与台账开始。
@@ -118,7 +113,12 @@ pub trait ToolExecutionPolicy: Send + Sync {
     }
 }
 
-/// 默认策略：不加任何门禁、不建台账，直接执行工具回调（三段式的默认实现）。
+/// 默认策略：不加任何门禁、不建台账，直接执行工具回调。
+///
+/// 仅测试使用——生产路径一律经 `AppToolExecutionPolicy`（审查门禁 + 台账），
+/// 或由 trait 的默认方法提供等价行为。
+#[cfg(test)]
 pub struct DirectToolExecution;
 
+#[cfg(test)]
 impl ToolExecutionPolicy for DirectToolExecution {}

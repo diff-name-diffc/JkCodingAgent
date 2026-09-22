@@ -552,23 +552,21 @@ async fn spawn_and_handshake_impl(
         }
     });
 
-    let handshake = timeout(HANDSHAKE_TIMEOUT, port_rx)
-        .await
-        .map_err(|_| {
-            // 清理守卫 Drop 时整组 kill 并清除在途登记；这里只标记死亡与记日志。
-            mark_dead(&alive_for_timeout, &exited_tx_for_timeout);
-            app.state::<RagLogStore>().append_system(
-                app,
-                format!("等待 RAG sidecar 端口握手超时（{HANDSHAKE_TIMEOUT:?}）"),
-            );
-            // 拼 stderr 尾部（空快照 no-op）；超时多为进程 hung，不加宽限。
-            anyhow!(
-                "{}",
-                stderr_ring.failure_message(&format!(
-                    "等待 rag-server 端口握手超时（{HANDSHAKE_TIMEOUT:?}）"
-                ))
-            )
-        })?;
+    let handshake = timeout(HANDSHAKE_TIMEOUT, port_rx).await.map_err(|_| {
+        // 清理守卫 Drop 时整组 kill 并清除在途登记；这里只标记死亡与记日志。
+        mark_dead(&alive_for_timeout, &exited_tx_for_timeout);
+        app.state::<RagLogStore>().append_system(
+            app,
+            format!("等待 RAG sidecar 端口握手超时（{HANDSHAKE_TIMEOUT:?}）"),
+        );
+        // 拼 stderr 尾部（空快照 no-op）；超时多为进程 hung，不加宽限。
+        anyhow!(
+            "{}",
+            stderr_ring.failure_message(&format!(
+                "等待 rag-server 端口握手超时（{HANDSHAKE_TIMEOUT:?}）"
+            ))
+        )
+    })?;
     let port = match handshake {
         Ok(port) => port,
         Err(_) => {

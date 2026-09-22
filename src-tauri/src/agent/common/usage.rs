@@ -49,7 +49,6 @@ impl UsageTracker {
             completion_tokens: self.completion_tokens,
             total_tokens: self.total_tokens,
             elapsed_ms: self.started_at.elapsed().as_millis() as u64,
-            paused: false,
         }
     }
 }

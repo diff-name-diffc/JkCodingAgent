@@ -1,5 +1,5 @@
 //! 工具公共助手：参数提取、路径沙箱、schema 注入。
-//! 移植自旧 `agent/tools/builtin/common.rs`；`resolve_path` 的入参由
+//! 迁移自旧自实现工具层（已随迁移删除）的 common 助手；`resolve_path` 的入参由
 //! `ToolContext` 改为显式沙箱参数（构造期依赖见 `deps.rs`）。
 
 use std::collections::HashSet;
@@ -91,9 +91,7 @@ pub(crate) fn boolish_arg(args: &Value, key: &str) -> Option<bool> {
     if let Some(flag) = value.as_bool() {
         return Some(flag);
     }
-    value
-        .as_str()
-        .map(|flag| flag.eq_ignore_ascii_case("true"))
+    value.as_str().map(|flag| flag.eq_ignore_ascii_case("true"))
 }
 
 /// 为工具 schema 注入 `compress` / `compress_intent` 参数。

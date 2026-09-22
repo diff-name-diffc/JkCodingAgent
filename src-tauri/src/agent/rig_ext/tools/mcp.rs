@@ -1,7 +1,7 @@
 //! MCP 动态工具桥（T2.4）：把 `mcp/` 注册表（Global/Project 作用域合并）
 //! 枚举到的工具包装为 `PortableDynamicTool`（canonical 名 `mcp__<server>__<tool>`）。
 //!
-//! 移植自旧 `agent/tools/mcp.rs`（DynamicToolProvider 桥），语义映射：
+//! 迁移自旧自实现工具层（已随迁移删除）的 MCP 桥（DynamicToolProvider），语义映射：
 //! - 枚举：旧实现走 `cached_for_scope` 只读缓存、由调用方预热（如
 //!   `agents/plain_chat/adapter.rs` 的 `ensure_recent`）；本桥把预热并入枚举
 //!   本身（`ensure_recent`），失败时对齐旧「缓存缺失 → 空工具面」语义，
@@ -12,7 +12,7 @@
 //!   `execute_tool_from_snapshot` 走注册表执行路径；
 //! - 安全审查门禁：每个 MCP 调用在 TOCTOU 复核与静态穿越检查之后、真正执行
 //!   之前送入 ssh_review 链路送审（工具名 + 完整参数 JSON），未配置审查
-//!   fail-closed 拒绝——对齐旧 `tools/mcp.rs::review_mcp_call`。
+//!   fail-closed 拒绝——对齐旧自实现 MCP 桥的 `review_mcp_call`。
 //!   审查上下文经 `RigToolDeps.review` 注入。
 
 use std::path::{Component, Path};
@@ -165,7 +165,7 @@ async fn execute_bridged(
 
 /// MCP 调用的安全审查：复用 ssh_review 链路，把工具名与完整参数 JSON 送审。
 /// 返回 `Some(拦截消息)` 表示禁止执行（含未配置审查的 fail-closed 拦截）。
-/// 移植自旧 `tools/mcp.rs::review_mcp_call`。
+/// 移植自旧自实现 MCP 桥的 `review_mcp_call`。
 async fn review_mcp_call(name: &str, args: &Value, review: &McpReviewInputs) -> Option<String> {
     let Some(review_config) = review.context.config.as_ref() else {
         return Some(format!(
@@ -214,7 +214,7 @@ fn definition_drifted(
     mcp_description(current) != prepared_description || &current.parameters != prepared_parameters
 }
 
-/// 可恢复执行错误：旧 `ToolResult::recoverable_error` 的 rig 映射——
+/// 可恢复执行错误：旧工具结果契约 recoverable_error 的 rig 映射——
 /// 错误文本回灌给模型、run 继续，retryable 提示置 true。
 fn recoverable(message: String) -> ToolExecutionError {
     ToolExecutionError::other(message).with_retryable(true)
@@ -348,7 +348,13 @@ mod tests {
 
     #[test]
     fn normalize_tool_error_enforces_prefix() {
-        assert_eq!(normalize_tool_error("错误：已带前缀".to_string()), "错误：已带前缀");
-        assert_eq!(normalize_tool_error("未带前缀".to_string()), "错误：未带前缀");
+        assert_eq!(
+            normalize_tool_error("错误：已带前缀".to_string()),
+            "错误：已带前缀"
+        );
+        assert_eq!(
+            normalize_tool_error("未带前缀".to_string()),
+            "错误：未带前缀"
+        );
     }
 }

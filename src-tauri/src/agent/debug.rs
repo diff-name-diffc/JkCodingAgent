@@ -30,8 +30,7 @@ pub(crate) struct DebugSection {
     body: String,
 }
 
-impl DebugSection {
-}
+impl DebugSection {}
 
 /// 单条待写入日志，经通道移交给后台写入线程。
 struct DebugLogEntry {
@@ -203,7 +202,4 @@ fn write_entry_body(file: &mut File, entry: &DebugLogEntry) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-
-
-    }
+mod tests {}

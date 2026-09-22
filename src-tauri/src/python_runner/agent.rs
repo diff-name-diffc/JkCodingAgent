@@ -118,9 +118,10 @@ async fn run_python_agent_inner(
             return Ok(());
         }
     };
-    let mut messages = vec![
-        Message::user(build_initial_agent_user_prompt(record, &message_context)),
-    ];
+    let mut messages = vec![Message::user(build_initial_agent_user_prompt(
+        record,
+        &message_context,
+    ))];
 
     for _ in 0..MAX_AGENT_ITERATIONS {
         if cancellation_requested(&stop_rx) {
@@ -250,10 +251,7 @@ fn split_python_response(
 }
 
 /// 组装追加进历史的 assistant 消息（正文 + 工具调用）。
-fn python_assistant_turn(
-    text: &str,
-    calls: &[rig::message::ToolCall],
-) -> Message {
+fn python_assistant_turn(text: &str, calls: &[rig::message::ToolCall]) -> Message {
     let mut content = Vec::new();
     if !text.is_empty() {
         content.push(rig::message::AssistantContent::text(text.to_string()));
@@ -265,10 +263,7 @@ fn python_assistant_turn(
 }
 
 /// 组装工具结果消息（回灌给模型）。
-fn python_tool_result_turn(
-    call: &rig::message::ToolCall,
-    result: String,
-) -> Message {
+fn python_tool_result_turn(call: &rig::message::ToolCall, result: String) -> Message {
     Message::User {
         content: vec![rig::message::UserContent::ToolResult(
             rig::message::ToolResult {

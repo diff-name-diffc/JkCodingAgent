@@ -1,5 +1,5 @@
 //! local_zsh 工具：在 macOS 本地 zsh 环境执行命令（固定工作目录 + 审计 + 超时/取消）。
-//! 移植自旧 `tools/builtin/local_zsh.rs` + `working_directory.rs`（local_zsh_dir 助手）。
+//! 迁移自旧自实现工具层（含 `local_zsh_dir` 助手；旧文件已随迁移删除）。
 
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -58,7 +58,7 @@ pub(crate) struct LocalZshAuditLog {
 
 /// local_zsh 执行目录：`<workspace>/.jkcodingagent/local_env/zsh`；
 /// plain-chat-browser 占位工作区落在 `workspace.parent()/local_env/zsh`。
-/// 移植自旧 `tools/builtin/working_directory.rs`。
+/// 迁移自旧自实现工具层（已随迁移删除）。
 pub(crate) fn local_zsh_dir(workspace: &Path) -> Result<PathBuf, String> {
     let is_plain_chat = workspace
         .file_name()
@@ -190,7 +190,7 @@ async fn run_local_zsh(
     };
 
     // 安全审查门禁（fail-closed）：未配置审查 / 审查异常 / 判定不通过一律拒绝执行，
-    // 并把「被拦截」写入 audit.json 审计（对齐旧 `review_local_command` 与
+    // 并把「被拦截」写入 audit.json 审计（对齐旧实现的 `review_local_command` 与
     // `blocked_command_response` 的完整语义）。
     let review = match review_local_command(
         args,
@@ -377,7 +377,7 @@ async fn run_local_zsh(
 }
 
 /// 本命令的安全审查（fail-closed）：未配置审查模型直接拒绝；审查服务异常
-/// 同样拒绝。移植自旧 `review_local_command`。
+/// 同样拒绝。移植自旧实现的 `review_local_command`。
 async fn review_local_command(
     args: &Value,
     review_context: &crate::agent::rig_ext::review::RigReviewContext,

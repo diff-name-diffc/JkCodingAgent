@@ -29,9 +29,8 @@ rig 提供契约（模型/消息/工具/流式/内存），运行时循环由应
 
 **迁移设计（rig 推荐方案映射）**：
 - LLM I/O 全部走 `CompletionModel`（删除 `llm/` 的 reqwest+SSE 自解析）。
-- 工具按 `PortableTool` 编写（类型化、context-free、可测试），经一个局部
-  `erase()` 适配为 `PortableDynamicTool` 组成工具面；MCP 动态工具直接构造
-  `PortableDynamicTool`（rmcp 调用包进回调）。删除 registry/spec/broker。
+- 工具统一以 `PortableDynamicTool` 构造（context-free，依赖经 `RigToolDeps`
+  注入）；MCP 动态工具同形（rmcp 调用包进回调）。删除 registry/spec/broker。
 - 运行时循环（事件分发/落库/审查门禁/压缩/取消/vision 切换）是我们基于 rig
   契约组合的 runtime——`StreamedAssistantContent` 增量 → `AgentEvent`（前端契约不变）；
   审查门禁拒绝 = 工具结果 `ToolExecutionError::refused` 回灌；vision 切换 =
@@ -67,37 +66,37 @@ LLM 调用迁移）；`mcp/` 注册表（桥接入 rig 工具面）；PTY/browse
 - [x] **T0.1** `src-tauri/Cargo.toml` 加入 `rig-core = "0.42"`；`cargo check` 绿。✅ 2026-09-22（注：0.42 无 `rmcp` feature，MCP 桥用 `PortableDynamicTool` 自包）
 
 ### Phase 1 — rig 适配层（新模块 `agent/rig_ext/`，此阶段不删旧代码）
-- [ ] **T1.1** 模型工厂 `rig_ext/model.rs`：用途槽位（chat/vision/summary/review）解析 →
+- [x] **T1.1** 模型工厂 `rig_ext/model.rs`：用途槽位（chat/vision/summary/review）解析 →
   `CompletionsClient`+模型；`PurposeSwitchingModel`（实现 rig `CompletionModel`，按请求
   是否含图片委托 chat/vision 模型）；请求构建助手（preamble/messages/tools/max_tokens/
   additional_params 注入 enable_thinking 等方言参数）。参照 `agents/plain_chat/mod.rs:146 apply_settings_v2` 的解析语义（库条目权威、凭据回退规则保持不变）。
-- [ ] **T1.2** 消息桥 `rig_ext/message.rs`：`db::DispatcherMessageRecord` ↔ rig `Message`
+- [x] **T1.2** 消息桥 `rig_ext/message.rs`：`db::DispatcherMessageRecord` ↔ rig `Message`
   （替代 `db/messages.rs:64 to_llm_message`）；`chat-image://` 段 → `UserContent::Image`
   （读取 `chat_images` 落盘文件转 base64，保持「上限 3 张、跨迭代去重」语义，见 `llm.rs attach_turn_tool_images`）。
-- [ ] **T1.3** 运行时循环 `rig_ext/loop.rs`：消费 `model.stream(request)` 的
+- [x] **T1.3** 运行时循环 `rig_ext/loop.rs`：消费 `model.stream(request)` 的
   `StreamedAssistantContent` → `Channel<AgentEvent>`（seq 计数、ToolPlanned/Started/Finished
   配对、思考增量）；工具结果落库 + 压缩（迁入 `common::persist_tool_result_with_compression`
   逻辑）；`Usage` 聚合 → UsageTracker；cancel_rx 协作取消；循环上限错误。
 
-### Phase 2 — 工具层迁移（每组独立文件，可并行；工具 authored as `PortableTool`，deps 下沉为构造参数）
-- [ ] **T2.1** 文件系统组：`tools/builtin/filesystem*`、`search*`（含 grep_fallback）、`working_directory.rs`。原 `ToolContext` 的 workspace/白名单/规范化下沉为构造参数。
-- [ ] **T2.2** 命令执行组：`local_zsh*`/`shell.rs`、`ssh.rs`、`ssh_memo.rs`、`sync_directory.rs`。SSH 审查门禁保留在 runtime 执行入口（拒绝 → `ToolExecutionError::refused`）。
-- [ ] **T2.3** 多媒体/杂项：`browser*`、`fetch_image.rs`、`image_generation.rs`、`image_edit.rs`、`analyze_image.rs`（改走 T1.1 vision 模型）、`run_tool_program.rs`+`tools/program/*`、`architecture_run.rs`、`graph_plan_report.rs`、`submit_graph.rs`。
-- [ ] **T2.4** MCP 桥：`mcp/` 注册表动态工具 → `PortableDynamicTool` 回调包装（Global/Project 作用域合并与 TOCTOU 复核语义不变）。
+### Phase 2 — 工具层迁移（每组独立文件，可并行；工具一律 authored as `PortableDynamicTool`，deps 下沉为构造参数）
+- [x] **T2.1** 文件系统组：`tools/builtin/filesystem*`、`search*`（含 grep_fallback）、`working_directory.rs`。原 `ToolContext` 的 workspace/白名单/规范化下沉为构造参数。
+- [x] **T2.2** 命令执行组：`local_zsh*`/`shell.rs`、`ssh.rs`、`ssh_memo.rs`、`sync_directory.rs`。SSH 审查门禁保留在 runtime 执行入口（拒绝 → `ToolExecutionError::refused`）。
+- [x] **T2.3** 多媒体/杂项：`browser*`、`fetch_image.rs`、`image_generation.rs`、`image_edit.rs`、`analyze_image.rs`（改走 T1.1 vision 模型）、`run_tool_program.rs`+`tools/program/*`、`architecture_run.rs`、`graph_plan_report.rs`、`submit_graph.rs`。
+- [x] **T2.4** MCP 桥：`mcp/` 注册表动态工具 → `PortableDynamicTool` 回调包装（Global/Project 作用域合并与 TOCTOU 复核语义不变）。
 
 ### Phase 3 — Agent 运行时迁移（删 `run_loop/` 与旧 agents 壳）
-- [ ] **T3.1** plain_chat：工厂装配 + T1.3 循环；vision 槽位切换（PurposeSwitchingModel）、tool_batch 语义、分类级 allowed_tools/系统提示过滤保留。
-- [ ] **T3.2** project 编排器：迁移；`submit_graph` 协议动作保留（工具回显 + runtime 拦截收口 GraphSubmitted）。
-- [ ] **T3.3** architecture：迁移；program schema/validate 逻辑挂到 rig 工具与 runtime。
-- [ ] **T3.4** sub_agent runtime：同一循环嵌套执行；trace 事件/滑窗裁剪（窗口预算 = contextWindow×4×1/2）保留。
+- [x] **T3.1** plain_chat：工厂装配 + T1.3 循环；vision 槽位切换（PurposeSwitchingModel）、tool_batch 语义、分类级 allowed_tools/系统提示过滤保留。
+- [x] **T3.2** project 编排器：迁移；`submit_graph` 协议动作保留（工具回显 + runtime 拦截收口 GraphSubmitted）。
+- [x] **T3.3** architecture：迁移；program schema/validate 逻辑挂到 rig 工具与 runtime。
+- [x] **T3.4** sub_agent runtime：同一循环嵌套执行；trace 事件/滑窗裁剪（窗口预算 = contextWindow×4×1/2）保留。
 
 ### Phase 4 — 附属 LLM 调用点（可并行）
-- [ ] **T4.1** summary 体系：`summary.rs`/`summary/tool_summary.rs`（15s 超时+规则兜底）、`commands/session_metadata.rs`（标题/关键字）。
-- [ ] **T4.2** 其余：`ssh_review.rs`、`scm/git/commit_message.rs`、`python_runner.rs`、`graph/verifier.rs`、`commands/model_commands.rs`（连通性测试）。
+- [x] **T4.1** summary 体系：`summary.rs`/`summary/tool_summary.rs`（15s 超时+规则兜底）、`commands/session_metadata.rs`（标题/关键字）。
+- [x] **T4.2** 其余：`ssh_review.rs`、`scm/git/commit_message.rs`、`python_runner.rs`、`graph/verifier.rs`、`commands/model_commands.rs`（连通性测试）。
 
 ### Phase 5 — 清理收口
-- [ ] **T5.1** 删除 `agent/llm/`、`agent/run_loop/`（types.rs 的 AgentEvent/AgentTurn 挪入 runtime 保留）、`tools/registry.rs`、`spec.rs`、`broker*`、`capability.rs`、`surface.rs` 及全部旧引用；全仓 `OpenAiCompatProvider`/`AgentTool`/`RunLoopAgent`/`ChatMessage` 零命中（`zg query --rg` 穷尽验证）。
-- [ ] **T5.2** 全量验证：`cargo check`/`cargo test`/`cargo clippy` 绿；`pnpm contract:check`、`pnpm lint`、`pnpm test`、`pnpm build` 绿；更新 `AGENTS.md`（架构表/新增工具流程/schema 策略章节同步 rig 方案）。
+- [x] **T5.1** 删除 `agent/llm/`、`agent/run_loop/`（types.rs 的 AgentEvent/AgentTurn 挪入 runtime 保留）、`tools/registry.rs`、`spec.rs`、`broker*`、`capability.rs`、`surface.rs` 及全部旧引用；全仓 `OpenAiCompatProvider`/`AgentTool`/`RunLoopAgent`/`ChatMessage` 零命中（`zg query --rg` 穷尽验证）。
+- [x] **T5.2** 全量验证：`cargo check`/`cargo test`/`cargo clippy` 绿；`pnpm contract:check`、`pnpm lint`、`pnpm test`、`pnpm build` 绿；更新 `AGENTS.md`（架构表/新增工具流程/schema 策略章节同步 rig 方案）。
 
 ## 3. Phase 2 合并备注（子智能体回报的偏差与遗留）
 

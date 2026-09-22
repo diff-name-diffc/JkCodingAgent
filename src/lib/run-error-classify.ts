@@ -2,7 +2,7 @@
  * 运行错误分类（UI-25 遗留 c：发送失败「模型未配置」深链；
  * 第四批遗留领取：工具级「模型未配置」错误深链 + 分类推断）。
  *
- * 后端在 run 入口（`run_loop/core.rs` 的 `validate_provider_completeness`
+ * 后端在 run 入口（`agent/config.rs` 的 `validate_provider_completeness`
  * 预校验）与各 adapter 的 `provider_missing_message` 处，对「模型未配置 /
  * 配置不完整」返回稳定的显式错误串。前端据这些稳定子串判定：命中时在错误
  * 展示旁提供「配置模型」深链，直达设置中心对应模型分类，取代只读的死错误。

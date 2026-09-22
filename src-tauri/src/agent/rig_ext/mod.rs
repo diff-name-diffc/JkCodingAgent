@@ -14,16 +14,13 @@
 //! 落库形态，非 provider 类型），仅在写库前转换；Phase 5 删除 `llm/` 时
 //! 随 DB 类型一起迁移归位。
 
-// Phase 1 仅建设适配层，尚未接入任何运行路径；Phase 3 接入后移除该 allow。
-#![allow(dead_code)]
-
-pub(crate) mod r#loop;
-pub(crate) mod message;
-pub(crate) mod models;
-pub(crate) mod model;
-pub(crate) mod review;
 pub(crate) mod agents;
 pub(crate) mod events;
+pub(crate) mod r#loop;
+pub(crate) mod message;
+pub(crate) mod model;
+pub(crate) mod models;
+pub(crate) mod review;
 pub(crate) mod sub_agent;
 pub(crate) mod summary;
 pub(crate) mod tool_result;

@@ -151,7 +151,13 @@ impl DispatcherDb {
         let model = model.to_string();
         let usage = usage.clone();
         tokio::task::spawn_blocking(move || {
-            db.upsert_session_token_usage(&wid, &model, source_kind, &usage, context_window_capacity)
+            db.upsert_session_token_usage(
+                &wid,
+                &model,
+                source_kind,
+                &usage,
+                context_window_capacity,
+            )
         })
         .await
         .context("upsert_session_token_usage spawn_blocking")?
@@ -337,8 +343,7 @@ mod tests {
         assert_eq!(record.prompt_tokens, 200);
         assert_eq!(record.completion_tokens, 80);
         assert_eq!(
-            record.context_window_capacity,
-            DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS,
+            record.context_window_capacity, DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS,
             "未配置容量必须回退默认 1M"
         );
         assert_eq!(

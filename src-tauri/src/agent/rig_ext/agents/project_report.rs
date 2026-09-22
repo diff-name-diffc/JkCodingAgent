@@ -26,8 +26,8 @@ pub(crate) async fn build_plan_report(
     arguments: &Value,
 ) -> Result<String> {
     let store = GraphStore::new(db);
-let plan_id_arg = arguments
-    .get("planId")
+    let plan_id_arg = arguments
+        .get("planId")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|id| !id.is_empty())

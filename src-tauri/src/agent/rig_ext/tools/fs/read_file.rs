@@ -1,4 +1,4 @@
-//! read_file 工具（rig 形态）。迁移自旧 `tools/builtin/filesystem/read_file.rs`。
+//! read_file 工具（rig 形态）。迁移自旧自实现工具层（已随迁移删除）。
 //! 语义不变：2MB 单文件硬上限 / 4MB 调用级共享预算 / `path:start-end` 行区间
 //! 协议 / offset+limit 分页；全路径失败返回「错误：」可恢复错误。
 //! 偏差：旧的结构化 `data` 载荷（files/resolvedPath/lines）不再产出——
@@ -7,8 +7,8 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 
-use serde_json::{json, Value};
 use rig::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
+use serde_json::{json, Value};
 use tokio::{
     task,
     time::{timeout, Duration},

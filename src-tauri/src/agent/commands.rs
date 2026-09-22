@@ -11,14 +11,14 @@ use super::db::{
     SessionCreatedRecord, SessionPage, SessionSearchResult,
 };
 
-use crate::agent::db::{ChatMessageContentPart, ChatMessageImageSource};
-use crate::agent::rig_ext::events::AgentTurn;
-use super::state::{DispatcherState, GenerationGuard};
-use super::sub_agent::db::ToolInfo;
 use super::rig_ext::summary::{
     fallback_session_title, parse_keyword_actions, summarize_session_keywords,
     summarize_session_title, SessionTitleMessage,
 };
+use super::state::{DispatcherState, GenerationGuard};
+use super::sub_agent::db::ToolInfo;
+use crate::agent::db::{ChatMessageContentPart, ChatMessageImageSource};
+use crate::agent::rig_ext::events::AgentTurn;
 use crate::browser::BrowserManager;
 use crate::shared::error::format_anyhow_error;
 use tauri::ipc::Channel;

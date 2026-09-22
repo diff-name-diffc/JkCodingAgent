@@ -50,12 +50,13 @@ pub(crate) async fn intercept_submit_graph(
 ) -> Result<SubmitGraphInterception> {
     if already_submitted {
         return Ok(SubmitGraphInterception::Rejected {
-            error: "错误：本轮已提交过执行图，每轮最多提交一次；如需调整，请先等待本轮收口后再修改。"
-                .to_string(),
+            error:
+                "错误：本轮已提交过执行图，每轮最多提交一次；如需调整，请先等待本轮收口后再修改。"
+                    .to_string(),
         });
     }
 
-let definition = match parse_graph_definition(arguments) {
+    let definition = match parse_graph_definition(arguments) {
         Ok(definition) => definition,
         Err(error) => return Ok(SubmitGraphInterception::Rejected { error }),
     };
@@ -109,8 +110,8 @@ let definition = match parse_graph_definition(arguments) {
         }
     };
 
-// 全局广播：前端图面板据此加载/刷新待确认计划。
-if let Some(app_handle) = app_handle {
+    // 全局广播：前端图面板据此加载/刷新待确认计划。
+    if let Some(app_handle) = app_handle {
         let _ = app_handle.emit(
             "graph-plan-updated",
             GraphPlanUpdatedPayload {
@@ -139,15 +140,14 @@ if let Some(app_handle) = app_handle {
         }
     );
 
-Ok(SubmitGraphInterception::Submitted {
-    display_text,
-    action: RigProtocolAction::GraphSubmitted {
+    Ok(SubmitGraphInterception::Submitted {
+        display_text,
+        action: RigProtocolAction::GraphSubmitted {
             title: plan.title,
             node_count,
         },
     })
 }
-
 
 /// 解析并校验 inheritsFrom：被继承的 plan/run 必须存在、同会话、run 已终态，
 /// 且 run 必须是该 plan 的最近一次运行。成功时返回种入新 plan 的 state 快照

@@ -1,4 +1,4 @@
-//! ToolProgram AST 与模型参数 schema（逐字迁移自旧 `agent/tools/program/ast.rs`）。
+//! ToolProgram AST 与模型参数 schema（逐字迁移自旧自实现工具层（已随迁移删除）的工具程序 ast 模块）。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

@@ -351,9 +351,8 @@ impl DispatcherDb {
                 self.create_chat_session(title, category)?,
             )),
             DispatcherSessionKind::Project => {
-                let project_id = project_id.ok_or_else(|| {
-                    anyhow::anyhow!("project kind 会话必须提供 project_id")
-                })?;
+                let project_id = project_id
+                    .ok_or_else(|| anyhow::anyhow!("project kind 会话必须提供 project_id"))?;
                 Ok(SessionCreatedRecord::Project(
                     self.create_project_session(project_id, title)?,
                 ))

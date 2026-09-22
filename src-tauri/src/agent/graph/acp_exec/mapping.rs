@@ -423,9 +423,10 @@ impl Mapper {
         } else {
             Value::Null
         };
-        let cost = usage.cost.as_ref().map(|cost| {
-            json!({ "amount": cost.amount, "currency": cost.currency })
-        });
+        let cost = usage
+            .cost
+            .as_ref()
+            .map(|cost| json!({ "amount": cost.amount, "currency": cost.currency }));
         let sequence = self.alloc_sequence();
         let now = now_ms();
         vec![MapperAction::Activity(AgentActivity {

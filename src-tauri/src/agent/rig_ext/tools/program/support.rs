@@ -1,5 +1,5 @@
 //! ToolProgram 执行器的纯函数助手：声明序收集、结果 envelope、预算守卫、
-//! 停止信号与取消等待。迁移自旧 `agent/tools/program/executor.rs` 的同名助手。
+//! 停止信号与取消等待。迁移自旧自实现工具层（已随迁移删除）的工具程序 executor 模块 的同名助手。
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,7 +60,7 @@ pub(super) fn success_envelope(output: &ToolOutput) -> Value {
 
 /// 子调用失败分类：rig 侧只有取消是可确定语义（`ToolErrorKind::Cancelled`）；
 /// 其余错误（含门禁拒绝 refusal / permission_denied）一律按 ChildRecoverable
-/// 处理——程序中止、外层模型可修正后重试，对齐旧 `ToolStatus::RecoverableError`
+/// 处理——程序中止、外层模型可修正后重试，对齐旧工具状态词表的 RecoverableError
 /// 的语义。旧 `ChildFatal` 不再由子调用产生（保留枚举用于外层映射完整性）。
 pub(super) fn child_error(id: &str, tool: &str, error: &ToolExecutionError) -> ProgramError {
     let kind = if error.kind() == ToolErrorKind::Cancelled {

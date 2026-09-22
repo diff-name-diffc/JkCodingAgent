@@ -132,7 +132,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 pub(crate) async fn build_static_prompt(root_dir: &Path) -> Result<String> {
     let root = root_dir.to_path_buf();
     let extra = tokio::task::spawn_blocking(move || load_prompt_files(&root))
-            .await
+        .await
         .map_err(|error| anyhow::anyhow!("读取编排器提示词文件失败：{error}"))?;
 
     // 版本占位符由常量生成：提示词示例、工具 schema、校验三方同源，
@@ -158,43 +158,43 @@ pub(crate) fn build_iteration_system_prompt(
     static_content: &str,
     tool_definitions: &[rig::completion::ToolDefinition],
 ) -> String {
-        let tools_block = render_available_tools_block(tool_definitions);
-        let local_time = crate::agent::prompt::current_local_time();
-        if tools_block.is_empty() {
-            format!("{static_content}\n\n---\n\n# 系统时间\n\n当前本地时间：{local_time}")
-        } else {
-            format!(
+    let tools_block = render_available_tools_block(tool_definitions);
+    let local_time = crate::agent::prompt::current_local_time();
+    if tools_block.is_empty() {
+        format!("{static_content}\n\n---\n\n# 系统时间\n\n当前本地时间：{local_time}")
+    } else {
+        format!(
                 "{static_content}\n\n---\n\n{tools_block}\n\n---\n\n# 系统时间\n\n当前本地时间：{local_time}"
             )
-        }
     }
+}
 
 /// 渲染 Harness 目录（图节点模型表）+ 既往运行统计注记。
 pub(crate) fn render_graph_harness_catalog(
     catalog: &crate::agent::graph::types::GraphHarnessCatalog,
     stats: &[crate::agent::graph::types::GraphModelStat],
 ) -> String {
-        let mut lines = vec![
+    let mut lines = vec![
             "# 当前 Harness 目录".to_string(),
             "图节点由 Claude Agent（claude-agent-acp）执行。该目录是 graph v4 的唯一模型来源；ID 必须原样引用。模型行末的历史统计（若有）来自既往节点运行，可作为选型参考。".to_string(),
             "\n## 主模型（每节点恰好一个）".to_string(),
         ];
-        for model in &catalog.models {
-            let stat_note = render_model_stat_note(&model.id, stats);
-            lines.push(format!(
-                "- `{}`：{} — {}{}",
-                model.id, model.label, model.model, stat_note
-            ));
-        }
-        lines.push("\n## 基础工具组（映射执行器的权限模式）".to_string());
-        lines.push("- `read_only`: plan 模式——只读规划，不允许修改文件或执行写操作".to_string());
-        lines.push("- `coding`: acceptEdits 模式——编码执行，自动接受文件编辑".to_string());
-        if !catalog.diagnostics.is_empty() {
-            lines.push(format!(
-                "\n## 发现诊断\n- {}",
-                catalog.diagnostics.join("\n- ")
-            ));
-        }
+    for model in &catalog.models {
+        let stat_note = render_model_stat_note(&model.id, stats);
+        lines.push(format!(
+            "- `{}`：{} — {}{}",
+            model.id, model.label, model.model, stat_note
+        ));
+    }
+    lines.push("\n## 基础工具组（映射执行器的权限模式）".to_string());
+    lines.push("- `read_only`: plan 模式——只读规划，不允许修改文件或执行写操作".to_string());
+    lines.push("- `coding`: acceptEdits 模式——编码执行，自动接受文件编辑".to_string());
+    if !catalog.diagnostics.is_empty() {
+        lines.push(format!(
+            "\n## 发现诊断\n- {}",
+            catalog.diagnostics.join("\n- ")
+        ));
+    }
     lines.join("\n")
 }
 

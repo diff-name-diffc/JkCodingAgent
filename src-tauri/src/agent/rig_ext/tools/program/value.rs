@@ -1,4 +1,4 @@
-//! ToolProgram 模板引用解析（逐字迁移自旧 `agent/tools/program/value.rs`）。
+//! ToolProgram 模板引用解析（逐字迁移自旧自实现工具层（已随迁移删除）的工具程序 value 模块）。
 
 use std::collections::BTreeMap;
 

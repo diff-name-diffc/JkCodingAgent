@@ -106,10 +106,12 @@ pub fn record(
             map.remove(&key);
         }
     }
-    let history = map.entry(workspace_id.to_string()).or_insert_with(|| SessionHistory {
-        entries: VecDeque::new(),
-        last_write_ms: timestamp,
-    });
+    let history = map
+        .entry(workspace_id.to_string())
+        .or_insert_with(|| SessionHistory {
+            entries: VecDeque::new(),
+            last_write_ms: timestamp,
+        });
     history.entries.push_back(entry);
     while history.entries.len() > MAX_ENTRIES_PER_SESSION {
         history.entries.pop_front();
@@ -180,7 +182,14 @@ mod tests {
     #[test]
     fn records_and_renders_in_chronological_order() {
         let ws = session("render");
-        record(&ws, "exec", "工作区", "git status", CommandHistoryStatus::Executed, "exit=0");
+        record(
+            &ws,
+            "exec",
+            "工作区",
+            "git status",
+            CommandHistoryStatus::Executed,
+            "exit=0",
+        );
         record(
             &ws,
             "ssh_exec",
@@ -202,7 +211,14 @@ mod tests {
         let ws = session("truncate");
         let long_command = "x".repeat(MAX_COMMAND_CHARS + 100);
         let long_note = "y".repeat(MAX_NOTE_CHARS + 100);
-        record(&ws, "exec", "工作区", &long_command, CommandHistoryStatus::Executed, &long_note);
+        record(
+            &ws,
+            "exec",
+            "工作区",
+            &long_command,
+            CommandHistoryStatus::Executed,
+            &long_note,
+        );
         let rendered = render_for_review(&ws).unwrap();
         // 截断后附省略号，且不包含完整原文长度
         assert!(rendered.contains(&"x".repeat(MAX_COMMAND_CHARS)));
@@ -215,7 +231,14 @@ mod tests {
     fn prunes_beyond_per_session_limit() {
         let ws = session("prune");
         for i in 0..(MAX_ENTRIES_PER_SESSION + 10) {
-            record(&ws, "exec", "工作区", &format!("cmd-{i}"), CommandHistoryStatus::Executed, "");
+            record(
+                &ws,
+                "exec",
+                "工作区",
+                &format!("cmd-{i}"),
+                CommandHistoryStatus::Executed,
+                "",
+            );
         }
         let map = registry().lock();
         let history = map.get(&ws).expect("会话应在册");

@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 
 use super::super::db::{DispatcherDb, DispatcherMessageRecord, DispatcherMessageUsageStats};
@@ -62,7 +61,9 @@ pub(crate) fn serialize_tool_arguments(
 
 /// 纯调度 plumbing 工具名：其 assistant/tool 消息不进入 LLM 上下文。
 /// 本常量是 LLM 上下文过滤的唯一口径来源；DB 加载路径
-/// （`db::messages::load_llm_history`）直接委托 `should_keep_llm_message`。
+/// （`db::messages::queries::load_llm_history`）直接委托 `should_keep_llm_message`。
+/// 这些工具名只存在于老库的历史行（dispatch 子进程系统已下线），保留过滤
+/// 是为了不让旧会话的 plumbing 消息重新灌进上下文。
 const DISPATCH_PLUMBING_TOOL_NAMES: [&str; 6] = [
     "dispatch_claude",
     "dispatch_codex",
@@ -76,10 +77,8 @@ const DISPATCH_PLUMBING_TOOL_NAMES: [&str; 6] = [
 ///
 /// 过滤纯调度 plumbing 工具（dispatch_claude 等）的工具结果，以及仅承载
 /// 流程状态、对模型决策无意义的 process-only assistant 消息。
-/// 内存追加路径（`AgentLoop::append`）与 DB 加载路径
-/// （`db::messages::load_llm_history` / `DispatcherMessageRecord::to_llm_message`）
-/// 均直接委托本函数，保证「同 run 多轮迭代」与「新 run 从 DB 重新加载」
-/// 使用同一上下文口径，不再存在双份实现漂移的可能。
+/// DB 加载路径（`db::messages::queries::load_llm_history`）直接委托本函数，
+/// 「新 run 从 DB 重新加载」因而不存在第二份同口径实现。
 pub(crate) fn should_keep_llm_message(message: &ChatMessage) -> bool {
     match message.role.as_str() {
         "assistant" => {

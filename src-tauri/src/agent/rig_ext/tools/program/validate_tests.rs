@@ -1,4 +1,4 @@
-//! `validate.rs` 的单元测试（迁移自旧 `agent/tools/program/validate.rs` 内联 tests）。
+//! `validate.rs` 的单元测试（迁移自旧自实现工具层（已随迁移删除）的工具程序 validate 模块 内联 tests）。
 
 use std::collections::BTreeMap;
 
@@ -305,9 +305,8 @@ fn rejects_non_parallel_capability_anywhere_in_parallel_subtree() {
         }
     });
 
-    let error =
-        validate_program_value(&program, &Catalog::standard(), &ProgramLimits::default())
-            .unwrap_err();
+    let error = validate_program_value(&program, &Catalog::standard(), &ProgramLimits::default())
+        .unwrap_err();
     assert_eq!(error.kind, ProgramErrorKind::PolicyDenied);
     assert_eq!(error.tool.as_deref(), Some("write_file"));
 }

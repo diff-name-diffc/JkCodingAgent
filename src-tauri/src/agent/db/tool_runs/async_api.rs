@@ -9,7 +9,6 @@ use super::{DispatcherToolRunRecord, FinishToolRun, NewToolRun, ToolRunTraceCont
 use crate::agent::db::DispatcherDb;
 
 impl DispatcherDb {
-    #[allow(dead_code)]
     pub async fn create_tool_run_with_trace_async(
         &self,
         run: NewToolRun,
@@ -55,5 +54,4 @@ impl DispatcherDb {
         .await
         .context("attach_tool_run_tree_message spawn_blocking")?
     }
-
 }

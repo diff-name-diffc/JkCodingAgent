@@ -10,31 +10,23 @@ use rig::completion::CompletionModel;
 
 use crate::agent::db::{ChatMessage, ChatMessageContentPart, LlmUsage};
 
+use super::llm_usage_from_rig;
 use super::message::chat_history_to_rig;
 use super::model::{build_completion_request, completions_model, PurposeModelSpec};
-use super::llm_usage_from_rig;
-/// 摘要调用失败：面向日志的消息 + 诊断上下文（模型与提示词预览）。
+/// 摘要调用失败：面向日志的消息。
 pub struct SummaryError {
     message: String,
-    debug_context: String,
 }
 
 impl SummaryError {
-    pub(super) fn new(message: impl Into<String>, debug_context: impl Into<String>) -> Self {
+    pub(super) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            debug_context: debug_context.into(),
         }
     }
 
     pub fn message(&self) -> &str {
         &self.message
-    }
-
-    /// 诊断上下文（模型/提示词预览）。当前仅用于排障日志。
-    #[allow(dead_code)]
-    pub fn debug_context(&self) -> &str {
-        &self.debug_context
     }
 }
 
@@ -42,15 +34,12 @@ impl SummaryError {
 /// 超时必须短：压缩是锦上添花，超时即回退零 LLM 的规则抽取
 /// （`extract_structured_summary`），绝不能让它成为工具调用的主要时延来源。
 const SUMMARY_TIMEOUT_SECS: u64 = 15;
-const SUMMARY_DEBUG_PREVIEW_CHARS: usize = 1_200;
 const SESSION_TITLE_SOURCE_MAX_CHARS: usize = 6_000;
 const SESSION_TITLE_MESSAGE_MAX_CHARS: usize = 1_200;
 const SESSION_TITLE_FALLBACK_MAX_CHARS: usize = 24;
 const SESSION_TITLE_CANDIDATE_SANITY_MAX_CHARS: usize = 80;
 const SESSION_KEYWORDS_QA_MAX_CHARS: usize = 3_000;
 const SESSION_KEYWORDS_MAX: usize = 15;
-
-pub const DUAL_TOOL_SUMMARY_CONTEXT_MAX_CHARS: usize = 24_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionTitleMessage {
@@ -132,13 +121,6 @@ async fn summarize_with_model(
     mut on_usage: impl FnMut(&LlmUsage) + Send,
 ) -> Result<String, SummaryError> {
     let model_name = spec.model.clone();
-    // 诊断上下文取内容最长的那条消息（通常是携带工具原始输出的 user 消息）。
-    let prompt = messages
-        .iter()
-        .max_by_key(|message| message.content.chars().count())
-        .map(|message| message.content.as_str())
-        .unwrap_or_default();
-    let debug_context = build_summary_debug_context(&model_name, prompt);
 
     let rig_messages = chat_history_to_rig(messages).await;
     let request = build_completion_request(
@@ -150,10 +132,7 @@ async fn summarize_with_model(
         spec.enable_thinking,
     );
     let model = completions_model(spec).map_err(|error| {
-        SummaryError::new(
-            format!("摘要模型 `{model_name}` 初始化失败：{error}"),
-            debug_context.clone(),
-        )
+        SummaryError::new(format!("摘要模型 `{model_name}` 初始化失败：{error}"))
     })?;
 
     let response = timeout(
@@ -162,17 +141,11 @@ async fn summarize_with_model(
     )
     .await
     .map_err(|_| {
-        SummaryError::new(
-            format!("摘要模型 `{model_name}` 调用超时（>{SUMMARY_TIMEOUT_SECS}s）"),
-            debug_context.clone(),
-        )
+        SummaryError::new(format!(
+            "摘要模型 `{model_name}` 调用超时（>{SUMMARY_TIMEOUT_SECS}s）"
+        ))
     })?
-    .map_err(|error| {
-        SummaryError::new(
-            format!("摘要模型 `{model_name}` 调用失败：{error}"),
-            debug_context.clone(),
-        )
-    })?;
+    .map_err(|error| SummaryError::new(format!("摘要模型 `{model_name}` 调用失败：{error}")))?;
 
     if response.usage.has_values() {
         on_usage(&llm_usage_from_rig(&response.usage));
@@ -190,10 +163,9 @@ async fn summarize_with_model(
         .trim()
         .to_string();
     if content.is_empty() {
-        return Err(SummaryError::new(
-            format!("摘要模型 `{model_name}` 返回空结果"),
-            debug_context,
-        ));
+        return Err(SummaryError::new(format!(
+            "摘要模型 `{model_name}` 返回空结果"
+        )));
     }
 
     Ok(content)
@@ -247,33 +219,6 @@ fn build_session_title_messages(
             name: None,
         },
     ]
-}
-
-fn build_summary_debug_context(model_name: &str, prompt: &str) -> String {
-    format!(
-        "调用方式：rig CompletionModel 摘要请求\n模型：{}\n超时阈值：{} 秒\nprompt 字符数：{}\nprompt 行数：{}\nprompt 预览：\n{}",
-        model_name,
-        SUMMARY_TIMEOUT_SECS,
-        prompt.chars().count(),
-        prompt.lines().count().max(1),
-        build_prompt_preview(prompt),
-    )
-}
-
-fn build_prompt_preview(prompt: &str) -> String {
-    let total_chars = prompt.chars().count();
-    if total_chars <= SUMMARY_DEBUG_PREVIEW_CHARS {
-        return prompt.to_string();
-    }
-
-    let preview = prompt
-        .chars()
-        .take(SUMMARY_DEBUG_PREVIEW_CHARS)
-        .collect::<String>();
-    format!(
-        "{preview}\n...（已截断，预览 {} / {} 字符）",
-        SUMMARY_DEBUG_PREVIEW_CHARS, total_chars
-    )
 }
 
 fn build_session_title_source(messages: &[SessionTitleMessage], fallback_source: &str) -> String {

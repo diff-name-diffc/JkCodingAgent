@@ -115,7 +115,6 @@ pub(super) fn render_grep_stdout(
     if matched_files.is_empty() {
         return GrepRendered {
             display: String::new(),
-            total_matches: 0,
             truncated: false,
         };
     }
@@ -136,7 +135,6 @@ pub(super) fn render_grep_stdout(
         lines.extend(matched_files.iter().map(|file| file.path.clone()));
         return GrepRendered {
             display: lines.join("\n"),
-            total_matches,
             truncated: truncated_by_file_limit,
         };
     }
@@ -152,7 +150,6 @@ pub(super) fn render_grep_stdout(
 
     GrepRendered {
         display: lines.join("\n"),
-        total_matches,
         truncated: truncated_by_file_limit,
     }
 }

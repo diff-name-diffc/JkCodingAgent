@@ -18,8 +18,8 @@ use crate::agent::db::{
 
 use super::artifacts::{DispatcherToolArtifactRef, ToolArtifactDraft};
 use super::content::{
-    content_to_segments_json, insert_chat_images, parse_segments_json,
-    remove_chat_image_dir, segments_to_plain_text, try_parse_segments_json, ContentSegment,
+    content_to_segments_json, insert_chat_images, parse_segments_json, remove_chat_image_dir,
+    segments_to_plain_text, try_parse_segments_json, ContentSegment,
 };
 use super::util::{map_dispatcher_message_record, now, MAX_LLM_DIALOGUES};
 use super::DispatcherDb;
@@ -31,8 +31,6 @@ pub struct DispatcherMessageUsageStats {
     pub completion_tokens: u64,
     pub total_tokens: u64,
     pub elapsed_ms: u64,
-    #[serde(default)]
-    pub paused: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,38 +57,6 @@ impl DispatcherMessageRecord {
     /// 内容的唯一存储形态，不存在独立的 content 字段。
     pub fn plain_text(&self) -> String {
         segments_to_plain_text(&parse_segments_json(&self.segments_json))
-    }
-
-    pub fn to_llm_message(&self) -> Option<ChatMessage> {
-        let (content, content_parts) = if let Some(payload) = self.context_payload.clone() {
-            (payload, Vec::new())
-        } else {
-            let segments = parse_segments_json(&self.segments_json);
-            (
-                segments_to_plain_text(&segments),
-                segments_to_llm_content_parts(&self.role, &segments),
-            )
-        };
-        let tool_calls = self
-            .tool_calls_json
-            .as_deref()
-            .and_then(|json| serde_json::from_str::<Vec<OutboundToolCall>>(json).ok());
-        let message = ChatMessage {
-            reasoning_content: if self.role == "assistant" {
-                self.thinking_content
-                    .clone()
-                    .filter(|content| !content.trim().is_empty())
-            } else {
-                None
-            },
-            role: self.role.clone(),
-            content,
-            content_parts,
-            tool_call_id: self.tool_call_id.clone(),
-            name: self.tool_name.clone(),
-            tool_calls,
-        };
-        should_keep_llm_message(&message).then_some(message)
     }
 }
 
@@ -469,8 +435,8 @@ impl DispatcherDb {
 }
 
 // G9-05：LLM 上下文过滤的唯一实现位于 `crate::agent::common::should_keep_llm_message`。
-// 本文件的 `load_llm_history` 与 `DispatcherMessageRecord::to_llm_message` 直接委托，
-// 不再维护同口径的第二份私有过滤函数，消除双实现漂移风险。
+// `messages::queries::load_llm_history` 直接委托它，本模块不再维护同口径的
+// 第二份私有过滤函数，消除双实现漂移风险。
 
 #[cfg(test)]
 mod tests;

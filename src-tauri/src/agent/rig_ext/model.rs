@@ -2,8 +2,8 @@
 //! `PurposeSwitchingModel`（chat/vision 委托模型，rig 文档化扩展点）；
 //! 请求组装助手。
 //!
-//! 槽位解析规则逐行对齐 `PlainChatAgent::apply_settings_v2`
-//! （`agents/plain_chat/mod.rs:146`）：库条目（读取时已回填凭据与容量）为
+//! 槽位解析规则与聊天 Agent 的 `apply_settings_v2` 同源（同一实现，不得
+//! 各写一份）：库条目（读取时已回填凭据与容量）为
 //! 权威源；聊天槽位凭据为空回退 `DispatcherAgentConfig`，视觉槽位凭据为空
 //! 回退聊天槽位，摘要槽位凭据为空回退聊天槽位、模型为空回退
 //! `DEFAULT_SUMMARY_MODEL`。不发明新规则。
@@ -12,14 +12,12 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use rig::client::CompletionClient;
-use rig::completion::{
-    CompletionModel, CompletionRequest, CompletionResponse, ToolDefinition,
-};
+use rig::completion::CompletionError;
+use rig::completion::{CompletionModel, CompletionRequest, CompletionResponse, ToolDefinition};
 use rig::message::{Message, UserContent};
 use rig::providers::openai::completion::CompletionModel as OpenAiCompletionModel;
 use rig::providers::openai::CompletionsClient;
 use rig::streaming::StreamingCompletionResponse;
-use rig::completion::CompletionError;
 
 use crate::agent::config::{DispatcherAgentConfig, DEFAULT_SUMMARY_MODEL};
 use crate::agent::db::{AgentContext, AhaSettingsV2};
@@ -122,8 +120,7 @@ pub fn resolve_purpose_specs(
             temperature,
             enable_thinking: true,
         },
-        // 无任何聊天槽位配置：等价于 apply_settings_v2 不触达 provider，
-        // 保留 `PlainChatAgent::new` 时用 config 构建的初始形态。
+        // 无任何聊天槽位配置：保留构造期由 config 构建的初始形态。
         None => PurposeModelSpec {
             api_key: config.api_key.clone(),
             api_base: config.api_base.clone(),
@@ -136,7 +133,7 @@ pub fn resolve_purpose_specs(
     };
 
     // 视觉槽位：设置条目优先；无有效条目时回退 env 兜底（`VISION_MODEL_NAME`，
-    // 只有模型名、沿用聊天槽位凭据——对齐旧 `OrchestratorAgent` 构造期语义）。
+    // 只有模型名、沿用聊天槽位凭据）。
     let vision = active_vision
         .filter(|v| !v.model.trim().is_empty())
         .map(|v| PurposeModelSpec {
@@ -245,10 +242,7 @@ impl ModelSelectionHandle {
     }
 
     fn record(&self, selection: ModelSelection) {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = Some(selection);
+        *self.0.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(selection);
     }
 }
 
@@ -270,7 +264,11 @@ pub struct PurposeSwitchingModel {
 }
 
 impl PurposeSwitchingModel {
-    pub fn new(chat: OpenAiCompletionModel, vision: Option<OpenAiCompletionModel>, specs: &PurposeModelSpecs) -> Self {
+    pub fn new(
+        chat: OpenAiCompletionModel,
+        vision: Option<OpenAiCompletionModel>,
+        specs: &PurposeModelSpecs,
+    ) -> Self {
         Self {
             chat: Arc::new(chat),
             vision: vision.map(Arc::new),
@@ -283,24 +281,12 @@ impl PurposeSwitchingModel {
     /// 从槽位规格一站式构建（chat/vision 各自独立客户端）。
     pub fn from_specs(specs: &PurposeModelSpecs) -> Result<Self> {
         let chat = completions_model(&specs.chat)?;
-        let vision = specs
-            .vision
-            .as_ref()
-            .map(completions_model)
-            .transpose()?;
+        let vision = specs.vision.as_ref().map(completions_model).transpose()?;
         Ok(Self::new(chat, vision, specs))
     }
 
     pub fn selection_handle(&self) -> ModelSelectionHandle {
         self.selection.clone()
-    }
-
-    pub fn chat_model_name(&self) -> &str {
-        &self.chat_spec.model
-    }
-
-    pub fn chat_spec(&self) -> &PurposeModelSpec {
-        &self.chat_spec
     }
 
     /// 选出本次请求的委托目标并记录探测结果。
@@ -337,11 +323,16 @@ impl PurposeSwitchingModel {
     }
 
     /// 以命中槽位的容量/采样参数覆盖请求（见类型级文档）。
-    fn tune_request(&self, spec: &PurposeModelSpec, mut request: CompletionRequest) -> CompletionRequest {
+    fn tune_request(
+        &self,
+        spec: &PurposeModelSpec,
+        mut request: CompletionRequest,
+    ) -> CompletionRequest {
         request.max_tokens = spec.max_tokens;
         request.temperature = Some(spec.temperature);
         if !spec.enable_thinking {
-            request.additional_params = Some(inject_enable_thinking(request.additional_params.take()));
+            request.additional_params =
+                Some(inject_enable_thinking(request.additional_params.take()));
         }
         request
     }
@@ -366,7 +357,7 @@ impl CompletionModel for PurposeSwitchingModel {
 }
 
 /// 消息列表是否含图片（任一 user 消息携带 `UserContent::Image`）。
-/// 口径与旧 `llm::messages_contain_images` 一致（全历史扫描，非仅尾部）。
+/// 口径与旧客户端层的 `messages_contain_images` 一致（全历史扫描，非仅尾部）。
 pub fn messages_contain_images(messages: &[Message]) -> bool {
     messages.iter().any(|message| {
         matches!(message, Message::User { content }

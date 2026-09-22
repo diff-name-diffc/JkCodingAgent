@@ -26,9 +26,7 @@ struct MockObservation {
 
 /// 启动一个极简 OpenAI 兼容端点：对每个请求返回一段固定 SSE 流，
 /// 并把请求体（JSON）记录到 `observation`。
-async fn spawn_mock_endpoint(
-    observation: Arc<parking_lot::Mutex<MockObservation>>,
-) -> SocketAddr {
+async fn spawn_mock_endpoint(observation: Arc<parking_lot::Mutex<MockObservation>>) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
     let addr = listener.local_addr().expect("addr");
     tokio::spawn(async move {
@@ -170,8 +168,7 @@ async fn chat_turn_streams_answer_and_persists_messages() {
         .run_turn(ChatTurnRequest {
             db: &db,
             workspace_id: &session.id,
-            user_segments_json:
-                r#"[{"type":"text","id":"seg-1","text":"你好"}]"#.to_string(),
+            user_segments_json: r#"[{"type":"text","id":"seg-1","text":"你好"}]"#.to_string(),
             on_event,
             cancel_rx,
         })
@@ -191,9 +188,7 @@ async fn chat_turn_streams_answer_and_persists_messages() {
 
     // 收口正文与落库形状。
     assert_eq!(reply.plain_text().trim(), "你好，这是一个端到端回答。");
-    let messages = db
-        .list_visible_messages(&session.id)
-        .expect("列出会话消息");
+    let messages = db.list_visible_messages(&session.id).expect("列出会话消息");
     let roles = messages
         .iter()
         .map(|message| message.role.as_str())
@@ -214,14 +209,15 @@ async fn chat_turn_streams_answer_and_persists_messages() {
         "assistantMessage",
         "finished",
     ] {
-        assert!(tags.iter().any(|tag| tag == expected), "缺少事件 {expected}：{tags:?}");
+        assert!(
+            tags.iter().any(|tag| tag == expected),
+            "缺少事件 {expected}：{tags:?}"
+        );
     }
     assert_eq!(deltas.lock().as_str(), "你好，这是一个端到端回答。");
 
     // 用量落库（primary 来源）。
-    let usage_rows = db
-        .list_session_token_usage(&session.id)
-        .expect("读取用量");
+    let usage_rows = db.list_session_token_usage(&session.id).expect("读取用量");
     assert!(
         usage_rows
             .iter()
@@ -251,13 +247,30 @@ async fn static_catalog_lists_candidate_tools() {
 
     // 设置页清单是「全部候选工具」（不做允许列表过滤——过滤发生在每轮装配期，
     // 由 `retain_allowed_tools` 承担，其行为见 allowlist 子模块用例）。
-    agent.apply_settings_v2(&AhaSettingsV2::default(), AgentContext::Chat);
-    let names = agent.static_tool_catalog();
-    let tool_names = names.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>();
+    let names = agent.tool_catalog(&db, "tool-catalog").await;
+    let tool_names = names
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
     assert!(tool_names.contains(&"local_zsh"));
     assert!(tool_names.contains(&"ssh_exec"));
-    assert!(!tool_names.contains(&"call_sub_agent"));
+    assert!(
+        !tool_names.contains(&"call_sub_agent"),
+        "未配置子智能体管理器时不出现子智能体工具"
+    );
     assert!(!tool_names.iter().any(|name| name.starts_with("mcp__")));
+
+    // 子智能体清单：含 notify_user_progress（子智能体专用进度通知），
+    // 不含嵌套子智能体工具（call_sub_agent/list_sub_agents 一律不可用）。
+    let sub_agent_names = agent
+        .sub_agent_tool_catalog()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>();
+    assert!(sub_agent_names.contains(&"notify_user_progress".to_string()));
+    assert!(sub_agent_names.contains(&"local_zsh".to_string()));
+    assert!(!sub_agent_names.contains(&"call_sub_agent".to_string()));
+    assert!(!sub_agent_names.contains(&"list_sub_agents".to_string()));
 
     // 工具定义可用（描述非空，schema 有效）。
     let tool = PortableDynamicTool::new(

@@ -1,6 +1,6 @@
 //! 运行时循环（T1.3）：基于 rig 契约组合的多轮工具循环。
 //!
-//! 分层对齐旧 `run_loop`（core.rs + agent_loop.rs）的语义骨架，但不复用其
+//! 分层对齐旧运行循环的语义骨架，但不复用其
 //! 类型：每轮迭代 = 组装请求（附加本轮工具图片 → vision 切换探测）→
 //! `model.stream()` 消费 `StreamedAssistantContent`（Text/ReasoningDelta 增量
 //! 发 `AssistantDelta`/`AssistantThinkingDelta`，seq 共享同一 message_id 计数器）
@@ -17,8 +17,8 @@
 
 use anyhow::Result;
 use rig::completion::{CompletionModel, Message};
-use rig::tool::ToolExecutionError;
 use rig::message::{ToolCall, ToolResult, ToolResultContent, UserContent};
+use rig::tool::ToolExecutionError;
 use tauri::ipc::Channel;
 use tokio::sync::watch;
 
@@ -29,8 +29,8 @@ use crate::agent::common::{
     cancellation_requested, emit, persist_assistant_message, persist_tool_calls_message,
     UsageTracker,
 };
-use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
 use crate::agent::db::OutboundToolCall;
+use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
 use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::tools::MAX_TOOL_CALLS_PER_BATCH;
 use crate::shared::error::format_anyhow_error;
@@ -38,21 +38,13 @@ use crate::shared::error::format_anyhow_error;
 mod app_policy;
 mod protocol;
 mod stream;
-#[cfg(test)]
-mod tests;
 mod support;
 mod surface;
+#[cfg(test)]
+mod tests;
 
-// Phase 3 各 agent 工厂的接入点（当前尚无 crate 内引用）。
-#[allow(unused_imports)]
 pub use app_policy::{AppToolExecutionPolicy, AppToolPolicyConfig};
-// RigProtocolResult 的构造函数由编排器协议处理器使用（T3.2 接入后方为已用）。
-#[allow(unused_imports)]
 pub use protocol::{ProtocolToolHandler, RigProtocolAction, RigProtocolResult};
-
-// DirectToolExecution 是 Phase 3 接入方的默认策略入口，当前尚无 crate 内引用。
-#[allow(unused_imports)]
-pub use surface::DirectToolExecution;
 pub use surface::{RigToolSurface, ToolCallOutcome, ToolExecutionPolicy};
 
 use stream::{consume_stream, split_choice};
@@ -403,13 +395,16 @@ where
             } else if batch.saw_retryable_error {
                 None
             } else if batch.final_message.is_some() {
-                handler.render_outcome(&[], batch.final_message.as_deref()).await
+                handler
+                    .render_outcome(&[], batch.final_message.as_deref())
+                    .await
             } else {
                 None
             };
             if let Some(text) = closing {
                 let usage_stats = usage_tracker.snapshot();
-                let reply = persist_assistant_message(db, workspace_id, &text, &usage_stats).await?;
+                let reply =
+                    persist_assistant_message(db, workspace_id, &text, &usage_stats).await?;
                 emit(
                     on_event,
                     AgentEvent::AssistantMessage {
@@ -498,7 +493,11 @@ where
 
         // 协议工具拦截（编排器）：命中则不执行壳工具回调，由宿主完成真实动作。
         let protocol_result = match hooks.protocol_handler.as_ref() {
-            Some(handler) => handler.handle(&call.function.name, &call.function.arguments).await,
+            Some(handler) => {
+                handler
+                    .handle(&call.function.name, &call.function.arguments)
+                    .await
+            }
             None => None,
         };
 
@@ -515,47 +514,44 @@ where
                 }
                 protocol.text
             }
-            None => {
-                match surface.find(&call.function.name) {
-                    None => {
-                        status = "recoverable_error";
-                        error_kind = Some("recoverable_error");
-                        format!("错误：未注册的工具：{}", call.function.name)
-                    }
-                    Some(tool) => {
-                        let guard = tool_policy.before_call(tool, call).await;
-                        trace = guard.trace;
-                        match guard.rejection {
-                            Some(error) => {
+            None => match surface.find(&call.function.name) {
+                None => {
+                    status = "recoverable_error";
+                    error_kind = Some("recoverable_error");
+                    format!("错误：未注册的工具：{}", call.function.name)
+                }
+                Some(tool) => {
+                    let guard = tool_policy.before_call(tool, call).await;
+                    trace = guard.trace;
+                    match guard.rejection {
+                        Some(error) => {
+                            let (mapped_status, mapped_kind, fatal) = classify_tool_error(&error);
+                            status = mapped_status;
+                            error_kind = Some(mapped_kind);
+                            if fatal {
+                                fatal_message = Some(tool_error_text(&error));
+                            }
+                            tool_error_text(&error)
+                        }
+                        None => match tool_policy.execute(tool, call).await {
+                            Ok(output) => tool_output_text(&output),
+                            Err(error) => {
                                 let (mapped_status, mapped_kind, fatal) =
                                     classify_tool_error(&error);
                                 status = mapped_status;
                                 error_kind = Some(mapped_kind);
+                                if error.retryable() == Some(true) {
+                                    saw_retryable_error = true;
+                                }
                                 if fatal {
                                     fatal_message = Some(tool_error_text(&error));
                                 }
                                 tool_error_text(&error)
                             }
-                            None => match tool_policy.execute(tool, call).await {
-                                Ok(output) => tool_output_text(&output),
-                                Err(error) => {
-                                    let (mapped_status, mapped_kind, fatal) =
-                                        classify_tool_error(&error);
-                                    status = mapped_status;
-                                    error_kind = Some(mapped_kind);
-                                    if error.retryable() == Some(true) {
-                                        saw_retryable_error = true;
-                                    }
-                                    if fatal {
-                                        fatal_message = Some(tool_error_text(&error));
-                                    }
-                                    tool_error_text(&error)
-                                }
-                            },
-                        }
+                        },
                     }
                 }
-            }
+            },
         };
 
         let policy = surface.policy_for(&call.function.name);
@@ -592,10 +588,13 @@ where
             call: call.id.clone(),
             provider: call.provider.clone(),
             name: call.function.name.clone(),
-            // 回灌模型的内容取 context_payload（压缩/截断后的形态），与旧
-            // to_llm_message 的口径一致；完整原文在工具产物中。
+            // 回灌模型的内容取 context_payload（压缩/截断后的形态），与
+            // `load_llm_history` 的历史口径一致；完整原文在工具产物中。
             content: vec![ToolResultContent::text(
-                record.context_payload.clone().unwrap_or_else(|| record.plain_text()),
+                record
+                    .context_payload
+                    .clone()
+                    .unwrap_or_else(|| record.plain_text()),
             )],
         }));
 
@@ -616,7 +615,7 @@ where
 
 /// rig 工具错误 → 台账终态（status, error_kind, 是否致命）。
 ///
-/// 词表对齐旧 `ToolStatus::as_run_status`：succeeded / recoverable_error /
+/// 词表对齐旧工具状态词表：succeeded / recoverable_error /
 /// fatal_error / cancelled。致命语义经 `with_code("fatal")` 显式声明
 /// （如子智能体委派失败）——rig 无 fatal 概念，用错误码承载。
 fn classify_tool_error(error: &ToolExecutionError) -> (&'static str, &'static str, bool) {

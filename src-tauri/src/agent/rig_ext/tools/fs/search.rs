@@ -1,6 +1,6 @@
-//! glob / grep 工具（rig 形态）。迁移自旧 `tools/builtin/search.rs` 与
-//! `tools/builtin/search/` 子模块：ripgrep 主后端、系统 grep 回退、有界子进程
-//! 输出、JSON/文本渲染全部保留。旧 `ToolContext` 收敛为构造期 `FsSandbox`。
+//! glob / grep 工具（rig 形态）。迁移自旧自实现工具层（已随迁移删除）的
+//! search 子模块：ripgrep 主后端、系统 grep 回退、有界子进程输出、
+//! JSON/文本渲染全部保留；旧运行时工具上下文收敛为构造期 `FsSandbox`。
 //! 偏差：旧的结构化 `data` 载荷（queries/files/totalMatches/backend 等）不再
 //! 产出——rig runtime 只持久化原始文本，模型侧展示文本保持一致。
 
@@ -15,8 +15,8 @@ use std::time::Duration;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures::future::join_all;
 use glob::{MatchOptions, Pattern};
-use serde_json::{json, Value};
 use rig::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
+use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 use tokio::{process::Command, task};
 use walkdir::WalkDir;
@@ -163,7 +163,6 @@ struct SearchOutcome {
 
 struct GrepRendered {
     display: String,
-    total_matches: usize,
     truncated: bool,
 }
 
@@ -245,8 +244,7 @@ async fn execute_glob(args: Value, sandbox: FsSandbox) -> Result<ToolOutput, Too
         Ok(patterns) => patterns,
         Err(message) => return Err(ToolExecutionError::invalid_args(message)),
     };
-    let paths =
-        non_empty_string_array_arg(&args, "paths").unwrap_or_else(|| vec![".".to_string()]);
+    let paths = non_empty_string_array_arg(&args, "paths").unwrap_or_else(|| vec![".".to_string()]);
     let max_results = usize_arg(&args, "max_results").unwrap_or(250).max(1);
 
     match task::spawn_blocking(move || {
@@ -375,8 +373,7 @@ async fn execute_grep(args: Value, sandbox: FsSandbox) -> Result<ToolOutput, Too
         Ok(patterns) => patterns,
         Err(message) => return Err(ToolExecutionError::invalid_args(message)),
     };
-    let paths =
-        non_empty_string_array_arg(&args, "paths").unwrap_or_else(|| vec![".".to_string()]);
+    let paths = non_empty_string_array_arg(&args, "paths").unwrap_or_else(|| vec![".".to_string()]);
     let options = GrepOptions {
         include: string_array_arg(&args, "include").unwrap_or_default(),
         exclude: string_array_arg(&args, "exclude").unwrap_or_default(),
@@ -385,7 +382,9 @@ async fn execute_grep(args: Value, sandbox: FsSandbox) -> Result<ToolOutput, Too
         word: boolish_arg(&args, "word").unwrap_or(false),
         context_before: usize_arg(&args, "context_before").unwrap_or(0),
         context_after: usize_arg(&args, "context_after").unwrap_or(0),
-        max_matches_per_file: usize_arg(&args, "max_matches_per_file").unwrap_or(20).max(1),
+        max_matches_per_file: usize_arg(&args, "max_matches_per_file")
+            .unwrap_or(20)
+            .max(1),
         max_files: usize_arg(&args, "max_files").unwrap_or(25).max(1),
         files_with_matches: boolish_arg(&args, "files_with_matches").unwrap_or(false),
         include_hidden: boolish_arg(&args, "include_hidden").unwrap_or(false),

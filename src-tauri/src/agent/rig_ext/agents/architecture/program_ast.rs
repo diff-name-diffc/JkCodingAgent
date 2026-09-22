@@ -1,6 +1,6 @@
 //! 架构画布程序（architecture_run 工具载荷）的类型化 AST：指令结构体与样式枚举。
 //!
-//! 与 `tools/program/ast.rs` 同一模式：**Rust 反序列化 + `validate_program`
+//! 与 `rig_ext/tools/program/ast.rs` 同一模式：**Rust 反序列化 + `validate_program`
 //! （`program_validate.rs`）才是权威校验**；随工具定义下发的 JSON Schema
 //! （见 `program_schema.rs`）用于尽早约束模型输出。语义层校验（别名解析、
 //! 形状存在性、几何计算）由前端画布解释器完成。

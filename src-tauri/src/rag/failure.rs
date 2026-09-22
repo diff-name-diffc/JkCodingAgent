@@ -169,10 +169,7 @@ mod tests {
         let log = RagFailureLog::default();
         let shared = log.clone();
         shared.record("来自 reaper 的退出记录");
-        assert_eq!(
-            log.get().expect("shared").message,
-            "来自 reaper 的退出记录"
-        );
+        assert_eq!(log.get().expect("shared").message, "来自 reaper 的退出记录");
         log.clear();
         assert!(shared.get().is_none());
     }
@@ -187,8 +184,16 @@ mod tests {
         }
         let snapshot = ring.snapshot();
         assert_eq!(snapshot.len(), STDERR_RING_CAPACITY, "容量应为 20 行");
-        assert_eq!(snapshot.first().map(String::as_str), Some("line5"), "最旧 5 行应被淘汰");
-        assert_eq!(snapshot.last().map(String::as_str), Some("line24"), "最新行应保留");
+        assert_eq!(
+            snapshot.first().map(String::as_str),
+            Some("line5"),
+            "最旧 5 行应被淘汰"
+        );
+        assert_eq!(
+            snapshot.last().map(String::as_str),
+            Some("line24"),
+            "最新行应保留"
+        );
     }
 
     #[test]
@@ -216,13 +221,19 @@ mod tests {
         let snapshot = ring.snapshot();
         assert_eq!(snapshot[0], "key sk-*** end", "sk- 凭据应脱敏");
         assert!(!snapshot[0].contains("sk-secret123"));
-        assert!(snapshot[1].contains("Authorization: ***"), "Authorization 应脱敏");
+        assert!(
+            snapshot[1].contains("Authorization: ***"),
+            "Authorization 应脱敏"
+        );
     }
 
     #[test]
     fn append_stderr_tail_format() {
         let tail = vec!["l1".to_string(), "l2".to_string()];
-        assert_eq!(append_stderr_tail("base", &tail), "base｜stderr 尾部：l1 / l2");
+        assert_eq!(
+            append_stderr_tail("base", &tail),
+            "base｜stderr 尾部：l1 / l2"
+        );
     }
 
     #[test]
@@ -255,7 +266,11 @@ mod tests {
 
         let fresh = RagStderrRing::default();
         assert!(fresh.snapshot().is_empty(), "新代 ring 独立于旧代");
-        assert_eq!(fresh.failure_message("base"), "base", "空环 failure_message 为 no-op");
+        assert_eq!(
+            fresh.failure_message("base"),
+            "base",
+            "空环 failure_message 为 no-op"
+        );
         assert_eq!(
             ring_a.failure_message("rag-server sidecar 在端口握手前已退出"),
             "rag-server sidecar 在端口握手前已退出｜stderr 尾部：fatal: boom"

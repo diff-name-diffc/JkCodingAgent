@@ -1,4 +1,4 @@
-//! `executor.rs` 的单元测试。迁移自旧 `agent/tools/program/executor_tests.rs`：
+//! `executor.rs` 的单元测试。迁移自旧自实现工具层（已随迁移删除）的工具程序 executor_tests 模块：
 //! mock 由旧 `ProgramBroker`/`CapabilityBroker` 改为构造 `PortableDynamicTool`
 //! 注入 `DataPlane`。rig 工具回调只接收 arguments（无 step id），mock 按
 //! `arguments.value` 键控回复；调用序列/审计 id 的断言随旧 Broker 接缝退役。
@@ -89,10 +89,7 @@ fn data_plane(mock: Arc<MockTool>) -> DataPlane {
     DataPlane::new(vec![mock_tool("echo", mock)])
 }
 
-fn validate(
-    program: Value,
-    policy: CapabilityPolicy,
-) -> super::super::validate::ValidatedProgram {
+fn validate(program: Value, policy: CapabilityPolicy) -> super::super::validate::ValidatedProgram {
     validate_program_value(
         &program,
         &|name: &str| (name == "echo").then_some(policy),
@@ -400,14 +397,9 @@ async fn pre_cancelled_program_starts_no_calls() {
     let (cancel_tx, cancel_rx) = watch::channel(true);
     drop(cancel_tx);
 
-    let error = execute_program_inner(
-        &program,
-        &plane,
-        &ProgramLimits::default(),
-        Some(cancel_rx),
-    )
-    .await
-    .expect_err("pre-cancelled program aborts");
+    let error = execute_program_inner(&program, &plane, &ProgramLimits::default(), Some(cancel_rx))
+        .await
+        .expect_err("pre-cancelled program aborts");
 
     assert_eq!(error.kind, ProgramErrorKind::Cancelled);
     assert!(mock.invocations().is_empty());

@@ -11,8 +11,8 @@ use rig::message::{AssistantContent, UserContent};
 /// × 4 字符/token × 1/2——窗口的一半留给系统提示、可见输出与单轮工具结果。
 pub(crate) fn context_budget_chars(context_window: Option<u64>) -> usize {
     const CHARS_PER_TOKEN: u64 = 4;
-    let window_tokens = context_window
-        .unwrap_or(crate::agent::db::DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS);
+    let window_tokens =
+        context_window.unwrap_or(crate::agent::db::DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS);
     (window_tokens * CHARS_PER_TOKEN / 2) as usize
 }
 
@@ -24,9 +24,7 @@ pub(crate) fn message_chars(message: &Message) -> usize {
             .iter()
             .map(|item| match item {
                 AssistantContent::Text(text) => text.text.chars().count(),
-                AssistantContent::Reasoning(reasoning) => {
-                    reasoning.display_text().chars().count()
-                }
+                AssistantContent::Reasoning(reasoning) => reasoning.display_text().chars().count(),
                 AssistantContent::ToolCall(call) => {
                     call.function.name.chars().count()
                         + call.function.arguments.to_string().chars().count()
@@ -120,10 +118,15 @@ mod tests {
     fn assistant_with_tool() -> Message {
         Message::Assistant {
             id: None,
-            content: vec![AssistantContent::ToolCall(rig::message::ToolCall::from_wire(
-                "call-1",
-                rig::message::ToolFunction::new("read_file".to_string(), serde_json::json!({"path": "a"})),
-            ))],
+            content: vec![AssistantContent::ToolCall(
+                rig::message::ToolCall::from_wire(
+                    "call-1",
+                    rig::message::ToolFunction::new(
+                        "read_file".to_string(),
+                        serde_json::json!({"path": "a"}),
+                    ),
+                ),
+            )],
         }
     }
 
@@ -167,7 +170,7 @@ mod tests {
 
     #[test]
     fn budget_drives_window_when_window_is_configured() {
-        assert_eq!(context_budget_chars(Some(1_000_000)) , 2_000_000);
+        assert_eq!(context_budget_chars(Some(1_000_000)), 2_000_000);
         assert_eq!(context_budget_chars(None), 2_000_000);
     }
 }

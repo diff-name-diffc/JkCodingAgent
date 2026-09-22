@@ -1,7 +1,7 @@
 //! 工具程序 DSL 执行器（T2.3b）：run_tool_program。
 //! 数据面（可被程序调用的工具集合）由调用方（编排器工厂）注入。
 //!
-//! 迁移自旧 `agent/tools/builtin/run_tool_program.rs` + `agent/tools/program/`：
+//! 迁移自旧自实现工具层（已随迁移删除）的 run_tool_program 与工具程序模块：
 //! - 「按名调用工具」的接缝由旧 `CapabilityBroker` 改为注入的
 //!   `Vec<PortableDynamicTool>` 数据面（按名查找 + `execute`）；
 //! - schema（name / description / parameters）与旧实现逐字一致；
@@ -30,7 +30,7 @@ use super::deps::RigToolDeps;
 /// 工具描述：与旧 `builtin/run_tool_program.rs` 逐字一致（模型行为依赖文案，勿改写）。
 const DESCRIPTION: &str = "在受限运行时中组合多个已授权工具调用。程序只支持 call、sequence、parallel、return；不执行 Python/JavaScript/Shell，不允许动态工具名。arguments 与 return.value 可用严格引用 {\"$ref\":{\"step\":\"步骤ID\",\"pointer\":\"/data/files\"}} 读取之前步骤的 JSON 结果。根节点必须是 sequence，且最后一步是全程序唯一 return。";
 
-/// 可在 parallel 分支内执行的只读工具，迁移自旧 `tools/spec.rs`
+/// 可在 parallel 分支内执行的只读工具，迁移自`rig_ext/tools/spec.rs`（自旧工具层迁入）
 /// TOOL_POLICY_TABLE 的 PARALLEL_READONLY 行（read_file / list_dir / glob /
 /// grep / ssh_list_servers / ssh_memo_read）。`PortableDynamicTool` 不携带
 /// access 元数据，校验器以本表为事实来源；未收录的工具一律按不可并行处理
@@ -128,7 +128,7 @@ fn build_program_tool(
 /// 将静态验证或运行期 ProgramError 映射为 rig 工具错误。
 ///
 /// 分类对齐旧 `program_error_result` 的 fatal/recoverable/cancelled 三态：
-/// - Cancelled → `cancelled`（旧 `ToolResult::cancelled`）；
+/// - Cancelled → `cancelled`（旧工具结果的取消语义）；
 /// - ChildFatal / Internal → `other` 且 retryable=false（旧 fatal_error）；
 /// - DeadlineExceeded → `timeout`（旧 recoverable，rig timeout 默认 retryable）；
 /// - PolicyDenied → `permission_denied`（旧 recoverable，语义为策略拒绝）；
@@ -157,9 +157,10 @@ pub(crate) fn program_error_tool_error(error: ProgramError) -> ToolExecutionErro
             ToolExecutionError::other(message).with_retryable(true)
         }
     };
-    match serde_json::to_value(kind).ok().and_then(|value| {
-        value.as_str().map(str::to_string)
-    }) {
+    match serde_json::to_value(kind)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+    {
         Some(code) => mapped.with_code(code),
         None => mapped,
     }
@@ -174,12 +175,9 @@ mod tests {
     use rig::tool::{PortableDynamicTool, ToolErrorKind, ToolOutput};
 
     fn echo_tool() -> PortableDynamicTool {
-        PortableDynamicTool::new(
-            "echo",
-            "echo",
-            json!({ "type": "object" }),
-            |args| Box::pin(async move { Ok(ToolOutput::json(args)) }),
-        )
+        PortableDynamicTool::new("echo", "echo", json!({ "type": "object" }), |args| {
+            Box::pin(async move { Ok(ToolOutput::json(args)) })
+        })
     }
 
     #[test]
@@ -244,7 +242,11 @@ mod tests {
                 ToolErrorKind::Other,
                 Some(true),
             ),
-            (ProgramErrorKind::ChildFatal, ToolErrorKind::Other, Some(false)),
+            (
+                ProgramErrorKind::ChildFatal,
+                ToolErrorKind::Other,
+                Some(false),
+            ),
             (
                 ProgramErrorKind::Cancelled,
                 ToolErrorKind::Cancelled,
@@ -255,11 +257,14 @@ mod tests {
                 ToolErrorKind::Timeout,
                 Some(true),
             ),
-            (ProgramErrorKind::Internal, ToolErrorKind::Other, Some(false)),
+            (
+                ProgramErrorKind::Internal,
+                ToolErrorKind::Other,
+                Some(false),
+            ),
         ];
         for (program_kind, expected_kind, expected_retryable) in cases {
-            let error =
-                super::program_error_tool_error(ProgramError::new(program_kind, "boom"));
+            let error = super::program_error_tool_error(ProgramError::new(program_kind, "boom"));
             assert_eq!(error.kind(), expected_kind, "{program_kind:?}");
             assert_eq!(error.retryable(), expected_retryable, "{program_kind:?}");
             assert_eq!(error.message(), "错误：ToolProgram 执行失败：boom");

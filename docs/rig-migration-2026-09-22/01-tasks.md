@@ -255,3 +255,74 @@ OpenAI 兼容客户端/SSE 解析/请求构造）、`agent/run_loop/`（运行�
 | T4.2 | ✅ 完成 | 主智能体 | 2026-09-22 | af8eb31/72bf00e；审查/验收/Python/连通性/提交信息全部迁移 |
 | T5.1 | ✅ 完成 | 主智能体 | 2026-09-22 | e8b735f；旧运行时零残留 |
 | T5.2 | ✅ 完成 | 主智能体 | 2026-09-22 | cargo+pnpm 全量验证通过；AGENTS.md 已更新 |
+| T6.1 | ✅ 完成 | 主智能体 | 2026-09-22 | 9ed3247；残留审计：死代码/过期引用/失去语义逻辑清理 + 两个工具面缺口修复 |
+
+## 9. Phase 6 完成记录 — 二次审查与残留清理（提交 9ed3247）
+
+**审计方法**：(a) 逐个复核 `#[allow(dead_code)]` 是否仍有消费者；(b) 旧符号/旧路径引用扫描
+（`OrchestratorAgent` / `PlainChatAgent` / `ArchitectureAgent` / `run_loop/` / `agent/tools/` /
+`to_llm_message` / `static_tool_catalog` / `PortableTool` 等）；(c) 工具 schema 声明参数的实际可达性；
+(d) 迁移期脚手架（阶段标记、多余 allow、过期再导出、TODO）。
+
+**关键前提**：`lib.rs` 为 `mod agent;`（私有模块），因此 `agent/rig_ext/**` 内的 `pub` 项同样受
+`dead_code` lint 覆盖——`cargo clippy --all-targets -- -D warnings` 全绿即证明没有隐藏的未使用实现
+（`pub` 不会豁免死代码告警），无需逐符号人工穷举。
+
+**已删除（迁移期产物 / 失去语义的旧逻辑）**
+1. 记录级消息桥：`rig_ext/message.rs` 的 `records_to_rig_messages` / `record_to_rig_message` 与
+   `DispatcherMessageRecord::to_llm_message`（生产路径为 `load_llm_history` → `chat_history_to_rig`）；
+   日志前缀与模块文档随之更正。
+2. `rig_ext/summary.rs` 的诊断上下文链路：`SummaryError.debug_context`（全程写入、无人读取）、
+   `build_summary_debug_context`、`build_prompt_preview`、`SUMMARY_DEBUG_PREVIEW_CHARS`。
+3. 重复/过期常量与开关：`rig_ext/summary.rs` 的 `DUAL_TOOL_SUMMARY_CONTEXT_MAX_CHARS`
+   （权威在 `rig_ext/tool_result/summary.rs`）；`tool_result.rs` 的 `with_force_compress_after_chars`
+   与 `RigSummaryModel.model_name`。
+4. 旧注册表机制遗留：`tools/spec.rs` 的 `to_definition` / `fingerprint`（TOCTOU 指纹）；
+   `search/*` 的 `GrepRendered.total_matches` 字段（渲染本地计数保留）。
+5. 无用访问器与脚手架：`RigArchitectureAgent::model_name/api_base`、`RigPlainChatAgent::model_name/
+   api_base/effective_system_prompt`、`RigOrchestratorAgent::context_debug_enabled`、
+   `RigToolSurface::with_policy`、`RigSubAgentRuntime.deps`/`trace_events()`、`no_policy`/`DirectPolicy`、
+   `static_tool_catalog`（改为 `sub_agent_tool_catalog()` + `sub_agent_tool_names*()`）。
+6. 失去语义的字段：`DispatcherMessageUsageStats.paused`（旧「子智能体调用期间暂停计时」语义随
+   usage pause 移除）——同步 `common/usage.rs`、`graph/receipt.rs`、`src/types/chat.ts`；
+   `GraphRunHandle.epoch` 与 `GraphRegistryData.next_epoch`（注释声称「供代际校验」，实际调用方只读
+   cancel/resume，代际防护已由 `begin()/finish()` 的 `receiver_count` 承担）。
+7. 阶段级噪音：`rig_ext/mod.rs` 的 `#![allow(dead_code)]`（去掉后逐项清理，暴露的 16 处已全部处理）、
+   `loop.rs` 的 `#[allow(unused_imports)]`、`db/tool_runs/async_api.rs` 的多余 `#[allow(dead_code)]`
+   （该包装确有调用方）、`db/mod.rs` 的 `AhaContextConfig` 再导出。
+
+**已修复的真实缺口（回归）**
+1. **子智能体工具面漏挂 `notify_user_progress`**：`sub_agent/runner.rs::build` 在允许列表过滤前补入，
+   trace 事件与 `sub-agent-event` 广播恢复；新增回归测试
+   `surface_offers_progress_tool_and_rejects_nested_sub_agents`（断言允许列表精确生效、嵌套子智能体
+   与编排器工具被拒）。
+2. **`generate_image` 的 `seed` / `style` 声明但未生效**：schema 与工具入参都有，请求体却静默丢弃。
+   改为「声明才发送」写入 `parameters`——未声明时请求体与旧行为逐字节一致（不发送显式 null）。
+3. **`sync_directory` 进度事件 `toolCallId` 恒为占位**（TODO T3）：`sync_directory_tool` 新增
+   `ToolCallSlot` 参数，进度事件写入真实 `deps.tool_call_id`。
+
+**有意保留（复核确认为非残留）**
+- `common/message.rs` 的 `DISPATCH_PLUMBING_TOOL_NAMES` 与 process-only 判定：只对老库历史行生效
+  （dispatch 子系统已下线），删掉会让旧会话的 plumbing 消息重新进入上下文。
+- `events.rs` 的 `ToolSummaryStarted` / `ToolSummaryDelta`：预留协议槽位，前端已有 handler。
+- `graph/types.rs` 的 `NODE_PHASE_RETRYING` / `NODE_PHASE_COMPACTING`：前端 `src/types/graph.ts`
+  的节点阶段联合类型引用这两个契约值。
+- `state/run.rs` 的 `ActiveRunHandle.cleanup`（RAII 守卫，值不被读取但 Drop 有副作用）。
+- `db/keywords.rs::clear_keywords`、`db/sessions.rs::update_{chat,project}_session_updated_at`、
+  `browser/process.rs::BrowserProcess.project_path`：迁移前既存的历史 dead code（复核 `e8b735f~1`
+  同样无调用方），不属本次重构残留，未动。
+- `dispatcher_tool_runs.action_kind`（恒空）与 `metadata_json`（创建期策略快照，`lifecycle.rs` 用
+  `COALESCE` 保留）：留存列，不做 schema 迁移。
+- 模块头的迁移溯源说明（`迁移自旧自实现工具层（已随迁移删除）`）：作为「为何这样实现」的溯源保留。
+- 事件 `ssh-sync-progress`：后端已发（`toolCallId` 现为真实值）但前端无订阅者——迁移前既存缺口，
+  本次未接前端。
+
+**验证**（全绿）
+- `cargo fmt --all -- --check`；`cargo clippy --all-targets -- -D warnings`（0 告警）；
+  `cargo test --all-targets` → 534 passed / 0 failed / 1 ignored。
+- `pnpm lint`；`pnpm test` → 569 passed / 58 files；`pnpm build`；
+  `pnpm contract:check` → 115 注册命令 / 113 直接调用，无未消费命令；`pnpm styles:report` → 0 无引用定义。
+
+**未验证**：GUI 冒烟（需真实桌面应用与模型凭据）不在本轮范围。行为级证据仅来自两组端到端测试：
+`rig_ext/loop/tests.rs`（rig 官方 `MockCompletionModel` 驱动消息级工具调用契约）与
+`rig_ext/agents/tests.rs`（本地 mock OpenAI HTTP 端点：真实 HTTP+SSE → 事件 → 落库 → 用量）。

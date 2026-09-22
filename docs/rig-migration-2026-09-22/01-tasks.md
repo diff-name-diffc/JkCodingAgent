@@ -99,18 +99,31 @@ LLM 调用迁移）；`mcp/` 注册表（桥接入 rig 工具面）；PTY/browse
 - [ ] **T5.1** 删除 `agent/llm/`、`agent/run_loop/`（types.rs 的 AgentEvent/AgentTurn 挪入 runtime 保留）、`tools/registry.rs`、`spec.rs`、`broker*`、`capability.rs`、`surface.rs` 及全部旧引用；全仓 `OpenAiCompatProvider`/`AgentTool`/`RunLoopAgent`/`ChatMessage` 零命中（`zg query --rg` 穷尽验证）。
 - [ ] **T5.2** 全量验证：`cargo check`/`cargo test`/`cargo clippy` 绿；`pnpm contract:check`、`pnpm lint`、`pnpm test`、`pnpm build` 绿；更新 `AGENTS.md`（架构表/新增工具流程/schema 策略章节同步 rig 方案）。
 
-## 3. 进度记录
+## 3. Phase 2 合并备注（子智能体回报的偏差与遗留）
+
+**合并提交**：T2.1=`rig/t21`(3fc1084) T2.2=`rig/t22`(869b548) T2.3a=`rig/t23a`(7385447) T2.3b=`rig/t23b`(21b8052) T2.4=`rig/t24`(756eb4f)，文件零冲突。
+
+**有意的语义偏差（Phase 3 承接）**：
+1. 旧 `ToolResult::success_data` 的结构化 data 载荷不再产出——rig `ToolOutput` 文本/JSON 为唯一通道；产物落库由 `rig_ext/tool_result` 承担。
+2. **SSH/命令审查门禁（ssh_review 链路）整体未随工具迁移**——按设计移入 Phase 3 runtime `ToolExecutionPolicy`（拒绝 = `ToolExecutionError::refused`）。T3 必须重建：AI 审查调用、未配置审查即拦截、服务器豁免、拦截审计/台账、with_confirm_guidance、MCP 工具的审查覆盖。
+3. 工具结果策略需在 Phase 3 组装工具面时挂载：命令类工具 `COMMAND_FORCE_COMPRESS_AFTER_CHARS`=12000，MCP 工具（`mcp__` 前缀）default_compress=true + 5000。
+4. `run_tool_program` 数据面由编排器工厂注入（`program_tool(deps, data_plane)`）；并行只读表迁移为静态表。
+5. analyze_image/browser_visual_analyze 只用 vision 槽位规格（凭据回退规则已在 `resolve_purpose_specs` 内置，语义等价旧回退链）。
+6. 取消映射：`ToolExecutionError::cancelled`；可恢复错误保持 `Ok(ToolOutput::text("错误：…"))` 或 `other().with_retryable(true)`。
+7. `sync_directory` 进度事件 `toolCallId` 暂为 null，待 Phase 3 策略层接线。
+
+## 4. 进度记录
 
 | 任务 | 状态 | 执行者 | 完成时间 | 备注 |
 |------|------|--------|----------|------|
 | T0.1 | ✅ 完成 | 主智能体 | 2026-09-22 | rig-core 0.42.0，无 rmcp feature；commit 70b68f3 |
-| T1.1 | 未开始 | - | - | - |
-| T1.2 | 未开始 | - | - | - |
-| T1.3 | 未开始 | - | - | - |
-| T2.1 | 未开始 | - | - | - |
-| T2.2 | 未开始 | - | - | - |
-| T2.3 | 未开始 | - | - | - |
-| T2.4 | 未开始 | - | - | - |
+| T1.1 | ✅ 完成 | agent-4 | 2026-09-22 | rig_ext/model.rs；a84f9ee |
+| T1.2 | ✅ 完成 | agent-4 | 2026-09-22 | rig_ext/message.rs；a84f9ee |
+| T1.3 | ✅ 完成 | agent-4 | 2026-09-22 | rig_ext/loop.rs+tool_result.rs；a84f9ee |
+| T2.1 | ✅ 完成 | agent-5 | 2026-09-22 | fs/（read_file/list_dir/glob/grep）；24 测试绿 |
+| T2.2 | ✅ 完成 | agent-6 | 2026-09-22 | exec/（local_zsh/ssh_*/ssh_memo/sync_directory）；审查门禁移交 T3 |
+| T2.3 | ✅ 完成 | agent-7（media）+ agent-8（program） | 2026-09-22 | media/ 12 工具 + program/ DSL 执行器 |
+| T2.4 | ✅ 完成 | agent-9 | 2026-09-22 | mcp.rs 桥（执行期重解析替代 spec hash 复核） |
 | T3.1 | 未开始 | - | - | - |
 | T3.2 | 未开始 | - | - | - |
 | T3.3 | 未开始 | - | - | - |

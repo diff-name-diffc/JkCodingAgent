@@ -121,10 +121,9 @@ impl DispatcherDb {
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("load dispatcher llm history")?;
         messages.retain(should_keep_llm_message);
-
-        while matches!(messages.first().map(|m| m.role.as_str()), Some("tool")) {
-            messages.remove(0);
-        }
+        // 配对修复要在可见性/上下文过滤之后：过滤可能丢下孤儿工具结果或未应答的
+        // tool_calls（见 `repair_tool_call_pairing`），两者都会被服务端以 400 拒绝。
+        repair_tool_call_pairing(&mut messages);
 
         Ok(messages)
     }

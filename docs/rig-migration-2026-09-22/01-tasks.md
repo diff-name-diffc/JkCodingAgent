@@ -326,3 +326,39 @@ OpenAI 兼容客户端/SSE 解析/请求构造）、`agent/run_loop/`（运行�
 **未验证**：GUI 冒烟（需真实桌面应用与模型凭据）不在本轮范围。行为级证据仅来自两组端到端测试：
 `rig_ext/loop/tests.rs`（rig 官方 `MockCompletionModel` 驱动消息级工具调用契约）与
 `rig_ext/agents/tests.rs`（本地 mock OpenAI HTTP 端点：真实 HTTP+SSE → 事件 → 落库 → 用量）。
+
+## 10. 运行期缺陷修复 — `tool_calls` 与 tool 结果配对（2026-09-22）
+
+**现象**：聊天请求被服务端以 400 拒绝——`An assistant message with 'tool_calls' must be
+followed by tool messages responding to each 'tool_call_id'`。整轮对话因此无法继续。
+
+**定位**（`~/.jkcodingagent/jkbot.sqlite3` 结构查询，不涉及正文）：库中 34 个
+`tool_call_id` 有 assistant 的 `tool_calls_json` 声明、却**完全没有对应的 tool 行**
+（不是被 `visible` / `context_cleared` 过滤）。最近一例（2026-09-22T09:45Z）：assistant 同批
+声明 `ssh_exec` × 2，只落了第一个结果——即**批量执行中途取消**（用户按停止）后，第二个调用
+既没执行也没落结果；下一轮请求重载历史即被服务端拒绝，且该会话此后每轮都失败。
+
+**根因**：写侧——`execute_tool_calls` 在「批内检测到取消」时直接返回 `contents: None` 收口，
+本批剩余调用既不执行也不补结果；「前序工具致命失败」时 `bail!` 同样留下悬空 `tool_calls`。
+读侧——历史装配只做上下文过滤与「去掉开头的 tool 消息」，没有任何配对校验，
+残缺历史原样发给服务端。
+
+**修复**（两侧都补，无兼容层）：
+1. 写侧 `rig_ext/loop.rs::persist_skipped_tool_results`：取消命中与前序致命失败两条路径上，
+   为剩余调用补占位工具结果（`错误：工具 'X' 尚未执行。<原因>`，发
+   `ToolStarted` → 落库 → `ToolFinished`，与门禁拒绝同一措辞族），使「assistant + 其全部工具
+   响应」始终成对落库。
+2. 读侧 `common/message.rs::repair_tool_call_pairing`（`load_llm_history` 在
+   `should_keep_llm_message` 之后调用）：按 `tool_calls` 顺序补齐缺失结果（占位文案
+   「该工具调用没有产生结果：运行被中断，结果未落库。若仍需要，请重新调用。」）、
+   重排乱序结果、剔除无前置声明的孤儿结果（含原「去掉开头 tool 消息」的语义）。
+   既有的残缺历史由此免迁移即可继续使用。
+
+**顺带修复**：`agent/common/tests.rs` 自 `e8b735f`（Phase 5）起缺少 `#[cfg(test)] mod tests;`
+声明而不被编译（4 个用例静默停跑）——已恢复声明，并删除其中引用已删 API
+（`classify_tool_result` / `ToolOutcome`）的过期用例。全仓同类检查确认其余测试文件均已声明
+（三个 `*_tests.rs` 走 `#[path]` 声明）。
+
+**验证**：`cargo test --all-targets` → 545 passed / 0 failed / 1 ignored（新增 10 个用例：
+`repair_tool_call_pairing` 4 个、`load_llm_history` 配对修复 1 个、取消批量补占位端到端 1 个、
+恢复的 4 个）；`cargo clippy --all-targets -- -D warnings` 0 告警。

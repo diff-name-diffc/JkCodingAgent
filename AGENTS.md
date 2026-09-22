@@ -101,6 +101,7 @@ App
 - 重型/阻塞操作（文件 I/O、进程、网络、Git）必须走 `tokio::task::spawn_blocking`，绝不阻塞 Tauri 主线程。
 - 持锁（`parking_lot::Mutex`）期间禁止做 I/O——先 clone/取出资源再释放锁。
 - 优先用 `tauri::Emitter` 向前端推事件，而非从命令返回大体积数据。
+- **assistant 的 `tool_calls` 与 tool 结果必须成对进入 LLM 上下文**：服务端要求每个 `tool_call_id` 都有紧随其后的 tool 消息，否则以 400 拒绝整轮请求。写侧由运行循环保证（取消/致命失败中止本批时补占位结果，`rig_ext/loop.rs::persist_skipped_tool_results`）；读侧由 `common/message.rs::repair_tool_call_pairing` 在历史装配前按调用顺序补齐缺失结果、剔除孤儿结果（库中既有的残缺历史因此无需数据迁移）。
 
 ---
 

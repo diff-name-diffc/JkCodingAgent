@@ -7,7 +7,9 @@ mod message;
 mod usage;
 
 pub use message::{persist_assistant_message, persist_tool_calls_message};
-pub(crate) use message::{serialize_tool_arguments, should_keep_llm_message};
+pub(crate) use message::{
+    repair_tool_call_pairing, serialize_tool_arguments, should_keep_llm_message,
+};
 pub use usage::UsageTracker;
 
 // ─── Cancellation ────────────────────────────────────────────────────────────────
@@ -33,3 +35,6 @@ pub async fn wait_for_cancellation(cancel_rx: &mut watch::Receiver<bool>) {
 pub fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {
     let _ = on_event.send(event);
 }
+
+#[cfg(test)]
+mod tests;

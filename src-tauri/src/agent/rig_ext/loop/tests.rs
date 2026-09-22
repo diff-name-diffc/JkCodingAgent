@@ -561,3 +561,98 @@ async fn protocol_retryable_error_keeps_the_loop_running() {
         .expect("协议拒绝结果应落库");
     assert!(tool_message.plain_text().contains("定义不合法"));
 }
+
+/// 批量执行中途取消时，本批未执行的剩余调用必须补占位结果：
+/// assistant 消息已连同全部 tool_calls 落库，缺结果会让下一轮请求被服务端
+/// 以 400 拒绝（assistant tool_calls 之后必须跟齐 tool 消息）。
+#[tokio::test]
+async fn cancelled_batch_persists_placeholder_results_for_remaining_calls() {
+    let fixture = Fixture::new();
+    let captured = Arc::new(Mutex::new(CapturedEvents::default()));
+    let on_event = capture_channel(Arc::clone(&captured));
+
+    let model = MockCompletionModel::from_stream_turns([vec![
+        MockStreamEvent::message_id("msg-1"),
+        MockStreamEvent::text("并行跑两条"),
+        MockStreamEvent::tool_call("call-1", "echo", serde_json::json!({"value": "hi"})),
+        MockStreamEvent::tool_call("call-2", "echo", serde_json::json!({"value": "bye"})),
+        MockStreamEvent::final_response_with_total_tokens(10),
+    ]]);
+
+    // 第一个工具执行即触发取消（模拟用户按下停止）。
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let surface = RigToolSurface::new(vec![PortableDynamicTool::new(
+        "echo",
+        "回显参数",
+        serde_json::json!({
+            "type": "object",
+            "properties": { "value": { "type": "string" } },
+            "required": ["value"]
+        }),
+        move |_args| {
+            let cancel_tx = cancel_tx.clone();
+            Box::pin(async move {
+                let _ = cancel_tx.send(true);
+                Ok(ToolOutput::text("echo:done"))
+            })
+        },
+    )]);
+
+    let mut hooks = RigLoopHooks::from_chat_spec(&crate::agent::rig_ext::model::PurposeModelSpec {
+        api_key: "test".to_string(),
+        api_base: "http://127.0.0.1:1/v1".to_string(),
+        model: "mock-chat".to_string(),
+        max_tokens: None,
+        context_window: None,
+        temperature: 0.0,
+        enable_thinking: true,
+    });
+    hooks.max_iterations = 8;
+    let mut usage_tracker = crate::agent::common::UsageTracker::new();
+
+    run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![rig::completion::Message::user("帮我回显")],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &on_event,
+        cancel_rx,
+        &mut usage_tracker,
+    )
+    .await
+    .expect("取消应收口成功");
+
+    // 模型只被调用一次：取消后不再发起带悬空 tool_calls 的请求。
+    assert_eq!(model.request_count(), 1);
+
+    let messages = list_visible(&fixture);
+    let shape = messages
+        .iter()
+        .map(|message| {
+            (
+                message.role.as_str(),
+                message.tool_call_id.as_deref().unwrap_or("-"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        shape,
+        vec![
+            ("assistant", "-"),
+            ("tool", "call-1"),
+            ("tool", "call-2"),
+            // 取消收口的助手消息（收口正文随 cancelled 模板落库）。
+            ("assistant", "-"),
+        ]
+    );
+    assert!(messages[1].plain_text().contains("echo:done"));
+    assert!(
+        messages[2].plain_text().contains("尚未执行"),
+        "未执行的调用应补占位结果：{}",
+        messages[2].plain_text()
+    );
+}

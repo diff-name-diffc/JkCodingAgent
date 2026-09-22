@@ -467,8 +467,22 @@ where
     let mut final_message: Option<String> = None;
     let mut saw_retryable_error = false;
 
-    for (call, outbound) in tool_calls.iter().zip(outbound_calls) {
+    for (index, (call, outbound)) in tool_calls.iter().zip(outbound_calls).enumerate() {
         if cancellation_requested(cancel_rx) {
+            // 本批未执行的剩余调用必须补齐占位结果：assistant 消息已连同全部
+            // tool_calls 落库，缺结果会让下一次请求被服务端以 400 拒绝。
+            persist_skipped_tool_results(
+                db,
+                workspace_id,
+                on_event,
+                &tool_calls[index..],
+                &outbound_calls[index..],
+                surface,
+                summary,
+                usage_tracker,
+                "本轮运行已取消。",
+            )
+            .await?;
             return Ok(ToolBatch {
                 contents: None,
                 actions,
@@ -599,8 +613,21 @@ where
         }));
 
         // 致命工具失败：本批已执行结果全部落库与收尾后中止 run
-        //（对齐旧 `ExecutedToolFinalize::FatalTool` 的收口时机）。
+        //（对齐旧 `ExecutedToolFinalize::FatalTool` 的收口时机）。剩余调用同样
+        // 补占位结果，否则历史里会留下未应答的 tool_calls。
         if let Some(message) = fatal_message {
+            persist_skipped_tool_results(
+                db,
+                workspace_id,
+                on_event,
+                &tool_calls[index + 1..],
+                &outbound_calls[index + 1..],
+                surface,
+                summary,
+                usage_tracker,
+                "本批次因前序工具致命失败已中止。",
+            )
+            .await?;
             anyhow::bail!("{message}");
         }
     }
@@ -611,6 +638,50 @@ where
         final_message,
         saw_retryable_error,
     })
+}
+
+/// 为本批「未执行」的调用补齐占位工具结果。
+///
+/// assistant 消息在流式结束时已连同本批全部 tool_calls 落库；后面的调用若没有
+/// 结果行，下一轮请求会因「assistant tool_calls 之后必须跟齐 tool 消息」被服务端
+/// 以 400 拒绝（库中既有的残缺历史由 `repair_tool_call_pairing` 在读侧兜底，
+/// 新产生的残缺在此写侧补齐）。措辞与运行取消时的门禁拒绝保持同一族。
+#[allow(clippy::too_many_arguments)]
+async fn persist_skipped_tool_results<M: CompletionModel>(
+    db: &DispatcherDb,
+    workspace_id: &str,
+    on_event: &Channel<AgentEvent>,
+    skipped_calls: &[ToolCall],
+    skipped_outbound: &[OutboundToolCall],
+    surface: &RigToolSurface,
+    summary: Option<&RigSummaryModel<'_, M>>,
+    usage_tracker: &mut UsageTracker,
+    reason: &str,
+) -> Result<()> {
+    for (call, outbound) in skipped_calls.iter().zip(skipped_outbound) {
+        emit(
+            on_event,
+            AgentEvent::ToolStarted {
+                tool_call_id: outbound.id.clone(),
+                name: outbound.function.name.clone(),
+                arguments: outbound.function.arguments.clone(),
+            },
+        );
+        let text = format!("错误：工具 '{}' 尚未执行。{reason}", call.function.name);
+        let policy = surface.policy_for(&call.function.name);
+        persist_rig_tool_result(
+            db,
+            workspace_id,
+            on_event,
+            call,
+            &policy,
+            &text,
+            summary,
+            usage_tracker,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// rig 工具错误 → 台账终态（status, error_kind, 是否致命）。

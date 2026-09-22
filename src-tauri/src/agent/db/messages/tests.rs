@@ -411,3 +411,104 @@ fn truncate_messages_from_cleans_traces_and_graph_plans() {
         1
     );
 }
+
+/// 装配 LLM 上下文时修复「assistant tool_calls ↔ tool 结果」配对：
+/// 缺结果按调用顺序补占位、孤儿结果剔除——残缺历史不迁移即可继续使用
+/// （服务端会以 400 拒绝「tool_calls 之后未跟齐 tool 消息」的请求）。
+#[tokio::test]
+async fn load_llm_history_repairs_unanswered_tool_calls() {
+    use crate::agent::db::{FunctionCall, OutboundToolCall};
+
+    fn tool_call(id: &str, name: &str) -> OutboundToolCall {
+        OutboundToolCall {
+            id: id.to_string(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: name.to_string(),
+                arguments: "{}".to_string(),
+            },
+        }
+    }
+
+    let db = test_db();
+    let session = db
+        .create_chat_session("配对修复", None)
+        .expect("create session");
+    let session_id = session.id;
+
+    add_text_message(&db, &session_id, "user", "帮我跑两条命令");
+    crate::agent::common::persist_tool_calls_message(
+        &db,
+        &session_id,
+        "并行执行",
+        &[
+            tool_call("call-a", "ssh_exec"),
+            tool_call("call-b", "ssh_exec"),
+        ],
+        "",
+        None,
+    )
+    .await
+    .expect("persist assistant tool calls");
+    // 批量中途取消：只落了第一个结果。
+    db.add_visible_tool_result_async(
+        &session_id,
+        "结果A",
+        "结果A",
+        Some("call-a"),
+        Some("ssh_exec"),
+        None,
+        &[],
+    )
+    .await
+    .expect("persist tool result");
+    // 孤儿结果：其 assistant 是 process-only 消息，装配上下文时被过滤掉。
+    crate::agent::common::persist_tool_calls_message(
+        &db,
+        &session_id,
+        "✅ 子任务进程已结束",
+        &[tool_call("call-orphan", "ssh_exec")],
+        "",
+        None,
+    )
+    .await
+    .expect("persist process-only assistant");
+    db.add_visible_tool_result_async(
+        &session_id,
+        "孤儿结果",
+        "孤儿结果",
+        Some("call-orphan"),
+        Some("ssh_exec"),
+        None,
+        &[],
+    )
+    .await
+    .expect("persist orphan tool result");
+
+    let history = db.load_llm_history(&session_id).expect("load llm history");
+    let shape = history
+        .iter()
+        .map(|message| {
+            (
+                message.role.as_str(),
+                message.tool_call_id.as_deref().unwrap_or("-"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        shape,
+        vec![
+            ("user", "-"),
+            ("assistant", "-"),
+            ("tool", "call-a"),
+            ("tool", "call-b"),
+        ]
+    );
+    assert!(history[2].content.contains("结果A"));
+    assert!(
+        history[3].content.contains("没有产生结果"),
+        "缺失结果应补占位文案：{}",
+        history[3].content
+    );
+    assert_eq!(history[3].name.as_deref(), Some("ssh_exec"));
+}

@@ -112,7 +112,40 @@ LLM 调用迁移）；`mcp/` 注册表（桥接入 rig 工具面）；PTY/browse
 6. 取消映射：`ToolExecutionError::cancelled`；可恢复错误保持 `Ok(ToolOutput::text("错误：…"))` 或 `other().with_retryable(true)`。
 7. `sync_directory` 进度事件 `toolCallId` 暂为 null，待 Phase 3 策略层接线。
 
-## 4. 进度记录
+## 4. Phase 3 进度（T3 基建已完成，agent 装配待续）
+
+**已完成（提交 05b3de9 / 7e91863，`cargo check`+`cargo test --lib`(692)+`clippy` 全绿）**：
+1. **审查门禁就地恢复**（Phase 2 留白已闭合）：新增 `rig_ext/review.rs`
+   （`RigReviewContext`：审查配置 + 会话标题 + 用户任务 + 执行者任务 + 对话
+   上下文；`build_payload` 对齐旧 `review_context`）；`RigToolDeps.review` 字段；
+   local_zsh / ssh_exec / sync_directory / MCP 桥四处恢复 fail-closed 审查
+   （未配置即拒、服务器豁免、审查异常拦截、拦截写审计与命令台账、
+   `with_confirm_guidance` 文案、审计条目 review 字段）。
+2. **工具调用台账**：`rig_ext/tools/run_record.rs`（`dispatcher_tool_runs`
+   创建/启动/收尾 + ToolRunUpdated 广播 + 策略元数据；未收录工具名标记
+   `registered=false`），并迁移参数准备（schema 默认值注入 + Draft 2020-12
+   校验 + 错误摘要，对齐旧 `ToolRegistry::prepare_input`）。
+3. **执行策略三段式**：`ToolExecutionPolicy` 扩展为
+   `before_call`（门禁 + 台账开始）/`execute`/`after_call`（台账收尾）；
+   新增 `rig_ext/loop/app_policy.rs::AppToolExecutionPolicy`：台账 →
+   取消检查 → 参数校验 → Dangerous 拒绝 → ReviewRequired 通用审查 →
+   统一超时（`unified_timeout=false` 跳过的语义保留）。
+   循环侧错误分类对齐旧 `ToolStatus` 词表（succeeded/recoverable_error/
+   fatal_error/cancelled），致命语义经 `with_code("fatal")` 声明并在结果
+   落库后中止 run（子智能体委派失败将用之）。
+
+**待续（下一轮）**：
+- **T3.4 子智能体**：rig 循环版 `SubAgentRuntime`（复用 `model.stream()` +
+  工具面 + 策略；保留 trace 事件、滑窗裁剪 `context_window×4×1/2`、
+  重试升级 force_final、整体超时与并行只读批）；`call_sub_agent` /
+  `list_sub_agents` / `notify_user_progress` 迁为 PortableDynamicTool。
+- **T3.1 plain_chat 装配**：新 agent（槽位规格 → 模型 / 工具面组装 +
+  allowed_tools 过滤 / 系统提示 + 子智能体快照 / 历史加载 / 跑循环）+
+  `state/mod.rs`、`commands/run_commands.rs` 接线 + 删除旧 PlainChatAgent。
+- 备注：`agent/tools/spec.rs`（策略表）被新运行时代码引用，Phase 5 需
+  将其迁入 `rig_ext/tools/`；`#![allow(dead_code)]` 在接入后移除。
+
+## 5. 进度记录
 
 | 任务 | 状态 | 执行者 | 完成时间 | 备注 |
 |------|------|--------|----------|------|
@@ -124,10 +157,10 @@ LLM 调用迁移）；`mcp/` 注册表（桥接入 rig 工具面）；PTY/browse
 | T2.2 | ✅ 完成 | agent-6 | 2026-09-22 | exec/（local_zsh/ssh_*/ssh_memo/sync_directory）；审查门禁移交 T3 |
 | T2.3 | ✅ 完成 | agent-7（media）+ agent-8（program） | 2026-09-22 | media/ 12 工具 + program/ DSL 执行器 |
 | T2.4 | ✅ 完成 | agent-9 | 2026-09-22 | mcp.rs 桥（执行期重解析替代 spec hash 复核） |
-| T3.1 | 未开始 | - | - | - |
+| T3.1 | 进行中 | 主智能体 | - | rig_ext 基建就绪（05b3de9/7e91863）；装配待续 |
 | T3.2 | 未开始 | - | - | - |
 | T3.3 | 未开始 | - | - | - |
-| T3.4 | 未开始 | - | - | - |
+| T3.4 | 进行中 | 主智能体 | - | 审查/台账/策略层已就绪；runner 待迁移 |
 | T4.1 | 未开始 | - | - | - |
 | T4.2 | 未开始 | - | - | - |
 | T5.1 | 未开始 | - | - | - |

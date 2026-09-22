@@ -49,14 +49,27 @@ pub(super) fn append_valid_utf8(buffer: &mut String, leftover_bytes: &mut Vec<u8
     }
 }
 
-pub(super) fn format_llm_http_error(status: StatusCode, body: &str) -> String {
-    let body = body.trim();
+pub(super) fn format_llm_http_error(
+    status: StatusCode,
+    body: &str,
+    model: &str,
+    url: &str,
+    api_key: &str,
+) -> String {
+    // 防御性脱敏：个别网关会在错误 body 中回显请求凭据（含 Authorization
+    // 头里的 key），该文本会进入前端可见错误与持久化失败记录。
+    let key = api_key.trim();
+    let body = if key.is_empty() {
+        body.trim().to_string()
+    } else {
+        body.trim().replace(key, "***")
+    };
     let detail = if body.is_empty() {
         "<空响应体>".to_string()
     } else {
-        truncate_for_display(body, 4_000, "\n...[LLM 错误响应已截断]")
+        truncate_for_display(&body, 4_000, "\n...[LLM 错误响应已截断]")
     };
-    format!("LLM 请求失败，HTTP {}：{}", status, detail)
+    format!("LLM 请求失败，HTTP {status}（model={model} url={url}）：{detail}")
 }
 
 /// 空响应（无可见内容且无工具调用）的诊断摘要：finish_reason、思考链长度、

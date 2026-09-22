@@ -289,44 +289,6 @@ pub(crate) fn resolve_project_chat_provider(
     resolve_chat_provider(config, &settings.project)
 }
 
-/// 按「模型用途」设置解析视觉用途 provider：取 vision_model_configs 中第一个
-/// active（否则第一个）条目，url/apiKey 为空时回退聊天主模型凭据，容量
-/// （maxTokens/contextWindow）取槽位（库条目回填），max_tokens 为空时回退
-/// `config_fallback_max_tokens`（env 开发路径兜底，与 `apply_settings_v2`
-/// 的视觉解析规则一致）；无有效条目（模型名为空）返回 None。供图执行等
-/// 无法访问 Agent 实例锁状态的运行入口复用。
-pub(crate) fn resolve_vision_provider(
-    vision_configs: &[crate::agent::db::DispatcherModelConfig],
-    chat_fallback: &OpenAiCompatProvider,
-    config_fallback_max_tokens: Option<u32>,
-    temperature: f32,
-) -> Option<OpenAiCompatProvider> {
-    let active_vision = vision_configs
-        .iter()
-        .find(|c| c.active)
-        .or_else(|| vision_configs.first());
-    active_vision
-        .filter(|v| !v.model.trim().is_empty())
-        .map(|v| {
-            OpenAiCompatProvider::new(
-                if v.api_key.trim().is_empty() {
-                    chat_fallback.api_key().to_string()
-                } else {
-                    v.api_key.trim().to_string()
-                },
-                if v.url.trim().is_empty() {
-                    chat_fallback.api_base().to_string()
-                } else {
-                    v.url.trim().to_string()
-                },
-                v.model.trim().to_string(),
-                v.max_tokens.or(config_fallback_max_tokens),
-                temperature,
-            )
-            .with_context_window(v.context_window)
-        })
-}
-
 fn resolve_chat_provider(
     config: &DispatcherAgentConfig,
     ctx_config: &crate::agent::db::AhaContextConfig,

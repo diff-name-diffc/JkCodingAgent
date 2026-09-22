@@ -14,6 +14,7 @@ mod surface;
 pub use broker::{BrokerAudit, CapabilityBroker, CapabilityInvocation};
 pub use capability::CapabilitySet;
 pub use context::ToolContext;
+pub(crate) use builtin::local_zsh_dir;
 pub use registry::{AgentTool, ToolRegistry};
 pub(super) use result::ToolInput;
 pub use result::{ToolAction, ToolResult, ToolStatus};
@@ -34,12 +35,6 @@ use crate::mcp::McpRegistry;
 use crate::ssh_tool::SshSessionManager;
 
 impl ToolRegistry {
-    pub fn default_tools(mcp_registry: McpRegistry, ssh_manager: SshSessionManager) -> Self {
-        let mut tools = builtin::builtin_tools(ssh_manager);
-        tools.push(crate::agent::sub_agent::notify_user_progress_tool());
-        Self::new(tools).with_dynamic_provider(mcp::mcp_tool_bridge(mcp_registry))
-    }
-
     pub fn plain_chat_tools(mcp_registry: McpRegistry, ssh_manager: SshSessionManager) -> Self {
         let mut tools = builtin::plain_chat_tools(ssh_manager);
         tools.push(crate::agent::sub_agent::notify_user_progress_tool());

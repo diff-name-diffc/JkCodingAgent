@@ -63,14 +63,13 @@ impl AgentRunAdapter for OrchestratorAgent {
         _workspace: &Path,
     ) -> Result<RunPromptState> {
         let mut static_prompt = self.build_static_prompt().await?;
+        // 图定义 v4 起 Harness 目录为静态 ACP 模型表（无 I/O）。
+        let catalog = crate::agent::graph::harness::build_harness_catalog();
         let app = self
             .app_handle
             .as_ref()
             .context("项目 Agent 缺少 AppHandle")?;
         let state = app.state::<crate::agent::state::DispatcherState>();
-        let catalog = crate::agent::graph::commands::catalog_for_workspace(&state, workspace_id)
-            .await
-            .map_err(anyhow::Error::msg)?;
         // 轻量学习回路：既往节点运行统计回注目录，辅助编排器选模型。
         // 统计查询失败时跳过历史统计、不阻塞提示词构建，但必须留下日志，
         // 否则学习回路静默失效时无任何可诊断痕迹。

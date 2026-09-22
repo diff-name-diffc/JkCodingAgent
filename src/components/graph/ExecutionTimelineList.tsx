@@ -1,9 +1,15 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  BrainCircuit,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   ChevronsDown,
+  Circle,
+  Info,
+  ListTodo,
+  Loader2,
   Pause,
   RotateCcw,
   Shrink,
@@ -15,6 +21,9 @@ import {
   formatCharCount,
   formatGraphDuration,
   type NodeNotice,
+  type PlanCard,
+  type PlanEntryView,
+  type ThinkingEntry,
   type TimelineRow,
   type ToolCallEntry,
 } from "./graph-utils";
@@ -62,7 +71,7 @@ function truncateBlock(text: string, keep: "head" | "tail"): { text: string; omi
   };
 }
 
-/** 虚拟化执行时间线（工具卡片 + 运行通知混排）：运行中自动跟随滚动，可暂停。 */
+/** 虚拟化执行时间线（工具卡片 + 计划/思考/运行通知混排）：运行中自动跟随滚动，可暂停。 */
 export function ExecutionTimelineList({ rows, live }: { rows: TimelineRow[]; live: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -104,13 +113,13 @@ export function ExecutionTimelineList({ rows, live }: { rows: TimelineRow[]; liv
             const row = rows[item.index];
             return (
               <div
-                key={row.kind === "tool" ? row.entry.id : row.notice.id}
+                key={timelineRowKey(row)}
                 ref={virtualizer.measureElement}
                 data-index={item.index}
                 className="ai-graph-tool-row"
                 style={{ transform: `translateY(${item.start}px)` }}
               >
-                {row.kind === "tool" ? <ToolCallCard entry={row.entry} /> : <NoticeRow notice={row.notice} />}
+                <TimelineRowView row={row} />
               </div>
             );
           })}
@@ -120,10 +129,37 @@ export function ExecutionTimelineList({ rows, live }: { rows: TimelineRow[]; liv
   );
 }
 
+function timelineRowKey(row: TimelineRow): string {
+  switch (row.kind) {
+    case "tool":
+      return row.entry.id;
+    case "notice":
+      return row.notice.id;
+    case "plan":
+      return row.plan.id;
+    case "thinking":
+      return row.thinking.id;
+  }
+}
+
+function TimelineRowView({ row }: { row: TimelineRow }) {
+  switch (row.kind) {
+    case "tool":
+      return <ToolCallCard entry={row.entry} />;
+    case "notice":
+      return <NoticeRow notice={row.notice} />;
+    case "plan":
+      return <PlanCardView plan={row.plan} />;
+    case "thinking":
+      return <ThinkingCard entry={row.thinking} />;
+  }
+}
+
 /** 通知类型 → 图标映射：新增通知类型须在此显式登记，避免隐式 fallback。 */
 const NOTICE_ICONS: Record<NodeNotice["kind"], typeof Shrink> = {
   compaction: Shrink,
   retry: RotateCcw,
+  lifecycle: Info,
 };
 
 /** 运行通知行：上下文压缩 / 自动重试等节点动态（不可展开）。 */
@@ -183,6 +219,95 @@ const ToolCallCard = memo(function ToolCallCard({ entry }: { entry: ToolCallEntr
             </div>
           ) : (
             <div className="ai-graph-tool-block-empty">{entry.status === "running" ? "执行中，尚无输出…" : "无输出"}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
+/** 计划条目状态 → 图标映射（词表见 graph-utils 的 PlanEntryView）。 */
+const PLAN_STATUS_ICONS: Record<PlanEntryView["status"], typeof Circle> = {
+  pending: Circle,
+  in_progress: Loader2,
+  completed: CheckCircle2,
+};
+
+const PLAN_STATUS_CLASS: Record<PlanEntryView["status"], string> = {
+  pending: "text-[var(--text-muted)]",
+  in_progress: "text-[var(--info)]",
+  completed: "text-[var(--success)]",
+};
+
+/** ACP 任务计划卡片：默认展开条目列表（计划是节点执行的路标信息），可点击折叠。 */
+const PlanCardView = memo(function PlanCardView({ plan }: { plan: PlanCard }) {
+  const [open, setOpen] = useState(true);
+  const completed = plan.entries.filter((entry) => entry.status === "completed").length;
+
+  return (
+    <div className={cn("ai-graph-tool-card", open && "ai-graph-tool-card--open")}>
+      <button
+        type="button"
+        className="ai-graph-tool-card-head"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <ListTodo className="ai-graph-tool-card-icon" aria-hidden />
+        <span className="ai-graph-tool-card-name">{plan.title}</span>
+        <span className="ai-graph-tool-card-chars">
+          {plan.entries.length > 0 ? `${completed}/${plan.entries.length} 项` : "空计划"}
+        </span>
+      </button>
+      {open && (
+        <div className="ai-graph-tool-card-body">
+          {plan.entries.length === 0 ? (
+            <div className="ai-graph-tool-block-empty">无计划条目</div>
+          ) : (
+            <ul className="flex flex-col gap-1.5">
+              {plan.entries.map((entry, index) => {
+                const StatusIcon = PLAN_STATUS_ICONS[entry.status];
+                return (
+                  <li key={index} className="flex items-start gap-1.5 text-[12px] leading-relaxed text-[var(--text-secondary)]">
+                    <StatusIcon
+                      className={cn("mt-0.5 h-3 w-3 flex-shrink-0", PLAN_STATUS_CLASS[entry.status], entry.status === "in_progress" && "animate-spin")}
+                      aria-hidden
+                    />
+                    <span className={cn(entry.status === "completed" && "line-through decoration-[var(--text-muted)]")}>{entry.content}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
+/** 思考过程卡片：默认折叠（内容可能较长），展开显示思考原文。 */
+const ThinkingCard = memo(function ThinkingCard({ entry }: { entry: ThinkingEntry }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className={cn("ai-graph-tool-card", open && "ai-graph-tool-card--open")}>
+      <button
+        type="button"
+        className="ai-graph-tool-card-head"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <BrainCircuit className="ai-graph-tool-card-icon" aria-hidden />
+        <span className="ai-graph-tool-card-name">{entry.title}</span>
+        <span className="ai-graph-tool-card-chars">{formatCharCount(entry.content.length)} 字符</span>
+      </button>
+      {open && (
+        <div className="ai-graph-tool-card-body">
+          {entry.content ? (
+            <pre className="ai-graph-tool-pre">{entry.content}</pre>
+          ) : (
+            <div className="ai-graph-tool-block-empty">无内容</div>
           )}
         </div>
       )}

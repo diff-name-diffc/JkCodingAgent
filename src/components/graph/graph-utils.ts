@@ -266,13 +266,13 @@ export function buildToolCallEntries(activities: AgentActivity[]): ToolCallEntry
     });
 }
 
-// ── 节点执行详情：运行通知（compaction / retry）与上下文占用 ──
+// ── 节点执行详情：运行通知（compaction / retry / lifecycle）与上下文占用 ──
 
-/** 时间线上的单行通知：上下文压缩、自动重试等节点运行动态。 */
+/** 时间线上的单行通知：上下文压缩、自动重试、执行器生命周期诊断等节点动态。 */
 export interface NodeNotice {
   id: string;
   sequence: number;
-  kind: "compaction" | "retry";
+  kind: "compaction" | "retry" | "lifecycle";
   /** 与工具卡片同口径的归一化状态；原始 started/updated/finished 仅用于文案。 */
   status: ToolCallStatus;
   title: string;
@@ -284,7 +284,11 @@ function payloadString(payload: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-function noticeTitle(kind: NodeNotice["kind"], status: string, payload: Record<string, unknown>): string {
+function noticeTitle(kind: NodeNotice["kind"], status: string, title: string, payload: Record<string, unknown>): string {
+  if (kind === "lifecycle") {
+    // 生命周期诊断的标题由执行器给出（如「未配置 ACP API Key」），原文透传。
+    return title || "执行器动态";
+  }
   if (kind === "compaction") {
     if (status === "started") return "正在压缩上下文…";
     if (status === "failed") return "上下文压缩失败";
@@ -298,10 +302,10 @@ function noticeTitle(kind: NodeNotice["kind"], status: string, payload: Record<s
   return status === "failed" ? "重试失败" : "重试成功";
 }
 
-/** 提取 compaction / retry 活动为时间线通知（按执行顺序）。 */
+/** 提取 compaction / retry / lifecycle 活动为时间线通知（按执行顺序）。 */
 export function buildNodeNotices(activities: AgentActivity[]): NodeNotice[] {
   return activities
-    .filter((activity) => activity.kind === "compaction" || activity.kind === "retry")
+    .filter((activity) => activity.kind === "compaction" || activity.kind === "retry" || activity.kind === "lifecycle")
     .sort((left, right) => left.sequence - right.sequence)
     .map((activity) => {
       const payload = payloadOf(activity);
@@ -316,16 +320,83 @@ export function buildNodeNotices(activities: AgentActivity[]): NodeNotice[] {
         sequence: activity.sequence,
         kind,
         status: normalizeToolCallStatus(activity.status),
-        title: noticeTitle(kind, activity.status, payload),
+        title: noticeTitle(kind, activity.status, activity.title, payload),
         detail,
       };
     });
 }
 
-/** 执行时间线行：工具调用卡片与运行通知按 sequence 混排。 */
+// ── 节点执行详情：ACP 任务计划与思考过程 ──
+
+/** ACP session/update:plan 的单条目（PlanEntryStatus 词表之外的状态兜底为 pending）。 */
+export interface PlanEntryView {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+/** 任务计划卡片数据（kind="plan" 活动；ACP 每轮 plan 更新产生一条）。 */
+export interface PlanCard {
+  id: string;
+  sequence: number;
+  title: string;
+  entries: PlanEntryView[];
+}
+
+function normalizePlanEntryStatus(value: unknown): PlanEntryView["status"] {
+  return value === "in_progress" || value === "completed" ? value : "pending";
+}
+
+/** 提取 plan 活动为计划卡片（按执行顺序；payload 损坏时回退空条目列表）。 */
+export function buildPlanCards(activities: AgentActivity[]): PlanCard[] {
+  return activities
+    .filter((activity) => activity.kind === "plan")
+    .sort((left, right) => left.sequence - right.sequence)
+    .map((activity) => {
+      const payload = payloadOf(activity);
+      const rawEntries = Array.isArray(payload.entries) ? payload.entries : [];
+      const entries = rawEntries.map((entry): PlanEntryView => {
+        const record = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {};
+        return {
+          content: typeof record.content === "string" ? record.content : "",
+          status: normalizePlanEntryStatus(record.status),
+        };
+      });
+      return {
+        id: activity.id,
+        sequence: activity.sequence,
+        title: activity.title || "任务计划",
+        entries,
+      };
+    });
+}
+
+/** 思考过程条目（kind="thinking" 活动；内容在 content，payload 为空）。 */
+export interface ThinkingEntry {
+  id: string;
+  sequence: number;
+  title: string;
+  content: string;
+}
+
+/** 提取 thinking 活动（按执行顺序）。 */
+export function buildThinkingEntries(activities: AgentActivity[]): ThinkingEntry[] {
+  return activities
+    .filter((activity) => activity.kind === "thinking")
+    .sort((left, right) => left.sequence - right.sequence)
+    .map((activity) => ({
+      id: activity.id,
+      sequence: activity.sequence,
+      title: activity.title || "思考过程",
+      content: activity.content,
+    }));
+}
+
+/** 执行时间线行：工具调用卡片、运行通知、计划卡片与思考条目按 sequence 混排。 */
 export type TimelineRow =
   | { kind: "tool"; sequence: number; entry: ToolCallEntry }
-  | { kind: "notice"; sequence: number; notice: NodeNotice };
+  | { kind: "notice"; sequence: number; notice: NodeNotice }
+  | { kind: "plan"; sequence: number; plan: PlanCard }
+  | { kind: "thinking"; sequence: number; thinking: ThinkingEntry };
 
 /**
  * 执行时间线的一次性派生：工具条目、混排行与上下文占用读数共享同一次
@@ -345,12 +416,14 @@ export function buildExecutionTimeline(activities: AgentActivity[]): ExecutionTi
   const rows: TimelineRow[] = [
     ...toolEntries.map((entry): TimelineRow => ({ kind: "tool", sequence: entry.sequence, entry })),
     ...buildNodeNotices(activities).map((notice): TimelineRow => ({ kind: "notice", sequence: notice.sequence, notice })),
+    ...buildPlanCards(activities).map((plan): TimelineRow => ({ kind: "plan", sequence: plan.sequence, plan })),
+    ...buildThinkingEntries(activities).map((thinking): TimelineRow => ({ kind: "thinking", sequence: thinking.sequence, thinking })),
   ];
   rows.sort((left, right) => left.sequence - right.sequence);
   return { toolEntries, timelineRows: rows, contextUsage: latestContextUsage(activities) };
 }
 
-/** 上下文占用读数（sidecar 节流传来的 PI 估算值；compaction 后 tokens/percent 短暂为 null）。 */
+/** 上下文占用读数（执行器节流传来的估算值；compaction 后 tokens/percent 短暂为 null）。 */
 export interface ContextUsageReading {
   tokens: number | null;
   contextWindow: number;
@@ -381,14 +454,32 @@ export function formatContextUsage(reading: ContextUsageReading): string {
 }
 
 /**
+ * ACP 静态模型目录的 id → 展示名映射（与后端 harness.rs 的 ACP_MODELS 同源；
+ * 目录为静态四值表，前端镜像一份避免为展示标签拉一次命令往返）。
+ */
+const ACP_MODEL_LABELS: Record<string, string> = {
+  default: "默认（继承 Claude 配置）",
+  sonnet: "Claude Sonnet",
+  opus: "Claude Opus",
+  haiku: "Claude Haiku",
+};
+
+/** 计划 modelRef 的展示名：命中 ACP 目录 id 时返回目录标签，否则原样返回。 */
+export function graphModelRefLabel(modelRef: string): string {
+  const trimmed = modelRef.trim();
+  return ACP_MODEL_LABELS[trimmed] ?? trimmed;
+}
+
+/**
  * 节点详情的模型显示名（UI-14 遗留：图节点真实运行模型）。
  *
- * 与画布节点同口径（GraphPanel 的 `run?.modelLabel || node.modelRef`）：
+ * 与画布节点同口径（GraphPanel 的 `run?.modelLabel || graphModelRefLabel(node.modelRef)`）：
  * 优先运行期实际解析值——后端 `resolve_node_harness` 在节点执行时按
- * model_ref 解析模型库条目，`node_task` 把条目别名（无别名时模型名）写入
+ * model_ref 解析 ACP 目录条目，`node_task` 把条目标签写入
  * `graph_node_runs.model_label`，故运行记录的 modelLabel 即真实运行模型；
- * 未运行（无记录 / 占位记录 label=modelRef）时回退计划值 node.modelRef，
- * 两者皆空回退执行引擎名 "PI Agent"（与画布 GraphNodeView 兜底一致）。
+ * 未运行（无记录 / 占位记录 label=modelRef）时回退计划值 node.modelRef
+ * （经 graphModelRefLabel 翻译为目录标签），两者皆空回退执行引擎名
+ * "Claude Agent"（与画布 GraphNodeView 兜底一致）。
  */
 export function graphNodeModelLabel(
   nodeRun: Pick<GraphNodeRunRecord, "modelLabel"> | null,
@@ -397,6 +488,6 @@ export function graphNodeModelLabel(
   const runLabel = nodeRun?.modelLabel?.trim();
   if (runLabel) return runLabel;
   const planned = node?.modelRef?.trim();
-  if (planned) return planned;
-  return "PI Agent";
+  if (planned) return graphModelRefLabel(planned);
+  return "Claude Agent";
 }

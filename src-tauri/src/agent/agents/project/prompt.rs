@@ -1,7 +1,7 @@
 //! 编排器系统提示。
 //!
 //! 结构：静态部分每轮构建一次（角色提示 + USER.md + 记忆 + 技能），
-//! 动态部分每次迭代重建（可用工具、系统时间）；PI Harness 目录每轮发现一次。
+//! 动态部分每次迭代重建（可用工具、系统时间）；执行图 Harness 目录每轮发现一次。
 //! 与 run_loop「每轮重建系统消息」的骨架对齐。
 
 use std::path::Path;
@@ -46,7 +46,6 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
     "role": "该节点 Agent 的角色定位",
     "modelRef": "<当前模型目录中的稳定 id>",
     "baseToolGroup": "read_only 或 coding",
-    "specialTools": [{ "source": "aha", "name": "宿主工具名" }],
     "task": "自包含的子任务说明",
     "dependsOn": ["上游节点 id"],
     "injectStateKeys": ["需要注入的 state key"],
@@ -57,7 +56,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 }
 ```
 
-- 每个节点只使用一个主模型。模型、基础工具组和特殊工具必须来自本轮 PI Harness 目录。
+- 每个节点只使用一个主模型。模型与基础工具组必须来自本轮 Harness 目录：模型是 Claude Agent 的选型（default 继承登录态默认模型），`read_only` 对应 plan 只读规划模式，`coding` 对应 acceptEdits 编码模式（自动接受编辑）。
 - 边由 `dependsOn` 派生，必须构成无环图；`dependsOn` 引用的节点必须存在；`id`、`outputKey` 全局唯一；节点数 ≤ 20。
 - 节点完成后 `state[outputKey] = 节点输出的「产出摘要」段`（≤4k，全文保留在节点运行记录中）；下游节点通过 `dependsOn` 收到上游输出、通过 `injectStateKeys` 收到指定 state 值。共享 state 只承载结论摘要：确需上游完整产出时用 `dependsOn` + `exportPolicy=full`，不要靠 injectStateKeys 拉全文。
 - 节点输入由系统装配：总体需求 + 角色 + 子任务 + 上游输出 + 注入的 state 节选。节点拿不到聊天记录，因此 `task` 必须自包含（目标、背景、相关文件/符号、约束、验证方式、期望产出）。
@@ -70,10 +69,10 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 - 上下文最小化 + 显式数据流：先由调研节点产出结论（outputKey），改造节点 inject 该结论后再动手。
 - **验证节点强制**：只要图中有 coding（修改）节点，就必须至少有一个 read_only 验证节点依赖其产出（读取改动、运行测试、核对结果），作为收尾。
 - **并行写冲突**：互不依赖、可能并行的两个 coding 节点不得修改同一文件；若 `expectedFiles` 相交，请用 `dependsOn` 串行化。coding 节点请如实填写 `expectedFiles` 以便系统预检。
-- 根据任务性质、模型分类和能力标签（含历史成功率）选择主模型；只读任务优先 `read_only`，确需修改或命令时使用 `coding`。
-- Harness Engineering：基础工具保持最小，只有任务确实需要时才选择 Aha/MCP 宿主特殊工具；PI 可执行扩展已禁用。
+- 根据任务性质选择主模型（含历史成功率参考）；只读任务优先 `read_only`，确需修改或命令时使用 `coding`。
+- Harness Engineering：基础工具保持最小，只读任务用 `read_only`（plan 模式），确需修改或命令时用 `coding`（acceptEdits 模式）。
 - 无依赖关系的节点会并行执行（最多 3 个并发）；可并行的子任务请拆成平行节点。
-- 禁止引用 PI Harness 目录之外的模型或工具；不要生成 subAgent、Claude CLI 或 Codex CLI 节点。
+- 禁止引用 Harness 目录之外的模型；不要生成 subAgent、Claude CLI 或 Codex CLI 节点。
 
 ## 修复与迭代纪律
 
@@ -146,40 +145,20 @@ impl OrchestratorAgent {
         stats: &[crate::agent::graph::types::GraphModelStat],
     ) -> String {
         let mut lines = vec![
-            "# 当前 PI Harness 目录".to_string(),
-            "该目录是 graph v3 的唯一模型与特殊工具来源；ID 必须原样引用。模型行末的历史统计（若有）来自既往节点运行，可作为选型参考。".to_string(),
+            "# 当前 Harness 目录".to_string(),
+            "图节点由 Claude Agent（claude-agent-acp）执行。该目录是 graph v4 的唯一模型来源；ID 必须原样引用。模型行末的历史统计（若有）来自既往节点运行，可作为选型参考。".to_string(),
             "\n## 主模型（每节点恰好一个）".to_string(),
         ];
         for model in &catalog.models {
             let stat_note = render_model_stat_note(&model.id, stats);
             lines.push(format!(
-                "- `{}`：{} / {} / category={} / capabilities={}{}",
-                model.id,
-                model.label,
-                model.model,
-                model.category,
-                model.capabilities.join(","),
-                stat_note
+                "- `{}`：{} — {}{}",
+                model.id, model.label, model.model, stat_note
             ));
         }
-        lines.push("\n## 基础工具组".to_string());
-        lines.push("- `read_only`: read, grep, find, ls".to_string());
-        lines.push("- `coding`: read, grep, find, ls, bash, edit, write".to_string());
-        lines.push("\n## 特殊工具".to_string());
-        for tool in &catalog.tools {
-            lines.push(format!(
-                "- `{}:{}` [{} / {}]：{}",
-                tool.source,
-                tool.name,
-                tool.category,
-                if tool.review_required {
-                    "需审查"
-                } else {
-                    "直接执行"
-                },
-                tool.description
-            ));
-        }
+        lines.push("\n## 基础工具组（映射执行器的权限模式）".to_string());
+        lines.push("- `read_only`: plan 模式——只读规划，不允许修改文件或执行写操作".to_string());
+        lines.push("- `coding`: acceptEdits 模式——编码执行，自动接受文件编辑".to_string());
         if !catalog.diagnostics.is_empty() {
             lines.push(format!(
                 "\n## 发现诊断\n- {}",

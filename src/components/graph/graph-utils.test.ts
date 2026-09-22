@@ -4,10 +4,13 @@ import type { AgentActivity } from "../../types";
 import {
   buildExecutionTimeline,
   buildNodeNotices,
+  buildPlanCards,
+  buildThinkingEntries,
   buildToolCallEntries,
   formatCharCount,
   formatContextUsage,
   formatToolPayload,
+  graphModelRefLabel,
   graphNodeModelLabel,
   latestContextUsage,
   normalizeToolCallStatus,
@@ -148,6 +151,77 @@ describe("buildNodeNotices", () => {
   it("忽略工具调用与上下文占用活动", () => {
     expect(buildNodeNotices([activity({ kind: "tool_call" }), activity({ kind: "context_usage" })])).toEqual([]);
   });
+
+  it("lifecycle 活动转为执行器诊断通知（标题透传）", () => {
+    const notices = buildNodeNotices([
+      activity({ id: "l1", kind: "lifecycle", title: "未配置 ACP API Key", content: "凭据依赖 ~/.claude 登录态", sequence: 3 }),
+    ]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0].kind).toBe("lifecycle");
+    expect(notices[0].title).toBe("未配置 ACP API Key");
+    expect(notices[0].detail).toBe("凭据依赖 ~/.claude 登录态");
+    expect(notices[0].status).toBe("succeeded");
+  });
+
+  it("lifecycle 标题缺失时兜底通用文案", () => {
+    const notices = buildNodeNotices([
+      activity({ kind: "lifecycle", title: "", content: "诊断" }),
+    ]);
+    expect(notices[0].title).toBe("执行器动态");
+  });
+});
+
+describe("buildPlanCards", () => {
+  it("plan 活动解析为条目列表并归一化状态词表", () => {
+    const cards = buildPlanCards([
+      activity({
+        id: "p1",
+        kind: "plan",
+        title: "任务计划",
+        sequence: 7,
+        payloadJson: JSON.stringify({
+          entries: [
+            { content: "读取代码", status: "completed", priority: "high" },
+            { content: "实现修改", status: "in_progress", priority: "medium" },
+            { content: "运行测试", status: "pending", priority: "low" },
+          ],
+        }),
+      }),
+    ]);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].title).toBe("任务计划");
+    expect(cards[0].entries).toEqual([
+      { content: "读取代码", status: "completed" },
+      { content: "实现修改", status: "in_progress" },
+      { content: "运行测试", status: "pending" },
+    ]);
+  });
+
+  it("未知状态兜底为 pending；payload 损坏回退空条目", () => {
+    const unknown = buildPlanCards([
+      activity({ kind: "plan", payloadJson: JSON.stringify({ entries: [{ content: "x", status: "blocked" }] }) }),
+    ]);
+    expect(unknown[0].entries).toEqual([{ content: "x", status: "pending" }]);
+
+    const broken = buildPlanCards([activity({ kind: "plan", payloadJson: "不是 JSON" })]);
+    expect(broken[0].entries).toEqual([]);
+  });
+
+  it("忽略非 plan 活动", () => {
+    expect(buildPlanCards([activity({ kind: "tool_call" })])).toEqual([]);
+  });
+});
+
+describe("buildThinkingEntries", () => {
+  it("thinking 活动提取内容与标题", () => {
+    const entries = buildThinkingEntries([
+      activity({ id: "th1", kind: "thinking", title: "思考过程", content: "先分析再动手", sequence: 4 }),
+      activity({ id: "t1", kind: "tool_call", sequence: 5 }),
+    ]);
+    expect(entries).toEqual([
+      { id: "th1", sequence: 4, title: "思考过程", content: "先分析再动手" },
+    ]);
+  });
 });
 
 describe("buildExecutionTimeline", () => {
@@ -157,6 +231,16 @@ describe("buildExecutionTimeline", () => {
       activity({ id: "c1", kind: "compaction", status: "started", sequence: 5 }),
     ]);
     expect(timelineRows.map((row) => row.kind)).toEqual(["notice", "tool"]);
+  });
+
+  it("plan / thinking / lifecycle 与工具调用按 sequence 混排", () => {
+    const { timelineRows } = buildExecutionTimeline([
+      activity({ id: "t1", kind: "tool_call", sequence: 30 }),
+      activity({ id: "p1", kind: "plan", sequence: 10, payloadJson: JSON.stringify({ entries: [] }) }),
+      activity({ id: "th1", kind: "thinking", sequence: 20, content: "嗯" }),
+      activity({ id: "l1", kind: "lifecycle", title: "诊断", sequence: 40 }),
+    ]);
+    expect(timelineRows.map((row) => row.kind)).toEqual(["plan", "thinking", "tool", "notice"]);
   });
 });
 
@@ -201,7 +285,8 @@ describe("graphNodeModelLabel（UI-14 遗留：节点真实运行模型显示）
     ).toBe("qwen3-coder-plus");
   });
 
-  it("无运行记录时回退计划 modelRef（与画布节点同口径）", () => {
+  it("无运行记录时回退计划 modelRef 的目录标签（与画布节点同口径）", () => {
+    expect(graphNodeModelLabel(null, { modelRef: "sonnet" })).toBe("Claude Sonnet");
     expect(graphNodeModelLabel(null, { modelRef: "m1" })).toBe("m1");
   });
 
@@ -209,9 +294,15 @@ describe("graphNodeModelLabel（UI-14 遗留：节点真实运行模型显示）
     expect(graphNodeModelLabel({ modelLabel: "  " }, { modelRef: "m1" })).toBe("m1");
   });
 
-  it("两者皆空回退引擎名 PI Agent", () => {
-    expect(graphNodeModelLabel(null, null)).toBe("PI Agent");
-    expect(graphNodeModelLabel({ modelLabel: "" }, { modelRef: "" })).toBe("PI Agent");
+  it("graphModelRefLabel 命中 ACP 目录返回标签，未命中原样返回", () => {
+    expect(graphModelRefLabel("opus")).toBe("Claude Opus");
+    expect(graphModelRefLabel("haiku")).toBe("Claude Haiku");
+    expect(graphModelRefLabel(" glm-4.6 ")).toBe("glm-4.6");
+  });
+
+  it("两者皆空回退引擎名 Claude Agent", () => {
+    expect(graphNodeModelLabel(null, null)).toBe("Claude Agent");
+    expect(graphNodeModelLabel({ modelLabel: "" }, { modelRef: "" })).toBe("Claude Agent");
   });
 
   it("首尾空白被裁剪", () => {

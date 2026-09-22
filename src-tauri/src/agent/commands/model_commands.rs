@@ -7,7 +7,7 @@ pub async fn dispatcher_fetch_models(
 ) -> Result<Vec<String>, String> {
     llm::fetch_models(&api_base, &api_key)
         .await
-        .map_err(format_anyhow_chain)
+        .map_err(|error| format_anyhow_error(&error))
 }
 
 #[tauri::command]
@@ -17,7 +17,7 @@ pub async fn dispatcher_test_model(
 ) -> Result<String, String> {
     test_dispatcher_model(&kind, config)
         .await
-        .map_err(format_anyhow_chain)
+        .map_err(|error| format_anyhow_error(&error))
 }
 
 async fn test_dispatcher_model(kind: &str, config: DispatcherModelConfig) -> Result<String> {
@@ -43,7 +43,8 @@ async fn test_chat_compatible_model(
 ) -> Result<String> {
     test_required_model_config(label, &config)?;
     let model_name = config.model.trim().to_string();
-    let provider = OpenAiCompatProvider::new(config.api_key, config.url, config.model, Some(64), 0.0);
+    let provider =
+        OpenAiCompatProvider::new(config.api_key, config.url, config.model, Some(64), 0.0);
     let messages = build_test_messages(enable_multimodal);
     let response = provider
         .chat_stream(&messages, &[], enable_multimodal, |_| {})
@@ -183,14 +184,6 @@ fn test_required_model_config(label: &str, config: &DispatcherModelConfig) -> Re
         anyhow::bail!("{label} 模型名称未配置（请在 Model 中填入具体模型 ID，如 gpt-4o）");
     }
     Ok(())
-}
-
-fn format_anyhow_chain(error: anyhow::Error) -> String {
-    error
-        .chain()
-        .map(|e| e.to_string())
-        .collect::<Vec<_>>()
-        .join("：")
 }
 
 fn embedding_endpoint(url: &str) -> String {

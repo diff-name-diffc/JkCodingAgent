@@ -12,7 +12,6 @@ use super::types::{
 };
 use super::validate::validate_graph;
 use crate::agent::state::DispatcherState;
-use crate::agent::tools::ToolRegistry;
 
 /// 读取图计划（含 node_runs + state，用于面板回放）。
 #[tauri::command]
@@ -66,7 +65,7 @@ pub async fn graph_plan_update(
         .map_err(|error| format!("错误：definition_json 不是合法的图定义：{error}"))?;
     definition.normalize_ids();
 
-    let catalog = catalog_for_workspace(&state, &plan.workspace_id).await?;
+    let catalog = build_harness_catalog();
     // 种子键沿用 plan 当前 state（draft 态普通图为空，修复图为继承 state）。
     // 解析失败必须显式报错：在空种子键前提下校验会把本应合法的修复图
     // injectStateKeys 误报为「不在继承的共享 state 中」，且掩盖真实根因。
@@ -166,8 +165,6 @@ pub async fn graph_run_start(
     let services = GraphRunServices {
         db: state.db().clone(),
         agent_config: state.agent_config(),
-        mcp_registry: state.mcp_registry(),
-        ssh_manager: state.ssh_manager(),
     };
     let run_plan_id = plan_id.clone();
     let run_app = app.clone();
@@ -225,7 +222,7 @@ pub async fn graph_run_start(
     Ok(())
 }
 
-/// 请求取消运行中的图：PI sidecar 先 abort，超时后终止进程组。
+/// 请求取消运行中的图：通知节点执行器 abort，由节点任务自行结算为 cancelled。
 #[tauri::command]
 pub async fn graph_run_cancel(
     app: AppHandle,
@@ -277,9 +274,33 @@ pub async fn graph_run_resume(
 #[tauri::command]
 pub async fn graph_harness_catalog_get(
     state: State<'_, DispatcherState>,
-    workspace_id: String,
+    _workspace_id: String,
 ) -> Result<GraphHarnessCatalog, String> {
-    catalog_for_workspace(&state, &workspace_id).await
+    // 图定义 v4 起目录为静态 ACP 模型表；workspace_id 保留为命令契约。
+    let mut catalog = build_harness_catalog();
+    // 诊断：凭据缺失时提示节点执行将依赖本机登录态（与 acp_exec::build_launch 同口径）。
+    // 设置读取失败不阻断目录返回（编辑草稿不该被设置库故障卡死）。
+    let db = state.db().clone();
+    let settings = tokio::task::spawn_blocking(move || db.get_settings_v2())
+        .await
+        .ok()
+        .and_then(Result::ok);
+    // 仅在设置成功读取且确无 key 时提示；读取失败不做凭据断言。
+    if let Some(settings) = settings {
+        let has_key = settings
+            .graph
+            .acp
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|key| !key.is_empty());
+        if !has_key {
+            catalog.diagnostics.push(
+                "未配置 ACP API Key：节点执行将使用本机 ~/.claude 登录态（可在 设置 → 执行图 中配置）".to_string(),
+            );
+        }
+    }
+    Ok(catalog)
 }
 
 #[tauri::command]
@@ -292,44 +313,4 @@ pub async fn graph_run_get(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("图运行不存在：{run_id}"))
-}
-
-pub(crate) async fn catalog_for_workspace(
-    state: &DispatcherState,
-    workspace_id: &str,
-) -> Result<GraphHarnessCatalog, String> {
-    let project_id = state
-        .db()
-        .get_session_project_id_async(workspace_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("找不到图计划所属会话：{workspace_id}"))?;
-    let workspace = {
-        let db = state.db().clone();
-        let lookup = project_id.clone();
-        tokio::task::spawn_blocking(move || db.find_project(&lookup).ok().flatten())
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "无法定位图计划所属项目".to_string())?
-            .path
-    };
-    // projects 表中的路径可能带符号链接/相对成分：统一经 McpScope::project
-    // canonicalize，保证与图执行共用同一缓存键（修复旧实现键漂移）。
-    let mcp_scope = crate::mcp::McpScope::project(std::path::Path::new(&workspace))?;
-    state.mcp_registry().ensure_recent(&mcp_scope).await?;
-    let settings = tokio::task::spawn_blocking({
-        let db = state.db().clone();
-        move || db.get_settings_v2()
-    })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())?;
-    let registry = ToolRegistry::default_tools(state.mcp_registry(), state.ssh_manager());
-    Ok(build_harness_catalog(
-        std::path::Path::new(&workspace),
-        &mcp_scope,
-        &settings,
-        &registry,
-    )
-    .await)
 }

@@ -180,7 +180,6 @@ fn tool_summary_focus(tool_name: &str) -> &str {
         "list_dir" => "保留最多两层的目录关系、关键文件名及其总行数，便于后续用 read_file path:start-end 精确加载",
         "glob" => "保留目录层级、关键文件名、数量和显著的结构特征",
         "grep" => "保留匹配文件路径、行号、命中片段、上下文和能支撑后续 read_file 的关键关键词",
-        "exec" => "保留命令结果、错误文本、失败项、退出状态、关键路径和数量统计",
         _ => "保留后续判断最依赖的事实、路径、标识符和数量信息",
     }
 }
@@ -297,10 +296,10 @@ pub fn extract_structured_summary(tool_name: &str, raw_output: &str) -> String {
     ));
 
     match tool_name {
-        // ssh_exec 与 exec 同为命令执行：兜底策略一致——退出状态、
-        // 错误/失败行、头尾行。ssh_exec 的原始输出是含 stdout/stderr/exit_code
-        // 的 JSON 文本，同样的模式匹配仍然适用。
-        "exec" | "ssh_exec" => {
+        // 命令执行类输出的兜底策略：退出状态、错误/失败行、头尾行。
+        // ssh_exec 的原始输出是含 stdout/stderr/exit_code 的 JSON 文本，
+        // 同样的模式匹配仍然适用。
+        "ssh_exec" => {
             let lines: Vec<&str> = raw_output.lines().collect();
             if let Some(exit) = lines.iter().rev().find(|l| {
                 let t = l.trim().to_lowercase();

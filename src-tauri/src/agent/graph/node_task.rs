@@ -1,4 +1,4 @@
-//! PI 节点生命周期：持久化运行快照、发事件、执行并返回调度结果。
+//! 节点生命周期：持久化运行快照、发事件、执行并返回调度结果。
 
 use std::collections::HashSet;
 
@@ -6,7 +6,7 @@ use futures::FutureExt;
 use serde_json::{Map, Value};
 use tauri::AppHandle;
 
-use super::node_exec::{execute_node, NodeExecContext, NodeExecOutcome};
+use super::acp_exec::{execute_node, NodeExecContext, NodeExecOutcome};
 use super::runner::emit_run_event;
 use super::store::GraphStore;
 use super::types::{
@@ -39,7 +39,7 @@ pub(super) async fn run_node_task(ctx: NodeTaskContext) -> NodeTaskResult {
     record.phase = NODE_PHASE_STARTING.into();
     record.input_text = ctx.input.clone();
     record.model_label = ctx.exec.harness.model_label.clone();
-    record.model_category = ctx.exec.harness.model.category.clone();
+    record.model_category = "acp".into();
     record.started_at = Some(started);
     record.retry_count = ctx.retry_count;
     if let Err(error) = ctx.store.save_node_run_async(&record).await {

@@ -206,8 +206,8 @@ pub struct ToolSpec {
     /// 该工具在内部自管安全审查（携带完整目标环境上下文做 fail-closed 判定）。
     /// CapabilityBroker 对这类工具不再做通用 JSON 参数审查——否则同一调用会
     /// 出现两套审查标准互相覆盖（例如 per-server 审查开关会被 broker 的通用
-    /// 结论短路）。目前为 exec / local_zsh / ssh_exec（策略表）与全部 MCP
-    /// 动态工具（ToolSpec::mcp）。
+    /// 结论短路）。目前为 local_zsh / ssh_exec / sync_directory（策略表）与
+    /// 全部 MCP 动态工具（ToolSpec::mcp）。
     pub review_self_managed: bool,
     pub execution: ToolExecutionPolicy,
     pub result_policy: ToolResultPolicy,
@@ -295,7 +295,7 @@ struct ToolProfile {
 /// 它们的审查携带完整目标环境上下文（目标服务器 / 执行目录、stdin、服务器级
 /// 审查开关），比 broker 的通用 JSON 参数审查更准确；broker 必须让位，
 /// 避免同一调用出现两套结论。新增此类工具时在此登记。
-const SELF_REVIEWED_TOOLS: &[&str] = &["exec", "local_zsh", "ssh_exec"];
+const SELF_REVIEWED_TOOLS: &[&str] = &["local_zsh", "ssh_exec", "sync_directory"];
 
 /// 未注册/未知工具名的兜底统一超时（秒）。
 const DEFAULT_UNKNOWN_TIMEOUT_SECS: u64 = 60;
@@ -441,14 +441,6 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolPolicyOptions::PARALLEL_READONLY,
     ),
     // ── 命令执行（能力边界按最坏情况声明，强制审查）──
-    policy_row(
-        "exec",
-        ToolCategory::Shell,
-        ToolAccess::FULL_EFFECTS,
-        ToolSafety::ReviewRequired,
-        60,
-        ToolPolicyOptions::COMPRESSED_SELF_MANAGED,
-    ),
     policy_row(
         "local_zsh",
         ToolCategory::Shell,
@@ -615,6 +607,14 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
     ),
     policy_row(
         "ssh_exec",
+        ToolCategory::Ssh,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        300,
+        ToolPolicyOptions::UNCOMPRESSED_SELF_MANAGED,
+    ),
+    policy_row(
+        "sync_directory",
         ToolCategory::Ssh,
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
@@ -865,17 +865,15 @@ mod tests {
 
     #[test]
     fn shell_tools_use_runtime_context_timeout_policy() {
-        for name in ["exec", "local_zsh"] {
-            let spec = ToolSpec::new(
-                name,
-                "执行命令",
-                json!({ "type": "object", "properties": {} }),
-            );
+        let spec = ToolSpec::new(
+            "local_zsh",
+            "执行命令",
+            json!({ "type": "object", "properties": {} }),
+        );
 
-            assert_eq!(spec.category, ToolCategory::Shell);
-            assert!(!spec.execution.unified_timeout);
-            assert!(!spec.execution.parallelizable);
-        }
+        assert_eq!(spec.category, ToolCategory::Shell);
+        assert!(!spec.execution.unified_timeout);
+        assert!(!spec.execution.parallelizable);
     }
 
     #[test]
@@ -898,26 +896,24 @@ mod tests {
     }
 
     #[test]
-    fn exec_and_local_zsh_declare_full_effects_and_review_required() {
-        for name in ["exec", "local_zsh"] {
-            let spec = spec_for(name);
+    fn local_zsh_declares_full_effects_and_review_required() {
+        let spec = spec_for("local_zsh");
 
-            assert_eq!(spec.category, ToolCategory::Shell);
-            assert_eq!(spec.safety, ToolSafety::ReviewRequired);
-            // 能力边界按最坏情况显式声明：可改文件、可联网、可变更外部状态。
-            assert!(!spec.access.readonly);
-            assert!(!spec.access.workspace_bound);
-            assert!(spec.access.requires_network);
-            assert!(spec.access.mutates_filesystem);
-            assert!(spec.access.mutates_external_state);
-            assert!(spec.result_policy.default_compress);
-            // 命令类工具：压缩阈值高于内联截断线，截断兜不住才摘要。
-            assert_eq!(
-                spec.result_policy.force_compress_after_chars,
-                super::COMMAND_FORCE_COMPRESS_AFTER_CHARS
-            );
-            assert!(!spec.execution.unified_timeout);
-        }
+        assert_eq!(spec.category, ToolCategory::Shell);
+        assert_eq!(spec.safety, ToolSafety::ReviewRequired);
+        // 能力边界按最坏情况显式声明：可改文件、可联网、可变更外部状态。
+        assert!(!spec.access.readonly);
+        assert!(!spec.access.workspace_bound);
+        assert!(spec.access.requires_network);
+        assert!(spec.access.mutates_filesystem);
+        assert!(spec.access.mutates_external_state);
+        assert!(spec.result_policy.default_compress);
+        // 命令类工具：压缩阈值高于内联截断线，截断兜不住才摘要。
+        assert_eq!(
+            spec.result_policy.force_compress_after_chars,
+            super::COMMAND_FORCE_COMPRESS_AFTER_CHARS
+        );
+        assert!(!spec.execution.unified_timeout);
     }
 
     #[test]
@@ -1053,7 +1049,7 @@ mod tests {
 
     #[test]
     fn command_tools_manage_their_own_review() {
-        for name in ["exec", "local_zsh", "ssh_exec"] {
+        for name in ["local_zsh", "ssh_exec", "sync_directory"] {
             let spec = spec_for(name);
 
             assert!(spec.review_self_managed, "{name} 应自管安全审查");

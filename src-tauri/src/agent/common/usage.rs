@@ -247,7 +247,9 @@ pub async fn stream_llm_response(
             has_images,
             on_delta,
             on_thinking_delta,
-        ) => StreamSettlement::Response(response.context("LLM 流式请求失败")?)
+        ) => StreamSettlement::Response(
+            response.with_context(|| format!("LLM 流式请求失败（model={model}）"))?,
+        )
     };
 
     // 流结束（正常完成或取消抢占）后 delta 闭包已随 select 分支 drop，

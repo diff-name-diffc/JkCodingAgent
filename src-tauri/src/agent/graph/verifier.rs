@@ -506,7 +506,6 @@ mod tests {
                     role: String::new(),
                     model_ref: "m1".into(),
                     base_tool_group: BaseToolGroup::Coding,
-                    special_tools: vec![],
                     task: "task".into(),
                     depends_on: vec![],
                     inject_state_keys: vec![],
@@ -521,7 +520,7 @@ mod tests {
             })
             .collect();
         let definition = GraphDefinition {
-            version: 3,
+            version: 4,
             title: "测试图".into(),
             summary: String::new(),
             state_keys: vec![],

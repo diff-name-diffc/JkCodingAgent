@@ -136,5 +136,5 @@ async fn validated_project_scope(
     project_path: &str,
 ) -> Result<McpScope, String> {
     let canonical = state.validate_project_workspace(project_path).await?;
-    Ok(McpScope::Project(canonical))
+    McpScope::project(&canonical)
 }

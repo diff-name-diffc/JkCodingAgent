@@ -1,466 +1,164 @@
-//! 动态模型与工具目录，以及节点运行前的稳定引用解析。
+//! ACP 执行器（claude-agent-acp）的静态模型目录，以及节点运行前的稳定引用解析。
+//!
+//! 图定义 v4 起模型目录不再引用应用模型库：节点执行器是 claude-agent-acp
+//! 子进程，模型选择走 ACP 会话的 configOptions（`default` 不设，继承 Claude
+//! 配置）。目录为静态四值表，校验（validate）与编排器提示词共用同一来源。
 
-use std::collections::HashSet;
-use std::path::Path;
+use anyhow::{anyhow, Result};
 
-use anyhow::{anyhow, Context, Result};
-use serde::Serialize;
+use super::types::{BaseToolGroup, GraphHarnessCatalog, GraphHarnessModel, GraphNode};
 
-use super::types::{
-    BaseToolGroup, GraphHarnessCatalog, GraphHarnessModel, GraphHarnessTool, GraphNode,
-};
-use crate::agent::db::settings::ModelLibraryEntry;
-use crate::agent::db::AhaSettingsV2;
-use crate::agent::tools::{ToolRegistry, ToolSafety, ToolSpec};
-use crate::mcp::McpScope;
-
-const EXCLUDED_AHA_TOOLS: &[&str] = &[
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list_dir",
-    "glob",
-    "grep",
-    "exec",
-    "local_zsh",
-    "message",
-    "submit_graph",
-    "list_sub_agents",
-    "call_sub_agent",
-    "notify_user_progress",
-];
-
-/// PI 只保留模型熟悉的短工具名；真正的能力名、Schema 与执行策略全部来自
-/// Rust ToolRegistry。sidecar 只能把调用数据回传，不能直接持有文件或 shell
-/// 能力。数组顺序也是模型看到的稳定工具顺序。
-const READ_ONLY_BASE_TOOLS: &[(&str, &str)] = &[
-    ("read", "read_file"),
-    ("grep", "grep"),
-    ("find", "glob"),
-    ("ls", "list_dir"),
-];
-const CODING_BASE_TOOLS: &[(&str, &str)] = &[
-    ("bash", "exec"),
-    ("edit", "edit_file"),
-    ("write", "write_file"),
-];
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PiModelConfig {
-    pub r#ref: String,
-    pub url: String,
-    /// 明文 API Key。任何 Serialize 路径（日志、调试输出、DTO 下发前端）都
-    /// 跳过该字段；唯一出口是 `sidecar_value`——节点执行时经 stdin 传给 sidecar。
-    /// Clone 仅用于运行器内部向节点执行上下文传递密钥，不得用于对外序列化。
-    #[serde(skip_serializing)]
-    pub api_key: String,
-    pub model: String,
-    pub category: String,
-    pub alias: String,
+/// ACP 会话权限模式（映射 Claude Code 权限模式的 mode id）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PermissionMode {
+    /// 只读规划（baseToolGroup=read_only）。
+    Plan,
+    /// 自动接受编辑（baseToolGroup=coding）。
+    AcceptEdits,
 }
 
-impl PiModelConfig {
-    /// 明文密钥的唯一出口：sidecar start 消息的 model 字段。
-    /// 手工构建而非复用派生 Serialize，避免派生实现把密钥带到
-    /// 其他序列化点（派生侧 api_key 已 skip_serializing）。
-    pub(crate) fn sidecar_value(&self) -> serde_json::Value {
-        serde_json::json!({
-            "ref": self.r#ref,
-            "url": self.url,
-            "apiKey": self.api_key,
-            "model": self.model,
-            "category": self.category,
-            "alias": self.alias,
-        })
+impl PermissionMode {
+    pub(crate) fn mode_id(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::AcceptEdits => "acceptEdits",
+        }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PiHostToolSpec {
-    pub name: String,
-    pub runtime_name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
-
-#[derive(Clone)]
+/// 节点运行前解析出的稳定执行配置。
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedNodeHarness {
-    pub model: PiModelConfig,
+    /// ACP 模型目录 id（default/sonnet/opus/haiku）；`default` 表示不下发模型
+    /// 配置项，继承 Claude 登录态的默认模型。
+    pub model_id: String,
     pub model_label: String,
-    pub host_tools: Vec<PiHostToolSpec>,
+    pub permission_mode: PermissionMode,
 }
 
-pub(crate) async fn build_harness_catalog(
-    workspace: &Path,
-    mcp_scope: &McpScope,
-    settings: &AhaSettingsV2,
-    registry: &ToolRegistry,
-) -> GraphHarnessCatalog {
-    let mut diagnostics = Vec::new();
-    for entry in settings
-        .model_library
-        .iter()
-        .filter(|entry| is_supported_graph_model(entry))
-    {
-        if entry.id.trim().is_empty()
-            || entry.model.trim().is_empty()
-            || entry.url.trim().is_empty()
-        {
-            diagnostics.push(format!(
-                "模型 '{}' 配置不完整，缺少稳定 ID、模型名或 URL，已从执行图目录排除",
-                if entry.alias.trim().is_empty() {
-                    entry.model.as_str()
-                } else {
-                    entry.alias.as_str()
-                }
-            ));
-        }
-    }
-    let models = settings
-        .model_library
-        .iter()
-        .filter(|entry| is_complete_graph_model(entry))
-        .map(|entry| GraphHarnessModel {
-            id: entry.id.clone(),
-            label: if entry.alias.trim().is_empty() {
-                entry.model.clone()
-            } else {
-                entry.alias.clone()
-            },
-            model: entry.model.clone(),
-            category: entry.category.clone(),
-            capabilities: model_capabilities(&entry.model, &entry.category),
-        })
-        .collect::<Vec<_>>();
+/// ACP 模型目录条目（静态表）。`id` 同时作为会话 configOptions 里匹配用的
+/// 关键字（`default`：不设置模型选项）。
+struct AcpModelSpec {
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+}
 
-    if models.is_empty() {
-        diagnostics.push("没有可用于执行图的已启用对话/视觉模型".to_string());
-    }
+const ACP_MODELS: &[AcpModelSpec] = &[
+    AcpModelSpec {
+        id: "default",
+        label: "默认（继承 Claude 配置）",
+        description: "不设置模型选项，沿用 Claude 登录态的默认模型",
+    },
+    AcpModelSpec {
+        id: "sonnet",
+        label: "Claude Sonnet",
+        description: "均衡型，适合大多数编码与调研节点",
+    },
+    AcpModelSpec {
+        id: "opus",
+        label: "Claude Opus",
+        description: "最强推理，适合复杂改造与验收节点",
+    },
+    AcpModelSpec {
+        id: "haiku",
+        label: "Claude Haiku",
+        description: "轻量快速，适合简单只读节点",
+    },
+];
 
-    // Aha 工具的安全元数据直接来自注册表 spec：readonly 取 access.readonly，
-    // review_required 按 spec.safety 重建（非 Safe 一律需审查）。
-    let mut tools = aha_specs(registry, mcp_scope)
-        .into_iter()
-        .map(|spec| GraphHarnessTool {
-            source: "aha".to_string(),
-            name: spec.name,
-            description: spec.description,
-            provider: spec.provider,
-            category: spec.category.as_str().to_string(),
-            readonly: spec.access.readonly,
-            review_required: spec.safety != ToolSafety::Safe,
-        })
-        .collect::<Vec<_>>();
+fn acp_model_spec(model_id: &str) -> Option<&'static AcpModelSpec> {
+    ACP_MODELS.iter().find(|spec| spec.id == model_id)
+}
 
-    if let Some(diagnostic) = disabled_project_extension_diagnostic(workspace).await {
-        diagnostics.push(diagnostic);
-    }
-    tools.sort_by(|left, right| {
-        (left.source.as_str(), left.name.as_str())
-            .cmp(&(right.source.as_str(), right.name.as_str()))
-    });
-    let mut seen = HashSet::new();
-    tools.retain(|tool| {
-        if seen.insert((tool.source.clone(), tool.name.clone())) {
-            true
-        } else {
-            diagnostics.push(format!("工具重名已排除：{}:{}", tool.source, tool.name));
-            false
-        }
-    });
+/// 构建 Harness 目录：静态 ACP 模型表（tools 恒空，前端类型契约不变）。
+pub(crate) fn build_harness_catalog() -> GraphHarnessCatalog {
     GraphHarnessCatalog {
-        models,
-        tools,
-        diagnostics,
-    }
-}
-
-pub(crate) fn resolve_node_harness(
-    node: &GraphNode,
-    settings: &AhaSettingsV2,
-    registry: &ToolRegistry,
-    mcp_scope: &McpScope,
-) -> Result<ResolvedNodeHarness> {
-    let entry = settings
-        .model_library
-        .iter()
-        .find(|entry| entry.id == node.model_ref && is_supported_graph_model(entry))
-        .ok_or_else(|| {
-            anyhow!(
-                "节点 '{}' 的模型 '{}' 不存在、已禁用或分类不受支持",
-                node.id,
-                node.model_ref
-            )
-        })?;
-    if entry.url.trim().is_empty() || entry.model.trim().is_empty() {
-        return Err(anyhow!("节点 '{}' 的模型配置缺少 URL 或模型名", node.id));
-    }
-    reject_pi_extensions(node)?;
-
-    let available = aha_specs(registry, mcp_scope);
-    let mut host_tools = Vec::new();
-    let mut runtime_names = HashSet::new();
-
-    for (runtime_name, capability_name) in base_tool_aliases(node.base_tool_group) {
-        let spec = registry
-            .spec_by_name(mcp_scope, capability_name, false)
-            .with_context(|| {
-                format!(
-                    "节点 '{}' 所需的基础宿主能力 '{}' 未注册",
-                    node.id, capability_name
-                )
-            })?;
-        push_host_tool(
-            &node.id,
-            &mut host_tools,
-            &mut runtime_names,
-            spec,
-            runtime_name.to_string(),
-        )?;
-    }
-
-    for selected in node
-        .special_tools
-        .iter()
-        .filter(|tool| tool.source == "aha")
-    {
-        let spec = available
+        models: ACP_MODELS
             .iter()
-            .find(|spec| spec.name == selected.name)
-            .with_context(|| {
-                format!(
-                    "节点 '{}' 的 Aha 工具 '{}' 已不可用",
-                    node.id, selected.name
-                )
-            })?;
-        let runtime_name = format!("aha__{}", sanitize_tool_name(&spec.name));
-        push_host_tool(
-            &node.id,
-            &mut host_tools,
-            &mut runtime_names,
-            spec.clone(),
-            runtime_name,
-        )?;
+            .map(|spec| GraphHarnessModel {
+                id: spec.id.to_string(),
+                label: spec.label.to_string(),
+                model: spec.description.to_string(),
+                category: "acp".to_string(),
+                capabilities: vec!["agent".to_string()],
+            })
+            .collect(),
+        tools: Vec::new(),
+        diagnostics: Vec::new(),
     }
-    let label = if entry.alias.trim().is_empty() {
-        entry.model.clone()
-    } else {
-        entry.alias.clone()
-    };
-    Ok(ResolvedNodeHarness {
-        model: PiModelConfig {
-            r#ref: entry.id.clone(),
-            url: entry.url.clone(),
-            api_key: entry.api_key.clone(),
-            model: entry.model.clone(),
-            category: entry.category.clone(),
-            alias: entry.alias.clone(),
-        },
-        model_label: label,
-        host_tools,
-    })
 }
 
-fn base_tool_aliases(group: BaseToolGroup) -> impl Iterator<Item = (&'static str, &'static str)> {
-    READ_ONLY_BASE_TOOLS.iter().copied().chain(
-        (group == BaseToolGroup::Coding)
-            .then_some(CODING_BASE_TOOLS)
-            .into_iter()
-            .flatten()
-            .copied(),
-    )
-}
-
-fn push_host_tool(
-    node_id: &str,
-    host_tools: &mut Vec<PiHostToolSpec>,
-    runtime_names: &mut HashSet<String>,
-    spec: ToolSpec,
-    runtime_name: String,
-) -> Result<()> {
-    // fail-closed：不同工具名清洗后可能塌缩为同一 runtime_name
-    // （如 foo-bar 与 foo_bar），或扩展工具试图占用 read/bash 等基础别名。
-    if !runtime_names.insert(runtime_name.clone()) {
-        return Err(anyhow!(
-            "节点 '{node_id}' 的宿主工具运行名冲突：{runtime_name}（能力 '{}'）",
-            spec.name
-        ));
-    }
-    host_tools.push(PiHostToolSpec {
-        name: spec.name,
-        runtime_name,
-        description: spec.description,
-        parameters: spec.parameters,
-    });
-    Ok(())
-}
-
-fn reject_pi_extensions(node: &GraphNode) -> Result<()> {
-    if let Some(extension) = node
-        .special_tools
-        .iter()
-        .find(|tool| tool.source == "pi_extension")
-    {
-        return Err(anyhow!(
-            "节点 '{}' 仍引用 PI 扩展工具 '{}'；执行图已禁用可执行扩展，请迁移为经 CapabilityBroker 托管的 Aha 工具",
+/// 解析节点 Harness：modelRef → ACP 目录条目 + baseToolGroup → 权限模式。
+pub(crate) fn resolve_node_harness(node: &GraphNode) -> Result<ResolvedNodeHarness> {
+    let spec = acp_model_spec(node.model_ref.trim()).ok_or_else(|| {
+        anyhow!(
+            "节点 '{}' 的模型 '{}' 不在 ACP 目录中（可选：{}）",
             node.id,
-            extension.name
-        ));
-    }
-    Ok(())
-}
-
-async fn disabled_project_extension_diagnostic(workspace: &Path) -> Option<String> {
-    let extensions = workspace.join(".jkcodingagent/pi-agent/extensions");
-    let display = extensions.display().to_string();
-    match tokio::task::spawn_blocking(move || std::fs::symlink_metadata(extensions)).await {
-        Ok(Ok(_)) => Some(format!(
-            "检测到项目 PI 扩展目录 {display}；为保证所有工具调用都经过 CapabilityBroker，执行图已禁用这些可执行扩展，请迁移为 Aha 工具"
-        )),
-        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Ok(Err(error)) => Some(format!(
-            "无法检查项目 PI 扩展目录 {display}，已按 fail-closed 禁用扩展：{error}"
-        )),
-        Err(error) => Some(format!(
-            "检查项目 PI 扩展目录的任务失败，已按 fail-closed 禁用扩展：{error}"
-        )),
-    }
-}
-
-fn is_supported_graph_model(entry: &ModelLibraryEntry) -> bool {
-    entry.enabled && matches!(entry.category.as_str(), "text" | "vision")
-}
-
-fn is_complete_graph_model(entry: &ModelLibraryEntry) -> bool {
-    is_supported_graph_model(entry)
-        && !entry.id.trim().is_empty()
-        && !entry.model.trim().is_empty()
-        && !entry.url.trim().is_empty()
-}
-
-fn aha_specs(registry: &ToolRegistry, scope: &McpScope) -> Vec<ToolSpec> {
-    registry
-        .specs_for_scope(scope, Option::<std::iter::Empty<&str>>::None, true)
-        .into_iter()
-        .filter(|spec| !EXCLUDED_AHA_TOOLS.contains(&spec.name.as_str()))
-        .filter(|spec| {
-            !matches!(
-                spec.category.as_str(),
-                "filesystem" | "search" | "shell" | "sub_agent"
-            )
-        })
-        .collect()
-}
-
-fn sanitize_tool_name(name: &str) -> String {
-    name.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-fn model_capabilities(model: &str, category: &str) -> Vec<String> {
-    let lower = model.to_ascii_lowercase();
-    let mut result = Vec::new();
-    if category == "vision" {
-        result.push("vision".to_string());
-    }
-    if ["reason", "thinking", "o1", "o3", "r1", "gpt-5"]
-        .iter()
-        .any(|tag| lower.contains(tag))
-    {
-        result.push("reasoning".to_string());
-    }
-    if ["128k", "200k", "256k", "long", "kimi", "gemini", "claude"]
-        .iter()
-        .any(|tag| lower.contains(tag))
-    {
-        result.push("long_context".to_string());
-    }
-    result
+            node.model_ref,
+            ACP_MODELS
+                .iter()
+                .map(|spec| spec.id)
+                .collect::<Vec<_>>()
+                .join(" / ")
+        )
+    })?;
+    Ok(ResolvedNodeHarness {
+        model_id: spec.id.to_string(),
+        model_label: spec.label.to_string(),
+        permission_mode: match node.base_tool_group {
+            BaseToolGroup::ReadOnly => PermissionMode::Plan,
+            BaseToolGroup::Coding => PermissionMode::AcceptEdits,
+        },
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn base_tool_groups_map_only_to_broker_capabilities() {
-        assert_eq!(
-            base_tool_aliases(BaseToolGroup::ReadOnly).collect::<Vec<_>>(),
-            vec![
-                ("read", "read_file"),
-                ("grep", "grep"),
-                ("find", "glob"),
-                ("ls", "list_dir"),
-            ]
-        );
-        assert_eq!(
-            base_tool_aliases(BaseToolGroup::Coding).collect::<Vec<_>>(),
-            vec![
-                ("read", "read_file"),
-                ("grep", "grep"),
-                ("find", "glob"),
-                ("ls", "list_dir"),
-                ("bash", "exec"),
-                ("edit", "edit_file"),
-                ("write", "write_file"),
-            ]
-        );
-    }
-
-    #[test]
-    fn persisted_pi_extension_selection_is_rejected_loudly() {
-        let node = GraphNode {
-            id: "node".into(),
-            title: "node".into(),
+    fn node(model_ref: &str, group: BaseToolGroup) -> GraphNode {
+        GraphNode {
+            id: "n1".into(),
+            title: "n1".into(),
             role: String::new(),
-            model_ref: "model".into(),
-            base_tool_group: BaseToolGroup::ReadOnly,
-            special_tools: vec![super::super::types::GraphToolRef {
-                source: "pi_extension".into(),
-                name: "unsafe".into(),
-            }],
+            model_ref: model_ref.into(),
+            base_tool_group: group,
             task: "task".into(),
-            depends_on: Vec::new(),
-            inject_state_keys: Vec::new(),
-            output_key: "output".into(),
-            expected_files: Vec::new(),
+            depends_on: vec![],
+            inject_state_keys: vec![],
+            output_key: "out".into(),
+            expected_files: vec![],
             export_policy: Default::default(),
-        };
-
-        let error = reject_pi_extensions(&node).unwrap_err().to_string();
-        assert!(error.contains("已禁用可执行扩展"));
-        assert!(error.contains("unsafe"));
+        }
     }
 
-    #[tokio::test]
-    async fn project_extension_directory_is_only_reported_never_loaded() {
-        let workspace = std::env::temp_dir().join(format!(
-            "aha-graph-extension-policy-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let extension_dir = workspace.join(".jkcodingagent/pi-agent/extensions");
-        std::fs::create_dir_all(&extension_dir).unwrap();
-        std::fs::write(
-            extension_dir.join("must-not-run.ts"),
-            "throw new Error('must not execute');",
-        )
-        .unwrap();
+    #[test]
+    fn catalog_lists_four_acp_models() {
+        let catalog = build_harness_catalog();
+        let ids: Vec<&str> = catalog.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["default", "sonnet", "opus", "haiku"]);
+        assert!(catalog.tools.is_empty());
+    }
 
-        let diagnostic = disabled_project_extension_diagnostic(&workspace)
-            .await
-            .expect("检测到扩展目录时必须给出诊断");
-        assert!(diagnostic.contains("已禁用这些可执行扩展"));
-        assert!(diagnostic.contains("CapabilityBroker"));
+    #[test]
+    fn resolves_permission_mode_from_tool_group() {
+        let read_only = resolve_node_harness(&node("sonnet", BaseToolGroup::ReadOnly)).unwrap();
+        assert_eq!(read_only.permission_mode, PermissionMode::Plan);
+        assert_eq!(read_only.model_id, "sonnet");
+        let coding = resolve_node_harness(&node("opus", BaseToolGroup::Coding)).unwrap();
+        assert_eq!(coding.permission_mode, PermissionMode::AcceptEdits);
+    }
 
-        std::fs::remove_dir_all(workspace).unwrap();
+    #[test]
+    fn rejects_unknown_model_ref() {
+        let error = resolve_node_harness(&node("gpt-4o", BaseToolGroup::ReadOnly)).unwrap_err();
+        assert!(format!("{error:#}").contains("不在 ACP 目录中"));
+    }
+
+    #[test]
+    fn permission_mode_ids_match_claude_modes() {
+        assert_eq!(PermissionMode::Plan.mode_id(), "plan");
+        assert_eq!(PermissionMode::AcceptEdits.mode_id(), "acceptEdits");
     }
 }

@@ -14,14 +14,14 @@ import type {
  *
  * 模式照搬 subAgentEventStore.ts：Tauri listen 惰性注册一次、事件折叠成
  * 内存快照、订阅广播。两点差异：
- *  - 高频 nodeOutputDelta 走 ~100ms 节流通知（PI SDK 文本流）；
+ *  - 高频 nodeOutputDelta 走 ~100ms 节流通知（执行器文本流）；
  *  - 不做 structuredClone——快照原地更新，订阅者凭单调 version 重渲染，
  *    避免 MB 级输出缓冲被反复克隆。
  */
 
 export interface GraphPlanSnapshot {
   plan: GraphPlanRecord | null;
-  /** PI Agent 文本 delta 的实时缓冲。 */
+  /** 节点执行器文本 delta 的实时缓冲。 */
   liveOutputs: Record<string, string>;
   liveActivities: Record<string, AgentActivity[]>;
   /** 最近一次图运行事件（面板状态提示用）。 */

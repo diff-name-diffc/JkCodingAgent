@@ -6,6 +6,7 @@ mod command_exec;
 pub(crate) mod commands;
 pub(crate) mod config_import;
 mod connection;
+pub(crate) mod sync;
 mod types;
 mod validation;
 

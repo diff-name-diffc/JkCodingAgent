@@ -82,6 +82,15 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    /// 运行入口提前完成与 broker 相同的路径规范化，使提示词与执行边界同源。
+    pub(crate) async fn normalize_paths_async(mut self) -> Result<Self, tokio::task::JoinError> {
+        tokio::task::spawn_blocking(move || {
+            self.normalize_paths();
+            self
+        })
+        .await
+    }
+
     /// 在执行入口统一规范化 `workspace` 与 `extra_allowed_dirs` 两个路径边界
     /// 输入（G1-23）：保证后续所有工具只与 canonical 形式的路径比较，
     /// 杜绝相对路径或符号链接绕过目录白名单。

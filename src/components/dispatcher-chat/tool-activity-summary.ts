@@ -30,6 +30,7 @@ const TOOL_VERB_MAP: Record<string, ToolVerbCategory> = {
   exec: "command",
   local_zsh: "command",
   ssh_exec: "command",
+  sync_directory: "command",
   grep: "search",
   glob: "search",
   call_sub_agent: "subagent",

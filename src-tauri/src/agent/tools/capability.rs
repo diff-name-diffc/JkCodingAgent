@@ -28,6 +28,8 @@ impl CapabilitySet {
 
     /// 将文件写能力收窄到明确的工作区相对路径集合。非法 scope 被丢弃，
     /// 这是 fail-closed 收紧；调用方若传入的列表全部非法，最终效果是禁止写。
+    /// 当前唯一调用方（图节点宿主工具授权）随 PI 移除暂缺，ACP 执行器接入后恢复。
+    #[allow(dead_code)]
     pub fn restrict_writes_to(mut self, scopes: impl IntoIterator<Item = String>) -> Self {
         let scopes = scopes
             .into_iter()

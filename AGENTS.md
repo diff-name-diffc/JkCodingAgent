@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-JKCodingAgent 是一款面向 AI 智能体的现代桌面应用：以「会话（session）」为核心，内置 dispatcher 智能体运行时（多轮工具调用、子智能体、命令审查门禁；项目 Agent 为图编排器——产出执行图 DAG 并调度子智能体 / claude / codex 节点执行）、RAG 知识库、嵌入式 Shell / 浏览器 / Python 运行器、文件浏览器、Git 集成与用量记录，外壳为 Tauri 2。
+JKCodingAgent 是一款面向 AI 智能体的现代桌面应用：以「会话（session）」为核心，内置 dispatcher 智能体运行时（多轮工具调用、子智能体、命令审查门禁；项目 Agent 为图编排器——产出执行图 DAG，图节点经 ACP 子进程（claude-agent-acp）执行）、RAG 知识库、嵌入式 Shell / 浏览器 / Python 运行器、文件浏览器、Git 集成与用量记录，外壳为 Tauri 2。
 
 **技术栈：** React 19 + TypeScript + Vite（前端） · Tauri 2 + Rust（桌面壳） · **Tailwind CSS + shadcn 风格组件 + CSS 变量主题**（UI） · Zustand + React Query（状态/数据） · xterm.js（终端） · Shiki（语法高亮） · rusqlite（持久化）
 
@@ -14,7 +14,7 @@ JKCodingAgent 是一款面向 AI 智能体的现代桌面应用：以「会话�
 pnpm dev            # 启动 Vite 开发服务器（端口 1420）
 pnpm build          # tsc 类型检查 + Vite 打包
 pnpm lint           # 运行 ESLint（--max-warnings 0）
-pnpm test           # Vitest（前端纯函数/归一化）+ PI sidecar Node 测试
+pnpm test           # Vitest（前端纯函数/归一化）
 pnpm contract:check # Tauri 命令双向契约检查（后端注册 ↔ 前端调用）
 pnpm styles:report  # .ai-* 类定义/引用双向 fail-closed 报告
 pnpm tauri dev      # 启动完整桌面应用（自动启动开发服务器）
@@ -80,7 +80,7 @@ App
 
 | 模块 | 职责 |
 |------|------|
-| `agent/` | dispatcher 智能体核心：`run_loop/`（运行循环）、`llm.rs`（模型调用）、`tools/`（工具注册表 + builtin 工具）、`summary.rs`（工具输出分类/摘要）、`sub_agent/`（子智能体）、`graph/`（图编排：定义/校验/执行引擎/命令）、`db/`（SQLite schema 与读写）、`commands.rs`（Tauri 命令）、`config.rs`（智能体配置 + `~/.jkcodingagent` 初始化） |
+| `agent/` | dispatcher 智能体核心：`run_loop/`（运行循环）、`llm.rs`（模型调用）、`tools/`（工具注册表 + builtin 工具）、`summary.rs`（工具输出分类/摘要）、`sub_agent/`（子智能体）、`graph/`（图编排：定义/校验/执行引擎/`acp_exec` ACP 节点执行器/命令）、`db/`（SQLite schema 与读写）、`commands.rs`（Tauri 命令）、`config.rs`（智能体配置 + `~/.jkcodingagent` 初始化） |
 | `task_runtime/` | `pty.rs`（PTY 创建/读写）、`session.rs`（会话/输出兜底） |
 | `project/` | `storage.rs`（受管项目/会话存储）、`config.rs`（项目配置）、`mcp.rs`（项目级 MCP） |
 | `mcp/` | MCP 子系统：`McpScope{Global, Project}` 显式作用域模型——`Global`（`mcp_servers` 全局注册表，所有聊天共享单一快照）与 `Project`（全局 ∪ 项目 `.jkcodingagent/mcp.json`，同名项目覆盖）；`registry.rs`（作用域缓存/合并/工具执行）、`transport.rs`（stdio/streamable_http/unix_socket_http + 诊断）、`project_file.rs`（项目文件读写）、`commands.rs`（Tauri 命令，项目命令前置路径校验） |
@@ -196,17 +196,24 @@ impl AgentTool for MyTool {
 
 ### 2. 注册工具 — `src-tauri/src/agent/tools/builtin/mod.rs`
 
-两处：顶部 `mod my_tool;` + `builtin_tools()` 函数中添加 `my_tool::my_tool()`。
+两处：顶部 `mod my_tool;` + 按工具的可见面加入对应构造函数：
+- 聊天 Agent（plain chat）可见 → `plain_chat_tools()`；
+- 编排器只读/协议壳 → `orchestrator_tools()`；
+- 架构画布专用 → `architecture_tools()`。
+
+`ToolRegistry::plain_chat_tools` / `orchestrator_tools` / `architecture_tools`（`tools/mod.rs`）是仅有的三个生产注册表构造点，分别被 `agents/plain_chat`、`agents/project`、`agents/architecture` 使用；图节点不经 in-process 工具注册表（由 ACP 子进程自带工具面执行）。
+
+> **图节点（ACP）的权限边界**：每个节点是一个独立的 claude-agent-acp 子进程，自带 Read/Write/Edit/Bash，不经 AI 命令审查门禁。执行器信任模型（`graph/acp_exec/launcher.rs` + `process.rs`）：默认托管模式把版本锁定的官方包安装到 `~/.jkcodingagent/acp-agent/`（`--ignore-scripts`）后以固定路径 `node <entry>` 启动（裸程序名优先从固定候选绝对路径解析，PATH 仅兜底）；子进程 `env_clear` 后仅注入白名单变量与显式凭据；stdout 单行超 1 MiB 即 fail-closed 中止；进程组守卫在会话结束/取消/超时时 SIGKILL 整组。宿主侧权限约束：自动应答（`mapping.rs::decide_permission`）对 coding 节点只选 allow_once（无则取消，绝不升级为 allow_always 常驻授权），read_only 节点与**声明路径越出工作区**的调用一律拒绝；read_only 节点的 plan 权限模式设置失败时 fail-closed（`client.rs::apply_mode`）；节点输出/思考缓冲有字节上限；越界路径以 `[工作区外]` 前缀保留在节点审计记录（affected_files）中。注意：无 locations 的调用（如 Bash）无法按路径约束——coding 节点的 shell 能力本质不受工作区限制，唯一人工闸门是 `pause_before_write` 检查点（每次运行首个可写节点前暂停一次）。
 
 ### 3. 工具输出压缩（可选）— `src-tauri/src/agent/summary.rs`
 
-工具结果压缩是「显式声明 + 阈值」双条件驱动、无需注册：只有 `compress=true`（schema default 或模型显式传入）**且**原始结果超过该工具的压缩阈值时，`persist_tool_result_with_compression` 才调用摘要模型压缩；低于阈值即使声明了压缩也直接返回原文（压缩是串行 LLM 往返，小结果不值得）。阈值随工具策略声明（`agent/tools/spec.rs`）：默认 `DEFAULT_FORCE_COMPRESS_AFTER_CHARS` = 5000，命令执行类工具（exec / local_zsh / ssh_exec）用 `COMMAND_FORCE_COMPRESS_AFTER_CHARS` = 12000（高于 8000 内联截断线，截断兜不住才摘要）。新增带 `compress` 参数的工具时，`with_compression_parameters` 传入的阈值必须与策略表一致（文案与运行时口径漂移会误导模型）。摘要调用超时 15s，失败或超时回退零 LLM 的规则抽取 `extract_structured_summary(tool_name, raw_output)`（`summary.rs`）——新工具如需定制兜底摘要，在该函数的 `match tool_name` 中加一个分支即可。
+工具结果压缩是「显式声明 + 阈值」双条件驱动、无需注册：只有 `compress=true`（schema default 或模型显式传入）**且**原始结果超过该工具的压缩阈值时，`persist_tool_result_with_compression` 才调用摘要模型压缩；低于阈值即使声明了压缩也直接返回原文（压缩是串行 LLM 往返，小结果不值得）。阈值随工具策略声明（`agent/tools/spec.rs`）：默认 `DEFAULT_FORCE_COMPRESS_AFTER_CHARS` = 5000，命令执行类工具（local_zsh / ssh_exec）用 `COMMAND_FORCE_COMPRESS_AFTER_CHARS` = 12000（高于 8000 内联截断线，截断兜不住才摘要）。新增带 `compress` 参数的工具时，`with_compression_parameters` 传入的阈值必须与策略表一致（文案与运行时口径漂移会误导模型）。摘要调用超时 15s，失败或超时回退零 LLM 的规则抽取 `extract_structured_summary(tool_name, raw_output)`（`summary.rs`）——新工具如需定制兜底摘要，在该函数的 `match tool_name` 中加一个分支即可。
 
 ### 4. 添加配置（可选）— `src-tauri/src/agent/config.rs`
 
 如工具需要 API Key / URL 等配置：在 `DispatcherAgentConfig` 加字段 → `load()` 中从环境变量读取 → 在构建 `ToolContext` 处传入（项目编排器：`agents/project/iteration.rs`；聊天 Agent：`agents/plain_chat/mod.rs`）。
 
-> 特例：`submit_graph`（图编排收口工具）只注册进编排器专用注册表（`ToolRegistry::orchestrator_tools`），不进通用 `builtin_tools()`，避免污染聊天上下文与设置页工具清单。
+> 特例：`submit_graph`（图编排收口工具）只注册进编排器专用注册表（`ToolRegistry::orchestrator_tools`），不进 `plain_chat_tools`，避免污染聊天上下文与设置页工具清单。
 
 ---
 

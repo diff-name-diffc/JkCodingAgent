@@ -250,7 +250,7 @@ fn aggregate_usage(
 }
 
 /// 容错解析 usage JSON：兼容 OpenAI（prompt_tokens/completion_tokens）与
-/// pi（input/output）等键名，返回 (prompt, completion)。
+/// 执行器 SDK（input/output）等键名，返回 (prompt, completion)。
 fn parse_usage(raw: &str) -> (u64, u64) {
     let Ok(value) = serde_json::from_str::<Value>(raw) else {
         return (0, 0);
@@ -285,7 +285,6 @@ mod tests {
             role: String::new(),
             model_ref: "m1".into(),
             base_tool_group: BaseToolGroup::Coding,
-            special_tools: vec![],
             task: "task".into(),
             depends_on: vec![],
             inject_state_keys: vec![],
@@ -301,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_usage_accepts_openai_and_pi_shapes() {
+    fn parse_usage_accepts_openai_and_sdk_shapes() {
         assert_eq!(
             parse_usage(r#"{"prompt_tokens":10,"completion_tokens":5}"#),
             (10, 5)

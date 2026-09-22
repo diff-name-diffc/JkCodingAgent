@@ -243,18 +243,24 @@ impl OpenAiCompatProvider {
                         .context("读取 LLM 重试错误响应失败")?;
                     return Err(anyhow!(
                         "{}；去除 stream_options/enable_thinking 后仍失败：{}",
-                        format_llm_http_error(initial_status, &body),
-                        format_llm_http_error(status, &retry_body)
+                        format_llm_http_error(initial_status, &body, &self.model, &url, &self.api_key),
+                        format_llm_http_error(status, &retry_body, &self.model, &url, &self.api_key)
                     ));
                 }
             } else {
-                return Err(anyhow!("{}", format_llm_http_error(initial_status, &body)));
+                return Err(anyhow!(
+                    "{}",
+                    format_llm_http_error(initial_status, &body, &self.model, &url, &self.api_key)
+                ));
             }
         };
 
         if !status.is_success() {
             let body = response.text().await.context("读取 LLM 错误响应失败")?;
-            return Err(anyhow!("{}", format_llm_http_error(status, &body)));
+            return Err(anyhow!(
+                "{}",
+                format_llm_http_error(status, &body, &self.model, &url, &self.api_key)
+            ));
         }
 
         let mut stream = response.bytes_stream();

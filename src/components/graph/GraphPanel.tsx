@@ -28,6 +28,7 @@ import { GraphStateInspector } from "./GraphStateInspector";
 import {
   EDGE_STATE_COLOR,
   computeEdgeState,
+  graphModelRefLabel,
   normalizeNodeStatus,
   normalizePlanStatus,
   parseGraphDefinition,
@@ -179,7 +180,7 @@ function GraphPanelInner({
         data: {
           nodeId: node.id,
           title: node.title,
-          modelLabel: run?.modelLabel || node.modelRef,
+          modelLabel: run?.modelLabel || graphModelRefLabel(node.modelRef),
           task: node.task,
           outputPreview: snapshot.liveOutputs[node.id] || run?.outputText || "",
           status,

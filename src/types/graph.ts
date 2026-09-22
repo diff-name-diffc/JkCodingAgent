@@ -17,14 +17,13 @@ export type GraphKnownNodePhase =
   | "cached"
   | "finalizing";
 /**
- * 应用侧阶段使用固定词表；PI sidecar lifecycle 事件允许透传额外阶段。
+ * 应用侧阶段使用固定词表；节点执行器（sidecar）的 lifecycle 事件允许透传额外阶段。
  * 交互层必须为未知值提供展示兜底，不能假设这是封闭枚举。
  */
 export type GraphNodePhase = GraphKnownNodePhase | (string & {});
 export type GraphBaseToolGroup = "read_only" | "coding";
 /** 节点输出对下游的导出策略：summary=仅产出摘要段（默认），full=全文。 */
 export type GraphExportPolicy = "summary" | "full";
-export type GraphToolRef = { source: "pi_extension" | "aha"; name: string };
 
 export interface GraphStateKey {
   key: string;
@@ -44,7 +43,6 @@ export interface GraphNodeDef {
   role: string;
   modelRef: string;
   baseToolGroup: GraphBaseToolGroup;
-  specialTools: GraphToolRef[];
   task: string;
   dependsOn: string[];
   injectStateKeys: string[];
@@ -57,7 +55,7 @@ export interface GraphNodeDef {
 
 /** 项目 Agent 的核心产物：执行图 DAG 定义（definitionJson 解析后的结构）。 */
 export interface GraphDefinition {
-  version: 3;
+  version: 4;
   title: string;
   summary: string;
   stateKeys: GraphStateKey[];
@@ -76,6 +74,7 @@ export interface GraphNodeRunRecord {
   modelLabel: string;
   modelCategory: string;
   baseToolGroup: GraphBaseToolGroup;
+  /** 历史列（v4 起图定义不再有 specialTools，后端固定写 "[]"）。 */
   specialToolsJson: string;
   inputText: string;
   outputText: string;
@@ -126,11 +125,12 @@ export interface GraphHarnessModel {
   id: string;
   label: string;
   model: string;
-  category: "text" | "vision";
+  /** v4 起图节点执行器为 ACP，目录条目 category 恒为 "acp"；旧值仅见于历史数据。 */
+  category: "text" | "vision" | "acp";
   capabilities: string[];
 }
 export interface GraphHarnessTool {
-  source: "pi_extension" | "aha";
+  source: "aha";
   name: string;
   description: string;
   provider: string;
@@ -245,7 +245,7 @@ export interface GraphRunFailedData {
   error: string;
 }
 
-/** 高危写检查点：就绪节点只剩可能写盘的节点（coding 工具组、可写特殊工具或
+/** 高危写检查点：就绪节点只剩可能写盘的节点（coding 工具组或
  * expectedFiles 任一），运行暂停等待恢复（后端 runner::node_may_write 判定）。 */
 export interface GraphRunPausedData {
   nodeId: string;

@@ -325,7 +325,7 @@ impl OrchestratorAgent {
         }
 
         if matches!(result.status, ToolStatus::RecoverableError)
-            || is_retryable_tool_error(&tool_call.name, &result_text)
+            || is_retryable_tool_error(&result_text)
         {
             let retry_message = self
                 .emit_tool_retry_feedback(db, workspace_id, on_event, tool_call, &result_text)

@@ -39,7 +39,7 @@ function plan(): GraphPlanRecord {
     workspaceId: "workspace-1",
     title: "Plan",
     summary: "",
-    definitionJson: '{"version":3,"title":"Plan","stateKeys":[],"nodes":[]}',
+    definitionJson: '{"version":4,"title":"Plan","stateKeys":[],"nodes":[]}',
     status: "running",
     stateJson: "{}",
     requirement: "需求",
@@ -98,9 +98,9 @@ describe("graph run reducer", () => {
     );
     reduceGraphRunEvent(
       state,
-      payload("nodeOutputDelta", { nodeId: "node-1", delta: "PI" }, 2),
+      payload("nodeOutputDelta", { nodeId: "node-1", delta: "ACP" }, 2),
     );
-    expect(state.liveOutputs["node-1"]).toBe("hello PI");
+    expect(state.liveOutputs["node-1"]).toBe("hello ACP");
     expect(first.notification).toBe("throttled");
   });
 

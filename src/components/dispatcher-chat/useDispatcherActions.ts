@@ -167,7 +167,11 @@ export function useDispatcherActions({
         console.error("发送消息失败:", err);
         updateLiveSessionState(targetSessionId, (state) => ({
           ...state,
-          runError: `${isPlainChat ? "聊天" : "调度智能体"}执行失败：${toErrorMessage(err)}`,
+          // Failed 事件若已带完整错误链，保留它；命令层 reject 且未发
+          // failed 时（如 Agent 构建失败）才用 invoke 错误兜底。
+          runError:
+            state.runError ??
+            `${isPlainChat ? "聊天" : "调度智能体"}执行失败：${toErrorMessage(err)}`,
         }));
         // 命令层 reject（如 Agent 构建失败）不一定伴随 failed 事件；对账
         // 兜底把已持久化消息刷进列表并清掉乐观 pending 消息。

@@ -222,10 +222,28 @@ export interface ModelLibraryEntry {
   contextWindow?: number;
 }
 
+/** 图节点 ACP 执行器（claude-agent-acp）的启动配置。 */
+export interface AcpAgentConfig {
+  /**
+   * 启动命令（按空白拆分为 program + args）。空 = 托管模式：应用把版本锁定
+   * 的官方包安装到 ~/.jkcodingagent/acp-agent/ 后以固定路径启动（默认推荐）。
+   */
+  command: string;
+  /** 注入子进程 env ANTHROPIC_API_KEY；留空依赖 ~/.claude 登录态。 */
+  apiKey?: string | null;
+  /** 注入子进程 env ANTHROPIC_BASE_URL。 */
+  baseUrl?: string | null;
+}
+
 export interface GraphExecutionConfig {
   /** 高危写检查点：每个 run 首个 coding 节点启动前暂停，等待用户恢复。 */
   pauseBeforeWrite: boolean;
+  /** 图节点执行器（claude-agent-acp）的启动与凭据配置。 */
+  acp?: AcpAgentConfig;
 }
+
+/** 后端 AcpAgentConfig 缺省值（与 db/settings.rs 保持一致）：空 = 托管模式。 */
+export const DEFAULT_ACP_COMMAND = "";
 
 export interface AhaSettingsV2 {
   shared: AhaSharedModels;

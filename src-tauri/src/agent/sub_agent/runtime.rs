@@ -30,6 +30,7 @@ use crate::agent::llm::{
 use crate::agent::tools::{
     CapabilitySet, ToolContext, ToolRegistry, ToolResult, ToolRuntime, ToolStatus,
 };
+use crate::shared::error::format_anyhow_error;
 use context::*;
 pub(super) use events::record_trace_event;
 pub use events::{SubAgentEvent, SubAgentEventPayload, SubAgentUsage};
@@ -95,6 +96,7 @@ impl SubAgentRuntime {
         // 执行命令。子智能体继承父上下文，若不覆盖，审查只能看到父会话的用户
         // 任务，与实际执行者的目标脱节。
         self.tool_context.executor_task = Some(task.to_string());
+        self.tool_context = self.tool_context.clone().normalize_paths_async().await?;
         let start = Instant::now();
         let overall_timeout = Duration::from_secs(self.config.timeout_secs);
         let llm_request_timeout = Duration::from_secs(SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS);
@@ -136,6 +138,12 @@ impl SubAgentRuntime {
                 name: None,
             },
         ];
+
+        crate::agent::prompt::runtime_workspace::append(
+            &mut messages,
+            &self.tool_context,
+            &self.tool_definitions,
+        )?;
 
         for iteration in 0..self.config.max_iterations {
             if start.elapsed() > overall_timeout {
@@ -198,7 +206,8 @@ impl SubAgentRuntime {
                 Ok(Err(error)) => {
                     let err_msg = format!(
                         "子智能体 '{}' 模型请求失败：{}",
-                        self.config.agent_id, error
+                        self.config.agent_id,
+                        format_anyhow_error(&error)
                     );
                     self.emit_failed(&app_handle, session_id, &err_msg);
                     anyhow::bail!("{}", err_msg);

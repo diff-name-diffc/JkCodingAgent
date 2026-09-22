@@ -6,8 +6,7 @@
 //! 错误文本并显式清槽（fail-closed）。
 //!
 //! 只注册进架构专用注册表（`ToolRegistry::architecture_tools`），不进
-//! `builtin_tools` / `plain_chat_tools`，避免污染聊天上下文与设置页工具清单
-//! （同 submit_graph 先例）。
+//! `plain_chat_tools`，避免污染聊天上下文与设置页工具清单（同 submit_graph 先例）。
 
 use std::time::Duration;
 

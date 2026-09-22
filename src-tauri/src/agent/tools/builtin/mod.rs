@@ -14,30 +14,12 @@ mod shell;
 mod ssh;
 mod ssh_memo;
 mod submit_graph;
+mod sync_directory;
+mod working_directory;
+pub(crate) use working_directory::local_zsh_dir;
 
 use super::registry::AgentTool;
 use crate::ssh_tool::SshSessionManager;
-
-pub(super) fn builtin_tools(ssh_manager: SshSessionManager) -> Vec<Box<dyn AgentTool>> {
-    let mut tools = vec![
-        filesystem::read_file_tool(),
-        filesystem::write_file_tool(),
-        filesystem::edit_file_tool(),
-        filesystem::list_dir_tool(),
-        search::glob_tool(),
-        search::grep_tool(),
-        shell::exec_tool(),
-        shell::message_tool(),
-        image_generation::generate_image_tool(),
-        image_edit::edit_image_tool(),
-        analyze_image::analyze_image_tool(),
-        fetch_image::fetch_image_tool(),
-    ];
-    tools.extend(browser::browser_tools());
-    tools.extend(ssh_memo::ssh_memo_tools(ssh_manager.clone()));
-    tools.extend(ssh::ssh_tools(ssh_manager));
-    tools
-}
 
 /// 编排器（项目 Agent）固定工具集：只读探索 + message 答复 + submit_graph 收口
 /// + graph_plan_report 运行报告（反思闭环）。
@@ -66,12 +48,13 @@ pub(super) fn plain_chat_tools(ssh_manager: SshSessionManager) -> Vec<Box<dyn Ag
     ];
     tools.extend(browser::browser_tools());
     tools.extend(ssh_memo::ssh_memo_tools(ssh_manager.clone()));
+    tools.push(sync_directory::sync_directory_tool(ssh_manager.clone()));
     tools.extend(ssh::ssh_tools(ssh_manager));
     tools
 }
 
 /// 架构设计视觉 Agent 专用工具集：仅 architecture_run 一个画布操作工具。
-/// 不进 `builtin_tools` / `plain_chat_tools`（同 submit_graph 的专用注册约定）。
+/// 不进 `plain_chat_tools`（同 submit_graph 的专用注册约定）。
 pub(super) fn architecture_tools() -> Vec<Box<dyn AgentTool>> {
     vec![architecture_run::architecture_run_tool()]
 }

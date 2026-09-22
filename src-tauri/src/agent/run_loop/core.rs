@@ -13,6 +13,7 @@ use super::super::prompt::PromptBundle;
 use super::super::tools::{CapabilitySet, ToolContext, ToolSurface};
 use super::agent_loop::AgentLoop;
 use super::types::{AgentEvent, AgentTurn};
+use crate::shared::error::format_anyhow_error;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeAgentKind {
@@ -202,7 +203,11 @@ where
             }
             // 完整性校验（G9-15）：API Key / Base URL / 模型名任一缺失都在 run 入口
             // 显式失败并给出「错误：」提示，避免延迟到 HTTP 请求时才以晦涩错误暴露。
-            validate_provider_completeness(provider.api_key(), provider.api_base(), provider.model())?;
+            validate_provider_completeness(
+                provider.api_key(),
+                provider.api_base(),
+                provider.model(),
+            )?;
         }
 
         let prompt = agent.build_run_prompt(workspace_id, &workspace).await?;
@@ -246,7 +251,9 @@ where
             &request.on_event,
             AgentEvent::Failed {
                 workspace_id: request.workspace_id.to_string(),
-                message: error.to_string(),
+                // {error} / to_string() 只保留最外层 context（如「LLM 流式请求失败」），
+                // 会丢掉 HTTP 状态、响应体、连接失败等根因。
+                message: format_anyhow_error(error),
             },
         );
     }
@@ -265,7 +272,11 @@ pub(crate) async fn run_loop<A>(
 where
     A: RunLoopAgent,
 {
-    let tool_context = agent.build_loop_tool_context(&ctx).await;
+    let tool_context = agent
+        .build_loop_tool_context(&ctx)
+        .await
+        .normalize_paths_async()
+        .await?;
     let mut tool_surface = agent.tool_surface_for_loop(&tool_context);
     let mut agent_loop =
         AgentLoop::new(ctx.db, ctx.workspace_id, ctx.initial_system_prompt.clone()).await?;
@@ -280,8 +291,13 @@ where
             tool_surface = agent.tool_surface_for_loop(&tool_context);
         }
 
-        let messages =
+        let mut messages =
             agent.build_iteration_messages(&ctx, &agent_loop, &tool_surface.definitions)?;
+        crate::agent::prompt::runtime_workspace::append(
+            &mut messages,
+            &tool_context,
+            &tool_surface.definitions,
+        )?;
         let request_provider = agent.provider_for_iteration(&ctx, &messages, iteration_index)?;
         let iteration = RunLoopIteration {
             tool_definitions: tool_surface.definitions.clone(),

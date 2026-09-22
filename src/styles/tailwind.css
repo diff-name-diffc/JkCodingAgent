@@ -804,10 +804,15 @@
     flex-shrink: 0;
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
+    align-items: flex-start;
     gap: 4px 8px;
     background: color-mix(in srgb, var(--danger) 12%, transparent);
     color: var(--danger);
+    max-height: 12rem;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   /* sendError 命中「模型未配置」类时的深链按钮（UI-25 遗留 c）：中性色，
@@ -10195,43 +10200,6 @@
   .ai-graph-expected-files:focus {
     outline: none;
     border-color: var(--accent);
-  }
-
-  .ai-graph-tool-picker {
-    display: flex;
-    max-height: 116px;
-    flex-wrap: wrap;
-    gap: 6px;
-    overflow-y: auto;
-  }
-
-  .ai-graph-tool-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 7px;
-    border: 1px solid var(--border-dim);
-    border-radius: 999px;
-    background: var(--bg-card);
-    color: var(--text-muted);
-    font-size: 10px;
-    cursor: pointer;
-  }
-
-  .ai-graph-tool-toggle.is-selected {
-    border-color: var(--accent);
-    background: rgb(var(--accent-rgb) / 0.1);
-    color: var(--accent);
-  }
-
-  .ai-graph-tool-toggle:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-  }
-
-  .ai-graph-tool-source {
-    color: var(--text-hint);
-    font-size: 9px;
   }
 
   .ai-graph-catalog-diagnostics {

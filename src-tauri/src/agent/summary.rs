@@ -3,6 +3,7 @@ use tokio::time::{timeout, Duration};
 use super::llm::{
     messages_contain_images, ChatMessage, ChatMessageContentPart, LlmUsage, OpenAiCompatProvider,
 };
+use crate::shared::error::format_anyhow_error;
 
 mod tool_summary;
 
@@ -135,7 +136,10 @@ async fn summarize_with_model(
     })?
     .map_err(|error| {
         SummaryError::new(
-            format!("摘要模型 `{summary_model}` 调用失败：{error}"),
+            format!(
+                "摘要模型 `{summary_model}` 调用失败：{}",
+                format_anyhow_error(&error)
+            ),
             debug_context.clone(),
         )
     })?;

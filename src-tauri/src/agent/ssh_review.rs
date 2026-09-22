@@ -59,10 +59,6 @@ pub enum CommandReviewTarget {
         workspace_path: String,
         run_dir: String,
     },
-    /// 工作区内通过 sh -lc 执行的命令（exec 工具）。
-    WorkspaceShell {
-        workspace_path: String,
-    },
     /// MCP 外部工具调用（第三方 server，可能封装 shell/网络/文件操作）。
     Mcp {
         workspace_path: String,
@@ -217,10 +213,6 @@ fn build_command_user_prompt(payload: &CommandReviewPayload) -> String {
         } => format!(
             "【目标环境】\n- 类型：本地 macOS zsh\n- 工作区：{}\n- 执行目录：{}\n- 约束：命令固定通过 /bin/zsh -lc 执行，产物应留在执行目录内",
             workspace_path, run_dir
-        ),
-        CommandReviewTarget::WorkspaceShell { workspace_path } => format!(
-            "【目标环境】\n- 类型：工作区 shell\n- 工作区：{}\n- 约束：命令在工作区根目录通过 sh -lc 执行",
-            workspace_path
         ),
         CommandReviewTarget::Mcp {
             workspace_path,
@@ -445,8 +437,9 @@ mod tests {
             task: String::new(),
             executor_task: None,
             conversation: None,
-            target: CommandReviewTarget::WorkspaceShell {
+            target: CommandReviewTarget::LocalZsh {
                 workspace_path: "/tmp/ws".to_string(),
+                run_dir: "/tmp/ws".to_string(),
             },
             command_history: None,
             command: command.to_string(),

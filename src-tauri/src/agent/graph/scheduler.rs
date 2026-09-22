@@ -322,7 +322,6 @@ mod tests {
             role: String::new(),
             model_ref: "m1".into(),
             base_tool_group: BaseToolGroup::Coding,
-            special_tools: vec![],
             task: "task".into(),
             depends_on: deps.iter().map(|v| v.to_string()).collect(),
             inject_state_keys: vec![],
@@ -333,7 +332,7 @@ mod tests {
     }
     fn definition(nodes: Vec<GraphNode>) -> GraphDefinition {
         GraphDefinition {
-            version: 3,
+            version: 4,
             title: "test".into(),
             summary: String::new(),
             state_keys: vec![],

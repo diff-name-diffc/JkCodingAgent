@@ -19,6 +19,7 @@ pub(super) struct SshClientHandler {
     server_id: String,
     db: SshDb,
     reject_reason: Arc<Mutex<Option<String>>>,
+    accepted_key: Arc<Mutex<Option<PublicKey>>>,
 }
 
 impl client::Handler for SshClientHandler {
@@ -56,7 +57,10 @@ impl client::Handler for SshClientHandler {
         .await
         .unwrap_or_else(|error| Err(error.to_string()));
         match verdict {
-            Ok(None) => Ok(true),
+            Ok(None) => {
+                *self.accepted_key.lock() = Some(key.clone());
+                Ok(true)
+            }
             Ok(Some(reason)) => {
                 *self.reject_reason.lock() = Some(reason);
                 Ok(false)
@@ -115,7 +119,7 @@ fn is_transient_connect_errno(errno: i32) -> bool {
             | libc::ENETDOWN      // 网络接口下线（切换 Wi-Fi 瞬间）
             | libc::ETIMEDOUT     // 内核级连接超时（含握手阶段路由消失）
             | libc::ECONNRESET    // 握手期间被重置（NAT 表项失效常见）
-            | libc::ECONNABORTED  // 连接被中止
+            | libc::ECONNABORTED // 连接被中止
     )
 }
 
@@ -178,6 +182,16 @@ pub(super) async fn connect(
     server: &SshServerConfig,
     ssh_db: &SshDb,
 ) -> Result<Handle<SshClientHandler>, String> {
+    connect_verified(server, ssh_db)
+        .await
+        .map(|(handle, _)| handle)
+}
+
+/// 向外部 OpenSSH 提供同一次握手已校验的公钥，避免另建一套信任库。
+pub(super) async fn connect_verified(
+    server: &SshServerConfig,
+    ssh_db: &SshDb,
+) -> Result<(Handle<SshClientHandler>, PublicKey), String> {
     with_one_transient_retry(
         || connect_once(server, ssh_db),
         TRANSIENT_CONNECT_RETRY_DELAY,
@@ -190,13 +204,15 @@ pub(super) async fn connect(
 async fn connect_once(
     server: &SshServerConfig,
     ssh_db: &SshDb,
-) -> Result<Handle<SshClientHandler>, ConnectError> {
+) -> Result<(Handle<SshClientHandler>, PublicKey), ConnectError> {
     let address = format!("{}:{}", server.host, server.port);
     let reject_reason = Arc::new(Mutex::new(None));
+    let accepted_key = Arc::new(Mutex::new(None));
     let handler = SshClientHandler {
         server_id: server.id.clone(),
         db: ssh_db.clone(),
         reject_reason: reject_reason.clone(),
+        accepted_key: accepted_key.clone(),
     };
     let config = Arc::new(client::Config {
         // 空闲回收由连接池自己管理，禁用 russh 的非活动断开。
@@ -227,10 +243,7 @@ async fn connect_once(
                 return Err(ConnectError::permanent(reason));
             }
             return Err(ConnectError {
-                message: sanitize_ssh_error(
-                    &format!("连接 SSH server {} 失败", server.id),
-                    error,
-                ),
+                message: sanitize_ssh_error(&format!("连接 SSH server {} 失败", server.id), error),
                 transient,
             });
         }
@@ -295,7 +308,11 @@ async fn connect_once(
             }
         }
     }
-    Ok(handle)
+    let key = accepted_key
+        .lock()
+        .clone()
+        .ok_or_else(|| ConnectError::permanent("SSH 握手未返回已校验的主机公钥".into()))?;
+    Ok((handle, key))
 }
 
 #[cfg(test)]
@@ -341,7 +358,7 @@ mod tests {
         // 无 raw errno 的 io 错误（如 DNS 解析失败）不判瞬态：
         // 与主机名拼错无法区分，重试会掩盖配置问题。
         assert!(!is_transient_connect_error(&russh::Error::IO(
-            std::io::Error::new(std::io::ErrorKind::Other, "failed to lookup address")
+            std::io::Error::other("failed to lookup address")
         )));
         // 非 io 的 russh 错误（协议/密钥类）为确定性失败
         assert!(!is_transient_connect_error(&russh::Error::UnknownKey));
@@ -390,7 +407,10 @@ mod tests {
     async fn transient_failure_is_retried_once_then_succeeds() {
         let counter = StdArc::new(PlMutex::new(0));
         let result = with_one_transient_retry(
-            counting_attempt(counter.clone(), FailMode::First(transient_error("No route to host"))),
+            counting_attempt(
+                counter.clone(),
+                FailMode::First(transient_error("No route to host")),
+            ),
             Duration::ZERO,
         )
         .await;
@@ -439,8 +459,11 @@ mod tests {
     #[tokio::test]
     async fn success_on_first_attempt_skips_retry() {
         let counter = StdArc::new(PlMutex::new(0));
-        let result =
-            with_one_transient_retry(counting_attempt(counter.clone(), FailMode::Succeed), Duration::ZERO).await;
+        let result = with_one_transient_retry(
+            counting_attempt(counter.clone(), FailMode::Succeed),
+            Duration::ZERO,
+        )
+        .await;
 
         assert_eq!(result.unwrap(), 7);
         assert_eq!(*counter.lock(), 1);

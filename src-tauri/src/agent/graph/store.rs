@@ -1,4 +1,4 @@
-//! PI 图计划、运行代、节点快照和 Agent 活动的 SQLite 存储。
+//! 图计划、运行代、节点快照和 Agent 活动的 SQLite 存储。
 
 use std::sync::Arc;
 
@@ -385,6 +385,7 @@ impl GraphStore {
         Ok(rows)
     }
 
+    // 活动写入由节点执行器（acp_exec 的 saver 任务）调用。
     pub(crate) fn save_activity(&self, activity: &AgentActivity) -> Result<()> {
         self.conn()?.execute(
             "INSERT INTO graph_node_activities (id,run_id,node_id,sequence,kind,status,title,content,payload_json,started_at,finished_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(run_id,node_id,sequence) DO UPDATE SET status=excluded.status,title=excluded.title,content=excluded.content,payload_json=excluded.payload_json,finished_at=excluded.finished_at",
@@ -682,7 +683,6 @@ mod tests {
             role: String::new(),
             model_ref: "m1".into(),
             base_tool_group: BaseToolGroup::Coding,
-            special_tools: vec![],
             task: "task".into(),
             depends_on: vec![],
             inject_state_keys: vec![],
@@ -693,7 +693,7 @@ mod tests {
     }
     fn definition() -> GraphDefinition {
         GraphDefinition {
-            version: 3,
+            version: 4,
             title: "测试".into(),
             summary: String::new(),
             state_keys: vec![],

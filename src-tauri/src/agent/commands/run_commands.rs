@@ -45,7 +45,7 @@ where
         },
     )
     .await
-    .map_err(|error| error.to_string());
+    .map_err(|error| format_anyhow_error(&error));
     // G11-09/10：运行槽位清理由句柄 RAII 负责（含 panic/提前 return 路径）。
     state.finish_run(run_handle);
     let agent_context = match kind {

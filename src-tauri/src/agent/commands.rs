@@ -23,6 +23,7 @@ use super::summary::{
     summarize_session_title, SessionTitleMessage,
 };
 use crate::browser::BrowserManager;
+use crate::shared::error::format_anyhow_error;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter};
 
@@ -34,7 +35,7 @@ where
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|error| format!("{operation} task failed: {error}"))?
-        .map_err(|error| error.to_string())
+        .map_err(|error| format_anyhow_error(&error))
 }
 
 mod session_metadata;

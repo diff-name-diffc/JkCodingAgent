@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
-import { BrainCircuit, ChevronDown, ChevronRight, Clock3, Gauge, Play, RotateCcw, Square, Wrench, X } from "lucide-react";
+import { BrainCircuit, ChevronDown, ChevronRight, Clock3, Gauge, Play, RotateCcw, Square, X } from "lucide-react";
 import type { AgentActivity, GraphBaseToolGroup, GraphDefinition, GraphHarnessCatalog, GraphPlanStatus, GraphRunDetail } from "../../types";
-import { cn } from "../../lib/cn";
 import { useToast } from "../Toast";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
@@ -176,22 +175,6 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
     return () => flushDraftsRef.current();
   }, [nodeId]);
 
-  async function toggleTool(source: "aha" | "pi_extension", name: string): Promise<boolean> {
-    return updateDefinition((value) => ({
-      ...value,
-      nodes: value.nodes.map((item) => {
-        if (item.id !== nodeId) return item;
-        const selected = item.specialTools.some((tool) => tool.source === source && tool.name === name);
-        return {
-          ...item,
-          specialTools: selected
-            ? item.specialTools.filter((tool) => tool.source !== source || tool.name !== name)
-            : [...item.specialTools, { source, name }],
-        };
-      }),
-    }));
-  }
-
   const upstream = node?.dependsOn ?? [];
   const downstream = definition?.nodes.filter((item) => item.dependsOn.includes(nodeId)).map((item) => item.id) ?? [];
   const titleOf = (id: string) => definition?.nodes.find((item) => item.id === id)?.title ?? id;
@@ -210,7 +193,7 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
         <StatusPill domain="graph-node" status={status} />
         {nodeRun?.durationMs != null && <span className="ai-graph-drawer-duration"><Clock3 className="h-3 w-3" />{formatGraphDuration(nodeRun.durationMs)}</span>}
         {contextUsage && (
-          <span className="ai-graph-drawer-usage" title="上下文窗口占用（PI 运行时估算值）">
+          <span className="ai-graph-drawer-usage" title="上下文窗口占用（运行时估算值）">
             <Gauge className="h-3 w-3" />{formatContextUsage(contextUsage)}
           </span>
         )}
@@ -232,12 +215,12 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
           <section className="ai-graph-drawer-section ai-graph-harness-editor">
             <div className="ai-graph-drawer-label">运行 Harness {saving && <span className="ai-graph-drawer-hint">保存中…</span>}</div>
             <Select value={node.modelRef} onValueChange={(modelRef) => void patchNode({ modelRef })} disabled={saving}>
-              <SelectTrigger><SelectValue placeholder="选择主模型" /></SelectTrigger>
-              <SelectContent>{catalog.models.map((model) => <SelectItem key={model.id} value={model.id}>{model.label} · {model.category}{model.capabilities.length > 0 ? ` · ${model.capabilities.join("/")}` : ""}</SelectItem>)}</SelectContent>
+              <SelectTrigger><SelectValue placeholder="选择模型" /></SelectTrigger>
+              <SelectContent>{catalog.models.map((model) => <SelectItem key={model.id} value={model.id} title={model.model}>{model.label}</SelectItem>)}</SelectContent>
             </Select>
             <Select value={node.baseToolGroup} onValueChange={(baseToolGroup) => void patchNode({ baseToolGroup: baseToolGroup as GraphBaseToolGroup })} disabled={saving}>
               <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="read_only">只读 · read/grep/find/ls</SelectItem><SelectItem value="coding">编码 · 加 bash/edit/write</SelectItem></SelectContent>
+              <SelectContent><SelectItem value="read_only">只读规划 · ACP plan 模式</SelectItem><SelectItem value="coding">编码执行 · ACP acceptEdits 模式</SelectItem></SelectContent>
             </Select>
             <Select value={node.exportPolicy ?? "summary"} onValueChange={(exportPolicy) => void patchNode({ exportPolicy: exportPolicy as "summary" | "full" })} disabled={saving}>
               <SelectTrigger><SelectValue placeholder="下游导出策略" /></SelectTrigger>
@@ -252,13 +235,6 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
               onChange={(event) => setDraftExpectedFiles(event.target.value)}
               onBlur={commitDraftExpectedFiles}
             />
-            <div className="ai-graph-tool-picker">
-              {catalog.tools.map((tool) => {
-                const selected = node.specialTools.some((item) => item.source === tool.source && item.name === tool.name);
-                const safety = tool.reviewRequired ? "需审查" : tool.readonly ? "只读" : "直接执行";
-                return <button key={`${tool.source}:${tool.name}`} type="button" className={cn("ai-graph-tool-toggle", selected && "is-selected")} title={`${tool.description}\n${tool.provider} · ${safety}`} disabled={saving} onClick={() => void toggleTool(tool.source, tool.name)}><Wrench className="h-3 w-3" /><span>{tool.name}</span><span className="ai-graph-tool-source">{tool.source === "aha" ? "Aha" : "PI"} · {safety}</span></button>;
-              })}
-            </div>
             {catalog.diagnostics.length > 0 && <div className="ai-graph-catalog-diagnostics">{catalog.diagnostics.map((diagnostic) => <div key={diagnostic}>{diagnostic}</div>)}</div>}
           </section>
         )}
@@ -300,7 +276,7 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
           {outputOpen && (
             <pre className="ai-graph-drawer-pre ai-graph-drawer-pre--output">
               {outputOmitted > 0 ? `…（前 ${formatCharCount(outputOmitted)} 字符已省略）\n` : ""}
-              {outputDisplay || (status === "running" ? "PI Agent 正在准备…" : "尚无输出")}
+              {outputDisplay || (status === "running" ? "Claude Agent 正在准备…" : "尚无输出")}
             </pre>
           )}
         </section>

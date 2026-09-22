@@ -101,16 +101,9 @@ pub(crate) fn build_tool_retry_context(tool_call: &RequestedToolCall, error: &st
     )
 }
 
-pub(crate) fn is_retryable_tool_error(tool_name: &str, result: &str) -> bool {
+pub(crate) fn is_retryable_tool_error(result: &str) -> bool {
     let trimmed = result.trim();
     if trimmed.is_empty() {
-        return false;
-    }
-    // exec 刻意不走自动重试通道（fail-closed）：命令执行受 AI 审查门禁管控，
-    // 自动重试会绕过重新审查。错误结果仍以普通工具消息喂回模型，模型若发起
-    // 新的 exec 调用会重新过门禁。除非把可重试性判定与审批状态关联，
-    // 否则不要放开此处。
-    if tool_name == "exec" {
         return false;
     }
     is_tool_error_message(trimmed)
@@ -245,10 +238,8 @@ mod tests {
 
     #[test]
     fn retryable_error_classification() {
-        assert!(is_retryable_tool_error("read_file", "错误：读取失败"));
-        assert!(!is_retryable_tool_error("read_file", "正常输出"));
-        assert!(!is_retryable_tool_error("read_file", "   "));
-        // exec 永远不可自动重试（审查门禁约束）。
-        assert!(!is_retryable_tool_error("exec", "错误：命令不存在"));
+        assert!(is_retryable_tool_error("错误：读取失败"));
+        assert!(!is_retryable_tool_error("正常输出"));
+        assert!(!is_retryable_tool_error("   "));
     }
 }

@@ -1,16 +1,17 @@
-//! PI 执行图 v3 的跨层数据契约。所有 serde 字段与前端保持 camelCase。
+//! 执行图 v4 的跨层数据契约。所有 serde 字段与前端保持 camelCase。
 //!
-//! v3 相对 v2 的方法论升级：闭环编排——执行图携带需求快照（requirement）与
-//! 修复继承（inheritsFrom）；运行携带模式（full/resume）与验收结论（verdict）；
-//! 节点携带预期文件（expectedFiles，供并行写冲突预检）与导出策略
-//! （exportPolicy，控制下游注入摘要还是全文）。
+//! v4 相对 v3 的变化：PI sidecar 执行路径移除，节点不再携带 specialTools
+//! （GraphToolRef 一并删除）；v3 相对 v2 的方法论升级保持——闭环编排：执行图
+//! 携带需求快照（requirement）与修复继承（inheritsFrom）；运行携带模式
+//! （full/resume）与验收结论（verdict）；节点携带预期文件（expectedFiles，
+//! 供并行写冲突预检）与导出策略（exportPolicy，控制下游注入摘要还是全文）。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// 执行图定义契约版本。单一事实来源：校验（validate）、编排器工具 schema
 /// （tools/builtin/submit_graph）都引用本常量，避免再次升级时多处漂移。
-pub(crate) const GRAPH_DEFINITION_VERSION: u8 = 3;
+pub(crate) const GRAPH_DEFINITION_VERSION: u8 = 4;
 
 // ── 状态词表（集中定义，禁止散落魔法字符串）────────────────────────────
 // 计划/运行状态（graph_plans.status 与 graph_runs.status 共用同一词表）。
@@ -23,8 +24,8 @@ pub(crate) const GRAPH_DEFINITION_VERSION: u8 = 3;
 // 2) 读取侧是字符串世界：rusqlite 读出的 status/phase 是 String，SQL 过滤
 //    条件与前端 normalize 都按字面值比较，enum 化需要全链路（store 读写、
 //    serde 契约、前端类型）同步改造，收益不抵回归面；
-// 3) phase 本身是开放集：sidecar lifecycle 事件会透传运行期阶段字符串
-//    （不经下方固定表），phase 字段无法用封闭 enum 表达。
+// 3) phase 本身是开放集：节点执行器（sidecar）的 lifecycle 事件会透传运行期
+//    阶段字符串（不经下方固定表），phase 字段无法用封闭 enum 表达。
 // 新增代码一律引用常量，不要再引入字面量；测试中的字面量是刻意保留的
 // 落库值锁定（值变了测试必须红），不属于散落魔法字符串。
 pub(crate) const PLAN_DRAFT: &str = "draft";
@@ -53,7 +54,7 @@ pub(crate) const VERDICT_FAIL: &str = "fail";
 pub(crate) const VERDICT_UNKNOWN: &str = "unknown";
 
 // 节点阶段（graph_node_runs.phase / NodePhaseChanged 事件）。
-// sidecar 的 lifecycle 事件还会透传运行期阶段字符串（不经此表），
+// 节点执行器的 lifecycle 事件还会透传运行期阶段字符串（不经此表），
 // 故 phase 字段保持 String；本表覆盖应用侧自行写入的固定阶段。
 /// 节点行创建时的初始阶段（pending 快照）。
 pub(crate) const NODE_PHASE_STARTING: &str = "starting";
@@ -61,15 +62,21 @@ pub(crate) const NODE_PHASE_STARTING: &str = "starting";
 pub(crate) const NODE_PHASE_FINALIZING: &str = "finalizing";
 /// resume 复制的成功节点行使用的 phase 标记：回执与前端据此区分「本次执行」与「续跑复用」。
 pub(crate) const NODE_PHASE_CACHED: &str = "cached";
+// 以下执行期阶段常量由节点执行器（acp_exec 的 activities 发射路径）写入；
+// 值是落库/前端契约，禁止删除。
 /// 等待模型响应。
 pub(crate) const NODE_PHASE_RESPONDING: &str = "responding";
 /// 模型思考中。
 pub(crate) const NODE_PHASE_THINKING: &str = "thinking";
 /// 工具执行中。
 pub(crate) const NODE_PHASE_TOOL_RUNNING: &str = "tool_running";
+// 重试/压缩阶段暂无构造方（重试由 runner 重新派发、phase 回到 starting；
+// ACP 的压缩事件是 unstable 特性），保留契约值待后续接入。
 /// 失败自动重试中。
+#[allow(dead_code)]
 pub(crate) const NODE_PHASE_RETRYING: &str = "retrying";
 /// 上下文压缩中。
+#[allow(dead_code)]
 pub(crate) const NODE_PHASE_COMPACTING: &str = "compacting";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,13 +115,6 @@ pub enum ExportPolicy {
     Full,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase")]
-pub struct GraphToolRef {
-    pub source: String,
-    pub name: String,
-}
-
 /// 修复图继承来源：新 plan 从既有 plan 的某次 run 继承共享 state（提交时快照种入）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,8 +132,6 @@ pub struct GraphNode {
     pub role: String,
     pub model_ref: String,
     pub base_tool_group: BaseToolGroup,
-    #[serde(default)]
-    pub special_tools: Vec<GraphToolRef>,
     pub task: String,
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -248,13 +246,15 @@ pub struct GraphNodeRunRecord {
     /// NODE_SKIPPED / NODE_CANCELLED。
     pub status: String,
     /// 节点阶段：应用侧固定阶段见 NODE_PHASE_*（STARTING/FINALIZING/CACHED/
-    /// RESPONDING/THINKING/TOOL_RUNNING/RETRYING/COMPACTING）；sidecar
+    /// RESPONDING/THINKING/TOOL_RUNNING/RETRYING/COMPACTING）；节点执行器
     /// lifecycle 事件还会透传运行期阶段字符串，故保持 String。
     pub phase: String,
     pub model_ref: String,
     pub model_label: String,
     pub model_category: String,
     pub base_tool_group: String,
+    /// 历史列（graph_node_runs.special_tools_json）：v4 起图定义不再有
+    /// specialTools，本字段固定写 "[]"；列保留仅因 DB schema 不变。
     pub special_tools_json: String,
     pub input_text: String,
     pub output_text: String,
@@ -281,8 +281,8 @@ impl GraphNodeRunRecord {
             model_label: node.model_ref.clone(),
             model_category: String::new(),
             base_tool_group: node.base_tool_group.as_str().to_string(),
-            special_tools_json: serde_json::to_string(&node.special_tools)
-                .unwrap_or_else(|_| "[]".into()),
+            // v4 起节点不再有 specialTools；列保留（schema 不变），固定写 "[]"。
+            special_tools_json: "[]".into(),
             input_text: String::new(),
             output_text: String::new(),
             error_text: None,
@@ -421,9 +421,11 @@ pub enum GraphRunEvent {
         model_label: String,
         input: String,
     },
+    // 以下三个变体由节点执行器（acp_exec）在运行中发射；线上 JSON 形态是
+    // 前端契约，禁止删除。
     NodePhaseChanged {
         node_id: String,
-        /// 阶段字符串：应用侧固定阶段见 NODE_PHASE_*；sidecar lifecycle
+        /// 阶段字符串：应用侧固定阶段见 NODE_PHASE_*；节点执行器 lifecycle
         /// 事件透传的运行期阶段原样广播。
         phase: String,
     },
@@ -467,7 +469,7 @@ pub enum GraphRunEvent {
         state: Value,
     },
     /// 高危写检查点：就绪节点只剩「可能写盘」的节点（判定见
-    /// runner::node_may_write——coding 工具组、可写特殊工具或 expectedFiles
+    /// runner::node_may_write——coding 工具组或 expectedFiles
     /// 任一即视为可写）且检查点未通过，运行暂停等待 graph_run_resume。
     /// node_id 为触发暂停的节点；暂停期间已启动的在途节点继续运行，
     /// 就绪的不可能写盘的节点不受阻塞。
@@ -491,10 +493,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v3_definition_round_trips() {
-        let raw = r#"{"version":3,"title":"测试","inheritsFrom":{"planId":"p1","runId":"r1"},"nodes":[{"id":"n1","title":"实现","modelRef":"m1","baseToolGroup":"coding","specialTools":[],"task":"完成任务","outputKey":"result","expectedFiles":["src/a.rs"],"exportPolicy":"full"}]}"#;
+    fn v4_definition_round_trips() {
+        let raw = r#"{"version":4,"title":"测试","inheritsFrom":{"planId":"p1","runId":"r1"},"nodes":[{"id":"n1","title":"实现","modelRef":"m1","baseToolGroup":"coding","task":"完成任务","outputKey":"result","expectedFiles":["src/a.rs"],"exportPolicy":"full"}]}"#;
         let definition: GraphDefinition = serde_json::from_str(raw).unwrap();
-        assert_eq!(definition.version, 3);
+        assert_eq!(definition.version, 4);
         assert_eq!(definition.nodes[0].base_tool_group, BaseToolGroup::Coding);
         assert_eq!(definition.nodes[0].export_policy, ExportPolicy::Full);
         assert_eq!(definition.nodes[0].expected_files, vec!["src/a.rs"]);
@@ -502,8 +504,8 @@ mod tests {
     }
 
     #[test]
-    fn v3_optional_fields_default() {
-        let raw = r#"{"version":3,"title":"测试","nodes":[{"id":"n1","title":"实现","modelRef":"m1","baseToolGroup":"read_only","task":"调研","outputKey":"result"}]}"#;
+    fn v4_optional_fields_default() {
+        let raw = r#"{"version":4,"title":"测试","nodes":[{"id":"n1","title":"实现","modelRef":"m1","baseToolGroup":"read_only","task":"调研","outputKey":"result"}]}"#;
         let definition: GraphDefinition = serde_json::from_str(raw).unwrap();
         let node = &definition.nodes[0];
         assert_eq!(node.export_policy, ExportPolicy::Summary);
@@ -514,7 +516,7 @@ mod tests {
     #[test]
     fn normalize_ids_trims_state_keys_and_inherits() {
         let mut definition: GraphDefinition = serde_json::from_str(
-            r#"{"version":3,"title":"测试","stateKeys":[{"key":" key1 ","description":"d"}],"inheritsFrom":{"planId":" p1 ","runId":" r1 "},"nodes":[{"id":" n1 ","title":"实现","modelRef":"m1","baseToolGroup":"coding","task":"调研","dependsOn":[" n0 "],"injectStateKeys":[" key1 "],"outputKey":" out "}]} "#,
+            r#"{"version":4,"title":"测试","stateKeys":[{"key":" key1 ","description":"d"}],"inheritsFrom":{"planId":" p1 ","runId":" r1 "},"nodes":[{"id":" n1 ","title":"实现","modelRef":"m1","baseToolGroup":"coding","task":"调研","dependsOn":[" n0 "],"injectStateKeys":[" key1 "],"outputKey":" out "}]} "#,
         )
         .unwrap();
         definition.normalize_ids();

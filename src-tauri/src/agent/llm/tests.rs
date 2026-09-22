@@ -1,6 +1,9 @@
 use reqwest::StatusCode;
 
-use super::protocol::{parse_sse_data_line, should_retry_without_extra_fields, StreamChatRequest};
+use super::protocol::{
+    format_llm_http_error, parse_sse_data_line, should_retry_without_extra_fields,
+    StreamChatRequest,
+};
 use super::request::{build_api_message_content, ApiMessageContent, ApiMessageContentPart};
 use super::*;
 
@@ -111,6 +114,52 @@ fn retry_heuristic_covers_enable_thinking_and_stream_options_rejections() {
     ));
 }
 
+#[test]
+fn llm_http_error_includes_status_model_url_and_body() {
+    let message = format_llm_http_error(
+        StatusCode::UNAUTHORIZED,
+        r#"{"error":{"message":"Incorrect API key"}}"#,
+        "qwen-plus",
+        "https://example.test/v1/chat/completions",
+        "sk-test",
+    );
+    assert!(message.contains("HTTP 401"), "{message}");
+    assert!(message.contains("model=qwen-plus"), "{message}");
+    assert!(
+        message.contains("url=https://example.test/v1/chat/completions"),
+        "{message}"
+    );
+    assert!(message.contains("Incorrect API key"), "{message}");
+}
+
+#[test]
+fn llm_http_error_redacts_api_key_echoed_in_body() {
+    // 个别网关会在错误 body 中回显请求凭据；错误文本会进入前端与持久化记录，
+    // 必须脱敏。
+    let message = format_llm_http_error(
+        StatusCode::UNAUTHORIZED,
+        r#"{"error":{"message":"auth failed","echo":"Bearer sk-secret-123"}}"#,
+        "qwen-plus",
+        "https://example.test/v1/chat/completions",
+        "sk-secret-123",
+    );
+    assert!(!message.contains("sk-secret-123"), "{message}");
+    assert!(message.contains("Bearer ***"), "{message}");
+}
+
+#[test]
+fn llm_http_error_marks_empty_body() {
+    let message = format_llm_http_error(
+        StatusCode::BAD_GATEWAY,
+        "  \n",
+        "qwen-plus",
+        "https://example.test/v1/chat/completions",
+        "sk-test",
+    );
+    assert!(message.contains("HTTP 502"), "{message}");
+    assert!(message.contains("<空响应体>"), "{message}");
+}
+
 // ─── 空响应诊断格式化 ─────────────────────────────────────────────────────────
 
 fn empty_response_fixture(
@@ -169,8 +218,11 @@ fn empty_response_diagnostics_without_finish_reason_or_thinking_stay_factual() {
 #[test]
 fn empty_response_diagnostics_counts_cjk_thinking_by_chars() {
     // 10 个汉字 = 10 字符（而非 30 字节）
-    let detail =
-        format_empty_response_diagnostics(&empty_response_fixture(Some("stop"), "一二三四五六七八九十", None));
+    let detail = format_empty_response_diagnostics(&empty_response_fixture(
+        Some("stop"),
+        "一二三四五六七八九十",
+        None,
+    ));
     assert!(detail.contains("思考链=10 字符"), "{detail}");
     // stop 终止但产出了思考：非截断，不误导为预算耗尽，改给「自行停止」说明
     assert!(!detail.contains("maxTokens"), "{detail}");

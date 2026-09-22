@@ -181,7 +181,7 @@ export function ArchitectureChatPanel({
 
       {chat.sendError && (
         <div className="ai-arch-chat-error" role="alert">
-          <span>{chat.sendError}</span>
+          <span className="min-w-0 flex-1">{chat.sendError}</span>
           {isModelNotConfiguredError(chat.sendError) && (
             <button
               type="button"

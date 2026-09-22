@@ -237,13 +237,20 @@ function MessageListInner({
           )}
 
           {liveState?.runError && (
-            <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-destructive">错误：{liveState.runError}</span>
+            <div
+              className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm"
+              role="alert"
+            >
+              <div className="flex flex-col gap-2">
+                <p className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-destructive">
+                  错误：{liveState.runError}
+                </p>
                 {onConfigureModel && isModelNotConfiguredError(liveState.runError) && (
-                  <Button variant="outline" size="sm" onClick={() => onConfigureModel()}>
-                    配置模型
-                  </Button>
+                  <div>
+                    <Button variant="outline" size="sm" onClick={() => onConfigureModel()}>
+                      配置模型
+                    </Button>
+                  </div>
                 )}
               </div>
             </div>

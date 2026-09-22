@@ -11,10 +11,9 @@ use std::collections::HashSet;
 use anyhow::Result;
 use serde_json::{Map, Value};
 use tauri::ipc::Channel;
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord};
-use crate::agent::graph::commands::catalog_for_workspace;
 use crate::agent::graph::types::{
     GraphDefinition, GraphPlanUpdatedPayload, PLAN_COMPLETED, PLAN_FAILED,
 };
@@ -80,20 +79,8 @@ impl OrchestratorAgent {
             None => ("{}".to_string(), HashSet::new(), false),
         };
 
-        let Some(app_handle) = &self.app_handle else {
-            return Ok(SubmitGraphInterception::Rejected {
-                error: "错误：应用运行时未初始化，无法发现 PI Harness".to_string(),
-            });
-        };
-        let dispatcher_state = app_handle.state::<crate::agent::state::DispatcherState>();
-        let catalog = match catalog_for_workspace(&dispatcher_state, workspace_id).await {
-            Ok(catalog) => catalog,
-            Err(error) => {
-                return Ok(SubmitGraphInterception::Rejected {
-                    error: format!("错误：发现 PI Harness 失败：{error}"),
-                })
-            }
-        };
+        // 图定义 v4 起 Harness 目录为静态 ACP 模型表（无 I/O）。
+        let catalog = crate::agent::graph::harness::build_harness_catalog();
         if let Err(error) = validate_graph(&definition, &catalog, &seeded_keys) {
             return Ok(SubmitGraphInterception::Rejected { error });
         }

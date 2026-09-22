@@ -255,7 +255,7 @@ export function useArchitectureChat({
             ...state,
             hasPendingRun: false,
             isLoading: false,
-            runError: message,
+            runError: state.runError ?? message,
           }));
           // 命令 reject 且无 failed 事件时兜底清槽 + 对账（清掉乐观 pending）。
           clearDispatcherActiveRunId(targetSessionId);

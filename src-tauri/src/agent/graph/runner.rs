@@ -1,18 +1,17 @@
-//! PI 执行图 v3 运行器：ready-queue 依赖驱动调度。
+//! 执行图 v4 运行器：ready-queue 依赖驱动调度。
 //!
-//! 方法论升级（相对 v2 层屏障调度）：
+//! 方法论（相对 v2 层屏障调度）：
 //! - 节点完成即解锁下游（scheduler::ReadyQueue 纯状态机驱动）；
 //! - 节点失败先重试一次（输入注入失败原因），仍失败才阻断下游；
 //! - resume 模式复用上次运行的成功节点（cached）与共享 state，实现断点续跑；
 //! - 高危写检查点：设置开启时，就绪节点只剩「可能写盘」的节点即暂停全 run
-//!   等待恢复（判定含 coding 工具组、可写特殊工具与 expectedFiles，见
-//!   node_may_write；暂停不阻塞已就绪的只读节点；写盘节点不会在确认前启动）；
+//!   等待恢复（判定含 coding 工具组与 expectedFiles，见 node_may_write；
+//!   暂停不阻塞已就绪的只读节点；写盘节点不会在确认前启动）；
 //! - 收尾由 verifier 产出验收结论、receipt 把执行回执写回会话消息（闭环）。
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
@@ -20,9 +19,9 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
+use super::acp_exec::{NodeExecContext, NodeExecOutcome};
 use super::harness::{build_harness_catalog, resolve_node_harness};
 use super::input::{assemble_node_input, state_value_from_output};
-use super::node_exec::{NodeExecContext, NodeExecOutcome};
 use super::node_task::{
     cancel_pending_nodes, finish_node_record, mark_node_skipped, persist_and_emit_state,
     run_node_task, NodeTaskContext, NodeTaskResult,
@@ -31,28 +30,22 @@ use super::receipt;
 use super::scheduler::{FinishKind, ReadyQueue, MAX_PARALLEL_NODES};
 use super::store::GraphStore;
 use super::types::{
-    BaseToolGroup, GraphDefinition, GraphHarnessCatalog, GraphNode, GraphNodeRunRecord,
+    BaseToolGroup, GraphDefinition, GraphNode, GraphNodeRunRecord,
     GraphPlanRecord, GraphPlanUpdatedPayload, GraphRunEvent, GraphRunEventPayload, GraphRunSummary,
     NODE_CANCELLED, NODE_FAILED, NODE_SUCCEEDED, PLAN_CANCELLED, PLAN_COMPLETED, PLAN_FAILED,
     RUN_MODE_RESUME,
 };
 use super::validate::validate_graph;
 use super::verifier;
-use crate::agent::agents::project::{resolve_project_chat_provider, resolve_vision_provider};
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::DispatcherDb;
 use crate::agent::state::GraphRunHandle;
-use crate::agent::tools::{ToolContext, ToolRegistry};
-use crate::mcp::{McpRegistry, McpScope};
-use crate::ssh_tool::SshSessionManager;
 
 static EVENT_SEQUENCE: AtomicI64 = AtomicI64::new(0);
 
 pub(crate) struct GraphRunServices {
     pub db: DispatcherDb,
     pub agent_config: DispatcherAgentConfig,
-    pub mcp_registry: McpRegistry,
-    pub ssh_manager: SshSessionManager,
 }
 
 pub(crate) fn emit_run_event(
@@ -160,23 +153,10 @@ async fn wait_for_cancel(cancel_rx: &mut watch::Receiver<bool>) {
     }
 }
 
-/// 高危写检查点的「节点可能写盘」判定：写能力来自三处合集的并集——
-/// sidecar 内置工具组（coding 组含 write/edit/bash）、specialTools
-/// （按目录条目的 readonly 标记；目录缺失的工具 fail-closed 视为可写）、
-/// 以及 expectedFiles 声明。仅看 base_tool_group 会漏掉「误标 read_only
-/// 但携带可写扩展工具」的节点，使其在检查点确认前就被派发执行写操作。
-fn node_may_write(node: &GraphNode, catalog: &GraphHarnessCatalog) -> bool {
-    if node.base_tool_group == BaseToolGroup::Coding || !node.expected_files.is_empty() {
-        return true;
-    }
-    node.special_tools.iter().any(|tool_ref| {
-        catalog
-            .tools
-            .iter()
-            .find(|entry| entry.source == tool_ref.source && entry.name == tool_ref.name)
-            .map(|entry| !entry.readonly)
-            .unwrap_or(true)
-    })
+/// 高危写检查点的「节点可能写盘」判定：coding 工具组（含 write/edit/bash）
+/// 或 expectedFiles 声明任一即视为可写。
+fn node_may_write(node: &GraphNode) -> bool {
+    node.base_tool_group == BaseToolGroup::Coding || !node.expected_files.is_empty()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -197,27 +177,15 @@ async fn run_graph(
     // 一次作为加载边界兜底，保证调度器、持久化、事件与 DB 记录全程使用同一套 id。
     definition.normalize_ids();
     let workspace_root = resolve_workspace_root(&services.db, &workspace_id).await?;
-    // resolve_workspace_root 已 canonicalize 且失败即错，直接构造项目作用域：
-    // 图执行全程使用同一份合并配置快照。
-    let mcp_scope = McpScope::Project(workspace_root.clone());
-    services
-        .mcp_registry
-        .ensure_recent(&mcp_scope)
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("刷新 MCP 工具目录失败")?;
     let settings = tokio::task::spawn_blocking({
         let db = services.db.clone();
         move || db.get_settings_v2()
     })
     .await
     .context("读取设置任务失败")??;
-    let tool_registry = Arc::new(ToolRegistry::default_tools(
-        services.mcp_registry.clone(),
-        services.ssh_manager.clone(),
-    ));
-    let catalog =
-        build_harness_catalog(&workspace_root, &mcp_scope, &settings, &tool_registry).await;
+    // 图定义 v4 起模型目录是静态 ACP 目录（default/sonnet/opus/haiku），
+    // 不再依赖应用模型库与 MCP/内置工具发现。
+    let catalog = build_harness_catalog();
     // 种子键：plan 当前 state 里的键（普通图为空；修复图/续跑携带继承或既有键）。
     // 解析失败必须显式报错而非静默退化为空集：空种子键会让 validate 把依赖
     // 继承键的节点误报为 missing-input（错误指向图定义而非真正的 state 损坏），
@@ -253,10 +221,7 @@ async fn run_graph(
         .collect::<HashMap<_, _>>();
     let mut harnesses = HashMap::new();
     for node in &definition.nodes {
-        harnesses.insert(
-            node.id.clone(),
-            resolve_node_harness(node, &settings, &tool_registry, &mcp_scope)?,
-        );
+        harnesses.insert(node.id.clone(), resolve_node_harness(node)?);
     }
 
     emit_plan_updated(app, &plan_id, &workspace_id);
@@ -272,24 +237,6 @@ async fn run_graph(
         },
     );
 
-    let provider = resolve_project_chat_provider(&services.agent_config, &settings);
-    // 视觉用途凭据（可能独立于聊天网关）：供图节点运行期工具（如
-    // analyze_image）直接调用视觉模型；未配置时为 None，工具报「视觉模型未配置」。
-    let vision_provider = resolve_vision_provider(
-        &settings.shared.vision_model_configs,
-        &provider,
-        services.agent_config.max_tokens,
-        services.agent_config.temperature,
-    );
-    let vision_model = vision_provider
-        .as_ref()
-        .map(|p| p.model().to_string())
-        .unwrap_or_default();
-    let session_title = services
-        .db
-        .get_session_title_async(&workspace_id)
-        .await
-        .unwrap_or_else(|_| "untitled".into());
     // v3：需求以提交时快照为准；快照为空时兜底取最新消息（防御旧数据）。
     let mut user_requirement = plan.requirement.trim().to_string();
     if user_requirement.is_empty() {
@@ -301,43 +248,6 @@ async fn run_graph(
             .flatten()
             .unwrap_or_default();
     }
-    let image_credentials = settings.shared.image_model_credentials();
-    let base_tool_context = ToolContext {
-        workspace_id: workspace_id.clone(),
-        workspace: workspace_root.clone(),
-        mcp_scope,
-        session_title,
-        user_task: Some(user_requirement.clone()),
-        // 图节点经外部 PI sidecar 执行，不经过进程内审查链路；
-        // 审查上下文字段保留空值即可。
-        executor_task: None,
-        review_conversation: None,
-        ssh_review: settings
-            .review
-            .is_configured()
-            .then_some(settings.review.clone()),
-        // 图片生成/编辑工具凭据（generate_image / edit_image 节点可用）。
-        image_model_url: image_credentials.url.clone(),
-        image_model_api_key: image_credentials.api_key.clone(),
-        image_model: image_credentials.model.clone(),
-        image_edit_model: image_credentials.edit_model.clone(),
-        exec_timeout_secs: 60,
-        restrict_to_workspace: true,
-        // PI 文本资源由宿主加载；图节点的 read/exec 能力严格限定在项目工作区。
-        extra_allowed_dirs: Vec::new(),
-        app_handle: Some(app.clone()),
-        llm_provider: Some(provider),
-        vision_model,
-        vision_provider,
-        sub_agent_tool_registry: None,
-        current_sub_agent_id: None,
-        current_sub_agent_name: None,
-        current_tool_call_id: None,
-        current_tool_spec_hash: None,
-        cancel_rx: None,
-        sub_agent_parent_tool_call_id: None,
-        sub_agent_trace_events: None,
-    };
     // 初始共享 state 与上游输出：resume 复用 plan 现有 state 与 cached 节点产出。
     let mut state = plan_state;
     let mut outputs: HashMap<String, String> = existing_runs
@@ -383,12 +293,7 @@ async fn run_graph(
             let node_id = if !checkpoint_passed && settings.graph.pause_before_write {
                 ready
                     .iter()
-                    .find(|id| {
-                        node_by_id
-                            .get(*id)
-                            .map(|n| !node_may_write(n, &catalog))
-                            .unwrap_or(false)
-                    })
+                    .find(|id| node_by_id.get(*id).map(|n| !node_may_write(n)).unwrap_or(false))
                     .or_else(|| ready.first())
                     .cloned()
             } else {
@@ -411,7 +316,7 @@ async fn run_graph(
             // 暂停等待恢复。
             if !checkpoint_passed
                 && settings.graph.pause_before_write
-                && node_may_write(&node, &catalog)
+                && node_may_write(&node)
             {
                 emit_run_event(
                     app,
@@ -487,8 +392,7 @@ async fn run_graph(
                     node,
                     input: input.clone(),
                     harness,
-                    tool_registry: Arc::clone(&tool_registry),
-                    tool_context: base_tool_context.clone(),
+                    acp: settings.graph.acp.clone(),
                     store: store.clone(),
                     cancel_rx: cancel_rx.clone(),
                 },
@@ -767,7 +671,7 @@ async fn resolve_workspace_root(db: &DispatcherDb, workspace_id: &str) -> Result
     let path = path.map(PathBuf::from).ok_or_else(|| {
         anyhow::anyhow!("无法定位图计划所属项目路径（项目 {project_id} 可能已被删除）")
     })?;
-    // 规范化工作区根（解析符号链接与 ../）：后续 sidecar 消息、受影响文件
+    // 规范化工作区根（解析符号链接与 ../）：后续执行器消息、受影响文件
     // 校验都以此为基准，目录不存在时 fail-closed。
     let root = tokio::task::spawn_blocking(move || path.canonicalize())
         .await

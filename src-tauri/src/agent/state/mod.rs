@@ -10,6 +10,7 @@ use super::sub_agent::db::ToolInfo;
 use super::sub_agent::SubAgentManager;
 use super::tools::ToolRegistry;
 use crate::mcp::McpRegistry;
+use crate::shared::error::format_anyhow_error;
 use crate::ssh_tool::SshSessionManager;
 
 mod generation;
@@ -157,7 +158,7 @@ impl DispatcherState {
         let settings = tokio::task::spawn_blocking(move || db.get_settings_v2())
             .await
             .map_err(|error| format!("错误：加载调度设置任务失败：{error}"))?
-            .map_err(|error| format!("错误：加载调度设置失败：{error}"))?;
+            .map_err(|error| format!("错误：加载调度设置失败：{}", format_anyhow_error(&error)))?;
         agent.apply_settings_v2(&settings, AgentContext::Project);
         agent.set_context_debug(settings.context_debug);
 
@@ -191,7 +192,7 @@ impl DispatcherState {
         )
         .await
         .map_err(|error| format!("错误：加载聊天设置任务失败：{error}"))?
-        .map_err(|error| format!("错误：加载聊天设置失败：{error}"))?;
+        .map_err(|error| format!("错误：加载聊天设置失败：{}", format_anyhow_error(&error)))?;
 
         agent.apply_settings_v2(&settings, AgentContext::Chat);
         if let Some(category_config) = category_config {
@@ -214,7 +215,12 @@ impl DispatcherState {
         let settings = tokio::task::spawn_blocking(move || db.get_settings_v2())
             .await
             .map_err(|error| format!("错误：加载架构助手设置任务失败：{error}"))?
-            .map_err(|error| format!("错误：加载架构助手设置失败：{error}"))?;
+            .map_err(|error| {
+                format!(
+                    "错误：加载架构助手设置失败：{}",
+                    format_anyhow_error(&error)
+                )
+            })?;
 
         // api_key 不参与判定：本地 OpenAI 兼容端点（Ollama / LM Studio 等）
         // 允许空 key，url 与 model 非空即可构建 provider；云端端点若漏配

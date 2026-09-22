@@ -1,6 +1,6 @@
-//! PI v3 图定义校验：结构、DAG、Harness 引用 + 语义规则（时序/冲突/验证节点）统一 fail-fast。
+//! 执行图 v4 定义校验：结构、DAG、模型引用 + 语义规则（时序/冲突/验证节点）统一 fail-fast。
 //!
-//! 语义规则（v3 新增，关闭 v2 的静默失败面）：
+//! 语义规则（关闭 v2 的静默失败面）：
 //! - injectStateKeys 的生产者必须是消费者的严格拓扑祖先；无生产者的键必须来自
 //!   seeded_keys（修复图继承的 state），否则运行期必然注入不到任何值。
 //! - 可能并行的两个 coding 节点若 expectedFiles 相交则报错（写冲突预检）。
@@ -17,7 +17,6 @@ const MAX_GRAPH_SUMMARY_CHARS: usize = 2_000;
 const MAX_STATE_KEYS: usize = 64;
 const MAX_NODE_ROLE_CHARS: usize = 1_000;
 const MAX_NODE_TASK_CHARS: usize = 32_000;
-const MAX_SPECIAL_TOOLS: usize = 16;
 const MAX_DEPENDENCIES: usize = 20;
 const MAX_INJECT_STATE_KEYS: usize = 64;
 const MAX_EXPECTED_FILES: usize = 256;
@@ -74,11 +73,6 @@ pub(crate) fn validate_graph(
         .models
         .iter()
         .map(|model| model.id.as_str())
-        .collect::<HashSet<_>>();
-    let tool_refs = catalog
-        .tools
-        .iter()
-        .map(|tool| (tool.source.as_str(), tool.name.as_str()))
         .collect::<HashSet<_>>();
     let mut declared_state_keys = HashSet::new();
     for state_key in &definition.state_keys {
@@ -140,11 +134,6 @@ pub(crate) fn validate_graph(
         } else if !output_keys.insert(output_key) {
             errors.push(format!("outputKey '{output_key}' 被多个节点使用"));
         }
-        if node.special_tools.len() > MAX_SPECIAL_TOOLS {
-            errors.push(format!(
-                "节点 '{id}' 的 specialTools 数量超过上限 {MAX_SPECIAL_TOOLS}"
-            ));
-        }
         if node.depends_on.len() > MAX_DEPENDENCIES {
             errors.push(format!(
                 "节点 '{id}' 的 dependsOn 数量超过上限 {MAX_DEPENDENCIES}"
@@ -164,31 +153,6 @@ pub(crate) fn validate_graph(
             if !valid_expected_path(path) {
                 errors.push(format!(
                     "节点 '{id}' 的 expectedFiles 路径 '{path}' 非法：必须是工作区内相对路径，不能包含空值、NUL、绝对路径或 '..' 段，且最长 {MAX_EXPECTED_PATH_CHARS} 字符"
-                ));
-            }
-        }
-        let mut selected = HashSet::new();
-        for tool in &node.special_tools {
-            if tool.source == "pi_extension" {
-                errors.push(format!(
-                    "节点 '{id}' 引用了已禁用的 PI 扩展工具 '{}'；请迁移为经 CapabilityBroker 托管的 Aha 工具",
-                    tool.name
-                ));
-            } else if tool.source != "aha" {
-                errors.push(format!(
-                    "节点 '{id}' 的工具 '{}' 来源 '{}' 非法",
-                    tool.name, tool.source
-                ));
-            } else if !tool_refs.contains(&(tool.source.as_str(), tool.name.as_str())) {
-                errors.push(format!(
-                    "节点 '{id}' 引用了不可用工具 '{}:{}'",
-                    tool.source, tool.name
-                ));
-            }
-            if !selected.insert((tool.source.as_str(), tool.name.as_str())) {
-                errors.push(format!(
-                    "节点 '{id}' 重复选择工具 '{}:{}'",
-                    tool.source, tool.name
                 ));
             }
         }
@@ -515,7 +479,6 @@ mod tests {
             role: String::new(),
             model_ref: "m1".into(),
             base_tool_group: BaseToolGroup::ReadOnly,
-            special_tools: vec![],
             task: "task".into(),
             depends_on: deps.iter().map(|v| v.to_string()).collect(),
             inject_state_keys: vec![],
@@ -531,7 +494,7 @@ mod tests {
     }
     fn definition(nodes: Vec<GraphNode>) -> GraphDefinition {
         GraphDefinition {
-            version: 3,
+            version: 4,
             title: "test".into(),
             summary: String::new(),
             state_keys: vec![],

@@ -192,10 +192,10 @@
 | 🟢 `graph_plan_get` | `agent/graph/commands.rs:19` | 按 plan_id 读计划（含最新 run 的 node_runs），面板回放唯一读路径 | `graph/graph-store.ts:318` | `graph-plan-updated` 事件触发回源 |
 | 🟢 `graph_plan_latest_for_session` | `commands.rs:33` | 按会话取最近计划（Option 语义，会话可无计划） | `chat-page-v2/useGraphPanelController.ts:26` | 服务端 `graph_submit.rs:119` 创建计划后广播事件驱动 |
 | 🟢 `graph_plan_update` | `commands.rs:46` | 仅 draft 态可编辑；normalize + harness 校验 + store 层条件更新（`WHERE status='draft'` + 影响行数）防与 run_start 竞态；广播事件 | `GraphNodeDrawer.tsx:123` | 校验目录与 harness catalog 同源（`catalog_for_workspace`） |
-| 🟢 `graph_harness_catalog_get` | `commands.rs:272` | 图节点运行目录：模型可选 + aha/PI 扩展工具 + 诊断（MCP scope canonicalize 对齐缓存键） | `GraphNodeDrawer.tsx:72`（draft 态） | 保证编辑器可选值与运行期一致 |
+| 🟢 `graph_harness_catalog_get` | `commands.rs:275` | 图节点运行目录：静态 ACP 模型表（default/sonnet/opus/haiku，tools 恒空）+ 诊断（未配置 ACP API Key 时提示走 ~/.claude 登录态） | `GraphNodeDrawer.tsx:72`（draft 态） | 保证编辑器可选值与运行期一致 |
 | 🟢 `graph_run_get` | `commands.rs:280` | 按 run_id 读历史运行详情（run + 全部 node_runs + activities） | `GraphNodeDrawer.tsx:65` | plan 记录只含最新 run，历史 attempt 必须经此获取 |
 | 🟢 `graph_run_start` | `commands.rs:109` | 确认执行/断点续跑（mode=full/resume，未知 mode 显式拒绝）；每计划唯一运行槽位防重入；catch_unwind 兜底；持续广播 `graph-run-event` | `GraphPanel.tsx:194` | 前端把事件流折叠进内存快照（100ms 节流），终态回源 |
-| 🟢 `graph_run_cancel` | `commands.rs:230` | 发取消信号（PI sidecar 先 abort 超时杀进程组）；重启残留的 running 直接复位 | `GraphPanel.tsx:228` | 逐节点 nodeCancelled → runCancelled；🔧 残留自愈分支 `let _ =` 吞 DB 错误（:241-243） |
+| 🟢 `graph_run_cancel` | `commands.rs:230` | 发取消信号（节点执行器 abort）；重启残留的 running 直接复位 | `GraphPanel.tsx:228` | 逐节点 nodeCancelled → runCancelled；🔧 残留自愈分支 `let _ =` 吞 DB 错误（:241-243） |
 | 🟢 `graph_run_resume` | `commands.rs:253` | 恢复「高危写检查点」暂停中的**活运行**（mpsc 信号，不触 DB 运行记录；带 cancel 已置位拒绝 + 容量 1 去重双防护） | `GraphPanel.tsx:211` | 与 runPaused/runResumed 事件配对 |
 
 ### 域内分析（v2 复核后）

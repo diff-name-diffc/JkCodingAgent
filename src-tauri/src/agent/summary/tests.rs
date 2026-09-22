@@ -68,15 +68,15 @@ fn tagged_block_falls_back_to_other_start_tag_without_closing_tag() {
 #[test]
 fn structured_summary_exit_status_only_matches_explicit_patterns() {
     let with_exit =
-        extract_structured_summary("exec", "running tests\nProcess finished with exit code 2");
+        extract_structured_summary("ssh_exec", "running tests\nProcess finished with exit code 2");
     assert!(with_exit.contains("退出/状态: Process finished with exit code 2"));
 
-    let with_chinese = extract_structured_summary("exec", "编译结束\n退出状态：0");
+    let with_chinese = extract_structured_summary("ssh_exec", "编译结束\n退出状态：0");
     assert!(with_chinese.contains("退出/状态: 退出状态：0"));
 
     // "$ 提示符"、含 exit 的普通日志、error 开头的行都不再被当作退出状态
     let without_exit = extract_structured_summary(
-        "exec",
+        "ssh_exec",
         "$ cargo test\ncalling exit() in test\nerror happened",
     );
     assert!(!without_exit.contains("退出/状态:"));

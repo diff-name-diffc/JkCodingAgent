@@ -4,7 +4,7 @@
 //! 由 OrchestratorAgent 在 `execute_loop_tool_calls` 中按工具名拦截完成。
 //! 工具自身的 `execute` 为 fail-closed 兜底：未经拦截直接调用时返回「错误：」
 //! 而非假成功回执。因此该工具只注册进编排器专用注册表（`orchestrator_tools`），
-//! 不进 `builtin_tools`，避免出现在普通工具目录与设置页中。
+//! 不进 `plain_chat_tools`，避免出现在普通工具目录与设置页中。
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -53,22 +53,6 @@ fn bounded_identifier(description: &str) -> Value {
 }
 
 fn graph_node_schema() -> Value {
-    let special_tool = json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "source": { "type": "string", "enum": ["aha"] },
-            "name": { "type": "string", "minLength": 1, "maxLength": 256 },
-        },
-        "required": ["source", "name"],
-    });
-    let special_tools = json!({
-        "type": "array",
-        "maxItems": 16,
-        "uniqueItems": true,
-        "description": "按需启用的 Aha/MCP 宿主工具（统一以 source=\"aha\" 提交并经 CapabilityBroker 执行）",
-        "items": special_tool,
-    });
     let depends_on = json!({
         "type": "array",
         "maxItems": 20,
@@ -100,7 +84,6 @@ fn graph_node_schema() -> Value {
             "role": { "type": "string", "maxLength": 1000 },
             "modelRef": { "type": "string", "minLength": 1, "maxLength": 256 },
             "baseToolGroup": { "type": "string", "enum": ["read_only", "coding"] },
-            "specialTools": special_tools,
             "task": { "type": "string", "minLength": 1, "maxLength": 32000 },
             "dependsOn": depends_on,
             "injectStateKeys": inject_state_keys,
@@ -187,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_is_strict_and_rejects_disabled_pi_extensions() {
+    fn schema_is_strict_and_rejects_removed_or_unknown_fields() {
         let validator = jsonschema::draft202012::new(&SubmitGraphTool.parameters())
             .expect("submit_graph schema");
         assert!(validator.is_valid(&minimal_definition()));
@@ -196,10 +179,11 @@ mod tests {
         unknown_field["definition"]["unknown"] = json!(true);
         assert!(!validator.is_valid(&unknown_field));
 
-        let mut pi_extension = minimal_definition();
-        pi_extension["definition"]["nodes"][0]["specialTools"] =
-            json!([{ "source": "pi_extension", "name": "unsafe" }]);
-        assert!(!validator.is_valid(&pi_extension));
+        // v4 已删除 specialTools：作为未知字段必须被 additionalProperties=false 拒绝。
+        let mut legacy = minimal_definition();
+        legacy["definition"]["nodes"][0]["specialTools"] =
+            json!([{ "source": "aha", "name": "exec" }]);
+        assert!(!validator.is_valid(&legacy));
     }
 
     #[test]

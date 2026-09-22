@@ -67,8 +67,8 @@ export const GraphNodeView = memo(function GraphNodeView({
         <div className="ai-graph-node-title" title={data.title}>
           {data.title}
         </div>
-        <div className="ai-graph-node-agent" title={data.modelLabel || "PI Agent"}>
-          {data.modelLabel || "PI Agent"}
+        <div className="ai-graph-node-agent" title={data.modelLabel || "Claude Agent"}>
+          {data.modelLabel || "Claude Agent"}
         </div>
         {summary && (
           <div className="ai-graph-node-summary" title={summary}>

@@ -281,13 +281,39 @@ fn normalize_theme_preference(raw: &str) -> String {
 }
 
 /// 执行图编排的运行期设置（设置中心「执行图」页）。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphExecutionConfig {
     /// 高危写检查点：每个 run 首个 coding 节点启动前暂停，等待用户在图面板恢复。
     #[serde(default = "default_pause_before_write")]
     pub pause_before_write: bool,
+    /// 图节点执行器（claude-agent-acp）的启动与凭据配置。
+    #[serde(default)]
+    pub acp: AcpAgentConfig,
 }
+
+/// 图节点 ACP 执行器（claude-agent-acp）的启动配置。
+/// 凭据注入子进程环境变量；缺省时依赖 `~/.claude` 登录态。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpAgentConfig {
+    /// 启动命令（按空白拆分为 program + args）。空 = 托管模式：应用把版本
+    /// 锁定的官方包安装到 `~/.jkcodingagent/acp-agent/` 后以固定路径启动
+    /// （默认推荐）。非空 = 用户自定义命令（可信输入，原样执行）。
+    #[serde(default)]
+    pub command: String,
+    /// 注入子进程 env `ANTHROPIC_API_KEY`。
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// 注入子进程 env `ANTHROPIC_BASE_URL`。
+    #[serde(default)]
+    pub base_url: Option<String>,
+}
+
+/// 历史默认启动命令（npx 运行时拉取）：启动解析时归一为托管模式，
+/// 避免老配置继续走「PATH 查找 + 每次运行联网拉取」的旧信任模型。
+pub(crate) const LEGACY_NPX_ACP_COMMAND: &str =
+    "npx -y @agentclientprotocol/claude-agent-acp@0.79.0";
 
 const fn default_pause_before_write() -> bool {
     true
@@ -297,6 +323,7 @@ impl Default for GraphExecutionConfig {
     fn default() -> Self {
         Self {
             pause_before_write: default_pause_before_write(),
+            acp: AcpAgentConfig::default(),
         }
     }
 }
@@ -667,7 +694,7 @@ impl DispatcherDb {
             context_debug: settings.context_debug,
             review,
             model_library: normalized_library_entries(&settings.model_library),
-            graph: settings.graph,
+            graph: settings.graph.clone(),
             theme,
         })
     }

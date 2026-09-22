@@ -1,6 +1,38 @@
 import { describe, expect, it } from "vitest";
 import type { DispatcherMessage, DispatcherMessageWire } from "../../types";
-import { buildOptimisticUserMessage, mergeDispatcherMessages } from "./dispatcherChatUtils";
+import {
+  buildOptimisticUserMessage,
+  mergeDispatcherMessages,
+  toErrorMessage,
+} from "./dispatcherChatUtils";
+
+describe("toErrorMessage", () => {
+  it("reads Error.message", () => {
+    expect(toErrorMessage(new Error("LLM 流式请求失败"))).toBe("LLM 流式请求失败");
+  });
+
+  it("keeps a plain string", () => {
+    expect(toErrorMessage("connection refused")).toBe("connection refused");
+  });
+
+  it("reads message from a Tauri-style object payload", () => {
+    expect(
+      toErrorMessage({
+        message: "LLM 请求失败，HTTP 401：Incorrect API key",
+      }),
+    ).toBe("LLM 请求失败，HTTP 401：Incorrect API key");
+  });
+
+  it("reads error field when message is absent", () => {
+    expect(toErrorMessage({ error: "发送流式对话请求失败" })).toBe("发送流式对话请求失败");
+  });
+
+  it("stringifies other objects instead of [object Object]", () => {
+    expect(toErrorMessage({ code: "TIMEOUT", status: 504 })).toBe(
+      '{"code":"TIMEOUT","status":504}',
+    );
+  });
+});
 
 describe("mergeDispatcherMessages", () => {
   it("把 Rust segmentsJson wire DTO 归一化为 UI segments", () => {

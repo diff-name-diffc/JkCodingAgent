@@ -31,12 +31,7 @@ pub async fn session_create(
 ) -> Result<SessionCreatedRecord, String> {
     let db = state.db().clone();
     let session = run_dispatcher_db("session_create", move || {
-        db.create_session(
-            kind,
-            &title,
-            category.as_deref(),
-            project_id.as_deref(),
-        )
+        db.create_session(kind, &title, category.as_deref(), project_id.as_deref())
     })
     .await?;
     let _ = app.emit("dispatcher-session-updated", session.clone());
@@ -57,8 +52,7 @@ pub async fn session_delete(
     }
     let db = state.db().clone();
     let session_for_cleanup = session_id.clone();
-    let result =
-        run_dispatcher_db("session_delete", move || db.delete_session(&session_id)).await;
+    let result = run_dispatcher_db("session_delete", move || db.delete_session(&session_id)).await;
     if result.is_ok() {
         // 会话资源清理规范：会话级内存状态（命令执行台账）同步回收。
         crate::agent::command_history::forget_session(&session_for_cleanup);

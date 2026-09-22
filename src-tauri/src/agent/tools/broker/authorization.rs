@@ -134,7 +134,7 @@ impl CapabilityBroker<'_> {
         }
 
         if spec.access.mutates_filesystem {
-            if matches!(invocation.name.as_str(), "exec" | "local_zsh") {
+            if invocation.name.as_str() == "local_zsh" {
                 // Shell 的实际写集不能靠字符串静态推断；它必须继续经过下方
                 // ReviewRequired 门禁。文件 API 则已经由 expectedFiles 精确约束。
                 return Ok(json!({

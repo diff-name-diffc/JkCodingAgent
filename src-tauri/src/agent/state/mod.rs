@@ -2,12 +2,10 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::agents::ArchitectureAgent;
 use super::rig_ext::agents::plain_chat::RigPlainChatAgent;
 use super::rig_ext::agents::project::RigOrchestratorAgent;
 use super::config::DispatcherAgentConfig;
 use super::db::{AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb};
-use super::llm::OpenAiCompatProvider;
 use super::sub_agent::db::ToolInfo;
 use super::sub_agent::SubAgentManager;
 use crate::mcp::McpRegistry;
@@ -235,7 +233,10 @@ impl DispatcherState {
     pub(crate) async fn build_architecture_agent(
         &self,
         model_library_id: Option<&str>,
-    ) -> std::result::Result<ArchitectureAgent, String> {
+    ) -> std::result::Result<
+        super::rig_ext::agents::architecture_agent::RigArchitectureAgent,
+        String,
+    > {
         let db = self.services.db.clone();
         let settings = tokio::task::spawn_blocking(move || db.get_settings_v2())
             .await
@@ -306,15 +307,19 @@ impl DispatcherState {
             })?;
 
         let config = self.services.config.clone();
-        let provider = OpenAiCompatProvider::new(
-            chosen.0,
-            chosen.1,
-            chosen.2,
-            chosen.3.or(config.max_tokens),
-            config.temperature,
-        )
-        .with_context_window(chosen.4);
-        Ok(ArchitectureAgent::new(config, provider))
+        let spec = super::rig_ext::model::PurposeModelSpec {
+            api_key: chosen.0,
+            api_base: chosen.1,
+            model: chosen.2,
+            // 容量以槽位（库条目回填）为权威；config 仅作 env 开发路径兜底。
+            max_tokens: chosen.3.or(config.max_tokens).map(u64::from),
+            context_window: chosen.4.map(u64::from),
+            temperature: f64::from(config.temperature),
+            enable_thinking: true,
+        };
+        Ok(super::rig_ext::agents::architecture_agent::RigArchitectureAgent::new(
+            config, spec,
+        ))
     }
 
     pub(crate) async fn list_agent_tools(

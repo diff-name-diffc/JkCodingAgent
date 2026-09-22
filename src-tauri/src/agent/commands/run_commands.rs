@@ -193,6 +193,42 @@ pub(crate) async fn run_chat_turn_skeleton(
     result
 }
 
+/// 架构画布运行骨架（rig 路径）：run 槽位 + 元数据守卫 + `run_turn` +
+/// 标题异步生成（**跳过关键字生成**：架构会话不出现在全局会话搜索）。
+pub(crate) async fn run_architecture_turn_skeleton(
+    state: &tauri::State<'_, DispatcherState>,
+    app: &AppHandle,
+    workspace_id: &str,
+    segments_json: String,
+    on_event: Channel<AgentEvent>,
+    agent: super::super::rig_ext::agents::architecture_agent::RigArchitectureAgent,
+) -> Result<AgentTurn, String> {
+    let title_segments_json = segments_json.clone();
+    let run_handle = state.begin_run(workspace_id).map_err(|e| e.to_string())?;
+    let title_guard = state.begin_title_generation(workspace_id);
+    let result = agent
+        .run_turn(super::super::rig_ext::agents::architecture_agent::ArchitectureTurnRequest {
+            db: state.db(),
+            workspace_id,
+            user_segments_json: segments_json,
+            on_event,
+            cancel_rx: run_handle.cancel_receiver(),
+        })
+        .await
+        .map(|reply| AgentTurn { reply })
+        .map_err(|error| format_anyhow_error(&error));
+    state.finish_run(run_handle);
+    spawn_session_title_update(
+        state,
+        app,
+        workspace_id,
+        &title_segments_json,
+        AgentContext::Chat,
+        title_guard,
+    );
+    result
+}
+
 /// 请求停止会话当前运行：向活动 run 的 watch channel 发取消信号；随后
 /// 无论结果关闭该会话浏览器（run 可能驱动浏览器动作，停 run 必须连带
 /// 停浏览器会话，避免残留有头窗口）。

@@ -4,6 +4,8 @@
 //! 运行统一交给 `rig_ext::r#loop::run_rig_loop`（三段式策略：审查门禁 +
 //! 台账 + 超时）。Phase 3 逐个迁移：plain_chat（本阶段）→ project → architecture。
 
+pub(crate) mod architecture;
+pub(crate) mod architecture_agent;
 pub(crate) mod plain_chat;
 pub(crate) mod project;
 pub(crate) mod project_prompt;

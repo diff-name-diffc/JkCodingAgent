@@ -7,6 +7,7 @@ mod provider;
 mod request;
 
 pub use models::fetch_models;
+#[allow(unused_imports)]
 pub use protocol::{format_empty_response_diagnostics, StreamOptions};
 pub use provider::OpenAiCompatProvider;
 

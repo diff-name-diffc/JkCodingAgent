@@ -11,10 +11,11 @@ mod tool_result;
 mod usage;
 
 pub use message::{
-    build_args_map, build_tool_calls_payload, persist_assistant_message,
+    persist_assistant_message,
     persist_tool_calls_message,
 };
 pub(crate) use message::{serialize_tool_arguments, should_keep_llm_message};
+#[allow(unused_imports)]
 pub use tool_result::{persist_tool_result_with_compression, TOOL_RESULT_INLINE_MAX_CHARS};
 #[cfg(test)]
 use tool_result::{

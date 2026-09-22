@@ -12,7 +12,7 @@
 
 use serde_json::{json, Value};
 
-use super::program::{
+use super::{
     ARCH_MAX_INSTRUCTIONS, ARCH_PROGRAM_VERSION, COORD_LIMIT, GAP_LIMIT, MAX_LABEL_LEN,
     MAX_LAYOUT_TARGETS, MAX_REPARENT_TARGETS, MAX_SELECT_TARGETS, MAX_TARGETS_PER_DELETE,
     MAX_TEXT_LEN, NUDGE_LIMIT, SIZE_LIMIT,
@@ -319,7 +319,7 @@ mod tests {
     use serde_json::json;
 
     use super::architecture_run_parameters_schema;
-    use crate::agent::agents::architecture::program::ARCH_PROGRAM_VERSION;
+    use crate::agent::rig_ext::agents::architecture::ARCH_PROGRAM_VERSION;
 
     fn compile() -> jsonschema::Validator {
         let schema = architecture_run_parameters_schema();

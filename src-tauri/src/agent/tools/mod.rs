@@ -52,9 +52,4 @@ impl ToolRegistry {
         Self::new(builtin::orchestrator_tools())
     }
 
-    /// 架构设计视觉 Agent 专用注册表：仅 architecture_run（画布程序执行），
-    /// 无 MCP 桥与其他工具——画布是该 Agent 唯一的效应面。
-    pub fn architecture_tools() -> Self {
-        Self::new(builtin::architecture_tools())
-    }
 }

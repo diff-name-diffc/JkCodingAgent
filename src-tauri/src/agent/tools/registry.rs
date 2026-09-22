@@ -813,42 +813,6 @@ mod tests {
         );
     }
 
-    /// 端到端：模型拿 update_shape 改箭头 labelPosition（历史真实故障）时，
-    /// 错误消息必须直接点出 labelPosition 字段，而不是笼统的 oneOf 文本。
-    #[test]
-    fn architecture_run_reports_labelposition_field_error() {
-        let registry = ToolRegistry::architecture_tools();
-        let error = registry
-            .prepare_input(
-                &McpScope::Global,
-                "architecture_run",
-                &json!({
-                    "program": {
-                        "version": 1,
-                        "instructions": [
-                            {
-                                "_type": "update_shape",
-                                "labelPosition": 0.3,
-                                "target": "shape:jIpSCG3QVzhAw6bjPa2iw"
-                            },
-                        ],
-                    },
-                }),
-                false,
-            )
-            .unwrap_err();
-        assert!(
-            error.display.contains("labelPosition"),
-            "错误应点出具体字段：{}",
-            error.display
-        );
-        assert!(
-            !error.display.contains("not valid under any of the schemas"),
-            "不应保留笼统 oneOf 文本：{}",
-            error.display
-        );
-    }
-
     #[test]
     fn orchestrator_runtime_tools_reject_unbounded_fanout_before_execution() {
         let registry = ToolRegistry::orchestrator_tools();

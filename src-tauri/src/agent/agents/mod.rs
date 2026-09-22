@@ -1,12 +1,6 @@
 //! 顶层 Agent 实现集合。
 //!
-//! `run_loop` 只定义统一运行骨架；这里放尚未迁移的旧 Agent 形态：
-//! - `architecture::ArchitectureAgent`：面向架构设计画布，单工具视觉循环
-//!   （T3.3 迁移）。
-//!
-//! 已迁移到 rig 实现的 Agent：`crate::agent::rig_ext::agents::plain_chat`
-//! （普通聊天）与 `...::project`（项目编排器）。
+//! 旧 Agent 形态目录：三类 Agent（普通聊天 / 项目编排器 / 架构画布）均已迁移到
+//! `crate::agent::rig_ext::agents`，本模块保留为 Phase 5 删除旧运行骨架
+//! （`run_loop`）时的占位。
 
-pub(crate) mod architecture;
-
-pub(crate) use architecture::ArchitectureAgent;

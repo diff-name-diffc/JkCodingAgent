@@ -1,4 +1,8 @@
-//! 架构画布程序（architecture_run 工具载荷）：模块入口与契约常量。
+//! 架构画布程序 DSL（architecture_run 工具载荷）：模块入口与契约常量。
+//!
+//! 迁移自旧 `agents/architecture/{program,program_ast,program_validate,
+//! program_schema,prompt}.rs`：AST 校验与 JSON Schema 是画布契约（与前端
+//! 解释器同源），随架构 Agent 一起迁入 rig 侧；`prompt.rs` 提供系统提示词。
 //!
 //! 与 `tools/program/ast.rs` 同一模式：**Rust 反序列化 + `validate_program`
 //! 才是权威校验**；随工具定义下发的 JSON Schema（见 `program_schema.rs`）
@@ -11,10 +15,15 @@
 //! - 本文件保留 schema 与校验共用的契约常量与全部测试，并统一再导出，
 //!   外部调用方（`architecture_run` 工具、`program_schema.rs`）的导入路径不变。
 
-// AST 类型经 glob 全量再导出，保持 `program::` 为单一入口
+pub(crate) mod program_ast;
+pub(crate) mod program_schema;
+pub(crate) mod program_validate;
+pub(crate) mod prompt;
+
+// AST 类型经 glob 全量再导出，保持本模块为单一入口
 // （外部调用方无需感知 `program_ast` / `program_validate` 的拆分）。
-pub use super::program_ast::*;
-pub use super::program_validate::validate_program;
+pub use program_ast::*;
+pub use program_validate::validate_program;
 
 pub const ARCH_PROGRAM_VERSION: u8 = 1;
 /// 单程序指令数上限（与系统提示词约定一致）。

@@ -26,6 +26,7 @@ use super::surface::{ToolCallGuard, ToolCallOutcome, ToolCallTrace, ToolExecutio
 use crate::agent::common::cancellation_requested;
 use crate::agent::db::{DispatcherDb, ToolRunTraceContext};
 use crate::agent::rig_ext::review::RigReviewContext;
+use crate::agent::rig_ext::tools::deps::ToolCallSlot;
 use crate::agent::rig_ext::tools::run_record::{
     finish_tool_run, prepare_arguments, start_tool_run, RigToolRun, RigToolRunContext,
     RigToolRunFinish,
@@ -46,6 +47,8 @@ pub struct AppToolPolicyConfig {
     pub cancel_rx: Option<watch::Receiver<bool>>,
     /// 子智能体工具调用的台账 trace 上下文（根 Agent 为默认值）。
     pub trace: ToolRunTraceContext,
+    /// 当前工具调用 id 注入槽（见 `ToolCallSlot`）。
+    pub tool_call_id: ToolCallSlot,
 }
 
 /// 应用级执行策略：借用 DB 与事件通道，持有门禁输入。
@@ -93,6 +96,7 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy<'_> {
     async fn before_call(&self, tool: &PortableDynamicTool, call: &ToolCall) -> ToolCallGuard {
         let (spec, registered) = self.spec_for(tool);
         let tool_call_id = call.wire_call_id().to_string();
+        self.config.tool_call_id.set(tool_call_id.clone());
         let run_context = RigToolRunContext {
             db: self.db,
             workspace_id: &self.config.workspace_id,
@@ -203,9 +207,10 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy<'_> {
     async fn after_call(
         &self,
         trace: Option<&ToolCallTrace>,
-        _call: &ToolCall,
+        call: &ToolCall,
         outcome: ToolCallOutcome<'_>,
     ) {
+        self.config.tool_call_id.clear_if(call.wire_call_id());
         let Some(run_id) = trace.and_then(|trace| trace.run_id.as_deref()) else {
             return;
         };

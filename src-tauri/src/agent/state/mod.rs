@@ -2,14 +2,14 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::agents::{ArchitectureAgent, OrchestratorAgent};
+use super::agents::ArchitectureAgent;
 use super::rig_ext::agents::plain_chat::RigPlainChatAgent;
+use super::rig_ext::agents::project::RigOrchestratorAgent;
 use super::config::DispatcherAgentConfig;
 use super::db::{AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb};
 use super::llm::OpenAiCompatProvider;
 use super::sub_agent::db::ToolInfo;
 use super::sub_agent::SubAgentManager;
-use super::tools::ToolRegistry;
 use crate::mcp::McpRegistry;
 use crate::shared::error::format_anyhow_error;
 use crate::ssh_tool::SshSessionManager;
@@ -23,7 +23,6 @@ pub(crate) use generation::GenerationGuard;
 use run::{ActiveRunHandle, ActiveRunStore, ArchRunRegistry, GraphRunRegistry};
 
 pub(crate) use run::GraphRunHandle;
-use tool_catalog::tool_infos_from_registry;
 
 /// 应用级状态聚合器，由 Tauri `.manage()` 托管，是整个调度智能体的长寿宿主。
 ///
@@ -176,9 +175,9 @@ impl DispatcherState {
     ///
     /// G11-01 / G7-06：DB 读取放入阻塞线程池执行；失败以 Result 透传可读错误，
     /// 不再 expect panic 导致 async 命令崩溃。
-    pub(crate) async fn build_run_agent(&self) -> std::result::Result<OrchestratorAgent, String> {
+    pub(crate) async fn build_run_agent(&self) -> std::result::Result<RigOrchestratorAgent, String> {
         let mut agent =
-            OrchestratorAgent::new(self.services.config.clone(), self.services.db.clone());
+            RigOrchestratorAgent::new(self.services.config.clone(), self.services.db.clone());
 
         let db = self.services.db.clone();
         let settings = tokio::task::spawn_blocking(move || db.get_settings_v2())
@@ -359,20 +358,19 @@ impl DispatcherState {
             return Ok(tools);
         }
 
-        let mcp_registry = self.services.mcp_registry.clone();
-        let ssh_manager = self.services.ssh_manager.clone();
-        let _ = (mcp_registry, ssh_manager);
-        tokio::task::spawn_blocking(move || {
-            let registry = ToolRegistry::orchestrator_tools();
-            let mut tools = tool_infos_from_registry(&registry, None, false);
-            tools.retain(|tool| {
-                crate::agent::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES
-                    .contains(&tool.name.as_str())
-            });
-            tools
+        // 项目模式：列举 ToolProgram 可代理的数据面能力（settings.project.allowed_tools
+        // 的配置对象），与运行期 grant 同源。
+        let mut agent =
+            RigOrchestratorAgent::new(self.services.config.clone(), self.services.db.clone());
+        let settings = tokio::task::spawn_blocking({
+            let db = self.services.db.clone();
+            move || db.get_settings_v2()
         })
         .await
-        .map_err(|error| format!("错误：枚举工具列表任务失败：{error}"))
+        .map_err(|error| format!("错误：加载设置任务失败：{error}"))?
+        .map_err(|error| format!("错误：加载设置失败：{}", format_anyhow_error(&error)))?;
+        agent.apply_settings_v2(&settings, AgentContext::Project);
+        Ok(agent.static_runtime_tool_catalog())
     }
 
     /// G11-03：校验前端传入的项目路径。

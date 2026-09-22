@@ -1,16 +1,20 @@
-//! 基于项目对话模型的 AI 提交信息生成。
+//! 基于项目对话模型的 AI 提交信息生成（rig 形态）。
 //!
-//! 与普通聊天/项目编排器共用 `resolve_project_chat_provider` 解析出的模型；
-//! 读取项目配置中的 `[git].commit_prompt` 作为提示词主体。
+//! 模型来自「项目」上下文的对话槽位（`resolve_purpose_specs`），经 rig
+//! `CompletionModel::completion` 发一次性请求；提示词主体取自项目配置的
+//! `[git].commit_prompt`。
 
 use std::time::Duration;
 
 use anyhow::Context;
+use rig::completion::{CompletionModel, Message};
 
 use super::exec::run_git;
 use super::{GitError, GitResult};
-use crate::agent::agents::project::resolve_project_chat_provider;
-use crate::agent::llm::ChatMessage;
+use crate::agent::db::AgentContext;
+use crate::agent::rig_ext::model::{
+    build_completion_request, completions_model, resolve_purpose_specs,
+};
 use crate::agent::DispatcherState;
 use crate::project::read_project_config;
 use crate::shared::error::{CommandResult, IntoCommandResult};
@@ -26,8 +30,8 @@ pub async fn generate_commit_message(
         Ok(settings) => settings,
         Err(error) => return Err(format!("读取模型设置失败：{error:#}")),
     };
-    let provider = resolve_project_chat_provider(&agent_config, &settings);
-    generate_commit_message_impl(project_path.clone(), provider)
+    let specs = resolve_purpose_specs(&settings, AgentContext::Project, &agent_config);
+    generate_commit_message_impl(project_path.clone(), specs.chat)
         .await
         .with_context(|| format!("生成提交信息失败（{}）", project_path))
         .into_command_result()
@@ -35,7 +39,7 @@ pub async fn generate_commit_message(
 
 async fn generate_commit_message_impl(
     project_path: String,
-    provider: crate::agent::llm::OpenAiCompatProvider,
+    spec: crate::agent::rig_ext::model::PurposeModelSpec,
 ) -> GitResult<String> {
     // 1. Get staged diff
     let diff_output = run_git(&project_path, &["diff", "--staged"]).await?;
@@ -57,30 +61,40 @@ async fn generate_commit_message_impl(
         commit_prompt, diff
     );
 
-    if !provider.is_configured() {
+    if !spec.is_configured() {
         return Err(GitError::AgentFailed(
             "项目对话模型未配置 API Key".to_string(),
         ));
     }
 
-    let messages = vec![ChatMessage {
-        role: "user".to_string(),
-        content: full_prompt,
-        content_parts: Vec::new(),
-        reasoning_content: None,
-        tool_calls: None,
-        tool_call_id: None,
-        name: None,
-    }];
-    let response = tokio::time::timeout(
-        Duration::from_secs(15),
-        provider.chat_stream(&messages, &[], false, |_| {}),
-    )
-    .await
-    .map_err(|_| GitError::CommitMessageTimeout)?
-    .map_err(|error| GitError::AgentFailed(format!("{error:#}")))?;
+    let model = completions_model(&spec).map_err(|error| {
+        GitError::AgentFailed(format!("初始化提交信息模型失败：{error:#}"))
+    })?;
+    // 提交信息是短结论任务：关闭思考链（与旧 `chat_stream(..., false, ...)` 同口径）。
+    let request = build_completion_request(
+        None,
+        vec![Message::user(full_prompt)],
+        Vec::new(),
+        spec.max_tokens,
+        spec.temperature,
+        false,
+    );
+    let response = tokio::time::timeout(Duration::from_secs(15), model.completion(request))
+        .await
+        .map_err(|_| GitError::CommitMessageTimeout)?
+        .map_err(|error| GitError::AgentFailed(format!("{error:#}")))?;
 
-    let result = response.content.trim().to_string();
+    let result = response
+        .choice
+        .iter()
+        .filter_map(|content| match content {
+            rig::message::AssistantContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+        .trim()
+        .to_string();
     if result.is_empty() {
         return Err(GitError::EmptyAgentResult);
     }

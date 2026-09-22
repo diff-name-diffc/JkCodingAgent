@@ -5,6 +5,11 @@
 //! 台账 + 超时）。Phase 3 逐个迁移：plain_chat（本阶段）→ project → architecture。
 
 pub(crate) mod plain_chat;
+pub(crate) mod project;
+pub(crate) mod project_prompt;
+pub(crate) mod project_report;
+pub(crate) mod project_submit;
+pub(crate) mod project_tools;
 
 use std::collections::HashSet;
 
@@ -93,6 +98,17 @@ pub(crate) fn tool_result_policies_from_specs(
             )
         })
         .collect()
+}
+
+/// 摘要模型名归一化：空串回退默认摘要模型（迁移自旧
+/// `agents/project/helpers.rs::normalize_summary_model`，图审阅等路径共用）。
+pub(crate) fn normalize_summary_model(model: &str) -> String {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        crate::agent::config::DEFAULT_SUMMARY_MODEL.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// 由会话 ID 生成会话工作区子目录名（G9-04，迁移自旧

@@ -13,94 +13,87 @@ use crate::agent::graph::types::{
     RUN_MODE_FULL, RUN_MODE_RESUME, VERDICT_FAIL, VERDICT_PARTIAL, VERDICT_PASS,
 };
 use crate::agent::graph::GraphStore;
-use crate::agent::llm::RequestedToolCall;
-
-use super::OrchestratorAgent;
 
 /// 报告节点输出摘要的最大字符数。
 const OUTPUT_PREVIEW_CHARS: usize = 400;
 const ERROR_PREVIEW_CHARS: usize = 300;
 
-impl OrchestratorAgent {
-    /// graph_plan_report 拦截：返回运行报告文本（永不收口）。
-    /// 无图计划/运行记录时返回说明性文本，模型可据此决定直接答复或重新出图。
-    pub(super) async fn intercept_graph_plan_report(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        tool_call: &RequestedToolCall,
-    ) -> Result<String> {
-        let store = GraphStore::new(db);
-        let plan_id_arg = tool_call
-            .arguments
-            .get("planId")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(str::to_string);
-        let explicit_plan_id = plan_id_arg.is_some();
-        let plan = match plan_id_arg {
-            Some(plan_id) => store.get_plan_async(&plan_id).await?,
-            None => store.latest_plan_for_workspace_async(workspace_id).await?,
-        };
-        let Some(plan) = plan else {
-            // 显式给了 planId 却查不到（拼写错误/已清理）时，返回「错误：」前缀
-            // 的明确提示引导模型纠正 planId；「从未出图」的说明性文本只适用于
-            // 未传 planId 的场景（审查项 G8-17）。
-            return Ok(if explicit_plan_id {
-                "错误：指定的 plan_id 不存在或已被清理，请重新确认后查询。".to_string()
-            } else {
-                "当前会话还没有提交过执行图。若任务复杂，请先探索项目后用 submit_graph 出图。"
-                    .to_string()
-            });
-        };
-        // workspace 校验只对显式传 planId 的路径有意义：未传 planId 时
-        // latest_plan_for_workspace_async 本身已按 workspace_id 过滤。
-        if plan.workspace_id != workspace_id {
-            return Ok("错误：指定的 plan_id 不属于当前会话。".to_string());
-        }
-        // 报告头运行选择：优先与 latest_run_id 一致的 run（节点明细记录即按该
-        // run 加载），找不到再退回 runs.first()（attempt_no DESC）；随后显式
-        // 校验节点明细同源，防止 store 排序/维护逻辑变更后报告头与节点明细
-        // 静默来自不同运行（审查项 G8-18）。
-        let latest_run = match plan.latest_run_id.as_deref() {
-            Some(run_id) => plan
-                .runs
-                .iter()
-                .find(|run| run.id == run_id)
-                .or_else(|| plan.runs.first()),
-            None => plan.runs.first(),
-        };
-        let Some(latest_run) = latest_run else {
-            return Ok(format!(
-                "执行图《{}》（plan_id={}，状态 {}）尚未运行过。{}",
-                plan.title,
-                plan.id,
-                plan.status,
-                plan.summary.trim()
-            ));
-        };
-        let total_node_runs = plan.node_runs.len();
-        let node_runs: Vec<&GraphNodeRunRecord> = plan
-            .node_runs
-            .iter()
-            .filter(|record| record.run_id == latest_run.id)
-            .collect();
-        let node_run_mismatch = node_runs.len() != total_node_runs;
-        Ok(build_report(
-            &plan.title,
-            &plan.id,
-            &plan.status,
-            latest_run.attempt_no,
-            &latest_run.mode,
-            &latest_run.status,
-            &latest_run.verdict_status,
-            &latest_run.verdict_reason,
-            &node_runs,
-            &plan.state_json,
-            node_run_mismatch,
-        ))
+/// graph_plan_report 拦截：返回运行报告文本（永不收口）。
+/// 无图计划/运行记录时返回说明性文本，模型可据此决定直接答复或重新出图。
+pub(crate) async fn build_plan_report(
+    db: &DispatcherDb,
+    workspace_id: &str,
+    arguments: &Value,
+) -> Result<String> {
+    let store = GraphStore::new(db);
+let plan_id_arg = arguments
+    .get("planId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let explicit_plan_id = plan_id_arg.is_some();
+    let plan = match plan_id_arg {
+        Some(plan_id) => store.get_plan_async(&plan_id).await?,
+        None => store.latest_plan_for_workspace_async(workspace_id).await?,
+    };
+    let Some(plan) = plan else {
+        // 显式给了 planId 却查不到（拼写错误/已清理）时，返回「错误：」前缀
+        // 的明确提示引导模型纠正 planId；「从未出图」的说明性文本只适用于
+        // 未传 planId 的场景（审查项 G8-17）。
+        return Ok(if explicit_plan_id {
+            "错误：指定的 plan_id 不存在或已被清理，请重新确认后查询。".to_string()
+        } else {
+            "当前会话还没有提交过执行图。若任务复杂，请先探索项目后用 submit_graph 出图。"
+                .to_string()
+        });
+    };
+    // workspace 校验只对显式传 planId 的路径有意义：未传 planId 时
+    // latest_plan_for_workspace_async 本身已按 workspace_id 过滤。
+    if plan.workspace_id != workspace_id {
+        return Ok("错误：指定的 plan_id 不属于当前会话。".to_string());
     }
+    // 报告头运行选择：优先与 latest_run_id 一致的 run（节点明细记录即按该
+    // run 加载），找不到再退回 runs.first()（attempt_no DESC）；随后显式
+    // 校验节点明细同源，防止 store 排序/维护逻辑变更后报告头与节点明细
+    // 静默来自不同运行（审查项 G8-18）。
+    let latest_run = match plan.latest_run_id.as_deref() {
+        Some(run_id) => plan
+            .runs
+            .iter()
+            .find(|run| run.id == run_id)
+            .or_else(|| plan.runs.first()),
+        None => plan.runs.first(),
+    };
+    let Some(latest_run) = latest_run else {
+        return Ok(format!(
+            "执行图《{}》（plan_id={}，状态 {}）尚未运行过。{}",
+            plan.title,
+            plan.id,
+            plan.status,
+            plan.summary.trim()
+        ));
+    };
+    let total_node_runs = plan.node_runs.len();
+    let node_runs: Vec<&GraphNodeRunRecord> = plan
+        .node_runs
+        .iter()
+        .filter(|record| record.run_id == latest_run.id)
+        .collect();
+    let node_run_mismatch = node_runs.len() != total_node_runs;
+    Ok(build_report(
+        &plan.title,
+        &plan.id,
+        &plan.status,
+        latest_run.attempt_no,
+        &latest_run.mode,
+        &latest_run.status,
+        &latest_run.verdict_status,
+        &latest_run.verdict_reason,
+        &node_runs,
+        &plan.state_json,
+        node_run_mismatch,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

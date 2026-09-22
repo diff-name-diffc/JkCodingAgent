@@ -36,6 +36,7 @@ use crate::agent::tools::MAX_TOOL_CALLS_PER_BATCH;
 use crate::shared::error::format_anyhow_error;
 
 mod app_policy;
+mod protocol;
 mod stream;
 #[cfg(test)]
 mod tests;
@@ -45,6 +46,10 @@ mod surface;
 // Phase 3 各 agent 工厂的接入点（当前尚无 crate 内引用）。
 #[allow(unused_imports)]
 pub use app_policy::{AppToolExecutionPolicy, AppToolPolicyConfig};
+// RigProtocolResult 的构造函数由编排器协议处理器使用（T3.2 接入后方为已用）。
+#[allow(unused_imports)]
+pub use protocol::{ProtocolToolHandler, RigProtocolAction, RigProtocolResult};
+
 // DirectToolExecution 是 Phase 3 接入方的默认策略入口，当前尚无 crate 内引用。
 #[allow(unused_imports)]
 pub use surface::DirectToolExecution;
@@ -95,6 +100,9 @@ pub struct RigLoopHooks {
     pub default_model_name: String,
     /// 上下文窗口容量（tokens），随用量落库。
     pub context_window: Option<u64>,
+    /// 协议工具处理器（编排器注入：submit_graph / graph_plan_report / message）。
+    /// None（聊天路径）= 全部工具按普通工具执行。
+    pub protocol_handler: Option<std::sync::Arc<dyn ProtocolToolHandler>>,
 }
 
 impl RigLoopHooks {
@@ -114,6 +122,7 @@ impl RigLoopHooks {
             model_selection: None,
             default_model_name: spec.model.clone(),
             context_window: spec.context_window,
+            protocol_handler: None,
         }
     }
 }
@@ -359,7 +368,7 @@ where
             stream.message_id.clone(),
         ));
 
-        let Some(result_contents) = execute_tool_calls(
+        let batch = execute_tool_calls(
             db,
             workspace_id,
             on_event,
@@ -370,9 +379,10 @@ where
             summary,
             usage_tracker,
             &cancel_rx,
+            hooks,
         )
-        .await?
-        else {
+        .await?;
+        let Some(result_contents) = batch.contents else {
             // 工具间取消：已执行结果已逐个落库；按取消语义收口（无部分正文——
             // 本轮流式已完整结束）。
             return finalize_cancelled(db, workspace_id, on_event, hooks, usage_tracker, "", None)
@@ -381,6 +391,37 @@ where
         messages.push(Message::User {
             content: result_contents,
         });
+
+        // 协议收口（编排器）：动作 > 可重试错误 > 最终答复——三者优先级对齐旧
+        // `resolve_loop_outcome`：已登记的图绝不因同轮另有可重试错误被丢弃；
+        // 有可重试错误则让模型先自修复，不收口。
+        if let Some(handler) = hooks.protocol_handler.as_ref() {
+            let closing = if !batch.actions.is_empty() {
+                handler
+                    .render_outcome(&batch.actions, batch.final_message.as_deref())
+                    .await
+            } else if batch.saw_retryable_error {
+                None
+            } else if batch.final_message.is_some() {
+                handler.render_outcome(&[], batch.final_message.as_deref()).await
+            } else {
+                None
+            };
+            if let Some(text) = closing {
+                let usage_stats = usage_tracker.snapshot();
+                let reply = persist_assistant_message(db, workspace_id, &text, &usage_stats).await?;
+                emit(
+                    on_event,
+                    AgentEvent::AssistantMessage {
+                        message: reply.clone(),
+                        // 工具循环后的合成收口消息，无关联的流式 delta 序号。
+                        last_seq: None,
+                    },
+                );
+                emit_finished(db, workspace_id, on_event).await?;
+                return Ok(reply);
+            }
+        }
     }
 
     anyhow::bail!(
@@ -394,7 +435,19 @@ where
     )
 }
 
-/// 逐个执行工具调用并落库结果（取消时返回 None：已执行结果已落库，
+/// 一批工具调用的执行结果。
+struct ToolBatch {
+    /// 回灌给模型的工具结果内容；None = 工具间取消（已执行结果已落库）。
+    contents: Option<Vec<UserContent>>,
+    /// 本批协议动作（编排器：图已提交）。
+    actions: Vec<RigProtocolAction>,
+    /// 本批最终答复（`message` 工具）。
+    final_message: Option<String>,
+    /// 本批是否出现可重试错误（含协议拒绝与普通工具的可重试失败）。
+    saw_retryable_error: bool,
+}
+
+/// 逐个执行工具调用并落库结果（取消时返回 contents=None：已执行结果已落库，
 /// 剩余调用不再执行——循环随之收口，不会再发起带悬空 tool_calls 的请求）。
 #[allow(clippy::too_many_arguments)]
 async fn execute_tool_calls<S, P>(
@@ -408,16 +461,25 @@ async fn execute_tool_calls<S, P>(
     summary: Option<&RigSummaryModel<'_, S>>,
     usage_tracker: &mut UsageTracker,
     cancel_rx: &watch::Receiver<bool>,
-) -> Result<Option<Vec<UserContent>>>
+    hooks: &RigLoopHooks,
+) -> Result<ToolBatch>
 where
     S: CompletionModel,
     P: ToolExecutionPolicy,
 {
     let mut result_contents = Vec::with_capacity(tool_calls.len());
+    let mut actions: Vec<RigProtocolAction> = Vec::new();
+    let mut final_message: Option<String> = None;
+    let mut saw_retryable_error = false;
 
     for (call, outbound) in tool_calls.iter().zip(outbound_calls) {
         if cancellation_requested(cancel_rx) {
-            return Ok(None);
+            return Ok(ToolBatch {
+                contents: None,
+                actions,
+                final_message,
+                saw_retryable_error,
+            });
         }
         emit(
             on_event,
@@ -434,37 +496,64 @@ where
         let mut fatal_message: Option<String> = None;
         let mut trace = None;
 
-        let result_text = match surface.find(&call.function.name) {
-            None => {
-                status = "recoverable_error";
-                error_kind = Some("recoverable_error");
-                format!("错误：未注册的工具：{}", call.function.name)
+        // 协议工具拦截（编排器）：命中则不执行壳工具回调，由宿主完成真实动作。
+        let protocol_result = match hooks.protocol_handler.as_ref() {
+            Some(handler) => handler.handle(&call.function.name, &call.function.arguments).await,
+            None => None,
+        };
+
+        let result_text = match protocol_result {
+            Some(protocol) => {
+                if protocol.retryable_error {
+                    saw_retryable_error = true;
+                    status = "recoverable_error";
+                    error_kind = Some("recoverable_error");
+                }
+                actions.extend(protocol.actions);
+                if protocol.final_message.is_some() {
+                    final_message = protocol.final_message;
+                }
+                protocol.text
             }
-            Some(tool) => {
-                let guard = tool_policy.before_call(tool, call).await;
-                trace = guard.trace;
-                match guard.rejection {
-                    Some(error) => {
-                        let (mapped_status, mapped_kind, fatal) = classify_tool_error(&error);
-                        status = mapped_status;
-                        error_kind = Some(mapped_kind);
-                        if fatal {
-                            fatal_message = Some(tool_error_text(&error));
-                        }
-                        tool_error_text(&error)
+            None => {
+                match surface.find(&call.function.name) {
+                    None => {
+                        status = "recoverable_error";
+                        error_kind = Some("recoverable_error");
+                        format!("错误：未注册的工具：{}", call.function.name)
                     }
-                    None => match tool_policy.execute(tool, call).await {
-                        Ok(output) => tool_output_text(&output),
-                        Err(error) => {
-                            let (mapped_status, mapped_kind, fatal) = classify_tool_error(&error);
-                            status = mapped_status;
-                            error_kind = Some(mapped_kind);
-                            if fatal {
-                                fatal_message = Some(tool_error_text(&error));
+                    Some(tool) => {
+                        let guard = tool_policy.before_call(tool, call).await;
+                        trace = guard.trace;
+                        match guard.rejection {
+                            Some(error) => {
+                                let (mapped_status, mapped_kind, fatal) =
+                                    classify_tool_error(&error);
+                                status = mapped_status;
+                                error_kind = Some(mapped_kind);
+                                if fatal {
+                                    fatal_message = Some(tool_error_text(&error));
+                                }
+                                tool_error_text(&error)
                             }
-                            tool_error_text(&error)
+                            None => match tool_policy.execute(tool, call).await {
+                                Ok(output) => tool_output_text(&output),
+                                Err(error) => {
+                                    let (mapped_status, mapped_kind, fatal) =
+                                        classify_tool_error(&error);
+                                    status = mapped_status;
+                                    error_kind = Some(mapped_kind);
+                                    if error.retryable() == Some(true) {
+                                        saw_retryable_error = true;
+                                    }
+                                    if fatal {
+                                        fatal_message = Some(tool_error_text(&error));
+                                    }
+                                    tool_error_text(&error)
+                                }
+                            },
                         }
-                    },
+                    }
                 }
             }
         };
@@ -517,7 +606,12 @@ where
         }
     }
 
-    Ok(Some(result_contents))
+    Ok(ToolBatch {
+        contents: Some(result_contents),
+        actions,
+        final_message,
+        saw_retryable_error,
+    })
 }
 
 /// rig 工具错误 → 台账终态（status, error_kind, 是否致命）。

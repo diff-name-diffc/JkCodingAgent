@@ -79,23 +79,60 @@ pub async fn dispatcher_send_project_agent_message(
     let validated_project_path = state.validate_project_workspace(&project_path).await?;
     let project_path = validated_project_path.to_string_lossy().into_owned();
     let agent_app = app.clone();
-    run_agent_turn_skeleton(
+    let agent = state
+        .build_run_agent()
+        .await?
+        .with_app_handle(agent_app);
+    run_orchestrator_turn_skeleton(
         &state,
         &app,
         &workspace_id,
+        project_path,
         segments_json,
         on_event,
-        RuntimeAgentKind::Project,
-        Some(project_path),
-        async {
-            state
-                .build_run_agent()
-                .await
-                .map(|agent| agent.with_app_handle(agent_app))
-        },
-        true,
+        agent,
     )
     .await
+}
+
+/// 项目编排运行骨架（rig 路径）：run 槽位 + 元数据守卫 + `run_turn` +
+/// 标题/关键字异步生成（与聊天骨架对称，差异仅在 Agent 类型与上下文）。
+pub(crate) async fn run_orchestrator_turn_skeleton(
+    state: &tauri::State<'_, DispatcherState>,
+    app: &AppHandle,
+    workspace_id: &str,
+    project_path: String,
+    segments_json: String,
+    on_event: Channel<AgentEvent>,
+    agent: super::super::rig_ext::agents::project::RigOrchestratorAgent,
+) -> Result<AgentTurn, String> {
+    let title_segments_json = segments_json.clone();
+    let run_handle = state.begin_run(workspace_id).map_err(|e| e.to_string())?;
+    let title_guard = state.begin_title_generation(workspace_id);
+    let keywords_guard = state.begin_keywords_generation(workspace_id);
+    let result = agent
+        .run_turn(super::super::rig_ext::agents::project::OrchestratorTurnRequest {
+            db: state.db(),
+            workspace_id,
+            project_path: &project_path,
+            user_segments_json: segments_json,
+            on_event,
+            cancel_rx: run_handle.cancel_receiver(),
+        })
+        .await
+        .map(|reply| AgentTurn { reply })
+        .map_err(|error| format_anyhow_error(&error));
+    state.finish_run(run_handle);
+    spawn_session_title_update(
+        state,
+        app,
+        workspace_id,
+        &title_segments_json,
+        AgentContext::Project,
+        title_guard,
+    );
+    spawn_session_keywords_update(state, app, workspace_id, AgentContext::Project, keywords_guard);
+    result
 }
 
 #[tauri::command]

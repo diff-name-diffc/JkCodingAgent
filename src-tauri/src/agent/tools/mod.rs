@@ -11,6 +11,7 @@ mod runtime;
 pub(crate) mod spec;
 mod surface;
 
+#[allow(unused_imports)]
 pub use broker::{BrokerAudit, CapabilityBroker, CapabilityInvocation};
 pub use capability::CapabilitySet;
 pub use context::ToolContext;

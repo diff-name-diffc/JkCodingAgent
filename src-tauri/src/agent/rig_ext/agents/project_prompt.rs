@@ -1,18 +1,51 @@
-//! 编排器系统提示。
+//! 编排器提示词（rig 形态，迁移自旧 `agents/project/prompt.rs`）。
 //!
-//! 结构：静态部分每轮构建一次（角色提示 + USER.md + 记忆 + 技能），
-//! 动态部分每次迭代重建（可用工具、系统时间）；执行图 Harness 目录每轮发现一次。
-//! 与 run_loop「每轮重建系统消息」的骨架对齐。
+//! 静态提示词 = 角色提示（含图 schema 版本占位符）+ 用户偏好（USER.md）+
+//! 记忆 + 技能；运行期再追加 Harness 目录（含节点运行统计）与系统时间。
+//! 读取规则（越界符号链接跳过、单文件 64KiB 上限、失败留痕）逐条保留。
 
 use std::path::Path;
 
 use anyhow::Result;
 
-use crate::agent::llm::ToolDefinition;
-use crate::agent::prompt::PromptBundle;
+/// 提示词加载告警的持久化出口：打包后 stderr 不落盘，编排器的提示词/学习
+/// 回路静默失效必须有可诊断痕迹（迁移自旧 `agents/project/helpers.rs`）。
+const MAX_WARNING_LOG_BYTES: u64 = 1024 * 1024;
 
-use super::helpers::log_warning;
-use super::OrchestratorAgent;
+pub(crate) fn log_warning(message: &str) {
+    eprintln!("{message}");
+    let Some(log_path) = dirs::home_dir().map(|home| {
+        home.join(".jkcodingagent")
+            .join("logs")
+            .join("orchestrator.log")
+    }) else {
+        return;
+    };
+    let entry = format!("{} {message}\n", chrono::Utc::now().to_rfc3339());
+    let write = move || {
+        if let Some(parent) = log_path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        // 简易滚动：超限后重命名为 .old 再重建，避免日志无限增长。
+        if let Ok(meta) = std::fs::metadata(&log_path) {
+            if meta.len() > MAX_WARNING_LOG_BYTES {
+                let _ = std::fs::rename(&log_path, log_path.with_extension("log.old"));
+            }
+        }
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let _ = file.write_all(entry.as_bytes());
+        }
+    };
+    // 同步写：调用点都已在 spawn_blocking 或提示词构建（一次性）路径上。
+    write();
+}
 
 const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
@@ -94,40 +127,37 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 默认简体中文，面向有经验的开发者，结论直接清晰。
 "#;
 
-impl OrchestratorAgent {
-    /// 静态提示词：角色 + 用户偏好（USER.md）+ 记忆 + 技能。
-    /// 每轮构建一次（文件读取走 spawn_blocking）。
-    pub(super) async fn build_static_prompt(&self) -> Result<String> {
-        let root = self.config.root_dir.clone();
-        let extra = tokio::task::spawn_blocking(move || load_prompt_files(&root))
+/// 静态提示词：角色 + 用户偏好（USER.md）+ 记忆 + 技能。
+/// 每轮构建一次（文件读取走 spawn_blocking）。
+pub(crate) async fn build_static_prompt(root_dir: &Path) -> Result<String> {
+    let root = root_dir.to_path_buf();
+    let extra = tokio::task::spawn_blocking(move || load_prompt_files(&root))
             .await
-            .map_err(|error| anyhow::anyhow!("读取编排器提示词文件失败：{error}"))?;
+        .map_err(|error| anyhow::anyhow!("读取编排器提示词文件失败：{error}"))?;
 
-        // 版本占位符由常量生成：提示词示例、工具 schema、校验三方同源，
-        // 契约升级时不再需要手工同步提示词里的示例值。
-        let mut prompt = ORCHESTRATOR_ROLE_PROMPT.replace(
-            "\"version\": \"{graph_definition_version}\"",
-            &format!(
-                "\"version\": {}",
-                crate::agent::graph::types::GRAPH_DEFINITION_VERSION
-            ),
-        );
-        if !extra.is_empty() {
-            prompt.push_str("\n\n---\n\n");
-            prompt.push_str(&extra);
-        }
-        Ok(prompt)
+    // 版本占位符由常量生成：提示词示例、工具 schema、校验三方同源，
+    // 契约升级时不再需要手工同步提示词里的示例值。
+    let mut prompt = ORCHESTRATOR_ROLE_PROMPT.replace(
+        "\"version\": \"{graph_definition_version}\"",
+        &format!(
+            "\"version\": {}",
+            crate::agent::graph::types::GRAPH_DEFINITION_VERSION
+        ),
+    );
+    if !extra.is_empty() {
+        prompt.push_str("\n\n---\n\n");
+        prompt.push_str(&extra);
     }
+    Ok(prompt)
+}
 
-    /// 每次迭代重建的完整系统提示：静态内容 + 动态分片。
-    /// 静态部分按引用直接装配进最终 format!，避免逐迭代对 static_content
-    /// 做大块中间克隆（最终 String 是唯一分配点，审查项 G8-21）。
-    pub(super) fn build_iteration_system_prompt(
-        &self,
-        static_bundle: &PromptBundle,
-        tool_definitions: &[ToolDefinition],
-    ) -> String {
-        let static_content = static_bundle.static_content.as_str();
+/// 每次迭代重建的完整系统提示：静态内容 + 动态分片（可用工具块 + 系统时间）。
+/// 静态部分按引用直接装配进最终 format!，避免逐迭代对 static_content
+/// 做大块中间克隆（最终 String 是唯一分配点，审查项 G8-21）。
+pub(crate) fn build_iteration_system_prompt(
+    static_content: &str,
+    tool_definitions: &[rig::completion::ToolDefinition],
+) -> String {
         let tools_block = render_available_tools_block(tool_definitions);
         let local_time = crate::agent::prompt::current_local_time();
         if tools_block.is_empty() {
@@ -139,11 +169,11 @@ impl OrchestratorAgent {
         }
     }
 
-    pub(super) fn render_graph_harness_catalog(
-        &self,
-        catalog: &crate::agent::graph::types::GraphHarnessCatalog,
-        stats: &[crate::agent::graph::types::GraphModelStat],
-    ) -> String {
+/// 渲染 Harness 目录（图节点模型表）+ 既往运行统计注记。
+pub(crate) fn render_graph_harness_catalog(
+    catalog: &crate::agent::graph::types::GraphHarnessCatalog,
+    stats: &[crate::agent::graph::types::GraphModelStat],
+) -> String {
         let mut lines = vec![
             "# 当前 Harness 目录".to_string(),
             "图节点由 Claude Agent（claude-agent-acp）执行。该目录是 graph v4 的唯一模型来源；ID 必须原样引用。模型行末的历史统计（若有）来自既往节点运行，可作为选型参考。".to_string(),
@@ -165,8 +195,7 @@ impl OrchestratorAgent {
                 catalog.diagnostics.join("\n- ")
             ));
         }
-        lines.join("\n")
-    }
+    lines.join("\n")
 }
 
 /// 模型历史统计注记（轻量学习回路）：聚合同一 model_ref 跨工具组的运行记录，
@@ -190,7 +219,7 @@ fn render_model_stat_note(
     format!(" ｜ 历史 {runs} 次节点运行 / 成功 {success}")
 }
 
-fn render_available_tools_block(tool_definitions: &[ToolDefinition]) -> String {
+fn render_available_tools_block(tool_definitions: &[rig::completion::ToolDefinition]) -> String {
     if tool_definitions.is_empty() {
         return String::new();
     }
@@ -202,12 +231,7 @@ fn render_available_tools_block(tool_definitions: &[ToolDefinition]) -> String {
 
     let mut tools = tool_definitions
         .iter()
-        .map(|tool| {
-            (
-                tool.function.name.clone(),
-                tool.function.description.trim().to_string(),
-            )
-        })
+        .map(|tool| (tool.name.clone(), tool.description.trim().to_string()))
         .collect::<Vec<_>>();
     tools.sort_by(|left, right| left.0.cmp(&right.0));
 

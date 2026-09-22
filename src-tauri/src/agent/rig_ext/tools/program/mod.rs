@@ -87,17 +87,29 @@ impl DataPlane {
 pub(crate) fn program_tool(
     deps: &RigToolDeps,
     data_plane: Vec<PortableDynamicTool>,
+    granted_note: Option<String>,
 ) -> PortableDynamicTool {
-    build_program_tool(deps.cancel_rx.clone(), DataPlane::new(data_plane))
+    build_program_tool(
+        deps.cancel_rx.clone(),
+        DataPlane::new(data_plane),
+        granted_note,
+    )
 }
 
 fn build_program_tool(
     cancel_rx: Option<watch::Receiver<bool>>,
     plane: DataPlane,
+    granted_note: Option<String>,
 ) -> PortableDynamicTool {
+    // 描述尾部声明当前会话实际授权的数据面能力（模型据此知道 program 里
+    // 能调用哪些工具；对齐旧编排器对 run_tool_program 描述的动态追加）。
+    let description = match granted_note {
+        Some(note) => format!("{DESCRIPTION} 当前会话实际授权的数据面能力：{note}。"),
+        None => DESCRIPTION.to_string(),
+    };
     PortableDynamicTool::new(
         "run_tool_program",
-        DESCRIPTION,
+        description,
         ast::tool_program_parameters_schema(),
         move |args| {
             let plane = plane.clone();
@@ -258,7 +270,7 @@ mod tests {
 
     #[tokio::test]
     async fn program_tool_executes_end_to_end() {
-        let tool = build_program_tool(None, DataPlane::new(vec![echo_tool()]));
+        let tool = build_program_tool(None, DataPlane::new(vec![echo_tool()]), None);
         let program = json!({
             "version": 1,
             "root": { "op": "sequence", "steps": [
@@ -273,7 +285,7 @@ mod tests {
 
     #[tokio::test]
     async fn program_tool_rejects_invalid_program_as_invalid_args() {
-        let tool = build_program_tool(None, DataPlane::new(vec![echo_tool()]));
+        let tool = build_program_tool(None, DataPlane::new(vec![echo_tool()]), None);
         let error = tool
             .execute(json!({ "version": 2, "root": {} }))
             .await

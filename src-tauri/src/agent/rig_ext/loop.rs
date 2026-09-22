@@ -37,6 +37,8 @@ use crate::shared::error::format_anyhow_error;
 
 mod app_policy;
 mod stream;
+#[cfg(test)]
+mod tests;
 mod support;
 mod surface;
 
@@ -531,33 +533,4 @@ fn classify_tool_error(error: &ToolExecutionError) -> (&'static str, &'static st
         return ("fatal_error", "fatal_error", true);
     }
     ("recoverable_error", "recoverable_error", false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::classify_tool_error;
-    use rig::tool::ToolExecutionError;
-
-    #[test]
-    fn cancelled_errors_map_to_cancelled_status() {
-        let (status, kind, fatal) = classify_tool_error(&ToolExecutionError::cancelled("已取消"));
-        assert_eq!((status, kind, fatal), ("cancelled", "cancelled", false));
-    }
-
-    #[test]
-    fn fatal_code_marks_the_run_abort() {
-        let error = ToolExecutionError::other("子智能体执行失败").with_code("fatal");
-        let (status, kind, fatal) = classify_tool_error(&error);
-        assert_eq!((status, kind, fatal), ("fatal_error", "fatal_error", true));
-    }
-
-    #[test]
-    fn ordinary_failures_stay_recoverable() {
-        let error = ToolExecutionError::refused("错误：被安全审查拦截");
-        let (status, kind, fatal) = classify_tool_error(&error);
-        assert_eq!(
-            (status, kind, fatal),
-            ("recoverable_error", "recoverable_error", false)
-        );
-    }
 }

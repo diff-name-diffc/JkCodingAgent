@@ -1,0 +1,373 @@
+//! 运行时循环端到端测试：rig 官方 mock 模型（`test-utils` feature）+ 真实
+//! `DispatcherDb`（临时目录）+ 真实事件通道（`Channel::new`），全程无网络。
+//!
+//! 覆盖：流式增量 → `AgentEvent` 序列、工具调用配对（Planned/Started/Finished）、
+//! 消息落库（assistant 工具调用 / 工具结果 / 收口正文）、用量落库。
+
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+use rig::test_utils::{MockCompletionModel, MockStreamEvent};
+use rig::tool::{PortableDynamicTool, ToolOutput};
+
+use super::classify_tool_error;
+use super::surface::{DirectToolExecution, RigToolSurface};
+use super::*;
+use crate::agent::db::{DispatcherDb, DispatcherSessionTokenUsageSource};
+
+/// 事件通道捕获：把每个事件的 `event` 标签与正文 delta 收集起来。
+#[derive(Default)]
+struct CapturedEvents {
+    tags: Vec<String>,
+    text_deltas: Vec<String>,
+    finished_message_count: Option<usize>,
+}
+
+fn capture_channel(captured: Arc<Mutex<CapturedEvents>>) -> Channel<AgentEvent> {
+    Channel::new(move |body| {
+        let tauri::ipc::InvokeResponseBody::Json(json) = body else {
+            return Ok(());
+        };
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+        let tag = value
+            .get("event")
+            .and_then(|tag| tag.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if tag == "assistantDelta" {
+            if let Some(delta) = value
+                .get("data")
+                .and_then(|data| data.get("delta"))
+                .and_then(|delta| delta.as_str())
+            {
+                captured.lock().text_deltas.push(delta.to_string());
+            }
+        }
+        if tag == "finished" {
+            captured.lock().finished_message_count = value
+                .get("data")
+                .and_then(|data| data.get("messageCount"))
+                .and_then(|count| count.as_u64())
+                .map(|count| count as usize);
+        }
+        captured.lock().tags.push(tag);
+        Ok(())
+    })
+}
+
+/// 夹具：临时库 + 聊天会话 + 一个 `echo` 工具面。
+struct Fixture {
+    db: DispatcherDb,
+    workspace_id: String,
+    temp_dir: std::path::PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let temp_dir = std::env::temp_dir().join(format!("rig-loop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let db = DispatcherDb::new(temp_dir.join("jkbot.sqlite3")).expect("open temp db");
+        let session = db
+            .create_chat_session("循环测试", None)
+            .expect("create chat session");
+        Self {
+            db,
+            workspace_id: session.id,
+            temp_dir,
+        }
+    }
+
+    fn surface() -> RigToolSurface {
+        let echo = PortableDynamicTool::new(
+            "echo",
+            "回显参数",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "value": { "type": "string" } },
+                "required": ["value"]
+            }),
+            |args| {
+                Box::pin(async move {
+                    let value = args
+                        .get("value")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default();
+                    Ok(ToolOutput::text(format!("echo:{value}")))
+                })
+            },
+        );
+        RigToolSurface::new(vec![echo])
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.temp_dir);
+    }
+}
+
+#[tokio::test]
+async fn loop_streams_deltas_executes_tool_and_persists_messages() {
+    let fixture = Fixture::new();
+    let captured = Arc::new(Mutex::new(CapturedEvents::default()));
+    let on_event = capture_channel(Arc::clone(&captured));
+
+    // 第一轮：正文 + 工具调用；第二轮：收口正文。两轮都带 usage。
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::message_id("msg-1"),
+            MockStreamEvent::text("先查一下"),
+            MockStreamEvent::tool_call("call-1", "echo", serde_json::json!({"value": "hi"})),
+            MockStreamEvent::final_response_with_total_tokens(12),
+        ],
+        vec![
+            MockStreamEvent::message_id("msg-2"),
+            MockStreamEvent::text("完成"),
+            MockStreamEvent::final_response_with_total_tokens(8),
+        ],
+    ]);
+
+    let surface = Fixture::surface();
+    let mut hooks = RigLoopHooks::from_chat_spec(&crate::agent::rig_ext::model::PurposeModelSpec {
+        api_key: "test".to_string(),
+        api_base: "http://127.0.0.1:1/v1".to_string(),
+        model: "mock-chat".to_string(),
+        max_tokens: None,
+        context_window: None,
+        temperature: 0.0,
+        enable_thinking: true,
+    });
+    hooks.max_iterations = 8;
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    let mut usage_tracker = crate::agent::common::UsageTracker::new();
+
+    let reply = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![rig::completion::Message::user("帮我回显 hi")],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &on_event,
+        cancel_rx,
+        &mut usage_tracker,
+    )
+    .await
+    .expect("循环应收口成功");
+
+    // 模型被调用两次（工具轮 + 收口轮）。
+    assert_eq!(model.request_count(), 2);
+    // 收口正文落库。
+    assert_eq!(reply.plain_text().trim(), "完成");
+
+    let events = captured.lock();
+    let tags = &events.tags;
+    for expected in [
+        "assistantStarted",
+        "assistantDelta",
+        "toolPlanned",
+        "toolStarted",
+        "toolFinished",
+        "assistantMessage",
+        "finished",
+    ] {
+        assert!(tags.iter().any(|tag| tag == expected), "缺少事件 {expected}：{tags:?}");
+    }
+    // 两轮流式正文增量都到达前端（顺序保持）。
+    assert!(events.text_deltas.join("").contains("先查一下"));
+    assert!(events.text_deltas.join("").contains("完成"));
+    // Finished 携带可见消息计数（工具调用消息 + 工具结果 + 收口正文 = 3）。
+    assert_eq!(events.finished_message_count, Some(3));
+    drop(events);
+
+    // 落库形状：assistant（含工具调用）→ tool 结果 → assistant 收口。
+    let messages = list_visible(&fixture);
+    let roles = messages
+        .iter()
+        .map(|message| message.role.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(roles, vec!["assistant", "tool", "assistant"]);
+    let tool_message = messages
+        .iter()
+        .find(|message| message.role == "tool")
+        .expect("工具结果消息");
+    assert!(
+        tool_message.plain_text().contains("echo:hi"),
+        "工具结果应回显：{}",
+        tool_message.plain_text()
+    );
+}
+
+#[tokio::test]
+async fn loop_rejects_unknown_tool_without_panicking() {
+    let fixture = Fixture::new();
+    let captured = Arc::new(Mutex::new(CapturedEvents::default()));
+    let on_event = capture_channel(Arc::clone(&captured));
+
+    // 第一轮请求不存在的工具（模型幻觉），第二轮收口。
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("call-9", "ghost_tool", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(4),
+        ],
+        vec![
+            MockStreamEvent::text("已收口"),
+            MockStreamEvent::final_response_with_total_tokens(3),
+        ],
+    ]);
+    let surface = Fixture::surface();
+    let mut hooks = RigLoopHooks::from_chat_spec(&crate::agent::rig_ext::model::PurposeModelSpec {
+        api_key: "test".to_string(),
+        api_base: "http://127.0.0.1:1/v1".to_string(),
+        model: "mock-chat".to_string(),
+        max_tokens: None,
+        context_window: None,
+        temperature: 0.0,
+        enable_thinking: true,
+    });
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    let mut usage_tracker = crate::agent::common::UsageTracker::new();
+
+    let reply = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![rig::completion::Message::user("调用幽灵工具")],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &on_event,
+        cancel_rx,
+        &mut usage_tracker,
+    )
+    .await
+    .expect("未注册工具应以可恢复错误回灌模型，而非中断 run");
+    assert_eq!(reply.plain_text().trim(), "已收口");
+
+    let messages = list_visible(&fixture);
+    let tool_message = messages
+        .iter()
+        .find(|message| message.role == "tool")
+        .expect("工具结果消息");
+    assert!(
+        tool_message.plain_text().contains("未注册的工具"),
+        "未注册工具应回灌可读错误：{}",
+        tool_message.plain_text()
+    );
+}
+
+#[tokio::test]
+async fn loop_records_token_usage_for_the_session() {
+    let fixture = Fixture::new();
+    let captured = Arc::new(Mutex::new(CapturedEvents::default()));
+    let on_event = capture_channel(Arc::clone(&captured));
+
+    let model = MockCompletionModel::from_stream_turns([vec![
+        MockStreamEvent::text("用量测试"),
+        MockStreamEvent::final_response(rig::completion::Usage {
+            input_tokens: 5,
+            output_tokens: 7,
+            total_tokens: 12,
+            ..Default::default()
+        }),
+    ]]);
+    let surface = Fixture::surface();
+    let mut hooks = RigLoopHooks::from_chat_spec(&crate::agent::rig_ext::model::PurposeModelSpec {
+        api_key: "test".to_string(),
+        api_base: "http://127.0.0.1:1/v1".to_string(),
+        model: "mock-chat".to_string(),
+        max_tokens: None,
+        context_window: None,
+        temperature: 0.0,
+        enable_thinking: true,
+    });
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    let mut usage_tracker = crate::agent::common::UsageTracker::new();
+
+    run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![rig::completion::Message::user("统计用量")],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &on_event,
+        cancel_rx,
+        &mut usage_tracker,
+    )
+    .await
+    .expect("单轮收口");
+
+    // 用量落库是 fire-and-forget（tokio::spawn）：等待写库完成后再断言。
+    let usage = wait_for_usage(&fixture).await;
+    let record = usage.expect("应写入会话用量");
+    assert_eq!(record.model, "mock-chat");
+    assert_eq!(record.prompt_tokens, 5);
+    assert_eq!(record.completion_tokens, 7);
+    assert_eq!(record.total_tokens, 12);
+    assert_eq!(
+        record.source_kind,
+        DispatcherSessionTokenUsageSource::Primary,
+        "聊天路径用量来源应为 primary"
+    );
+}
+
+/// 可见消息（同步读取，测试内直接调用）。
+fn list_visible(fixture: &Fixture) -> Vec<crate::agent::db::DispatcherMessageRecord> {
+    fixture
+        .db
+        .list_visible_messages(&fixture.workspace_id)
+        .expect("列出会话消息")
+}
+
+/// 轮询等待用量落库（最多 ~2s），返回该模型的行。
+async fn wait_for_usage(
+    fixture: &Fixture,
+) -> Option<crate::agent::db::DispatcherSessionTokenUsageRecord> {
+    for _ in 0..40 {
+        if let Ok(rows) = fixture
+            .db
+            .list_session_token_usage(&fixture.workspace_id)
+        {
+            if let Some(row) = rows
+                .into_iter()
+                .find(|row| row.model == "mock-chat" && row.prompt_tokens > 0)
+            {
+                return Some(row);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    None
+}
+
+// ─── 错误分类（对齐旧 ToolStatus 词表） ─────────────────────────────────────
+
+#[test]
+fn cancelled_errors_map_to_cancelled_status() {
+    let (status, kind, fatal) =
+        classify_tool_error(&rig::tool::ToolExecutionError::cancelled("已取消"));
+    assert_eq!((status, kind, fatal), ("cancelled", "cancelled", false));
+}
+
+#[test]
+fn fatal_code_marks_the_run_abort() {
+    let error = rig::tool::ToolExecutionError::other("子智能体执行失败").with_code("fatal");
+    let (status, kind, fatal) = classify_tool_error(&error);
+    assert_eq!((status, kind, fatal), ("fatal_error", "fatal_error", true));
+}
+
+#[test]
+fn ordinary_failures_stay_recoverable() {
+    let error = rig::tool::ToolExecutionError::refused("错误：被安全审查拦截");
+    let (status, kind, fatal) = classify_tool_error(&error);
+    assert_eq!(
+        (status, kind, fatal),
+        ("recoverable_error", "recoverable_error", false)
+    );
+}

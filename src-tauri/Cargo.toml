@@ -64,6 +64,10 @@ libc = "0.2"
 agent-client-protocol = "2"
 rig = { package = "rig-core", version = "0.42" }
 
+[dev-dependencies]
+# rig 官方 mock 模型（`test-utils`）：运行时循环的端到端测试用，仅测试构建启用。
+rig = { package = "rig-core", version = "0.42", features = ["test-utils"] }
+
 [profile.dev]
 debug = 0
 codegen-units = 256

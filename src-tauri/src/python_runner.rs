@@ -18,15 +18,17 @@ use uuid::Uuid;
 
 use crate::agent::config::resolve_home_dir;
 use crate::agent::db::{DispatcherDb, PythonCodeRunRecord};
-use crate::agent::llm::{
-    ChatMessage, OpenAiCompatProvider, OutboundToolCall, ToolDefinition, ToolFunctionDefinition,
-};
+use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
+use crate::agent::rig_ext::model::{build_completion_request, completions_model, PurposeModelSpec};
+use rig::completion::{CompletionModel, Message};
 use crate::agent::DispatcherState;
 use crate::shared::truncate_for_display;
 
 const RUN_TIMEOUT_SECS: u64 = 60;
 const INSTALL_TIMEOUT_SECS: u64 = 120;
 const MAX_AGENT_ITERATIONS: usize = 6;
+/// 单次解释请求超时（旧 `chat_stream` 由 provider 的 15s 摘要超时约束，此处显式化）。
+const EXPLAIN_TIMEOUT_SECS: u64 = 30;
 const MAX_OUTPUT_CHARS: usize = 24_000;
 
 #[derive(Default)]
@@ -132,7 +134,9 @@ async fn execute_python_tool(
     }
 }
 
-fn resolve_summary_provider(db: &DispatcherDb) -> Result<OpenAiCompatProvider> {
+/// 项目上下文摘要槽位规格（Python 教学 agent 与解释共用）。
+/// 与旧实现一致：url/key/model 任一缺失即报错，**不回退到主聊天模型**。
+fn resolve_summary_spec(db: &DispatcherDb) -> Result<PurposeModelSpec> {
     let settings = db.get_settings_v2()?;
     let model_config = settings
         .project
@@ -148,20 +152,23 @@ fn resolve_summary_provider(db: &DispatcherDb) -> Result<OpenAiCompatProvider> {
     {
         anyhow::bail!("摘要模型未完整配置。Python 执行解释不会回退到主聊天模型。");
     }
-    Ok(OpenAiCompatProvider::new(
-        model_config.api_key,
-        model_config.url,
-        model_config.model,
-        Some(4096),
-        0.1,
-    ))
+    Ok(PurposeModelSpec {
+        api_key: model_config.api_key,
+        api_base: model_config.url,
+        model: model_config.model,
+        max_tokens: Some(4096),
+        context_window: model_config.context_window.map(u64::from),
+        temperature: 0.1,
+        enable_thinking: false,
+    })
 }
 
 async fn explain_result(
-    provider: &OpenAiCompatProvider,
+    spec: &PurposeModelSpec,
     record: &PythonCodeRunRecord,
     extra_instruction: Option<&str>,
 ) -> Result<String> {
+    let model = completions_model(spec).context("初始化 Python 解释模型失败")?;
     let prompt = format!(
         "你是 Python 教学助理。请基于代码和运行结果，用简体中文给出简洁但有教学价值的解释。\n\
          必须包含：1) 运行结果说明；2) 关键代码解释；3) 如果失败，指出错误原因和修复建议。\n\
@@ -172,11 +179,31 @@ async fn explain_result(
         record.stderr,
         record.status,
     );
-    let response = provider
-        .chat_stream(&[ChatMessage::system(prompt)], &[], false, |_| {})
+    // 规则进系统提示、数据经用户消息承载（与旧实现的 system-only 请求等价，
+    // 但保持「规则/数据分离」的提示词纪律）。
+    let request = build_completion_request(
+        Some(prompt),
+        vec![Message::user("请按以上要求给出解释。")],
+        Vec::new(),
+        spec.max_tokens,
+        spec.temperature,
+        spec.enable_thinking,
+    );
+    let response = timeout(Duration::from_secs(EXPLAIN_TIMEOUT_SECS), model.completion(request))
         .await
+        .map_err(|_| anyhow!("生成 Python 教学解释超时"))?
         .context("生成 Python 教学解释失败")?;
-    Ok(response.content.trim().to_string())
+    Ok(response
+        .choice
+        .iter()
+        .filter_map(|item| match item {
+            rig::message::AssistantContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+        .trim()
+        .to_string())
 }
 
 fn build_python_agent_system_prompt() -> String {

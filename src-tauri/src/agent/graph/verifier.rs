@@ -23,7 +23,12 @@ use super::types::{
 use crate::agent::rig_ext::agents::normalize_summary_model;
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::AhaSettingsV2;
-use crate::agent::llm::{ChatMessage, LlmResponse, LlmUsage, OpenAiCompatProvider};
+use crate::agent::llm::LlmUsage;
+use crate::agent::rig_ext::llm_usage_from_rig;
+use crate::agent::rig_ext::model::{
+    build_completion_request, completions_model, PurposeModelSpec,
+};
+use rig::completion::CompletionModel;
 
 const VERIFY_TIMEOUT_SECS: u64 = 90;
 /// 验收输出预算。思考已关闭，结论（首行关键词 + ≤200 字理由）远小于此值，
@@ -52,12 +57,13 @@ pub(crate) struct VerdictOutcome {
     pub usage: Option<LlmUsage>,
 }
 
-/// 镜像 OrchestratorAgent::summary_provider 的解析规则：
-/// 项目上下文摘要模型（active 优先）→ url/key/model 缺省回退 agent_config。
-pub(crate) fn build_summary_provider(
+/// 项目上下文摘要/验收槽位解析（active 优先）→ url/key/model 缺省回退
+/// `agent_config`；验收是短结论分类任务：低温 + 关思考（推理模型的思考 token
+/// 与可见输出共享预算，带着思考调用可能耗尽预算导致结论为空）。
+pub(crate) fn build_summary_spec(
     settings: &AhaSettingsV2,
     agent_config: &DispatcherAgentConfig,
-) -> OpenAiCompatProvider {
+) -> PurposeModelSpec {
     let active = settings
         .project
         .summary_model_configs
@@ -78,10 +84,15 @@ pub(crate) fn build_summary_provider(
             .filter(|model| !model.trim().is_empty())
             .unwrap_or(&agent_config.summary_model),
     );
-    // 验收是短结论分类任务：低温 + 关思考。推理模型的思考 token 与可见输出
-    // 共享 max_tokens 预算，若带着思考调用，思考链可能耗尽预算导致结论为空。
-    OpenAiCompatProvider::new(api_key, api_base, model, Some(VERIFY_MAX_TOKENS), 0.0)
-        .with_thinking(false)
+    PurposeModelSpec {
+        api_key,
+        api_base,
+        model,
+        max_tokens: Some(u64::from(VERIFY_MAX_TOKENS)),
+        context_window: None,
+        temperature: 0.0,
+        enable_thinking: false,
+    }
 }
 
 /// 执行验收。永不失败：任何异常回退 unknown + 事实罗列。
@@ -94,29 +105,35 @@ pub(crate) async fn verify_run(
     node_runs: &[GraphNodeRunRecord],
 ) -> VerdictOutcome {
     let facts = build_facts(definition, state, node_runs);
-    let provider = build_summary_provider(settings, agent_config);
-    if provider.model().trim().is_empty() {
+    let spec = build_summary_spec(settings, agent_config);
+    if spec.model.trim().is_empty() {
         return unknown_with_facts("未配置摘要/验收模型", &facts);
     }
-    // is_configured 只查 key；url 缺失会让请求打到无效地址，提前给出准确原因。
-    if provider.api_base().trim().is_empty() || provider.api_key().trim().is_empty() {
+    // url/key 缺失会让请求打到无效地址，提前给出准确原因。
+    if spec.api_base.trim().is_empty() || spec.api_key.trim().is_empty() {
         return unknown_with_facts("摘要/验收模型配置不完整（缺少 URL 或 API Key）", &facts);
     }
-    let messages = vec![
-        ChatMessage::system(VERIFY_SYSTEM_PROMPT.to_string()),
-        ChatMessage {
-            role: "user".to_string(),
-            content: build_verify_user_prompt(requirement, definition, &facts),
-            content_parts: Vec::new(),
-            reasoning_content: None,
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-        },
-    ];
+    let model = match completions_model(&spec) {
+        Ok(model) => model,
+        Err(error) => {
+            return unknown_with_facts(&format!("验收模型初始化失败：{error}"), &facts);
+        }
+    };
+    let request = build_completion_request(
+        Some(VERIFY_SYSTEM_PROMPT.to_string()),
+        vec![rig::completion::Message::user(build_verify_user_prompt(
+            requirement,
+            definition,
+            &facts,
+        ))],
+        Vec::new(),
+        Some(u64::from(VERIFY_MAX_TOKENS)),
+        0.0,
+        false,
+    );
     let response = tokio::time::timeout(
         Duration::from_secs(VERIFY_TIMEOUT_SECS),
-        provider.chat_stream(&messages, &[], false, |_| {}),
+        model.completion(request),
     )
     .await;
     let response = match response {
@@ -129,15 +146,30 @@ pub(crate) async fn verify_run(
             )
         }
     };
-    let usage = response.usage.clone();
-    match parse_verdict(&response.content) {
+    let usage = response
+        .usage
+        .has_values()
+        .then(|| llm_usage_from_rig(&response.usage));
+    let content = response
+        .choice
+        .iter()
+        .filter_map(|item| match item {
+            rig::message::AssistantContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let finish_reason = response
+        .finish_reason()
+        .map(|reason| format!("{reason:?}").to_ascii_lowercase());
+    match parse_verdict(&content) {
         Some((status, reason)) => VerdictOutcome {
             status,
             reason,
             usage,
         },
         None => {
-            let cause = unparseable_cause(&response);
+            let cause = unparseable_cause(&content, finish_reason.as_deref());
             eprintln!("[graph] 验收结论解析失败：{cause}");
             let mut outcome = unknown_with_facts(&cause, &facts);
             outcome.usage = usage;
@@ -151,16 +183,15 @@ pub(crate) async fn verify_run(
 /// 截断判定优先于格式判定：max_tokens 截断也可能发生在非空输出上
 /// （带前导文字的结论句被腰斩），若归为「格式不符」会掩盖思考/预算
 /// 耗尽这一真实根因。
-fn unparseable_cause(response: &LlmResponse) -> String {
-    let truncated = response.finish_reason.as_deref() == Some("length");
-    let preview: String = response
-        .content
+fn unparseable_cause(content: &str, finish_reason: Option<&str>) -> String {
+    let truncated = finish_reason == Some("length");
+    let preview: String = content
         .trim()
         .chars()
         .take(UNPARSEABLE_PREVIEW_CHARS)
         .collect();
     if truncated {
-        if response.content.trim().is_empty() {
+        if content.trim().is_empty() {
             "验收输出被 max_tokens 截断（finish_reason=length），未产生可见结论：\
              推理模型的思考/推理可能耗尽了输出预算"
                 .to_string()
@@ -169,7 +200,7 @@ fn unparseable_cause(response: &LlmResponse) -> String {
                 "验收输出被 max_tokens 截断（finish_reason=length），结论行可能被截断丢失。原始输出开头：{preview}"
             )
         }
-    } else if response.content.trim().is_empty() {
+    } else if content.trim().is_empty() {
         "验收模型未返回可见内容".to_string()
     } else {
         format!(
@@ -542,44 +573,22 @@ mod tests {
 
     #[test]
     fn unparseable_cause_distinguishes_truncation_and_format() {
-        let mut truncated = LlmResponse {
-            status_code: 200,
-            content: String::new(),
-            thinking_content: String::new(),
-            thinking_elapsed_ms: 0,
-            tool_calls: Vec::new(),
-            raw_response: String::new(),
-            usage: None,
-            finish_reason: Some("length".to_string()),
-        };
-        assert!(unparseable_cause(&truncated).contains("截断"));
+        assert!(unparseable_cause("", Some("length")).contains("截断"));
+        assert!(unparseable_cause("", None).contains("未返回可见内容"));
 
-        truncated.finish_reason = None;
-        assert!(unparseable_cause(&truncated).contains("未返回可见内容"));
-
-        let bad_format = LlmResponse {
-            content: "总体来看基本完成了任务".to_string(),
-            finish_reason: Some("stop".to_string()),
-            ..truncated.clone()
-        };
-        let cause = unparseable_cause(&bad_format);
+        let cause = unparseable_cause("总体来看基本完成了任务", Some("stop"));
         assert!(cause.contains("无法解析"));
         assert!(cause.contains("总体来看"), "失败原因需附原始输出开头");
 
         // 截断也可能发生在非空输出上：截断判定优先于格式判定，
         // 否则「思考/预算耗尽」这一真实根因会被误归为格式不符。
-        let truncated_nonempty = LlmResponse {
-            content: "总体来看本次执行基本完成".to_string(),
-            finish_reason: Some("length".to_string()),
-            ..truncated
-        };
-        let cause = unparseable_cause(&truncated_nonempty);
+        let cause = unparseable_cause("总体来看本次执行基本完成", Some("length"));
         assert!(cause.contains("截断"));
         assert!(cause.contains("总体来看本次执行基本完成"));
     }
 
     #[test]
-    fn summary_provider_falls_back_to_agent_config() {
+    fn summary_spec_falls_back_to_agent_config() {
         let settings = AhaSettingsV2::default();
         let config = DispatcherAgentConfig {
             root_dir: std::path::PathBuf::new(),
@@ -596,11 +605,10 @@ mod tests {
             restrict_to_workspace: true,
             context_debug: false,
         };
-        let provider = build_summary_provider(&settings, &config);
-        assert_eq!(provider.model(), "summary-model");
-        assert_eq!(provider.api_key(), "key");
-        // 验收是短结论分类任务：请求体必须显式关闭思考，防止思考链挤占结论预算。
-        let snapshot = provider.build_request_snapshot(&[], &[]);
-        assert!(!snapshot.body.enable_thinking);
+        let spec = build_summary_spec(&settings, &config);
+        assert_eq!(spec.model, "summary-model");
+        assert_eq!(spec.api_key, "key");
+        // 验收是短结论分类任务：请求必须显式关闭思考，防止思考链挤占结论预算。
+        assert!(!spec.enable_thinking);
     }
 }

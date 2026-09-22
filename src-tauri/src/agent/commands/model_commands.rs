@@ -1,4 +1,8 @@
 use super::*;
+use crate::agent::rig_ext::model::{
+    build_completion_request, completions_model, PurposeModelSpec,
+};
+use rig::completion::CompletionModel;
 
 #[tauri::command]
 pub async fn dispatcher_fetch_models(
@@ -43,14 +47,43 @@ async fn test_chat_compatible_model(
 ) -> Result<String> {
     test_required_model_config(label, &config)?;
     let model_name = config.model.trim().to_string();
-    let provider =
-        OpenAiCompatProvider::new(config.api_key, config.url, config.model, Some(64), 0.0);
-    let messages = build_test_messages(enable_multimodal);
-    let response = provider
-        .chat_stream(&messages, &[], enable_multimodal, |_| {})
+    let spec = PurposeModelSpec {
+        api_key: config.api_key,
+        api_base: config.url,
+        model: config.model,
+        // 连通性测试只要一个词的答案：给足小预算但保留上限保护。
+        max_tokens: Some(64),
+        context_window: None,
+        temperature: 0.0,
+        // 测试只验证链路可用：关闭思考链，避免「只想说 pong」的任务被思考耗尽预算。
+        enable_thinking: false,
+    };
+    let model = completions_model(&spec)
+        .with_context(|| format!("{label} 测试模型初始化失败（模型 {model_name}）"))?;
+    let (preamble, messages) = build_test_messages(enable_multimodal);
+    let request = build_completion_request(
+        preamble,
+        messages,
+        Vec::new(),
+        spec.max_tokens,
+        spec.temperature,
+        spec.enable_thinking,
+    );
+    let response = model
+        .completion(request)
         .await
         .with_context(|| format!("{label} 测试请求失败（模型 {model_name}）"))?;
-    let content = response.content.trim().to_string();
+    let content = response
+        .choice
+        .iter()
+        .filter_map(|item| match item {
+            rig::message::AssistantContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+        .trim()
+        .to_string();
     if content.is_empty() {
         anyhow::bail!("{label}（{model_name}）返回空内容");
     }
@@ -68,36 +101,34 @@ async fn test_chat_compatible_model(
 /// exercised — a text-only model misconfigured as the vision model will then
 /// fail here (HTTP 400 / `unknown variant image_url`) instead of silently
 /// passing and crashing `browser_visual_analyze` at runtime.
-fn build_test_messages(enable_multimodal: bool) -> Vec<ChatMessage> {
+fn build_test_messages(
+    enable_multimodal: bool,
+) -> (Option<String>, Vec<rig::completion::Message>) {
     if !enable_multimodal {
-        return vec![ChatMessage::system("只输出 pong。".to_string())];
+        return (
+            Some("只输出 pong。".to_string()),
+            vec![rig::completion::Message::user("ping".to_string())],
+        );
     }
     // 64x64 red PNG. Kept small to minimize request size, but every side
     // exceeds the minimum image dimension enforced by some providers
     // (e.g. Aliyun DashScope rejects images with width/height <= 10px).
     const TEST_PNG_DATA_URL: &str =
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc8OLDQitxAAAAAElFTkSuQmCC";
-    vec![
-        ChatMessage::system("你是模型连通性测试器，只对图片中的颜色做最简短回答。".to_string()),
-        ChatMessage {
-            role: "user".to_string(),
-            content: "这是一张测试图片，请用一个词描述其中主要的颜色。".to_string(),
-            content_parts: vec![
-                ChatMessageContentPart::Text {
-                    text: "这是一张测试图片，请用一个词描述其中主要的颜色。".to_string(),
-                },
-                ChatMessageContentPart::Image {
-                    source: ChatMessageImageSource::DataUrl {
-                        data_url: TEST_PNG_DATA_URL.to_string(),
-                    },
-                },
+    (
+        Some("你是模型连通性测试器，只对图片中的颜色做最简短回答。".to_string()),
+        vec![rig::completion::Message::User {
+            content: vec![
+                rig::message::UserContent::text("这是一张测试图片，请用一个词描述其中主要的颜色。"),
+                rig::message::UserContent::Image(rig::message::Image {
+                    data: rig::message::DocumentSourceKind::Url(TEST_PNG_DATA_URL.to_string()),
+                    media_type: Some(rig::message::ImageMediaType::PNG),
+                    detail: None,
+                    additional_params: None,
+                }),
             ],
-            reasoning_content: None,
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-        },
-    ]
+        }],
+    )
 }
 
 async fn test_embedding_model(config: DispatcherModelConfig) -> Result<String> {

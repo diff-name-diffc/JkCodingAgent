@@ -1,4 +1,4 @@
-use crate::agent::llm::{ChatMessage, FunctionCall, OutboundToolCall};
+use crate::agent::db::{ChatMessage, FunctionCall, OutboundToolCall};
 
 use super::{cancellation_requested, classify_tool_result, should_keep_llm_message, ToolOutcome};
 

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::agent::db::content::ContentSegment;
-use crate::agent::llm::{FunctionCall, OutboundToolCall};
+use crate::agent::db::{FunctionCall, OutboundToolCall};
 
 fn record(role: &str, content: &str) -> DispatcherMessageRecord {
     DispatcherMessageRecord {

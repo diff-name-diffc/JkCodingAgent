@@ -2,6 +2,7 @@ pub(crate) mod app_config;
 pub(crate) mod artifacts;
 pub(crate) mod categories;
 pub(crate) mod content;
+pub(crate) mod contract;
 pub(crate) mod keywords;
 pub(crate) mod mcp_servers;
 pub(crate) mod messages;
@@ -25,6 +26,11 @@ use rusqlite::{params, Connection};
 
 // 对外引用的共享常量需显式重新导出（glob `pub use` 会丢弃 pub(crate) 项）。
 pub use artifacts::{DispatcherToolArtifactRecord, DispatcherToolArtifactRef, ToolArtifactDraft};
+pub use contract::{
+    ChatMessage, ChatMessageContentPart, ChatMessageImageSource, FunctionCall, LlmPromptTokensDetails,
+    LlmUsage, OutboundToolCall,
+};
+pub(crate) use contract::MAX_TURN_TOOL_IMAGE_ATTACHMENTS;
 pub use categories::{ChatCategory, ChatCategoryAgentConfig};
 pub use keywords::{KeywordAction, SessionSearchResult};
 pub use messages::{DispatcherMessageRecord, DispatcherMessageUsageStats};
@@ -39,7 +45,7 @@ pub use token_usage::{DispatcherSessionTokenUsageRecord, DispatcherSessionTokenU
 pub use tool_runs::{DispatcherToolRunRecord, FinishToolRun, NewToolRun, ToolRunTraceContext};
 use util::MAX_DIALOGUE_QUERY_LIMIT;
 #[allow(unused_imports)]
-pub(crate) use util::{DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS, TOOL_RETRY_CONTEXT_PREFIX};
+pub(crate) use util::DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS;
 
 #[derive(Debug, Clone)]
 pub struct DispatcherDb {
@@ -101,7 +107,7 @@ impl DispatcherDb {
 
     /// Rough token estimate for context budget management.
     /// Uses a ~4 chars/token heuristic suitable for mixed CJK/Latin content.
-    pub(crate) fn estimate_context_tokens(messages: &[crate::agent::llm::ChatMessage]) -> u64 {
+    pub(crate) fn estimate_context_tokens(messages: &[crate::agent::db::ChatMessage]) -> u64 {
         // 按字符而非字节统计：CJK 内容字节数可达字符数 3 倍，按字节估算会明显
         // 偏离真实 token 占用（低估时可能突破上下文窗口）。
         let total_chars: usize = messages

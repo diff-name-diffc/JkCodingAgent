@@ -28,5 +28,14 @@ pub(crate) mod mcp;
 pub(crate) mod media;
 pub(crate) mod program;
 pub(crate) mod run_record;
+pub(crate) mod spec;
 
 pub(crate) use deps::RigToolDeps;
+
+/// 单轮工具调用数上限（对齐旧 `agent::tools::MAX_TOOL_CALLS_PER_BATCH`）。
+pub(crate) const MAX_TOOL_CALLS_PER_BATCH: usize = 32;
+/// 只读工具并发上限（对齐旧 `agent::tools::MAX_PARALLEL_TOOL_CALLS`）。
+pub(crate) const MAX_PARALLEL_TOOL_CALLS: usize = 4;
+/// 项目编排器授权给 ToolProgram 的数据面能力（只读探索四件套）。
+pub(crate) const ORCHESTRATOR_RUNTIME_TOOL_NAMES: [&str; 4] =
+    ["read_file", "list_dir", "glob", "grep"];

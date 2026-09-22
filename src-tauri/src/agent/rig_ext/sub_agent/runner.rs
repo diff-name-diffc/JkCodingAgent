@@ -39,8 +39,8 @@ use crate::agent::rig_ext::tools::deps::RigToolDeps;
 use crate::agent::rig_ext::tools::run_record::prepare_arguments;
 use crate::agent::rig_ext::tools::{exec::exec_tools, media::media_tools};
 use crate::agent::sub_agent::config::SubAgentConfig;
-use crate::agent::tools::spec::ToolSpec;
-use crate::agent::tools::MAX_TOOL_CALLS_PER_BATCH;
+use crate::agent::rig_ext::tools::spec::ToolSpec;
+use crate::agent::rig_ext::tools::MAX_TOOL_CALLS_PER_BATCH;
 
 /// 返回父循环前的结果截断上限。
 const SUB_AGENT_RESULT_MAX_CHARS: usize = 32_000;
@@ -531,7 +531,7 @@ impl RigSubAgentRuntime {
             self.emit_tool_started(call);
         }
         let semaphore = Arc::new(tokio::sync::Semaphore::new(
-            crate::agent::tools::MAX_PARALLEL_TOOL_CALLS,
+            crate::agent::rig_ext::tools::MAX_PARALLEL_TOOL_CALLS,
         ));
         let results = join_all(calls.iter().map(|call| {
             let semaphore = Arc::clone(&semaphore);

@@ -9,7 +9,7 @@ pub async fn dispatcher_fetch_models(
     api_base: String,
     api_key: String,
 ) -> Result<Vec<String>, String> {
-    llm::fetch_models(&api_base, &api_key)
+    crate::agent::rig_ext::models::fetch_models(&api_base, &api_key)
         .await
         .map_err(|error| format_anyhow_error(&error))
 }

@@ -1,4 +1,5 @@
 use super::run_commands::run_architecture_turn_skeleton;
+use crate::agent::rig_ext::events::AgentEvent;
 use super::*;
 
 /// 架构设计视觉 Agent 的消息入口。

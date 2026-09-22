@@ -19,15 +19,17 @@
 
 pub(crate) mod r#loop;
 pub(crate) mod message;
+pub(crate) mod models;
 pub(crate) mod model;
 pub(crate) mod review;
 pub(crate) mod agents;
+pub(crate) mod events;
 pub(crate) mod sub_agent;
 pub(crate) mod summary;
 pub(crate) mod tool_result;
 pub(crate) mod tools;
 
-use crate::agent::llm::{LlmPromptTokensDetails, LlmUsage};
+use crate::agent::db::{LlmPromptTokensDetails, LlmUsage};
 
 /// rig `Usage` → 落库用 `LlmUsage`（`dispatcher_session_token_usage` 表的
 /// 写入契约）。字段映射：input→prompt、output→completion、total 缺省（0）

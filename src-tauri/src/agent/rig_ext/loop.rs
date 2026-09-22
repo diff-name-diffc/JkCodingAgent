@@ -30,9 +30,9 @@ use crate::agent::common::{
     UsageTracker,
 };
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
-use crate::agent::llm::OutboundToolCall;
-use crate::agent::run_loop::AgentEvent;
-use crate::agent::tools::MAX_TOOL_CALLS_PER_BATCH;
+use crate::agent::db::OutboundToolCall;
+use crate::agent::rig_ext::events::AgentEvent;
+use crate::agent::rig_ext::tools::MAX_TOOL_CALLS_PER_BATCH;
 use crate::shared::error::format_anyhow_error;
 
 mod app_policy;

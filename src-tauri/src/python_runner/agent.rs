@@ -100,7 +100,7 @@ async fn run_python_agent_inner(
         return Ok(());
     }
 
-    let tool_definitions = rig_tool_definitions();
+    let tool_definitions = python_tool_definitions();
     let model = match completions_model(&spec) {
         Ok(model) => model,
         Err(error) => {
@@ -231,18 +231,6 @@ async fn run_python_agent_inner(
     upsert_run_record(db, record).await?;
     emit_run_event(app, record, "final", json!({ "record": record.clone() }));
     Ok(())
-}
-
-/// 旧 `ToolDefinition`（kind/function）→ rig 工具定义。
-fn rig_tool_definitions() -> Vec<rig::completion::ToolDefinition> {
-    python_tool_definitions()
-        .into_iter()
-        .map(|definition| rig::completion::ToolDefinition {
-            name: definition.function.name,
-            description: definition.function.description,
-            parameters: definition.function.parameters,
-        })
-        .collect()
 }
 
 /// 拆分模型回复：可见正文 + 工具调用。

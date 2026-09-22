@@ -12,7 +12,7 @@ use tauri::ipc::Channel;
 use tokio::sync::watch;
 
 use crate::agent::common::{emit, wait_for_cancellation};
-use crate::agent::run_loop::AgentEvent;
+use crate::agent::rig_ext::events::AgentEvent;
 
 pub(super) struct StreamConsumption {
     /// 已流出的正文（取消收口用）。

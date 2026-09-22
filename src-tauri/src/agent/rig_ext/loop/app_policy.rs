@@ -31,8 +31,8 @@ use crate::agent::rig_ext::tools::run_record::{
     finish_tool_run, prepare_arguments, start_tool_run, RigToolRun, RigToolRunContext,
     RigToolRunFinish,
 };
-use crate::agent::run_loop::AgentEvent;
-use crate::agent::tools::spec::{ToolSafety, ToolSpec};
+use crate::agent::rig_ext::events::AgentEvent;
+use crate::agent::rig_ext::tools::spec::{ToolSafety, ToolSpec};
 
 /// MCP 动态工具的 canonical 名前缀（见 `mcp/registry.rs`）。
 const MCP_TOOL_NAME_PREFIX: &str = "mcp__";
@@ -83,7 +83,7 @@ impl<'a> AppToolExecutionPolicy<'a> {
             );
         }
         let definition = tool.definition();
-        let registered = crate::agent::tools::spec::is_registered_tool_name(name);
+        let registered = crate::agent::rig_ext::tools::spec::is_registered_tool_name(name);
         (
             ToolSpec::new(name, &definition.description, definition.parameters),
             registered,

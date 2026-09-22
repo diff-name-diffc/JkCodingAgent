@@ -25,7 +25,7 @@ use rig::message::{
 };
 
 use crate::agent::db::DispatcherMessageRecord;
-use crate::agent::llm::{
+use crate::agent::db::{
     ChatMessage, ChatMessageContentPart, ChatMessageImageSource, MAX_TURN_TOOL_IMAGE_ATTACHMENTS,
 };
 

@@ -31,7 +31,7 @@ use crate::agent::rig_ext::r#loop::{
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
 use crate::agent::rig_ext::tools::deps::ToolCallSlot;
-use crate::agent::run_loop::AgentEvent;
+use crate::agent::rig_ext::events::AgentEvent;
 
 /// 等待画布前端执行与回传的总时限（含截图耗时）。
 const ARCH_RUN_WAIT_TIMEOUT: Duration = Duration::from_secs(20);

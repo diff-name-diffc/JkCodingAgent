@@ -7,7 +7,6 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use serde::Serialize;
 
 const DEBUG_LOG_DIR: &str = "logs";
 const DEBUG_LOG_FILE: &str = "agent.debug";
@@ -32,12 +31,6 @@ pub(crate) struct DebugSection {
 }
 
 impl DebugSection {
-    pub(crate) fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            body: body.into(),
-        }
-    }
 }
 
 /// 单条待写入日志，经通道移交给后台写入线程。
@@ -54,10 +47,6 @@ impl ContextDebugLogger {
             enabled,
             project_root: project_root.into(),
         }
-    }
-
-    pub(crate) fn enabled(&self) -> bool {
-        self.enabled
     }
 
     pub(crate) fn log(
@@ -85,16 +74,6 @@ impl ContextDebugLogger {
             }
         }
     }
-}
-
-pub(crate) fn render_json<T: Serialize + ?Sized>(value: &T) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|error| {
-        // 错误信息可能含引号/反斜杠/换行，必须先 JSON 转义再嵌入，
-        // 否则生成的 {"serializationError":...} 本身不是合法 JSON。
-        let message = serde_json::to_string(&error.to_string())
-            .unwrap_or_else(|_| "\"serialization error\"".to_string());
-        format!("{{\"serializationError\":{message}}}")
-    })
 }
 
 fn debug_log_channel() -> &'static Sender<DebugLogEntry> {
@@ -225,34 +204,6 @@ fn write_entry_body(file: &mut File, entry: &DebugLogEntry) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::render_json;
 
-    #[test]
-    fn render_json_escapes_serialization_error_message() {
-        struct Unserializable;
 
-        impl serde::Serialize for Unserializable {
-            fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
-                Err(serde::ser::Error::custom(
-                    "bad \"quote\" \\ backslash\nnewline",
-                ))
-            }
-        }
-
-        let rendered = render_json(&Unserializable);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&rendered).expect("render_json 必须产出合法 JSON");
-        let message = parsed["serializationError"]
-            .as_str()
-            .expect("serializationError 字段存在");
-        assert!(message.contains("bad \"quote\""));
-        assert!(message.contains('\n'));
     }
-
-    #[test]
-    fn render_json_serializes_normal_values() {
-        let rendered = render_json(&serde_json::json!({"key": "值"}));
-        assert!(rendered.contains("\"key\""));
-        assert!(rendered.contains("值"));
-    }
-}

@@ -285,7 +285,6 @@ pub(crate) struct SaveChatImageParams<'a> {
 #[derive(Debug, Clone)]
 pub(crate) struct SavedChatImage {
     pub image_id: String,
-    pub path: PathBuf,
     pub mime_type: String,
 }
 
@@ -324,7 +323,6 @@ pub(crate) async fn save_image(
         generation_prompt: params.generation_prompt.map(str::to_string),
     };
     let db = db.clone();
-    let saved_path = file_path.clone();
     tokio::task::spawn_blocking(move || -> ChatImageResult<()> {
         std::fs::create_dir_all(&dir).map_err(io_error("创建会话图片目录", dir.clone()))?;
         std::fs::write(&file_path, &image_bytes)
@@ -338,7 +336,6 @@ pub(crate) async fn save_image(
 
     Ok(SavedChatImage {
         image_id,
-        path: saved_path,
         mime_type: saved_mime,
     })
 }

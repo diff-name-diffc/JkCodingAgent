@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agent::common::should_keep_llm_message;
-use crate::agent::llm::{
+use crate::agent::db::{
     ChatMessage, ChatMessageContentPart, ChatMessageImageSource, OutboundToolCall,
 };
 
@@ -219,30 +219,6 @@ impl DispatcherDb {
             usage_stats: Some(usage_stats),
             visible: true,
         })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_visible_message_with_tools(
-        &self,
-        workspace_id: &str,
-        role: &str,
-        content: &str,
-        tool_call_id: Option<&str>,
-        tool_name: Option<&str>,
-        tool_result_mode: Option<&str>,
-        tool_calls: Option<&[OutboundToolCall]>,
-    ) -> Result<DispatcherMessageRecord> {
-        self.add_visible_message_with_tools_and_thinking(
-            workspace_id,
-            role,
-            content,
-            tool_call_id,
-            tool_name,
-            tool_result_mode,
-            tool_calls,
-            None,
-            0,
-        )
     }
 
     #[allow(clippy::too_many_arguments)]

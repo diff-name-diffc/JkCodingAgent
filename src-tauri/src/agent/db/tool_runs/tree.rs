@@ -84,30 +84,6 @@ impl DispatcherDb {
         self.list_tool_run_tree(&workspace_id, root_run_id)
     }
 
-    /// 外层 tool message 持久化失败时删除尚未绑定消息的整棵运行树。
-    /// parent_run_id 与 artifact.tool_run_id 均为 ON DELETE CASCADE，因此只需
-    /// 精确删除根记录；workspace 条件防止跨会话误删。
-    pub fn delete_unattached_tool_run_tree(
-        &self,
-        workspace_id: &str,
-        root_run_id: &str,
-    ) -> Result<()> {
-        let conn = self.conn()?;
-        let changed = conn
-            .execute(
-                "DELETE FROM dispatcher_tool_runs
-                 WHERE id = ?1 AND workspace_id = ?2 AND message_id IS NULL",
-                params![root_run_id, workspace_id],
-            )
-            .context("delete unattached dispatcher tool run tree")?;
-        if changed == 0 {
-            anyhow::bail!(
-                "unattached dispatcher tool run root not found: {root_run_id} in {workspace_id}"
-            );
-        }
-        Ok(())
-    }
-
     /// 按外层模型工具调用定位完整运行树。`root_run_id` 可用于实时卡片精确命中；
     /// 历史消息没有该字段时，使用同一 tool_call_id 的最新根运行。
     pub fn list_tool_run_tree_for_call(

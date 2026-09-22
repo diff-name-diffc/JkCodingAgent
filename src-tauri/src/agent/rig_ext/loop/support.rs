@@ -11,8 +11,8 @@ use crate::agent::common::{
     emit, persist_assistant_message, serialize_tool_arguments, UsageTracker,
 };
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
-use crate::agent::llm::{FunctionCall, OutboundToolCall};
-use crate::agent::run_loop::AgentEvent;
+use crate::agent::db::{FunctionCall, OutboundToolCall};
+use crate::agent::rig_ext::events::AgentEvent;
 
 /// 组装追加进历史的 assistant 消息：思考（合并标签拆出的部分）+ 正文 + 工具调用。
 pub(super) fn build_assistant_message(

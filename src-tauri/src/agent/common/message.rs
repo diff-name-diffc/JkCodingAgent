@@ -1,16 +1,8 @@
-use std::collections::HashMap;
 
 use anyhow::Result;
-use tauri::ipc::Channel;
 
 use super::super::db::{DispatcherDb, DispatcherMessageRecord, DispatcherMessageUsageStats};
-use super::super::llm::{
-    messages_contain_images, ChatMessage, FunctionCall, OpenAiCompatProvider, OutboundToolCall,
-    RequestedToolCall,
-};
-use super::super::run_loop::AgentEvent;
-use super::super::tools::ToolRegistry;
-use super::emit;
+use crate::agent::db::{ChatMessage, OutboundToolCall};
 
 // ─── Assistant Message Persistence ───────────────────────────────────────────────
 
@@ -50,41 +42,6 @@ pub async fn persist_tool_calls_message(
     .await
 }
 
-pub fn build_tool_calls_payload(
-    tool_calls: &[RequestedToolCall],
-    registry: &ToolRegistry,
-) -> Result<Vec<OutboundToolCall>> {
-    tool_calls
-        .iter()
-        .map(|call| {
-            let enriched = registry.effective_args(&call.name, &call.arguments);
-            let args_json = serialize_tool_arguments(&call.name, &enriched)?;
-            Ok(OutboundToolCall {
-                id: call.id.clone(),
-                kind: "function".to_string(),
-                function: FunctionCall {
-                    name: call.name.clone(),
-                    arguments: args_json,
-                },
-            })
-        })
-        .collect()
-}
-
-pub fn build_args_map(
-    tool_calls: &[RequestedToolCall],
-    registry: &ToolRegistry,
-) -> Result<HashMap<String, String>> {
-    tool_calls
-        .iter()
-        .map(|tc| {
-            let enriched = registry.effective_args(&tc.name, &tc.arguments);
-            let args_json = serialize_tool_arguments(&tc.name, &enriched)?;
-            Ok((tc.id.clone(), args_json))
-        })
-        .collect()
-}
-
 /// 序列化工具参数供模型/前端展示。
 ///
 /// G9-14：失败（如非有限浮点数）不再记日志降级为空对象 `{}`，而是返回错误上抛——
@@ -99,49 +56,6 @@ pub(crate) fn serialize_tool_arguments(
 ) -> Result<String> {
     serde_json::to_string(arguments)
         .map_err(|error| anyhow::anyhow!("错误：工具 '{tool_name}' 参数序列化失败：{error}"))
-}
-
-// ─── Vision Model Selection ──────────────────────────────────────────────────────
-
-/// Pick the provider for one run-loop iteration.
-///
-/// When the pending messages contain images, the pre-built `vision_provider`
-/// (constructed from the configured vision model's own url/apiKey/model) is
-/// used instead of the chat provider — the vision model may live on a
-/// different gateway, so swapping only the model name is not enough.
-pub fn select_provider_for_messages(
-    provider: &OpenAiCompatProvider,
-    messages: &[ChatMessage],
-    vision_provider: Option<&OpenAiCompatProvider>,
-    on_event: &Channel<AgentEvent>,
-    notify_user: bool,
-) -> Result<OpenAiCompatProvider> {
-    if !messages_contain_images(messages) {
-        return Ok(provider.clone());
-    }
-
-    let Some(vision) = vision_provider else {
-        anyhow::bail!("检测到用户上传了图片，但视觉模型未配置。请先在设置中配置视觉模型后重试。");
-    };
-
-    let selected = vision.clone();
-    // 视觉模型可能部署在独立 gateway（url/apiKey 不同）：仅模型名相同并不代表
-    // 同一 provider。三项（模型名/网关/密钥）全部一致才视为未切换，否则即通知。
-    let same_provider = selected.model() == provider.model()
-        && selected.api_base() == provider.api_base()
-        && selected.api_key() == provider.api_key();
-    if notify_user && !same_provider {
-        emit(
-            on_event,
-            AgentEvent::ModelSwitched {
-                from_model: provider.model().to_string(),
-                to_model: selected.model().to_string(),
-                reason: "检测到用户上传了图片".to_string(),
-            },
-        );
-    }
-
-    Ok(selected)
 }
 
 // ─── LLM Context Filtering ─────────────────────────────────────────────────────

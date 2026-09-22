@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use rig::tool::PortableDynamicTool;
 
 use crate::agent::rig_ext::tool_result::RigToolResultPolicy;
-use crate::agent::tools::spec::ToolSpec;
+use crate::agent::rig_ext::tools::spec::ToolSpec;
 use crate::mcp::ResolvedMcpTool;
 
 /// MCP 工具名契约前缀（见 `mcp/registry.rs` 的 canonical 名）。
@@ -86,7 +86,7 @@ pub(crate) fn tool_result_policies_from_specs(
 ) -> Vec<(String, RigToolResultPolicy)> {
     // 工具名列表由策略表派生：`ToolSpec::new` 对未收录名字回退 fail-closed，
     // 因此这里只登记策略表中真实存在的名字。
-    crate::agent::tools::spec::registered_tool_names()
+    crate::agent::rig_ext::tools::spec::registered_tool_names()
         .into_iter()
         .map(|name| {
             let spec = ToolSpec::new(name, "", serde_json::json!({}));
@@ -228,7 +228,7 @@ mod tests {
         assert!(local_zsh.default_compress);
         assert_eq!(
             local_zsh.force_compress_after_chars,
-            crate::agent::tools::spec::COMMAND_FORCE_COMPRESS_AFTER_CHARS
+            crate::agent::rig_ext::tools::spec::COMMAND_FORCE_COMPRESS_AFTER_CHARS
         );
         let read_file = value("read_file").expect("read_file 在策略表中");
         assert!(!read_file.default_compress);

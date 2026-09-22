@@ -14,7 +14,6 @@ use crate::ssh_tool::SshSessionManager;
 
 mod generation;
 mod run;
-mod tool_catalog;
 
 use generation::GenerationGate;
 pub(crate) use generation::GenerationGuard;

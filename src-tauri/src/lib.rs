@@ -11,7 +11,6 @@ mod scm;
 mod shared;
 mod ssh_tool;
 mod task_runtime;
-mod tools;
 mod workspace;
 
 pub use app::run;

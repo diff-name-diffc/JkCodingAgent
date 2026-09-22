@@ -3,9 +3,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use super::util::now;
 use super::DispatcherDb;
 
 /// 单个原始工具产物允许持久化的最大字节数。工具输出可能来自外部进程或
@@ -145,104 +143,6 @@ pub struct DispatcherToolArtifactRecord {
 }
 
 impl DispatcherDb {
-    pub fn insert_tool_artifacts_for_run(
-        &self,
-        workspace_id: &str,
-        tool_run_id: &str,
-        tool_call_id: &str,
-        tool_name: &str,
-        drafts: &[ToolArtifactDraft],
-    ) -> Result<Vec<DispatcherToolArtifactRef>> {
-        if drafts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut conn = self.conn()?;
-        let tx = conn.transaction().context("begin insert run artifacts")?;
-        let run_workspace = tx
-            .query_row(
-                "SELECT workspace_id FROM dispatcher_tool_runs WHERE id = ?1",
-                params![tool_run_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .context("load dispatcher tool run before artifact insert")?
-            .with_context(|| format!("dispatcher tool run not found: {tool_run_id}"))?;
-        if run_workspace != workspace_id {
-            anyhow::bail!(
-                "dispatcher tool run {tool_run_id} belongs to workspace {run_workspace}, not {workspace_id}"
-            );
-        }
-
-        let created_at = now();
-        let mut refs = Vec::with_capacity(drafts.len());
-        for draft in drafts {
-            let id = Uuid::new_v4().to_string();
-            let char_count = i64::try_from(draft.char_count)
-                .context("tool artifact char_count exceeds sqlite INTEGER range")?;
-            let line_count = i64::try_from(draft.line_count)
-                .context("tool artifact line_count exceeds sqlite INTEGER range")?;
-            tx.execute(
-                "INSERT INTO dispatcher_tool_artifacts (
-                    id, workspace_id, message_id, tool_call_id, tool_run_id, tool_name,
-                    title, kind, preview, content, char_count, line_count, created_at
-                 ) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![
-                    &id,
-                    workspace_id,
-                    tool_call_id,
-                    tool_run_id,
-                    tool_name,
-                    &draft.title,
-                    &draft.kind,
-                    &draft.preview,
-                    &draft.content,
-                    char_count,
-                    line_count,
-                    &created_at,
-                ],
-            )
-            .context("insert dispatcher run tool artifact")?;
-            refs.push(DispatcherToolArtifactRef {
-                id,
-                title: draft.title.clone(),
-                kind: draft.kind.clone(),
-                preview: draft.preview.clone(),
-                char_count: draft.char_count,
-                line_count: draft.line_count,
-                created_at: created_at.clone(),
-            });
-        }
-        tx.commit().context("commit insert run artifacts")?;
-        Ok(refs)
-    }
-
-    pub async fn insert_tool_artifacts_for_run_async(
-        &self,
-        workspace_id: &str,
-        tool_run_id: &str,
-        tool_call_id: &str,
-        tool_name: &str,
-        drafts: &[ToolArtifactDraft],
-    ) -> Result<Vec<DispatcherToolArtifactRef>> {
-        let db = self.clone();
-        let workspace_id = workspace_id.to_string();
-        let tool_run_id = tool_run_id.to_string();
-        let tool_call_id = tool_call_id.to_string();
-        let tool_name = tool_name.to_string();
-        let drafts = drafts.to_vec();
-        tokio::task::spawn_blocking(move || {
-            db.insert_tool_artifacts_for_run(
-                &workspace_id,
-                &tool_run_id,
-                &tool_call_id,
-                &tool_name,
-                &drafts,
-            )
-        })
-        .await
-        .context("insert_tool_artifacts_for_run spawn_blocking")?
-    }
-
     pub fn get_tool_artifact(
         &self,
         workspace_id: &str,

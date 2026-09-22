@@ -18,7 +18,6 @@ use uuid::Uuid;
 
 use crate::agent::config::resolve_home_dir;
 use crate::agent::db::{DispatcherDb, PythonCodeRunRecord};
-use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
 use crate::agent::rig_ext::model::{build_completion_request, completions_model, PurposeModelSpec};
 use rig::completion::{CompletionModel, Message};
 use crate::agent::DispatcherState;
@@ -228,51 +227,42 @@ fn build_initial_agent_user_prompt(record: &PythonCodeRunRecord, message_context
     )
 }
 
-fn python_tool_definitions() -> Vec<ToolDefinition> {
+fn python_tool_definitions() -> Vec<rig::completion::ToolDefinition> {
     vec![
-        ToolDefinition {
-            kind: "function".to_string(),
-            function: ToolFunctionDefinition {
-                name: "run_python".to_string(),
-                description: "运行当前 main.py，返回 stdout/stderr 和退出状态。".to_string(),
-                parameters: json!({ "type": "object", "properties": {} }),
-            },
+        rig::completion::ToolDefinition {
+            name: "run_python".to_string(),
+            description: "运行当前 main.py，返回 stdout/stderr 和退出状态。".to_string(),
+            parameters: json!({ "type": "object", "properties": {} }),
         },
-        ToolDefinition {
-            kind: "function".to_string(),
-            function: ToolFunctionDefinition {
-                name: "install_packages".to_string(),
-                description: "在全应用共享 uv 虚拟环境中安装缺失的 Python 包。只安装必要依赖。"
-                    .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "packages": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "要安装的包名列表，例如 [\"pandas\", \"matplotlib\"]"
-                        }
-                    },
-                    "required": ["packages"]
-                }),
-            },
+        rig::completion::ToolDefinition {
+            name: "install_packages".to_string(),
+            description: "在全应用共享 uv 虚拟环境中安装缺失的 Python 包。只安装必要依赖。"
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "packages": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "要安装的包名列表，例如 [\"pandas\", \"matplotlib\"]"
+                    }
+                },
+                "required": ["packages"]
+            }),
         },
-        ToolDefinition {
-            kind: "function".to_string(),
-            function: ToolFunctionDefinition {
-                name: "update_code".to_string(),
-                description: "用完整、可运行、忠实于消息上下文的 Python 脚本替换当前临时 main.py。用于补全片段、缺失变量、缺失示例数据或修正代码错误。".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "code": {
-                            "type": "string",
-                            "description": "完整 Python 文件内容，不要包含 Markdown 代码围栏。"
-                        }
-                    },
-                    "required": ["code"]
-                }),
-            },
+        rig::completion::ToolDefinition {
+            name: "update_code".to_string(),
+            description: "用完整、可运行、忠实于消息上下文的 Python 脚本替换当前临时 main.py。用于补全片段、缺失变量、缺失示例数据或修正代码错误。".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "完整 Python 文件内容，不要包含 Markdown 代码围栏。"
+                    }
+                },
+                "required": ["code"]
+            }),
         },
     ]
 }

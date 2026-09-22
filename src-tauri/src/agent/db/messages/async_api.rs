@@ -17,35 +17,6 @@ impl DispatcherDb {
         .context("add_visible_message_from_segments spawn_blocking")?
     }
 
-    pub async fn add_visible_message_with_usage_and_thinking_async(
-        &self,
-        workspace_id: &str,
-        role: &str,
-        content: &str,
-        usage_stats: &DispatcherMessageUsageStats,
-        thinking_content: Option<&str>,
-        thinking_elapsed_ms: u64,
-    ) -> Result<DispatcherMessageRecord> {
-        let db = self.clone();
-        let wid = workspace_id.to_string();
-        let role = role.to_string();
-        let content = content.to_string();
-        let usage = usage_stats.clone();
-        let thinking = thinking_content.map(str::to_string);
-        tokio::task::spawn_blocking(move || {
-            db.add_visible_message_with_usage_and_thinking(
-                &wid,
-                &role,
-                &content,
-                &usage,
-                thinking.as_deref(),
-                thinking_elapsed_ms,
-            )
-        })
-        .await
-        .context("add_visible_message_with_usage_and_thinking spawn_blocking")?
-    }
-
     pub async fn load_llm_history_async(&self, workspace_id: &str) -> Result<Vec<ChatMessage>> {
         let db = self.clone();
         let wid = workspace_id.to_string();
@@ -163,39 +134,6 @@ impl DispatcherDb {
         .context("add_visible_message_with_usage spawn_blocking")?
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn add_visible_message_with_tools_async(
-        &self,
-        workspace_id: &str,
-        role: &str,
-        content: &str,
-        tool_call_id: Option<&str>,
-        tool_name: Option<&str>,
-        tool_result_mode: Option<&str>,
-        tool_calls: Option<&[OutboundToolCall]>,
-    ) -> Result<DispatcherMessageRecord> {
-        let db = self.clone();
-        let wid = workspace_id.to_string();
-        let role = role.to_string();
-        let content = content.to_string();
-        let tool_call_id = tool_call_id.map(str::to_string);
-        let tool_name = tool_name.map(str::to_string);
-        let tool_result_mode = tool_result_mode.map(str::to_string);
-        let tool_calls = tool_calls.map(|c| c.to_vec());
-        tokio::task::spawn_blocking(move || {
-            db.add_visible_message_with_tools(
-                &wid,
-                &role,
-                &content,
-                tool_call_id.as_deref(),
-                tool_name.as_deref(),
-                tool_result_mode.as_deref(),
-                tool_calls.as_deref(),
-            )
-        })
-        .await
-        .context("add_visible_message_with_tools spawn_blocking")?
-    }
     pub async fn get_latest_user_message_content_async(
         &self,
         workspace_id: &str,

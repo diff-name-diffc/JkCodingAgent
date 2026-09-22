@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
-use crate::agent::llm::LlmUsage;
+use crate::agent::db::LlmUsage;
 
 use super::util::{now, DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS};
 use super::DispatcherDb;

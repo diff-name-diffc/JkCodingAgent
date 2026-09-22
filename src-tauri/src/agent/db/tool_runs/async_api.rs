@@ -29,14 +29,6 @@ impl DispatcherDb {
             .context("mark_tool_run_started spawn_blocking")?
     }
 
-    pub async fn load_tool_run_async(&self, id: &str) -> Result<DispatcherToolRunRecord> {
-        let db = self.clone();
-        let id = id.to_string();
-        tokio::task::spawn_blocking(move || db.load_tool_run(&id))
-            .await
-            .context("load_tool_run spawn_blocking")?
-    }
-
     pub async fn finish_tool_run_async(
         &self,
         id: &str,
@@ -64,18 +56,4 @@ impl DispatcherDb {
         .context("attach_tool_run_tree_message spawn_blocking")?
     }
 
-    pub async fn delete_unattached_tool_run_tree_async(
-        &self,
-        workspace_id: &str,
-        root_run_id: &str,
-    ) -> Result<()> {
-        let db = self.clone();
-        let workspace_id = workspace_id.to_string();
-        let root_run_id = root_run_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            db.delete_unattached_tool_run_tree(&workspace_id, &root_run_id)
-        })
-        .await
-        .context("delete_unattached_tool_run_tree spawn_blocking")?
-    }
 }

@@ -37,8 +37,8 @@ use crate::agent::rig_ext::tool_result::RigSummaryModel;
 use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps, ToolCallSlot};
 use crate::agent::rig_ext::tools::fs::fs_tools;
 use crate::agent::rig_ext::tools::program::program_tool;
-use crate::agent::run_loop::AgentEvent;
-use crate::agent::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES;
+use crate::agent::rig_ext::events::AgentEvent;
+use crate::agent::rig_ext::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES;
 use crate::mcp::McpScope;
 
 /// 一轮项目编排的输入。
@@ -66,13 +66,15 @@ pub struct RigOrchestratorAgent {
 impl RigOrchestratorAgent {
     pub fn new(config: DispatcherAgentConfig, db: DispatcherDb) -> Self {
         let specs = resolve_purpose_specs(&AhaSettingsV2::default(), AgentContext::Project, &config);
+        // env 兜底初值（`CONTEXT_DEBUG`）；run 构建时以设置为准覆盖。
+        let context_debug = config.context_debug;
         Self {
             config,
             db,
             app_handle: None,
             specs,
             allowed_runtime_tools: Vec::new(),
-            context_debug: false,
+            context_debug,
             review_config: None,
             image_credentials: Default::default(),
         }
@@ -183,6 +185,27 @@ impl RigOrchestratorAgent {
 
         // 历史（不含 system）：系统提示逐轮由 preamble 重建。
         let history = db.load_llm_history_async(workspace_id).await?;
+        // 上下文窗口诊断（context_debug 开启时留痕）：接近容量上限时记录，
+        // 便于事后定位「上下文被挤爆」类问题（对齐旧编排器的诊断点）。
+        if self.context_debug {
+            let estimated = crate::agent::db::DispatcherDb::estimate_context_tokens(&history);
+            let capacity = self
+                .specs
+                .chat
+                .context_window
+                .unwrap_or(crate::agent::db::DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS);
+            if estimated > capacity * 8 / 10 {
+                crate::agent::debug::ContextDebugLogger::new(true, workspace.clone()).log(
+                    "上下文窗口接近上限",
+                    vec![
+                        ("工作区".to_string(), workspace_id.to_string()),
+                        ("估算tokens".to_string(), estimated.to_string()),
+                        ("容量".to_string(), capacity.to_string()),
+                    ],
+                    vec![],
+                );
+            }
+        }
         let messages = chat_history_to_rig(history).await;
 
         let model = PurposeSwitchingModel::from_specs(&self.specs)

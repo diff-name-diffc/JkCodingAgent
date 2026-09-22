@@ -1,6 +1,5 @@
 //! 工具运行台账回归测试：生命周期单向推进、终态幂等、树语义与级联清理。
 
-use rusqlite::params;
 use uuid::Uuid;
 
 use super::{FinishToolRun, NewToolRun, ToolRunTraceContext, TOOL_RUN_ORIGIN_MODEL};
@@ -257,40 +256,6 @@ fn traced_run_rejects_cross_workspace_parent_and_duplicate_sequence() {
         .create_tool_run_with_trace(new_run("ws-a"), trace)
         .expect_err("duplicate sibling sequence must fail");
     assert!(duplicate.to_string().contains("create dispatcher tool run"));
-}
-
-#[test]
-fn deleting_parent_cascades_to_descendants() {
-    let db = test_db();
-    let root = db.create_tool_run(new_run("ws")).expect("create root");
-    let child = db
-        .create_tool_run_with_trace(
-            new_run("ws"),
-            ToolRunTraceContext {
-                parent_run_id: Some(root.id.clone()),
-                origin: "tool_program".to_string(),
-                step_id: None,
-                sequence: 0,
-            },
-        )
-        .expect("create child");
-
-    assert!(db
-        .delete_unattached_tool_run_tree("other-ws", &root.id)
-        .expect_err("cross-workspace delete must fail")
-        .to_string()
-        .contains("not found"));
-    db.delete_unattached_tool_run_tree("ws", &root.id)
-        .expect("delete parent tree");
-    let conn = db.conn().expect("db conn");
-    let remaining: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM dispatcher_tool_runs WHERE id IN (?1, ?2)",
-            params![&root.id, &child.id],
-            |row| row.get(0),
-        )
-        .expect("count remaining runs");
-    assert_eq!(remaining, 0);
 }
 
 #[test]

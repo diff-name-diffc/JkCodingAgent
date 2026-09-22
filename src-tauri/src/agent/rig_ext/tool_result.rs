@@ -17,7 +17,7 @@ use tauri::ipc::Channel;
 use super::llm_usage_from_rig;
 use crate::agent::common::{emit, serialize_tool_arguments, UsageTracker};
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, ToolArtifactDraft};
-use crate::agent::run_loop::AgentEvent;
+use crate::agent::rig_ext::events::AgentEvent;
 use summary::extract_structured_summary;
 
 pub(crate) mod summary;

@@ -135,6 +135,8 @@ pub fn resolve_purpose_specs(
         },
     };
 
+    // 视觉槽位：设置条目优先；无有效条目时回退 env 兜底（`VISION_MODEL_NAME`，
+    // 只有模型名、沿用聊天槽位凭据——对齐旧 `OrchestratorAgent` 构造期语义）。
     let vision = active_vision
         .filter(|v| !v.model.trim().is_empty())
         .map(|v| PurposeModelSpec {
@@ -153,6 +155,18 @@ pub fn resolve_purpose_specs(
             context_window: v.context_window.map(u64::from),
             temperature,
             enable_thinking: true,
+        })
+        .or_else(|| {
+            let env_model = config.vision_model.trim();
+            (!env_model.is_empty()).then(|| PurposeModelSpec {
+                api_key: chat.api_key.clone(),
+                api_base: chat.api_base.clone(),
+                model: env_model.to_string(),
+                max_tokens: chat.max_tokens,
+                context_window: chat.context_window,
+                temperature,
+                enable_thinking: true,
+            })
         });
 
     let summary = PurposeModelSpec {

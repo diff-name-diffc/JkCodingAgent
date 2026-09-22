@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::agent::llm::{ToolDefinition, ToolFunctionDefinition};
+
 
 /// 工具结果语义压缩的通用触发阈值：`compress=true` 且原始结果超过该字符数
 /// 才调用摘要模型，不超过则直接返回原文（小结果不付额外 LLM 往返）。
@@ -253,14 +253,12 @@ impl ToolSpec {
         }
     }
 
-    pub fn to_definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            kind: "function".to_string(),
-            function: ToolFunctionDefinition {
-                name: self.name.clone(),
-                description: self.description.clone(),
-                parameters: self.parameters.clone(),
-            },
+    /// 模型可见工具定义（rig 形态）。
+    pub fn to_definition(&self) -> rig::completion::ToolDefinition {
+        rig::completion::ToolDefinition {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            parameters: self.parameters.clone(),
         }
     }
 
@@ -804,10 +802,9 @@ mod tests {
 
         let definition = spec.to_definition();
 
-        assert_eq!(definition.kind, "function");
-        assert_eq!(definition.function.name, "read_file");
-        assert_eq!(definition.function.description, "读取文件");
-        assert_eq!(definition.function.parameters["type"], "object");
+        assert_eq!(definition.name, "read_file");
+        assert_eq!(definition.description, "读取文件");
+        assert_eq!(definition.parameters["type"], "object");
     }
 
     #[test]

@@ -178,7 +178,7 @@ fn image_segment(image_id: &str) -> super::super::content::ContentSegment {
 
 #[test]
 fn user_image_segments_expose_resolvable_chat_image_reference() {
-    use crate::agent::llm::{ChatMessageContentPart, ChatMessageImageSource};
+    use crate::agent::db::{ChatMessageContentPart, ChatMessageImageSource};
 
     let segments = vec![
         image_segment("563ff830-d978-4c77-b1ec-ba8b620752aa"),

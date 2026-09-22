@@ -3,7 +3,7 @@
 //! 迁移自旧 `agent/tools/runtime.rs`（`create_and_start_tool_run_with_trace` /
 //! `finish_tool_run`）与 `registry.rs` 的参数准备片段（schema 默认值注入 +
 //! Draft 2020-12 校验），但不再经 `ToolRegistry`：策略来源改为工具名
-//! （`crate::agent::tools::spec::ToolSpec` 策略表），参数校验直接对
+//! （`crate::agent::rig_ext::tools::spec::ToolSpec` 策略表），参数校验直接对
 //! `PortableDynamicTool` 的 definition 做。
 
 use serde_json::{json, Value};
@@ -11,8 +11,8 @@ use tauri::ipc::Channel;
 
 use crate::agent::common::emit;
 use crate::agent::db::{DispatcherDb, FinishToolRun, NewToolRun, ToolRunTraceContext};
-use crate::agent::run_loop::AgentEvent;
-use crate::agent::tools::spec::ToolSpec;
+use crate::agent::rig_ext::events::AgentEvent;
+use crate::agent::rig_ext::tools::spec::ToolSpec;
 
 /// 校验错误摘要最多列出的条数（对齐旧 `MAX_SUMMARIZED_ERRORS`）。
 const MAX_SUMMARIZED_ERRORS: usize = 8;

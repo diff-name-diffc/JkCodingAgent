@@ -35,7 +35,7 @@ use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps, ToolCallS
 use crate::agent::rig_ext::tools::exec::exec_tools;
 use crate::agent::rig_ext::tools::media::media_tools;
 use crate::agent::rig_ext::tools::mcp::mcp_tools;
-use crate::agent::run_loop::AgentEvent;
+use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::sub_agent::config::SubAgentConfig;
 use crate::agent::sub_agent::SubAgentManager;
 use crate::mcp::{tool_definitions_from_snapshot, McpRegistry, McpScope, ResolvedMcpTool};

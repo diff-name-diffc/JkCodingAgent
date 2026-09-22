@@ -8,7 +8,7 @@ use tokio::time::{timeout, Duration};
 
 use rig::completion::CompletionModel;
 
-use crate::agent::llm::{ChatMessage, ChatMessageContentPart, LlmUsage};
+use crate::agent::db::{ChatMessage, ChatMessageContentPart, LlmUsage};
 
 use super::message::chat_history_to_rig;
 use super::model::{build_completion_request, completions_model, PurposeModelSpec};

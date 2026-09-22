@@ -23,7 +23,7 @@ use super::types::{
 use crate::agent::rig_ext::agents::normalize_summary_model;
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::AhaSettingsV2;
-use crate::agent::llm::LlmUsage;
+use crate::agent::db::LlmUsage;
 use crate::agent::rig_ext::llm_usage_from_rig;
 use crate::agent::rig_ext::model::{
     build_completion_request, completions_model, PurposeModelSpec,

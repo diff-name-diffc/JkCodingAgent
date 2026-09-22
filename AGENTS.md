@@ -64,7 +64,9 @@ App
     └── AppSettingsDialog             — 应用设置（智能体 / RAG / SSH / 子智能体配置）
 ```
 
-异步状态由 Tauri 事件驱动（`@tauri-apps/api/event` 的 `listen()`），当前在用的事件：
+异步状态由 Tauri 事件驱动（`@tauri-apps/api/event` 的 `listen()`）。Agent 运行事件的类型契约在
+`src-tauri/src/agent/rig_ext/events.rs`（`AgentEvent` / `AgentTurn`，字段为前端契约，改动即破坏前端），
+由 `rig_ext::r#loop` 在消费 rig 流式事件时发出。当前在用的事件：
 - `dispatcher-session-updated` — 会话记录变更（消息、标题、用量等）
 - `sub-agent-event` — 子智能体执行事件流
 - `graph-plan-updated` — 图编排计划登记/状态流转（收到后重新 `graph_plan_get`）
@@ -80,7 +82,7 @@ App
 
 | 模块 | 职责 |
 |------|------|
-| `agent/` | dispatcher 智能体核心：`run_loop/`（运行循环）、`llm.rs`（模型调用）、`tools/`（工具注册表 + builtin 工具）、`summary.rs`（工具输出分类/摘要）、`sub_agent/`（子智能体）、`graph/`（图编排：定义/校验/执行引擎/`acp_exec` ACP 节点执行器/命令）、`db/`（SQLite schema 与读写）、`commands.rs`（Tauri 命令）、`config.rs`（智能体配置 + `~/.jkcodingagent` 初始化） |
+| `agent/` | dispatcher 智能体核心（基于 **rig-core 0.42 portable contracts**）：`rig_ext/`（运行时：`model`（用途槽位→rig 模型）/`message`（消息桥）/`r#loop`（多轮工具循环 + 三段式执行策略 + 工具台账 + 协议拦截）/`tool_result`（结果落盘与压缩）/`summary`（标题/关键字）/`events`（前端事件契约）/`agents`（三类 Agent 装配 + 协议工具 + 画布 DSL + 提示词）/`sub_agent`（子智能体运行时与工具）/`tools`（rig 工具面：fs/exec/media/program/mcp/spec 策略表 + 参数校验/台账）/`review`（命令审查上下文）/`models`（模型列表拉取））、`graph/`（图编排：定义/校验/执行引擎/`acp_exec` ACP 节点执行器/命令）、`db/`（SQLite schema 与读写 + `contract.rs` 落库 JSON 契约）、`commands/`（Tauri 命令）、`config.rs`（智能体配置 + `~/.jkcodingagent` 初始化）、`ssh_review.rs`（命令安全审查，rig 模型）、`sub_agent/{config,manager,db,commands}.rs`（子智能体配置与持久化） |
 | `task_runtime/` | `pty.rs`（PTY 创建/读写）、`session.rs`（会话/输出兜底） |
 | `project/` | `storage.rs`（受管项目/会话存储）、`config.rs`（项目配置）、`mcp.rs`（项目级 MCP） |
 | `mcp/` | MCP 子系统：`McpScope{Global, Project}` 显式作用域模型——`Global`（`mcp_servers` 全局注册表，所有聊天共享单一快照）与 `Project`（全局 ∪ 项目 `.jkcodingagent/mcp.json`，同名项目覆盖）；`registry.rs`（作用域缓存/合并/工具执行）、`transport.rs`（stdio/streamable_http/unix_socket_http + 诊断）、`project_file.rs`（项目文件读写）、`commands.rs`（Tauri 命令，项目命令前置路径校验） |
@@ -111,7 +113,7 @@ App
 - 资源目录：`~/.jkcodingagent/`（含 `memory/`、`skills/`、`local_env/zsh/`、`chat-images/` 等）
 - **应用配置的权威源是全局库**（分层原则：应用生命周期配置一律全局一份；只有随项目变化之物放项目目录）：SSH 服务器/主机密钥/审计（`ssh_servers` 等表）、受管项目注册表（`projects` 表）、MCP 全局注册表（`mcp_servers` 表，与项目级 `mcp.json` 并存、同名项目覆盖）、应用级键值配置（`app_config` 表：全局浏览器选项/RAG 配置）。外观主题偏好（system/light/dark）为 `dispatcher_settings.theme`，随 `AhaSettingsV2` 统一经 `aha_get_settings_v2` / `aha_save_settings_v2` 存取。
 - 主要表：`dispatcher_settings`、`ssh_servers`/`ssh_host_keys`/`ssh_audit_log`、`projects`、`mcp_servers`、`app_config`、`sub_agents`、`dispatcher_sessions`、`dispatcher_messages`、`dispatcher_session_token_usage`、`dispatcher_tool_artifacts`、`chat_images`、`graph_plans`、`graph_node_runs`、分类、关键字索引、python 运行记录等（schema 见 `agent/db/schema.rs`）
-- 模型配置：`dispatcher_settings.model_library` 为唯一权威；用途槽位以 `libraryId` 引用库条目（保存剥离凭据**与容量**、读取回填）。**容量参数同样以库条目为统一数据源**：`maxTokens`（输出预算，未配置 → 请求体省略 max_tokens、由服务端默认预算接管，历史硬编码 8192 已删除）与 `contextWindow`（上下文窗口 tokens，未配置 → 回退 `DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS` = 1M；驱动会话容量展示、上下文占用告警与子智能体滑窗裁剪阈值——字符预算 = 窗口 × 4 字符/token × 1/2，见 `sub_agent/runtime/context.rs` 的 `context_budget_chars`）。环境变量回退（DASHSCOPE_*/MODEL_NAME 等）默认关闭，仅 `AHA_ALLOW_ENV_PROVIDER=1` 显式开启。
+- 模型配置：`dispatcher_settings.model_library` 为唯一权威；用途槽位以 `libraryId` 引用库条目（保存剥离凭据**与容量**、读取回填）。**容量参数同样以库条目为统一数据源**：`maxTokens`（输出预算，未配置 → 请求体省略 max_tokens、由服务端默认预算接管，历史硬编码 8192 已删除）与 `contextWindow`（上下文窗口 tokens，未配置 → 回退 `DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS` = 1M；驱动会话容量展示、上下文占用告警与子智能体滑窗裁剪阈值——字符预算 = 窗口 × 4 字符/token × 1/2，见 `agent/rig_ext/sub_agent/context.rs` 的 `context_budget_chars`）。环境变量回退（DASHSCOPE_*/MODEL_NAME 等）默认关闭，仅 `AHA_ALLOW_ENV_PROVIDER=1` 显式开启。
 
 **存储 schema 版本策略（桌面应用基线 + 前向迁移）**
 
@@ -126,7 +128,7 @@ App
 
 ## 项目配置
 
-应用级与项目级配置、智能体系统提示词/工具集、SSH/RAG/子智能体设置统一在 `AppSettingsDialog` 中编辑，存全局库。项目目录下仅保留随仓库共享的配置（`.jkcodingagent/config.toml` 的 `[git].commit_prompt`）与项目级 MCP（`.jkcodingagent/mcp.json`，同名覆盖全局注册表）。聊天图片统一走 `chat-image://{image_id}` 协议：唯一保存入口 `chat_images::save_image` 落盘 `~/.jkcodingagent/chat-images/{workspace_id}/{image_id}.{ext}` 并登记 `chat_images` 表（用户粘贴、generate_image/edit_image 产物与 fetch_image 下载的 URL 图片共用）；前端 `<img>` 经自定义 `chat-image` URI scheme 直出（`convertFileSrc(id, "chat-image")`），asset 协议仅兜底旧消息里的绝对路径 markdown。LLM 侧：`attach_turn_tool_images`（`agent/llm.rs`）在每次请求前把本轮 assistant/tool 消息文本里引用的 `chat-image://` 附加为当前用户消息的视觉输入（上限 3 张、跨迭代去重），主模型直看工具产图并自动触发 vision 槽位切换。
+应用级与项目级配置、智能体系统提示词/工具集、SSH/RAG/子智能体设置统一在 `AppSettingsDialog` 中编辑，存全局库。项目目录下仅保留随仓库共享的配置（`.jkcodingagent/config.toml` 的 `[git].commit_prompt`）与项目级 MCP（`.jkcodingagent/mcp.json`，同名覆盖全局注册表）。聊天图片统一走 `chat-image://{image_id}` 协议：唯一保存入口 `chat_images::save_image` 落盘 `~/.jkcodingagent/chat-images/{workspace_id}/{image_id}.{ext}` 并登记 `chat_images` 表（用户粘贴、generate_image/edit_image 产物与 fetch_image 下载的 URL 图片共用）；前端 `<img>` 经自定义 `chat-image` URI scheme 直出（`convertFileSrc(id, "chat-image")`），asset 协议仅兜底旧消息里的绝对路径 markdown。LLM 侧：`rig_ext::message::attach_turn_tool_images` 在每次请求前把本轮 assistant/tool 消息文本里引用的 `chat-image://` 附加为当前用户消息的视觉输入（上限 3 张、跨迭代去重），主模型直看工具产图并自动触发 vision 槽位切换（`rig_ext::model::PurposeSwitchingModel` 按请求是否含图在 chat/vision 槽位间委托）。
 
 **设置中心结构（2025 重构后）：** 外壳 `components/AppSettingsDialog.tsx`（左侧栏单层导航 + 内容区两层结构），页面与共享组件在 `components/settings/`：
 - `use-aha-settings.ts` — Aha 设置的统一 store + 失焦/变更自动保存管线（debounce 400ms 整体调用 `aha_save_settings_v2`），通过 React Context 提供给各设置页。
@@ -169,53 +171,69 @@ App
 
 ---
 
-## 新增 Agent 工具流程
+## 新增 Agent 工具流程（rig 形态）
 
-新增工具涉及 3 个文件（必选）+ 1 个文件（可选），前端无需修改。
+工具是 rig `PortableDynamicTool`（`rig_ext/tools/` 下的构造器返回 `Vec<PortableDynamicTool>`），
+业务逻辑写在同目录文件中，**不再有自实现的工具 trait/注册表**。
 
-### 1. 实现工具 — `src-tauri/src/agent/tools/builtin/<tool_name>.rs`
-
-创建新文件，实现 `AgentTool` trait（定义在 `registry.rs`）：
+### 1. 实现工具 — `src-tauri/src/agent/rig_ext/tools/<组>.rs`
 
 ```rust
-pub(super) fn my_tool() -> Box<dyn AgentTool> { Box::new(MyTool) }
-struct MyTool;
-#[async_trait]
-impl AgentTool for MyTool {
-    fn name(&self) -> &'static str { "my_tool" }
-    fn description(&self) -> &'static str { "工具用途描述" }
-    fn parameters(&self) -> Value { json!({ "type": "object", "properties": { ... } }) }
-    async fn execute(&self, args: &Value, ctx: &ToolContext) -> String { ... }
+pub(crate) fn my_tool(deps: &RigToolDeps) -> PortableDynamicTool {
+    let parameters = with_compression_parameters(json!({ /* JSON Schema */ }), false,
+        COMMAND_FORCE_COMPRESS_AFTER_CHARS, "何时值得压缩的文案");
+    let workspace = deps.workspace.clone();
+    PortableDynamicTool::new("my_tool", "工具用途描述（逐字写清约束，模型行为依赖它）", parameters,
+        move |args| {
+            let workspace = workspace.clone();
+            Box::pin(async move {
+                // 参数提取：super::common::{string_arg, usize_arg, boolish_arg, ...}
+                // 路径沙箱：super::common::resolve_path(&workspace, restrict, &extra, raw)
+                // 阻塞 I/O：tokio::task::spawn_blocking；取消：deps.cancel_rx
+                // 成功：Ok(ToolOutput::text(...))；失败：Err(ToolExecutionError::{invalid_args,refused,timeout,other})
+                //   —— 错误消息以「错误：」开头；可恢复重试用 .with_retryable(true)；
+                //      致命（如委派失败，父循环据此中止）用 .with_code("fatal")
+            })
+        })
 }
 ```
 
-- 参数提取用 `common.rs` 中的 `string_arg` / `boolish_arg` 等辅助函数
-- 路径参数必须通过 `resolve_path(ctx, raw)` 确保不越界
-- 错误消息以 `"错误："` 开头
-- 如需 `result_mode` 参数，调用 `with_result_mode_parameter(schema, default, guidance)`
+要点：
+- 工具的**构造期依赖**来自 `RigToolDeps`（见 `rig_ext/tools/deps.rs`）：workspace/白名单、MCP 作用域、
+  DB、SSH、子智能体管理器、取消信号、视觉/图像凭据、审查上下文（`review`）。逐次调用注入的
+  `tool_call_id` 用 `deps.tool_call_id` 槽位（`ToolCallSlot`）。
+- 需要命令执行/外部效应的工具**自己带 fail-closed 审查**（`deps.review` + `ssh_review::review_shell_command`），
+  与 local_zsh / ssh_exec / sync_directory / MCP 桥一致。
+- 压缩阈值与内联上限取自 `rig_ext/tool_result.rs`（命令类 12000，默认 5000）；schema 文案必须与
+  运行时策略一致（`with_compression_parameters` 的阈值参数）。
 
-### 2. 注册工具 — `src-tauri/src/agent/tools/builtin/mod.rs`
+### 2. 挂进工具面 — 相应组的入口
 
-两处：顶部 `mod my_tool;` + 按工具的可见面加入对应构造函数：
-- 聊天 Agent（plain chat）可见 → `plain_chat_tools()`；
-- 编排器只读/协议壳 → `orchestrator_tools()`；
-- 架构画布专用 → `architecture_tools()`。
+按工具的可见面加入对应函数返回值：
+- 普通聊天 → `rig_ext/tools/exec.rs`（+ `media.rs`）→ 由 `rig_ext/agents/plain_chat.rs` 的 `build_surface` 汇总；
+- 编排器数据面（read_file/list_dir/glob/grep）→ `rig_ext/tools/fs.rs`，并登记进
+  `rig_ext/tools/mod.rs` 的 `ORCHESTRATOR_RUNTIME_TOOL_NAMES`；
+- 子智能体 → `rig_ext/sub_agent/runner.rs` 的 `build`（继承普通聊天 profile）；
+- 协议壳（submit_graph / graph_plan_report / message）→ `rig_ext/agents/project_tools.rs`，
+  真实动作在 `RigOrchestratorProtocol`（实现 `rig_ext::r#loop::ProtocolToolHandler`）中拦截。
 
-`ToolRegistry::plain_chat_tools` / `orchestrator_tools` / `architecture_tools`（`tools/mod.rs`）是仅有的三个生产注册表构造点，分别被 `agents/plain_chat`、`agents/project`、`agents/architecture` 使用；图节点不经 in-process 工具注册表（由 ACP 子进程自带工具面执行）。
+### 3. 登记策略表 — `src-tauri/src/agent/rig_ext/tools/spec.rs`
 
-> **图节点（ACP）的权限边界**：每个节点是一个独立的 claude-agent-acp 子进程，自带 Read/Write/Edit/Bash，不经 AI 命令审查门禁。执行器信任模型（`graph/acp_exec/launcher.rs` + `process.rs`）：默认托管模式把版本锁定的官方包安装到 `~/.jkcodingagent/acp-agent/`（`--ignore-scripts`）后以固定路径 `node <entry>` 启动（裸程序名优先从固定候选绝对路径解析，PATH 仅兜底）；子进程 `env_clear` 后仅注入白名单变量与显式凭据；stdout 单行超 1 MiB 即 fail-closed 中止；进程组守卫在会话结束/取消/超时时 SIGKILL 整组。宿主侧权限约束：自动应答（`mapping.rs::decide_permission`）对 coding 节点只选 allow_once（无则取消，绝不升级为 allow_always 常驻授权），read_only 节点与**声明路径越出工作区**的调用一律拒绝；read_only 节点的 plan 权限模式设置失败时 fail-closed（`client.rs::apply_mode`）；节点输出/思考缓冲有字节上限；越界路径以 `[工作区外]` 前缀保留在节点审计记录（affected_files）中。注意：无 locations 的调用（如 Bash）无法按路径约束——coding 节点的 shell 能力本质不受工作区限制，唯一人工闸门是 `pause_before_write` 检查点（每次运行首个可写节点前暂停一次）。
+在 `TOOL_POLICY_TABLE` 补一行（category/access/safety/timeout/compress/parallel/self-managed）。
+该表是**台账元数据、审查门禁判定、统一超时与结果策略的唯一来源**；未收录的工具名走 fail-closed 兜底
+（只读+需审查+串行）。
 
-### 3. 工具输出压缩（可选）— `src-tauri/src/agent/summary.rs`
+### 4. 工具输出压缩（可选）
 
-工具结果压缩是「显式声明 + 阈值」双条件驱动、无需注册：只有 `compress=true`（schema default 或模型显式传入）**且**原始结果超过该工具的压缩阈值时，`persist_tool_result_with_compression` 才调用摘要模型压缩；低于阈值即使声明了压缩也直接返回原文（压缩是串行 LLM 往返，小结果不值得）。阈值随工具策略声明（`agent/tools/spec.rs`）：默认 `DEFAULT_FORCE_COMPRESS_AFTER_CHARS` = 5000，命令执行类工具（local_zsh / ssh_exec）用 `COMMAND_FORCE_COMPRESS_AFTER_CHARS` = 12000（高于 8000 内联截断线，截断兜不住才摘要）。新增带 `compress` 参数的工具时，`with_compression_parameters` 传入的阈值必须与策略表一致（文案与运行时口径漂移会误导模型）。摘要调用超时 15s，失败或超时回退零 LLM 的规则抽取 `extract_structured_summary(tool_name, raw_output)`（`summary.rs`）——新工具如需定制兜底摘要，在该函数的 `match tool_name` 中加一个分支即可。
+压缩是「显式声明（`compress=true`）+ 阈值」双条件驱动：只有声明且原文超过该工具阈值时
+`rig_ext/tool_result.rs` 才调用摘要模型（15s 超时），失败/超时回退零 LLM 的
+`extract_structured_summary` 规则抽取；未摘要的超长结果按内联上限确定性截断，完整原文进工具产物。
+阈值随策略表声明（默认 5000，命令类 12000）。
 
-### 4. 添加配置（可选）— `src-tauri/src/agent/config.rs`
+### 5. 配置（可选）
 
-如工具需要 API Key / URL 等配置：在 `DispatcherAgentConfig` 加字段 → `load()` 中从环境变量读取 → 在构建 `ToolContext` 处传入（项目编排器：`agents/project/iteration.rs`；聊天 Agent：`agents/plain_chat/mod.rs`）。
-
-> 特例：`submit_graph`（图编排收口工具）只注册进编排器专用注册表（`ToolRegistry::orchestrator_tools`），不进 `plain_chat_tools`，避免污染聊天上下文与设置页工具清单。
-
----
+需要 API Key / URL 等配置时：`config.rs` 的 `DispatcherAgentConfig` 加字段 → `load()` 读取 →
+在 `rig_ext/agents/*.rs` 构造 `RigToolDeps` 时传入。
 
 ## 已知技术债务与防劣化规则
 

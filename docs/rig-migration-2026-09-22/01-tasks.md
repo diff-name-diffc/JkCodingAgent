@@ -202,7 +202,41 @@ LLM 调用迁移）；`mcp/` 注册表（桥接入 rig 工具面）；PTY/browse
 - **测试**：新增协议收口端到端测试（动作优先收口 / 可重试错误继续循环）；
   全套 695 测试绿、clippy 0 告警、Tauri 命令契约通过。
 
-## 7. 进度记录
+## 7. Phase 5 完成记录（提交 e8b735f）
+
+**已删除（旧自实现 Agent 运行时）**：`agent/llm.rs` + `agent/llm/`（自研
+OpenAI 兼容客户端/SSE 解析/请求构造）、`agent/run_loop/`（运行骨架与
+`RunLoopAgent`/`AgentRunAdapter`）、`agent/agents/`（旧三类 Agent 残留）、
+`agent/tools/`（注册表/broker/capability/surface/context/result/runtime/
+旧 MCP 桥/builtin 工具）、`src/tools/image_generator.rs`、
+`agent/prompt/runtime_workspace.rs`、`agent/state/tool_catalog.rs`，
+以及迁移期 `agent/mod.rs` 的 `#![allow(dead_code)]`。
+
+**契约类型归位（存活必需）**：
+- `agent/db/contract.rs`：落库 JSON 契约（`ChatMessage` 及其 parts/图片源、
+  `OutboundToolCall`/`FunctionCall`、`LlmUsage`/`LlmPromptTokensDetails`、
+  `MAX_TURN_TOOL_IMAGE_ATTACHMENTS`、`messages_contain_images`）——库中既有
+  数据的读写形状，与「模型调用」无关。
+- `agent/rig_ext/events.rs`：前端事件与收口契约（`AgentEvent`/`AgentTurn`）。
+- `agent/rig_ext/tools/spec.rs`：工具策略表（台账元数据/审查门禁/超时/结果
+  策略的唯一来源）+ 上限常量（`MAX_TOOL_CALLS_PER_BATCH` 等）。
+- `agent/rig_ext/models.rs`：模型列表拉取（`/models` 两种方言）。
+
+**语义等价性说明（有意偏差，均已记录）**：
+1. 主循环工具执行串行（旧聊天对只读工具有 ≤4 并发批；子智能体路径保留并发批）。
+2. `UsageTracker` 去掉「子智能体调用期间暂停计时」（token/秒 在
+   `call_sub_agent` 期间会偏低，不再人为剔除暂停时长）。
+3. 空响应诊断文案改用 rig 运行时默认（不再回显原始 SSE 原文）。
+4. 系统提示快照化（除系统时间逐轮刷新）。
+5. 父聊天工具面不含旧的 `notify_user_progress`（该工具只在子智能体上下文有意义）。
+
+**验证**：`cargo check` / `cargo test`（537 通过）/ `cargo clippy --all-targets`
+（0 告警）；`pnpm lint` / `pnpm test`（569 通过）/ `pnpm build` /
+`pnpm contract:check`（115 命令）/ `pnpm styles:report`（0 无引用）全绿；
+全仓 `agent::llm` / `OpenAiCompatProvider` / `AgentTool` / `ToolRegistry` /
+`CapabilityBroker` 零引用（仅注释中的历史说明）。
+
+## 8. 进度记录
 
 | 任务 | 状态 | 执行者 | 完成时间 | 备注 |
 |------|------|--------|----------|------|
@@ -216,9 +250,9 @@ LLM 调用迁移）；`mcp/` 注册表（桥接入 rig 工具面）；PTY/browse
 | T2.4 | ✅ 完成 | agent-9 | 2026-09-22 | mcp.rs 桥（执行期重解析替代 spec hash 复核） |
 | T3.1 | ✅ 完成 | 主智能体 | 2026-09-22 | b3dfc07；旧 PlainChatAgent 已删除，端到端测试绿 |
 | T3.2 | ✅ 完成 | 主智能体 | 2026-09-22 | d1aa279；旧 agents/project 已删除 |
-| T3.3 | 未开始 | - | - | - |
+| T3.3 | ✅ 完成 | 主智能体 | 2026-09-22 | e3c42a3；画布 DSL 随迁，旧 ArchitectureAgent 已删除 |
 | T3.4 | ✅ 完成 | 主智能体 | 2026-09-22 | 04eedff/b3dfc07；旧 sub_agent runtime/tool 已删除 |
-| T4.1 | 未开始 | - | - | - |
-| T4.2 | 未开始 | - | - | - |
-| T5.1 | 未开始 | - | - | - |
-| T5.2 | 未开始 | - | - | - |
+| T4.1 | ✅ 完成 | 主智能体 | 2026-09-22 | af8eb31；summary 迁入 rig_ext（旧 summary/ 已删） |
+| T4.2 | ✅ 完成 | 主智能体 | 2026-09-22 | af8eb31/72bf00e；审查/验收/Python/连通性/提交信息全部迁移 |
+| T5.1 | ✅ 完成 | 主智能体 | 2026-09-22 | e8b735f；旧运行时零残留 |
+| T5.2 | ✅ 完成 | 主智能体 | 2026-09-22 | cargo+pnpm 全量验证通过；AGENTS.md 已更新 |

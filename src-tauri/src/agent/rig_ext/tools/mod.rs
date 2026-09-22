@@ -27,5 +27,6 @@ pub(crate) mod fs;
 pub(crate) mod mcp;
 pub(crate) mod media;
 pub(crate) mod program;
+pub(crate) mod run_record;
 
 pub(crate) use deps::RigToolDeps;

@@ -17,6 +17,7 @@
 
 use anyhow::Result;
 use rig::completion::{CompletionModel, Message};
+use rig::tool::ToolExecutionError;
 use rig::message::{ToolCall, ToolResult, ToolResultContent, UserContent};
 use tauri::ipc::Channel;
 use tokio::sync::watch;
@@ -34,14 +35,18 @@ use crate::agent::run_loop::AgentEvent;
 use crate::agent::tools::MAX_TOOL_CALLS_PER_BATCH;
 use crate::shared::error::format_anyhow_error;
 
+mod app_policy;
 mod stream;
 mod support;
 mod surface;
 
+// Phase 3 各 agent 工厂的接入点（当前尚无 crate 内引用）。
+#[allow(unused_imports)]
+pub use app_policy::{AppToolExecutionPolicy, AppToolPolicyConfig};
 // DirectToolExecution 是 Phase 3 接入方的默认策略入口，当前尚无 crate 内引用。
 #[allow(unused_imports)]
 pub use surface::DirectToolExecution;
-pub use surface::{RigToolSurface, ToolExecutionPolicy};
+pub use surface::{RigToolSurface, ToolCallOutcome, ToolExecutionPolicy};
 
 use stream::{consume_stream, split_choice};
 use support::{
@@ -421,12 +426,45 @@ where
             },
         );
 
+        // 三段式策略：before_call（门禁 + 台账开始）→ execute → after_call（台账收尾）。
+        let mut status: &'static str = "succeeded";
+        let mut error_kind: Option<&'static str> = None;
+        let mut fatal_message: Option<String> = None;
+        let mut trace = None;
+
         let result_text = match surface.find(&call.function.name) {
-            None => format!("错误：未注册的工具：{}", call.function.name),
-            Some(tool) => match tool_policy.execute(tool, call).await {
-                Ok(output) => tool_output_text(&output),
-                Err(error) => tool_error_text(&error),
-            },
+            None => {
+                status = "recoverable_error";
+                error_kind = Some("recoverable_error");
+                format!("错误：未注册的工具：{}", call.function.name)
+            }
+            Some(tool) => {
+                let guard = tool_policy.before_call(tool, call).await;
+                trace = guard.trace;
+                match guard.rejection {
+                    Some(error) => {
+                        let (mapped_status, mapped_kind, fatal) = classify_tool_error(&error);
+                        status = mapped_status;
+                        error_kind = Some(mapped_kind);
+                        if fatal {
+                            fatal_message = Some(tool_error_text(&error));
+                        }
+                        tool_error_text(&error)
+                    }
+                    None => match tool_policy.execute(tool, call).await {
+                        Ok(output) => tool_output_text(&output),
+                        Err(error) => {
+                            let (mapped_status, mapped_kind, fatal) = classify_tool_error(&error);
+                            status = mapped_status;
+                            error_kind = Some(mapped_kind);
+                            if fatal {
+                                fatal_message = Some(tool_error_text(&error));
+                            }
+                            tool_error_text(&error)
+                        }
+                    },
+                }
+            }
         };
 
         let policy = surface.policy_for(&call.function.name);
@@ -442,6 +480,23 @@ where
         )
         .await?;
 
+        // 台账收尾：结果已落库后回填 result_mode / message_id（对齐旧
+        // `persist_and_finalize_executed_tool` 的调用顺序）。
+        tool_policy
+            .after_call(
+                trace.as_ref(),
+                call,
+                ToolCallOutcome {
+                    status,
+                    result_mode: record.tool_result_mode.as_deref(),
+                    message_id: Some(record.id.as_str()),
+                    error_kind,
+                    error_message: error_kind.map(|_| result_text.as_str()),
+                    action_kind: None,
+                },
+            )
+            .await;
+
         result_contents.push(UserContent::ToolResult(ToolResult {
             call: call.id.clone(),
             provider: call.provider.clone(),
@@ -452,7 +507,57 @@ where
                 record.context_payload.clone().unwrap_or_else(|| record.plain_text()),
             )],
         }));
+
+        // 致命工具失败：本批已执行结果全部落库与收尾后中止 run
+        //（对齐旧 `ExecutedToolFinalize::FatalTool` 的收口时机）。
+        if let Some(message) = fatal_message {
+            anyhow::bail!("{message}");
+        }
     }
 
     Ok(Some(result_contents))
+}
+
+/// rig 工具错误 → 台账终态（status, error_kind, 是否致命）。
+///
+/// 词表对齐旧 `ToolStatus::as_run_status`：succeeded / recoverable_error /
+/// fatal_error / cancelled。致命语义经 `with_code("fatal")` 显式声明
+/// （如子智能体委派失败）——rig 无 fatal 概念，用错误码承载。
+fn classify_tool_error(error: &ToolExecutionError) -> (&'static str, &'static str, bool) {
+    if error.kind() == rig::tool::ToolErrorKind::Cancelled {
+        return ("cancelled", "cancelled", false);
+    }
+    if error.code() == Some("fatal") {
+        return ("fatal_error", "fatal_error", true);
+    }
+    ("recoverable_error", "recoverable_error", false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_tool_error;
+    use rig::tool::ToolExecutionError;
+
+    #[test]
+    fn cancelled_errors_map_to_cancelled_status() {
+        let (status, kind, fatal) = classify_tool_error(&ToolExecutionError::cancelled("已取消"));
+        assert_eq!((status, kind, fatal), ("cancelled", "cancelled", false));
+    }
+
+    #[test]
+    fn fatal_code_marks_the_run_abort() {
+        let error = ToolExecutionError::other("子智能体执行失败").with_code("fatal");
+        let (status, kind, fatal) = classify_tool_error(&error);
+        assert_eq!((status, kind, fatal), ("fatal_error", "fatal_error", true));
+    }
+
+    #[test]
+    fn ordinary_failures_stay_recoverable() {
+        let error = ToolExecutionError::refused("错误：被安全审查拦截");
+        let (status, kind, fatal) = classify_tool_error(&error);
+        assert_eq!(
+            (status, kind, fatal),
+            ("recoverable_error", "recoverable_error", false)
+        );
+    }
 }

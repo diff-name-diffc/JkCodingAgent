@@ -724,6 +724,12 @@ fn lookup_policy(name: &str) -> Option<&'static ToolPolicyRow> {
     TOOL_POLICY_TABLE.iter().find(|row| row.name == name)
 }
 
+/// 该工具名是否在策略表中登记（rig 运行时的台账审计用：
+/// 未登记的名字按「模型幻觉」标记 `registered=false`，不落策略字段）。
+pub fn is_registered_tool_name(name: &str) -> bool {
+    lookup_policy(name).is_some()
+}
+
 impl ToolProfile {
     fn from_name(name: &str) -> Self {
         match lookup_policy(name) {

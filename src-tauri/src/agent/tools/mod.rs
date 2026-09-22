@@ -8,7 +8,7 @@ mod registry;
 mod result;
 pub(crate) mod review_context;
 mod runtime;
-mod spec;
+pub(crate) mod spec;
 mod surface;
 
 pub use broker::{BrokerAudit, CapabilityBroker, CapabilityInvocation};

@@ -145,7 +145,42 @@ LLM 调用迁移）；`mcp/` 注册表（桥接入 rig 工具面）；PTY/browse
 - 备注：`agent/tools/spec.rs`（策略表）被新运行时代码引用，Phase 5 需
   将其迁入 `rig_ext/tools/`；`#![allow(dead_code)]` 在接入后移除。
 
-## 5. 进度记录
+## 5. T3.1 / T3.4 完成记录（提交 b3dfc07 / f25809f）
+
+**已完成**：
+- **T3.4 子智能体**：`rig_ext/sub_agent/{runner,context,events,tools}.rs`
+  ——rig `CompletionModel::stream()` 驱动的独立循环（滑窗裁剪、整体超时+父取消
+  转发（run 级取消通道在工具面构建前建立，工具在构造期捕获接收端）、单次请求
+  120s 超时、失败重试升级 `force_final_response`、并行只读批、
+  结果 32k 头尾截断、`SubAgentEvent`/轨迹缓冲）；`call_sub_agent` /
+  `list_sub_agents` / `notify_user_progress` 为 `PortableDynamicTool`。
+  旧 `sub_agent/{tool,runtime*}` 已删除。
+- **T3.1 普通聊天**：`rig_ext/agents/{mod,plain_chat}.rs` ——槽位规格 → 模型、
+  工具面（exec+media+MCP+子智能体工具，按允许列表过滤）、系统提示（配置+分类+
+  系统时间（逐轮）+子智能体/MCP 清单+备忘录纪律+运行工作目录块）、历史加载、
+  `run_rig_loop` 执行；`state::build_plain_chat_agent` / 新
+  `run_chat_turn_skeleton` / `dispatcher_send_chat_agent_message` 接线；
+  工具清单枚举切到新工具面（`tool_catalog`/`static_tool_catalog`）。
+  旧 `agents/plain_chat/` 已删除。
+- **端到端验证**（`rig_ext/loop/tests.rs`，rig 官方 mock 模型 + 真实临时 DB +
+  `Channel` 事件通道）：流式增量事件序列、工具 Planned/Started/Finished 配对、
+  三轮消息落库形状（assistant(工具调用)/tool/assistant）、用量落库（primary）、
+  未注册工具回灌可恢复错误而非中断。
+- **迁移期 allow**：`agent/mod.rs` 顶部 `#![allow(dead_code)]`（旧执行路径在
+  Phase 5 删除前产生死代码告警）。**Phase 5 必须删除本 allow**。
+
+**有意偏差（需用户知悉）**：
+1. 主循环工具执行为**串行**（旧聊天对只读工具做 ≤4 并发批）。只读并发批在
+   子智能体运行时保留；聊天路径并发批待 Phase 5 前补齐或评估。
+2. 父聊天工具面不含 `notify_user_progress`（旧注册表把它并入 chat 面，实际
+   调用恒失败——该工具只在子智能体上下文有意义）；子智能体面自带该工具。
+3. 空响应错误文案改用 rig 运行时默认诊断（model/finish_reason/思考字符数/
+   completion_tokens），不再回显原始 SSE 响应体（旧实现回显 4000 字符原文）。
+4. 系统提示除「系统时间」外不再逐轮重建（配置/分类/子智能体清单/MCP 清单在
+   本轮装配期快照；旧实现逐轮重建）。子智能体清单本就在 run 入口预热一次，
+   MCP 清单刷新改为 run 级。
+
+## 6. 进度记录
 
 | 任务 | 状态 | 执行者 | 完成时间 | 备注 |
 |------|------|--------|----------|------|
@@ -157,10 +192,10 @@ LLM 调用迁移）；`mcp/` 注册表（桥接入 rig 工具面）；PTY/browse
 | T2.2 | ✅ 完成 | agent-6 | 2026-09-22 | exec/（local_zsh/ssh_*/ssh_memo/sync_directory）；审查门禁移交 T3 |
 | T2.3 | ✅ 完成 | agent-7（media）+ agent-8（program） | 2026-09-22 | media/ 12 工具 + program/ DSL 执行器 |
 | T2.4 | ✅ 完成 | agent-9 | 2026-09-22 | mcp.rs 桥（执行期重解析替代 spec hash 复核） |
-| T3.1 | 进行中 | 主智能体 | - | rig_ext 基建就绪（05b3de9/7e91863）；装配待续 |
+| T3.1 | ✅ 完成 | 主智能体 | 2026-09-22 | b3dfc07；旧 PlainChatAgent 已删除，端到端测试绿 |
 | T3.2 | 未开始 | - | - | - |
 | T3.3 | 未开始 | - | - | - |
-| T3.4 | 进行中 | 主智能体 | - | 审查/台账/策略层已就绪；runner 待迁移 |
+| T3.4 | ✅ 完成 | 主智能体 | 2026-09-22 | 04eedff/b3dfc07；旧 sub_agent runtime/tool 已删除 |
 | T4.1 | 未开始 | - | - | - |
 | T4.2 | 未开始 | - | - | - |
 | T5.1 | 未开始 | - | - | - |

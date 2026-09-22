@@ -7,6 +7,9 @@
 pub(crate) mod architecture;
 pub(crate) mod architecture_agent;
 pub(crate) mod plain_chat;
+
+#[cfg(test)]
+mod tests;
 pub(crate) mod project;
 pub(crate) mod project_prompt;
 pub(crate) mod project_report;
@@ -143,94 +146,5 @@ pub(crate) fn session_workspace_dir_name(workspace_id: &str) -> String {
         format!("session-{hash:016x}")
     } else {
         format!("{sanitized}-{hash:016x}")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rig::tool::PortableDynamicTool;
-
-    fn tool(name: &str) -> PortableDynamicTool {
-        PortableDynamicTool::new(
-            name,
-            "测试工具",
-            serde_json::json!({"type": "object", "properties": {}}),
-            |_args| Box::pin(async { Ok(rig::tool::ToolOutput::text("ok")) }),
-        )
-    }
-
-    fn names(tools: &[PortableDynamicTool]) -> Vec<&str> {
-        tools.iter().map(PortableDynamicTool::name).collect()
-    }
-
-    #[test]
-    fn empty_allowlist_keeps_builtins_and_drops_all_mcp() {
-        let tools = vec![
-            tool("local_zsh"),
-            tool("browser_read_text"),
-            tool("mcp__srv__list"),
-        ];
-        let filtered = retain_allowed_tools(tools, &[], false);
-        assert_eq!(names(&filtered), vec!["local_zsh", "browser_read_text"]);
-    }
-
-    #[test]
-    fn mcp_tools_require_explicit_allowlist_entry() {
-        let tools = vec![
-            tool("local_zsh"),
-            tool("browser_read_text"),
-            tool("mcp__srv__a"),
-            tool("mcp__srv__b"),
-        ];
-        let configured = vec!["browser_read_text".to_string(), "mcp__srv__a".to_string()];
-        let filtered = retain_allowed_tools(tools, &configured, false);
-        assert_eq!(names(&filtered), vec!["browser_read_text", "mcp__srv__a"]);
-    }
-
-    #[test]
-    fn sub_agent_tools_are_exempt_only_for_builtin_branch() {
-        let tools = vec![
-            tool("browser_read_text"),
-            tool("list_sub_agents"),
-            tool("call_sub_agent"),
-            tool("mcp__srv__a"),
-        ];
-        let configured = vec!["browser_read_text".to_string()];
-        let filtered = retain_allowed_tools(tools, &configured, true);
-        assert_eq!(
-            names(&filtered),
-            vec!["browser_read_text", "list_sub_agents", "call_sub_agent"]
-        );
-    }
-
-    #[test]
-    fn session_workspace_dir_name_is_safe_and_deterministic() {
-        assert_eq!(session_workspace_dir_name("abc-123_XYZ"), "abc-123_XYZ");
-        let dotted = session_workspace_dir_name("../etc");
-        assert!(!dotted.contains("..") && !dotted.contains('/'));
-        assert_eq!(dotted, session_workspace_dir_name("../etc"));
-        assert_ne!(dotted, session_workspace_dir_name("a_b"));
-        let blank = session_workspace_dir_name("  ");
-        assert!(blank.starts_with("session-"));
-    }
-
-    #[test]
-    fn result_policies_come_from_the_spec_table() {
-        let policies = tool_result_policies_from_specs();
-        let value = |name: &str| {
-            policies
-                .iter()
-                .find(|(tool, _)| tool == name)
-                .map(|(_, policy)| *policy)
-        };
-        let local_zsh = value("local_zsh").expect("local_zsh 在策略表中");
-        assert!(local_zsh.default_compress);
-        assert_eq!(
-            local_zsh.force_compress_after_chars,
-            crate::agent::rig_ext::tools::spec::COMMAND_FORCE_COMPRESS_AFTER_CHARS
-        );
-        let read_file = value("read_file").expect("read_file 在策略表中");
-        assert!(!read_file.default_compress);
     }
 }

@@ -180,7 +180,29 @@ LLM 调用迁移）；`mcp/` 注册表（桥接入 rig 工具面）；PTY/browse
    本轮装配期快照；旧实现逐轮重建）。子智能体清单本就在 run 入口预热一次，
    MCP 清单刷新改为 run 级。
 
-## 6. 进度记录
+## 6. T3.2 完成记录（提交 d1aa279 / 7b679ec）
+
+- **协议工具宿主拦截**（`rig_ext/loop/protocol.rs`）：`ProtocolToolHandler`
+  注入 `RigLoopHooks`；循环在批量执行前拦截协议工具（命中则不跑壳工具回调），
+  批量结束后按「协议动作 > 可重试错误 > 最终答复」收口（对齐旧
+  `resolve_loop_outcome` 的优先级），收口文案由处理器 `render_outcome` 合成。
+- **编排器**（`rig_ext/agents/{project,project_prompt,project_tools,project_submit,project_report}.rs`）：
+  提示词/Harness 目录/节点统计、工作区边界校验、四个模型可见入口
+  （run_tool_program + message/submit_graph/graph_plan_report 壳）、
+  `submit_graph` 全流程（解析→继承→校验→落 graph_plans→广播）、
+  `graph_plan_report` 报告、`message` 最终答复；数据面 grant = 策略过滤后的
+  read_file/list_dir/glob/grep，经 `program_tool` 的 granted 文案告知模型。
+- **接线**：`state::build_run_agent`、`dispatcher_send_project_agent_message`
+  → 新 `run_orchestrator_turn_skeleton`；设置页项目工具清单改由
+  `static_runtime_tool_catalog` 枚举（与 grant 同源）；旧 `agents/project/`
+  整目录删除。
+- **顺带迁移**：`scm/git/commit_message.rs` 改走 rig 模型工厂
+  （`resolve_purpose_specs` + `completion`，15s 超时 + 关闭思考链），
+  不再依赖旧 provider 解析函数。
+- **测试**：新增协议收口端到端测试（动作优先收口 / 可重试错误继续循环）；
+  全套 695 测试绿、clippy 0 告警、Tauri 命令契约通过。
+
+## 7. 进度记录
 
 | 任务 | 状态 | 执行者 | 完成时间 | 备注 |
 |------|------|--------|----------|------|
@@ -193,7 +215,7 @@ LLM 调用迁移）；`mcp/` 注册表（桥接入 rig 工具面）；PTY/browse
 | T2.3 | ✅ 完成 | agent-7（media）+ agent-8（program） | 2026-09-22 | media/ 12 工具 + program/ DSL 执行器 |
 | T2.4 | ✅ 完成 | agent-9 | 2026-09-22 | mcp.rs 桥（执行期重解析替代 spec hash 复核） |
 | T3.1 | ✅ 完成 | 主智能体 | 2026-09-22 | b3dfc07；旧 PlainChatAgent 已删除，端到端测试绿 |
-| T3.2 | 未开始 | - | - | - |
+| T3.2 | ✅ 完成 | 主智能体 | 2026-09-22 | d1aa279；旧 agents/project 已删除 |
 | T3.3 | 未开始 | - | - | - |
 | T3.4 | ✅ 完成 | 主智能体 | 2026-09-22 | 04eedff/b3dfc07；旧 sub_agent runtime/tool 已删除 |
 | T4.1 | 未开始 | - | - | - |

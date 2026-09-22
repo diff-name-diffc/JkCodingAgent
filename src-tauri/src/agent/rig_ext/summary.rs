@@ -1,18 +1,42 @@
+//! 会话元数据摘要（标题 / 关键字）：rig 形态。
+//!
+//! 迁移自旧 `agent/summary.rs`：消息构建、标题归一化、关键字 JSON 解析等
+//! 纯逻辑逐条保留；模型调用改为 rig `CompletionModel::completion`（槽位规格
+//! 由调用方解析，见 `commands/session_metadata.rs`）。
+
 use tokio::time::{timeout, Duration};
 
-use super::llm::{
-    messages_contain_images, ChatMessage, ChatMessageContentPart, LlmUsage, OpenAiCompatProvider,
-};
-use crate::shared::error::format_anyhow_error;
+use rig::completion::CompletionModel;
 
-mod tool_summary;
+use crate::agent::llm::{ChatMessage, ChatMessageContentPart, LlmUsage};
 
-#[cfg(test)]
-use tool_summary::{
-    build_tool_summary_messages, extract_tagged_block, normalize_tool_output_line,
-    parse_dual_tool_summary,
-};
-pub use tool_summary::{extract_structured_summary, summarize_tool_result, SummaryError};
+use super::message::chat_history_to_rig;
+use super::model::{build_completion_request, completions_model, PurposeModelSpec};
+use super::llm_usage_from_rig;
+/// 摘要调用失败：面向日志的消息 + 诊断上下文（模型与提示词预览）。
+pub struct SummaryError {
+    message: String,
+    debug_context: String,
+}
+
+impl SummaryError {
+    pub(super) fn new(message: impl Into<String>, debug_context: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            debug_context: debug_context.into(),
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// 诊断上下文（模型/提示词预览）。当前仅用于排障日志。
+    #[allow(dead_code)]
+    pub fn debug_context(&self) -> &str {
+        &self.debug_context
+    }
+}
 
 /// 工具结果摘要是夹在「工具执行完成 → 主模型下一轮」之间的串行步骤，
 /// 超时必须短：压缩是锦上添花，超时即回退零 LLM 的规则抽取
@@ -37,8 +61,7 @@ pub struct SessionTitleMessage {
 // ─── Session Metadata Summary ────────────────────────────────────────────────
 
 pub async fn summarize_session_title<FUsage>(
-    provider: &OpenAiCompatProvider,
-    summary_model: &str,
+    spec: &PurposeModelSpec,
     messages: &[SessionTitleMessage],
     fallback_source: &str,
     current_user_parts: &[ChatMessageContentPart],
@@ -51,8 +74,7 @@ where
         truncate_session_title_source(&build_session_title_source(messages, fallback_source));
     let title_messages =
         build_session_title_messages(source.trim().to_string(), current_user_parts);
-    let raw_title =
-        summarize_with_model(provider, summary_model, title_messages, |_| {}, on_usage).await?;
+    let raw_title = summarize_with_model(spec, title_messages, on_usage).await?;
 
     Ok(normalize_session_title(&raw_title, fallback_source))
 }
@@ -64,8 +86,7 @@ pub fn fallback_session_title(user_prompt: &str) -> String {
 // ─── Session Keywords (uses LLM) ──────────────────────────────────────────────────
 
 pub async fn summarize_session_keywords<FUsage>(
-    provider: &OpenAiCompatProvider,
-    summary_model: &str,
+    spec: &PurposeModelSpec,
     qa_text: &str,
     existing_keywords_json: &str,
     on_usage: FUsage,
@@ -74,16 +95,14 @@ where
     FUsage: FnMut(&LlmUsage) + Send,
 {
     summarize_with_model(
-        provider,
-        summary_model,
+        spec,
         build_keywords_messages(qa_text, existing_keywords_json),
-        |_| {},
         on_usage,
     )
     .await
 }
 
-pub fn parse_keyword_actions(raw: &str) -> Vec<super::db::KeywordAction> {
+pub fn parse_keyword_actions(raw: &str) -> Vec<crate::agent::db::KeywordAction> {
     let text = raw.trim();
     let json_str = if text.starts_with("```") {
         text.lines()
@@ -94,7 +113,7 @@ pub fn parse_keyword_actions(raw: &str) -> Vec<super::db::KeywordAction> {
     } else {
         text.to_string()
     };
-    match serde_json::from_str::<Vec<super::db::KeywordAction>>(&json_str) {
+    match serde_json::from_str::<Vec<crate::agent::db::KeywordAction>>(&json_str) {
         Ok(actions) => actions,
         Err(error) => {
             // 解析失败不能当作「无变更」静默吞掉：记录警告便于排查；
@@ -108,50 +127,71 @@ pub fn parse_keyword_actions(raw: &str) -> Vec<super::db::KeywordAction> {
 // ─── Internal Helpers ─────────────────────────────────────────────────────────────
 
 async fn summarize_with_model(
-    provider: &OpenAiCompatProvider,
-    summary_model: &str,
+    spec: &PurposeModelSpec,
     messages: Vec<ChatMessage>,
-    on_delta: impl FnMut(&str),
     mut on_usage: impl FnMut(&LlmUsage) + Send,
 ) -> Result<String, SummaryError> {
-    let summary_provider = provider.with_model(summary_model);
+    let model_name = spec.model.clone();
     // 诊断上下文取内容最长的那条消息（通常是携带工具原始输出的 user 消息）。
     let prompt = messages
         .iter()
         .max_by_key(|message| message.content.chars().count())
         .map(|message| message.content.as_str())
         .unwrap_or_default();
-    let debug_context = build_summary_debug_context(&summary_provider, prompt);
-    let enable_multimodal = messages_contain_images(&messages);
+    let debug_context = build_summary_debug_context(&model_name, prompt);
+
+    let rig_messages = chat_history_to_rig(messages).await;
+    let request = build_completion_request(
+        None,
+        rig_messages,
+        Vec::new(),
+        spec.max_tokens,
+        spec.temperature,
+        spec.enable_thinking,
+    );
+    let model = completions_model(spec).map_err(|error| {
+        SummaryError::new(
+            format!("摘要模型 `{model_name}` 初始化失败：{error}"),
+            debug_context.clone(),
+        )
+    })?;
+
     let response = timeout(
         Duration::from_secs(SUMMARY_TIMEOUT_SECS),
-        summary_provider.chat_stream(&messages, &[], enable_multimodal, on_delta),
+        model.completion(request),
     )
     .await
     .map_err(|_| {
         SummaryError::new(
-            format!("摘要模型 `{summary_model}` 调用超时（>{SUMMARY_TIMEOUT_SECS}s）"),
+            format!("摘要模型 `{model_name}` 调用超时（>{SUMMARY_TIMEOUT_SECS}s）"),
             debug_context.clone(),
         )
     })?
     .map_err(|error| {
         SummaryError::new(
-            format!(
-                "摘要模型 `{summary_model}` 调用失败：{}",
-                format_anyhow_error(&error)
-            ),
+            format!("摘要模型 `{model_name}` 调用失败：{error}"),
             debug_context.clone(),
         )
     })?;
 
-    if let Some(usage) = response.usage.as_ref() {
-        on_usage(usage);
+    if response.usage.has_values() {
+        on_usage(&llm_usage_from_rig(&response.usage));
     }
 
-    let content = response.content.trim().to_string();
+    let content = response
+        .choice
+        .iter()
+        .filter_map(|item| match item {
+            rig::message::AssistantContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+        .trim()
+        .to_string();
     if content.is_empty() {
         return Err(SummaryError::new(
-            format!("摘要模型 `{summary_model}` 返回空结果"),
+            format!("摘要模型 `{model_name}` 返回空结果"),
             debug_context,
         ));
     }
@@ -209,10 +249,10 @@ fn build_session_title_messages(
     ]
 }
 
-fn build_summary_debug_context(provider: &OpenAiCompatProvider, prompt: &str) -> String {
+fn build_summary_debug_context(model_name: &str, prompt: &str) -> String {
     format!(
-        "调用方式：OpenAI 兼容流式摘要请求\n模型：{}\n超时阈值：{} 秒\nprompt 字符数：{}\nprompt 行数：{}\nprompt 预览：\n{}",
-        provider.model(),
+        "调用方式：rig CompletionModel 摘要请求\n模型：{}\n超时阈值：{} 秒\nprompt 字符数：{}\nprompt 行数：{}\nprompt 预览：\n{}",
+        model_name,
         SUMMARY_TIMEOUT_SECS,
         prompt.chars().count(),
         prompt.lines().count().max(1),

@@ -19,7 +19,6 @@ mod run_loop;
 pub(crate) mod ssh_review;
 mod state;
 pub mod sub_agent;
-mod summary;
 pub mod tools;
 
 pub use state::DispatcherState;

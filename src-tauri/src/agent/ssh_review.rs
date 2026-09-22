@@ -7,10 +7,10 @@
 
 use std::time::Duration;
 
+use rig::completion::CompletionModel;
 use tokio::time::timeout;
 
 use crate::agent::db::settings::{SshReviewConfig, DEFAULT_REVIEW_SYSTEM_PROMPT};
-use crate::agent::llm::{ChatMessage, OpenAiCompatProvider};
 
 const REVIEW_TIMEOUT_SECS: u64 = 30;
 /// 待审查命令送入 prompt 的最大字符数（防止超长命令撑爆审查请求）。
@@ -114,14 +114,17 @@ pub async fn review_shell_command(
     // 审查请求完全不携带 max_tokens（None → 请求体省略该字段）：显式小上限
     // 会压低模型自身的输出预算（推理模型的思考 token 还会与可见输出共享该
     // 预算）；同时关闭思考，避免思考链耗尽预算导致结论为空（同 graph/verifier）。
-    let provider = OpenAiCompatProvider::new(
-        config.model_config.api_key.clone(),
-        config.model_config.url.clone(),
-        config.model_config.model.clone(),
-        None,
-        0.0,
-    )
-    .with_thinking(false);
+    let spec = crate::agent::rig_ext::model::PurposeModelSpec {
+        api_key: config.model_config.api_key.clone(),
+        api_base: config.model_config.url.clone(),
+        model: config.model_config.model.clone(),
+        max_tokens: None,
+        context_window: None,
+        temperature: 0.0,
+        enable_thinking: false,
+    };
+    let model = crate::agent::rig_ext::model::completions_model(&spec)
+        .map_err(|error| format!("审查模型 `{model_name}` 初始化失败：{error}"))?;
 
     let system_prompt = {
         let trimmed = config.system_prompt.trim();
@@ -132,50 +135,66 @@ pub async fn review_shell_command(
         }
     };
     let user_prompt = build_command_user_prompt(payload);
-    let messages = vec![
-        ChatMessage::system(system_prompt),
-        ChatMessage {
-            role: "user".to_string(),
-            content: user_prompt,
-            content_parts: Vec::new(),
-            reasoning_content: None,
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-        },
-    ];
+    let request = crate::agent::rig_ext::model::build_completion_request(
+        Some(system_prompt),
+        vec![rig::completion::Message::user(user_prompt)],
+        Vec::new(),
+        None,
+        0.0,
+        false,
+    );
 
     // 超时只映射 Elapsed；内层 Result 单独处理，避免把超时二次包装成「调用失败」。
-    let inner = timeout(
-        Duration::from_secs(REVIEW_TIMEOUT_SECS),
-        provider.chat_stream(&messages, &[], false, |_| {}),
-    )
-    .await
-    .map_err(|_| format!("审查模型 `{model_name}` 调用超时（>{REVIEW_TIMEOUT_SECS}s）"))?;
+    let inner = timeout(Duration::from_secs(REVIEW_TIMEOUT_SECS), model.completion(request))
+        .await
+        .map_err(|_| format!("审查模型 `{model_name}` 调用超时（>{REVIEW_TIMEOUT_SECS}s）"))?;
 
-    let response = inner.map_err(|error| format!("审查模型 `{model_name}` 调用失败：{error}"))?;
+    let response =
+        inner.map_err(|error| format!("审查模型 `{model_name}` 调用失败：{error}"))?;
 
-    let content = response.content.trim();
+    let content = response
+        .choice
+        .iter()
+        .filter_map(|item| match item {
+            rig::message::AssistantContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+        .trim()
+        .to_string();
     if content.is_empty() {
         // 空内容按 finish_reason 与思考通道细分，便于定位审查链路问题
         // （截断判定优先：思考链与可见输出共享预算，耗尽时 content 可能为空）。
-        return Err(match response.finish_reason.as_deref() {
+        let finish_reason = response
+            .finish_reason()
+            .map(|reason| format!("{reason:?}").to_ascii_lowercase());
+        let thinking_chars: usize = response
+            .choice
+            .iter()
+            .filter_map(|item| match item {
+                rig::message::AssistantContent::Reasoning(reasoning) => {
+                    Some(reasoning.display_text().chars().count())
+                }
+                _ => None,
+            })
+            .sum();
+        return Err(match finish_reason.as_deref() {
             Some("length") => format!(
                 "审查模型 `{model_name}` 返回空内容：输出被截断（finish_reason=length），思考链可能耗尽输出预算"
             ),
-            _ if !response.thinking_content.trim().is_empty() => format!(
-                "审查模型 `{model_name}` 仅输出思考内容（约 {} 字符）而可见内容为空（finish_reason={}）",
-                response.thinking_content.chars().count(),
-                response.finish_reason.as_deref().unwrap_or("未知"),
+            _ if thinking_chars > 0 => format!(
+                "审查模型 `{model_name}` 仅输出思考内容（约 {thinking_chars} 字符）而可见内容为空（finish_reason={}）",
+                finish_reason.as_deref().unwrap_or("未知"),
             ),
             _ => format!(
                 "审查模型 `{model_name}` 返回空内容（finish_reason={}）",
-                response.finish_reason.as_deref().unwrap_or("未知"),
+                finish_reason.as_deref().unwrap_or("未知"),
             ),
         });
     }
 
-    parse_verdict(content)
+    parse_verdict(&content)
 }
 
 /// 待审查内容分隔符：命令/stdin/上下文文本一律包裹在分隔符内，模型只审查其中的内容。

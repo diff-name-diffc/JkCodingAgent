@@ -18,9 +18,9 @@ use super::llm_usage_from_rig;
 use crate::agent::common::{emit, serialize_tool_arguments, UsageTracker};
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, ToolArtifactDraft};
 use crate::agent::run_loop::AgentEvent;
-use crate::agent::summary::extract_structured_summary;
+use summary::extract_structured_summary;
 
-mod summary;
+pub(crate) mod summary;
 #[cfg(test)]
 mod tests;
 

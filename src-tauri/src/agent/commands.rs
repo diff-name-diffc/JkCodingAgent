@@ -18,7 +18,7 @@ use super::run_loop::{
 };
 use super::state::{DispatcherState, GenerationGuard};
 use super::sub_agent::db::ToolInfo;
-use super::summary::{
+use super::rig_ext::summary::{
     fallback_session_title, parse_keyword_actions, summarize_session_keywords,
     summarize_session_title, SessionTitleMessage,
 };

@@ -23,6 +23,7 @@ pub(crate) mod model;
 pub(crate) mod review;
 pub(crate) mod agents;
 pub(crate) mod sub_agent;
+pub(crate) mod summary;
 pub(crate) mod tool_result;
 pub(crate) mod tools;
 

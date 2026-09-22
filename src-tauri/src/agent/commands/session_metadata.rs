@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::rig_ext::model::PurposeModelSpec;
 
 const SESSION_TITLE_RECENT_DIALOGUES: usize = 3;
 
@@ -220,10 +221,10 @@ async fn generate_session_keywords(
 
     let provider_db = db.clone();
     let provider_config =
-        tokio::task::spawn_blocking(move || resolve_summary_provider(&provider_db, context)).await;
+        tokio::task::spawn_blocking(move || resolve_summary_spec(&provider_db, context)).await;
 
-    let (provider, summary_model) = match provider_config {
-        Ok(Ok(config)) => config,
+    let spec = match provider_config {
+        Ok(Ok(spec)) => spec,
         Ok(Err(error)) => {
             eprintln!("failed to resolve keywords summary provider: {error}");
             return None;
@@ -234,17 +235,17 @@ async fn generate_session_keywords(
         }
     };
 
-    if !provider.is_configured() {
+    if !spec.is_configured() {
         return None;
     }
 
     let usage_db = db.clone();
     let usage_ws = workspace_id.clone();
-    let usage_model = summary_model.clone();
-    let usage_capacity = provider.context_window().map(u64::from);
+    let usage_model = spec.model.clone();
+    let usage_model_for_log = spec.model.clone();
+    let usage_capacity = spec.context_window;
     match summarize_session_keywords(
-        &provider,
-        &summary_model,
+        &spec,
         &qa_text,
         &existing_keywords_json,
         move |usage| {
@@ -279,7 +280,7 @@ async fn generate_session_keywords(
         Err(error) => {
             eprintln!(
                 "failed to call summarize_session_keywords with {}: {}",
-                summary_model,
+                usage_model_for_log,
                 error.message()
             );
             None
@@ -343,10 +344,10 @@ async fn generate_session_title(
         .collect::<Vec<_>>();
     let provider_db = db.clone();
     let provider_config =
-        tokio::task::spawn_blocking(move || resolve_summary_provider(&provider_db, context)).await;
+        tokio::task::spawn_blocking(move || resolve_summary_spec(&provider_db, context)).await;
 
-    let (provider, summary_model) = match provider_config {
-        Ok(Ok(config)) => config,
+    let spec = match provider_config {
+        Ok(Ok(spec)) => spec,
         Ok(Err(error)) => {
             eprintln!("failed to load dispatcher title summary config: {error}");
             return fallback;
@@ -357,17 +358,17 @@ async fn generate_session_title(
         }
     };
 
-    if !provider.is_configured() {
+    if !spec.is_configured() {
         return fallback;
     }
 
     let usage_db = db.clone();
     let usage_workspace_id = workspace_id.clone();
-    let usage_summary_model = summary_model.clone();
-    let usage_capacity = provider.context_window().map(u64::from);
+    let usage_summary_model = spec.model.clone();
+    let usage_model_for_log = spec.model.clone();
+    let usage_capacity = spec.context_window;
     match summarize_session_title(
-        &provider,
-        &summary_model,
+        &spec,
         &title_messages,
         &fallback_source,
         &current_user_parts,
@@ -392,7 +393,7 @@ async fn generate_session_title(
         Err(error) => {
             eprintln!(
                 "failed to summarize dispatcher session title with {}: {}",
-                summary_model,
+                usage_model_for_log,
                 error.message()
             );
             fallback
@@ -417,10 +418,13 @@ fn title_content_parts_from_segments(segments: &[ContentSegment]) -> Vec<ChatMes
         .collect()
 }
 
-fn resolve_summary_provider(
-    db: &DispatcherDb,
-    context: AgentContext,
-) -> Result<(OpenAiCompatProvider, String)> {
+/// 解析会话元数据（标题/关键字）摘要槽位规格。
+///
+/// 与 `rig_ext::model::resolve_purpose_specs` 的差异（有意保留旧语义）：
+/// 摘要槽位的 api_key 或 url **任一缺失时整组回退**到同一 context 的主对话
+/// 模型槽位——不做逐字段回退（「摘要的 key + 对话的 url」会把 A 厂商凭据发往
+/// B 厂商端点，产生晦涩的鉴权失败）。
+fn resolve_summary_spec(db: &DispatcherDb, context: AgentContext) -> Result<PurposeModelSpec> {
     let settings_v2 = db.get_settings_v2()?;
     let context_config = match context {
         AgentContext::Project => &settings_v2.project,
@@ -432,15 +436,15 @@ fn resolve_summary_provider(
         .find(|item| item.active)
         .or_else(|| context_config.summary_model_configs.first())
         .ok_or_else(|| anyhow!("未配置 {:?} 摘要模型", context))?;
-    let summary_model = summary.model.trim();
-    if summary_model.is_empty() {
-        return Err(anyhow!("未配置 {:?} 摘要模型名称", context));
-    }
+    let summary_model = {
+        let trimmed = summary.model.trim();
+        if trimmed.is_empty() {
+            crate::agent::config::DEFAULT_SUMMARY_MODEL.to_string()
+        } else {
+            trimmed.to_string()
+        }
+    };
 
-    // 凭据回退：摘要槽位 api_key 或 url 任一缺失时，整组回退到同一 context 的
-    // 主对话模型槽位（chat_model_configs 的 active 条目，已由模型库回填凭据）。
-    // 不做逐字段回退：「摘要的 key + 对话的 url」会把 A 厂商的凭据发往 B 厂商
-    // 端点，产生晦涩的鉴权失败。
     let chat_fallback = context_config
         .chat_model_configs
         .iter()
@@ -463,20 +467,17 @@ fn resolve_summary_provider(
         )
     };
 
-    Ok((
-        OpenAiCompatProvider::new(
-            api_key,
-            url,
-            summary_model.to_string(),
-            // 关键字摘要输出 JSON 数组（最多 15 项）需要较大预算；也兼容仍会思考的摘要
-            // 模型（思考 token 计入上限）。非思考模型输出完即停，此处仅作上限保护。
-            Some(2048),
-            // 摘要是低创造性任务，固定低温度（沿用历史 config.temperature 默认 0.1）。
-            0.1,
-        )
-        // 容量回填自库条目（get_settings_v2 已解析），供 token 用量记录的
-        // context_window_capacity 使用；未配置时消费方回退默认 1M。
-        .with_context_window(summary.context_window),
-        summary_model.to_string(),
-    ))
+    Ok(PurposeModelSpec {
+        api_key,
+        api_base: url,
+        model: summary_model,
+        // 关键字摘要输出 JSON 数组（最多 15 项）需要较大预算；也兼容仍会思考的
+        // 摘要模型（思考 token 计入上限）。非思考模型输出完即停，此处仅作上限保护。
+        max_tokens: Some(2048),
+        // 容量回填自库条目，供 token 用量记录的 context_window_capacity 使用。
+        context_window: summary.context_window.map(u64::from),
+        // 摘要是低创造性任务，固定低温度（沿用历史 config.temperature 默认 0.1）。
+        temperature: 0.1,
+        enable_thinking: true,
+    })
 }

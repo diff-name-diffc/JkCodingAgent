@@ -7,6 +7,9 @@ use super::TOOL_RESULT_INLINE_MAX_CHARS;
 /// 上下文回写负载的篇幅预算。`bound_inline_tool_result` 会把负载硬性截断到
 /// `TOOL_RESULT_INLINE_MAX_CHARS`，预算略低于该上限，引导摘要模型自行收口，
 /// 避免硬截断切在内容段中间。
+/// 送入摘要模型的原文上限（对齐旧 `summary::DUAL_TOOL_SUMMARY_CONTEXT_MAX_CHARS`）。
+pub(super) const DUAL_TOOL_SUMMARY_CONTEXT_MAX_CHARS: usize = 24_000;
+
 const CONTEXT_PAYLOAD_BUDGET_CHARS: usize = TOOL_RESULT_INLINE_MAX_CHARS - 200;
 // 保证预算恒为正：上限调低时在编译期报错，而非静默溢出或产生无意义预算。
 const _: () = assert!(TOOL_RESULT_INLINE_MAX_CHARS > 200);
@@ -83,7 +86,7 @@ pub(super) fn build_summary_user_message(
 }
 
 fn truncate_for_summary(raw_output: &str) -> String {
-    let max_chars = crate::agent::summary::DUAL_TOOL_SUMMARY_CONTEXT_MAX_CHARS;
+    let max_chars = DUAL_TOOL_SUMMARY_CONTEXT_MAX_CHARS;
     let char_count = raw_output.chars().count();
     if char_count <= max_chars {
         return raw_output.to_string();
@@ -110,7 +113,7 @@ fn normalize_tool_output(raw_output: &str) -> String {
         .join("\n")
 }
 
-fn normalize_tool_output_line(line: &str) -> String {
+pub(crate) fn normalize_tool_output_line(line: &str) -> String {
     if line.trim().is_empty() {
         return String::new();
     }
@@ -144,7 +147,7 @@ fn normalize_tool_output_line(line: &str) -> String {
 }
 
 /// 解析双标签输出：(context_payload, display_summary)。
-pub(super) fn parse_dual_tool_summary(output: &str) -> (String, String) {
+pub(crate) fn parse_dual_tool_summary(output: &str) -> (String, String) {
     let context_payload = extract_tagged_block(output, "CONTEXT_PAYLOAD", "DISPLAY_SUMMARY");
     let display_summary = extract_tagged_block(output, "DISPLAY_SUMMARY", "CONTEXT_PAYLOAD");
 
@@ -165,7 +168,7 @@ pub(super) fn parse_dual_tool_summary(output: &str) -> (String, String) {
 /// 回退到「另一个区块的起始标签」或文本末尾处截止。优先匹配闭合标签，
 /// 防止正文里出现的字面 `<OTHER_TAG>` / `</TAG>` 残留把负载提前切断。
 /// 起始标签缺失或内容为空时返回 None。
-fn extract_tagged_block(output: &str, tag: &str, other_tag: &str) -> Option<String> {
+pub(crate) fn extract_tagged_block(output: &str, tag: &str, other_tag: &str) -> Option<String> {
     let start_tag = format!("<{tag}>");
     let start = output.find(&start_tag)?;
     let rest = &output[start + start_tag.len()..];
@@ -194,6 +197,163 @@ fn strip_dual_summary_tags(output: &str) -> String {
         .replace("</CONTEXT_PAYLOAD>", "")
         .trim()
         .to_string()
+}
+// ─── 工具结果摘要的确定性兜底（零 LLM 规则抽取） ──────────────────────────────
+// 迁移自旧 `summary/tool_summary.rs`：摘要模型超时/失败时用规则抽取
+// （头尾截断 + 各工具的关注点提示），保证压缩链路绝不因 LLM 不可用而中断。
+
+pub(super) const STRUCTURED_SUMMARY_MAX_CHARS: usize = 8_000;
+const STRUCTURED_SUMMARY_BODY_CHARS: usize = 6_000;
+
+/// Pure rule-based extraction of key information from a tool result.
+/// Zero LLM calls. Used as fallback when the summary model fails, reducing
+/// the probability of the main model's content-moderation filter firing by
+/// stripping large code blocks and repetitive log lines.
+pub(crate) fn extract_structured_summary(tool_name: &str, raw_output: &str) -> String {
+    let mut sections: Vec<String> = Vec::new();
+    let char_count = raw_output.chars().count();
+    let line_count = raw_output.lines().count();
+
+    sections.push(format!(
+        "[{tool_name}: {char_count} chars, {line_count} lines]"
+    ));
+
+    match tool_name {
+        // 命令执行类输出的兜底策略：退出状态、错误/失败行、头尾行。
+        // ssh_exec 的原始输出是含 stdout/stderr/exit_code 的 JSON 文本，
+        // 同样的模式匹配仍然适用。
+        "ssh_exec" => {
+            let lines: Vec<&str> = raw_output.lines().collect();
+            if let Some(exit) = lines.iter().rev().find(|l| {
+                let t = l.trim().to_lowercase();
+                // 只匹配明确的退出状态模式（exit code N / 退出状态：N 等）；
+                // 不匹配 "$ 提示符"、含 "exit" 字样的普通日志或以 "error" 开头的行，
+                // 匹配不到时不编造状态。
+                t.contains("exit code") || t.contains("退出状态")
+            }) {
+                sections.push(format!("退出/状态: {exit}"));
+            }
+            let errors: Vec<&&str> = lines
+                .iter()
+                .filter(|l| {
+                    let t = l.trim().to_lowercase();
+                    t.contains("error")
+                        || t.contains("fail")
+                        || t.contains("panic")
+                        || t.contains("failed")
+                        || t.contains("失败")
+                })
+                .take(10)
+                .collect();
+            if !errors.is_empty() {
+                sections.push(format!(
+                    "错误/失败:\n{}",
+                    errors.iter().map(|s| **s).collect::<Vec<_>>().join("\n")
+                ));
+            }
+            let head: Vec<&str> = lines.iter().take(20).copied().collect();
+            sections.push(head.join("\n"));
+            if lines.len() > 30 {
+                sections.push(format!("...(省略 {} 行)...", lines.len() - 30));
+                let tail: Vec<&str> = lines.iter().rev().take(10).rev().copied().collect();
+                sections.push(tail.join("\n"));
+            }
+        }
+        "read_file" => {
+            let symbols: Vec<&str> = raw_output
+                .lines()
+                .filter(|l| {
+                    // Strip leading line-number prefix (e.g., "1|  " or "42 |  ").
+                    // 仅剥离「行首数字+可选空格+|」形式，避免拆坏正文中含 `|`
+                    // 的代码行（闭包、管道等）。
+                    let stripped = l
+                        .split_once('|')
+                        .filter(|(prefix, _)| {
+                            !prefix.trim().is_empty()
+                                && prefix.trim().chars().all(|c| c.is_ascii_digit())
+                        })
+                        .map(|(_, rest)| rest)
+                        .unwrap_or(l);
+                    let t = stripped.trim();
+                    t.starts_with("fn ")
+                        || t.starts_with("pub fn")
+                        || t.starts_with("pub(crate)")
+                        || t.starts_with("async fn")
+                        || t.starts_with("pub async fn")
+                        || t.starts_with("class ")
+                        || t.starts_with("def ")
+                        || t.starts_with("import ")
+                        || t.starts_with("from ")
+                        || t.starts_with("const ")
+                        || t.starts_with("interface ")
+                        || t.starts_with("type ")
+                        || t.starts_with("export ")
+                        || t.starts_with("struct ")
+                        || t.starts_with("enum ")
+                })
+                .take(50)
+                .collect();
+            if !symbols.is_empty() {
+                sections.push(format!(
+                    "符号定义:\n{}",
+                    symbols.into_iter().collect::<Vec<_>>().join("\n")
+                ));
+            }
+            sections.push(truncate_middle(
+                raw_output,
+                STRUCTURED_SUMMARY_BODY_CHARS,
+                "代码体",
+            ));
+        }
+        "grep" => {
+            let matches: Vec<&str> = raw_output
+                .lines()
+                .filter(|l| l.contains(':') || l.contains("-->"))
+                .take(100)
+                .collect();
+            sections.push(matches.into_iter().collect::<Vec<_>>().join("\n"));
+            let total = raw_output.lines().count();
+            if total > 100 {
+                sections.push(format!("...(共 {total} 条匹配)..."));
+            }
+        }
+        "glob" | "list_dir" => {
+            let entries: Vec<&str> = raw_output.lines().take(200).collect();
+            sections.push(entries.into_iter().collect::<Vec<_>>().join("\n"));
+            let total = raw_output.lines().count();
+            if total > 200 {
+                sections.push(format!("...(共 {total} 项)..."));
+            }
+        }
+        _ => {
+            sections.push(truncate_middle(
+                raw_output,
+                STRUCTURED_SUMMARY_BODY_CHARS,
+                "内容",
+            ));
+        }
+    }
+
+    let result = sections.join("\n");
+    if result.chars().count() > STRUCTURED_SUMMARY_MAX_CHARS {
+        truncate_middle(&result, STRUCTURED_SUMMARY_MAX_CHARS, "摘要")
+    } else {
+        result
+    }
+}
+
+fn truncate_middle(text: &str, max_chars: usize, label: &str) -> String {
+    let chars = text.chars().count();
+    if chars <= max_chars {
+        return text.to_string();
+    }
+    let half = max_chars / 2;
+    let head: String = text.chars().take(half).collect();
+    let tail: String = text.chars().skip(chars - half).collect();
+    format!(
+        "{head}\n[...省略 {} {label}字符...]\n{tail}",
+        chars - max_chars
+    )
 }
 
 #[cfg(test)]

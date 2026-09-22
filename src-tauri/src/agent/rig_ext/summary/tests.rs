@@ -1,8 +1,15 @@
 use super::{
-    build_keywords_messages, build_session_title_messages, build_tool_summary_messages,
-    extract_structured_summary, extract_tagged_block, normalize_session_title,
-    normalize_tool_output_line, parse_dual_tool_summary, parse_keyword_actions,
+    build_keywords_messages, build_session_title_messages, normalize_session_title,
+    parse_keyword_actions,
 };
+use crate::agent::rig_ext::tool_result::summary::{
+    extract_structured_summary, extract_tagged_block, normalize_tool_output_line,
+    parse_dual_tool_summary,
+};
+
+// 说明：双标签摘要协议与结构化兜底的实现在 `rig_ext/tool_result/summary.rs`
+// （工具结果压缩就地使用）；本文件保留这些用例以继续覆盖其纯函数行为。
+
 
 #[test]
 fn mixed_language_title_keeps_complete_term() {
@@ -120,9 +127,7 @@ fn parse_keyword_actions_returns_empty_and_survives_invalid_json() {
 #[test]
 fn dual_summary_parses_fully_closed_tags() {
     let (context, display) = parse_dual_tool_summary(
-            "<DISPLAY_SUMMARY>\n给人看的摘要\n</DISPLAY_SUMMARY>\n<CONTEXT_PAYLOAD>\n给模型的负载\n</CONTEXT_PAYLOAD>"
-                .to_string(),
-        );
+            "<DISPLAY_SUMMARY>\n给人看的摘要\n</DISPLAY_SUMMARY>\n<CONTEXT_PAYLOAD>\n给模型的负载\n</CONTEXT_PAYLOAD>");
     assert_eq!(display, "给人看的摘要");
     assert_eq!(context, "给模型的负载");
 }
@@ -131,9 +136,7 @@ fn dual_summary_parses_fully_closed_tags() {
 fn dual_summary_tolerates_unclosed_display_tag() {
     // 实测场景：摘要模型漏掉 </DISPLAY_SUMMARY>，直接接 <CONTEXT_PAYLOAD>。
     let (context, display) = parse_dual_tool_summary(
-            "<DISPLAY_SUMMARY>\n搜索命中 6 个文件。\n\n<CONTEXT_PAYLOAD>\n共 6 个文件 / 34 处匹配\n</CONTEXT_PAYLOAD>"
-                .to_string(),
-        );
+            "<DISPLAY_SUMMARY>\n搜索命中 6 个文件。\n\n<CONTEXT_PAYLOAD>\n共 6 个文件 / 34 处匹配\n</CONTEXT_PAYLOAD>");
     assert_eq!(display, "搜索命中 6 个文件。");
     assert_eq!(context, "共 6 个文件 / 34 处匹配");
 }
@@ -141,7 +144,7 @@ fn dual_summary_tolerates_unclosed_display_tag() {
 #[test]
 fn dual_summary_tolerates_unclosed_context_tag() {
     let (context, display) = parse_dual_tool_summary(
-        "<DISPLAY_SUMMARY>\n摘要\n</DISPLAY_SUMMARY>\n<CONTEXT_PAYLOAD>\n负载到结尾".to_string(),
+        "<DISPLAY_SUMMARY>\n摘要\n</DISPLAY_SUMMARY>\n<CONTEXT_PAYLOAD>\n负载到结尾",
     );
     assert_eq!(display, "摘要");
     assert_eq!(context, "负载到结尾");
@@ -150,7 +153,7 @@ fn dual_summary_tolerates_unclosed_context_tag() {
 #[test]
 fn dual_summary_single_block_reuses_content_for_both_sides() {
     let (context, display) =
-        parse_dual_tool_summary("<DISPLAY_SUMMARY>\n只有摘要\n</DISPLAY_SUMMARY>".to_string());
+        parse_dual_tool_summary("<DISPLAY_SUMMARY>\n只有摘要\n</DISPLAY_SUMMARY>");
     assert_eq!(display, "只有摘要");
     assert_eq!(context, "只有摘要");
 }
@@ -158,7 +161,7 @@ fn dual_summary_single_block_reuses_content_for_both_sides() {
 #[test]
 fn dual_summary_fallback_strips_protocol_tags() {
     let (context, display) = parse_dual_tool_summary(
-        "<DISPLAY_SUMMARY>\n</DISPLAY_SUMMARY>\n正文内容 <CONTEXT_PAYLOAD>".to_string(),
+        "<DISPLAY_SUMMARY>\n</DISPLAY_SUMMARY>\n正文内容 <CONTEXT_PAYLOAD>",
     );
     assert!(!display.contains("DISPLAY_SUMMARY"));
     assert!(!display.contains("CONTEXT_PAYLOAD"));
@@ -166,67 +169,3 @@ fn dual_summary_fallback_strips_protocol_tags() {
     assert_eq!(context, "正文内容");
 }
 
-#[test]
-fn tool_summary_prompt_requires_reviewable_multi_segment_locators() {
-    let messages = build_tool_summary_messages(
-        "read_file",
-        "## read_file path=src/app.rs:10-20\n10|fn main() {}",
-        None,
-        Some("定位主函数"),
-    );
-    let prompt = messages
-        .iter()
-        .map(|message| message.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    assert!(prompt.contains("内容摘要：…"));
-    assert!(prompt.contains("内容定位：path:start-end"));
-    assert!(prompt.contains("不连续的相关内容拆成多段"));
-    assert!(prompt.contains("严禁猜测或伪造"));
-}
-
-#[test]
-fn tool_summary_intent_goes_to_user_message_with_fidelity_rules() {
-    let messages = build_tool_summary_messages(
-        "read_file",
-        "10|fn main() {}",
-        Some("前端视图结构是什么？"),
-        Some("了解项目的前端视图结构"),
-    );
-
-    assert_eq!(messages.len(), 2);
-    let (system, user) = (&messages[0], &messages[1]);
-    assert_eq!(system.role, "system");
-    assert_eq!(user.role, "user");
-    // 保真与意图优先规则在 system 中
-    assert!(system.content.contains("尽量原文摘录"));
-    assert!(system.content.contains("意图优先"));
-    // 意图分支要求精炼输出，且回写预算收紧（2000 字符，远小于保守分支的 7800）
-    assert!(system.content.contains("重点精炼"));
-    assert!(system.content.contains("总量控制在 2000 字符以内"));
-    // 意图、用户问题与原始输出作为数据放在 user 消息中
-    assert!(user
-        .content
-        .contains("<提取意图>\n了解项目的前端视图结构\n</提取意图>"));
-    assert!(user
-        .content
-        .contains("<用户原始问题>\n前端视图结构是什么？\n</用户原始问题>"));
-    assert!(user.content.contains("工具名：read_file"));
-    assert!(user.content.contains("10|fn main() {}"));
-}
-
-#[test]
-fn tool_summary_without_intent_keeps_conservative_budget() {
-    let messages = build_tool_summary_messages(
-        "ssh_exec",
-        "stdout: service started\nexit_code: 0",
-        Some("服务为什么起不来？"),
-        None,
-    );
-    let system = &messages[0];
-
-    // 无意图的保守压缩分支维持大预算（8000 内联上限 - 200）
-    assert!(system.content.contains("总量控制在 7800 字符以内"));
-    assert!(!system.content.contains("重点精炼"));
-}

@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::agents::{ArchitectureAgent, OrchestratorAgent, PlainChatAgent};
+use super::agents::{ArchitectureAgent, OrchestratorAgent};
+use super::rig_ext::agents::plain_chat::RigPlainChatAgent;
 use super::config::DispatcherAgentConfig;
 use super::db::{AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb};
 use super::llm::OpenAiCompatProvider;
@@ -136,12 +137,37 @@ impl DispatcherState {
     /// （本模块边界外，无法在变更后主动触发刷新），而工具枚举为纯内存操作、
     /// 成本可忽略，读取即重建从机制上消除缓存陈旧。原 ToolCatalog「缓存」
     /// 的唯一读者是写入者自身（直写式死缓存），已删除。
+    /// 普通聊天静态工具名（子智能体保存校验用：必须与运行期 execution
+    /// profile 同源，否则会出现「配置可保存但运行时缺工具」）。
+    pub fn plain_chat_static_tool_names(&self) -> Vec<String> {
+        self.registered_tool_names()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// 子智能体工具选择清单（同步只读：仅静态工具名与描述，MCP 动态工具
+    /// 由 `mcp_global_status` 单独提供）。
+    ///
+    /// 与 `list_agent_tools` 的差异：这里是同步入口，不能触发 MCP 注册表
+    /// 刷新，因此只枚举静态工具面（exec + media + 子智能体工具），
+    /// 与旧 `plain_chat_tools` 注册表的口径一致。
     pub fn registered_tool_names(&self) -> Vec<(String, String)> {
-        let registry = ToolRegistry::plain_chat_tools(
+        let mut agent = RigPlainChatAgent::new(
+            self.services.config.clone(),
             self.services.mcp_registry.clone(),
             self.services.ssh_manager.clone(),
+            self.services.sub_agent_manager.clone(),
         );
-        registry.tool_names_and_descriptions()
+        let settings = match self.services.db.get_settings_v2() {
+            Ok(settings) => settings,
+            Err(error) => {
+                eprintln!("读取设置失败，工具清单按空列表降级：{error}");
+                return Vec::new();
+            }
+        };
+        agent.apply_settings_v2(&settings, AgentContext::Chat);
+        agent.static_tool_catalog()
     }
 
     /// 每轮构建一个新的 OrchestratorAgent（短命对象）并从 DB 实时应用设置。
@@ -173,8 +199,8 @@ impl DispatcherState {
     pub(crate) async fn build_plain_chat_agent(
         &self,
         workspace_id: &str,
-    ) -> std::result::Result<PlainChatAgent, String> {
-        let agent = PlainChatAgent::new(
+    ) -> std::result::Result<RigPlainChatAgent, String> {
+        let mut agent = RigPlainChatAgent::new(
             self.services.config.clone(),
             self.services.mcp_registry.clone(),
             self.services.ssh_manager.clone(),
@@ -307,28 +333,42 @@ impl DispatcherState {
 
     /// 构建注册表并枚举内置工具信息。G11-06：整个同步枚举过程（注册表构建、
     /// schema 构建、排序去重）放入阻塞线程池，不占用 async 执行器线程。
+    /// 工具清单枚举。聊天模式走 rig 工具面（`RigPlainChatAgent::tool_catalog`，
+    /// 与实际授权集同源）；项目模式仍走旧只读注册表（编排器 T3.2 迁移后再切换）。
     async fn enumerate_tools(&self, chat_mode: bool) -> std::result::Result<Vec<ToolInfo>, String> {
+        if chat_mode {
+            // 分类级允许列表不参与清单枚举：清单展示全部可选工具，
+            // 过滤发生在每轮 run 的装配期（与实际授权集同一处逻辑）。
+            let mut agent = RigPlainChatAgent::new(
+                self.services.config.clone(),
+                self.services.mcp_registry.clone(),
+                self.services.ssh_manager.clone(),
+                self.services.sub_agent_manager.clone(),
+            );
+            let settings = tokio::task::spawn_blocking({
+                let db = self.services.db.clone();
+                move || db.get_settings_v2()
+            })
+            .await
+            .map_err(|error| format!("错误：加载设置任务失败：{error}"))?
+            .map_err(|error| format!("错误：加载设置失败：{}", format_anyhow_error(&error)))?;
+            agent.apply_settings_v2(&settings, AgentContext::Chat);
+            let mut tools = agent.tool_catalog(&self.services.db, "tool-catalog").await;
+            tools.sort_by(|a, b| a.name.cmp(&b.name));
+            tools.dedup_by(|a, b| a.name == b.name);
+            return Ok(tools);
+        }
+
         let mcp_registry = self.services.mcp_registry.clone();
         let ssh_manager = self.services.ssh_manager.clone();
-        let sub_agent_manager = self.services.sub_agent_manager.clone();
+        let _ = (mcp_registry, ssh_manager);
         tokio::task::spawn_blocking(move || {
-            let mut registry = if chat_mode {
-                ToolRegistry::plain_chat_tools(mcp_registry, ssh_manager)
-            } else {
-                ToolRegistry::orchestrator_tools()
-            };
-            if chat_mode {
-                if let Some(manager) = sub_agent_manager {
-                    register_sub_agent_tools(&manager, &mut registry);
-                }
-            }
+            let registry = ToolRegistry::orchestrator_tools();
             let mut tools = tool_infos_from_registry(&registry, None, false);
-            if !chat_mode {
-                tools.retain(|tool| {
-                    crate::agent::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES
-                        .contains(&tool.name.as_str())
-                });
-            }
+            tools.retain(|tool| {
+                crate::agent::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES
+                    .contains(&tool.name.as_str())
+            });
             tools
         })
         .await
@@ -458,13 +498,4 @@ impl DispatcherState {
     pub(crate) fn begin_keywords_generation(&self, workspace_id: &str) -> GenerationGuard {
         self.keywords_generations.begin(workspace_id)
     }
-}
-
-fn register_sub_agent_tools(manager: &Arc<SubAgentManager>, registry: &mut ToolRegistry) {
-    registry.add_tool(Box::new(super::sub_agent::SubAgentTool::new(Arc::clone(
-        manager,
-    ))));
-    registry.add_tool(Box::new(super::sub_agent::ListSubAgentsTool::new(
-        Arc::clone(manager),
-    )));
 }

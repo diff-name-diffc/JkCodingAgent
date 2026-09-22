@@ -46,6 +46,18 @@ pub async fn records_to_rig_messages(records: &[DispatcherMessageRecord]) -> Vec
     messages
 }
 
+/// DB 历史（`DispatcherDb::load_llm_history_async` 的产物）→ rig 消息序列。
+/// 供运行时循环以「本轮 run 的历史起点」加载上下文（旧 `AgentLoop::new` 的角色）。
+pub async fn chat_history_to_rig(history: Vec<ChatMessage>) -> Vec<Message> {
+    let mut messages = Vec::with_capacity(history.len());
+    for message in history {
+        if let Some(message) = chat_message_to_rig(message).await {
+            messages.push(message);
+        }
+    }
+    messages
+}
+
 /// 单条记录 → rig 消息。返回 None 表示该记录按 LLM 上下文口径被过滤
 /// （纯调度 plumbing 工具结果、process-only assistant 消息等）。
 pub async fn record_to_rig_message(record: &DispatcherMessageRecord) -> Option<Message> {

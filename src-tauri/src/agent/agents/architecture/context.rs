@@ -10,7 +10,7 @@ impl ArchitectureAgent {
     /// `restrict_to_workspace` 语义的锚点。
     pub(super) async fn session_workspace(&self, workspace_id: &str) -> Result<PathBuf> {
         let workspace = self.config.root_dir.join("architecture").join(
-            crate::agent::agents::plain_chat::policy::session_workspace_dir_name(workspace_id),
+            crate::agent::rig_ext::agents::session_workspace_dir_name(workspace_id),
         );
         tokio::task::spawn_blocking({
             let workspace = workspace.clone();

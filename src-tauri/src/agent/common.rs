@@ -12,7 +12,7 @@ mod usage;
 
 pub use message::{
     build_args_map, build_tool_calls_payload, persist_assistant_message,
-    persist_tool_calls_message, select_provider_for_messages,
+    persist_tool_calls_message,
 };
 pub(crate) use message::{serialize_tool_arguments, should_keep_llm_message};
 pub use tool_result::{persist_tool_result_with_compression, TOOL_RESULT_INLINE_MAX_CHARS};
@@ -21,6 +21,7 @@ use tool_result::{
     prepare_tool_result, prepare_tool_result_for_registered_tool,
     TOOL_RESULT_INLINE_MAX_CHARS_PAGED, TOOL_RESULT_INLINE_MAX_CHARS_READ,
 };
+#[allow(unused_imports)]
 pub use usage::{stream_llm_response, with_usage_paused, LlmStreamOutcome, UsageTracker};
 
 // ─── Cancellation ────────────────────────────────────────────────────────────────

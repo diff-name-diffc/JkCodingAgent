@@ -78,7 +78,7 @@ pub struct RigLoopHooks {
     pub request_enable_thinking: bool,
     /// 每轮迭代的系统提示（preamble）。普通聊天每轮重建系统提示（G9-17：
     /// 系统时间/分类上下文等动态内容不随 run 陈旧），故为闭包而非静态值。
-    pub preamble_for_iteration: Option<Box<dyn FnMut(usize) -> Option<String> + Send>>,
+    pub preamble_for_iteration: Option<Box<dyn FnMut(usize) -> Option<String> + Send + Sync>>,
     /// 取消收口文案：输入已流出的部分正文，输出落库的 assistant 文本。
     pub cancelled_reply: Box<dyn Fn(&str) -> String + Send + Sync>,
     /// 空响应错误构造。

@@ -35,9 +35,11 @@ use crate::mcp::McpRegistry;
 use crate::ssh_tool::SshSessionManager;
 
 impl ToolRegistry {
+    /// 旧聊天注册表：仅剩子智能体工具清单的静态名/描述枚举用途
+    /// （`DispatcherState::registered_tool_names` 已切到 rig 工具面）。
+    /// Phase 5 随旧 `builtin` 一起删除。
     pub fn plain_chat_tools(mcp_registry: McpRegistry, ssh_manager: SshSessionManager) -> Self {
-        let mut tools = builtin::plain_chat_tools(ssh_manager);
-        tools.push(crate::agent::sub_agent::notify_user_progress_tool());
+        let tools = builtin::plain_chat_tools(ssh_manager);
         Self::new(tools).with_dynamic_provider(mcp::mcp_tool_bridge(mcp_registry))
     }
 

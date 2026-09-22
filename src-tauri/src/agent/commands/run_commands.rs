@@ -109,23 +109,51 @@ pub async fn dispatcher_send_chat_agent_message(
     let agent_app = app.clone();
     // workspace_id 同时被骨架参数借用与 agent 构建闭包持有，克隆一份给后者。
     let agent_workspace = workspace_id.clone();
-    run_agent_turn_skeleton(
-        &state,
-        &app,
-        &workspace_id,
-        segments_json,
-        on_event,
-        RuntimeAgentKind::PlainChat,
-        None,
-        async {
-            state
-                .build_plain_chat_agent(&agent_workspace)
-                .await
-                .map(|agent| agent.with_app_handle(agent_app))
-        },
-        true,
-    )
-    .await
+    let agent = state
+        .build_plain_chat_agent(&agent_workspace)
+        .await?
+        .with_app_handle(agent_app);
+    run_chat_turn_skeleton(&state, &app, &workspace_id, segments_json, on_event, agent).await
+}
+
+/// 普通聊天运行骨架（rig 路径）：run 槽位 + 元数据守卫 + `run_turn` +
+/// 标题/关键字异步生成。与旧骨架的差异仅在「由谁执行本轮 run」——
+/// 聊天由 `RigPlainChatAgent::run_turn` 自包含（rig 循环自含 Started/Finished
+/// 事件与错误收口），项目/架构仍走 `run_agent_turn_skeleton`。
+pub(crate) async fn run_chat_turn_skeleton(
+    state: &tauri::State<'_, DispatcherState>,
+    app: &AppHandle,
+    workspace_id: &str,
+    segments_json: String,
+    on_event: Channel<AgentEvent>,
+    agent: super::super::rig_ext::agents::plain_chat::RigPlainChatAgent,
+) -> Result<AgentTurn, String> {
+    let title_segments_json = segments_json.clone();
+    let run_handle = state.begin_run(workspace_id).map_err(|e| e.to_string())?;
+    let title_guard = state.begin_title_generation(workspace_id);
+    let keywords_guard = state.begin_keywords_generation(workspace_id);
+    let result = agent
+        .run_turn(super::super::rig_ext::agents::plain_chat::ChatTurnRequest {
+            db: state.db(),
+            workspace_id,
+            user_segments_json: segments_json,
+            on_event,
+            cancel_rx: run_handle.cancel_receiver(),
+        })
+        .await
+        .map(|reply| AgentTurn { reply })
+        .map_err(|error| format_anyhow_error(&error));
+    state.finish_run(run_handle);
+    spawn_session_title_update(
+        state,
+        app,
+        workspace_id,
+        &title_segments_json,
+        AgentContext::Chat,
+        title_guard,
+    );
+    spawn_session_keywords_update(state, app, workspace_id, AgentContext::Chat, keywords_guard);
+    result
 }
 
 /// 请求停止会话当前运行：向活动 run 的 watch channel 发取消信号；随后

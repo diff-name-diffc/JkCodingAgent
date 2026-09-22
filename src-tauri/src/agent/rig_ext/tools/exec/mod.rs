@@ -13,6 +13,8 @@ use rig::tool::PortableDynamicTool;
 
 use super::deps::RigToolDeps;
 
+pub(crate) use local_zsh::local_zsh_dir;
+
 pub(crate) fn exec_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
     let mut tools = vec![local_zsh::local_zsh_tool(
         deps.workspace.clone(),

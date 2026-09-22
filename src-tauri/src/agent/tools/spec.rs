@@ -730,6 +730,11 @@ pub fn is_registered_tool_name(name: &str) -> bool {
     lookup_policy(name).is_some()
 }
 
+/// 策略表登记的全部工具名（rig 运行时按名派生结果策略/审计元数据的来源）。
+pub fn registered_tool_names() -> Vec<&'static str> {
+    TOOL_POLICY_TABLE.iter().map(|row| row.name).collect()
+}
+
 impl ToolProfile {
     fn from_name(name: &str) -> Self {
         match lookup_policy(name) {

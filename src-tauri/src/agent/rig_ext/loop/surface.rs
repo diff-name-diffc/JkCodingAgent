@@ -28,6 +28,15 @@ impl RigToolSurface {
         self
     }
 
+    /// 批量挂载结果策略（工具面装配期从策略表派生）。
+    pub fn with_policies(
+        mut self,
+        policies: impl IntoIterator<Item = (String, RigToolResultPolicy)>,
+    ) -> Self {
+        self.policies.extend(policies);
+        self
+    }
+
     pub fn definitions(&self) -> Vec<rig::completion::ToolDefinition> {
         self.tools.iter().map(|tool| tool.definition()).collect()
     }

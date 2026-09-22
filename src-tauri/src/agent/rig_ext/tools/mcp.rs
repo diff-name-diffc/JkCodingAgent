@@ -10,9 +10,10 @@
 //! - 执行：回调内按名重新解析最新目录快照做 TOCTOU 复核（对齐旧 broker
 //!   注入 spec hash 的复核语义，见 `execute_bridged` 注释），再通过
 //!   `execute_tool_from_snapshot` 走注册表执行路径；
-//! - 安全审查门禁（ssh_review 链路）属 Phase 3 runtime 策略层
-//!   （见 `deps.rs` 头注），不在本桥重复；静态路径穿越防护为纯函数
-//!   参数卫生检查，随本桥迁移。
+//! - 安全审查门禁：每个 MCP 调用在 TOCTOU 复核与静态穿越检查之后、真正执行
+//!   之前送入 ssh_review 链路送审（工具名 + 完整参数 JSON），未配置审查
+//!   fail-closed 拒绝——对齐旧 `tools/mcp.rs::review_mcp_call`。
+//!   审查上下文经 `RigToolDeps.review` 注入。
 
 use std::path::{Component, Path};
 
@@ -29,6 +30,9 @@ use super::deps::RigToolDeps;
 pub(crate) async fn mcp_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
     let registry = deps.mcp_registry.clone();
     let scope = deps.mcp_scope.clone();
+    let review_context = deps.review.clone();
+    let workspace = deps.workspace.clone();
+    let workspace_id = deps.workspace_id.clone();
 
     let snapshot = match registry.ensure_recent(&scope).await {
         Ok(snapshot) => snapshot,
@@ -38,16 +42,35 @@ pub(crate) async fn mcp_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
         }
     };
 
+    let review = McpReviewInputs {
+        context: review_context,
+        workspace,
+        workspace_id,
+    };
+
     tool_definitions_from_snapshot(Some(&snapshot))
         .into_iter()
-        .map(|tool| bridge_tool(&registry, &scope, tool))
+        .map(|tool| bridge_tool(&registry, &scope, review.clone(), tool))
         .collect()
+}
+
+/// 审查调用所需的运行上下文（工作区路径 + 会话 id + 审查输入）。
+#[derive(Clone)]
+struct McpReviewInputs {
+    context: crate::agent::rig_ext::review::RigReviewContext,
+    workspace: std::path::PathBuf,
+    workspace_id: String,
 }
 
 /// 单个已解析 MCP 工具 → PortableDynamicTool。description/parameters 用
 /// 注册表快照原值（description 与旧桥一致带 `[MCP/<server>]` 前缀）；
 /// 枚举期捕获的 definition 同时作为执行期 TOCTOU 复核的基准。
-fn bridge_tool(registry: &McpRegistry, scope: &McpScope, tool: ResolvedMcpTool) -> PortableDynamicTool {
+fn bridge_tool(
+    registry: &McpRegistry,
+    scope: &McpScope,
+    review: McpReviewInputs,
+    tool: ResolvedMcpTool,
+) -> PortableDynamicTool {
     let name = tool.canonical_name.clone();
     let description = mcp_description(&tool);
     let parameters = tool.parameters.clone();
@@ -64,10 +87,12 @@ fn bridge_tool(registry: &McpRegistry, scope: &McpScope, tool: ResolvedMcpTool) 
         let name = callback_name.clone();
         let prepared_description = prepared_description.clone();
         let prepared_parameters = prepared_parameters.clone();
+        let review = review.clone();
         Box::pin(async move {
             execute_bridged(
                 &registry,
                 &scope,
+                &review,
                 &name,
                 &prepared_description,
                 &prepared_parameters,
@@ -78,9 +103,11 @@ fn bridge_tool(registry: &McpRegistry, scope: &McpScope, tool: ResolvedMcpTool) 
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_bridged(
     registry: &McpRegistry,
     scope: &McpScope,
+    review: &McpReviewInputs,
     name: &str,
     prepared_description: &str,
     prepared_parameters: &Value,
@@ -115,6 +142,11 @@ async fn execute_bridged(
         )));
     }
 
+    // 安全审查门禁（fail-closed）：未配置审查 / 审查异常 / 判定不通过一律拒绝。
+    if let Some(blocked) = review_mcp_call(name, &args, review).await {
+        return Err(ToolExecutionError::refused(blocked));
+    }
+
     // 在 TOCTOU 复核通过的同一份快照上执行，避免刷新缓存后把同名但
     // Schema/server 已变化的工具偷换进当前 invocation。
     match registry
@@ -128,6 +160,41 @@ async fn execute_bridged(
             ))),
         },
         Err(error) => Err(recoverable(normalize_tool_error(error))),
+    }
+}
+
+/// MCP 调用的安全审查：复用 ssh_review 链路，把工具名与完整参数 JSON 送审。
+/// 返回 `Some(拦截消息)` 表示禁止执行（含未配置审查的 fail-closed 拦截）。
+/// 移植自旧 `tools/mcp.rs::review_mcp_call`。
+async fn review_mcp_call(name: &str, args: &Value, review: &McpReviewInputs) -> Option<String> {
+    let Some(review_config) = review.context.config.as_ref() else {
+        return Some(format!(
+            "错误：未配置安全审查，已拒绝执行 MCP 工具 `{name}`。请先在应用设置中配置安全审查模型。"
+        ));
+    };
+    let args_json = serde_json::to_string(args).unwrap_or_else(|_| args.to_string());
+    let payload = review.context.build_payload(
+        &review.workspace_id,
+        None,
+        crate::agent::ssh_review::CommandReviewTarget::Mcp {
+            workspace_path: review.workspace.display().to_string(),
+            tool_name: name.to_string(),
+        },
+        format!("调用 MCP 工具 `{name}`，参数 JSON：{args_json}"),
+        None,
+    );
+    match crate::agent::ssh_review::review_shell_command(review_config, &payload).await {
+        Ok(verdict) if verdict.allowed => None,
+        Ok(verdict) => Some(crate::agent::ssh_review::with_confirm_guidance(
+            format!(
+                "错误：MCP 工具 `{name}` 调用被安全审查拦截：{}",
+                verdict.reason
+            ),
+            &verdict.reason,
+        )),
+        Err(error) => Some(format!(
+            "错误：MCP 工具 `{name}` 安全审查异常，已拒绝执行：{error}"
+        )),
     }
 }
 

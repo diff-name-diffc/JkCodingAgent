@@ -92,6 +92,7 @@ pub(super) fn local_zsh_tool(
     workspace_id: String,
     exec_timeout_secs: u64,
     cancel_rx: Option<watch::Receiver<bool>>,
+    review: crate::agent::rig_ext::review::RigReviewContext,
 ) -> PortableDynamicTool {
     let parameters = with_compression_parameters(
         json!({
@@ -116,10 +117,17 @@ pub(super) fn local_zsh_tool(
             let workspace = workspace.clone();
             let workspace_id = workspace_id.clone();
             let cancel_rx = cancel_rx.clone();
+            let review = review.clone();
             Box::pin(async move {
-                let (text, cancelled) =
-                    run_local_zsh(&args, workspace, workspace_id, exec_timeout_secs, cancel_rx)
-                        .await;
+                let (text, cancelled) = run_local_zsh(
+                    &args,
+                    workspace,
+                    workspace_id,
+                    exec_timeout_secs,
+                    cancel_rx,
+                    review,
+                )
+                .await;
                 if cancelled {
                     // 取消是 run 级语义：以 cancelled 错误信封上抛，模型可见文本不变。
                     Err(ToolExecutionError::cancelled(text))
@@ -138,6 +146,7 @@ async fn run_local_zsh(
     workspace_id: String,
     exec_timeout_secs: u64,
     cancel_rx: Option<watch::Receiver<bool>>,
+    review_context: crate::agent::rig_ext::review::RigReviewContext,
 ) -> (String, bool) {
     let Some(command) = string_arg(args, "command") else {
         return ("错误：缺少必填参数 command".to_string(), false);
@@ -163,6 +172,8 @@ async fn run_local_zsh(
 
     let timeout_secs = exec_timeout_secs.max(1);
     let session_id = workspace_id;
+    // 审查载荷需要工作区绝对路径；workspace 随后被移入 spawn_blocking 闭包。
+    let workspace_for_review = workspace.clone();
 
     let run_result = tokio::task::spawn_blocking(move || {
         let run_dir = local_zsh_dir(&workspace)?;
@@ -178,9 +189,65 @@ async fn run_local_zsh(
         Ok(Err(error)) | Err(error) => return (error, false),
     };
 
-    // TODO(T3)：审查门禁移至 runtime ToolExecutionPolicy——旧实现在此调用
-    // `ssh_review::review_shell_command`（fail-closed），未配置审查即拒绝执行；
-    // 迁移后工具层不再审查，由策略层在调用前拦截。审计条目的 review 字段暂为 None。
+    // 安全审查门禁（fail-closed）：未配置审查 / 审查异常 / 判定不通过一律拒绝执行，
+    // 并把「被拦截」写入 audit.json 审计（对齐旧 `review_local_command` 与
+    // `blocked_command_response` 的完整语义）。
+    let review = match review_local_command(
+        args,
+        &review_context,
+        &session_id,
+        &workspace_for_review,
+        &run_dir,
+        &command,
+    )
+    .await
+    {
+        Ok(review) => review,
+        Err(error) => {
+            // 与黑名单/review-denied 路径一致：审查异常导致的阻断也登记台账。
+            command_history::record(
+                &session_id,
+                "local_zsh",
+                "本地 zsh",
+                &command,
+                CommandHistoryStatus::Blocked,
+                &error,
+            );
+            let blocked = crate::ssh_tool::SshAuditReview {
+                allowed: false,
+                reason: error.clone(),
+            };
+            return (
+                blocked_command_response(
+                    &run_dir,
+                    &session_id,
+                    &command,
+                    blocked,
+                    format!("错误：{error}"),
+                )
+                .await,
+                false,
+            );
+        }
+    };
+    if !review.allowed {
+        command_history::record(
+            &session_id,
+            "local_zsh",
+            "本地 zsh",
+            &command,
+            CommandHistoryStatus::Blocked,
+            &review.reason,
+        );
+        let headline = crate::agent::ssh_review::with_confirm_guidance(
+            format!("错误：命令已被安全审查拦截：{}", review.reason),
+            &review.reason,
+        );
+        return (
+            blocked_command_response(&run_dir, &session_id, &command, review, headline).await,
+            false,
+        );
+    }
 
     let started = std::time::Instant::now();
     let mut cmd = Command::new("/bin/zsh");
@@ -217,7 +284,7 @@ async fn run_local_zsh(
         session_id: session_id.clone(),
         executed_at: Utc::now().to_rfc3339(),
         command: command.clone(),
-        review: None,
+        review: Some(review.clone()),
         exit_code: captured.output.status.code(),
         timed_out: captured.timed_out,
         cancelled: captured.cancelled,
@@ -301,12 +368,119 @@ async fn run_local_zsh(
             captured.cancelled,
             duration_ms,
             output_truncated,
-            None,
+            Some(&review),
             command_contains_ssh(&command),
             &session_history,
         ),
         command_cancelled,
     )
+}
+
+/// 本命令的安全审查（fail-closed）：未配置审查模型直接拒绝；审查服务异常
+/// 同样拒绝。移植自旧 `review_local_command`。
+async fn review_local_command(
+    args: &Value,
+    review_context: &crate::agent::rig_ext::review::RigReviewContext,
+    workspace_id: &str,
+    workspace: &Path,
+    run_dir: &Path,
+    command: &str,
+) -> Result<crate::ssh_tool::SshAuditReview, String> {
+    // fail-closed：未配置审查时对可执行命令默认拦截，不得跳过审查放行。
+    let Some(review_config) = review_context.config.as_ref() else {
+        return Err(
+            "未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。".to_string(),
+        );
+    };
+
+    let payload = review_context.build_payload(
+        workspace_id,
+        Some(args),
+        crate::agent::ssh_review::CommandReviewTarget::LocalZsh {
+            workspace_path: workspace.display().to_string(),
+            run_dir: run_dir.display().to_string(),
+        },
+        command.to_string(),
+        None,
+    );
+
+    crate::agent::ssh_review::review_shell_command(review_config, &payload)
+        .await
+        .map_err(|error| format!("审查服务异常：{error}"))
+        .map(|verdict| crate::ssh_tool::SshAuditReview {
+            allowed: verdict.allowed,
+            reason: verdict.reason,
+        })
+}
+
+/// 写入「被拦截」审计条目，并返回带「错误：」前缀的拦截响应（含审计明细）。
+async fn blocked_command_response(
+    run_dir: &Path,
+    session_id: &str,
+    command: &str,
+    review: crate::ssh_tool::SshAuditReview,
+    headline: String,
+) -> String {
+    let entry = blocked_audit_entry(session_id, command, review);
+    let render_entry = entry.clone();
+    let run_dir_for_audit = run_dir.to_path_buf();
+    let session_id_for_history = session_id.to_string();
+    let audit_result = tokio::task::spawn_blocking(move || {
+        append_audit_entry(&run_dir_for_audit, entry, &session_id_for_history)
+    })
+    .await;
+    let render_entry_now = render_entry.clone();
+    match audit_result {
+        Ok(Ok(history)) => format!(
+            "{headline}\n\n{}",
+            render_blocked_entry(run_dir, &render_entry_now, &history)
+        ),
+        Ok(Err(error)) => format!("{headline}\n\n错误：审计历史写入失败：{error}"),
+        Err(error) => format!("{headline}\n\n错误：审计历史写入失败：{error}"),
+    }
+}
+
+fn render_blocked_entry(
+    run_dir: &Path,
+    entry: &LocalZshAuditEntry,
+    session_history: &[LocalZshAuditEntry],
+) -> String {
+    render_command_result(
+        run_dir,
+        &entry.command,
+        &entry.stdout,
+        &entry.stderr,
+        entry.exit_code,
+        entry.timed_out,
+        entry.cancelled,
+        entry.duration_ms,
+        entry.output_truncated,
+        entry.review.as_ref(),
+        true,
+        session_history,
+    )
+}
+
+fn blocked_audit_entry(
+    session_id: &str,
+    command: &str,
+    review: crate::ssh_tool::SshAuditReview,
+) -> LocalZshAuditEntry {
+    LocalZshAuditEntry {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        executed_at: Utc::now().to_rfc3339(),
+        command: command.to_string(),
+        review: Some(review),
+        exit_code: None,
+        timed_out: false,
+        cancelled: false,
+        duration_ms: 0,
+        stdout: String::new(),
+        stderr: String::new(),
+        output_truncated: false,
+        error: Some("命令被审查 AI 拦截，未执行。".to_string()),
+    }
 }
 
 fn blacklist_reason(command: &str) -> Option<&'static str> {
@@ -381,6 +555,7 @@ mod tests {
             "test-session".to_string(),
             30,
             None,
+            crate::agent::rig_ext::review::RigReviewContext::unconfigured(),
         );
         let parameters = tool.definition().parameters;
 

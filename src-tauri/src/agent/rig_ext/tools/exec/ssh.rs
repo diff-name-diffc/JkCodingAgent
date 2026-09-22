@@ -17,10 +17,11 @@ pub(super) fn ssh_tools(
     workspace: PathBuf,
     workspace_id: String,
     db: DispatcherDb,
+    review_context: crate::agent::rig_ext::review::RigReviewContext,
 ) -> Vec<PortableDynamicTool> {
     vec![
         ssh_list_servers_tool(manager.clone()),
-        ssh_exec_tool(manager, workspace, workspace_id, db),
+        ssh_exec_tool(manager, workspace, workspace_id, db, review_context),
     ]
 }
 
@@ -67,6 +68,7 @@ fn ssh_exec_tool(
     workspace: PathBuf,
     workspace_id: String,
     db: DispatcherDb,
+    review_context: crate::agent::rig_ext::review::RigReviewContext,
 ) -> PortableDynamicTool {
     let parameters = with_compression_parameters(
         json!({
@@ -111,8 +113,10 @@ fn ssh_exec_tool(
             let workspace = workspace.clone();
             let workspace_id = workspace_id.clone();
             let db = db.clone();
+            let review_context = review_context.clone();
             Box::pin(async move {
-                let text = ssh_exec_text(&args, manager, workspace, workspace_id, db).await;
+                let text =
+                    ssh_exec_text(&args, manager, workspace, workspace_id, db, review_context).await;
                 Ok(ToolOutput::text(text))
             })
         },
@@ -125,6 +129,7 @@ async fn ssh_exec_text(
     workspace: PathBuf,
     workspace_id: String,
     db: DispatcherDb,
+    review_context: crate::agent::rig_ext::review::RigReviewContext,
 ) -> String {
     let Some(server_id) = string_arg(args, "server_id") else {
         return "错误：缺少必填参数 server_id；请先调用 ssh_list_servers。".to_string();
@@ -137,16 +142,156 @@ async fn ssh_exec_text(
     };
     let stdin = string_arg(args, "stdin");
 
-    // TODO(T3)：审查门禁移至 runtime ToolExecutionPolicy——旧实现在此对
-    // 命令+stdin 做 fail-closed 安全审查（未配置审查即拦截、服务器可显式豁免、
-    // 拦截写审计与命令台账）；迁移后工具层不再审查，审计记录的 review 字段暂为 None。
-
-    // 审计元数据需要会话标题：旧实现由 ToolContext 注入，此处从会话库按
-    // workspace_id 现查（查不到回退空串，不阻断命令执行）。
+    // 审计元数据需要会话标题（审查阻断记录与执行记录共用）。
     let session_title = db
         .get_session_title_async(&workspace_id)
         .await
         .unwrap_or_default();
+
+    // 安全审查门禁：fail-closed，且是 ssh_exec 的唯一审查层。
+    // - 未配置审查模型：默认拦截可执行命令，不得跳过审查放行。
+    // - 已配置且服务器开启审查：执行前评估命令（含 stdin）安全性。
+    // - 审查异常或判定不通过：拦截并写入审计，不执行命令。
+    // - 服务器显式关闭「执行前审查」开关：按配置放行（设计内的豁免通道）。
+    let review_outcome: Option<crate::ssh_tool::SshAuditReview> = match review_context.config.as_ref()
+    {
+        None => {
+            // 与 review-denied 路径一致：未配置审查的阻断也登记命令台账。
+            command_history::record(
+                &workspace_id,
+                "ssh_exec",
+                &server_id,
+                &command,
+                CommandHistoryStatus::Blocked,
+                "未配置安全审查，无法评估命令安全性",
+            );
+            let blocked = crate::ssh_tool::SshAuditReview {
+                allowed: false,
+                reason: "未配置安全审查，无法评估命令安全性".to_string(),
+            };
+            if let Ok(record) = manager
+                .record_review_blocked(
+                    workspace.clone(),
+                    workspace_id.clone(),
+                    session_title.clone(),
+                    server_id.clone(),
+                    session_id.clone(),
+                    command.clone(),
+                    blocked,
+                )
+                .await
+            {
+                return format!(
+                    "错误：未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。\n\n{}",
+                    crate::ssh_tool::render_ssh_audit_record_markdown(&record)
+                );
+            }
+            return "错误：未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。"
+                .to_string();
+        }
+        Some(review_config) => match manager.server_config_async(server_id.clone()).await {
+            Ok(server) if server.review_enabled => {
+                let payload = review_context.build_payload(
+                    &workspace_id,
+                    Some(args),
+                    crate::agent::ssh_review::CommandReviewTarget::Ssh(
+                        crate::agent::ssh_review::SshReviewServerInfo {
+                            id: server.id.clone(),
+                            description: server.description.clone(),
+                            host: server.host.clone(),
+                            port: server.port,
+                            username: server.username.clone(),
+                            tags: server.tags.clone(),
+                        },
+                    ),
+                    command.clone(),
+                    stdin.clone(),
+                );
+                match crate::agent::ssh_review::review_shell_command(review_config, &payload).await {
+                    Ok(verdict) => Some(crate::ssh_tool::SshAuditReview {
+                        allowed: verdict.allowed,
+                        reason: verdict.reason,
+                    }),
+                    Err(error) => {
+                        // 与 review-denied 路径一致：审查异常导致的阻断也登记台账。
+                        command_history::record(
+                            &workspace_id,
+                            "ssh_exec",
+                            &server_id,
+                            &command,
+                            CommandHistoryStatus::Blocked,
+                            &format!("审查服务异常：{error}"),
+                        );
+                        let blocked = crate::ssh_tool::SshAuditReview {
+                            allowed: false,
+                            reason: format!("审查服务异常：{error}"),
+                        };
+                        let record_result = manager
+                            .record_review_blocked(
+                                workspace.clone(),
+                                workspace_id.clone(),
+                                session_title.clone(),
+                                server_id.clone(),
+                                session_id.clone(),
+                                command.clone(),
+                                blocked,
+                            )
+                            .await;
+                        if let Ok(record) = record_result {
+                            return format!(
+                                "错误：命令已被安全审查拦截（审查服务异常：{error}）。\n\n{}",
+                                crate::ssh_tool::render_ssh_audit_record_markdown(&record)
+                            );
+                        }
+                        return format!(
+                            "错误：命令已被安全审查拦截（审查服务异常：{error}）。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
+                        );
+                    }
+                }
+            }
+            Ok(_) => None,
+            Err(error) => return format!("错误：{error}"),
+        },
+    };
+
+    // 判定为不通过：写入「被拦截」审计记录并阻断，同时登记命令台账
+    //（供后续命令的安全审查判断来龙去脉）。
+    if let Some(review) = &review_outcome {
+        if !review.allowed {
+            let reason = review.reason.clone();
+            command_history::record(
+                &workspace_id,
+                "ssh_exec",
+                &server_id,
+                &command,
+                CommandHistoryStatus::Blocked,
+                &reason,
+            );
+            let record_result = manager
+                .record_review_blocked(
+                    workspace.clone(),
+                    workspace_id.clone(),
+                    session_title.clone(),
+                    server_id.clone(),
+                    session_id.clone(),
+                    command.clone(),
+                    review.clone(),
+                )
+                .await;
+            if let Ok(record) = record_result {
+                return crate::agent::ssh_review::with_confirm_guidance(
+                    crate::ssh_tool::render_ssh_audit_record_markdown(&record),
+                    &reason,
+                );
+            }
+            return crate::agent::ssh_review::with_confirm_guidance(
+                format!(
+                    "错误：命令已被安全审查拦截：{reason}。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
+                ),
+                &reason,
+            );
+        }
+    }
 
     // 台账登记需要命令与目标标识，而下方 execute 会按值消费它们，先克隆留存。
     let history_server_id = server_id.clone();
@@ -161,7 +306,7 @@ async fn ssh_exec_text(
             command,
             stdin,
             u64_arg(args, "timeout_secs"),
-            None,
+            review_outcome,
         )
         .await
     {

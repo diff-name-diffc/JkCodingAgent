@@ -57,15 +57,12 @@ pub(super) fn run_glob_query(
     let mut newest: BinaryHeap<Reverse<(Option<std::time::SystemTime>, std::path::PathBuf)>> =
         BinaryHeap::with_capacity(max_results.saturating_add(1));
     let mut total_matches = 0usize;
-    let mut scanned_entries = 0usize;
     let mut scan_truncated = false;
-    for entry in safe_glob_entries(&dir_path, max_depth) {
+    for (scanned_entries, entry) in safe_glob_entries(&dir_path, max_depth).enumerate() {
         if scanned_entries >= MAX_GLOB_SCAN_ENTRIES {
             scan_truncated = true;
             break;
-        }
-        scanned_entries += 1;
-        match entry {
+        }        match entry {
             Ok(entry) => {
                 let path = entry.into_path();
                 let relative = path.strip_prefix(&dir_path).unwrap_or(&path);

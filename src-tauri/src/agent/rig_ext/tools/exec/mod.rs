@@ -1,8 +1,8 @@
 //! 命令执行工具组（T2.2）：local_zsh / ssh_* / ssh_memo_* / sync_directory。
 //!
 //! 移植自旧 `agent/tools/builtin/{local_zsh,working_directory,ssh,ssh_memo,sync_directory}`。
-//! 命令安全审查门禁（`ssh_review` / `review_context`）不在工具层——由 runtime
-//! `ToolExecutionPolicy`（Phase 3）在调用前拦截，见各工具内的 TODO(T3) 标注。
+//! 命令安全审查门禁随工具就地恢复（旧实现即自管审查：命令类工具携带完整
+//! 目标环境上下文做 fail-closed 判定），审查输入经 `RigToolDeps.review` 注入。
 
 mod local_zsh;
 mod ssh;
@@ -19,12 +19,14 @@ pub(crate) fn exec_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
         deps.workspace_id.clone(),
         deps.exec_timeout_secs,
         deps.cancel_rx.clone(),
+        deps.review.clone(),
     )];
     tools.extend(ssh::ssh_tools(
         deps.ssh_manager.clone(),
         deps.workspace.clone(),
         deps.workspace_id.clone(),
         deps.db.clone(),
+        deps.review.clone(),
     ));
     tools.extend(ssh_memo::ssh_memo_tools(deps.ssh_manager.clone()));
     tools.push(sync_directory::sync_directory_tool(
@@ -36,6 +38,7 @@ pub(crate) fn exec_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
         deps.app_handle.clone(),
         deps.db.clone(),
         deps.cancel_rx.clone(),
+        deps.review.clone(),
     ));
     tools
 }

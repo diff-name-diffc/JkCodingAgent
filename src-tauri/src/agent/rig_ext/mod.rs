@@ -20,6 +20,7 @@
 pub(crate) mod r#loop;
 pub(crate) mod message;
 pub(crate) mod model;
+pub(crate) mod review;
 pub(crate) mod tool_result;
 pub(crate) mod tools;
 

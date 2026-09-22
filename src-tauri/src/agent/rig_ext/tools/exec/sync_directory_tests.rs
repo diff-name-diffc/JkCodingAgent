@@ -19,6 +19,19 @@ struct Fixture {
     db: DispatcherDb,
 }
 
+/// 审查上下文：配置存在但测试服务器显式关闭「执行前审查」
+/// （fixture 的 `reviewEnabled:false`），因此审查按豁免通道放行、
+/// 用例得以到达路径校验与连接阶段（不触发真实审查模型请求）。
+fn review_context_with_config() -> crate::agent::rig_ext::review::RigReviewContext {
+    crate::agent::rig_ext::review::RigReviewContext {
+        config: Some(crate::agent::db::settings::SshReviewConfig::default()),
+        session_title: "sync-test".to_string(),
+        user_task: None,
+        executor_task: None,
+        review_conversation: None,
+    }
+}
+
 impl Fixture {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!("sync-tool-test-{}", uuid::Uuid::new_v4()));
@@ -65,6 +78,7 @@ impl Fixture {
             None,
             self.db.clone(),
             None,
+            review_context_with_config(),
         )
     }
 
@@ -161,6 +175,7 @@ async fn session_workspace_and_shell_artifacts_are_valid_sync_sources() {
             None,
             fixture.db.clone(),
             None,
+            review_context_with_config(),
         );
         let display = run(&tool, args).await;
         // 必须通过路径校验到达连接阶段；连接 127.0.0.1 失败属预期（测试不连真实服务器）。
@@ -169,10 +184,16 @@ async fn session_workspace_and_shell_artifacts_are_valid_sync_sources() {
             "{display}"
         );
     }
-    // 连接失败的执行同样写审计（review 字段在策略层接管前为 None）。
+    // 连接失败的执行同样写审计，且审计记录携带本次审查结论
+    //（测试服务器显式关闭执行前审查 → 豁免放行）。
     let records = fixture.ssh_db.list_audit().unwrap().records;
     assert_eq!(records.len(), 2);
-    assert!(records.iter().all(|record| record.review.is_none()));
+    assert!(records.iter().all(|record| {
+        record
+            .review
+            .as_ref()
+            .is_some_and(|review| review.allowed && review.reason.contains("显式关闭执行前审查"))
+    }));
 }
 
 #[tokio::test]

@@ -64,4 +64,7 @@ pub(crate) struct RigToolDeps {
     /// 工具须返回明确的「错误：视觉模型未配置…」可恢复错误。
     pub vision_spec: Option<PurposeModelSpec>,
     pub image: ImageToolConfig,
+    /// 命令类工具的安全审查上下文（local_zsh / ssh_exec / sync_directory /
+    /// MCP 桥在执行前带完整目标环境上下文做 fail-closed 审查）。
+    pub review: super::super::review::RigReviewContext,
 }

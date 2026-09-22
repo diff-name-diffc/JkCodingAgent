@@ -25,6 +25,7 @@ pub(super) fn sync_directory_tool(
     app_handle: Option<AppHandle>,
     db: DispatcherDb,
     cancel_rx: Option<watch::Receiver<bool>>,
+    review_context: crate::agent::rig_ext::review::RigReviewContext,
 ) -> PortableDynamicTool {
     PortableDynamicTool::new(
         "sync_directory",
@@ -48,6 +49,7 @@ pub(super) fn sync_directory_tool(
             let app_handle = app_handle.clone();
             let db = db.clone();
             let cancel_rx = cancel_rx.clone();
+            let review_context = review_context.clone();
             Box::pin(async move {
                 let cancelled = cancel_rx.clone();
                 match execute_inner(
@@ -60,6 +62,7 @@ pub(super) fn sync_directory_tool(
                     app_handle,
                     db,
                     cancel_rx,
+                    review_context,
                 )
                 .await
                 {
@@ -92,6 +95,55 @@ fn ensure_error_prefix(message: String) -> String {
     }
 }
 
+/// 同步命令的安全审查（对齐旧 `sync_directory::review`）：未配置审查模型即
+/// 拒绝（fail-closed）；服务器显式关闭「执行前审查」按配置放行；审查异常按拒绝处理。
+async fn review_sync_command(
+    review_context: &crate::agent::rig_ext::review::RigReviewContext,
+    workspace_id: &str,
+    args: &Value,
+    server: &crate::ssh_tool::SshServerConfig,
+    command: &str,
+) -> crate::ssh_tool::SshAuditReview {
+    let Some(config) = review_context.config.as_ref() else {
+        return crate::ssh_tool::SshAuditReview {
+            allowed: false,
+            reason: "未配置安全审查模型，已拒绝目录同步".into(),
+        };
+    };
+    if !server.review_enabled {
+        return crate::ssh_tool::SshAuditReview {
+            allowed: true,
+            reason: "服务器配置显式关闭执行前审查".into(),
+        };
+    }
+    let payload = review_context.build_payload(
+        workspace_id,
+        Some(args),
+        crate::agent::ssh_review::CommandReviewTarget::Ssh(
+            crate::agent::ssh_review::SshReviewServerInfo {
+                id: server.id.clone(),
+                description: server.description.clone(),
+                host: server.host.clone(),
+                port: server.port,
+                username: server.username.clone(),
+                tags: server.tags.clone(),
+            },
+        ),
+        command.into(),
+        None,
+    );
+    match crate::agent::ssh_review::review_shell_command(config, &payload).await {
+        Ok(verdict) => crate::ssh_tool::SshAuditReview {
+            allowed: verdict.allowed,
+            reason: verdict.reason,
+        },
+        Err(error) => crate::ssh_tool::SshAuditReview {
+            allowed: false,
+            reason: format!("安全审查服务失败：{error}"),
+        },
+    }
+}
+
 /// 同步失败的两种去向：取消走 cancelled 错误信封（run 级语义），
 /// 其余为「错误：」开头的可恢复文本（模型可据此自愈）。
 enum SyncFailure {
@@ -110,6 +162,7 @@ async fn execute_inner(
     app_handle: Option<AppHandle>,
     db: DispatcherDb,
     cancel_rx: Option<watch::Receiver<bool>>,
+    review_context: crate::agent::rig_ext::review::RigReviewContext,
 ) -> Result<String, SyncFailure> {
     let mut request: SyncDirectory = serde_json::from_value(args.clone())
         .map_err(|e| SyncFailure::Recoverable(format!("错误：同步参数无效：{e}")))?;
@@ -136,9 +189,40 @@ async fn execute_inner(
         .map_err(|e| SyncFailure::Recoverable(format!("错误：{e}")))?;
     let command = request.command_description();
 
-    // TODO(T3)：审查门禁移至 runtime ToolExecutionPolicy——旧实现在此对同步
-    // 命令做 fail-closed 安全审查（未配置审查即拦截、服务器可显式豁免、拦截写
-    // 审计与命令台账）；迁移后工具层不再审查，审计记录的 review 字段暂为 None。
+    // 安全审查门禁（fail-closed，对齐旧 `review`）：未配置审查模型即拦截、
+    // 服务器可显式豁免、判定不通过写审计与命令台账并阻断。
+    let review = review_sync_command(&review_context, &workspace_id, args, &server, &command).await;
+    if !review.allowed {
+        command_history::record(
+            &workspace_id,
+            "sync_directory",
+            &server.id,
+            &command,
+            CommandHistoryStatus::Blocked,
+            &review.reason,
+        );
+        let record_result = manager
+            .record_review_blocked(
+                workspace.clone(),
+                workspace_id.clone(),
+                review_context.session_title.clone(),
+                server.id.clone(),
+                workspace_id.clone(),
+                command.clone(),
+                review.clone(),
+            )
+            .await;
+        let headline = match record_result {
+            Ok(_) => format!("目录同步已被安全审查拦截：{}", review.reason),
+            Err(error) => format!(
+                "目录同步已被安全审查拦截：{}（写入审计记录失败：{error}）",
+                review.reason
+            ),
+        };
+        return Err(SyncFailure::Recoverable(
+            crate::agent::ssh_review::with_confirm_guidance(headline, &review.reason),
+        ));
+    }
 
     // 审计元数据需要会话标题：旧实现由 ToolContext 注入，此处从会话库按
     // workspace_id 现查（查不到回退空串，不阻断同步）。
@@ -172,6 +256,7 @@ async fn execute_inner(
         &session_title,
         &request,
         command.clone(),
+        review.clone(),
         &result,
     );
     let audit_error = manager.append_sync_audit(record).await.err();
@@ -260,6 +345,7 @@ fn audit_record(
     session_title: &str,
     request: &SyncDirectory,
     command: String,
+    review: crate::ssh_tool::SshAuditReview,
     result: &Result<SyncResult, String>,
 ) -> SshAuditRecord {
     let output = result.as_ref().ok();
@@ -282,6 +368,7 @@ fn audit_record(
         truncated: output.is_some_and(|r| {
             r.truncated || r.stdout.chars().count() > 8000 || r.stderr.chars().count() > 8000
         }),
+        review: Some(review),
         interactive_blocked: false,
         error: result.as_ref().err().cloned().or_else(|| {
             output.and_then(|r| {
@@ -296,7 +383,6 @@ fn audit_record(
                 }
             })
         }),
-        review: None,
     }
 }
 

@@ -411,13 +411,13 @@ mod tests {
     fn bounded_dimension_arg_rejects_out_of_range_values() {
         assert_eq!(bounded_dimension_arg(&json!({}), "width").unwrap(), None);
         assert_eq!(
-            bounded_dimension_arg(&json!({"width": 1328})).unwrap(),
+            bounded_dimension_arg(&json!({"width": 1328}), "width").unwrap(),
             Some(1328)
         );
-        assert!(bounded_dimension_arg(&json!({"width": 0})).is_err());
-        assert!(bounded_dimension_arg(&json!({"width": 100000})).is_err());
-        assert!(bounded_dimension_arg(&json!({"width": 1u64 << 40})).is_err());
-        assert!(bounded_dimension_arg(&json!({"width": 256})).is_ok());
-        assert!(bounded_dimension_arg(&json!({"width": 4096})).is_ok());
+        assert!(bounded_dimension_arg(&json!({"width": 0}), "width").is_err());
+        assert!(bounded_dimension_arg(&json!({"width": 100000}), "width").is_err());
+        assert!(bounded_dimension_arg(&json!({"width": 1u64 << 40}), "width").is_err());
+        assert!(bounded_dimension_arg(&json!({"width": 256}), "width").is_ok());
+        assert!(bounded_dimension_arg(&json!({"width": 4096}), "width").is_ok());
     }
 }

@@ -11,6 +11,7 @@ use rig::test_utils::{MockCompletionModel, MockStreamEvent};
 use rig::tool::{PortableDynamicTool, ToolOutput};
 
 use super::classify_tool_error;
+use super::protocol::{ProtocolToolHandler, RigProtocolAction, RigProtocolResult};
 use super::surface::{DirectToolExecution, RigToolSurface};
 use super::*;
 use crate::agent::db::{DispatcherDb, DispatcherSessionTokenUsageSource};
@@ -370,4 +371,194 @@ fn ordinary_failures_stay_recoverable() {
         (status, kind, fatal),
         ("recoverable_error", "recoverable_error", false)
     );
+}
+
+// ─── 协议工具拦截（编排器收口路径） ───────────────────────────────────────
+
+/// 桩：`finish_tool` 触发协议收口（带动作 + 最终答复）、`reject_tool` 返回
+/// 可重试错误（不收口，由模型自修复）。
+struct StubProtocolHandler;
+
+#[async_trait::async_trait]
+impl ProtocolToolHandler for StubProtocolHandler {
+    async fn handle(
+        &self,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+    ) -> Option<RigProtocolResult> {
+        match tool_name {
+            "finish_tool" => Some(RigProtocolResult {
+                text: "壳工具回显".to_string(),
+                retryable_error: false,
+                actions: vec![RigProtocolAction::GraphSubmitted {
+                    title: "测试图".to_string(),
+                    node_count: 2,
+                }],
+                final_message: arguments
+                    .get("content")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+            }),
+            "reject_tool" => Some(RigProtocolResult::retryable_error(
+                "错误：定义不合法（可重试）",
+            )),
+            _ => None,
+        }
+    }
+
+    async fn render_outcome(
+        &self,
+        actions: &[RigProtocolAction],
+        final_message: Option<&str>,
+    ) -> Option<String> {
+        let mut sections = Vec::new();
+        for action in actions {
+            match action {
+                RigProtocolAction::GraphSubmitted { title, node_count } => sections.push(format!(
+                    "🗺️ 执行图《{title}》已生成并通过校验（{node_count} 个节点）。"
+                )),
+            }
+        }
+        if let Some(message) = final_message {
+            if sections.is_empty() {
+                sections.push(message.to_string());
+            } else {
+                sections.push(format!("补充说明：\n{message}"));
+            }
+        }
+        (!sections.is_empty()).then(|| sections.join("\n\n"))
+    }
+}
+
+fn protocol_surface() -> RigToolSurface {
+    RigToolSurface::new(vec![
+        PortableDynamicTool::new(
+            "finish_tool",
+            "协议收口壳工具",
+            serde_json::json!({"type": "object", "properties": {}}),
+            |_args| Box::pin(async { Err(rig::tool::ToolExecutionError::refused("不应执行")) }),
+        ),
+        PortableDynamicTool::new(
+            "reject_tool",
+            "协议拒绝壳工具",
+            serde_json::json!({"type": "object", "properties": {}}),
+            |_args| Box::pin(async { Err(rig::tool::ToolExecutionError::refused("不应执行")) }),
+        ),
+    ])
+}
+
+fn hook_with_protocol() -> RigLoopHooks {
+    let mut hooks = RigLoopHooks::from_chat_spec(&spec());
+    hooks.protocol_handler = Some(Arc::new(StubProtocolHandler));
+    hooks
+}
+
+fn spec() -> crate::agent::rig_ext::model::PurposeModelSpec {
+    crate::agent::rig_ext::model::PurposeModelSpec {
+        api_key: "test".to_string(),
+        api_base: "http://127.0.0.1:1/v1".to_string(),
+        model: "mock-chat".to_string(),
+        max_tokens: None,
+        context_window: None,
+        temperature: 0.0,
+        enable_thinking: true,
+    }
+}
+
+#[tokio::test]
+async fn protocol_action_closes_the_turn_with_a_synthesized_reply() {
+    let fixture = Fixture::new();
+    let captured = Arc::new(Mutex::new(CapturedEvents::default()));
+    let on_event = capture_channel(Arc::clone(&captured));
+
+    // 单轮：模型调用协议壳工具 + 最终答复；协议动作优先收口，不再请求模型。
+    let model = MockCompletionModel::from_stream_turns([vec![
+        MockStreamEvent::text("提交图"),
+        MockStreamEvent::tool_call(
+            "call-p1",
+            "finish_tool",
+            serde_json::json!({"content": "补充说明文本"}),
+        ),
+        MockStreamEvent::final_response_with_total_tokens(9),
+    ]]);
+    let surface = protocol_surface();
+    let mut hooks = hook_with_protocol();
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    let mut usage_tracker = crate::agent::common::UsageTracker::new();
+
+    let reply = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![rig::completion::Message::user("出图")],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &on_event,
+        cancel_rx,
+        &mut usage_tracker,
+    )
+    .await
+    .expect("协议动作应完成收口");
+
+    // 只请求模型一次：协议动作直接收口。
+    assert_eq!(model.request_count(), 1);
+    let text = reply.plain_text();
+    assert!(text.contains("执行图《测试图》已生成并通过校验（2 个节点）"), "{text}");
+    assert!(text.contains("补充说明：\n补充说明文本"), "{text}");
+    assert!(captured
+        .lock()
+        .tags
+        .iter()
+        .any(|tag| tag == "finished"));
+}
+
+#[tokio::test]
+async fn protocol_retryable_error_keeps_the_loop_running() {
+    let fixture = Fixture::new();
+    let captured = Arc::new(Mutex::new(CapturedEvents::default()));
+    let on_event = capture_channel(Arc::clone(&captured));
+
+    // 第一轮协议拒绝（可重试）→ 不收口；第二轮模型给出最终答复收口。
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("call-r1", "reject_tool", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(4),
+        ],
+        vec![
+            MockStreamEvent::text("已修正，直接答复用户"),
+            MockStreamEvent::final_response_with_total_tokens(3),
+        ],
+    ]);
+    let surface = protocol_surface();
+    let mut hooks = hook_with_protocol();
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    let mut usage_tracker = crate::agent::common::UsageTracker::new();
+
+    let reply = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![rig::completion::Message::user("试错")],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &on_event,
+        cancel_rx,
+        &mut usage_tracker,
+    )
+    .await
+    .expect("可重试错误后应继续循环并收口");
+
+    assert_eq!(model.request_count(), 2, "可重试错误不得收口");
+    assert_eq!(reply.plain_text().trim(), "已修正，直接答复用户");
+
+    // 协议拒绝以「错误：」文本落库（模型据此自修复）。
+    let tool_message = list_visible(&fixture)
+        .into_iter()
+        .find(|message| message.role == "tool")
+        .expect("协议拒绝结果应落库");
+    assert!(tool_message.plain_text().contains("定义不合法"));
 }

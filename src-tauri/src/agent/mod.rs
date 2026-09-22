@@ -8,6 +8,7 @@ pub(crate) mod debug;
 pub(crate) mod graph;
 pub(crate) mod llm;
 mod prompt;
+pub(crate) mod rig_ext;
 mod run_loop;
 pub(crate) mod ssh_review;
 mod state;

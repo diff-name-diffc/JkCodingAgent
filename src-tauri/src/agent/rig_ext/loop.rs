@@ -93,6 +93,7 @@ where
         cancel_rx.clone(),
         preparer,
         on_event.clone(),
+        None,
     ));
     coordinator.tasks.recover_completions().await?;
     let result = run_loop_inner(

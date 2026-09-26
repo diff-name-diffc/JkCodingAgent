@@ -25,6 +25,7 @@ use rig::tool::{ToolExecutionError, ToolOutput};
 
 use super::ast::ProgramNode;
 use super::error::{ProgramError, ProgramErrorKind};
+use super::leaf_host::LeafHost;
 use super::support::{
     cancel_wait, child_error, collect_call_sequences, ensure_environment_budget,
     ensure_json_budget, is_stopped, mark_stopped, render_value, success_envelope,
@@ -89,6 +90,21 @@ pub(crate) async fn execute_program_inner(
         deadline,
         deadline_reached: Arc::new(AtomicBool::new(false)),
         cancel_rx,
+        // 受管路径下一个程序执行期只建一个叶子宿主（共享 `TaskScheduler`，R63）。
+        // 必须在当前 task-local 作用域内构造：`TaskScheduler::new` 用
+        // `ToolInvocationContext::current()` 决定 run_id，spawn 不继承 task-local。
+        leaf_host: match (
+            plane.runtime.as_ref(),
+            crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current(),
+        ) {
+            (Some(deps), Some(parent)) => Some(Arc::new(LeafHost::new(
+                deps,
+                &parent,
+                plane.run_events.clone(),
+            ))),
+            // 无 runtime（裸路径）或缺少受管上下文：叶子按裸路径执行。
+            _ => None,
+        },
     };
     let mut environment = StepEnvironment::new();
     let mut completed_steps = Vec::new();
@@ -102,6 +118,13 @@ pub(crate) async fn execute_program_inner(
         )
         .await;
     engine.sort_completed_steps(&mut completed_steps);
+
+    // 无论成功失败都让残留叶子 job 收敛一次；收尾失败只留痕，不改变程序结果。
+    if let Some(host) = engine.leaf_host.as_ref() {
+        if let Err(error) = host.shutdown().await {
+            eprintln!("[agent] ToolProgram 叶子宿主收尾失败：{error:#}");
+        }
+    }
 
     match outcome {
         Ok(Some(value)) => Ok(ProgramSuccess {
@@ -130,6 +153,8 @@ struct ExecutionEngine<'a> {
     deadline: Instant,
     deadline_reached: Arc<AtomicBool>,
     cancel_rx: Option<watch::Receiver<bool>>,
+    /// 受管路径的叶子宿主（runtime 有则必有；裸路径为 None）。
+    leaf_host: Option<Arc<LeafHost>>,
 }
 
 #[derive(Debug)]
@@ -293,6 +318,7 @@ impl ExecutionEngine<'_> {
         // （见 managed::execute）。
         let future = super::managed::execute(
             self.plane,
+            self.leaf_host.as_deref(),
             tool_impl,
             id,
             step_sequence,

@@ -175,7 +175,7 @@ impl RigOrchestratorAgent {
 
         // 工具依赖（项目工作区 + 项目作用域 MCP + 审查/图像凭据）。
         let deps = self.build_deps(workspace_id, &workspace, &request.cancel_rx);
-        let surface = self.build_surface(&deps, &static_prompt);
+        let surface = self.build_surface(&deps, &static_prompt, &on_event);
         let definitions = surface.definitions();
 
         // 历史（不含 system）：系统提示逐轮由 preamble 重建。
@@ -283,7 +283,15 @@ impl RigOrchestratorAgent {
     }
 
     /// 模型可见工具面：四个入口（run_tool_program + 三个协议壳）。
-    fn build_surface(&self, deps: &RigToolDeps, _static_prompt: &str) -> RigToolSurface {
+    ///
+    /// `on_event` 作为 ToolProgram 叶子台账的真实事件通道注入：叶子以
+    /// `parentRunId` 挂进 `run_tool_program` 卡片，不产生顶层工具卡片。
+    fn build_surface(
+        &self,
+        deps: &RigToolDeps,
+        _static_prompt: &str,
+        on_event: &Channel<AgentEvent>,
+    ) -> RigToolSurface {
         let configured = &self.allowed_runtime_tools;
         let granted = ORCHESTRATOR_RUNTIME_TOOL_NAMES
             .into_iter()
@@ -295,7 +303,7 @@ impl RigOrchestratorAgent {
             .collect::<Vec<PortableDynamicTool>>();
 
         let tools = vec![
-            program_tool(deps, data_plane),
+            program_tool(deps, data_plane, on_event.clone()),
             message_shell(),
             submit_graph_shell(),
             graph_plan_report_shell(),

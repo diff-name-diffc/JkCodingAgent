@@ -69,6 +69,11 @@ pub(crate) struct TaskScheduler {
     controls: BTreeMap<String, (u64, watch::Sender<bool>, Arc<std::sync::atomic::AtomicBool>)>,
     run_lease: Option<ActiveRunHandle>,
     events: tauri::ipc::Channel<crate::agent::rig_ext::events::AgentEvent>,
+    /// 可选的第二条事件通道：只有当宿主需要把叶子台账的 `ToolRunUpdated`
+    /// 推给前端时才注入（ToolProgram 叶子宿主）。与 `events` 分开是刻意的：
+    /// 叶子若把 `ToolStarted`/`ToolFinished` 发到真实通道，前端会按
+    /// `tool_call_id`（形如 `program-call:step1`）新建顶层工具卡片。
+    run_events: Option<tauri::ipc::Channel<crate::agent::rig_ext::events::AgentEvent>>,
 }
 
 impl TaskScheduler {
@@ -78,6 +83,7 @@ impl TaskScheduler {
         cancel: watch::Receiver<bool>,
         prepare: ResultPreparer,
         events: tauri::ipc::Channel<crate::agent::rig_ext::events::AgentEvent>,
+        run_events: Option<tauri::ipc::Channel<crate::agent::rig_ext::events::AgentEvent>>,
     ) -> Self {
         let parent = ToolInvocationContext::current();
         let run_id = parent
@@ -104,6 +110,7 @@ impl TaskScheduler {
             delivery_permits: BTreeMap::new(),
             controls: BTreeMap::new(),
             events,
+            run_events,
             run_lease: ActiveRunHandle::current(),
         }
     }
@@ -130,6 +137,24 @@ impl TaskScheduler {
         self.delivery_permits.remove(task);
         self.controls.remove(task);
         self.calls.remove(task)
+    }
+
+    /// 按 task_id 取回并移除自身结算（共享调度器下每个宿主只取自己的那条）。
+    ///
+    /// `ready` 以 `event_id` 为键，不能整体 clear：同一调度器上其它叶子可能还有
+    /// 未取走的结算。找不到即返回 None（调用方可据此判断 job 已空但结算未到）。
+    pub(crate) fn take_completion(&mut self, task: &str) -> Option<ToolCompletion> {
+        let event_id = self
+            .ready
+            .iter()
+            .find(|(_, completion)| completion.tool_run_id == task)
+            .map(|(event_id, _)| *event_id)?;
+        self.ready.remove(&event_id)
+    }
+
+    /// 是否仍有在途 worker：宿主据此区分「还在跑」与「job 已空却缺结算」。
+    pub(crate) fn has_jobs(&self) -> bool {
+        !self.jobs.is_empty()
     }
 
     async fn absorb(&mut self, event: i64) -> Result<()> {
@@ -375,5 +400,61 @@ mod tests {
         let mut jobs: JoinSet<Result<i64>> = JoinSet::new();
         hand_off(&mut jobs);
         assert!(jobs.is_empty());
+    }
+
+    fn completion(event_id: i64, tool_run_id: &str) -> ToolCompletion {
+        ToolCompletion {
+            event_id,
+            tool_run_id: tool_run_id.into(),
+            tool_name: "read_file".into(),
+            tool_call_id: format!("call-{tool_run_id}"),
+            dispatch_round: 1,
+            agent_run_id: "run".into(),
+            scope_id: "scope".into(),
+            status: "succeeded".into(),
+            error_kind: None,
+            fatal: false,
+            retryable: false,
+            display_content: "ok".into(),
+            context_payload: "ok".into(),
+            result_mode: "inline".into(),
+            usage_json: None,
+            delivery_message_id: None,
+            observed_request_step: None,
+        }
+    }
+
+    /// 共享调度器下 `take_completion` 只取自己的那条：其它叶子的结算必须留在
+    /// `ready` 里等各自宿主取走（整体 clear 会把它们丢掉）。
+    #[tokio::test]
+    async fn take_completion_removes_only_the_target_entry() {
+        let dir = std::env::temp_dir().join(format!("rig-scheduler-take-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let db = DispatcherDb::new(dir.join("jkbot.sqlite3")).expect("open temp db");
+        let (_cancel_tx, cancel) = watch::channel(false);
+        let mut scheduler = TaskScheduler::new(
+            db,
+            "workspace".into(),
+            cancel,
+            crate::agent::rig_ext::tool_result::prepare::raw_preparer(),
+            tauri::ipc::Channel::new(|_| Ok(())),
+            None,
+        );
+        scheduler.ready.insert(1, completion(1, "first"));
+        scheduler.ready.insert(2, completion(2, "second"));
+
+        let taken = scheduler.take_completion("first").expect("目标结算可取走");
+        assert_eq!(taken.tool_run_id, "first");
+        assert_eq!(taken.event_id, 1);
+        assert_eq!(scheduler.ready.len(), 1, "另一条结算必须仍留在 ready 中");
+        assert_eq!(
+            scheduler.ready.get(&2).map(|c| c.tool_run_id.as_str()),
+            Some("second")
+        );
+        assert!(
+            scheduler.take_completion("first").is_none(),
+            "同一结算不得被取两次"
+        );
+        assert!(!scheduler.has_jobs(), "未入队时没有在途 job");
     }
 }

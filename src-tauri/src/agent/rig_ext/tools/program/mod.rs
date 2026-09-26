@@ -10,6 +10,7 @@ mod ast;
 mod error;
 mod executor;
 mod guide;
+mod leaf_host;
 mod managed;
 mod support;
 mod validate;
@@ -19,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rig::tool::{PortableDynamicTool, ToolExecutionError};
+use tauri::ipc::Channel;
 use tokio::sync::watch;
 
 use self::error::{ProgramError, ProgramErrorKind};
@@ -53,6 +55,9 @@ pub(super) struct ToolContract {
 pub(crate) struct DataPlane {
     tools: Arc<HashMap<String, PortableDynamicTool>>,
     runtime: Option<RigToolDeps>,
+    /// 叶子 `ToolRunUpdated` 的真实事件通道（见 `leaf_host.rs`）。生产入口注入；
+    /// 裸路径（测试）保持 None。
+    run_events: Option<Channel<crate::agent::rig_ext::events::AgentEvent>>,
 }
 
 impl DataPlane {
@@ -77,6 +82,7 @@ impl DataPlane {
         Self {
             tools: Arc::new(map),
             runtime: None,
+            run_events: None,
         }
     }
 
@@ -84,6 +90,15 @@ impl DataPlane {
     /// 生产入口 `program_tool` 恒走这里；`DataPlane::new` 之后未调用本方法即 runtime=None。
     fn with_runtime(mut self, deps: RigToolDeps) -> Self {
         self.runtime = Some(deps);
+        self
+    }
+
+    /// 注入叶子台账事件的真实通道（当前 run 的事件通道）。
+    fn with_run_events(
+        mut self,
+        events: Channel<crate::agent::rig_ext::events::AgentEvent>,
+    ) -> Self {
+        self.run_events = Some(events);
         self
     }
 
@@ -120,14 +135,17 @@ impl DataPlane {
     }
 }
 
-/// `run_tool_program` 工具入口：数据面由调用方注入。
+/// `run_tool_program` 工具入口：数据面与叶子事件通道由调用方注入。
 pub(crate) fn program_tool(
     deps: &RigToolDeps,
     data_plane: Vec<PortableDynamicTool>,
+    events: Channel<crate::agent::rig_ext::events::AgentEvent>,
 ) -> PortableDynamicTool {
     build_program_tool(
         deps.cancel_rx.clone(),
-        DataPlane::new(data_plane).with_runtime(deps.clone()),
+        DataPlane::new(data_plane)
+            .with_runtime(deps.clone())
+            .with_run_events(events),
     )
 }
 

@@ -1,20 +1,20 @@
-//! 程序叶子的受管执行：叶子以 `parent_run_id = 程序自身 run` 登记为内部工具运行，
+//! 程序叶子的受管执行入口：叶子以 `parent_run_id = 程序自身 run` 登记为内部工具运行，
 //! 并保留原始 ToolOutput 供 IR 数据依赖使用。
 //!
-//! 两处刻意的取舍（审查记录 R63/R64）：
-//! - 每个叶子各建一个 `TaskScheduler`。共享一个调度器需要给 `drain`/`ready` 加一层
-//!   按 task_id 的结算路由（现有接口是「等全部 job 结束、ready 取任意一条」），
-//!   收益只是省下每次叶子的调度器分配，风险却落在程序执行的关键路径上，故暂不合并。
-//!   预算/租约本身按 run id 共享（`RunBudgets::shared`），不受影响。
-//! - 叶子事件走空接收端：叶子是程序内部子台账（不产生可见聊天卡片，与旧实现的
-//!   Broker 审计树一致），且当前没有可从工具回调复用的外层事件通道。
+//! 调度器与台账交互全部迁到 `leaf_host.rs`（整个程序共享一个 `TaskScheduler`，R63）；
+//! 本模块只负责「每叶子的策略/工具包装」与「结算 → 返回值的映射」。
+//!
+//! 两处刻意的取舍：
+//! - 叶子的工具级事件走空接收端：叶子是程序内部子台账（不产生可见聊天卡片），
+//!   且前端 `toolStarted` 分支会按 wire call id（`program-call:step1`）新建顶层
+//!   工具卡片；叶子生命周期改由 `LeafHost` 经真实通道发 `ToolRunUpdated`（R64）。
+//! - 每个叶子各建一个 `AppToolExecutionPolicy`（借用空事件通道），这是廉价的值克隆，
+//!   不是每叶子一个调度器。
+use super::leaf_host::LeafHost;
 use super::{DataPlane, RigToolDeps};
 use crate::agent::rig_ext::{
-    r#loop::{
-        invocation::ToolInvocationContext, scheduler::TaskScheduler, AppToolExecutionPolicy,
-        AppToolPolicyConfig,
-    },
-    tool_result::{prepare::raw_preparer, RigToolResultPolicy},
+    r#loop::{invocation::ToolInvocationContext, AppToolExecutionPolicy, AppToolPolicyConfig},
+    tool_result::RigToolResultPolicy,
 };
 use parking_lot::Mutex;
 use rig::{
@@ -33,6 +33,7 @@ use std::sync::Arc;
 /// 唯一索引，第二个叶子以 fatal 收场、整个程序中止。
 pub(super) async fn execute(
     plane: &DataPlane,
+    host: Option<&LeafHost>,
     tool: &PortableDynamicTool,
     step: &str,
     sequence: u64,
@@ -47,11 +48,16 @@ pub(super) async fn execute(
         warn_bare_execution_once(step);
         return tool.execute(arguments).await;
     };
+    // runtime 已注入却没有宿主只可能来自未接线的调用方（生产路径由 executor 成对构造）。
+    let Some(host) = host else {
+        warn_bare_execution_once(step);
+        return tool.execute(arguments).await;
+    };
     let parent = ToolInvocationContext::current().ok_or_else(|| {
         ToolExecutionError::other("ToolProgram 缺少受管调用上下文，拒绝执行叶子工具")
             .with_code("fatal")
     })?;
-    execute_managed(deps, tool, step, sequence, arguments, &parent)
+    execute_managed(deps, host, tool, step, sequence, arguments, &parent)
         .await
         .map_err(|error| ToolExecutionError::other(error.to_string()).with_code("fatal"))?
 }
@@ -71,6 +77,7 @@ fn warn_bare_execution_once(step: &str) {
 
 async fn execute_managed(
     deps: &RigToolDeps,
+    host: &LeafHost,
     tool: &PortableDynamicTool,
     step: &str,
     sequence: u64,
@@ -116,13 +123,6 @@ async fn execute_managed(
             },
         },
     );
-    let mut scheduler = TaskScheduler::new(
-        deps.db.clone(),
-        parent.workspace_id.clone(),
-        parent.cancel_rx.clone(),
-        raw_preparer(),
-        events,
-    );
     let call = ToolCall::from_wire(
         format!("{}:{step}", parent.tool_call_id),
         ToolFunction {
@@ -130,52 +130,18 @@ async fn execute_managed(
             arguments,
         },
     );
-    let ids = scheduler
-        .enqueue(
-            &[call],
-            &[wrapped],
-            &policy,
-            &[RigToolResultPolicy::default()],
-            // 叶子在自己的调度器里是唯一一个批次：把声明序号当 round 用，
-            // 登记 sequence = sequence * 32，同一程序内两两不同。
-            sequence,
-            &parent.root_request_message_id,
-        )
-        .await?;
-    scheduler.drain().await?;
-    let completion = scheduler
-        .ready
-        .values()
-        .next()
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("程序叶子缺少结算事件"))?;
-    let (db, run, scope, event) = (
-        deps.db.clone(),
-        scheduler.run_id.clone(),
-        scheduler.scope_id.clone(),
-        completion.event_id,
-    );
-    tokio::task::spawn_blocking(move || db.observe_internal_completions(&run, &scope, 0, &[event]))
-        .await??;
-    scheduler.delivered(&ids[0]);
-    scheduler.ready.clear();
-    if completion.status == "succeeded" {
-        Ok(Ok(output.lock().take().ok_or_else(|| {
-            anyhow::anyhow!("成功叶子缺少原始结构化输出")
-        })?))
-    } else {
-        let mut error = if completion.status == "cancelled" {
-            ToolExecutionError::cancelled(completion.context_payload)
-        } else {
-            ToolExecutionError::other(completion.context_payload)
-        };
-        if completion.fatal {
-            error = error.with_code("fatal");
-        } else if let Some(kind) = completion.error_kind {
-            error = error.with_code(kind);
-        }
-        Ok(Err(error.with_retryable(completion.retryable)))
-    }
+    host.run_leaf(
+        &wrapped,
+        &call,
+        &policy,
+        &RigToolResultPolicy::default(),
+        // 叶子在自己的批次里是唯一一个调用：把声明序号当 round 用，
+        // 登记 sequence = sequence * 32，同一程序内两两不同。
+        sequence,
+        &parent.root_request_message_id,
+        &output,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -276,10 +242,31 @@ mod tests {
         };
 
         let (first, second) = context
-            .clone()
-            .scope(async move {
-                let first = execute(&plane, &tool, "first", 1, json!({ "path": "a.txt" })).await;
-                let second = execute(&plane, &tool, "second", 2, json!({ "path": "b.txt" })).await;
+            .scope(async {
+                // 宿主必须在 task-local 作用域内构造（run_id 取自当前调用上下文）。
+                let host = LeafHost::new(
+                    &deps,
+                    &ToolInvocationContext::current().expect("上下文"),
+                    None,
+                );
+                let first = execute(
+                    &plane,
+                    Some(&host),
+                    &tool,
+                    "first",
+                    1,
+                    json!({ "path": "a.txt" }),
+                )
+                .await;
+                let second = execute(
+                    &plane,
+                    Some(&host),
+                    &tool,
+                    "second",
+                    2,
+                    json!({ "path": "b.txt" }),
+                )
+                .await;
                 (first, second)
             })
             .await;

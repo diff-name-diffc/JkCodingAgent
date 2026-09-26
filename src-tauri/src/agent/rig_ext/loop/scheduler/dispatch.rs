@@ -150,6 +150,7 @@ impl TaskScheduler {
             );
             let result_policy = *result_policy;
             let events = self.events.clone();
+            let run_events = self.run_events.clone();
             let composite = is_composite(tool.name());
             let declaration = declarations.next().expect("整批资源声明已完成");
             let reservation = if composite {
@@ -227,9 +228,21 @@ impl TaskScheduler {
                             "错误：同批失败，工具尚未执行",
                         ));
                     }
-                    db.mark_tool_run_started_async(&context.task_id)
+                    let started = db
+                        .mark_tool_run_started_async(&context.task_id)
                         .await
-                        .map_err(|e| ToolExecutionError::other(e.to_string()).with_code("fatal"))?;
+                        .map_err(|e| {
+                            ToolExecutionError::other(e.to_string()).with_code("fatal")
+                        })?;
+                    // 叶子宿主（ToolProgram）注入 `run_events` 时把「已 started」的
+                    // 台账行直发前端；主路径 `run_events=None`，记录仍由
+                    // `tools/run_record.rs` 经策略的 on_event 发布，行为不变。
+                    if let Some(run_events) = &run_events {
+                        crate::agent::common::emit(
+                            run_events,
+                            crate::agent::rig_ext::events::AgentEvent::ToolRunUpdated { run: started },
+                        );
+                    }
                     update_phase(&db, &context.task_id, "running")
                         .await
                         .map_err(|e| ToolExecutionError::other(e.to_string()).with_code("fatal"))?;

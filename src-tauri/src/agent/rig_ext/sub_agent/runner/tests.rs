@@ -244,6 +244,7 @@ async fn child_tools_cross_decision_rounds_without_writing_parent_messages() {
                 rx,
                 crate::agent::rig_ext::tool_result::prepare::raw_preparer(),
                 runtime.loop_events.clone(),
+                None,
             ));
             coordinator.host = LoopHost::Memory;
             let mut messages = vec![Message::system("test"), Message::user("run A and B")];

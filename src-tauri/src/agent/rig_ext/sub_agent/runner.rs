@@ -236,6 +236,7 @@ impl RigSubAgentRuntime {
                 self.tool_cancel_tx.subscribe(),
                 crate::agent::rig_ext::tool_result::prepare::raw_preparer(),
                 self.loop_events.clone(),
+                None,
             ),
         );
         coordinator.host = crate::agent::rig_ext::r#loop::host::LoopHost::Memory;

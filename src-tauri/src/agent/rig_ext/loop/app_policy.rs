@@ -29,8 +29,8 @@ use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::tools::deps::ToolCallSlot;
 use crate::agent::rig_ext::tools::run_record::{
-    finish_tool_run, prepare_arguments, start_tool_run, RigToolRun, RigToolRunContext,
-    RigToolRunFinish,
+    RigToolRun, RigToolRunContext, RigToolRunFinish, finish_tool_run, prepare_arguments,
+    start_tool_run,
 };
 use crate::agent::rig_ext::tools::spec::{ToolSafety, ToolSpec};
 

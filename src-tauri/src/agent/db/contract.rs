@@ -40,6 +40,9 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// 装配历史时的落库消息 id。不进 JSON，只供滚动摘要按锚点裁掉已覆盖原文。
+    #[serde(default, skip)]
+    pub source_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -52,6 +55,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            source_id: None,
         }
     }
 
@@ -64,6 +68,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            source_id: None,
         }
     }
 }

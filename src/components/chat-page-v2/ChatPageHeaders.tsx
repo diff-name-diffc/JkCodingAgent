@@ -1,4 +1,4 @@
-import { GitBranch, Loader2, MoreHorizontal, Settings, Trash2, Waypoints, X } from "lucide-react";
+import { Gauge, GitBranch, Loader2, MoreHorizontal, Settings, Trash2, Waypoints, X } from "lucide-react";
 import type { McpStatus } from "../../types";
 import { getMcpConnectionStatus } from "../../hooks/use-mcp-status";
 import { hexWithAlpha } from "../../lib/hex-alpha";
@@ -22,6 +22,49 @@ interface CommonHeaderProps {
   onOpenMcpStatus?: () => void;
   onClearMessages: () => void;
   onOpenSettings: () => void;
+  /** 最近一次请求的上下文占用快照（token 用量回路；无数据时不渲染）。 */
+  contextUsage?: ContextUsageSnapshot | null;
+}
+
+/** 上下文占用快照（最近一次请求的 prompt tokens / 窗口容量）。 */
+export interface ContextUsageSnapshot {
+  usedTokens: number;
+  capacityTokens: number;
+}
+
+function formatTokenAxis(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens <= 0) return "0";
+  if (tokens >= 1_000_000) {
+    const value = tokens / 1_000_000;
+    return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}M`;
+  }
+  if (tokens >= 1_000) {
+    const value = tokens / 1_000;
+    return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)}K`;
+  }
+  return String(Math.round(tokens));
+}
+
+/**
+ * 上下文占用指示（容量回路闭环）：最近一次请求的 prompt 占用 / 窗口容量。
+ * 占用超 70% 转警示色、超 90% 转危险色——占用走高时整形层会把历史折叠为
+ * 滚动摘要（tooltip 说明这一行为，避免用户困惑"历史变短"）。
+ */
+function ContextUsageIndicator({ usage }: { usage: ContextUsageSnapshot }) {
+  if (usage.capacityTokens <= 0 || usage.usedTokens <= 0) return null;
+  const ratio = usage.usedTokens / usage.capacityTokens;
+  const percent = Math.max(1, Math.round(ratio * 100));
+  const level = ratio >= 0.9 ? "danger" : ratio >= 0.7 ? "warning" : "normal";
+  return (
+    <span
+      className={`ai-chat-header-usage is-${level}`}
+      role="status"
+      title={`最近一次请求的上下文占用：${formatTokenAxis(usage.usedTokens)} / ${formatTokenAxis(usage.capacityTokens)} tokens（${percent}%）。占用走高时，较早的对话历史会被折叠为滚动摘要以控制上下文长度。`}
+    >
+      <Gauge size={11} strokeWidth={2} aria-hidden="true" />
+      上下文 {percent}%
+    </span>
+  );
 }
 
 /**
@@ -160,6 +203,7 @@ export function PlainChatHeader({
   hasMessages,
   mcpStatus,
   mcpChecking,
+  contextUsage,
   onOpenMcpStatus,
   onClearMessages,
   onOpenSettings,
@@ -177,6 +221,7 @@ export function PlainChatHeader({
         </div>
       </div>
       <div className="ai-chat-header-actions">
+        {contextUsage && <ContextUsageIndicator usage={contextUsage} />}
         {onOpenMcpStatus && (
           <McpStatusButton
             mcpStatus={mcpStatus}
@@ -204,6 +249,7 @@ export function ProjectChatHeader({
   hasMessages,
   mcpStatus,
   mcpChecking,
+  contextUsage,
   graphAvailable,
   onOpenGraphPanel,
   onOpenMcpStatus,
@@ -242,6 +288,7 @@ export function ProjectChatHeader({
         )}
       </div>
       <div className="ai-chat-header-actions">
+        {contextUsage && <ContextUsageIndicator usage={contextUsage} />}
         <Button
           variant="outline"
           size="sm"

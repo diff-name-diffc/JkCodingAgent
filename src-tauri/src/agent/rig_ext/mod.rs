@@ -6,6 +6,8 @@
 //! - `message`：`DispatcherMessageRecord` → rig `Message` 消息桥
 //!   （含 `chat-image://` 图片段 → base64 `UserContent::Image`）；
 //! - `tool_result`：工具结果落库 + 压缩管线（迁移自 `common::tool_result`）；
+//! - `context`：统一上下文整形层（预算 + 配对安全滑窗），运行循环每轮迭代
+//!   发请求前对内存历史整形，只影响发给模型的视图；
 //! - `loop`（`r#loop`）：多轮工具运行时循环，消费 rig 流式事件 → `AgentEvent`。
 //!
 //! 类型约束：本模块的公开接口只出现 rig 契约类型与 app 领域类型。
@@ -15,6 +17,7 @@
 //! 随 DB 类型一起迁移归位。
 
 pub(crate) mod agents;
+pub(crate) mod context;
 pub(crate) mod events;
 pub(crate) mod r#loop;
 pub(crate) mod message;

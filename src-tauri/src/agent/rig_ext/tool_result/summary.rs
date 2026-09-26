@@ -98,7 +98,9 @@ fn truncate_for_summary(raw_output: &str) -> String {
 fn tool_summary_focus(tool_name: &str) -> &str {
     match tool_name {
         "read_file" => "保留关键文件路径、符号名、行号范围、配置键和能支持判断的核心实现细节",
-        "list_dir" => "保留最多两层的目录关系、关键文件名及其总行数，便于后续用 read_file path:start-end 精确加载",
+        "list_dir" => {
+            "保留最多两层的目录关系、关键文件名及其总行数，便于后续用 read_file path:start-end 精确加载"
+        }
         "glob" => "保留目录层级、关键文件名、数量和显著的结构特征",
         "grep" => "保留匹配文件路径、行号、命中片段、上下文和能支撑后续 read_file 的关键关键词",
         _ => "保留后续判断最依赖的事实、路径、标识符和数量信息",

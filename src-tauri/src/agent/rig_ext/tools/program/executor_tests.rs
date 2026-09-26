@@ -176,6 +176,80 @@ async fn echo_chain_executes_and_merges_step_results() {
     assert_eq!(output.as_text(), Some("{\"value\":\"hello\"}"));
 }
 
+/// 回归：数据面工具只返回文本时（rig 迁移后 read_file / list_dir / glob /
+/// grep 全部如此），`/data` 必须解析为这段文本，而不是 `null`。
+///
+/// 旧实现把 `data` 直接取自 `ToolResult::data`，文本工具缺该字段即回落
+/// `null`：程序会「成功」返回 `{"dir":null,"gos":null}`——模型拿不到任何
+/// 证据，只能重试。该 envelope 由 `success_envelope` 统一构造，此处从
+/// 程序入口逐层验证（envelope → `$ref` 解析 → 模型可见输出）。
+#[tokio::test]
+async fn text_only_tool_results_resolve_through_data_pointer() {
+    let mock = Arc::new(MockTool::default().with_reply(
+        "listing",
+        0,
+        Ok(ToolOutput::text("src\n  main.rs\n  lib.rs")),
+    ));
+    let plane = data_plane(mock);
+    let program = validate(
+        json!({
+            "version": 1,
+            "root": { "op": "sequence", "steps": [
+                { "op": "call", "id": "dir", "tool": "echo", "arguments": { "value": "listing" } },
+                { "op": "return", "value": {
+                    "dir": { "$ref": { "step": "dir", "pointer": "/data" } },
+                    "text": { "$ref": { "step": "dir", "pointer": "/output" } }
+                } }
+            ] }
+        }),
+        CapabilityPolicy::sequential(),
+    );
+
+    let success = execute_program_inner(&program, &plane, &ProgramLimits::default(), None)
+        .await
+        .expect("program succeeds");
+    assert_eq!(
+        success.value,
+        json!({ "dir": "src\n  main.rs\n  lib.rs", "text": "src\n  main.rs\n  lib.rs" })
+    );
+
+    let output = execute_program(&program, &plane, &ProgramLimits::default(), None)
+        .await
+        .expect("program succeeds");
+    assert_eq!(
+        output.as_text(),
+        Some("{\"dir\":\"src\\n  main.rs\\n  lib.rs\",\"text\":\"src\\n  main.rs\\n  lib.rs\"}")
+    );
+}
+
+/// `/data` 的 JSON 分支不受文本回落影响：工具返回 JSON 块时仍是结构本身。
+#[tokio::test]
+async fn json_tool_results_keep_their_structure_under_data_pointer() {
+    let mock = Arc::new(MockTool::default().with_reply(
+        "payload",
+        0,
+        Ok(ToolOutput::json(json!({ "files": ["a.rs"] }))),
+    ));
+    let plane = data_plane(mock);
+    let program = validate(
+        json!({
+            "version": 1,
+            "root": { "op": "sequence", "steps": [
+                { "op": "call", "id": "find", "tool": "echo", "arguments": { "value": "payload" } },
+                { "op": "return", "value": {
+                    "files": { "$ref": { "step": "find", "pointer": "/data/files" } }
+                } }
+            ] }
+        }),
+        CapabilityPolicy::sequential(),
+    );
+
+    let success = execute_program_inner(&program, &plane, &ProgramLimits::default(), None)
+        .await
+        .expect("program succeeds");
+    assert_eq!(success.value, json!({ "files": ["a.rs"] }));
+}
+
 #[tokio::test]
 async fn parallel_calls_are_bounded_and_merged_in_declaration_order() {
     let mock = Arc::new(

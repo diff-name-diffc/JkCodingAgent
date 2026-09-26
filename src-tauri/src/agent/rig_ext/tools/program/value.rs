@@ -39,6 +39,51 @@ pub fn resolve_template(
     resolve_at(template, environment, "")
 }
 
+/// 模板里是否含有 `$ref`。解析失败也视为含有引用，避免把引用对象拿去对工具 schema 校验。
+pub(super) fn contains_reference(template: &Value) -> bool {
+    let mut found = false;
+    let visit = visit_references_at(template, "", &mut |_, _| {
+        found = true;
+        Ok(())
+    });
+    visit.is_err() || found
+}
+
+/// 引用必须指向已完成步骤。文本结果只能取全文（`/data` 或 `/output`），不能再取子字段。
+pub(super) fn validate_template_references(
+    template: &Value,
+    available: &BTreeMap<String, bool>,
+    base_path: &str,
+) -> Result<(), ProgramError> {
+    visit_references_at(template, base_path, &mut |reference, reference_path| {
+        let Some(returns_text) = available.get(&reference.step) else {
+            return Err(ProgramError::new(
+                ProgramErrorKind::InvalidReference,
+                format!("步骤 '{}' 不存在，或在当前位置尚未确定完成", reference.step),
+            )
+            .at_path(reference_path));
+        };
+        if *returns_text && !text_result_pointer_ok(&reference.pointer) {
+            return Err(ProgramError::new(
+                ProgramErrorKind::InvalidReference,
+                format!(
+                    "步骤 '{}' 返回文本，pointer '{}' 没有子字段。文本结果只能用 /data 或 /output（两者都是全文）。paths、pattern 请写成字面量，不要从文本里拆字段",
+                    reference.step, reference.pointer
+                ),
+            )
+            .at_path(reference_path));
+        }
+        Ok(())
+    })
+}
+
+/// 文本结果的 envelope 顶层是 status / data / output / metadata。`/data` 与
+/// `/output` 是全文。`metadata` 恒为 `{}`，没有子字段；`/metadata/...` 若在这里
+/// 放行，会拖到全部 call 执行完才在指针解析时报错。
+fn text_result_pointer_ok(pointer: &str) -> bool {
+    matches!(pointer, "" | "/data" | "/output" | "/status" | "/metadata")
+}
+
 pub(crate) fn visit_references_at<F>(
     template: &Value,
     base_path: &str,
@@ -199,7 +244,7 @@ mod tests {
     use serde_json::json;
 
     use super::super::error::ProgramErrorKind;
-    use super::{collect_references, resolve_template, StepEnvironment};
+    use super::{StepEnvironment, collect_references, resolve_template};
 
     #[test]
     fn collects_nested_references_without_interpreting_strings() {

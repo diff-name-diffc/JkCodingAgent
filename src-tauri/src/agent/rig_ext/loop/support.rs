@@ -1,30 +1,29 @@
 //! 循环支撑函数：消息组装、落库契约转换、取消/完成收口、用量落库。
 
 use anyhow::Result;
-use rig::message::{AssistantContent, Message, Reasoning, Text, ToolCall, ToolResultContent};
+use rig::message::{AssistantContent, Message, Text, ToolCall, ToolResultContent};
 use rig::tool::{ToolExecutionError, ToolOutput};
 use tauri::ipc::Channel;
 
 use super::super::llm_usage_from_rig;
 use super::RigLoopHooks;
 use crate::agent::common::{
-    emit, persist_assistant_message, serialize_tool_arguments, UsageTracker,
+    UsageTracker, emit, persist_assistant_message, serialize_tool_arguments,
 };
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
 use crate::agent::db::{FunctionCall, OutboundToolCall};
 use crate::agent::rig_ext::events::AgentEvent;
 
-/// 组装追加进历史的 assistant 消息：思考（合并标签拆出的部分）+ 正文 + 工具调用。
+/// 组装追加进历史的 assistant 消息：正文 + 工具调用。
+/// 思考链不回灌上下文（瞬态产物：rig 的 openai 线格式会把 Reasoning 序列化进
+/// 请求体，DeepSeek 等服务商明确要求历史不携带 reasoning_content；思考已随
+/// `persist_tool_calls_message` 落库供 UI 展示，模型侧重放只会浪费预算）。
 pub(super) fn build_assistant_message(
     visible_text: &str,
-    thinking: &str,
     tool_calls: &[ToolCall],
     message_id: Option<String>,
 ) -> Message {
     let mut content: Vec<AssistantContent> = Vec::new();
-    if !thinking.trim().is_empty() {
-        content.push(AssistantContent::Reasoning(Reasoning::new(thinking.trim())));
-    }
     if !visible_text.is_empty() {
         content.push(AssistantContent::Text(Text::new(visible_text)));
     }

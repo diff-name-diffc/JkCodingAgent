@@ -128,7 +128,8 @@ fn parse_keyword_actions_returns_empty_and_survives_invalid_json() {
 #[test]
 fn dual_summary_parses_fully_closed_tags() {
     let (context, display) = parse_dual_tool_summary(
-            "<DISPLAY_SUMMARY>\n给人看的摘要\n</DISPLAY_SUMMARY>\n<CONTEXT_PAYLOAD>\n给模型的负载\n</CONTEXT_PAYLOAD>");
+        "<DISPLAY_SUMMARY>\n给人看的摘要\n</DISPLAY_SUMMARY>\n<CONTEXT_PAYLOAD>\n给模型的负载\n</CONTEXT_PAYLOAD>",
+    );
     assert_eq!(display, "给人看的摘要");
     assert_eq!(context, "给模型的负载");
 }
@@ -137,7 +138,8 @@ fn dual_summary_parses_fully_closed_tags() {
 fn dual_summary_tolerates_unclosed_display_tag() {
     // 实测场景：摘要模型漏掉 </DISPLAY_SUMMARY>，直接接 <CONTEXT_PAYLOAD>。
     let (context, display) = parse_dual_tool_summary(
-            "<DISPLAY_SUMMARY>\n搜索命中 6 个文件。\n\n<CONTEXT_PAYLOAD>\n共 6 个文件 / 34 处匹配\n</CONTEXT_PAYLOAD>");
+        "<DISPLAY_SUMMARY>\n搜索命中 6 个文件。\n\n<CONTEXT_PAYLOAD>\n共 6 个文件 / 34 处匹配\n</CONTEXT_PAYLOAD>",
+    );
     assert_eq!(display, "搜索命中 6 个文件。");
     assert_eq!(context, "共 6 个文件 / 34 处匹配");
 }

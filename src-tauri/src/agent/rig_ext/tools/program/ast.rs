@@ -46,8 +46,24 @@ pub fn tool_program_parameters_schema() -> Value {
         "additionalProperties": false,
         "required": ["version", "root"],
         "properties": {
-            "version": { "const": TOOL_PROGRAM_VERSION },
-            "root": { "$ref": "#/$defs/node" }
+            "version": {
+                "const": TOOL_PROGRAM_VERSION,
+                "description": "固定为 1。"
+            },
+            "root": {
+                "description": "必须是 op=sequence。steps 最后一项必须是全程序唯一的 return，否则整次拒绝、不执行。",
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["op", "steps"],
+                "properties": {
+                    "op": { "const": "sequence" },
+                    "steps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": { "$ref": "#/$defs/node" }
+                    }
+                }
+            }
         },
         "$defs": {
             "node": {
@@ -58,9 +74,19 @@ pub fn tool_program_parameters_schema() -> Value {
                         "required": ["op", "id", "tool"],
                         "properties": {
                             "op": { "const": "call" },
-                            "id": { "type": "string" },
-                            "tool": { "type": "string" },
-                            "arguments": { "type": "object", "default": {} }
+                            "id": {
+                                "type": "string",
+                                "description": "全程序唯一，匹配 [A-Za-z][A-Za-z0-9_-]{0,63}。"
+                            },
+                            "tool": {
+                                "type": "string",
+                                "description": "只能是工具描述里「当前可调用的数据面工具」列出的名字。"
+                            },
+                            "arguments": {
+                                "type": "object",
+                                "default": {},
+                                "description": "该工具的参数对象。路径字段名是 paths（字符串数组），不是 path。paths、pattern、patterns 写字面量，不要填 $ref。"
+                            }
                         }
                     },
                     {
@@ -183,7 +209,14 @@ mod tests {
 
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["properties"]["version"]["const"], 1);
-        assert_eq!(schema["properties"]["root"]["$ref"], "#/$defs/node");
+        assert_eq!(
+            schema["properties"]["root"]["properties"]["op"]["const"],
+            "sequence"
+        );
+        assert_eq!(
+            schema["properties"]["root"]["properties"]["steps"]["items"]["$ref"],
+            "#/$defs/node"
+        );
         assert_eq!(
             schema["$defs"]["node"]["oneOf"].as_array().unwrap().len(),
             4

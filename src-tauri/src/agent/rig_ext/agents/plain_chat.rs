@@ -12,22 +12,22 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tauri::ipc::Channel;
 use tauri::AppHandle;
+use tauri::ipc::Channel;
 use tokio::sync::watch;
 
-use crate::agent::config::{DispatcherAgentConfig, DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT};
+use crate::agent::config::{DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT, DispatcherAgentConfig};
 use crate::agent::db::{
     AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb, DispatcherMessageRecord,
 };
 use crate::agent::rig_ext::events::AgentEvent;
-use crate::agent::rig_ext::message::chat_history_to_rig;
-use crate::agent::rig_ext::model::{
-    completions_model, resolve_purpose_specs, ModelSelectionHandle, PurposeModelSpecs,
-    PurposeSwitchingModel,
-};
 use crate::agent::rig_ext::r#loop::{
-    run_rig_loop, AppToolExecutionPolicy, AppToolPolicyConfig, RigLoopHooks, RigToolSurface,
+    AppToolExecutionPolicy, AppToolPolicyConfig, RigLoopHooks, RigToolSurface, run_rig_loop,
+};
+use crate::agent::rig_ext::message::{apply_stored_session_summary, chat_history_to_rig_with_ids};
+use crate::agent::rig_ext::model::{
+    ModelSelectionHandle, PurposeModelSpecs, PurposeSwitchingModel, completions_model,
+    resolve_purpose_specs,
 };
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::sub_agent::{call_sub_agent_tool, list_sub_agents_tool};
@@ -36,9 +36,9 @@ use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps, ToolCallS
 use crate::agent::rig_ext::tools::exec::exec_tools;
 use crate::agent::rig_ext::tools::mcp::mcp_tools;
 use crate::agent::rig_ext::tools::media::media_tools;
-use crate::agent::sub_agent::config::SubAgentConfig;
 use crate::agent::sub_agent::SubAgentManager;
-use crate::mcp::{tool_definitions_from_snapshot, McpRegistry, McpScope, ResolvedMcpTool};
+use crate::agent::sub_agent::config::SubAgentConfig;
+use crate::mcp::{McpRegistry, McpScope, ResolvedMcpTool, tool_definitions_from_snapshot};
 use crate::ssh_tool::SshSessionManager;
 
 use super::{retain_allowed_tools, session_workspace_dir_name, tool_result_policies_from_specs};
@@ -343,9 +343,11 @@ impl RigPlainChatAgent {
             .await;
         let surface = self.build_surface(&deps, workspace_id).await;
 
-        // 历史：DB 最近若干轮对话（不含 system，逐轮由 preamble 重建）。
+        // 历史：DB 最近若干轮对话（不含 system，逐轮由 preamble 重建），
+        // 前插已持久化的滚动摘要（历史级压缩的跨 run 延续）。
         let history = db.load_llm_history_async(workspace_id).await?;
-        let messages = chat_history_to_rig(history).await;
+        let history = apply_stored_session_summary(db, workspace_id, history).await?;
+        let (messages, message_ids) = chat_history_to_rig_with_ids(history).await;
 
         // 模型 + 循环钩子。
         let model = PurposeSwitchingModel::from_specs(&self.specs)
@@ -402,6 +404,7 @@ impl RigPlainChatAgent {
             workspace_id,
             &model,
             messages,
+            message_ids,
             &surface,
             &policy,
             Some(&summary),

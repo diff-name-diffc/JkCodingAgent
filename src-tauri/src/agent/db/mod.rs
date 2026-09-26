@@ -10,6 +10,7 @@ pub(crate) mod projects;
 pub(crate) mod purge;
 pub(crate) mod python_runs;
 pub(crate) mod schema;
+pub(crate) mod session_summaries;
 pub(crate) mod sessions;
 pub(crate) mod settings;
 pub(crate) mod token_usage;
@@ -89,7 +90,7 @@ impl DispatcherDb {
         let mut stmt = conn.prepare(
             "SELECT rowid
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND role = 'user' AND visible = 1 AND context_cleared = 0
+             WHERE workspace_id = ?1 AND role = 'user' AND visible = 1
              ORDER BY rowid DESC
              LIMIT ?2",
         )?;

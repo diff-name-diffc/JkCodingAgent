@@ -19,16 +19,16 @@ use tokio::sync::watch;
 
 use super::super::architecture::program_schema::architecture_run_parameters_schema;
 use super::super::architecture::prompt::ARCHITECTURE_SYSTEM_PROMPT;
-use super::super::architecture::{validate_program, ArchProgram};
+use super::super::architecture::{ArchProgram, validate_program};
 use super::super::plain_chat::render_runtime_workspace;
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord};
 use crate::agent::rig_ext::events::AgentEvent;
-use crate::agent::rig_ext::message::chat_history_to_rig;
-use crate::agent::rig_ext::model::{completions_model, PurposeModelSpec};
 use crate::agent::rig_ext::r#loop::{
-    run_rig_loop, AppToolExecutionPolicy, AppToolPolicyConfig, RigLoopHooks, RigToolSurface,
+    AppToolExecutionPolicy, AppToolPolicyConfig, RigLoopHooks, RigToolSurface, run_rig_loop,
 };
+use crate::agent::rig_ext::message::{apply_stored_session_summary, chat_history_to_rig_with_ids};
+use crate::agent::rig_ext::model::{PurposeModelSpec, completions_model};
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
 use crate::agent::rig_ext::tools::deps::ToolCallSlot;
@@ -83,7 +83,7 @@ async fn run_architecture_program(
         Err(error) => {
             return Err(ToolExecutionError::invalid_args(format!(
                 "错误：程序不符合画布程序 DSL：{error}"
-            )))
+            )));
         }
     };
     if let Err(error) = validate_program(&program) {
@@ -251,7 +251,9 @@ impl RigArchitectureAgent {
             Some(request.cancel_rx.clone()),
         )]);
         let history = db.load_llm_history_async(workspace_id).await?;
-        let messages = chat_history_to_rig(history).await;
+        // 前插已持久化的滚动摘要（历史级压缩的跨 run 延续）。
+        let history = apply_stored_session_summary(db, workspace_id, history).await?;
+        let (messages, message_ids) = chat_history_to_rig_with_ids(history).await;
 
         let model = completions_model(&self.spec)
             .map_err(|error| anyhow::anyhow!("初始化架构视觉模型失败：{error}"))?;
@@ -303,6 +305,7 @@ impl RigArchitectureAgent {
             workspace_id,
             &model,
             messages,
+            message_ids,
             &surface,
             &policy,
             Some(&summary),

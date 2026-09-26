@@ -138,12 +138,23 @@ export function ChatPageV2({
   // 整页（会话控制器/头部/输入区）拖进每帧重渲染。
   const updateLiveSessionState = useLiveSessionUpdater();
   const isSessionRunning = useDispatcherSessionRunning(activeSessionId);
-  const { refresh: refreshSessionTokenUsage } = useDispatcherSessionTokenUsage(
-    activeSessionId ?? "",
-  );
+  const { entries: sessionTokenUsageEntries, refresh: refreshSessionTokenUsage } =
+    useDispatcherSessionTokenUsage(activeSessionId ?? "");
 
   const currentSessionIdRef = useRef<string | null>(activeSessionId);
   currentSessionIdRef.current = activeSessionId;
+  // 上下文占用快照（容量回路闭环）：最近一次请求的 prompt 占用 / 窗口容量，
+  // 取 primary 来源里最新的一条；头部指示器据此提示历史折叠行为。
+  const contextUsage = useMemo(() => {
+    const primary = sessionTokenUsageEntries.filter((entry) => entry.sourceKind === "primary");
+    if (primary.length === 0) return null;
+    const latest = primary.reduce((a, b) => (a.updatedAt > b.updatedAt ? a : b));
+    if (latest.contextWindowTokens <= 0 || latest.contextWindowCapacity <= 0) return null;
+    return {
+      usedTokens: latest.contextWindowTokens,
+      capacityTokens: latest.contextWindowCapacity,
+    };
+  }, [sessionTokenUsageEntries]);
   // 布局根节点 ref（UI-23a）：把输入框聚焦等 DOM 查询限定在本实例子树内——
   // 多项目保活时页面同时挂载多套聊天 DOM，全局选择器会命中隐藏工作区。
   const shellContainerRef = useRef<HTMLDivElement>(null);
@@ -416,7 +427,10 @@ export function ChatPageV2({
     }
     clearDraft();
     setMessages([]);
-  }, [activeSessionId, clearDraft, isRunning, setMessages, showToast]);
+    // 清空会删掉 token 用量行。占用指示只在运行事件里刷新，这里不拉一次就会
+    // 继续显示清空前的百分比。
+    await refreshSessionTokenUsage(activeSessionId);
+  }, [activeSessionId, clearDraft, isRunning, refreshSessionTokenUsage, setMessages, showToast]);
 
   // 聊天模式（主页）也提供顶部栏：会话标题 + 运行状态 + 更多菜单，
   // 让宽屏下的消息区有视觉锚点；embedded（项目内嵌面板）下保持紧凑不加栏。
@@ -430,6 +444,7 @@ export function ChatPageV2({
       hasMessages={messages.length > 0}
       mcpStatus={mcpStatus}
       mcpChecking={mcpChecking}
+      contextUsage={contextUsage}
       graphAvailable={graphPanel.latestPlanId !== null}
       onOpenGraphPanel={graphPanel.open}
       onOpenMcpStatus={onOpenMcpStatus}
@@ -446,6 +461,7 @@ export function ChatPageV2({
       hasMessages={messages.length > 0}
       mcpStatus={mcpStatus}
       mcpChecking={mcpChecking}
+      contextUsage={contextUsage}
       onOpenMcpStatus={onOpenMcpStatus}
       onClearMessages={handleClearMessages}
       onOpenSettings={onOpenSettings}

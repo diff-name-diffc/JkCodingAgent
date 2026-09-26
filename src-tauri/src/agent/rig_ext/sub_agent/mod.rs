@@ -3,7 +3,6 @@
 //! 与主 Agent 的区别（与旧实现一致）：无图编排、无协议动作，是纯粹的
 //! 「LLM ↔ 工具」循环；结果截断后返回父循环；轨迹事件单独下发。
 
-mod context;
 mod events;
 mod runner;
 mod tools;

@@ -1,18 +1,15 @@
-//! 工具程序 DSL 执行器（T2.3b）：run_tool_program。
+//! 工具程序 DSL 执行器：run_tool_program。
 //! 数据面（可被程序调用的工具集合）由调用方（编排器工厂）注入。
 //!
-//! 迁移自旧自实现工具层（已随迁移删除）的 run_tool_program 与工具程序模块：
-//! - 「按名调用工具」的接缝由旧 `CapabilityBroker` 改为注入的
-//!   `Vec<PortableDynamicTool>` 数据面（按名查找 + `execute`）；
-//! - schema（name / description / parameters）与旧实现逐字一致；
-//! - 校验规则（`validate`）、模板引用解析（`value`）、执行器防御规则
-//!   （并发/深度/预算/wall-time/drain，`executor` + `support`）逐条保留；
-//! - 外层错误映射为带分类 code（ProgramErrorKind 的 snake_case 名）的
-//!   `ToolExecutionError`，由 runtime 循环转成模型可见的「错误：…」文本。
+//! 模型只能看到这个工具的描述，看不到数据面工具自己的 schema。描述由
+//! `guide` 按本轮数据面现写：程序形状、引用限制、每个授权工具的字段名。
+//! 字面量参数在执行前按该 schema 校验；文本结果禁止 `/data/...` 子路径。
+//! 子步骤直接 `execute`，不另建工具运行台账，文本按内联上限截断。
 
 mod ast;
 mod error;
 mod executor;
+mod guide;
 mod support;
 mod validate;
 mod value;
@@ -27,15 +24,9 @@ use self::error::{ProgramError, ProgramErrorKind};
 use self::validate::CapabilityPolicy;
 use super::deps::RigToolDeps;
 
-/// 工具描述：与旧 `builtin/run_tool_program.rs` 逐字一致（模型行为依赖文案，勿改写）。
-const DESCRIPTION: &str = "在受限运行时中组合多个已授权工具调用。程序只支持 call、sequence、parallel、return；不执行 Python/JavaScript/Shell，不允许动态工具名。arguments 与 return.value 可用严格引用 {\"$ref\":{\"step\":\"步骤ID\",\"pointer\":\"/data/files\"}} 读取之前步骤的 JSON 结果。根节点必须是 sequence，且最后一步是全程序唯一 return。";
-
-/// 可在 parallel 分支内执行的只读工具，迁移自`rig_ext/tools/spec.rs`（自旧工具层迁入）
-/// TOOL_POLICY_TABLE 的 PARALLEL_READONLY 行（read_file / list_dir / glob /
-/// grep / ssh_list_servers / ssh_memo_read）。`PortableDynamicTool` 不携带
-/// access 元数据，校验器以本表为事实来源；未收录的工具一律按不可并行处理
-/// （fail-closed，对齐旧 `ToolProfile::fail_closed` 的串行兜底）。
-const PARALLEL_READONLY_TOOLS: &[&str] = &[
+/// 这些工具的程序结果是整段文本，`/data` 没有子字段。并行能力另见策略表
+/// `supports_parallel_readonly`，不在这里抄一份。
+const TEXT_RESULT_TOOLS: &[&str] = &[
     "read_file",
     "list_dir",
     "glob",
@@ -43,6 +34,15 @@ const PARALLEL_READONLY_TOOLS: &[&str] = &[
     "ssh_list_servers",
     "ssh_memo_read",
 ];
+
+/// 描述数据面工具时用的快照。描述文本在工具构造时生成，不随单次调用变化。
+pub(super) struct ToolContract {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+    pub supports_parallel_readonly: bool,
+    pub returns_text: bool,
+}
 
 /// 程序可调用的数据面：按名查找注入的 `PortableDynamicTool`。
 ///
@@ -78,8 +78,29 @@ impl DataPlane {
     /// 静态校验用的能力目录条目。
     pub(crate) fn policy_for(&self, name: &str) -> Option<CapabilityPolicy> {
         self.get(name).map(|_| CapabilityPolicy {
-            supports_parallel_readonly: PARALLEL_READONLY_TOOLS.contains(&name),
+            supports_parallel_readonly: super::spec::supports_parallel_readonly(name),
+            returns_text: TEXT_RESULT_TOOLS.contains(&name),
         })
+    }
+
+    pub(super) fn contracts(&self) -> Vec<ToolContract> {
+        let mut entries = self
+            .tools
+            .values()
+            .map(|tool| {
+                let definition = tool.definition();
+                let name = definition.name;
+                ToolContract {
+                    supports_parallel_readonly: super::spec::supports_parallel_readonly(&name),
+                    returns_text: TEXT_RESULT_TOOLS.contains(&name.as_str()),
+                    description: definition.description,
+                    parameters: definition.parameters,
+                    name,
+                }
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        entries
     }
 }
 
@@ -87,26 +108,15 @@ impl DataPlane {
 pub(crate) fn program_tool(
     deps: &RigToolDeps,
     data_plane: Vec<PortableDynamicTool>,
-    granted_note: Option<String>,
 ) -> PortableDynamicTool {
-    build_program_tool(
-        deps.cancel_rx.clone(),
-        DataPlane::new(data_plane),
-        granted_note,
-    )
+    build_program_tool(deps.cancel_rx.clone(), DataPlane::new(data_plane))
 }
 
 fn build_program_tool(
     cancel_rx: Option<watch::Receiver<bool>>,
     plane: DataPlane,
-    granted_note: Option<String>,
 ) -> PortableDynamicTool {
-    // 描述尾部声明当前会话实际授权的数据面能力（模型据此知道 program 里
-    // 能调用哪些工具；对齐旧编排器对 run_tool_program 描述的动态追加）。
-    let description = match granted_note {
-        Some(note) => format!("{DESCRIPTION} 当前会话实际授权的数据面能力：{note}。"),
-        None => DESCRIPTION.to_string(),
-    };
+    let description = guide::render_description(&plane);
     PortableDynamicTool::new(
         "run_tool_program",
         description,
@@ -119,6 +129,8 @@ fn build_program_tool(
                 let catalog = |name: &str| plane.policy_for(name);
                 let program = validate::validate_program_value(&args, &catalog, &limits)
                     .map_err(program_error_tool_error)?;
+                guide::reject_invalid_literal_arguments(&program, &plane)
+                    .map_err(program_error_tool_error)?;
                 executor::execute_program(&program, &plane, &limits, cancel_rx).await
             })
         },
@@ -127,32 +139,33 @@ fn build_program_tool(
 
 /// 将静态验证或运行期 ProgramError 映射为 rig 工具错误。
 ///
-/// 分类对齐旧 `program_error_result` 的 fatal/recoverable/cancelled 三态：
-/// - Cancelled → `cancelled`（旧工具结果的取消语义）；
-/// - ChildFatal / Internal → `other` 且 retryable=false（旧 fatal_error）；
-/// - DeadlineExceeded → `timeout`（旧 recoverable，rig timeout 默认 retryable）；
-/// - PolicyDenied → `permission_denied`（旧 recoverable，语义为策略拒绝）；
-/// - Parse / Validation / LimitExceeded / InvalidReference → `invalid_args`
-///   （旧 recoverable，模型可修正程序后重试）；
-/// - ChildRecoverable → `other` 且 retryable=true（旧 recoverable）。
+/// 模型可以改程序再试的失败都标成 retryable，避免和同批 `message` 一起被收口：
+/// - Cancelled → `cancelled`；
+/// - ChildFatal / Internal → `other` 且 retryable=false；
+/// - DeadlineExceeded → `timeout`（默认可重试）；
+/// - PolicyDenied → `permission_denied` 且 retryable（换成已授权工具即可）；
+/// - Parse / Validation / LimitExceeded / InvalidReference → `invalid_args` 且 retryable；
+/// - ChildRecoverable → `other` 且 retryable。
 ///
-/// `code` 携带 ProgramErrorKind 的 snake_case 名，供策略层/审计机器可读；
-/// 旧 `metadata.toolProgram`（version/completedSteps/error 详情）在 rig 工具
-/// 结果模型中没有通道，由 Phase 3 策略层按需重建。
+/// 步骤、位置和已完成步骤写进模型可见文本。rig 工具结果没有单独的 metadata 通道。
 pub(crate) fn program_error_tool_error(error: ProgramError) -> ToolExecutionError {
     let kind = error.kind;
-    let message = format!("错误：ToolProgram 执行失败：{}", error.message);
+    let message = model_error_message(&error);
     let mapped = match kind {
         ProgramErrorKind::Cancelled => ToolExecutionError::cancelled(message),
         ProgramErrorKind::ChildFatal | ProgramErrorKind::Internal => {
             ToolExecutionError::other(message).with_retryable(false)
         }
         ProgramErrorKind::DeadlineExceeded => ToolExecutionError::timeout(message),
-        ProgramErrorKind::PolicyDenied => ToolExecutionError::permission_denied(message),
+        ProgramErrorKind::PolicyDenied => {
+            ToolExecutionError::permission_denied(message).with_retryable(true)
+        }
         ProgramErrorKind::Parse
         | ProgramErrorKind::Validation
         | ProgramErrorKind::LimitExceeded
-        | ProgramErrorKind::InvalidReference => ToolExecutionError::invalid_args(message),
+        | ProgramErrorKind::InvalidReference => {
+            ToolExecutionError::invalid_args(message).with_retryable(true)
+        }
         ProgramErrorKind::ChildRecoverable => {
             ToolExecutionError::other(message).with_retryable(true)
         }
@@ -164,6 +177,32 @@ pub(crate) fn program_error_tool_error(error: ProgramError) -> ToolExecutionErro
         Some(code) => mapped.with_code(code),
         None => mapped,
     }
+}
+
+fn model_error_message(error: &ProgramError) -> String {
+    let mut message = format!("错误：ToolProgram 执行失败：{}", error.message);
+    let mut extras = Vec::new();
+    if let Some(step) = error.step_id.as_deref() {
+        match error.tool.as_deref() {
+            Some(tool) if !tool.is_empty() => extras.push(format!("步骤 {step}（{tool}）")),
+            _ => extras.push(format!("步骤 {step}")),
+        }
+    }
+    if let Some(path) = error.node_path.as_deref() {
+        extras.push(format!("位置 {path}"));
+    }
+    if !extras.is_empty() {
+        message.push(' ');
+        message.push_str(&extras.join("，"));
+        message.push('。');
+    }
+    if !error.completed_steps.is_empty() {
+        message.push_str(&format!(
+            " 已完成步骤：{}。这些步骤的输出没有随错误返回，修正后会重新执行。",
+            error.completed_steps.join("、")
+        ));
+    }
+    message
 }
 
 #[cfg(test)]
@@ -189,7 +228,8 @@ mod tests {
         assert_eq!(
             plane.policy_for("echo"),
             Some(super::validate::CapabilityPolicy {
-                supports_parallel_readonly: false
+                supports_parallel_readonly: false,
+                returns_text: false,
             })
         );
         assert_eq!(plane.policy_for("missing"), None);
@@ -209,33 +249,33 @@ mod tests {
 
     #[test]
     fn error_mapping_preserves_kind_code_and_retryability() {
-        // retryable 期望值即 rig 各类型的默认 retryability（result.rs 的
-        // kind_defaults 表）叠加 with_retryable 覆盖后的结果。
+        // 模型能改程序再试的失败（形状、参数、引用、策略、子调用）都是 retryable。
+        // 取消、内部错误和子调用致命错误保持不可重试。
         let cases = [
             (
                 ProgramErrorKind::Parse,
                 ToolErrorKind::InvalidArgs,
-                Some(false),
+                Some(true),
             ),
             (
                 ProgramErrorKind::Validation,
                 ToolErrorKind::InvalidArgs,
-                Some(false),
+                Some(true),
             ),
             (
                 ProgramErrorKind::LimitExceeded,
                 ToolErrorKind::InvalidArgs,
-                Some(false),
+                Some(true),
             ),
             (
                 ProgramErrorKind::InvalidReference,
                 ToolErrorKind::InvalidArgs,
-                Some(false),
+                Some(true),
             ),
             (
                 ProgramErrorKind::PolicyDenied,
                 ToolErrorKind::PermissionDenied,
-                Some(false),
+                Some(true),
             ),
             (
                 ProgramErrorKind::ChildRecoverable,
@@ -275,7 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn program_tool_executes_end_to_end() {
-        let tool = build_program_tool(None, DataPlane::new(vec![echo_tool()]), None);
+        let tool = build_program_tool(None, DataPlane::new(vec![echo_tool()]));
         let program = json!({
             "version": 1,
             "root": { "op": "sequence", "steps": [
@@ -290,7 +330,7 @@ mod tests {
 
     #[tokio::test]
     async fn program_tool_rejects_invalid_program_as_invalid_args() {
-        let tool = build_program_tool(None, DataPlane::new(vec![echo_tool()]), None);
+        let tool = build_program_tool(None, DataPlane::new(vec![echo_tool()]));
         let error = tool
             .execute(json!({ "version": 2, "root": {} }))
             .await

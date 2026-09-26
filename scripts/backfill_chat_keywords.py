@@ -149,7 +149,6 @@ def list_candidate_sessions(conn: sqlite3.Connection, force: bool, limit: int) -
             SELECT 1 FROM dispatcher_messages dm
             WHERE dm.workspace_id = ds.id
               AND dm.visible = 1
-              AND dm.context_cleared = 0
               AND dm.role IN ('user', 'assistant')
           )
     """
@@ -174,7 +173,6 @@ def dialogue_cutoff_rowid(conn: sqlite3.Connection, session_id: str, max_dialogu
         FROM dispatcher_messages
         WHERE workspace_id = ?
           AND visible = 1
-          AND context_cleared = 0
           AND role = 'user'
         ORDER BY created_at DESC, rowid DESC
         LIMIT ?
@@ -194,7 +192,6 @@ def recent_messages(conn: sqlite3.Connection, session_id: str) -> list[dict[str,
         FROM dispatcher_messages
         WHERE workspace_id = ?
           AND visible = 1
-          AND context_cleared = 0
           AND rowid >= ?
         ORDER BY created_at ASC, rowid ASC
         """,

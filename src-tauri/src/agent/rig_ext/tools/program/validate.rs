@@ -2,13 +2,13 @@
 //! 能力目录的注入点保持 `CapabilityCatalog` trait：生产环境由 `DataPlane`
 //! 提供（工具存在于数据面即视为已授权；并行能力见 `super::PARALLEL_READONLY_TOOLS`）。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
 use super::ast::{ProgramNode, ToolProgram, TOOL_PROGRAM_VERSION};
 use super::error::{ProgramError, ProgramErrorKind};
-use super::value::visit_references_at;
+use super::value::validate_template_references;
 
 pub const CONTROL_PLANE_TOOLS: &[&str] = &[
     "run_tool_program",
@@ -22,6 +22,8 @@ pub const CONTROL_PLANE_TOOLS: &[&str] = &[
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct CapabilityPolicy {
     pub supports_parallel_readonly: bool,
+    /// `/data` 是整段文本，没有子字段。JSON 结果的工具保持 false，以便 `/data/files` 这类指针仍可用。
+    pub returns_text: bool,
 }
 
 impl CapabilityPolicy {
@@ -29,6 +31,7 @@ impl CapabilityPolicy {
     pub const fn sequential() -> Self {
         Self {
             supports_parallel_readonly: false,
+            returns_text: false,
         }
     }
 
@@ -36,7 +39,14 @@ impl CapabilityPolicy {
     pub const fn parallel_readonly() -> Self {
         Self {
             supports_parallel_readonly: true,
+            returns_text: false,
         }
+    }
+
+    #[cfg(test)]
+    pub const fn with_text_result(mut self) -> Self {
+        self.returns_text = true;
+        self
     }
 }
 
@@ -83,8 +93,10 @@ impl Default for ProgramLimits {
             max_concurrency: 4,
             max_resolved_arguments_bytes: 64 * 1024,
             max_step_envelope_bytes: 256 * 1024,
-            max_environment_bytes: 1024 * 1024,
-            max_return_bytes: 64 * 1024,
+            // 单步文本按内联上限截断后仍会在 envelope 里存 data 与 output 两份。
+            // 额度要盖住多步调查的汇总，避免正确程序在 return 时因体积失败。
+            max_environment_bytes: 4 * 1024 * 1024,
+            max_return_bytes: 384 * 1024,
             max_wall_time_secs: 120,
             max_drain_time_ms: 5_000,
         }
@@ -179,30 +191,34 @@ fn validate_program_inner<C: CapabilityCatalog + ?Sized>(
     validate_root_shape(&program.root)?;
 
     let mut state = ValidationState::new(catalog, limits);
-    let mut available = BTreeSet::new();
+    let mut available = BTreeMap::new();
     state.validate_node(&program.root, &mut available, 1, "/root", false, false)?;
 
     Ok(ValidatedProgram { program })
 }
 
+/// 根形状的三种拒绝都是**模型可自行修正**的形状错误，消息直接给出期望的
+/// JSON 形状：这句文本是模型唯一的自修复线索（本次实测中模型漏写 return 后
+/// 反复重试），比只陈述「必须是什么」更省一轮往返。
 fn validate_root_shape(root: &ProgramNode) -> Result<(), ProgramError> {
     let ProgramNode::Sequence { steps } = root else {
         return Err(ProgramError::new(
             ProgramErrorKind::Validation,
-            "ToolProgram 根节点必须是 sequence",
+            "ToolProgram 根节点必须是 sequence，形如 {\"version\":1,\"root\":{\"op\":\"sequence\",\"steps\":[…]}}",
         )
         .at_path("/root"));
     };
     if steps.is_empty() {
-        return Err(
-            ProgramError::new(ProgramErrorKind::Validation, "根 sequence 不能为空")
-                .at_path("/root/steps"),
-        );
+        return Err(ProgramError::new(
+            ProgramErrorKind::Validation,
+            "根 sequence 不能为空，且最后一步必须是 return",
+        )
+        .at_path("/root/steps"));
     }
     if !matches!(steps.last(), Some(ProgramNode::Return { .. })) {
         return Err(ProgramError::new(
             ProgramErrorKind::Validation,
-            "根 sequence 的最后一个节点必须是 return",
+            "根 sequence 的最后一个节点必须是 return（形如 {\"op\":\"return\",\"value\":{…}}），且全程序只能有一个 return",
         )
         .at_path("/root/steps"));
     }
@@ -230,7 +246,7 @@ impl<'a, C: CapabilityCatalog + ?Sized> ValidationState<'a, C> {
     fn validate_node(
         &mut self,
         node: &ProgramNode,
-        available: &mut BTreeSet<String>,
+        available: &mut BTreeMap<String, bool>,
         depth: usize,
         path: &str,
         inside_parallel: bool,
@@ -298,7 +314,7 @@ impl<'a, C: CapabilityCatalog + ?Sized> ValidationState<'a, C> {
                 // 每个 branch 只能看到进入 parallel 前的同一份快照；兄弟 branch
                 // 在验证顺序上即使已经出现，也不会泄漏进后续 branch 的可见集合。
                 let entry_snapshot = available.clone();
-                let mut defined_by_branches = BTreeSet::new();
+                let mut defined_by_branches = BTreeMap::new();
                 for (index, branch) in branches.iter().enumerate() {
                     let mut branch_available = entry_snapshot.clone();
                     self.validate_node(
@@ -309,12 +325,11 @@ impl<'a, C: CapabilityCatalog + ?Sized> ValidationState<'a, C> {
                         true,
                         false,
                     )?;
-                    defined_by_branches.extend(
-                        branch_available
-                            .difference(&entry_snapshot)
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                    );
+                    for (id, returns_text) in &branch_available {
+                        if !entry_snapshot.contains_key(id) {
+                            defined_by_branches.insert(id.clone(), *returns_text);
+                        }
+                    }
                 }
                 available.extend(defined_by_branches);
                 Ok(())
@@ -345,7 +360,7 @@ impl<'a, C: CapabilityCatalog + ?Sized> ValidationState<'a, C> {
         id: &str,
         tool: &str,
         arguments: &Value,
-        available: &mut BTreeSet<String>,
+        available: &mut BTreeMap<String, bool>,
         path: &str,
         inside_parallel: bool,
     ) -> Result<(), ProgramError> {
@@ -423,26 +438,9 @@ impl<'a, C: CapabilityCatalog + ?Sized> ValidationState<'a, C> {
             .for_step(id, tool));
         }
 
-        available.insert(id.to_string());
+        available.insert(id.to_string(), capability.returns_text);
         Ok(())
     }
-}
-
-fn validate_template_references(
-    template: &Value,
-    available: &BTreeSet<String>,
-    base_path: &str,
-) -> Result<(), ProgramError> {
-    visit_references_at(template, base_path, &mut |reference, reference_path| {
-        if available.contains(&reference.step) {
-            return Ok(());
-        }
-        Err(ProgramError::new(
-            ProgramErrorKind::InvalidReference,
-            format!("步骤 '{}' 不存在，或在当前位置尚未确定完成", reference.step),
-        )
-        .at_path(reference_path))
-    })
 }
 
 fn valid_step_id(id: &str) -> bool {

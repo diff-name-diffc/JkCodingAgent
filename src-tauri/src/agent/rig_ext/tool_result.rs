@@ -15,7 +15,7 @@ use rig::message::ToolCall;
 use tauri::ipc::Channel;
 
 use super::llm_usage_from_rig;
-use crate::agent::common::{emit, serialize_tool_arguments, UsageTracker};
+use crate::agent::common::{UsageTracker, emit, serialize_tool_arguments};
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, ToolArtifactDraft};
 use crate::agent::rig_ext::events::AgentEvent;
 use summary::extract_structured_summary;
@@ -38,6 +38,13 @@ pub const TOOL_RESULT_INLINE_MAX_CHARS_READ: usize = 10_000;
 /// 一页只给 8000 字符会导致接续读取的往返次数过多。
 pub const TOOL_RESULT_INLINE_MAX_CHARS_PAGED: usize = 20_000;
 
+/// `run_tool_program` 的返回值是一次调查的汇总，编排器没有别的入口能再打开
+/// 工具产物。8000 字符会把多段证据截断，模型只能再发一轮程序重取。
+pub const TOOL_RESULT_INLINE_MAX_CHARS_PROGRAM: usize = 32_000;
+
+const ARTIFACT_REMAINDER_NOTE: &str = "完整原始结果见工具产物。";
+const PROGRAM_REMAINDER_NOTE: &str = "编排器读不到工具产物，被截掉的部分不会回到上下文。请把 return 收成更短的摘录，或分成下一次程序。";
+
 /// 内容读取类工具：结果主体是供模型精读的文本。这些工具享有两档内联预算——
 /// 默认 READ（10000），显式传入 offset/limit 分页读取时 PAGED（20000）；
 /// 其余工具维持 8000。
@@ -57,6 +64,9 @@ const INLINE_READ_TOOLS: &[&str] = &[
 
 /// 按工具与入参决定本次调用的内联字符上限。
 fn inline_max_chars(tool_name: &str, args: &serde_json::Value) -> usize {
+    if tool_name == "run_tool_program" {
+        return TOOL_RESULT_INLINE_MAX_CHARS_PROGRAM;
+    }
     if !INLINE_READ_TOOLS.contains(&tool_name) {
         return TOOL_RESULT_INLINE_MAX_CHARS;
     }
@@ -65,6 +75,27 @@ fn inline_max_chars(tool_name: &str, args: &serde_json::Value) -> usize {
     } else {
         TOOL_RESULT_INLINE_MAX_CHARS_READ
     }
+}
+
+/// ToolProgram 子步骤的可见文本。与外层内联上限同一口径，但截掉的部分不会
+/// 进入工具产物：程序里没有第二条读取通道。
+pub(crate) fn clip_program_step_text(
+    tool_name: &str,
+    args: &serde_json::Value,
+    rendered: &str,
+) -> String {
+    let max_chars = inline_max_chars(tool_name, args);
+    let char_count = rendered.chars().count();
+    if char_count <= max_chars {
+        return rendered.to_string();
+    }
+    let prefix: String = rendered.chars().take(max_chars).collect();
+    let line_marker = source_line_number_at_cut(&prefix)
+        .map(|line| format!("截断处标注的源码/匹配行号约为 {line}。"))
+        .unwrap_or_default();
+    format!(
+        "{prefix}\n\n[程序内结果已截断：仅保留前 {max_chars} / {char_count} 字符。{line_marker}程序不保存被截掉的原文，也不调用摘要模型。请缩小范围后重读：read_file 用 path:start-end 或 offset/limit；grep 降低 max_files / max_matches_per_file；glob 降低 max_results；list_dir 指定更小的目录。]"
+    )
 }
 
 /// 默认压缩触发阈值（对齐 `tools/spec.rs` 的 DEFAULT_FORCE_COMPRESS_AFTER_CHARS）。
@@ -151,7 +182,12 @@ pub fn prepare_rig_tool_result(
             compress_intent,
         }
     } else if char_count > max_inline {
-        let truncated = truncate_tool_result(trimmed, char_count, max_inline);
+        let remainder = if tool_name == "run_tool_program" {
+            PROGRAM_REMAINDER_NOTE
+        } else {
+            ARTIFACT_REMAINDER_NOTE
+        };
+        let truncated = truncate_tool_result(trimmed, char_count, max_inline, remainder);
         PreparedRigToolResult {
             display_content: truncated.clone(),
             context_payload: truncated,
@@ -172,7 +208,12 @@ pub fn prepare_rig_tool_result(
     }
 }
 
-fn truncate_tool_result(raw_output: &str, char_count: usize, max_chars: usize) -> String {
+fn truncate_tool_result(
+    raw_output: &str,
+    char_count: usize,
+    max_chars: usize,
+    remainder_note: &str,
+) -> String {
     let prefix = raw_output.chars().take(max_chars).collect::<String>();
     let truncated_at_output_line = prefix.chars().filter(|ch| *ch == '\n').count() + 1;
     let total_lines = raw_output.lines().count().max(1);
@@ -181,7 +222,7 @@ fn truncate_tool_result(raw_output: &str, char_count: usize, max_chars: usize) -
         .unwrap_or_default();
 
     format!(
-        "{prefix}\n\n[结果已截断：仅返回前 {max_chars} / {char_count} 字符；截断发生在原始结果第 {truncated_at_output_line} 个输出行{source_line_marker}，原始结果共 {total_lines} 行。完整原始结果见工具产物。]"
+        "{prefix}\n\n[结果已截断：仅返回前 {max_chars} / {char_count} 字符；截断发生在原始结果第 {truncated_at_output_line} 个输出行{source_line_marker}，原始结果共 {total_lines} 行。{remainder_note}]"
     )
 }
 
@@ -204,7 +245,12 @@ pub(super) fn bound_inline_tool_result(content: String) -> String {
     // 摘要结果的展示上限保持紧凑值：压缩后的内容本就该足够精炼。
     let char_count = content.chars().count();
     if char_count > TOOL_RESULT_INLINE_MAX_CHARS {
-        truncate_tool_result(&content, char_count, TOOL_RESULT_INLINE_MAX_CHARS)
+        truncate_tool_result(
+            &content,
+            char_count,
+            TOOL_RESULT_INLINE_MAX_CHARS,
+            ARTIFACT_REMAINDER_NOTE,
+        )
     } else {
         content
     }
@@ -341,6 +387,7 @@ pub async fn persist_rig_tool_result<M: CompletionModel>(
             &prepared.raw_output,
             char_count,
             inline_max_chars(tool_name, &tool_call.function.arguments),
+            ARTIFACT_REMAINDER_NOTE,
         );
         return persist_with_presentation(
             db,

@@ -653,8 +653,9 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolPolicyOptions::SERIAL,
     ),
     // ── 图编排协议壳 ──
-    // 外层运行时本身不代表子调用的权限；每个子调用仍由 CapabilityBroker 按
-    // 真实 ToolSpec 逐项执行策略。该入口仅在项目编排器注册。
+    // 外层运行时只看到这一次程序调用。子步骤由 ToolProgram 直接执行数据面
+    // 工具：授权以注入的数据面为准，参数 schema 在执行前校验，文本结果按
+    // 内联上限截断。该入口仅在项目编排器注册。
     policy_row(
         "run_tool_program",
         ToolCategory::Other,
@@ -696,6 +697,12 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
 
 fn lookup_policy(name: &str) -> Option<&'static ToolPolicyRow> {
     TOOL_POLICY_TABLE.iter().find(|row| row.name == name)
+}
+
+/// 该工具在策略表中是否声明为只读可并行。未登记的名字按不可并行（fail-closed）。
+/// ToolProgram 用它判断 `parallel` 分支，避免再维护一份手抄名单。
+pub(crate) fn supports_parallel_readonly(name: &str) -> bool {
+    lookup_policy(name).is_some_and(|row| row.parallel_readonly)
 }
 
 /// 该工具名是否在策略表中登记（rig 运行时的台账审计用：

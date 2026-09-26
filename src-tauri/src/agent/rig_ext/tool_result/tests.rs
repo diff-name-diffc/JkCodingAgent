@@ -85,4 +85,16 @@ fn paged_read_tool_gets_larger_inline_budget() {
         &policy,
     );
     assert_eq!(prepared.result_mode, "truncated");
+
+    // 程序汇总结果使用更高的内联额度，截断说明不指向编排器读不到的工具产物。
+    let program_output = "y".repeat(40_000);
+    let prepared = prepare_rig_tool_result(
+        "run_tool_program",
+        &serde_json::json!({}),
+        &program_output,
+        &policy,
+    );
+    assert_eq!(prepared.result_mode, "truncated");
+    assert!(prepared.context_payload.contains("编排器读不到工具产物"));
+    assert!(!prepared.context_payload.contains("完整原始结果见工具产物"));
 }

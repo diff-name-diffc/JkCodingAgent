@@ -23,11 +23,11 @@ use tauri::ipc::Channel;
 use tokio::sync::watch;
 
 use super::message::attach_turn_tool_images;
-use super::model::{build_completion_request, ModelSelectionHandle, PurposeModelSpec};
-use super::tool_result::{persist_rig_tool_result, RigSummaryModel};
+use super::model::{ModelSelectionHandle, PurposeModelSpec, build_completion_request};
+use super::tool_result::{RigSummaryModel, persist_rig_tool_result};
 use crate::agent::common::{
-    cancellation_requested, emit, persist_assistant_message, persist_tool_calls_message,
-    UsageTracker,
+    UsageTracker, cancellation_requested, emit, persist_assistant_message,
+    persist_tool_calls_message,
 };
 use crate::agent::db::OutboundToolCall;
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
@@ -42,6 +42,12 @@ mod support;
 mod surface;
 #[cfg(test)]
 mod tests;
+
+/// 上下文超限（400）收缩重试上限：每次预算减半，重试耗尽后错误照常上抛。
+const MAX_CONTEXT_OVERFLOW_RETRIES: usize = 2;
+/// 收缩重试的预算下限（字符）：低于此值继续减半已无意义（头+尾都放不下），
+/// 避免除二把预算压成 0。
+const MIN_CONTEXT_BUDGET_CHARS: usize = 16_000;
 
 pub use app_policy::{AppToolExecutionPolicy, AppToolPolicyConfig};
 pub use protocol::{ProtocolToolHandler, RigProtocolAction, RigProtocolResult};
@@ -156,6 +162,7 @@ pub async fn run_rig_loop<M, S, P>(
     workspace_id: &str,
     model: &M,
     messages: Vec<Message>,
+    message_ids: Vec<Option<String>>,
     surface: &RigToolSurface,
     tool_policy: &P,
     summary: Option<&RigSummaryModel<'_, S>>,
@@ -174,6 +181,7 @@ where
         workspace_id,
         model,
         messages,
+        message_ids,
         surface,
         tool_policy,
         summary,
@@ -204,6 +212,7 @@ async fn run_loop_inner<M, S, P>(
     workspace_id: &str,
     model: &M,
     mut messages: Vec<Message>,
+    mut message_ids: Vec<Option<String>>,
     surface: &RigToolSurface,
     tool_policy: &P,
     summary: Option<&RigSummaryModel<'_, S>>,
@@ -217,6 +226,21 @@ where
     S: CompletionModel,
     P: ToolExecutionPolicy,
 {
+    // 上下文整形预算（统一整形层）：容量源为 hooks.context_window（三条
+    // 装配路径均已以槽位规格回填）；上下文超限错误（400）时预算减半重试，
+    // 故为循环变量而非常量。
+    let mut history_budget_chars = super::context::context_budget_chars(hooks.context_window);
+    let mut overflow_retries = 0usize;
+    // 迭代边界的配对不变量由写侧保证（工具结果同批补齐、取消/致命失败补
+    // 占位）；装配历史经 DB 读侧修复。这里对初始序列再做一次防御性修复，
+    // 保证后续 compact_history 的下标与 message_ids 严格对齐。
+    // 与 messages 平行的落库消息 id。装配历史带真实 id，摘要和占位为 None。
+    // 长度对不上就放弃锚点，不能让后续 splice 越界。
+    if message_ids.len() != messages.len() {
+        message_ids = vec![None; messages.len()];
+    }
+    super::context::repair_pairing_aligned(&mut messages, &mut message_ids);
+
     for iteration in 0..hooks.max_iterations {
         if cancellation_requested(&cancel_rx) {
             // 循环边界取消时尚未开始流式输出，无 delta 序号可对账。
@@ -224,8 +248,47 @@ where
                 .await;
         }
 
-        // 本轮工具图片附加（chat-image:// 引用 → 视觉输入），vision 槽位切换随之命中。
-        let effective_messages = attach_turn_tool_images(&messages).await;
+        // 历史级滚动压缩：超预算时被裁中段折叠为【前情摘要】滚动摘要消息
+        //（摘要模型缺省/失败回退零 LLM 规则抽取），而非占位丢弃；旧摘要
+        // 头部并入新摘要保持滚动连续。只作用于发给模型的内存视图——落库
+        // 走 persist_* 路径（以本轮新内容为参数），裁剪绝不影响持久化历史。
+        if let Some(outcome) = super::context::compact_history(
+            &mut messages,
+            history_budget_chars,
+            1, // 保护头部 1 条（首轮任务意图；是滚动摘要时由压缩层折叠并入）
+            summary,
+            usage_tracker,
+            Some(&cancel_rx),
+        )
+        .await
+        {
+            let removed: Vec<Option<String>> = message_ids
+                .splice(
+                    outcome.splice_start..outcome.splice_start + outcome.dropped_len,
+                    [None],
+                )
+                .collect();
+            // 覆盖范围内最近一条已知消息 id 作为锚点持久化（best-effort：
+            // 失败不影响本轮运行，下一 run 只是少了跨 run 延续）。
+            if let Some(anchor) = removed.iter().rev().find_map(|id| id.as_deref()) {
+                if let Err(error) = db
+                    .upsert_session_summary_async(workspace_id, &outcome.summary, anchor)
+                    .await
+                {
+                    eprintln!("upsert session summary failed ({workspace_id}): {error:#}");
+                }
+            }
+        }
+
+        if cancellation_requested(&cancel_rx) {
+            return finalize_cancelled(db, workspace_id, on_event, hooks, usage_tracker, "", None)
+                .await;
+        }
+
+        // 本轮工具图片附加（chat-image:// 引用 → 视觉输入，就地写入内存视图：
+        // 解析一次驻留、后续迭代零磁盘重读），vision 槽位切换随之命中。
+        attach_turn_tool_images(&mut messages).await;
+        let effective_messages = messages.clone();
         let preamble = hooks
             .preamble_for_iteration
             .as_mut()
@@ -239,12 +302,32 @@ where
             hooks.request_enable_thinking,
         );
 
-        let mut stream = model.stream(request).await.map_err(|error| {
-            anyhow::anyhow!(
-                "LLM 流式请求失败（model={}）：{error}",
-                current_model_name(hooks)
-            )
-        })?;
+        let mut stream = match model.stream(request).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                let error_text = format!("{error}");
+                // 上下文超限（400）：预算减半后重试（压缩在循环顶部重新执行）。
+                // 整形层按估算字符数控制预算，与服务端真实 tokenizer 存在误差，
+                // 这里是估算失灵时的恢复路径，而非正常路径。
+                if overflow_retries < MAX_CONTEXT_OVERFLOW_RETRIES
+                    && super::context::is_context_overflow_error(&error_text)
+                {
+                    overflow_retries += 1;
+                    history_budget_chars = (history_budget_chars / 2).max(MIN_CONTEXT_BUDGET_CHARS);
+                    // 减半只缩文本。驻留 base64 不缩，先换成引用再重发。
+                    super::message::degrade_resident_images(&mut messages);
+                    eprintln!(
+                        "LLM 请求上下文超限（model={}），预算收缩至 {history_budget_chars} 字符后重试（第 {overflow_retries} 次）：{error_text}",
+                        current_model_name(hooks)
+                    );
+                    continue;
+                }
+                return Err(anyhow::anyhow!(
+                    "LLM 流式请求失败（model={}）：{error_text}",
+                    current_model_name(hooks)
+                ));
+            }
+        };
 
         // ModelSwitched：仅首轮通知（对齐 select_provider_for_messages 的
         // notify_user = iteration == 0；与聊天 provider 完全一致不通知）。
@@ -343,8 +426,9 @@ where
             );
         }
 
-        // 落库 assistant 工具调用消息（含思考），再向历史追加等价 rig 消息。
-        persist_tool_calls_message(
+        // 落库 assistant 工具调用消息（含思考），再向历史追加等价 rig 消息
+        //（思考不回灌内存视图——瞬态产物，见 build_assistant_message）。
+        let tool_calls_record = persist_tool_calls_message(
             db,
             workspace_id,
             &visible_text,
@@ -355,10 +439,10 @@ where
         .await?;
         messages.push(build_assistant_message(
             &visible_text,
-            &thinking,
             &tool_calls,
             stream.message_id.clone(),
         ));
+        message_ids.push(Some(tool_calls_record.id));
 
         let batch = execute_tool_calls(
             db,
@@ -383,6 +467,7 @@ where
         messages.push(Message::User {
             content: result_contents,
         });
+        message_ids.push(batch.last_result_message_id);
 
         // 协议收口（编排器）：动作 > 可重试错误 > 最终答复——三者优先级对齐旧
         // `resolve_loop_outcome`：已登记的图绝不因同轮另有可重试错误被丢弃；
@@ -434,6 +519,8 @@ where
 struct ToolBatch {
     /// 回灌给模型的工具结果内容；None = 工具间取消（已执行结果已落库）。
     contents: Option<Vec<UserContent>>,
+    /// 本批最后一个落库工具结果的消息 id（滚动摘要持久化的覆盖锚点跟踪）。
+    last_result_message_id: Option<String>,
     /// 本批协议动作（编排器：图已提交）。
     actions: Vec<RigProtocolAction>,
     /// 本批最终答复（`message` 工具）。
@@ -463,6 +550,7 @@ where
     P: ToolExecutionPolicy,
 {
     let mut result_contents = Vec::with_capacity(tool_calls.len());
+    let mut last_result_message_id: Option<String> = None;
     let mut actions: Vec<RigProtocolAction> = Vec::new();
     let mut final_message: Option<String> = None;
     let mut saw_retryable_error = false;
@@ -485,6 +573,7 @@ where
             .await?;
             return Ok(ToolBatch {
                 contents: None,
+                last_result_message_id,
                 actions,
                 final_message,
                 saw_retryable_error,
@@ -580,6 +669,7 @@ where
             usage_tracker,
         )
         .await?;
+        last_result_message_id = Some(record.id.clone());
 
         // 台账收尾：结果已落库后回填 result_mode / message_id（对齐旧
         // `persist_and_finalize_executed_tool` 的调用顺序）。
@@ -634,6 +724,7 @@ where
 
     Ok(ToolBatch {
         contents: Some(result_contents),
+        last_result_message_id,
         actions,
         final_message,
         saw_retryable_error,

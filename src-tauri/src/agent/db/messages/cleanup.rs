@@ -43,6 +43,8 @@ impl DispatcherDb {
     /// - 图编排产物按计划创建时间截断（`graph_plans.created_at` 为 epoch 毫秒，
     ///   与目标消息 `created_at` 换算比较），`graph_runs` / `graph_node_runs` /
     ///   `graph_node_activities` 随外键级联删除。
+    /// - 历史滚动摘要（`dispatcher_session_summaries`）锚点落在被删范围的
+    ///   精确回收；锚点早于截断点的只覆盖存活前缀，有意保留。
     ///
     /// 有意保留（决策在账）：
     /// - **token 用量**（`dispatcher_session_token_usage`）是真实消耗记录，
@@ -141,6 +143,20 @@ impl DispatcherDb {
             params![workspace_id, target_epoch_ms],
         )
         .context("delete graph plans created at or after truncated message")?;
+
+        // 历史滚动摘要（v6）：锚点落在被删范围的摘要已失效，随截断精确回收；
+        // 锚点早于截断点的摘要只覆盖存活前缀，仍然有效，有意保留。读取路径
+        // （`valid_session_summary`）另有锚点存在性校验兜底。必须在删除消息
+        // 之前执行（IN 子查询引用 dispatcher_messages 的被删范围）。
+        tx.execute(
+            "DELETE FROM dispatcher_session_summaries
+             WHERE workspace_id = ?1 AND covered_through_message_id IN (
+                 SELECT id FROM dispatcher_messages
+                 WHERE workspace_id = ?1 AND rowid >= ?2
+             )",
+            params![workspace_id, target_rowid],
+        )
+        .context("delete session summaries anchored in truncated range")?;
 
         let removed = tx
             .execute(

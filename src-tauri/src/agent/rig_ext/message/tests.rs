@@ -17,11 +17,58 @@ fn chat(role: &str, content: &str) -> ChatMessage {
         tool_calls: None,
         tool_call_id: None,
         name: None,
+        source_id: None,
     }
 }
 
 async fn convert(messages: Vec<ChatMessage>) -> Vec<Message> {
     chat_history_to_rig(messages).await
+}
+
+#[test]
+fn summary_anchor_drops_covered_messages_and_keeps_the_suffix() {
+    let mut history = vec![
+        chat("user", "旧任务"),
+        chat("assistant", "旧回复"),
+        chat("user", "还在窗口里"),
+    ];
+    history[0].source_id = Some("m1".to_string());
+    history[1].source_id = Some("m2".to_string());
+    history[2].source_id = Some("m3".to_string());
+    omit_messages_through_anchor(&mut history, "m2");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].content, "还在窗口里");
+    assert_eq!(history[0].source_id.as_deref(), Some("m3"));
+}
+
+#[test]
+fn summary_anchor_outside_the_window_keeps_history() {
+    let mut history = vec![chat("user", "最近一轮")];
+    history[0].source_id = Some("m9".to_string());
+    omit_messages_through_anchor(&mut history, "m1");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].content, "最近一轮");
+}
+
+#[test]
+fn degrade_resident_images_replaces_pixels_with_the_reference() {
+    let mut messages = vec![Message::User {
+        content: vec![
+            UserContent::text("看这张图"),
+            UserContent::Image(chat_image(
+                "base64data".to_string(),
+                ImageMediaType::PNG,
+                "pic-12345678",
+            )),
+        ],
+    }];
+    degrade_resident_images(&mut messages);
+    let Message::User { content } = &messages[0] else {
+        panic!("应为 user");
+    };
+    assert!(
+        matches!(&content[1], UserContent::Text(text) if text.text.contains("chat-image://pic-12345678"))
+    );
 }
 
 #[tokio::test]
@@ -37,7 +84,7 @@ async fn system_and_user_messages_map_directly() {
 }
 
 #[tokio::test]
-async fn assistant_message_maps_reasoning_and_tool_calls() {
+async fn assistant_message_drops_reasoning_and_maps_tool_calls() {
     let mut message = chat("assistant", "正文");
     message.reasoning_content = Some("思考链".to_string());
     message.tool_calls = Some(vec![OutboundToolCall {
@@ -53,12 +100,18 @@ async fn assistant_message_maps_reasoning_and_tool_calls() {
     let Some(Message::Assistant { content, .. }) = messages.first() else {
         panic!("assistant 消息应映射为 Assistant");
     };
-    assert!(content
-        .iter()
-        .any(|item| matches!(item, AssistantContent::Reasoning(_))));
-    assert!(content
-        .iter()
-        .any(|item| matches!(item, AssistantContent::Text(t) if t.text == "正文")));
+    // 历史思考链不回灌（瞬态产物，只浪费上下文预算；DeepSeek 等服务商
+    // 明确要求历史不携带 reasoning_content）。
+    assert!(
+        !content
+            .iter()
+            .any(|item| matches!(item, AssistantContent::Reasoning(_)))
+    );
+    assert!(
+        content
+            .iter()
+            .any(|item| matches!(item, AssistantContent::Text(t) if t.text == "正文"))
+    );
     let call = content
         .iter()
         .find_map(|item| match item {
@@ -180,9 +233,31 @@ async fn collect_turn_image_ids_dedupes_and_prefers_newest() {
     };
     let messages = vec![first_turn_user, last_user, assistant.clone()];
     let last_user_index = 1;
-    let ids = collect_turn_tool_image_ids(&messages, last_user_index);
+    let ids = collect_turn_tool_image_ids(&messages, last_user_index, 2);
     // already1234 已在用户消息中 → 去重；两个新引用按新→旧（消息逆序、引用逆序）。
     assert_eq!(ids, vec!["new333334444", "old111112222"]);
+
+    // 工具结果在 rig 里也是 User。锚点必须停在人类消息上，结果里的引用才扫得到。
+    let tool_result = Message::User {
+        content: vec![UserContent::ToolResult(ToolResult {
+            call: ToolCallId::for_provider(ProviderCallId::new("c1".to_string()).as_ref()),
+            provider: ProviderCallId::new("c1".to_string()),
+            name: "generate_image".to_string(),
+            content: vec![ToolResultContent::text("已生成 chat-image://generated1234")],
+        })],
+    };
+    let with_tool_result = vec![
+        Message::User {
+            content: vec![UserContent::text("画一张图")],
+        },
+        tool_result,
+    ];
+    let anchor = last_turn_anchor_index(&with_tool_result).expect("应有人类消息锚点");
+    assert_eq!(anchor, 0);
+    assert_eq!(
+        collect_turn_tool_image_ids(&with_tool_result, anchor, 1),
+        vec!["generated1234".to_string()]
+    );
 
     // 引用全部位于最后一条用户消息之前 → 属历史轮次，不附加。
     let history_only = vec![
@@ -194,5 +269,57 @@ async fn collect_turn_image_ids_dedupes_and_prefers_newest() {
             content: vec![UserContent::text("任务")],
         },
     ];
-    assert!(collect_turn_tool_image_ids(&history_only, 2).is_empty());
+    assert!(collect_turn_tool_image_ids(&history_only, 2, 1).is_empty());
+}
+
+#[test]
+fn tool_image_ids_stay_capped_at_three_newest() {
+    let anchor = Message::User {
+        content: vec![
+            UserContent::text("画一张图"),
+            UserContent::text(
+                "[以下 2 张图片由本轮工具调用（fetch_image / generate_image / edit_image 等）产生的 chat-image:// 引用附加为视觉输入]",
+            ),
+            UserContent::Image(chat_image(
+                "a".to_string(),
+                ImageMediaType::PNG,
+                "aaaa1111aaaa",
+            )),
+            UserContent::Image(chat_image(
+                "b".to_string(),
+                ImageMediaType::PNG,
+                "bbbb2222bbbb",
+            )),
+        ],
+    };
+    let older = Message::User {
+        content: vec![UserContent::ToolResult(ToolResult {
+            call: ToolCallId::for_provider(ProviderCallId::new("c1".to_string()).as_ref()),
+            provider: ProviderCallId::new("c1".to_string()),
+            name: "generate_image".to_string(),
+            content: vec![ToolResultContent::text(
+                "chat-image://aaaa1111aaaa chat-image://bbbb2222bbbb",
+            )],
+        })],
+    };
+    let newest = Message::User {
+        content: vec![UserContent::ToolResult(ToolResult {
+            call: ToolCallId::for_provider(ProviderCallId::new("c2".to_string()).as_ref()),
+            provider: ProviderCallId::new("c2".to_string()),
+            name: "generate_image".to_string(),
+            content: vec![ToolResultContent::text(
+                "chat-image://cccc3333cccc chat-image://dddd4444dddd",
+            )],
+        })],
+    };
+    let messages = vec![anchor, older, newest];
+    let ids = collect_turn_tool_image_ids(&messages, 0, 1);
+    assert_eq!(
+        ids,
+        vec![
+            "dddd4444dddd".to_string(),
+            "cccc3333cccc".to_string(),
+            "bbbb2222bbbb".to_string(),
+        ]
+    );
 }

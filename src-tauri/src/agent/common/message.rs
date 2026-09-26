@@ -129,7 +129,8 @@ fn is_dispatch_plumbing_tool_name(name: &str) -> bool {
 // ─── LLM Context Repair ────────────────────────────────────────────────────────
 
 /// 未应答工具调用的占位结果文案（模型据此知道该结果不存在、可重新调用）。
-const UNANSWERED_TOOL_RESULT_PLACEHOLDER: &str =
+/// rig `Message` 侧的整形兜底（`rig_ext::context::repair_pairing`）复用同一文案。
+pub(crate) const UNANSWERED_TOOL_RESULT_PLACEHOLDER: &str =
     "（该工具调用没有产生结果：运行被中断，结果未落库。若仍需要，请重新调用。）";
 
 /// 修复「assistant tool_calls ↔ tool 结果」配对（全仓唯一实现）。
@@ -138,18 +139,23 @@ const UNANSWERED_TOOL_RESULT_PLACEHOLDER: &str =
 /// 致命失败中止——也可能留下没有对应 assistant 的孤儿结果（其 assistant 被
 /// `should_keep_llm_message` 过滤掉）。两者都会让服务端以 400 拒绝整轮请求
 /// （assistant 的 tool_calls 之后必须跟齐 tool 消息），因此装配上下文前必须按
-/// 调用顺序补齐缺失结果、剔除孤儿结果。写侧由运行循环保证成对落库，此处是读侧
-/// 兜底：库中既有的残缺历史无需数据迁移即可继续使用。
+/// 调用顺序补齐缺失结果、剔除孤儿结果。写侧由运行循环保证成对落库（含取消/致命
+/// 失败的占位补齐），此处只是读侧防御校验：触发即留痕——频繁出现说明写侧回归。
+/// 库中既有的残缺历史无需数据迁移即可继续使用。
 pub(crate) fn repair_tool_call_pairing(messages: &mut Vec<ChatMessage>) {
     let mut pending: Vec<ChatMessage> = std::mem::take(messages);
     pending.reverse();
     let mut repaired: Vec<ChatMessage> = Vec::with_capacity(pending.len());
+    let mut placeholders_added = 0usize;
+    let mut orphans_dropped = 0usize;
 
     while let Some(message) = pending.pop() {
         if message.role != "assistant" {
             // 排在 assistant 之外的工具结果是孤儿：没有前置 tool_calls 可应答。
             if message.role != "tool" {
                 repaired.push(message);
+            } else {
+                orphans_dropped += 1;
             }
             continue;
         }
@@ -174,12 +180,23 @@ pub(crate) fn repair_tool_call_pairing(messages: &mut Vec<ChatMessage>) {
                 .position(|result| result.tool_call_id.as_deref() == Some(call.id.as_str()));
             match matched {
                 Some(index) => repaired.push(results.remove(index)),
-                None => repaired.push(unanswered_tool_result(&call.id, &call.function.name)),
+                None => {
+                    placeholders_added += 1;
+                    repaired.push(unanswered_tool_result(&call.id, &call.function.name));
+                }
             }
         }
         // 其余结果没有对应的 tool_call：一并丢弃，避免出现响应错位的工具消息。
+        orphans_dropped += results.len();
     }
 
+    if placeholders_added > 0 || orphans_dropped > 0 {
+        eprintln!(
+            "repair_tool_call_pairing 触发防御修复：补占位 {placeholders_added} 条、\
+             剔除孤儿结果 {orphans_dropped} 条（库中残缺历史）。写侧已保证配对，\
+             若新会话频繁出现此日志说明写侧回归"
+        );
+    }
     *messages = repaired;
 }
 
@@ -193,5 +210,6 @@ fn unanswered_tool_result(tool_call_id: &str, tool_name: &str) -> ChatMessage {
         tool_calls: None,
         tool_call_id: Some(tool_call_id.to_string()),
         name: Some(tool_name.to_string()),
+        source_id: None,
     }
 }

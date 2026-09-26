@@ -17,12 +17,12 @@ use base64::Engine;
 use rig::completion::Message;
 use rig::message::{
     AdditionalParams, AssistantContent, DocumentSourceKind, Image, ImageMediaType, ProviderCallId,
-    Reasoning, Text, ToolCall, ToolCallId, ToolFunction, ToolResult, ToolResultContent,
-    UserContent,
+    Text, ToolCall, ToolCallId, ToolFunction, ToolResult, ToolResultContent, UserContent,
 };
 
 use crate::agent::db::{
-    ChatMessage, ChatMessageContentPart, ChatMessageImageSource, MAX_TURN_TOOL_IMAGE_ATTACHMENTS,
+    ChatMessage, ChatMessageContentPart, ChatMessageImageSource, DispatcherDb,
+    MAX_TURN_TOOL_IMAGE_ATTACHMENTS,
 };
 
 /// `Image.additional_params` 中暂存 image_id 的键（见模块文档）。
@@ -34,20 +34,61 @@ const MAX_INLINE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 /// DB 历史（`DispatcherDb::load_llm_history_async` 的产物）→ rig 消息序列。
 /// 运行时循环的上下文起点（记录解析与过滤已在 DB 侧完成）。
 pub async fn chat_history_to_rig(history: Vec<ChatMessage>) -> Vec<Message> {
+    chat_history_to_rig_with_ids(history).await.0
+}
+
+/// 与 `chat_history_to_rig` 相同，并带回每条 rig 消息对应的落库 id。
+/// 空 assistant 被丢弃时，id 一并丢掉。摘要和配对占位没有 id。
+pub async fn chat_history_to_rig_with_ids(
+    history: Vec<ChatMessage>,
+) -> (Vec<Message>, Vec<Option<String>>) {
     let mut messages = Vec::with_capacity(history.len());
+    let mut ids = Vec::with_capacity(history.len());
     for message in history {
+        let id = message.source_id.clone();
         if let Some(message) = chat_message_to_rig(message).await {
             messages.push(message);
+            ids.push(id);
         }
     }
-    messages
+    (messages, ids)
+}
+
+/// 锚点及更早的消息已写进滚动摘要，装配时不再把原文送进模型。
+/// 锚点不在本次窗口里（已经滑出最近 5 轮）时原样保留。
+pub(crate) fn omit_messages_through_anchor(history: &mut Vec<ChatMessage>, anchor_id: &str) {
+    let Some(index) = history
+        .iter()
+        .position(|message| message.source_id.as_deref() == Some(anchor_id))
+    else {
+        return;
+    };
+    history.drain(..=index);
+}
+
+/// 装配运行起点的历史视图：在 DB 窗口历史前插入已持久化的滚动摘要
+/// （`dispatcher_session_summaries`，阶段 2 历史级压缩的跨 run 延续）。
+/// 锚点消息已被截断/删除时摘要失效——DB 侧读取即删，不回插脏摘要。
+/// 锚点仍在窗口内时，锚点及更早的原文删掉，避免摘要和原文叠在一起。
+/// 摘要以普通 user 文本消息插入（`HISTORY_SUMMARY_MARKER` 前缀），
+/// 进入运行循环 `compact_history` 的滚动合并链路。
+pub async fn apply_stored_session_summary(
+    db: &DispatcherDb,
+    workspace_id: &str,
+    mut history: Vec<ChatMessage>,
+) -> Result<Vec<ChatMessage>> {
+    if let Some(summary) = db.valid_session_summary_async(workspace_id).await? {
+        omit_messages_through_anchor(&mut history, &summary.covered_through_message_id);
+        history.insert(0, ChatMessage::user(summary.summary));
+    }
+    Ok(history)
 }
 
 /// `ChatMessage` → rig `Message` 的契约转换。
 ///
 /// 角色映射：system → `System`；user → `User`（多模态 parts）；
-/// assistant → `Assistant`（reasoning → `Reasoning`、正文 → `Text`、
-/// tool_calls → `ToolCall`，空消息丢弃）；tool → `User` 内的
+/// assistant → `Assistant`（正文 → `Text`、tool_calls → `ToolCall`，
+/// reasoning 不回灌、空消息丢弃）；tool → `User` 内的
 /// `ToolResult`（openai 线格式即 role=tool 消息）。
 async fn chat_message_to_rig(message: ChatMessage) -> Option<Message> {
     match message.role.as_str() {
@@ -57,12 +98,9 @@ async fn chat_message_to_rig(message: ChatMessage) -> Option<Message> {
         "user" => user_message_to_rig(&message).await,
         "assistant" => {
             let mut content: Vec<AssistantContent> = Vec::new();
-            if let Some(reasoning) = message
-                .reasoning_content
-                .filter(|content| !content.trim().is_empty())
-            {
-                content.push(AssistantContent::Reasoning(Reasoning::new(&reasoning)));
-            }
+            // 历史思考链不回灌（reasoning_content 只用于 UI 展示）：rig 的
+            // openai 线格式会把 Reasoning 序列化进请求体，DeepSeek 等服务商
+            // 明确要求历史不携带 reasoning_content；回灌只浪费上下文预算。
             if !message.content.is_empty() {
                 content.push(AssistantContent::Text(Text::new(message.content)));
             }
@@ -249,73 +287,181 @@ fn attached_image_id(image: &Image) -> Option<&str> {
         .as_str()
 }
 
-/// 把「本轮（最后一条用户消息之后）assistant/tool 消息文本里引用的
-/// `chat-image://{image_id}`」附加为该用户消息的视觉输入。
-/// 语义对齐旧客户端的同名能力（`attach_turn_tool_images`）：上限 3 张、越新的引用优先、
-/// 已在用户消息中的图片（粘贴 + 上次附加）去重、跨迭代稳定不累积。
-/// 与旧实现的差异：图片在此立即解析为 base64（旧实现挂引用、请求构造期解析），
-/// 丢失图片按同一占位文案降级。
-pub async fn attach_turn_tool_images(messages: &[Message]) -> Vec<Message> {
-    let Some(last_user_index) = messages
-        .iter()
-        .rposition(|message| matches!(message, Message::User { .. }))
-    else {
-        return messages.to_vec();
+/// 工具图片说明的稳定标记。锚点上这一段会整段换掉，避免多轮工具各自追加。
+const TOOL_IMAGE_NOTE_MARK: &str = "张图片由本轮工具调用";
+
+/// 把「本轮用户消息之后的 assistant/tool 文本里引用的
+/// `chat-image://{image_id}`」就地附加进该用户消息（内存视图直接持有
+/// base64，后续迭代零磁盘重读/零重编码）。锚点上最多保留 3 张、越新的引用优先；
+/// 已经解码过的图片直接复用。丢失图片按占位文案降级，绝不中断 run。
+///
+/// 锚点是最后一条含非工具结果内容的 user 消息。工具结果在 rig 里也是
+/// `Message::User`，若把锚点取成「任意最后一条 User」，刚落库的工具结果
+/// 会把扫描区间挤空，`generate_image` / `fetch_image` 的引用就进不了视觉输入。
+pub async fn attach_turn_tool_images(messages: &mut Vec<Message>) {
+    let Some(last_user_index) = last_turn_anchor_index(messages) else {
+        return;
     };
-    let new_ids = collect_turn_tool_image_ids(messages, last_user_index);
-    if new_ids.is_empty() {
-        return messages.to_vec();
+    let Message::User { content } = &messages[last_user_index] else {
+        return;
+    };
+    let prefix_len = tool_image_suffix_start(content).unwrap_or(content.len());
+    let wanted = collect_turn_tool_image_ids(messages, last_user_index, prefix_len);
+    let current = resident_tool_image_ids(content);
+    if wanted == current {
+        return;
     }
 
-    let mut messages = messages.to_vec();
     let Message::User { content } = &mut messages[last_user_index] else {
-        return messages;
+        return;
     };
-    content.push(UserContent::text(format!(
-        "[以下 {} 张图片由本轮工具调用（fetch_image / generate_image / edit_image 等）产生的 \
-         chat-image:// 引用附加为视觉输入]",
-        new_ids.len()
-    )));
-    for image_id in new_ids {
-        let source = ChatMessageImageSource::ChatImage {
-            image_id: image_id.clone(),
-        };
-        match resolve_image_source(&source).await {
-            Ok(image) => content.push(UserContent::Image(image)),
-            Err(reason) => {
-                content.push(UserContent::text(format!("[图片已丢失：{reason}，已跳过]")))
+    let (prefix, mut resident) = split_tool_image_suffix(std::mem::take(content));
+    let mut rebuilt = prefix;
+    if !wanted.is_empty() {
+        rebuilt.push(UserContent::text(format!(
+            "[以下 {} 张图片由本轮工具调用（fetch_image / generate_image / edit_image 等）产生的 \
+             chat-image:// 引用附加为视觉输入]",
+            wanted.len()
+        )));
+        for image_id in wanted {
+            if let Some(index) = resident.iter().position(|(id, _)| id == &image_id) {
+                let (_, image) = resident.swap_remove(index);
+                rebuilt.push(UserContent::Image(image));
+                continue;
             }
-        }
-    }
-    messages
-}
-
-/// 纯函数：收集本轮需要附加的新 image_id（从新到旧，已附加/已收集的去重，
-/// 截断到上限）。与旧实现遍历顺序一致：消息逆序、消息内引用逆序。
-fn collect_turn_tool_image_ids(messages: &[Message], last_user_index: usize) -> Vec<String> {
-    let attached: HashSet<&str> = match &messages[last_user_index] {
-        Message::User { content } => content
-            .iter()
-            .filter_map(|item| match item {
-                UserContent::Image(image) => attached_image_id(image),
-                _ => None,
-            })
-            .collect(),
-        _ => HashSet::new(),
-    };
-
-    let mut new_ids: Vec<String> = Vec::new();
-    for message in messages[last_user_index + 1..].iter().rev() {
-        for text in message_visible_texts(message).into_iter().rev() {
-            for image_id in extract_chat_image_references(text).into_iter().rev() {
-                if !attached.contains(image_id.as_str()) && !new_ids.contains(&image_id) {
-                    new_ids.push(image_id);
+            let source = ChatMessageImageSource::ChatImage {
+                image_id: image_id.clone(),
+            };
+            match resolve_image_source(&source).await {
+                Ok(image) => rebuilt.push(UserContent::Image(image)),
+                Err(reason) => {
+                    rebuilt.push(UserContent::text(format!("[图片已丢失：{reason}，已跳过]")))
                 }
             }
         }
     }
-    new_ids.truncate(MAX_TURN_TOOL_IMAGE_ATTACHMENTS);
-    new_ids
+    *content = rebuilt;
+}
+
+/// 上下文超限重试前卸掉驻留图片。文本预算减半缩不掉 base64；保留
+/// `chat-image://` 引用，模型仍知道图在哪，只是这一轮不再看像素。
+pub(crate) fn degrade_resident_images(messages: &mut [Message]) {
+    for message in messages {
+        let Message::User { content } = message else {
+            continue;
+        };
+        for item in content.iter_mut() {
+            let UserContent::Image(image) = item else {
+                continue;
+            };
+            let note = match attached_image_id(image) {
+                Some(id) => format!("chat-image://{id}（上下文超限，本轮不再附带图像数据）"),
+                None => "（上下文超限，本轮不再附带图像数据）".to_string(),
+            };
+            *item = UserContent::text(note);
+        }
+    }
+}
+
+/// 最后一条「人类/摘要」user 消息的下标。只含 `ToolResult` 的 user 消息是
+/// 工具回灌，不能当作本轮锚点。
+fn last_turn_anchor_index(messages: &[Message]) -> Option<usize> {
+    messages.iter().rposition(|message| {
+        let Message::User { content } = message else {
+            return false;
+        };
+        content
+            .iter()
+            .any(|item| !matches!(item, UserContent::ToolResult(_)))
+    })
+}
+
+/// 锚点消息里工具图片说明的起点。没有说明时，整段都是用户自己的内容。
+fn tool_image_suffix_start(content: &[UserContent]) -> Option<usize> {
+    content.iter().position(
+        |item| matches!(item, UserContent::Text(text) if text.text.contains(TOOL_IMAGE_NOTE_MARK)),
+    )
+}
+
+/// 当前锚点后缀里、按附加顺序排列的工具图片 id。
+fn resident_tool_image_ids(content: &[UserContent]) -> Vec<String> {
+    let Some(start) = tool_image_suffix_start(content) else {
+        return Vec::new();
+    };
+    content[start + 1..]
+        .iter()
+        .filter_map(|item| match item {
+            UserContent::Image(image) => attached_image_id(image).map(str::to_string),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 拆掉锚点上的工具图片后缀，返回用户原文和已解码图片（供原样复用）。
+fn split_tool_image_suffix(
+    mut content: Vec<UserContent>,
+) -> (Vec<UserContent>, Vec<(String, Image)>) {
+    let Some(start) = tool_image_suffix_start(&content) else {
+        return (content, Vec::new());
+    };
+    let suffix = content.split_off(start);
+    let mut resident = Vec::new();
+    for item in suffix.into_iter().skip(1) {
+        let UserContent::Image(image) = item else {
+            continue;
+        };
+        let Some(id) = attached_image_id(&image).map(str::to_string) else {
+            continue;
+        };
+        resident.push((id, image));
+    }
+    (content, resident)
+}
+
+/// 纯函数：收集锚点之后应保留的工具图片 id（从新到旧，最多 3 张）。
+///
+/// `prefix_len` 是锚点里用户原文的长度。原文和更早用户消息里的图片不再附加；
+/// 锚点后缀里已经挂上的图片不参与去重，这样它们还能和新引用一起竞争这 3 个名额，
+/// 落选的会被换掉，而不是一轮轮叠上去。
+fn collect_turn_tool_image_ids(
+    messages: &[Message],
+    last_user_index: usize,
+    prefix_len: usize,
+) -> Vec<String> {
+    let mut skip: HashSet<&str> = HashSet::new();
+    for (index, message) in messages.iter().enumerate() {
+        if index > last_user_index {
+            break;
+        }
+        let Message::User { content } = message else {
+            continue;
+        };
+        let parts = if index == last_user_index {
+            &content[..prefix_len.min(content.len())]
+        } else {
+            content.as_slice()
+        };
+        for item in parts {
+            if let UserContent::Image(image) = item {
+                if let Some(id) = attached_image_id(image) {
+                    skip.insert(id);
+                }
+            }
+        }
+    }
+
+    let mut ids: Vec<String> = Vec::new();
+    for message in messages[last_user_index + 1..].iter().rev() {
+        for text in message_visible_texts(message).into_iter().rev() {
+            for image_id in extract_chat_image_references(text).into_iter().rev() {
+                if !skip.contains(image_id.as_str()) && !ids.contains(&image_id) {
+                    ids.push(image_id);
+                }
+            }
+        }
+    }
+    ids.truncate(MAX_TURN_TOOL_IMAGE_ATTACHMENTS);
+    ids
 }
 
 /// 消息中可供引用扫描的可见文本（assistant 正文 / user 文本 / 工具结果文本）。

@@ -10,6 +10,8 @@ use tokio::sync::{watch, Semaphore};
 
 use rig::tool::{ToolErrorKind, ToolExecutionError, ToolOutput};
 
+use crate::agent::rig_ext::tool_result::clip_program_step_text;
+
 use super::ast::ProgramNode;
 use super::error::{ProgramError, ProgramErrorKind};
 use super::validate::ProgramLimits;
@@ -45,15 +47,29 @@ pub(super) fn collect_call_sequences(root: &ProgramNode) -> BTreeMap<String, u64
     sequences
 }
 
-/// 数据面调用成功后的步骤 envelope。保持旧 DSL 引用面：`/data` 为结构化
-/// JSON 结果（工具返回单 JSON 块时），`/output` 为渲染文本，`/metadata`
-/// 恒为空对象（PortableDynamicTool 无元数据通道；旧 `metadata.broker.*`
-/// 审计字段随旧 Broker 一起退役）。
-pub(super) fn success_envelope(output: &ToolOutput) -> Value {
+/// 数据面调用成功后的步骤 envelope。保持旧 DSL 引用面：`/data` 为工具结果
+/// 载荷（工具返回单 JSON 块时为其结构，否则为渲染文本），`/output` 为渲染
+/// 文本，`/metadata` 恒为空对象（PortableDynamicTool 无元数据通道；旧
+/// `metadata.broker.*` 审计字段随旧 Broker 一起退役）。
+///
+/// `/data` 对文本输出回落为文本本身，而不是 `null`。超内联上限的文本在这里
+/// 截断：程序不保存被截掉的原文，也不走外层摘要。JSON 结果保持结构，供
+/// `/data/...` 子路径使用。
+pub(super) fn success_envelope(tool: &str, args: &Value, output: &ToolOutput) -> Value {
+    if let Some(payload) = output.as_json() {
+        return json!({
+            "status": "success",
+            "data": payload,
+            "output": output.render(),
+            "metadata": {},
+        });
+    }
+    let rendered = clip_program_step_text(tool, args, &output.render());
+    let data = rendered.clone();
     json!({
         "status": "success",
-        "data": output.as_json().cloned().unwrap_or(Value::Null),
-        "output": output.render(),
+        "data": data,
+        "output": rendered,
         "metadata": {},
     })
 }

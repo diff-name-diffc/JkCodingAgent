@@ -49,7 +49,6 @@ impl DispatcherDb {
              FROM dispatcher_messages
              WHERE workspace_id = ?1
                AND visible = 1
-               AND context_cleared = 0
                AND rowid >= ?2
              ORDER BY created_at ASC, rowid ASC",
         )?;
@@ -74,9 +73,9 @@ impl DispatcherDb {
             self.find_dialogue_cutoff_rowid(&conn, workspace_id, MAX_LLM_DIALOGUES)?;
 
         let mut stmt = conn.prepare(
-            "SELECT role, segments_json, context_payload, tool_call_id, tool_name, tool_calls_json, thinking_content
+            "SELECT role, segments_json, context_payload, tool_call_id, tool_name, tool_calls_json, thinking_content, id
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND rowid >= ?2 AND visible = 1 AND context_cleared = 0
+             WHERE workspace_id = ?1 AND rowid >= ?2 AND visible = 1
              ORDER BY rowid ASC",
         )?;
         let rows = stmt.query_map(params![workspace_id, cutoff_rowid], |row| {
@@ -87,6 +86,7 @@ impl DispatcherDb {
             let tool_name: Option<String> = row.get(4)?;
             let tool_calls_json: Option<String> = row.get(5)?;
             let thinking_content: Option<String> = row.get(6)?;
+            let source_id: String = row.get(7)?;
 
             let (content, content_parts) = if let Some(payload) = context_payload {
                 (payload, Vec::new())
@@ -114,6 +114,7 @@ impl DispatcherDb {
                 tool_call_id,
                 name: tool_name,
                 tool_calls,
+                source_id: Some(source_id),
             })
         })?;
 
@@ -137,7 +138,7 @@ impl DispatcherDb {
         conn.query_row(
             "SELECT segments_json
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND role = 'user' AND visible = 1 AND context_cleared = 0
+             WHERE workspace_id = ?1 AND role = 'user' AND visible = 1
              ORDER BY rowid DESC
              LIMIT 1",
             params![workspace_id],
@@ -186,7 +187,6 @@ impl DispatcherDb {
              FROM dispatcher_messages
              WHERE workspace_id = ?1
                AND visible = 1
-               AND context_cleared = 0
                AND role IN ('user', 'assistant')
              ORDER BY rowid DESC
              LIMIT ?2",

@@ -3,10 +3,10 @@
 //! 迁移自旧自实现工具层（已随迁移删除）的工具程序 executor 模块：「按名调用工具」的接缝由旧
 //! `CapabilityBroker`（`CapabilityInvocation` + `ToolResult`/`ToolStatus`）
 //! 改为注入的 `DataPlane`（按名查找 `PortableDynamicTool` 并 `execute`）。
-//! 并发上限、wall-time、drain 收敛、预算守卫与停止信号语义逐条保留；
-//! 审计 invocation id / outer_call_id 不再由执行器构造（新 runtime 策略层
-//! 负责每次调用的审计与门禁）；外层取消直接消费 run 级 `cancel_rx`
-//! （数据面工具与程序共享同一 run 取消源，无需再桥接独立取消通道）。
+//! 并发上限、wall-time、drain 收敛、预算守卫与停止信号语义逐条保留。
+//! 子步骤直接执行数据面工具，不另建工具运行台账；参数在解析后按工具 schema
+//! 再校验一次。外层取消直接消费 run 级 `cancel_rx`（数据面工具与程序共享
+//! 同一 run 取消源）。
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -251,6 +251,11 @@ impl ExecutionEngine<'_> {
             &format!("步骤 '{id}' 的解析后参数"),
         )
         .map_err(|error| self.fail(error.for_step(id, tool), stop_signals))?;
+        if let Err(error) =
+            super::guide::check_resolved_arguments(id, tool, &resolved_arguments, self.plane)
+        {
+            return Err(self.fail(error, stop_signals));
+        }
 
         let permit = self.acquire_permit(id, tool, stop_signals).await?;
         if is_stopped(stop_signals) {
@@ -282,7 +287,7 @@ impl ExecutionEngine<'_> {
             ));
         }
 
-        let future = tool_impl.execute(resolved_arguments);
+        let future = tool_impl.execute(resolved_arguments.clone());
         tokio::pin!(future);
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         let deadline = tokio::time::sleep(remaining);
@@ -344,7 +349,7 @@ impl ExecutionEngine<'_> {
             }
         };
 
-        let envelope = success_envelope(&output);
+        let envelope = success_envelope(tool, &resolved_arguments, &output);
         ensure_json_budget(
             &envelope,
             self.limits.max_step_envelope_bytes,

@@ -17,8 +17,8 @@ use super::content::delete_chat_image_resources;
 
 /// 在事务内删除会话的全部从属资源（不删会话行本身）：
 /// tool 产物/运行、子智能体 trace、图编排产物、token 用量、图片记录、
-/// 关键字与消息。`python_code_runs` / `chat_images` 行由消息外键级联，
-/// 这里显式删 chat_images 是为了拿回图片目录路径供提交后回收。
+/// 关键字、历史滚动摘要与消息。`python_code_runs` / `chat_images` 行由
+/// 消息外键级联，这里显式删 chat_images 是为了拿回图片目录路径供提交后回收。
 ///
 /// 返回待回收的图片目录（事务提交后由调用方 best-effort 删除；
 /// DB 已提交时文件清理失败不应把删除误报为失败）。
@@ -64,6 +64,12 @@ pub(crate) fn purge_session_resources_tx(
         params![workspace_id],
     )
     .context("purge session keywords")?;
+    // 历史滚动摘要（v6）：摘要文本是已删消息的派生物，随会话资源一并回收。
+    tx.execute(
+        "DELETE FROM dispatcher_session_summaries WHERE workspace_id = ?1",
+        params![workspace_id],
+    )
+    .context("purge dispatcher session summary")?;
     tx.execute(
         "DELETE FROM dispatcher_messages WHERE workspace_id = ?1",
         params![workspace_id],

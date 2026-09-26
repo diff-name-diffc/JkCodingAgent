@@ -6,8 +6,8 @@ use serde_json::json;
 
 use super::super::error::ProgramErrorKind;
 use super::{
-    parse_and_validate_program, validate_program_value, CapabilityCatalog, CapabilityPolicy,
-    ProgramLimits,
+    CapabilityCatalog, CapabilityPolicy, ProgramLimits, parse_and_validate_program,
+    validate_program_value,
 };
 
 struct Catalog(BTreeMap<&'static str, CapabilityPolicy>);
@@ -15,8 +15,14 @@ struct Catalog(BTreeMap<&'static str, CapabilityPolicy>);
 impl Catalog {
     fn standard() -> Self {
         Self(BTreeMap::from([
-            ("read_file", CapabilityPolicy::parallel_readonly()),
-            ("grep", CapabilityPolicy::parallel_readonly()),
+            (
+                "read_file",
+                CapabilityPolicy::parallel_readonly().with_text_result(),
+            ),
+            (
+                "grep",
+                CapabilityPolicy::parallel_readonly().with_text_result(),
+            ),
             ("write_file", CapabilityPolicy::sequential()),
         ]))
     }
@@ -414,6 +420,37 @@ fn rejects_malformed_reference_during_static_validation() {
             .kind,
         ProgramErrorKind::InvalidReference
     );
+}
+
+#[test]
+fn rejects_text_result_subpath_before_execution() {
+    let program = json!({
+        "version": 1,
+        "root": { "op": "sequence", "steps": [
+            { "op": "call", "id": "search", "tool": "grep", "arguments": { "pattern": "Tool" } },
+            { "op": "return", "value": { "$ref": { "step": "search", "pointer": "/data/files" } } }
+        ] }
+    });
+    let error = validate_program_value(&program, &Catalog::standard(), &ProgramLimits::default())
+        .unwrap_err();
+    assert_eq!(error.kind, ProgramErrorKind::InvalidReference);
+    assert!(error.message.contains("/data/files"));
+    assert!(error.message.contains("/data"));
+}
+
+#[test]
+fn rejects_text_metadata_child_before_execution() {
+    let program = json!({
+        "version": 1,
+        "root": { "op": "sequence", "steps": [
+            { "op": "call", "id": "search", "tool": "grep", "arguments": { "pattern": "Tool" } },
+            { "op": "return", "value": { "$ref": { "step": "search", "pointer": "/metadata/source" } } }
+        ] }
+    });
+    let error = validate_program_value(&program, &Catalog::standard(), &ProgramLimits::default())
+        .unwrap_err();
+    assert_eq!(error.kind, ProgramErrorKind::InvalidReference);
+    assert!(error.message.contains("/metadata/source"));
 }
 
 #[test]

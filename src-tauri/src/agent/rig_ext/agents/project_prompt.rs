@@ -59,7 +59,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 ## 可用工具
 
-- `run_tool_program`：只读探索的唯一入口。它在宿主授权边界内组合 `read_file` / `list_dir` / `glob` / `grep`，实际可代理能力以本轮工具描述为准。
+- `run_tool_program`：只读探索的唯一入口。程序形状、引用方式和每个数据面工具的字段名，以该工具描述里的规则和「当前可调用的数据面工具」清单为准。清单是本轮授权的唯一列表。
 - `message`：向用户发送最终答复（简单问题的收口方式）。
 - `submit_graph`：提交执行图（复杂任务的收口方式）。每轮最多提交一次；提交后等待用户确认，不要重复提交。
 - `graph_plan_report`：读取最近一次执行图的运行报告（验收结论、各节点成败与输出摘要、失败原因、共享 state 键）。
@@ -115,12 +115,18 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 ## 探索纪律
 
-- 不要直接调用数据面工具；将一次调查写成一个 `run_tool_program`。程序只支持 `call` / `sequence` / `parallel` / `return`，根节点必须是 sequence，最后一步必须是全程序唯一 return。
-- `glob` 缩小范围 → `grep` 精确匹配 → `read_file` 加载确认；用 `{"$ref":{"step":"步骤ID","pointer":"/data/..."}}` 把前一步结构化结果传给后一步，证据不足时继续收缩，不臆测。
-- `list_dir` 只返回指定 path 之下最多两层，文件条目后的 `(:N行)` 是文件总行数；先用它了解局部结构，再用 `read_file path:start-end` 加载所需行段。
-- 互相独立且在本轮工具描述中标记为可并行的只读探索放进 parallel；有数据依赖的调用必须放进 sequence。不要把写入、命令、浏览器或任何控制面工具塞进运行时程序。
-- 每个 call 的 `id` 全局唯一；引用只能读取已经完成的步骤。parallel 分支不能互相引用；并行块结束后，后续 sequence 才能读取各分支结果。
-- 调查工具支持 `compress` / `compress_intent` 参数：`compress=false` 时绝不摘要，超过内联上限（普通 8000、读取类 10000、显式分页 20000 字符）的结果带截断标记返回、完整原文在工具产物中；只有 `compress=true` 且结果超过压缩阈值时才摘要（一般 5000 字符，命令执行类工具 12000 字符——命令输出在阈值内直读或截断，不为压缩多付一次模型往返）。分析代码、配置等需要精确内容时保持 `compress=false`；需从超长输出中确认特定信息时显式设置 `compress=true` 并写明 `compress_intent`（摘要只返回与意图相关的重点）。`read_file` 的 `paths` 可使用 `path:start-end` 协议精确读取包含边界的行范围。
+一次调查只写一个 `run_tool_program`。不要直接调用 `read_file` / `list_dir` / `glob` / `grep`，也不要把写入、命令、浏览器或控制面工具写进程序。字段名以工具描述中的数据面清单为准，不要凭记忆改名。
+
+写程序前核对，这些错误会整次拒绝、一步都不执行：
+- `version` 必须为 1。`root.op` 必须为 `sequence`。`steps` 的最后一项是全程序唯一的 `return`。
+- 路径参数叫 `paths`，类型是字符串数组。只读一个文件也写成 `["src/main.rs"]` 或 `["src/main.rs:10-40"]`。没有 `path` 这个字段。
+- `grep` / `glob` 用 `pattern` 或 `patterns`。
+- 引用只有 `{"$ref":{"step":"已完成步骤ID","pointer":"/data"}}`。`/output` 与 `/data` 相同，都是该步全文。不要写 `/data/files`、`/data/entries` 或其他子路径。
+- `$ref` 只用于把整段文本放进 `return.value`。`paths`、`pattern`、`patterns` 必须是字面量。要先看目录或搜索结果时，本程序只 return 那段文本；下一轮再把看到的路径写成字面量。
+- 描述里标了「可并行」的工具才能放进 `parallel`。分支之间不能互相引用。
+- 不要传 `compress` 或 `compress_intent`。超长文本会截断并带标记，截掉的部分不会留下。用 `path:start-end`、`offset`/`limit`、`max_files`、`max_results` 控制体量。`return` 进入后续上下文的上限约 32000 字符，只收本次需要的步骤。
+
+`list_dir` 最多展开两层，文件名后的 `(:N行)` 是总行数，用来决定 `read_file` 的行范围。已知多个互不依赖的路径时，放进同一个 `parallel`，最后用 `return` 把各步 `/data` 收成一个对象。
 
 ## 输出语言
 
@@ -388,7 +394,18 @@ fn read_prompt_file(root_canonical: &Path, path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_prompt_files, MAX_PROMPT_FILE_BYTES};
+    use super::{load_prompt_files, MAX_PROMPT_FILE_BYTES, ORCHESTRATOR_ROLE_PROMPT};
+
+    #[test]
+    fn exploration_prompt_states_the_program_contract() {
+        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("paths"));
+        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("没有 `path` 这个字段"));
+        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("/data/files"));
+        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("唯一的 `return`"));
+        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("不要传 `compress`"));
+        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("32000"));
+    }
+
     use std::path::PathBuf;
 
     fn unique_temp_dir(tag: &str) -> PathBuf {

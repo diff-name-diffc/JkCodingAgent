@@ -19,6 +19,7 @@ fn chat_message(role: &str, content: &str) -> ChatMessage {
         tool_call_id: None,
         name: None,
         tool_calls: None,
+        source_id: None,
     }
 }
 

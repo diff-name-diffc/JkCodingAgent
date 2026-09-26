@@ -31,7 +31,12 @@ use super::DispatcherDb;
 /// 兜底文案，详见 docs/tauri-commands.md D 域分析）。
 /// v5：sub_agent_run_traces 新增可空 `model` 列（子智能体运行轨迹记录
 /// 真实模型，UI-14 遗留；老轨迹为 NULL，前端「未记录」兜底）。
-pub(crate) const SCHEMA_VERSION: i32 = 5;
+/// v6：新增 `dispatcher_session_summaries` 表（历史级滚动压缩的跨 run
+/// 持久化：滚动摘要 + 覆盖锚点消息 id，详见
+/// docs/context-management-2026-09-25/00-progress.md 阶段 2）。
+/// v7：删除 dispatcher_messages 死列 `context_cleared`（从未有写方、恒 0，
+/// 读侧过滤与索引一并移除）。
+pub(crate) const SCHEMA_VERSION: i32 = 7;
 
 impl DispatcherDb {
     pub(super) fn init(&self) -> Result<()> {
@@ -99,6 +104,12 @@ impl DispatcherDb {
         }
         if current_version < 5 {
             self.migrate_v4_to_v5(&mut conn)?;
+        }
+        if current_version < 6 {
+            self.migrate_v5_to_v6(&mut conn)?;
+        }
+        if current_version < 7 {
+            self.migrate_v6_to_v7(&mut conn)?;
             return Ok(());
         }
 
@@ -335,6 +346,129 @@ impl DispatcherDb {
             .context("advance user_version to 5")?;
         tx.commit().context("commit v4→v5 migration")
     }
+
+    /// v5 → v6：新增 `dispatcher_session_summaries` 表（历史级滚动压缩的跨
+    /// run 持久化）。纯增量建表、零数据迁移；按规范仍先做整库快照备份
+    /// （VACUUM INTO，不能在事务内执行），备份失败只留痕不阻断。
+    /// CREATE TABLE IF NOT EXISTS 幂等可重试。
+    fn migrate_v5_to_v6(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v6-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!("v5→v6 迁移前整库快照失败（纯增量建表，继续）：{error}");
+        }
+
+        let tx = conn
+            .transaction()
+            .context("begin v5→v6 migration transaction")?;
+        tx.execute_batch(SESSION_SUMMARIES_DDL)
+            .context("create dispatcher_session_summaries table")?;
+        tx.pragma_update(None, "user_version", 6)
+            .context("advance user_version to 6")?;
+        tx.commit().context("commit v5→v6 migration")
+    }
+
+    /// v6 → v7：删除 dispatcher_messages 死列 `context_cleared`（从未有写方、
+    /// 恒 0；读侧过滤与索引随列一并移除）。事务内重建表 + INSERT SELECT 全量
+    /// 保留数据（显式 ORDER BY rowid 保持物理顺序）。**关键陷阱**：DROP 父表
+    /// 在外键开启时会执行隐式 DELETE，触发 chat_images / python_code_runs 等
+    /// 子表的 ON DELETE CASCADE 误删行——必须先在事务外关闭 foreign_keys，
+    /// 提交后无论成败都恢复（连接来自连接池，状态不得外泄）。幂等可重试：
+    /// 列已不存在且新表已就位则只推进版本号。迁移前按规范 VACUUM INTO 快照。
+    fn migrate_v6_to_v7(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v7-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!("v6→v7 迁移前整库快照失败（INSERT SELECT 保留全部数据，继续）：{error}");
+        }
+
+        conn.pragma_update(None, "foreign_keys", "OFF")
+            .context("disable foreign_keys for v6→v7 rebuild")?;
+        let result = self.migrate_v6_to_v7_tx(conn);
+        let restore = conn
+            .pragma_update(None, "foreign_keys", "ON")
+            .context("restore foreign_keys after v6→v7 rebuild");
+        restore?;
+        result
+    }
+
+    fn migrate_v6_to_v7_tx(&self, conn: &mut Connection) -> Result<()> {
+        // 幂等检查：列已不存在说明表已是新形态（或前次重试已完成重建）。
+        let legacy_column_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('dispatcher_messages') WHERE name = 'context_cleared'",
+                [],
+                |row| row.get(0),
+            )
+            .context("inspect dispatcher_messages.context_cleared column")?;
+
+        let tx = conn
+            .transaction()
+            .context("begin v6→v7 migration transaction")?;
+        if legacy_column_exists > 0 {
+            tx.execute_batch(
+                "CREATE TABLE dispatcher_messages_v7 (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    segments_json TEXT NOT NULL DEFAULT '[]',
+                    thinking_content TEXT,
+                    thinking_elapsed_ms INTEGER,
+                    context_payload TEXT,
+                    tool_call_id TEXT,
+                    tool_name TEXT,
+                    tool_result_mode TEXT,
+                    tool_artifacts_json TEXT,
+                    tool_calls_json TEXT,
+                    usage_stats_json TEXT,
+                    visible INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO dispatcher_messages_v7 (
+                    id, workspace_id, role, segments_json, thinking_content,
+                    thinking_elapsed_ms, context_payload, tool_call_id, tool_name,
+                    tool_result_mode, tool_artifacts_json, tool_calls_json,
+                    usage_stats_json, visible, created_at
+                )
+                SELECT
+                    id, workspace_id, role, segments_json, thinking_content,
+                    thinking_elapsed_ms, context_payload, tool_call_id, tool_name,
+                    tool_result_mode, tool_artifacts_json, tool_calls_json,
+                    usage_stats_json, visible, created_at
+                FROM dispatcher_messages ORDER BY rowid;
+                DROP TABLE dispatcher_messages;
+                ALTER TABLE dispatcher_messages_v7 RENAME TO dispatcher_messages;
+                CREATE INDEX idx_dispatcher_messages_workspace_created
+                ON dispatcher_messages(workspace_id, created_at);
+                CREATE INDEX idx_dispatcher_messages_workspace_role_created
+                ON dispatcher_messages(workspace_id, role, created_at);",
+            )
+            .context("rebuild dispatcher_messages without context_cleared")?;
+        }
+        tx.pragma_update(None, "user_version", 7)
+            .context("advance user_version to 7")?;
+        tx.commit().context("commit v6→v7 migration")
+    }
 }
 
 /// 全新建库：单事务内执行基线 DDL + 领域建表助手 + 内置种子数据，
@@ -345,6 +479,8 @@ fn create_baseline(conn: &mut Connection) -> Result<()> {
         .context("begin baseline schema transaction")?;
     tx.execute_batch(BASELINE_DDL)
         .context("initialize baseline schema")?;
+    tx.execute_batch(SESSION_SUMMARIES_DDL)
+        .context("initialize session summaries table")?;
 
     ensure_chat_categories_table_tx(&tx)?;
     ensure_chat_category_agent_configs_table_tx(&tx)?;
@@ -367,6 +503,20 @@ fn create_baseline(conn: &mut Connection) -> Result<()> {
 /// 基线 DDL：核心表按「当前最终形态」一次性建齐。领域模块自管的表
 /// （sub_agent / ssh / projects / mcp_servers / app_config）由各自的
 /// `ensure_*_tx` 助手在 `create_baseline` 中补齐，DDL 保持单一出处。
+/// `dispatcher_session_summaries`（v6 新增）的 DDL 在
+/// `SESSION_SUMMARIES_DDL`，基线与 v5→v6 迁移共用同一出处。
+const SESSION_SUMMARIES_DDL: &str = "
+-- 历史级滚动压缩的跨 run 持久化（rig_ext::context::compact_history）：
+-- 同会话只保留最新一条滚动摘要；锚点为覆盖范围内最近一条已知消息 id，
+-- 锚点被截断/删除即摘要失效（读取路径即读即删，purge/truncate 级联清理）。
+CREATE TABLE IF NOT EXISTS dispatcher_session_summaries (
+    workspace_id TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    covered_through_message_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+";
+
 const BASELINE_DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatcher_sessions (
     id TEXT PRIMARY KEY,
@@ -397,13 +547,12 @@ CREATE TABLE IF NOT EXISTS dispatcher_messages (
     tool_calls_json TEXT,
     usage_stats_json TEXT,
     visible INTEGER NOT NULL DEFAULT 1,
-    context_cleared INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dispatcher_messages_workspace_created
 ON dispatcher_messages(workspace_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_dispatcher_messages_workspace_context_role
-ON dispatcher_messages(workspace_id, context_cleared, role, created_at);
+CREATE INDEX IF NOT EXISTS idx_dispatcher_messages_workspace_role_created
+ON dispatcher_messages(workspace_id, role, created_at);
 
 CREATE TABLE IF NOT EXISTS chat_images (
     id TEXT PRIMARY KEY,
@@ -1275,6 +1424,171 @@ mod tests {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if name.contains("v4-to-v5-") && name.contains("pre-v5-backup") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// v5 库打开时迁移到 v6：新增 dispatcher_session_summaries 表、
+    /// 快照备份生成、重复打开幂等；摘要读路径的锚点校验（失效即删）。
+    #[test]
+    fn v5_database_adds_session_summaries_table() {
+        let path = temp_db_path("v5-to-v6");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE dispatcher_sessions (id TEXT PRIMARY KEY);
+                CREATE TABLE dispatcher_messages (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL
+                );
+                PRAGMA user_version = 5;",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, super::SCHEMA_VERSION);
+        }
+        // 锚点消息不存在 → 摘要失效，即读即删。
+        db.upsert_session_summary("ws-1", "摘要正文", "msg-1")
+            .unwrap();
+        assert!(db.valid_session_summary("ws-1").unwrap().is_none());
+        // 锚点存在 → 正常读回（upsert 冲突更新同一会话行）。
+        {
+            let conn = db.conn().unwrap();
+            conn.execute(
+                "INSERT INTO dispatcher_messages (id, workspace_id) VALUES ('msg-1', 'ws-1')",
+                [],
+            )
+            .unwrap();
+        }
+        db.upsert_session_summary("ws-1", "摘要正文", "msg-1")
+            .unwrap();
+        let record = db
+            .valid_session_summary("ws-1")
+            .unwrap()
+            .expect("锚点存在应读回摘要");
+        assert_eq!(record.summary, "摘要正文");
+        assert_eq!(record.covered_through_message_id, "msg-1");
+
+        // 重开幂等：已是 v6 的库直接打开，不再触发任何迁移。
+        drop(db);
+        let _ = DispatcherDb::new(path.clone());
+        cleanup_db_files(&path);
+        let dir = path.parent().unwrap();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("v5-to-v6-") && name.contains("pre-v6-backup") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// v6 库打开时迁移到 v7：dispatcher_messages 死列 `context_cleared` 删除、
+    /// 数据全量保留、引用父表的子表行不被级联误删（DROP 前关闭 foreign_keys）、
+    /// 快照备份生成、重复打开幂等。
+    #[test]
+    fn v6_database_drops_context_cleared_column() {
+        let path = temp_db_path("v6-to-v7");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys = ON;
+                CREATE TABLE dispatcher_sessions (id TEXT PRIMARY KEY);
+                INSERT INTO dispatcher_sessions (id) VALUES ('ws-1');
+                CREATE TABLE dispatcher_messages (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    segments_json TEXT NOT NULL DEFAULT '[]',
+                    thinking_content TEXT,
+                    thinking_elapsed_ms INTEGER,
+                    context_payload TEXT,
+                    tool_call_id TEXT,
+                    tool_name TEXT,
+                    tool_result_mode TEXT,
+                    tool_artifacts_json TEXT,
+                    tool_calls_json TEXT,
+                    usage_stats_json TEXT,
+                    visible INTEGER NOT NULL DEFAULT 1,
+                    context_cleared INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO dispatcher_messages (id, workspace_id, role, created_at)
+                VALUES ('m-1', 'ws-1', 'user', '2026-01-01T00:00:00Z');
+                INSERT INTO dispatcher_messages (id, workspace_id, role, created_at)
+                VALUES ('m-2', 'ws-1', 'assistant', '2026-01-01T00:00:01Z');
+                CREATE TABLE chat_images (
+                    id TEXT PRIMARY KEY,
+                    image_id TEXT NOT NULL UNIQUE,
+                    workspace_id TEXT NOT NULL,
+                    message_id TEXT,
+                    segment_index INTEGER NOT NULL DEFAULT 0,
+                    path TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (message_id) REFERENCES dispatcher_messages(id) ON DELETE CASCADE
+                );
+                INSERT INTO chat_images (id, image_id, workspace_id, message_id, path, created_at)
+                VALUES ('ci-1', 'img-1', 'ws-1', 'm-1', '/tmp/x.png', '2026-01-01T00:00:00Z');
+                PRAGMA user_version = 6;",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, super::SCHEMA_VERSION);
+
+            let legacy_columns: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('dispatcher_messages') WHERE name = 'context_cleared'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(legacy_columns, 0, "context_cleared 列应被删除");
+
+            let message_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM dispatcher_messages", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(message_count, 2, "消息行应全量保留");
+            let image_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM chat_images", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(image_count, 1, "子表行不得被 DROP 父表的隐式 DELETE 级联误删");
+
+            // 时间顺序保持（rowid 相对顺序不变）：m-1 先于 m-2。
+            let first_id: String = conn
+                .query_row(
+                    "SELECT id FROM dispatcher_messages ORDER BY rowid ASC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(first_id, "m-1");
+        }
+        // 重开幂等：已是 v7 的库直接打开，不再触发任何迁移。
+        drop(db);
+        let _ = DispatcherDb::new(path.clone());
+        cleanup_db_files(&path);
+        let dir = path.parent().unwrap();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("v6-to-v7-") && name.contains("pre-v7-backup") {
                 let _ = std::fs::remove_file(entry.path());
             }
         }

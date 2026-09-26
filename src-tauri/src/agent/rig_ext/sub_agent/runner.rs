@@ -7,7 +7,8 @@
 //!
 //! - 独立执行上下文：内存消息历史（不落库），结果截断到
 //!   `SUB_AGENT_RESULT_MAX_CHARS` 后返回父循环；
-//! - 滑窗裁剪（`context_budget_chars`，容量源 = 模型库条目 contextWindow）；
+//! - 滚动压缩裁剪（与主对话同一整形层 `rig_ext::context`，容量源 = 模型库
+//!   条目 contextWindow；子智能体不消耗摘要模型，规则兜底折叠）；
 //! - 单次请求超时 `SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS` 与整体超时
 //!   `config.timeout_secs`；整体超时向工具转发取消信号（协作式收敛），
 //!   并对每次工具等待施加剩余预算硬边界；
@@ -29,12 +30,12 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;
 use tokio::time::timeout;
 
-use super::context::{context_budget_chars, trim_context_messages};
 use super::events::{
     record_trace_event, SubAgentEvent, SubAgentEventPayload, SubAgentUsage,
     SUB_AGENT_TRACE_EVENT_LIMIT,
 };
 use super::tools::notify_user_progress_tool;
+use crate::agent::rig_ext::context::{compact_history_offline, context_budget_chars};
 use crate::agent::rig_ext::model::{build_completion_request, completions_model, PurposeModelSpec};
 use crate::agent::rig_ext::tools::deps::RigToolDeps;
 use crate::agent::rig_ext::tools::run_record::prepare_arguments;
@@ -47,8 +48,8 @@ use crate::agent::sub_agent::config::SubAgentConfig;
 const SUB_AGENT_RESULT_MAX_CHARS: usize = 32_000;
 /// 单次模型请求超时（秒）。
 const SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS: u64 = 120;
-/// 上下文裁剪保留的最近轮数上限（安全兜底；真正约束是字符预算）。
-const SUB_AGENT_CONTEXT_KEEP_ROUNDS: usize = 200;
+/// 上下文裁剪的保护头部条数：system + 首轮任务（恒不折叠）。
+const SUB_AGENT_HEADER_LEN: usize = 2;
 /// 嵌套子智能体工具（子智能体不得递归派生）。
 const NESTED_SUB_AGENT_TOOLS: &[&str] = &["call_sub_agent", "list_sub_agents"];
 
@@ -268,14 +269,13 @@ impl RigSubAgentRuntime {
             }
             *last_iteration = iteration + 1;
 
-            // 请求前滑动窗口裁剪（None = 无需裁剪，跳过 clone）。
-            if let Some(trimmed) = trim_context_messages(
+            // 请求前滚动压缩（与主对话同一整形层；子智能体不消耗摘要模型，
+            // 规则兜底折叠被裁中段）。头部 2 条（system + 首轮任务）恒保护。
+            compact_history_offline(
                 messages,
                 context_budget_chars(self.spec.context_window),
-                SUB_AGENT_CONTEXT_KEEP_ROUNDS,
-            ) {
-                *messages = trimmed;
-            }
+                SUB_AGENT_HEADER_LEN,
+            );
 
             // 强制收口阶段传空工具集，逼模型给出最终结论。
             let definitions = if *force_final_response {
@@ -352,7 +352,7 @@ impl RigSubAgentRuntime {
                 }
             }
 
-            let (visible_text, thinking, tool_calls) = split_choice(&stream.choice);
+            let (visible_text, _thinking, tool_calls) = split_choice(&stream.choice);
 
             // 无工具调用 ⇒ 模型给出最终答复；强制收口阶段即使仍返回工具调用，
             // 也绝不执行——有文本即收口，无文本按错误退出（G13-06）。
@@ -376,7 +376,7 @@ impl RigSubAgentRuntime {
                 ));
             }
 
-            messages.push(build_assistant_turn(&visible_text, &thinking, &tool_calls));
+            messages.push(build_assistant_turn(&visible_text, &tool_calls));
 
             self.execute_batch(
                 &tool_calls,
@@ -733,13 +733,12 @@ async fn forward_cancellation(
     }
 }
 
-/// 组装追加进历史的 assistant 消息（思考 + 正文 + 工具调用）。
-fn build_assistant_turn(visible_text: &str, thinking: &str, tool_calls: &[ToolCall]) -> Message {
-    use rig::message::{AssistantContent, Reasoning, Text};
+/// 组装追加进历史的 assistant 消息（正文 + 工具调用）。
+/// 思考链不回灌上下文（与主对话同一口径：瞬态产物，rig 的 openai 线格式
+/// 会把 Reasoning 序列化进请求体，回灌只浪费预算）。
+fn build_assistant_turn(visible_text: &str, tool_calls: &[ToolCall]) -> Message {
+    use rig::message::{AssistantContent, Text};
     let mut content: Vec<AssistantContent> = Vec::new();
-    if !thinking.trim().is_empty() {
-        content.push(AssistantContent::Reasoning(Reasoning::new(thinking.trim())));
-    }
     if !visible_text.is_empty() {
         content.push(AssistantContent::Text(Text::new(visible_text)));
     }

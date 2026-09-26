@@ -9,6 +9,7 @@ mod usage;
 pub use message::{persist_assistant_message, persist_tool_calls_message};
 pub(crate) use message::{
     repair_tool_call_pairing, serialize_tool_arguments, should_keep_llm_message,
+    UNANSWERED_TOOL_RESULT_PLACEHOLDER,
 };
 pub use usage::UsageTracker;
 

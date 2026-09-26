@@ -12,31 +12,31 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use rig::tool::PortableDynamicTool;
 use serde_json::Value;
-use tauri::ipc::Channel;
 use tauri::AppHandle;
+use tauri::ipc::Channel;
 use tokio::sync::watch;
 
 use super::project_prompt::{build_iteration_system_prompt, build_static_prompt, log_warning};
 use super::project_tools::{
-    graph_plan_report_shell, message_shell, submit_graph_shell, ORCHESTRATOR_PROTOCOL_TOOL_NAMES,
+    ORCHESTRATOR_PROTOCOL_TOOL_NAMES, graph_plan_report_shell, message_shell, submit_graph_shell,
 };
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::{AgentContext, AhaSettingsV2, DispatcherDb, DispatcherMessageRecord};
 use crate::agent::rig_ext::events::AgentEvent;
-use crate::agent::rig_ext::message::chat_history_to_rig;
-use crate::agent::rig_ext::model::{
-    completions_model, resolve_purpose_specs, PurposeModelSpecs, PurposeSwitchingModel,
-};
 use crate::agent::rig_ext::r#loop::{
-    run_rig_loop, AppToolExecutionPolicy, AppToolPolicyConfig, ProtocolToolHandler, RigLoopHooks,
-    RigProtocolAction, RigProtocolResult, RigToolSurface,
+    AppToolExecutionPolicy, AppToolPolicyConfig, ProtocolToolHandler, RigLoopHooks,
+    RigProtocolAction, RigProtocolResult, RigToolSurface, run_rig_loop,
+};
+use crate::agent::rig_ext::message::{apply_stored_session_summary, chat_history_to_rig_with_ids};
+use crate::agent::rig_ext::model::{
+    PurposeModelSpecs, PurposeSwitchingModel, completions_model, resolve_purpose_specs,
 };
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
+use crate::agent::rig_ext::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES;
 use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps, ToolCallSlot};
 use crate::agent::rig_ext::tools::fs::fs_tools;
 use crate::agent::rig_ext::tools::program::program_tool;
-use crate::agent::rig_ext::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES;
 use crate::mcp::McpScope;
 
 /// 一轮项目编排的输入。
@@ -180,6 +180,8 @@ impl RigOrchestratorAgent {
 
         // 历史（不含 system）：系统提示逐轮由 preamble 重建。
         let history = db.load_llm_history_async(workspace_id).await?;
+        // 前插已持久化的滚动摘要（历史级压缩的跨 run 延续）。
+        let history = apply_stored_session_summary(db, workspace_id, history).await?;
         // 上下文窗口诊断（context_debug 开启时留痕）：接近容量上限时记录，
         // 便于事后定位「上下文被挤爆」类问题（对齐旧编排器的诊断点）。
         if self.context_debug {
@@ -201,7 +203,7 @@ impl RigOrchestratorAgent {
                 );
             }
         }
-        let messages = chat_history_to_rig(history).await;
+        let (messages, message_ids) = chat_history_to_rig_with_ids(history).await;
 
         let model = PurposeSwitchingModel::from_specs(&self.specs)
             .map_err(|error| anyhow::anyhow!("初始化编排模型失败：{error}"))?;
@@ -269,6 +271,7 @@ impl RigOrchestratorAgent {
             workspace_id,
             &model,
             messages,
+            message_ids,
             &surface,
             &policy,
             Some(&summary),
@@ -291,18 +294,9 @@ impl RigOrchestratorAgent {
             .into_iter()
             .filter(|tool| granted.contains(&tool.name()))
             .collect::<Vec<PortableDynamicTool>>();
-        let granted_note = if granted.is_empty() {
-            "（无；当前设置禁止全部数据面能力）".to_string()
-        } else {
-            granted
-                .iter()
-                .map(|name| format!("`{name}`"))
-                .collect::<Vec<_>>()
-                .join("、")
-        };
 
         let tools = vec![
-            program_tool(deps, data_plane, Some(granted_note)),
+            program_tool(deps, data_plane),
             message_shell(),
             submit_graph_shell(),
             graph_plan_report_shell(),
@@ -627,13 +621,17 @@ mod tests {
     #[test]
     fn parent_dir_component_detection() {
         let hostile = PathBuf::from("/tmp/foo/../bar");
-        assert!(hostile
-            .components()
-            .any(|component| matches!(component, Component::ParentDir)));
+        assert!(
+            hostile
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        );
         let clean = Path::new("/tmp/foo/bar");
-        assert!(!clean
-            .components()
-            .any(|component| matches!(component, Component::ParentDir)));
+        assert!(
+            !clean
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        );
     }
 
     #[test]
@@ -650,10 +648,12 @@ mod tests {
         assert!(parent.is_err());
         // 受管项目列表为空：任何绝对路径都无法通过。
         let unmanaged = validate_project_workspace_sync(&db, "/tmp");
-        assert!(unmanaged
-            .expect_err("空项目列表必须拒绝")
-            .to_string()
-            .contains("受管项目列表为空"));
+        assert!(
+            unmanaged
+                .expect_err("空项目列表必须拒绝")
+                .to_string()
+                .contains("受管项目列表为空")
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

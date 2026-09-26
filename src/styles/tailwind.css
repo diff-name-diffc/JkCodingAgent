@@ -6783,6 +6783,32 @@
     background: rgb(var(--warning-rgb) / 0.1);
   }
 
+  /* 上下文占用指示（容量回路）：随占用率切换令牌色，占用走高时提示
+     历史会被折叠为滚动摘要。 */
+  .ai-chat-header-usage {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    font-size: 11px;
+    line-height: 18px;
+    border-radius: 999px;
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+    cursor: default;
+  }
+
+  .ai-chat-header-usage.is-warning {
+    color: var(--warning);
+    background: rgb(var(--warning-rgb) / 0.1);
+  }
+
+  .ai-chat-header-usage.is-danger {
+    color: var(--danger);
+    background: rgb(var(--danger-rgb) / 0.1);
+  }
+
   .ai-chat-header-runstate-dot {
     width: 6px;
     height: 6px;

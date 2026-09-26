@@ -11,6 +11,25 @@ use crate::agent::db::util::now;
 use crate::agent::db::DispatcherDb;
 
 impl DispatcherDb {
+    pub(crate) fn runtime_tasks(
+        &self,
+        workspace: &str,
+        runs: &[String],
+    ) -> Result<Vec<DispatcherToolRunRecord>> {
+        let conn = self.conn()?;
+        let sql = format!("SELECT {TOOL_RUN_SELECT_COLUMNS} FROM dispatcher_tool_runs r WHERE workspace_id=?1 AND agent_run_id=?2 ORDER BY sequence, created_at");
+        let mut statement = conn.prepare(&sql)?;
+        let mut tasks = Vec::new();
+        for run in runs {
+            tasks.extend(
+                statement
+                    .query_map(params![workspace, run], map_tool_run)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
+        }
+        Ok(tasks)
+    }
+
     /// 将外层 LLM tool 结果消息绑定到整棵内部调用树及其产物。
     pub fn attach_tool_run_tree_message(
         &self,

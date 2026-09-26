@@ -82,6 +82,8 @@ pub struct SshMemoPayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SshExecResult {
+    pub cancelled: bool,
+    pub external_state_unknown: bool,
     pub server_id: String,
     pub session_id: String,
     pub exit_code: i32,

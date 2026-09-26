@@ -17,14 +17,19 @@
 //!   有文本即强制收口、无文本按错误退出）；
 //! - 事件流与轨迹缓冲（`SubAgentEvent` + `sub-agent-event`）。
 
-use std::collections::HashMap;
+#[path = "runner/decision.rs"]
+mod decision;
+#[path = "runner/lifecycle.rs"]
+mod lifecycle;
+use lifecycle::{forward_cancellation, resolve_sub_agent_spec};
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use rig::completion::Message;
 use rig::message::{ToolCall, ToolResult, ToolResultContent, UserContent};
-use rig::tool::{PortableDynamicTool, ToolErrorKind, ToolExecutionError, ToolOutput};
+use rig::tool::PortableDynamicTool;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;
@@ -38,8 +43,6 @@ use super::tools::notify_user_progress_tool;
 use crate::agent::rig_ext::context::{compact_history_offline, context_budget_chars};
 use crate::agent::rig_ext::model::{build_completion_request, completions_model, PurposeModelSpec};
 use crate::agent::rig_ext::tools::deps::RigToolDeps;
-use crate::agent::rig_ext::tools::run_record::prepare_arguments;
-use crate::agent::rig_ext::tools::spec::ToolSpec;
 use crate::agent::rig_ext::tools::MAX_TOOL_CALLS_PER_BATCH;
 use crate::agent::rig_ext::tools::{exec::exec_tools, media::media_tools};
 use crate::agent::sub_agent::config::SubAgentConfig;
@@ -71,6 +74,9 @@ pub struct RigSubAgentRequest<'a> {
 /// 子智能体独立执行运行时。
 pub struct RigSubAgentRuntime {
     config: SubAgentConfig,
+    db: crate::agent::db::DispatcherDb,
+    policy: crate::agent::rig_ext::r#loop::AppToolExecutionPolicy,
+    loop_events: tauri::ipc::Channel<crate::agent::rig_ext::events::AgentEvent>,
     spec: PurposeModelSpec,
     surface: Vec<PortableDynamicTool>,
     session_id: String,
@@ -144,7 +150,29 @@ impl RigSubAgentRuntime {
         }
         surface.retain(|tool| allowed.contains(tool.name()));
 
+        let loop_events = super::loop_events::channel(
+            config.agent_id.clone(),
+            config.agent_name.clone(),
+            request.session_id.into(),
+            request.parent_tool_call_id.into(),
+            request.app_handle.clone(),
+            trace_events.clone(),
+        );
+        let policy = crate::agent::rig_ext::r#loop::AppToolExecutionPolicy::new(
+            &deps.db,
+            &loop_events,
+            crate::agent::rig_ext::r#loop::AppToolPolicyConfig {
+                workspace_id: request.session_id.into(),
+                workspace: deps.workspace.clone(),
+                review: deps.review.clone(),
+                cancel_rx: deps.cancel_rx.clone(),
+                trace: Default::default(),
+            },
+        );
         Ok(Self {
+            db: deps.db.clone(),
+            policy,
+            loop_events,
             config: config.clone(),
             spec,
             surface,
@@ -198,10 +226,19 @@ impl RigSubAgentRuntime {
         ];
 
         // G13-05：按工具名记录「已消耗重试资格的失败轮数」。
-        let mut tool_failure_rounds: HashMap<String, u32> = HashMap::new();
         let mut force_final_response = false;
         let mut last_iteration: u32 = 0;
 
+        let mut coordinator = crate::agent::rig_ext::r#loop::coordinator::Coordinator::new(
+            crate::agent::rig_ext::r#loop::scheduler::TaskScheduler::new(
+                self.db.clone(),
+                self.session_id.clone(),
+                self.tool_cancel_tx.subscribe(),
+                crate::agent::rig_ext::tool_result::prepare::raw_preparer(),
+                self.loop_events.clone(),
+            ),
+        );
+        coordinator.host = crate::agent::rig_ext::r#loop::host::LoopHost::Memory;
         let outcome = self
             .run_loop(
                 &model,
@@ -209,11 +246,22 @@ impl RigSubAgentRuntime {
                 &mut usage,
                 start,
                 deadline,
-                &mut tool_failure_rounds,
                 &mut force_final_response,
                 &mut last_iteration,
+                &mut coordinator,
             )
             .await;
+        if outcome.is_err() {
+            self.tool_cancel_tx.send_replace(true);
+        }
+        // 结果已产出，收尾 drain 失败仅告警降级（与 after_call 同一口径），
+        // 不让父 Agent 因清理失败丢失可用结论。
+        if let Err(error) = coordinator.tasks.shutdown().await {
+            eprintln!(
+                "子智能体 '{}' 收尾 drain 失败：{error}",
+                self.config.agent_id
+            );
+        }
         signal_task.abort();
 
         match outcome {
@@ -239,408 +287,10 @@ impl RigSubAgentRuntime {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn run_loop(
-        &self,
-        model: &impl rig::completion::CompletionModel,
-        messages: &mut Vec<Message>,
-        usage: &mut SubAgentUsage,
-        start: Instant,
-        deadline: Instant,
-        tool_failure_rounds: &mut HashMap<String, u32>,
-        force_final_response: &mut bool,
-        last_iteration: &mut u32,
-    ) -> Result<String, String> {
-        let definitions_all = self
-            .surface
-            .iter()
-            .map(PortableDynamicTool::definition)
-            .collect::<Vec<_>>();
-
-        for iteration in 0..self.config.max_iterations {
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "子智能体 '{}' 执行超时（{}秒）",
-                    self.config.agent_id, self.config.timeout_secs
-                ));
-            }
-            if self.cancelled() {
-                return Err(format!("子智能体 '{}' 执行已取消", self.config.agent_id));
-            }
-            *last_iteration = iteration + 1;
-
-            // 请求前滚动压缩（与主对话同一整形层；子智能体不消耗摘要模型，
-            // 规则兜底折叠被裁中段）。头部 2 条（system + 首轮任务）恒保护。
-            compact_history_offline(
-                messages,
-                context_budget_chars(self.spec.context_window),
-                SUB_AGENT_HEADER_LEN,
-            );
-
-            // 强制收口阶段传空工具集，逼模型给出最终结论。
-            let definitions = if *force_final_response {
-                Vec::new()
-            } else {
-                definitions_all.clone()
-            };
-            let request = build_completion_request(
-                None,
-                messages.clone(),
-                definitions,
-                Some(u64::from(self.config.max_output_tokens)),
-                self.config.temperature,
-                true,
-            );
-
-            let mut stream = match timeout(
-                Duration::from_secs(SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS),
-                model.stream(request),
-            )
-            .await
-            {
-                Ok(Ok(stream)) => stream,
-                Ok(Err(error)) => {
-                    return Err(format!(
-                        "子智能体 '{}' 模型请求失败：{error}",
-                        self.config.agent_id
-                    ))
-                }
-                Err(_) => {
-                    return Err(format!(
-                        "子智能体 '{}' 单次模型请求超时（{}秒）",
-                        self.config.agent_id, SUB_AGENT_LLM_REQUEST_TIMEOUT_SECS
-                    ))
-                }
-            };
-
-            // 流式消费：正文增量 → llmDelta 事件；思考/工具增量忽略
-            //（子智能体 UI 只展示正文增量，与旧实现一致）。
-            {
-                use futures::StreamExt;
-                use rig::streaming::StreamedAssistantContent;
-                while let Some(item) = stream.next().await {
-                    match item {
-                        Ok(StreamedAssistantContent::Text(text)) => {
-                            if !text.text.is_empty() {
-                                self.emit(SubAgentEvent::LlmDelta {
-                                    agent_id: self.config.agent_id.clone(),
-                                    agent_name: self.config.agent_name.clone(),
-                                    delta: text.text,
-                                });
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
-                            return Err(format!(
-                                "子智能体 '{}' 流式响应失败：{error}",
-                                self.config.agent_id
-                            ))
-                        }
-                    }
-                }
-            }
-
-            if let Some(final_record) = stream.response.as_ref() {
-                if final_record.usage.has_values() {
-                    usage.record(&final_record.usage);
-                    self.emit(SubAgentEvent::UsageUpdated {
-                        agent_id: self.config.agent_id.clone(),
-                        agent_name: self.config.agent_name.clone(),
-                        token_usage: usage.clone(),
-                        elapsed_ms: start.elapsed().as_millis() as u64,
-                    });
-                }
-            }
-
-            let (visible_text, _thinking, tool_calls) = split_choice(&stream.choice);
-
-            // 无工具调用 ⇒ 模型给出最终答复；强制收口阶段即使仍返回工具调用，
-            // 也绝不执行——有文本即收口，无文本按错误退出（G13-06）。
-            let force_ignore_tool_calls = *force_final_response && !tool_calls.is_empty();
-            if tool_calls.is_empty() || force_ignore_tool_calls {
-                if force_ignore_tool_calls && visible_text.trim().is_empty() {
-                    return Err(format!(
-                        "子智能体 '{}' 在强制收口阶段仍返回工具调用且未提供文本结论，无法收口",
-                        self.config.agent_id
-                    ));
-                }
-                return Ok(visible_text);
-            }
-
-            if tool_calls.len() > MAX_TOOL_CALLS_PER_BATCH {
-                return Err(format!(
-                    "子智能体 '{}' 单轮返回 {} 个工具调用，超过运行时上限 {}，已拒绝执行",
-                    self.config.agent_id,
-                    tool_calls.len(),
-                    MAX_TOOL_CALLS_PER_BATCH
-                ));
-            }
-
-            messages.push(build_assistant_turn(&visible_text, &tool_calls));
-
-            self.execute_batch(
-                &tool_calls,
-                deadline,
-                usage,
-                tool_failure_rounds,
-                force_final_response,
-                messages,
-            )
-            .await?;
-        }
-
-        Err(format!(
-            "子智能体 '{}' 达到最大迭代次数（{}）",
-            self.config.agent_id, self.config.max_iterations
-        ))
-    }
-
-    /// 执行一批工具调用：只读并发批 → 结果统一决策（重试 / 强制收口）→
-    /// 写回工具结果消息。致命/取消结果立即向上抛错（run 收口）。
-    #[allow(clippy::too_many_arguments)]
-    async fn execute_batch(
-        &self,
-        tool_calls: &[ToolCall],
-        deadline: Instant,
-        usage: &mut SubAgentUsage,
-        tool_failure_rounds: &mut HashMap<String, u32>,
-        force_final_response: &mut bool,
-        messages: &mut Vec<Message>,
-    ) -> Result<(), String> {
-        let mut index = 0usize;
-        while index < tool_calls.len() {
-            let readonly_end = self.readonly_run_end(tool_calls, index);
-            let batch_len = readonly_end.saturating_sub(index);
-            let executed: Vec<(&ToolCall, Result<ToolOutput, ToolExecutionError>)> =
-                if batch_len >= 2 {
-                    self.execute_parallel_readonly(&tool_calls[index..readonly_end], deadline)
-                        .await
-                } else {
-                    let call = &tool_calls[index];
-                    vec![(call, self.execute_single(call, deadline).await)]
-                };
-            let next_index = if batch_len >= 2 {
-                readonly_end
-            } else {
-                index + 1
-            };
-
-            // 致命/取消结果立即收口（子智能体不再基于不完整的工具结果继续推理）。
-            for (call, result) in &executed {
-                if let Err(error) = result {
-                    if error.kind() == ToolErrorKind::Cancelled {
-                        return Err(format!(
-                            "子智能体 '{}' 内部工具 '{}' 执行失败：{}",
-                            self.config.agent_id,
-                            call.function.name,
-                            tool_error_text(error)
-                        ));
-                    }
-                }
-            }
-
-            let failed_names = distinct_failed_tool_names(&executed);
-            if failed_names.is_empty() {
-                // 全部成功：写回结果（成功的工具清零失败记录，恢复重试资格）。
-                for (call, result) in &executed {
-                    if let Ok(output) = result {
-                        tool_failure_rounds.remove(&call.function.name);
-                        let text = truncate_tool_result(&tool_output_text(output));
-                        messages.push(tool_result_message(call, text));
-                    }
-                }
-                index = next_index;
-                continue;
-            }
-
-            // 统一决策：任一失败工具已消耗重试资格（此前轮次已失败过）
-            // ⇒ 升级强制收口；否则允许一次重试。
-            let escalate = *force_final_response
-                || failed_names
-                    .iter()
-                    .any(|name| tool_failure_rounds.get(name).copied().unwrap_or(0) >= 1);
-            if escalate {
-                *force_final_response = true;
-            } else {
-                for name in &failed_names {
-                    *tool_failure_rounds.entry(name.clone()).or_insert(0) += 1;
-                }
-            }
-
-            for (call, result) in &executed {
-                match result {
-                    Ok(output) => {
-                        tool_failure_rounds.remove(&call.function.name);
-                        let text = truncate_tool_result(&tool_output_text(output));
-                        messages.push(tool_result_message(call, text));
-                    }
-                    Err(error) => {
-                        let result_text = tool_error_text(error);
-                        let hint = if escalate {
-                            format!(
-                                "错误：工具重试后仍然失败。\n错误信息：{result_text}\n\n要求：不要继续调用工具。请基于当前状态判断该错误是否无法修复；如果无法修复，请明确说明已尝试的动作、失败原因和退出结论。"
-                            )
-                        } else {
-                            format!(
-                                "错误：工具调用失败。\n错误信息：{result_text}\n\n要求：请根据工具 schema、上次参数和错误信息修正后重试；如果你判断无法修复，请不要猜测，直接说明无法修复并退出。"
-                            )
-                        };
-                        messages.push(tool_result_message(call, hint));
-                    }
-                }
-            }
-
-            // 本轮剩余未执行工具：暂停，措辞跟随统一决策保持一致。
-            for skipped in &tool_calls[next_index..] {
-                let content = if escalate {
-                    format!(
-                        "未执行：工具重试后仍失败，本轮剩余工具已暂停，等待模型确认无法修复或给出最终结论。工具：{}",
-                        skipped.function.name
-                    )
-                } else {
-                    format!(
-                        "未执行：前一个工具调用失败，已暂停本轮剩余工具调用。请先根据错误信息修正后重试。工具：{}",
-                        skipped.function.name
-                    )
-                };
-                messages.push(tool_result_message(skipped, content));
-            }
-            break;
-        }
-        let _ = usage; // 子智能体用量只统计模型请求（工具自身不回灌用量）
-        Ok(())
-    }
-
-    /// 只读批边界：从 `start` 起连续「只读 + 可并行」的工具（策略表口径）。
-    fn readonly_run_end(&self, tool_calls: &[ToolCall], start: usize) -> usize {
-        let mut end = start;
-        while end < tool_calls.len() {
-            let name = &tool_calls[end].function.name;
-            if !self.surface.iter().any(|tool| tool.name() == name) {
-                break;
-            }
-            let spec = ToolSpec::new(name, "", serde_json::json!({}));
-            if !spec.supports_parallel_readonly() {
-                break;
-            }
-            end += 1;
-        }
-        end
-    }
-
-    /// 并行执行只读批（上限 `MAX_PARALLEL_TOOL_CALLS`）。
-    async fn execute_parallel_readonly<'a>(
-        &'a self,
-        calls: &'a [ToolCall],
-        deadline: Instant,
-    ) -> Vec<(&'a ToolCall, Result<ToolOutput, ToolExecutionError>)> {
-        use futures::future::join_all;
-
-        for call in calls {
-            self.emit_tool_started(call);
-        }
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(
-            crate::agent::rig_ext::tools::MAX_PARALLEL_TOOL_CALLS,
-        ));
-        let results = join_all(calls.iter().map(|call| {
-            let semaphore = Arc::clone(&semaphore);
-            async move {
-                let Ok(_permit) = semaphore.acquire().await else {
-                    return (
-                        call,
-                        Err(ToolExecutionError::other(
-                            "错误：只读工具并发调度器意外关闭，已拒绝执行",
-                        )),
-                    );
-                };
-                (call, self.execute_single(call, deadline).await)
-            }
-        }))
-        .await;
-        for (call, result) in &results {
-            self.emit_tool_finished(call, result);
-        }
-        results
-    }
-
-    /// 单工具执行：参数校验 → 剩余预算硬边界 → 工具回调。
-    async fn execute_single(
-        &self,
-        call: &ToolCall,
-        deadline: Instant,
-    ) -> Result<ToolOutput, ToolExecutionError> {
-        self.emit_tool_started(call);
-        let result = self.execute_single_inner(call, deadline).await;
-        self.emit_tool_finished(call, &result);
-        result
-    }
-
-    async fn execute_single_inner(
-        &self,
-        call: &ToolCall,
-        deadline: Instant,
-    ) -> Result<ToolOutput, ToolExecutionError> {
-        let Some(tool) = self
-            .surface
-            .iter()
-            .find(|tool| tool.name() == call.function.name)
-        else {
-            return Err(ToolExecutionError::invalid_args(format!(
-                "错误：未找到工具 '{}'",
-                call.function.name
-            )));
-        };
-        let definition = tool.definition();
-        if let Err(error) = prepare_arguments(
-            &call.function.name,
-            &definition.parameters,
-            &call.function.arguments,
-        ) {
-            return Err(ToolExecutionError::other(error.message).with_code(error.code.to_string()));
-        }
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(ToolExecutionError::timeout(format!(
-                "错误：工具 '{}' 达到子智能体 '{}' 的整体超时边界（{}秒）。",
-                call.function.name, self.config.agent_id, self.config.timeout_secs
-            )));
-        }
-        match timeout(remaining, tool.execute(call.function.arguments.clone())).await {
-            Ok(result) => result,
-            Err(_) => Err(ToolExecutionError::timeout(format!(
-                "错误：工具 '{}' 达到子智能体 '{}' 的整体超时边界（{}秒）；已停止等待。",
-                call.function.name, self.config.agent_id, self.config.timeout_secs
-            ))),
-        }
-    }
-
     fn cancelled(&self) -> bool {
         self.parent_cancel
             .as_ref()
             .is_some_and(|rx| *rx.borrow() || rx.has_changed().is_err())
-    }
-
-    fn emit_tool_started(&self, call: &ToolCall) {
-        self.emit(SubAgentEvent::ToolStarted {
-            agent_id: self.config.agent_id.clone(),
-            agent_name: self.config.agent_name.clone(),
-            tool_name: call.function.name.clone(),
-            arguments: call.function.arguments.clone(),
-        });
-    }
-
-    fn emit_tool_finished(&self, call: &ToolCall, result: &Result<ToolOutput, ToolExecutionError>) {
-        let text = match result {
-            Ok(output) => tool_output_text(output),
-            Err(error) => tool_error_text(error),
-        };
-        self.emit(SubAgentEvent::ToolFinished {
-            agent_id: self.config.agent_id.clone(),
-            agent_name: self.config.agent_name.clone(),
-            tool_name: call.function.name.clone(),
-            result_preview: tool_result_preview(&call.function.name, &text),
-        });
     }
 
     /// 事件下发 + 轨迹写入（对齐旧 `emit_event`）。
@@ -671,68 +321,6 @@ impl RigSubAgentRuntime {
     }
 }
 
-/// 解析子智能体模型槽位：继承父级凭据/网关（仅换模型名）或使用独立配置；
-/// 输出预算与温度取子智能体自身配置。
-fn resolve_sub_agent_spec(config: &SubAgentConfig, parent: &PurposeModelSpec) -> PurposeModelSpec {
-    let mut spec = parent.clone();
-    let model_config = &config.model_config;
-    if !model_config.inherit_from_parent {
-        if let Some(api_base) = model_config.api_base.as_deref() {
-            spec.api_base = api_base.to_string();
-        }
-        if let Some(api_key) = model_config.api_key.as_deref() {
-            spec.api_key = api_key.to_string();
-        }
-    }
-    if let Some(model) = model_config
-        .model_name
-        .as_deref()
-        .filter(|name| !name.is_empty())
-    {
-        spec.model = model.to_string();
-    }
-    spec.max_tokens = Some(u64::from(config.max_output_tokens));
-    spec.temperature = config.temperature;
-    spec
-}
-
-/// 转发取消：父取消或整体超时 → 翻转 run 级取消通道（协作式收敛）。
-async fn forward_cancellation(
-    parent: Option<watch::Receiver<bool>>,
-    tx: watch::Sender<bool>,
-    overall_timeout: Duration,
-) {
-    let deadline = tokio::time::sleep(overall_timeout);
-    tokio::pin!(deadline);
-    match parent {
-        Some(mut parent) => loop {
-            tokio::select! {
-                _ = &mut deadline => {
-                    let _ = tx.send(true);
-                    return;
-                }
-                changed = parent.changed() => {
-                    match changed {
-                        Ok(()) if *parent.borrow() => {
-                            let _ = tx.send(true);
-                            return;
-                        }
-                        Ok(()) => {}
-                        Err(_) => {
-                            let _ = tx.send(true);
-                            return;
-                        }
-                    }
-                }
-            }
-        },
-        None => {
-            deadline.await;
-            let _ = tx.send(true);
-        }
-    }
-}
-
 /// 组装追加进历史的 assistant 消息（正文 + 工具调用）。
 /// 思考链不回灌上下文（与主对话同一口径：瞬态产物，rig 的 openai 线格式
 /// 会把 Reasoning 序列化进请求体，回灌只浪费预算）。
@@ -760,49 +348,6 @@ fn tool_result_message(call: &ToolCall, content: String) -> Message {
     }
 }
 
-/// 收集本批可恢复失败的工具名（按出现顺序去重）。
-fn distinct_failed_tool_names(
-    executed: &[(&ToolCall, Result<ToolOutput, ToolExecutionError>)],
-) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for (call, result) in executed {
-        if result.is_err() && !names.iter().any(|existing| existing == &call.function.name) {
-            names.push(call.function.name.clone());
-        }
-    }
-    names
-}
-
-/// 工具结果 → 回灌文本（与主循环同口径）。
-fn tool_output_text(output: &ToolOutput) -> String {
-    if let Some(text) = output.as_text() {
-        return text.to_string();
-    }
-    output
-        .as_content()
-        .iter()
-        .map(|content| match content {
-            ToolResultContent::Text(text) => text.text.clone(),
-            ToolResultContent::Json { value } => value.to_string(),
-            ToolResultContent::Image(_) => "[图片结果]".to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// 工具执行错误 → 模型可见文本（保持「错误：」前缀契约）。
-fn tool_error_text(error: &ToolExecutionError) -> String {
-    let text = tool_output_text(error.model_output());
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        "错误：工具执行失败".to_string()
-    } else if trimmed.starts_with("错误：") {
-        trimmed.to_string()
-    } else {
-        format!("错误：{trimmed}")
-    }
-}
-
 /// 结果截断（头尾各留一半），保证子智能体结果不撑爆父上下文。
 fn truncate_tool_result(result: &str) -> String {
     let char_count = result.chars().count();
@@ -814,29 +359,6 @@ fn truncate_tool_result(result: &str) -> String {
     let tail: String = result.chars().skip(char_count - keep).collect();
     let dropped = char_count - SUB_AGENT_RESULT_MAX_CHARS;
     format!("{head}\n\n[...已截断 {dropped} 字符...]\n\n{tail}")
-}
-
-/// 事件结果预览：命令审查结果类保留更长预览（便于排障），其余 200 字符。
-fn tool_result_preview(tool_name: &str, result: &str) -> String {
-    let preview_limit = if is_command_review_result(tool_name, result) {
-        4_000
-    } else {
-        200
-    };
-    if result.chars().count() > preview_limit {
-        format!(
-            "{}...",
-            result.chars().take(preview_limit).collect::<String>()
-        )
-    } else {
-        result.to_string()
-    }
-}
-
-fn is_command_review_result(tool_name: &str, result: &str) -> bool {
-    matches!(tool_name, "ssh_exec" | "local_zsh")
-        && (result.starts_with("## SSH 命令审查记录")
-            || (result.starts_with("## local_zsh 执行结果") && result.contains("审查结论: `拦截`")))
 }
 
 /// 流终态 choice → (正文, 思考, 工具调用)：`<think>` 标签正文拆入思考链。
@@ -901,157 +423,5 @@ fn split_tagged_thinking(content: &str) -> (String, String) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 夹具：临时库 + 最小工具依赖（只构造不执行）。
-    fn test_deps(temp_dir: &std::path::Path) -> RigToolDeps {
-        let db = crate::agent::db::DispatcherDb::new(temp_dir.join("jkbot.sqlite3"))
-            .expect("open temp db");
-        let mut deps = RigToolDeps {
-            workspace_id: "sub-agent-test".to_string(),
-            workspace: temp_dir.to_path_buf(),
-            mcp_scope: crate::mcp::McpScope::Global,
-            exec_timeout_secs: 30,
-            restrict_to_workspace: true,
-            extra_allowed_dirs: Vec::new(),
-            app_handle: None,
-            db: db.clone(),
-            ssh_manager: crate::ssh_tool::SshSessionManager::new(db.pool()),
-            mcp_registry: crate::mcp::McpRegistry::new(db),
-            sub_agent_manager: None,
-            cancel_rx: None,
-            vision_spec: None,
-            image: crate::agent::rig_ext::tools::deps::ImageToolConfig {
-                url: String::new(),
-                api_key: String::new(),
-                model: String::new(),
-                edit_model: String::new(),
-            },
-            review: crate::agent::rig_ext::review::RigReviewContext::unconfigured(),
-            tool_call_id: crate::agent::rig_ext::tools::deps::ToolCallSlot::default(),
-        };
-        deps.review.executor_task = None;
-        deps
-    }
-
-    fn config(allowed_tools: Vec<&str>) -> crate::agent::sub_agent::config::SubAgentConfig {
-        crate::agent::sub_agent::config::SubAgentConfig {
-            agent_id: "a1".to_string(),
-            agent_name: "测试子智能体".to_string(),
-            description: "测试".to_string(),
-            system_prompt: "你是测试子智能体。".to_string(),
-            user_prompt_template: "任务：{{task}}".to_string(),
-            allowed_tools: allowed_tools.into_iter().map(str::to_string).collect(),
-            model_config: Default::default(),
-            max_iterations: 2,
-            max_output_tokens: 128,
-            temperature: 0.0,
-            timeout_secs: 30,
-            enabled: true,
-            created_at: 0,
-            updated_at: 0,
-        }
-    }
-
-    #[test]
-    fn surface_offers_progress_tool_and_rejects_nested_sub_agents() {
-        let temp_dir = std::env::temp_dir().join(format!("rig-sub-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
-        let deps = test_deps(&temp_dir);
-        let parent_spec = PurposeModelSpec {
-            api_key: "test".to_string(),
-            api_base: "http://127.0.0.1:1/v1".to_string(),
-            model: "mock".to_string(),
-            max_tokens: None,
-            context_window: None,
-            temperature: 0.0,
-            enable_thinking: true,
-        };
-        let cfg = config(vec!["local_zsh", "notify_user_progress"]);
-        let runtime = RigSubAgentRuntime::build(&RigSubAgentRequest {
-            config: &cfg,
-            parent_spec: &parent_spec,
-            deps: &deps,
-            task: "跑一下",
-            parent_tool_call_id: "call-1",
-            app_handle: None,
-            session_id: "ws-1",
-            cancel_rx: None,
-        })
-        .expect("构建应成功");
-        let mut names = runtime
-            .surface
-            .iter()
-            .map(|tool| tool.name().to_string())
-            .collect::<Vec<_>>();
-        names.sort();
-        // 允许列表精确生效：只有显式列出的两个工具。
-        assert_eq!(names, vec!["local_zsh", "notify_user_progress"]);
-
-        // 嵌套子智能体工具一律拒绝（防递归派生）。
-        let nested = config(vec!["call_sub_agent"]);
-        let error = RigSubAgentRuntime::build(&RigSubAgentRequest {
-            config: &nested,
-            parent_spec: &parent_spec,
-            deps: &deps,
-            task: "跑一下",
-            parent_tool_call_id: "call-1",
-            app_handle: None,
-            session_id: "ws-1",
-            cancel_rx: None,
-        })
-        .err()
-        .expect("嵌套子智能体工具必须被拒绝");
-        assert!(error.contains("不允许递归调用子智能体工具"), "{error}");
-
-        // 不可用工具名（编排器专属）在构建期报错，而不是运行期静默缺失。
-        let unavailable = config(vec!["submit_graph"]);
-        let error = RigSubAgentRuntime::build(&RigSubAgentRequest {
-            config: &unavailable,
-            parent_spec: &parent_spec,
-            deps: &deps,
-            task: "跑一下",
-            parent_tool_call_id: "call-1",
-            app_handle: None,
-            session_id: "ws-1",
-            cancel_rx: None,
-        })
-        .err()
-        .expect("编排器工具对子智能体不可用");
-        assert!(error.contains("不可用的工具"), "{error}");
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn truncation_keeps_head_and_tail() {
-        let long = "a".repeat(SUB_AGENT_RESULT_MAX_CHARS + 100);
-        let truncated = truncate_tool_result(&long);
-        assert!(truncated.starts_with(&"a".repeat(64)));
-        assert!(truncated.contains("已截断 100 字符"));
-    }
-
-    #[test]
-    fn command_review_results_keep_longer_previews() {
-        let review = format!("## SSH 命令审查记录\n{}", "x".repeat(1_000));
-        // 命令审查结果在 4000 字符内全量保留（便于排障），普通工具 200 字符后截断。
-        assert_eq!(
-            tool_result_preview("ssh_exec", &review).chars().count(),
-            review.chars().count()
-        );
-        assert_eq!(
-            tool_result_preview("read_file", &"y".repeat(500))
-                .chars()
-                .count(),
-            203
-        );
-    }
-
-    #[test]
-    fn tagged_thinking_is_split_into_reasoning() {
-        let (visible, thinking) = split_tagged_thinking("前<think>推理</think>后");
-        assert_eq!(visible, "前后");
-        assert_eq!(thinking, "推理");
-    }
-}
+#[path = "runner/tests.rs"]
+mod tests;

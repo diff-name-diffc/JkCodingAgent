@@ -26,6 +26,55 @@ fn new_run(workspace_id: &str) -> NewToolRun {
     }
 }
 
+#[test]
+fn batch_registration_rolls_back_all_rows_if_a_later_parent_is_invalid() {
+    let db = test_db();
+    let first = new_run("ws");
+    let call = first.tool_call_id.clone();
+    let invalid = ToolRunTraceContext {
+        parent_run_id: Some("missing".into()),
+        ..Default::default()
+    };
+    assert!(db
+        .register_tool_task_batch(
+            vec![(first, Default::default()), (new_run("ws"), invalid)],
+            "run",
+            "scope",
+            1,
+            "anchor"
+        )
+        .is_err());
+    assert!(db
+        .list_tool_run_tree_for_call("ws", &call, None)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn batch_registration_commits_all_runtime_identity_fields() {
+    let db = test_db();
+    let rows = db
+        .register_tool_task_batch(
+            vec![
+                (new_run("ws"), Default::default()),
+                (new_run("ws"), Default::default()),
+            ],
+            "run",
+            "scope",
+            2,
+            "anchor",
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert_eq!(row.agent_run_id.as_deref(), Some("run"));
+        assert_eq!(row.scope_id.as_deref(), Some("scope"));
+        assert_eq!(row.dispatch_round, Some(2));
+        assert_eq!(row.root_request_message_id.as_deref(), Some("anchor"));
+        assert_eq!(row.phase.as_deref(), Some("queued"));
+    }
+}
+
 fn finish(status: &str) -> FinishToolRun {
     FinishToolRun {
         status: status.to_string(),

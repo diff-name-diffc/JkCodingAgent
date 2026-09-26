@@ -20,7 +20,7 @@ use tauri::{AppHandle, Emitter};
 use super::events::{record_trace_event, SubAgentEvent, SubAgentEventPayload};
 use super::runner::{RigSubAgentRequest, RigSubAgentRuntime};
 use crate::agent::rig_ext::model::PurposeModelSpec;
-use crate::agent::rig_ext::tools::deps::{RigToolDeps, ToolCallSlot};
+use crate::agent::rig_ext::tools::deps::RigToolDeps;
 use crate::agent::sub_agent::manager::SubAgentManager;
 
 /// `call_sub_agent`：委派子任务给指定子智能体。
@@ -30,7 +30,6 @@ pub fn call_sub_agent_tool(
     parent_spec: PurposeModelSpec,
     app_handle: Option<AppHandle>,
     workspace_id: String,
-    tool_call_id: ToolCallSlot,
 ) -> PortableDynamicTool {
     PortableDynamicTool::new(
         "call_sub_agent",
@@ -55,7 +54,7 @@ pub fn call_sub_agent_tool(
             let parent_spec = parent_spec.clone();
             let app_handle = app_handle.clone();
             let workspace_id = workspace_id.clone();
-            let tool_call_id = tool_call_id.clone();
+            let invocation = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current();
             Box::pin(async move {
                 run_sub_agent_call(
                     &args,
@@ -64,7 +63,7 @@ pub fn call_sub_agent_tool(
                     parent_spec,
                     app_handle,
                     workspace_id,
-                    tool_call_id,
+                    invocation,
                 )
                 .await
             })
@@ -80,7 +79,7 @@ async fn run_sub_agent_call(
     parent_spec: PurposeModelSpec,
     app_handle: Option<AppHandle>,
     workspace_id: String,
-    tool_call_id: ToolCallSlot,
+    invocation: Option<crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext>,
 ) -> Result<ToolOutput, ToolExecutionError> {
     // LLM 传参常带前后空白/换行：先 trim 再校验（避免纯空白参数白跑一次）。
     let agent_id = args
@@ -108,10 +107,11 @@ async fn run_sub_agent_call(
         None => return Err(fatal(format!("错误：未找到子智能体 '{agent_id}'"))),
     };
 
-    let Some(parent_tool_call_id) = tool_call_id.get() else {
+    let Some(invocation) = invocation else {
         return Err(fatal("错误：调用子智能体缺少 tool_call_id"));
     };
 
+    let parent_tool_call_id = invocation.tool_call_id.clone();
     let request = RigSubAgentRequest {
         config: &config,
         parent_spec: &parent_spec,

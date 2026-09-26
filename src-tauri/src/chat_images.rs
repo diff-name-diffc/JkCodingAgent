@@ -8,10 +8,15 @@ use tauri::Manager;
 use crate::shared::error::{CommandResult, IntoCommandResult};
 use anyhow::Context;
 
+mod save;
+pub(crate) use save::save_image;
+
 type ChatImageResult<T> = std::result::Result<T, ChatImageError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ChatImageError {
+    #[error("图片任务已取消，未保存产物")]
+    Cancelled,
     #[error("无法解析用户主目录")]
     HomeDirMissing,
     #[error("image_id 不能为空")]
@@ -288,59 +293,7 @@ pub(crate) struct SavedChatImage {
     pub mime_type: String,
 }
 
-/// 唯一的聊天图片落盘入口：超阈值低损压缩、严格 mime 映射，写入
-/// `chat-images/{workspace_id}/{image_id}.{ext}`，并最佳努力登记 chat_images
-/// 索引行（message_id 为 NULL，消息落库时由 insert_chat_images 绑定）。
-/// 登记失败只留痕不回滚——文件是事实源，索引可由消息路径补齐。
-pub(crate) async fn save_image(
-    db: &crate::agent::db::DispatcherDb,
-    params: SaveChatImageParams<'_>,
-) -> ChatImageResult<SavedChatImage> {
-    let image_id = uuid::Uuid::new_v4().to_string();
-    let (ext, image_bytes) = if params.bytes.len() >= COMPRESS_THRESHOLD {
-        let compressed = compress_image_bytes(&params.bytes, MAX_COMPRESS_DIM);
-        if compressed.len() < params.bytes.len() {
-            ("jpg", compressed)
-        } else {
-            (ext_for_mime(params.mime_type)?, params.bytes)
-        }
-    } else {
-        (ext_for_mime(params.mime_type)?, params.bytes)
-    };
-    let saved_mime = mime_for_ext(ext)
-        .expect("ext_for_mime 与 mime_for_ext 保持对齐")
-        .to_string();
-
-    let dir = workspace_image_dir(params.workspace_id)?;
-    let file_path = dir.join(format!("{}.{}", image_id, ext));
-    let register = ChatImageRegistration {
-        image_id: image_id.clone(),
-        workspace_id: params.workspace_id.to_string(),
-        width: params.width,
-        height: params.height,
-        mime_type: saved_mime.clone(),
-        source: params.source.to_string(),
-        generation_prompt: params.generation_prompt.map(str::to_string),
-    };
-    let db = db.clone();
-    tokio::task::spawn_blocking(move || -> ChatImageResult<()> {
-        std::fs::create_dir_all(&dir).map_err(io_error("创建会话图片目录", dir.clone()))?;
-        std::fs::write(&file_path, &image_bytes)
-            .map_err(io_error("写入聊天图片", file_path.clone()))?;
-        if let Err(error) = db.register_chat_image(&register, &file_path) {
-            eprintln!("登记聊天图片失败（{}）：{error:#}", register.image_id);
-        }
-        Ok(())
-    })
-    .await??;
-
-    Ok(SavedChatImage {
-        image_id,
-        mime_type: saved_mime,
-    })
-}
-
-/// 保存即登记的一行索引（见 save_image）。
+/// 保存即登记的一行索引（见 save.rs 的 save_image）。
 pub(crate) struct ChatImageRegistration {
     pub image_id: String,
     pub workspace_id: String,
@@ -392,6 +345,10 @@ async fn save_chat_image_impl(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&image_data_base64)
         .map_err(|e| ChatImageError::Decode(e.to_string()))?;
+    // 取消信号在这里（唯一可读 agent 循环 task-local 的边界）读一次后传给
+    // save_image；无 task-local 时按「无取消源」处理（同 IPC 调用现状）。
+    let cancel_rx = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
+        .map(|context| context.cancel_rx);
     let saved = save_image(
         &db,
         SaveChatImageParams {
@@ -403,6 +360,7 @@ async fn save_chat_image_impl(
             width: None,
             height: None,
         },
+        cancel_rx,
     )
     .await?;
     Ok(SaveChatImageResult {

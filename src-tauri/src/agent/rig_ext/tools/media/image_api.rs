@@ -314,6 +314,10 @@ async fn persist_generated_image(
     width: Option<u32>,
     height: Option<u32>,
 ) -> anyhow::Result<crate::chat_images::SavedChatImage> {
+    // 取消信号在本层（处于 agent 循环 task-local 作用域的工具边界）读取后
+    // 显式传入 save_image；无 task-local 时为 None，按无取消源处理。
+    let cancel_rx = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
+        .map(|context| context.cancel_rx);
     crate::chat_images::save_image(
         &db,
         crate::chat_images::SaveChatImageParams {
@@ -325,6 +329,7 @@ async fn persist_generated_image(
             width,
             height,
         },
+        cancel_rx,
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))

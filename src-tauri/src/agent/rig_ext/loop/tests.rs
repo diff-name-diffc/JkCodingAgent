@@ -4,9 +4,13 @@
 //! 覆盖：流式增量 → `AgentEvent` 序列、工具调用配对（Planned/Started/Finished）、
 //! 消息落库（assistant 工具调用 / 工具结果 / 收口正文）、用量落库。
 
+mod policy_cancellation;
+
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use rig::completion::{CompletionError, CompletionRequest, CompletionResponse};
+use rig::streaming::{RawStreamingChoice, StreamingCompletionResponse};
 use rig::test_utils::{MockCompletionModel, MockStreamEvent};
 use rig::tool::{PortableDynamicTool, ToolOutput};
 
@@ -384,6 +388,9 @@ struct StubProtocolHandler;
 
 #[async_trait::async_trait]
 impl ProtocolToolHandler for StubProtocolHandler {
+    fn handles(&self, name: &str) -> bool {
+        matches!(name, "finish_tool" | "reject_tool")
+    }
     async fn handle(
         &self,
         tool_name: &str,
@@ -660,5 +667,356 @@ async fn cancelled_batch_persists_placeholder_results_for_remaining_calls() {
         messages[2].plain_text().contains("尚未执行"),
         "未执行的调用应补占位结果：{}",
         messages[2].plain_text()
+    );
+}
+
+#[tokio::test]
+async fn slow_tool_runs_across_model_turns_and_runtime_delivers_once() {
+    let fixture = Fixture::new();
+    let captured = Arc::new(Mutex::new(CapturedEvents::default()));
+    let channel = capture_channel(captured);
+    let release = Arc::new(tokio::sync::Notify::new());
+    let slow_gate = release.clone();
+    let slow = PortableDynamicTool::new(
+        "read_file",
+        "slow read",
+        serde_json::json!({"type":"object"}),
+        move |_| {
+            let gate = slow_gate.clone();
+            Box::pin(async move {
+                gate.notified().await;
+                Ok(ToolOutput::text("A completed"))
+            })
+        },
+    );
+    let quick = PortableDynamicTool::new(
+        "list_dir",
+        "independent read",
+        serde_json::json!({"type":"object"}),
+        move |_| {
+            let gate = release.clone();
+            Box::pin(async move {
+                gate.notify_one();
+                Ok(ToolOutput::text("B completed"))
+            })
+        },
+    );
+    let surface = RigToolSurface::new(vec![slow, quick]);
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("a", "read_file", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::tool_call("b", "list_dir", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::text("都已完成"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+    ]);
+    let mut hooks = RigLoopHooks::from_chat_spec(&spec());
+    let (_cancel, rx) = watch::channel(false);
+    let mut usage = UsageTracker::new();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run_rig_loop(
+            &fixture.db,
+            &fixture.workspace_id,
+            &model,
+            vec![Message::user("执行 A 和 B")],
+            vec![],
+            &surface,
+            &DirectToolExecution,
+            None::<&RigSummaryModel<'_, MockCompletionModel>>,
+            &mut hooks,
+            &channel,
+            rx,
+            &mut usage,
+        ),
+    )
+    .await
+    .expect("B 必须在 A 未完成时执行，不能串行死锁")
+    .unwrap();
+    assert_eq!(result.plain_text(), "都已完成");
+    assert_eq!(model.request_count(), 3);
+    let messages = list_visible(&fixture);
+    let replies = messages
+        .iter()
+        .filter(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some("a"))
+        .collect::<Vec<_>>();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].tool_result_mode.as_deref(), Some("accepted"));
+    let observations = messages
+        .iter()
+        .filter(|m| m.role == "runtime")
+        .collect::<Vec<_>>();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].tool_task_id, replies[0].tool_task_id);
+    assert!(observations[0]
+        .context_payload
+        .as_ref()
+        .unwrap()
+        .contains("A completed"));
+}
+
+#[tokio::test]
+async fn explicit_wait_is_event_driven_and_completion_causes_next_decision() {
+    let fixture = Fixture::new();
+    let waiting = Arc::new(tokio::sync::Notify::new());
+    let observed_wait = waiting.clone();
+    let channel = Channel::new(move |body| {
+        if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            if value["event"] == "runPhaseChanged" && value["data"]["phase"] == "waiting" {
+                observed_wait.notify_one();
+            }
+        }
+        Ok(())
+    });
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let worker_gate = gate.clone();
+    let surface = RigToolSurface::new(vec![PortableDynamicTool::new(
+        "read_file",
+        "blocked read",
+        serde_json::json!({"type":"object"}),
+        move |_| {
+            let gate = worker_gate.clone();
+            Box::pin(async move {
+                gate.notified().await;
+                Ok(ToolOutput::text("ready"))
+            })
+        },
+    )]);
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("a", "read_file", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::tool_call("wait", "wait_for_tools", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::text("观察结果后完成"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+    ]);
+    let (_cancel, rx) = watch::channel(false);
+    let mut usage = UsageTracker::new();
+    let mut hooks = RigLoopHooks::from_chat_spec(&spec());
+    let run = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![Message::user("wait")],
+        vec![],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &channel,
+        rx,
+        &mut usage,
+    );
+    let signal = async {
+        waiting.notified().await;
+        assert_eq!(model.request_count(), 2, "等待时不能请求模型轮询");
+        gate.notify_one();
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(run, signal)
+    })
+    .await
+    .expect("完成事件应唤醒等待");
+    assert_eq!(result.unwrap().plain_text(), "观察结果后完成");
+    assert_eq!(model.request_count(), 3);
+    let messages = list_visible(&fixture);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m.tool_call_id.as_deref() == Some("wait"))
+            .count(),
+        1
+    );
+    assert_eq!(messages.iter().filter(|m| m.role == "runtime").count(), 1);
+}
+
+// ─── 取消路径回归（R26/R27/R28） ────────────────────────────────────────────
+
+/// 闸门流模型：流出一个正文增量后挂起（sender 由模型持有，流不自然终结），
+/// 复现「流式输出中途取消」时 drive 与 consume_stream 的取消竞态。
+#[derive(Default)]
+struct PendingStreamModel {
+    held:
+        Mutex<Option<futures::channel::mpsc::Sender<Result<RawStreamingChoice, CompletionError>>>>,
+}
+
+impl CompletionModel for PendingStreamModel {
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> Result<CompletionResponse, CompletionError> {
+        Err(CompletionError::ProviderError(
+            "PendingStreamModel 不支持非流式调用".into(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> Result<StreamingCompletionResponse, CompletionError> {
+        let (mut sender, receiver) = futures::channel::mpsc::channel(1);
+        sender
+            .try_send(Ok(RawStreamingChoice::Message("前半句".to_string())))
+            .expect("预置首个正文增量");
+        *self.held.lock() = Some(sender);
+        Ok(StreamingCompletionResponse::stream(
+            "mock",
+            Box::pin(receiver),
+        ))
+    }
+}
+
+/// R26：流式输出中途取消——无论 drive 的取消分支还是 consume_stream 自带的
+/// 取消检查赢掉竞态，已流出的部分正文都必须随取消收口落库，不落空 stub。
+#[tokio::test]
+async fn cancel_mid_stream_persists_partial_text() {
+    let fixture = Fixture::new();
+    let delta_seen = Arc::new(tokio::sync::Notify::new());
+    let delta_watcher = delta_seen.clone();
+    let channel = Channel::new(move |body| {
+        if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            if value["event"] == "assistantDelta" {
+                delta_watcher.notify_one();
+            }
+        }
+        Ok(())
+    });
+    let model = PendingStreamModel::default();
+    let surface = Fixture::surface();
+    let mut hooks = RigLoopHooks::from_chat_spec(&spec());
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let mut usage = UsageTracker::new();
+    let run = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![Message::user("说点什么")],
+        vec![],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &channel,
+        cancel_rx,
+        &mut usage,
+    );
+    let signal = async {
+        delta_seen.notified().await;
+        let _ = cancel_tx.send(true);
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(run, signal)
+    })
+    .await
+    .expect("取消收口不应挂起");
+    let reply = result.expect("取消应收口成功");
+    assert!(
+        reply.plain_text().contains("前半句"),
+        "已流出的部分正文应随取消落库：{}",
+        reply.plain_text()
+    );
+    let messages = list_visible(&fixture);
+    assert_eq!(messages.len(), 1, "取消收口只落一条消息");
+    assert!(messages[0].plain_text().contains("前半句"));
+}
+
+/// R27：正式答复已落库+发事件后，等待未决工具期间收到取消——答复本身就是
+/// 收口，外层取消路径不得再落一条「已停止」stub（幂等）。
+#[tokio::test]
+async fn cancel_during_wait_after_reply_keeps_the_persisted_reply() {
+    let fixture = Fixture::new();
+    let waiting = Arc::new(tokio::sync::Notify::new());
+    let observed_wait = waiting.clone();
+    let channel = Channel::new(move |body| {
+        if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            if value["event"] == "runPhaseChanged" && value["data"]["phase"] == "waiting" {
+                observed_wait.notify_one();
+            }
+        }
+        Ok(())
+    });
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let worker_gate = gate.clone();
+    let surface = RigToolSurface::new(vec![PortableDynamicTool::new(
+        "read_file",
+        "slow read",
+        serde_json::json!({"type":"object"}),
+        move |_| {
+            let gate = worker_gate.clone();
+            Box::pin(async move {
+                gate.notified().await;
+                Ok(ToolOutput::text("迟到结果"))
+            })
+        },
+    )]);
+    // 第一轮：调用慢工具；第二轮：工具未决时模型直接给出正式答复。
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("slow", "read_file", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::text("正式答复"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+    ]);
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let mut usage = UsageTracker::new();
+    let mut hooks = RigLoopHooks::from_chat_spec(&spec());
+    let run = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![Message::user("先跑工具再答复")],
+        vec![],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &channel,
+        cancel_rx,
+        &mut usage,
+    );
+    let signal = async {
+        waiting.notified().await;
+        let _ = cancel_tx.send(true);
+        // 放行慢工具 worker，保证 shutdown 的 drain 能收尾。
+        gate.notify_one();
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(run, signal)
+    })
+    .await
+    .expect("取消收口不应挂起");
+    let reply = result.expect("答复已持久化，取消应幂等收口");
+    assert_eq!(reply.plain_text().trim(), "正式答复");
+    assert_eq!(model.request_count(), 2);
+    // assistant（工具调用）→ tool（accepted）→ assistant（正式答复）；无重复取消 stub。
+    let messages = list_visible(&fixture);
+    let roles = messages
+        .iter()
+        .map(|message| message.role.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(roles, vec!["assistant", "tool", "assistant"]);
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.plain_text().contains("本轮聊天已停止")),
+        "答复已落库后不得再写「已停止」stub"
     );
 }

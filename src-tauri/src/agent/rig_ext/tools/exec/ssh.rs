@@ -8,9 +8,12 @@ use super::super::common::{
 };
 use crate::agent::command_history::{self, CommandHistoryStatus};
 use crate::agent::db::DispatcherDb;
-use crate::ssh_tool::SshSessionManager;
-use rig::tool::{PortableDynamicTool, ToolOutput};
+use crate::ssh_tool::{CommandFailure, CommandFailureKind, SshSessionManager};
+use rig::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
 use std::path::PathBuf;
+
+#[cfg(test)]
+mod tests;
 
 pub(super) fn ssh_tools(
     manager: SshSessionManager,
@@ -114,10 +117,24 @@ fn ssh_exec_tool(
             let workspace_id = workspace_id.clone();
             let db = db.clone();
             let review_context = review_context.clone();
+            // 取消信号在本层（唯一处于 agent 循环 task-local 作用域的边界）读取
+            // 一次后向下显式传递；无 task-local（如脱离循环的调用）时为 None，
+            // 传输层按「无取消源」处理，不误判为已取消。
+            let cancel_rx =
+                crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
+                    .map(|context| context.cancel_rx);
             Box::pin(async move {
-                let text =
-                    ssh_exec_text(&args, manager, workspace, workspace_id, db, review_context).await;
-                Ok(ToolOutput::text(text))
+                ssh_exec_text(
+                    &args,
+                    manager,
+                    workspace,
+                    workspace_id,
+                    db,
+                    cancel_rx,
+                    review_context,
+                )
+                .await
+                .map(ToolOutput::text)
             })
         },
     )
@@ -129,24 +146,35 @@ async fn ssh_exec_text(
     workspace: PathBuf,
     workspace_id: String,
     db: DispatcherDb,
+    cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
-) -> String {
+) -> Result<String, ToolExecutionError> {
     let Some(server_id) = string_arg(args, "server_id") else {
-        return "错误：缺少必填参数 server_id；请先调用 ssh_list_servers。".to_string();
+        return Err(ToolExecutionError::invalid_args(
+            "错误：缺少必填参数 server_id；请先调用 ssh_list_servers。".to_string(),
+        ));
     };
     let Some(session_id) = string_arg(args, "session_id") else {
-        return "错误：缺少必填参数 session_id。".to_string();
+        return Err(ToolExecutionError::invalid_args(
+            "错误：缺少必填参数 session_id。".to_string(),
+        ));
     };
     let Some(command) = string_arg(args, "command") else {
-        return "错误：缺少必填参数 command。".to_string();
+        return Err(ToolExecutionError::invalid_args(
+            "错误：缺少必填参数 command。".to_string(),
+        ));
     };
     let stdin = string_arg(args, "stdin");
 
-    // 审计元数据需要会话标题（审查阻断记录与执行记录共用）。
+    // 审计元数据需要会话标题（审查阻断记录与执行记录共用）。读取失败仅降级
+    // 审计展示（标题留空），仅留日志，不应中止命令执行（对齐 sync_directory）。
     let session_title = db
         .get_session_title_async(&workspace_id)
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|error| {
+            eprintln!("[ssh-tool] 读取会话标题失败，审计记录标题留空：{error}");
+            String::new()
+        });
 
     // 安全审查门禁：fail-closed，且是 ssh_exec 的唯一审查层。
     // - 未配置审查模型：默认拦截可执行命令，不得跳过审查放行。
@@ -183,13 +211,15 @@ async fn ssh_exec_text(
                 )
                 .await
             {
-                return format!(
+                return Err(ToolExecutionError::refused(format!(
                     "错误：未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。\n\n{}",
                     crate::ssh_tool::render_ssh_audit_record_markdown(&record)
-                );
+                )));
             }
-            return "错误：未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。"
-                .to_string();
+            return Err(ToolExecutionError::refused(
+                "错误：未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。"
+                    .to_string(),
+            ));
         }
         Some(review_config) => match manager.server_config_async(server_id.clone()).await {
             Ok(server) if server.review_enabled => {
@@ -241,19 +271,19 @@ async fn ssh_exec_text(
                             )
                             .await;
                         if let Ok(record) = record_result {
-                            return format!(
+                            return Err(ToolExecutionError::refused(format!(
                                 "错误：命令已被安全审查拦截（审查服务异常：{error}）。\n\n{}",
                                 crate::ssh_tool::render_ssh_audit_record_markdown(&record)
-                            );
+                            )));
                         }
-                        return format!(
+                        return Err(ToolExecutionError::refused(format!(
                             "错误：命令已被安全审查拦截（审查服务异常：{error}）。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
-                        );
+                        )));
                     }
                 }
             }
             Ok(_) => None,
-            Err(error) => return format!("错误：{error}"),
+            Err(error) => return Err(ToolExecutionError::other(format!("错误：{error}"))),
         },
     };
 
@@ -282,17 +312,19 @@ async fn ssh_exec_text(
                 )
                 .await;
             if let Ok(record) = record_result {
-                return crate::agent::ssh_review::with_confirm_guidance(
-                    crate::ssh_tool::render_ssh_audit_record_markdown(&record),
-                    &reason,
-                );
+                return Err(ToolExecutionError::refused(
+                    crate::agent::ssh_review::with_confirm_guidance(
+                        crate::ssh_tool::render_ssh_audit_record_markdown(&record),
+                        &reason,
+                    ),
+                ));
             }
-            return crate::agent::ssh_review::with_confirm_guidance(
+            return Err(ToolExecutionError::refused(crate::agent::ssh_review::with_confirm_guidance(
                 format!(
                     "错误：命令已被安全审查拦截：{reason}。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
                 ),
                 &reason,
-            );
+            )));
         }
     }
 
@@ -309,13 +341,15 @@ async fn ssh_exec_text(
             command,
             stdin,
             u64_arg(args, "timeout_secs"),
+            cancel_rx,
             review_outcome,
         )
         .await
     {
         Ok(result) => {
-            let rendered = serde_json::to_string_pretty(&result)
-                .unwrap_or_else(|error| format!("错误：序列化 SSH 执行结果失败：{error}"));
+            let rendered = serde_json::to_string_pretty(&result).map_err(|error| {
+                ToolExecutionError::other(format!("错误：序列化 SSH 执行结果失败：{error}"))
+            })?;
             command_history::record(
                 &workspace_id,
                 "ssh_exec",
@@ -324,8 +358,53 @@ async fn ssh_exec_text(
                 CommandHistoryStatus::Executed,
                 &rendered,
             );
-            rendered
+            classify_ssh_result(&result, rendered)
         }
-        Err(error) => format!("错误：SSH 命令执行失败：{error}"),
+        Err(failure) => Err(map_command_failure(failure)),
+    }
+}
+
+// manager.execute 的 Err 携带结构化 kind，按语义映射：
+// - 发送前取消 → cancelled（远端状态确定未改变，台账记取消而非可恢复错误）；
+// - 执行请求失败 → external_state_unknown + 禁止自动重跑（app_policy 按 code 匹配）；
+// - 其余（配置 / 校验 / 建链）→ 普通执行失败。
+fn map_command_failure(failure: CommandFailure) -> ToolExecutionError {
+    match failure.kind {
+        CommandFailureKind::CancelledNotSent => {
+            ToolExecutionError::cancelled(format!("错误：{}", failure.message))
+        }
+        CommandFailureKind::ExternalStateUnknown => {
+            ToolExecutionError::other(format!("错误：SSH 命令执行失败：{}", failure.message))
+                .with_code("external_state_unknown")
+                .with_retryable(false)
+        }
+        CommandFailureKind::Other => {
+            ToolExecutionError::other(format!("错误：SSH 命令执行失败：{}", failure.message))
+        }
+    }
+}
+
+// 输出捕获完成不等于命令成功；完整 JSON（包括退出码）仍进入产物。
+fn classify_ssh_result(
+    result: &crate::ssh_tool::SshExecResult,
+    rendered: String,
+) -> Result<String, ToolExecutionError> {
+    if result.cancelled {
+        Err(ToolExecutionError::cancelled(rendered)
+            .with_code("external_state_unknown")
+            .with_retryable(false))
+    } else if result.interactive_blocked {
+        // 交互式命令被中止（command_exec 会同时置 external_state_unknown=true，
+        // 必须先于此分支判断）：工具描述引导模型改写为非交互命令后重试，
+        // 与「结果未知、禁止自动重跑」语义不同，归入 command_failed。
+        Err(ToolExecutionError::other(rendered).with_code("command_failed"))
+    } else if result.external_state_unknown {
+        Err(ToolExecutionError::other(rendered)
+            .with_code("external_state_unknown")
+            .with_retryable(false))
+    } else if result.exit_code != 0 {
+        Err(ToolExecutionError::other(rendered).with_code("command_failed"))
+    } else {
+        Ok(rendered)
     }
 }

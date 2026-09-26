@@ -77,7 +77,6 @@ impl Fixture {
             self.db.clone(),
             None,
             review_context_with_config(),
-            crate::agent::rig_ext::tools::deps::ToolCallSlot::default(),
         )
     }
 
@@ -175,7 +174,6 @@ async fn session_workspace_and_shell_artifacts_are_valid_sync_sources() {
             fixture.db.clone(),
             None,
             review_context_with_config(),
-            crate::agent::rig_ext::tools::deps::ToolCallSlot::default(),
         );
         let display = run(&tool, args).await;
         // 必须通过路径校验到达连接阶段；连接 127.0.0.1 失败属预期（测试不连真实服务器）。

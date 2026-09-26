@@ -176,6 +176,34 @@ async fn run_graph(
     // 一次作为加载边界兜底，保证调度器、持久化、事件与 DB 记录全程使用同一套 id。
     definition.normalize_ids();
     let workspace_root = resolve_workspace_root(&services.db, &workspace_id).await?;
+    let canonical_root = tokio::task::spawn_blocking({
+        let root = workspace_root.clone();
+        move || root.canonicalize()
+    })
+    .await
+    .context("规范化图工作区任务失败")??;
+    // ACP 内部工具不可逐次声明资源，整个图运行持有工作区写租约。租约按路径嵌套判定
+    // 冲突：只挡本工作区（同一或嵌套工作区）的文件/工作区域声明，跨项目会话不受影响；
+    // 会话内文件工具因此排队超时时，超时文案会点名占用方（见 resources.rs 的
+    // `AcquireError::timeout_message`）。
+    use crate::agent::rig_ext::r#loop::resources::{Claim, Resource, ResourceArbiter};
+    let _workspace_lease = ResourceArbiter::shared()
+        .acquire(
+            vec![Claim {
+                resource: Resource::File(canonical_root),
+                write: true,
+            }],
+            cancel_rx.clone(),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .await
+        .map_err(|error| match error {
+            crate::agent::rig_ext::r#loop::resources::AcquireError::QueueTimeout { .. } => {
+                anyhow::anyhow!("{}", error.timeout_message())
+            }
+            other => anyhow::anyhow!("图工作区资源租约获取失败：{other:?}"),
+        })?;
+
     let settings = tokio::task::spawn_blocking({
         let db = services.db.clone();
         move || db.get_settings_v2()

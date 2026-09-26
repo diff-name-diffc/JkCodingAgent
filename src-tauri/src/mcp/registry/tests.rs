@@ -12,6 +12,7 @@ use super::resolve::{
     normalize_transport_name, resolve_cwd, resolve_mcp_tool, resolve_server_config,
     resolve_transport_kind, sanitize_tool_name,
 };
+use super::CallBudget;
 use crate::mcp::{McpAggregateStatus, McpConfig, McpServerConfig, McpServerState, McpServerStatus};
 
 fn server(command: &str) -> McpServerConfig {
@@ -19,6 +20,19 @@ fn server(command: &str) -> McpServerConfig {
         command: Some(command.to_string()),
         ..Default::default()
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn call_budget_shares_one_deadline_between_init_and_call() {
+    // 初始化握手与工具调用共用一份预算：握手耗掉的时间从调用阶段扣除，
+    // 最坏总等待为 startup_timeout，不翻倍。
+    let budget = CallBudget::start(Duration::from_secs(10));
+    assert_eq!(budget.remaining(), Duration::from_secs(10));
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    assert_eq!(budget.remaining(), Duration::from_secs(3));
+    // 预算耗尽后归零（saturating，不出现负值）。
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(budget.remaining(), Duration::ZERO);
 }
 
 #[test]

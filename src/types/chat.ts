@@ -43,7 +43,7 @@ export type AnyContentSegment = TextSegment | ImageSegment | FileSegment;
 export interface DispatcherMessage {
   id: string;
   workspaceId: string;
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "tool" | "runtime";
   segments: AnyContentSegment[];
   /** 展示文本：归一化时从 segments 派生（segments 是消息内容的唯一权威形态，
    * wire 层不再携带独立正文字段）。 */
@@ -53,6 +53,7 @@ export interface DispatcherMessage {
   thinkingContent?: string | null;
   thinkingElapsedMs?: number | null;
   toolCallId?: string;
+  toolTaskId?: string | null;
   toolName?: string;
   toolResultMode?: DispatcherToolResultMode;
   toolArtifacts?: DispatcherToolArtifactRef[];
@@ -84,7 +85,8 @@ export type DispatcherToolResultMode =
   | "intent_compressed"
   | "structured_fallback"
   | "truncated"
-  | "pending_summary";
+  | "pending_summary"
+  | "accepted";
 
 export interface DispatcherToolArtifactRef {
   id: string;
@@ -118,6 +120,13 @@ export interface DispatcherToolRunRecord {
   id: string;
   workspaceId: string;
   toolCallId: string;
+  agentRunId?: string | null;
+  scopeId?: string | null;
+  dispatchRound?: number | null;
+  rootRequestMessageId?: string | null;
+  replyMessageId?: string | null;
+  dispatchMode?: string | null;
+  phase?: "queued" | "reviewing" | "running" | "preparing" | "cancelling" | null;
   parentRunId?: string | null;
   origin: DispatcherToolRunOrigin;
   stepId?: string | null;
@@ -351,7 +360,10 @@ export type DispatcherAgentEvent =
       data: { workspaceId: string; stats: DispatcherMessageUsageStats };
     }
   | { event: "toolPlanned"; data: { toolCallId: string; name: string; arguments: string } }
-  | { event: "toolStarted"; data: { toolCallId: string; name: string; arguments: string } }
+  | {
+      event: "toolStarted";
+      data: { taskId?: string | null; toolCallId: string; name: string; arguments: string };
+    }
   | {
       event: "toolSummaryStarted";
       data: {
@@ -372,6 +384,7 @@ export type DispatcherAgentEvent =
   | {
       event: "toolFinished";
       data: {
+        taskId?: string | null;
         toolCallId: string;
         name: string;
         arguments: string;
@@ -381,6 +394,8 @@ export type DispatcherAgentEvent =
         detailRefs: DispatcherToolArtifactRef[];
       };
     }
+  | { event: "runPhaseChanged"; data: { agentRunId: string; scopeId: string; workspaceId: string; phase: string } }
+  | { event: "toolAccepted"; data: { taskId: string; toolCallId: string; name: string } }
   | { event: "toolRunUpdated"; data: { run: DispatcherToolRunRecord } }
   | {
       event: "finished";
@@ -453,4 +468,9 @@ export interface SessionSearchResult {
   matchedKeywords: string[];
   relevanceScore: number;
   updatedAt: string;
+}
+
+export interface DispatcherRuntimeSnapshot {
+  scopes: Array<{ agentRunId: string; scopeId: string; workspaceId: string; phase: string }>;
+  tasks: DispatcherToolRunRecord[];
 }

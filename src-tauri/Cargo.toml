@@ -65,6 +65,8 @@ agent-client-protocol = "2"
 rig = { package = "rig-core", version = "0.42" }
 
 [dev-dependencies]
+rmcp = { version = "1.8.0", default-features = false, features = ["server"] }
+tokio = { version = "1", features = ["test-util"] }
 # rig 官方 mock 模型（`test-utils`）：运行时循环的端到端测试用，仅测试构建启用。
 rig = { package = "rig-core", version = "0.42", features = ["test-utils"] }
 

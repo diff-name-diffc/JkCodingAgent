@@ -24,12 +24,26 @@ pub(super) struct StreamConsumption {
     pub(super) cancelled: bool,
 }
 
+/// 流式进度的共享视图：`drive` 的取消分支赢掉与 `consume_stream` 自带取消
+/// 检查的竞态时，流式 future 被整体 drop，已累积的部分正文/序号经此句柄
+/// 带出给取消收口，不再随 future 一起丢弃。
+#[derive(Default)]
+pub(super) struct StreamProgress {
+    /// 已流出的正文（随增量就地追加）。
+    pub(super) partial_text: String,
+    /// 已发出的 delta 计数；最后一个已发序号 = `seq.checked_sub(1)`。
+    pub(super) seq: u64,
+}
+
 /// 消费一条 rig 流：逐条把增量翻译成 AgentEvent；取消时中止流并保留部分正文。
 /// 流项错误 fail-closed（对齐旧实现：任何 SSE 协议错误 = 整轮请求失败）。
+/// 增量就地写入 `progress`：即使本 future 被 `drive` 的取消分支中途 drop，
+/// 已流出的部分正文仍可由调用方取回落库。
 pub(super) async fn consume_stream(
     stream: &mut StreamingCompletionResponse,
     on_event: &Channel<AgentEvent>,
     cancel_rx: watch::Receiver<bool>,
+    progress: &mut StreamProgress,
 ) -> Result<StreamConsumption> {
     let message_id = uuid::Uuid::new_v4().to_string();
     emit(
@@ -39,8 +53,6 @@ pub(super) async fn consume_stream(
         },
     );
 
-    let mut seq: u64 = 0;
-    let mut partial_text = String::new();
     let mut thinking_started_at: Option<Instant> = None;
     let mut thinking_elapsed_ms = 0_u64;
     // 已见增量的 reasoning 关联键：完整 Reasoning 块是对其增量的替代而非追加，
@@ -69,9 +81,9 @@ pub(super) async fn consume_stream(
 
         match content {
             StreamedAssistantContent::Text(text) => {
-                let this_seq = seq;
-                seq += 1;
-                partial_text.push_str(&text.text);
+                let this_seq = progress.seq;
+                progress.seq += 1;
+                progress.partial_text.push_str(&text.text);
                 emit(
                     on_event,
                     AgentEvent::AssistantDelta {
@@ -86,8 +98,8 @@ pub(super) async fn consume_stream(
                     seen_reasoning_ids.insert(id);
                     let started_at = thinking_started_at.get_or_insert_with(Instant::now);
                     thinking_elapsed_ms = started_at.elapsed().as_millis() as u64;
-                    let this_seq = seq;
-                    seq += 1;
+                    let this_seq = progress.seq;
+                    progress.seq += 1;
                     emit(
                         on_event,
                         AgentEvent::AssistantThinkingDelta {
@@ -106,8 +118,8 @@ pub(super) async fn consume_stream(
                     if !display.is_empty() {
                         let started_at = thinking_started_at.get_or_insert_with(Instant::now);
                         thinking_elapsed_ms = started_at.elapsed().as_millis() as u64;
-                        let this_seq = seq;
-                        seq += 1;
+                        let this_seq = progress.seq;
+                        progress.seq += 1;
                         emit(
                             on_event,
                             AgentEvent::AssistantThinkingDelta {
@@ -130,9 +142,9 @@ pub(super) async fn consume_stream(
     }
 
     Ok(StreamConsumption {
-        partial_text,
+        partial_text: std::mem::take(&mut progress.partial_text),
         thinking_elapsed_ms,
-        last_seq: seq.checked_sub(1),
+        last_seq: progress.seq.checked_sub(1),
         cancelled,
     })
 }

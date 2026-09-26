@@ -26,6 +26,7 @@ pub use audit::render_ssh_audit_record_markdown;
 use audit::{truncate_for_audit, AUDIT_OUTPUT_CHARS};
 use command_exec::run_command_on_connection;
 pub use command_exec::MAX_STDIN_CHARS;
+pub(crate) use command_exec::{CommandFailure, CommandFailureKind};
 use connection::{connect, SshClientHandler};
 pub use db::{SharedPool, SshDb};
 pub use types::{
@@ -203,6 +204,9 @@ impl SshSessionManager {
     }
 
     /// `workspace_path` 仅作为审计元数据记录（配置已全局化，不再决定存储位置）。
+    ///
+    /// `cancel_rx` 由工具边界（`ssh_exec_text`）读一次 task-local 后显式传入：
+    /// 本层（及以下传输层）只消费取消信号，不反向依赖 agent 循环的 task-local。
     #[allow(clippy::too_many_arguments)]
     pub async fn execute(
         &self,
@@ -214,8 +218,9 @@ impl SshSessionManager {
         command: String,
         stdin: Option<String>,
         timeout_secs: Option<u64>,
+        cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
         review: Option<SshAuditReview>,
-    ) -> Result<SshExecResult, String> {
+    ) -> Result<SshExecResult, CommandFailure> {
         let mut result = self
             .execute_command(
                 server_id.clone(),
@@ -223,6 +228,7 @@ impl SshSessionManager {
                 command.clone(),
                 stdin,
                 timeout_secs,
+                cancel_rx,
             )
             .await;
         let audit_record = SshAuditRecord::from_execution(
@@ -239,7 +245,7 @@ impl SshSessionManager {
         let audit_write =
             tokio::task::spawn_blocking(move || ssh_db.append_audit_record(&audit_record))
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| CommandFailure::other(error.to_string()))?;
         if let Err(error) = audit_write {
             // 命令已经执行过：审计失败不能伪装成命令失败。保留真实结果，
             // 把审计写入失败作为警告附在 stderr 里返回。
@@ -298,23 +304,25 @@ impl SshSessionManager {
         command: String,
         stdin: Option<String>,
         timeout_secs: Option<u64>,
-    ) -> Result<SshExecResult, String> {
+        cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<SshExecResult, CommandFailure> {
         let ssh_db = self.db.clone();
         let lookup_id = server_id.clone();
         let server = tokio::task::spawn_blocking(move || ssh_db.find_enabled_server(&lookup_id))
             .await
-            .map_err(|error| error.to_string())??;
+            .map_err(|error| CommandFailure::other(error.to_string()))?
+            .map_err(CommandFailure::other)?;
         let timeout_secs = timeout_secs.unwrap_or(server.default_timeout_secs);
         let timeout_secs = timeout_secs.clamp(1, MAX_TIMEOUT_SECS);
         let max_output_bytes = server.max_output_bytes.clamp(1, MAX_OUTPUT_BYTES);
-        validate_session_id(&session_id)?;
-        validate_command(&command)?;
+        validate_session_id(&session_id).map_err(CommandFailure::other)?;
+        validate_command(&command).map_err(CommandFailure::other)?;
         if let Some(input) = stdin.as_deref() {
             let chars = input.chars().count();
             if chars > MAX_STDIN_CHARS {
-                return Err(format!(
+                return Err(CommandFailure::other(format!(
                     "错误：stdin 长度 {chars} 字符超过上限 {MAX_STDIN_CHARS}（与安全审查送审上限一致，不允许执行未完整送审的内容；请改用分批写入）"
-                ));
+                )));
             }
         }
 
@@ -324,8 +332,11 @@ impl SshSessionManager {
         };
         let started = Instant::now();
 
-        let connection = self.connection_for(key.clone(), &server).await?;
-        match run_command_on_connection(
+        let connection = self
+            .connection_for(key.clone(), &server)
+            .await
+            .map_err(CommandFailure::other)?;
+        let result = match run_command_on_connection(
             &connection,
             &server_id,
             &session_id,
@@ -334,6 +345,7 @@ impl SshSessionManager {
             timeout_secs,
             max_output_bytes,
             started,
+            cancel_rx.clone(),
         )
         .await
         {
@@ -341,7 +353,10 @@ impl SshSessionManager {
             Err(failure) if failure.stale => {
                 // 缓存连接已断：丢弃入池记录，重连后重试一次。
                 self.drop_session(&key);
-                let connection = self.connection_for(key, &server).await?;
+                let connection = self
+                    .connection_for(key.clone(), &server)
+                    .await
+                    .map_err(CommandFailure::other)?;
                 run_command_on_connection(
                     &connection,
                     &server_id,
@@ -351,12 +366,20 @@ impl SshSessionManager {
                     timeout_secs,
                     max_output_bytes,
                     started,
+                    cancel_rx,
                 )
                 .await
-                .map_err(|failure| failure.message)
             }
-            Err(failure) => Err(failure.message),
+            Err(failure) => Err(failure),
+        };
+        if let Err(failure) = &result {
+            if matches!(failure.kind, CommandFailureKind::ExternalStateUnknown) {
+                // 执行请求已发出但结果未知：连接状态存疑，回收出池，
+                // 不把半坏连接留给后续命令（下次重建）。
+                self.drop_session(&key);
+            }
         }
+        result
     }
 
     /// 取指定 key 的连接；不存在或已断开则在锁外新建后入池。

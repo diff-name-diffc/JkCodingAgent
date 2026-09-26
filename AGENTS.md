@@ -83,7 +83,7 @@ App
 | 模块 | 职责 |
 |------|------|
 | `agent/` | dispatcher 智能体核心（基于 **rig-core 0.42 portable contracts**）：`rig_ext/`（运行时：`model`（用途槽位→rig 模型）/`message`（消息桥）/`r#loop`（多轮工具循环 + 三段式执行策略 + 工具台账 + 协议拦截）/`tool_result`（结果落盘与压缩）/`summary`（标题/关键字）/`events`（前端事件契约）/`agents`（三类 Agent 装配 + 协议工具 + 画布 DSL + 提示词）/`sub_agent`（子智能体运行时与工具）/`tools`（rig 工具面：fs/exec/media/program/mcp/spec 策略表 + 参数校验/台账）/`review`（命令审查上下文）/`models`（模型列表拉取））、`graph/`（图编排：定义/校验/执行引擎/`acp_exec` ACP 节点执行器/命令）、`db/`（SQLite schema 与读写 + `contract.rs` 落库 JSON 契约）、`commands/`（Tauri 命令）、`config.rs`（智能体配置 + `~/.jkcodingagent` 初始化）、`ssh_review.rs`（命令安全审查，rig 模型）、`sub_agent/{config,manager,db,commands}.rs`（子智能体配置与持久化） |
-| `task_runtime/` | `pty.rs`（PTY 创建/读写）、`session.rs`（会话/输出兜底） |
+| `task_runtime/` | `pty.rs`（PTY 创建/读写） |
 | `project/` | `storage.rs`（受管项目/会话存储）、`config.rs`（项目配置）、`mcp.rs`（项目级 MCP） |
 | `mcp/` | MCP 子系统：`McpScope{Global, Project}` 显式作用域模型——`Global`（`mcp_servers` 全局注册表，所有聊天共享单一快照）与 `Project`（全局 ∪ 项目 `.jkcodingagent/mcp.json`，同名项目覆盖）；`registry.rs`（作用域缓存/合并/工具执行）、`transport.rs`（stdio/streamable_http/unix_socket_http + 诊断）、`project_file.rs`（项目文件读写）、`commands.rs`（Tauri 命令，项目命令前置路径校验） |
 | `scm/git.rs` | Git 集成：状态、分支、日志、差异、暂存、提交、推送、拉取 |
@@ -94,7 +94,6 @@ App
 | `browser.rs` | 内嵌浏览器宿主 |
 | `chat_images.rs` | 聊天图片存储 |
 | `python_runner.rs` | Python 运行器 |
-| `tools/image_generator.rs` | 图像生成 |
 
 核心约束：
 - 所有接受路径参数的命令必须校验路径位于工作区内，防止目录遍历。
@@ -118,7 +117,7 @@ App
 
 **存储 schema 版本策略（桌面应用基线 + 前向迁移）**
 
-- 当前为 **v7 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）：应用开发阶段无存量用户，历史 v0→v33 迁移链已按产品决策清除；`init()` 路径为「全新建库到当前形态」「同版本直开」与「存在迁移块的低版本逐级前向迁移」（v1→v2：chat_images 的 message_id 改可空并删除两个未用列，事务内重建表 + 数据全量保留；v2→v3：dispatcher_settings 新增 `theme` 列，并把旧 `app_config` 中 `app_settings` 键的主题偏好搬移进 `AhaSettingsV2.theme`；v3→v4：删除 projects 表死列 `branch`；v4→v5：sub_agent_run_traces 新增可空 `model` 列〔子智能体轨迹记录真实模型，老行 NULL 前端「未记录」兜底〕；v5→v6：新增 `dispatcher_session_summaries` 表〔历史级滚动压缩的跨 run 持久化：滚动摘要 + 覆盖锚点消息 id，DDL 单出处 `SESSION_SUMMARIES_DDL` 基线与迁移共用〕；v6→v7：删除 dispatcher_messages 死列 `context_cleared`〔事务内重建表 + 数据全量保留；DROP 父表前事务外关闭 foreign_keys，避免隐式 DELETE 触发子表级联误删〕；各迁移均在迁移前 `VACUUM INTO` 整库快照）。更早的旧开发库直接报错并引导运行 `scripts/reset-dev-data.sh`。
+- 当前为 **v9 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）：应用开发阶段无存量用户，历史 v0→v33 迁移链已按产品决策清除；`init()` 路径为「全新建库到当前形态」「同版本直开」与「存在迁移块的低版本逐级前向迁移」（v1→v2：chat_images 的 message_id 改可空并删除两个未用列，事务内重建表 + 数据全量保留；v2→v3：dispatcher_settings 新增 `theme` 列，并把旧 `app_config` 中 `app_settings` 键的主题偏好搬移进 `AhaSettingsV2.theme`；v3→v4：删除 projects 表死列 `branch`；v4→v5：sub_agent_run_traces 新增可空 `model` 列〔子智能体轨迹记录真实模型，老行 NULL 前端「未记录」兜底〕；v5→v6：新增 `dispatcher_session_summaries` 表〔历史级滚动压缩的跨 run 持久化：滚动摘要 + 覆盖锚点消息 id，DDL 单出处 `SESSION_SUMMARIES_DDL` 基线与迁移共用〕；v6→v7：删除 dispatcher_messages 死列 `context_cleared`〔事务内重建表 + 数据全量保留；DROP 父表前事务外关闭 foreign_keys，避免隐式 DELETE 触发子表级联误删〕；v7→v8：新增工具 run/scope/phase 身份字段、消息 tool_task_id 与 dispatcher_tool_completions 完成事件表；v8→v9：为 dispatcher_tool_completions.delivery_message_id 补索引〔消息删除触发器按该列反查投递消息，索引 DDL 与基线同源〕；各迁移均在迁移前 `VACUUM INTO` 整库快照）。更早的旧开发库直接报错并引导运行 `scripts/reset-dev-data.sh`。
 - 后续每次 schema 变更必须同时做两件事：① 更新 `schema.rs` 的基线 DDL（新装库直接得到新形态）；② 递增 `SCHEMA_VERSION` 并在 `init()` 迁移挂载点追加 `if current_version < N` 的事务块（DDL/回填与 `user_version` 推进同事务、幂等可重试）。**禁止改写或删除历史迁移块**——它们是已发布版本用户升级的唯一路径。
 - 破坏性迁移（DROP/清空数据）前必须做整库快照备份（参考 `VACUUM INTO` 方案），并保留「备份失败留痕」的兜底。
 - 领域模块自管的表（sub_agent / ssh / projects / mcp_servers / app_config）的 DDL 放在各领域的 `ensure_*_tx` 助手中，由 `create_baseline` 统一调用，保持单一出处。
@@ -202,7 +201,7 @@ pub(crate) fn my_tool(deps: &RigToolDeps) -> PortableDynamicTool {
 要点：
 - 工具的**构造期依赖**来自 `RigToolDeps`（见 `rig_ext/tools/deps.rs`）：workspace/白名单、MCP 作用域、
   DB、SSH、子智能体管理器、取消信号、视觉/图像凭据、审查上下文（`review`）。逐次调用注入的
-  `tool_call_id` 用 `deps.tool_call_id` 槽位（`ToolCallSlot`）。
+  身份由 `loop::invocation::ToolInvocationContext` 在 rig 回调边界注入；入口取得 owned clone，业务函数和新 spawn 显式传递，禁止共享可变调用槽。
 - 需要命令执行/外部效应的工具**自己带 fail-closed 审查**（`deps.review` + `ssh_review::review_shell_command`），
   与 local_zsh / ssh_exec / sync_directory / MCP 桥一致。
 - 压缩阈值与内联上限取自 `rig_ext/tool_result.rs`（命令类 12000，默认 5000）；schema 文案必须与
@@ -223,6 +222,18 @@ pub(crate) fn my_tool(deps: &RigToolDeps) -> PortableDynamicTool {
 在 `TOOL_POLICY_TABLE` 补一行（category/access/safety/timeout/compress/parallel/self-managed）。
 该表是**台账元数据、审查门禁判定、统一超时与结果策略的唯一来源**；未收录的工具名走 fail-closed 兜底
 （只读+需审查+串行）。
+
+**超时契约（`ToolExecutionPolicy`）**：
+- `timeout_secs` + `unified_timeout=true`：策略层在调用外层包统一超时；到点发取消 → 宽限收敛
+  （`SETTLE_CEILING`）→ 仍不收敛则把在途执行移交后台并按「结算未确认」收口（绝不 drop future）。
+- `unified_timeout=false`（自管超时，当前 6 个工具：`local_zsh`/`ssh_exec`/`sync_directory`/
+  `analyze_image`/`call_sub_agent`/`run_tool_program`）：**执行预算由工具自管**（分阶段超时、交互/静默
+  容忍、优雅终止：杀进程树 / 关 channel / 写审计与台账），策略层不包统一超时；但仍以
+  `settle_ceiling_secs`（兜底上限 = 该工具最坏合法预算，登记在 `self_managed_settle_ceiling_secs`）
+  作**最后防线**，到点走与统一超时同一套收口流程。`cancellable` 声明工具是否消费 run 级取消：
+  为 `false` 时兜底到点不发取消（发了也没人收），直接交接后台。
+  新增自管工具**必须**在 `self_managed_settle_ceiling_secs` 登记上限
+  （`spec.rs` 的 `self_managed_tools_declare_settle_ceiling` 测试守护）。
 
 ### 4. 工具输出压缩（可选）
 

@@ -14,7 +14,9 @@
 //!    fail-closed 拒绝）；自管审查的工具（local_zsh / ssh_exec /
 //!    sync_directory / MCP 桥）在工具内部完成审查，此处放行。
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::time::Duration;
 
 use rig::message::ToolCall;
@@ -27,17 +29,25 @@ use crate::agent::common::cancellation_requested;
 use crate::agent::db::{DispatcherDb, ToolRunTraceContext};
 use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::review::RigReviewContext;
-use crate::agent::rig_ext::tools::deps::ToolCallSlot;
 use crate::agent::rig_ext::tools::run_record::{
-    RigToolRun, RigToolRunContext, RigToolRunFinish, finish_tool_run, prepare_arguments,
-    start_tool_run,
+    finish_tool_run, prepare_arguments, start_tool_run, RigToolRun, RigToolRunContext,
+    RigToolRunFinish,
 };
 use crate::agent::rig_ext::tools::spec::{ToolSafety, ToolSpec};
 
 /// MCP 动态工具的 canonical 名前缀（见 `mcp/registry.rs`）。
 const MCP_TOOL_NAME_PREFIX: &str = "mcp__";
 
+/// 发出取消/超时信号后，在途工具执行收敛的兜底上限。
+///
+/// 统一超时由 `tools/spec.rs` 策略表声明（最长 60 秒），取消经 `watch` 通道即时
+/// 下发，正常路径远早于此即收敛——这个上限只为兜住真正卡死的工具回调。取
+/// 「最大统一超时的 10 倍」是为了不把正常的慢工具误判为未收敛；自管超时的工具
+/// （`unified_timeout=false`）走下面的提前返回，不受此上限约束。
+const SETTLE_CEILING: Duration = Duration::from_secs(600);
+
 /// 应用级策略的构造输入。
+#[derive(Clone)]
 pub struct AppToolPolicyConfig {
     pub workspace_id: String,
     pub workspace: PathBuf,
@@ -47,26 +57,25 @@ pub struct AppToolPolicyConfig {
     pub cancel_rx: Option<watch::Receiver<bool>>,
     /// 子智能体工具调用的台账 trace 上下文（根 Agent 为默认值）。
     pub trace: ToolRunTraceContext,
-    /// 当前工具调用 id 注入槽（见 `ToolCallSlot`）。
-    pub tool_call_id: ToolCallSlot,
 }
 
 /// 应用级执行策略：借用 DB 与事件通道，持有门禁输入。
-pub struct AppToolExecutionPolicy<'a> {
-    db: &'a DispatcherDb,
-    on_event: &'a Channel<AgentEvent>,
+#[derive(Clone)]
+pub struct AppToolExecutionPolicy {
+    db: DispatcherDb,
+    on_event: Channel<AgentEvent>,
     config: AppToolPolicyConfig,
 }
 
-impl<'a> AppToolExecutionPolicy<'a> {
+impl AppToolExecutionPolicy {
     pub fn new(
-        db: &'a DispatcherDb,
-        on_event: &'a Channel<AgentEvent>,
+        db: &DispatcherDb,
+        on_event: &Channel<AgentEvent>,
         config: AppToolPolicyConfig,
     ) -> Self {
         Self {
-            db,
-            on_event,
+            db: db.clone(),
+            on_event: on_event.clone(),
             config,
         }
     }
@@ -96,38 +105,59 @@ impl<'a> AppToolExecutionPolicy<'a> {
 }
 
 #[async_trait::async_trait]
-impl ToolExecutionPolicy for AppToolExecutionPolicy<'_> {
+impl ToolExecutionPolicy for AppToolExecutionPolicy {
+    fn registration_trace(&self) -> ToolRunTraceContext {
+        self.config.trace.clone()
+    }
+    fn resource_workspace(&self) -> Option<PathBuf> {
+        Some(self.config.workspace.clone())
+    }
+
     async fn before_call(&self, tool: &PortableDynamicTool, call: &ToolCall) -> ToolCallGuard {
         let (spec, registered) = self.spec_for(tool);
         let tool_call_id = call.wire_call_id().to_string();
-        self.config.tool_call_id.set(tool_call_id.clone());
         let run_context = RigToolRunContext {
-            db: self.db,
+            db: &self.db,
             workspace_id: &self.config.workspace_id,
-            on_event: self.on_event,
+            on_event: &self.on_event,
         };
 
         // 1. 台账创建 + started：无效参数同样先进入台账（旧实现口径）。
         let effective_arguments =
             prepare_arguments(&spec.name, &spec.parameters, &call.function.arguments)
                 .unwrap_or_else(|_| call.function.arguments.clone());
-        let trace = match start_tool_run(
-            run_context,
-            &spec,
-            registered,
-            &tool_call_id,
-            &call.function.arguments,
-            &effective_arguments,
-            self.config.trace.clone(),
-        )
-        .await
-        {
-            Ok(run) => Some(ToolCallTrace {
-                run_id: Some(run.run_id),
-            }),
-            Err(error) => {
-                eprintln!("错误：创建工具运行记录失败（工具 {}）：{error}", spec.name);
-                None
+        let registered_context = super::invocation::ToolInvocationContext::current();
+        let trace = if let Some(context) = registered_context {
+            Some(ToolCallTrace {
+                run_id: Some(context.task_id),
+            })
+        } else {
+            match start_tool_run(
+                run_context,
+                &spec,
+                registered,
+                &tool_call_id,
+                &call.function.arguments,
+                &effective_arguments,
+                self.config.trace.clone(),
+            )
+            .await
+            {
+                Ok(run) => Some(ToolCallTrace {
+                    run_id: Some(run.run_id),
+                }),
+                Err(error) => {
+                    return ToolCallGuard {
+                        trace: None,
+                        rejection: Some(
+                            ToolExecutionError::other(format!(
+                                "错误：创建工具运行记录失败（工具 {}），未执行工具：{error}",
+                                spec.name
+                            ))
+                            .with_code("fatal"),
+                        ),
+                    };
+                }
             }
         };
 
@@ -185,30 +215,106 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy<'_> {
         call: &ToolCall,
     ) -> Result<ToolOutput, ToolExecutionError> {
         let (spec, _) = self.spec_for(tool);
-        let arguments = call.function.arguments.clone();
+        let arguments = prepare_arguments(&spec.name, &spec.parameters, &call.function.arguments)
+            .map_err(|error| ToolExecutionError::invalid_args(error.message))?;
 
-        // 统一超时：`unified_timeout=false`（自管超时）或 timeout_secs=0 时跳过，
-        // 由工具自管生命周期（对齐旧 ToolExecutionPolicy 语义）。
-        if !spec.execution.unified_timeout || spec.execution.timeout_secs == 0 {
+        // 等待上限：统一超时工具用自身 `timeout_secs`；自管工具（unified_timeout=false）用
+        // 兜底上限 `settle_ceiling_secs`（工具自身预算之外的最后防线，取值 = 最坏合法预算）。
+        // 两者共用同一套「到点 → 发取消 → 宽限收敛 → 交接后台」流程，差别只在文案与
+        // 「是否值得发取消」：统一超时工具恒发，自管工具按 `cancellable` 声明。
+        // `timeout_secs == 0` 维持文档语义（不设统一超时限制）；策略表内工具恒 > 0。
+        let ceiling_mode = !spec.execution.unified_timeout;
+        let deadline_secs = if ceiling_mode {
+            spec.execution.settle_ceiling_secs
+        } else {
+            spec.execution.timeout_secs
+        };
+        if deadline_secs == 0 {
             return tool.execute(arguments).await;
         }
-        let timeout = Duration::from_secs(spec.execution.timeout_secs);
-        match tokio::time::timeout(timeout, tool.execute(arguments)).await {
-            Ok(result) => result,
-            Err(_) => Err(ToolExecutionError::timeout(format!(
-                "错误：工具 '{}' 执行超时（{}秒），已终止等待。",
-                spec.name, spec.execution.timeout_secs
-            ))),
+        let deadline = Duration::from_secs(deadline_secs);
+        let invocation = super::invocation::ToolInvocationContext::current();
+        let upstream = invocation
+            .as_ref()
+            .map(|context| context.cancel_rx.clone())
+            .or_else(|| self.config.cancel_rx.clone());
+        let (cancel, cancel_rx) = watch::channel(false);
+        // 在途执行需要能被移交（上限到达时交给后台继续跑），因此持有 owned 工具：
+        // `PortableDynamicTool::execute` 借 `&self`，借用无法移进 spawn 后的任务。
+        let owned_tool = tool.clone();
+        let execution = async move {
+            if let Some(mut context) = invocation {
+                context.cancel_rx = cancel_rx;
+                context.scope(owned_tool.execute(arguments)).await
+            } else {
+                owned_tool.execute(arguments).await
+            }
+        };
+        let mut execution = Box::pin(execution);
+        tokio::select! {
+            biased;
+            result = &mut execution => result,
+            _ = tokio::time::sleep(deadline) => {
+                if !ceiling_mode || spec.execution.cancellable {
+                    cancel.send_replace(true);
+                }
+                let Some(settled) = settle_in_flight(execution).await else {
+                    return Err(if ceiling_mode {
+                        ToolExecutionError::timeout(format!(
+                            "错误：工具 '{}' 自管预算上限（{}秒）已过，底层操作未确认收敛，已在后台继续等待其结算：本轮按「结算未确认」处理。",
+                            spec.name, deadline_secs
+                        ))
+                    } else {
+                        ToolExecutionError::timeout(format!(
+                            "错误：工具 '{}' 执行超时（{}秒），发出取消信号后 {} 秒内底层操作仍未收敛，已在后台继续等待其结算：本轮按「结算未确认」处理。",
+                            spec.name, deadline_secs, SETTLE_CEILING.as_secs()
+                        ))
+                    }
+                    .with_retryable(false));
+                };
+                if let Err(error) = settled {
+                    if matches!(error.code(), Some("external_state_unknown" | "fatal")) {
+                        return Err(error);
+                    }
+                }
+                Err(if ceiling_mode {
+                    ToolExecutionError::timeout(format!(
+                        "错误：工具 '{}' 自管预算上限（{}秒）已过，底层操作已按取消收敛。",
+                        spec.name, deadline_secs
+                    ))
+                } else {
+                    ToolExecutionError::timeout(format!(
+                        "错误：工具 '{}' 执行超时（{}秒），底层操作已收敛。",
+                        spec.name, deadline_secs
+                    ))
+                }
+                .with_retryable(false))
+            }
+            _ = cancellation(upstream) => {
+                cancel.send_replace(true);
+                let Some(settled) = settle_in_flight(execution).await else {
+                    return Err(ToolExecutionError::cancelled(format!(
+                        "错误：工具 '{}' 执行取消，发出取消信号后 {} 秒内底层操作仍未收敛，已在后台继续等待其结算：本轮按「结算未确认」处理。",
+                        spec.name, SETTLE_CEILING.as_secs()
+                    )));
+                };
+                match settled {
+                    Err(error) => Err(error),
+                    Ok(output) => Err(ToolExecutionError::cancelled(format!(
+                        "错误：取消期间底层操作已结算，操作结果：{}",
+                        super::support::tool_output_text(&output)
+                    ))),
+                }
+            }
         }
     }
 
     async fn after_call(
         &self,
         trace: Option<&ToolCallTrace>,
-        call: &ToolCall,
+        _call: &ToolCall,
         outcome: ToolCallOutcome<'_>,
     ) {
-        self.config.tool_call_id.clear_if(call.wire_call_id());
         let Some(run_id) = trace.and_then(|trace| trace.run_id.as_deref()) else {
             return;
         };
@@ -226,9 +332,9 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy<'_> {
         };
         if let Err(error) = finish_tool_run(
             RigToolRunContext {
-                db: self.db,
+                db: &self.db,
                 workspace_id: &self.config.workspace_id,
-                on_event: self.on_event,
+                on_event: &self.on_event,
             },
             &run,
             update,
@@ -241,7 +347,36 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy<'_> {
     }
 }
 
-impl AppToolExecutionPolicy<'_> {
+async fn cancellation(rx: Option<watch::Receiver<bool>>) {
+    let Some(mut rx) = rx else {
+        return std::future::pending().await;
+    };
+    while !*rx.borrow() {
+        if rx.changed().await.is_err() {
+            break;
+        }
+    }
+}
+
+/// 等待在途执行收敛：超过 `SETTLE_CEILING` 仍不收敛时，把执行移交后台任务继续跑完
+/// （不 drop、不中止在途 I/O，结果丢弃仅留日志），返回 `None` 表示本轮结算未确认。
+async fn settle_in_flight<F>(execution: Pin<Box<F>>) -> Option<F::Output>
+where
+    F: Future + Send + 'static,
+{
+    let mut execution = execution;
+    match tokio::time::timeout(SETTLE_CEILING, &mut execution).await {
+        Ok(output) => Some(output),
+        Err(_) => {
+            tokio::spawn(async move {
+                let _ = execution.await;
+            });
+            None
+        }
+    }
+}
+
+impl AppToolExecutionPolicy {
     /// 通用审查（非自管审查的 `ReviewRequired` 工具）：送审工具名 + 完整参数。
     async fn generic_review(
         &self,
@@ -296,5 +431,137 @@ impl AppToolExecutionPolicy<'_> {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig::message::ToolFunction;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// 在途执行的 drop 计数：上限到达后必须仍为 0（未丢弃）。
+    struct DropFlag(Arc<AtomicUsize>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn policy() -> AppToolExecutionPolicy {
+        let temp_dir =
+            std::env::temp_dir().join(format!("rig-app-policy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let db = DispatcherDb::new(temp_dir.join("jkbot.sqlite3")).expect("open temp db");
+        let events = Channel::new(|_| Ok(()));
+        AppToolExecutionPolicy::new(
+            &db,
+            &events,
+            AppToolPolicyConfig {
+                workspace_id: "workspace".into(),
+                workspace: temp_dir,
+                review: RigReviewContext::unconfigured(),
+                cancel_rx: None,
+                trace: Default::default(),
+            },
+        )
+    }
+
+    /// 上限只兜住真正卡死的工具：发出取消信号后仍不收敛时，不丢弃在途执行
+    /// （移交后台继续收敛），调用方拿到明确的「结算未确认」错误而不是无限等待。
+    #[tokio::test(start_paused = true)]
+    async fn settle_ceiling_hands_off_stuck_execution_without_dropping_it() {
+        let policy = policy();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let tool_dropped = dropped.clone();
+        // 忽略取消信号且永不返回：模拟取消后仍不收敛的工具。
+        let tool = PortableDynamicTool::new(
+            "read_file",
+            "卡死工具",
+            json!({"type":"object"}),
+            move |_| {
+                let tool_dropped = tool_dropped.clone();
+                Box::pin(async move {
+                    let _guard = DropFlag(tool_dropped);
+                    std::future::pending::<Result<ToolOutput, ToolExecutionError>>().await
+                })
+            },
+        );
+        let call = ToolCall::from_wire(
+            "call",
+            ToolFunction {
+                name: "read_file".into(),
+                arguments: json!({}),
+            },
+        );
+        let task = tokio::spawn(async move { policy.execute(&tool, &call).await });
+        tokio::task::yield_now().await;
+        // read_file 统一超时 30 秒 → 发取消信号 → 再等满 SETTLE_CEILING 仍不收敛。
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::time::advance(SETTLE_CEILING + Duration::from_secs(1)).await;
+        let error = task.await.expect("join").expect_err("必须返回错误");
+        assert_eq!(error.retryable(), Some(false));
+        assert!(
+            error.message().contains("结算未确认"),
+            "错误应说明结算未确认：{}",
+            error.message()
+        );
+        tokio::task::yield_now().await;
+        assert_eq!(
+            dropped.load(Ordering::SeqCst),
+            0,
+            "上限到达不得丢弃仍在收敛的在途执行"
+        );
+    }
+
+    /// 自管工具（unified_timeout=false）自带预算，但仍受兜底上限约束：
+    /// 到上限 → 按 `cancellable` 发取消 → 宽限收敛 → 仍不收则交接后台并按「结算未确认」收口。
+    #[tokio::test(start_paused = true)]
+    async fn self_managed_tool_hits_settle_ceiling_and_hands_off() {
+        let policy = policy();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let tool_dropped = dropped.clone();
+        // local_zsh：策略表里的自管工具（声明预算 60 秒、兜底上限 600 秒）。
+        let tool = PortableDynamicTool::new(
+            "local_zsh",
+            "卡死的自管工具",
+            json!({"type":"object"}),
+            move |_| {
+                let tool_dropped = tool_dropped.clone();
+                Box::pin(async move {
+                    let _guard = DropFlag(tool_dropped);
+                    std::future::pending::<Result<ToolOutput, ToolExecutionError>>().await
+                })
+            },
+        );
+        let call = ToolCall::from_wire(
+            "call",
+            ToolFunction {
+                name: "local_zsh".into(),
+                arguments: json!({}),
+            },
+        );
+        let task = tokio::spawn(async move { policy.execute(&tool, &call).await });
+        tokio::task::yield_now().await;
+        // 兜底上限 600 秒：未到点前不得被判失败。
+        tokio::time::advance(Duration::from_secs(599)).await;
+        assert!(!task.is_finished(), "自管工具在兜底上限前不应被判定失败");
+        tokio::time::advance(Duration::from_secs(2) + SETTLE_CEILING).await;
+        let error = task.await.expect("join").expect_err("必须返回错误");
+        assert_eq!(error.retryable(), Some(false));
+        assert!(
+            error.message().contains("自管预算上限"),
+            "错误应说明自管预算上限：{}",
+            error.message()
+        );
+        tokio::task::yield_now().await;
+        assert_eq!(
+            dropped.load(Ordering::SeqCst),
+            0,
+            "上限到达不得丢弃仍在收敛的在途执行"
+        );
     }
 }

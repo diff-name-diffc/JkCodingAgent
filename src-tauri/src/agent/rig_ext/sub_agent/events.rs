@@ -134,6 +134,8 @@ pub enum SubAgentEvent {
         model: String,
     },
     ToolStarted {
+        #[serde(rename = "taskId", skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
         #[serde(rename = "agentId")]
         agent_id: String,
         #[serde(rename = "agentName")]
@@ -143,6 +145,8 @@ pub enum SubAgentEvent {
         arguments: Value,
     },
     ToolFinished {
+        #[serde(rename = "taskId", skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
         #[serde(rename = "agentId")]
         agent_id: String,
         #[serde(rename = "agentName")]

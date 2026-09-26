@@ -116,10 +116,10 @@ pub(super) fn local_zsh_tool(
         move |args| {
             let workspace = workspace.clone();
             let workspace_id = workspace_id.clone();
-            let cancel_rx = cancel_rx.clone();
+            let cancel_rx = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current().map(|context| context.cancel_rx).or_else(|| cancel_rx.clone());
             let review = review.clone();
             Box::pin(async move {
-                let (text, cancelled) = run_local_zsh(
+                run::run_local_zsh(
                     &args,
                     workspace,
                     workspace_id,
@@ -127,252 +127,9 @@ pub(super) fn local_zsh_tool(
                     cancel_rx,
                     review,
                 )
-                .await;
-                if cancelled {
-                    // 取消是 run 级语义：以 cancelled 错误信封上抛，模型可见文本不变。
-                    Err(ToolExecutionError::cancelled(text))
-                } else {
-                    Ok(ToolOutput::text(text))
-                }
+                .await.map(ToolOutput::text)
             })
         },
-    )
-}
-
-/// 返回（模型可见文本，是否因取消而终止）。
-async fn run_local_zsh(
-    args: &Value,
-    workspace: PathBuf,
-    workspace_id: String,
-    exec_timeout_secs: u64,
-    cancel_rx: Option<watch::Receiver<bool>>,
-    review_context: crate::agent::rig_ext::review::RigReviewContext,
-) -> (String, bool) {
-    let Some(command) = string_arg(args, "command") else {
-        return ("错误：缺少必填参数 command".to_string(), false);
-    };
-    let command = command.trim().to_string();
-    if command.is_empty() {
-        return ("错误：command 不能为空".to_string(), false);
-    }
-    if let Some(reason) = blacklist_reason(&command) {
-        command_history::record(
-            &workspace_id,
-            "local_zsh",
-            "本地 zsh",
-            &command,
-            CommandHistoryStatus::Blocked,
-            &format!("命中内置黑名单：{reason}"),
-        );
-        return (
-            format!("错误：local_zsh 已拦截命令：{reason}\n命令：{command}"),
-            false,
-        );
-    }
-
-    let timeout_secs = exec_timeout_secs.max(1);
-    let session_id = workspace_id;
-    // 审查载荷需要工作区绝对路径；workspace 随后被移入 spawn_blocking 闭包。
-    let workspace_for_review = workspace.clone();
-
-    let run_result = tokio::task::spawn_blocking(move || {
-        let run_dir = local_zsh_dir(&workspace)?;
-        std::fs::create_dir_all(&run_dir)
-            .map_err(|error| format!("错误：创建 local_zsh 目录失败：{error}"))?;
-        Ok::<PathBuf, String>(run_dir)
-    })
-    .await
-    .map_err(|error| format!("错误：准备 local_zsh 目录失败：{error}"));
-
-    let run_dir = match run_result {
-        Ok(Ok(dir)) => dir,
-        Ok(Err(error)) | Err(error) => return (error, false),
-    };
-
-    // 安全审查门禁（fail-closed）：未配置审查 / 审查异常 / 判定不通过一律拒绝执行，
-    // 并把「被拦截」写入 audit.json 审计（对齐旧实现的 `review_local_command` 与
-    // `blocked_command_response` 的完整语义）。
-    let review = match review_local_command(
-        args,
-        &review_context,
-        &session_id,
-        &workspace_for_review,
-        &run_dir,
-        &command,
-    )
-    .await
-    {
-        Ok(review) => review,
-        Err(error) => {
-            // 与黑名单/review-denied 路径一致：审查异常导致的阻断也登记台账。
-            command_history::record(
-                &session_id,
-                "local_zsh",
-                "本地 zsh",
-                &command,
-                CommandHistoryStatus::Blocked,
-                &error,
-            );
-            let blocked = crate::ssh_tool::SshAuditReview {
-                allowed: false,
-                reason: error.clone(),
-            };
-            return (
-                blocked_command_response(
-                    &run_dir,
-                    &session_id,
-                    &command,
-                    blocked,
-                    format!("错误：{error}"),
-                )
-                .await,
-                false,
-            );
-        }
-    };
-    if !review.allowed {
-        command_history::record(
-            &session_id,
-            "local_zsh",
-            "本地 zsh",
-            &command,
-            CommandHistoryStatus::Blocked,
-            &review.reason,
-        );
-        let headline = crate::agent::ssh_review::with_confirm_guidance(
-            format!("错误：命令已被安全审查拦截：{}", review.reason),
-            &review.reason,
-        );
-        return (
-            blocked_command_response(&run_dir, &session_id, &command, review, headline).await,
-            false,
-        );
-    }
-
-    let started = std::time::Instant::now();
-    let mut cmd = Command::new("/bin/zsh");
-    cmd.arg("-lc")
-        .arg(&command)
-        .current_dir(&run_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(unix)]
-    cmd.process_group(0); // 独立进程组：超时可按组终止全部派生进程
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(error) => return (format!("错误：执行 zsh 命令失败：{error}"), false),
-    };
-
-    let captured = match capture_command_output(&mut child, timeout_secs, cancel_rx).await {
-        Ok(output) => output,
-        Err(error) => return (format!("错误：执行 zsh 命令失败：{error}"), false),
-    };
-    let command_cancelled = captured.cancelled;
-    let duration_ms = started.elapsed().as_millis();
-    let stdout = String::from_utf8_lossy(&captured.output.stdout)
-        .trim_end()
-        .to_string();
-    let stderr = String::from_utf8_lossy(&captured.output.stderr)
-        .trim_end()
-        .to_string();
-    let retained_bytes = captured.output.stdout.len() + captured.output.stderr.len();
-    let output_truncated = captured.total_bytes_read > retained_bytes;
-
-    let entry = LocalZshAuditEntry {
-        id: uuid::Uuid::new_v4().to_string(),
-        session_id: session_id.clone(),
-        executed_at: Utc::now().to_rfc3339(),
-        command: command.clone(),
-        review: Some(review.clone()),
-        exit_code: captured.output.status.code(),
-        timed_out: captured.timed_out,
-        cancelled: captured.cancelled,
-        duration_ms,
-        stdout: stdout.clone(),
-        stderr: stderr.clone(),
-        output_truncated,
-        error: None,
-    };
-
-    // 命令台账：供后续命令的安全审查判断来龙去脉（如清理本任务派生的进程）。
-    let history_note = if captured.timed_out {
-        format!("超时终止（{timeout_secs}s）")
-    } else if captured.cancelled {
-        "已取消".to_string()
-    } else {
-        let exit = captured
-            .output
-            .status
-            .code()
-            .map(|code| format!("exit={code}"))
-            .unwrap_or_else(|| format!("exit={}", captured.output.status));
-        let excerpt = if !stdout.is_empty() {
-            stdout.as_str()
-        } else {
-            stderr.as_str()
-        };
-        format!("{exit}；输出：{excerpt}")
-    };
-    command_history::record(
-        &session_id,
-        "local_zsh",
-        "本地 zsh",
-        &command,
-        CommandHistoryStatus::Executed,
-        &history_note,
-    );
-
-    let run_dir_for_audit = run_dir.clone();
-    let session_id_for_history = session_id.clone();
-    let audit_result = tokio::task::spawn_blocking(move || {
-        append_audit_entry(&run_dir_for_audit, entry, &session_id_for_history)
-    })
-    .await
-    .map_err(|error| format!("错误：写入 local_zsh 审计历史失败：{error}"));
-
-    let session_history = match audit_result {
-        Ok(Ok(history)) => history,
-        Ok(Err(error)) | Err(error) => {
-            return (
-                format!(
-                    "错误：命令已执行，但审计历史写入失败：{error}\n\n{}",
-                    render_command_result(
-                        &run_dir,
-                        &command,
-                        &stdout,
-                        &stderr,
-                        captured.output.status.code(),
-                        captured.timed_out,
-                        captured.cancelled,
-                        duration_ms,
-                        output_truncated,
-                        None,
-                        false,
-                        &[],
-                    )
-                ),
-                command_cancelled,
-            )
-        }
-    };
-
-    (
-        render_command_result(
-            &run_dir,
-            &command,
-            &stdout,
-            &stderr,
-            captured.output.status.code(),
-            captured.timed_out,
-            captured.cancelled,
-            duration_ms,
-            output_truncated,
-            Some(&review),
-            command_contains_ssh(&command),
-            &session_history,
-        ),
-        command_cancelled,
     )
 }
 
@@ -538,6 +295,7 @@ pub(crate) fn command_invokes_command(command: &str, target: &str) -> bool {
 
 mod audit;
 mod execution;
+mod run;
 use audit::{append_audit_entry, command_contains_ssh, render_command_result};
 use execution::capture_command_output;
 

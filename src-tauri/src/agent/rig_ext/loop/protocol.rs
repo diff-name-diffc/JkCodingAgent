@@ -48,8 +48,14 @@ impl RigProtocolResult {
 }
 
 /// 协议工具处理器：按工具名拦截，返回 None 表示「非协议工具，走正常执行」。
+///
+/// `handles` 由各实现显式声明拦截集合（无默认实现）：默认值只能内嵌编排器
+/// 专属工具名，对其它实现是错误契约，且与决策层的收口名单构成第二处硬编码。
 #[async_trait::async_trait]
 pub trait ProtocolToolHandler: Send + Sync {
+    /// 本处理器拦截的工具名；未命中的调用走正常工具执行路径。
+    fn handles(&self, name: &str) -> bool;
+
     async fn handle(&self, tool_name: &str, arguments: &Value) -> Option<RigProtocolResult>;
 
     /// 本轮收口文案：输入协议动作与最终答复，输出落库的 assistant 文本；

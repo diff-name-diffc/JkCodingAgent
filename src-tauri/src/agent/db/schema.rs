@@ -1,8 +1,9 @@
 //! 数据库 schema 初始化与版本管理（PRAGMA user_version 方案）。
 //!
-//! 当前基线为 **v5**（历史 v0→v33 迁移链已按产品决策清除）。`init()` 的
+//! 当前基线为 **v9**（历史 v0→v33 迁移链已按产品决策清除）。`init()` 的
 //! 路径：同版本库直接复用；低于基线但存在迁移块的版本逐级前向迁移
-//! （当前为 v1→v2、v2→v3、v3→v4、v4→v5）；再早的旧开发库一律拒绝打开
+//! （当前为 v1→v2、v2→v3、v3→v4、v4→v5、v5→v6、v6→v7、v7→v8、v8→v9）；
+//! 再早的旧开发库一律拒绝打开
 //! （提示运行 `scripts/reset-dev-data.sh`）；user_version=0 且无表则按
 //! 基线全新建库。
 //!
@@ -36,7 +37,12 @@ use super::DispatcherDb;
 /// docs/context-management-2026-09-25/00-progress.md 阶段 2）。
 /// v7：删除 dispatcher_messages 死列 `context_cleared`（从未有写方、恒 0，
 /// 读侧过滤与索引一并移除）。
-pub(crate) const SCHEMA_VERSION: i32 = 7;
+/// v8：异步工具调用身份、消息 task_id 和事务型完成事件 outbox。
+/// v9：为 `dispatcher_tool_completions.delivery_message_id` 补索引（消息删除
+/// 触发器按该列反查投递消息，无索引时对事件表全表扫描）。
+pub(crate) const SCHEMA_VERSION: i32 = 9;
+
+mod runtime;
 
 impl DispatcherDb {
     pub(super) fn init(&self) -> Result<()> {
@@ -93,6 +99,8 @@ impl DispatcherDb {
         }
 
         // 0 < current_version < SCHEMA_VERSION：前向迁移块按版本递增挂载。
+        // 链尾（最后一块）返回，尾部 bail 保留为「升级 SCHEMA_VERSION 却漏挂
+        // 迁移块」的兜底：落在最后一块与基线之间的版本号会命中它。
         if current_version < 2 {
             self.migrate_v1_to_v2(&mut conn)?;
         }
@@ -110,6 +118,12 @@ impl DispatcherDb {
         }
         if current_version < 7 {
             self.migrate_v6_to_v7(&mut conn)?;
+        }
+        if current_version < 8 {
+            runtime::migrate(self, &mut conn)?;
+        }
+        if current_version < 9 {
+            self.migrate_v8_to_v9(&mut conn)?;
             return Ok(());
         }
 
@@ -469,6 +483,39 @@ impl DispatcherDb {
             .context("advance user_version to 7")?;
         tx.commit().context("commit v6→v7 migration")
     }
+
+    /// v8 → v9：为 `dispatcher_tool_completions.delivery_message_id` 补索引
+    /// ——消息删除触发器按该列反查投递消息（`schema/runtime.rs` 的
+    /// `reset_tool_completion_observation`），无索引时每次删除都对该表全表
+    /// 扫描。纯增量建索引、零数据迁移；DDL 与基线同源（复用
+    /// `runtime::extend_schema`，避免索引定义两处漂移），`IF NOT EXISTS`
+    /// 幂等可重试。按规范仍先做整库快照备份（VACUUM INTO，不能在事务内
+    /// 执行），备份失败只留痕不阻断。
+    fn migrate_v8_to_v9(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v9-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!("v8→v9 迁移前整库快照失败（纯增量建索引，继续）：{error}");
+        }
+
+        let tx = conn
+            .transaction()
+            .context("begin v8→v9 migration transaction")?;
+        runtime::extend_schema(&tx)?;
+        tx.pragma_update(None, "user_version", 9)
+            .context("advance user_version to 9")?;
+        tx.commit().context("commit v8→v9 migration")
+    }
 }
 
 /// 全新建库：单事务内执行基线 DDL + 领域建表助手 + 内置种子数据，
@@ -479,6 +526,7 @@ fn create_baseline(conn: &mut Connection) -> Result<()> {
         .context("begin baseline schema transaction")?;
     tx.execute_batch(BASELINE_DDL)
         .context("initialize baseline schema")?;
+    runtime::extend_schema(&tx)?;
     tx.execute_batch(SESSION_SUMMARIES_DDL)
         .context("initialize session summaries table")?;
 
@@ -1061,6 +1109,18 @@ fn scenario_chat_category_agent_config(
 
 #[cfg(test)]
 mod tests {
+    // 旧迁移夹具仅建被测表；补齐 v8 依赖的既有表，不覆盖旧表形态。
+    fn complete_runtime_fixture(path: &std::path::Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        for table in ["dispatcher_messages", "dispatcher_tool_runs"] {
+            let prefix = format!("CREATE TABLE IF NOT EXISTS {table} (");
+            let start = super::BASELINE_DDL.find(&prefix).unwrap();
+            let tail = &super::BASELINE_DDL[start..];
+            let end = tail.find("\n);").unwrap() + 3;
+            conn.execute_batch(&tail[..end]).unwrap();
+        }
+    }
+
     use super::super::DispatcherDb;
 
     fn temp_db_path(tag: &str) -> std::path::PathBuf {
@@ -1212,6 +1272,7 @@ mod tests {
             .unwrap();
         }
 
+        complete_runtime_fixture(&path);
         let db = DispatcherDb::new(path.clone()).unwrap();
         {
             let conn = db.conn().unwrap();
@@ -1286,7 +1347,11 @@ mod tests {
                 && (name.contains("pre-v2-backup")
                     || name.contains("pre-v3-backup")
                     || name.contains("pre-v4-backup")
-                    || name.contains("pre-v5-backup"))
+                    || name.contains("pre-v5-backup")
+                    || name.contains("pre-v6-backup")
+                    || name.contains("pre-v7-backup")
+                    || name.contains("pre-v8-backup")
+                    || name.contains("pre-v9-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1316,6 +1381,7 @@ mod tests {
             .unwrap();
         }
 
+        complete_runtime_fixture(&path);
         let db = DispatcherDb::new(path.clone()).unwrap();
         {
             let conn = db.conn().unwrap();
@@ -1346,7 +1412,12 @@ mod tests {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if name.contains("v3-to-v4-")
-                && (name.contains("pre-v4-backup") || name.contains("pre-v5-backup"))
+                && (name.contains("pre-v4-backup")
+                    || name.contains("pre-v5-backup")
+                    || name.contains("pre-v6-backup")
+                    || name.contains("pre-v7-backup")
+                    || name.contains("pre-v8-backup")
+                    || name.contains("pre-v9-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1386,6 +1457,7 @@ mod tests {
             .unwrap();
         }
 
+        complete_runtime_fixture(&path);
         let db = DispatcherDb::new(path.clone()).unwrap();
         {
             let conn = db.conn().unwrap();
@@ -1423,7 +1495,13 @@ mod tests {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.contains("v4-to-v5-") && name.contains("pre-v5-backup") {
+            if name.contains("v4-to-v5-")
+                && (name.contains("pre-v5-backup")
+                    || name.contains("pre-v6-backup")
+                    || name.contains("pre-v7-backup")
+                    || name.contains("pre-v8-backup")
+                    || name.contains("pre-v9-backup"))
+            {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -1447,6 +1525,7 @@ mod tests {
             .unwrap();
         }
 
+        complete_runtime_fixture(&path);
         let db = DispatcherDb::new(path.clone()).unwrap();
         {
             let conn = db.conn().unwrap();
@@ -1485,7 +1564,12 @@ mod tests {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.contains("v5-to-v6-") && name.contains("pre-v6-backup") {
+            if name.contains("v5-to-v6-")
+                && (name.contains("pre-v6-backup")
+                    || name.contains("pre-v7-backup")
+                    || name.contains("pre-v8-backup")
+                    || name.contains("pre-v9-backup"))
+            {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -1542,6 +1626,7 @@ mod tests {
             .unwrap();
         }
 
+        complete_runtime_fixture(&path);
         let db = DispatcherDb::new(path.clone()).unwrap();
         {
             let conn = db.conn().unwrap();
@@ -1568,7 +1653,10 @@ mod tests {
             let image_count: i64 = conn
                 .query_row("SELECT COUNT(*) FROM chat_images", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(image_count, 1, "子表行不得被 DROP 父表的隐式 DELETE 级联误删");
+            assert_eq!(
+                image_count, 1,
+                "子表行不得被 DROP 父表的隐式 DELETE 级联误删"
+            );
 
             // 时间顺序保持（rowid 相对顺序不变）：m-1 先于 m-2。
             let first_id: String = conn
@@ -1588,7 +1676,11 @@ mod tests {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.contains("v6-to-v7-") && name.contains("pre-v7-backup") {
+            if name.contains("v6-to-v7-")
+                && (name.contains("pre-v7-backup")
+                    || name.contains("pre-v8-backup")
+                    || name.contains("pre-v9-backup"))
+            {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -1642,6 +1734,7 @@ mod tests {
             .unwrap();
         }
 
+        complete_runtime_fixture(&path);
         let db = DispatcherDb::new(path.clone()).unwrap();
         {
             let conn = db.conn().unwrap();
@@ -1678,7 +1771,11 @@ mod tests {
             if name.contains("v2-to-v3-")
                 && (name.contains("pre-v3-backup")
                     || name.contains("pre-v4-backup")
-                    || name.contains("pre-v5-backup"))
+                    || name.contains("pre-v5-backup")
+                    || name.contains("pre-v6-backup")
+                    || name.contains("pre-v7-backup")
+                    || name.contains("pre-v8-backup")
+                    || name.contains("pre-v9-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1706,6 +1803,7 @@ mod tests {
             .unwrap();
         }
 
+        complete_runtime_fixture(&path);
         let db = DispatcherDb::new(path.clone()).unwrap();
         let conn = db.conn().unwrap();
         let theme_default: String = conn
@@ -1733,7 +1831,11 @@ mod tests {
             if name.contains("v2-to-v3-no-legacy-")
                 && (name.contains("pre-v3-backup")
                     || name.contains("pre-v4-backup")
-                    || name.contains("pre-v5-backup"))
+                    || name.contains("pre-v5-backup")
+                    || name.contains("pre-v6-backup")
+                    || name.contains("pre-v7-backup")
+                    || name.contains("pre-v8-backup")
+                    || name.contains("pre-v9-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1791,6 +1893,16 @@ mod tests {
                 .unwrap();
             assert_eq!(exists, 1, "baseline must contain {table}.{column}");
         }
+        let delivery_index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
+                   AND name = 'idx_tool_completions_delivery'
+                   AND tbl_name = 'dispatcher_tool_completions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(delivery_index, 1, "baseline must contain the v9 投递索引");
         let parent_fk: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_foreign_key_list('dispatcher_tool_runs')
@@ -1833,6 +1945,160 @@ mod tests {
         assert_eq!(categories, 5, "重复打开不得重复种子");
         drop(conn);
         drop(db);
+        cleanup_db_files(&path);
+    }
+
+    /// 造一个 v8 形态的库：基线表 + 工具完成事件表（`runtime::extend_schema`
+    /// 的 DDL），随后删掉 v9 新增的索引、版本号置 8。事件表结构在 v8/v9 之间
+    /// 无差异，索引是两者唯一区别。
+    fn write_v8_runtime_fixture(path: &std::path::Path) {
+        let mut conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(super::BASELINE_DDL).unwrap();
+        let tx = conn.transaction().unwrap();
+        super::runtime::extend_schema(&tx).unwrap();
+        tx.commit().unwrap();
+        conn.execute_batch(
+            "DROP INDEX idx_tool_completions_delivery;
+             PRAGMA user_version = 8;",
+        )
+        .unwrap();
+    }
+
+    /// 目标库的迁移前快照文件（与库文件同目录，`{库名}.{marker}-{stamp}`）；
+    /// 按库名前缀过滤，避免与并行测试的快照互相干扰。
+    fn backup_files(path: &std::path::Path, marker: &str) -> Vec<std::path::PathBuf> {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|entry| {
+                let file = entry.file_name().unwrap().to_string_lossy().to_string();
+                file.starts_with(&name) && file.contains(marker)
+            })
+            .collect()
+    }
+
+    /// v8 库（工具完成事件表尚无 `delivery_message_id` 索引）打开时前向迁移
+    /// 到 v9：索引补齐且被删除触发器的反查用上、既有行全量保留、生成迁移前
+    /// 快照。
+    #[test]
+    fn v8_database_gains_delivery_message_index() {
+        let path = temp_db_path("v8-to-v9");
+        write_v8_runtime_fixture(&path);
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "INSERT INTO dispatcher_tool_runs
+                    (id, workspace_id, tool_call_id, tool_name, provider, category,
+                     status, created_at, updated_at)
+                 VALUES ('task', 'workspace', 'call', 'echo', 'builtin', 'general',
+                    'succeeded', '2026-09-27T00:00:00Z', '2026-09-27T00:00:00Z');
+                 INSERT INTO dispatcher_messages (id, workspace_id, role, created_at)
+                 VALUES ('delivery', 'workspace', 'tool', '2026-09-27T00:00:00Z');
+                 INSERT INTO dispatcher_tool_completions
+                    (tool_run_id, agent_run_id, scope_id, status, display_content,
+                     context_payload, result_mode, delivery_message_id,
+                     observed_request_step, created_at)
+                 VALUES ('task', 'run', 'scope', 'succeeded', 'out', '{}', 'inline',
+                    'delivery', 3, '2026-09-27T00:00:00Z');",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, super::SCHEMA_VERSION);
+            let indexes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
+                       AND name = 'idx_tool_completions_delivery'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(indexes, 1, "v9 迁移应补出投递消息索引");
+            let (step, delivery): (Option<i64>, Option<String>) = conn
+                .query_row(
+                    "SELECT observed_request_step, delivery_message_id
+                     FROM dispatcher_tool_completions",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(step, Some(3), "事件行应全量保留");
+            assert_eq!(delivery.as_deref(), Some("delivery"));
+
+            // 索引确实服务于删除触发器按 delivery_message_id 的反查。
+            let mut plan = conn
+                .prepare(
+                    "EXPLAIN QUERY PLAN UPDATE dispatcher_tool_completions
+                     SET observed_request_step = NULL WHERE delivery_message_id = 'delivery'",
+                )
+                .unwrap();
+            let details = plan
+                .query_map([], |row| row.get::<_, String>(3))
+                .unwrap()
+                .map(|row| row.unwrap())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                details.contains("idx_tool_completions_delivery"),
+                "反查应走投递消息索引，实际计划：{details}"
+            );
+        }
+        drop(db);
+
+        let backups = backup_files(&path, "pre-v9-backup");
+        assert_eq!(backups.len(), 1, "迁移前应生成整库快照");
+        let snapshot = rusqlite::Connection::open(&backups[0]).unwrap();
+        assert_eq!(
+            snapshot
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                .unwrap(),
+            8
+        );
+        drop(snapshot);
+        for backup in backups {
+            let _ = std::fs::remove_file(backup);
+        }
+        cleanup_db_files(&path);
+    }
+
+    /// 已迁到 v9 的库再次打开走同版本 fast path：版本号不变、不重跑迁移、
+    /// 不再生成迁移前快照。
+    #[test]
+    fn reopened_v9_database_skips_migration() {
+        let path = temp_db_path("v9-reopen");
+        write_v8_runtime_fixture(&path);
+        {
+            let db = DispatcherDb::new(path.clone()).unwrap();
+            drop(db);
+        }
+        assert_eq!(
+            backup_files(&path, "pre-v9-backup").len(),
+            1,
+            "首次打开应完成 v8→v9 迁移"
+        );
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        let conn = db.conn().expect("db conn");
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+        drop(conn);
+        drop(db);
+
+        let backups = backup_files(&path, "pre-v9-backup");
+        assert_eq!(backups.len(), 1, "同版本直开不得重跑迁移或再生成快照");
+        for backup in backups {
+            let _ = std::fs::remove_file(backup);
+        }
         cleanup_db_files(&path);
     }
 }

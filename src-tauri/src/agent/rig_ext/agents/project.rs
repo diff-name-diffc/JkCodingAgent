@@ -12,31 +12,31 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use rig::tool::PortableDynamicTool;
 use serde_json::Value;
-use tauri::AppHandle;
 use tauri::ipc::Channel;
+use tauri::AppHandle;
 use tokio::sync::watch;
 
 use super::project_prompt::{build_iteration_system_prompt, build_static_prompt, log_warning};
 use super::project_tools::{
-    ORCHESTRATOR_PROTOCOL_TOOL_NAMES, graph_plan_report_shell, message_shell, submit_graph_shell,
+    graph_plan_report_shell, message_shell, submit_graph_shell, ORCHESTRATOR_PROTOCOL_TOOL_NAMES,
 };
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::{AgentContext, AhaSettingsV2, DispatcherDb, DispatcherMessageRecord};
 use crate::agent::rig_ext::events::AgentEvent;
-use crate::agent::rig_ext::r#loop::{
-    AppToolExecutionPolicy, AppToolPolicyConfig, ProtocolToolHandler, RigLoopHooks,
-    RigProtocolAction, RigProtocolResult, RigToolSurface, run_rig_loop,
-};
 use crate::agent::rig_ext::message::{apply_stored_session_summary, chat_history_to_rig_with_ids};
 use crate::agent::rig_ext::model::{
-    PurposeModelSpecs, PurposeSwitchingModel, completions_model, resolve_purpose_specs,
+    completions_model, resolve_purpose_specs, PurposeModelSpecs, PurposeSwitchingModel,
+};
+use crate::agent::rig_ext::r#loop::{
+    run_rig_loop, AppToolExecutionPolicy, AppToolPolicyConfig, ProtocolToolHandler, RigLoopHooks,
+    RigProtocolAction, RigProtocolResult, RigToolSurface,
 };
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
-use crate::agent::rig_ext::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES;
-use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps, ToolCallSlot};
+use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps};
 use crate::agent::rig_ext::tools::fs::fs_tools;
 use crate::agent::rig_ext::tools::program::program_tool;
+use crate::agent::rig_ext::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES;
 use crate::mcp::McpScope;
 
 /// 一轮项目编排的输入。
@@ -261,7 +261,6 @@ impl RigOrchestratorAgent {
                 review: self.review_context(db, workspace_id).await,
                 cancel_rx: Some(request.cancel_rx.clone()),
                 trace: Default::default(),
-                tool_call_id: ToolCallSlot::default(),
             },
         );
 
@@ -344,7 +343,6 @@ impl RigOrchestratorAgent {
                 edit_model: self.image_credentials.edit_model.clone(),
             },
             review: RigReviewContext::unconfigured(),
-            tool_call_id: ToolCallSlot::default(),
         }
     }
 
@@ -383,7 +381,6 @@ impl RigOrchestratorAgent {
                 executor_task: None,
                 review_conversation: None,
             },
-            tool_call_id: ToolCallSlot::default(),
         }
     }
 
@@ -418,6 +415,10 @@ struct RigOrchestratorProtocol {
 
 #[async_trait::async_trait]
 impl ProtocolToolHandler for RigOrchestratorProtocol {
+    fn handles(&self, name: &str) -> bool {
+        matches!(name, "submit_graph" | "graph_plan_report" | "message")
+    }
+
     async fn handle(&self, tool_name: &str, arguments: &Value) -> Option<RigProtocolResult> {
         match tool_name {
             "submit_graph" => {
@@ -621,17 +622,13 @@ mod tests {
     #[test]
     fn parent_dir_component_detection() {
         let hostile = PathBuf::from("/tmp/foo/../bar");
-        assert!(
-            hostile
-                .components()
-                .any(|component| matches!(component, Component::ParentDir))
-        );
+        assert!(hostile
+            .components()
+            .any(|component| matches!(component, Component::ParentDir)));
         let clean = Path::new("/tmp/foo/bar");
-        assert!(
-            !clean
-                .components()
-                .any(|component| matches!(component, Component::ParentDir))
-        );
+        assert!(!clean
+            .components()
+            .any(|component| matches!(component, Component::ParentDir)));
     }
 
     #[test]
@@ -648,12 +645,10 @@ mod tests {
         assert!(parent.is_err());
         // 受管项目列表为空：任何绝对路径都无法通过。
         let unmanaged = validate_project_workspace_sync(&db, "/tmp");
-        assert!(
-            unmanaged
-                .expect_err("空项目列表必须拒绝")
-                .to_string()
-                .contains("受管项目列表为空")
-        );
+        assert!(unmanaged
+            .expect_err("空项目列表必须拒绝")
+            .to_string()
+            .contains("受管项目列表为空"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -42,8 +42,8 @@ pub(crate) async fn run_orchestrator_turn_skeleton(
     let run_handle = state.begin_run(workspace_id).map_err(|e| e.to_string())?;
     let title_guard = state.begin_title_generation(workspace_id);
     let keywords_guard = state.begin_keywords_generation(workspace_id);
-    let result = agent
-        .run_turn(
+    let result = run_handle
+        .scope(agent.run_turn(
             super::super::rig_ext::agents::project::OrchestratorTurnRequest {
                 db: state.db(),
                 workspace_id,
@@ -52,7 +52,7 @@ pub(crate) async fn run_orchestrator_turn_skeleton(
                 on_event,
                 cancel_rx: run_handle.cancel_receiver(),
             },
-        )
+        ))
         .await
         .map(|reply| AgentTurn { reply })
         .map_err(|error| format_anyhow_error(&error));
@@ -109,14 +109,16 @@ pub(crate) async fn run_chat_turn_skeleton(
     let run_handle = state.begin_run(workspace_id).map_err(|e| e.to_string())?;
     let title_guard = state.begin_title_generation(workspace_id);
     let keywords_guard = state.begin_keywords_generation(workspace_id);
-    let result = agent
-        .run_turn(super::super::rig_ext::agents::plain_chat::ChatTurnRequest {
-            db: state.db(),
-            workspace_id,
-            user_segments_json: segments_json,
-            on_event,
-            cancel_rx: run_handle.cancel_receiver(),
-        })
+    let result = run_handle
+        .scope(
+            agent.run_turn(super::super::rig_ext::agents::plain_chat::ChatTurnRequest {
+                db: state.db(),
+                workspace_id,
+                user_segments_json: segments_json,
+                on_event,
+                cancel_rx: run_handle.cancel_receiver(),
+            }),
+        )
         .await
         .map(|reply| AgentTurn { reply })
         .map_err(|error| format_anyhow_error(&error));
@@ -146,8 +148,8 @@ pub(crate) async fn run_architecture_turn_skeleton(
     let title_segments_json = segments_json.clone();
     let run_handle = state.begin_run(workspace_id).map_err(|e| e.to_string())?;
     let title_guard = state.begin_title_generation(workspace_id);
-    let result = agent
-        .run_turn(
+    let result = run_handle
+        .scope(agent.run_turn(
             super::super::rig_ext::agents::architecture_agent::ArchitectureTurnRequest {
                 db: state.db(),
                 workspace_id,
@@ -155,7 +157,7 @@ pub(crate) async fn run_architecture_turn_skeleton(
                 on_event,
                 cancel_rx: run_handle.cancel_receiver(),
             },
-        )
+        ))
         .await
         .map(|reply| AgentTurn { reply })
         .map_err(|error| format_anyhow_error(&error));
@@ -200,4 +202,26 @@ pub async fn dispatcher_active_runs(
     state: tauri::State<'_, DispatcherState>,
 ) -> Result<Vec<String>, String> {
     Ok(state.active_run_workspace_ids())
+}
+
+/// webview 只读对账，模型不能调用。
+#[tauri::command]
+pub async fn dispatcher_runtime_snapshot(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+) -> Result<crate::agent::rig_ext::r#loop::runtime::RuntimeSnapshot, String> {
+    use crate::agent::rig_ext::r#loop::runtime;
+    let scopes = runtime::scopes(&workspace_id);
+    let runs = scopes
+        .iter()
+        .map(|scope| scope.agent_run_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let db = state.db().clone();
+    let tasks = tokio::task::spawn_blocking(move || db.runtime_tasks(&workspace_id, &runs))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    Ok(runtime::RuntimeSnapshot { scopes, tasks })
 }

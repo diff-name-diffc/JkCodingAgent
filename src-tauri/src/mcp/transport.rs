@@ -282,18 +282,3 @@ where
         Err(_) => Err((McpServerState::ConnectionFailed, timeout_message)),
     }
 }
-
-pub(crate) async fn timeout_tool_call<F, T>(
-    timeout: Duration,
-    future: F,
-    timeout_message: String,
-) -> Result<T, (McpServerState, String)>
-where
-    F: std::future::Future<Output = Result<T, String>>,
-{
-    match tokio::time::timeout(timeout, future).await {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(error)) => Err((McpServerState::ConnectionFailed, error)),
-        Err(_) => Err((McpServerState::ConnectionFailed, timeout_message)),
-    }
-}

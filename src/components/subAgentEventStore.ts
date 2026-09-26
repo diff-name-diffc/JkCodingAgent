@@ -222,8 +222,13 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
 
       if (eventType === "ToolStarted") {
         phase = "tool_calling";
-        const toolCallId = `${agentId}-${data.toolName}-${now}`;
-        toolCalls.push({
+        const toolCallId = data.taskId ?? `${agentId}-${data.toolName}-${now}`;
+        const existingIndex = toolCalls.findIndex((call) => call.id === toolCallId);
+        if (existingIndex >= 0) {
+          if (data.arguments && Object.keys(data.arguments).length > 0) {
+            toolCalls[existingIndex] = { ...toolCalls[existingIndex], arguments: data.arguments };
+          }
+        } else toolCalls.push({
           id: toolCallId,
           toolName: data.toolName ?? "",
           arguments: data.arguments ?? {},
@@ -233,9 +238,9 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
       } else if (eventType === "ToolFinished") {
         // Keep current phase, but update the last running tool call
         phase = existing?.phase ?? "tool_calling";
-        const lastRunning = [...toolCalls].reverse().find(
-          (tc) => tc.status === "running" && tc.toolName === (data.toolName ?? "")
-        );
+        const lastRunning = data.taskId
+          ? toolCalls.find((call) => call.id === data.taskId)
+          : [...toolCalls].reverse().find((call) => call.status === "running" && call.toolName === (data.toolName ?? ""));
         if (lastRunning) {
           const idx = toolCalls.findIndex((tc) => tc.id === lastRunning.id);
           if (idx !== -1) {

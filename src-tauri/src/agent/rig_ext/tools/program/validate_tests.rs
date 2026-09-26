@@ -6,8 +6,8 @@ use serde_json::json;
 
 use super::super::error::ProgramErrorKind;
 use super::{
-    CapabilityCatalog, CapabilityPolicy, ProgramLimits, parse_and_validate_program,
-    validate_program_value,
+    parse_and_validate_program, validate_program_value, CapabilityCatalog, CapabilityPolicy,
+    ProgramLimits,
 };
 
 struct Catalog(BTreeMap<&'static str, CapabilityPolicy>);

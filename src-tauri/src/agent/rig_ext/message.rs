@@ -96,6 +96,7 @@ async fn chat_message_to_rig(message: ChatMessage) -> Option<Message> {
             content: message.content,
         }),
         "user" => user_message_to_rig(&message).await,
+        "runtime" => Some(Message::user(message.content)),
         "assistant" => {
             let mut content: Vec<AssistantContent> = Vec::new();
             // 历史思考链不回灌（reasoning_content 只用于 UI 展示）：rig 的
@@ -299,7 +300,13 @@ const TOOL_IMAGE_NOTE_MARK: &str = "张图片由本轮工具调用";
 /// `Message::User`，若把锚点取成「任意最后一条 User」，刚落库的工具结果
 /// 会把扫描区间挤空，`generate_image` / `fetch_image` 的引用就进不了视觉输入。
 pub async fn attach_turn_tool_images(messages: &mut Vec<Message>) {
-    let Some(last_user_index) = last_turn_anchor_index(messages) else {
+    let anchor = last_turn_anchor_index(messages);
+    attach_turn_tool_images_at(messages, anchor).await;
+}
+
+/// 运行时 observation 同样映射为 User，因此调用方应传入真实请求的来源锚点。
+pub(crate) async fn attach_turn_tool_images_at(messages: &mut Vec<Message>, anchor: Option<usize>) {
+    let Some(last_user_index) = anchor else {
         return;
     };
     let Message::User { content } = &messages[last_user_index] else {

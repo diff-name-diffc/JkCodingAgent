@@ -245,6 +245,7 @@ mod tests {
             thinking_elapsed_ms: None,
             context_payload: None,
             tool_call_id: None,
+            tool_task_id: None,
             tool_name: None,
             tool_result_mode: None,
             tool_artifacts: Vec::new(),

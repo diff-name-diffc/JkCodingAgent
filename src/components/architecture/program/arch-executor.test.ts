@@ -169,3 +169,16 @@ describe("runArchProgram", () => {
     expect(api.scrollToContent).toHaveBeenCalled();
   });
 });
+
+it("取消的草稿不提交画布", async () => {
+  const { api, updateScene } = fakeApi();
+  const controller = new AbortController();
+  controller.abort();
+  const outcome = await runArchProgram(api, "ws", {
+    version: 1,
+    instructions: [{ _type: "create_shape", ref: "a", shape: "geo", geo: "rectangle", text: "A" }],
+  }, controller.signal);
+  expect(outcome.ok).toBe(false);
+  expect(outcome.reportText).toContain("未提交");
+  expect(updateScene).not.toHaveBeenCalled();
+});

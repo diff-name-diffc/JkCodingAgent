@@ -2,8 +2,9 @@
 //!
 //! - `architecture_run`：把类型化画布程序交给前端画布解释器执行（绝不 eval）：
 //!   登记 oneshot → emit `architecture-run-request` → 等待
-//!   `architecture_run_complete` 回传报告；超时/取消一律返回可恢复错误文本并
-//!   显式清槽（fail-closed）。迁移自 旧自实现工具层（已随迁移删除）的 architecture_run。
+//!   `architecture_run_complete` 回传报告（前端取得执行权后另有
+//!   `ARCH_REPORT_TIMEOUT` 兜底，避免前端失联时永久挂起）；超时/取消一律返回
+//!   可恢复错误文本并显式清槽（fail-closed）。迁移自 旧自实现工具层（已随迁移删除）的 architecture_run。
 //! - `RigArchitectureAgent`：单工具视觉循环（主模型即视觉模型），会话沙箱
 //!   为 `root_dir/architecture/<会话子目录>`。
 
@@ -15,26 +16,35 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 
 use super::super::architecture::program_schema::architecture_run_parameters_schema;
 use super::super::architecture::prompt::ARCHITECTURE_SYSTEM_PROMPT;
-use super::super::architecture::{ArchProgram, validate_program};
+use super::super::architecture::{validate_program, ArchProgram};
 use super::super::plain_chat::render_runtime_workspace;
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord};
 use crate::agent::rig_ext::events::AgentEvent;
-use crate::agent::rig_ext::r#loop::{
-    AppToolExecutionPolicy, AppToolPolicyConfig, RigLoopHooks, RigToolSurface, run_rig_loop,
-};
 use crate::agent::rig_ext::message::{apply_stored_session_summary, chat_history_to_rig_with_ids};
-use crate::agent::rig_ext::model::{PurposeModelSpec, completions_model};
+use crate::agent::rig_ext::model::{completions_model, PurposeModelSpec};
+use crate::agent::rig_ext::r#loop::{
+    run_rig_loop, AppToolExecutionPolicy, AppToolPolicyConfig, RigLoopHooks, RigToolSurface,
+};
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
-use crate::agent::rig_ext::tools::deps::ToolCallSlot;
 
 /// 等待画布前端执行与回传的总时限（含截图耗时）。
 const ARCH_RUN_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// 前端取得执行权（claim）后，等待其回传执行报告的兜底时限。
+///
+/// 选型依据：claim 之后的等待按既有语义不接受取消打断（执行权已交出，只能等
+/// 结算），因此前端崩溃 / 页面重载 / 用户离开时这份等待此前永不返回——工具
+/// worker 与本次 run 的租赁一起永久悬挂。取 10 分钟：远高于正常执行的一次
+/// 往返（首次等待 `ARCH_RUN_WAIT_TIMEOUT` + 画布程序 + 截图），足以覆盖用户在
+/// 大程序上的人工停顿；再长则一个死前端会长期占住当次 run，再短会误伤真实的
+/// 大画布操作。
+const ARCH_REPORT_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// 事件载荷：前端画布监听器收到后在 editor 上执行程序并经
 /// `architecture_run_complete` 回传报告。
@@ -96,33 +106,89 @@ async fn run_architecture_program(
         ));
     };
     let state = app_handle.state::<crate::agent::DispatcherState>();
-    let (run_id, report_rx) = state.begin_arch_run(workspace_id);
+    let (run_id, mut report_rx) = state.begin_arch_run(workspace_id);
     let payload = ArchRunRequestPayload {
         run_id: &run_id,
         workspace_id,
         program: &program,
     };
-    let _ = app_handle.emit("architecture-run-request", payload);
-
-    // 取消通道在工具构造期由 run 级信号注入（见 `architecture_run_tool`）。
-    tokio::select! {
+    if let Err(error) = app_handle.emit("architecture-run-request", payload) {
+        state.remove_arch_run(&run_id);
+        return Err(ToolExecutionError::other(format!(
+            "画布请求发送失败：{error}"
+        )));
+    }
+    // 分支优先级确定化：报告已就绪 > 取消 > 超时（与 app_policy 的 biased 约定一致）。
+    let interrupted = tokio::select! {
         biased;
-        () = wait_for_cancellation(cancel_rx) => {
+        received = &mut report_rx => {
+            return received.map(ToolOutput::text)
+                .map_err(|_| ToolExecutionError::other("错误：画布响应通道已关闭").with_code("fatal"));
+        }
+        () = wait_for_cancellation(cancel_rx) => "本轮已取消",
+        () = tokio::time::sleep(ARCH_RUN_WAIT_TIMEOUT) => "画布执行超时",
+    };
+    if state.cancel_unstarted_arch_run(&run_id) {
+        return Err(ToolExecutionError::cancelled(format!(
+            "{interrupted}，画布程序未开始执行。"
+        )));
+    }
+    // 已取得执行权，清槽不能撤销操作。发出协作取消并保持租约直到报告回传
+    // （等待另有 ARCH_REPORT_TIMEOUT 兜底，不再接受取消打断）。
+    if let Err(error) = app_handle.emit(
+        "architecture-run-cancel",
+        serde_json::json!({
+            "runId": run_id, "workspaceId": workspace_id
+        }),
+    ) {
+        eprintln!("发送画布取消失败，继续等待实际结算：{error}");
+    }
+    let report = match wait_for_arch_report(&mut report_rx, ARCH_REPORT_TIMEOUT).await {
+        ArchReportWait::Report(report) => report,
+        ArchReportWait::Closed => {
+            return Err(ToolExecutionError::other("画布结算通道关闭，状态未知").with_code("fatal"))
+        }
+        ArchReportWait::TimedOut => {
+            // 前端 claim 之后崩溃 / 重载 / 离开，再无人提交报告：显式清槽释放
+            // 执行权，否则条目会以 started=true 永久留在注册表里。
             state.remove_arch_run(&run_id);
-            Err(ToolExecutionError::cancelled("本轮已停止，画布程序未执行。"))
+            return Err(ToolExecutionError::timeout(
+                "错误：画布报告超时未提交，已释放执行权；请重试。",
+            ));
         }
-        received = report_rx => {
-            let report = received
-                .unwrap_or_else(|_| "错误：画布响应通道已关闭。".to_string());
-            Ok(ToolOutput::text(report))
-        }
-        () = tokio::time::sleep(ARCH_RUN_WAIT_TIMEOUT) => {
-            state.remove_arch_run(&run_id);
-            Err(ToolExecutionError::other(format!(
-                "错误：画布 {} 秒未响应（请确认已打开架构设计视图后重试）。",
-                ARCH_RUN_WAIT_TIMEOUT.as_secs()
-            )))
-        }
+    };
+    Err(ToolExecutionError::cancelled(format!(
+        "{interrupted}；执行已结算：{report}"
+    )))
+}
+
+/// claim 之后等待前端回传报告的三种结局。
+enum ArchReportWait {
+    /// 前端回传了执行报告。
+    Report(String),
+    /// 报告通道关闭（发送端已销毁），执行状态不可知。
+    Closed,
+    /// 兜底时限内无人提交报告（前端已死或已离开）。
+    TimedOut,
+}
+
+/// 等待前端回传报告，带 [`ARCH_REPORT_TIMEOUT`] 兜底。
+///
+/// 超时判定与报告回传可能落在同一时刻（前端恰好在截止时提交）：超时后先
+/// `try_recv` 取走已入箱的报告，不把「正好赶到」的结算误判成前端未提交。
+async fn wait_for_arch_report(
+    report_rx: &mut oneshot::Receiver<String>,
+    timeout: Duration,
+) -> ArchReportWait {
+    // 超时 future 在语句末尾释放（`&mut *` 重借用），后续才能再取接收端。
+    let outcome = tokio::time::timeout(timeout, &mut *report_rx).await;
+    match outcome {
+        Ok(Ok(report)) => ArchReportWait::Report(report),
+        Ok(Err(_)) => ArchReportWait::Closed,
+        Err(_) => match report_rx.try_recv() {
+            Ok(report) => ArchReportWait::Report(report),
+            Err(_) => ArchReportWait::TimedOut,
+        },
     }
 }
 
@@ -295,7 +361,6 @@ impl RigArchitectureAgent {
                 review: RigReviewContext::unconfigured(),
                 cancel_rx: Some(request.cancel_rx.clone()),
                 trace: Default::default(),
-                tool_call_id: ToolCallSlot::default(),
             },
         );
 
@@ -337,6 +402,55 @@ mod tests {
 
     use super::super::super::architecture::program_schema::architecture_run_parameters_schema;
     use crate::agent::rig_ext::tools::run_record::prepare_arguments;
+
+    use super::{wait_for_arch_report, ArchReportWait, ARCH_REPORT_TIMEOUT};
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    /// 报告在兜底时限前到达：按正常结算返回，超时逻辑不参与。
+    #[tokio::test(start_paused = true)]
+    async fn arch_report_wait_returns_report_before_timeout() {
+        let (tx, mut rx) = oneshot::channel();
+        tx.send("修改已提交".to_string()).expect("发送报告");
+        assert!(matches!(
+            wait_for_arch_report(&mut rx, ARCH_REPORT_TIMEOUT).await,
+            ArchReportWait::Report(report) if report == "修改已提交"
+        ));
+    }
+
+    /// 前端 claim 后崩溃/重载/离开，无人提交报告：兜底超时收口，
+    /// 而不是让工具 worker 永久挂起。
+    #[tokio::test(start_paused = true)]
+    async fn arch_report_wait_times_out_without_report() {
+        // 发送端保持存活（通道未关闭），模拟「前端还在但永不回传」。
+        let (_tx, mut rx) = oneshot::channel::<String>();
+        assert!(matches!(
+            wait_for_arch_report(&mut rx, ARCH_REPORT_TIMEOUT).await,
+            ArchReportWait::TimedOut
+        ));
+    }
+
+    /// 发送端销毁（工具侧已清槽等极端路径）：按通道关闭上报，不误报超时。
+    #[tokio::test(start_paused = true)]
+    async fn arch_report_wait_reports_closed_channel() {
+        let (tx, mut rx) = oneshot::channel::<String>();
+        drop(tx);
+        assert!(matches!(
+            wait_for_arch_report(&mut rx, ARCH_REPORT_TIMEOUT).await,
+            ArchReportWait::Closed
+        ));
+    }
+
+    /// 零时限下报告已入箱：超时不早于内层 future 的就绪，报告不被超时丢弃。
+    #[tokio::test(start_paused = true)]
+    async fn arch_report_wait_prefers_buffered_report_over_deadline() {
+        let (tx, mut rx) = oneshot::channel();
+        tx.send("边界报告".to_string()).expect("发送报告");
+        assert!(matches!(
+            wait_for_arch_report(&mut rx, Duration::ZERO).await,
+            ArchReportWait::Report(report) if report == "边界报告"
+        ));
+    }
 
     /// 端到端：模型拿 update_shape 改箭头 labelPosition（历史真实故障）时，
     /// 参数校验错误必须直接点出 labelPosition 字段，而不是笼统的 oneOf 文本。

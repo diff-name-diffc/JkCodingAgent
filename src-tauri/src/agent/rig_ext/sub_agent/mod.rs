@@ -4,6 +4,8 @@
 //! 「LLM ↔ 工具」循环；结果截断后返回父循环；轨迹事件单独下发。
 
 mod events;
+mod failure;
+mod loop_events;
 mod runner;
 mod tools;
 

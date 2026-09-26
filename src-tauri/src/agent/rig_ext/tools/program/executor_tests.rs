@@ -313,10 +313,8 @@ async fn parallel_failure_stops_unstarted_calls_and_awaits_in_flight_call() {
         .map(|args| args["value"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
     assert_eq!(invoked, vec!["a", "b"]);
-    assert_eq!(
-        error.completed_steps.into_vec(),
-        vec!["a".to_string(), "b".to_string()]
-    );
+    // 只有成功结算的叶子计入已完成步骤：b 以失败收场，不在列内。
+    assert_eq!(error.completed_steps.into_vec(), vec!["a".to_string()]);
 }
 
 #[tokio::test]
@@ -348,6 +346,7 @@ async fn enforces_resolved_arguments_envelope_environment_and_return_budgets() {
         .expect_err("arguments budget exceeded");
     assert_eq!(error.kind, ProgramErrorKind::LimitExceeded);
     assert_eq!(mock.invocations().len(), 1);
+    assert_eq!(mock.active.load(Ordering::Acquire), 0);
 
     // 步骤 envelope 预算：第一步结果 envelope 超限。
     let mock = Arc::new(MockTool::default().with_reply("", 0, large_reply()));
@@ -360,6 +359,7 @@ async fn enforces_resolved_arguments_envelope_environment_and_return_budgets() {
         .expect_err("envelope budget exceeded");
     assert_eq!(error.kind, ProgramErrorKind::LimitExceeded);
     assert_eq!(mock.invocations().len(), 1);
+    assert_eq!(mock.active.load(Ordering::Acquire), 0);
 
     // 环境预算：第一步 envelope 入环境后超限。
     let mock = Arc::new(MockTool::default().with_reply("", 0, large_reply()));
@@ -372,6 +372,7 @@ async fn enforces_resolved_arguments_envelope_environment_and_return_budgets() {
         .expect_err("environment budget exceeded");
     assert_eq!(error.kind, ProgramErrorKind::LimitExceeded);
     assert_eq!(mock.invocations().len(), 1);
+    assert_eq!(mock.active.load(Ordering::Acquire), 0);
 
     // return 预算：放宽参数预算让第二步成功，最终由解析后的大 return 触发。
     let mock = Arc::new(MockTool::default().with_reply("", 0, large_reply()));
@@ -388,7 +389,7 @@ async fn enforces_resolved_arguments_envelope_environment_and_return_budgets() {
 }
 
 #[tokio::test]
-async fn wall_time_stops_new_work_and_bounds_in_flight_drain() {
+async fn wall_time_stops_new_work_and_waits_for_actual_settlement() {
     let mock = Arc::new(MockTool::default().with_reply(
         "hello",
         3_000,
@@ -398,7 +399,6 @@ async fn wall_time_stops_new_work_and_bounds_in_flight_drain() {
     let program = validate(sequential_program(), CapabilityPolicy::sequential());
     let limits = ProgramLimits {
         max_wall_time_secs: 1,
-        max_drain_time_ms: 50,
         ..ProgramLimits::default()
     };
     let started_at = StdInstant::now();
@@ -409,8 +409,9 @@ async fn wall_time_stops_new_work_and_bounds_in_flight_drain() {
 
     assert_eq!(error.kind, ProgramErrorKind::DeadlineExceeded);
     assert!(started_at.elapsed() >= Duration::from_millis(1_000));
-    assert!(started_at.elapsed() < Duration::from_millis(1_500));
+    assert!(started_at.elapsed() >= Duration::from_millis(3_000));
     assert_eq!(mock.invocations().len(), 1);
+    assert_eq!(mock.active.load(Ordering::Acquire), 0);
 
     // 外层入口映射为 rig Timeout 错误（分类 code 保留 deadline_exceeded）。
     let error = execute_program(&program, &plane, &limits, None)
@@ -446,6 +447,7 @@ async fn maps_cancelled_refused_and_failed_child_results() {
 
         assert_eq!(error.kind, expected_kind);
         assert_eq!(mock.invocations().len(), 1);
+        assert_eq!(mock.active.load(Ordering::Acquire), 0);
     }
 
     // 子调用取消经外层入口映射为 rig Cancelled 错误。
@@ -488,10 +490,7 @@ async fn cancel_signal_stops_scheduling_and_drains_in_flight_call() {
     ));
     let plane = data_plane(mock.clone());
     let program = validate(sequential_program(), CapabilityPolicy::sequential());
-    let limits = ProgramLimits {
-        max_drain_time_ms: 50,
-        ..ProgramLimits::default()
-    };
+    let limits = ProgramLimits::default();
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let started_at = StdInstant::now();
 
@@ -506,8 +505,9 @@ async fn cancel_signal_stops_scheduling_and_drains_in_flight_call() {
 
     assert_eq!(error.kind, ProgramErrorKind::Cancelled);
     assert!(started_at.elapsed() >= Duration::from_millis(100));
-    assert!(started_at.elapsed() < Duration::from_millis(1_000));
+    assert!(started_at.elapsed() >= Duration::from_millis(3_000));
     assert_eq!(mock.invocations().len(), 1);
+    assert_eq!(mock.active.load(Ordering::Acquire), 0);
 
     // 外层入口映射为 rig Cancelled 错误。
     let (cancel_tx, cancel_rx) = watch::channel(false);

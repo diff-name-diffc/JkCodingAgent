@@ -79,11 +79,13 @@ impl DispatcherDb {
                 .prepare(
                     "SELECT DISTINCT tool_call_id FROM dispatcher_tool_runs
                      WHERE workspace_id = ?1 AND (
-                         message_id IN (
-                             SELECT id FROM dispatcher_messages
-                             WHERE workspace_id = ?1 AND rowid >= ?2
+                         root_request_message_id IN (
+                             SELECT id FROM dispatcher_messages WHERE workspace_id = ?1 AND rowid >= ?2
                          )
-                         OR (message_id IS NULL AND created_at >= ?3)
+                         OR (root_request_message_id IS NULL AND (
+                             message_id IN (SELECT id FROM dispatcher_messages WHERE workspace_id = ?1 AND rowid >= ?2)
+                             OR (message_id IS NULL AND created_at >= ?3)
+                         ))
                      )",
                 )
                 .context("prepare truncated tool call id lookup")?;
@@ -97,7 +99,7 @@ impl DispatcherDb {
 
         tx.execute(
             "DELETE FROM dispatcher_tool_artifacts
-             WHERE workspace_id = ?1 AND message_id IN (
+             WHERE workspace_id = ?1 AND tool_run_id IS NULL AND message_id IN (
                  SELECT id FROM dispatcher_messages
                  WHERE workspace_id = ?1 AND rowid >= ?2)",
             params![workspace_id, target_rowid],
@@ -106,11 +108,13 @@ impl DispatcherDb {
         tx.execute(
             "DELETE FROM dispatcher_tool_runs
              WHERE workspace_id = ?1 AND (
-                 message_id IN (
-                     SELECT id FROM dispatcher_messages
-                     WHERE workspace_id = ?1 AND rowid >= ?2
+                 root_request_message_id IN (
+                     SELECT id FROM dispatcher_messages WHERE workspace_id = ?1 AND rowid >= ?2
                  )
-                 OR (message_id IS NULL AND created_at >= ?3)
+                 OR (root_request_message_id IS NULL AND (
+                     message_id IN (SELECT id FROM dispatcher_messages WHERE workspace_id = ?1 AND rowid >= ?2)
+                     OR (message_id IS NULL AND created_at >= ?3)
+                 ))
              )",
             params![workspace_id, target_rowid, target_created_at],
         )

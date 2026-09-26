@@ -26,7 +26,6 @@ pub(super) fn sync_directory_tool(
     db: DispatcherDb,
     cancel_rx: Option<watch::Receiver<bool>>,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
-    tool_call_id: super::super::deps::ToolCallSlot,
 ) -> PortableDynamicTool {
     PortableDynamicTool::new(
         "sync_directory",
@@ -51,7 +50,8 @@ pub(super) fn sync_directory_tool(
             let db = db.clone();
             let cancel_rx = cancel_rx.clone();
             let review_context = review_context.clone();
-            let tool_call_id = tool_call_id.clone();
+            let tool_call_id = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
+                .map(|context| context.tool_call_id);
             Box::pin(async move {
                 let cancelled = cancel_rx.clone();
                 match execute_inner(
@@ -166,7 +166,7 @@ async fn execute_inner(
     db: DispatcherDb,
     cancel_rx: Option<watch::Receiver<bool>>,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
-    tool_call_id: super::super::deps::ToolCallSlot,
+    tool_call_id: Option<String>,
 ) -> Result<String, SyncFailure> {
     let mut request: SyncDirectory = serde_json::from_value(args.clone())
         .map_err(|e| SyncFailure::Recoverable(format!("错误：同步参数无效：{e}")))?;
@@ -239,10 +239,8 @@ async fn execute_inner(
     let progress_workspace_id = workspace_id.clone();
     let progress = Arc::new(move |p: crate::ssh_tool::sync::SyncProgress| {
         if let Some(app) = &app_handle {
-            // 事件关联 id：执行策略在每次调用前把当前 tool_call_id 写入槽位
-            //（`ToolCallSlot`），前端据此把进度挂到对应工具卡片（类型见
+            // 调用入口捕获独立 ID，异步进度始终关联原调用（类型见
             // `src/types/ssh-sync.ts`；UI 消费方待接入时直接可用）。
-            let tool_call_id = tool_call_id.get();
             if let Err(error) = app.emit(
                 "ssh-sync-progress",
                 json!({

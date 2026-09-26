@@ -86,6 +86,15 @@ pub struct ToolCallOutcome<'a> {
 /// 三段中只有 `execute` 有行为；生产策略由 `AppToolExecutionPolicy` 覆盖三段。
 #[async_trait::async_trait]
 pub trait ToolExecutionPolicy: Send + Sync {
+    /// 宿主提供的真实工作区，模型参数不能改变资源域。
+    fn resource_workspace(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    fn registration_trace(&self) -> crate::agent::db::ToolRunTraceContext {
+        Default::default()
+    }
+
     /// 调用前置：门禁（审查/授权/参数准备）与台账开始。
     async fn before_call(&self, _tool: &PortableDynamicTool, _call: &ToolCall) -> ToolCallGuard {
         ToolCallGuard {
@@ -118,6 +127,7 @@ pub trait ToolExecutionPolicy: Send + Sync {
 /// 仅测试使用——生产路径一律经 `AppToolExecutionPolicy`（审查门禁 + 台账），
 /// 或由 trait 的默认方法提供等价行为。
 #[cfg(test)]
+#[derive(Clone)]
 pub struct DirectToolExecution;
 
 #[cfg(test)]

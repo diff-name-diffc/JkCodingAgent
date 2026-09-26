@@ -14,6 +14,7 @@ pub(crate) mod session_summaries;
 pub(crate) mod sessions;
 pub(crate) mod settings;
 pub(crate) mod token_usage;
+pub(crate) mod tool_completions;
 pub(crate) mod tool_runs;
 pub(crate) mod util;
 

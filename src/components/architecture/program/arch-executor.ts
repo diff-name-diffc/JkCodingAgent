@@ -279,6 +279,7 @@ export async function runArchProgram(
   api: ExcalidrawImperativeAPI,
   workspaceId: string,
   rawProgram: unknown,
+  signal?: AbortSignal,
 ): Promise<ArchExecOutcome> {
   const validation = validateArchProgram(rawProgram);
   if (!validation.ok) {
@@ -351,6 +352,7 @@ export async function runArchProgram(
     };
   }
 
+  if (signal?.aborted) return { ok: false, reportText: "画布程序已取消，草稿未提交。" };
   const elements = [...draft.values()];
   api.updateScene({
     elements,
@@ -383,8 +385,9 @@ export async function runArchProgram(
 
   const screenshotImageId = await captureAffectedRegion(api, draft, workspaceId, touchedIds);
   const totalShapes = elements.length;
+  const successReport = buildArchSuccessReport(stats, refMap, totalShapes, screenshotImageId);
   return {
     ok: true,
-    reportText: buildArchSuccessReport(stats, refMap, totalShapes, screenshotImageId),
+    reportText: signal?.aborted ? "取消到达前画布修改已提交；" + successReport : successReport,
   };
 }

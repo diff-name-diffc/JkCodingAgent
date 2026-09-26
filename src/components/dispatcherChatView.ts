@@ -45,6 +45,11 @@ export function buildDispatcherDisplayItems(
 ): DispatcherDisplayItem[] {
   const items: DispatcherDisplayItem[] = [];
   const toolStartedAt = new Map<string, number>();
+  const taskCalls = new Map<string, { id: string; name: string }>();
+  // R54：toolTaskId → 发起工具的回合。停止运行后落库的清理/完成消息按 createdAt
+  // 可能排到下一条 user 消息之后，凭此映射归并回原始回合，避免造出只含完成态
+  // 卡片的幽灵回合（查不到归属时回退当前回合）。
+  const taskTurns = new Map<string, DispatcherAssistantTurn>();
   let currentTurn: DispatcherAssistantTurn | null = null;
 
   const ensureAssistantTurn = (seedId: string) => {
@@ -77,9 +82,8 @@ export function buildDispatcherDisplayItems(
       continue;
     }
 
-    const turn = ensureAssistantTurn(message.id);
-
     if (message.role === "assistant") {
+      const turn = ensureAssistantTurn(message.id);
       mergeTurnUsageStats(turn, message.usageStats);
       mergeTurnThinking(turn, message.thinkingContent, message.thinkingElapsedMs);
 
@@ -114,6 +118,34 @@ export function buildDispatcherDisplayItems(
       continue;
     }
 
+    if (message.role === "runtime") {
+      const taskId = message.toolTaskId;
+      const task = taskId ? taskCalls.get(taskId) : undefined;
+      if (!taskId || !task) continue;
+      let payload: unknown;
+      try { payload = JSON.parse(message.contextPayload ?? message.content); } catch { continue; }
+      if (!payload || typeof payload !== "object" || !("kind" in payload) || payload.kind !== "tool_completion") continue;
+      const output = "context_payload" in payload && typeof payload.context_payload === "string" ? payload.context_payload : message.content;
+      const succeeded = "status" in payload && payload.status === "succeeded";
+      // 归属优先：完成消息可能排在新 user 消息之后，必须写回发起工具的原始回合。
+      const turn = taskTurns.get(taskId) ?? ensureAssistantTurn(message.id);
+      // 与 tool 角色分支同口径：完成时刻 − 卡片开始时刻，覆盖 accepted 受理时
+      // 落上的部分耗时。
+      const startedAtMs = toolStartedAt.get(task.id);
+      const finishedAtMs = Date.parse(message.createdAt);
+      upsertToolActivity(turn.tools, {
+        id: task.id, name: task.name, workspaceId: message.workspaceId,
+        output, status: succeeded ? "success" : "error",
+        errorText: succeeded ? undefined : output,
+        durationMs:
+          startedAtMs != null && Number.isFinite(finishedAtMs)
+            ? Math.max(0, finishedAtMs - startedAtMs)
+            : undefined,
+        resultMode: message.toolResultMode, detailRefs: message.toolArtifacts,
+      });
+      continue;
+    }
+
     if (message.role === "tool") {
       const shouldInlineSummary = shouldRenderToolSummaryInline(message.toolResultMode);
       // contextPayload 是后端真正回灌给 Agent 的内容。工具卡片必须展示它，
@@ -122,6 +154,15 @@ export function buildDispatcherDisplayItems(
       // G9-07 保证 toolCallId 必填，与助手侧 planned 卡片（toolCall.id）直接匹配；
       // 生成式兜底与助手侧 `${message.id}-${name}` 形态对称，仅防极端脏载荷。
       const id = message.toolCallId || `${message.id}-${message.toolName || "tool"}`;
+      // 与 runtime 分支同规则：已登记归属的 task 写回原始回合；首次见到时登记。
+      const turn =
+        (message.toolTaskId ? taskTurns.get(message.toolTaskId) : undefined) ??
+        ensureAssistantTurn(message.id);
+      if (message.toolTaskId) {
+        taskCalls.set(message.toolTaskId, { id, name: message.toolName || "tool" });
+        taskTurns.set(message.toolTaskId, turn);
+      }
+      const accepted = message.toolResultMode === "accepted";
       const errorText = getToolErrorText(message.content);
       const startedAtMs = toolStartedAt.get(id);
       const finishedAtMs = Date.parse(message.createdAt);
@@ -138,7 +179,7 @@ export function buildDispatcherDisplayItems(
             : undefined,
         detailRefs: message.toolArtifacts,
         resultMode: message.toolResultMode,
-        status: errorText ? "error" : "success",
+        status: accepted ? "running" : errorText ? "error" : "success",
       });
 
       const content = message.content.trim();

@@ -8,7 +8,7 @@ use tauri::ipc::Channel;
 use super::super::llm_usage_from_rig;
 use super::RigLoopHooks;
 use crate::agent::common::{
-    UsageTracker, emit, persist_assistant_message, serialize_tool_arguments,
+    emit, persist_assistant_message, serialize_tool_arguments, UsageTracker,
 };
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, DispatcherSessionTokenUsageSource};
 use crate::agent::db::{FunctionCall, OutboundToolCall};
@@ -101,7 +101,6 @@ pub(super) async fn finalize_cancelled(
             last_seq,
         },
     );
-    emit_finished(db, workspace_id, on_event).await?;
     Ok(reply)
 }
 

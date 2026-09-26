@@ -112,6 +112,10 @@ async fn fetch_and_save(
         )
     })?;
 
+    // 取消信号在本层（处于 agent 循环 task-local 作用域的工具边界）读取后
+    // 显式传入 save_image；无 task-local 时为 None，按无取消源处理。
+    let cancel_rx = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
+        .map(|context| context.cancel_rx);
     let saved = crate::chat_images::save_image(
         db,
         crate::chat_images::SaveChatImageParams {
@@ -123,6 +127,7 @@ async fn fetch_and_save(
             width: None,
             height: None,
         },
+        cancel_rx,
     )
     .await
     .map_err(|e| format!("错误：保存图片失败：{e}"))?;

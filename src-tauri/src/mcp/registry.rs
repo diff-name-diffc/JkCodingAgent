@@ -9,11 +9,14 @@
 //! - `check`：连通性检查、工具清单拉取与作用域状态汇总；
 //! - `tests`：纯函数单测。
 
+mod call;
 mod check;
 mod config;
 mod resolve;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use call::McpCallError;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,14 +26,14 @@ use parking_lot::RwLock;
 use rmcp::model::{CallToolRequestParams, JsonObject};
 use rmcp::ServiceExt;
 use serde_json::Value;
+use tokio::sync::watch;
 
 use check::{aggregate_server_statuses, build_status, check_server};
 use config::{is_fresh, load_merged_config};
 
 use crate::mcp::transport::{
-    build_stdio_timeout_error, build_streamable_http_transport, build_timeout_error,
-    build_unix_socket_transport, collect_captured_stderr, enrich_stdio_error,
-    spawn_stdio_mcp_process, timeout_tool_call, SpawnedStdioMcpProcess,
+    build_streamable_http_transport, build_unix_socket_transport, collect_captured_stderr,
+    enrich_stdio_error, spawn_stdio_mcp_process, SpawnedStdioMcpProcess,
 };
 use crate::mcp::{
     McpAggregateStatus, McpScope, McpServerState, McpSnapshot, McpToolTaskSupport,
@@ -38,6 +41,26 @@ use crate::mcp::{
 };
 
 const MCP_REFRESH_MAX_AGE: Duration = Duration::from_secs(300);
+
+/// 单次 MCP 调用的共享时间预算：初始化握手与工具调用共用同一份
+/// `startup_timeout`（各拿满一份会让最坏等待翻倍）。
+struct CallBudget {
+    deadline: tokio::time::Instant,
+}
+
+impl CallBudget {
+    fn start(total: Duration) -> Self {
+        Self {
+            deadline: tokio::time::Instant::now() + total,
+        }
+    }
+
+    /// 剩余预算：初始化已耗尽时为 0。
+    fn remaining(&self) -> Duration {
+        self.deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+    }
+}
 
 #[derive(Clone)]
 pub struct McpRegistry {
@@ -154,20 +177,31 @@ impl McpRegistry {
 
     /// 在调用方已经校验过的不可变目录快照上执行，避免再次刷新缓存后把
     /// 同名但 Schema/server 已变化的工具偷换进当前 invocation。
+    ///
+    /// `cancel` 由调用方从工具边界注入（agent 循环的 task-local 只在 tool
+    /// 回调处读一次）；非 agent 路径（注册表检查等）传 `None`，注册表本身
+    /// 不依赖 agent 循环。
+    ///
+    /// 错误为结构化的 [`McpCallError`]：只有请求真正发送后的失败才标记
+    /// `external_state_unknown`（禁止自动重试）；「未发送」类错误（参数
+    /// 非法、初始化超时、进程启动失败等）按普通失败处理。
     pub(crate) async fn execute_tool_from_snapshot(
         &self,
         snapshot: &McpSnapshot,
         tool_name: &str,
         arguments: &Value,
-    ) -> Result<String, String> {
+        cancel: Option<watch::Receiver<bool>>,
+    ) -> Result<String, McpCallError> {
         let Some(tool) = snapshot.tool_by_name(tool_name).cloned() else {
-            return Err(format!("错误：未找到 MCP 工具 '{tool_name}'"));
+            return Err(McpCallError::not_sent(format!(
+                "错误：未找到 MCP 工具 '{tool_name}'"
+            )));
         };
         let Some(server_config) = snapshot.server_config(&tool.server_name).cloned() else {
-            return Err(format!(
+            return Err(McpCallError::not_sent(format!(
                 "错误：未找到 MCP server '{}' 的有效配置",
                 tool.server_name
-            ));
+            )));
         };
 
         let mut call = CallToolRequestParams::new(tool.original_name.clone());
@@ -185,9 +219,11 @@ impl McpRegistry {
                 env,
                 cwd,
             } => {
+                // 预算覆盖「准备传输 → 初始化握手 → 工具调用」整段。
+                let budget = CallBudget::start(server_config.startup_timeout);
                 let spawned = match spawn_stdio_mcp_process(command, args, env, cwd) {
                     Ok(spawned) => spawned,
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(McpCallError::not_sent(error)),
                 };
                 let SpawnedStdioMcpProcess {
                     transport,
@@ -195,85 +231,70 @@ impl McpRegistry {
                     stderr_task,
                 } = spawned;
 
-                let result = tokio::time::timeout(server_config.startup_timeout, async move {
-                    let client = ().serve(transport).await.map_err(|error| error.to_string())?;
-                    let result = client
-                        .call_tool(call)
+                let result = async {
+                    let client = tokio::time::timeout(budget.remaining(), ().serve(transport))
                         .await
-                        .map_err(|error| error.to_string());
-                    let _ = client.cancel().await;
-                    result
-                })
+                        .map_err(|_| McpCallError::not_sent("MCP 初始化超时"))?
+                        .map_err(|error| McpCallError::not_sent(error.to_string()))?;
+                    call::execute(client, call, budget.remaining(), cancel).await
+                }
                 .await;
                 let stderr_output = collect_captured_stderr(stderr_buffer, stderr_task).await;
 
-                match result {
-                    Ok(Ok(value)) => Ok(value),
-                    Ok(Err(error)) => Err((
+                result.map_err(|error| {
+                    (
                         McpServerState::ConnectionFailed,
-                        enrich_stdio_error(&server_config, error, stderr_output.as_deref()),
-                    )),
-                    Err(_) => Err((
-                        McpServerState::ConnectionFailed,
-                        build_stdio_timeout_error(
-                            &server_config,
-                            "工具调用",
-                            stderr_output.as_deref(),
-                        ),
-                    )),
-                }
+                        error.map_message(|message| {
+                            enrich_stdio_error(&server_config, message, stderr_output.as_deref())
+                        }),
+                    )
+                })
             }
-            ResolvedMcpTransport::StreamableHttp { url, headers } => {
-                timeout_tool_call(
-                    server_config.startup_timeout,
-                    async {
-                        let transport = build_streamable_http_transport(url, headers)?;
-                        let client = ().serve(transport).await.map_err(|error| error.to_string())?;
-                        let result = client
-                            .call_tool(call)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        let _ = client.cancel().await;
-                        Ok::<_, String>(result)
-                    },
-                    build_timeout_error("MCP 工具调用", server_config.startup_timeout),
-                )
-                .await
+            ResolvedMcpTransport::StreamableHttp { url, headers } => async {
+                let transport = build_streamable_http_transport(url, headers)
+                    .map_err(McpCallError::not_sent)?;
+                let budget = CallBudget::start(server_config.startup_timeout);
+                let client = tokio::time::timeout(budget.remaining(), ().serve(transport))
+                    .await
+                    .map_err(|_| McpCallError::not_sent("MCP 初始化超时"))?
+                    .map_err(|error| McpCallError::not_sent(error.to_string()))?;
+                call::execute(client, call, budget.remaining(), cancel).await
             }
+            .await
+            .map_err(|error| (McpServerState::ConnectionFailed, error)),
             ResolvedMcpTransport::UnixSocketHttp {
                 socket_path,
                 url,
                 headers,
-            } => {
-                timeout_tool_call(
-                    server_config.startup_timeout,
-                    async {
-                        let transport = build_unix_socket_transport(socket_path, url, headers)?;
-                        let client = ().serve(transport).await.map_err(|error| error.to_string())?;
-                        let result = client
-                            .call_tool(call)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        let _ = client.cancel().await;
-                        Ok::<_, String>(result)
-                    },
-                    build_timeout_error("MCP 工具调用", server_config.startup_timeout),
-                )
-                .await
+            } => async {
+                let transport = build_unix_socket_transport(socket_path, url, headers)
+                    .map_err(McpCallError::not_sent)?;
+                let budget = CallBudget::start(server_config.startup_timeout);
+                let client = tokio::time::timeout(budget.remaining(), ().serve(transport))
+                    .await
+                    .map_err(|_| McpCallError::not_sent("MCP 初始化超时"))?
+                    .map_err(|error| McpCallError::not_sent(error.to_string()))?;
+                call::execute(client, call, budget.remaining(), cancel).await
             }
+            .await
+            .map_err(|error| (McpServerState::ConnectionFailed, error)),
         }
         .map_err(|error| error.1)?;
 
-        serde_json::to_string_pretty(&result).map_err(|error| error.to_string())
+        // 序列化失败发生在请求成功执行之后，重跑可能重复副作用，按外部状态未知处理。
+        serde_json::to_string_pretty(&result)
+            .map_err(|error| McpCallError::external_state_unknown(error.to_string()))
     }
 }
 
-fn value_to_json_object(value: &Value) -> Result<Option<JsonObject>, String> {
+fn value_to_json_object(value: &Value) -> Result<Option<JsonObject>, McpCallError> {
     match value {
         Value::Null => Ok(None),
         Value::Object(map) if map.is_empty() => Ok(None),
         Value::Object(map) => Ok(Some(map.clone())),
-        _ => Err("MCP 工具参数必须是 JSON object".to_string()),
+        _ => Err(McpCallError::not_sent(
+            "MCP 工具参数必须是 JSON object".to_string(),
+        )),
     }
 }
 

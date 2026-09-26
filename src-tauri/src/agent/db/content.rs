@@ -52,7 +52,7 @@ pub fn segments_to_plain_text(segments: &[ContentSegment]) -> String {
         .join("\n")
 }
 
-pub(super) fn content_to_segments_json(content: &str) -> String {
+pub(crate) fn content_to_segments_json(content: &str) -> String {
     let segments = vec![ContentSegment::Text {
         id: Uuid::new_v4().to_string(),
         text: content.to_string(),

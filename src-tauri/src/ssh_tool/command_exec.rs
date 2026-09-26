@@ -26,10 +26,24 @@ const INTERACTIVE_EXIT_CODE: i32 = -1;
 const UNKNOWN_EXIT_CODE: i32 = -2;
 
 /// 命令执行失败：message 为用户可读诊断；stale 表示连接已断，
-/// 调用方应丢弃缓存连接并重连重试一次。
-pub(super) struct CommandFailure {
-    pub(super) message: String,
-    pub(super) stale: bool,
+/// 调用方应丢弃缓存连接并重连重试一次；kind 承载错误语义，
+/// 由工具边界（ssh_exec）映射为结构化 ToolExecutionError，
+/// 不在到达工具边界前扁平化为 String。
+pub(crate) struct CommandFailure {
+    pub(crate) message: String,
+    pub(crate) stale: bool,
+    pub(crate) kind: CommandFailureKind,
+}
+
+/// SSH 命令失败的结构化分类（供工具边界映射 code / retryable / 取消语义）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandFailureKind {
+    /// 发送前被取消：远端状态确定未改变，归类取消而非可重试错误。
+    CancelledNotSent,
+    /// 执行请求发出后失败：远端是否已执行未知，禁止自动重跑。
+    ExternalStateUnknown,
+    /// 其余失败（配置 / 参数校验 / 建链等）。
+    Other,
 }
 
 impl CommandFailure {
@@ -37,10 +51,23 @@ impl CommandFailure {
         Self {
             message: sanitize_ssh_error(prefix, error),
             stale: connection.handle.is_closed(),
+            kind: CommandFailureKind::Other,
+        }
+    }
+
+    /// 非命令执行阶段的失败（配置 / 校验 / 建连），message 已含完整诊断。
+    pub(crate) fn other(message: String) -> Self {
+        Self {
+            message,
+            stale: false,
+            kind: CommandFailureKind::Other,
         }
     }
 }
 
+/// `cancel` 由调用方（工具边界，唯一可读 task-local 的层）显式注入；
+/// 本层只消费信号，不反向依赖上层 agent 循环。None 表示无取消源：行为与
+/// 未取消一致（不会误判为已取消）。
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_command_on_connection(
     connection: &Arc<SshConnection>,
@@ -51,7 +78,18 @@ pub(super) async fn run_command_on_connection(
     timeout_secs: u64,
     max_output_bytes: usize,
     started: Instant,
+    cancel: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> Result<SshExecResult, CommandFailure> {
+    if cancel
+        .as_ref()
+        .is_some_and(|rx| *rx.borrow() || rx.has_changed().is_err())
+    {
+        return Err(CommandFailure {
+            message: "SSH 调用已取消，未发送命令".into(),
+            stale: false,
+            kind: CommandFailureKind::CancelledNotSent,
+        });
+    }
     let mut channel = connection
         .handle
         .channel_open_session()
@@ -60,7 +98,15 @@ pub(super) async fn run_command_on_connection(
     channel
         .exec(true, command.as_bytes())
         .await
-        .map_err(|error| CommandFailure::new("执行远程命令失败", error, connection))?;
+        .map_err(|error| CommandFailure {
+            // kind 承载 external_state_unknown 语义；文本保留给模型的行为指引。
+            message: format!(
+                "远程执行请求失败，结果未知，禁止自动重跑：{}",
+                sanitize_ssh_error("执行远程命令失败", error)
+            ),
+            stale: false,
+            kind: CommandFailureKind::ExternalStateUnknown,
+        })?;
 
     // 写入 stdin（若有）并关闭输入端。写入失败（如命令很快退出、不再读输入）
     // 不判为命令失败，但要把原因带到 stderr，避免无声丢失。
@@ -84,6 +130,7 @@ pub(super) async fn run_command_on_connection(
             prompt_idle_secs,
             silent_idle_secs,
             deadline,
+            cancel,
         )
         .await;
 
@@ -110,6 +157,11 @@ pub(super) async fn run_command_on_connection(
                 .unwrap_or(UNKNOWN_EXIT_CODE),
             finalize_output(&stderr_raw, stderr_capped),
         ),
+        DrainOutcome::Cancelled => {
+            let mut text = finalize_output(&stderr_raw, stderr_capped);
+            text.push_str("\n[SSH 调用已取消；channel 已关闭，无法确认远端进程退出，external_state_unknown；禁止自动重跑副作用。]");
+            (-3, text)
+        }
         DrainOutcome::TimedOut => {
             let mut text = finalize_output(&stderr_raw, stderr_capped);
             text.push_str(&format!(
@@ -137,6 +189,9 @@ pub(super) async fn run_command_on_connection(
     connection.touch();
 
     Ok(SshExecResult {
+        cancelled: matches!(outcome, DrainOutcome::Cancelled),
+        external_state_unknown: !matches!(outcome, DrainOutcome::Completed)
+            || exit_status.is_none(),
         server_id: server_id.to_string(),
         session_id: session_id.to_string(),
         exit_code,
@@ -164,6 +219,7 @@ async fn drain_channel(
     prompt_idle_secs: u64,
     silent_idle_secs: u64,
     deadline: Instant,
+    cancel: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> (DrainOutcome, Vec<u8>, Vec<u8>, bool, bool, Option<u32>) {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -197,7 +253,11 @@ async fn drain_channel(
         let wait_for = Duration::from_secs(idle_budget_secs)
             .saturating_sub(idle_for)
             .min(deadline.saturating_duration_since(now));
-        match tokio::time::timeout(wait_for, channel.wait()).await {
+        let next = tokio::select! {
+            message = tokio::time::timeout(wait_for, channel.wait()) => message,
+            _ = wait_for_cancel(cancel.clone()) => break DrainOutcome::Cancelled,
+        };
+        match next {
             Ok(Some(ChannelMsg::Data { data })) => {
                 append_limited(&mut stdout, &data, max_output_bytes, &mut stdout_capped);
                 last_data_at = Instant::now();
@@ -229,6 +289,7 @@ async fn drain_channel(
 
 #[derive(Clone, Copy)]
 enum DrainOutcome {
+    Cancelled,
     Completed,
     InteractiveBlocked,
     TimedOut,
@@ -315,5 +376,20 @@ mod tests {
         assert_eq!(idle_thresholds(120), (8, 30));
         assert_eq!(idle_thresholds(300), (8, 60));
         assert_eq!(idle_thresholds(600), (8, 60));
+    }
+}
+
+async fn wait_for_cancel(cancel: Option<tokio::sync::watch::Receiver<bool>>) {
+    let Some(mut cancel) = cancel else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    loop {
+        if *cancel.borrow() || cancel.has_changed().is_err() {
+            return;
+        }
+        if cancel.changed().await.is_err() {
+            return;
+        }
     }
 }

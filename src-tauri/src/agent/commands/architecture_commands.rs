@@ -41,3 +41,13 @@ pub async fn architecture_run_complete(
 ) -> Result<bool, String> {
     Ok(state.complete_arch_run(&run_id, &workspace_id, report))
 }
+
+/// 画布执行前的原子准入；晚到的请求不能绕过已完成的取消。
+#[tauri::command]
+pub async fn architecture_run_claim(
+    state: tauri::State<'_, DispatcherState>,
+    workspace_id: String,
+    run_id: String,
+) -> Result<bool, String> {
+    Ok(state.claim_arch_run(&run_id, &workspace_id))
+}

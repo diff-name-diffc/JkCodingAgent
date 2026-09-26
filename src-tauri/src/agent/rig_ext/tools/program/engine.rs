@@ -197,9 +197,8 @@ impl ExecutionEngine<'_> {
         let error = ProgramError::new(
             ProgramErrorKind::DeadlineExceeded,
             format!(
-                "ToolProgram 达到整体 wall-time 上限 {} 秒；已停止调度新调用，在途调用最多等待 {} ms 收敛",
+                "ToolProgram 达到整体 wall-time 上限 {} 秒；已停止调度新调用，在途调用等待真实结算后返回",
                 self.limits.max_wall_time_secs,
-                self.limits.max_drain_time_ms,
             ),
         );
         match (id, tool) {
@@ -211,10 +210,7 @@ impl ExecutionEngine<'_> {
     pub(super) fn cancelled_error(&self, id: Option<&str>, tool: Option<&str>) -> ProgramError {
         let error = ProgramError::new(
             ProgramErrorKind::Cancelled,
-            format!(
-                "ToolProgram 收到外层取消信号；已停止调度新调用，在途调用最多等待 {} ms 收敛",
-                self.limits.max_drain_time_ms,
-            ),
+            "ToolProgram 收到外层取消信号；已停止调度新调用，在途调用等待真实结算后返回",
         );
         match (id, tool) {
             (Some(id), Some(tool)) => error.for_step(id, tool),

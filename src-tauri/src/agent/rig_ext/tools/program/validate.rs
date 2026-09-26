@@ -78,8 +78,6 @@ pub struct ProgramLimits {
     pub max_environment_bytes: usize,
     pub max_return_bytes: usize,
     pub max_wall_time_secs: u64,
-    /// 达到 wall-time 后等待已启动数据面调用协作收敛的硬上限。
-    pub max_drain_time_ms: u64,
 }
 
 impl Default for ProgramLimits {
@@ -98,7 +96,6 @@ impl Default for ProgramLimits {
             max_environment_bytes: 4 * 1024 * 1024,
             max_return_bytes: 384 * 1024,
             max_wall_time_secs: 120,
-            max_drain_time_ms: 5_000,
         }
     }
 }
@@ -466,13 +463,11 @@ fn validate_limits(limits: &ProgramLimits) -> Result<(), ProgramError> {
         || limits.max_step_envelope_bytes == 0
         || limits.max_environment_bytes == 0
         || limits.max_return_bytes == 0
-        || limits.max_wall_time_secs == 0
-        || limits.max_drain_time_ms == 0
-        || limits.max_drain_time_ms > 5_000;
+        || limits.max_wall_time_secs == 0;
     if invalid {
         return Err(ProgramError::new(
             ProgramErrorKind::Internal,
-            "ProgramLimits 必须全部为正数，max_parallel_branches 至少为 2，max_drain_time_ms 不得超过 5000",
+            "ProgramLimits 必须全部为正数，max_parallel_branches 至少为 2",
         ));
     }
     Ok(())

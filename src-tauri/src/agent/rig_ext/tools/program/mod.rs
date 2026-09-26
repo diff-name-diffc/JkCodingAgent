@@ -10,6 +10,7 @@ mod ast;
 mod error;
 mod executor;
 mod guide;
+mod managed;
 mod support;
 mod validate;
 mod value;
@@ -51,9 +52,16 @@ pub(super) struct ToolContract {
 #[derive(Clone, Default)]
 pub(crate) struct DataPlane {
     tools: Arc<HashMap<String, PortableDynamicTool>>,
+    runtime: Option<RigToolDeps>,
 }
 
 impl DataPlane {
+    /// 组装数据面，**不注入运行时依赖**（`runtime = None`）。
+    ///
+    /// runtime=None 时叶子走裸执行路径：`managed::execute` 直接
+    /// `tool.execute(arguments)`，跳过受管叶子的登记、结算与命令门禁。
+    /// 生产路径必须随后接 `with_runtime(deps)`（见 `program_tool`）；只有测试与
+    /// 未接管 runtime 的外部调用方停在 None 形态。
     pub(crate) fn new(tools: Vec<PortableDynamicTool>) -> Self {
         let mut map = HashMap::with_capacity(tools.len());
         for tool in tools {
@@ -68,7 +76,15 @@ impl DataPlane {
         }
         Self {
             tools: Arc::new(map),
+            runtime: None,
         }
+    }
+
+    /// 注入运行时依赖，把叶子切到受管路径（登记为内部工具运行 + 结算 + 门禁）。
+    /// 生产入口 `program_tool` 恒走这里；`DataPlane::new` 之后未调用本方法即 runtime=None。
+    fn with_runtime(mut self, deps: RigToolDeps) -> Self {
+        self.runtime = Some(deps);
+        self
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<&PortableDynamicTool> {
@@ -109,7 +125,10 @@ pub(crate) fn program_tool(
     deps: &RigToolDeps,
     data_plane: Vec<PortableDynamicTool>,
 ) -> PortableDynamicTool {
-    build_program_tool(deps.cancel_rx.clone(), DataPlane::new(data_plane))
+    build_program_tool(
+        deps.cancel_rx.clone(),
+        DataPlane::new(data_plane).with_runtime(deps.clone()),
+    )
 }
 
 fn build_program_tool(
@@ -123,7 +142,10 @@ fn build_program_tool(
         ast::tool_program_parameters_schema(),
         move |args| {
             let plane = plane.clone();
-            let cancel_rx = cancel_rx.clone();
+            let cancel_rx =
+                crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
+                    .map(|context| context.cancel_rx)
+                    .or_else(|| cancel_rx.clone());
             Box::pin(async move {
                 let limits = validate::ProgramLimits::default();
                 let catalog = |name: &str| plane.policy_for(name);

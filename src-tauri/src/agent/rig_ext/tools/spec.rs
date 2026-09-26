@@ -128,9 +128,16 @@ pub struct ToolExecutionPolicy {
     /// ToolRuntime 会跳过统一超时包裹（与 unified_timeout=false 等效），
     /// 由工具自管生命周期；策略表中的已知工具必须 > 0。
     pub timeout_secs: u64,
+    /// 工具是否消费 run 级取消信号。自管工具的兜底上限到点时据此判断是否值得发取消
+    /// （见 `loop/app_policy.rs` 的 ceiling 分支；统一超时工具恒 true）。
     pub cancellable: bool,
     #[serde(default = "default_unified_timeout")]
     pub unified_timeout: bool,
+    /// 自管超时工具（`unified_timeout=false`）的兜底上限（秒）：工具自身预算之外的
+    /// **最后防线**，只在工具终止路径卡死时才触发，绝不用作单次超时。
+    /// 取值 = 该工具最坏合法预算（见 `self_managed_settle_ceiling_secs`）；统一超时工具恒 0。
+    #[serde(default)]
+    pub settle_ceiling_secs: u64,
 }
 
 impl ToolExecutionPolicy {
@@ -140,6 +147,7 @@ impl ToolExecutionPolicy {
             timeout_secs,
             cancellable: true,
             unified_timeout: true,
+            settle_ceiling_secs: 0,
         }
     }
 
@@ -149,15 +157,17 @@ impl ToolExecutionPolicy {
             timeout_secs,
             cancellable: true,
             unified_timeout: true,
+            settle_ceiling_secs: 0,
         }
     }
 
-    pub fn tool_managed_timeout(timeout_secs: u64) -> Self {
+    pub fn tool_managed_timeout(timeout_secs: u64, settle_ceiling_secs: u64) -> Self {
         Self {
             parallelizable: false,
             timeout_secs,
             cancellable: true,
             unified_timeout: false,
+            settle_ceiling_secs,
         }
     }
 }
@@ -248,11 +258,6 @@ impl ToolSpec {
             execution: ToolExecutionPolicy::sequential(60),
             result_policy: ToolResultPolicy::new(true),
         }
-    }
-
-    /// 只读且可并行（子智能体只读批的判定口径）。
-    pub fn supports_parallel_readonly(&self) -> bool {
-        self.access.readonly && self.execution.parallelizable
     }
 }
 
@@ -727,7 +732,10 @@ impl ToolProfile {
 
     fn from_row(row: &'static ToolPolicyRow) -> Self {
         let execution = if row.self_managed_timeout {
-            ToolExecutionPolicy::tool_managed_timeout(row.timeout_secs)
+            ToolExecutionPolicy::tool_managed_timeout(
+                row.timeout_secs,
+                self_managed_settle_ceiling_secs(row.name),
+            )
         } else if row.parallel_readonly {
             ToolExecutionPolicy::parallel_readonly(row.timeout_secs)
         } else {
@@ -759,6 +767,32 @@ impl ToolProfile {
     }
 }
 
+/// 自管超时工具的兜底上限（秒）：工具自身预算之外，策略层等待结算的最后防线。
+///
+/// 集中一处而非写进主策略表，是为了把自管工具的「最坏合法预算」放在一起横向比较，
+/// 也避免给主表 50 余行都加参数。取值原则：**不得小于该工具的最坏合法预算**（宁可宽），
+/// 只在工具终止路径卡死时才会触发（到点行为见 `loop/app_policy.rs` 的 ceiling 分支）。
+///
+/// 返回 0 表示未登记：新增自管工具若忘了在这里登记，`self_managed_tools_declare_ceiling`
+/// 测试会失败。
+fn self_managed_settle_ceiling_secs(name: &str) -> u64 {
+    match name {
+        // config `exec_timeout_secs` 默认 60（非前端可配），留 10× 余量
+        "local_zsh" => 600,
+        // 单命令参数上限 300 + 交互/静默容忍与 channel drain
+        "ssh_exec" => 600,
+        // rsync 无硬上限
+        "sync_directory" => 900,
+        // 多图批量 × 单图超时（声明 1500），留 2× 余量
+        "analyze_image" => 3000,
+        // 子智能体配置上限 MAX_TIMEOUT_SECS = 3600 + 收敛窗口
+        "call_sub_agent" => 3900,
+        // 程序 wall-time 120 + 在途叶子最长 300 + drain
+        "run_tool_program" => 900,
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -786,7 +820,6 @@ mod tests {
         assert_eq!(spec.category, ToolCategory::Filesystem);
         assert!(spec.access.readonly);
         assert!(spec.execution.parallelizable);
-        assert!(spec.supports_parallel_readonly());
     }
 
     #[test]
@@ -800,7 +833,6 @@ mod tests {
         assert_eq!(spec.category, ToolCategory::Mcp);
         assert!(!spec.access.readonly);
         assert!(!spec.execution.parallelizable);
-        assert!(!spec.supports_parallel_readonly());
     }
 
     #[test]
@@ -845,7 +877,6 @@ mod tests {
         assert_eq!(spec.safety, ToolSafety::ReviewRequired);
         assert!(!spec.execution.parallelizable);
         assert!(spec.execution.unified_timeout);
-        assert!(!spec.supports_parallel_readonly());
         assert!(!spec.result_policy.default_compress);
     }
 
@@ -881,7 +912,6 @@ mod tests {
             assert!(spec.access.readonly);
             assert!(spec.access.requires_network);
             assert!(!spec.execution.parallelizable);
-            assert!(!spec.supports_parallel_readonly());
         }
         // 交互类：外部效应 + 需审查。
         for name in [
@@ -1051,6 +1081,36 @@ mod tests {
                 assert!(
                     row.safety != ToolSafety::Safe || row.access.workspace_bound,
                     "{} 有外部效应但既非 Safe 也非工作区内",
+                    row.name
+                );
+            }
+        }
+    }
+
+    /// 自管工具的兜底上限（策略层的最后防线）必须在策略表里显式登记：
+    /// 新增自管工具忘了登记 `self_managed_settle_ceiling_secs` 会在这里失败；
+    /// 统一超时工具不得带兜底上限。
+    #[test]
+    fn self_managed_tools_declare_settle_ceiling() {
+        for row in TOOL_POLICY_TABLE {
+            let spec = ToolSpec::new(row.name, "测试工具", json!({ "type": "object" }));
+            if row.self_managed_timeout {
+                assert!(
+                    spec.execution.settle_ceiling_secs > spec.execution.timeout_secs,
+                    "{}：兜底上限必须大于声明预算（当前 {} vs {}）",
+                    row.name,
+                    spec.execution.settle_ceiling_secs,
+                    spec.execution.timeout_secs
+                );
+                assert!(
+                    spec.execution.cancellable,
+                    "{}：自管工具必须消费取消信号（cancellable）",
+                    row.name
+                );
+            } else {
+                assert_eq!(
+                    spec.execution.settle_ceiling_secs, 0,
+                    "{}：统一超时工具不应带兜底上限",
                     row.name
                 );
             }

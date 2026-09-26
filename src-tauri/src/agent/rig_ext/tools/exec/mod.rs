@@ -42,7 +42,6 @@ pub(crate) fn exec_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
         deps.db.clone(),
         deps.cancel_rx.clone(),
         deps.review.clone(),
-        deps.tool_call_id.clone(),
     ));
     tools
 }

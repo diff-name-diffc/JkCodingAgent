@@ -11,6 +11,8 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import type { DispatcherRuntimeSnapshot } from "../../types";
+import { updateLiveToolRunActivity } from "./live-tool-activity";
 import {
   createIdleLiveSessionState,
   getDispatcherActiveRunId,
@@ -105,6 +107,24 @@ async function pollDetachedRuns(): Promise<void> {
     applyDetachedRunState(sessionId, false);
     reconcileSessionMessages(sessionId);
   }
+  await Promise.all([...trackedDetachedRuns].map(async (sessionId) => {
+    try {
+      const snapshot = await invoke<DispatcherRuntimeSnapshot>("dispatcher_runtime_snapshot", { workspaceId: sessionId });
+      // 请求期间若已由新事件通道接管，不覆盖其状态。
+      if (getDispatcherActiveRunId(sessionId) !== undefined || !trackedDetachedRuns.has(sessionId)) return;
+      const current = getDispatcherLiveSessionState(sessionId) ?? createIdleLiveSessionState();
+      const cleaning = snapshot.scopes.some((scope) => scope.phase === "cleaning");
+      const next = {
+        ...current,
+        assistantPlaceholder: cleaning ? "正在清理工具任务，请等待实际操作结束..." : current.assistantPlaceholder,
+        liveToolCalls: snapshot.tasks.reduce(updateLiveToolRunActivity, current.liveToolCalls),
+      };
+      setDispatcherLiveSessionState(sessionId, next);
+      notifyDispatcherLiveSessionSubscribers(sessionId, next);
+    } catch (error) {
+      console.error("查询异步工具运行快照失败:", error);
+    }
+  }));
   scheduleNextPoll();
 }
 

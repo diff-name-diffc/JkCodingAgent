@@ -15,11 +15,12 @@ use rig::message::ToolCall;
 use tauri::ipc::Channel;
 
 use super::llm_usage_from_rig;
-use crate::agent::common::{UsageTracker, emit, serialize_tool_arguments};
+use crate::agent::common::{emit, serialize_tool_arguments, UsageTracker};
 use crate::agent::db::{DispatcherDb, DispatcherMessageRecord, ToolArtifactDraft};
 use crate::agent::rig_ext::events::AgentEvent;
 use summary::extract_structured_summary;
 
+pub(crate) mod prepare;
 pub(crate) mod summary;
 #[cfg(test)]
 mod tests;
@@ -256,6 +257,16 @@ pub(super) fn bound_inline_tool_result(content: String) -> String {
     }
 }
 
+/// 摘要成功时 result_mode 的统一映射：单一出处，同步/异步链路共用
+/// （前端 DispatcherToolResultMode 按穷举字面量匹配，任一处漂移即破契约）。
+pub(super) fn summary_result_mode(has_intent: bool) -> &'static str {
+    if has_intent {
+        "intent_compressed"
+    } else {
+        "conservative_summary"
+    }
+}
+
 // ─── 摘要模型（rig 形态） ─────────────────────────────────────────────────────
 
 /// 摘要模型调用配置（压缩用途槽位的运行形态）。
@@ -368,6 +379,7 @@ pub async fn persist_rig_tool_result<M: CompletionModel>(
         emit(
             on_event,
             AgentEvent::ToolFinished {
+                task_id: None,
                 tool_call_id,
                 name: tool_name.clone(),
                 arguments: arguments_json,
@@ -424,11 +436,7 @@ pub async fn persist_rig_tool_result<M: CompletionModel>(
             if usage.has_values() {
                 usage_tracker.record(&llm_usage_from_rig(&usage));
             }
-            let mode = if prepared.compress_intent.is_some() {
-                "intent_compressed"
-            } else {
-                "conservative_summary"
-            };
+            let mode = summary_result_mode(prepared.compress_intent.is_some());
             persist_with_presentation(
                 db,
                 workspace_id,
@@ -503,6 +511,7 @@ async fn persist_with_presentation(
     emit(
         on_event,
         AgentEvent::ToolFinished {
+            task_id: None,
             tool_call_id: tool_call_id.to_string(),
             name: tool_call.function.name.clone(),
             arguments: arguments_json.to_string(),

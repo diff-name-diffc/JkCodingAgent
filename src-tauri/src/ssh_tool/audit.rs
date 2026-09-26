@@ -2,7 +2,7 @@ use std::path::Path;
 
 use chrono::Utc;
 
-use super::{SshAuditRecord, SshAuditReview, SshExecResult};
+use super::{CommandFailure, SshAuditRecord, SshAuditReview, SshExecResult};
 
 /// 单条审计记录里 stdout / stderr 各自保留的最大字符数（头尾各半）。
 /// 完整输出仍随工具结果返回；这里只限制审计文件的落盘体积。
@@ -17,7 +17,7 @@ impl SshAuditRecord {
         server_id: String,
         session_id: String,
         command: String,
-        result: &Result<SshExecResult, String>,
+        result: &Result<SshExecResult, CommandFailure>,
         review: Option<&SshAuditReview>,
     ) -> Self {
         let review = review.cloned();
@@ -39,7 +39,7 @@ impl SshAuditRecord {
                 error: None,
                 review,
             },
-            Err(error) => Self {
+            Err(failure) => Self {
                 created_at: Utc::now().to_rfc3339(),
                 workspace_path: normalize_project_key(workspace_path),
                 workspace_id,
@@ -53,7 +53,7 @@ impl SshAuditRecord {
                 duration_ms: None,
                 truncated: false,
                 interactive_blocked: false,
-                error: Some(sanitize_error_text(error)),
+                error: Some(sanitize_error_text(&failure.message)),
                 review,
             },
         }

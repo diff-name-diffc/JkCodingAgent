@@ -64,6 +64,7 @@ export interface SubAgentEvent {
     /** Started 事件携带的运行实际模型（UI-14 遗留）；老轨迹缺该字段。 */
     model?: string;
     toolName?: string;
+    taskId?: string;
     arguments?: Record<string, unknown>;
     resultPreview?: string;
     message?: string;

@@ -11,4 +11,5 @@ pub(crate) mod ssh_review;
 mod state;
 pub mod sub_agent;
 
+pub(crate) use state::ActiveRunHandle;
 pub use state::DispatcherState;

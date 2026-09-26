@@ -10,7 +10,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
 use tauri::AppHandle;
 use tokio::sync::watch;
 
@@ -42,33 +41,6 @@ impl std::fmt::Debug for ImageToolConfig {
     }
 }
 
-/// 逐次调用注入槽：当前工具调用 id。
-///
-/// 等价于旧运行时 `current_tool_call_id` 的角色——需要与父级调用关联的
-/// 工具（`call_sub_agent` 的子智能体事件/轨迹关联）在构造期拿不到调用 id，
-/// 由执行策略在每次调用前写入、收尾时清除。主 Agent 循环逐次执行工具，
-/// 因此不存在并发写入竞态；并行只读批中的工具不得依赖本槽位。
-#[derive(Clone, Default)]
-pub(crate) struct ToolCallSlot(Arc<Mutex<Option<String>>>);
-
-impl ToolCallSlot {
-    pub(crate) fn set(&self, tool_call_id: impl Into<String>) {
-        *self.0.lock() = Some(tool_call_id.into());
-    }
-
-    pub(crate) fn get(&self) -> Option<String> {
-        self.0.lock().clone()
-    }
-
-    /// 仅当槽位仍是 `tool_call_id` 时清除，避免误清后续调用写入的值。
-    pub(crate) fn clear_if(&self, tool_call_id: &str) {
-        let mut slot = self.0.lock();
-        if slot.as_deref() == Some(tool_call_id) {
-            *slot = None;
-        }
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct RigToolDeps {
     pub workspace_id: String,
@@ -95,6 +67,4 @@ pub(crate) struct RigToolDeps {
     /// 命令类工具的安全审查上下文（local_zsh / ssh_exec / sync_directory /
     /// MCP 桥在执行前带完整目标环境上下文做 fail-closed 审查）。
     pub review: super::super::review::RigReviewContext,
-    /// 当前工具调用 id 注入槽（子智能体工具关联父调用用，见 `ToolCallSlot`）。
-    pub tool_call_id: ToolCallSlot,
 }

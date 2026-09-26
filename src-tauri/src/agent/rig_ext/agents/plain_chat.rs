@@ -12,33 +12,33 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tauri::AppHandle;
 use tauri::ipc::Channel;
+use tauri::AppHandle;
 use tokio::sync::watch;
 
-use crate::agent::config::{DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT, DispatcherAgentConfig};
+use crate::agent::config::{DispatcherAgentConfig, DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT};
 use crate::agent::db::{
     AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb, DispatcherMessageRecord,
 };
 use crate::agent::rig_ext::events::AgentEvent;
-use crate::agent::rig_ext::r#loop::{
-    AppToolExecutionPolicy, AppToolPolicyConfig, RigLoopHooks, RigToolSurface, run_rig_loop,
-};
 use crate::agent::rig_ext::message::{apply_stored_session_summary, chat_history_to_rig_with_ids};
 use crate::agent::rig_ext::model::{
-    ModelSelectionHandle, PurposeModelSpecs, PurposeSwitchingModel, completions_model,
-    resolve_purpose_specs,
+    completions_model, resolve_purpose_specs, ModelSelectionHandle, PurposeModelSpecs,
+    PurposeSwitchingModel,
+};
+use crate::agent::rig_ext::r#loop::{
+    run_rig_loop, AppToolExecutionPolicy, AppToolPolicyConfig, RigLoopHooks, RigToolSurface,
 };
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::sub_agent::{call_sub_agent_tool, list_sub_agents_tool};
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
-use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps, ToolCallSlot};
+use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps};
 use crate::agent::rig_ext::tools::exec::exec_tools;
 use crate::agent::rig_ext::tools::mcp::mcp_tools;
 use crate::agent::rig_ext::tools::media::media_tools;
-use crate::agent::sub_agent::SubAgentManager;
 use crate::agent::sub_agent::config::SubAgentConfig;
-use crate::mcp::{McpRegistry, McpScope, ResolvedMcpTool, tool_definitions_from_snapshot};
+use crate::agent::sub_agent::SubAgentManager;
+use crate::mcp::{tool_definitions_from_snapshot, McpRegistry, McpScope, ResolvedMcpTool};
 use crate::ssh_tool::SshSessionManager;
 
 use super::{retain_allowed_tools, session_workspace_dir_name, tool_result_policies_from_specs};
@@ -71,7 +71,6 @@ pub struct RigPlainChatAgent {
     image_credentials: Mutex<crate::agent::db::settings::ImageModelCredentials>,
     /// 本 run 会话已启用的子智能体快照（run 入口异步拉取一次）。
     sub_agent_exposure: Mutex<Option<SubAgentExposure>>,
-    tool_call_id: ToolCallSlot,
 }
 
 struct SubAgentExposure {
@@ -99,7 +98,6 @@ impl RigPlainChatAgent {
             review_config: Mutex::new(None),
             image_credentials: Mutex::new(Default::default()),
             sub_agent_exposure: Mutex::new(None),
-            tool_call_id: ToolCallSlot::default(),
         }
     }
 
@@ -275,7 +273,6 @@ impl RigPlainChatAgent {
                 parent_spec,
                 self.app_handle.clone(),
                 workspace_id.to_string(),
-                self.tool_call_id.clone(),
             ));
             tools.push(list_sub_agents_tool(
                 Arc::clone(manager),
@@ -394,7 +391,6 @@ impl RigPlainChatAgent {
                 review: self.review_context(db, workspace_id, None).await,
                 cancel_rx: Some(request.cancel_rx.clone()),
                 trace: Default::default(),
-                tool_call_id: self.tool_call_id.clone(),
             },
         );
 
@@ -442,7 +438,6 @@ impl RigPlainChatAgent {
             vision_spec: self.specs.vision.clone(),
             image: self.image_tool_config(),
             review: self.review_context(db, workspace_id, None).await,
-            tool_call_id: self.tool_call_id.clone(),
         }
     }
 
@@ -544,7 +539,6 @@ impl RigPlainChatAgent {
             vision_spec: self.specs.vision.clone(),
             image: self.image_tool_config(),
             review: RigReviewContext::unconfigured(),
-            tool_call_id: ToolCallSlot::default(),
         }
     }
 

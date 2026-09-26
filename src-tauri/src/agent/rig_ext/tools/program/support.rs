@@ -156,9 +156,7 @@ pub(super) fn validate_execution_limits(limits: &ProgramLimits) -> Result<(), Pr
         || limits.max_step_envelope_bytes == 0
         || limits.max_environment_bytes == 0
         || limits.max_return_bytes == 0
-        || limits.max_wall_time_secs == 0
-        || limits.max_drain_time_ms == 0
-        || limits.max_drain_time_ms > 5_000;
+        || limits.max_wall_time_secs == 0;
     if invalid_budget {
         return Err(ProgramError::new(
             ProgramErrorKind::Internal,

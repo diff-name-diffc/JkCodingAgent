@@ -41,6 +41,7 @@ pub(super) fn map_dispatcher_message_record(
         thinking_elapsed_ms,
         context_payload: row.get("context_payload")?,
         tool_call_id: row.get("tool_call_id")?,
+        tool_task_id: row.get("tool_task_id")?,
         tool_name: row.get("tool_name")?,
         tool_result_mode: row.get("tool_result_mode")?,
         tool_artifacts: parse_tool_artifact_refs(

@@ -17,7 +17,8 @@ mod run;
 
 use generation::GenerationGate;
 pub(crate) use generation::GenerationGuard;
-use run::{ActiveRunHandle, ActiveRunStore, ArchRunRegistry, GraphRunRegistry};
+pub(crate) use run::ActiveRunHandle;
+use run::{ActiveRunStore, ArchRunRegistry, GraphRunRegistry};
 
 pub(crate) use run::GraphRunHandle;
 
@@ -64,6 +65,8 @@ impl DispatcherState {
         let (db, sub_agent_manager) = tokio::task::spawn_blocking(
             move || -> Result<(DispatcherDb, Option<Arc<SubAgentManager>>)> {
                 let db = DispatcherDb::new(db_path).context("打开本地数据库失败")?;
+                db.recover_interrupted_tool_tasks()
+                    .context("恢复中断的工具执行事实")?;
                 super::graph::store::GraphStore::new(&db)
                     .fail_interrupted_runs(None)
                     .context("恢复中断的执行图运行")?;
@@ -472,6 +475,18 @@ impl DispatcherState {
         report: String,
     ) -> bool {
         self.arch_runs.complete(run_id, workspace_id, report)
+    }
+
+    /// 前端提交草稿前取得唯一执行权；返回 false 表示取消先发生或条目已不存在，
+    /// 前端不得再执行该程序。
+    pub(crate) fn claim_arch_run(&self, run_id: &str, workspace_id: &str) -> bool {
+        self.arch_runs.claim(run_id, workspace_id)
+    }
+
+    /// 取消尚未取得执行权的程序（清槽并让接收端失效）；已启动的程序
+    /// 必须等前端结算，返回 false。
+    pub(crate) fn cancel_unstarted_arch_run(&self, run_id: &str) -> bool {
+        self.arch_runs.cancel_unstarted(run_id)
     }
 
     /// architecture_run 工具超时/取消路径的显式清槽。

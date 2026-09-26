@@ -244,7 +244,7 @@ mod tests {
     use serde_json::json;
 
     use super::super::error::ProgramErrorKind;
-    use super::{StepEnvironment, collect_references, resolve_template};
+    use super::{collect_references, resolve_template, StepEnvironment};
 
     #[test]
     fn collects_nested_references_without_interpreting_strings() {

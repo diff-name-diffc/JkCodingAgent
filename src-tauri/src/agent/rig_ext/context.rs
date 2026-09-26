@@ -21,7 +21,7 @@ use rig::message::{AssistantContent, Text, ToolCall, ToolResult, ToolResultConte
 use tokio::sync::watch;
 
 use super::tool_result::RigSummaryModel;
-use crate::agent::common::{UNANSWERED_TOOL_RESULT_PLACEHOLDER, UsageTracker};
+use crate::agent::common::{UsageTracker, UNANSWERED_TOOL_RESULT_PLACEHOLDER};
 
 /// 单张图片的固定估算成本：base64 不直接计全量（一张截图的 base64 可达
 /// 数十万字符，按实际字符计会瞬间挤爆预算）。
@@ -1252,18 +1252,16 @@ mod tests {
         let mut tracker = UsageTracker::new();
         let stub = failing_summary_model();
         let summary_model = stub.rig_summary_model();
-        assert!(
-            compact_history(
-                &mut messages,
-                usize::MAX,
-                1,
-                Some(&summary_model),
-                &mut tracker,
-                None,
-            )
-            .await
-            .is_none()
-        );
+        assert!(compact_history(
+            &mut messages,
+            usize::MAX,
+            1,
+            Some(&summary_model),
+            &mut tracker,
+            None,
+        )
+        .await
+        .is_none());
         assert_eq!(messages, original);
     }
 

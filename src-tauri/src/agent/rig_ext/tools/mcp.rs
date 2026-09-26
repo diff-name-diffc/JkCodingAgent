@@ -14,6 +14,8 @@
 //!   之前送入 ssh_review 链路送审（工具名 + 完整参数 JSON），未配置审查
 //!   fail-closed 拒绝——对齐旧自实现 MCP 桥的 `review_mcp_call`。
 //!   审查上下文经 `RigToolDeps.review` 注入。
+//! - 取消：工具边界是唯一读 agent 循环 task-local 的地方，取一次取消源后
+//!   注入 `execute_tool_from_snapshot`，MCP 基础层不依赖 agent 循环。
 
 use std::path::{Component, Path};
 
@@ -149,17 +151,54 @@ async fn execute_bridged(
 
     // 在 TOCTOU 复核通过的同一份快照上执行，避免刷新缓存后把同名但
     // Schema/server 已变化的工具偷换进当前 invocation。
+    //
+    // 取消源在工具边界读一次 task-local 并注入注册表：MCP 基础层（registry
+    // 的检查等非 agent 路径）不得依赖 agent 循环类型。读取点在工具回调内，
+    // task-local 由调度器经 `ToolInvocationContext::scope` 铺好。
+    let cancel = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
+        .map(|context| context.cancel_rx);
     match registry
-        .execute_tool_from_snapshot(&snapshot, name, &args)
+        .execute_tool_from_snapshot(&snapshot, name, &args, cancel)
         .await
     {
         Ok(output) => match serde_json::from_str::<Value>(&output) {
+            Ok(data) if data.get("isError").and_then(Value::as_bool) == Some(true) => {
+                Err(ToolExecutionError::other(mcp_tool_error_message(&output))
+                    .with_code("mcp_tool_failed"))
+            }
             Ok(data) => Ok(ToolOutput::json(data)),
-            Err(error) => Err(recoverable(format!(
+            Err(error) => Err(ToolExecutionError::other(format!(
                 "错误：解析 MCP 工具 `{name}` 的结构化结果失败：{error}"
             ))),
         },
-        Err(error) => Err(recoverable(normalize_tool_error(error))),
+        // 按错误类别分流：请求发送后失败不能证明外部副作用未发生，禁止通用
+        // 重试并带 external_state_unknown code；「未发送」类错误（请求未离开
+        // 本机）按普通失败处理，不带该 code。
+        Err(error) => {
+            if error.is_external_state_unknown() {
+                Err(
+                    ToolExecutionError::other(normalize_tool_error(error.into_message()))
+                        .with_code("external_state_unknown")
+                        .with_retryable(false),
+                )
+            } else {
+                Err(ToolExecutionError::other(normalize_tool_error(
+                    error.into_message(),
+                )))
+            }
+        }
+    }
+}
+
+/// MCP isError 结果回灌给模型时统一带「错误：」前缀，并截断超长内容。
+const MCP_ERROR_RESULT_MAX_CHARS: usize = 2000;
+
+fn mcp_tool_error_message(output: &str) -> String {
+    let preview: String = output.chars().take(MCP_ERROR_RESULT_MAX_CHARS).collect();
+    if preview.len() < output.len() {
+        format!("错误：MCP 工具返回错误：{preview}…（已截断）")
+    } else {
+        format!("错误：MCP 工具返回错误：{preview}")
     }
 }
 
@@ -266,7 +305,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        definition_drifted, looks_like_path_traversal, normalize_tool_error, traversal_risk_arg,
+        definition_drifted, looks_like_path_traversal, mcp_tool_error_message,
+        normalize_tool_error, traversal_risk_arg,
     };
     use crate::mcp::{McpToolTaskSupport, ResolvedMcpTool};
 
@@ -356,5 +396,17 @@ mod tests {
             normalize_tool_error("未带前缀".to_string()),
             "错误：未带前缀"
         );
+    }
+
+    #[test]
+    fn mcp_tool_error_message_prefixes_and_truncates() {
+        let short = mcp_tool_error_message(r#"{"isError":true}"#);
+        assert_eq!(short, "错误：MCP 工具返回错误：{\"isError\":true}");
+
+        let long_output = "x".repeat(5000);
+        let truncated = mcp_tool_error_message(&long_output);
+        assert!(truncated.starts_with("错误：MCP 工具返回错误："));
+        assert!(truncated.ends_with("…（已截断）"));
+        assert!(truncated.chars().count() < long_output.len());
     }
 }

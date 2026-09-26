@@ -1,13 +1,20 @@
 use super::*;
 
 impl DispatcherDb {
+    pub(crate) fn latest_user_request_anchor(&self, workspace_id: &str) -> Result<Option<String>> {
+        self.conn()?.query_row(
+            "SELECT id FROM dispatcher_messages WHERE workspace_id=?1 AND role='user' AND visible=1 ORDER BY rowid DESC LIMIT 1",
+            [workspace_id], |row| row.get(0),
+        ).optional().context("查询真实用户请求锚点")
+    }
+
     pub fn list_visible_messages(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<DispatcherMessageRecord>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
+            "SELECT id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_task_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
              FROM dispatcher_messages
              WHERE workspace_id = ?1 AND visible = 1
              ORDER BY created_at ASC, rowid ASC",
@@ -45,7 +52,7 @@ impl DispatcherDb {
         let conn = self.conn()?;
         let cutoff_rowid = self.find_dialogue_cutoff_rowid(&conn, workspace_id, max_dialogues)?;
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
+            "SELECT id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_task_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
              FROM dispatcher_messages
              WHERE workspace_id = ?1
                AND visible = 1

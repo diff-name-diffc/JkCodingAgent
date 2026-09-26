@@ -4,7 +4,7 @@
 //! 纯逻辑逐条保留；模型调用改为 rig `CompletionModel::completion`（槽位规格
 //! 由调用方解析，见 `commands/session_metadata.rs`）。
 
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
 use rig::completion::CompletionModel;
 
@@ -12,7 +12,7 @@ use crate::agent::db::{ChatMessage, ChatMessageContentPart, LlmUsage};
 
 use super::llm_usage_from_rig;
 use super::message::chat_history_to_rig;
-use super::model::{PurposeModelSpec, build_completion_request, completions_model};
+use super::model::{build_completion_request, completions_model, PurposeModelSpec};
 /// 摘要调用失败：面向日志的消息。
 pub struct SummaryError {
     message: String,

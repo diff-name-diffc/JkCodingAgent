@@ -28,60 +28,7 @@ impl DispatcherDb {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("begin create dispatcher tool run transaction")?;
-        let id = Uuid::new_v4().to_string();
-        let timestamp = now();
-        let origin = trace.origin.trim();
-        if origin.is_empty() {
-            anyhow::bail!("dispatcher tool run origin must not be empty");
-        }
-        let sequence = i64::try_from(trace.sequence)
-            .context("dispatcher tool run sequence exceeds sqlite INTEGER range")?;
-
-        if let Some(parent_run_id) = trace.parent_run_id.as_deref() {
-            let parent_workspace_id = tx
-                .query_row(
-                    "SELECT workspace_id FROM dispatcher_tool_runs WHERE id = ?1",
-                    params![parent_run_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .context("load parent dispatcher tool run")?
-                .with_context(|| {
-                    format!("parent dispatcher tool run not found: {parent_run_id}")
-                })?;
-            if parent_workspace_id != run.workspace_id {
-                anyhow::bail!(
-                    "parent dispatcher tool run {parent_run_id} belongs to workspace {parent_workspace_id}, not {}",
-                    run.workspace_id
-                );
-            }
-        }
-
-        tx.execute(
-            "INSERT INTO dispatcher_tool_runs (
-                id, workspace_id, tool_call_id, parent_run_id, origin, step_id, sequence,
-                tool_name, provider, category, status, arguments_json,
-                effective_arguments_json, metadata_json, created_at, updated_at
-             )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'planned', ?11, ?12, ?13, ?14, ?14)",
-            params![
-                &id,
-                &run.workspace_id,
-                &run.tool_call_id,
-                &trace.parent_run_id,
-                origin,
-                &trace.step_id,
-                sequence,
-                &run.tool_name,
-                &run.provider,
-                &run.category,
-                &run.arguments_json,
-                &run.effective_arguments_json,
-                &run.metadata_json,
-                &timestamp
-            ],
-        )
-        .context("create dispatcher tool run")?;
+        let id = insert_tool_run(&tx, &run, &trace)?;
         tx.commit()
             .context("commit create dispatcher tool run transaction")?;
         load_tool_run_on_conn(&conn, &id)
@@ -211,4 +158,65 @@ fn duration_since_started_ms(started_at: Option<&str>, finished_at: &str) -> i64
         return 0;
     };
     (finished - started).num_milliseconds().max(0)
+}
+
+// 单调用与批次登记共享同一个事务内插入路径。
+pub(super) fn insert_tool_run(
+    tx: &rusqlite::Transaction<'_>,
+    run: &NewToolRun,
+    trace: &ToolRunTraceContext,
+) -> Result<String> {
+    let id = Uuid::new_v4().to_string();
+    let timestamp = now();
+    let origin = trace.origin.trim();
+    if origin.is_empty() {
+        anyhow::bail!("dispatcher tool run origin must not be empty");
+    }
+    let sequence = i64::try_from(trace.sequence)
+        .context("dispatcher tool run sequence exceeds sqlite INTEGER range")?;
+
+    if let Some(parent_run_id) = trace.parent_run_id.as_deref() {
+        let parent_workspace_id = tx
+            .query_row(
+                "SELECT workspace_id FROM dispatcher_tool_runs WHERE id = ?1",
+                params![parent_run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("load parent dispatcher tool run")?
+            .with_context(|| format!("parent dispatcher tool run not found: {parent_run_id}"))?;
+        if parent_workspace_id != run.workspace_id {
+            anyhow::bail!(
+                    "parent dispatcher tool run {parent_run_id} belongs to workspace {parent_workspace_id}, not {}",
+                    run.workspace_id
+                );
+        }
+    }
+
+    tx.execute(
+        "INSERT INTO dispatcher_tool_runs (
+                id, workspace_id, tool_call_id, parent_run_id, origin, step_id, sequence,
+                tool_name, provider, category, status, arguments_json,
+                effective_arguments_json, metadata_json, created_at, updated_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'planned', ?11, ?12, ?13, ?14, ?14)",
+        params![
+            &id,
+            &run.workspace_id,
+            &run.tool_call_id,
+            &trace.parent_run_id,
+            origin,
+            &trace.step_id,
+            sequence,
+            &run.tool_name,
+            &run.provider,
+            &run.category,
+            &run.arguments_json,
+            &run.effective_arguments_json,
+            &run.metadata_json,
+            &timestamp
+        ],
+    )
+    .context("create dispatcher tool run")?;
+    Ok(id)
 }

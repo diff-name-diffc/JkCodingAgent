@@ -102,16 +102,12 @@ async fn assistant_message_drops_reasoning_and_maps_tool_calls() {
     };
     // 历史思考链不回灌（瞬态产物，只浪费上下文预算；DeepSeek 等服务商
     // 明确要求历史不携带 reasoning_content）。
-    assert!(
-        !content
-            .iter()
-            .any(|item| matches!(item, AssistantContent::Reasoning(_)))
-    );
-    assert!(
-        content
-            .iter()
-            .any(|item| matches!(item, AssistantContent::Text(t) if t.text == "正文"))
-    );
+    assert!(!content
+        .iter()
+        .any(|item| matches!(item, AssistantContent::Reasoning(_))));
+    assert!(content
+        .iter()
+        .any(|item| matches!(item, AssistantContent::Text(t) if t.text == "正文")));
     let call = content
         .iter()
         .find_map(|item| match item {

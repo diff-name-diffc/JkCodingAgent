@@ -84,6 +84,7 @@ pub enum AgentEvent {
     },
     /// 工具开始执行。字段语义与 `ToolPlanned` 相同，`tool_call_id` 必填（G9-07）。
     ToolStarted {
+        task_id: Option<String>,
         tool_call_id: String,
         name: String,
         arguments: String,
@@ -114,6 +115,7 @@ pub enum AgentEvent {
     /// G9-07：`tool_call_id` 必填；补 `arguments`（schema 补全后的 effective
     /// 参数 JSON）与 Planned/Started 字段对称，前端无需缓存 Started 即可展示入参。
     ToolFinished {
+        task_id: Option<String>,
         tool_call_id: String,
         name: String,
         arguments: String,
@@ -123,6 +125,17 @@ pub enum AgentEvent {
         context_payload: String,
         result_mode: String,
         detail_refs: Vec<DispatcherToolArtifactRef>,
+    },
+    RunPhaseChanged {
+        agent_run_id: String,
+        scope_id: String,
+        workspace_id: String,
+        phase: String,
+    },
+    ToolAccepted {
+        task_id: String,
+        tool_call_id: String,
+        name: String,
     },
     ToolRunUpdated {
         run: DispatcherToolRunRecord,

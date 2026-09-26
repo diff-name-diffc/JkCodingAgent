@@ -9,6 +9,7 @@
 
 mod async_api;
 mod lifecycle;
+mod registration;
 mod tree;
 
 #[cfg(test)]
@@ -24,7 +25,7 @@ pub(super) const TOOL_RUN_SELECT_COLUMNS: &str =
      r.tool_name, r.provider, r.category, r.status, r.arguments_json,
      r.effective_arguments_json, r.result_mode, r.message_id, r.error_kind,
      r.error_message, r.action_kind, r.started_at, r.finished_at, r.duration_ms,
-     r.metadata_json, r.created_at, r.updated_at";
+     r.metadata_json, r.created_at, r.updated_at, r.agent_run_id, r.scope_id, r.dispatch_round, r.root_request_message_id, r.reply_message_id, r.dispatch_mode, r.phase";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +33,13 @@ pub struct DispatcherToolRunRecord {
     pub id: String,
     pub workspace_id: String,
     pub tool_call_id: String,
+    pub agent_run_id: Option<String>,
+    pub scope_id: Option<String>,
+    pub dispatch_round: Option<i64>,
+    pub root_request_message_id: Option<String>,
+    pub reply_message_id: Option<String>,
+    pub dispatch_mode: Option<String>,
+    pub phase: Option<String>,
     pub parent_run_id: Option<String>,
     pub origin: String,
     pub step_id: Option<String>,
@@ -130,6 +138,13 @@ pub(super) fn map_tool_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch
         id: row.get("id")?,
         workspace_id: row.get("workspace_id")?,
         tool_call_id: row.get("tool_call_id")?,
+        agent_run_id: row.get("agent_run_id")?,
+        scope_id: row.get("scope_id")?,
+        dispatch_round: row.get("dispatch_round")?,
+        root_request_message_id: row.get("root_request_message_id")?,
+        reply_message_id: row.get("reply_message_id")?,
+        dispatch_mode: row.get("dispatch_mode")?,
+        phase: row.get("phase")?,
         parent_run_id: row.get("parent_run_id")?,
         origin: row.get("origin")?,
         step_id: row.get("step_id")?,
